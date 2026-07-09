@@ -69,9 +69,10 @@ async fn forward(
         return Err(mapped_upstream_error(status, upstream, &route.provider).await);
     }
     if client_wants_stream {
+        let keepalive = std::time::Duration::from_secs(state.config.server.sse_keepalive_seconds);
         Ok((
             StatusCode::OK,
-            stream_response(upstream, route.model, thinking_enabled),
+            stream_response(upstream, route.model, thinking_enabled, keepalive),
         ))
     } else {
         Ok((
@@ -85,6 +86,7 @@ fn stream_response(
     upstream: reqwest::Response,
     model: String,
     thinking_enabled: bool,
+    keepalive: std::time::Duration,
 ) -> axum::response::Response {
     let bytes = upstream.bytes_stream();
     let parser = SseParser::default();
@@ -125,7 +127,9 @@ fn stream_response(
     Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "text/event-stream")
-        .body(Body::from_stream(output))
+        .body(Body::from_stream(crate::keepalive::with_pings(
+            output, keepalive,
+        )))
         .expect("response builder uses valid status and headers")
         .into_response()
 }

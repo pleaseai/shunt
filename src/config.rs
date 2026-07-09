@@ -33,6 +33,15 @@ pub struct ServerConfig {
     /// Absent ⇒ no inbound auth (loopback-only personal use).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<InboundAuthConfig>,
+    /// Idle seconds before shunt injects an SSE `ping` event into a streaming
+    /// response so middlebox timers (Cloudflare's 100s → 524) never expire.
+    /// `0` disables injection (M5).
+    #[serde(default = "default_sse_keepalive_seconds")]
+    pub sse_keepalive_seconds: u64,
+}
+
+fn default_sse_keepalive_seconds() -> u64 {
+    30
 }
 
 /// `[server.auth]` — inbound client-token check on injected-credential routes.
@@ -257,6 +266,7 @@ impl Default for Config {
                 bind: "127.0.0.1:3001".to_string(),
                 default_provider: "anthropic".to_string(),
                 auth: None,
+                sse_keepalive_seconds: default_sse_keepalive_seconds(),
             },
             providers,
             models: Vec::new(),

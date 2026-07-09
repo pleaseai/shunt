@@ -6,6 +6,9 @@
 [server]
 bind = "127.0.0.1:3001"        # address shunt listens on (ANTHROPIC_BASE_URL points here)
 default_provider = "anthropic" # provider for any model with no route -> pass-through to Anthropic
+# sse_keepalive_seconds = 30   # (default) inject an SSE `ping` after this much upstream
+                               # silence so middlebox idle timers (Cloudflare 100s -> 524)
+                               # never kill a quiet stream; 0 disables (docs/running.md §5.10)
 
 # --- Optional: inbound client tokens for a shared gateway (docs/running.md §5.9).
 # When set, models routed to a credential-injecting provider (api_key /

@@ -512,6 +512,23 @@ This is application-layer identification only — transport encryption still com
 deployment (WireGuard/Tailscale tunnel, or TLS termination in front); shunt itself serves
 plain HTTP.
 
+### 5.10 SSE keepalive pings (Cloudflare 524 survival)
+
+Middleboxes kill quiet streams — Cloudflare's proxy returns **524 after 100 seconds without
+a byte** (fixed below Enterprise), and long reasoning stretches can be silent that long.
+shunt therefore injects the Anthropic protocol's own `ping` event (which api.anthropic.com
+itself emits and every client ignores) whenever a streaming response has been idle:
+
+```toml
+[server]
+sse_keepalive_seconds = 30   # default; 0 disables
+```
+
+Pings are injected only between complete SSE events (never inside a half-sent frame), only
+on `text/event-stream` responses, and stop with the upstream stream. Behind a tunnel with
+no idle timeout (WireGuard/Tailscale) the pings are harmless; disable with `0` if you want
+byte-identical relaying. Spec: [`m5-sse-keepalive.md`](m5-sse-keepalive.md).
+
 ---
 
 ## 6. Verify

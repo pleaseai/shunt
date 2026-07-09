@@ -5,6 +5,7 @@ pub mod count_tokens;
 pub mod discovery;
 pub mod error;
 pub mod headers;
+pub mod keepalive;
 pub mod model;
 pub mod proxy;
 pub mod routing;

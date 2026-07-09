@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use axum::{
     body::Body,
     http::{HeaderMap, HeaderValue, Response, StatusCode, Uri},
@@ -9,7 +11,7 @@ use crate::{
     auth::{resolve_credential, Credential},
     config::ApiKeyHeader,
     error::UpstreamError,
-    headers,
+    headers, keepalive,
     routing::Route,
     server::AppState,
 };
@@ -48,6 +50,12 @@ async fn forward(
         .map_err(upstream_error)?;
     let status = upstream.status();
     let response_headers = headers::filtered(upstream.headers());
+    let is_sse = upstream
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.starts_with("text/event-stream"))
+        .unwrap_or(false);
     let stream = upstream.bytes_stream();
 
     let mut builder = Response::builder().status(status);
@@ -57,8 +65,17 @@ async fn forward(
         }
     }
 
+    // Keepalive pings apply only to SSE relays; JSON bodies pass untouched.
+    let body = if is_sse {
+        Body::from_stream(keepalive::with_pings(
+            stream,
+            Duration::from_secs(state.config.server.sse_keepalive_seconds),
+        ))
+    } else {
+        Body::from_stream(stream)
+    };
     let response = builder
-        .body(Body::from_stream(stream))
+        .body(body)
         .expect("response builder uses valid upstream status and headers")
         .into_response();
     Ok((status, response))
