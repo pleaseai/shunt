@@ -2,7 +2,8 @@ use axum::http::StatusCode;
 use serde_json::{json, Value};
 use shunt::{
     model::responses::{
-        anthropic_error_type, parse_sse_events, translate_request, AnthropicSseMachine,
+        anthropic_error_type, map_error_value, parse_sse_events, translate_request,
+        AnthropicSseMachine,
     },
     routing::{AdapterKind, Route},
 };
@@ -249,6 +250,31 @@ fn maps_upstream_error_statuses() {
         anthropic_error_type(StatusCode::INTERNAL_SERVER_ERROR),
         "api_error"
     );
+}
+
+#[test]
+fn surfaces_upstream_error_detail_and_message() {
+    // ChatGPT Codex backend shape: {"detail": "..."}
+    let codex = map_error_value(
+        &json!({"detail": "The 'gpt-x' model is not supported when using Codex with a ChatGPT account."}),
+        StatusCode::BAD_REQUEST,
+    );
+    assert_eq!(codex["error"]["type"], "invalid_request_error");
+    assert_eq!(
+        codex["error"]["message"],
+        "The 'gpt-x' model is not supported when using Codex with a ChatGPT account."
+    );
+
+    // OpenAI Responses shape: {"error":{"message": "..."}}
+    let openai = map_error_value(
+        &json!({"error": {"message": "invalid model"}}),
+        StatusCode::BAD_REQUEST,
+    );
+    assert_eq!(openai["error"]["message"], "invalid model");
+
+    // Unknown shape falls back to a generic message.
+    let unknown = map_error_value(&json!({"weird": true}), StatusCode::BAD_GATEWAY);
+    assert_eq!(unknown["error"]["message"], "upstream request failed");
 }
 
 fn event_names(sse: &str) -> Vec<String> {

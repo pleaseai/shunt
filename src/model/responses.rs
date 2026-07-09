@@ -362,9 +362,13 @@ pub fn anthropic_error_type(status: StatusCode) -> &'static str {
 }
 
 fn error_message(value: &Value) -> String {
+    // OpenAI Responses errors use {"error":{"message":...}} or {"message":...};
+    // the ChatGPT Codex backend uses {"detail":...}. Surface whichever is present
+    // so the client sees the real reason (e.g. "The 'X' model is not supported").
     value
         .pointer("/error/message")
         .or_else(|| value.get("message"))
+        .or_else(|| value.get("detail"))
         .and_then(Value::as_str)
         .unwrap_or("upstream request failed")
         .to_string()
