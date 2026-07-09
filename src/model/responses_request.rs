@@ -73,6 +73,18 @@ fn input_items(request: &Value) -> Vec<Value> {
     out
 }
 
+/// Claude Code sends `output_config.effort` (low|medium|high|xhigh|max) when
+/// the model advertises effort support or `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1`
+/// is set (needed for custom gateway ids like gpt-5.5). Map it to the Responses
+/// `reasoning.effort`: the levels pass through, except `max`, which the Responses
+/// API has no equivalent for, so fold it to the deepest level it accepts (xhigh).
+fn map_effort(effort: &str) -> &str {
+    match effort {
+        "max" => "xhigh",
+        other => other,
+    }
+}
+
 /// Claude Code sends mid-conversation `system`-role messages (e.g. SessionStart
 /// hook output, the agent catalog) in the `messages` array. The ChatGPT Codex
 /// backend rejects them (`{"detail":"System messages are not allowed"}`), while
@@ -232,6 +244,12 @@ fn effort(request: &Value, route: &Route) -> String {
     if let Some(effort) = &route.effort {
         return effort.clone();
     }
+    if let Some(effort) = request
+        .pointer("/output_config/effort")
+        .and_then(Value::as_str)
+    {
+        return map_effort(effort).to_string();
+    }
     if request.pointer("/thinking/type").and_then(Value::as_str) == Some("enabled") {
         return "high".to_string();
     }
@@ -254,7 +272,46 @@ fn effort(request: &Value, route: &Route) -> String {
 mod tests {
     use serde_json::json;
 
-    use super::input_items;
+    use super::{effort, input_items};
+    use crate::routing::{AdapterKind, Route};
+
+    fn codex_route() -> Route {
+        Route {
+            provider: "codex".to_string(),
+            adapter: AdapterKind::Responses,
+            model: "gpt-5.5".to_string(),
+            upstream_model: "gpt-5.5".to_string(),
+            effort: None,
+        }
+    }
+
+    #[test]
+    fn maps_output_config_effort_to_reasoning_effort() {
+        for (level, expected) in [
+            ("low", "low"),
+            ("medium", "medium"),
+            ("high", "high"),
+            ("xhigh", "xhigh"),
+            ("max", "xhigh"), // Responses API has no "max"
+        ] {
+            let request = json!({"output_config": {"effort": level}});
+            assert_eq!(effort(&request, &codex_route()), expected, "level={level}");
+        }
+    }
+
+    #[test]
+    fn route_effort_overrides_request_effort() {
+        let mut route = codex_route();
+        route.effort = Some("high".to_string());
+        let request = json!({"output_config": {"effort": "low"}});
+        assert_eq!(effort(&request, &route), "high");
+    }
+
+    #[test]
+    fn falls_back_to_medium_without_effort_or_thinking() {
+        let request = json!({"messages": []});
+        assert_eq!(effort(&request, &codex_route()), "medium");
+    }
 
     #[test]
     fn maps_system_role_message_to_developer() {
