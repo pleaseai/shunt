@@ -1,7 +1,25 @@
 [package]
-name = "shunt"
+# crates.io package name; the library and binary keep the short name `shunt`
+# (the bare `shunt` crate name is taken by an unrelated project).
+name = "shunt-gateway"
 version = "0.1.0"
 edition = "2021"
+description = "Claude Code LLM gateway — an Anthropic Messages proxy that routes models to OpenAI/Codex and Anthropic-compatible backends"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/pleaseai/shunt"
+readme = "README.md"
+keywords = ["claude", "gateway", "proxy", "anthropic", "openai"]
+categories = ["command-line-utilities", "web-programming::http-server"]
+# Keep the published tarball to what's needed to build and use the crate.
+include = ["src/**", "README.md", "LICENSE-MIT", "LICENSE-APACHE", "shunt.toml.example"]
+
+[lib]
+name = "shunt"
+path = "src/lib.rs"
+
+[[bin]]
+name = "shunt"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
