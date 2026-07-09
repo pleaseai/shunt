@@ -1,0 +1,25 @@
+shunt.toml.example
+  s_6bc3ac219e1ce4::t_39b0908a8d3de0 1-5,7-8,13,15,17-18,20-28,30,32,34-35,37-45,49-52,56
+  s_6bc3ac219e1ce4::t_c6e203e32591e1 53-55,57-63
+README.md
+  s_6bc3ac219e1ce4::t_a95ab0951eb58f 11
+docs/running.md
+  s_6bc3ac219e1ce4::t_eeefb5e7d9aa5c 205-209,211-223,228-233
+  s_6bc3ac219e1ce4::t_7fafb462eb6124 1-204,210,224-227,234-301
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7b60241b5373e7d77026550290705cfb6f7757ef",
+  "prompts": {},
+  "sessions": {
+    "s_6bc3ac219e1ce4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5de415b6-0b38-4917-a8cb-268d8a9476f6",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@passionfactory.ai>"
+    }
+  }
+}
