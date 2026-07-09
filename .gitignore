@@ -1,2 +1,7 @@
 /target
 shunt.toml
+
+# Astro Starlight wiki generated artifacts
+wiki/node_modules/
+wiki/.astro/
+wiki/dist/

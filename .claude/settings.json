@@ -2,7 +2,8 @@
   "enabledPlugins": {
     "codex-delegation@passionfactory": true,
     "codex@passionfactory": true,
-    "claude-code-docs@passionfactory": true
+    "claude-code-docs@passionfactory": true,
+    "astro-lsp@code-intelligence": true
   },
   "language": "english"
 }

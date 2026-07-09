@@ -1,0 +1,1557 @@
+# shunt full documentation
+
+<doc title="Configuration" path="src/content/docs/01-getting-started/configuration.md">
+## Overview
+
+Configuration exists to keep shunt generic: new upstreams are provider table entries, not code changes, and routing is a data problem expressed as exact model routes, prefix routes, and a default provider. `Config::load` merges built-in defaults, a TOML file, and `SHUNT_` environment overrides before `validate` checks bind addresses, provider URLs, auth requirements, and provider references [src/config.rs:185-194](https://github.com/chatbot-pf/shunt/blob/main/src/config.rs#L185-L194) [src/config.rs:196-242](https://github.com/chatbot-pf/shunt/blob/main/src/config.rs#L196-L242).
+
+| Area | Responsibility | Key file | Source |
+|---|---|---|---|
+| Built-in defaults | Seeds `anthropic`, `openai`, and `codex` providers | `src/config.rs` | [src/config.rs:142-183](https://github.com/chatbot-pf/shunt/blob/main/src/config.rs#L142-L183) |
+| TOML example | Documents server, providers, routes, aliases | `shunt.toml.example` | [shunt.toml.example:1-134](https://github.com/chatbot-pf/shunt/blob/main/shunt.toml.example#L1-L134) |
+| Runtime docs | Explains config precedence and Claude Code env vars | `docs/running.md` | [docs/running.md:40-159](https://github.com/chatbot-pf/shunt/blob/main/docs/running.md#L40-L159) |
+| Route resolver | Applies exact, prefix, default precedence | `src/routing.rs` | [src/routing.rs:37-89](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L37-L89) |
+| Discovery | Serializes configured `[[models]]` entries | `src/discovery.rs` | [src/discovery.rs:17-30](https://github.com/chatbot-pf/shunt/blob/main/src/discovery.rs#L17-L30) |
+
+## Configuration Layers
+
+```mermaid
+flowchart TB
+    Defaults[Built-in Config default] --> Toml[shunt.toml or --config path]
+    Toml --> Env[SHUNT_ environment overrides]
+    Env --> Validate[Config::validate]
+    Validate --> Runtime[Validated Config in AppState]
+    classDef dark fill:#2d333b,stroke:#6d5dfc,color:#e6edf3;
+    class Defaults,Toml,Env,Validate,Runtime dark;
+    linkStyle default stroke:#8b949e;
+```
+<!-- Sources: src/config.rs:142, src/config.rs:185, src/config.rs:196, src/server.rs:13 -->
+
+## Route Resolution
+
+```mermaid
+flowchart LR
+    Model[Request model id] --> Exact{Exact route?}
+    Exact -->|yes| ExactProvider[Route provider + optional upstream_model]
+    Exact -->|no| Prefix{Prefix match?}
+    Prefix -->|yes| PrefixProvider[Prefix provider]
+    Prefix -->|no| DefaultProvider[server.default_provider]
+    ExactProvider --> Route[Route]
+    PrefixProvider --> Route
+    DefaultProvider --> Route
+    classDef dark fill:#2d333b,stroke:#6d5dfc,color:#e6edf3;
+    class Model,Exact,ExactProvider,Prefix,PrefixProvider,DefaultProvider,Route dark;
+    linkStyle default stroke:#8b949e;
+```
+<!-- Sources: src/routing.rs:48, src/routing.rs:49, src/routing.rs:60, src/routing.rs:65, shunt.toml.example:87 -->
+
+## Route Entities
+
+```mermaid
+erDiagram
+    CONFIG ||--|| SERVER_CONFIG : owns
+    CONFIG ||--o{ PROVIDER_CONFIG : names
+    CONFIG ||--o{ ROUTE_CONFIG : exact_routes
+    CONFIG ||--o{ ROUTE_PREFIX_CONFIG : prefix_routes
+    CONFIG ||--o{ MODEL_CONFIG : exposes
+    PROVIDER_CONFIG ||--o{ ROUTE_CONFIG : selected_by
+    PROVIDER_CONFIG ||--o{ ROUTE_PREFIX_CONFIG : selected_by
+```
+<!-- Sources: src/config.rs:9, src/config.rs:27, src/config.rs:89, src/config.rs:97, src/config.rs:103 -->
+
+## Credential Strategy
+
+| Auth mode | Who supplies credential | Outbound behavior | Source |
+|---|---|---|---|
+| `passthrough` | Claude Code request | Forward incoming credential unchanged | [src/auth/mod.rs:29-99](https://github.com/chatbot-pf/shunt/blob/main/src/auth/mod.rs#L29-L99) [src/adapters/anthropic.rs:66-89](https://github.com/chatbot-pf/shunt/blob/main/src/adapters/anthropic.rs#L66-L89) |
+| `api_key` | Environment variable named by `api_key_env`; OpenAI can fall back to Codex auth JSON | Inject provider key as Bearer or `x-api-key` | [src/auth/mod.rs:57-80](https://github.com/chatbot-pf/shunt/blob/main/src/auth/mod.rs#L57-L80) |
+| `chatgpt_oauth` | `~/.codex/auth.json` from `codex login` | Refresh if near expiry, send Bearer + `chatgpt-account-id` | [src/auth/codex_auth.rs:34-63](https://github.com/chatbot-pf/shunt/blob/main/src/auth/codex_auth.rs#L34-L63) [src/adapters/responses.rs:180-188](https://github.com/chatbot-pf/shunt/blob/main/src/adapters/responses.rs#L180-L188) |
+
+## Discovery Sequence
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant CC as Claude Code
+    participant S as shunt /v1/models
+    participant CFG as Config.models
+    CC->>S: GET /v1/models?limit=1000
+    S->>CFG: iterate configured aliases
+    CFG-->>S: ModelConfig entries
+    S-->>CC: data array with id and display_name
+```
+<!-- Sources: src/discovery.rs:17, src/discovery.rs:19, src/config.rs:98, docs/running.md:257 -->
+
+## Related Pages
+
+| Page | Relationship |
+|---|---|
+| [Overview](./overview.md) | Explains why configuration controls routing |
+| [Operations](./operations.md) | Shows how to run `shunt check` and connect Claude Code |
+| [Routing and Configuration](../02-deep-dive/routing-and-configuration.md) | Deep implementation details |
+| [Authentication](../02-deep-dive/authentication.md) | Credential resolution internals |
+
+## References
+
+- [src/config.rs:9-269](https://github.com/chatbot-pf/shunt/blob/main/src/config.rs#L9-L269)
+- [shunt.toml.example:1-134](https://github.com/chatbot-pf/shunt/blob/main/shunt.toml.example#L1-L134)
+- [docs/running.md:40-159](https://github.com/chatbot-pf/shunt/blob/main/docs/running.md#L40-L159)
+- [src/routing.rs:37-89](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L37-L89)
+- [src/discovery.rs:17-30](https://github.com/chatbot-pf/shunt/blob/main/src/discovery.rs#L17-L30)
+</doc>
+
+<doc title="Operations" path="src/content/docs/01-getting-started/operations.md">
+## Overview
+
+Operationally, shunt is a local Rust binary plus a TOML config. You build it with Cargo, validate the config with `shunt check`, run the gateway, then start Claude Code with `ANTHROPIC_BASE_URL` pointing at the gateway. Provider credentials stay in the shunt process environment or Codex/Claude credential files; Claude Code does not send OpenAI or ChatGPT credentials for mapped models [docs/running.md:1-461](https://github.com/chatbot-pf/shunt/blob/main/docs/running.md#L1-L461) [src/auth/mod.rs:29-99](https://github.com/chatbot-pf/shunt/blob/main/src/auth/mod.rs#L29-L99).
+
+| Operation | Command | Why it exists | Source |
+|---|---|---|---|
+| Debug build | `cargo build` | Compile the gateway while developing | [docs/running.md:26-37](https://github.com/chatbot-pf/shunt/blob/main/docs/running.md#L26-L37) |
+| Release build | `cargo build --release` | Produce `target/release/shunt` for daily use | [docs/running.md:31-34](https://github.com/chatbot-pf/shunt/blob/main/docs/running.md#L31-L34) |
+| Config check | `cargo run -- check` or `shunt check` | Validate before binding or connecting Claude Code | [src/main.rs:77-83](https://github.com/chatbot-pf/shunt/blob/main/src/main.rs#L77-L83) |
+| Run | `cargo run -- run` or `shunt run` | Start Axum HTTP gateway | [src/main.rs:38-76](https://github.com/chatbot-pf/shunt/blob/main/src/main.rs#L38-L76) |
+| Token helper | `shunt token` | Print Claude subscription token for `apiKeyHelper` | [src/main.rs:51-58](https://github.com/chatbot-pf/shunt/blob/main/src/main.rs#L51-L58) |
+| CI validation | `cargo fmt`, `cargo clippy`, `cargo test` | Enforced before PR merge | [.github/workflows/ci.yml:1-42](https://github.com/chatbot-pf/shunt/blob/main/.github/workflows/ci.yml#L1-L42) |
+
+## Command Lifecycle
+
+```mermaid
+flowchart TB
+    Start[Clone repo] --> Build[cargo build --release]
+    Build --> Config[cp shunt.toml.example shunt.toml]
+    Config --> Check[shunt check]
+    Check -->|ok| Run[shunt run]
+    Check -->|error| Fix[Fix TOML or env]
+    Fix --> Check
+    Run --> Claude[Start Claude Code with ANTHROPIC_BASE_URL]
+    Claude --> Verify[Run curl or model picker smoke]
+    classDef dark fill:#2d333b,stroke:#6d5dfc,color:#e6edf3;
+    class Start,Build,Config,Check,Run,Fix,Claude,Verify dark;
+    linkStyle default stroke:#8b949e;
+```
+<!-- Sources: docs/running.md:26, docs/running.md:40, src/main.rs:77, src/main.rs:60, docs/running.md:189, docs/running.md:395 -->
+
+## Connect Claude Code
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Shell as Developer shell
+    participant Shunt as shunt process
+    participant Claude as Claude Code
+    Shell->>Shunt: export provider credentials and run gateway
+    Shell->>Claude: export ANTHROPIC_BASE_URL=http://127.0.0.1:3001
+    Claude->>Shunt: HEAD / probe
+    Claude->>Shunt: POST /v1/messages
+    Shunt-->>Claude: Anthropic-shaped response
+```
+<!-- Sources: docs/running.md:163, docs/running.md:189, src/server.rs:21, src/server.rs:23 -->
+
+## CI Pipeline
+
+```mermaid
+flowchart LR
+    PR[Push or pull_request] --> Checkout[Checkout pinned SHA]
+    Checkout --> Rust[Install stable Rust + rustfmt + clippy]
+    Rust --> Cache[Cargo cache]
+    Cache --> Fmt[cargo fmt --all --check]
+    Fmt --> Clippy[cargo clippy --all-targets --all-features -- -D warnings]
+    Clippy --> Test[cargo test --all-features --workspace]
+    classDef dark fill:#2d333b,stroke:#6d5dfc,color:#e6edf3;
+    class PR,Checkout,Rust,Cache,Fmt,Clippy,Test dark;
+    linkStyle default stroke:#8b949e;
+```
+<!-- Sources: .github/workflows/ci.yml:1, .github/workflows/ci.yml:23, .github/workflows/ci.yml:27, .github/workflows/ci.yml:32, .github/workflows/ci.yml:35, .github/workflows/ci.yml:38, .github/workflows/ci.yml:41 -->
+
+## Troubleshooting Table
+
+| Symptom | Likely cause | Fix | Source |
+|---|---|---|---|
+| `config check failed` | Bad bind address, provider URL, missing env setting, or unknown provider reference | Run `shunt check` and follow typed error | [src/config.rs:196-242](https://github.com/chatbot-pf/shunt/blob/main/src/config.rs#L196-L242) |
+| `ChatGPT auth not found; run codex login` | `~/.codex/auth.json` is absent or unreadable | Run `codex login` | [src/auth/codex_auth.rs:34-63](https://github.com/chatbot-pf/shunt/blob/main/src/auth/codex_auth.rs#L34-L63) |
+| Model absent in `/model` | `gpt-*` IDs are ignored by gateway discovery | Use `ANTHROPIC_CUSTOM_MODEL_OPTION` or a Claude-named alias | [docs/running.md:231-287](https://github.com/chatbot-pf/shunt/blob/main/docs/running.md#L231-L287) |
+| Claude passthrough fails | Gateway credential is dummy or missing | Use real Anthropic credential or `shunt token` helper | [docs/running.md:289-348](https://github.com/chatbot-pf/shunt/blob/main/docs/running.md#L289-L348) |
+| OpenAI/Codex model rejected | Upstream slug not entitled or unsupported | Use an entitled slug or `upstream_model` | [docs/running.md:244-252](https://github.com/chatbot-pf/shunt/blob/main/docs/running.md#L244-L252) |
+
+## Related Pages
+
+| Page | Relationship |
+|---|---|
+| [Configuration](./configuration.md) | Defines the settings operations validate |
+| [Authentication](../02-deep-dive/authentication.md) | Explains credential sources and refresh |
+| [Testing and Quality](../02-deep-dive/testing-and-quality.md) | Expands on CI and test coverage |
+| [Contributor Guide](../onboarding/contributor-guide.md) | Contributor workflow using these commands |
+
+## References
+
+- [docs/running.md:1-461](https://github.com/chatbot-pf/shunt/blob/main/docs/running.md#L1-L461)
+- [src/main.rs:38-76](https://github.com/chatbot-pf/shunt/blob/main/src/main.rs#L38-L76)
+- [src/server.rs:13-25](https://github.com/chatbot-pf/shunt/blob/main/src/server.rs#L13-L25)
+- [.github/workflows/ci.yml:1-42](https://github.com/chatbot-pf/shunt/blob/main/.github/workflows/ci.yml#L1-L42)
+- [tests/passthrough.rs:72-247](https://github.com/chatbot-pf/shunt/blob/main/tests/passthrough.rs#L72-L247)
+</doc>
+
+<doc title="Overview" path="src/content/docs/01-getting-started/overview.md">
+## Overview
+
+`shunt` exists because Claude Code can talk to a first-class LLM gateway through `ANTHROPIC_BASE_URL`, but teams sometimes want only selected model IDs to run on another provider while the rest of the Claude Code session keeps its normal tools, skills, settings, and Anthropic pass-through behavior. The project implements that gateway as a Rust/Axum process that routes by the request `model` instead of trying to infer caller identity from prompts [README.md:1-60](https://github.com/chatbot-pf/shunt/blob/main/README.md#L1-L60) [docs/implementation-plan.md:46-71](https://github.com/chatbot-pf/shunt/blob/main/docs/implementation-plan.md#L46-L71).
+
+| Component | Responsibility | Key file | Source |
+|---|---|---|---|
+| CLI process | Starts server, validates config, prints token helper output | `src/main.rs` | [src/main.rs:38-76](https://github.com/chatbot-pf/shunt/blob/main/src/main.rs#L38-L76) |
+| Router | Exposes `HEAD /`, `GET /v1/models`, `POST /v1/messages`, and `POST /v1/messages/count_tokens` | `src/server.rs` | [src/server.rs:13-25](https://github.com/chatbot-pf/shunt/blob/main/src/server.rs#L13-L25) |
+| Proxy handler | Buffers request, resolves route, dispatches adapter, logs latency | `src/proxy.rs` | [src/proxy.rs:19-126](https://github.com/chatbot-pf/shunt/blob/main/src/proxy.rs#L19-L126) |
+| Route resolver | Applies exact, prefix, then default provider precedence | `src/routing.rs` | [src/routing.rs:37-89](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L37-L89) |
+| Config | Defines built-in providers and validates routes/providers | `src/config.rs` | [src/config.rs:142-183](https://github.com/chatbot-pf/shunt/blob/main/src/config.rs#L142-L183) |
+| Translation | Converts Anthropic request/stream shapes to and from Responses | `src/model/responses_request.rs`, `src/model/responses.rs` | [src/model/responses_request.rs:4-280](https://github.com/chatbot-pf/shunt/blob/main/src/model/responses_request.rs#L4-L280) [src/model/responses.rs:45-378](https://github.com/chatbot-pf/shunt/blob/main/src/model/responses.rs#L45-L378) |
+
+## Gateway Position
+
+```mermaid
+graph TB
+    subgraph Client[Claude Code process]
+      ModelPicker[/model picker]
+      ToolLoop[Tool loop and skills]
+    end
+    subgraph Gateway[shunt]
+      Server[Axum router]
+      Resolver[Model route resolver]
+      Adapter[Selected adapter]
+    end
+    subgraph Upstreams[Provider APIs]
+      Anthropic[Anthropic-compatible Messages API]
+      Responses[OpenAI Responses API]
+    end
+    ModelPicker --> ToolLoop --> Server --> Resolver --> Adapter
+    Adapter --> Anthropic
+    Adapter --> Responses
+    classDef dark fill:#2d333b,stroke:#6d5dfc,color:#e6edf3;
+    class ModelPicker,ToolLoop,Server,Resolver,Adapter,Anthropic,Responses dark;
+    style Client fill:#161b22,stroke:#30363d,color:#e6edf3;
+    style Gateway fill:#161b22,stroke:#30363d,color:#e6edf3;
+    style Upstreams fill:#161b22,stroke:#30363d,color:#e6edf3;
+    linkStyle default stroke:#8b949e;
+```
+<!-- Sources: README.md:14, src/server.rs:13, src/routing.rs:37, src/adapters/anthropic.rs:31, src/adapters/responses.rs:34 -->
+
+## Request Lifecycle
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant CC as Claude Code
+    participant Axum as shunt Router
+    participant Proxy as proxy::post
+    participant Routing as routing::resolve
+    participant Adapter as Adapter
+    participant Upstream as Provider API
+    CC->>Axum: POST /v1/messages
+    Axum->>Proxy: body + headers + OriginalUri
+    Proxy->>Routing: parse JSON model field
+    Routing-->>Proxy: Route(provider, adapter, upstream_model)
+    Proxy->>Adapter: forward(state, route, uri, headers, body)
+    Adapter->>Upstream: provider-specific request
+    Upstream-->>Adapter: stream or JSON response
+    Adapter-->>CC: Anthropic-shaped response
+```
+<!-- Sources: src/server.rs:19, src/proxy.rs:19, src/routing.rs:37, src/adapters/mod.rs:21, src/adapters/responses.rs:34 -->
+
+## Runtime States
+
+```mermaid
+stateDiagram-v2
+    [*] --> ConfigLoad
+    ConfigLoad --> Listening: valid config
+    ConfigLoad --> Failed: validation error
+    Listening --> RequestBuffered: POST received
+    RequestBuffered --> Routed: model parsed
+    Routed --> AnthropicPath: AdapterKind::Anthropic
+    Routed --> ResponsesPath: AdapterKind::Responses
+    AnthropicPath --> StreamBack
+    ResponsesPath --> TranslateBack
+    StreamBack --> Listening
+    TranslateBack --> Listening
+    Failed --> [*]
+```
+<!-- Sources: src/main.rs:60, src/config.rs:196, src/proxy.rs:93, src/routing.rs:48, src/adapters/responses.rs:61 -->
+
+## Why Model-Based Routing
+
+| Approach | shunt decision | Reason | Source |
+|---|---|---|---|
+| Prompt fingerprinting | Not used | The request already contains the selected model ID, so prompt-shape coupling is unnecessary | [docs/implementation-plan.md:24-32](https://github.com/chatbot-pf/shunt/blob/main/docs/implementation-plan.md#L24-L32) |
+| Global provider swap | Not the focus | Unmapped models must continue to pass through to Anthropic | [README.md:43-56](https://github.com/chatbot-pf/shunt/blob/main/README.md#L43-L56) |
+| Per-model mapping | Primary mechanism | Claude Code lets users pick model IDs per context; shunt honors those IDs | [README.md:18-20](https://github.com/chatbot-pf/shunt/blob/main/README.md#L18-L20) |
+
+## Related Pages
+
+| Page | Relationship |
+|---|---|
+| [Configuration](./configuration.md) | Explains how model IDs map to providers |
+| [Operations](./operations.md) | Turns the overview into runnable commands |
+| [Architecture](../02-deep-dive/architecture.md) | Deep runtime component map |
+| [Adapters and Translation](../02-deep-dive/adapters-and-translation.md) | Details the adapter implementation |
+
+## References
+
+- [README.md:1-60](https://github.com/chatbot-pf/shunt/blob/main/README.md#L1-L60)
+- [src/main.rs:38-76](https://github.com/chatbot-pf/shunt/blob/main/src/main.rs#L38-L76)
+- [src/server.rs:13-25](https://github.com/chatbot-pf/shunt/blob/main/src/server.rs#L13-L25)
+- [src/proxy.rs:19-126](https://github.com/chatbot-pf/shunt/blob/main/src/proxy.rs#L19-L126)
+- [src/routing.rs:37-89](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L37-L89)
+</doc>
+
+<doc title="Adapters and Translation" path="src/content/docs/02-deep-dive/adapters-and-translation.md">
+## Overview
+
+Adapters are the protocol boundary. The Anthropic adapter preserves the Anthropic Messages shape and streams upstream bytes back to Claude Code. The Responses adapter rebuilds the request for OpenAI's Responses API, sends provider-specific credentials, and converts Responses SSE events into Anthropic SSE events through a state machine [src/adapters/anthropic.rs:31-104](https://github.com/chatbot-pf/shunt/blob/main/src/adapters/anthropic.rs#L31-L104) [src/adapters/responses.rs:34-213](https://github.com/chatbot-pf/shunt/blob/main/src/adapters/responses.rs#L34-L213) [src/model/responses_request.rs:4-280](https://github.com/chatbot-pf/shunt/blob/main/src/model/responses_request.rs#L4-L280) [src/model/responses.rs:45-378](https://github.com/chatbot-pf/shunt/blob/main/src/model/responses.rs#L45-L378).
+
+| Adapter | Provider kinds | Mutation level | Streaming behavior | Source |
+|---|---|---|---|---|
+| `AnthropicAdapter` | `kind = "anthropic"` | Header credential swap only for API-key providers; body is unchanged | Relays upstream `bytes_stream()` | [src/adapters/anthropic.rs:31-104](https://github.com/chatbot-pf/shunt/blob/main/src/adapters/anthropic.rs#L31-L104) |
+| `ResponsesAdapter` | `kind = "responses"` | Full request rebuild into Responses shape | Parses upstream SSE and emits Anthropic SSE | [src/adapters/responses.rs:34-213](https://github.com/chatbot-pf/shunt/blob/main/src/adapters/responses.rs#L34-L213) |
+| `translate_request` | Responses providers | Maps system/messages/tools/effort into Responses request | Always requests upstream streaming | [src/model/responses_request.rs:4-280](https://github.com/chatbot-pf/shunt/blob/main/src/model/responses_request.rs#L4-L280) |
+| `AnthropicSseMachine` | Responses providers | Converts response events into content blocks and final JSON | Supports stream and non-stream output | [src/model/responses.rs:62-113](https://github.com/chatbot-pf/shunt/blob/main/src/model/responses.rs#L62-L113) |
+
+## Adapter Dispatch
+
+```mermaid
+flowchart TB
+    Route[Route adapter] --> Choice{AdapterKind}
+    Choice -->|Anthropic| A[AnthropicAdapter.forward]
+    Choice -->|Responses| R[ResponsesAdapter.forward]
+    A --> AU[upstream_url + filtered headers]
+    R --> TR[translate_request]
+    R --> RB[request_builder + responses_url]
+    R --> SM[AnthropicSseMachine]
+    classDef dark fill:#2d333b,stroke:#6d5dfc,color:#e6edf3;
+    class Route,Choice,A,R,AU,TR,RB,SM dark;
+    linkStyle default stroke:#8b949e;
+```
+<!-- Sources: src/proxy.rs:113, src/adapters/anthropic.rs:18, src/adapters/responses.rs:21, src/model/responses_request.rs:4, src/model/responses.rs:24 -->
+
+## Request Translation
+
+```mermaid
+flowchart LR
+    AM[Anthropic Messages JSON] --> System[system to instructions]
+    AM --> Messages[messages to input items]
+    AM --> Tools[tools to function tools]
+    AM --> Choice[tool_choice mapping]
+    AM --> Effort[effort mapping]
+    System --> OR[OpenAI Responses request]
+    Messages --> OR
+    Tools --> OR
+    Choice --> OR
+    Effort --> OR
+    OR --> Stream[stream true and store false]
+    classDef dark fill:#2d333b,stroke:#6d5dfc,color:#e6edf3;
+    class AM,System,Messages,Tools,Choice,Effort,OR,Stream dark;
+    linkStyle default stroke:#8b949e;
+```
+<!-- Sources: src/model/responses_request.rs:4, src/model/responses_request.rs:31, src/model/responses_request.rs:47, src/model/responses_request.rs:198, src/model/responses_request.rs:233, src/model/responses_request.rs:254 -->
+
+## Streaming Conversion
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Up as Responses upstream
+    participant Parser as SseParser
+    participant Machine as AnthropicSseMachine
+    participant CC as Claude Code
+    Up-->>Parser: response.created
+    Parser->>Machine: ResponseEvent
+    Machine-->>CC: message_start + ping
+    Up-->>Parser: response.output_item.added
+    Machine-->>CC: content_block_start
+    Up-->>Parser: response.output_text.delta
+    Machine-->>CC: content_block_delta
+    Up-->>Parser: response.completed
+    Machine-->>CC: message_delta + message_stop
+```
+<!-- Sources: src/adapters/responses.rs:68, src/adapters/responses.rs:226, src/model/responses.rs:62, src/model/responses.rs:115, src/model/responses.rs:206, src/model/responses.rs:273 -->
+
+## SSE State Machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Started: response.created
+    Started --> TextOpen: message output item
+    Started --> ToolOpen: function_call output item
+    TextOpen --> TextOpen: output_text.delta
+    ToolOpen --> ToolOpen: function_call_arguments.delta
+    TextOpen --> Started: output_text.done
+    ToolOpen --> Started: arguments.done
+    Started --> Completed: response.completed
+    Started --> Error: response.failed or error
+    Completed --> [*]
+    Error --> [*]
+```
+<!-- Sources: src/model/responses.rs:62, src/model/responses.rs:146, src/model/responses.rs:206, src/model/responses.rs:222, src/model/responses.rs:273 -->
+
+## Translation Coverage
+
+| Anthropic concept | Responses concept | Implementation | Test coverage | Source |
+|---|---|---|---|---|
+| `system` string/blocks | `instructions` | `instructions()` | Plain-text request test | [src/model/responses_request.rs:31-45](https://github.com/chatbot-pf/shunt/blob/main/src/model/responses_request.rs#L31-L45) [tests/responses_translate.rs:25-50](https://github.com/chatbot-pf/shunt/blob/main/tests/responses_translate.rs#L25-L50) |
+| User text blocks | `input_text` | `text_part()` | Multi-turn role test | [src/model/responses_request.rs:113-123](https://github.com/chatbot-pf/shunt/blob/main/src/model/responses_request.rs#L113-L123) [tests/responses_translate.rs:52-71](https://github.com/chatbot-pf/shunt/blob/main/tests/responses_translate.rs#L52-L71) |
+| Images | Data URL `input_image` | `image_part()` | Image translation test | [src/model/responses_request.rs:126-138](https://github.com/chatbot-pf/shunt/blob/main/src/model/responses_request.rs#L126-L138) [tests/responses_translate.rs:98-119](https://github.com/chatbot-pf/shunt/blob/main/tests/responses_translate.rs#L98-L119) |
+| Tool use | `function_call` | `tool_use_item()` | Tool call ID test | [src/model/responses_request.rs:140-148](https://github.com/chatbot-pf/shunt/blob/main/src/model/responses_request.rs#L140-L148) [tests/responses_translate.rs:73-96](https://github.com/chatbot-pf/shunt/blob/main/tests/responses_translate.rs#L73-L96) |
+| Reasoning effort | `reasoning.effort` | `effort()` | Thinking and override test | [src/model/responses_request.rs:254-280](https://github.com/chatbot-pf/shunt/blob/main/src/model/responses_request.rs#L254-L280) [tests/responses_translate.rs:164-178](https://github.com/chatbot-pf/shunt/blob/main/tests/responses_translate.rs#L164-L178) |
+
+## Related Pages
+
+| Page | Relationship |
+|---|---|
+| [Architecture](./architecture.md) | Shows adapter layer in context |
+| [Routing and Configuration](./routing-and-configuration.md) | Explains how a provider selects an adapter |
+| [Authentication](./authentication.md) | Explains credentials adapters consume |
+| [Testing and Quality](./testing-and-quality.md) | Shows tests that lock translation behavior |
+
+## References
+
+- [src/adapters/anthropic.rs:31-104](https://github.com/chatbot-pf/shunt/blob/main/src/adapters/anthropic.rs#L31-L104)
+- [src/adapters/responses.rs:34-213](https://github.com/chatbot-pf/shunt/blob/main/src/adapters/responses.rs#L34-L213)
+- [src/model/responses_request.rs:4-280](https://github.com/chatbot-pf/shunt/blob/main/src/model/responses_request.rs#L4-L280)
+- [src/model/responses.rs:45-378](https://github.com/chatbot-pf/shunt/blob/main/src/model/responses.rs#L45-L378)
+- [tests/responses_translate.rs:25-287](https://github.com/chatbot-pf/shunt/blob/main/tests/responses_translate.rs#L25-L287)
+</doc>
+
+<doc title="Architecture" path="src/content/docs/02-deep-dive/architecture.md">
+## Overview
+
+The core architectural insight is that shunt is not a second agent runtime. It is a protocol-preserving gateway inserted at Claude Code's inference boundary. Because Claude Code already sends a `model` field, shunt can stay stateless for routing: parse the model, choose a provider, and hand the request to the adapter responsible for that provider's protocol [docs/implementation-plan.md:6-249](https://github.com/chatbot-pf/shunt/blob/main/docs/implementation-plan.md#L6-L249) [src/routing.rs:37-89](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L37-L89).
+
+| Component | Responsibility | Key file | Source |
+|---|---|---|---|
+| `AppState` | Holds validated config and shared reqwest client | `src/server.rs` | [src/server.rs:13-25](https://github.com/chatbot-pf/shunt/blob/main/src/server.rs#L13-L25) |
+| `proxy::post` | Entry handler for inference and count-token posts | `src/proxy.rs` | [src/proxy.rs:19-126](https://github.com/chatbot-pf/shunt/blob/main/src/proxy.rs#L19-L126) |
+| `Route` | Carries provider, adapter kind, model, upstream model, effort | `src/routing.rs` | [src/routing.rs:23-31](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L23-L31) |
+| `Adapter` trait | Hides provider protocol differences behind one async `forward` | `src/adapters/mod.rs` | [src/adapters/mod.rs:21-30](https://github.com/chatbot-pf/shunt/blob/main/src/adapters/mod.rs#L21-L30) |
+| `Credential` | Represents pass-through, API-key, and ChatGPT OAuth modes | `src/auth/mod.rs` | [src/auth/mod.rs:17-28](https://github.com/chatbot-pf/shunt/blob/main/src/auth/mod.rs#L17-L28) |
+| `AnthropicSseMachine` | Converts Responses event streams into Anthropic event streams | `src/model/responses.rs` | [src/model/responses.rs:62-113](https://github.com/chatbot-pf/shunt/blob/main/src/model/responses.rs#L62-L113) |
+
+## System Architecture
+
+```mermaid
+graph TB
+    subgraph Entry[Process entry]
+      CLI[src/main.rs CLI]
+      Config[Config load and validate]
+    end
+    subgraph HTTP[HTTP gateway]
+      Router[server::build_router]
+      Proxy[proxy::post]
+      Discovery[discovery::get]
+    end
+    subgraph RoutingCore[Routing core]
+      Resolver[routing::resolve_model]
+      Route[Route]
+    end
+    subgraph AdapterLayer[Adapter layer]
+      Anthropic[AnthropicAdapter]
+      Responses[ResponsesAdapter]
+    end
+    subgraph Models[Translation model]
+      Request[translate_request]
+      SSE[AnthropicSseMachine]
+    end
+    CLI --> Config --> Router
+    Router --> Proxy --> Resolver --> Route
+    Router --> Discovery
+    Route --> Anthropic
+    Route --> Responses --> Request
+    Responses --> SSE
+    classDef dark fill:#2d333b,stroke:#6d5dfc,color:#e6edf3;
+    class CLI,Config,Router,Proxy,Discovery,Resolver,Route,Anthropic,Responses,Request,SSE dark;
+    style Entry fill:#161b22,stroke:#30363d,color:#e6edf3;
+    style HTTP fill:#161b22,stroke:#30363d,color:#e6edf3;
+    style RoutingCore fill:#161b22,stroke:#30363d,color:#e6edf3;
+    style AdapterLayer fill:#161b22,stroke:#30363d,color:#e6edf3;
+    style Models fill:#161b22,stroke:#30363d,color:#e6edf3;
+    linkStyle default stroke:#8b949e;
+```
+<!-- Sources: src/main.rs:38, src/config.rs:185, src/server.rs:13, src/proxy.rs:19, src/routing.rs:48, src/adapters/mod.rs:21, src/model/responses.rs:24 -->
+
+## Core Types
+
+```mermaid
+classDiagram
+    class Config {
+      ServerConfig server
+      ProvidersConfig providers
+      Vec_ModelConfig models
+      Vec_RouteConfig routes
+      Vec_RoutePrefixConfig route_prefixes
+      load(path)
+      validate()
+    }
+    class Route {
+      String provider
+      AdapterKind adapter
+      String model
+      String upstream_model
+      Option_String effort
+    }
+    class Adapter {
+      forward(state, route, uri, headers, body)
+    }
+    class AnthropicAdapter
+    class ResponsesAdapter
+    class Credential {
+      Passthrough
+      ApiKey
+      ChatGptOAuth
+    }
+    Config --> Route
+    Route --> Adapter
+    Adapter <|.. AnthropicAdapter
+    Adapter <|.. ResponsesAdapter
+    ResponsesAdapter --> Credential
+    AnthropicAdapter --> Credential
+```
+<!-- Sources: src/config.rs:9, src/routing.rs:23, src/adapters/mod.rs:21, src/adapters/anthropic.rs:18, src/adapters/responses.rs:21, src/auth/mod.rs:17 -->
+
+## Request Sequence
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Main as main::run
+    participant Server as server::build_router
+    participant Proxy as proxy::post
+    participant Routing as routing::resolve
+    participant Auth as resolve_credential
+    participant Adapter as Adapter impl
+    participant Model as Translation state
+    Main->>Server: build router with Config
+    Server->>Proxy: dispatch POST /v1/messages
+    Proxy->>Routing: resolve(config, body bytes)
+    Routing-->>Proxy: Route
+    Proxy->>Adapter: forward(...)
+    Adapter->>Auth: provider credential
+    Adapter->>Model: translate or stream-convert if Responses
+    Adapter-->>Proxy: status + response
+```
+<!-- Sources: src/main.rs:73, src/server.rs:19, src/proxy.rs:39, src/routing.rs:37, src/auth/mod.rs:29, src/adapters/responses.rs:43 -->
+
+## State and Failure Paths
+
+```mermaid
+stateDiagram-v2
+    [*] --> ValidatingConfig
+    ValidatingConfig --> Serving: Config validate ok
+    ValidatingConfig --> ConfigError: bad bind/provider/route
+    Serving --> BodyBuffered: POST body within cap
+    BodyBuffered --> RouteResolved: model JSON parsed
+    BodyBuffered --> BadRequest: invalid model JSON
+    RouteResolved --> CredentialResolved
+    CredentialResolved --> UpstreamCall
+    CredentialResolved --> AuthenticationError: missing provider credential
+    UpstreamCall --> SuccessStream
+    UpstreamCall --> MappedError: upstream error or transport failure
+    SuccessStream --> Serving
+    MappedError --> Serving
+```
+<!-- Sources: src/config.rs:196, src/proxy.rs:17, src/routing.rs:37, src/auth/mod.rs:82, src/adapters/responses.rs:128, src/error.rs:40 -->
+
+## Architectural Invariants
+
+| Invariant | Enforced by | Why it matters | Source |
+|---|---|---|---|
+| Request bodies are buffered only to choose a route | `to_bytes(..., 64 MiB)` before `routing::resolve` | Routing needs `model`, while responses must still stream | [src/proxy.rs:17-112](https://github.com/chatbot-pf/shunt/blob/main/src/proxy.rs#L17-L112) |
+| Response streaming is preserved | `Body::from_stream` for both pass-through and Responses | Claude Code expects incremental SSE | [src/adapters/anthropic.rs:49-62](https://github.com/chatbot-pf/shunt/blob/main/src/adapters/anthropic.rs#L49-L62) [src/adapters/responses.rs:68-111](https://github.com/chatbot-pf/shunt/blob/main/src/adapters/responses.rs#L68-L111) |
+| Route precedence is deterministic | `resolve_model` loops exact routes before prefixes before default | Prevents broad prefixes from shadowing explicit mappings | [src/routing.rs:37-89](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L37-L89) |
+| Adapter selection follows provider kind | `ProviderKind` to `AdapterKind` conversion | Provider config controls protocol boundary | [src/routing.rs:14-21](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L14-L21) |
+| Gateway-owned errors use Anthropic error envelope | `ShuntError` and `UpstreamError` `IntoResponse` | Claude Code can interpret failures consistently | [src/error.rs:7-91](https://github.com/chatbot-pf/shunt/blob/main/src/error.rs#L7-L91) |
+
+## Related Pages
+
+| Page | Relationship |
+|---|---|
+| [Routing and Configuration](./routing-and-configuration.md) | Deep dive into config and route resolver |
+| [Adapters and Translation](./adapters-and-translation.md) | Deep dive into adapter internals |
+| [Authentication](./authentication.md) | Credential resolution and refresh |
+| [Testing and Quality](./testing-and-quality.md) | Tests that enforce the architecture |
+
+## References
+
+- [src/main.rs:38-76](https://github.com/chatbot-pf/shunt/blob/main/src/main.rs#L38-L76)
+- [src/server.rs:13-25](https://github.com/chatbot-pf/shunt/blob/main/src/server.rs#L13-L25)
+- [src/proxy.rs:19-126](https://github.com/chatbot-pf/shunt/blob/main/src/proxy.rs#L19-L126)
+- [src/routing.rs:37-89](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L37-L89)
+- [src/config.rs:9-269](https://github.com/chatbot-pf/shunt/blob/main/src/config.rs#L9-L269)
+- [src/adapters/responses.rs:34-213](https://github.com/chatbot-pf/shunt/blob/main/src/adapters/responses.rs#L34-L213)
+</doc>
+
+<doc title="Authentication" path="src/content/docs/02-deep-dive/authentication.md">
+## Overview
+
+Authentication is intentionally route-scoped. Once routing selects a provider, shunt resolves the credential strategy declared by that provider: pass through the Claude Code credential, read an API key, or reuse and refresh ChatGPT/Codex OAuth tokens. That separation keeps Claude Code from needing provider-specific secrets for mapped models [src/auth/mod.rs:29-99](https://github.com/chatbot-pf/shunt/blob/main/src/auth/mod.rs#L29-L99) [src/auth/codex_auth.rs:34-63](https://github.com/chatbot-pf/shunt/blob/main/src/auth/codex_auth.rs#L34-L63) [src/auth/claude_auth.rs:27-92](https://github.com/chatbot-pf/shunt/blob/main/src/auth/claude_auth.rs#L27-L92).
+
+| Credential mode | Used by | Secret source | Boundary | Source |
+|---|---|---|---|---|
+| `Passthrough` | Anthropic default provider | Inbound Claude Code headers | Forwarded unchanged | [src/auth/mod.rs:17-22](https://github.com/chatbot-pf/shunt/blob/main/src/auth/mod.rs#L17-L22) [src/adapters/anthropic.rs:66-89](https://github.com/chatbot-pf/shunt/blob/main/src/adapters/anthropic.rs#L66-L89) |
+| `ApiKey` | OpenAI and Anthropic-compatible gateways | Env var named by `api_key_env`, with OpenAI fallback to Codex auth JSON | Injected by shunt | [src/auth/mod.rs:57-80](https://github.com/chatbot-pf/shunt/blob/main/src/auth/mod.rs#L57-L80) |
+| `ChatGptOAuth` | `codex` provider | `~/.codex/auth.json` | Refreshed and sent with account ID | [src/auth/codex_auth.rs:34-63](https://github.com/chatbot-pf/shunt/blob/main/src/auth/codex_auth.rs#L34-L63) |
+| Claude token helper | Claude Code gateway discovery/pass-through credential | `SHUNT_GATEWAY_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, or `~/.claude/.credentials.json` | Printed to stdout for `apiKeyHelper` | [src/auth/claude_auth.rs:27-92](https://github.com/chatbot-pf/shunt/blob/main/src/auth/claude_auth.rs#L27-L92) |
+
+## Credential Resolution Flow
+
+```mermaid
+flowchart TB
+    Route[Route provider] --> Provider[Config provider]
+    Provider --> Auth{AuthMode}
+    Auth -->|passthrough| Pass[Credential Passthrough]
+    Auth -->|api_key| Env[Read api_key_env]
+    Env -->|found| Api[Credential ApiKey]
+    Env -->|OPENAI_API_KEY missing| CodexKey[Read OPENAI_API_KEY from codex auth]
+    CodexKey --> Api
+    Auth -->|chatgpt_oauth| Store[CodexAuthStore]
+    Store --> Valid{Token valid beyond 5 min?}
+    Valid -->|yes| Chat[Credential ChatGptOAuth]
+    Valid -->|no| Refresh[Refresh token and atomic write-back]
+    Refresh --> Chat
+    classDef dark fill:#2d333b,stroke:#6d5dfc,color:#e6edf3;
+    class Route,Provider,Auth,Pass,Env,Api,CodexKey,Store,Valid,Refresh,Chat dark;
+    linkStyle default stroke:#8b949e;
+```
+<!-- Sources: src/auth/mod.rs:29, src/auth/mod.rs:57, src/auth/codex_auth.rs:34, src/auth/codex_auth.rs:125, src/auth/codex_auth.rs:207 -->
+
+## Token Refresh Sequence
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Adapter as ResponsesAdapter
+    participant Auth as resolve_credential
+    participant Store as CodexAuthStore
+    participant File as codex auth json
+    participant OAuth as auth.openai.com
+    Adapter->>Auth: route provider codex
+    Auth->>Store: get_valid_chatgpt()
+    Store->>File: read auth JSON
+    Store->>Store: check JWT expiry with buffer
+    alt expired
+      Store->>OAuth: refresh_token grant
+      OAuth-->>Store: new access/refresh/id token
+      Store->>File: atomic write-back 0600
+    end
+    Store-->>Auth: access_token + account_id
+    Auth-->>Adapter: Credential ChatGptOAuth
+```
+<!-- Sources: src/adapters/responses.rs:51, src/auth/mod.rs:44, src/auth/codex_auth.rs:34, src/auth/codex_auth.rs:172, src/auth/codex_auth.rs:213 -->
+
+## Trust Boundaries
+
+```mermaid
+graph LR
+    CC[Claude Code credential] -->|passthrough only| Anthropic[Anthropic-compatible upstream]
+    Env[Provider API key env] -->|injected by shunt| OpenAI[OpenAI-compatible upstream]
+    CodexFile[Codex auth JSON] -->|read and refresh by shunt| ChatGPT[ChatGPT Codex backend]
+    ClaudeFile[Claude credentials JSON] -->|optional token helper| CC
+    classDef dark fill:#2d333b,stroke:#6d5dfc,color:#e6edf3;
+    class CC,Anthropic,Env,OpenAI,CodexFile,ChatGPT,ClaudeFile dark;
+    linkStyle default stroke:#8b949e;
+```
+<!-- Sources: src/adapters/anthropic.rs:66, src/auth/mod.rs:57, src/auth/codex_auth.rs:201, src/auth/claude_auth.rs:94 -->
+
+## Credential States
+
+```mermaid
+stateDiagram-v2
+    [*] --> Missing
+    Missing --> Present: env or file exists
+    Present --> Valid: expiry beyond buffer
+    Present --> RefreshNeeded: within five-minute buffer
+    RefreshNeeded --> Valid: refresh succeeds
+    RefreshNeeded --> Error: refresh fails
+    Valid --> Injected: adapter builds request
+    Error --> AuthenticationError
+```
+<!-- Sources: src/auth/mod.rs:82, src/auth/codex_auth.rs:125, src/auth/codex_auth.rs:172, src/adapters/responses.rs:174, src/adapters/anthropic.rs:71 -->
+
+## Related Pages
+
+| Page | Relationship |
+|---|---|
+| [Configuration](../01-getting-started/configuration.md) | Shows user-facing auth modes |
+| [Operations](../01-getting-started/operations.md) | Shows `codex login`, `OPENAI_API_KEY`, and `shunt token` usage |
+| [Adapters and Translation](./adapters-and-translation.md) | Shows where credentials are injected |
+| [Testing and Quality](./testing-and-quality.md) | Covers auth-related unit tests |
+
+## References
+
+- [src/auth/mod.rs:29-99](https://github.com/chatbot-pf/shunt/blob/main/src/auth/mod.rs#L29-L99)
+- [src/auth/codex_auth.rs:34-63](https://github.com/chatbot-pf/shunt/blob/main/src/auth/codex_auth.rs#L34-L63)
+- [src/auth/codex_auth.rs:103-129](https://github.com/chatbot-pf/shunt/blob/main/src/auth/codex_auth.rs#L103-L129)
+- [src/auth/claude_auth.rs:27-92](https://github.com/chatbot-pf/shunt/blob/main/src/auth/claude_auth.rs#L27-L92)
+- [src/adapters/anthropic.rs:66-89](https://github.com/chatbot-pf/shunt/blob/main/src/adapters/anthropic.rs#L66-L89)
+</doc>
+
+<doc title="Routing and Configuration" path="src/content/docs/02-deep-dive/routing-and-configuration.md">
+## Overview
+
+Routing and configuration are deliberately simple: the config file describes providers and model mappings, and the resolver turns a request body's `model` string into a `Route`. The design favors data changes over code changes, which is why provider definitions are a `BTreeMap<String, ProviderConfig>` and why new Anthropic-compatible gateways can be added as TOML tables [src/config.rs:9-269](https://github.com/chatbot-pf/shunt/blob/main/src/config.rs#L9-L269) [src/routing.rs:37-89](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L37-L89).
+
+| Topic | Mechanism | Key file | Source |
+|---|---|---|---|
+| Config structure | `Config`, `ServerConfig`, `ProviderConfig`, route structs | `src/config.rs` | [src/config.rs:9-107](https://github.com/chatbot-pf/shunt/blob/main/src/config.rs#L9-L107) |
+| Defaults | Built-in `anthropic`, `openai`, `codex` providers | `src/config.rs` | [src/config.rs:142-183](https://github.com/chatbot-pf/shunt/blob/main/src/config.rs#L142-L183) |
+| Loading | Figment defaults to TOML to `SHUNT_` env | `src/config.rs` | [src/config.rs:185-194](https://github.com/chatbot-pf/shunt/blob/main/src/config.rs#L185-L194) |
+| Validation | URL, bind, auth, provider references | `src/config.rs` | [src/config.rs:196-242](https://github.com/chatbot-pf/shunt/blob/main/src/config.rs#L196-L242) |
+| Routing | Exact to prefix to default | `src/routing.rs` | [src/routing.rs:37-89](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L37-L89) |
+
+## Config Entity Model
+
+```mermaid
+erDiagram
+    SERVER_CONFIG {
+      string bind
+      string default_provider
+    }
+    PROVIDER_CONFIG {
+      string kind
+      string base_url
+      string auth
+      string api_key_env
+      string api_key_header
+      string effort
+    }
+    ROUTE_CONFIG {
+      string model
+      string provider
+      string upstream_model
+      string effort
+    }
+    ROUTE_PREFIX_CONFIG {
+      string prefix
+      string provider
+    }
+    MODEL_CONFIG {
+      string id
+      string display_name
+    }
+    CONFIG ||--|| SERVER_CONFIG : contains
+    CONFIG ||--o{ PROVIDER_CONFIG : providers
+    CONFIG ||--o{ ROUTE_CONFIG : routes
+    CONFIG ||--o{ ROUTE_PREFIX_CONFIG : route_prefixes
+    CONFIG ||--o{ MODEL_CONFIG : models
+```
+<!-- Sources: src/config.rs:9, src/config.rs:27, src/config.rs:89, src/config.rs:97, src/config.rs:103 -->
+
+## Loading and Validation Flow
+
+```mermaid
+flowchart TB
+    Defaults[Serialized defaults] --> File[TOML file]
+    File --> Env[SHUNT_ env]
+    Env --> Extract[Figment extract Config]
+    Extract --> Bind[Validate bind address]
+    Bind --> Urls[Validate provider base URLs]
+    Urls --> Auth[Validate api_key_env]
+    Auth --> Refs[Validate default/route/prefix provider refs]
+    Refs --> Warn[Warn discovery model without route]
+    Warn --> Ok[Validated Config]
+    classDef dark fill:#2d333b,stroke:#6d5dfc,color:#e6edf3;
+    class Defaults,File,Env,Extract,Bind,Urls,Auth,Refs,Warn,Ok dark;
+    linkStyle default stroke:#8b949e;
+```
+<!-- Sources: src/config.rs:185, src/config.rs:196, src/config.rs:198, src/config.rs:200, src/config.rs:212, src/config.rs:233 -->
+
+## Routing Sequence
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Proxy as proxy::forward
+    participant Routing as routing::resolve
+    participant JSON as serde_json
+    participant Config as Config
+    Proxy->>Routing: body bytes
+    Routing->>JSON: parse RoutingView with model
+    JSON-->>Routing: model string
+    Routing->>Config: scan exact routes
+    Routing->>Config: scan prefix routes
+    Routing->>Config: fallback default provider
+    Routing-->>Proxy: Route with AdapterKind
+```
+<!-- Sources: src/proxy.rs:93, src/routing.rs:32, src/routing.rs:37, src/routing.rs:49, src/routing.rs:60, src/routing.rs:65 -->
+
+## Route Decision Table
+
+| Input condition | Selected provider | Upstream model | Effort source | Source |
+|---|---|---|---|---|
+| Exact `route.model == model` | `route.provider` | `route.upstream_model` or original model | Route override, then provider default | [src/routing.rs:49-58](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L49-L58) |
+| Prefix `model.starts_with(prefix)` | Prefix provider | Original model | Provider default | [src/routing.rs:60-64](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L60-L64) |
+| No match | `server.default_provider` | Original model | Provider default | [src/routing.rs:65-66](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L65-L66) |
+| Unknown provider after validation | Fallback adapter is Anthropic | Original model | None/provider default if present | [src/routing.rs:75-82](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L75-L82) |
+
+## Adapter Selection
+
+```mermaid
+flowchart LR
+    ProviderKind[ProviderKind] -->|anthropic| AnthropicKind[AdapterKind Anthropic]
+    ProviderKind -->|responses| ResponsesKind[AdapterKind Responses]
+    AnthropicKind --> Pass[Pass-through adapter]
+    ResponsesKind --> Translate[Responses adapter]
+    classDef dark fill:#2d333b,stroke:#6d5dfc,color:#e6edf3;
+    class ProviderKind,AnthropicKind,ResponsesKind,Pass,Translate dark;
+    linkStyle default stroke:#8b949e;
+```
+<!-- Sources: src/config.rs:52, src/routing.rs:14, src/adapters/anthropic.rs:16, src/adapters/responses.rs:19 -->
+
+## Related Pages
+
+| Page | Relationship |
+|---|---|
+| [Configuration](../01-getting-started/configuration.md) | User-facing configuration reference |
+| [Architecture](./architecture.md) | Shows route resolver in the full runtime |
+| [Authentication](./authentication.md) | Explains how selected providers get credentials |
+| [Adapters and Translation](./adapters-and-translation.md) | Explains what each adapter does after routing |
+
+## References
+
+- [src/config.rs:9-269](https://github.com/chatbot-pf/shunt/blob/main/src/config.rs#L9-L269)
+- [src/routing.rs:37-89](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L37-L89)
+- [shunt.toml.example:1-134](https://github.com/chatbot-pf/shunt/blob/main/shunt.toml.example#L1-L134)
+- [src/routing.rs:97-134](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L97-L134)
+- [docs/running.md:40-159](https://github.com/chatbot-pf/shunt/blob/main/docs/running.md#L40-L159)
+</doc>
+
+<doc title="Testing and Quality" path="src/content/docs/02-deep-dive/testing-and-quality.md">
+## Overview
+
+Testing exists because shunt's correctness is mostly protocol preservation. The dangerous failures are subtle: a beta header split incorrectly, an SSE stream buffered until the end, a tool call ID lost during translation, or an upstream error hidden behind a generic gateway error. The repository uses colocated unit tests plus Wiremock integration tests to lock those behaviors down [tests/passthrough.rs:72-247](https://github.com/chatbot-pf/shunt/blob/main/tests/passthrough.rs#L72-L247) [tests/responses_translate.rs:25-287](https://github.com/chatbot-pf/shunt/blob/main/tests/responses_translate.rs#L25-L287).
+
+| Test layer | Scope | Representative file | Source |
+|---|---|---|---|
+| Unit tests | Config, routing, auth, adapters, translation helpers | `src/**` module tests | [src/routing.rs:97-134](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L97-L134) [src/config.rs:301-391](https://github.com/chatbot-pf/shunt/blob/main/src/config.rs#L301-L391) |
+| Integration tests | Axum gateway with mock upstream | `tests/passthrough.rs` | [tests/passthrough.rs:72-247](https://github.com/chatbot-pf/shunt/blob/main/tests/passthrough.rs#L72-L247) |
+| Translation tests | Request conversion, SSE state machine, error mapping | `tests/responses_translate.rs` | [tests/responses_translate.rs:25-287](https://github.com/chatbot-pf/shunt/blob/main/tests/responses_translate.rs#L25-L287) |
+| CI | Format, clippy with warnings denied, test suite | `.github/workflows/ci.yml` | [.github/workflows/ci.yml:1-42](https://github.com/chatbot-pf/shunt/blob/main/.github/workflows/ci.yml#L1-L42) |
+
+## Test Architecture
+
+```mermaid
+graph TB
+    subgraph Unit[Colocated unit tests]
+      Config[config.rs tests]
+      Routing[routing.rs tests]
+      Auth[auth tests]
+      Adapter[adapter tests]
+    end
+    subgraph Integration[tests]
+      Pass[passthrough.rs]
+      Translate[responses_translate.rs]
+    end
+    subgraph CI[GitHub Actions]
+      Fmt[cargo fmt]
+      Clippy[cargo clippy -D warnings]
+      CargoTest[cargo test]
+    end
+    Unit --> CargoTest
+    Integration --> CargoTest
+    Fmt --> Clippy --> CargoTest
+    classDef dark fill:#2d333b,stroke:#6d5dfc,color:#e6edf3;
+    class Config,Routing,Auth,Adapter,Pass,Translate,Fmt,Clippy,CargoTest dark;
+    style Unit fill:#161b22,stroke:#30363d,color:#e6edf3;
+    style Integration fill:#161b22,stroke:#30363d,color:#e6edf3;
+    style CI fill:#161b22,stroke:#30363d,color:#e6edf3;
+    linkStyle default stroke:#8b949e;
+```
+<!-- Sources: src/routing.rs:91, src/config.rs:277, tests/passthrough.rs:72, tests/responses_translate.rs:25, .github/workflows/ci.yml:35 -->
+
+## Pass-through Integration Flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Test as Wiremock test
+    participant Gateway as shunt gateway
+    participant Mock as Mock upstream
+    Test->>Mock: mount expected request matchers
+    Test->>Gateway: POST /v1/messages or count_tokens
+    Gateway->>Mock: forwarded request
+    Mock-->>Gateway: configured status/body/stream
+    Gateway-->>Test: response
+    Test->>Mock: verify expected calls
+```
+<!-- Sources: tests/passthrough.rs:90, tests/passthrough.rs:96, tests/passthrough.rs:110, tests/passthrough.rs:119, tests/passthrough.rs:120 -->
+
+## Translation Test Coverage
+
+```mermaid
+flowchart LR
+    Input[Anthropic fixture] --> Translate[translate_request]
+    Translate --> Assertions[JSON assertions]
+    SSE[Responses SSE fixture] --> Parse[parse_sse_events]
+    Parse --> Machine[AnthropicSseMachine]
+    Machine --> EventAssertions[Event name and payload assertions]
+    Error[OpenAI/Codex error shapes] --> Map[map_error_value]
+    Map --> ErrorAssertions[Anthropic error assertions]
+    classDef dark fill:#2d333b,stroke:#6d5dfc,color:#e6edf3;
+    class Input,Translate,Assertions,SSE,Parse,Machine,EventAssertions,Error,Map,ErrorAssertions dark;
+    linkStyle default stroke:#8b949e;
+```
+<!-- Sources: tests/responses_translate.rs:20, tests/responses_translate.rs:25, tests/responses_translate.rs:180, tests/responses_translate.rs:234, tests/responses_translate.rs:255 -->
+
+## CI State Machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> Checkout
+    Checkout --> RustToolchain
+    RustToolchain --> CacheCargo
+    CacheCargo --> FormatCheck
+    FormatCheck --> Clippy
+    Clippy --> Tests
+    Tests --> Success
+    FormatCheck --> Failed: formatting differs
+    Clippy --> Failed: warning or lint
+    Tests --> Failed: test failure
+    Success --> [*]
+```
+<!-- Sources: .github/workflows/ci.yml:23, .github/workflows/ci.yml:27, .github/workflows/ci.yml:32, .github/workflows/ci.yml:35, .github/workflows/ci.yml:38, .github/workflows/ci.yml:41 -->
+
+## Quality Gates
+
+| Gate | Command | What it protects | Source |
+|---|---|---|---|
+| Formatting | `cargo fmt --all --check` | Consistent Rust style | [.github/workflows/ci.yml:1-42](https://github.com/chatbot-pf/shunt/blob/main/.github/workflows/ci.yml#L1-L42) |
+| Lints | `cargo clippy --all-targets --all-features -- -D warnings` | No warnings in all targets/features | [.github/workflows/ci.yml:1-42](https://github.com/chatbot-pf/shunt/blob/main/.github/workflows/ci.yml#L1-L42) |
+| Tests | `cargo test --all-features --workspace` | Unit and integration behavior | [.github/workflows/ci.yml:1-42](https://github.com/chatbot-pf/shunt/blob/main/.github/workflows/ci.yml#L1-L42) |
+| PR checklist | Build, test, clippy, fmt, 500-line limit, spec sync | Review discipline | [.github/PULL_REQUEST_TEMPLATE.md:1-26](https://github.com/chatbot-pf/shunt/blob/main/.github/PULL_REQUEST_TEMPLATE.md#L1-L26) |
+| Contribution guide | Same commands plus SHA-pinned GitHub Actions | Contributor expectations | [CONTRIBUTING.md:1-52](https://github.com/chatbot-pf/shunt/blob/main/CONTRIBUTING.md#L1-L52) |
+
+## Related Pages
+
+| Page | Relationship |
+|---|---|
+| [Operations](../01-getting-started/operations.md) | Shows the commands CI runs |
+| [Adapters and Translation](./adapters-and-translation.md) | Explains the behavior translation tests protect |
+| [Routing and Configuration](./routing-and-configuration.md) | Explains config/routing unit tests |
+| [Contributor Guide](../onboarding/contributor-guide.md) | Contributor workflow and first task guidance |
+
+## References
+
+- [tests/passthrough.rs:72-247](https://github.com/chatbot-pf/shunt/blob/main/tests/passthrough.rs#L72-L247)
+- [tests/responses_translate.rs:25-287](https://github.com/chatbot-pf/shunt/blob/main/tests/responses_translate.rs#L25-L287)
+- [.github/workflows/ci.yml:1-42](https://github.com/chatbot-pf/shunt/blob/main/.github/workflows/ci.yml#L1-L42)
+- [CONTRIBUTING.md:1-52](https://github.com/chatbot-pf/shunt/blob/main/CONTRIBUTING.md#L1-L52)
+- [src/routing.rs:97-134](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L97-L134)
+</doc>
+
+<doc title="shunt Wiki" path="src/content/docs/index.md">
+`shunt` is a Rust Claude Code LLM gateway that exposes the Anthropic Messages gateway surface, routes by request `model`, passes unmapped models through to Anthropic, and translates mapped OpenAI-family models to the OpenAI Responses API. The CLI starts an Axum server, the router chooses a provider from TOML/env configuration, adapters either stream pass-through bytes or translate Responses SSE, and auth helpers resolve OpenAI, ChatGPT/Codex, and Claude gateway credentials [src/main.rs:38-76](https://github.com/chatbot-pf/shunt/blob/main/src/main.rs#L38-L76) [src/server.rs:13-25](https://github.com/chatbot-pf/shunt/blob/main/src/server.rs#L13-L25) [src/routing.rs:37-89](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L37-L89) [src/adapters/responses.rs:34-213](https://github.com/chatbot-pf/shunt/blob/main/src/adapters/responses.rs#L34-L213).
+
+## Quick Start
+
+| Step | Command | Expected result | Source |
+|---|---|---|---|
+| Build | `cargo build --release` | `target/release/shunt` is produced | [docs/running.md:26-37](https://github.com/chatbot-pf/shunt/blob/main/docs/running.md#L26-L37) |
+| Create config | `cp shunt.toml.example shunt.toml` | Local editable TOML config | [docs/running.md:40-55](https://github.com/chatbot-pf/shunt/blob/main/docs/running.md#L40-L55) |
+| Validate config | `./target/release/shunt check` | Prints `config ok` or a typed error | [src/main.rs:77-83](https://github.com/chatbot-pf/shunt/blob/main/src/main.rs#L77-L83) |
+| Run gateway | `./target/release/shunt run` | Logs `shunt listening` | [src/main.rs:38-76](https://github.com/chatbot-pf/shunt/blob/main/src/main.rs#L38-L76) |
+| Connect Claude Code | `export ANTHROPIC_BASE_URL=http://127.0.0.1:3001` | Claude Code sends gateway traffic locally | [docs/running.md:189-393](https://github.com/chatbot-pf/shunt/blob/main/docs/running.md#L189-L393) |
+
+```mermaid
+flowchart LR
+    CC[Claude Code] -->|ANTHROPIC_BASE_URL| S[shunt Axum gateway]
+    S --> R{Route by model}
+    R -->|unmapped| A[Anthropic Messages passthrough]
+    R -->|mapped responses provider| O[OpenAI Responses translation]
+    O --> C[OpenAI or ChatGPT Codex backend]
+    A --> API[api.anthropic.com or compatible gateway]
+    classDef dark fill:#2d333b,stroke:#6d5dfc,color:#e6edf3;
+    class CC,S,R,A,O,C,API dark;
+    linkStyle default stroke:#8b949e;
+```
+<!-- Sources: README.md:4, src/server.rs:13, src/routing.rs:37, src/adapters/anthropic.rs:31, src/adapters/responses.rs:34 -->
+
+## Documentation Map
+
+| Section | Purpose | Start here when... |
+|---|---|---|
+| [Onboarding](./onboarding/) | Audience-specific guides for contributors, staff engineers, executives, and PMs | You are new to the project |
+| [Getting Started](./01-getting-started/overview.md) | Product overview, setup, config, and operations | You want to run or configure shunt |
+| [Deep Dive](./02-deep-dive/architecture.md) | Architecture, routing, adapters, auth, and testing | You need to modify internals |
+
+## Key Files
+
+| File | Responsibility | Source |
+|---|---|---|
+| `src/main.rs` | CLI, tracing, `run`, `check`, and `token` commands | [src/main.rs:38-76](https://github.com/chatbot-pf/shunt/blob/main/src/main.rs#L38-L76) |
+| `src/server.rs` | Axum router and shared `AppState` | [src/server.rs:13-25](https://github.com/chatbot-pf/shunt/blob/main/src/server.rs#L13-L25) |
+| `src/proxy.rs` | Request buffering, routing, adapter dispatch, logging | [src/proxy.rs:19-126](https://github.com/chatbot-pf/shunt/blob/main/src/proxy.rs#L19-L126) |
+| `src/routing.rs` | Exact route, prefix route, default-provider resolution | [src/routing.rs:37-89](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L37-L89) |
+| `src/config.rs` | Typed config, defaults, figment TOML/env loading, validation | [src/config.rs:9-269](https://github.com/chatbot-pf/shunt/blob/main/src/config.rs#L9-L269) |
+| `src/adapters/anthropic.rs` | Pass-through Anthropic-compatible adapter | [src/adapters/anthropic.rs:31-104](https://github.com/chatbot-pf/shunt/blob/main/src/adapters/anthropic.rs#L31-L104) |
+| `src/adapters/responses.rs` | OpenAI Responses transport and streaming response conversion | [src/adapters/responses.rs:34-213](https://github.com/chatbot-pf/shunt/blob/main/src/adapters/responses.rs#L34-L213) |
+| `src/model/responses_request.rs` | Anthropic request to Responses request translation | [src/model/responses_request.rs:4-280](https://github.com/chatbot-pf/shunt/blob/main/src/model/responses_request.rs#L4-L280) |
+| `src/model/responses.rs` | Responses SSE to Anthropic SSE state machine | [src/model/responses.rs:45-378](https://github.com/chatbot-pf/shunt/blob/main/src/model/responses.rs#L45-L378) |
+| `src/auth/*` | Provider credential resolution and token refresh helpers | [src/auth/mod.rs:29-99](https://github.com/chatbot-pf/shunt/blob/main/src/auth/mod.rs#L29-L99) |
+
+## Tech Stack Summary
+
+| Layer | Technology | Why it exists | Source |
+|---|---|---|---|
+| CLI | `clap` | Provides `run`, `check`, and `token` command surface | [src/main.rs:7-35](https://github.com/chatbot-pf/shunt/blob/main/src/main.rs#L7-L35) |
+| HTTP server | Axum | Serves Claude Code gateway endpoints and streams bodies | [src/server.rs:13-25](https://github.com/chatbot-pf/shunt/blob/main/src/server.rs#L13-L25) |
+| Async runtime | Tokio | Drives server and HTTP client futures | [Cargo.toml:1-23](https://github.com/chatbot-pf/shunt/blob/main/Cargo.toml#L1-L23) |
+| HTTP client | Reqwest with `rustls-tls` and `stream` | Streams upstream responses without OpenSSL | [Cargo.toml:1-23](https://github.com/chatbot-pf/shunt/blob/main/Cargo.toml#L1-L23) |
+| Config | Figment + TOML + env | Merges defaults, file config, and `SHUNT_` overrides | [src/config.rs:185-194](https://github.com/chatbot-pf/shunt/blob/main/src/config.rs#L185-L194) |
+| Observability | Tracing | Logs per-request span fields and latency | [src/proxy.rs:26-60](https://github.com/chatbot-pf/shunt/blob/main/src/proxy.rs#L26-L60) |
+| Tests | Wiremock + Tokio tests | Exercises gateway endpoints and translation behavior | [tests/passthrough.rs:72-247](https://github.com/chatbot-pf/shunt/blob/main/tests/passthrough.rs#L72-L247) |
+
+## Related Pages
+
+| Page | Relationship |
+|---|---|
+| [Overview](./01-getting-started/overview.md) | Explains the gateway problem shunt solves |
+| [Configuration](./01-getting-started/configuration.md) | Shows provider and route setup |
+| [Architecture](./02-deep-dive/architecture.md) | Maps the runtime components and invariants |
+| [Adapters and Translation](./02-deep-dive/adapters-and-translation.md) | Details the pass-through and Responses adapters |
+</doc>
+
+<doc title="Contributor Guide" path="src/content/docs/onboarding/contributor-guide.md">
+## Part I: Foundations
+
+shunt is a Rust service. If you come from Python or JavaScript, think of the binary as an async web server plus a protocol translator. `tokio` is the event loop, Axum is the router, Reqwest is the outbound HTTP client, Serde owns JSON/TOML shape, and Figment merges configuration layers [Cargo.toml:1-23](https://github.com/chatbot-pf/shunt/blob/main/Cargo.toml#L1-L23) [src/server.rs:13-25](https://github.com/chatbot-pf/shunt/blob/main/src/server.rs#L13-L25) [src/config.rs:185-194](https://github.com/chatbot-pf/shunt/blob/main/src/config.rs#L185-L194).
+
+| Rust concept | Python/JS analogy | Where shunt uses it | Source |
+|---|---|---|---|
+| `async fn` on Tokio | `async def` / `async function` under an event loop | `main`, `run`, proxy and adapter paths | [src/main.rs:38-76](https://github.com/chatbot-pf/shunt/blob/main/src/main.rs#L38-L76) [src/proxy.rs:19-126](https://github.com/chatbot-pf/shunt/blob/main/src/proxy.rs#L19-L126) |
+| `Result<T, E>` | Exception-returning operation made explicit | Config loading, token refresh, adapter forwarding | [src/main.rs:77-83](https://github.com/chatbot-pf/shunt/blob/main/src/main.rs#L77-L83) [src/auth/codex_auth.rs:34-63](https://github.com/chatbot-pf/shunt/blob/main/src/auth/codex_auth.rs#L34-L63) |
+| `enum` variants | Tagged unions | `ProviderKind`, `AuthMode`, `AdapterKind`, `Credential` | [src/config.rs:9-269](https://github.com/chatbot-pf/shunt/blob/main/src/config.rs#L9-L269) [src/routing.rs:37-89](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L37-L89) [src/auth/mod.rs:29-99](https://github.com/chatbot-pf/shunt/blob/main/src/auth/mod.rs#L29-L99) |
+| Trait | Interface/protocol | `Adapter` abstracts provider protocol differences | [src/adapters/mod.rs:21-30](https://github.com/chatbot-pf/shunt/blob/main/src/adapters/mod.rs#L21-L30) |
+| Serde derive | Pydantic/dataclass/TypeScript interface with parser | Config and gateway JSON structs | [src/config.rs:9-269](https://github.com/chatbot-pf/shunt/blob/main/src/config.rs#L9-L269) [src/discovery.rs:17-30](https://github.com/chatbot-pf/shunt/blob/main/src/discovery.rs#L17-L30) |
+
+## Part II: This Codebase
+
+shunt accepts Claude Code gateway requests and either forwards them to an Anthropic-compatible endpoint or translates them to OpenAI Responses. It does not run tools itself; it keeps Claude Code's tool loop intact by staying at the HTTP inference layer [README.md:1-60](https://github.com/chatbot-pf/shunt/blob/main/README.md#L1-L60) [docs/implementation-plan.md:46-71](https://github.com/chatbot-pf/shunt/blob/main/docs/implementation-plan.md#L46-L71).
+
+```mermaid
+graph TB
+    CLI[main.rs CLI] --> Config[Config load and validation]
+    Config --> Router[server.rs router]
+    Router --> Proxy[proxy.rs post]
+    Proxy --> Route[routing.rs resolve]
+    Route --> Anthropic[AnthropicAdapter]
+    Route --> Responses[ResponsesAdapter]
+    Responses --> Req[responses_request.rs]
+    Responses --> Sse[responses.rs state machine]
+    classDef dark fill:#2d333b,stroke:#6d5dfc,color:#e6edf3;
+    class CLI,Config,Router,Proxy,Route,Anthropic,Responses,Req,Sse dark;
+    linkStyle default stroke:#8b949e;
+```
+<!-- Sources: src/main.rs:38, src/config.rs:185, src/server.rs:13, src/proxy.rs:19, src/routing.rs:37, src/adapters/responses.rs:34 -->
+
+### Project Structure
+
+| Path | Purpose | Why it matters | Source |
+|---|---|---|---|
+| `src/main.rs` | CLI and process lifecycle | Every local run starts here | [src/main.rs:38-76](https://github.com/chatbot-pf/shunt/blob/main/src/main.rs#L38-L76) |
+| `src/server.rs` | Gateway HTTP surface | Defines supported endpoints | [src/server.rs:13-25](https://github.com/chatbot-pf/shunt/blob/main/src/server.rs#L13-L25) |
+| `src/proxy.rs` | Request dispatch | Joins routing, adapters, and logging | [src/proxy.rs:19-126](https://github.com/chatbot-pf/shunt/blob/main/src/proxy.rs#L19-L126) |
+| `src/config.rs` | Configuration schema and validation | Prevents invalid provider references | [src/config.rs:196-242](https://github.com/chatbot-pf/shunt/blob/main/src/config.rs#L196-L242) |
+| `src/routing.rs` | Model-to-provider route resolution | Central selectivity mechanism | [src/routing.rs:37-89](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L37-L89) |
+| `src/adapters/` | Protocol-specific outbound paths | Keeps pass-through separate from translation | [src/adapters/anthropic.rs:31-104](https://github.com/chatbot-pf/shunt/blob/main/src/adapters/anthropic.rs#L31-L104) [src/adapters/responses.rs:34-213](https://github.com/chatbot-pf/shunt/blob/main/src/adapters/responses.rs#L34-L213) |
+| `src/model/` | Request and SSE translation | Load-bearing protocol conversion | [src/model/responses_request.rs:4-280](https://github.com/chatbot-pf/shunt/blob/main/src/model/responses_request.rs#L4-L280) [src/model/responses.rs:45-378](https://github.com/chatbot-pf/shunt/blob/main/src/model/responses.rs#L45-L378) |
+| `src/auth/` | Credential lookup and refresh | Keeps provider secrets inside shunt | [src/auth/mod.rs:29-99](https://github.com/chatbot-pf/shunt/blob/main/src/auth/mod.rs#L29-L99) |
+| `tests/` | Integration/protocol behavior tests | Protects gateway compatibility | [tests/passthrough.rs:72-247](https://github.com/chatbot-pf/shunt/blob/main/tests/passthrough.rs#L72-L247) [tests/responses_translate.rs:25-287](https://github.com/chatbot-pf/shunt/blob/main/tests/responses_translate.rs#L25-L287) |
+
+### Core Request Lifecycle
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Dev as Contributor
+    participant CLI as shunt run
+    participant CC as Claude Code
+    participant Proxy as proxy::post
+    participant Routing as routing::resolve
+    participant Adapter as Adapter
+    Dev->>CLI: cargo run -- run
+    CC->>Proxy: POST /v1/messages
+    Proxy->>Routing: body bytes
+    Routing-->>Proxy: Route
+    Proxy->>Adapter: forward
+    Adapter-->>CC: Anthropic-shaped response
+```
+<!-- Sources: src/main.rs:60, src/server.rs:23, src/proxy.rs:19, src/routing.rs:37, src/adapters/mod.rs:21 -->
+
+### Data Model
+
+```mermaid
+erDiagram
+    CONFIG ||--o{ PROVIDER_CONFIG : providers
+    CONFIG ||--o{ ROUTE_CONFIG : routes
+    CONFIG ||--o{ ROUTE_PREFIX_CONFIG : prefixes
+    CONFIG ||--o{ MODEL_CONFIG : discovery
+    ROUTE_CONFIG }o--|| PROVIDER_CONFIG : selects
+    ROUTE_PREFIX_CONFIG }o--|| PROVIDER_CONFIG : selects
+```
+<!-- Sources: src/config.rs:9, src/config.rs:25, src/config.rs:89, src/config.rs:97, src/config.rs:103 -->
+
+### First Task Walkthrough
+
+| Goal | Files to read first | Change pattern | Tests to run | Source |
+|---|---|---|---|---|
+| Add provider documentation | `shunt.toml.example`, `docs/running.md` | Add a provider table and route example | `cargo test` if code unchanged is optional; docs review required | [shunt.toml.example:1-134](https://github.com/chatbot-pf/shunt/blob/main/shunt.toml.example#L1-L134) [docs/running.md:1-461](https://github.com/chatbot-pf/shunt/blob/main/docs/running.md#L1-L461) |
+| Add routing behavior | `src/routing.rs` | Extend resolver or route struct, then unit-test precedence | `cargo test routing` or full `cargo test` | [src/routing.rs:37-89](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L37-L89) $route_tests |
+| Add request conversion behavior | `src/model/responses_request.rs` | Add mapping helper and a focused test | `cargo test --test responses_translate` | [src/model/responses_request.rs:4-280](https://github.com/chatbot-pf/shunt/blob/main/src/model/responses_request.rs#L4-L280) [tests/responses_translate.rs:25-287](https://github.com/chatbot-pf/shunt/blob/main/tests/responses_translate.rs#L25-L287) |
+| Add SSE conversion behavior | `src/model/responses.rs` | Update `AnthropicSseMachine` and event-sequence tests | `cargo test --test responses_translate` | [src/model/responses.rs:45-378](https://github.com/chatbot-pf/shunt/blob/main/src/model/responses.rs#L45-L378) [tests/responses_translate.rs:25-287](https://github.com/chatbot-pf/shunt/blob/main/tests/responses_translate.rs#L25-L287) |
+
+## Part III: Getting Productive
+
+| Tool | Version / source | Install / command | Expected output | Source |
+|---|---|---|---|---|
+| Rust stable | Cargo manifest edition 2021 | `rustup default stable` | stable toolchain active | [Cargo.toml:1-23](https://github.com/chatbot-pf/shunt/blob/main/Cargo.toml#L1-L23) |
+| Cargo build | Rust toolchain | `cargo build` | debug binary compiles | [docs/running.md:1-461](https://github.com/chatbot-pf/shunt/blob/main/docs/running.md#L1-L461) |
+| Config check | shunt binary | `cargo run -- check` | `config ok` | [src/main.rs:77-83](https://github.com/chatbot-pf/shunt/blob/main/src/main.rs#L77-L83) |
+| Tests | Cargo + Wiremock | `cargo test` | all unit and integration tests pass | [.github/workflows/ci.yml:1-42](https://github.com/chatbot-pf/shunt/blob/main/.github/workflows/ci.yml#L1-L42) |
+| Format | rustfmt | `cargo fmt --all --check` | no diff | [.github/workflows/ci.yml:1-42](https://github.com/chatbot-pf/shunt/blob/main/.github/workflows/ci.yml#L1-L42) |
+| Lints | Clippy | `cargo clippy --all-targets --all-features -- -D warnings` | no warnings | [.github/workflows/ci.yml:1-42](https://github.com/chatbot-pf/shunt/blob/main/.github/workflows/ci.yml#L1-L42) |
+
+### Development Workflow
+
+```mermaid
+flowchart LR
+    Issue[Pick focused task] --> Branch[Worktree branch]
+    Branch --> Read[Read docs + source]
+    Read --> Change[Small code/doc change]
+    Change --> Test[cargo fmt + clippy + test]
+    Test --> PR[Open PR with checklist]
+    PR --> Review[Review and iterate]
+    classDef dark fill:#2d333b,stroke:#6d5dfc,color:#e6edf3;
+    class Issue,Branch,Read,Change,Test,PR,Review dark;
+    linkStyle default stroke:#8b949e;
+```
+<!-- Sources: CONTRIBUTING.md:1, .github/PULL_REQUEST_TEMPLATE.md:1, .github/workflows/ci.yml:35 -->
+
+### Common Pitfalls
+
+| Pitfall | Symptom | Avoid it by | Source |
+|---|---|---|---|
+| Treating shunt as an agent runtime | Looking for tool execution inside shunt | Remember shunt only changes inference HTTP routing | [README.md:1-60](https://github.com/chatbot-pf/shunt/blob/main/README.md#L1-L60) |
+| Breaking streaming | Claude Code appears stalled | Preserve `Body::from_stream` and SSE event emission | $resp_stream [tests/passthrough.rs:72-247](https://github.com/chatbot-pf/shunt/blob/main/tests/passthrough.rs#L72-L247) |
+| Dropping tool IDs | Tool results no longer match tool calls | Preserve `call_id` in request translation | [src/model/responses_request.rs:4-280](https://github.com/chatbot-pf/shunt/blob/main/src/model/responses_request.rs#L4-L280) [tests/responses_translate.rs:25-287](https://github.com/chatbot-pf/shunt/blob/main/tests/responses_translate.rs#L25-L287) |
+| Assuming discovery shows `gpt-*` IDs | Model does not appear in `/model` | Use `ANTHROPIC_CUSTOM_MODEL_OPTION` or Claude-named aliases | [docs/running.md:189-393](https://github.com/chatbot-pf/shunt/blob/main/docs/running.md#L189-L393) |
+| Storing provider keys in Claude Code | Secrets leak into wrong process boundary | Put provider credentials in shunt env/auth files | [src/auth/mod.rs:29-99](https://github.com/chatbot-pf/shunt/blob/main/src/auth/mod.rs#L29-L99) |
+
+### Glossary
+
+| Term | Meaning | Source |
+|---|---|---|
+| Gateway | HTTP server Claude Code talks to instead of Anthropic directly | [docs/implementation-plan.md:46-71](https://github.com/chatbot-pf/shunt/blob/main/docs/implementation-plan.md#L46-L71) |
+| Provider | Named upstream service in `[providers.<name>]` | [src/config.rs:9-269](https://github.com/chatbot-pf/shunt/blob/main/src/config.rs#L9-L269) |
+| Route | Exact model mapping to a provider | [src/routing.rs:37-89](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L37-L89) |
+| Prefix route | Catch-all mapping by model prefix | [src/routing.rs:37-89](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L37-L89) |
+| Default provider | Fallback provider for unmapped models | [src/config.rs:142-183](https://github.com/chatbot-pf/shunt/blob/main/src/config.rs#L142-L183) |
+| Anthropic adapter | Pass-through protocol adapter | [src/adapters/anthropic.rs:31-104](https://github.com/chatbot-pf/shunt/blob/main/src/adapters/anthropic.rs#L31-L104) |
+| Responses adapter | OpenAI Responses translation adapter | [src/adapters/responses.rs:34-213](https://github.com/chatbot-pf/shunt/blob/main/src/adapters/responses.rs#L34-L213) |
+| Reasoning effort | Claude Code effort mapped to Responses reasoning effort | [src/model/responses_request.rs:75-98](https://github.com/chatbot-pf/shunt/blob/main/src/model/responses_request.rs#L75-L98) |
+| Model discovery | `/v1/models` response consumed by Claude Code | [src/discovery.rs:17-30](https://github.com/chatbot-pf/shunt/blob/main/src/discovery.rs#L17-L30) |
+| `apiKeyHelper` | Claude Code setting that can call `shunt token` | [src/auth/claude_auth.rs:27-92](https://github.com/chatbot-pf/shunt/blob/main/src/auth/claude_auth.rs#L27-L92) |
+| ChatGPT OAuth | Codex login token source for ChatGPT-backed Responses | [src/auth/codex_auth.rs:34-63](https://github.com/chatbot-pf/shunt/blob/main/src/auth/codex_auth.rs#L34-L63) |
+| SSE | Server-sent events streamed back to Claude Code | [src/model/responses.rs:45-378](https://github.com/chatbot-pf/shunt/blob/main/src/model/responses.rs#L45-L378) |
+
+## Related Pages
+
+| Page | Relationship |
+|---|---|
+| [Overview](../01-getting-started/overview.md) | Project overview |
+| [Operations](../01-getting-started/operations.md) | Copy-paste run commands |
+| [Architecture](../02-deep-dive/architecture.md) | Full internal map |
+| [Testing and Quality](../02-deep-dive/testing-and-quality.md) | Validation strategy |
+</doc>
+
+<doc title="Executive Guide" path="src/content/docs/onboarding/executive-guide.md">
+## System Overview
+
+shunt lets a Claude Code user keep the Claude Code workflow while selectively sending chosen model IDs to another model provider. This preserves developer productivity tooling while creating optionality across model vendors [README.md:1-60](https://github.com/chatbot-pf/shunt/blob/main/README.md#L1-L60) [docs/running.md:1-461](https://github.com/chatbot-pf/shunt/blob/main/docs/running.md#L1-L461).
+
+| Capability | Status | Maturity | Dependency | Source |
+|---|---|---|---|---|
+| Local gateway for Claude Code | Built | Working implementation | Axum/Rust binary | [src/server.rs:13-25](https://github.com/chatbot-pf/shunt/blob/main/src/server.rs#L13-L25) [src/main.rs:38-76](https://github.com/chatbot-pf/shunt/blob/main/src/main.rs#L38-L76) |
+| Anthropic pass-through | Built | Tested | Anthropic-compatible upstream | [src/adapters/anthropic.rs:31-104](https://github.com/chatbot-pf/shunt/blob/main/src/adapters/anthropic.rs#L31-L104) [tests/passthrough.rs:72-247](https://github.com/chatbot-pf/shunt/blob/main/tests/passthrough.rs#L72-L247) |
+| OpenAI Responses translation | Built | Tested with fixtures | OpenAI Responses API shape | [src/adapters/responses.rs:34-213](https://github.com/chatbot-pf/shunt/blob/main/src/adapters/responses.rs#L34-L213) [tests/responses_translate.rs:25-287](https://github.com/chatbot-pf/shunt/blob/main/tests/responses_translate.rs#L25-L287) |
+| ChatGPT/Codex credential reuse | Built | Sensitive; needs operational care | `~/.codex/auth.json` | [src/auth/codex_auth.rs:34-63](https://github.com/chatbot-pf/shunt/blob/main/src/auth/codex_auth.rs#L34-L63) |
+| Model discovery | Built | Limited by Claude Code ID rules | Claude Code gateway discovery | [src/discovery.rs:17-30](https://github.com/chatbot-pf/shunt/blob/main/src/discovery.rs#L17-L30) [docs/running.md:189-393](https://github.com/chatbot-pf/shunt/blob/main/docs/running.md#L189-L393) |
+| Production hardening | Partial | Roadmap item | Observability/timeouts/retries | [docs/implementation-plan.md:6-249](https://github.com/chatbot-pf/shunt/blob/main/docs/implementation-plan.md#L6-L249) |
+
+```mermaid
+graph LR
+    Dev[Developer] --> Claude[Claude Code]
+    Claude --> Shunt[Local shunt gateway]
+    Shunt --> Anthropic[Anthropic]
+    Shunt --> OpenAI[OpenAI]
+    Shunt --> ChatGPT[ChatGPT Codex]
+    classDef dark fill:#2d333b,stroke:#6d5dfc,color:#e6edf3;
+    class Dev,Claude,Shunt,Anthropic,OpenAI,ChatGPT dark;
+    linkStyle default stroke:#8b949e;
+```
+<!-- Sources: README.md:4, docs/running.md:6, src/server.rs:13, src/adapters/responses.rs:34 -->
+
+## Technology Investment Thesis
+
+| Technology | Purpose | Risk level | Investment view | Source |
+|---|---|---|---|---|
+| Rust + Tokio | Reliable local network service | Low | Good fit for streaming gateway | [Cargo.toml:1-23](https://github.com/chatbot-pf/shunt/blob/main/Cargo.toml#L1-L23) |
+| Axum | HTTP routing and serving | Low | Simple implementation surface | [src/server.rs:13-25](https://github.com/chatbot-pf/shunt/blob/main/src/server.rs#L13-L25) |
+| Reqwest streaming | Upstream calls and SSE relay | Medium | Critical for responsiveness | [src/adapters/anthropic.rs:31-104](https://github.com/chatbot-pf/shunt/blob/main/src/adapters/anthropic.rs#L31-L104) $resp_stream |
+| Figment TOML/env | Operator configuration | Low | Reduces code churn for providers | [src/config.rs:185-194](https://github.com/chatbot-pf/shunt/blob/main/src/config.rs#L185-L194) |
+| Token-file reuse | Fast setup for Codex/ChatGPT | Medium | Practical but security-sensitive | [src/auth/codex_auth.rs:34-63](https://github.com/chatbot-pf/shunt/blob/main/src/auth/codex_auth.rs#L34-L63) [SECURITY.md:1-38](https://github.com/chatbot-pf/shunt/blob/main/SECURITY.md#L1-L38) |
+
+## Risk Assessment
+
+| Risk | Likelihood | Impact | Mitigation | Owner |
+|---|---|---|---|---|
+| Provider API shape changes | Medium | High | Keep translation tests and fixtures current | Engineering |
+| Credential refresh failure | Medium | Medium | Surface clear `codex login` errors and prefer setup tokens where possible | Engineering/Users |
+| Streaming regression | Low | High | Wiremock and SSE state machine tests | Engineering |
+| Discovery confusion | Medium | Low | Document custom model option and aliases | Developer Experience |
+| Private early status | High | Medium | Keep docs explicit and avoid over-promising | Maintainers |
+
+```mermaid
+graph TB
+    Shunt[shunt] --> Anthropic[Anthropic-compatible providers]
+    Shunt --> OpenAI[OpenAI Platform]
+    Shunt --> Codex[ChatGPT Codex backend]
+    Shunt --> Files[Local credential files]
+    Files --> Risk[Credential handling risk]
+    classDef dark fill:#2d333b,stroke:#6d5dfc,color:#e6edf3;
+    class Shunt,Anthropic,OpenAI,Codex,Files,Risk dark;
+    linkStyle default stroke:#8b949e;
+```
+<!-- Sources: src/config.rs:142, src/auth/codex_auth.rs:34, src/auth/claude_auth.rs:27, SECURITY.md:1 -->
+
+## Cost and Scaling Model
+
+| Driver | Cost behavior | Current bottleneck | Source |
+|---|---|---|---|
+| Local CPU/memory | Minimal; proxy and translation only | JSON/SSE transformation in process | [src/model/responses_request.rs:4-280](https://github.com/chatbot-pf/shunt/blob/main/src/model/responses_request.rs#L4-L280) [src/model/responses.rs:45-378](https://github.com/chatbot-pf/shunt/blob/main/src/model/responses.rs#L45-L378) |
+| Upstream inference | Scales with selected provider usage | Provider account limits and entitlements | [docs/running.md:189-393](https://github.com/chatbot-pf/shunt/blob/main/docs/running.md#L189-L393) |
+| Developer operations | One local process per user or environment | Credential setup and config correctness | [docs/running.md:1-461](https://github.com/chatbot-pf/shunt/blob/main/docs/running.md#L1-L461) |
+
+## Roadmap Alignment
+
+```mermaid
+flowchart LR
+    M0[M0 pass-through] --> M1[M1 Responses translation]
+    M1 --> M2[M2 ChatGPT OAuth]
+    M2 --> M3[M3 discovery UX]
+    M3 --> M4[M4 hardening]
+    classDef dark fill:#2d333b,stroke:#6d5dfc,color:#e6edf3;
+    class M0,M1,M2,M3,M4 dark;
+    linkStyle default stroke:#8b949e;
+```
+<!-- Sources: docs/implementation-plan.md:238, docs/implementation-plan.md:240, docs/implementation-plan.md:243, docs/implementation-plan.md:244, docs/implementation-plan.md:245, docs/implementation-plan.md:246 -->
+
+## Recommendations
+
+| Priority | Recommendation | Expected impact | Source |
+|---|---|---|---|
+| 1 | Keep translation tests as release gate | Protects core compatibility | [tests/responses_translate.rs:25-287](https://github.com/chatbot-pf/shunt/blob/main/tests/responses_translate.rs#L25-L287) [.github/workflows/ci.yml:1-42](https://github.com/chatbot-pf/shunt/blob/main/.github/workflows/ci.yml#L1-L42) |
+| 2 | Document supported provider/model combinations continuously | Reduces setup failures | [docs/running.md:1-461](https://github.com/chatbot-pf/shunt/blob/main/docs/running.md#L1-L461) [shunt.toml.example:1-134](https://github.com/chatbot-pf/shunt/blob/main/shunt.toml.example#L1-L134) |
+| 3 | Add production-hardening backlog around timeouts/retries/observability | Improves reliability if shared beyond local use | [docs/implementation-plan.md:6-249](https://github.com/chatbot-pf/shunt/blob/main/docs/implementation-plan.md#L6-L249) |
+| 4 | Treat credential-file refresh as a security-sensitive area | Reduces incident risk | [SECURITY.md:1-38](https://github.com/chatbot-pf/shunt/blob/main/SECURITY.md#L1-L38) [src/auth/codex_auth.rs:34-63](https://github.com/chatbot-pf/shunt/blob/main/src/auth/codex_auth.rs#L34-L63) |
+
+## Related Pages
+
+| Page | Relationship |
+|---|---|
+| [Product Manager Guide](./product-manager-guide.md) | Product-facing explanation |
+| [Staff Engineer Guide](./staff-engineer-guide.md) | Architectural details |
+| [Operations](../01-getting-started/operations.md) | Current operating model |
+</doc>
+
+<doc title="Onboarding" path="src/content/docs/onboarding/index.md">
+`shunt` is a local gateway for Claude Code: run it, point Claude Code at it with `ANTHROPIC_BASE_URL`, and it diverts only configured model IDs while preserving the Claude Code harness, tools, and skills [README.md:4-20](https://github.com/chatbot-pf/shunt/blob/main/README.md#L4-L20) [docs/running.md:6-9](https://github.com/chatbot-pf/shunt/blob/main/docs/running.md#L6-L9).
+
+| Guide | Audience | What You'll Learn | Time |
+|---|---|---|---|
+| [Contributor Guide](./contributor-guide.md) | New contributors with Python/JS experience | Rust setup, first PR, gateway code paths, testing | ~30 min |
+| [Staff Engineer Guide](./staff-engineer-guide.md) | Staff/principal engineers | Architecture, invariants, tradeoffs, failure modes | ~45 min |
+| [Executive Guide](./executive-guide.md) | VP/director-level engineering leaders | Capabilities, risks, ownership, investment thesis | ~20 min |
+| [Product Manager Guide](./product-manager-guide.md) | Product managers and stakeholders | User journeys, product capabilities, constraints, FAQ | ~20 min |
+
+```mermaid
+flowchart TB
+    New[New reader] --> Choice{What do you need?}
+    Choice -->|Contribute code| CG[Contributor Guide]
+    Choice -->|Evaluate architecture| SG[Staff Engineer Guide]
+    Choice -->|Plan investment| EG[Executive Guide]
+    Choice -->|Understand user value| PM[Product Manager Guide]
+    classDef dark fill:#2d333b,stroke:#6d5dfc,color:#e6edf3;
+    class New,Choice,CG,SG,EG,PM dark;
+    linkStyle default stroke:#8b949e;
+```
+<!-- Sources: README.md:4, docs/running.md:1, docs/implementation-plan.md:6 -->
+</doc>
+
+<doc title="Product Manager Guide" path="src/content/docs/onboarding/product-manager-guide.md">
+## What This System Does
+
+shunt lets a Claude Code user choose that some conversations or agents use another model provider while everything else keeps working as normal in Claude Code. In plain terms, it is a switchboard: if the request names a configured model, shunt sends it to the configured provider; otherwise it lets it go to Anthropic [README.md:1-60](https://github.com/chatbot-pf/shunt/blob/main/README.md#L1-L60) [src/routing.rs:37-89](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L37-L89).
+
+## User Journey
+
+```mermaid
+journey
+    title Using shunt with Claude Code
+    section Setup
+      Build shunt: 3: User
+      Copy config: 3: User
+      Add provider credential: 2: User
+    section Run
+      Start shunt: 4: User
+      Point Claude Code at gateway: 4: User
+      Select mapped model: 4: User
+    section Outcome
+      Claude Code keeps tools: 5: User
+      Selected model is diverted: 5: User
+```
+<!-- Sources: docs/running.md:438, docs/running.md:456, README.md:14 -->
+
+## Feature Capability Map
+
+| Feature | Status | User-facing behavior | Limitation | Source |
+|---|---|---|---|---|
+| Run local gateway | Live | User starts a local process | User must keep it running | [src/main.rs:38-76](https://github.com/chatbot-pf/shunt/blob/main/src/main.rs#L38-L76) [docs/running.md:1-461](https://github.com/chatbot-pf/shunt/blob/main/docs/running.md#L1-L461) |
+| Choose model by ID | Live | User picks or configures a model name | Config must match the model string | [src/routing.rs:37-89](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L37-L89) [shunt.toml.example:1-134](https://github.com/chatbot-pf/shunt/blob/main/shunt.toml.example#L1-L134) |
+| Keep normal Claude models | Live | Unmapped requests continue to Anthropic | Requires valid Anthropic credential | [src/adapters/anthropic.rs:31-104](https://github.com/chatbot-pf/shunt/blob/main/src/adapters/anthropic.rs#L31-L104) [docs/running.md:189-393](https://github.com/chatbot-pf/shunt/blob/main/docs/running.md#L189-L393) |
+| Use OpenAI API key | Live | Mapped model can go to OpenAI | Requires `OPENAI_API_KEY` | [src/auth/mod.rs:29-99](https://github.com/chatbot-pf/shunt/blob/main/src/auth/mod.rs#L29-L99) [shunt.toml.example:1-134](https://github.com/chatbot-pf/shunt/blob/main/shunt.toml.example#L1-L134) |
+| Use ChatGPT/Codex login | Live | Mapped model can use Codex backend | Requires `codex login` and entitled model | [src/auth/codex_auth.rs:34-63](https://github.com/chatbot-pf/shunt/blob/main/src/auth/codex_auth.rs#L34-L63) [docs/running.md:189-393](https://github.com/chatbot-pf/shunt/blob/main/docs/running.md#L189-L393) |
+| Automatic model list | Partial | Claude-named aliases can appear in `/model` | `gpt-*` IDs are ignored by discovery | [src/discovery.rs:17-30](https://github.com/chatbot-pf/shunt/blob/main/src/discovery.rs#L17-L30) [docs/running.md:189-393](https://github.com/chatbot-pf/shunt/blob/main/docs/running.md#L189-L393) |
+
+## Product Data Model
+
+```mermaid
+erDiagram
+    USER ||--o{ MODEL_CHOICE : selects
+    MODEL_CHOICE ||--|| ROUTE_RULE : matches
+    ROUTE_RULE ||--|| PROVIDER : sends_to
+    PROVIDER ||--|| CREDENTIAL : uses
+```
+<!-- Sources: src/routing.rs:48, src/config.rs:89, src/config.rs:27, src/auth/mod.rs:17 -->
+
+## Capability Flow
+
+```mermaid
+flowchart LR
+    Request[Claude Code request] --> Model[Model name]
+    Model --> Rule{Configured?}
+    Rule -->|yes| Other[Other provider]
+    Rule -->|no| Claude[Anthropic]
+    Other --> Response[Claude Code response]
+    Claude --> Response
+    classDef dark fill:#2d333b,stroke:#6d5dfc,color:#e6edf3;
+    class Request,Model,Rule,Other,Claude,Response dark;
+    linkStyle default stroke:#8b949e;
+```
+<!-- Sources: README.md:4, src/routing.rs:48, src/adapters/anthropic.rs:31, src/adapters/responses.rs:34 -->
+
+## Configuration and Controls
+
+| Control | What it changes | Who can change it | Source |
+|---|---|---|---|
+| `server.bind` | Where shunt listens locally | Operator/developer | [shunt.toml.example:1-134](https://github.com/chatbot-pf/shunt/blob/main/shunt.toml.example#L1-L134) |
+| `default_provider` | Where unmapped model requests go | Operator/developer | [src/config.rs:142-183](https://github.com/chatbot-pf/shunt/blob/main/src/config.rs#L142-L183) |
+| `[[routes]]` | Exact model-to-provider mapping | Operator/developer | [src/routing.rs:37-89](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L37-L89) |
+| `[[route_prefixes]]` | Broad model-prefix mapping | Operator/developer | [src/routing.rs:37-89](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L37-L89) |
+| `ANTHROPIC_CUSTOM_MODEL_OPTION` | Adds a model choice in Claude Code | User | [docs/running.md:189-393](https://github.com/chatbot-pf/shunt/blob/main/docs/running.md#L189-L393) |
+| Provider credentials | Enables access to provider | User/operator | [src/auth/mod.rs:29-99](https://github.com/chatbot-pf/shunt/blob/main/src/auth/mod.rs#L29-L99) |
+
+## Known Limitations
+
+| Limitation | User impact | Workaround | Source |
+|---|---|---|---|
+| Discovery does not show most `gpt-*` names | User may not see expected model in picker | Use custom model option or Claude-named alias | [docs/running.md:189-393](https://github.com/chatbot-pf/shunt/blob/main/docs/running.md#L189-L393) |
+| Unsupported Codex model slug fails | Request returns provider error | Use an entitled slug or route alias | [docs/running.md:189-393](https://github.com/chatbot-pf/shunt/blob/main/docs/running.md#L189-L393) |
+| Gateway must be running | Claude Code cannot reach mapped route | Start shunt before Claude Code | [docs/running.md:1-461](https://github.com/chatbot-pf/shunt/blob/main/docs/running.md#L1-L461) |
+| Private early project | API/UX may change | Follow docs and PR checklist | [README.md:1-60](https://github.com/chatbot-pf/shunt/blob/main/README.md#L1-L60) [.github/PULL_REQUEST_TEMPLATE.md:1-26](https://github.com/chatbot-pf/shunt/blob/main/.github/PULL_REQUEST_TEMPLATE.md#L1-L26) |
+
+## Data and Privacy
+
+| Data type | Where it goes | Retention | Source |
+|---|---|---|---|
+| Claude Code request body | Routed through local shunt to selected upstream | shunt is stateless by default | [src/proxy.rs:19-126](https://github.com/chatbot-pf/shunt/blob/main/src/proxy.rs#L19-L126) [docs/implementation-plan.md:6-249](https://github.com/chatbot-pf/shunt/blob/main/docs/implementation-plan.md#L6-L249) |
+| Provider API key | shunt process environment or Codex auth file | Local machine | [src/auth/mod.rs:29-99](https://github.com/chatbot-pf/shunt/blob/main/src/auth/mod.rs#L29-L99) [src/auth/codex_auth.rs:34-63](https://github.com/chatbot-pf/shunt/blob/main/src/auth/codex_auth.rs#L34-L63) |
+| ChatGPT OAuth token | `~/.codex/auth.json` | Local machine, refreshed by shunt when needed | [src/auth/codex_auth.rs:34-63](https://github.com/chatbot-pf/shunt/blob/main/src/auth/codex_auth.rs#L34-L63) |
+| Claude OAuth token helper | `~/.claude/.credentials.json` or env override | Local machine | [src/auth/claude_auth.rs:27-92](https://github.com/chatbot-pf/shunt/blob/main/src/auth/claude_auth.rs#L27-L92) |
+
+## FAQ
+
+| Question | Answer | Source |
+|---|---|---|
+| Does shunt replace Claude Code? | No. Claude Code still runs the session; shunt only handles inference HTTP routing. | [README.md:1-60](https://github.com/chatbot-pf/shunt/blob/main/README.md#L1-L60) |
+| Can only one model be diverted? | Yes. Exact routes can target one model ID. | [src/routing.rs:37-89](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L37-L89) |
+| Can broad groups be diverted? | Yes. Prefix routes can catch names like `gpt-`. | [src/routing.rs:37-89](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L37-L89) |
+| Do normal Claude models keep working? | Yes, if the default provider remains Anthropic and credentials are valid. | [src/adapters/anthropic.rs:31-104](https://github.com/chatbot-pf/shunt/blob/main/src/adapters/anthropic.rs#L31-L104) |
+| Does it store prompts? | The implementation is stateless by default according to the plan. | [docs/implementation-plan.md:6-249](https://github.com/chatbot-pf/shunt/blob/main/docs/implementation-plan.md#L6-L249) |
+| Why does my `gpt-*` model not appear? | Claude Code discovery ignores IDs that do not start with `claude` or `anthropic`. | [docs/running.md:189-393](https://github.com/chatbot-pf/shunt/blob/main/docs/running.md#L189-L393) |
+| What credentials are needed? | Anthropic for pass-through plus provider credentials for mapped models. | [src/auth/mod.rs:29-99](https://github.com/chatbot-pf/shunt/blob/main/src/auth/mod.rs#L29-L99) |
+| Is this production-ready? | It is early/private, with hardening listed as a roadmap milestone. | [README.md:1-60](https://github.com/chatbot-pf/shunt/blob/main/README.md#L1-L60) [docs/implementation-plan.md:6-249](https://github.com/chatbot-pf/shunt/blob/main/docs/implementation-plan.md#L6-L249) |
+| How do we know translation works? | Tests cover request translation, SSE conversion, and errors. | [tests/responses_translate.rs:25-287](https://github.com/chatbot-pf/shunt/blob/main/tests/responses_translate.rs#L25-L287) |
+| Who reports security issues? | Use the private security contact and process in `SECURITY.md`. | [SECURITY.md:1-38](https://github.com/chatbot-pf/shunt/blob/main/SECURITY.md#L1-L38) |
+
+## Related Pages
+
+| Page | Relationship |
+|---|---|
+| [Executive Guide](./executive-guide.md) | Strategic risk and investment view |
+| [Overview](../01-getting-started/overview.md) | Technical overview with minimal jargon |
+| [Configuration](../01-getting-started/configuration.md) | Details of switches and model mappings |
+</doc>
+
+<doc title="Staff Engineer Guide" path="src/content/docs/onboarding/staff-engineer-guide.md">
+## Executive Summary
+
+shunt owns one boundary: translating Claude Code's Anthropic-compatible gateway traffic into either pass-through Anthropic Messages traffic or OpenAI Responses traffic, selected by `model`. It delegates all agent behavior, tool execution, and UI/session orchestration back to Claude Code, which is why the gateway can be small, stateless, and testable [README.md:1-60](https://github.com/chatbot-pf/shunt/blob/main/README.md#L1-L60) [docs/implementation-plan.md:6-249](https://github.com/chatbot-pf/shunt/blob/main/docs/implementation-plan.md#L6-L249).
+
+## Core Architectural Insight
+
+The important decision is **route by model ID, not by agent identity**. In Python-like pseudocode:
+
+```python
+def handle_messages(request):
+    route = resolve_model(config, request["model"])
+    if route.adapter == "anthropic":
+        return stream_passthrough(request, route)
+    return stream_responses_translation(request, route)
+```
+
+That mirrors `routing::resolve_model` and `proxy::forward`: body bytes are parsed only for `model`, then a `Route` selects the adapter [src/routing.rs:37-89](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L37-L89) [src/proxy.rs:19-126](https://github.com/chatbot-pf/shunt/blob/main/src/proxy.rs#L19-L126).
+
+```mermaid
+graph TB
+    Body[Request body bytes] --> Parse[Parse model only]
+    Parse --> Resolve[Exact, prefix, default]
+    Resolve --> Route[Route]
+    Route --> A[Anthropic adapter]
+    Route --> R[Responses adapter]
+    classDef dark fill:#2d333b,stroke:#6d5dfc,color:#e6edf3;
+    class Body,Parse,Resolve,Route,A,R dark;
+    linkStyle default stroke:#8b949e;
+```
+<!-- Sources: src/proxy.rs:93, src/routing.rs:37, src/routing.rs:48, src/adapters/anthropic.rs:31, src/adapters/responses.rs:34 -->
+
+## Architecture, Abstractions, and Invariants
+
+| Abstraction | Why it is load-bearing | Failure if wrong | Source |
+|---|---|---|---|
+| `Config` | Makes providers and routes declarative | Adding providers would require code changes | [src/config.rs:9-269](https://github.com/chatbot-pf/shunt/blob/main/src/config.rs#L9-L269) |
+| `Route` | Carries adapter, provider, upstream model, effort | Adapter cannot build correct outbound request | [src/routing.rs:37-89](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L37-L89) |
+| `Adapter` trait | Separates protocol behavior from dispatch | Pass-through and translation logic would tangle | [src/adapters/mod.rs:21-30](https://github.com/chatbot-pf/shunt/blob/main/src/adapters/mod.rs#L21-L30) |
+| `Credential` | Keeps auth strategy explicit | Provider secrets could leak or be omitted | [src/auth/mod.rs:29-99](https://github.com/chatbot-pf/shunt/blob/main/src/auth/mod.rs#L29-L99) |
+| `AnthropicSseMachine` | Preserves Claude Code's expected stream protocol | Tool loop or UI streaming can break | [src/model/responses.rs:62-113](https://github.com/chatbot-pf/shunt/blob/main/src/model/responses.rs#L62-L113) |
+
+```mermaid
+classDiagram
+    class Config
+    class Route
+    class Adapter
+    class Credential
+    class AnthropicSseMachine
+    Config --> Route
+    Route --> Adapter
+    Adapter --> Credential
+    Adapter --> AnthropicSseMachine
+```
+<!-- Sources: src/config.rs:9, src/routing.rs:23, src/adapters/mod.rs:21, src/auth/mod.rs:17, src/model/responses.rs:24 -->
+
+## Domain Model
+
+```mermaid
+erDiagram
+    CONFIG ||--o{ PROVIDER : declares
+    PROVIDER ||--o{ ROUTE : selected_by
+    PROVIDER ||--o{ PREFIX : selected_by
+    ROUTE ||--|| ADAPTER : chooses
+    ADAPTER ||--o{ CREDENTIAL : consumes
+```
+<!-- Sources: src/config.rs:9, src/config.rs:25, src/routing.rs:23, src/routing.rs:68, src/auth/mod.rs:17 -->
+
+| Decision | Alternatives considered | Rationale | Source |
+|---|---|---|---|
+| Use model routing | Prompt fingerprinting, global swap | Claude Code already chooses models per context | [docs/implementation-plan.md:6-249](https://github.com/chatbot-pf/shunt/blob/main/docs/implementation-plan.md#L6-L249) |
+| Keep pass-through default | Translate every request | Unmapped Claude models should remain native | [README.md:1-60](https://github.com/chatbot-pf/shunt/blob/main/README.md#L1-L60) |
+| Use Figment TOML/env config | Hardcoded providers | Operators can add providers without code | [src/config.rs:185-194](https://github.com/chatbot-pf/shunt/blob/main/src/config.rs#L185-L194) |
+| Use Responses API only for OpenAI-family path | Chat Completions adapter | Codex/ChatGPT target speaks Responses | [docs/implementation-plan.md:6-249](https://github.com/chatbot-pf/shunt/blob/main/docs/implementation-plan.md#L6-L249) |
+| Reuse Codex auth file | New OAuth flow first | Faster setup, matches `codex login` workflow | [src/auth/codex_auth.rs:34-63](https://github.com/chatbot-pf/shunt/blob/main/src/auth/codex_auth.rs#L34-L63) |
+
+## Request Lifecycle
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant CC as Claude Code
+    participant Proxy as proxy
+    participant Route as routing
+    participant Adapter as adapter
+    participant Up as upstream
+    CC->>Proxy: POST /v1/messages
+    Proxy->>Route: resolve body model
+    Route-->>Proxy: Route
+    Proxy->>Adapter: forward
+    Adapter->>Up: upstream request
+    Up-->>Adapter: stream/error
+    Adapter-->>CC: Anthropic response
+```
+<!-- Sources: src/server.rs:23, src/proxy.rs:19, src/routing.rs:37, src/adapters/mod.rs:21, src/error.rs:77 -->
+
+## Failure Modes
+
+```mermaid
+flowchart TB
+    Req[Request] --> Parse{model JSON valid?}
+    Parse -->|no| Bad[400 invalid_request_error]
+    Parse -->|yes| Auth{credential available?}
+    Auth -->|no| AuthErr[401 authentication_error]
+    Auth -->|yes| Up[Upstream call]
+    Up -->|transport error| Bg[502 api_error]
+    Up -->|upstream 400/401/429| Map[Mapped Anthropic error]
+    Up -->|ok| Stream[Stream response]
+    classDef dark fill:#2d333b,stroke:#6d5dfc,color:#e6edf3;
+    class Req,Parse,Bad,Auth,AuthErr,Up,Bg,Map,Stream dark;
+    linkStyle default stroke:#8b949e;
+```
+<!-- Sources: src/routing.rs:37, src/auth/mod.rs:82, src/error.rs:40, src/adapters/responses.rs:128, src/proxy.rs:49 -->
+
+## State Transitions
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> TextBlock: response output message
+    Idle --> ToolBlock: response output function_call
+    TextBlock --> Idle: text done
+    ToolBlock --> Idle: arguments done
+    Idle --> Stopped: response completed
+    Idle --> Failed: response failed
+```
+<!-- Sources: src/model/responses.rs:62, src/model/responses.rs:146, src/model/responses.rs:237, src/model/responses.rs:273, src/model/responses.rs:79 -->
+
+## Risk and Debt
+
+| Issue | Risk level | Business/technical impact | Source |
+|---|---|---|---|
+| `GET /protocol` not implemented in current router | Medium | Full gateway contract discoverability is deferred | [src/server.rs:13-25](https://github.com/chatbot-pf/shunt/blob/main/src/server.rs#L13-L25) [docs/implementation-plan.md:6-249](https://github.com/chatbot-pf/shunt/blob/main/docs/implementation-plan.md#L6-L249) |
+| Token refresh writes credential files | Medium | Requires careful file permission and concurrency awareness | [src/auth/codex_auth.rs:34-63](https://github.com/chatbot-pf/shunt/blob/main/src/auth/codex_auth.rs#L34-L63) [src/auth/claude_auth.rs:27-92](https://github.com/chatbot-pf/shunt/blob/main/src/auth/claude_auth.rs#L27-L92) |
+| Responses translation is stateful | High | Incorrect state transitions break streaming/tool use | [src/model/responses.rs:45-378](https://github.com/chatbot-pf/shunt/blob/main/src/model/responses.rs#L45-L378) [tests/responses_translate.rs:25-287](https://github.com/chatbot-pf/shunt/blob/main/tests/responses_translate.rs#L25-L287) |
+| Discovery only works for Claude-prefixed aliases | Low | UX caveat, documented workaround exists | [src/discovery.rs:17-30](https://github.com/chatbot-pf/shunt/blob/main/src/discovery.rs#L17-L30) [docs/running.md:189-393](https://github.com/chatbot-pf/shunt/blob/main/docs/running.md#L189-L393) |
+
+## Related Pages
+
+| Page | Relationship |
+|---|---|
+| [Architecture](../02-deep-dive/architecture.md) | Full system map |
+| [Adapters and Translation](../02-deep-dive/adapters-and-translation.md) | Translation internals |
+| [Authentication](../02-deep-dive/authentication.md) | Trust boundaries |
+| [Testing and Quality](../02-deep-dive/testing-and-quality.md) | Verification strategy |
+</doc>
