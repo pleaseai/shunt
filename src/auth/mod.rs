@@ -11,6 +11,7 @@ use crate::{
 
 pub mod claude_auth;
 pub mod codex_auth;
+pub mod inbound;
 
 // TODO(M2): Add the optional `shunt login` PKCE loopback fallback. M2 currently
 // reuses the Codex CLI-owned ~/.codex/auth.json credential source.

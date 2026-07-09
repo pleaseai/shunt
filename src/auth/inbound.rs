@@ -1,0 +1,160 @@
+//! Inbound client authentication for shared gateways (M4).
+//!
+//! Optional per-client tokens checked on routes where shunt injects a
+//! server-side credential (`api_key` / `chatgpt_oauth`). Passthrough routes
+//! are never checked — the caller pays with their own credential. See
+//! `docs/m4-inbound-auth.md`.
+
+use axum::http::{HeaderMap, HeaderName};
+
+/// Resolved inbound-auth state: the header to inspect and the accepted
+/// `name → token` pairs. Built once at startup from `[server.auth]` plus the
+/// configured env var; absent entirely when inbound auth is not configured.
+#[derive(Debug, Clone)]
+pub struct InboundAuth {
+    header: HeaderName,
+    tokens: Vec<(String, String)>,
+}
+
+impl InboundAuth {
+    pub fn new(header: HeaderName, tokens: Vec<(String, String)>) -> Self {
+        Self { header, tokens }
+    }
+
+    pub fn header(&self) -> &HeaderName {
+        &self.header
+    }
+
+    /// Check the request's token. Returns the matching client's name, or
+    /// `None` when the header is missing or matches no configured token.
+    /// Every configured token is compared (no early exit) so timing does not
+    /// reveal which entry matched.
+    pub fn authenticate(&self, headers: &HeaderMap) -> Option<&str> {
+        let presented = headers.get(&self.header)?.as_bytes();
+        let mut matched = None;
+        for (name, token) in &self.tokens {
+            if constant_time_eq(presented, token.as_bytes()) {
+                matched = Some(name.as_str());
+            }
+        }
+        matched
+    }
+}
+
+/// Parse the tokens env value: comma-separated `name:token` pairs. Names and
+/// tokens are trimmed; a token keeps everything after the first `:` (so it may
+/// itself contain `:`). Wholly empty entries (trailing comma) are ignored.
+pub fn parse_tokens(raw: &str) -> Result<Vec<(String, String)>, String> {
+    let mut tokens: Vec<(String, String)> = Vec::new();
+    for entry in raw.split(',') {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        let (name, token) = entry
+            .split_once(':')
+            .ok_or_else(|| format!("entry {entry:?} is not a name:token pair"))?;
+        let name = name.trim();
+        let token = token.trim();
+        if name.is_empty() {
+            return Err("entry has an empty client name".to_string());
+        }
+        if token.is_empty() {
+            return Err(format!("client {name:?} has an empty token"));
+        }
+        if tokens.iter().any(|(existing, _)| existing == name) {
+            return Err(format!("duplicate client name {name:?}"));
+        }
+        tokens.push((name.to_string(), token.to_string()));
+    }
+    if tokens.is_empty() {
+        return Err("no client tokens configured".to_string());
+    }
+    Ok(tokens)
+}
+
+/// Constant-time equality: runs over the longer input and folds every byte
+/// difference (and the length difference) into one accumulator, so timing does
+/// not depend on where the first mismatch occurs.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    let mut diff = a.len() ^ b.len();
+    for i in 0..a.len().max(b.len()) {
+        let x = a.get(i).copied().unwrap_or(0);
+        let y = b.get(i).copied().unwrap_or(0);
+        diff |= usize::from(x ^ y);
+    }
+    diff == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::{HeaderMap, HeaderName, HeaderValue};
+
+    use super::{constant_time_eq, parse_tokens, InboundAuth};
+
+    #[test]
+    fn parses_name_token_pairs() {
+        let tokens = parse_tokens("alice:tok-a, bob:tok-b").unwrap();
+        assert_eq!(
+            tokens,
+            vec![
+                ("alice".to_string(), "tok-a".to_string()),
+                ("bob".to_string(), "tok-b".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn token_keeps_everything_after_first_colon() {
+        let tokens = parse_tokens("ci:v1:with:colons").unwrap();
+        assert_eq!(
+            tokens,
+            vec![("ci".to_string(), "v1:with:colons".to_string())]
+        );
+    }
+
+    #[test]
+    fn trims_whitespace_and_ignores_trailing_comma() {
+        let tokens = parse_tokens("  alice : tok-a ,").unwrap();
+        assert_eq!(tokens, vec![("alice".to_string(), "tok-a".to_string())]);
+    }
+
+    #[test]
+    fn rejects_malformed_entries() {
+        assert!(parse_tokens("").is_err());
+        assert!(parse_tokens("   ").is_err());
+        assert!(parse_tokens("no-colon").is_err());
+        assert!(parse_tokens(":token-without-name").is_err());
+        assert!(parse_tokens("alice:").is_err());
+        assert!(parse_tokens("alice:a,alice:b").is_err());
+    }
+
+    #[test]
+    fn constant_time_eq_matches_semantics_of_eq() {
+        assert!(constant_time_eq(b"secret", b"secret"));
+        assert!(!constant_time_eq(b"secret", b"secreT"));
+        assert!(!constant_time_eq(b"secret", b"secret-longer"));
+        assert!(!constant_time_eq(b"", b"x"));
+        assert!(constant_time_eq(b"", b""));
+    }
+
+    #[test]
+    fn authenticate_returns_client_name_only_for_valid_token() {
+        let auth = InboundAuth::new(
+            HeaderName::from_static("x-shunt-token"),
+            vec![
+                ("alice".to_string(), "tok-a".to_string()),
+                ("bob".to_string(), "tok-b".to_string()),
+            ],
+        );
+
+        let mut headers = HeaderMap::new();
+        assert_eq!(auth.authenticate(&headers), None);
+
+        headers.insert("x-shunt-token", HeaderValue::from_static("tok-b"));
+        assert_eq!(auth.authenticate(&headers), Some("bob"));
+
+        headers.insert("x-shunt-token", HeaderValue::from_static("wrong"));
+        assert_eq!(auth.authenticate(&headers), None);
+    }
+}

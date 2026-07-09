@@ -29,6 +29,57 @@ pub type ProvidersConfig = BTreeMap<String, ProviderConfig>;
 pub struct ServerConfig {
     pub bind: String,
     pub default_provider: String,
+    /// Optional inbound client authentication for shared gateways (M4).
+    /// Absent ⇒ no inbound auth (loopback-only personal use).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<InboundAuthConfig>,
+}
+
+/// `[server.auth]` — inbound client-token check on injected-credential routes.
+/// Tokens live in the environment (never in the TOML), as `name:token` pairs:
+/// `SHUNT_CLIENT_TOKENS="alice:3f9c…,bob:a41b…"`. See `docs/m4-inbound-auth.md`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct InboundAuthConfig {
+    /// Header carrying the client token.
+    #[serde(default = "default_auth_header")]
+    pub header: String,
+    /// Env var holding the `name:token` pairs.
+    #[serde(default = "default_tokens_env")]
+    pub tokens_env: String,
+}
+
+fn default_auth_header() -> String {
+    "x-shunt-token".to_string()
+}
+
+fn default_tokens_env() -> String {
+    "SHUNT_CLIENT_TOKENS".to_string()
+}
+
+impl InboundAuthConfig {
+    /// Resolve the configured tokens from the environment. Fails closed: a
+    /// present `[server.auth]` with an unset/empty/malformed env var is a
+    /// startup error, never a silently-open gateway.
+    pub fn resolve(&self) -> Result<crate::auth::inbound::InboundAuth, ConfigError> {
+        let header = axum::http::HeaderName::from_bytes(self.header.as_bytes()).map_err(|_| {
+            ConfigError::InvalidAuthHeader {
+                header: self.header.clone(),
+            }
+        })?;
+        let raw = std::env::var(&self.tokens_env).unwrap_or_default();
+        if raw.trim().is_empty() {
+            return Err(ConfigError::MissingClientTokens {
+                env: self.tokens_env.clone(),
+            });
+        }
+        let tokens = crate::auth::inbound::parse_tokens(&raw).map_err(|message| {
+            ConfigError::InvalidClientTokens {
+                env: self.tokens_env.clone(),
+                message,
+            }
+        })?;
+        Ok(crate::auth::inbound::InboundAuth::new(header, tokens))
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -147,6 +198,12 @@ pub enum ConfigError {
     UnknownRouteProvider { model: String, provider: String },
     #[error("route prefix {prefix} references unknown provider: {provider}")]
     UnknownPrefixProvider { prefix: String, provider: String },
+    #[error("server.auth.header is not a valid header name: {header}")]
+    InvalidAuthHeader { header: String },
+    #[error("[server.auth] is set but {env} is unset or empty; refusing to run open")]
+    MissingClientTokens { env: String },
+    #[error("invalid client tokens in {env}: {message}")]
+    InvalidClientTokens { env: String, message: String },
 }
 
 impl ProviderConfig {
@@ -199,6 +256,7 @@ impl Default for Config {
             server: ServerConfig {
                 bind: "127.0.0.1:3001".to_string(),
                 default_provider: "anthropic".to_string(),
+                auth: None,
             },
             providers,
             models: Vec::new(),
@@ -221,6 +279,11 @@ impl Config {
 
     pub fn validate(self) -> Result<Self, ConfigError> {
         self.server.bind_addr()?;
+        // Fail closed at boot: [server.auth] without resolvable tokens is an
+        // error, not an open gateway.
+        if let Some(auth) = &self.server.auth {
+            auth.resolve()?;
+        }
         for (name, provider) in &self.providers {
             self.provider_base_url(name, &provider.base_url)?;
             if provider.auth == AuthMode::ApiKey

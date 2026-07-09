@@ -294,6 +294,7 @@ mod tests {
         let state = AppState {
             config: Config::default(),
             http_client: reqwest::Client::new(),
+            inbound_auth: None,
         };
 
         let request = build_test_request(

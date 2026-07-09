@@ -475,6 +475,43 @@ unless the upstream really has that window.
 | `count_tokens` (pre-flight) | ⚠️ client `char/4`, or `count_tokens = "tiktoken"` for a closer local count (§4) | ✅ exact (upstream) |
 | `rate_limits` (5h / weekly) | ❌ needs Anthropic `anthropic-ratelimit-*` headers | ✅ shown |
 
+### 5.9 (Optional) Shared-gateway client tokens
+
+By default shunt has no inbound auth — fine for a loopback-only personal gateway, but once
+you share it over a VPN/tunnel, anyone who can reach it can spend the **operator's** account
+on mapped models (shunt injects its own `api_key`/`chatgpt_oauth` credential for those).
+Passthrough models are not the concern: they forward each caller's own Anthropic credential.
+
+`[server.auth]` gates exactly the injected-credential routes with per-client tokens
+(spec: [`m4-inbound-auth.md`](m4-inbound-auth.md)):
+
+```toml
+[server.auth]                        # both keys optional; defaults shown
+header = "x-shunt-token"
+tokens_env = "SHUNT_CLIENT_TOKENS"
+```
+
+```bash
+# Gateway side: name:token pairs (names are labels for logging; tokens are secrets)
+export SHUNT_CLIENT_TOKENS="minsu:$(openssl rand -hex 32),alice:$(openssl rand -hex 32)"
+```
+
+Startup **fails closed** if `[server.auth]` is present but the env var is unset or
+malformed. Requests to mapped models without a valid token get a 401
+`authentication_error`; `GET /v1/models`, `HEAD /`, and passthrough models stay open.
+The token header is always stripped before forwarding, matching is constant-time, and
+token values are never logged (client *names* are, per request).
+
+Client side, one line (`ANTHROPIC_CUSTOM_HEADERS` takes one `Name: Value` per line):
+
+```bash
+export ANTHROPIC_CUSTOM_HEADERS="x-shunt-token: <your token>"
+```
+
+This is application-layer identification only — transport encryption still comes from the
+deployment (WireGuard/Tailscale tunnel, or TLS termination in front); shunt itself serves
+plain HTTP.
+
 ---
 
 ## 6. Verify

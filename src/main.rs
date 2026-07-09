@@ -71,7 +71,8 @@ async fn run(config_path: Option<PathBuf>) -> anyhow::Result<()> {
         .local_addr()
         .context("failed to read bind address")?;
     tracing::info!(%local_addr, "shunt listening");
-    axum::serve(listener, server::build_router(config)).await?;
+    let router = server::build_router(config).context("failed to initialize gateway")?;
+    axum::serve(listener, router).await?;
     Ok(())
 }
 

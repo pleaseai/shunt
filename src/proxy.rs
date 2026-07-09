@@ -10,7 +10,7 @@ use tracing::Instrument;
 
 use crate::{
     adapters::{anthropic::AnthropicAdapter, responses::ResponsesAdapter, Adapter, AdapterError},
-    config::CountTokens,
+    config::{AuthMode, CountTokens},
     count_tokens,
     error::{ShuntError, UpstreamError},
     routing::{self, AdapterKind},
@@ -112,6 +112,12 @@ async fn forward(
         message: "failed to route request".to_string(),
         response: error.into_response(),
     })?;
+    // Inbound client auth (M4): only routes where shunt injects a server-side
+    // credential are gated — passthrough callers pay with their own credential.
+    // The client-token header is stripped below either way, so it never leaks
+    // upstream.
+    let headers = check_inbound_auth(&state, &route, headers).map_err(|error| *error)?;
+    let headers = &headers;
     // The Responses API has no token-counting endpoint. For a responses-routed
     // model, either count locally with tiktoken (opt-in) or return 404 so Claude
     // Code estimates tokens locally (gateway protocol). Either way we must NOT let
@@ -149,6 +155,53 @@ async fn forward(
         }
     };
     result.map_err(ForwardError::from)
+}
+
+/// Enforce `[server.auth]` on injected-credential routes and strip the client
+/// token header from what gets forwarded upstream. Returns the headers to
+/// forward. Token values are never logged.
+fn check_inbound_auth(
+    state: &AppState,
+    route: &routing::Route,
+    headers: &HeaderMap,
+) -> Result<HeaderMap, Box<ForwardError>> {
+    let Some(auth) = &state.inbound_auth else {
+        return Ok(headers.clone());
+    };
+    let mut forwarded = headers.clone();
+    forwarded.remove(auth.header());
+
+    let injects_credential = state
+        .config
+        .provider(&route.provider)
+        .map(|provider| provider.auth != AuthMode::Passthrough)
+        .unwrap_or(false);
+    if !injects_credential {
+        return Ok(forwarded);
+    }
+
+    match auth.authenticate(headers) {
+        Some(client) => {
+            tracing::info!(client = %client, provider = %route.provider, "inbound client authenticated");
+            Ok(forwarded)
+        }
+        None => {
+            tracing::warn!(provider = %route.provider, "inbound auth failed: missing or invalid client token");
+            let message = format!(
+                "missing or invalid {} header: this gateway requires a client token for mapped models; ask the operator for one",
+                auth.header()
+            );
+            Err(Box::new(ForwardError {
+                message: "inbound authentication failed".to_string(),
+                response: ShuntError::new(
+                    StatusCode::UNAUTHORIZED,
+                    "authentication_error",
+                    message,
+                )
+                .into_response(),
+            }))
+        }
+    }
 }
 
 fn is_count_tokens(uri: &Uri) -> bool {
