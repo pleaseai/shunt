@@ -1,0 +1,53 @@
+Cargo.toml
+  s_b2c3ea94027dab::t_5e50b648725c56 17
+src/proxy.rs
+  s_b2c3ea94027dab::t_5e50b648725c56 13-15,115-137,153-185
+tests/passthrough.rs
+  s_b2c3ea94027dab::t_5e50b648725c56 4-7,46-50,256-326
+.claude/settings.json
+  s_b2c3ea94027dab::t_fad4e077127854 11
+  s_b2c3ea94027dab::t_5e50b648725c56 2-6,12
+src/adapters/responses.rs
+  s_b2c3ea94027dab::t_5e50b648725c56 40-42,45-54,72-75,77-80,84-88,91,136,142,218-219,225
+src/config.rs
+  s_b2c3ea94027dab::t_5e50b648725c56 51-68,157,178,190,271-278
+  s_b2c3ea94027dab::t_5890a63731f8b3 279-280
+src/count_tokens.rs
+  s_b2c3ea94027dab::t_5e50b648725c56 1-154
+src/model/responses_request.rs
+  s_b2c3ea94027dab::t_5e50b648725c56 1,6-10,32-54,60-109,144,147-150,211-263,265-274,297-347,364-380,382,384-422,425-432,435-436,438,441-442
+docs/m3-discovery.md
+  s_b2c3ea94027dab::t_5e50b648725c56 78-87
+src/model/responses.rs
+  s_b2c3ea94027dab::t_5e50b648725c56 4,22,34-36,41,51-61,63,72-74,79,95,97-98,132,172,177-304,415-423,452-457,464-476,478,480-484,487-497
+src/lib.rs
+  s_b2c3ea94027dab::t_5e50b648725c56 4
+.gitignore
+  s_b2c3ea94027dab::t_43a26c25d0d139 8
+  s_b2c3ea94027dab::t_5e50b648725c56 9-10
+docs/running.md
+  s_b2c3ea94027dab::t_5e50b648725c56 121,187-209,417-445
+  s_b2c3ea94027dab::t_e40c6d2fdb7c6f 446
+shunt.toml.example
+  s_b2c3ea94027dab::t_5e50b648725c56 40-41
+tests/responses_translate.rs
+  s_b2c3ea94027dab::t_5e50b648725c56 23-24,48,55-73,120-178,257,283,286,313-319,376-685
+Cargo.lock
+  s_b2c3ea94027dab::t_2e3ce669999f90 153-167,174-184,336-346,1338,1455-1469
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ba0f6d0b51f921ce76b031d18129e6a4a637c5c5",
+  "prompts": {},
+  "sessions": {
+    "s_b2c3ea94027dab": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "afee540e-f155-4b7e-be41-de74f1593a79",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@passionfactory.ai>"
+    }
+  }
+}
