@@ -1,0 +1,84 @@
+wiki/astro.config.mjs
+  s_ce173323fd5513::t_d251cefffe170c 9
+  s_ce173323fd5513::t_a5321b7fa64b0a 1-8,10-54
+wiki/src/content/docs/02-deep-dive/routing-and-configuration.md
+  s_ce173323fd5513::t_76bde16c956577 1-132
+wiki/public/llms.txt
+  s_ce173323fd5513::t_98b055a3d60530 1-29
+wiki/src/content/docs/02-deep-dive/authentication.md
+  s_ce173323fd5513::t_76bde16c956577 1-107
+wiki/src/content/docs/02-deep-dive/testing-and-quality.md
+  s_ce173323fd5513::t_76bde16c956577 1-125
+wiki/src/content/docs/onboarding/product-manager-guide.md
+  s_ce173323fd5513::t_aa13d513b305f6 1-117
+wiki/public/llms-full.txt
+  s_ce173323fd5513::t_98b055a3d60530 1-1557
+wiki/src/content/docs/onboarding/contributor-guide.md
+  s_ce173323fd5513::t_aa13d513b305f6 1-155
+wiki/src/content/docs/01-getting-started/configuration.md
+  s_ce173323fd5513::t_d9db96775398b4 1-102
+wiki/src/content/docs/onboarding/executive-guide.md
+  s_ce173323fd5513::t_aa13d513b305f6 1-102
+wiki/src/content/docs/index.md
+  s_ce173323fd5513::t_d9db96775398b4 1-74
+CLAUDE.md
+  s_ce173323fd5513::t_9cc99716b7f13b 1-5
+wiki/src/content/docs/02-deep-dive/adapters-and-translation.md
+  s_ce173323fd5513::t_76bde16c956577 1-120
+tests/AGENTS.md
+  s_ce173323fd5513::t_4863ef47e38490 1-36
+src/AGENTS.md
+  s_ce173323fd5513::t_4863ef47e38490 1-45
+wiki/llms-full.txt
+  s_ce173323fd5513::t_98b055a3d60530 1-1557
+.gitignore
+  s_ce173323fd5513::t_71384922b6776b 2-7
+wiki/src/content/docs/onboarding/index.md
+  s_ce173323fd5513::t_d9db96775398b4 1-26
+wiki/AGENTS.md
+  s_ce173323fd5513::t_9cc99716b7f13b 1-43
+wiki/src/styles/memex.css
+  s_ce173323fd5513::t_a5321b7fa64b0a 1-68
+wiki/src/content/docs/01-getting-started/overview.md
+  s_ce173323fd5513::t_d9db96775398b4 1-112
+AGENTS.md
+  s_ce173323fd5513::t_9cc99716b7f13b 1-52
+wiki/CLAUDE.md
+  s_ce173323fd5513::t_9cc99716b7f13b 1-5
+src/CLAUDE.md
+  s_ce173323fd5513::t_4863ef47e38490 1-5
+wiki/src/content/docs/onboarding/staff-engineer-guide.md
+  s_ce173323fd5513::t_aa13d513b305f6 1-149
+wiki/src/content.config.ts
+  s_ce173323fd5513::t_a5321b7fa64b0a 1-10
+wiki/src/content/docs/01-getting-started/operations.md
+  s_ce173323fd5513::t_d9db96775398b4 1-94
+llms.txt
+  s_ce173323fd5513::t_98b055a3d60530 1-28
+wiki/src/content/docs/02-deep-dive/architecture.md
+  s_ce173323fd5513::t_76bde16c956577 1-169
+wiki/llms.txt
+  s_ce173323fd5513::t_98b055a3d60530 1-29
+wiki/package.json
+  s_ce173323fd5513::t_a5321b7fa64b0a 1-18
+tests/CLAUDE.md
+  s_ce173323fd5513::t_4863ef47e38490 1-5
+wiki/package-lock.json
+  s_ce173323fd5513::t_f07002971ea7ad 1-7923
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5792335dad9482e897d74f0f2d9ed7d296809047",
+  "prompts": {},
+  "sessions": {
+    "s_ce173323fd5513": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7d206e9e-32a5-4143-973c-a55ecaa0d3ad",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@passionfactory.ai>"
+    }
+  }
+}
