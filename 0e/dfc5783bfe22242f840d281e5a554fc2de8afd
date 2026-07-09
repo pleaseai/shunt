@@ -1,0 +1,22 @@
+src/discovery.rs
+  s_6bc3ac219e1ce4::t_1c8f099dffce74 20-30
+src/adapters/responses.rs
+  s_6bc3ac219e1ce4::t_caefdf723a0625 135
+  s_6bc3ac219e1ce4::t_1901d7287333f9 46-51
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0edfc5783bfe22242f840d281e5a554fc2de8afd",
+  "prompts": {},
+  "sessions": {
+    "s_6bc3ac219e1ce4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5de415b6-0b38-4917-a8cb-268d8a9476f6",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@passionfactory.ai>"
+    }
+  }
+}
