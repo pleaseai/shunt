@@ -51,10 +51,12 @@ fn input_items(request: &Value) -> Vec<Value> {
         return out;
     };
     for message in messages {
-        let role = message
-            .get("role")
-            .and_then(Value::as_str)
-            .unwrap_or("user");
+        let role = normalize_role(
+            message
+                .get("role")
+                .and_then(Value::as_str)
+                .unwrap_or("user"),
+        );
         let blocks = content_blocks(message.get("content"));
         let mut pending = Vec::new();
         for block in blocks {
@@ -69,6 +71,20 @@ fn input_items(request: &Value) -> Vec<Value> {
         flush_message(&mut out, role, &mut pending);
     }
     out
+}
+
+/// Claude Code sends mid-conversation `system`-role messages (e.g. SessionStart
+/// hook output, the agent catalog) in the `messages` array. The ChatGPT Codex
+/// backend rejects them (`{"detail":"System messages are not allowed"}`), while
+/// the Responses convention for system-level turns is `developer`, which the
+/// backend accepts. Map `system` -> `developer` so the content is preserved
+/// rather than dropped; verified live against the ChatGPT Codex backend.
+fn normalize_role(role: &str) -> &str {
+    if role == "system" {
+        "developer"
+    } else {
+        role
+    }
 }
 
 fn text_part(role: &str, block: &Value, pending: &mut Vec<Value>) {
@@ -232,4 +248,48 @@ fn effort(request: &Value, route: &Route) -> String {
         "medium"
     }
     .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::input_items;
+
+    #[test]
+    fn maps_system_role_message_to_developer() {
+        // Claude Code sends mid-conversation system messages; the ChatGPT Codex
+        // backend rejects role "system" but accepts "developer".
+        let request = json!({
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "system", "content": "SessionStart hook output"}
+            ]
+        });
+
+        let items = input_items(&request);
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["role"], "user");
+        assert_eq!(items[1]["role"], "developer");
+        assert_eq!(items[1]["content"][0]["type"], "input_text");
+        assert_eq!(items[1]["content"][0]["text"], "SessionStart hook output");
+    }
+
+    #[test]
+    fn preserves_user_and_assistant_roles() {
+        let request = json!({
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "hello"}
+            ]
+        });
+
+        let items = input_items(&request);
+
+        assert_eq!(items[0]["role"], "user");
+        assert_eq!(items[0]["content"][0]["type"], "input_text");
+        assert_eq!(items[1]["role"], "assistant");
+        assert_eq!(items[1]["content"][0]["type"], "output_text");
+    }
 }
