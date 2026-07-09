@@ -1,0 +1,50 @@
+Cargo.toml
+  s_18f9665ec21bfd::t_31e57b2f4bd14a 9
+src/auth/mod.rs
+  s_18f9665ec21bfd::t_54e036dae8a25e 5,30-33,36
+  s_18f9665ec21bfd::t_57bc12463a2853 1-4,6-8,12-29,34-35,37-66,68-129
+  s_18f9665ec21bfd::t_6a8b231129eee0 9-11
+  s_18f9665ec21bfd::t_a93c575646af64 67
+src/config.rs
+  s_18f9665ec21bfd::t_31e57b2f4bd14a 30,43,47-61,98-103,121-127,152,156-164,202-205,224
+src/proxy.rs
+  s_18f9665ec21bfd::t_a93c575646af64 83
+src/adapters/anthropic.rs
+  s_18f9665ec21bfd::t_a93c575646af64 80
+src/routing.rs
+  s_18f9665ec21bfd::t_31e57b2f4bd14a 64,72-73
+  s_18f9665ec21bfd::t_347d5189739ecb 115-130
+src/adapters/mod.rs
+  s_18f9665ec21bfd::t_a93c575646af64 19
+src/lib.rs
+  s_18f9665ec21bfd::t_31e57b2f4bd14a 2
+src/adapters/responses.rs
+  s_18f9665ec21bfd::t_29f4f2c374d4de 227-291
+  s_18f9665ec21bfd::t_d5fa551a9f0924 11,46-47,54,123-127,129-133,155-194,198-207
+  s_18f9665ec21bfd::t_a93c575646af64 144-146,154
+src/auth/codex_auth.rs
+  s_18f9665ec21bfd::t_54e036dae8a25e 2,12,167-170,188-190,218-220,338-341
+  s_18f9665ec21bfd::t_57bc12463a2853 1,3-11,13-119,121-166,171-187,191,194,197-217,221-337,342-435
+  s_18f9665ec21bfd::t_c347652ffa13b9 120
+  s_18f9665ec21bfd::t_fe6742528828ad 192-193,195-196
+tests/passthrough.rs
+  s_18f9665ec21bfd::t_347d5189739ecb 5-8,59-65
+Cargo.lock
+  s_18f9665ec21bfd::t_b3dea6dee649ab 1293
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ac92b9dc0ee06e7fe63e6aa74d9619ada03f7bfb",
+  "prompts": {},
+  "sessions": {
+    "s_18f9665ec21bfd": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f46b7-f660-7163-b9cb-3fcd44f7f88e",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@passionfactory.ai>"
+    }
+  }
+}
