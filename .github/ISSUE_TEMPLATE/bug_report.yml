@@ -1,0 +1,41 @@
+name: Bug report
+description: Report a defect in shunt (routing, translation, streaming, auth)
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: A clear description of the bug and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: |
+        Steps to reproduce. Include the relevant `shunt.toml` route/provider config
+        (redact secrets), the model id selected, and whether streaming was on.
+      placeholder: |
+        1. shunt.toml routes gpt-5.2-codex -> openai
+        2. Claude Code with ANTHROPIC_CUSTOM_MODEL_OPTION=gpt-5.2-codex
+        3. Ran a tool-using task; ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant `shunt` tracing output. **Redact tokens/API keys.**
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: shunt version / commit
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      description: OS, Rust version, Claude Code version, provider (openai / codex / anthropic).

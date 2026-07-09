@@ -1,0 +1,24 @@
+name: Feature request
+description: Propose an enhancement or a new provider/adapter for shunt
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What are you trying to do that shunt does not yet support?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: |
+        The change you'd like. If it touches routing/translation/auth, note which
+        milestone spec in `docs/` it relates to or extends.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
