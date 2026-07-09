@@ -1,0 +1,31 @@
+src/model/responses_request.rs
+  s_254f285974a876::t_9e2e928b46aa9f 6-10
+  s_254f285974a876::t_793637bf465eda 47-53
+tests/responses_translate.rs
+  s_254f285974a876::t_57f1886930fedd 56-73
+  s_254f285974a876::t_5e77571245d4d4 198
+  s_254f285974a876::t_87d4b775e10b81 23-24
+  s_254f285974a876::t_19f29f918bcf40 55
+src/adapters/responses.rs
+  s_254f285974a876::t_53076679790d18 52-54
+  s_254f285974a876::t_42c23eabe8afcb 225
+  s_254f285974a876::t_ca5fc4789281d3 218-219
+src/config.rs
+  s_254f285974a876::t_62ccf40f5ea7db 271-280
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2522ede778c01bf09e136608f846121e6d6b35e9",
+  "prompts": {},
+  "sessions": {
+    "s_254f285974a876": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4a0ff68d-2676-4f73-a8a6-eb4c5cea0f52",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@passionfactory.ai>"
+    }
+  }
+}
