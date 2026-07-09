@@ -1,0 +1,67 @@
+src/proxy.rs
+  s_aff5a67040992a::t_3daf33054591a4 99
+  s_2ca0e8171047fa::t_d126c618a69eca 1-68,70-85,95-98,100-133
+  s_2ca0e8171047fa::t_70566b0fd4a581 86-94
+  s_2ca0e8171047fa::t_7690ad46c4d2c2 69
+Cargo.toml
+  s_aff5a67040992a::t_054bfcbd6b610c 21
+  s_2ca0e8171047fa::t_80ac73cffd6661 1-6
+  s_2ca0e8171047fa::t_d126c618a69eca 7-9,11-20
+  s_aff5a67040992a::t_013b2ab3b861fd 10
+src/headers.rs
+  s_2ca0e8171047fa::t_d126c618a69eca 1-29
+src/config.rs
+  s_2ca0e8171047fa::t_d59dbbcae6e5e0 38,76-77
+  s_2ca0e8171047fa::t_d126c618a69eca 1-3,5-33,35-37,39-63,66-75,78-89
+  s_aff5a67040992a::t_e7a7130ba758ec 34
+  s_aff5a67040992a::t_2b3f07713f9c26 64-65
+  s_aff5a67040992a::t_601cb0424cf54d 4
+src/main.rs
+  s_2ca0e8171047fa::t_70566b0fd4a581 55-57
+  s_2ca0e8171047fa::t_d126c618a69eca 1-54,58-76
+  s_2ca0e8171047fa::t_80ac73cffd6661 77
+tests/passthrough.rs
+  s_aff5a67040992a::t_3bec28090cad5d 109-110
+  s_2ca0e8171047fa::t_70566b0fd4a581 203-204
+  s_aff5a67040992a::t_b3b84df659972c 170-171,174
+  s_aff5a67040992a::t_67052b66735037 11,13-29
+  s_2ca0e8171047fa::t_56b4e77bdb670d 1,68-81,84-86,102-104,132-134,161-163,199-201,231-233
+  s_2ca0e8171047fa::t_28b5af296a5566 2-10,12,30-67,82-83,87-101,105-108,111-131,135-160,164-169,172-173,175-198,202,205-230,234-254
+src/server.rs
+  s_2ca0e8171047fa::t_d126c618a69eca 1-27
+src/error.rs
+  s_2ca0e8171047fa::t_7690ad46c4d2c2 14,17-22
+  s_2ca0e8171047fa::t_d126c618a69eca 1-13,15-16,23-55
+shunt.toml.example
+  s_2ca0e8171047fa::t_d126c618a69eca 1-5
+.gitignore
+  s_2ca0e8171047fa::t_80ac73cffd6661 1
+src/lib.rs
+  s_2ca0e8171047fa::t_d126c618a69eca 1-5
+Cargo.lock
+  s_aff5a67040992a::t_36ea6c6bfedfaf 1-2034
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "bacda61b1d8a0536f33e571669ecccc6802c9a53",
+  "prompts": {},
+  "sessions": {
+    "s_2ca0e8171047fa": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4687-1658-7902-ad7b-c6e4845a1005",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@passionfactory.ai>"
+    },
+    "s_aff5a67040992a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3d19ef13-49aa-49ae-8a29-6a58cdc4290d",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@passionfactory.ai>"
+    }
+  }
+}
