@@ -35,7 +35,7 @@ graph LR
 |---|---|---|---|---|
 | Rust + Tokio | Reliable local network service | Low | Good fit for streaming gateway | [Cargo.toml:1-23](https://github.com/chatbot-pf/shunt/blob/main/Cargo.toml#L1-L23) |
 | Axum | HTTP routing and serving | Low | Simple implementation surface | [src/server.rs:13-25](https://github.com/chatbot-pf/shunt/blob/main/src/server.rs#L13-L25) |
-| Reqwest streaming | Upstream calls and SSE relay | Medium | Critical for responsiveness | [src/adapters/anthropic.rs:31-104](https://github.com/chatbot-pf/shunt/blob/main/src/adapters/anthropic.rs#L31-L104) $resp_stream |
+| Reqwest streaming | Upstream calls and SSE relay | Medium | Critical for responsiveness | [src/adapters/anthropic.rs:31-104](https://github.com/chatbot-pf/shunt/blob/main/src/adapters/anthropic.rs#L31-L104) |
 | Figment TOML/env | Operator configuration | Low | Reduces code churn for providers | [src/config.rs:185-194](https://github.com/chatbot-pf/shunt/blob/main/src/config.rs#L185-L194) |
 | Token-file reuse | Fast setup for Codex/ChatGPT | Medium | Practical but security-sensitive | [src/auth/codex_auth.rs:34-63](https://github.com/chatbot-pf/shunt/blob/main/src/auth/codex_auth.rs#L34-L63) [SECURITY.md:1-38](https://github.com/chatbot-pf/shunt/blob/main/SECURITY.md#L1-L38) |
 

@@ -87,7 +87,7 @@ erDiagram
 | Goal | Files to read first | Change pattern | Tests to run | Source |
 |---|---|---|---|---|
 | Add provider documentation | `shunt.toml.example`, `docs/running.md` | Add a provider table and route example | `cargo test` if code unchanged is optional; docs review required | [shunt.toml.example:1-134](https://github.com/chatbot-pf/shunt/blob/main/shunt.toml.example#L1-L134) [docs/running.md:1-461](https://github.com/chatbot-pf/shunt/blob/main/docs/running.md#L1-L461) |
-| Add routing behavior | `src/routing.rs` | Extend resolver or route struct, then unit-test precedence | `cargo test routing` or full `cargo test` | [src/routing.rs:37-89](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L37-L89) $route_tests |
+| Add routing behavior | `src/routing.rs` | Extend resolver or route struct, then unit-test precedence | `cargo test routing` or full `cargo test` | [src/routing.rs:37-89](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L37-L89) |
 | Add request conversion behavior | `src/model/responses_request.rs` | Add mapping helper and a focused test | `cargo test --test responses_translate` | [src/model/responses_request.rs:4-280](https://github.com/chatbot-pf/shunt/blob/main/src/model/responses_request.rs#L4-L280) [tests/responses_translate.rs:25-287](https://github.com/chatbot-pf/shunt/blob/main/tests/responses_translate.rs#L25-L287) |
 | Add SSE conversion behavior | `src/model/responses.rs` | Update `AnthropicSseMachine` and event-sequence tests | `cargo test --test responses_translate` | [src/model/responses.rs:45-378](https://github.com/chatbot-pf/shunt/blob/main/src/model/responses.rs#L45-L378) [tests/responses_translate.rs:25-287](https://github.com/chatbot-pf/shunt/blob/main/tests/responses_translate.rs#L25-L287) |
 
@@ -123,7 +123,7 @@ flowchart LR
 | Pitfall | Symptom | Avoid it by | Source |
 |---|---|---|---|
 | Treating shunt as an agent runtime | Looking for tool execution inside shunt | Remember shunt only changes inference HTTP routing | [README.md:1-60](https://github.com/chatbot-pf/shunt/blob/main/README.md#L1-L60) |
-| Breaking streaming | Claude Code appears stalled | Preserve `Body::from_stream` and SSE event emission | $resp_stream [tests/passthrough.rs:72-247](https://github.com/chatbot-pf/shunt/blob/main/tests/passthrough.rs#L72-L247) |
+| Breaking streaming | Claude Code appears stalled | Preserve `Body::from_stream` and SSE event emission | [tests/passthrough.rs:72-247](https://github.com/chatbot-pf/shunt/blob/main/tests/passthrough.rs#L72-L247) |
 | Dropping tool IDs | Tool results no longer match tool calls | Preserve `call_id` in request translation | [src/model/responses_request.rs:4-280](https://github.com/chatbot-pf/shunt/blob/main/src/model/responses_request.rs#L4-L280) [tests/responses_translate.rs:25-287](https://github.com/chatbot-pf/shunt/blob/main/tests/responses_translate.rs#L25-L287) |
 | Assuming discovery shows `gpt-*` IDs | Model does not appear in `/model` | Use `ANTHROPIC_CUSTOM_MODEL_OPTION` or Claude-named aliases | [docs/running.md:189-393](https://github.com/chatbot-pf/shunt/blob/main/docs/running.md#L189-L393) |
 | Storing provider keys in Claude Code | Secrets leak into wrong process boundary | Put provider credentials in shunt env/auth files | [src/auth/mod.rs:29-99](https://github.com/chatbot-pf/shunt/blob/main/src/auth/mod.rs#L29-L99) |
