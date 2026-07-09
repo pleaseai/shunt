@@ -80,10 +80,10 @@ base_url = "https://chatgpt.com/backend-api"
 
 # Exact match wins first. `upstream_model` and `effort` are optional overrides.
 [[routes]]
-model = "gpt-5.5"
+model = "gpt-5.6-sol"
 provider = "codex"
-# upstream_model = "gpt-5.5"
-# effort = "high"
+# upstream_model = "gpt-5.6-sol"
+# effort = "high"          # gpt-5.6 slugs also accept "max"
 
 # Then prefix match.
 [[route_prefixes]]
@@ -184,17 +184,20 @@ OpenAI/Codex ids (`gpt-*`) use `ANTHROPIC_CUSTOM_MODEL_OPTION` — it adds a pic
 skips validation:
 
 ```bash
-export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.5"
+export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
 ```
 
 Then pick it from `/model` in Claude Code. That id is what shunt routes on, so it must match a
 `[[routes]]`/`[[route_prefixes]]` rule in your config.
 
-> **Model slugs (verified 2026-07-09):** the ChatGPT-account Codex backend **rejects**
-> `gpt-*-codex` slugs (e.g. `gpt-5.2-codex`) — it only accepts the account's live-entitled
-> slugs. A **free** ChatGPT account resolves to **`gpt-5.5`**. Use `upstream_model` in a route,
-> or pass an entitled slug via `ANTHROPIC_CUSTOM_MODEL_OPTION`. See
-> [`m2-chatgpt-oauth.md`](m2-chatgpt-oauth.md) §0.
+> **Model slugs:** the ChatGPT-account Codex backend **rejects** `gpt-*-codex` slugs (e.g.
+> `gpt-5.2-codex`) — it only accepts the account's live-entitled slugs. The authoritative catalog
+> of Codex slugs (and the reasoning levels each accepts) is openai/codex's
+> [`codex-rs/models-manager/models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json).
+> The current listed slugs are **`gpt-5.6-sol`**, **`gpt-5.6-terra`**, **`gpt-5.6-luna`** (latest,
+> frontier), and **`gpt-5.5`** / **`gpt-5.4`** / **`gpt-5.4-mini`** / **`gpt-5.2`**; older accounts
+> may only be entitled to the earlier ones. Use `upstream_model` in a route, or pass an entitled
+> slug via `ANTHROPIC_CUSTOM_MODEL_OPTION`. See [`m2-chatgpt-oauth.md`](m2-chatgpt-oauth.md) §0.
 
 Per-context selection also works via Claude Code's own knobs — a subagent's `model:`
 frontmatter, or `CLAUDE_CODE_SUBAGENT_MODEL` for all subagents — so you can divert only one
@@ -210,13 +213,13 @@ id is dropped client-side no matter what; discovery is only useful when you expo
 
 ```toml
 [[models]]
-id = "claude-gpt-5.5-via-codex"        # must begin with claude/anthropic
-display_name = "GPT-5.5 (via Codex)"
+id = "claude-gpt-5.6-sol-via-codex"     # must begin with claude/anthropic
+display_name = "GPT-5.6-Sol (via Codex)"
 
 [[routes]]
-model = "claude-gpt-5.5-via-codex"     # the alias Claude Code sends
+model = "claude-gpt-5.6-sol-via-codex"  # the alias Claude Code sends
 provider = "codex"
-upstream_model = "gpt-5.5"             # real slug forwarded to the ChatGPT backend
+upstream_model = "gpt-5.6-sol"          # real slug forwarded to the ChatGPT backend
 ```
 
 Then enable discovery (Claude Code v2.1.129+) and restart shunt + Claude Code:
@@ -226,7 +229,7 @@ export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
 ```
 
 The alias appears in `/model` labeled *From gateway*; selecting it sends
-`claude-gpt-5.5-via-codex`, which shunt routes to `codex` and rewrites to `gpt-5.5`. Discovery
+`claude-gpt-5.6-sol-via-codex`, which shunt routes to `codex` and rewrites to `gpt-5.6-sol`. Discovery
 fails **silently** (3-second timeout, any redirect counts as failure) and falls back to the
 cached/built-in list — run `claude --debug` and look for `[gatewayDiscovery]` lines to confirm
 it ran. For `gpt-*` ids without an alias, use `ANTHROPIC_CUSTOM_MODEL_OPTION` (§5.3) instead.
@@ -301,9 +304,15 @@ it to the Responses `reasoning.effort` for mapped models:
 | Claude Code effort | → `reasoning.effort` |
 | :-- | :-- |
 | `low` / `medium` / `high` / `xhigh` | passthrough |
-| `max` | `xhigh` (the Responses API has no `max`) |
+| `max` | passthrough on models that accept it (the **gpt-5.6** family), else folded to `xhigh` |
 
-**For a custom gateway id like `gpt-5.5` you must set `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1`** —
+Which reasoning levels a Codex slug accepts is listed per-model in openai/codex's
+[`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json)
+(`supported_reasoning_levels`): `gpt-5.6-sol`/`-terra`/`-luna` accept up to `max` (sol/terra even
+`ultra`, which Claude Code never sends), while `gpt-5.5`/`5.4`/`5.2` cap at `xhigh`. shunt folds
+`max → xhigh` only for slugs that don't support it.
+
+**For a custom gateway id like `gpt-5.6-sol` you must set `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1`** —
 otherwise Claude Code omits `output_config.effort` for model ids it doesn't recognize as
 effort-capable, and shunt falls back to `medium`.
 
@@ -348,7 +357,7 @@ curl -s -X POST "$ANTHROPIC_BASE_URL/v1/messages" \
 curl -s -X POST "$ANTHROPIC_BASE_URL/v1/messages" \
   -H "anthropic-version: 2023-06-01" \
   -H "content-type: application/json" \
-  -d '{"model":"gpt-5.5","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}'
+  -d '{"model":"gpt-5.6-sol","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}'
 ```
 
 A JSON response starting with `{"id":"msg_` means it worked.
@@ -365,7 +374,7 @@ mapped model.
 | :------ | :---------- |
 | `ChatGPT auth not found; run codex login` | shunt can't read `~/.codex/auth.json`. Run `codex login`. |
 | `authentication_error` on a mapped model | Expired/absent provider credential — re-run `codex login`, or export `OPENAI_API_KEY`. shunt surfaces the backend's real `detail` message. |
-| `400 ... model is not supported when using Codex with a ChatGPT account` | You used a `-codex` slug. Use an entitled slug (e.g. `gpt-5.5`) or set `upstream_model`. |
+| `400 ... model is not supported when using Codex with a ChatGPT account` | You used a `-codex` slug (or one your account isn't entitled to). Use an entitled slug from [models.json](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json) (e.g. `gpt-5.6-sol`, `gpt-5.5`) or set `upstream_model`. |
 | `/model` doesn't list your model | For `gpt-*` ids use `ANTHROPIC_CUSTOM_MODEL_OPTION`; discovery only surfaces `claude`/`anthropic`-prefixed ids. |
 | `config check failed` | Run `shunt check` for the exact reason (bind address, unknown provider in a route, wrong adapter/auth). |
 | Claude Code asks you to log in | Set an Anthropic credential (`ANTHROPIC_AUTH_TOKEN` / login) that shunt can forward for unmapped models. A base URL alone is not a credential. |
@@ -394,7 +403,7 @@ codex login                    # Codex/ChatGPT provider
 
 # 5. Point Claude Code at it and select a mapped model
 export ANTHROPIC_BASE_URL=http://127.0.0.1:3001
-export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.5"
+export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
 export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1   # so /effort maps to reasoning.effort (§5.5)
-claude                         # then /model -> pick gpt-5.5
+claude                         # then /model -> pick gpt-5.6-sol
 ```

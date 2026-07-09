@@ -75,14 +75,26 @@ fn input_items(request: &Value) -> Vec<Value> {
 
 /// Claude Code sends `output_config.effort` (low|medium|high|xhigh|max) when
 /// the model advertises effort support or `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1`
-/// is set (needed for custom gateway ids like gpt-5.5). Map it to the Responses
-/// `reasoning.effort`: the levels pass through, except `max`, which the Responses
-/// API has no equivalent for, so fold it to the deepest level it accepts (xhigh).
-fn map_effort(effort: &str) -> &str {
-    match effort {
-        "max" => "xhigh",
-        other => other,
+/// is set (needed for custom gateway ids like gpt-5.6-sol). Map it to the
+/// Responses `reasoning.effort`.
+///
+/// Which levels the ChatGPT/Codex backend accepts is per-model, listed in
+/// openai/codex `codex-rs/models-manager/models.json` (`supported_reasoning_levels`):
+/// the gpt-5.6 family accepts up to `max` (sol/terra even `ultra`), while the
+/// gpt-5.5/5.4/5.2 slugs cap at `xhigh`. So `max` passes through for a model that
+/// supports it and folds to `xhigh` otherwise. (Claude Code never emits `ultra`.)
+fn map_effort(effort: &str, model: &str) -> String {
+    if effort == "max" && !supports_max_effort(model) {
+        "xhigh".to_string()
+    } else {
+        effort.to_string()
     }
+}
+
+/// Whether `model` accepts the `max` reasoning level, per codex models.json.
+/// The gpt-5.6 family does; earlier slugs cap at `xhigh`.
+fn supports_max_effort(model: &str) -> bool {
+    model.contains("gpt-5.6")
 }
 
 /// Claude Code sends mid-conversation `system`-role messages (e.g. SessionStart
@@ -248,7 +260,7 @@ fn effort(request: &Value, route: &Route) -> String {
         .pointer("/output_config/effort")
         .and_then(Value::as_str)
     {
-        return map_effort(effort).to_string();
+        return map_effort(effort, &route.upstream_model);
     }
     if request.pointer("/thinking/type").and_then(Value::as_str) == Some("enabled") {
         return "high".to_string();
@@ -285,18 +297,35 @@ mod tests {
         }
     }
 
+    fn codex_route_model(model: &str) -> Route {
+        Route {
+            upstream_model: model.to_string(),
+            model: model.to_string(),
+            ..codex_route()
+        }
+    }
+
     #[test]
     fn maps_output_config_effort_to_reasoning_effort() {
+        // gpt-5.5 caps at xhigh, so `max` folds down (per codex models.json).
         for (level, expected) in [
             ("low", "low"),
             ("medium", "medium"),
             ("high", "high"),
             ("xhigh", "xhigh"),
-            ("max", "xhigh"), // Responses API has no "max"
+            ("max", "xhigh"),
         ] {
             let request = json!({"output_config": {"effort": level}});
             assert_eq!(effort(&request, &codex_route()), expected, "level={level}");
         }
+    }
+
+    #[test]
+    fn passes_max_effort_through_for_gpt_5_6() {
+        // gpt-5.6* accept `max` natively, so it must not fold to xhigh.
+        let request = json!({"output_config": {"effort": "max"}});
+        assert_eq!(effort(&request, &codex_route_model("gpt-5.6-sol")), "max");
+        assert_eq!(effort(&request, &codex_route_model("gpt-5.6-luna")), "max");
     }
 
     #[test]

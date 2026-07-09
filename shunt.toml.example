@@ -15,14 +15,14 @@ base_url = "https://api.anthropic.com"
 adapter = "responses"          # must be "responses"
 base_url = "https://api.openai.com/v1"
 api_key_env = "OPENAI_API_KEY" # env var shunt reads the key from
-# effort = "high"              # optional default reasoning effort (low|medium|high|xhigh)
+# effort = "high"              # optional default reasoning effort (low|medium|high|xhigh|max)
 
 # ChatGPT / Codex subscription (reuses ~/.codex/auth.json — run `codex login`).
 [providers.codex]
 adapter = "responses"          # must be "responses"
 base_url = "https://chatgpt.com/backend-api"
 # auth = "chatgpt_oauth"       # default; reads + auto-refreshes ~/.codex/auth.json
-# effort = "high"
+# effort = "high"              # low|medium|high|xhigh; gpt-5.6 slugs also accept "max"
 
 # --- Routing: a request's `model` id picks the provider ---
 # Precedence: exact [[routes]] match -> [[route_prefixes]] -> server.default_provider.
@@ -36,10 +36,13 @@ provider = "openai"
 
 # Example B — route to your ChatGPT subscription via Codex.
 # The ChatGPT-account backend REJECTS gpt-*-codex slugs; it only accepts the
-# account's live-entitled slugs (a free account resolves to gpt-5.5).
-# See docs/m2-chatgpt-oauth.md §0.
+# account's live-entitled slugs. The catalog of valid Codex slugs (and the
+# reasoning levels each accepts) is openai/codex's models.json:
+#   https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json
+# The latest are gpt-5.6-sol / gpt-5.6-terra / gpt-5.6-luna; older accounts may
+# only be entitled to gpt-5.5 / gpt-5.4 / gpt-5.2. See docs/m2-chatgpt-oauth.md §0.
 # [[routes]]
-# model = "gpt-5.5"
+# model = "gpt-5.6-sol"
 # provider = "codex"
 
 # Catch-all: send every gpt-* id to a provider.
@@ -54,10 +57,10 @@ provider = "openai"
 # [[routes]] entry rewrites it to the real upstream slug. It then shows in /model
 # labeled "From gateway". Requires CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1.
 # [[models]]
-# id = "claude-gpt-5.5-via-codex"        # must begin with claude/anthropic
-# display_name = "GPT-5.5 (via Codex)"
+# id = "claude-gpt-5.6-sol-via-codex"    # must begin with claude/anthropic
+# display_name = "GPT-5.6-Sol (via Codex)"
 #
 # [[routes]]
-# model = "claude-gpt-5.5-via-codex"     # the alias Claude Code sends
+# model = "claude-gpt-5.6-sol-via-codex" # the alias Claude Code sends
 # provider = "codex"
-# upstream_model = "gpt-5.5"             # real slug forwarded upstream
+# upstream_model = "gpt-5.6-sol"         # real slug forwarded upstream (see models.json)
