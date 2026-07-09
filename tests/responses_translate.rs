@@ -118,6 +118,65 @@ fn preserves_tool_use_and_tool_result_call_ids() {
 }
 
 #[test]
+fn tool_reference_result_becomes_loaded_tool_text() {
+    // Claude Code's ToolSearch (ENABLE_TOOL_SEARCH) returns tool_result content
+    // made only of {type:"tool_reference", tool_name} blocks. Dropping them
+    // yields an empty result that reads as "no tools found" — they must render
+    // as text instead. The referenced tools' schemas arrive in the next
+    // request's `tools` array, so text is all the model needs here.
+    let actual = translate(json!({
+        "model": "gpt-5.2-codex",
+        "messages": [
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "toolu_ts", "name": "ToolSearch", "input": {"query": "select:Foo"}}
+            ]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "toolu_ts", "content": [
+                    {"type": "tool_reference", "tool_name": "mcp__github__get_me"},
+                    {"type": "tool_reference", "tool_name": "mcp__slack__slack_send_message"}
+                ]}
+            ]}
+        ]
+    }));
+
+    assert_eq!(
+        actual["input"][1],
+        json!({
+            "type": "function_call_output",
+            "call_id": "toolu_ts",
+            "output": "Loaded tool: mcp__github__get_me\nLoaded tool: mcp__slack__slack_send_message"
+        })
+    );
+}
+
+#[test]
+fn defer_loading_field_never_reaches_upstream_tools() {
+    // With tool search enabled, discovered deferred tools carry
+    // defer_loading:true. The Responses API doesn't know the field; the tools()
+    // rebuild must emit only type/name/description/parameters.
+    let actual = translate(json!({
+        "model": "gpt-5.2-codex",
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [{
+            "name": "mcp__github__get_me",
+            "description": "Get the authenticated user",
+            "input_schema": {"type": "object", "properties": {}},
+            "defer_loading": true
+        }]
+    }));
+
+    assert_eq!(
+        actual["tools"],
+        json!([{
+            "type": "function",
+            "name": "mcp__github__get_me",
+            "description": "Get the authenticated user",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": true}
+        }])
+    );
+}
+
+#[test]
 fn translates_image_content_to_data_url() {
     let actual = translate(json!({
         "model": "gpt-5.2-codex",

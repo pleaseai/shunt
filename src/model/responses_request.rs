@@ -361,6 +361,18 @@ fn flush_message(out: &mut Vec<Value>, role: &str, pending: &mut Vec<Value>) {
     pending.clear();
 }
 
+/// Claude Code's tool-search feature (ENABLE_TOOL_SEARCH) puts
+/// `{type:"tool_reference", tool_name}` blocks in ToolSearch tool_results. The
+/// Anthropic API expands each reference into the tool's schema server-side; the
+/// Responses API can't, but doesn't need to — Claude Code adds every discovered
+/// tool's full definition to the next request's `tools` array. Render the
+/// reference as text so the model sees the search succeeded (a dropped block
+/// would read as "no tools found" and kill the discovery loop).
+fn tool_reference_text(block: &Value) -> Option<String> {
+    let name = block.get("tool_name").and_then(Value::as_str)?;
+    Some(format!("Loaded tool: {name}"))
+}
+
 /// The `output` of a `function_call_output`. Text-only results collapse to a plain
 /// string (what most tools return); results carrying an image or document are sent
 /// as the Responses content-item array (text/image/file) so they are not dropped.
@@ -385,6 +397,8 @@ fn tool_result_output(block: &Value) -> Value {
                             .map(|text| json!({"type": "input_text", "text": text})),
                         Some("image") => image_content_item(inner),
                         Some("document") => file_content_item(inner),
+                        Some("tool_reference") => tool_reference_text(inner)
+                            .map(|text| json!({"type": "input_text", "text": text})),
                         _ => None,
                     })
                     .collect::<Vec<_>>();
@@ -408,8 +422,14 @@ fn tool_result_output(block: &Value) -> Value {
             }
             let text = blocks
                 .iter()
-                .filter(|inner| inner.get("type").and_then(Value::as_str) == Some("text"))
-                .filter_map(|inner| inner.get("text").and_then(Value::as_str))
+                .filter_map(|inner| match inner.get("type").and_then(Value::as_str) {
+                    Some("text") => inner
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    Some("tool_reference") => tool_reference_text(inner),
+                    _ => None,
+                })
                 .collect::<Vec<_>>()
                 .join("\n");
             if text.is_empty() && is_error {
