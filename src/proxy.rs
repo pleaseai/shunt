@@ -3,12 +3,17 @@ use std::time::Instant;
 use axum::{
     body::{to_bytes, Body},
     extract::{OriginalUri, State},
-    http::{HeaderMap, Method, Response, StatusCode, Uri},
+    http::{HeaderMap, Method, StatusCode, Uri},
     response::IntoResponse,
 };
 use tracing::Instrument;
 
-use crate::{error::UpstreamError, headers, server::AppState};
+use crate::{
+    adapters::{anthropic::AnthropicAdapter, responses::ResponsesAdapter, Adapter, AdapterError},
+    error::UpstreamError,
+    routing::{self, AdapterKind},
+    server::AppState,
+};
 
 const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024 * 1024;
 
@@ -58,7 +63,7 @@ pub async fn post(
 
 struct ForwardError {
     message: String,
-    response: UpstreamError,
+    response: axum::response::Response,
 }
 
 impl From<reqwest::Error> for ForwardError {
@@ -66,14 +71,23 @@ impl From<reqwest::Error> for ForwardError {
         let message = error.to_string();
         Self {
             message,
-            response: UpstreamError::from_reqwest(error),
+            response: UpstreamError::from_reqwest(error).into_response(),
+        }
+    }
+}
+
+impl From<AdapterError> for ForwardError {
+    fn from(error: AdapterError) -> Self {
+        Self {
+            message: error.message,
+            response: error.response,
         }
     }
 }
 
 impl IntoResponse for ForwardError {
     fn into_response(self) -> axum::response::Response {
-        self.response.into_response()
+        self.response
     }
 }
 
@@ -89,45 +103,25 @@ async fn forward(
             let message = error.to_string();
             ForwardError {
                 message: message.clone(),
-                response: UpstreamError::from_message(message),
+                response: UpstreamError::from_message(message).into_response(),
             }
         })?;
-    let upstream_url = upstream_url(&state, uri);
-    let upstream = state
-        .http_client
-        .post(upstream_url)
-        .headers(headers::filtered(headers))
-        .body(body)
-        .send()
-        .await?;
-    let status = upstream.status();
-    let response_headers = headers::filtered(upstream.headers());
-    let stream = upstream.bytes_stream();
-
-    let mut builder = Response::builder().status(status);
-    for (name, value) in response_headers {
-        if let Some(name) = name {
-            builder = builder.header(name, value);
+    let route = routing::resolve(&state.config, &body).map_err(|error| ForwardError {
+        message: "failed to route request".to_string(),
+        response: error.into_response(),
+    })?;
+    let body = body.to_vec();
+    let result = match route.adapter {
+        AdapterKind::Anthropic => {
+            AnthropicAdapter
+                .forward(state, route, uri, headers, body)
+                .await
         }
-    }
-
-    let response = builder
-        .body(Body::from_stream(stream))
-        .expect("response builder uses valid upstream status and headers")
-        .into_response();
-    Ok((status, response))
-}
-
-fn upstream_url(state: &AppState, uri: &Uri) -> String {
-    let base = state
-        .config
-        .providers
-        .anthropic
-        .base_url
-        .trim_end_matches('/');
-    let path_and_query = uri
-        .path_and_query()
-        .map(|value| value.as_str())
-        .unwrap_or(uri.path());
-    format!("{base}{path_and_query}")
+        AdapterKind::Responses => {
+            ResponsesAdapter
+                .forward(state, route, uri, headers, body)
+                .await
+        }
+    };
+    result.map_err(ForwardError::from)
 }

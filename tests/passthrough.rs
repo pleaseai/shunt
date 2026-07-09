@@ -2,7 +2,7 @@ use std::{io::ErrorKind, net::SocketAddr, time::Duration};
 
 use reqwest::StatusCode;
 use shunt::{
-    config::{AnthropicConfig, Config, ProvidersConfig, ServerConfig},
+    config::{AnthropicConfig, Config, OpenAiConfig, ProvidersConfig, ServerConfig},
     server,
 };
 use tokio::task::JoinHandle;
@@ -43,12 +43,21 @@ async fn start_gateway(upstream_base_url: String) -> TestGateway {
     let config = Config {
         server: ServerConfig {
             bind: "127.0.0.1:0".to_string(),
+            default_provider: "anthropic".to_string(),
         },
         providers: ProvidersConfig {
             anthropic: AnthropicConfig {
                 base_url: upstream_base_url,
             },
+            openai: OpenAiConfig {
+                adapter: "responses".to_string(),
+                base_url: "https://api.openai.com/v1".to_string(),
+                api_key_env: "OPENAI_API_KEY".to_string(),
+                effort: None,
+            },
         },
+        routes: Vec::new(),
+        route_prefixes: Vec::new(),
     };
     let listener = tokio::net::TcpListener::bind(config.server.bind_addr().unwrap())
         .await
@@ -106,7 +115,10 @@ async fn messages_forwards_anthropic_headers_verbatim_and_preserves_query() {
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .and(query_param("beta", "true"))
-        .and(ExactHeader("anthropic-beta", "tools-2025-01-01,custom=value"))
+        .and(ExactHeader(
+            "anthropic-beta",
+            "tools-2025-01-01,custom=value",
+        ))
         .and(ExactHeader("anthropic-version", "2023-06-01"))
         .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
         .expect(1)

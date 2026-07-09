@@ -53,3 +53,40 @@ impl IntoResponse for UpstreamError {
             .into_response()
     }
 }
+
+#[derive(Debug)]
+pub struct ShuntError {
+    status: StatusCode,
+    kind: &'static str,
+    message: String,
+}
+
+impl ShuntError {
+    pub fn new(status: StatusCode, kind: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            kind,
+            message: message.into(),
+        }
+    }
+
+    pub fn bad_gateway(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::BAD_GATEWAY, "api_error", message)
+    }
+}
+
+impl IntoResponse for ShuntError {
+    fn into_response(self) -> Response {
+        (
+            self.status,
+            Json(AnthropicErrorBody {
+                kind: "error",
+                error: AnthropicErrorDetail {
+                    kind: self.kind,
+                    message: self.message,
+                },
+            }),
+        )
+            .into_response()
+    }
+}

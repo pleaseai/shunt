@@ -1,5 +1,19 @@
 [server]
 bind = "127.0.0.1:3001"
+default_provider = "anthropic"
 
 [providers.anthropic]
 base_url = "https://api.anthropic.com"
+
+[providers.openai]
+adapter = "responses"
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+
+[[routes]]
+model = "gpt-5.2-codex"
+provider = "openai"
+
+[[route_prefixes]]
+prefix = "gpt-"
+provider = "openai"
