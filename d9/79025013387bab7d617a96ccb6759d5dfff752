@@ -1,0 +1,21 @@
+.worktreeinclude
+  s_aff5a67040992a::t_60218895a7a060 1-12
+orca.yaml
+  s_aff5a67040992a::t_cf73307aa267dc 1-24
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d979025013387bab7d617a96ccb6759d5dfff752",
+  "prompts": {},
+  "sessions": {
+    "s_aff5a67040992a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3d19ef13-49aa-49ae-8a29-6a58cdc4290d",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@passionfactory.ai>"
+    }
+  }
+}
