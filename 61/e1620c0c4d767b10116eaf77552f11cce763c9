@@ -1,0 +1,32 @@
+LICENSE-APACHE
+  s_e98ee481180058::t_49d9122081a29e 1-202
+packaging/homebrew/shunt.rb
+  s_e98ee481180058::t_7a44aaaff72438 1-49
+Cargo.toml
+  s_e98ee481180058::t_3c68adda606ebb 2-4,7-12,15-22
+  s_e98ee481180058::t_ea1f2daf8351ad 13-14
+.github/workflows/release.yml
+  s_e98ee481180058::t_a00ab38b7b9a16 1-103
+LICENSE-MIT
+  s_e98ee481180058::t_37dbd7bf4f0fc2 1-21
+docs/RELEASING.md
+  s_e98ee481180058::t_0d87561f609481 1-61
+Cargo.lock
+  s_e98ee481180058::t_aeb90232afbf0d 1325
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "61e1620c0c4d767b10116eaf77552f11cce763c9",
+  "prompts": {},
+  "sessions": {
+    "s_e98ee481180058": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "58fa0769-2d33-4335-9e10-b0f0ccc58c27",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@passionfactory.ai>"
+    }
+  }
+}
