@@ -1,0 +1,33 @@
+src/config.rs
+  s_9271b6afe5e2e6::t_455a24d7e72fde 286-292
+  s_9271b6afe5e2e6::t_8f31e5a9c7800b 15-16,72-77,139,195-200
+  s_9271b6afe5e2e6::t_5089163daf1e5d 202,250-285,293-302
+  s_9271b6afe5e2e6::t_19f7b8666d2071 201
+tests/passthrough.rs
+  s_9271b6afe5e2e6::t_f0040e52a2ce10 69
+src/lib.rs
+  s_9271b6afe5e2e6::t_eb5a275135dd8f 4
+src/server.rs
+  s_9271b6afe5e2e6::t_041c9796e379fb 2,6,22
+shunt.toml.example
+  s_9271b6afe5e2e6::t_b06972d2bb9283 13-18
+src/discovery.rs
+  s_9271b6afe5e2e6::t_ccdf3506b5d57c 39-105
+  s_9271b6afe5e2e6::t_32b007bdb700b3 1-38
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c31982f976b2cd8c2b791a0da9f6abd9bb186d5c",
+  "prompts": {},
+  "sessions": {
+    "s_9271b6afe5e2e6": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f46c0-feab-7072-8e5f-ff013fd0cb31",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@passionfactory.ai>"
+    }
+  }
+}
