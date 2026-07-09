@@ -1,0 +1,22 @@
+.claude/skills/run-shunt/smoke.sh
+  s_2ad446bc7302cf::t_75e56379df2f81 84,87,89-93,105-112
+  s_2ad446bc7302cf::t_0b1435bd01f60a 1-83,85-86,88,94-104,113-147
+.claude/skills/run-shunt/SKILL.md
+  s_2ad446bc7302cf::t_6c97c48ed58984 1-177
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e7d69192c8c28f54931a6b47750aab724f8f14de",
+  "prompts": {},
+  "sessions": {
+    "s_2ad446bc7302cf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7d0522a2-d766-4fc1-8561-6642d2e85fc1",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@passionfactory.ai>"
+    }
+  }
+}
