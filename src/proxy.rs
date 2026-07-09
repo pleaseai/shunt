@@ -10,7 +10,7 @@ use tracing::Instrument;
 
 use crate::{
     adapters::{anthropic::AnthropicAdapter, responses::ResponsesAdapter, Adapter, AdapterError},
-    error::UpstreamError,
+    error::{ShuntError, UpstreamError},
     routing::{self, AdapterKind},
     server::AppState,
 };
@@ -110,6 +110,15 @@ async fn forward(
         message: "failed to route request".to_string(),
         response: error.into_response(),
     })?;
+    // The Responses API has no token-counting endpoint, and synthesizing counts
+    // would be inaccurate, so return 404 for count_tokens on a responses-routed
+    // model: Claude Code treats an absent count_tokens endpoint as a signal to
+    // estimate tokens locally (gateway protocol). Without this the request would
+    // be translated into — and billed as — a full inference call. Anthropic-routed
+    // models still pass through to the upstream count_tokens endpoint below.
+    if is_count_tokens(uri) && route.adapter == AdapterKind::Responses {
+        return Ok((StatusCode::NOT_FOUND, count_tokens_unsupported()));
+    }
     let body = body.to_vec();
     let result = match route.adapter {
         AdapterKind::Anthropic => {
@@ -124,4 +133,37 @@ async fn forward(
         }
     };
     result.map_err(ForwardError::from)
+}
+
+fn is_count_tokens(uri: &Uri) -> bool {
+    uri.path().ends_with("/count_tokens")
+}
+
+fn count_tokens_unsupported() -> axum::response::Response {
+    ShuntError::new(
+        StatusCode::NOT_FOUND,
+        "not_found_error",
+        "count_tokens is not available for this model; Claude Code estimates tokens locally",
+    )
+    .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::Uri;
+
+    use super::is_count_tokens;
+
+    #[test]
+    fn detects_count_tokens_path() {
+        assert!(is_count_tokens(
+            &"/v1/messages/count_tokens".parse::<Uri>().unwrap()
+        ));
+        assert!(is_count_tokens(
+            &"http://host/v1/messages/count_tokens?beta=true"
+                .parse::<Uri>()
+                .unwrap()
+        ));
+        assert!(!is_count_tokens(&"/v1/messages".parse::<Uri>().unwrap()));
+    }
 }

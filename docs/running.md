@@ -183,7 +183,14 @@ e.g. `RUST_LOG=shunt=debug cargo run -- run`.
 | `HEAD` | `/`                           | Liveness probe                                      |
 | `GET`  | `/v1/models`                  | Model discovery (returns your `[[models]]` entries) |
 | `POST` | `/v1/messages`                | Inference — routed per the request's `model` id     |
-| `POST` | `/v1/messages/count_tokens`   | Token counting (passed through for Anthropic models)|
+| `POST` | `/v1/messages/count_tokens`   | Token counting (see below)                          |
+
+**`count_tokens`:** for an **Anthropic-routed** model shunt passes the request through to the
+upstream's `count_tokens` endpoint (exact counts). For a **`responses`-routed** model (codex/OpenAI)
+there is no equivalent endpoint, and synthesizing a count would be inaccurate, so shunt returns
+**404** — Claude Code then estimates tokens locally, which the [gateway
+protocol](https://code.claude.com/docs/en/llm-gateway-protocol) explicitly allows for an absent
+`count_tokens` endpoint. (This also avoids turning a count request into a billed inference call.)
 
 ---
 

@@ -1,7 +1,10 @@
 use std::{io::ErrorKind, net::SocketAddr, time::Duration};
 
 use reqwest::StatusCode;
-use shunt::{config::Config, server};
+use shunt::{
+    config::{Config, RoutePrefixConfig},
+    server,
+};
 use tokio::task::JoinHandle;
 use wiremock::{
     matchers::{body_string_contains, header, method, path, query_param},
@@ -39,8 +42,12 @@ impl Drop for TestGateway {
 async fn start_gateway(upstream_base_url: String) -> TestGateway {
     // Default providers, but point the anthropic passthrough at the mock upstream.
     let mut config = Config::default();
-    config.server.bind = "127.0.0.1:0".to_string();
     config.providers.get_mut("anthropic").unwrap().base_url = upstream_base_url;
+    start_gateway_with(config).await
+}
+
+async fn start_gateway_with(mut config: Config) -> TestGateway {
+    config.server.bind = "127.0.0.1:0".to_string();
     let listener = tokio::net::TcpListener::bind(config.server.bind_addr().unwrap())
         .await
         .unwrap();
@@ -244,5 +251,40 @@ async fn count_tokens_is_passed_through() {
 
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.text().await.unwrap(), r#"{"input_tokens":7}"#);
+    upstream.verify().await;
+}
+
+#[tokio::test]
+async fn count_tokens_returns_404_for_responses_model() {
+    if !can_bind_loopback() {
+        return;
+    }
+    // The upstream must never be hit: a responses-model count_tokens is
+    // short-circuited to 404 (so Claude Code estimates locally) rather than
+    // translated into a billed inference call.
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&upstream)
+        .await;
+
+    let mut config = Config::default();
+    config.providers.get_mut("anthropic").unwrap().base_url = upstream.uri();
+    config.route_prefixes = vec![RoutePrefixConfig {
+        prefix: "gpt-".to_string(),
+        provider: "codex".to_string(),
+    }];
+    let gateway = start_gateway_with(config).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/messages/count_tokens", gateway.base_url))
+        .body(r#"{"model":"gpt-5.6-sol","messages":[]}"#)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert!(response.text().await.unwrap().contains("count_tokens"));
     upstream.verify().await;
 }
