@@ -1,0 +1,46 @@
+shunt.toml.example
+  s_6bc3ac219e1ce4::t_ee3a5ba77dcb23 40-41
+src/proxy.rs
+  s_6bc3ac219e1ce4::t_6224904fde4e26 115-120,122-131,133-136
+  s_6bc3ac219e1ce4::t_beb2b962ee324d 132
+  s_6bc3ac219e1ce4::t_33293305866e89 13-14
+docs/running.md
+  s_6bc3ac219e1ce4::t_b24af6225ad882 444
+  s_6bc3ac219e1ce4::t_2bd6981a5dbb56 121
+  s_6bc3ac219e1ce4::t_14308d944241d8 191-209
+src/count_tokens.rs
+  s_6bc3ac219e1ce4::t_e1cff24cc225e0 1-154
+docs/m3-discovery.md
+  s_6bc3ac219e1ce4::t_11767749ec8b5e 81-87
+Cargo.toml
+  s_6bc3ac219e1ce4::t_279e88c19be40a 17
+src/lib.rs
+  s_6bc3ac219e1ce4::t_09744c9fff6bcc 4
+src/config.rs
+  s_6bc3ac219e1ce4::t_a9cb867273b45d 157
+  s_6bc3ac219e1ce4::t_de1814b9b68429 178
+  s_6bc3ac219e1ce4::t_b639b32406d020 190
+  s_6bc3ac219e1ce4::t_7f13caa08a2357 51-68
+tests/passthrough.rs
+  s_6bc3ac219e1ce4::t_a6e14998c256ef 5
+  s_6bc3ac219e1ce4::t_2cb8de6105bd99 323
+  s_6bc3ac219e1ce4::t_a55c76de322ce1 291-322,324-326
+Cargo.lock
+  s_6bc3ac219e1ce4::t_321bca68ea3c3b 153-167,174-184,336-346,1338,1455-1469
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "de3b6d64ddc5095498220b7c37d23774bba9db6a",
+  "prompts": {},
+  "sessions": {
+    "s_6bc3ac219e1ce4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5de415b6-0b38-4917-a8cb-268d8a9476f6",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@passionfactory.ai>"
+    }
+  }
+}
