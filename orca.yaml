@@ -1,0 +1,24 @@
+# orca.yaml — setup script run when Orca creates a worktree.
+#
+# Orca (a worktree-native IDE for parallel agents) runs scripts.setup whenever it
+# creates a new worktree. This file is committed, so the whole team shares it.
+# Reference: repos/code-search/orca.yaml (Rust) and templates/orca.yaml.
+#
+# Toolchain: shunt is a Cargo (Rust stable) project. Full mise/hk pinning
+# (mise.toml + rust-toolchain.toml + git hooks) is a follow-up via
+# Skill("standards:setup") / Skill("standards:dev-tooling"); this setup only
+# needs to seed local files and warm the build cache.
+#
+# Injected environment variables:
+#   $ORCA_ROOT_PATH     — main checkout (root repo) path; source for copying gitignored local files
+#   $ORCA_WORKTREE_PATH — the newly created worktree path; copy target and setup working directory
+
+scripts:
+  setup: |
+    set -e
+    # 1. Copy gitignored local files (.env*, .claude/settings.local.json) from the main
+    #    checkout into the worktree, as listed in .worktreeinclude.
+    bunx @pleaseai/worktreeinclude "$ORCA_ROOT_PATH" "$ORCA_WORKTREE_PATH"
+    # 2. Warm the Cargo cache in the worktree (fetch dependencies). The Rust toolchain is
+    #    taken from rust-toolchain.toml when present, else the host default.
+    cargo fetch

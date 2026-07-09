@@ -1,0 +1,8 @@
+{
+  "enabledPlugins": {
+    "codex-delegation@passionfactory": true,
+    "codex@passionfactory": true,
+    "claude-code-docs@passionfactory": true
+  },
+  "language": "english"
+}
