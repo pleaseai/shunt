@@ -1,0 +1,19 @@
+.claude/settings.json
+  s_ce173323fd5513::t_c60e5889efaa45 2-5,9-10
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "cfcbc233b35d462def000b5387df218c34570560",
+  "prompts": {},
+  "sessions": {
+    "s_ce173323fd5513": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7d206e9e-32a5-4143-973c-a55ecaa0d3ad",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <minsu.lee@passionfactory.ai>"
+    }
+  }
+}
