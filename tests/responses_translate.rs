@@ -44,6 +44,7 @@ fn translates_plain_text_request() {
             }],
             "reasoning": {"effort": "medium", "summary": "auto"},
             "text": {"verbosity": "medium"},
+            "max_output_tokens": 1000,
             "store": false,
             "stream": true
         })
@@ -203,7 +204,7 @@ fn streaming_state_machine_emits_incremental_anthropic_events() {
         "data: {\"response\":{\"usage\":{\"input_tokens\":1200,\"input_tokens_details\":{\"cached_tokens\":800},\"output_tokens\":9}}}\n\n",
         "data: [DONE]\n\n"
     );
-    let mut machine = AnthropicSseMachine::new("gpt-5.2-codex");
+    let mut machine = AnthropicSseMachine::new("gpt-5.2-codex", false);
     let emitted = parse_sse_events(fixture)
         .into_iter()
         .flat_map(|event| machine.apply(event))
@@ -292,4 +293,210 @@ fn event_names(sse: &str) -> Vec<String> {
                 .find_map(|line| line.strip_prefix("event: ").map(ToOwned::to_owned))
         })
         .collect()
+}
+
+#[test]
+fn includes_encrypted_reasoning_only_when_thinking_enabled() {
+    let with_thinking = translate(json!({
+        "thinking": {"type": "enabled"},
+        "messages": [{"role": "user", "content": "hi"}]
+    }));
+    assert_eq!(
+        with_thinking["include"],
+        json!(["reasoning.encrypted_content"])
+    );
+
+    let without = translate(json!({
+        "messages": [{"role": "user", "content": "hi"}]
+    }));
+    assert!(without.get("include").is_none());
+}
+
+/// End-to-end: a reasoning item streams out as a thinking block whose signature
+/// carries the encrypted state, and feeding that block back yields a Responses
+/// `reasoning` input item — preserving chain-of-thought under store:false.
+#[test]
+fn streams_reasoning_as_thinking_block_and_round_trips() {
+    let fixture = concat!(
+        "event: response.created\n",
+        "data: {\"response\":{\"id\":\"resp_1\"}}\n\n",
+        "event: response.output_item.added\n",
+        "data: {\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\"}}\n\n",
+        "event: response.reasoning_summary_text.delta\n",
+        "data: {\"delta\":\"Let me\"}\n\n",
+        "event: response.reasoning_summary_text.delta\n",
+        "data: {\"delta\":\" think\"}\n\n",
+        "event: response.output_item.done\n",
+        "data: {\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\",\"encrypted_content\":\"ENC123\"}}\n\n",
+        "event: response.output_item.added\n",
+        "data: {\"item\":{\"type\":\"message\"}}\n\n",
+        "event: response.output_text.delta\n",
+        "data: {\"delta\":\"Hi\"}\n\n",
+        "event: response.output_text.done\n",
+        "data: {}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":2}}}\n\n",
+        "data: [DONE]\n\n"
+    );
+
+    let mut machine = AnthropicSseMachine::new("gpt-5.2-codex", true);
+    let emitted = parse_sse_events(fixture)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
+    let mut finished = machine.finish().join("");
+    finished.insert_str(0, &emitted);
+    let emitted = finished;
+
+    // A thinking block leads the message, streams summary text, then a signature.
+    let names = event_names(&emitted);
+    assert_eq!(names.first().map(String::as_str), Some("message_start"));
+    assert!(emitted.contains("\"type\":\"thinking\""));
+    assert!(emitted.contains("\"thinking_delta\""));
+    assert!(emitted.contains("\"signature_delta\""));
+
+    let expected_signature = shunt::model::responses::encode_reasoning_signature("rs_1", "ENC123");
+    assert!(emitted.contains(&expected_signature));
+
+    // Feed the thinking block back: it must become a reasoning input item.
+    let out = translate(json!({
+        "thinking": {"type": "enabled"},
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "Let me think", "signature": expected_signature},
+                {"type": "text", "text": "Hi"}
+            ]}
+        ]
+    }));
+    let input = out["input"].as_array().unwrap();
+    let reasoning = input
+        .iter()
+        .find(|item| item["type"] == "reasoning")
+        .expect("reasoning input item present");
+    assert_eq!(reasoning["id"], "rs_1");
+    assert_eq!(reasoning["encrypted_content"], "ENC123");
+    // Reasoning must precede the assistant message it reasoned about.
+    let reasoning_pos = input.iter().position(|i| i["type"] == "reasoning").unwrap();
+    let message_pos = input
+        .iter()
+        .position(|i| i["type"] == "message" && i["role"] == "assistant")
+        .unwrap();
+    assert!(reasoning_pos < message_pos);
+}
+
+#[test]
+fn drops_foreign_thinking_signature() {
+    // A signature shunt did not produce (e.g. a genuine Anthropic one) is dropped,
+    // never forwarded as a bogus reasoning item the backend would reject.
+    let out = translate(json!({
+        "thinking": {"type": "enabled"},
+        "messages": [
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "x", "signature": "not-a-shunt-signature"},
+                {"type": "text", "text": "Hi"}
+            ]}
+        ]
+    }));
+    let input = out["input"].as_array().unwrap();
+    assert!(input.iter().all(|item| item["type"] != "reasoning"));
+}
+
+#[test]
+fn ignores_reasoning_when_thinking_disabled() {
+    let fixture = concat!(
+        "event: response.output_item.added\n",
+        "data: {\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\"}}\n\n",
+        "event: response.reasoning_summary_text.delta\n",
+        "data: {\"delta\":\"secret\"}\n\n",
+        "event: response.output_item.done\n",
+        "data: {\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\",\"encrypted_content\":\"ENC\"}}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
+    );
+    let mut machine = AnthropicSseMachine::new("gpt-5.2-codex", false);
+    let emitted = parse_sse_events(fixture)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
+    assert!(!emitted.contains("thinking"));
+    assert!(!emitted.contains("signature"));
+}
+
+#[test]
+fn derives_prompt_cache_key_from_session_id() {
+    // Claude Code packs a JSON blob into metadata.user_id; session_id is the
+    // stable per-conversation key the Responses cache should be routed by.
+    let out = translate(json!({
+        "messages": [{"role": "user", "content": "hi"}],
+        "metadata": {"user_id": "{\"device_id\":\"d1\",\"session_id\":\"sess_abc\"}"}
+    }));
+    assert_eq!(out["prompt_cache_key"], "shunt-sess_abc");
+
+    // No metadata -> no key sent.
+    let bare = translate(json!({"messages": [{"role": "user", "content": "hi"}]}));
+    assert!(bare.get("prompt_cache_key").is_none());
+
+    // A non-JSON user_id still yields a stable (hashed) key.
+    let hashed = translate(json!({
+        "messages": [{"role": "user", "content": "hi"}],
+        "metadata": {"user_id": "plain-user"}
+    }));
+    let key = hashed["prompt_cache_key"].as_str().unwrap();
+    assert!(key.starts_with("shunt-"));
+    // Determinism: same input -> same key.
+    let again = translate(json!({
+        "messages": [{"role": "user", "content": "different"}],
+        "metadata": {"user_id": "plain-user"}
+    }));
+    assert_eq!(hashed["prompt_cache_key"], again["prompt_cache_key"]);
+}
+
+#[test]
+fn tool_result_with_image_becomes_content_array() {
+    let out = translate(json!({
+        "messages": [{"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "toolu_1", "content": [
+                {"type": "text", "text": "see screenshot"},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "IMG"}}
+            ]}
+        ]}]
+    }));
+    let output = &out["input"][0]["output"];
+    assert_eq!(
+        *output,
+        json!([
+            {"type": "input_text", "text": "see screenshot"},
+            {"type": "input_image", "image_url": "data:image/png;base64,IMG"}
+        ])
+    );
+}
+
+#[test]
+fn text_only_tool_result_stays_a_string() {
+    let out = translate(json!({
+        "messages": [{"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "toolu_1", "content": [
+                {"type": "text", "text": "ok"}
+            ]}
+        ]}]
+    }));
+    assert_eq!(out["input"][0]["output"], json!("ok"));
+}
+
+#[test]
+fn document_block_becomes_input_file() {
+    let out = translate(json!({
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": "read this"},
+            {"type": "document", "title": "spec.pdf", "source": {"type": "base64", "media_type": "application/pdf", "data": "PDF"}}
+        ]}]
+    }));
+    assert_eq!(
+        out["input"][0]["content"],
+        json!([
+            {"type": "input_text", "text": "read this"},
+            {"type": "input_file", "file_data": "data:application/pdf;base64,PDF", "filename": "spec.pdf"}
+        ])
+    );
 }

@@ -1,3 +1,4 @@
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::{json, Map, Value};
 
 use crate::routing::Route;
@@ -24,9 +25,78 @@ pub fn translate_request(body: &[u8], route: &Route) -> Result<Value, serde_json
         json!({"effort": effort(&request, route), "summary": "auto"}),
     );
     out.insert("text".to_string(), json!({"verbosity": "medium"}));
+    // With store:false the Responses backend forgets each turn's reasoning, so ask
+    // for the encrypted reasoning blob and echo it back next turn (see input_items).
+    // Only when the client enabled extended thinking, which is what lets Claude Code
+    // round-trip the thinking blocks that carry the blob (see model/responses.rs).
+    if thinking_enabled(&request) {
+        out.insert(
+            "include".to_string(),
+            json!(["reasoning.encrypted_content"]),
+        );
+    }
+    if let Some(cache_key) = prompt_cache_key(&request) {
+        out.insert("prompt_cache_key".to_string(), json!(cache_key));
+    }
+    // Anthropic `max_tokens` caps output; the Responses equivalent is
+    // `max_output_tokens`. Forward it so the client's cap is respected instead of
+    // falling back to the model default.
+    if let Some(max_tokens) = request.get("max_tokens").and_then(Value::as_u64) {
+        out.insert("max_output_tokens".to_string(), json!(max_tokens));
+    }
     out.insert("store".to_string(), json!(false));
     out.insert("stream".to_string(), json!(true));
     Ok(Value::Object(out))
+}
+
+/// A stable per-conversation key so the Responses backend routes every turn of a
+/// session to the same prompt cache (codex uses its thread_id here). Claude Code
+/// packs `{device_id, account_uuid, session_id}` as a JSON string in
+/// `metadata.user_id`; `session_id` is the per-conversation id. Falls back to a
+/// hash of the raw user_id, or nothing when the client sends no metadata.
+fn prompt_cache_key(request: &Value) -> Option<String> {
+    let user_id = request
+        .pointer("/metadata/user_id")
+        .and_then(Value::as_str)
+        .filter(|user_id| !user_id.is_empty())?;
+    if let Ok(parsed) = serde_json::from_str::<Value>(user_id) {
+        if let Some(session) = parsed
+            .get("session_id")
+            .and_then(Value::as_str)
+            .filter(|session| !session.is_empty())
+        {
+            return Some(format!("shunt-{session}"));
+        }
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(user_id, &mut hasher);
+    Some(format!("shunt-{:016x}", std::hash::Hasher::finish(&hasher)))
+}
+
+/// Whether the client requested extended thinking. Gates reasoning round-tripping:
+/// Claude Code only echoes assistant thinking blocks back when thinking is enabled.
+fn thinking_enabled(request: &Value) -> bool {
+    request.pointer("/thinking/type").and_then(Value::as_str) == Some("enabled")
+}
+
+/// Pack a Responses reasoning item's id + encrypted_content into the opaque
+/// `signature` of an Anthropic thinking block. Claude Code round-trips signatures
+/// verbatim, so the next turn can [`decode_reasoning_signature`] it back into a
+/// Responses `reasoning` input item — preserving chain-of-thought under store:false.
+pub fn encode_reasoning_signature(id: &str, encrypted_content: &str) -> String {
+    let payload = json!({"id": id, "enc": encrypted_content});
+    URL_SAFE_NO_PAD.encode(payload.to_string())
+}
+
+/// Inverse of [`encode_reasoning_signature`]. Returns `None` for signatures shunt
+/// did not produce (e.g. a genuine Anthropic thinking signature), which are dropped
+/// rather than forwarded — the Responses backend rejects reasoning it never issued.
+fn decode_reasoning_signature(signature: &str) -> Option<(String, String)> {
+    let bytes = URL_SAFE_NO_PAD.decode(signature).ok()?;
+    let value: Value = serde_json::from_slice(&bytes).ok()?;
+    let id = value.get("id").and_then(Value::as_str)?.to_string();
+    let enc = value.get("enc").and_then(Value::as_str)?.to_string();
+    Some((id, enc))
 }
 
 fn instructions(request: &Value) -> Option<String> {
@@ -63,8 +133,13 @@ fn input_items(request: &Value) -> Vec<Value> {
             match block.get("type").and_then(Value::as_str) {
                 Some("text") => text_part(role, &block, &mut pending),
                 Some("image") => image_part(&block, &mut pending),
+                Some("document") => document_part(&block, &mut pending),
                 Some("tool_use") => tool_use_item(&mut out, role, &mut pending, &block),
                 Some("tool_result") => tool_result_item(&mut out, role, &mut pending, &block),
+                Some("thinking") => reasoning_item(&mut out, role, &mut pending, &block),
+                Some("redacted_thinking") => {
+                    redacted_reasoning_item(&mut out, role, &mut pending, &block)
+                }
                 _ => {}
             }
         }
@@ -125,17 +200,47 @@ fn text_part(role: &str, block: &Value, pending: &mut Vec<Value>) {
 }
 
 fn image_part(block: &Value, pending: &mut Vec<Value>) {
-    if let Some(source) = block.get("source") {
-        let media_type = source
-            .get("media_type")
-            .and_then(Value::as_str)
-            .unwrap_or("image/png");
-        let data = source.get("data").and_then(Value::as_str).unwrap_or("");
-        pending.push(json!({
-            "type": "input_image",
-            "image_url": format!("data:{media_type};base64,{data}")
-        }));
+    if let Some(item) = image_content_item(block) {
+        pending.push(item);
     }
+}
+
+fn document_part(block: &Value, pending: &mut Vec<Value>) {
+    if let Some(item) = file_content_item(block) {
+        pending.push(item);
+    }
+}
+
+/// Anthropic `image` block -> Responses `input_image` (base64 data URL).
+fn image_content_item(block: &Value) -> Option<Value> {
+    let source = block.get("source")?;
+    let media_type = source
+        .get("media_type")
+        .and_then(Value::as_str)
+        .unwrap_or("image/png");
+    let data = source.get("data").and_then(Value::as_str).unwrap_or("");
+    Some(json!({
+        "type": "input_image",
+        "image_url": format!("data:{media_type};base64,{data}")
+    }))
+}
+
+/// Anthropic `document` block (e.g. a PDF) -> Responses `input_file`.
+fn file_content_item(block: &Value) -> Option<Value> {
+    let source = block.get("source")?;
+    let media_type = source
+        .get("media_type")
+        .and_then(Value::as_str)
+        .unwrap_or("application/pdf");
+    let data = source.get("data").and_then(Value::as_str).unwrap_or("");
+    let mut item = json!({
+        "type": "input_file",
+        "file_data": format!("data:{media_type};base64,{data}")
+    });
+    if let Some(filename) = block.get("title").and_then(Value::as_str) {
+        item["filename"] = json!(filename);
+    }
+    Some(item)
 }
 
 fn tool_use_item(out: &mut Vec<Value>, role: &str, pending: &mut Vec<Value>, block: &Value) {
@@ -157,6 +262,57 @@ fn tool_result_item(out: &mut Vec<Value>, role: &str, pending: &mut Vec<Value>, 
     }));
 }
 
+/// An assistant `thinking` block carries a Responses reasoning item's state in its
+/// signature (stamped by shunt on the way out). Decode it back into a `reasoning`
+/// input item so the backend keeps its chain-of-thought under store:false. Blocks
+/// whose signature shunt did not produce are dropped — never forwarded.
+fn reasoning_item(out: &mut Vec<Value>, role: &str, pending: &mut Vec<Value>, block: &Value) {
+    let Some(signature) = block.get("signature").and_then(Value::as_str) else {
+        return;
+    };
+    let Some((id, encrypted_content)) = decode_reasoning_signature(signature) else {
+        return;
+    };
+    flush_message(out, role, pending);
+    let summary = block.get("thinking").and_then(Value::as_str).unwrap_or("");
+    out.push(reasoning_input_item(&id, &encrypted_content, summary));
+}
+
+/// A `redacted_thinking` block is the opaque fallback vehicle for the same reasoning
+/// state, carried in `data` instead of a signature.
+fn redacted_reasoning_item(
+    out: &mut Vec<Value>,
+    role: &str,
+    pending: &mut Vec<Value>,
+    block: &Value,
+) {
+    let Some(data) = block.get("data").and_then(Value::as_str) else {
+        return;
+    };
+    let Some((id, encrypted_content)) = decode_reasoning_signature(data) else {
+        return;
+    };
+    flush_message(out, role, pending);
+    out.push(reasoning_input_item(&id, &encrypted_content, ""));
+}
+
+fn reasoning_input_item(id: &str, encrypted_content: &str, summary: &str) -> Value {
+    let summary = if summary.is_empty() {
+        json!([])
+    } else {
+        json!([{"type": "summary_text", "text": summary}])
+    };
+    let mut item = json!({
+        "type": "reasoning",
+        "summary": summary,
+        "encrypted_content": encrypted_content,
+    });
+    if !id.is_empty() {
+        item["id"] = json!(id);
+    }
+    item
+}
+
 fn content_blocks(content: Option<&Value>) -> Vec<Value> {
     match content {
         Some(Value::String(text)) => vec![json!({"type": "text", "text": text})],
@@ -173,26 +329,49 @@ fn flush_message(out: &mut Vec<Value>, role: &str, pending: &mut Vec<Value>) {
     pending.clear();
 }
 
-fn tool_result_output(block: &Value) -> String {
+/// The `output` of a `function_call_output`. Text-only results collapse to a plain
+/// string (what most tools return); results carrying an image or document are sent
+/// as the Responses content-item array (text/image/file) so they are not dropped.
+fn tool_result_output(block: &Value) -> Value {
+    let is_error = block.get("is_error").and_then(Value::as_bool) == Some(true);
     match block.get("content") {
-        Some(Value::String(text)) => text.clone(),
+        Some(Value::String(text)) => json!(text),
         Some(Value::Array(blocks)) => {
+            let has_rich = blocks.iter().any(|inner| {
+                matches!(
+                    inner.get("type").and_then(Value::as_str),
+                    Some("image") | Some("document")
+                )
+            });
+            if has_rich {
+                let items = blocks
+                    .iter()
+                    .filter_map(|inner| match inner.get("type").and_then(Value::as_str) {
+                        Some("text") => inner
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .map(|text| json!({"type": "input_text", "text": text})),
+                        Some("image") => image_content_item(inner),
+                        Some("document") => file_content_item(inner),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                return Value::Array(items);
+            }
             let text = blocks
                 .iter()
-                .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
-                .filter_map(|block| block.get("text").and_then(Value::as_str))
+                .filter(|inner| inner.get("type").and_then(Value::as_str) == Some("text"))
+                .filter_map(|inner| inner.get("text").and_then(Value::as_str))
                 .collect::<Vec<_>>()
                 .join("\n");
-            if text.is_empty() && block.get("is_error").and_then(Value::as_bool) == Some(true) {
-                "Tool execution failed".to_string()
+            if text.is_empty() && is_error {
+                json!("Tool execution failed")
             } else {
-                text
+                json!(text)
             }
         }
-        _ if block.get("is_error").and_then(Value::as_bool) == Some(true) => {
-            "Tool execution failed".to_string()
-        }
-        _ => String::new(),
+        _ if is_error => json!("Tool execution failed"),
+        _ => json!(""),
     }
 }
 

@@ -1,7 +1,7 @@
 use axum::http::StatusCode;
 use serde_json::{json, Value};
 
-pub use crate::model::responses_request::translate_request;
+pub use crate::model::responses_request::{encode_reasoning_signature, translate_request};
 
 #[derive(Debug, Clone)]
 pub struct ResponseEvent {
@@ -19,6 +19,7 @@ struct OpenBlock {
 enum BlockKind {
     Text,
     Tool,
+    Reasoning,
 }
 
 #[derive(Debug, Clone)]
@@ -30,12 +31,14 @@ pub struct AnthropicSseMachine {
     index: usize,
     open: Option<OpenBlock>,
     saw_tool: bool,
+    thinking_enabled: bool,
     input_tokens: u64,
     cache_read_tokens: u64,
     output_tokens: u64,
     content: Vec<Value>,
     text_buffer: String,
     tool_buffer: Option<ToolBuffer>,
+    reasoning: Option<ReasoningBuffer>,
 }
 
 #[derive(Debug, Clone)]
@@ -45,8 +48,19 @@ struct ToolBuffer {
     json: String,
 }
 
+/// Accumulates a Responses `reasoning` output item so it can be surfaced as an
+/// Anthropic thinking block. `signature` packs the item's id + encrypted_content
+/// (set at `output_item.done`) so the next turn can round-trip it (see
+/// [`encode_reasoning_signature`]).
+#[derive(Debug, Clone)]
+struct ReasoningBuffer {
+    id: String,
+    summary: String,
+    signature: Option<String>,
+}
+
 impl AnthropicSseMachine {
-    pub fn new(model: impl Into<String>) -> Self {
+    pub fn new(model: impl Into<String>, thinking_enabled: bool) -> Self {
         Self {
             id: "msg_responses".to_string(),
             model: model.into(),
@@ -55,12 +69,14 @@ impl AnthropicSseMachine {
             index: 0,
             open: None,
             saw_tool: false,
+            thinking_enabled,
             input_tokens: 0,
             cache_read_tokens: 0,
             output_tokens: 0,
             content: Vec::new(),
             text_buffer: String::new(),
             tool_buffer: None,
+            reasoning: None,
         }
     }
 
@@ -76,10 +92,10 @@ impl AnthropicSseMachine {
             "response.output_text.done" | "response.content_part.done" => {
                 self.close_current(BlockKind::Text)
             }
+            "response.reasoning_summary_text.delta" => self.reasoning_delta(&event.data),
             "response.function_call_arguments.delta" => self.arguments_delta(&event.data),
-            "response.function_call_arguments.done" | "response.output_item.done" => {
-                self.close_current(BlockKind::Tool)
-            }
+            "response.function_call_arguments.done" => self.close_current(BlockKind::Tool),
+            "response.output_item.done" => self.output_item_done(&event.data),
             "response.completed" | "response.done" => self.complete(&event.data),
             "error" | "response.failed" => {
                 self.stopped = true;
@@ -153,8 +169,132 @@ impl AnthropicSseMachine {
         match item.get("type").and_then(Value::as_str) {
             Some("message") => self.open_text(),
             Some("function_call") => self.open_tool(item),
+            Some("reasoning") => self.reasoning_added(item),
             _ => Vec::new(),
         }
+    }
+
+    /// `response.output_item.done` closes whichever item just finished. Reasoning
+    /// items need special handling (stamp the round-trip signature); function_call
+    /// and message items just close.
+    fn output_item_done(&mut self, data: &Value) -> Vec<String> {
+        let item = data.get("item").unwrap_or(data);
+        if item.get("type").and_then(Value::as_str) == Some("reasoning") {
+            return self.reasoning_done(item);
+        }
+        self.close_any()
+    }
+
+    /// Record the reasoning item's id; defer opening the thinking block until the
+    /// first summary delta (or `output_item.done` when there is encrypted content),
+    /// so a reasoning item with neither summary nor encrypted content emits nothing.
+    fn reasoning_added(&mut self, item: &Value) -> Vec<String> {
+        if !self.thinking_enabled {
+            return Vec::new();
+        }
+        let id = item
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        self.reasoning = Some(ReasoningBuffer {
+            id,
+            summary: String::new(),
+            signature: None,
+        });
+        Vec::new()
+    }
+
+    fn open_reasoning(&mut self) -> Vec<String> {
+        let mut out = self.close_any();
+        if self.reasoning.is_none() {
+            self.reasoning = Some(ReasoningBuffer {
+                id: String::new(),
+                summary: String::new(),
+                signature: None,
+            });
+        }
+        self.open = Some(OpenBlock {
+            index: self.index,
+            kind: BlockKind::Reasoning,
+        });
+        out.push(sse(
+            "content_block_start",
+            &json!({
+                "type": "content_block_start",
+                "index": self.index,
+                "content_block": {"type": "thinking", "thinking": ""}
+            }),
+        ));
+        out
+    }
+
+    fn reasoning_delta(&mut self, data: &Value) -> Vec<String> {
+        if !self.thinking_enabled {
+            return Vec::new();
+        }
+        let delta = data.get("delta").and_then(Value::as_str).unwrap_or("");
+        if delta.is_empty() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        if self.open.as_ref().map(|block| block.kind) != Some(BlockKind::Reasoning) {
+            out.extend(self.open_reasoning());
+        }
+        if let Some(reasoning) = &mut self.reasoning {
+            reasoning.summary.push_str(delta);
+        }
+        out.push(sse(
+            "content_block_delta",
+            &json!({
+                "type": "content_block_delta",
+                "index": self.open_index(),
+                "delta": {"type": "thinking_delta", "thinking": delta}
+            }),
+        ));
+        out
+    }
+
+    fn reasoning_done(&mut self, item: &Value) -> Vec<String> {
+        if !self.thinking_enabled {
+            return Vec::new();
+        }
+        let encrypted = item
+            .get("encrypted_content")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let is_open = self.open.as_ref().map(|block| block.kind) == Some(BlockKind::Reasoning);
+        // Nothing to show (no summary streamed) and nothing to round-trip.
+        if !is_open && encrypted.is_empty() {
+            self.reasoning = None;
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        if !is_open {
+            // Open an empty thinking block purely to carry the round-trip signature.
+            out.extend(self.open_reasoning());
+        }
+        if !encrypted.is_empty() {
+            let id = self
+                .reasoning
+                .as_ref()
+                .map(|reasoning| reasoning.id.clone())
+                .unwrap_or_default();
+            let signature = encode_reasoning_signature(&id, encrypted);
+            if let Some(reasoning) = &mut self.reasoning {
+                reasoning.signature = Some(signature.clone());
+            }
+            out.push(sse(
+                "content_block_delta",
+                &json!({
+                    "type": "content_block_delta",
+                    "index": self.open_index(),
+                    "delta": {"type": "signature_delta", "signature": signature}
+                }),
+            ));
+        }
+        out.extend(self.close_any());
+        out
     }
 
     fn open_text(&mut self) -> Vec<String> {
@@ -265,6 +405,15 @@ impl AnthropicSseMachine {
                         "name": tool.name,
                         "input": input
                     }));
+                }
+            }
+            BlockKind::Reasoning => {
+                if let Some(reasoning) = self.reasoning.take() {
+                    let mut block = json!({"type": "thinking", "thinking": reasoning.summary});
+                    if let Some(signature) = reasoning.signature {
+                        block["signature"] = json!(signature);
+                    }
+                    self.content.push(block);
                 }
             }
         }
