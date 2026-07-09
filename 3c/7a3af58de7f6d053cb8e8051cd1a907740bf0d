@@ -1,0 +1,46 @@
+docs/running.md
+  s_6bc3ac219e1ce4::t_77a8c79071b64b 64,66,70,72,77,79,107-153
+  s_6bc3ac219e1ce4::t_36f4598057a9cb 106
+  s_6bc3ac219e1ce4::t_8a116bce16c554 155
+  s_6bc3ac219e1ce4::t_ffddc234bd2a95 154
+src/routing.rs
+  s_6bc3ac219e1ce4::t_bba9e0b423b3c5 4-7,15-21
+  s_6bc3ac219e1ce4::t_57aee15acbd60d 76-82
+  s_6bc3ac219e1ce4::t_1b16824c6ecc6e 124
+  s_6bc3ac219e1ce4::t_792fd80a2f4f53 22-23
+src/config.rs
+  s_6bc3ac219e1ce4::t_db2b55d75351b7 333-344
+  s_6bc3ac219e1ce4::t_caf59478106e61 1,22-27,35-37,39-49,53-63,66-67,69-73,75,79-89,116,118,120-121,128-140,145-153,155-157,160-164,166-168,171-176,178,199-211,245-247,268,285,329-332,345-392
+src/adapters/responses.rs
+  s_6bc3ac219e1ce4::t_5b54f71cf824f5 176-179,190-192,198-208
+src/adapters/anthropic.rs
+  s_6bc3ac219e1ce4::t_40a98d1139300b 3,9-10,23,28,34,39-40,43-44,67-92,95-97,113-163
+shunt.toml.example
+  s_6bc3ac219e1ce4::t_558606283db959 109-115
+  s_6bc3ac219e1ce4::t_975d1f2be169ae 10-20,22,24,28,30,36,38,41-86
+  s_6bc3ac219e1ce4::t_7a369307c0af91 87
+src/auth/mod.rs
+  s_6bc3ac219e1ce4::t_db2b55d75351b7 23,36-38,63-65
+  s_6bc3ac219e1ce4::t_18378a22522b35 5-10,20-22,30,39-45,58-62,66-68,74-77,80
+  s_6bc3ac219e1ce4::t_5e8c8c021b1ce4 104,106,127-128,136-143
+tests/passthrough.rs
+  s_6bc3ac219e1ce4::t_37fc638b360ad4 41
+  s_6bc3ac219e1ce4::t_b10bedb874f9bb 4
+  s_6bc3ac219e1ce4::t_326afafb5a1df9 40,42-43
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3c7a3af58de7f6d053cb8e8051cd1a907740bf0d",
+  "prompts": {},
+  "sessions": {
+    "s_6bc3ac219e1ce4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5de415b6-0b38-4917-a8cb-268d8a9476f6",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@passionfactory.ai>"
+    }
+  }
+}
