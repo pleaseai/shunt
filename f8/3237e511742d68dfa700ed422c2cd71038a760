@@ -1,0 +1,45 @@
+src/model/responses.rs
+  s_3448cc461ae9fe::t_06bee14fbbce0a 95,97-98
+  s_3448cc461ae9fe::t_09215653f21d00 172,177-298
+  s_3448cc461ae9fe::t_033b87820d7fea 410-418
+  s_3448cc461ae9fe::t_2d31edef954eb7 22,34,41,51-61,63,72,79
+  s_3448cc461ae9fe::t_694370870e3ee3 4
+  s_3448cc461ae9fe::t_ce5915d0069503 299
+tests/responses_translate.rs
+  s_3448cc461ae9fe::t_d7aef5a095e022 454-502
+  s_3448cc461ae9fe::t_ac5d0d339b342c 358
+  s_3448cc461ae9fe::t_4069679f11a631 47
+  s_3448cc461ae9fe::t_1bb044ac38683a 207
+  s_3448cc461ae9fe::t_ec80ec7e2f6ae4 297-357,359-424
+  s_3448cc461ae9fe::t_402d3165ee21a0 425-453
+src/adapters/responses.rs
+  s_3448cc461ae9fe::t_5c8f99d2299573 135,141
+  s_3448cc461ae9fe::t_69d3c2fb6c182e 40-42,45-51
+  s_3448cc461ae9fe::t_b4bc09a8d3d611 71-74,76-79,83-87,90
+src/model/responses_request.rs
+  s_3448cc461ae9fe::t_17ced5abc4adab 136
+  s_3448cc461ae9fe::t_982805df7790ed 38-40,52-73
+  s_3448cc461ae9fe::t_f846ceafcb52be 332-336,338,340-360,363-364,367-368,370,373-374
+  s_3448cc461ae9fe::t_5a51ddcc23e401 41-46
+  s_3448cc461ae9fe::t_c7c2425ed0d335 203-241,243
+  s_3448cc461ae9fe::t_91832257e0f6b2 1,28-37,74-99
+  s_3448cc461ae9fe::t_ca98faeddb64ab 139-142
+  s_3448cc461ae9fe::t_4e7779aea18921 100,265-315
+  s_3448cc461ae9fe::t_3c25161ed81ca5 101
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f83237e511742d68dfa700ed422c2cd71038a760",
+  "prompts": {},
+  "sessions": {
+    "s_3448cc461ae9fe": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e996ff96-ed13-416e-9440-d2b3e9c87f26",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@passionfactory.ai>"
+    }
+  }
+}
