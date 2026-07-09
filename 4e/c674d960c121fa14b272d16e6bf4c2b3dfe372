@@ -1,0 +1,70 @@
+tests/responses_translate.rs
+  s_c5b50578591856::t_65107937ac4d8e 1-152,157-262
+  s_aff5a67040992a::t_774cd8f0da4a40 153-156
+Cargo.toml
+  s_c5b50578591856::t_0e2e1b7f0193e1 11
+src/lib.rs
+  s_c5b50578591856::t_0e2e1b7f0193e1 1,5,7
+src/config.rs
+  s_aff5a67040992a::t_774cd8f0da4a40 162-166
+  s_c5b50578591856::t_0e2e1b7f0193e1 14-17,23,29,37-58,69-80,88,94-99,101-102,121-145,157-161,167-181
+src/model/responses_request.rs
+  s_c5b50578591856::t_fac34b6f469095 1-53,58-235
+  s_aff5a67040992a::t_774cd8f0da4a40 54-57
+src/model/responses.rs
+  s_c5b50578591856::t_fac34b6f469095 2,4
+  s_c5b50578591856::t_7cfca866346c3a 1,3,5-81,86-276,282-301,305-313,318-375
+  s_aff5a67040992a::t_774cd8f0da4a40 82-85,277-281,302-304,314-317
+src/proxy.rs
+  s_c5b50578591856::t_5c31ca62d493bf 6,11,13-16,75-82,112-114,125-126
+  s_aff5a67040992a::t_774cd8f0da4a40 12,109-111,115-118,120-124
+  s_c5b50578591856::t_372cab211fbf3d 66,74,83,90,106
+shunt.toml.example
+  s_c5b50578591856::t_4002864e1bc01f 3,7-19
+tests/passthrough.rs
+  s_c5b50578591856::t_f0039db5b3b4e4 5,46,52-57,59-60
+  s_aff5a67040992a::t_774cd8f0da4a40 118-121
+src/routing.rs
+  s_c5b50578591856::t_1a1954b7cbeb5f 93-105
+  s_c5b50578591856::t_0e2e1b7f0193e1 1-92,106-113
+src/error.rs
+  s_c5b50578591856::t_5c31ca62d493bf 56-92
+src/model/mod.rs
+  s_c5b50578591856::t_7cfca866346c3a 1
+  s_aff5a67040992a::t_774cd8f0da4a40 2
+src/adapters/anthropic.rs
+  s_c5b50578591856::t_0e2e1b7f0193e1 1-82
+src/adapters/mod.rs
+  s_c5b50578591856::t_a7e31f5f43febd 3-6
+  s_c5b50578591856::t_0e2e1b7f0193e1 1-2,7-31
+src/adapters/responses.rs
+  s_c5b50578591856::t_7cfca866346c3a 1-40,42,45-55,58-72,76-89,94-178
+  s_c5b50578591856::t_a7e31f5f43febd 41,56-57,73-75
+  s_aff5a67040992a::t_774cd8f0da4a40 43-44,90-93
+Cargo.lock
+  s_c5b50578591856::t_149838950e1dd4 1295
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4ec674d960c121fa14b272d16e6bf4c2b3dfe372",
+  "prompts": {},
+  "sessions": {
+    "s_aff5a67040992a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3d19ef13-49aa-49ae-8a29-6a58cdc4290d",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@passionfactory.ai>"
+    },
+    "s_c5b50578591856": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f46aa-53e4-7d51-b0d1-af650aef89be",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@passionfactory.ai>"
+    }
+  }
+}
