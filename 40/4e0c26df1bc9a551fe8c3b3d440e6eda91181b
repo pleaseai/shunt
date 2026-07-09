@@ -1,0 +1,29 @@
+.github/workflows/release-please.yml
+  s_0a5d7e9303fc94::t_788deca5d27691 1-31
+release-please-config.json
+  s_0a5d7e9303fc94::t_fa4423417d92a5 1-10
+.release-please-manifest.json
+  s_0a5d7e9303fc94::t_f547c24c1ce829 1-3
+.github/workflows/release.yml
+  s_0a5d7e9303fc94::t_63301480293869 66,81-92
+docs/RELEASING.md
+  s_0a5d7e9303fc94::t_cadbfca0e9be07 47-61
+  s_0a5d7e9303fc94::t_6a94dadc6a5dc0 71-76
+  s_0a5d7e9303fc94::t_7210dd882b75b2 62
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "404e0c26df1bc9a551fe8c3b3d440e6eda91181b",
+  "prompts": {},
+  "sessions": {
+    "s_0a5d7e9303fc94": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "38f89084-8414-4d2a-9f5c-1659986a3a78",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
