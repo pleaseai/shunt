@@ -1,0 +1,56 @@
+src/config.rs
+  s_e98ee481180058::t_017bca88b364ed 282-286
+  s_e98ee481180058::t_e95415984c5f6d 32-82
+  s_e98ee481180058::t_a827bea54f5dec 201-206
+  s_e98ee481180058::t_91a7d94ad3f4e1 259
+src/main.rs
+  s_e98ee481180058::t_0ec9391a83dfab 74-75
+src/auth/mod.rs
+  s_e98ee481180058::t_384c662562ccb4 14
+docs/running.md
+  s_e98ee481180058::t_cd9e5b3695ea41 478-514
+src/adapters/responses.rs
+  s_e98ee481180058::t_51d04564f7d78d 297
+tests/inbound_auth.rs
+  s_e98ee481180058::t_97e68b475b8c7c 148
+  s_e98ee481180058::t_efa89ed4dabf44 1-12,14-147,149-264
+  s_e98ee481180058::t_7ba2eabecda472 13
+tests/passthrough.rs
+  s_e98ee481180058::t_c1d16d150cce25 55
+docs/m4-inbound-auth.md
+  s_e98ee481180058::t_655a490dbdd45d 1-59,62-107
+  s_e98ee481180058::t_dd613f60041a9d 60-61
+src/server.rs
+  s_e98ee481180058::t_b952289c6226fd 36,41
+  s_e98ee481180058::t_d82e569947e351 1-2,8-12,18-19,22-29,33
+src/proxy.rs
+  s_e98ee481180058::t_53dbe4f5954358 194,202
+  s_e98ee481180058::t_01b22f33c58337 160-166,168-193,195-201,203-206
+  s_e98ee481180058::t_a5d1fc185d1709 119
+  s_e98ee481180058::t_4edfa809690f30 115-118,120
+  s_e98ee481180058::t_a17365382564f9 167
+  s_e98ee481180058::t_d1d5cb4fd3dd2e 13
+src/discovery.rs
+  s_e98ee481180058::t_51d04564f7d78d 70,94
+  s_e98ee481180058::t_c1d16d150cce25 105
+src/auth/inbound.rs
+  s_e98ee481180058::t_51750a663a9753 1-160
+shunt.toml.example
+  s_e98ee481180058::t_31652c1959e0a2 10-18
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "fc6f085d8b48a099c6fab48b4f1f095fdd319bc7",
+  "prompts": {},
+  "sessions": {
+    "s_e98ee481180058": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "58fa0769-2d33-4335-9e10-b0f0ccc58c27",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@passionfactory.ai>"
+    }
+  }
+}
