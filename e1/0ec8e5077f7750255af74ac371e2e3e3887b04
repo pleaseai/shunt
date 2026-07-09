@@ -1,0 +1,26 @@
+wiki/public/llms-full.txt
+  s_b2c3ea94027dab::t_dc830656a3faf1 1105,1141,1206
+wiki/src/content/docs/onboarding/executive-guide.md
+  s_b2c3ea94027dab::t_684ba59cb0a04f 38
+wiki/src/content/docs/onboarding/contributor-guide.md
+  s_b2c3ea94027dab::t_9f26fee44aa29e 126
+  s_b2c3ea94027dab::t_022681cbd967a1 90
+wiki/llms-full.txt
+  s_b2c3ea94027dab::t_dc830656a3faf1 1105,1141,1206
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e10ec8e5077f7750255af74ac371e2e3e3887b04",
+  "prompts": {},
+  "sessions": {
+    "s_b2c3ea94027dab": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "afee540e-f155-4b7e-be41-de74f1593a79",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@passionfactory.ai>"
+    }
+  }
+}
