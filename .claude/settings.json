@@ -8,6 +8,7 @@
     "codex-delegation@passionfactory": true,
     "codex@passionfactory": true,
     "claude-code-docs@passionfactory": true,
+    "astro-lsp@code-intelligence": true,
     "astro@pleaseai": true
   },
   "language": "english"

@@ -1,0 +1,28 @@
+# shunt
+
+> Claude Code LLM gateway with an Astro Starlight wiki in `wiki/`.
+
+## Onboarding
+
+- [Contributor Guide](./wiki/src/content/docs/onboarding/contributor-guide.md)
+- [Staff Engineer Guide](./wiki/src/content/docs/onboarding/staff-engineer-guide.md)
+- [Executive Guide](./wiki/src/content/docs/onboarding/executive-guide.md)
+- [Product Manager Guide](./wiki/src/content/docs/onboarding/product-manager-guide.md)
+
+## Architecture
+
+- [Wiki Home](./wiki/src/content/docs/index.md)
+- [Architecture](./wiki/src/content/docs/02-deep-dive/architecture.md)
+- [Adapters and Translation](./wiki/src/content/docs/02-deep-dive/adapters-and-translation.md)
+
+## Getting Started
+
+- [Overview](./wiki/src/content/docs/01-getting-started/overview.md)
+- [Configuration](./wiki/src/content/docs/01-getting-started/configuration.md)
+- [Operations](./wiki/src/content/docs/01-getting-started/operations.md)
+
+## Deep Dive
+
+- [Routing and Configuration](./wiki/src/content/docs/02-deep-dive/routing-and-configuration.md)
+- [Authentication](./wiki/src/content/docs/02-deep-dive/authentication.md)
+- [Testing and Quality](./wiki/src/content/docs/02-deep-dive/testing-and-quality.md)

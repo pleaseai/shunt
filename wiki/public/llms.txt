@@ -1,0 +1,29 @@
+# shunt
+
+> Claude Code LLM gateway documentation for routing selected model IDs to Anthropic-compatible or OpenAI Responses providers while preserving the Claude Code harness.
+
+## Onboarding
+
+- [Contributor Guide](./src/content/docs/onboarding/contributor-guide.md) — /onboarding/contributor-guide
+- [Executive Guide](./src/content/docs/onboarding/executive-guide.md) — /onboarding/executive-guide
+- [Onboarding](./src/content/docs/onboarding/index.md) — /onboarding
+- [Product Manager Guide](./src/content/docs/onboarding/product-manager-guide.md) — /onboarding/product-manager-guide
+- [Staff Engineer Guide](./src/content/docs/onboarding/staff-engineer-guide.md) — /onboarding/staff-engineer-guide
+
+## Architecture
+
+- [shunt Wiki](./src/content/docs/index.md) — /
+
+## Getting Started
+
+- [Configuration](./src/content/docs/01-getting-started/configuration.md) — /01-getting-started/configuration
+- [Operations](./src/content/docs/01-getting-started/operations.md) — /01-getting-started/operations
+- [Overview](./src/content/docs/01-getting-started/overview.md) — /01-getting-started/overview
+
+## Deep Dive
+
+- [Adapters and Translation](./src/content/docs/02-deep-dive/adapters-and-translation.md) — /02-deep-dive/adapters-and-translation
+- [Architecture](./src/content/docs/02-deep-dive/architecture.md) — /02-deep-dive/architecture
+- [Authentication](./src/content/docs/02-deep-dive/authentication.md) — /02-deep-dive/authentication
+- [Routing and Configuration](./src/content/docs/02-deep-dive/routing-and-configuration.md) — /02-deep-dive/routing-and-configuration
+- [Testing and Quality](./src/content/docs/02-deep-dive/testing-and-quality.md) — /02-deep-dive/testing-and-quality
