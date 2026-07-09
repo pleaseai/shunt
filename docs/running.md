@@ -256,6 +256,15 @@ See [`m3-discovery.md`](m3-discovery.md).
 > The `setup-token` OAuth token is the best of both: it satisfies the discovery gate *and*
 > authenticates Claude-passthrough models on your subscription. `gpt-*` models are unaffected
 > either way — shunt injects the ChatGPT/OpenAI credential for them regardless of this token.
+>
+> **Use `claude setup-token`, not the raw login token.** `setup-token` mints a **one-year** OAuth
+> token ([authentication docs](https://code.claude.com/docs/en/authentication#generate-a-long-lived-token)),
+> so nothing needs refreshing. The short-lived access token inside `~/.claude/.credentials.json`
+> (macOS: Keychain) expires in hours and, once a gateway credential is active, Claude Code stops
+> refreshing the login — so pointing a credential helper at that file just breaks after expiry.
+> Do **not** hand-roll an OAuth refresh against `platform.claude.com/v1/oauth/token`: it is
+> aggressively rate-limited/WAF-guarded (a single call can return `429`), and it writes to your
+> live login file. The one-year `setup-token` avoids all of it.
 
 ### 5.5 Reasoning effort
 
