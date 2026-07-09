@@ -151,6 +151,13 @@ async fn mapped_upstream_error(
     upstream: reqwest::Response,
     provider: &str,
 ) -> AdapterError {
+    // Claude Code backs off on 429 by honoring Retry-After; the header must
+    // survive the error re-shaping or the client retries blind.
+    let retry_after = upstream
+        .headers()
+        .get("retry-after")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
     let text = upstream.text().await.unwrap_or_default();
     tracing::warn!(%status, %provider, upstream_error_body = %text, "responses upstream error");
     let value = if status == StatusCode::UNAUTHORIZED && matches!(provider, "codex" | "chatgpt") {
@@ -166,11 +173,13 @@ async fn mapped_upstream_error(
     } else {
         StatusCode::BAD_GATEWAY
     };
+    let mut response = (shunt_status, axum::Json(map_error_value(&value, status))).into_response();
+    if let Some(retry_after) = retry_after.and_then(|value| value.parse().ok()) {
+        response.headers_mut().insert("retry-after", retry_after);
+    }
     AdapterError {
         message: format!("upstream responses request failed with {status}"),
-        response: Box::new(
-            (shunt_status, axum::Json(map_error_value(&value, status))).into_response(),
-        ),
+        response: Box::new(response),
     }
 }
 

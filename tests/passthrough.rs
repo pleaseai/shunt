@@ -330,3 +330,51 @@ async fn count_tokens_uses_tiktoken_by_default() {
     assert!(body["input_tokens"].as_u64().unwrap() > 0);
     upstream.verify().await;
 }
+
+#[tokio::test]
+async fn responses_upstream_429_keeps_retry_after_header() {
+    if !can_bind_loopback() {
+        return;
+    }
+    // Claude Code honors Retry-After when backing off on 429; the responses
+    // adapter re-shapes the upstream error body, and the header must survive.
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("retry-after", "17")
+                .set_body_string(r#"{"detail":"rate limited"}"#),
+        )
+        .mount(&upstream)
+        .await;
+
+    let mut config = Config::default();
+    // Passthrough auth on a responses provider sends no credential — fine for
+    // a mock; it keeps the test free of key material.
+    let openai = config.providers.get_mut("openai").unwrap();
+    openai.base_url = upstream.uri();
+    openai.auth = shunt::config::AuthMode::Passthrough;
+    openai.api_key_env = None;
+    config.route_prefixes = vec![RoutePrefixConfig {
+        prefix: "gpt-".to_string(),
+        provider: "openai".to_string(),
+    }];
+    let gateway = start_gateway_with(config).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .body(r#"{"model":"gpt-5.6-sol","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}"#)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        response
+            .headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok()),
+        Some("17")
+    );
+}
