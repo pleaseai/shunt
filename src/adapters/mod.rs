@@ -16,7 +16,7 @@ pub type AdapterFuture<'a> = Pin<Box<dyn Future<Output = AdapterResult> + Send +
 #[derive(Debug)]
 pub struct AdapterError {
     pub message: String,
-    pub response: Response,
+    pub response: Box<Response>,
 }
 
 pub trait Adapter {

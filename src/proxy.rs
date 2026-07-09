@@ -80,7 +80,7 @@ impl From<AdapterError> for ForwardError {
     fn from(error: AdapterError) -> Self {
         Self {
             message: error.message,
-            response: error.response,
+            response: *error.response,
         }
     }
 }

@@ -77,6 +77,6 @@ fn upstream_error(error: reqwest::Error) -> AdapterError {
     let message = error.to_string();
     AdapterError {
         message,
-        response: UpstreamError::from_reqwest(error).into_response(),
+        response: Box::new(UpstreamError::from_reqwest(error).into_response()),
     }
 }

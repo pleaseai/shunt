@@ -2,7 +2,10 @@ use std::{io::ErrorKind, net::SocketAddr, time::Duration};
 
 use reqwest::StatusCode;
 use shunt::{
-    config::{AnthropicConfig, Config, OpenAiConfig, ProvidersConfig, ServerConfig},
+    config::{
+        AnthropicConfig, CodexConfig, Config, OpenAiConfig, ProviderAuth, ProvidersConfig,
+        ServerConfig,
+    },
     server,
 };
 use tokio::task::JoinHandle;
@@ -53,6 +56,13 @@ async fn start_gateway(upstream_base_url: String) -> TestGateway {
                 adapter: "responses".to_string(),
                 base_url: "https://api.openai.com/v1".to_string(),
                 api_key_env: "OPENAI_API_KEY".to_string(),
+                auth: ProviderAuth::ApiKey,
+                effort: None,
+            },
+            codex: CodexConfig {
+                adapter: "responses".to_string(),
+                base_url: "https://chatgpt.com/backend-api".to_string(),
+                auth: ProviderAuth::ChatgptOauth,
                 effort: None,
             },
         },

@@ -27,6 +27,7 @@ pub struct ServerConfig {
 pub struct ProvidersConfig {
     pub anthropic: AnthropicConfig,
     pub openai: OpenAiConfig,
+    pub codex: CodexConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -39,7 +40,23 @@ pub struct OpenAiConfig {
     pub adapter: String,
     pub base_url: String,
     pub api_key_env: String,
+    pub auth: ProviderAuth,
     pub effort: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CodexConfig {
+    pub adapter: String,
+    pub base_url: String,
+    pub auth: ProviderAuth,
+    pub effort: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderAuth {
+    ApiKey,
+    ChatgptOauth,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -78,6 +95,12 @@ pub enum ConfigError {
     UnknownPrefixProvider { prefix: String, provider: String },
     #[error("providers.openai.adapter must be responses")]
     OpenAiAdapter,
+    #[error("providers.codex.adapter must be responses")]
+    CodexAdapter,
+    #[error("providers.openai.auth must be api_key")]
+    OpenAiAuth,
+    #[error("providers.codex.auth must be chatgpt_oauth")]
+    CodexAuth,
 }
 
 impl Default for Config {
@@ -95,6 +118,13 @@ impl Default for Config {
                     adapter: "responses".to_string(),
                     base_url: "https://api.openai.com/v1".to_string(),
                     api_key_env: "OPENAI_API_KEY".to_string(),
+                    auth: ProviderAuth::ApiKey,
+                    effort: None,
+                },
+                codex: CodexConfig {
+                    adapter: "responses".to_string(),
+                    base_url: "https://chatgpt.com/backend-api".to_string(),
+                    auth: ProviderAuth::ChatgptOauth,
                     effort: None,
                 },
             },
@@ -119,8 +149,18 @@ impl Config {
         self.server.bind_addr()?;
         self.anthropic_base_url()?;
         self.openai_base_url()?;
+        self.codex_base_url()?;
         if self.providers.openai.adapter != "responses" {
             return Err(ConfigError::OpenAiAdapter);
+        }
+        if self.providers.codex.adapter != "responses" {
+            return Err(ConfigError::CodexAdapter);
+        }
+        if self.providers.openai.auth != ProviderAuth::ApiKey {
+            return Err(ConfigError::OpenAiAuth);
+        }
+        if self.providers.codex.auth != ProviderAuth::ChatgptOauth {
+            return Err(ConfigError::CodexAuth);
         }
         if !self.has_provider(&self.server.default_provider) {
             return Err(ConfigError::UnknownDefaultProvider(
@@ -159,6 +199,10 @@ impl Config {
         self.provider_base_url("providers.openai", &self.providers.openai.base_url)
     }
 
+    pub fn codex_base_url(&self) -> Result<reqwest::Url, ConfigError> {
+        self.provider_base_url("providers.codex", &self.providers.codex.base_url)
+    }
+
     pub fn provider_base_url(
         &self,
         provider: &str,
@@ -177,7 +221,7 @@ impl Config {
     }
 
     fn has_provider(&self, provider: &str) -> bool {
-        matches!(provider, "anthropic" | "openai")
+        matches!(provider, "anthropic" | "openai" | "codex" | "chatgpt")
     }
 }
 

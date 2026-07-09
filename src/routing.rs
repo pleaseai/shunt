@@ -61,7 +61,7 @@ fn route_for(
     upstream_model: &str,
     effort: Option<String>,
 ) -> Route {
-    let adapter = if provider == "openai" {
+    let adapter = if matches!(provider, "openai" | "codex" | "chatgpt") {
         AdapterKind::Responses
     } else {
         AdapterKind::Anthropic
@@ -69,6 +69,8 @@ fn route_for(
     let effort = effort.or_else(|| {
         if provider == "openai" {
             config.providers.openai.effort.clone()
+        } else if matches!(provider, "codex" | "chatgpt") {
+            config.providers.codex.effort.clone()
         } else {
             None
         }
@@ -108,6 +110,22 @@ mod tests {
 
         assert_eq!(route.adapter, AdapterKind::Responses);
         assert_eq!(route.upstream_model, "gpt-upstream");
+        assert_eq!(route.effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn codex_routes_use_responses_adapter_and_codex_effort() {
+        let mut config = Config::default();
+        config.providers.codex.effort = Some("high".to_string());
+        config.route_prefixes = vec![RoutePrefixConfig {
+            prefix: "gpt-".to_string(),
+            provider: "codex".to_string(),
+        }];
+
+        let route = resolve_model(&config, "gpt-5.2-codex");
+
+        assert_eq!(route.provider, "codex");
+        assert_eq!(route.adapter, AdapterKind::Responses);
         assert_eq!(route.effort.as_deref(), Some("high"));
     }
 }
