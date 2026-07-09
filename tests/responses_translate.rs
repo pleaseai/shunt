@@ -20,7 +20,8 @@ fn route(model: &str) -> Route {
 
 fn translate(input: Value) -> Value {
     let body = serde_json::to_vec(&input).unwrap();
-    translate_request(&body, &route("gpt-5.2-codex")).unwrap()
+    // provider "openai" is the stock Responses API (not the ChatGPT backend).
+    translate_request(&body, &route("gpt-5.2-codex"), false).unwrap()
 }
 
 #[test]
@@ -44,9 +45,29 @@ fn translates_plain_text_request() {
             }],
             "reasoning": {"effort": "medium", "summary": "auto"},
             "text": {"verbosity": "medium"},
+            "max_output_tokens": 1000,
             "store": false,
             "stream": true
         })
+    );
+}
+
+#[test]
+fn omits_max_output_tokens_for_chatgpt_backend() {
+    // The ChatGPT/Codex backend rejects `max_output_tokens` ("Unsupported
+    // parameter"), so translation must drop it when chatgpt_backend is true.
+    let body = serde_json::to_vec(&json!({
+        "model": "gpt-5.2-codex",
+        "messages": [{"role": "user", "content": "hello"}],
+        "max_tokens": 1000
+    }))
+    .unwrap();
+
+    let actual = translate_request(&body, &route("gpt-5.2-codex"), true).unwrap();
+
+    assert!(
+        actual.get("max_output_tokens").is_none(),
+        "max_output_tokens must not be sent to the ChatGPT backend: {actual}"
     );
 }
 
@@ -93,6 +114,65 @@ fn preserves_tool_use_and_tool_result_call_ids() {
             {"type": "function_call", "call_id": "toolu_123", "name": "read_file", "arguments": "{\"path\":\"Cargo.toml\"}"},
             {"type": "function_call_output", "call_id": "toolu_123", "output": "ok"}
         ])
+    );
+}
+
+#[test]
+fn tool_reference_result_becomes_loaded_tool_text() {
+    // Claude Code's ToolSearch (ENABLE_TOOL_SEARCH) returns tool_result content
+    // made only of {type:"tool_reference", tool_name} blocks. Dropping them
+    // yields an empty result that reads as "no tools found" — they must render
+    // as text instead. The referenced tools' schemas arrive in the next
+    // request's `tools` array, so text is all the model needs here.
+    let actual = translate(json!({
+        "model": "gpt-5.2-codex",
+        "messages": [
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "toolu_ts", "name": "ToolSearch", "input": {"query": "select:Foo"}}
+            ]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "toolu_ts", "content": [
+                    {"type": "tool_reference", "tool_name": "mcp__github__get_me"},
+                    {"type": "tool_reference", "tool_name": "mcp__slack__slack_send_message"}
+                ]}
+            ]}
+        ]
+    }));
+
+    assert_eq!(
+        actual["input"][1],
+        json!({
+            "type": "function_call_output",
+            "call_id": "toolu_ts",
+            "output": "Loaded tool: mcp__github__get_me\nLoaded tool: mcp__slack__slack_send_message"
+        })
+    );
+}
+
+#[test]
+fn defer_loading_field_never_reaches_upstream_tools() {
+    // With tool search enabled, discovered deferred tools carry
+    // defer_loading:true. The Responses API doesn't know the field; the tools()
+    // rebuild must emit only type/name/description/parameters.
+    let actual = translate(json!({
+        "model": "gpt-5.2-codex",
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [{
+            "name": "mcp__github__get_me",
+            "description": "Get the authenticated user",
+            "input_schema": {"type": "object", "properties": {}},
+            "defer_loading": true
+        }]
+    }));
+
+    assert_eq!(
+        actual["tools"],
+        json!([{
+            "type": "function",
+            "name": "mcp__github__get_me",
+            "description": "Get the authenticated user",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": true}
+        }])
     );
 }
 
@@ -174,7 +254,7 @@ fn maps_thinking_and_route_override_to_effort() {
     let mut route = route("gpt-5.2-codex-low");
     route.effort = Some("xhigh".to_string());
     let body = serde_json::to_vec(&json!({"model": "gpt-5.2-codex-low", "messages": []})).unwrap();
-    let override_effort = translate_request(&body, &route).unwrap();
+    let override_effort = translate_request(&body, &route, false).unwrap();
     assert_eq!(override_effort["reasoning"]["effort"], "xhigh");
 }
 
@@ -200,10 +280,10 @@ fn streaming_state_machine_emits_incremental_anthropic_events() {
         "event: response.function_call_arguments.done\n",
         "data: {\"arguments\":\"{\\\"path\\\":\\\"Cargo.toml\\\"}\"}\n\n",
         "event: response.completed\n",
-        "data: {\"response\":{\"usage\":{\"output_tokens\":9}}}\n\n",
+        "data: {\"response\":{\"usage\":{\"input_tokens\":1200,\"input_tokens_details\":{\"cached_tokens\":800},\"output_tokens\":9}}}\n\n",
         "data: [DONE]\n\n"
     );
-    let mut machine = AnthropicSseMachine::new("gpt-5.2-codex");
+    let mut machine = AnthropicSseMachine::new("gpt-5.2-codex", false);
     let emitted = parse_sse_events(fixture)
         .into_iter()
         .flat_map(|event| machine.apply(event))
@@ -230,6 +310,13 @@ fn streaming_state_machine_emits_incremental_anthropic_events() {
     assert!(emitted.contains("\"text\":\"Hel\""));
     assert!(emitted.contains("\"partial_json\":\"{\\\"path\\\":\""));
     assert!(emitted.contains("\"stop_reason\":\"tool_use\""));
+    // Prompt-size usage must reach message_delta so Claude Code's context
+    // indicator works for non-Anthropic (Responses) models. OpenAI input_tokens
+    // (1200, incl. 800 cached) splits into input_tokens 400 + cache_read 800,
+    // preserving the 1200 total the context window is charted against.
+    assert!(emitted.contains("\"input_tokens\":400"));
+    assert!(emitted.contains("\"cache_read_input_tokens\":800"));
+    assert!(emitted.contains("\"output_tokens\":9"));
 }
 
 #[test]
@@ -285,4 +372,314 @@ fn event_names(sse: &str) -> Vec<String> {
                 .find_map(|line| line.strip_prefix("event: ").map(ToOwned::to_owned))
         })
         .collect()
+}
+
+#[test]
+fn includes_encrypted_reasoning_only_when_thinking_enabled() {
+    let with_thinking = translate(json!({
+        "thinking": {"type": "enabled"},
+        "messages": [{"role": "user", "content": "hi"}]
+    }));
+    assert_eq!(
+        with_thinking["include"],
+        json!(["reasoning.encrypted_content"])
+    );
+
+    let without = translate(json!({
+        "messages": [{"role": "user", "content": "hi"}]
+    }));
+    assert!(without.get("include").is_none());
+}
+
+/// End-to-end: a reasoning item streams out as a thinking block whose signature
+/// carries the encrypted state, and feeding that block back yields a Responses
+/// `reasoning` input item — preserving chain-of-thought under store:false.
+#[test]
+fn streams_reasoning_as_thinking_block_and_round_trips() {
+    let fixture = concat!(
+        "event: response.created\n",
+        "data: {\"response\":{\"id\":\"resp_1\"}}\n\n",
+        "event: response.output_item.added\n",
+        "data: {\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\"}}\n\n",
+        "event: response.reasoning_summary_text.delta\n",
+        "data: {\"delta\":\"Let me\"}\n\n",
+        "event: response.reasoning_summary_text.delta\n",
+        "data: {\"delta\":\" think\"}\n\n",
+        "event: response.output_item.done\n",
+        "data: {\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\",\"encrypted_content\":\"ENC123\"}}\n\n",
+        "event: response.output_item.added\n",
+        "data: {\"item\":{\"type\":\"message\"}}\n\n",
+        "event: response.output_text.delta\n",
+        "data: {\"delta\":\"Hi\"}\n\n",
+        "event: response.output_text.done\n",
+        "data: {}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":2}}}\n\n",
+        "data: [DONE]\n\n"
+    );
+
+    let mut machine = AnthropicSseMachine::new("gpt-5.2-codex", true);
+    let emitted = parse_sse_events(fixture)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
+    let mut finished = machine.finish().join("");
+    finished.insert_str(0, &emitted);
+    let emitted = finished;
+
+    // A thinking block leads the message, streams summary text, then a signature.
+    let names = event_names(&emitted);
+    assert_eq!(names.first().map(String::as_str), Some("message_start"));
+    assert!(emitted.contains("\"type\":\"thinking\""));
+    assert!(emitted.contains("\"thinking_delta\""));
+    assert!(emitted.contains("\"signature_delta\""));
+
+    let expected_signature = shunt::model::responses::encode_reasoning_signature("rs_1", "ENC123");
+    assert!(emitted.contains(&expected_signature));
+
+    // Feed the thinking block back: it must become a reasoning input item.
+    let out = translate(json!({
+        "thinking": {"type": "enabled"},
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "Let me think", "signature": expected_signature},
+                {"type": "text", "text": "Hi"}
+            ]}
+        ]
+    }));
+    let input = out["input"].as_array().unwrap();
+    let reasoning = input
+        .iter()
+        .find(|item| item["type"] == "reasoning")
+        .expect("reasoning input item present");
+    assert_eq!(reasoning["id"], "rs_1");
+    assert_eq!(reasoning["encrypted_content"], "ENC123");
+    // Reasoning must precede the assistant message it reasoned about.
+    let reasoning_pos = input.iter().position(|i| i["type"] == "reasoning").unwrap();
+    let message_pos = input
+        .iter()
+        .position(|i| i["type"] == "message" && i["role"] == "assistant")
+        .unwrap();
+    assert!(reasoning_pos < message_pos);
+}
+
+#[test]
+fn drops_foreign_thinking_signature() {
+    // A signature shunt did not produce (e.g. a genuine Anthropic one) is dropped,
+    // never forwarded as a bogus reasoning item the backend would reject.
+    let out = translate(json!({
+        "thinking": {"type": "enabled"},
+        "messages": [
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "x", "signature": "not-a-shunt-signature"},
+                {"type": "text", "text": "Hi"}
+            ]}
+        ]
+    }));
+    let input = out["input"].as_array().unwrap();
+    assert!(input.iter().all(|item| item["type"] != "reasoning"));
+}
+
+#[test]
+fn ignores_reasoning_when_thinking_disabled() {
+    let fixture = concat!(
+        "event: response.output_item.added\n",
+        "data: {\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\"}}\n\n",
+        "event: response.reasoning_summary_text.delta\n",
+        "data: {\"delta\":\"secret\"}\n\n",
+        "event: response.output_item.done\n",
+        "data: {\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\",\"encrypted_content\":\"ENC\"}}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
+    );
+    let mut machine = AnthropicSseMachine::new("gpt-5.2-codex", false);
+    let emitted = parse_sse_events(fixture)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
+    assert!(!emitted.contains("thinking"));
+    assert!(!emitted.contains("signature"));
+}
+
+#[test]
+fn derives_prompt_cache_key_from_session_id() {
+    // Claude Code packs a JSON blob into metadata.user_id; session_id is the
+    // stable per-conversation key the Responses cache should be routed by.
+    let out = translate(json!({
+        "messages": [{"role": "user", "content": "hi"}],
+        "metadata": {"user_id": "{\"device_id\":\"d1\",\"session_id\":\"sess_abc\"}"}
+    }));
+    assert_eq!(out["prompt_cache_key"], "shunt-sess_abc");
+
+    // No metadata -> no key sent.
+    let bare = translate(json!({"messages": [{"role": "user", "content": "hi"}]}));
+    assert!(bare.get("prompt_cache_key").is_none());
+
+    // A non-JSON user_id still yields a stable (hashed) key.
+    let hashed = translate(json!({
+        "messages": [{"role": "user", "content": "hi"}],
+        "metadata": {"user_id": "plain-user"}
+    }));
+    let key = hashed["prompt_cache_key"].as_str().unwrap();
+    assert!(key.starts_with("shunt-"));
+    // Determinism: same input -> same key.
+    let again = translate(json!({
+        "messages": [{"role": "user", "content": "different"}],
+        "metadata": {"user_id": "plain-user"}
+    }));
+    assert_eq!(hashed["prompt_cache_key"], again["prompt_cache_key"]);
+}
+
+#[test]
+fn tool_result_with_image_becomes_content_array() {
+    let out = translate(json!({
+        "messages": [{"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "toolu_1", "content": [
+                {"type": "text", "text": "see screenshot"},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "IMG"}}
+            ]}
+        ]}]
+    }));
+    let output = &out["input"][0]["output"];
+    assert_eq!(
+        *output,
+        json!([
+            {"type": "input_text", "text": "see screenshot"},
+            {"type": "input_image", "image_url": "data:image/png;base64,IMG"}
+        ])
+    );
+}
+
+#[test]
+fn text_only_tool_result_stays_a_string() {
+    let out = translate(json!({
+        "messages": [{"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "toolu_1", "content": [
+                {"type": "text", "text": "ok"}
+            ]}
+        ]}]
+    }));
+    assert_eq!(out["input"][0]["output"], json!("ok"));
+}
+
+#[test]
+fn document_block_becomes_input_file() {
+    let out = translate(json!({
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": "read this"},
+            {"type": "document", "title": "spec.pdf", "source": {"type": "base64", "media_type": "application/pdf", "data": "PDF"}}
+        ]}]
+    }));
+    assert_eq!(
+        out["input"][0]["content"],
+        json!([
+            {"type": "input_text", "text": "read this"},
+            {"type": "input_file", "file_data": "data:application/pdf;base64,PDF", "filename": "spec.pdf"}
+        ])
+    );
+}
+
+#[test]
+fn url_sourced_document_uses_file_url_not_empty_data() {
+    let out = translate(json!({
+        "messages": [{"role": "user", "content": [
+            {"type": "document", "source": {"type": "url", "url": "https://example.com/spec.pdf"}}
+        ]}]
+    }));
+    assert_eq!(
+        out["input"][0]["content"][0],
+        json!({"type": "input_file", "file_url": "https://example.com/spec.pdf"})
+    );
+}
+
+#[test]
+fn url_sourced_image_passes_url_through() {
+    let out = translate(json!({
+        "messages": [{"role": "user", "content": [
+            {"type": "image", "source": {"type": "url", "url": "https://example.com/x.png"}}
+        ]}]
+    }));
+    assert_eq!(
+        out["input"][0]["content"][0],
+        json!({"type": "input_image", "image_url": "https://example.com/x.png"})
+    );
+}
+
+#[test]
+fn unrepresentable_document_source_is_dropped_not_emptied() {
+    // A source shunt can't represent must not become an empty "data:...;base64," URI.
+    let out = translate(json!({
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": "read"},
+            {"type": "document", "source": {"type": "file", "file_id": "file_123"}}
+        ]}]
+    }));
+    // Only the text survives; the unrepresentable document is dropped.
+    assert_eq!(
+        out["input"][0]["content"],
+        json!([{"type": "input_text", "text": "read"}])
+    );
+}
+
+#[test]
+fn errored_tool_result_with_image_keeps_failure_signal() {
+    let out = translate(json!({
+        "messages": [{"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "toolu_1", "is_error": true, "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "IMG"}}
+            ]}
+        ]}]
+    }));
+    assert_eq!(
+        out["input"][0]["output"],
+        json!([
+            {"type": "input_text", "text": "Tool execution failed"},
+            {"type": "input_image", "image_url": "data:image/png;base64,IMG"}
+        ])
+    );
+}
+
+#[test]
+fn errored_tool_result_with_text_and_image_keeps_text_only() {
+    // When the tool provided its own error text, don't inject a duplicate marker.
+    let out = translate(json!({
+        "messages": [{"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "toolu_1", "is_error": true, "content": [
+                {"type": "text", "text": "boom: file missing"},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "IMG"}}
+            ]}
+        ]}]
+    }));
+    assert_eq!(
+        out["input"][0]["output"],
+        json!([
+            {"type": "input_text", "text": "boom: file missing"},
+            {"type": "input_image", "image_url": "data:image/png;base64,IMG"}
+        ])
+    );
+}
+
+#[test]
+fn reasoning_id_falls_back_to_done_event_when_added_missing() {
+    // No output_item.added for the reasoning item (so the buffer id is empty);
+    // the id must be recovered from the output_item.done event's item.
+    let fixture = concat!(
+        "event: response.reasoning_summary_text.delta\n",
+        "data: {\"delta\":\"think\"}\n\n",
+        "event: response.output_item.done\n",
+        "data: {\"item\":{\"type\":\"reasoning\",\"id\":\"rs_done\",\"encrypted_content\":\"ENC\"}}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
+    );
+    let mut machine = AnthropicSseMachine::new("gpt-5.2-codex", true);
+    let emitted = parse_sse_events(fixture)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
+    let expected = shunt::model::responses::encode_reasoning_signature("rs_done", "ENC");
+    assert!(
+        emitted.contains(&expected),
+        "signature should encode the id from the done event"
+    );
 }

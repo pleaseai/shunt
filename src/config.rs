@@ -48,6 +48,24 @@ pub struct ProviderConfig {
     /// Optional default reasoning effort for `kind = "responses"` providers.
     #[serde(default)]
     pub effort: Option<String>,
+    /// How `POST /v1/messages/count_tokens` is answered for this provider.
+    #[serde(default)]
+    pub count_tokens: CountTokens,
+}
+
+/// How a provider answers `count_tokens`. Only meaningful for `responses`
+/// providers; Anthropic providers always pass the request through upstream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CountTokens {
+    /// Return 404 so Claude Code estimates tokens locally (no server endpoint
+    /// exists on the Responses API; the gateway protocol allows this).
+    #[default]
+    Estimate,
+    /// Compute an approximate count locally with tiktoken (o200k_base) and
+    /// return `{"input_tokens": N}` — closer than the client's char/4 estimate,
+    /// but not an exact match for the backend's billed count.
+    Tiktoken,
 }
 
 /// The upstream protocol / adapter a provider uses.
@@ -136,6 +154,7 @@ impl ProviderConfig {
             api_key_env: None,
             api_key_header: ApiKeyHeader::Bearer,
             effort: None,
+            count_tokens: CountTokens::Estimate,
         }
     }
 }
@@ -156,6 +175,7 @@ impl Default for Config {
                     api_key_env: Some("OPENAI_API_KEY".to_string()),
                     api_key_header: ApiKeyHeader::Bearer,
                     effort: None,
+                    count_tokens: CountTokens::Estimate,
                 },
             ),
             (
@@ -167,6 +187,7 @@ impl Default for Config {
                     api_key_env: None,
                     api_key_header: ApiKeyHeader::Bearer,
                     effort: None,
+                    count_tokens: CountTokens::Estimate,
                 },
             ),
         ]);
@@ -245,6 +266,16 @@ impl Config {
     /// Look up a provider by name.
     pub fn provider(&self, name: &str) -> Option<&ProviderConfig> {
         self.providers.get(name)
+    }
+
+    /// Whether `provider` is the ChatGPT/Codex backend (ChatGPT OAuth auth).
+    /// That backend serves the Responses API under `/codex/responses` and is
+    /// stricter than the stock OpenAI Responses API — it rejects parameters
+    /// codex never sends (e.g. `max_output_tokens`), so translation drops them.
+    pub fn is_chatgpt_backend(&self, provider: &str) -> bool {
+        self.provider(provider)
+            .map(|provider| provider.auth == AuthMode::ChatgptOauth)
+            .unwrap_or(false)
     }
 
     pub fn provider_base_url(

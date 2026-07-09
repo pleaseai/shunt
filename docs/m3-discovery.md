@@ -75,12 +75,16 @@ Referenced by M1 §5/§7. Provide:
 - Keep the reference tables (from `insightflo/chatgpt-codex-proxy/src/codex/models.ts`) in this
   one module so a Codex-CLI model list bump touches a single file.
 
-## 6. `count_tokens` (optional)
+## 6. `count_tokens` (implemented)
 
-M0 already passes `POST /v1/messages/count_tokens` through to Anthropic. For a `responses`-routed
-model there is no exact Responses token-count endpoint used here; leave the pass-through for
-Anthropic-routed models and let Claude Code estimate locally for `responses` models (the protocol
-explicitly allows this). Do not synthesize counts.
+`POST /v1/messages/count_tokens` passes through to the upstream for Anthropic-routed models.
+For a `responses`-routed model there is no exact Responses token-count endpoint, so
+`proxy::forward` short-circuits before the adapter based on the provider's `count_tokens` setting:
+`estimate` (default) returns **404** and Claude Code estimates locally (the protocol allows this
+for an absent endpoint), while `tiktoken` returns an approximate local o200k_base count as
+`{"input_tokens": N}` (see `src/count_tokens.rs`). Either way a count request is never turned into
+(and billed as) a full inference call. Covered by `count_tokens_returns_404_for_responses_model`
+and `count_tokens_uses_tiktoken_when_enabled` in `tests/passthrough.rs`.
 
 ## 7. Interactions to document
 

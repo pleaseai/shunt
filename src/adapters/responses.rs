@@ -37,12 +37,21 @@ async fn forward(
     route: Route,
     body: Vec<u8>,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
-    let client_wants_stream = serde_json::from_slice::<Value>(&body)
-        .ok()
+    let request_json = serde_json::from_slice::<Value>(&body).ok();
+    let client_wants_stream = request_json
+        .as_ref()
         .and_then(|value| value.get("stream").and_then(Value::as_bool))
         .unwrap_or(false);
-    let upstream_body =
-        translate_request(&body, &route).map_err(|error| own_error(error.to_string()))?;
+    // Gates reasoning round-tripping (see model/responses.rs): surface thinking
+    // blocks only when the client asked for extended thinking, since that is what
+    // makes Claude Code echo them back on the next turn.
+    let thinking_enabled = request_json
+        .as_ref()
+        .and_then(|value| value.pointer("/thinking/type").and_then(Value::as_str))
+        == Some("enabled");
+    let chatgpt_backend = state.config.is_chatgpt_backend(&route.provider);
+    let upstream_body = translate_request(&body, &route, chatgpt_backend)
+        .map_err(|error| own_error(error.to_string()))?;
     tracing::debug!(
         provider = %route.provider,
         upstream_model = %route.upstream_model,
@@ -60,16 +69,26 @@ async fn forward(
         return Err(mapped_upstream_error(status, upstream, &route.provider).await);
     }
     if client_wants_stream {
-        Ok((StatusCode::OK, stream_response(upstream, route.model)))
+        Ok((
+            StatusCode::OK,
+            stream_response(upstream, route.model, thinking_enabled),
+        ))
     } else {
-        Ok((StatusCode::OK, json_response(upstream, route.model).await?))
+        Ok((
+            StatusCode::OK,
+            json_response(upstream, route.model, thinking_enabled).await?,
+        ))
     }
 }
 
-fn stream_response(upstream: reqwest::Response, model: String) -> axum::response::Response {
+fn stream_response(
+    upstream: reqwest::Response,
+    model: String,
+    thinking_enabled: bool,
+) -> axum::response::Response {
     let bytes = upstream.bytes_stream();
     let parser = SseParser::default();
-    let machine = AnthropicSseMachine::new(model);
+    let machine = AnthropicSseMachine::new(model, thinking_enabled);
     let output = stream::unfold((bytes, parser, machine, false), |state| async move {
         let (mut bytes, mut parser, mut machine, mut finished) = state;
         if finished {
@@ -114,12 +133,13 @@ fn stream_response(upstream: reqwest::Response, model: String) -> axum::response
 async fn json_response(
     upstream: reqwest::Response,
     model: String,
+    thinking_enabled: bool,
 ) -> Result<axum::response::Response, AdapterError> {
     let body = upstream
         .text()
         .await
         .map_err(|error| own_error(error.to_string()))?;
-    let mut machine = AnthropicSseMachine::new(model);
+    let mut machine = AnthropicSseMachine::new(model, thinking_enabled);
     for event in parse_sse_events(&body) {
         let _ = machine.apply(event);
     }
@@ -195,17 +215,14 @@ fn request_builder(
 }
 
 pub fn responses_url(config: &crate::config::Config, provider: &str) -> String {
-    let provider = config.provider(provider);
-    let base = provider
+    let base = config
+        .provider(provider)
         .map(|provider| provider.base_url.as_str())
         .unwrap_or("https://api.openai.com/v1")
         .trim_end_matches('/');
     // The ChatGPT/Codex backend serves the Responses API under /codex/responses;
     // a plain OpenAI-compatible upstream uses /responses.
-    let chatgpt = provider
-        .map(|provider| provider.auth == crate::config::AuthMode::ChatgptOauth)
-        .unwrap_or(false);
-    if chatgpt {
+    if config.is_chatgpt_backend(provider) {
         format!("{base}/codex/responses")
     } else {
         format!("{base}/responses")

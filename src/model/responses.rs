@@ -1,7 +1,7 @@
 use axum::http::StatusCode;
 use serde_json::{json, Value};
 
-pub use crate::model::responses_request::translate_request;
+pub use crate::model::responses_request::{encode_reasoning_signature, translate_request};
 
 #[derive(Debug, Clone)]
 pub struct ResponseEvent {
@@ -19,6 +19,7 @@ struct OpenBlock {
 enum BlockKind {
     Text,
     Tool,
+    Reasoning,
 }
 
 #[derive(Debug, Clone)]
@@ -30,10 +31,14 @@ pub struct AnthropicSseMachine {
     index: usize,
     open: Option<OpenBlock>,
     saw_tool: bool,
+    thinking_enabled: bool,
+    input_tokens: u64,
+    cache_read_tokens: u64,
     output_tokens: u64,
     content: Vec<Value>,
     text_buffer: String,
     tool_buffer: Option<ToolBuffer>,
+    reasoning: Option<ReasoningBuffer>,
 }
 
 #[derive(Debug, Clone)]
@@ -43,8 +48,19 @@ struct ToolBuffer {
     json: String,
 }
 
+/// Accumulates a Responses `reasoning` output item so it can be surfaced as an
+/// Anthropic thinking block. `signature` packs the item's id + encrypted_content
+/// (set at `output_item.done`) so the next turn can round-trip it (see
+/// [`encode_reasoning_signature`]).
+#[derive(Debug, Clone)]
+struct ReasoningBuffer {
+    id: String,
+    summary: String,
+    signature: Option<String>,
+}
+
 impl AnthropicSseMachine {
-    pub fn new(model: impl Into<String>) -> Self {
+    pub fn new(model: impl Into<String>, thinking_enabled: bool) -> Self {
         Self {
             id: "msg_responses".to_string(),
             model: model.into(),
@@ -53,10 +69,14 @@ impl AnthropicSseMachine {
             index: 0,
             open: None,
             saw_tool: false,
+            thinking_enabled,
+            input_tokens: 0,
+            cache_read_tokens: 0,
             output_tokens: 0,
             content: Vec::new(),
             text_buffer: String::new(),
             tool_buffer: None,
+            reasoning: None,
         }
     }
 
@@ -72,10 +92,10 @@ impl AnthropicSseMachine {
             "response.output_text.done" | "response.content_part.done" => {
                 self.close_current(BlockKind::Text)
             }
+            "response.reasoning_summary_text.delta" => self.reasoning_delta(&event.data),
             "response.function_call_arguments.delta" => self.arguments_delta(&event.data),
-            "response.function_call_arguments.done" | "response.output_item.done" => {
-                self.close_current(BlockKind::Tool)
-            }
+            "response.function_call_arguments.done" => self.close_current(BlockKind::Tool),
+            "response.output_item.done" => self.output_item_done(&event.data),
             "response.completed" | "response.done" => self.complete(&event.data),
             "error" | "response.failed" => {
                 self.stopped = true;
@@ -109,7 +129,7 @@ impl AnthropicSseMachine {
             "content": self.content,
             "stop_reason": if self.saw_tool { "tool_use" } else { "end_turn" },
             "stop_sequence": null,
-            "usage": {"input_tokens": 0, "output_tokens": self.output_tokens},
+            "usage": self.usage_value(),
         })
     }
 
@@ -149,8 +169,137 @@ impl AnthropicSseMachine {
         match item.get("type").and_then(Value::as_str) {
             Some("message") => self.open_text(),
             Some("function_call") => self.open_tool(item),
+            Some("reasoning") => self.reasoning_added(item),
             _ => Vec::new(),
         }
+    }
+
+    /// `response.output_item.done` closes whichever item just finished. Reasoning
+    /// items need special handling (stamp the round-trip signature); function_call
+    /// and message items just close.
+    fn output_item_done(&mut self, data: &Value) -> Vec<String> {
+        let item = data.get("item").unwrap_or(data);
+        if item.get("type").and_then(Value::as_str) == Some("reasoning") {
+            return self.reasoning_done(item);
+        }
+        self.close_any()
+    }
+
+    /// Record the reasoning item's id; defer opening the thinking block until the
+    /// first summary delta (or `output_item.done` when there is encrypted content),
+    /// so a reasoning item with neither summary nor encrypted content emits nothing.
+    fn reasoning_added(&mut self, item: &Value) -> Vec<String> {
+        if !self.thinking_enabled {
+            return Vec::new();
+        }
+        let id = item
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        self.reasoning = Some(ReasoningBuffer {
+            id,
+            summary: String::new(),
+            signature: None,
+        });
+        Vec::new()
+    }
+
+    fn open_reasoning(&mut self) -> Vec<String> {
+        let mut out = self.close_any();
+        if self.reasoning.is_none() {
+            self.reasoning = Some(ReasoningBuffer {
+                id: String::new(),
+                summary: String::new(),
+                signature: None,
+            });
+        }
+        self.open = Some(OpenBlock {
+            index: self.index,
+            kind: BlockKind::Reasoning,
+        });
+        out.push(sse(
+            "content_block_start",
+            &json!({
+                "type": "content_block_start",
+                "index": self.index,
+                "content_block": {"type": "thinking", "thinking": ""}
+            }),
+        ));
+        out
+    }
+
+    fn reasoning_delta(&mut self, data: &Value) -> Vec<String> {
+        if !self.thinking_enabled {
+            return Vec::new();
+        }
+        let delta = data.get("delta").and_then(Value::as_str).unwrap_or("");
+        if delta.is_empty() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        if self.open.as_ref().map(|block| block.kind) != Some(BlockKind::Reasoning) {
+            out.extend(self.open_reasoning());
+        }
+        if let Some(reasoning) = &mut self.reasoning {
+            reasoning.summary.push_str(delta);
+        }
+        out.push(sse(
+            "content_block_delta",
+            &json!({
+                "type": "content_block_delta",
+                "index": self.open_index(),
+                "delta": {"type": "thinking_delta", "thinking": delta}
+            }),
+        ));
+        out
+    }
+
+    fn reasoning_done(&mut self, item: &Value) -> Vec<String> {
+        if !self.thinking_enabled {
+            return Vec::new();
+        }
+        let encrypted = item
+            .get("encrypted_content")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let is_open = self.open.as_ref().map(|block| block.kind) == Some(BlockKind::Reasoning);
+        // Nothing to show (no summary streamed) and nothing to round-trip.
+        if !is_open && encrypted.is_empty() {
+            self.reasoning = None;
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        if !is_open {
+            // Open an empty thinking block purely to carry the round-trip signature.
+            out.extend(self.open_reasoning());
+        }
+        if !encrypted.is_empty() {
+            // Prefer the id captured at output_item.added; fall back to the id on
+            // this done event so the round-trip keeps a real reasoning-item id even
+            // if the added event was missed or carried none.
+            let id = self
+                .reasoning
+                .as_ref()
+                .map(|reasoning| reasoning.id.clone())
+                .filter(|id| !id.is_empty())
+                .or_else(|| item.get("id").and_then(Value::as_str).map(str::to_string))
+                .unwrap_or_default();
+            let signature = encode_reasoning_signature(&id, encrypted);
+            if let Some(reasoning) = &mut self.reasoning {
+                reasoning.signature = Some(signature.clone());
+            }
+            out.push(sse(
+                "content_block_delta",
+                &json!({
+                    "type": "content_block_delta",
+                    "index": self.open_index(),
+                    "delta": {"type": "signature_delta", "signature": signature}
+                }),
+            ));
+        }
+        out.extend(self.close_any());
+        out
     }
 
     fn open_text(&mut self) -> Vec<String> {
@@ -263,6 +412,15 @@ impl AnthropicSseMachine {
                     }));
                 }
             }
+            BlockKind::Reasoning => {
+                if let Some(reasoning) = self.reasoning.take() {
+                    let mut block = json!({"type": "thinking", "thinking": reasoning.summary});
+                    if let Some(signature) = reasoning.signature {
+                        block["signature"] = json!(signature);
+                    }
+                    self.content.push(block);
+                }
+            }
         }
         self.index += 1;
         vec![sse(
@@ -291,22 +449,51 @@ impl AnthropicSseMachine {
                 &json!({
                     "type": "message_delta",
                     "delta": {"stop_reason": stop_reason, "stop_sequence": null},
-                    "usage": {"output_tokens": self.output_tokens}
+                    // Carry input_tokens here (not message_start): the Responses
+                    // API only reports usage at response.completed, so this is the
+                    // first point shunt knows the prompt size. The Anthropic SDK
+                    // merges message_delta usage into the message, which is what
+                    // Claude Code reads for its context-window indicator.
+                    "usage": self.usage_value()
                 }),
             ),
             sse("message_stop", &json!({"type": "message_stop"})),
         ]
     }
 
+    /// Anthropic-shaped usage. Claude Code's context indicator sums
+    /// input_tokens + cache_read + cache_creation, so the split must preserve the
+    /// total. OpenAI's `input_tokens` already includes cached tokens, so
+    /// cache_read is peeled off and input_tokens holds the uncached remainder.
+    fn usage_value(&self) -> Value {
+        json!({
+            "input_tokens": self.input_tokens,
+            "cache_read_input_tokens": self.cache_read_tokens,
+            "cache_creation_input_tokens": 0,
+            "output_tokens": self.output_tokens,
+        })
+    }
+
     fn read_usage(&mut self, data: &Value) {
-        let usage = data
+        let Some(usage) = data
             .pointer("/response/usage")
-            .or_else(|| data.get("usage"));
-        if let Some(tokens) = usage
-            .and_then(|usage| usage.get("output_tokens"))
-            .and_then(Value::as_u64)
-        {
+            .or_else(|| data.get("usage"))
+        else {
+            return;
+        };
+        if let Some(tokens) = usage.get("output_tokens").and_then(Value::as_u64) {
             self.output_tokens = tokens;
+        }
+        // OpenAI `input_tokens` counts total prompt tokens including cached ones;
+        // peel the cached portion into cache_read so the sum still equals the
+        // prompt size Claude Code charts against the context window.
+        let cached = usage
+            .pointer("/input_tokens_details/cached_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        if let Some(total_input) = usage.get("input_tokens").and_then(Value::as_u64) {
+            self.cache_read_tokens = cached.min(total_input);
+            self.input_tokens = total_input - self.cache_read_tokens;
         }
     }
 

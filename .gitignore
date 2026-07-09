@@ -5,3 +5,6 @@ shunt.toml
 wiki/node_modules/
 wiki/.astro/
 wiki/dist/
+
+# Local worktrees created by the worktree workflow (per-branch, not shared)
+.claude/worktrees/

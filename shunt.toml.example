@@ -37,6 +37,8 @@ kind = "responses"
 base_url = "https://chatgpt.com/backend-api"
 auth = "chatgpt_oauth"         # reads + auto-refreshes ~/.codex/auth.json
 # effort = "high"              # low|medium|high|xhigh; gpt-5.6 slugs also accept "max"
+# count_tokens = "tiktoken"    # opt-in: local o200k_base count for count_tokens
+                               # (default "estimate" = 404 -> client estimates). Approximate.
 
 # --- Anthropic-compatible gateways: all `kind = "anthropic"` + an injected key.
 # Uncomment one, set its api_key_env, then add a matching [[routes]] below.

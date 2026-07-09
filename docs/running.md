@@ -118,6 +118,7 @@ a brand-new table adds a provider. Every provider takes these keys:
 | `api_key_env` | env var name | Where the key is read from, when `auth = "api_key"`. |
 | `api_key_header` | `bearer` (default) \| `x_api_key` | Header the injected key is sent in. |
 | `effort` | `low`…`max` | Optional default reasoning effort (`responses` providers). |
+| `count_tokens` | `estimate` (default) \| `tiktoken` | For `responses` providers: `estimate` returns 404 so Claude Code estimates locally; `tiktoken` computes an approximate local count (o200k_base) and returns `{"input_tokens": N}`. See §4. |
 
 Most third-party "use Claude Code with X" gateways are **Anthropic-Messages-compatible**: they are
 `kind = "anthropic"` with `auth = "api_key"`, differing only in `base_url` and the key env var.
@@ -183,7 +184,29 @@ e.g. `RUST_LOG=shunt=debug cargo run -- run`.
 | `HEAD` | `/`                           | Liveness probe                                      |
 | `GET`  | `/v1/models`                  | Model discovery (returns your `[[models]]` entries) |
 | `POST` | `/v1/messages`                | Inference — routed per the request's `model` id     |
-| `POST` | `/v1/messages/count_tokens`   | Token counting (passed through for Anthropic models)|
+| `POST` | `/v1/messages/count_tokens`   | Token counting (see below)                          |
+
+**`count_tokens`:** for an **Anthropic-routed** model shunt passes the request through to the
+upstream's `count_tokens` endpoint (exact counts). For a **`responses`-routed** model (codex/OpenAI)
+there is no equivalent upstream endpoint, so the provider's `count_tokens` setting decides:
+
+- `count_tokens = "estimate"` (default) — shunt returns **404**; Claude Code then estimates tokens
+  locally, which the [gateway protocol](https://code.claude.com/docs/en/llm-gateway-protocol)
+  explicitly allows for an absent endpoint.
+- `count_tokens = "tiktoken"` (opt-in) — shunt computes an **approximate** count locally with
+  tiktoken's `o200k_base` encoder and returns `{"input_tokens": N}`. This is closer than Claude
+  Code's `char/4` fallback, but **not exact**: the backend's billed count also includes reasoning
+  tokens, image/tool-schema encoding, and cache accounting that a text-only local count can't see.
+  It also can't perfectly match a model whose real encoder differs from `o200k_base`.
+
+Either way the request never reaches the responses adapter, so a count request is never turned into
+(and billed as) a full inference call. Enable tiktoken per provider:
+
+```toml
+[providers.codex]
+kind = "responses"
+count_tokens = "tiktoken"
+```
 
 ---
 
@@ -390,6 +413,36 @@ export CLAUDE_CODE_ATTRIBUTION_HEADER=0
 
 This is global, so it also removes attribution from any Anthropic-passthrough traffic (used for
 cost tracking) — which is fine when you're routing to another provider.
+
+### 5.7 Context / usage display for mapped models
+
+Claude Code's statusline and prompt footer compute the **context indicator locally** from the
+assistant message's token `usage` (`input_tokens + cache_read + cache_creation`) divided by the
+model's context-window size — no server field controls it. Two consequences for models routed to
+a `responses` provider (codex/OpenAI):
+
+- **Token count (the numerator) is accurate.** shunt reads `input_tokens` (and cached tokens) from
+  the Responses `usage` and forwards them in the Anthropic `message_delta`, so the bar fills as the
+  conversation grows. (The OpenAI `input_tokens` total includes cached tokens; shunt peels the
+  cached part into `cache_read_input_tokens`, preserving the total.)
+- **The window (the denominator) is a fixed 200k for unmapped ids.** `getContextWindowForModel`
+  returns `200_000` for any model id it doesn't recognize, and its accurate per-model lookup
+  (`max_input_tokens` from the gateway's `/v1/models`) is **disabled unless the base URL is
+  `api.anthropic.com`** — so a gateway can't set it. A model with a larger real window (e.g.
+  `gpt-5.6-sol` at 372k) therefore shows a **conservative, over-reported** percentage. This only
+  makes Claude Code's auto-compact trigger a little early; it is otherwise harmless.
+
+The only client-side lever is the `[1m]` model-id suffix, which forces a **1M** window — useful for
+a genuinely 1M-context model, but misleading (under-reporting) for a smaller one, so avoid it
+unless the upstream really has that window. Claude passthrough models are unaffected: Claude Code
+already knows their window sizes, so their percentage is exact.
+
+| Field | Mapped (`responses`) model | Claude passthrough |
+| :-- | :-- | :-- |
+| Context tokens used | ✅ accurate (forwarded by shunt) | ✅ accurate |
+| Context window (denominator) | ⚠️ 200k default (or `[1m]` → 1M) | ✅ exact |
+| `count_tokens` (pre-flight) | ⚠️ client `char/4`, or `count_tokens = "tiktoken"` for a closer local count (§4) | ✅ exact (upstream) |
+| `rate_limits` (5h / weekly) | ❌ needs Anthropic `anthropic-ratelimit-*` headers | ✅ shown |
 
 ---
 

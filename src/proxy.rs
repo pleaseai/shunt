@@ -10,7 +10,9 @@ use tracing::Instrument;
 
 use crate::{
     adapters::{anthropic::AnthropicAdapter, responses::ResponsesAdapter, Adapter, AdapterError},
-    error::UpstreamError,
+    config::CountTokens,
+    count_tokens,
+    error::{ShuntError, UpstreamError},
     routing::{self, AdapterKind},
     server::AppState,
 };
@@ -110,6 +112,29 @@ async fn forward(
         message: "failed to route request".to_string(),
         response: error.into_response(),
     })?;
+    // The Responses API has no token-counting endpoint. For a responses-routed
+    // model, either count locally with tiktoken (opt-in) or return 404 so Claude
+    // Code estimates tokens locally (gateway protocol). Either way we must NOT let
+    // the request reach the responses adapter, which would translate it into — and
+    // bill it as — a full inference call. Anthropic-routed models still pass
+    // through to the upstream count_tokens endpoint below.
+    if is_count_tokens(uri) && route.adapter == AdapterKind::Responses {
+        let mode = state
+            .config
+            .provider(&route.provider)
+            .map(|provider| provider.count_tokens)
+            .unwrap_or(CountTokens::Estimate);
+        return Ok(match mode {
+            CountTokens::Tiktoken => {
+                let input_tokens = count_tokens::count_input_tokens(&body);
+                (
+                    StatusCode::OK,
+                    axum::Json(serde_json::json!({ "input_tokens": input_tokens })).into_response(),
+                )
+            }
+            CountTokens::Estimate => (StatusCode::NOT_FOUND, count_tokens_unsupported()),
+        });
+    }
     let body = body.to_vec();
     let result = match route.adapter {
         AdapterKind::Anthropic => {
@@ -124,4 +149,37 @@ async fn forward(
         }
     };
     result.map_err(ForwardError::from)
+}
+
+fn is_count_tokens(uri: &Uri) -> bool {
+    uri.path().ends_with("/count_tokens")
+}
+
+fn count_tokens_unsupported() -> axum::response::Response {
+    ShuntError::new(
+        StatusCode::NOT_FOUND,
+        "not_found_error",
+        "count_tokens is not available for this model; Claude Code estimates tokens locally",
+    )
+    .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::Uri;
+
+    use super::is_count_tokens;
+
+    #[test]
+    fn detects_count_tokens_path() {
+        assert!(is_count_tokens(
+            &"/v1/messages/count_tokens".parse::<Uri>().unwrap()
+        ));
+        assert!(is_count_tokens(
+            &"http://host/v1/messages/count_tokens?beta=true"
+                .parse::<Uri>()
+                .unwrap()
+        ));
+        assert!(!is_count_tokens(&"/v1/messages".parse::<Uri>().unwrap()));
+    }
 }
