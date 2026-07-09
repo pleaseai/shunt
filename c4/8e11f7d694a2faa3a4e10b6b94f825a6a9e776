@@ -1,0 +1,19 @@
+docs/m3-discovery.md
+  s_aff5a67040992a::t_0e708e9dd95473 1-91
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c48e11f7d694a2faa3a4e10b6b94f825a6a9e776",
+  "prompts": {},
+  "sessions": {
+    "s_aff5a67040992a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3d19ef13-49aa-49ae-8a29-6a58cdc4290d",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@passionfactory.ai>"
+    }
+  }
+}
