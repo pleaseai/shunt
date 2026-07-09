@@ -500,3 +500,107 @@ fn document_block_becomes_input_file() {
         ])
     );
 }
+
+#[test]
+fn url_sourced_document_uses_file_url_not_empty_data() {
+    let out = translate(json!({
+        "messages": [{"role": "user", "content": [
+            {"type": "document", "source": {"type": "url", "url": "https://example.com/spec.pdf"}}
+        ]}]
+    }));
+    assert_eq!(
+        out["input"][0]["content"][0],
+        json!({"type": "input_file", "file_url": "https://example.com/spec.pdf"})
+    );
+}
+
+#[test]
+fn url_sourced_image_passes_url_through() {
+    let out = translate(json!({
+        "messages": [{"role": "user", "content": [
+            {"type": "image", "source": {"type": "url", "url": "https://example.com/x.png"}}
+        ]}]
+    }));
+    assert_eq!(
+        out["input"][0]["content"][0],
+        json!({"type": "input_image", "image_url": "https://example.com/x.png"})
+    );
+}
+
+#[test]
+fn unrepresentable_document_source_is_dropped_not_emptied() {
+    // A source shunt can't represent must not become an empty "data:...;base64," URI.
+    let out = translate(json!({
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": "read"},
+            {"type": "document", "source": {"type": "file", "file_id": "file_123"}}
+        ]}]
+    }));
+    // Only the text survives; the unrepresentable document is dropped.
+    assert_eq!(
+        out["input"][0]["content"],
+        json!([{"type": "input_text", "text": "read"}])
+    );
+}
+
+#[test]
+fn errored_tool_result_with_image_keeps_failure_signal() {
+    let out = translate(json!({
+        "messages": [{"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "toolu_1", "is_error": true, "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "IMG"}}
+            ]}
+        ]}]
+    }));
+    assert_eq!(
+        out["input"][0]["output"],
+        json!([
+            {"type": "input_text", "text": "Tool execution failed"},
+            {"type": "input_image", "image_url": "data:image/png;base64,IMG"}
+        ])
+    );
+}
+
+#[test]
+fn errored_tool_result_with_text_and_image_keeps_text_only() {
+    // When the tool provided its own error text, don't inject a duplicate marker.
+    let out = translate(json!({
+        "messages": [{"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "toolu_1", "is_error": true, "content": [
+                {"type": "text", "text": "boom: file missing"},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "IMG"}}
+            ]}
+        ]}]
+    }));
+    assert_eq!(
+        out["input"][0]["output"],
+        json!([
+            {"type": "input_text", "text": "boom: file missing"},
+            {"type": "input_image", "image_url": "data:image/png;base64,IMG"}
+        ])
+    );
+}
+
+#[test]
+fn reasoning_id_falls_back_to_done_event_when_added_missing() {
+    // No output_item.added for the reasoning item (so the buffer id is empty);
+    // the id must be recovered from the output_item.done event's item.
+    let fixture = concat!(
+        "event: response.reasoning_summary_text.delta\n",
+        "data: {\"delta\":\"think\"}\n\n",
+        "event: response.output_item.done\n",
+        "data: {\"item\":{\"type\":\"reasoning\",\"id\":\"rs_done\",\"encrypted_content\":\"ENC\"}}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
+    );
+    let mut machine = AnthropicSseMachine::new("gpt-5.2-codex", true);
+    let emitted = parse_sse_events(fixture)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
+    let expected = shunt::model::responses::encode_reasoning_signature("rs_done", "ENC");
+    assert!(
+        emitted.contains(&expected),
+        "signature should encode the id from the done event"
+    );
+}

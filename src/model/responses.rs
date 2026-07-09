@@ -275,10 +275,15 @@ impl AnthropicSseMachine {
             out.extend(self.open_reasoning());
         }
         if !encrypted.is_empty() {
+            // Prefer the id captured at output_item.added; fall back to the id on
+            // this done event so the round-trip keeps a real reasoning-item id even
+            // if the added event was missed or carried none.
             let id = self
                 .reasoning
                 .as_ref()
                 .map(|reasoning| reasoning.id.clone())
+                .filter(|id| !id.is_empty())
+                .or_else(|| item.get("id").and_then(Value::as_str).map(str::to_string))
                 .unwrap_or_default();
             let signature = encode_reasoning_signature(&id, encrypted);
             if let Some(reasoning) = &mut self.reasoning {

@@ -211,36 +211,60 @@ fn document_part(block: &Value, pending: &mut Vec<Value>) {
     }
 }
 
-/// Anthropic `image` block -> Responses `input_image` (base64 data URL).
+/// Anthropic `image` block -> Responses `input_image`. `image_url` accepts both
+/// a passthrough URL and a base64 `data:` URI, so both source shapes map to it.
 fn image_content_item(block: &Value) -> Option<Value> {
-    let source = block.get("source")?;
-    let media_type = source
-        .get("media_type")
-        .and_then(Value::as_str)
-        .unwrap_or("image/png");
-    let data = source.get("data").and_then(Value::as_str).unwrap_or("");
-    Some(json!({
-        "type": "input_image",
-        "image_url": format!("data:{media_type};base64,{data}")
-    }))
+    let image_url = source_url(block.get("source")?, "image/png")?;
+    Some(json!({"type": "input_image", "image_url": image_url}))
 }
 
-/// Anthropic `document` block (e.g. a PDF) -> Responses `input_file`.
+/// Anthropic `document` block (e.g. a PDF) -> Responses `input_file`. Unlike
+/// images, `input_file` splits by key: `file_url` for a URL source, `file_data`
+/// for base64. Source shapes shunt can't represent are dropped (return None)
+/// rather than forwarded as an empty, invalid `data:` URI.
 fn file_content_item(block: &Value) -> Option<Value> {
     let source = block.get("source")?;
-    let media_type = source
-        .get("media_type")
-        .and_then(Value::as_str)
-        .unwrap_or("application/pdf");
-    let data = source.get("data").and_then(Value::as_str).unwrap_or("");
-    let mut item = json!({
-        "type": "input_file",
-        "file_data": format!("data:{media_type};base64,{data}")
-    });
+    let mut item = match source.get("type").and_then(Value::as_str) {
+        Some("url") => {
+            let url = source.get("url").and_then(Value::as_str)?;
+            json!({"type": "input_file", "file_url": url})
+        }
+        Some("base64") | None => {
+            let data = source.get("data").and_then(Value::as_str)?;
+            let media_type = source
+                .get("media_type")
+                .and_then(Value::as_str)
+                .unwrap_or("application/pdf");
+            json!({"type": "input_file", "file_data": format!("data:{media_type};base64,{data}")})
+        }
+        _ => return None,
+    };
     if let Some(filename) = block.get("title").and_then(Value::as_str) {
         item["filename"] = json!(filename);
     }
     Some(item)
+}
+
+/// Resolve an Anthropic block `source` to a URL string: a passthrough `url`
+/// source, or a base64 `data:` URI. Returns None for a base64 source missing its
+/// data, or any source shape shunt can't represent — the caller drops the block
+/// rather than emitting a malformed empty `data:` URI.
+fn source_url(source: &Value, default_media_type: &str) -> Option<String> {
+    match source.get("type").and_then(Value::as_str) {
+        Some("url") => source
+            .get("url")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        Some("base64") | None => {
+            let data = source.get("data").and_then(Value::as_str)?;
+            let media_type = source
+                .get("media_type")
+                .and_then(Value::as_str)
+                .unwrap_or(default_media_type);
+            Some(format!("data:{media_type};base64,{data}"))
+        }
+        _ => None,
+    }
 }
 
 fn tool_use_item(out: &mut Vec<Value>, role: &str, pending: &mut Vec<Value>, block: &Value) {
@@ -344,7 +368,7 @@ fn tool_result_output(block: &Value) -> Value {
                 )
             });
             if has_rich {
-                let items = blocks
+                let mut items = blocks
                     .iter()
                     .filter_map(|inner| match inner.get("type").and_then(Value::as_str) {
                         Some("text") => inner
@@ -356,6 +380,22 @@ fn tool_result_output(block: &Value) -> Value {
                         _ => None,
                     })
                     .collect::<Vec<_>>();
+                // Preserve the failure signal the text-only branch conveys: a
+                // failed result with no text would otherwise reach the model as
+                // media alone, with no indication it errored.
+                let has_text = items.iter().any(|item| {
+                    item.get("type").and_then(Value::as_str) == Some("input_text")
+                        && item
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .is_some_and(|text| !text.is_empty())
+                });
+                if is_error && !has_text {
+                    items.insert(
+                        0,
+                        json!({"type": "input_text", "text": "Tool execution failed"}),
+                    );
+                }
                 return Value::Array(items);
             }
             let text = blocks
