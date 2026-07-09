@@ -1,2 +1,5 @@
 /target
 shunt.toml
+
+# Local worktrees created by the worktree workflow (per-branch, not shared)
+.claude/worktrees/
