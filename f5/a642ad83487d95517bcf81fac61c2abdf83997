@@ -1,0 +1,23 @@
+docs/RELEASING.md
+  s_0a5d7e9303fc94::t_e8d71b47379d5d 31-46
+  s_0a5d7e9303fc94::t_cd991b4af2526e 4-5
+  s_0a5d7e9303fc94::t_1305987b3a13f1 73-75
+.github/workflows/release.yml
+  s_0a5d7e9303fc94::t_fbff5698dfadb3 89-92,97-99,107-110,112,114
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f5a642ad83487d95517bcf81fac61c2abdf83997",
+  "prompts": {},
+  "sessions": {
+    "s_0a5d7e9303fc94": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "38f89084-8414-4d2a-9f5c-1659986a3a78",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@passionfactory.ai>"
+    }
+  }
+}
