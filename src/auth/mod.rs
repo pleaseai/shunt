@@ -4,6 +4,7 @@ use axum::{http::StatusCode, response::IntoResponse};
 
 use crate::{adapters::AdapterError, config::Config, error::ShuntError, routing::Route};
 
+pub mod claude_auth;
 pub mod codex_auth;
 
 // TODO(M2): Add the optional `shunt login` PKCE loopback fallback. M2 currently

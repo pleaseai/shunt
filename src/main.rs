@@ -28,6 +28,11 @@ enum Command {
         #[arg(long)]
         config: Option<PathBuf>,
     },
+    /// Print a Claude subscription OAuth token to stdout, for use as an
+    /// `apiKeyHelper`. Static mode echoes `SHUNT_GATEWAY_TOKEN` /
+    /// `CLAUDE_CODE_OAUTH_TOKEN`; otherwise auto-refresh mode reads and refreshes
+    /// `~/.claude/.credentials.json`.
+    Token,
 }
 
 #[tokio::main]
@@ -38,9 +43,19 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Some(Command::Run { config }) => run(config.or(cli.config)).await,
         Some(Command::Check { config }) => check(config.or(cli.config)),
+        Some(Command::Token) => token().await,
         None if cli.check => check(cli.config),
         None => run(cli.config).await,
     }
+}
+
+async fn token() -> anyhow::Result<()> {
+    let path = shunt::auth::claude_auth::default_credentials_path();
+    let client = reqwest::Client::new();
+    // stdout carries only the token so it can be consumed by apiKeyHelper.
+    let token = shunt::auth::claude_auth::resolve_token(path, client).await?;
+    println!("{token}");
+    Ok(())
 }
 
 async fn run(config_path: Option<PathBuf>) -> anyhow::Result<()> {
@@ -72,6 +87,8 @@ fn init_tracing() {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("shunt=info"));
     tracing_subscriber::registry()
         .with(filter)
-        .with(tracing_subscriber::fmt::layer())
+        // Logs go to stderr so command stdout (e.g. the `token` subcommand's
+        // apiKeyHelper output) stays free of log noise.
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
         .init();
 }

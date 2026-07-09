@@ -257,14 +257,40 @@ See [`m3-discovery.md`](m3-discovery.md).
 > authenticates Claude-passthrough models on your subscription. `gpt-*` models are unaffected
 > either way — shunt injects the ChatGPT/OpenAI credential for them regardless of this token.
 >
-> **Use `claude setup-token`, not the raw login token.** `setup-token` mints a **one-year** OAuth
-> token ([authentication docs](https://code.claude.com/docs/en/authentication#generate-a-long-lived-token)),
+> **Prefer `claude setup-token`.** It mints a **one-year** OAuth token
+> ([authentication docs](https://code.claude.com/docs/en/authentication#generate-a-long-lived-token)),
 > so nothing needs refreshing. The short-lived access token inside `~/.claude/.credentials.json`
 > (macOS: Keychain) expires in hours and, once a gateway credential is active, Claude Code stops
-> refreshing the login — so pointing a credential helper at that file just breaks after expiry.
-> Do **not** hand-roll an OAuth refresh against `platform.claude.com/v1/oauth/token`: it is
-> aggressively rate-limited/WAF-guarded (a single call can return `429`), and it writes to your
-> live login file. The one-year `setup-token` avoids all of it.
+> refreshing the login — so a helper that just reads that file breaks after expiry. If you want to
+> reuse the live subscription login instead of minting a separate token, use the built-in
+> `shunt token` helper (below), which refreshes it for you. Refreshing manually is otherwise
+> discouraged: `platform.claude.com/v1/oauth/token` is aggressively rate-limited/WAF-guarded (a
+> single stray call can return `429`), and it rewrites your live login file.
+
+#### The `shunt token` credential helper
+
+`shunt token` prints a Claude subscription OAuth token to **stdout** (logs go to stderr), so it
+can be wired straight into Claude Code's `apiKeyHelper`. It has two modes:
+
+- **Static** — if `SHUNT_GATEWAY_TOKEN` or `CLAUDE_CODE_OAUTH_TOKEN` is set, it echoes that value
+  unchanged. Point it at a `claude setup-token` value and nothing is ever refreshed.
+- **Auto-refresh** — otherwise it reads `~/.claude/.credentials.json`
+  (override with `CLAUDE_CREDENTIALS`), returns the `claudeAiOauth` access token, and when it is
+  within 5 minutes of `expiresAt` refreshes it against `platform.claude.com/v1/oauth/token` (the
+  same grant Claude Code uses), then writes the new token back **atomically at `0600`, preserving
+  every other field**. Refresh happens only on actual expiry, to respect the endpoint's rate limit.
+
+Wire it up via `apiKeyHelper` in `~/.claude/settings.json` (or the project `.claude/settings.json`):
+
+```json
+{
+  "apiKeyHelper": "/path/to/shunt token"
+}
+```
+
+Claude Code calls the helper for its gateway credential, so discovery fires; `SHUNT_GATEWAY_TOKEN`
+(static) vs. no override (auto-refresh) selects the mode. The refresh path touches your real login
+file, so the static + `setup-token` route stays the simplest and safest default.
 
 ### 5.5 Reasoning effort
 
