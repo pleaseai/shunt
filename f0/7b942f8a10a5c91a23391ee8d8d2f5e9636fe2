@@ -1,0 +1,19 @@
+src/auth/codex_auth.rs
+  s_7200dc5a3f6b63::t_3aca08d83700f9 235-240,243
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f07b942f8a10a5c91a23391ee8d8d2f5e9636fe2",
+  "prompts": {},
+  "sessions": {
+    "s_7200dc5a3f6b63": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e2b30df9-39bd-49c4-84a4-8de5b6108113",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
