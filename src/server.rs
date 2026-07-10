@@ -36,8 +36,8 @@ pub fn build_router(config: Config) -> Result<Router, ConfigError> {
 
     // `/` and `/health` stay unauthenticated even when `[server.auth]` is
     // configured (healthcheck tools rarely carry tokens); they must never
-    // expose config, credentials, or upstream details — version and status
-    // only.
+    // expose config, credentials, or upstream details — only version, status,
+    // and the already-public endpoint list.
     Ok(Router::new()
         .route("/", get(root_index))
         .route("/health", get(health))

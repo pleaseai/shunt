@@ -189,7 +189,8 @@ e.g. `RUST_LOG=shunt=debug cargo run -- run`.
 | `POST` | `/v1/messages/count_tokens`   | Token counting (see below)                          |
 
 `GET /` and `GET /health` stay open even when `[server.auth]` is enabled (healthcheck tools
-usually cannot attach tokens) and expose nothing beyond status and version.
+usually cannot attach tokens) and expose nothing sensitive — only status, version, and the
+already-public endpoint list.
 
 **`count_tokens`:** for an **Anthropic-routed** model shunt passes the request through to the
 upstream's `count_tokens` endpoint (exact counts). For a **`responses`-routed** model (codex/OpenAI)
