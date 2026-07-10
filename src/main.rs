@@ -134,11 +134,7 @@ fn init_sentry(config: Option<&SentryConfig>) -> Option<sentry::ClientInitGuard>
         // reporting; with this off, `crate::metrics` capture calls are dropped
         // by the client.
         enable_metrics: config.metrics,
-        // The host name identifies the operator's machine; withhold it.
-        before_send: Some(std::sync::Arc::new(|mut event| {
-            event.server_name = None;
-            Some(event)
-        })),
+        before_send: Some(std::sync::Arc::new(scrub_event)),
         // Log fields can quote request-derived data (e.g. upstream error
         // bodies at warn level); keep only the breadcrumb message and level so
         // no log field ever leaves the machine — regardless of what existing
@@ -151,6 +147,14 @@ fn init_sentry(config: Option<&SentryConfig>) -> Option<sentry::ClientInitGuard>
     });
     tracing::info!(metrics = config.metrics, "sentry error reporting enabled");
     Some(guard)
+}
+
+/// The host name identifies the operator's machine; withhold it.
+fn scrub_event(
+    mut event: sentry::protocol::Event<'static>,
+) -> Option<sentry::protocol::Event<'static>> {
+    event.server_name = None;
+    Some(event)
 }
 
 fn init_tracing() {
@@ -167,4 +171,76 @@ fn init_tracing() {
         // otherwise ride into error events via the trace context.
         .with(sentry::integrations::tracing::layer().span_filter(|_| false))
         .init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_builds() {
+        assert!(runtime().is_ok());
+    }
+
+    #[test]
+    fn init_sentry_without_config_creates_no_client() {
+        assert!(init_sentry(None).is_none());
+    }
+
+    #[test]
+    fn init_sentry_with_blank_dsn_creates_no_client() {
+        let config = SentryConfig {
+            dsn: "   ".to_string(),
+            environment: None,
+            metrics: false,
+        };
+        assert!(init_sentry(Some(&config)).is_none());
+    }
+
+    #[test]
+    fn init_sentry_with_valid_dsn_binds_client() {
+        let config = SentryConfig {
+            dsn: "https://public@sentry.invalid/1".to_string(),
+            environment: Some("test".to_string()),
+            metrics: false,
+        };
+        let guard = init_sentry(Some(&config));
+        assert!(guard.is_some());
+    }
+
+    #[test]
+    fn scrub_event_withholds_server_name() {
+        let event = sentry::protocol::Event {
+            server_name: Some("operator-laptop".into()),
+            ..Default::default()
+        };
+        let scrubbed = scrub_event(event).expect("scrubbing keeps the event");
+        assert!(scrubbed.server_name.is_none());
+    }
+
+    #[test]
+    fn serve_rejects_invalid_bind_address() {
+        let mut config = Config::default();
+        config.server.bind = "not-an-address".to_string();
+        let error = runtime()
+            .expect("runtime builds")
+            .block_on(serve(config))
+            .expect_err("invalid bind must fail");
+        assert!(error.to_string().contains("invalid server bind address"));
+    }
+
+    #[test]
+    fn run_surfaces_serve_errors() {
+        let path = std::env::temp_dir().join("shunt-main-run-test.toml");
+        // TEST-NET-3 (RFC 5737): parses as a socket address, so config load
+        // succeeds, but binding it fails — the error must surface through run.
+        std::fs::write(&path, "[server]\nbind = \"203.0.113.7:39999\"\n")
+            .expect("write test config");
+        let result = run(Some(path.clone()));
+        std::fs::remove_file(&path).ok();
+        assert!(result
+            .expect_err("unbindable address must fail")
+            .to_string()
+            .contains("failed to bind"));
+    }
 }
