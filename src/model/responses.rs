@@ -552,10 +552,12 @@ pub fn anthropic_error_type(status: StatusCode) -> &'static str {
 
 fn error_message(value: &Value) -> String {
     // OpenAI Responses errors use {"error":{"message":...}} or {"message":...};
+    // streaming `response.failed` events nest it at {"response":{"error":...}};
     // the ChatGPT Codex backend uses {"detail":...}. Surface whichever is present
     // so the client sees the real reason (e.g. "The 'X' model is not supported").
     value
         .pointer("/error/message")
+        .or_else(|| value.pointer("/response/error/message"))
         .or_else(|| value.get("message"))
         .or_else(|| value.get("detail"))
         .and_then(Value::as_str)
@@ -573,22 +575,29 @@ fn error_message(value: &Value) -> String {
 fn context_overflow_message(value: &Value, message: &str) -> Option<String> {
     let code = value
         .pointer("/error/code")
+        .or_else(|| value.pointer("/response/error/code"))
+        .or_else(|| value.get("code"))
         .and_then(Value::as_str)
         .unwrap_or_default();
     let lower = message.to_lowercase();
+    // "exceeds the limit" alone also appears in quota/rate errors ("exceeds the
+    // limit of 1000000 tokens per minute"); requiring "prompt" or "token count"
+    // pins that branch to prompt-size messages.
     let is_overflow = code == "context_length_exceeded"
         || lower.contains("maximum context length")
         || (lower.contains("context window") && lower.contains("exceed"))
-        || (lower.contains("exceeds the limit") && lower.contains("token"));
+        || (lower.contains("exceeds the limit")
+            && (lower.contains("prompt") || lower.contains("token count")));
     if !is_overflow {
         return None;
     }
     // Token counts and window sizes are the only large integers in these
     // messages (small ones come from model names like "gpt-5.2"), and the
-    // overflowing count is always the larger of the two.
+    // overflowing count is always the larger of the two. Commas and
+    // underscores are digit-group separators ("272,000"), not delimiters.
     let mut numbers: Vec<i64> = Vec::new();
     let mut current: Option<i64> = None;
-    for ch in message.chars() {
+    for ch in message.chars().filter(|ch| !matches!(ch, ',' | '_')) {
         if let Some(digit) = ch.to_digit(10) {
             current = Some(
                 current

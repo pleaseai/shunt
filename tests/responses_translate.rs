@@ -405,6 +405,26 @@ fn rewrites_context_overflow_errors_to_anthropic_wording() {
     );
     assert_eq!(responses["error"]["message"], "prompt is too long");
 
+    // Comma-formatted counts still parse (digit-group separators, not delimiters).
+    let grouped = map_error_value(
+        &json!({"error": {"message": "This model's maximum context length is 272,000 tokens. However, your messages resulted in 372,982 tokens."}}),
+        StatusCode::BAD_REQUEST,
+    );
+    assert_eq!(
+        grouped["error"]["message"],
+        "prompt is too long: 372982 tokens > 272000 maximum"
+    );
+
+    // Streaming `response.failed` events nest the error under "response".
+    let failed = map_error_value(
+        &json!({"type": "response.failed", "response": {"error": {
+            "code": "context_length_exceeded",
+            "message": "Your input exceeds the context window of this model."
+        }}}),
+        StatusCode::BAD_GATEWAY,
+    );
+    assert_eq!(failed["error"]["message"], "prompt is too long");
+
     // Non-overflow errors pass through untouched.
     let other = map_error_value(
         &json!({"error": {"code": "invalid_api_key", "message": "Incorrect API key provided: 1234567890"}}),
@@ -413,6 +433,16 @@ fn rewrites_context_overflow_errors_to_anthropic_wording() {
     assert_eq!(
         other["error"]["message"],
         "Incorrect API key provided: 1234567890"
+    );
+
+    // Quota/rate errors mention token limits too; they must NOT be rewritten.
+    let quota = map_error_value(
+        &json!({"error": {"code": "rate_limit_exceeded", "message": "Your request exceeds the limit of 1000000 tokens per minute."}}),
+        StatusCode::TOO_MANY_REQUESTS,
+    );
+    assert_eq!(
+        quota["error"]["message"],
+        "Your request exceeds the limit of 1000000 tokens per minute."
     );
 }
 
