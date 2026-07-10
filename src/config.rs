@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, net::SocketAddr, path::Path};
+use std::{
+    collections::BTreeMap,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
 
 use figment::{
     providers::{Env, Format, Serialized, Toml},
@@ -193,6 +197,8 @@ pub struct RoutePrefixConfig {
 pub enum ConfigError {
     #[error("failed to load configuration: {0}")]
     Figment(#[from] Box<figment::Error>),
+    #[error("config file not found: {}", .0.display())]
+    MissingConfigFile(PathBuf),
     #[error("server.bind must be a socket address: {0}")]
     BindAddress(#[from] std::net::AddrParseError),
     #[error("providers.{provider}.base_url must be a valid absolute URL: {message}")]
@@ -276,15 +282,67 @@ impl Default for Config {
     }
 }
 
+/// Standard config search order: `./shunt.toml`, then
+/// `$XDG_CONFIG_HOME/shunt/shunt.toml` (defaulting to `~/.config`), then
+/// `<homebrew prefix>/etc/shunt.toml` (`$HOMEBREW_PREFIX`, or the stock
+/// `/opt/homebrew` and `/usr/local` prefixes when unset).
+fn config_file_candidates(
+    xdg_config_home: Option<PathBuf>,
+    homebrew_prefix: Option<PathBuf>,
+) -> Vec<PathBuf> {
+    let mut candidates = vec![PathBuf::from("./shunt.toml")];
+    if let Some(dir) = xdg_config_home {
+        candidates.push(dir.join("shunt").join("shunt.toml"));
+    }
+    let brew_prefixes = match homebrew_prefix {
+        Some(prefix) => vec![prefix],
+        None => vec![PathBuf::from("/opt/homebrew"), PathBuf::from("/usr/local")],
+    };
+    for prefix in brew_prefixes {
+        candidates.push(prefix.join("etc").join("shunt.toml"));
+    }
+    candidates
+}
+
 impl Config {
     pub fn load(path: Option<&Path>) -> Result<Self, ConfigError> {
-        let path = path.unwrap_or_else(|| Path::new("./shunt.toml"));
-        let config: Self = Figment::from(Serialized::defaults(Self::default()))
-            .merge(Toml::file(path))
+        // An explicit --config that doesn't exist is an error; a typo'd path
+        // must not silently fall back to defaults.
+        let path = match path {
+            Some(path) if !path.is_file() => {
+                return Err(ConfigError::MissingConfigFile(path.to_path_buf()));
+            }
+            Some(path) => Some(path.to_path_buf()),
+            None => Self::find_config_file(),
+        };
+        let mut figment = Figment::from(Serialized::defaults(Self::default()));
+        if let Some(path) = &path {
+            figment = figment.merge(Toml::file(path));
+        }
+        let config: Self = figment
             .merge(Env::prefixed("SHUNT_").split("__"))
             .extract()
             .map_err(Box::new)?;
+        match &path {
+            Some(path) => tracing::info!(path = %path.display(), "loaded config"),
+            None => tracing::info!("no config file found, using defaults"),
+        }
         config.validate()
+    }
+
+    /// First existing file from the standard search order used when no
+    /// `--config` is given.
+    fn find_config_file() -> Option<PathBuf> {
+        let xdg_config_home = match std::env::var_os("XDG_CONFIG_HOME") {
+            Some(dir) if !dir.is_empty() => Some(PathBuf::from(dir)),
+            _ => std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")),
+        };
+        let homebrew_prefix = std::env::var_os("HOMEBREW_PREFIX")
+            .filter(|prefix| !prefix.is_empty())
+            .map(PathBuf::from);
+        config_file_candidates(xdg_config_home, homebrew_prefix)
+            .into_iter()
+            .find(|path| path.is_file())
     }
 
     pub fn validate(self) -> Result<Self, ConfigError> {
@@ -390,7 +448,7 @@ mod tests {
         sync::{Arc, Mutex},
     };
 
-    use super::{AuthMode, Config, ModelConfig, ProviderKind};
+    use super::{config_file_candidates, AuthMode, Config, ConfigError, ModelConfig, ProviderKind};
 
     struct BufferWriter {
         buffer: Arc<Mutex<Vec<u8>>>,
@@ -451,6 +509,51 @@ mod tests {
             AuthMode::ChatgptOauth
         );
         assert!(config.provider("kimi").is_none());
+    }
+
+    #[test]
+    fn load_errors_when_explicit_config_path_is_missing() {
+        let path = std::path::Path::new("./no-such-shunt-config.toml");
+        let error = Config::load(Some(path)).unwrap_err();
+        assert!(matches!(error, ConfigError::MissingConfigFile(_)));
+        assert!(error.to_string().contains("no-such-shunt-config.toml"));
+    }
+
+    #[test]
+    fn config_file_candidates_follow_search_order() {
+        let candidates = config_file_candidates(
+            Some(std::path::PathBuf::from("/home/u/.config")),
+            Some(std::path::PathBuf::from("/opt/homebrew")),
+        );
+        let candidates: Vec<_> = candidates
+            .iter()
+            .map(|path| path.to_str().unwrap())
+            .collect();
+        assert_eq!(
+            candidates,
+            [
+                "./shunt.toml",
+                "/home/u/.config/shunt/shunt.toml",
+                "/opt/homebrew/etc/shunt.toml",
+            ]
+        );
+    }
+
+    #[test]
+    fn config_file_candidates_try_stock_brew_prefixes_when_env_is_unset() {
+        let candidates = config_file_candidates(None, None);
+        let candidates: Vec<_> = candidates
+            .iter()
+            .map(|path| path.to_str().unwrap())
+            .collect();
+        assert_eq!(
+            candidates,
+            [
+                "./shunt.toml",
+                "/opt/homebrew/etc/shunt.toml",
+                "/usr/local/etc/shunt.toml",
+            ]
+        );
     }
 
     #[test]

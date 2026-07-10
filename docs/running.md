@@ -43,7 +43,11 @@ You can also run straight from the source tree with `cargo run -- <args>` (examp
 shunt loads configuration from, in increasing precedence:
 
 1. Built-in defaults (all providers preconfigured — see `src/config.rs`).
-2. A **TOML file**, `./shunt.toml` by default (override with `--config <path>`).
+2. A **TOML file**. With `--config <path>` that exact file is used (a missing
+   file is an error). Otherwise shunt takes the first file found in:
+   `./shunt.toml` → `$XDG_CONFIG_HOME/shunt/shunt.toml` (defaulting to
+   `~/.config/shunt/shunt.toml`) → `$(brew --prefix)/etc/shunt.toml`. Boot
+   logs report which file was loaded, or that defaults are in use.
 3. **Environment variables** prefixed `SHUNT_`, using `__` for nested keys
    (e.g. `SHUNT_SERVER__BIND=0.0.0.0:3001`).
 
