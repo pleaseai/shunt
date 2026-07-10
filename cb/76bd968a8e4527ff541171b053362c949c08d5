@@ -1,0 +1,36 @@
+docs/m1-responses-translation.md
+  s_3ac2250c48b157::t_3dee16b9de1357 153-161
+tests/responses_translate.rs
+  s_3ac2250c48b157::t_de45a3ea12f05d 367-418
+site/src/content/docs/reference/troubleshooting.md
+  s_3ac2250c48b157::t_212ee27b3a5f8a 16
+site/src/content/docs/reference/endpoints.md
+  s_3ac2250c48b157::t_e070cfeceae5c8 19
+src/model/responses.rs
+  s_3ac2250c48b157::t_2b5639a6526443 533-534,539
+  s_3ac2250c48b157::t_2cd20a84fa9f1f 566-617
+wiki/src/content/docs/02-deep-dive/adapters-and-translation.md
+  s_3ac2250c48b157::t_87d4e3234924f4 105-108,110-123
+  s_3ac2250c48b157::t_8fc5e76a08286b 109
+site/src/content/docs/guides/effort-and-context.md
+  s_3ac2250c48b157::t_fe005eaa84a54d 63-74
+  s_3ac2250c48b157::t_b93a97b85b56e9 51
+wiki/llms-full.txt
+  s_3ac2250c48b157::t_5aa0980f43ea61 405-410
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "cb76bd968a8e4527ff541171b053362c949c08d5",
+  "prompts": {},
+  "sessions": {
+    "s_3ac2250c48b157": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "724caacc-6c88-4241-b325-3b0ffd7798be",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
