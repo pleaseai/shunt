@@ -26,6 +26,9 @@ default_provider = "anthropic" # provider for any model with no route -> pass-th
 # [sentry]
 # dsn = "https://<key>@<org>.ingest.sentry.io/<project>"
 # environment = "home-lab"     # optional environment tag on events
+# metrics = false              # (default) separate opt-in: also send usage metrics —
+                               # request counts + latency tagged provider/model/status
+                               # (aggregates only; no client names, sessions, or bodies)
 
 # --- Providers: each is a `[providers.<name>]` table. Add a new upstream by
 # adding a table — no code change. Every provider has these keys:

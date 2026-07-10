@@ -122,6 +122,10 @@ fn init_sentry(config: Option<&SentryConfig>) -> Option<sentry::ClientInitGuard>
         dsn: config.dsn.parse().ok(),
         release: sentry::release_name!(),
         environment: config.environment.clone().map(Into::into),
+        // Usage/performance metrics are a separate opt-in from error
+        // reporting; with this off, `crate::metrics` capture calls are dropped
+        // by the client.
+        enable_metrics: config.metrics,
         // The host name identifies the operator's machine; withhold it.
         before_send: Some(std::sync::Arc::new(|mut event| {
             event.server_name = None;
@@ -129,7 +133,7 @@ fn init_sentry(config: Option<&SentryConfig>) -> Option<sentry::ClientInitGuard>
         })),
         ..Default::default()
     });
-    tracing::info!("sentry error reporting enabled");
+    tracing::info!(metrics = config.metrics, "sentry error reporting enabled");
     Some(guard)
 }
 

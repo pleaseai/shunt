@@ -29,7 +29,7 @@ clap = { version = "4", features = ["derive"] }
 figment = { version = "0.10", features = ["toml", "env"] }
 futures-util = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
-sentry = { version = "0.48.4", default-features = false, features = ["backtrace", "contexts", "panic", "reqwest", "rustls", "tracing"] }
+sentry = { version = "0.48.4", default-features = false, features = ["backtrace", "contexts", "metrics", "panic", "reqwest", "rustls", "tracing"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

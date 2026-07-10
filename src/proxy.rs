@@ -40,7 +40,7 @@ pub async fn post(
     );
 
     async move {
-        match forward(state, &uri, &headers, body).await {
+        match forward(state, &uri, &headers, body, started_at).await {
             Ok((status, response)) => {
                 tracing::info!(
                     upstream_status = status.as_u16(),
@@ -98,6 +98,7 @@ async fn forward(
     uri: &Uri,
     headers: &HeaderMap,
     body: Body,
+    started_at: Instant,
 ) -> Result<(StatusCode, axum::response::Response), ForwardError> {
     let body = to_bytes(body, MAX_REQUEST_BODY_BYTES)
         .await
@@ -142,6 +143,8 @@ async fn forward(
         });
     }
     let body = body.to_vec();
+    let provider = route.provider.clone();
+    let model = route.model.clone();
     let result = match route.adapter {
         AdapterKind::Anthropic => {
             AnthropicAdapter
@@ -154,7 +157,20 @@ async fn forward(
                 .await
         }
     };
-    result.map_err(ForwardError::from)
+    let result = result.map_err(ForwardError::from);
+    // For streaming responses this measures time to response headers, not to
+    // stream completion — the body is forwarded without buffering.
+    let status = match &result {
+        Ok((status, _)) => status.as_u16(),
+        Err(error) => error.response.status().as_u16(),
+    };
+    crate::metrics::record_proxied_request(
+        &provider,
+        &model,
+        status,
+        started_at.elapsed().as_secs_f64() * 1000.0,
+    );
+    result
 }
 
 /// Enforce `[server.auth]` on injected-credential routes and strip the client

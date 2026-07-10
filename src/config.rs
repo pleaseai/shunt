@@ -112,6 +112,11 @@ pub struct SentryConfig {
     /// Optional environment tag on reported events (e.g. "prod", "home-lab").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment: Option<String>,
+    /// Also send usage/performance metrics (request counts and latency per
+    /// provider/model). Off by default — a separate opt-in from error
+    /// reporting, since metrics describe traffic rather than gateway faults.
+    #[serde(default)]
+    pub metrics: bool,
 }
 
 impl SentryConfig {
@@ -744,6 +749,7 @@ mod tests {
             sentry: Some(super::SentryConfig {
                 dsn: "https://public@o0.ingest.sentry.io/1234".to_string(),
                 environment: Some("home-lab".to_string()),
+                metrics: false,
             }),
             ..Config::default()
         };
@@ -752,11 +758,27 @@ mod tests {
     }
 
     #[test]
+    fn sentry_metrics_default_off_and_parse_from_toml() {
+        // `metrics` is a separate opt-in on top of error reporting.
+        use figment::providers::{Format, Toml};
+        let dsn = "dsn = \"https://public@o0.ingest.sentry.io/1234\"";
+        let sentry: super::SentryConfig =
+            figment::Figment::from(Toml::string(dsn)).extract().unwrap();
+        assert!(!sentry.metrics);
+        let sentry: super::SentryConfig =
+            figment::Figment::from(Toml::string(&format!("{dsn}\nmetrics = true")))
+                .extract()
+                .unwrap();
+        assert!(sentry.metrics);
+    }
+
+    #[test]
     fn sentry_invalid_dsn_is_rejected_at_boot() {
         let config = Config {
             sentry: Some(super::SentryConfig {
                 dsn: "not-a-dsn".to_string(),
                 environment: None,
+                metrics: false,
             }),
             ..Config::default()
         };
@@ -771,6 +793,7 @@ mod tests {
             sentry: Some(super::SentryConfig {
                 dsn: "".to_string(),
                 environment: None,
+                metrics: false,
             }),
             ..Config::default()
         };

@@ -113,6 +113,11 @@ provider = "openai"
 # [sentry]
 # dsn = "https://<key>@<org>.ingest.sentry.io/<project>"
 # environment = "home-lab"   # optional environment tag on events
+# metrics = false            # (default) separate opt-in: also send usage metrics.
+#                            # `shunt.requests` (count) and `shunt.latency` (ms
+#                            # distribution; time to response headers for streams),
+#                            # tagged provider/model/status. Aggregates only — no
+#                            # client names, session ids, or request contents.
 ```
 
 **Routing precedence** (`src/routing.rs`): exact `[[routes]]` match → `[[route_prefixes]]`

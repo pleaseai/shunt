@@ -6,6 +6,7 @@ pub mod discovery;
 pub mod error;
 pub mod headers;
 pub mod keepalive;
+pub mod metrics;
 pub mod model;
 pub mod proxy;
 pub mod routing;
