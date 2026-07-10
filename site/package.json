@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "astro dev",
     "build": "astro build && npm run build:worker",
-    "build:worker": "esbuild worker/index.ts --bundle --format=esm --outfile=dist/_worker.js",
+    "build:worker": "esbuild worker/index.ts --bundle --platform=browser --conditions=workerd,worker --format=esm --outfile=dist/_worker.js",
     "preview": "astro preview"
   },
   "dependencies": {
