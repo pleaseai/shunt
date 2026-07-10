@@ -150,6 +150,15 @@ Preserve the upstream message text where available. (Unlike the pure pass-throug
 and does not conflict with the "forward errors unmodified" rule, which governs the
 Anthropic→Anthropic path.)
 
+**Exception — context overflow.** Claude Code's automatic compact-and-retry matches the literal
+phrase `prompt is too long` (case-insensitive) and optionally parses `N tokens > M maximum` to
+size the retry, so upstream context-length errors forwarded verbatim would strand the session
+until a manual `/compact`. `map_error_value` detects them (error code
+`context_length_exceeded` or message heuristics) and rewrites the message to
+`prompt is too long: {actual} tokens > {limit} maximum`, keeping the upstream token counts when
+the message carries two (order-agnostic: the larger is the actual count), or to the bare phrase
+when it carries none.
+
 ## 9. Test targets (M1)
 
 - `insta` snapshots: request translation for (plain text, multi-turn, tool_use+tool_result

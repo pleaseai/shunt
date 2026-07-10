@@ -13,6 +13,7 @@ description: Common shunt errors and how to fix them.
 | `config check failed` | Run `shunt check` for the exact reason (bind address, unknown provider in a route, wrong adapter/auth). |
 | Claude Code asks you to log in | Set an Anthropic credential (`ANTHROPIC_AUTH_TOKEN` / login) that shunt can forward for unmapped models. A base URL alone is not a credential. |
 | Effort stuck at `medium` on a mapped model | Set `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` — see [Effort & Context](/guides/effort-and-context/#reasoning-effort). |
+| Session stuck after a context-length error on a mapped model | shunt rewrites upstream overflow errors to `prompt is too long …` so Claude Code auto-compacts and retries — see [Context overflow recovery](/guides/effort-and-context/#context-overflow-recovery). If it recurs every few turns, lower `CLAUDE_CODE_MAX_CONTEXT_TOKENS` to the model's real window. |
 | Stream dies behind Cloudflare (524) | Keep [`sse_keepalive_seconds`](/guides/shared-gateway/#sse-keepalive-pings) at its default (30) instead of `0`. |
 | 401 on mapped models on a shared gateway | Missing/invalid client token — set `ANTHROPIC_CUSTOM_HEADERS="x-shunt-token: <token>"`; see [Sharing a Gateway](/guides/shared-gateway/). |
 
