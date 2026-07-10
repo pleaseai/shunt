@@ -234,6 +234,38 @@ async fn passthrough_route_needs_no_token_and_still_strips_the_header() {
 }
 
 #[tokio::test]
+async fn health_and_root_stay_open_when_inbound_auth_is_configured() {
+    if !can_bind_loopback() {
+        return;
+    }
+    std::env::set_var("SHUNT_TEST_M4_KEY_F", "upstream-key");
+    std::env::set_var("SHUNT_TEST_M4_TOKENS_F", "alice:tok-a");
+    let upstream = MockServer::start().await;
+    let config = with_inbound_auth(
+        test_config(&upstream.uri(), "SHUNT_TEST_M4_KEY_F"),
+        "SHUNT_TEST_M4_TOKENS_F",
+    );
+    let gateway = start_gateway_with(config).await;
+    let client = reqwest::Client::new();
+
+    let response = client
+        .get(format!("{}/health", gateway.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    assert_eq!(body["status"], "ok");
+
+    let response = client
+        .get(format!("{}/", gateway.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn without_auth_config_mapped_route_stays_open() {
     if !can_bind_loopback() {
         return;
