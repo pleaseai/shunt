@@ -1,6 +1,6 @@
 ---
 name: sentry-pii-egress
-description: Sentry integration egress surface — before_send only strips server_name, so warn!/info! breadcrumbs (upstream_error_body, client names) can leak request-derived data on panic.
+description: Sentry integration egress surface. Iter-1 breadcrumb.data + span-field exfil paths CLOSED by commit 9b1d2a1 (before_breadcrumb clears .data, span_filter(false) drops all spans). before_send still only strips server_name.
 metadata:
   type: project
 ---
@@ -15,4 +15,10 @@ Opt-in Sentry integration (branch amondnet/sentry-metrics, PR #12/#13). Egress m
 - `src/proxy.rs:35` span field `session_id` = client `x-claude-code-session-id` header (span-field→event attachment is sentry-tracing-version-dependent; traces_sample_rate default 0).
 - `src/metrics.rs` — `model` attribute is the raw client-supplied model string (routing.rs default-provider fallthrough passes it verbatim) → unbounded metric cardinality. Gated behind `metrics=true` (default off).
 
-**How to apply:** when reviewing changes to logging/tracing here, check any new `warn!`/`info!` field for request-derived data, and prefer `debug!` (ignored by the layer) for bodies. A `before_breadcrumb` scrub hook would close the class of issue rather than per-site fixes.
+**FIX STATUS (commit 9b1d2a1, verified iter-2 against sentry-core/-tracing 0.48.4 vendored source):**
+- `before_breadcrumb: |mut b| { b.data.clear(); Some(b) }` — verified in hub.rs:241-262 to run on EVERY breadcrumb (incl. sentry-tracing's `add_breadcrumb` at layer/mod.rs:279) BEFORE it enters the scope ring buffer. Closes the breadcrumb.data path. Breadcrumb `.message` is NOT cleared, but all per-request `warn!`/`info!` call sites use STATIC message literals (request data lives only in fields → cleared). category=target (module path) and ty="log" are safe.
+- `.span_filter(|_| false)` — verified in layer/mod.rs:296-340: on_new_span returns at line 302 before start_transaction/record_fields/SentrySpanData insert, so NO transaction, NO TraceContext.data, and converters.rs:100 `ext.get::<SentrySpanData>()` is always None. Layer also has `with_span_attributes=false` (default), so on_event passes span_ctx=None → no span data merged into breadcrumbs/events regardless. Closes the span-field→trace-context path.
+
+**Feature note:** sentry `logs` feature is NOT enabled (Cargo.toml features: backtrace/contexts/metrics/panic/reqwest/rustls/tracing). So EventFilter::Log is compiled out (before_breadcrumb would NOT filter logs, but there are none). WARN/INFO→Breadcrumb only; ERROR→Event (no `error!` sites exist); panics→Event with static/opaque messages (no request data). Metrics attrs = provider/model/http.response.status_code only (model by-design per rejected-findings ledger).
+
+**How to apply:** when reviewing changes here, the invariant is now: any `warn!`/`info!` must keep request-derived data in FIELDS (never interpolated into the format-string message), because before_breadcrumb clears fields but not the message. Never add a `tracing::error!` with request data (becomes a captured event, unfiltered). Do not enable the sentry `logs` feature without adding a log scrubber. Avoid `panic!`/`.expect(msg)` where msg or the Err Debug embeds request data.
