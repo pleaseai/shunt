@@ -1,0 +1,20 @@
+.claude/agent-memory/review-review-security-reviewer/project_sentry-pii-egress.md
+  s_81040fa8a0a53d::t_47de87fbe89a8a 3
+  s_81040fa8a0a53d::t_b5499bf3c88f41 18-24
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.11",
+  "base_commit_sha": "8c051c55951a1d93e6040874b83967f8f1e2316a",
+  "prompts": {},
+  "sessions": {
+    "s_81040fa8a0a53d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "596e44a3-1e32-40fd-a15e-4c18f3594140",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
