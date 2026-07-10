@@ -174,12 +174,19 @@ async fn mapped_upstream_error(
             json!({"message": "ChatGPT authentication failed; run codex login"})
         } else if status == StatusCode::UNAUTHORIZED && auth == crate::config::AuthMode::XaiOauth {
             json!({"message": "xAI authentication failed; run shunt login xai"})
+        } else if status == StatusCode::FORBIDDEN && auth == crate::config::AuthMode::XaiOauth {
+            // Same subscription-tier gate as a 403 on refresh: re-login won't
+            // help, so surface the distinct guidance instead of a generic 502.
+            json!({"message": crate::auth::xai_auth::refresh_error_message(status)})
         } else {
             serde_json::from_str(&text).unwrap_or_else(|_| json!({"message": text}))
         };
+    let xai_tier_gate =
+        status == StatusCode::FORBIDDEN && auth == crate::config::AuthMode::XaiOauth;
     let shunt_status = if status == StatusCode::UNAUTHORIZED
         || status == StatusCode::TOO_MANY_REQUESTS
         || status == StatusCode::BAD_REQUEST
+        || xai_tier_gate
     {
         status
     } else {
@@ -440,6 +447,28 @@ mod tests {
             body["error"]["message"],
             "xAI authentication failed; run shunt login xai"
         );
+    }
+
+    #[tokio::test]
+    async fn maps_403_to_xai_tier_gate_message_for_xai_oauth() {
+        // A live-API 403 is the same subscription-tier gate as a 403 on
+        // refresh: keep the 403 status (not 502) and point at XAI_API_KEY.
+        let upstream = upstream_response(403, "forbidden", &[]).await;
+        let error =
+            mapped_upstream_error(StatusCode::FORBIDDEN, upstream, AuthMode::XaiOauth).await;
+        assert_eq!(error.response.status(), StatusCode::FORBIDDEN);
+        let body = body_json(error).await;
+        let message = body["error"]["message"].as_str().unwrap();
+        assert!(message.contains("tier gate"));
+        assert!(message.contains("XAI_API_KEY"));
+        assert!(!message.contains("run shunt login xai"));
+    }
+
+    #[tokio::test]
+    async fn maps_403_to_bad_gateway_for_other_auth_modes() {
+        let upstream = upstream_response(403, "forbidden", &[]).await;
+        let error = mapped_upstream_error(StatusCode::FORBIDDEN, upstream, AuthMode::ApiKey).await;
+        assert_eq!(error.response.status(), StatusCode::BAD_GATEWAY);
     }
 
     #[tokio::test]

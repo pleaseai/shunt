@@ -119,7 +119,7 @@ a brand-new table adds a provider. Every provider takes these keys:
 | :-- | :-- | :-- |
 | `kind` | `anthropic` \| `responses` | Upstream protocol / adapter. `anthropic` = Messages API (passed through, optionally re-keyed); `responses` = Anthropic Messages translated to the OpenAI Responses API. |
 | `base_url` | URL | Upstream base; Claude Code appends `/v1/messages`. |
-| `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `xai_oauth` | `passthrough` forwards the client's own credential (api.anthropic.com); `api_key` injects a key from `api_key_env`; `chatgpt_oauth` reuses `~/.codex/auth.json`; `xai_oauth` reuses the xAI subscription login in `~/.shunt/xai-auth.json` (`shunt login xai`; base_url must stay on an `x.ai` host). |
+| `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `xai_oauth` | `passthrough` forwards the client's own credential (api.anthropic.com); `api_key` injects a key from `api_key_env`; `chatgpt_oauth` reuses `~/.codex/auth.json`; `xai_oauth` reuses the xAI subscription login in `~/.shunt/xai-auth.json` (`shunt login xai`; `kind = "responses"` only, base_url must stay on an https `x.ai` host). |
 | `api_key_env` | env var name | Where the key is read from, when `auth = "api_key"`. |
 | `api_key_header` | `bearer` (default) \| `x_api_key` | Header the injected key is sent in. |
 | `effort` | `low`…`max` | Optional default reasoning effort (`responses` providers). |
@@ -359,7 +359,7 @@ export XAI_API_KEY=xai-...
 ```toml
 [providers.xai]
 auth = "xai_oauth"          # reuse the SuperGrok / X Premium+ login instead of a key
-# base_url stays https://api.x.ai/v1 — shunt refuses xai_oauth on a non-x.ai host
+# base_url stays https://api.x.ai/v1 — shunt refuses xai_oauth on a non-x.ai or non-https host
 
 [[routes]]
 model = "grok-build-0.1"

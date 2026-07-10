@@ -55,7 +55,9 @@ Written atomically (temp file + rename) at `0600`.
   (unverified decode, like codex_auth) and treat as expired within a **5-minute buffer**.
   Device-code tokens can be short-lived (~15 min), so refresh is frequent.
 - **Refresh-token rotation:** every refresh consumes the old refresh token and returns a new
-  one. shunt persists the rotated pair or the next refresh fails.
+  one. shunt persists the rotated pair or the next refresh fails. A refresh success that
+  omits `refresh_token` is treated as an invalid response (nothing persisted) rather than
+  leaving the consumed token on disk.
 
 ## 4. Device-code flow (`shunt login xai`, `auth/xai_login.rs`)
 
@@ -123,9 +125,12 @@ replay (`include`) stays gated on the client's extended-thinking flag, exactly l
 - New `AuthMode::XaiOauth`. Built-in `xai` provider seeded in `Config::default()`
   (`kind = responses`, `base_url = https://api.x.ai/v1`, `auth = api_key`,
   `api_key_env = XAI_API_KEY`).
-- **Bearer-leak guard:** a provider with `auth = "xai_oauth"` must have a base_url host of
-  `x.ai` or `*.x.ai`, else startup fails with `ConfigError::XaiOauthNonXaiHost` — shunt refuses
-  to inject a subscription token toward another origin (mirrors Hermes' endpoint re-validation).
+- **Bearer-leak guard:** a provider with `auth = "xai_oauth"` must be `kind = "responses"`
+  (the anthropic adapter has no XaiOauth injection and would forward the client's own
+  credential), use an **https** base_url (never plaintext), and have a base_url host of
+  `x.ai` or `*.x.ai` — else startup fails with `XaiOauthWrongKind` / `XaiOauthNotHttps` /
+  `XaiOauthNonXaiHost`. shunt refuses to inject a subscription token toward another origin
+  (mirrors Hermes' endpoint re-validation).
 
 ## 8. Security
 

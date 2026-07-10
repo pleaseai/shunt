@@ -105,12 +105,15 @@ impl XaiAuthStore {
 
         let refreshed =
             refresh_tokens(&self.client, &self.token_url, &tokens.refresh_token).await?;
-        // xAI rotates the refresh token every refresh; fall back to the old one
-        // only if the response omitted it. Same for id_token.
-        let refresh_token = refreshed
-            .refresh_token
-            .as_deref()
-            .unwrap_or(&tokens.refresh_token);
+        // xAI rotates the refresh token on every refresh and consumes the old
+        // one. A success that omits refresh_token would leave the consumed
+        // token on disk and break the next refresh, so treat it as an invalid
+        // response instead of persisting a broken pair.
+        let Some(refresh_token) = refreshed.refresh_token.as_deref() else {
+            return Err(auth_error(
+                "xAI refresh response missing refresh_token; run shunt login xai",
+            ));
+        };
         let id_token = refreshed.id_token.as_deref().or(tokens.id_token.as_deref());
         write_tokens(&self.path, &refreshed.access_token, refresh_token, id_token)
             .map_err(|error| auth_error(format!("failed to update xAI auth file: {error}")))?;
@@ -428,6 +431,39 @@ mod tests {
         let stored = parse_tokens(&read_auth_value(&file).unwrap()).unwrap();
         assert_eq!(stored.refresh_token, "rotated-refresh");
         server.verify().await;
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn refresh_without_rotated_token_is_rejected_and_not_persisted() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // xAI consumes the old refresh token on every refresh, so a success
+        // that omits refresh_token must not overwrite the stored pair.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": jwt(4_000_000_000),
+                "expires_in": 900
+            })))
+            .mount(&server)
+            .await;
+
+        let file = temp_path("norotate");
+        write_tokens(&file, &jwt(0), "old-refresh", None).unwrap();
+        let store = XaiAuthStore::with_token_url(
+            file.clone(),
+            reqwest::Client::new(),
+            format!("{}/token", server.uri()),
+        );
+
+        let error = store.get_valid().await.unwrap_err();
+        assert_eq!(error.message, "authentication failed");
+        // The stored pair is untouched — nothing was persisted.
+        let stored = parse_tokens(&read_auth_value(&file).unwrap()).unwrap();
+        assert_eq!(stored.refresh_token, "old-refresh");
         let _ = std::fs::remove_dir_all(file.parent().unwrap());
     }
 

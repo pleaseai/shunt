@@ -236,6 +236,10 @@ pub enum ConfigError {
     MissingApiKeyEnv { provider: String },
     #[error("providers.{provider} uses auth = \"xai_oauth\" but base_url host {host} is not x.ai; refusing to send a subscription token off-origin")]
     XaiOauthNonXaiHost { provider: String, host: String },
+    #[error("providers.{provider} uses auth = \"xai_oauth\" but base_url is not https; refusing to send a subscription token over plaintext")]
+    XaiOauthNotHttps { provider: String },
+    #[error("providers.{provider} uses auth = \"xai_oauth\" but kind is not \"responses\"; the anthropic adapter would forward the client's own credential instead of the xAI token")]
+    XaiOauthWrongKind { provider: String },
     #[error("server.default_provider references unknown provider: {0}")]
     UnknownDefaultProvider(String),
     #[error("route for model {model} references unknown provider: {provider}")]
@@ -422,9 +426,22 @@ impl Config {
                 });
             }
             // An xai_oauth provider injects the operator's subscription bearer,
-            // so its base_url must stay on an xAI host (mirrors Hermes'
-            // endpoint re-validation) — never a gateway that would receive it.
+            // so its base_url must stay on an xAI host over https (mirrors
+            // Hermes' endpoint re-validation) — never a gateway that would
+            // receive it, and never plaintext. It must also be a Responses
+            // provider: the anthropic adapter has no XaiOauth injection and
+            // would forward the client's own credential to the upstream.
             if provider.auth == AuthMode::XaiOauth {
+                if provider.kind != ProviderKind::Responses {
+                    return Err(ConfigError::XaiOauthWrongKind {
+                        provider: name.clone(),
+                    });
+                }
+                if url.scheme() != "https" {
+                    return Err(ConfigError::XaiOauthNotHttps {
+                        provider: name.clone(),
+                    });
+                }
                 let host = url.host_str().unwrap_or_default();
                 if !host_is_xai(host) {
                     return Err(ConfigError::XaiOauthNonXaiHost {
@@ -637,6 +654,32 @@ mod tests {
         let error = config.validate().unwrap_err();
         assert!(matches!(error, ConfigError::XaiOauthNonXaiHost { .. }));
         assert!(error.to_string().contains("evil.example.com"));
+    }
+
+    #[test]
+    fn xai_oauth_requires_https_base_url() {
+        let mut config = Config::default();
+        let provider = config.providers.get_mut("xai").unwrap();
+        provider.auth = AuthMode::XaiOauth;
+        provider.api_key_env = None;
+        provider.base_url = "http://api.x.ai/v1".to_string();
+        let error = config.validate().unwrap_err();
+        assert!(matches!(error, ConfigError::XaiOauthNotHttps { .. }));
+        assert!(error.to_string().contains("plaintext"));
+    }
+
+    #[test]
+    fn xai_oauth_requires_responses_kind() {
+        // An anthropic-kind provider never injects the XaiOauth credential —
+        // the anthropic adapter would forward the client's own headers — so
+        // the combination is rejected at boot.
+        let mut config = Config::default();
+        let provider = config.providers.get_mut("xai").unwrap();
+        provider.auth = AuthMode::XaiOauth;
+        provider.api_key_env = None;
+        provider.kind = ProviderKind::Anthropic;
+        let error = config.validate().unwrap_err();
+        assert!(matches!(error, ConfigError::XaiOauthWrongKind { .. }));
     }
 
     #[test]
