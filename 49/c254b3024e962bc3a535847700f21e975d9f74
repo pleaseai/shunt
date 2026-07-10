@@ -1,0 +1,37 @@
+wiki/src/content/docs/02-deep-dive/authentication.md
+  s_7200dc5a3f6b63::t_552fcaf92ae14c 103
+  s_7200dc5a3f6b63::t_ad8c383fdfb7c6 8
+  s_7200dc5a3f6b63::t_ba6ade91bcc07b 15
+  s_7200dc5a3f6b63::t_baed0f5a70a5b1 34-38,40,43
+wiki/src/content/docs/01-getting-started/xai-provider.md
+  s_7200dc5a3f6b63::t_6097f9d66e58bf 1-79
+wiki/llms-full.txt
+  s_7200dc5a3f6b63::t_8b28164cba4248 10,69,104-180,678
+docs/implementation-plan.md
+  s_7200dc5a3f6b63::t_230ede3e26c6e9 252-256
+wiki/astro.config.mjs
+  s_7200dc5a3f6b63::t_ddc0fda08092e5 21
+wiki/src/content/docs/01-getting-started/configuration.md
+  s_7200dc5a3f6b63::t_777e7fd4ef2c3e 12
+  s_7200dc5a3f6b63::t_c3234cb26d8ab3 71
+wiki/src/content/docs/02-deep-dive/adapters-and-translation.md
+  s_7200dc5a3f6b63::t_d07e719398d4cf 15
+wiki/llms.txt
+  s_7200dc5a3f6b63::t_a4ee9307f5fe7f 22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "49c254b3024e962bc3a535847700f21e975d9f74",
+  "prompts": {},
+  "sessions": {
+    "s_7200dc5a3f6b63": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e2b30df9-39bd-49c4-84a4-8de5b6108113",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
