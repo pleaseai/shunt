@@ -103,6 +103,16 @@ provider = "openai"
 # [[models]]
 # id = "claude-opus-via-codex"
 # display_name = "Opus (via Codex)"
+
+# Optional: error reporting to your own Sentry project. Off unless a DSN is
+# set; nothing is ever sent by default. Only gateway-owned diagnostics are
+# reported — panics and error-level log events, with warn/info as breadcrumbs.
+# Request/response bodies, headers, credentials, and the host name are never
+# sent. An empty DSN (e.g. SHUNT_SENTRY__DSN="") disables reporting again;
+# an invalid DSN is a startup error.
+# [sentry]
+# dsn = "https://<key>@<org>.ingest.sentry.io/<project>"
+# environment = "home-lab"   # optional environment tag on events
 ```
 
 **Routing precedence** (`src/routing.rs`): exact `[[routes]]` match → `[[route_prefixes]]`

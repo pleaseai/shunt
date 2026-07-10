@@ -19,6 +19,14 @@ default_provider = "anthropic" # provider for any model with no route -> pass-th
 # header = "x-shunt-token"           # (default) header the client sends
 # tokens_env = "SHUNT_CLIENT_TOKENS" # (default) env var with name:token pairs
 
+# --- Optional: Sentry error reporting to YOUR OWN Sentry project (docs/running.md §3.1).
+# Off unless you set a DSN. Reports gateway-owned diagnostics only — panics and
+# error-level log events (warn/info as breadcrumbs); request/response bodies,
+# headers, and credentials are never sent. SHUNT_SENTRY__DSN="" disables again.
+# [sentry]
+# dsn = "https://<key>@<org>.ingest.sentry.io/<project>"
+# environment = "home-lab"     # optional environment tag on events
+
 # --- Providers: each is a `[providers.<name>]` table. Add a new upstream by
 # adding a table — no code change. Every provider has these keys:
 #   kind           = "anthropic" | "responses"   (which upstream protocol)

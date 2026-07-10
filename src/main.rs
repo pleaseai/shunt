@@ -2,7 +2,10 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use shunt::{config::Config, server};
+use shunt::{
+    config::{Config, SentryConfig},
+    server,
+};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 #[derive(Debug, Parser)]
@@ -42,19 +45,29 @@ enum Command {
     },
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     init_tracing();
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Command::Run { config }) => run(config.or(cli.config)).await,
+        Some(Command::Run { config }) => run(config.or(cli.config)),
         Some(Command::Check { config }) => check(config.or(cli.config)),
-        Some(Command::Token) => token().await,
-        Some(Command::Login { provider }) => shunt::auth::xai_login::run(&provider).await,
+        Some(Command::Token) => runtime()?.block_on(token()),
+        Some(Command::Login { provider }) => {
+            runtime()?.block_on(shunt::auth::xai_login::run(&provider))
+        }
         None if cli.check => check(cli.config),
-        None => run(cli.config).await,
+        None => run(cli.config),
     }
+}
+
+/// The runtime is built by hand (not `#[tokio::main]`) so `run` can initialize
+/// Sentry before any runtime thread exists, per sentry-rust guidance.
+fn runtime() -> anyhow::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("failed to start tokio runtime")
 }
 
 async fn token() -> anyhow::Result<()> {
@@ -66,8 +79,14 @@ async fn token() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn run(config_path: Option<PathBuf>) -> anyhow::Result<()> {
+fn run(config_path: Option<PathBuf>) -> anyhow::Result<()> {
     let config = Config::load(config_path.as_deref()).context("failed to load config")?;
+    // The guard must outlive the runtime so buffered events flush on shutdown.
+    let _sentry = init_sentry(config.sentry.as_ref());
+    runtime()?.block_on(serve(config))
+}
+
+async fn serve(config: Config) -> anyhow::Result<()> {
     let bind = config
         .server
         .bind_addr()
@@ -92,6 +111,28 @@ fn check(config_path: Option<PathBuf>) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Opt-in Sentry error reporting: a client exists only when the operator
+/// configured a non-empty `[sentry] dsn`, and it reports gateway-owned
+/// diagnostics only — panics and `error!` events, never request/response
+/// bodies, headers, or credentials.
+fn init_sentry(config: Option<&SentryConfig>) -> Option<sentry::ClientInitGuard> {
+    let config = config.filter(|sentry| sentry.enabled())?;
+    let guard = sentry::init(sentry::ClientOptions {
+        // Validated at config load; an unparseable DSN never gets this far.
+        dsn: config.dsn.parse().ok(),
+        release: sentry::release_name!(),
+        environment: config.environment.clone().map(Into::into),
+        // The host name identifies the operator's machine; withhold it.
+        before_send: Some(std::sync::Arc::new(|mut event| {
+            event.server_name = None;
+            Some(event)
+        })),
+        ..Default::default()
+    });
+    tracing::info!("sentry error reporting enabled");
+    Some(guard)
+}
+
 fn init_tracing() {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("shunt=info"));
     tracing_subscriber::registry()
@@ -99,5 +140,8 @@ fn init_tracing() {
         // Logs go to stderr so command stdout (e.g. the `token` subcommand's
         // apiKeyHelper output) stays free of log noise.
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+        // Forwards error! events to Sentry as events and warn!/info! as
+        // breadcrumbs — a no-op unless `init_sentry` bound a client.
+        .with(sentry::integrations::tracing::layer())
         .init();
 }

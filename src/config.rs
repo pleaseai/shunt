@@ -21,6 +21,10 @@ pub struct Config {
     pub routes: Vec<RouteConfig>,
     #[serde(default)]
     pub route_prefixes: Vec<RoutePrefixConfig>,
+    /// Optional opt-in Sentry error reporting. Absent (the default) means no
+    /// Sentry client is created and nothing ever leaves the machine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sentry: Option<SentryConfig>,
 }
 
 /// Providers are a name → config map, so a new upstream is just another
@@ -92,6 +96,28 @@ impl InboundAuthConfig {
             }
         })?;
         Ok(crate::auth::inbound::InboundAuth::new(header, tokens))
+    }
+}
+
+/// `[sentry]` — opt-in error reporting to the operator's own Sentry project.
+/// Only gateway-owned diagnostics are reported (panics plus `error!` log
+/// events, with `warn!`/`info!` as breadcrumbs); request/response bodies,
+/// headers, and credentials never are.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SentryConfig {
+    /// DSN of the operator's Sentry project. An empty string disables
+    /// reporting, so `SHUNT_SENTRY__DSN=""` can turn a TOML-configured section
+    /// off without editing the file.
+    pub dsn: String,
+    /// Optional environment tag on reported events (e.g. "prod", "home-lab").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<String>,
+}
+
+impl SentryConfig {
+    /// Whether this section actually enables reporting (non-empty DSN).
+    pub fn enabled(&self) -> bool {
+        !self.dsn.trim().is_empty()
     }
 }
 
@@ -252,6 +278,8 @@ pub enum ConfigError {
     MissingClientTokens { env: String },
     #[error("invalid client tokens in {env}: {message}")]
     InvalidClientTokens { env: String, message: String },
+    #[error("sentry.dsn is not a valid DSN: {message}")]
+    InvalidSentryDsn { message: String },
 }
 
 impl ProviderConfig {
@@ -326,6 +354,7 @@ impl Default for Config {
             models: Vec::new(),
             routes: Vec::new(),
             route_prefixes: Vec::new(),
+            sentry: None,
         }
     }
 }
@@ -411,6 +440,17 @@ impl Config {
         // error, not an open gateway.
         if let Some(auth) = &self.server.auth {
             auth.resolve()?;
+        }
+        // A [sentry] section with a non-empty DSN must parse at boot; a typo'd
+        // DSN silently dropping every report would defeat the point of opting in.
+        if let Some(sentry) = &self.sentry {
+            if sentry.enabled() {
+                sentry.dsn.parse::<sentry::types::Dsn>().map_err(|error| {
+                    ConfigError::InvalidSentryDsn {
+                        message: error.to_string(),
+                    }
+                })?;
+            }
         }
         for (name, provider) in &self.providers {
             let url = self.provider_base_url(name, &provider.base_url)?;
@@ -690,6 +730,52 @@ mod tests {
         provider.api_key_env = None;
         provider.base_url = "https://api.x.ai/v1".to_string();
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn sentry_is_disabled_by_default() {
+        let config = Config::default();
+        assert!(config.sentry.is_none());
+    }
+
+    #[test]
+    fn sentry_section_with_valid_dsn_validates() {
+        let config = Config {
+            sentry: Some(super::SentryConfig {
+                dsn: "https://public@o0.ingest.sentry.io/1234".to_string(),
+                environment: Some("home-lab".to_string()),
+            }),
+            ..Config::default()
+        };
+        let config = config.validate().unwrap();
+        assert!(config.sentry.as_ref().unwrap().enabled());
+    }
+
+    #[test]
+    fn sentry_invalid_dsn_is_rejected_at_boot() {
+        let config = Config {
+            sentry: Some(super::SentryConfig {
+                dsn: "not-a-dsn".to_string(),
+                environment: None,
+            }),
+            ..Config::default()
+        };
+        let error = config.validate().unwrap_err();
+        assert!(matches!(error, ConfigError::InvalidSentryDsn { .. }));
+    }
+
+    #[test]
+    fn sentry_empty_dsn_disables_reporting_and_validates() {
+        // SHUNT_SENTRY__DSN="" must be able to switch a TOML section off.
+        let config = Config {
+            sentry: Some(super::SentryConfig {
+                dsn: "".to_string(),
+                environment: None,
+            }),
+            ..Config::default()
+        };
+        let config = config.validate().unwrap();
+        assert!(!config.sentry.as_ref().unwrap().enabled());
     }
 
     #[test]
