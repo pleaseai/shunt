@@ -1,0 +1,41 @@
+tests/passthrough.rs
+  s_15bb53f513e195::t_14eafd383109f4 134
+  s_15bb53f513e195::t_3c18bffeabdbb9 131-133
+  s_15bb53f513e195::t_821454ce7aad37 135-137
+  s_15bb53f513e195::t_6bcdcbbc62ffcd 98-130,138-140
+tests/inbound_auth.rs
+  s_15bb53f513e195::t_2f3be5de76d96e 237-256,258-267
+  s_15bb53f513e195::t_143d261e891de2 257
+  s_15bb53f513e195::t_de7a0182c94cb2 236
+docs/running.md
+  s_15bb53f513e195::t_4abfe427b1f620 506-507
+  s_15bb53f513e195::t_44710cf20eab12 185-186,191-192
+  s_09e58cb89fb53f::t_85a25edddb665b 193
+src/server.rs
+  s_15bb53f513e195::t_b4729745db527a 4-5,7
+  s_15bb53f513e195::t_2f15708c9e3307 37-40,42-43,50-73
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f1986372486790e5600a553979659e13dec565fc",
+  "prompts": {},
+  "sessions": {
+    "s_09e58cb89fb53f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d8c565f-8058-4ca3-9ab4-cf91f82f8f02",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_15bb53f513e195": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "00f739d7-5a15-4351-a403-52103e5c2b65",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
