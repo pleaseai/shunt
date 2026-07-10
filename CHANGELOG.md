@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.0](https://github.com/pleaseai/shunt/compare/v0.3.0...v0.4.0) (2026-07-10)
+
+
+### Features
+
+* **observability:** add opt-in Sentry error reporting ([#12](https://github.com/pleaseai/shunt/issues/12)) ([2b4009c](https://github.com/pleaseai/shunt/commit/2b4009cd894f8a60e834fdfa2946758562991e75))
+* **observability:** add opt-in Sentry usage metrics ([#13](https://github.com/pleaseai/shunt/issues/13)) ([983319a](https://github.com/pleaseai/shunt/commit/983319addceeb883e293f16ec6ed9c21e0ad75b2))
+
+
+### Bug Fixes
+
+* **codex:** send codex client identity headers to unlock version-gated models ([#16](https://github.com/pleaseai/shunt/issues/16)) ([83e8d97](https://github.com/pleaseai/shunt/commit/83e8d97310ce5a088ac6b1c9ea1360355db92ec1))
+
 ## [0.3.0](https://github.com/pleaseai/shunt/compare/v0.2.0...v0.3.0) (2026-07-10)
 
 
