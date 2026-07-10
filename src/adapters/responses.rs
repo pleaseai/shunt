@@ -227,6 +227,21 @@ fn own_error(message: String) -> AdapterError {
     }
 }
 
+/// Codex CLI client identity, mirrored from openai/codex rust-v0.144.1.
+///
+/// The ChatGPT backend routes newer model slugs (e.g. gpt-5.6-luna, which has
+/// `minimal_client_version: 0.144.0`) by client identity and answers
+/// "Model not found" — not an entitlement error — when the identity is
+/// missing or too old. Per openai/codex#31967 the gate keys on the
+/// `originator` + `version` header combination; the `user-agent` is sent for
+/// fidelity with Codex, which builds it as
+/// `{originator}/{version} ({os} {os_version}; {arch}) {terminal}`
+/// (codex-rs/login/src/auth/default_client.rs) and sends the bare CLI
+/// version in a `version` header (codex-rs/model-provider-info/src/lib.rs).
+/// Bump both together when a new slug requires a newer client version.
+const CODEX_USER_AGENT: &str = "codex_cli_rs/0.144.1";
+const CODEX_CLIENT_VERSION: &str = "0.144.1";
+
 fn request_builder(
     state: &AppState,
     route: &Route,
@@ -254,7 +269,9 @@ fn request_builder(
             request = request
                 .bearer_auth(access_token)
                 .header("chatgpt-account-id", account_id)
-                .header("originator", "codex_cli_rs");
+                .header("originator", "codex_cli_rs")
+                .header("user-agent", CODEX_USER_AGENT)
+                .header("version", CODEX_CLIENT_VERSION);
         }
         // xAI subscription OAuth: bearer only, no account-id/originator headers.
         Credential::XaiOauth { access_token } => {
@@ -402,6 +419,14 @@ mod tests {
         );
         assert_eq!(request.headers().get("originator").unwrap(), "codex_cli_rs");
         assert_eq!(
+            request.headers().get("user-agent").unwrap(),
+            super::CODEX_USER_AGENT
+        );
+        assert_eq!(
+            request.headers().get("version").unwrap(),
+            super::CODEX_CLIENT_VERSION
+        );
+        assert_eq!(
             request.headers().get("OpenAI-Beta").unwrap(),
             "responses=experimental"
         );
@@ -450,6 +475,8 @@ mod tests {
         // No ChatGPT/Codex headers and no OpenAI-Beta for the xai flavor.
         assert!(request.headers().get("chatgpt-account-id").is_none());
         assert!(request.headers().get("originator").is_none());
+        assert!(request.headers().get("user-agent").is_none());
+        assert!(request.headers().get("version").is_none());
         assert!(request.headers().get("OpenAI-Beta").is_none());
     }
 

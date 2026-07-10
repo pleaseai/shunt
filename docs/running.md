@@ -433,6 +433,15 @@ Then pick it from `/model` in Claude Code. That id is what shunt routes on, so i
 > may only be entitled to the earlier ones. Use `upstream_model` in a route, or pass an entitled
 > slug via `ANTHROPIC_CUSTOM_MODEL_OPTION`. See [`m2-chatgpt-oauth.md`](m2-chatgpt-oauth.md) §0.
 
+> **Client-version gating:** some slugs additionally carry a `minimal_client_version` (e.g.
+> `gpt-5.6-luna` requires ≥ 0.144.0) and the backend answers **`Model not found <slug>`** — not
+> an entitlement error — when the request's client identity is missing or too old. The gate keys
+> on the `originator` + `version` headers ([openai/codex#31967](https://github.com/openai/codex/issues/31967)).
+> shunt therefore sends the Codex CLI identity headers (`originator: codex_cli_rs`,
+> `version`, and a matching `user-agent`) on ChatGPT OAuth requests, **pinned to
+> openai/codex rust-v0.144.1**. If a future slug demands a newer client, bump the pinned
+> version in `src/adapters/responses.rs` (`CODEX_USER_AGENT` / `CODEX_CLIENT_VERSION`).
+
 Per-context selection also works via Claude Code's own knobs — a subagent's `model:`
 frontmatter, or `CLAUDE_CODE_SUBAGENT_MODEL` for all subagents — so you can divert only one
 agent while the main session stays on Claude.
