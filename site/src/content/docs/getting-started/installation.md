@@ -22,8 +22,11 @@ cargo install shunt-gateway
 Each [GitHub release](https://github.com/pleaseai/shunt/releases) attaches standalone binaries for macOS (arm64/x64) and Linux (arm64/x64), plus a `SHA256SUMS` file:
 
 ```bash
-curl -fsSLO https://github.com/pleaseai/shunt/releases/latest/download/shunt-darwin-arm64
-chmod +x shunt-darwin-arm64 && mv shunt-darwin-arm64 /usr/local/bin/shunt
+# Selects the right asset for your OS/CPU (darwin/linux × arm64/x64)
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+ARCH=$(uname -m); case "$ARCH" in x86_64) ARCH=x64 ;; aarch64) ARCH=arm64 ;; esac
+curl -fsSLO "https://github.com/pleaseai/shunt/releases/latest/download/shunt-${OS}-${ARCH}"
+chmod +x "shunt-${OS}-${ARCH}" && mv "shunt-${OS}-${ARCH}" /usr/local/bin/shunt
 ```
 
 ## From source
