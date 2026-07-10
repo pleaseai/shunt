@@ -1,0 +1,31 @@
+src/main.rs
+  s_81040fa8a0a53d::t_604a26f8b09853 121-130,142-148
+  s_81040fa8a0a53d::t_b9b298ebbdc8cb 164-168
+  s_81040fa8a0a53d::t_d62435bfaaf53e 149
+docs/running.md
+  s_81040fa8a0a53d::t_14ca215ab20bab 111-113,120-124
+shunt.toml.example
+  s_81040fa8a0a53d::t_5d0e0c49ffd72e 24-26,31-33
+src/proxy.rs
+  s_81040fa8a0a53d::t_918232bbe9be6a 161-178
+.please/docs/review/rejected-findings.jsonl
+  s_81040fa8a0a53d::t_705e08bcbd15ef 1-2
+src/metrics.rs
+  s_81040fa8a0a53d::t_09ece42d7c84a7 27-40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.11",
+  "base_commit_sha": "9b1d2a13f76e3c2eab8faff02e5bc2c68f83092d",
+  "prompts": {},
+  "sessions": {
+    "s_81040fa8a0a53d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "596e44a3-1e32-40fd-a15e-4c18f3594140",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
