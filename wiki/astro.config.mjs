@@ -18,6 +18,7 @@ const sidebar = [
     items: [
       { label: 'Overview', slug: '01-getting-started/overview' },
       { label: 'Configuration', slug: '01-getting-started/configuration' },
+      { label: 'xAI Grok Provider', slug: '01-getting-started/xai-provider' },
       { label: 'Operations', slug: '01-getting-started/operations' },
     ],
   },

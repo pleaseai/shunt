@@ -249,6 +249,11 @@ layer, not stored in the file.
 MVP for the stated goal = **M0 + M1 + M2** (drive OpenAI **and** Codex/ChatGPT). M3 is UX
 polish; M4 is production-readiness.
 
+Milestones shipped after this plan was frozen have their own specs: inbound client auth
+([`m4-inbound-auth.md`](m4-inbound-auth.md)), SSE keepalive pings
+([`m5-sse-keepalive.md`](m5-sse-keepalive.md)), and the xAI Grok provider — API key or
+SuperGrok/X Premium+ subscription OAuth ([`m6-xai-provider.md`](m6-xai-provider.md)).
+
 ## 9. Testing strategy
 
 - **Unit:** config parse/validate; `routing.rs` order; header rules; auth token load/refresh +

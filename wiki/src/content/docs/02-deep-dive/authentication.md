@@ -5,13 +5,14 @@ description: "Credential modes, token stores, refresh behavior, and trust bounda
 
 ## Overview
 
-Authentication is intentionally route-scoped. Once routing selects a provider, shunt resolves the credential strategy declared by that provider: pass through the Claude Code credential, read an API key, or reuse and refresh ChatGPT/Codex OAuth tokens. That separation keeps Claude Code from needing provider-specific secrets for mapped models [src/auth/mod.rs:29-99](https://github.com/chatbot-pf/shunt/blob/main/src/auth/mod.rs#L29-L99) [src/auth/codex_auth.rs:34-63](https://github.com/chatbot-pf/shunt/blob/main/src/auth/codex_auth.rs#L34-L63) [src/auth/claude_auth.rs:27-92](https://github.com/chatbot-pf/shunt/blob/main/src/auth/claude_auth.rs#L27-L92).
+Authentication is intentionally route-scoped. Once routing selects a provider, shunt resolves the credential strategy declared by that provider: pass through the Claude Code credential, read an API key, or reuse and refresh a subscription OAuth login (ChatGPT/Codex, or xAI SuperGrok via `shunt login xai`). That separation keeps Claude Code from needing provider-specific secrets for mapped models [src/auth/mod.rs:29-99](https://github.com/chatbot-pf/shunt/blob/main/src/auth/mod.rs#L29-L99) [src/auth/codex_auth.rs:34-63](https://github.com/chatbot-pf/shunt/blob/main/src/auth/codex_auth.rs#L34-L63) [src/auth/claude_auth.rs:27-92](https://github.com/chatbot-pf/shunt/blob/main/src/auth/claude_auth.rs#L27-L92).
 
 | Credential mode | Used by | Secret source | Boundary | Source |
 |---|---|---|---|---|
 | `Passthrough` | Anthropic default provider | Inbound Claude Code headers | Forwarded unchanged | [src/auth/mod.rs:17-22](https://github.com/chatbot-pf/shunt/blob/main/src/auth/mod.rs#L17-L22) [src/adapters/anthropic.rs:66-89](https://github.com/chatbot-pf/shunt/blob/main/src/adapters/anthropic.rs#L66-L89) |
 | `ApiKey` | OpenAI and Anthropic-compatible gateways | Env var named by `api_key_env`, with OpenAI fallback to Codex auth JSON | Injected by shunt | [src/auth/mod.rs:57-80](https://github.com/chatbot-pf/shunt/blob/main/src/auth/mod.rs#L57-L80) |
 | `ChatGptOAuth` | `codex` provider | `~/.codex/auth.json` | Refreshed and sent with account ID | [src/auth/codex_auth.rs:34-63](https://github.com/chatbot-pf/shunt/blob/main/src/auth/codex_auth.rs#L34-L63) |
+| `XaiOauth` | `xai` provider (opt-in) | `~/.shunt/xai-auth.json` from `shunt login xai` (RFC 8628 device code) | Refreshed under a single-flight lock (xAI rotates the refresh token), sent as Bearer only; base_url validated to stay on `x.ai` | [src/auth/xai_auth.rs:87-121](https://github.com/chatbot-pf/shunt/blob/main/src/auth/xai_auth.rs#L87-L121) [src/auth/xai_login.rs:52-100](https://github.com/chatbot-pf/shunt/blob/main/src/auth/xai_login.rs#L52-L100) |
 | Claude token helper | Claude Code gateway discovery/pass-through credential | `SHUNT_GATEWAY_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, or `~/.claude/.credentials.json` | Printed to stdout for `apiKeyHelper` | [src/auth/claude_auth.rs:27-92](https://github.com/chatbot-pf/shunt/blob/main/src/auth/claude_auth.rs#L27-L92) |
 
 ## Credential Resolution Flow
@@ -30,11 +31,16 @@ flowchart TB
     Valid -->|yes| Chat[Credential ChatGptOAuth]
     Valid -->|no| Refresh[Refresh token and atomic write-back]
     Refresh --> Chat
+    Auth -->|xai_oauth| XStore[XaiAuthStore]
+    XStore --> XValid{Token valid beyond 5 min?}
+    XValid -->|yes| Xai[Credential XaiOauth]
+    XValid -->|no| XRefresh[Single-flight refresh, persist rotated pair]
+    XRefresh --> Xai
     classDef dark fill:#2d333b,stroke:#6d5dfc,color:#e6edf3;
-    class Route,Provider,Auth,Pass,Env,Api,CodexKey,Store,Valid,Refresh,Chat dark;
+    class Route,Provider,Auth,Pass,Env,Api,CodexKey,Store,Valid,Refresh,Chat,XStore,XValid,Xai,XRefresh dark;
     linkStyle default stroke:#8b949e;
 ```
-<!-- Sources: src/auth/mod.rs:29, src/auth/mod.rs:57, src/auth/codex_auth.rs:34, src/auth/codex_auth.rs:125, src/auth/codex_auth.rs:207 -->
+<!-- Sources: src/auth/mod.rs:29, src/auth/mod.rs:57, src/auth/codex_auth.rs:34, src/auth/codex_auth.rs:125, src/auth/codex_auth.rs:207, src/auth/xai_auth.rs:87 -->
 
 ## Token Refresh Sequence
 
@@ -94,6 +100,7 @@ stateDiagram-v2
 | Page | Relationship |
 |---|---|
 | [Configuration](../01-getting-started/configuration.md) | Shows user-facing auth modes |
+| [xAI Grok Provider](../01-getting-started/xai-provider.md) | Setup for `XAI_API_KEY` and `shunt login xai` |
 | [Operations](../01-getting-started/operations.md) | Shows `codex login`, `OPENAI_API_KEY`, and `shunt token` usage |
 | [Adapters and Translation](./adapters-and-translation.md) | Shows where credentials are injected |
 | [Testing and Quality](./testing-and-quality.md) | Covers auth-related unit tests |

@@ -9,7 +9,7 @@ Configuration exists to keep shunt generic: new upstreams are provider table ent
 
 | Area | Responsibility | Key file | Source |
 |---|---|---|---|
-| Built-in defaults | Seeds `anthropic`, `openai`, and `codex` providers | `src/config.rs` | [src/config.rs:142-183](https://github.com/chatbot-pf/shunt/blob/main/src/config.rs#L142-L183) |
+| Built-in defaults | Seeds `anthropic`, `openai`, `codex`, and `xai` providers | `src/config.rs` | [src/config.rs:240-311](https://github.com/chatbot-pf/shunt/blob/main/src/config.rs#L240-L311) |
 | TOML example | Documents server, providers, routes, aliases | `shunt.toml.example` | [shunt.toml.example:1-134](https://github.com/chatbot-pf/shunt/blob/main/shunt.toml.example#L1-L134) |
 | Runtime docs | Explains config precedence and Claude Code env vars | `docs/running.md` | [docs/running.md:40-159](https://github.com/chatbot-pf/shunt/blob/main/docs/running.md#L40-L159) |
 | Route resolver | Applies exact, prefix, default precedence | `src/routing.rs` | [src/routing.rs:37-89](https://github.com/chatbot-pf/shunt/blob/main/src/routing.rs#L37-L89) |
@@ -68,6 +68,7 @@ erDiagram
 | `passthrough` | Claude Code request | Forward incoming credential unchanged | [src/auth/mod.rs:29-99](https://github.com/chatbot-pf/shunt/blob/main/src/auth/mod.rs#L29-L99) [src/adapters/anthropic.rs:66-89](https://github.com/chatbot-pf/shunt/blob/main/src/adapters/anthropic.rs#L66-L89) |
 | `api_key` | Environment variable named by `api_key_env`; OpenAI can fall back to Codex auth JSON | Inject provider key as Bearer or `x-api-key` | [src/auth/mod.rs:57-80](https://github.com/chatbot-pf/shunt/blob/main/src/auth/mod.rs#L57-L80) |
 | `chatgpt_oauth` | `~/.codex/auth.json` from `codex login` | Refresh if near expiry, send Bearer + `chatgpt-account-id` | [src/auth/codex_auth.rs:34-63](https://github.com/chatbot-pf/shunt/blob/main/src/auth/codex_auth.rs#L34-L63) [src/adapters/responses.rs:180-188](https://github.com/chatbot-pf/shunt/blob/main/src/adapters/responses.rs#L180-L188) |
+| `xai_oauth` | `~/.shunt/xai-auth.json` from `shunt login xai` (SuperGrok / X Premium+) | Refresh with rotated-token persistence, send Bearer only; base_url must stay on an `x.ai` host | [src/auth/xai_auth.rs:87-121](https://github.com/chatbot-pf/shunt/blob/main/src/auth/xai_auth.rs#L87-L121) [src/config.rs:424-435](https://github.com/chatbot-pf/shunt/blob/main/src/config.rs#L424-L435) |
 
 ## Discovery Sequence
 
