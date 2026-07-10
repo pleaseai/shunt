@@ -211,7 +211,7 @@ fn write_refreshed_auth(path: &Path, response: RefreshResponse) -> io::Result<()
     write_auth_file_atomic(path, &auth)
 }
 
-fn write_auth_file_atomic(path: &Path, value: &Value) -> io::Result<()> {
+pub(crate) fn write_auth_file_atomic(path: &Path, value: &Value) -> io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let temp = parent.join(format!(
         ".{}.tmp-{}",
@@ -287,7 +287,7 @@ impl RefreshResponse {
     }
 }
 
-fn format_iso8601(time: SystemTime) -> String {
+pub(crate) fn format_iso8601(time: SystemTime) -> String {
     let seconds = time
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

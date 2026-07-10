@@ -12,6 +12,8 @@ use crate::{
 pub mod claude_auth;
 pub mod codex_auth;
 pub mod inbound;
+pub mod xai_auth;
+pub mod xai_login;
 
 // TODO(M2): Add the optional `shunt login` PKCE loopback fallback. M2 currently
 // reuses the Codex CLI-owned ~/.codex/auth.json credential source.
@@ -26,6 +28,8 @@ pub enum Credential {
         access_token: String,
         account_id: String,
     },
+    /// xAI subscription OAuth: bearer only, no account-id header.
+    XaiOauth { access_token: String },
 }
 
 /// Resolve the credential for a route from its provider's configured `auth`.
@@ -51,6 +55,15 @@ pub async fn resolve_credential(
                 .map(|credential| Credential::ChatGptOAuth {
                     access_token: credential.access_token,
                     account_id: credential.account_id,
+                })
+        }
+        AuthMode::XaiOauth => {
+            let store = xai_auth::XaiAuthStore::new(default_xai_auth_path(), client.clone());
+            store
+                .get_valid()
+                .await
+                .map(|credential| Credential::XaiOauth {
+                    access_token: credential.access_token,
                 })
         }
     }
@@ -98,6 +111,20 @@ fn default_codex_auth_path() -> PathBuf {
                 .map(|home| home.join(".codex").join("auth.json"))
         })
         .unwrap_or_else(|| PathBuf::from(".codex/auth.json"))
+}
+
+/// shunt-owned xAI credential file: `$SHUNT_XAI_AUTH_FILE`, else
+/// `~/.shunt/xai-auth.json`. Unlike the codex path this file is written by
+/// `shunt login xai` and refreshed by shunt alone.
+pub fn default_xai_auth_path() -> PathBuf {
+    env::var_os("SHUNT_XAI_AUTH_FILE")
+        .map(PathBuf::from)
+        .or_else(|| {
+            env::var_os("HOME")
+                .map(PathBuf::from)
+                .map(|home| home.join(".shunt").join("xai-auth.json"))
+        })
+        .unwrap_or_else(|| PathBuf::from(".shunt/xai-auth.json"))
 }
 
 #[cfg(test)]
