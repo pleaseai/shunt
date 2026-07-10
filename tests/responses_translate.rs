@@ -300,6 +300,33 @@ fn xai_omits_reasoning_and_text_without_configured_effort() {
 }
 
 #[test]
+fn xai_honors_explicit_client_effort_without_route_config() {
+    // A per-request `output_config.effort` is a deliberate client choice and
+    // must not be silently dropped just because the route has no static effort.
+    let body = serde_json::to_vec(&json!({
+        "model": "grok-4.3",
+        "messages": [],
+        "output_config": {"effort": "high"}
+    }))
+    .unwrap();
+
+    let actual = translate_request(&body, &xai_route("grok-4.3"), ResponsesFlavor::Xai).unwrap();
+
+    assert_eq!(actual["reasoning"], json!({"effort": "high"}));
+
+    // Derived defaults stay off: the extended-thinking flag alone must not
+    // opt xai into reasoning (several grok models 400 on it).
+    let body = serde_json::to_vec(&json!({
+        "model": "grok-4.3",
+        "messages": [],
+        "thinking": {"type": "enabled", "budget_tokens": 1024}
+    }))
+    .unwrap();
+    let actual = translate_request(&body, &xai_route("grok-4.3"), ResponsesFlavor::Xai).unwrap();
+    assert!(actual.get("reasoning").is_none());
+}
+
+#[test]
 fn xai_sends_reasoning_without_summary_when_effort_configured() {
     // With an explicit route/provider effort the reasoning dial is sent, but
     // without the `summary` key (xAI rejects it).

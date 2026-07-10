@@ -59,7 +59,7 @@ shunt login xai   # prints a verification URL + short code; approve in any brows
 ## Safety and request shaping
 
 - **Bearer-leak guard:** a provider with `auth = "xai_oauth"` must be `kind = "responses"`, use an https `base_url`, and stay on an `x.ai` host; anything else fails validation at boot, so the subscription bearer can never be sent off-origin or over plaintext [src/config.rs:424-435](https://github.com/chatbot-pf/shunt/blob/main/src/config.rs#L424-L435).
-- **Reasoning is opt-in:** several grok models reject `reasoning.effort` with a 400, so shunt sends a `reasoning` object only when an `effort` is configured on the route or provider [src/model/responses_request.rs:34-51](https://github.com/chatbot-pf/shunt/blob/main/src/model/responses_request.rs#L34-L51).
+- **Reasoning is opt-in:** several grok models reject `reasoning.effort` with a 400, so shunt sends a `reasoning` object only when an `effort` was explicitly chosen — configured on the route/provider, or sent per-request by the client (`output_config.effort`) [src/model/responses_request.rs:34-51](https://github.com/chatbot-pf/shunt/blob/main/src/model/responses_request.rs#L34-L51).
 - The xAI dialect also omits the `text` object and the `OpenAI-Beta` header, and always sends `store: false`; detection is table-driven from the provider's auth mode and base-URL host, never a hardcoded provider name [src/config.rs:489-505](https://github.com/chatbot-pf/shunt/blob/main/src/config.rs#L489-L505) [src/adapters/responses.rs:214-240](https://github.com/chatbot-pf/shunt/blob/main/src/adapters/responses.rs#L214-L240).
 
 ## Related Pages

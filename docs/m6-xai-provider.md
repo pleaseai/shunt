@@ -109,7 +109,7 @@ reference impls):
 | :-- | :-- | :-- | :-- |
 | `store` | `false` | `false` | `false` |
 | `service_tier` | never sent | never sent | never sent (xAI 400s on it) |
-| `reasoning` | always `{effort, summary:auto}` | always `{effort, summary:auto}` | **only when effort configured** on the route/provider, and `{effort}` **without** `summary` |
+| `reasoning` | always `{effort, summary:auto}` | always `{effort, summary:auto}` | **only when effort explicitly chosen** (route/provider config or per-request `output_config.effort`), and `{effort}` **without** `summary` |
 | `text.verbosity` | sent | sent | **omitted** (xAI rejects the `text` object) |
 | `max_output_tokens` | sent | dropped | sent |
 | `include: [reasoning.encrypted_content]` | when thinking enabled | when thinking enabled | when thinking enabled |
@@ -117,7 +117,9 @@ reference impls):
 The reasoning gate is the key quirk: several grok models (`grok-4*`, `grok-3`, `grok-code-fast`,
 `grok-4.20-0309-*`) **400 on `reasoning.effort`** even though they reason natively. Rather than a
 hardcoded model list (AGENTS.md forbids it), shunt keeps the dial **opt-in**: send `reasoning`
-only when an `effort` is configured for the route or provider in `shunt.toml`. Encrypted-reasoning
+only when an effort was explicitly chosen — configured for the route or provider in `shunt.toml`,
+or sent per-request via `output_config.effort`. Derived defaults (thinking flag, model suffix)
+stay off. Encrypted-reasoning
 replay (`include`) stays gated on the client's extended-thinking flag, exactly like the codex path.
 
 ## 7. Config & validation (`config.rs`)

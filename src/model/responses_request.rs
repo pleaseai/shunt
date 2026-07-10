@@ -27,13 +27,19 @@ pub fn translate_request(
     }
     // Several grok models 400 on `reasoning.effort` even though they reason
     // natively, so on the xai flavor the reasoning dial stays opt-in: sent only
-    // when an effort is explicitly configured for the route/provider (mirrors
-    // Hermes' per-model allowlist, but table-driven per AGENTS.md). xAI also
-    // rejects the `summary` key, so it is omitted there. Other flavors always
-    // request a reasoning summary, as before.
+    // when an effort was explicitly chosen — configured on the route/provider,
+    // or sent per-request by the client (`output_config.effort`). Derived
+    // defaults (thinking flag, model-suffix) stay off to avoid blanket 400s
+    // (mirrors Hermes' per-model allowlist, but table-driven per AGENTS.md).
+    // xAI also rejects the `summary` key, so it is omitted there. Other
+    // flavors always request a reasoning summary, as before.
     match flavor {
         ResponsesFlavor::Xai => {
-            if route.effort.is_some() {
+            let client_effort = request
+                .pointer("/output_config/effort")
+                .and_then(Value::as_str)
+                .is_some();
+            if route.effort.is_some() || client_effort {
                 out.insert(
                     "reasoning".to_string(),
                     json!({"effort": effort(&request, route)}),

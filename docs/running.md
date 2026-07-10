@@ -383,7 +383,7 @@ xAI API access (a subscription-tier gate) — shunt says so distinctly and point
 `shunt login xai` again.
 
 > **Reasoning effort is opt-in for grok.** Several grok models reject `reasoning.effort` with a
-> 400, so shunt sends the reasoning dial only when you set an `effort` on the route or provider
+> 400, so shunt sends the reasoning dial only when an effort was explicitly chosen — an `effort` on the route or provider, or a per-request `output_config.effort` from the client
 > (e.g. `effort = "high"` under `[providers.xai]` or a `[[routes]]` entry). Without it, grok
 > reasons on its own and shunt sends no `reasoning` object.
 

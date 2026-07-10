@@ -175,9 +175,26 @@ async fn mapped_upstream_error(
         } else if status == StatusCode::UNAUTHORIZED && auth == crate::config::AuthMode::XaiOauth {
             json!({"message": "xAI authentication failed; run shunt login xai"})
         } else if status == StatusCode::FORBIDDEN && auth == crate::config::AuthMode::XaiOauth {
-            // Same subscription-tier gate as a 403 on refresh: re-login won't
-            // help, so surface the distinct guidance instead of a generic 502.
-            json!({"message": crate::auth::xai_auth::refresh_error_message(status)})
+            // Usually the subscription tier gate (as on refresh), but this
+            // endpoint can also 403 for content policy or model gating — keep
+            // the upstream message when there is one and append the tier-gate
+            // hint, rather than replacing real context with generic guidance.
+            let hint = "if this is the xAI subscription tier gate, re-logging in \
+                        will not help — set XAI_API_KEY or upgrade your plan";
+            let upstream_message = serde_json::from_str::<Value>(&text)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .pointer("/error/message")
+                        .or_else(|| value.get("message"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .filter(|message| !message.is_empty());
+            match upstream_message {
+                Some(message) => json!({"message": format!("{message} ({hint})")}),
+                None => json!({"message": crate::auth::xai_auth::refresh_error_message(status)}),
+            }
         } else {
             serde_json::from_str(&text).unwrap_or_else(|_| json!({"message": text}))
         };
@@ -451,8 +468,9 @@ mod tests {
 
     #[tokio::test]
     async fn maps_403_to_xai_tier_gate_message_for_xai_oauth() {
-        // A live-API 403 is the same subscription-tier gate as a 403 on
-        // refresh: keep the 403 status (not 502) and point at XAI_API_KEY.
+        // A live-API 403 without a usable upstream message falls back to the
+        // refresh path's tier-gate guidance: 403 kept (not 502), points at
+        // XAI_API_KEY, never suggests a re-login.
         let upstream = upstream_response(403, "forbidden", &[]).await;
         let error =
             mapped_upstream_error(StatusCode::FORBIDDEN, upstream, AuthMode::XaiOauth).await;
@@ -462,6 +480,25 @@ mod tests {
         assert!(message.contains("tier gate"));
         assert!(message.contains("XAI_API_KEY"));
         assert!(!message.contains("run shunt login xai"));
+    }
+
+    #[tokio::test]
+    async fn xai_403_preserves_upstream_message_and_appends_tier_hint() {
+        // A 403 can also mean content policy or model gating — the upstream
+        // message must survive, with the tier-gate possibility as a hint.
+        let upstream = upstream_response(
+            403,
+            r#"{"error": {"message": "model grok-4.5 is not enabled for this account"}}"#,
+            &[],
+        )
+        .await;
+        let error =
+            mapped_upstream_error(StatusCode::FORBIDDEN, upstream, AuthMode::XaiOauth).await;
+        assert_eq!(error.response.status(), StatusCode::FORBIDDEN);
+        let body = body_json(error).await;
+        let message = body["error"]["message"].as_str().unwrap();
+        assert!(message.contains("model grok-4.5 is not enabled for this account"));
+        assert!(message.contains("XAI_API_KEY"));
     }
 
     #[tokio::test]

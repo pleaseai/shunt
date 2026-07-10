@@ -125,9 +125,23 @@ impl XaiAuthStore {
 
     fn read_tokens(&self) -> Result<TokenSet, AdapterError> {
         let value = read_auth_value(&self.path)
-            .map_err(|_| auth_error("xAI auth not found; run shunt login xai"))?;
+            .map_err(|error| auth_error(read_error_message(&self.path, &error)))?;
         parse_tokens(&value)
             .ok_or_else(|| auth_error("xAI auth tokens missing; run shunt login xai"))
+    }
+}
+
+/// User-facing message for a failed credential-file read. A missing file means
+/// "log in"; anything else (EACCES, corrupt JSON) names the real cause so the
+/// operator isn't misdirected into a re-login that can't help.
+fn read_error_message(path: &Path, error: &io::Error) -> String {
+    if error.kind() == io::ErrorKind::NotFound {
+        "xAI auth not found; run shunt login xai".to_string()
+    } else {
+        format!(
+            "xAI auth file {} unreadable: {error}; fix the file or run shunt login xai",
+            path.display()
+        )
     }
 }
 
@@ -334,6 +348,23 @@ mod tests {
 
         // A response without an access_token is not a valid success.
         assert!(parse_token_response(&json!({"refresh_token": "r"})).is_none());
+    }
+
+    #[test]
+    fn read_errors_distinguish_missing_file_from_unreadable() {
+        let missing = io::Error::new(io::ErrorKind::NotFound, "no such file");
+        assert_eq!(
+            read_error_message(Path::new("/tmp/x.json"), &missing),
+            "xAI auth not found; run shunt login xai"
+        );
+
+        // EACCES / corrupt JSON name the real cause instead of claiming the
+        // file doesn't exist and misdirecting the operator into a re-login.
+        let denied = io::Error::new(io::ErrorKind::PermissionDenied, "permission denied");
+        let message = read_error_message(Path::new("/tmp/x.json"), &denied);
+        assert!(message.contains("/tmp/x.json"));
+        assert!(message.contains("permission denied"));
+        assert!(!message.contains("not found"));
     }
 
     #[test]
