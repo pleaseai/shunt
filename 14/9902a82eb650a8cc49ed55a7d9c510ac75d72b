@@ -1,0 +1,25 @@
+CHANGELOG.md
+  s_81040fa8a0a53d::t_c435e8c05c7b0f 3-15
+Cargo.toml
+  s_81040fa8a0a53d::t_c435e8c05c7b0f 5
+.release-please-manifest.json
+  s_81040fa8a0a53d::t_c435e8c05c7b0f 2
+Cargo.lock
+  s_81040fa8a0a53d::t_d314622d233527 2081
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.11",
+  "base_commit_sha": "149902a82eb650a8cc49ed55a7d9c510ac75d72b",
+  "prompts": {},
+  "sessions": {
+    "s_81040fa8a0a53d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "596e44a3-1e32-40fd-a15e-4c18f3594140",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
