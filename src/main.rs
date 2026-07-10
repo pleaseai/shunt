@@ -231,15 +231,28 @@ mod tests {
 
     #[test]
     fn run_surfaces_serve_errors() {
-        let path = std::env::temp_dir().join("shunt-main-run-test.toml");
-        // TEST-NET-3 (RFC 5737): parses as a socket address, so config load
-        // succeeds, but binding it fails — the error must surface through run.
-        std::fs::write(&path, "[server]\nbind = \"203.0.113.7:39999\"\n")
-            .expect("write test config");
+        // Hold a loopback port so `serve` deterministically fails to bind it.
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("reserve test bind address");
+        let bind = listener.local_addr().expect("read reserved bind address");
+        // Unique directory so concurrent `cargo test` invocations on the same
+        // machine can't collide on the config file.
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-run-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("shunt.toml");
+        std::fs::write(&path, format!("[server]\nbind = \"{bind}\"\n")).expect("write test config");
         let result = run(Some(path.clone()));
-        std::fs::remove_file(&path).ok();
+        drop(listener);
+        std::fs::remove_dir_all(&dir).ok();
         assert!(result
-            .expect_err("unbindable address must fail")
+            .expect_err("occupied address must fail")
             .to_string()
             .contains("failed to bind"));
     }
