@@ -1,0 +1,21 @@
+site/src/content/docs/getting-started/installation.md
+  s_f3e5d8bb9a3f87::t_038da9f48e1394 25-29
+site/src/content/docs/getting-started/why-shunt.md
+  s_f3e5d8bb9a3f87::t_1e0b57638c4ed4 6
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2ac250089f122a77c69060f8789f30d3d20aa610",
+  "prompts": {},
+  "sessions": {
+    "s_f3e5d8bb9a3f87": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "72a43b8f-8b0f-4112-b3dd-954c7d5cc3f4",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
