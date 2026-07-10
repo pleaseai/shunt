@@ -134,11 +134,7 @@ fn init_sentry(config: Option<&SentryConfig>) -> Option<sentry::ClientInitGuard>
         // reporting; with this off, `crate::metrics` capture calls are dropped
         // by the client.
         enable_metrics: config.metrics,
-        // The host name identifies the operator's machine; withhold it.
-        before_send: Some(std::sync::Arc::new(|mut event| {
-            event.server_name = None;
-            Some(event)
-        })),
+        before_send: Some(std::sync::Arc::new(scrub_event)),
         // Log fields can quote request-derived data (e.g. upstream error
         // bodies at warn level); keep only the breadcrumb message and level so
         // no log field ever leaves the machine — regardless of what existing
@@ -151,6 +147,14 @@ fn init_sentry(config: Option<&SentryConfig>) -> Option<sentry::ClientInitGuard>
     });
     tracing::info!(metrics = config.metrics, "sentry error reporting enabled");
     Some(guard)
+}
+
+/// The host name identifies the operator's machine; withhold it.
+fn scrub_event(
+    mut event: sentry::protocol::Event<'static>,
+) -> Option<sentry::protocol::Event<'static>> {
+    event.server_name = None;
+    Some(event)
 }
 
 fn init_tracing() {
@@ -167,4 +171,99 @@ fn init_tracing() {
         // otherwise ride into error events via the trace context.
         .with(sentry::integrations::tracing::layer().span_filter(|_| false))
         .init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_builds() {
+        assert!(runtime().is_ok());
+    }
+
+    #[test]
+    fn init_sentry_without_config_creates_no_client() {
+        assert!(init_sentry(None).is_none());
+    }
+
+    #[test]
+    fn init_sentry_with_blank_dsn_creates_no_client() {
+        let config = SentryConfig {
+            dsn: "   ".to_string(),
+            environment: None,
+            metrics: false,
+        };
+        assert!(init_sentry(Some(&config)).is_none());
+    }
+
+    #[test]
+    fn init_sentry_with_valid_dsn_binds_client() {
+        let config = SentryConfig {
+            dsn: "https://public@sentry.invalid/1".to_string(),
+            environment: Some("test".to_string()),
+            metrics: false,
+        };
+        let guard = init_sentry(Some(&config));
+        assert!(guard.is_some());
+    }
+
+    #[test]
+    fn scrub_event_withholds_server_name() {
+        let event = sentry::protocol::Event {
+            server_name: Some("operator-laptop".into()),
+            ..Default::default()
+        };
+        let scrubbed = scrub_event(event).expect("scrubbing keeps the event");
+        assert!(scrubbed.server_name.is_none());
+    }
+
+    #[test]
+    fn serve_rejects_invalid_bind_address() {
+        let mut config = Config::default();
+        config.server.bind = "not-an-address".to_string();
+        let error = runtime()
+            .expect("runtime builds")
+            .block_on(serve(config))
+            .expect_err("invalid bind must fail");
+        assert!(error.to_string().contains("invalid server bind address"));
+    }
+
+    #[test]
+    fn run_surfaces_serve_errors() {
+        // Hold a loopback port so `serve` deterministically fails to bind it.
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("reserve test bind address");
+        let bind = listener.local_addr().expect("read reserved bind address");
+        // Unique directory so concurrent `cargo test` invocations on the same
+        // machine can't collide on the config file.
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-run-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+
+        // RAII guard so the directory is removed even when an assertion
+        // below panics.
+        struct TempDirGuard(std::path::PathBuf);
+        impl Drop for TempDirGuard {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _guard = TempDirGuard(dir.clone());
+
+        let path = dir.join("shunt.toml");
+        std::fs::write(&path, format!("[server]\nbind = \"{bind}\"\n")).expect("write test config");
+        let result = run(Some(path.clone()));
+        drop(listener);
+        assert!(result
+            .expect_err("occupied address must fail")
+            .to_string()
+            .contains("failed to bind"));
+    }
 }
