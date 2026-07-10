@@ -119,7 +119,7 @@ a brand-new table adds a provider. Every provider takes these keys:
 | :-- | :-- | :-- |
 | `kind` | `anthropic` \| `responses` | Upstream protocol / adapter. `anthropic` = Messages API (passed through, optionally re-keyed); `responses` = Anthropic Messages translated to the OpenAI Responses API. |
 | `base_url` | URL | Upstream base; Claude Code appends `/v1/messages`. |
-| `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` | `passthrough` forwards the client's own credential (api.anthropic.com); `api_key` injects a key from `api_key_env`; `chatgpt_oauth` reuses `~/.codex/auth.json`. |
+| `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `xai_oauth` | `passthrough` forwards the client's own credential (api.anthropic.com); `api_key` injects a key from `api_key_env`; `chatgpt_oauth` reuses `~/.codex/auth.json`; `xai_oauth` reuses the xAI subscription login in `~/.shunt/xai-auth.json` (`shunt login xai`; `kind = "responses"` only, base_url must stay on an https `x.ai` host). |
 | `api_key_env` | env var name | Where the key is read from, when `auth = "api_key"`. |
 | `api_key_header` | `bearer` (default) \| `x_api_key` | Header the injected key is sent in. |
 | `effort` | `low`…`max` | Optional default reasoning effort (`responses` providers). |
@@ -330,6 +330,67 @@ file, so the static + `setup-token` route stays the simplest and safest default.
   ```
   If the file is missing/expired, shunt returns an `authentication_error` telling you to run
   `codex login`.
+
+#### xAI Grok — API key or subscription OAuth
+
+> **⚠️ Experimental — not yet verified against the live xAI API.** Implemented from the
+> reference clients (Hermes, OpenCode) and covered by unit tests with mocked endpoints;
+> it has not been exercised with a real SuperGrok account or `XAI_API_KEY` yet. Expect
+> rough edges and report issues.
+
+shunt ships a built-in `xai` provider (`kind = "responses"`, `base_url = https://api.x.ai/v1`).
+It defaults to the **API-key** path; flip it to `xai_oauth` to reuse a **SuperGrok / X Premium+**
+subscription. Full spec: [`m6-xai-provider.md`](m6-xai-provider.md).
+
+**API key** (default) — just export the key and add routes:
+
+```toml
+# built-in defaults already define [providers.xai]; you only add routes
+[[routes]]
+model = "grok-build-0.1"    # flagship coding model
+provider = "xai"
+
+[[routes]]
+model = "grok-4.3"
+provider = "xai"
+```
+
+```bash
+export XAI_API_KEY=xai-...
+```
+
+**Subscription OAuth** — flip the provider's `auth` and log in once with the device-code flow:
+
+```toml
+[providers.xai]
+auth = "xai_oauth"          # reuse the SuperGrok / X Premium+ login instead of a key
+# base_url stays https://api.x.ai/v1 — shunt refuses xai_oauth on a non-x.ai or non-https host
+
+[[routes]]
+model = "grok-build-0.1"
+provider = "xai"
+
+[[routes]]
+model = "grok-4.3"
+provider = "xai"
+```
+
+```bash
+shunt login xai            # prints a URL + code; approve in any browser
+```
+
+`shunt login xai` runs the RFC 8628 device-code flow: it prints a verification URL and short
+code, you approve in a browser (on any device — no loopback port needed, so it works over
+SSH/VPS/Docker), and it saves `~/.shunt/xai-auth.json` (override with `SHUNT_XAI_AUTH_FILE`).
+shunt refreshes the token automatically. A **403** on refresh means the account isn't entitled to
+xAI API access (a subscription-tier gate) — shunt says so distinctly and points you at the
+`XAI_API_KEY` path rather than telling you to re-login; a **400/401** tells you to run
+`shunt login xai` again.
+
+> **Reasoning effort is opt-in for grok.** Several grok models reject `reasoning.effort` with a
+> 400, so shunt sends the reasoning dial only when an effort was explicitly chosen — an `effort` on the route or provider, or a per-request `output_config.effort` from the client
+> (e.g. `effort = "high"` under `[providers.xai]` or a `[[routes]]` entry). Without it, grok
+> reasons on its own and shunt sends no `reasoning` object.
 
 ### 5.4 Select a mapped model (primary path)
 

@@ -49,9 +49,9 @@ async fn forward(
         .as_ref()
         .and_then(|value| value.pointer("/thinking/type").and_then(Value::as_str))
         == Some("enabled");
-    let chatgpt_backend = state.config.is_chatgpt_backend(&route.provider);
-    let upstream_body = translate_request(&body, &route, chatgpt_backend)
-        .map_err(|error| own_error(error.to_string()))?;
+    let flavor = state.config.responses_flavor(&route.provider);
+    let upstream_body =
+        translate_request(&body, &route, flavor).map_err(|error| own_error(error.to_string()))?;
     tracing::debug!(
         provider = %route.provider,
         upstream_model = %route.upstream_model,
@@ -66,7 +66,12 @@ async fn forward(
         .map_err(|error| own_error(error.to_string()))?;
     let status = upstream.status();
     if !status.is_success() {
-        return Err(mapped_upstream_error(status, upstream, &route.provider).await);
+        let auth = state
+            .config
+            .provider(&route.provider)
+            .map(|provider| provider.auth)
+            .unwrap_or_default();
+        return Err(mapped_upstream_error(status, upstream, auth).await);
     }
     if client_wants_stream {
         let keepalive = std::time::Duration::from_secs(state.config.server.sse_keepalive_seconds);
@@ -153,7 +158,7 @@ async fn json_response(
 async fn mapped_upstream_error(
     status: StatusCode,
     upstream: reqwest::Response,
-    provider: &str,
+    auth: crate::config::AuthMode,
 ) -> AdapterError {
     // Claude Code backs off on 429 by honoring Retry-After; the header must
     // survive the error re-shaping or the client retries blind.
@@ -163,15 +168,42 @@ async fn mapped_upstream_error(
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
     let text = upstream.text().await.unwrap_or_default();
-    tracing::warn!(%status, %provider, upstream_error_body = %text, "responses upstream error");
-    let value = if status == StatusCode::UNAUTHORIZED && matches!(provider, "codex" | "chatgpt") {
-        json!({"message": "ChatGPT authentication failed; run codex login"})
-    } else {
-        serde_json::from_str(&text).unwrap_or_else(|_| json!({"message": text}))
-    };
+    tracing::warn!(%status, ?auth, upstream_error_body = %text, "responses upstream error");
+    let value =
+        if status == StatusCode::UNAUTHORIZED && auth == crate::config::AuthMode::ChatgptOauth {
+            json!({"message": "ChatGPT authentication failed; run codex login"})
+        } else if status == StatusCode::UNAUTHORIZED && auth == crate::config::AuthMode::XaiOauth {
+            json!({"message": "xAI authentication failed; run shunt login xai"})
+        } else if status == StatusCode::FORBIDDEN && auth == crate::config::AuthMode::XaiOauth {
+            // Usually the subscription tier gate (as on refresh), but this
+            // endpoint can also 403 for content policy or model gating — keep
+            // the upstream message when there is one and append the tier-gate
+            // hint, rather than replacing real context with generic guidance.
+            let hint = "if this is the xAI subscription tier gate, re-logging in \
+                        will not help — set XAI_API_KEY or upgrade your plan";
+            let upstream_message = serde_json::from_str::<Value>(&text)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .pointer("/error/message")
+                        .or_else(|| value.get("message"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .filter(|message| !message.is_empty());
+            match upstream_message {
+                Some(message) => json!({"message": format!("{message} ({hint})")}),
+                None => json!({"message": crate::auth::xai_auth::refresh_error_message(status)}),
+            }
+        } else {
+            serde_json::from_str(&text).unwrap_or_else(|_| json!({"message": text}))
+        };
+    let xai_tier_gate =
+        status == StatusCode::FORBIDDEN && auth == crate::config::AuthMode::XaiOauth;
     let shunt_status = if status == StatusCode::UNAUTHORIZED
         || status == StatusCode::TOO_MANY_REQUESTS
         || status == StatusCode::BAD_REQUEST
+        || xai_tier_gate
     {
         status
     } else {
@@ -203,8 +235,12 @@ fn request_builder(
     let mut request = state
         .http_client
         .post(responses_url(&state.config, &route.provider))
-        .header("OpenAI-Beta", "responses=experimental")
         .header("content-type", "application/json");
+    // `OpenAI-Beta: responses=experimental` is an OpenAI/ChatGPT header; xAI's
+    // Responses API doesn't expect it and the reference clients don't send it.
+    if state.config.responses_flavor(&route.provider) != crate::config::ResponsesFlavor::Xai {
+        request = request.header("OpenAI-Beta", "responses=experimental");
+    }
     match credential {
         // The Responses API is always Bearer-authenticated; the configured
         // api_key_header only governs the Anthropic passthrough adapter.
@@ -219,6 +255,10 @@ fn request_builder(
                 .bearer_auth(access_token)
                 .header("chatgpt-account-id", account_id)
                 .header("originator", "codex_cli_rs");
+        }
+        // xAI subscription OAuth: bearer only, no account-id/originator headers.
+        Credential::XaiOauth { access_token } => {
+            request = request.bearer_auth(access_token);
         }
         // A Responses provider configured with passthrough auth is a
         // misconfiguration; send no credential and let the upstream reject it.
@@ -274,14 +314,52 @@ impl SseParser {
 
 #[cfg(test)]
 mod tests {
+    use axum::body::to_bytes;
+    use axum::http::StatusCode;
+    use serde_json::Value;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
     use crate::{
         auth::Credential,
-        config::Config,
+        config::{AuthMode, Config},
         routing::{AdapterKind, Route},
         server::AppState,
     };
 
-    use super::{build_test_request, responses_url};
+    use super::{build_test_request, mapped_upstream_error, responses_url};
+
+    /// Serves `body` at `status` from a mock server and returns the resulting
+    /// `reqwest::Response`, mirroring the shape `mapped_upstream_error` sees in
+    /// production (a response read off the wire, not built in-process).
+    async fn upstream_response(
+        status: u16,
+        body: &str,
+        headers: &[(&str, &str)],
+    ) -> reqwest::Response {
+        let server = MockServer::start().await;
+        let mut template = ResponseTemplate::new(status).set_body_string(body.to_string());
+        for (name, value) in headers {
+            template = template.insert_header(*name, *value);
+        }
+        Mock::given(method("GET"))
+            .and(path("/e"))
+            .respond_with(template)
+            .mount(&server)
+            .await;
+        reqwest::Client::new()
+            .get(format!("{}/e", server.uri()))
+            .send()
+            .await
+            .expect("mock request should succeed")
+    }
+
+    async fn body_json(error: crate::adapters::AdapterError) -> Value {
+        let bytes = to_bytes(error.response.into_body(), usize::MAX)
+            .await
+            .expect("response body should be readable");
+        serde_json::from_slice(&bytes).expect("error body should be JSON")
+    }
 
     fn codex_route() -> Route {
         Route {
@@ -335,5 +413,134 @@ mod tests {
             responses_url(&Config::default(), "openai"),
             "https://api.openai.com/v1/responses"
         );
+    }
+
+    fn xai_route() -> Route {
+        Route {
+            provider: "xai".to_string(),
+            adapter: AdapterKind::Responses,
+            model: "grok-4.3".to_string(),
+            upstream_model: "grok-4.3".to_string(),
+            effort: None,
+        }
+    }
+
+    #[test]
+    fn builds_xai_request_bearer_only_without_openai_beta() {
+        let state = AppState {
+            config: Config::default(),
+            http_client: reqwest::Client::new(),
+            inbound_auth: None,
+        };
+
+        let request = build_test_request(
+            &state,
+            &xai_route(),
+            Credential::XaiOauth {
+                access_token: "xai-access".to_string(),
+            },
+        );
+
+        // Stock /responses path on the xAI base URL.
+        assert_eq!(request.url().as_str(), "https://api.x.ai/v1/responses");
+        assert_eq!(
+            request.headers().get("authorization").unwrap(),
+            "Bearer xai-access"
+        );
+        // No ChatGPT/Codex headers and no OpenAI-Beta for the xai flavor.
+        assert!(request.headers().get("chatgpt-account-id").is_none());
+        assert!(request.headers().get("originator").is_none());
+        assert!(request.headers().get("OpenAI-Beta").is_none());
+    }
+
+    #[tokio::test]
+    async fn maps_401_to_xai_auth_message_for_xai_oauth() {
+        let upstream = upstream_response(401, "{}", &[]).await;
+        let error =
+            mapped_upstream_error(StatusCode::UNAUTHORIZED, upstream, AuthMode::XaiOauth).await;
+        assert_eq!(error.response.status(), StatusCode::UNAUTHORIZED);
+        let body = body_json(error).await;
+        assert_eq!(
+            body["error"]["message"],
+            "xAI authentication failed; run shunt login xai"
+        );
+    }
+
+    #[tokio::test]
+    async fn maps_403_to_xai_tier_gate_message_for_xai_oauth() {
+        // A live-API 403 without a usable upstream message falls back to the
+        // refresh path's tier-gate guidance: 403 kept (not 502), points at
+        // XAI_API_KEY, never suggests a re-login.
+        let upstream = upstream_response(403, "forbidden", &[]).await;
+        let error =
+            mapped_upstream_error(StatusCode::FORBIDDEN, upstream, AuthMode::XaiOauth).await;
+        assert_eq!(error.response.status(), StatusCode::FORBIDDEN);
+        let body = body_json(error).await;
+        let message = body["error"]["message"].as_str().unwrap();
+        assert!(message.contains("tier gate"));
+        assert!(message.contains("XAI_API_KEY"));
+        assert!(!message.contains("run shunt login xai"));
+    }
+
+    #[tokio::test]
+    async fn xai_403_preserves_upstream_message_and_appends_tier_hint() {
+        // A 403 can also mean content policy or model gating — the upstream
+        // message must survive, with the tier-gate possibility as a hint.
+        let upstream = upstream_response(
+            403,
+            r#"{"error": {"message": "model grok-4.5 is not enabled for this account"}}"#,
+            &[],
+        )
+        .await;
+        let error =
+            mapped_upstream_error(StatusCode::FORBIDDEN, upstream, AuthMode::XaiOauth).await;
+        assert_eq!(error.response.status(), StatusCode::FORBIDDEN);
+        let body = body_json(error).await;
+        let message = body["error"]["message"].as_str().unwrap();
+        assert!(message.contains("model grok-4.5 is not enabled for this account"));
+        assert!(message.contains("XAI_API_KEY"));
+    }
+
+    #[tokio::test]
+    async fn maps_403_to_bad_gateway_for_other_auth_modes() {
+        let upstream = upstream_response(403, "forbidden", &[]).await;
+        let error = mapped_upstream_error(StatusCode::FORBIDDEN, upstream, AuthMode::ApiKey).await;
+        assert_eq!(error.response.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    #[tokio::test]
+    async fn maps_401_to_chatgpt_auth_message_for_chatgpt_oauth() {
+        let upstream = upstream_response(401, "{}", &[]).await;
+        let error =
+            mapped_upstream_error(StatusCode::UNAUTHORIZED, upstream, AuthMode::ChatgptOauth).await;
+        assert_eq!(error.response.status(), StatusCode::UNAUTHORIZED);
+        let body = body_json(error).await;
+        assert_eq!(
+            body["error"]["message"],
+            "ChatGPT authentication failed; run codex login"
+        );
+    }
+
+    #[tokio::test]
+    async fn remaps_5xx_to_bad_gateway_but_passes_429_through() {
+        let upstream = upstream_response(503, "service unavailable", &[]).await;
+        let error =
+            mapped_upstream_error(StatusCode::SERVICE_UNAVAILABLE, upstream, AuthMode::ApiKey)
+                .await;
+        assert_eq!(error.response.status(), StatusCode::BAD_GATEWAY);
+
+        let upstream = upstream_response(429, "{}", &[]).await;
+        let error =
+            mapped_upstream_error(StatusCode::TOO_MANY_REQUESTS, upstream, AuthMode::ApiKey).await;
+        assert_eq!(error.response.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn preserves_retry_after_header_on_429() {
+        let upstream = upstream_response(429, "{}", &[("retry-after", "7")]).await;
+        let error =
+            mapped_upstream_error(StatusCode::TOO_MANY_REQUESTS, upstream, AuthMode::ApiKey).await;
+        assert_eq!(error.response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(error.response.headers().get("retry-after").unwrap(), "7");
     }
 }

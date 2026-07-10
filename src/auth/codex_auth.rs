@@ -211,7 +211,7 @@ fn write_refreshed_auth(path: &Path, response: RefreshResponse) -> io::Result<()
     write_auth_file_atomic(path, &auth)
 }
 
-fn write_auth_file_atomic(path: &Path, value: &Value) -> io::Result<()> {
+pub(crate) fn write_auth_file_atomic(path: &Path, value: &Value) -> io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let temp = parent.join(format!(
         ".{}.tmp-{}",
@@ -220,11 +220,35 @@ fn write_auth_file_atomic(path: &Path, value: &Value) -> io::Result<()> {
             .unwrap_or("auth"),
         std::process::id()
     ));
-    fs::write(&temp, serde_json::to_vec_pretty(value)?)?;
-    set_private_permissions(&temp)?;
+    // The temp file must be born private: chmod-after-write would leave a
+    // window where the tokens sit at the umask default on multi-user hosts.
+    write_private(&temp, &serde_json::to_vec_pretty(value)?)?;
     fs::rename(&temp, path)?;
     set_private_permissions(path)?;
     Ok(())
+}
+
+#[cfg(unix)]
+fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    // `mode(0o600)` only applies when the file is created, so a stale or
+    // pre-created temp at this predictable path would keep its old mode.
+    // Remove any leftover, then require exclusive creation: if something
+    // recreates the path in between, fail instead of writing tokens into a
+    // file someone else owns.
+    let _ = fs::remove_file(path);
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(bytes)
+}
+
+#[cfg(not(unix))]
+fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    fs::write(path, bytes)
 }
 
 #[cfg(unix)]
@@ -287,7 +311,7 @@ impl RefreshResponse {
     }
 }
 
-fn format_iso8601(time: SystemTime) -> String {
+pub(crate) fn format_iso8601(time: SystemTime) -> String {
     let seconds = time
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

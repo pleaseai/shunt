@@ -52,6 +52,17 @@ auth = "chatgpt_oauth"         # reads + auto-refreshes ~/.codex/auth.json
 # count_tokens = "tiktoken"    # default: local o200k_base count for count_tokens.
                                # "estimate" opts out (404 -> client estimates).
 
+# xAI Grok (EXPERIMENTAL — not yet verified against the live xAI API).
+# Built-in as an API-key provider (export XAI_API_KEY); to reuse a
+# SuperGrok / X Premium+ subscription instead, uncomment the auth line below and
+# run `shunt login xai`. See docs/m6-xai-provider.md.
+# [providers.xai]              # grok-build-0.1, grok-4.5, grok-4.3
+# kind = "responses"
+# base_url = "https://api.x.ai/v1"
+# auth = "xai_oauth"           # subscription OAuth (~/.shunt/xai-auth.json); omit to use XAI_API_KEY
+# effort = "high"              # opt-in: several grok models 400 on reasoning.effort, so it is
+                               # only sent when you configure an effort here or on a route.
+
 # --- Anthropic-compatible gateways: all `kind = "anthropic"` + an injected key.
 # Uncomment one, set its api_key_env, then add a matching [[routes]] below.
 # (Each provider's own model IDs are shown in a comment.)

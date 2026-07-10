@@ -1,12 +1,13 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::{json, Map, Value};
 
+use crate::config::ResponsesFlavor;
 use crate::routing::Route;
 
 pub fn translate_request(
     body: &[u8],
     route: &Route,
-    chatgpt_backend: bool,
+    flavor: ResponsesFlavor,
 ) -> Result<Value, serde_json::Error> {
     let request: Value = serde_json::from_slice(body)?;
     let mut out = Map::new();
@@ -24,11 +25,39 @@ pub fn translate_request(
     if let Some(value) = request.get("parallel_tool_calls") {
         out.insert("parallel_tool_calls".to_string(), value.clone());
     }
-    out.insert(
-        "reasoning".to_string(),
-        json!({"effort": effort(&request, route), "summary": "auto"}),
-    );
-    out.insert("text".to_string(), json!({"verbosity": "medium"}));
+    // Several grok models 400 on `reasoning.effort` even though they reason
+    // natively, so on the xai flavor the reasoning dial stays opt-in: sent only
+    // when an effort was explicitly chosen — configured on the route/provider,
+    // or sent per-request by the client (`output_config.effort`). Derived
+    // defaults (thinking flag, model-suffix) stay off to avoid blanket 400s
+    // (mirrors Hermes' per-model allowlist, but table-driven per AGENTS.md).
+    // xAI also rejects the `summary` key, so it is omitted there. Other
+    // flavors always request a reasoning summary, as before.
+    match flavor {
+        ResponsesFlavor::Xai => {
+            let client_effort = request
+                .pointer("/output_config/effort")
+                .and_then(Value::as_str)
+                .is_some();
+            if route.effort.is_some() || client_effort {
+                out.insert(
+                    "reasoning".to_string(),
+                    json!({"effort": effort(&request, route)}),
+                );
+            }
+        }
+        _ => {
+            out.insert(
+                "reasoning".to_string(),
+                json!({"effort": effort(&request, route), "summary": "auto"}),
+            );
+        }
+    }
+    // `text.verbosity` is a gpt-family knob; xAI's Responses API rejects the
+    // `text` object, and Hermes never sends it there, so skip it for xai.
+    if flavor != ResponsesFlavor::Xai {
+        out.insert("text".to_string(), json!({"verbosity": "medium"}));
+    }
     // With store:false the Responses backend forgets each turn's reasoning, so ask
     // for the encrypted reasoning blob and echo it back next turn (see input_items).
     // Only when the client enabled extended thinking, which is what lets Claude Code
@@ -46,8 +75,8 @@ pub fn translate_request(
     // `max_output_tokens`. Forward it so the client's cap is respected instead of
     // falling back to the model default. The ChatGPT/Codex backend rejects the
     // parameter it never receives from codex ("Unsupported parameter:
-    // max_output_tokens"), so send it only to the stock OpenAI Responses API.
-    if !chatgpt_backend {
+    // max_output_tokens"), so send it everywhere except that backend.
+    if flavor != ResponsesFlavor::Chatgpt {
         if let Some(max_tokens) = request.get("max_tokens").and_then(Value::as_u64) {
             out.insert("max_output_tokens".to_string(), json!(max_tokens));
         }

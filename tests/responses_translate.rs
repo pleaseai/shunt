@@ -1,6 +1,7 @@
 use axum::http::StatusCode;
 use serde_json::{json, Value};
 use shunt::{
+    config::ResponsesFlavor,
     model::responses::{
         anthropic_error_type, map_error_value, parse_sse_events, translate_request,
         AnthropicSseMachine,
@@ -21,7 +22,7 @@ fn route(model: &str) -> Route {
 fn translate(input: Value) -> Value {
     let body = serde_json::to_vec(&input).unwrap();
     // provider "openai" is the stock Responses API (not the ChatGPT backend).
-    translate_request(&body, &route("gpt-5.2-codex"), false).unwrap()
+    translate_request(&body, &route("gpt-5.2-codex"), ResponsesFlavor::OpenAi).unwrap()
 }
 
 #[test]
@@ -63,7 +64,8 @@ fn omits_max_output_tokens_for_chatgpt_backend() {
     }))
     .unwrap();
 
-    let actual = translate_request(&body, &route("gpt-5.2-codex"), true).unwrap();
+    let actual =
+        translate_request(&body, &route("gpt-5.2-codex"), ResponsesFlavor::Chatgpt).unwrap();
 
     assert!(
         actual.get("max_output_tokens").is_none(),
@@ -254,8 +256,100 @@ fn maps_thinking_and_route_override_to_effort() {
     let mut route = route("gpt-5.2-codex-low");
     route.effort = Some("xhigh".to_string());
     let body = serde_json::to_vec(&json!({"model": "gpt-5.2-codex-low", "messages": []})).unwrap();
-    let override_effort = translate_request(&body, &route, false).unwrap();
+    let override_effort = translate_request(&body, &route, ResponsesFlavor::OpenAi).unwrap();
     assert_eq!(override_effort["reasoning"]["effort"], "xhigh");
+}
+
+fn xai_route(model: &str) -> Route {
+    Route {
+        provider: "xai".to_string(),
+        adapter: AdapterKind::Responses,
+        model: model.to_string(),
+        upstream_model: model.to_string(),
+        effort: None,
+    }
+}
+
+#[test]
+fn xai_omits_reasoning_and_text_without_configured_effort() {
+    // Several grok models 400 on reasoning.effort, so with no route/provider
+    // effort configured the xai flavor sends no `reasoning` object at all — and
+    // no `text` object (xAI rejects it). store:false and stream:true remain.
+    let body = serde_json::to_vec(&json!({
+        "model": "grok-4.3",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 256
+    }))
+    .unwrap();
+
+    let actual = translate_request(&body, &xai_route("grok-4.3"), ResponsesFlavor::Xai).unwrap();
+
+    assert!(
+        actual.get("reasoning").is_none(),
+        "reasoning must be opt-in: {actual}"
+    );
+    assert!(
+        actual.get("text").is_none(),
+        "text object must be omitted for xai: {actual}"
+    );
+    assert_eq!(actual["store"], json!(false));
+    assert_eq!(actual["stream"], json!(true));
+    // xAI is not the ChatGPT backend, so the output cap is still forwarded.
+    assert_eq!(actual["max_output_tokens"], json!(256));
+    assert!(actual.get("service_tier").is_none());
+}
+
+#[test]
+fn xai_honors_explicit_client_effort_without_route_config() {
+    // A per-request `output_config.effort` is a deliberate client choice and
+    // must not be silently dropped just because the route has no static effort.
+    let body = serde_json::to_vec(&json!({
+        "model": "grok-4.3",
+        "messages": [],
+        "output_config": {"effort": "high"}
+    }))
+    .unwrap();
+
+    let actual = translate_request(&body, &xai_route("grok-4.3"), ResponsesFlavor::Xai).unwrap();
+
+    assert_eq!(actual["reasoning"], json!({"effort": "high"}));
+
+    // Derived defaults stay off: the extended-thinking flag alone must not
+    // opt xai into reasoning (several grok models 400 on it).
+    let body = serde_json::to_vec(&json!({
+        "model": "grok-4.3",
+        "messages": [],
+        "thinking": {"type": "enabled", "budget_tokens": 1024}
+    }))
+    .unwrap();
+    let actual = translate_request(&body, &xai_route("grok-4.3"), ResponsesFlavor::Xai).unwrap();
+    assert!(actual.get("reasoning").is_none());
+}
+
+#[test]
+fn xai_sends_reasoning_without_summary_when_effort_configured() {
+    // With an explicit route/provider effort the reasoning dial is sent, but
+    // without the `summary` key (xAI rejects it).
+    let mut route = xai_route("grok-4.5");
+    route.effort = Some("high".to_string());
+    let body = serde_json::to_vec(&json!({"model": "grok-4.5", "messages": []})).unwrap();
+
+    let actual = translate_request(&body, &route, ResponsesFlavor::Xai).unwrap();
+
+    assert_eq!(actual["reasoning"], json!({"effort": "high"}));
+}
+
+#[test]
+fn xai_includes_encrypted_reasoning_when_thinking_enabled() {
+    let body = serde_json::to_vec(&json!({
+        "thinking": {"type": "enabled"},
+        "messages": [{"role": "user", "content": "hi"}]
+    }))
+    .unwrap();
+
+    let actual = translate_request(&body, &xai_route("grok-4.5"), ResponsesFlavor::Xai).unwrap();
+
+    assert_eq!(actual["include"], json!(["reasoning.encrypted_content"]));
 }
 
 #[test]

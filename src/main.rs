@@ -33,6 +33,13 @@ enum Command {
     /// `CLAUDE_CODE_OAUTH_TOKEN`; otherwise auto-refresh mode reads and refreshes
     /// `~/.claude/.credentials.json`.
     Token,
+    /// Log in to a subscription provider via its OAuth device-code flow and save
+    /// the credential for shunt to inject. Currently supports `xai` (SuperGrok /
+    /// X Premium+): `shunt login xai`.
+    Login {
+        /// Provider to log in to (currently: `xai`).
+        provider: String,
+    },
 }
 
 #[tokio::main]
@@ -44,6 +51,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Command::Run { config }) => run(config.or(cli.config)).await,
         Some(Command::Check { config }) => check(config.or(cli.config)),
         Some(Command::Token) => token().await,
+        Some(Command::Login { provider }) => shunt::auth::xai_login::run(&provider).await,
         None if cli.check => check(cli.config),
         None => run(cli.config).await,
     }

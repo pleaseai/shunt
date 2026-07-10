@@ -19,6 +19,7 @@
 - [Configuration](./src/content/docs/01-getting-started/configuration.md) — /01-getting-started/configuration
 - [Operations](./src/content/docs/01-getting-started/operations.md) — /01-getting-started/operations
 - [Overview](./src/content/docs/01-getting-started/overview.md) — /01-getting-started/overview
+- [xAI Grok Provider](./src/content/docs/01-getting-started/xai-provider.md) — /01-getting-started/xai-provider
 
 ## Deep Dive
 

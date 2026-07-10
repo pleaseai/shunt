@@ -160,6 +160,31 @@ pub enum AuthMode {
     ApiKey,
     /// Reuse the ChatGPT/Codex OAuth login in ~/.codex/auth.json.
     ChatgptOauth,
+    /// xAI subscription OAuth (SuperGrok / X Premium+), acquired via the
+    /// device-code flow (`shunt login xai`) and stored in ~/.shunt/xai-auth.json.
+    XaiOauth,
+}
+
+/// The dialect of the OpenAI Responses API an upstream speaks. Some backends
+/// reject parameters others require, so translation is gated per flavor rather
+/// than by hardcoded provider names (AGENTS.md table-driven rule).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResponsesFlavor {
+    /// Stock OpenAI Responses API (api.openai.com and compatible gateways).
+    OpenAi,
+    /// ChatGPT/Codex backend under /codex/responses — rejects parameters codex
+    /// never sends (e.g. `max_output_tokens`).
+    Chatgpt,
+    /// xAI Grok Responses API — rejects `service_tier`/`text`, and 400s on
+    /// `reasoning.effort` for several grok models, so reasoning stays opt-in.
+    Xai,
+}
+
+/// Whether `host` belongs to xAI (`x.ai` or any subdomain). Used both to gate
+/// xai-flavored translation and to reject an `xai_oauth` provider pointed at a
+/// non-xAI host, so shunt never leaks a subscription bearer to another origin.
+pub fn host_is_xai(host: &str) -> bool {
+    host == "x.ai" || host.ends_with(".x.ai")
 }
 
 /// Which header an injected API key is sent in.
@@ -209,6 +234,12 @@ pub enum ConfigError {
     ProviderBaseUrlMissingHost { provider: String },
     #[error("providers.{provider} uses auth = \"api_key\" but api_key_env is not set")]
     MissingApiKeyEnv { provider: String },
+    #[error("providers.{provider} uses auth = \"xai_oauth\" but base_url host {host} is not x.ai; refusing to send a subscription token off-origin")]
+    XaiOauthNonXaiHost { provider: String, host: String },
+    #[error("providers.{provider} uses auth = \"xai_oauth\" but base_url is not https; refusing to send a subscription token over plaintext")]
+    XaiOauthNotHttps { provider: String },
+    #[error("providers.{provider} uses auth = \"xai_oauth\" but kind is not \"responses\"; the anthropic adapter would forward the client's own credential instead of the xAI token")]
+    XaiOauthWrongKind { provider: String },
     #[error("server.default_provider references unknown provider: {0}")]
     UnknownDefaultProvider(String),
     #[error("route for model {model} references unknown provider: {provider}")]
@@ -263,6 +294,21 @@ impl Default for Config {
                     base_url: "https://chatgpt.com/backend-api".to_string(),
                     auth: AuthMode::ChatgptOauth,
                     api_key_env: None,
+                    api_key_header: ApiKeyHeader::Bearer,
+                    effort: None,
+                    count_tokens: CountTokens::default(),
+                },
+            ),
+            (
+                // xAI Grok. Defaults to the API-key path (XAI_API_KEY); a
+                // subscription user flips `auth = "xai_oauth"` in shunt.toml to
+                // reuse a SuperGrok / X Premium+ login (`shunt login xai`).
+                "xai".to_string(),
+                ProviderConfig {
+                    kind: ProviderKind::Responses,
+                    base_url: "https://api.x.ai/v1".to_string(),
+                    auth: AuthMode::ApiKey,
+                    api_key_env: Some("XAI_API_KEY".to_string()),
                     api_key_header: ApiKeyHeader::Bearer,
                     effort: None,
                     count_tokens: CountTokens::default(),
@@ -367,7 +413,7 @@ impl Config {
             auth.resolve()?;
         }
         for (name, provider) in &self.providers {
-            self.provider_base_url(name, &provider.base_url)?;
+            let url = self.provider_base_url(name, &provider.base_url)?;
             if provider.auth == AuthMode::ApiKey
                 && provider
                     .api_key_env
@@ -378,6 +424,31 @@ impl Config {
                 return Err(ConfigError::MissingApiKeyEnv {
                     provider: name.clone(),
                 });
+            }
+            // An xai_oauth provider injects the operator's subscription bearer,
+            // so its base_url must stay on an xAI host over https (mirrors
+            // Hermes' endpoint re-validation) — never a gateway that would
+            // receive it, and never plaintext. It must also be a Responses
+            // provider: the anthropic adapter has no XaiOauth injection and
+            // would forward the client's own credential to the upstream.
+            if provider.auth == AuthMode::XaiOauth {
+                if provider.kind != ProviderKind::Responses {
+                    return Err(ConfigError::XaiOauthWrongKind {
+                        provider: name.clone(),
+                    });
+                }
+                if url.scheme() != "https" {
+                    return Err(ConfigError::XaiOauthNotHttps {
+                        provider: name.clone(),
+                    });
+                }
+                let host = url.host_str().unwrap_or_default();
+                if !host_is_xai(host) {
+                    return Err(ConfigError::XaiOauthNonXaiHost {
+                        provider: name.clone(),
+                        host: host.to_string(),
+                    });
+                }
             }
         }
         if !self.has_provider(&self.server.default_provider) {
@@ -427,6 +498,29 @@ impl Config {
             .unwrap_or(false)
     }
 
+    /// Which Responses dialect a provider speaks, so translation can gate the
+    /// per-backend quirks (see [`ResponsesFlavor`]). Detected from `auth` and
+    /// the base_url host rather than provider names: the ChatGPT/Codex backend
+    /// by its OAuth mode, xAI by its host (covers both the API-key `xai`
+    /// provider and an `xai_oauth` one), everything else stock OpenAI.
+    pub fn responses_flavor(&self, provider: &str) -> ResponsesFlavor {
+        let Some(provider) = self.provider(provider) else {
+            return ResponsesFlavor::OpenAi;
+        };
+        if provider.auth == AuthMode::ChatgptOauth {
+            return ResponsesFlavor::Chatgpt;
+        }
+        let host = reqwest::Url::parse(&provider.base_url)
+            .ok()
+            .and_then(|url| url.host_str().map(ToOwned::to_owned))
+            .unwrap_or_default();
+        if host_is_xai(&host) {
+            ResponsesFlavor::Xai
+        } else {
+            ResponsesFlavor::OpenAi
+        }
+    }
+
     pub fn provider_base_url(
         &self,
         provider: &str,
@@ -462,7 +556,10 @@ mod tests {
         sync::{Arc, Mutex},
     };
 
-    use super::{config_file_candidates, AuthMode, Config, ConfigError, ModelConfig, ProviderKind};
+    use super::{
+        config_file_candidates, AuthMode, Config, ConfigError, ModelConfig, ProviderKind,
+        ResponsesFlavor,
+    };
 
     struct BufferWriter {
         buffer: Arc<Mutex<Vec<u8>>>,
@@ -523,6 +620,76 @@ mod tests {
             AuthMode::ChatgptOauth
         );
         assert!(config.provider("kimi").is_none());
+    }
+
+    #[test]
+    fn default_seeds_builtin_xai_provider() {
+        let config = Config::default();
+        let xai = config.provider("xai").unwrap();
+        assert_eq!(xai.kind, ProviderKind::Responses);
+        assert_eq!(xai.base_url, "https://api.x.ai/v1");
+        assert_eq!(xai.auth, AuthMode::ApiKey);
+        assert_eq!(xai.api_key_env.as_deref(), Some("XAI_API_KEY"));
+        // The API-key xai provider still speaks the xai Responses dialect.
+        assert_eq!(config.responses_flavor("xai"), ResponsesFlavor::Xai);
+        assert_eq!(config.responses_flavor("openai"), ResponsesFlavor::OpenAi);
+        assert_eq!(config.responses_flavor("codex"), ResponsesFlavor::Chatgpt);
+    }
+
+    #[test]
+    fn xai_oauth_provider_validates_and_rejects_non_xai_host() {
+        // Flipping the built-in xai provider to oauth is accepted (x.ai host).
+        let mut config = Config::default();
+        config.providers.get_mut("xai").unwrap().auth = AuthMode::XaiOauth;
+        config.providers.get_mut("xai").unwrap().api_key_env = None;
+        let config = config.validate().unwrap();
+        assert_eq!(config.responses_flavor("xai"), ResponsesFlavor::Xai);
+
+        // Pointing an xai_oauth provider off-origin is refused (bearer-leak guard).
+        let mut config = Config::default();
+        let provider = config.providers.get_mut("xai").unwrap();
+        provider.auth = AuthMode::XaiOauth;
+        provider.api_key_env = None;
+        provider.base_url = "https://evil.example.com/v1".to_string();
+        let error = config.validate().unwrap_err();
+        assert!(matches!(error, ConfigError::XaiOauthNonXaiHost { .. }));
+        assert!(error.to_string().contains("evil.example.com"));
+    }
+
+    #[test]
+    fn xai_oauth_requires_https_base_url() {
+        let mut config = Config::default();
+        let provider = config.providers.get_mut("xai").unwrap();
+        provider.auth = AuthMode::XaiOauth;
+        provider.api_key_env = None;
+        provider.base_url = "http://api.x.ai/v1".to_string();
+        let error = config.validate().unwrap_err();
+        assert!(matches!(error, ConfigError::XaiOauthNotHttps { .. }));
+        assert!(error.to_string().contains("plaintext"));
+    }
+
+    #[test]
+    fn xai_oauth_requires_responses_kind() {
+        // An anthropic-kind provider never injects the XaiOauth credential —
+        // the anthropic adapter would forward the client's own headers — so
+        // the combination is rejected at boot.
+        let mut config = Config::default();
+        let provider = config.providers.get_mut("xai").unwrap();
+        provider.auth = AuthMode::XaiOauth;
+        provider.api_key_env = None;
+        provider.kind = ProviderKind::Anthropic;
+        let error = config.validate().unwrap_err();
+        assert!(matches!(error, ConfigError::XaiOauthWrongKind { .. }));
+    }
+
+    #[test]
+    fn xai_oauth_accepts_x_ai_subdomain() {
+        let mut config = Config::default();
+        let provider = config.providers.get_mut("xai").unwrap();
+        provider.auth = AuthMode::XaiOauth;
+        provider.api_key_env = None;
+        provider.base_url = "https://api.x.ai/v1".to_string();
+        assert!(config.validate().is_ok());
     }
 
     #[test]
