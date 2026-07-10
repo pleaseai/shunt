@@ -46,7 +46,8 @@ shunt loads configuration from, in increasing precedence:
 2. A **TOML file**. With `--config <path>` that exact file is used (a missing
    file is an error). Otherwise shunt takes the first file found in:
    `./shunt.toml` → `$XDG_CONFIG_HOME/shunt/shunt.toml` (defaulting to
-   `~/.config/shunt/shunt.toml`) → `$(brew --prefix)/etc/shunt.toml`. Boot
+   `~/.config/shunt/shunt.toml`) → `$HOMEBREW_PREFIX/etc/shunt.toml`
+   (defaulting to the `/opt/homebrew` and `/usr/local` prefixes). Boot
    logs report which file was loaded, or that defaults are in use.
 3. **Environment variables** prefixed `SHUNT_`, using `__` for nested keys
    (e.g. `SHUNT_SERVER__BIND=0.0.0.0:3001`).

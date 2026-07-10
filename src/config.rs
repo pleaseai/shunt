@@ -199,6 +199,8 @@ pub enum ConfigError {
     Figment(#[from] Box<figment::Error>),
     #[error("config file not found: {}", .0.display())]
     MissingConfigFile(PathBuf),
+    #[error("failed to read config file {}: {message}", .path.display())]
+    ReadConfigFile { path: PathBuf, message: String },
     #[error("server.bind must be a socket address: {0}")]
     BindAddress(#[from] std::net::AddrParseError),
     #[error("providers.{provider}.base_url must be a valid absolute URL: {message}")]
@@ -306,28 +308,40 @@ fn config_file_candidates(
 
 impl Config {
     pub fn load(path: Option<&Path>) -> Result<Self, ConfigError> {
-        // An explicit --config that doesn't exist is an error; a typo'd path
-        // must not silently fall back to defaults.
         let path = match path {
-            Some(path) if !path.is_file() => {
-                return Err(ConfigError::MissingConfigFile(path.to_path_buf()));
-            }
             Some(path) => Some(path.to_path_buf()),
             None => Self::find_config_file(),
         };
         let mut figment = Figment::from(Serialized::defaults(Self::default()));
         if let Some(path) = &path {
-            figment = figment.merge(Toml::file(path));
+            // Read the file ourselves instead of `Toml::file`, which silently
+            // yields an empty provider for a missing file — a typo'd --config
+            // or a file deleted after discovery must error, not fall back to
+            // defaults while the boot log claims the file was loaded.
+            let raw = std::fs::read_to_string(path).map_err(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    ConfigError::MissingConfigFile(path.clone())
+                } else {
+                    ConfigError::ReadConfigFile {
+                        path: path.clone(),
+                        message: error.to_string(),
+                    }
+                }
+            })?;
+            figment = figment.merge(Toml::string(&raw));
         }
         let config: Self = figment
             .merge(Env::prefixed("SHUNT_").split("__"))
             .extract()
             .map_err(Box::new)?;
+        let config = config.validate()?;
+        // Logged only after validation so a rejected config never boots with a
+        // misleading "loaded config" line.
         match &path {
             Some(path) => tracing::info!(path = %path.display(), "loaded config"),
             None => tracing::info!("no config file found, using defaults"),
         }
-        config.validate()
+        Ok(config)
     }
 
     /// First existing file from the standard search order used when no
