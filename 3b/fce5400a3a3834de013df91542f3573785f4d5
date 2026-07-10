@@ -1,0 +1,57 @@
+site/src/content/docs/getting-started/quickstart.md
+  s_f3e5d8bb9a3f87::t_2996fcf47fe051 1-78
+.github/workflows/deploy-docs.yml
+  s_f3e5d8bb9a3f87::t_4f3e626b920c1a 1-51
+site/src/content/docs/guides/connect-claude-code.md
+  s_f3e5d8bb9a3f87::t_5608f2bc0a4f45 1-115
+site/src/content/docs/reference/troubleshooting.md
+  s_f3e5d8bb9a3f87::t_c58f651c224f54 1-19
+site/src/content/docs/getting-started/installation.md
+  s_f3e5d8bb9a3f87::t_e08b81f5bf25b7 1-49
+site/src/content/docs/reference/configuration.md
+  s_f3e5d8bb9a3f87::t_28bdcc06f281d2 1-70
+site/src/content/docs/reference/endpoints.md
+  s_f3e5d8bb9a3f87::t_432c0178e8e994 1-19
+site/astro.config.mjs
+  s_f3e5d8bb9a3f87::t_5818069a90debf 1-48
+site/src/content/docs/guides/shared-gateway.md
+  s_f3e5d8bb9a3f87::t_0fd6474924905b 1-46
+site/src/content.config.ts
+  s_f3e5d8bb9a3f87::t_13ea8c8aded6d5 1-10
+site/package.json
+  s_f3e5d8bb9a3f87::t_4954a9ba2516e6 1-15
+site/src/content/docs/getting-started/why-shunt.md
+  s_f3e5d8bb9a3f87::t_d924060a30119b 1-39
+site/src/content/docs/reference/cli.md
+  s_f3e5d8bb9a3f87::t_aeb42293b81449 1-55
+site/src/content/docs/guides/model-discovery.md
+  s_f3e5d8bb9a3f87::t_6404af210cba27 1-35
+.gitignore
+  s_f3e5d8bb9a3f87::t_4f4459ebe4225b 9-13
+site/src/content/docs/index.mdx
+  s_f3e5d8bb9a3f87::t_c27f234b019844 1-38
+site/src/content/docs/guides/effort-and-context.md
+  s_f3e5d8bb9a3f87::t_4d351865397aa8 1-71
+site/src/content/docs/guides/providers.md
+  s_f3e5d8bb9a3f87::t_c543e82eeefdc0 1-63
+site/src/content/docs/guides/configuration.md
+  s_f3e5d8bb9a3f87::t_722844025a2a4b 1-90
+site/package-lock.json
+  s_f3e5d8bb9a3f87::t_108b57bcacbe09 1-6821
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3bfce5400a3a3834de013df91542f3573785f4d5",
+  "prompts": {},
+  "sessions": {
+    "s_f3e5d8bb9a3f87": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "72a43b8f-8b0f-4112-b3dd-954c7d5cc3f4",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
