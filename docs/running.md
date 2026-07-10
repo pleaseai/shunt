@@ -333,6 +333,11 @@ file, so the static + `setup-token` route stays the simplest and safest default.
 
 #### xAI Grok — API key or subscription OAuth
 
+> **⚠️ Experimental — not yet verified against the live xAI API.** Implemented from the
+> reference clients (Hermes, OpenCode) and covered by unit tests with mocked endpoints;
+> it has not been exercised with a real SuperGrok account or `XAI_API_KEY` yet. Expect
+> rough edges and report issues.
+
 shunt ships a built-in `xai` provider (`kind = "responses"`, `base_url = https://api.x.ai/v1`).
 It defaults to the **API-key** path; flip it to `xai_oauth` to reuse a **SuperGrok / X Premium+**
 subscription. Full spec: [`m6-xai-provider.md`](m6-xai-provider.md).

@@ -3,6 +3,10 @@ title: "xAI Grok Provider"
 description: "Route Claude Code to xAI Grok with an API key or a SuperGrok / X Premium+ subscription OAuth login."
 ---
 
+:::caution[Experimental]
+The xAI provider is **experimental and not yet verified against the live xAI API**. It is implemented from the reference clients (Hermes, OpenCode) and covered by unit tests with mocked endpoints only — it has not been exercised with a real SuperGrok account or `XAI_API_KEY`. Expect rough edges and please report issues.
+:::
+
 ## Overview
 
 shunt ships a built-in `xai` provider that translates Anthropic Messages to xAI's OpenAI-Responses-shaped API at `https://api.x.ai/v1/responses`. It is reachable two ways: an **API key** (`XAI_API_KEY`, the default) or a **subscription OAuth** login that reuses a SuperGrok / X Premium+ plan with no separate API billing [src/config.rs:300-311](https://github.com/chatbot-pf/shunt/blob/main/src/config.rs#L300-L311) [docs/m6-xai-provider.md](https://github.com/chatbot-pf/shunt/blob/main/docs/m6-xai-provider.md).

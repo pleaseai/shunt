@@ -1,5 +1,10 @@
 # M6 — xAI Grok provider (spec)
 
+> **⚠️ Experimental — not yet verified against the live xAI API.** The flow is validated
+> against the reference implementations (Hermes, OpenCode) and unit tests with mocked
+> endpoints only; it has not been exercised with a real SuperGrok account or `XAI_API_KEY`.
+> Endpoints, request quirks, and error semantics may change once verified live.
+
 > Companion to [`m2-chatgpt-oauth.md`](m2-chatgpt-oauth.md) and
 > [`m1-responses-translation.md`](m1-responses-translation.md). Adds the `xai` provider: the
 > xAI Grok Responses API, reachable two ways — an **API key** (`XAI_API_KEY`) or a
