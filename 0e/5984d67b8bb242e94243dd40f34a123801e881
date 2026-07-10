@@ -1,0 +1,23 @@
+shunt.toml.example
+  s_f3e5d8bb9a3f87::t_ab9986f8906210 52-53
+site/src/content/docs/guides/effort-and-context.md
+  s_f3e5d8bb9a3f87::t_16abcec556ffc8 25
+docs/running.md
+  s_f3e5d8bb9a3f87::t_542744ad854659 426
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0e5984d67b8bb242e94243dd40f34a123801e881",
+  "prompts": {},
+  "sessions": {
+    "s_f3e5d8bb9a3f87": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "72a43b8f-8b0f-4112-b3dd-954c7d5cc3f4",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
