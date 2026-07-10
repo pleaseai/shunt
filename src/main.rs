@@ -246,11 +246,21 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).expect("create temp dir");
+
+        // RAII guard so the directory is removed even when an assertion
+        // below panics.
+        struct TempDirGuard(std::path::PathBuf);
+        impl Drop for TempDirGuard {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _guard = TempDirGuard(dir.clone());
+
         let path = dir.join("shunt.toml");
         std::fs::write(&path, format!("[server]\nbind = \"{bind}\"\n")).expect("write test config");
         let result = run(Some(path.clone()));
         drop(listener);
-        std::fs::remove_dir_all(&dir).ok();
         assert!(result
             .expect_err("occupied address must fail")
             .to_string()
