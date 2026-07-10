@@ -3,6 +3,7 @@
 [![Socket Badge](https://socket.dev/api/badge/cargo/package/shunt-gateway)](https://socket.dev/cargo/package/shunt-gateway)
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=pleaseai_shunt&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=pleaseai_shunt)
 [![codecov](https://codecov.io/gh/pleaseai/shunt/graph/badge.svg)](https://codecov.io/gh/pleaseai/shunt)
+[![License](https://img.shields.io/crates/l/shunt-gateway.svg)](https://github.com/pleaseai/shunt#license)
 
 > Shunt Claude Code to any model.
 
