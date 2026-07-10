@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.0](https://github.com/pleaseai/shunt/compare/v0.1.0...v0.2.0) (2026-07-10)
+
+
+### Features
+
+* add GET /health healthcheck and GET / landing endpoints ([#4](https://github.com/pleaseai/shunt/issues/4)) ([3618779](https://github.com/pleaseai/shunt/commit/3618779538c92bec08ae7dc85c2cb1033d39a784))
+* **config:** standard config-file fallback chain and strict --config ([#5](https://github.com/pleaseai/shunt/issues/5)) ([66fa78b](https://github.com/pleaseai/shunt/commit/66fa78b8398f686d4a1ec6ea61cd6703dc20c24d))
+
 ## 0.1.0 (2026-07-09)
 
 
