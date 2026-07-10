@@ -1,0 +1,22 @@
+.github/workflows/release.yml
+  s_8e6f5afadd115d::t_33d7da6c65d676 26
+  s_8e6f5afadd115d::t_bcfa6b227615e3 239,242
+  s_8e6f5afadd115d::t_97ade917615941 129-238,240-241,243-253
+  s_8e6f5afadd115d::t_38cc980f9e92d9 8-15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "40bc29241e80a31993ab3d39f9c30d93a041396b",
+  "prompts": {},
+  "sessions": {
+    "s_8e6f5afadd115d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "54415c5e-6d27-465e-9fcb-a259c3f7c59c",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
