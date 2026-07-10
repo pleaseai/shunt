@@ -364,6 +364,58 @@ fn surfaces_upstream_error_detail_and_message() {
     assert_eq!(unknown["error"]["message"], "upstream request failed");
 }
 
+#[test]
+fn rewrites_context_overflow_errors_to_anthropic_wording() {
+    // Claude Code's compact-and-retry matches "prompt is too long" and parses
+    // "N tokens > M maximum" to size the retry; each upstream phrasing must
+    // land on that shape with actual > limit regardless of the original order.
+
+    // Chat-Completions phrasing: limit appears before the actual count.
+    let chat = map_error_value(
+        &json!({"error": {
+            "code": "context_length_exceeded",
+            "message": "This model's maximum context length is 272000 tokens. However, your messages resulted in 372982 tokens. Please reduce the length of the messages."
+        }}),
+        StatusCode::BAD_REQUEST,
+    );
+    assert_eq!(chat["error"]["type"], "invalid_request_error");
+    assert_eq!(
+        chat["error"]["message"],
+        "prompt is too long: 372982 tokens > 272000 maximum"
+    );
+
+    // Gateway/proxy phrasing: actual count appears before the limit.
+    let proxied = map_error_value(
+        &json!({"error": {"message": "prompt token count of 372982 exceeds the limit of 272000 for model gpt-5.2"}}),
+        StatusCode::BAD_REQUEST,
+    );
+    assert_eq!(
+        proxied["error"]["message"],
+        "prompt is too long: 372982 tokens > 272000 maximum"
+    );
+
+    // Responses API phrasing carries no token counts; the phrase alone still
+    // triggers the client's compaction path.
+    let responses = map_error_value(
+        &json!({"error": {
+            "code": "context_length_exceeded",
+            "message": "Your input exceeds the context window of this model. Please adjust your input and try again."
+        }}),
+        StatusCode::BAD_REQUEST,
+    );
+    assert_eq!(responses["error"]["message"], "prompt is too long");
+
+    // Non-overflow errors pass through untouched.
+    let other = map_error_value(
+        &json!({"error": {"code": "invalid_api_key", "message": "Incorrect API key provided: 1234567890"}}),
+        StatusCode::UNAUTHORIZED,
+    );
+    assert_eq!(
+        other["error"]["message"],
+        "Incorrect API key provided: 1234567890"
+    );
+}
+
 fn event_names(sse: &str) -> Vec<String> {
     sse.split("\n\n")
         .filter_map(|frame| {

@@ -530,11 +530,13 @@ pub fn parse_sse_events(input: &str) -> Vec<ResponseEvent> {
 }
 
 pub fn map_error_value(value: &Value, status: StatusCode) -> Value {
+    let message = error_message(value);
+    let message = context_overflow_message(value, &message).unwrap_or(message);
     json!({
         "type": "error",
         "error": {
             "type": anthropic_error_type(status),
-            "message": error_message(value)
+            "message": message
         }
     })
 }
@@ -559,6 +561,58 @@ fn error_message(value: &Value) -> String {
         .and_then(Value::as_str)
         .unwrap_or("upstream request failed")
         .to_string()
+}
+
+/// Rewrite upstream context-overflow errors into Anthropic's wording.
+///
+/// Claude Code's automatic compact-and-retry only fires when the error
+/// message contains the phrase "prompt is too long" (matched
+/// case-insensitively), and it parses "N tokens > M maximum" from it to
+/// size the retry. Upstream providers phrase the same failure in their own
+/// words, which would otherwise strand the session until a manual /compact.
+fn context_overflow_message(value: &Value, message: &str) -> Option<String> {
+    let code = value
+        .pointer("/error/code")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let lower = message.to_lowercase();
+    let is_overflow = code == "context_length_exceeded"
+        || lower.contains("maximum context length")
+        || (lower.contains("context window") && lower.contains("exceed"))
+        || (lower.contains("exceeds the limit") && lower.contains("token"));
+    if !is_overflow {
+        return None;
+    }
+    // Token counts and window sizes are the only large integers in these
+    // messages (small ones come from model names like "gpt-5.2"), and the
+    // overflowing count is always the larger of the two.
+    let mut numbers: Vec<i64> = Vec::new();
+    let mut current: Option<i64> = None;
+    for ch in message.chars() {
+        if let Some(digit) = ch.to_digit(10) {
+            current = Some(
+                current
+                    .unwrap_or(0)
+                    .saturating_mul(10)
+                    .saturating_add(i64::from(digit)),
+            );
+        } else if let Some(number) = current.take() {
+            if number >= 1000 {
+                numbers.push(number);
+            }
+        }
+    }
+    if let Some(number) = current {
+        if number >= 1000 {
+            numbers.push(number);
+        }
+    }
+    match (numbers.iter().max(), numbers.iter().min()) {
+        (Some(&actual), Some(&limit)) if actual > limit => Some(format!(
+            "prompt is too long: {actual} tokens > {limit} maximum"
+        )),
+        _ => Some("prompt is too long".to_string()),
+    }
 }
 
 fn sse(event: &str, data: &Value) -> String {

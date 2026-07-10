@@ -402,6 +402,12 @@ stateDiagram-v2
 | Tool use | `function_call` | `tool_use_item()` | Tool call ID test | [src/model/responses_request.rs:140-148](https://github.com/chatbot-pf/shunt/blob/main/src/model/responses_request.rs#L140-L148) [tests/responses_translate.rs:73-96](https://github.com/chatbot-pf/shunt/blob/main/tests/responses_translate.rs#L73-L96) |
 | Reasoning effort | `reasoning.effort` | `effort()` | Thinking and override test | [src/model/responses_request.rs:254-280](https://github.com/chatbot-pf/shunt/blob/main/src/model/responses_request.rs#L254-L280) [tests/responses_translate.rs:164-178](https://github.com/chatbot-pf/shunt/blob/main/tests/responses_translate.rs#L164-L178) |
 
+## Error Mapping
+
+Upstream errors on the `responses` path are re-shaped into the Anthropic error envelope by `map_error_value`, with the `error.type` derived from the upstream status (401 → `authentication_error`, 429 → `rate_limit_error`, 400 → `invalid_request_error`, other → `api_error`) and the upstream message preserved ([src/model/responses.rs:532-563](https://github.com/chatbot-pf/shunt/blob/main/src/model/responses.rs#L532-L563)).
+
+Context-overflow errors are the one case where the message itself is rewritten: Claude Code's automatic compact-and-retry matches the literal phrase `prompt is too long` and parses `N tokens > M maximum` to size the retry, so upstream phrasings (`context_length_exceeded`, "maximum context length is N tokens", "prompt token count of N exceeds the limit of M") are detected and rewritten to that shape, keeping the token counts when the upstream message carries them ([src/model/responses.rs:566-616](https://github.com/chatbot-pf/shunt/blob/main/src/model/responses.rs#L566-L616), [tests/responses_translate.rs:368-417](https://github.com/chatbot-pf/shunt/blob/main/tests/responses_translate.rs#L368-L417)).
+
 ## Related Pages
 
 | Page | Relationship |

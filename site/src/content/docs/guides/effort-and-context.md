@@ -48,7 +48,7 @@ export CLAUDE_CODE_MAX_CONTEXT_TOKENS=372000
 ```
 
 :::caution
-The value is **global** — one value for every non-`claude-` model in the session — and setting it larger than the real upstream window delays auto-compact past the point where the upstream rejects the request with a context-length error. Match it to the smallest real window among your mapped models.
+The value is **global** — one value for every non-`claude-` model in the session — and setting it larger than the real upstream window delays auto-compact until the upstream rejects the request with a context-length error. shunt [rewrites that error](#context-overflow-recovery) so Claude Code compacts and retries automatically, but each overflow round-trip is wasted latency — match the value to the smallest real window among your mapped models.
 :::
 
 The other client-side lever is the `[1m]` model-id suffix, which forces a 1M window — only use it when the upstream really has that window.
@@ -59,6 +59,18 @@ The other client-side lever is the `[1m]` model-id suffix, which forces a 1M win
 | Context window (denominator) | ⚠️ 200k default; set `CLAUDE_CODE_MAX_CONTEXT_TOKENS` | ✅ exact |
 | `count_tokens` (pre-flight) | ⚠️ local tiktoken count (default) | ✅ exact (upstream) |
 | `rate_limits` (5h / weekly) | ❌ needs Anthropic headers | ✅ shown |
+
+## Context overflow recovery
+
+When a conversation outgrows the upstream model's real window, the provider rejects the request with its own wording — OpenAI's `context_length_exceeded`, `"This model's maximum context length is N tokens…"`, or a proxy's `"prompt token count of N exceeds the limit of M"`. Claude Code's automatic compact-and-retry only fires on Anthropic's phrasing, so unrewritten these errors would strand the session until a manual `/compact` ([documented gateway pitfall](https://code.claude.com/docs/en/llm-gateway-connect#troubleshoot-gateway-errors)).
+
+shunt detects context-overflow errors on `responses`-routed models and rewrites them into the Anthropic shape Claude Code matches:
+
+```json
+{"type": "error", "error": {"type": "invalid_request_error", "message": "prompt is too long: 372982 tokens > 272000 maximum"}}
+```
+
+When the upstream message carries both token counts, shunt preserves them (whatever order the upstream states them in) — Claude Code parses the `N tokens > M maximum` gap and compacts past the whole overshoot in a single retry. When the upstream gives no counts (e.g. the Responses API's plain *"Your input exceeds the context window of this model"*), shunt emits `prompt is too long` alone, which still triggers compaction. Non-overflow errors are passed through with their original message.
 
 ## Attribution block
 
