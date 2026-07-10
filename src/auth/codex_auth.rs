@@ -232,10 +232,15 @@ pub(crate) fn write_auth_file_atomic(path: &Path, value: &Value) -> io::Result<(
 fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
+    // `mode(0o600)` only applies when the file is created, so a stale or
+    // pre-created temp at this predictable path would keep its old mode.
+    // Remove any leftover, then require exclusive creation: if something
+    // recreates the path in between, fail instead of writing tokens into a
+    // file someone else owns.
+    let _ = fs::remove_file(path);
     let mut file = fs::OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .mode(0o600)
         .open(path)?;
     file.write_all(bytes)
