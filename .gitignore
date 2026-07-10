@@ -6,5 +6,10 @@ wiki/node_modules/
 wiki/.astro/
 wiki/dist/
 
+# Astro Starlight user docs site artifacts
+site/node_modules/
+site/.astro/
+site/dist/
+
 # Local worktrees created by the worktree workflow (per-branch, not shared)
 .claude/worktrees/

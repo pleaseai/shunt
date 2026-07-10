@@ -1,0 +1,46 @@
+---
+title: Sharing a Gateway
+description: Per-client tokens for shared deployments, and SSE keepalive pings for proxies and tunnels.
+---
+
+## Inbound client tokens
+
+By default shunt has no inbound auth — fine for a loopback-only personal gateway, but once you share it over a VPN/tunnel, anyone who can reach it can spend the **operator's** account on mapped models (shunt injects its own `api_key`/`chatgpt_oauth` credential for those). Passthrough models are not the concern: they forward each caller's own Anthropic credential.
+
+`[server.auth]` gates exactly the injected-credential routes with per-client tokens:
+
+```toml
+[server.auth]                        # both keys optional; defaults shown
+header = "x-shunt-token"
+tokens_env = "SHUNT_CLIENT_TOKENS"
+```
+
+```bash
+# Gateway side: name:token pairs (names are labels for logging; tokens are secrets)
+export SHUNT_CLIENT_TOKENS="minsu:$(openssl rand -hex 32),alice:$(openssl rand -hex 32)"
+```
+
+Startup **fails closed** if `[server.auth]` is present but the env var is unset or malformed. Requests to mapped models without a valid token get a 401 `authentication_error`; `GET /v1/models`, `GET|HEAD /`, `GET /health`, and passthrough models stay open.
+
+The token header is always stripped before forwarding, matching is constant-time, and token values are never logged (client *names* are, per request).
+
+Client side, one line (`ANTHROPIC_CUSTOM_HEADERS` takes one `Name: Value` per line):
+
+```bash
+export ANTHROPIC_CUSTOM_HEADERS="x-shunt-token: <your token>"
+```
+
+:::note
+This is application-layer identification only — transport encryption still comes from the deployment (WireGuard/Tailscale tunnel, or TLS termination in front); shunt itself serves plain HTTP.
+:::
+
+## SSE keepalive pings
+
+Middleboxes kill quiet streams — Cloudflare's proxy returns **524 after 100 seconds without a byte** (fixed below Enterprise), and long reasoning stretches can be silent that long. shunt therefore injects the Anthropic protocol's own `ping` event (which `api.anthropic.com` itself emits and every client ignores) whenever a streaming response has been idle:
+
+```toml
+[server]
+sse_keepalive_seconds = 30   # default; 0 disables
+```
+
+Pings are injected only between complete SSE events (never inside a half-sent frame), only on `text/event-stream` responses, and stop with the upstream stream. Behind a tunnel with no idle timeout (WireGuard/Tailscale) the pings are harmless; disable with `0` if you want byte-identical relaying.

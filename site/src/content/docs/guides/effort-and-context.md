@@ -1,0 +1,71 @@
+---
+title: Effort & Context
+description: How reasoning effort, token counting, and the context indicator behave for mapped models.
+---
+
+## Reasoning effort
+
+Claude Code's effort level (`/effort`, the `/model` slider, `--effort`, or `CLAUDE_CODE_EFFORT_LEVEL`) is sent as the `output_config.effort` request field, and shunt maps it to the Responses `reasoning.effort` for mapped models:
+
+| Claude Code effort | → `reasoning.effort` |
+| :-- | :-- |
+| `low` / `medium` / `high` / `xhigh` | passthrough |
+| `max` | passthrough on models that accept it (the **gpt-5.6** family), else folded to `xhigh` |
+
+Which reasoning levels a Codex slug accepts is listed per-model in openai/codex's [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json) (`supported_reasoning_levels`).
+
+:::note[Custom model ids need a flag]
+For a custom gateway id like `gpt-5.6-sol` you must set `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` — otherwise Claude Code omits `output_config.effort` for model ids it doesn't recognize as effort-capable, and shunt falls back to `medium`.
+
+```bash
+export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1
+```
+:::
+
+Precedence in shunt: a config `route.effort` / `[providers.*].effort` override wins first; otherwise the request's `output_config.effort` is honored; otherwise `thinking.enabled → high`, then a model-name suffix (`-xhigh`/`-high`/`-medium`/`-low`, with `-spark` treated as `-low`), else `medium`.
+
+## Token counting (`count_tokens`)
+
+For an **Anthropic-routed** model shunt passes `POST /v1/messages/count_tokens` through to the upstream (exact counts). For a **`responses`-routed** model there is no equivalent upstream endpoint, so the provider's `count_tokens` setting decides:
+
+- **`count_tokens = "tiktoken"` (default)** — shunt computes the count locally with tiktoken's `o200k_base` encoder and returns `{"input_tokens": N}`. Near-exact for text on GPT-family models, and answered in-process (~ms) — which matters because Claude Code's `/context` issues one `count_tokens` call per displayed item (30–50 calls per invocation).
+- **`count_tokens = "estimate"` (opt-in)** — shunt returns **404**, which the gateway protocol explicitly allows. The main-loop context bar then estimates locally, but `/context` re-runs every category count against Haiku over the network — slow, and silently reported as 0 tokens when no Anthropic credential is available.
+
+Either way the request never reaches the responses adapter, so a count request is never turned into (and billed as) a full inference call.
+
+## Context / usage display for mapped models
+
+Claude Code computes the context indicator locally from the assistant message's token `usage` divided by the model's context-window size. For models routed to a `responses` provider:
+
+- **Token count (the numerator) is accurate.** shunt reads `input_tokens` (and cached tokens) from the Responses `usage` and forwards them in the Anthropic `message_delta`, peeling the cached part into `cache_read_input_tokens`.
+- **The window (the denominator) defaults to a fixed 200k for unrecognized ids.** A model with a larger real window (e.g. `gpt-5.6-sol` at 372k) shows a conservative, over-reported percentage — this only makes auto-compact trigger a little early.
+
+The 200k default can be overridden client-side with `CLAUDE_CODE_MAX_CONTEXT_TOKENS` (Claude Code 2.1.205+); it applies to any model id that does **not** start with `claude-`:
+
+```bash
+# e.g. gpt-5.6-sol's real window
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS=372000
+```
+
+:::caution
+The value is **global** — one value for every non-`claude-` model in the session — and setting it larger than the real upstream window delays auto-compact past the point where the upstream rejects the request with a context-length error. Match it to the smallest real window among your mapped models.
+:::
+
+The other client-side lever is the `[1m]` model-id suffix, which forces a 1M window — only use it when the upstream really has that window.
+
+| Field | Mapped (`responses`) model | Claude passthrough |
+| :-- | :-- | :-- |
+| Context tokens used | ✅ accurate (forwarded by shunt) | ✅ accurate |
+| Context window (denominator) | ⚠️ 200k default; set `CLAUDE_CODE_MAX_CONTEXT_TOKENS` | ✅ exact |
+| `count_tokens` (pre-flight) | ⚠️ local tiktoken count (default) | ✅ exact (upstream) |
+| `rate_limits` (5h / weekly) | ❌ needs Anthropic headers | ✅ shown |
+
+## Attribution block
+
+Claude Code prepends an attribution line to the system prompt. Anthropic strips it before processing, but shunt forwards it unchanged, so a mapped provider receives it as the first line of `instructions`. It's harmless but meaningless noise for a non-Anthropic model. To drop it:
+
+```bash
+export CLAUDE_CODE_ATTRIBUTION_HEADER=0
+```
+
+This is global, so it also removes attribution from Anthropic-passthrough traffic (used for cost tracking) — fine when you're routing to another provider.
