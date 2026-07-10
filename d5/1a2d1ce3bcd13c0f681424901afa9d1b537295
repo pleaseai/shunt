@@ -1,0 +1,41 @@
+Cargo.toml
+  s_81040fa8a0a53d::t_7546914e2d9fc2 32
+src/proxy.rs
+  s_81040fa8a0a53d::t_b64362efa7e023 146-147,160-173
+  s_81040fa8a0a53d::t_b2bcfe6edfa985 101
+  s_81040fa8a0a53d::t_d71a85bc2a4c26 43
+src/main.rs
+  s_81040fa8a0a53d::t_f740339bb0132b 136
+  s_81040fa8a0a53d::t_e0fe863ea0baf2 125-128
+src/lib.rs
+  s_81040fa8a0a53d::t_e426893a98cbb9 9
+src/config.rs
+  s_81040fa8a0a53d::t_5598c7f9a6c295 115-119
+  s_81040fa8a0a53d::t_a169d108a29bd3 752,781,796
+  s_81040fa8a0a53d::t_73454624591ecc 761-762,772-774
+  s_81040fa8a0a53d::t_0da87fa71cad07 763-764,766,768-771
+  s_81040fa8a0a53d::t_e71c9ba64314c6 765
+  s_81040fa8a0a53d::t_8a41b98447f93a 760,767
+src/metrics.rs
+  s_81040fa8a0a53d::t_acf7c6007433e0 1-26
+shunt.toml.example
+  s_81040fa8a0a53d::t_42c46a8b606f0f 29-31
+docs/running.md
+  s_81040fa8a0a53d::t_8e82dab753bddb 116-120
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.11",
+  "base_commit_sha": "d51a2d1ce3bcd13c0f681424901afa9d1b537295",
+  "prompts": {},
+  "sessions": {
+    "s_81040fa8a0a53d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "596e44a3-1e32-40fd-a15e-4c18f3594140",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
