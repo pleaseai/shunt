@@ -1,0 +1,41 @@
+src/adapters/responses.rs
+  s_7200dc5a3f6b63::t_0b8827f0b63d13 452-456,459-473
+  s_7200dc5a3f6b63::t_17c379174bd5e8 177-180,184-185,189
+  s_7200dc5a3f6b63::t_e938cea5906ab4 457-458
+wiki/llms-full.txt
+  s_7200dc5a3f6b63::t_f9e72d49cf98fe 160
+src/config.rs
+  s_7200dc5a3f6b63::t_8acf193eee0b17 659-684
+  s_7200dc5a3f6b63::t_a282f0817900ce 239-242
+  s_7200dc5a3f6b63::t_935f900910a175 429-433,435-444
+docs/m6-xai-provider.md
+  s_7200dc5a3f6b63::t_4d5ff42b001982 128-133
+  s_7200dc5a3f6b63::t_3378b5552b7680 58-60
+src/auth/codex_auth.rs
+  s_7200dc5a3f6b63::t_eca69a039db8e1 223-225,231-247
+  s_7200dc5a3f6b63::t_c121ea34f0e5fd 248
+docs/running.md
+  s_7200dc5a3f6b63::t_f9e72d49cf98fe 122,362
+wiki/src/content/docs/01-getting-started/xai-provider.md
+  s_7200dc5a3f6b63::t_f9e72d49cf98fe 61
+src/auth/xai_auth.rs
+  s_7200dc5a3f6b63::t_feea3aa4af3d91 438-469
+  s_7200dc5a3f6b63::t_552bd8d3e5cfe7 108-116
+  s_7200dc5a3f6b63::t_7baf528d839cea 437
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "fcf8d9c3a47b3fbef65d7395726ff7bfd0a07a2f",
+  "prompts": {},
+  "sessions": {
+    "s_7200dc5a3f6b63": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e2b30df9-39bd-49c4-84a4-8de5b6108113",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
