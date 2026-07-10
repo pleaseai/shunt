@@ -96,6 +96,49 @@ async fn head_root_returns_ok() {
 }
 
 #[tokio::test]
+async fn get_root_returns_landing_text_with_version_and_endpoints() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let upstream = MockServer::start().await;
+    let gateway = start_gateway(upstream.uri()).await;
+
+    let response = reqwest::Client::new()
+        .get(format!("{}/", gateway.base_url))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.unwrap();
+    assert!(body.contains(&format!("shunt v{}", env!("CARGO_PKG_VERSION"))));
+    assert!(body.contains("/v1/messages"));
+    assert!(body.contains("/health"));
+}
+
+#[tokio::test]
+async fn get_health_returns_ok_status_and_version() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let upstream = MockServer::start().await;
+    let gateway = start_gateway(upstream.uri()).await;
+
+    let response = reqwest::Client::new()
+        .get(format!("{}/health", gateway.base_url))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    assert_eq!(
+        body,
+        serde_json::json!({"status": "ok", "version": env!("CARGO_PKG_VERSION")})
+    );
+}
+
+#[tokio::test]
 async fn messages_forwards_anthropic_headers_verbatim_and_preserves_query() {
     if !can_bind_loopback() {
         return;

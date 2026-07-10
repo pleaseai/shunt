@@ -182,9 +182,14 @@ e.g. `RUST_LOG=shunt=debug cargo run -- run`.
 | Method | Path                          | Purpose                                             |
 | :----- | :---------------------------- | :-------------------------------------------------- |
 | `HEAD` | `/`                           | Liveness probe                                      |
+| `GET`  | `/`                           | Human-readable landing (version + endpoint list)    |
+| `GET`  | `/health`                     | Healthcheck — `{"status":"ok","version":"x.y.z"}`   |
 | `GET`  | `/v1/models`                  | Model discovery (returns your `[[models]]` entries) |
 | `POST` | `/v1/messages`                | Inference — routed per the request's `model` id     |
 | `POST` | `/v1/messages/count_tokens`   | Token counting (see below)                          |
+
+`GET /` and `GET /health` stay open even when `[server.auth]` is enabled (healthcheck tools
+usually cannot attach tokens) and expose nothing beyond status and version.
 
 **`count_tokens`:** for an **Anthropic-routed** model shunt passes the request through to the
 upstream's `count_tokens` endpoint (exact counts). For a **`responses`-routed** model (codex/OpenAI)
@@ -498,7 +503,8 @@ export SHUNT_CLIENT_TOKENS="minsu:$(openssl rand -hex 32),alice:$(openssl rand -
 
 Startup **fails closed** if `[server.auth]` is present but the env var is unset or
 malformed. Requests to mapped models without a valid token get a 401
-`authentication_error`; `GET /v1/models`, `HEAD /`, and passthrough models stay open.
+`authentication_error`; `GET /v1/models`, `GET|HEAD /`, `GET /health`, and passthrough
+models stay open.
 The token header is always stripped before forwarding, matching is constant-time, and
 token values are never logged (client *names* are, per request).
 
