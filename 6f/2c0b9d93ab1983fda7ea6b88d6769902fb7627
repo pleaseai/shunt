@@ -1,0 +1,33 @@
+site/astro.config.mjs
+  s_344e3a9e5c2566::t_cc4991736f175a 28-31
+  s_344e3a9e5c2566::t_8dc9495dbbdb53 3
+  s_344e3a9e5c2566::t_0f9d2f727c4562 15-27,32
+  s_344e3a9e5c2566::t_5df5bed3ddd5d9 4
+site/worker/index.ts
+  s_344e3a9e5c2566::t_b260eacd26afd7 1-7
+site/package.json
+  s_344e3a9e5c2566::t_1f1317ce15177c 15-16
+  s_344e3a9e5c2566::t_831b605dbdc427 17-20
+  s_344e3a9e5c2566::t_561b781184283c 14
+  s_344e3a9e5c2566::t_1edc5c45f991bd 8-9
+.gitignore
+  s_344e3a9e5c2566::t_ea9879fd86148a 13
+site/package-lock.json
+  s_344e3a9e5c2566::t_d7288a82ccb4f3 12-18,597-604,2078-2427,2538-2543,2598-2606,2652-2664,2904-2915,2922-2933,3627-3638,3704-3715,4013-4039,4223-4234,4260-4280,4291-4299,5724-5748,5899-5910,6285-6298,6344-6360,6590-6634,6813-6940,7044-7055,7066-7075,7214-7228,7531-7600
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.11",
+  "base_commit_sha": "6f2c0b9d93ab1983fda7ea6b88d6769902fb7627",
+  "prompts": {},
+  "sessions": {
+    "s_344e3a9e5c2566": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "80931a2e-fe65-4c7f-b33d-1959c375ea16",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
