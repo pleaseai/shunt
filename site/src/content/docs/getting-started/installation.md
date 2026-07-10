@@ -1,0 +1,49 @@
+---
+title: Installation
+description: Install shunt via Homebrew, cargo, prebuilt binaries, or from source.
+---
+
+## Homebrew (macOS / Linux)
+
+```bash
+brew install pleaseai/tap/shunt
+```
+
+## Cargo
+
+The crate is published as `shunt-gateway` (the binary is still `shunt`):
+
+```bash
+cargo install shunt-gateway
+```
+
+## Prebuilt binaries
+
+Each [GitHub release](https://github.com/pleaseai/shunt/releases) attaches standalone binaries for macOS (arm64/x64) and Linux (arm64/x64), plus a `SHA256SUMS` file:
+
+```bash
+curl -fsSLO https://github.com/pleaseai/shunt/releases/latest/download/shunt-darwin-arm64
+chmod +x shunt-darwin-arm64 && mv shunt-darwin-arm64 /usr/local/bin/shunt
+```
+
+## From source
+
+Requires stable Rust with `cargo`:
+
+```bash
+git clone https://github.com/pleaseai/shunt
+cd shunt
+cargo build --release   # -> target/release/shunt
+```
+
+You can also run straight from the source tree with `cargo run -- <args>`.
+
+## Prerequisites for connecting Claude Code
+
+- **Claude Code** — any recent version; v2.1.129+ only if you want [model discovery](/guides/model-discovery/).
+- A credential for whichever provider you map:
+  - an **OpenAI API key** for the `openai` provider, or
+  - a **ChatGPT login** via the Codex CLI (`codex login`) for the `codex` provider.
+- Your normal **Anthropic credential** (claude.ai login or an API key) — shunt forwards it through for every model you *don't* map.
+
+Next: the [Quickstart](/getting-started/quickstart/).
