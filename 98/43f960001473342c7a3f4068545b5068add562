@@ -1,0 +1,27 @@
+wiki/llms-full.txt
+  s_7200dc5a3f6b63::t_4e11c145cd83ef 105-106
+wiki/src/content/docs/01-getting-started/xai-provider.md
+  s_7200dc5a3f6b63::t_12fdd4f60fe597 6-9
+shunt.toml.example
+  s_7200dc5a3f6b63::t_4e11c145cd83ef 55-56
+docs/m6-xai-provider.md
+  s_7200dc5a3f6b63::t_32592a67be9346 3-7
+docs/running.md
+  s_7200dc5a3f6b63::t_99f277f40f76a5 336-340
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9843f960001473342c7a3f4068545b5068add562",
+  "prompts": {},
+  "sessions": {
+    "s_7200dc5a3f6b63": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e2b30df9-39bd-49c4-84a4-8de5b6108113",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
