@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.0](https://github.com/pleaseai/shunt/compare/v0.2.0...v0.3.0) (2026-07-10)
+
+
+### Features
+
+* **site:** serve LLM-friendly markdown twins via Cloudflare worker ([#11](https://github.com/pleaseai/shunt/issues/11)) ([4569d02](https://github.com/pleaseai/shunt/commit/4569d027519d89c8bee25069cf5bc58e342f78cb))
+* **xai:** add xAI Grok provider with SuperGrok OAuth login ([#8](https://github.com/pleaseai/shunt/issues/8)) ([a8540c1](https://github.com/pleaseai/shunt/commit/a8540c139f1811470c1b0d9b4cb849550d2cf5b3))
+
+
+### Bug Fixes
+
+* **responses:** rewrite context-overflow errors to Anthropic wording ([#9](https://github.com/pleaseai/shunt/issues/9)) ([8ef8746](https://github.com/pleaseai/shunt/commit/8ef87469acd9444e1cf57d917ff5d84cfc3b3a6b))
+
 ## [0.2.0](https://github.com/pleaseai/shunt/compare/v0.1.0...v0.2.0) (2026-07-10)
 
 
