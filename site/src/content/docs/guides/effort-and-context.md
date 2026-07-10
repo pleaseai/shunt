@@ -22,7 +22,7 @@ export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1
 ```
 :::
 
-Precedence in shunt: a config `route.effort` / `[providers.*].effort` override wins first; otherwise the request's `output_config.effort` is honored; otherwise `thinking.enabled → high`, then a model-name suffix (`-xhigh`/`-high`/`-medium`/`-low`), else `medium`.
+Precedence in shunt: a config `route.effort` / `[providers.*].effort` override wins first; otherwise the request's `output_config.effort` is honored; otherwise `thinking.enabled → high`, then a model-name suffix (`-xhigh`/`-high`/`-medium`/`-low`, with `-spark` treated as `-low`), else `medium`.
 
 ## Token counting (`count_tokens`)
 
