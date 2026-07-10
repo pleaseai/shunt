@@ -158,18 +158,24 @@ async fn forward(
         }
     };
     let result = result.map_err(ForwardError::from);
-    // For streaming responses this measures time to response headers, not to
-    // stream completion — the body is forwarded without buffering.
-    let status = match &result {
-        Ok((status, _)) => status.as_u16(),
-        Err(error) => error.response.status().as_u16(),
-    };
-    crate::metrics::record_proxied_request(
-        &provider,
-        &model,
-        status,
-        started_at.elapsed().as_secs_f64() * 1000.0,
-    );
+    // Usage metrics count inference calls only, so Anthropic-routed
+    // count_tokens requests are excluded here just like the Responses-routed
+    // ones that early-returned above — cheap token counts would otherwise be
+    // indistinguishable from real inference in the request/latency series.
+    if !is_count_tokens(uri) {
+        // For streaming responses this measures time to response headers, not
+        // to stream completion — the body is forwarded without buffering.
+        let status = match &result {
+            Ok((status, _)) => status.as_u16(),
+            Err(error) => error.response.status().as_u16(),
+        };
+        crate::metrics::record_proxied_request(
+            &provider,
+            &model,
+            status,
+            started_at.elapsed().as_secs_f64() * 1000.0,
+        );
+    }
     result
 }
 

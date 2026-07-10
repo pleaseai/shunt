@@ -108,16 +108,20 @@ provider = "openai"
 # set; nothing is ever sent by default. Only gateway-owned diagnostics are
 # reported — panics and error-level log events, with warn/info as breadcrumbs.
 # Request/response bodies, headers, credentials, and the host name are never
-# sent. An empty DSN (e.g. SHUNT_SENTRY__DSN="") disables reporting again;
+# sent: breadcrumbs keep only the log message (field values are stripped), and
+# tracing spans never attach, so request-derived data has no path off the
+# machine. An empty DSN (e.g. SHUNT_SENTRY__DSN="") disables reporting again;
 # an invalid DSN is a startup error.
 # [sentry]
 # dsn = "https://<key>@<org>.ingest.sentry.io/<project>"
 # environment = "home-lab"   # optional environment tag on events
 # metrics = false            # (default) separate opt-in: also send usage metrics.
 #                            # `shunt.requests` (count) and `shunt.latency` (ms
-#                            # distribution; time to response headers for streams),
-#                            # tagged provider/model/status. Aggregates only — no
-#                            # client names, session ids, or request contents.
+#                            # distribution; time to response headers for streams;
+#                            # inference calls only, count_tokens excluded), tagged
+#                            # provider, model (the requested id), and
+#                            # `http.response.status_code`. Aggregates only — no
+#                            # prompts, client names, or session ids.
 ```
 
 **Routing precedence** (`src/routing.rs`): exact `[[routes]]` match → `[[route_prefixes]]`

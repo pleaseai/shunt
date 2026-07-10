@@ -118,8 +118,16 @@ fn check(config_path: Option<PathBuf>) -> anyhow::Result<()> {
 fn init_sentry(config: Option<&SentryConfig>) -> Option<sentry::ClientInitGuard> {
     let config = config.filter(|sentry| sentry.enabled())?;
     let guard = sentry::init(sentry::ClientOptions {
-        // Validated at config load; an unparseable DSN never gets this far.
-        dsn: config.dsn.parse().ok(),
+        // Validated at config load; a violation here means a code path
+        // constructed a Config without `validate()` — fail loudly, because
+        // `.ok()` would silently disable the reporting the operator opted
+        // into.
+        dsn: Some(
+            config
+                .dsn
+                .parse()
+                .expect("sentry.dsn validated at config load"),
+        ),
         release: sentry::release_name!(),
         environment: config.environment.clone().map(Into::into),
         // Usage/performance metrics are a separate opt-in from error
@@ -130,6 +138,14 @@ fn init_sentry(config: Option<&SentryConfig>) -> Option<sentry::ClientInitGuard>
         before_send: Some(std::sync::Arc::new(|mut event| {
             event.server_name = None;
             Some(event)
+        })),
+        // Log fields can quote request-derived data (e.g. upstream error
+        // bodies at warn level); keep only the breadcrumb message and level so
+        // no log field ever leaves the machine — regardless of what existing
+        // or future call sites put in their fields.
+        before_breadcrumb: Some(std::sync::Arc::new(|mut breadcrumb| {
+            breadcrumb.data.clear();
+            Some(breadcrumb)
         })),
         ..Default::default()
     });
@@ -145,7 +161,10 @@ fn init_tracing() {
         // apiKeyHelper output) stays free of log noise.
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
         // Forwards error! events to Sentry as events and warn!/info! as
-        // breadcrumbs — a no-op unless `init_sentry` bound a client.
-        .with(sentry::integrations::tracing::layer())
+        // breadcrumbs — a no-op unless `init_sentry` bound a client. Spans are
+        // rejected entirely: shunt doesn't use Sentry tracing, and span fields
+        // carry request-derived data (path, client session id) that would
+        // otherwise ride into error events via the trace context.
+        .with(sentry::integrations::tracing::layer().span_filter(|_| false))
         .init();
 }

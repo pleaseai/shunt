@@ -24,3 +24,17 @@ pub fn record_proxied_request(provider: &str, model: &str, status: u16, latency_
         .attribute("http.response.status_code", i64::from(status))
         .capture();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::record_proxied_request;
+
+    /// The core opt-in contract: with no Sentry client bound (the default),
+    /// recording must be a silent no-op on every proxied request, never a
+    /// panic.
+    #[test]
+    fn record_is_noop_without_sentry_client() {
+        record_proxied_request("openai", "gpt-5.2", 200, 123.4);
+        record_proxied_request("anthropic", "claude-opus-4-8", 502, 0.0);
+    }
+}

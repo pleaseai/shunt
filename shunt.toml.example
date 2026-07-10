@@ -21,14 +21,16 @@ default_provider = "anthropic" # provider for any model with no route -> pass-th
 
 # --- Optional: Sentry error reporting to YOUR OWN Sentry project (docs/running.md §3.1).
 # Off unless you set a DSN. Reports gateway-owned diagnostics only — panics and
-# error-level log events (warn/info as breadcrumbs); request/response bodies,
-# headers, and credentials are never sent. SHUNT_SENTRY__DSN="" disables again.
+# error-level log events (warn/info as breadcrumbs, message only: log field
+# values are stripped); request/response bodies, headers, and credentials are
+# never sent. SHUNT_SENTRY__DSN="" disables again.
 # [sentry]
 # dsn = "https://<key>@<org>.ingest.sentry.io/<project>"
 # environment = "home-lab"     # optional environment tag on events
 # metrics = false              # (default) separate opt-in: also send usage metrics —
-                               # request counts + latency tagged provider/model/status
-                               # (aggregates only; no client names, sessions, or bodies)
+                               # inference request counts + latency tagged provider,
+                               # model, `http.response.status_code` (aggregates only;
+                               # no prompts, client names, or session ids)
 
 # --- Providers: each is a `[providers.<name>]` table. Add a new upstream by
 # adding a table — no code change. Every provider has these keys:
