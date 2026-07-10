@@ -10,6 +10,7 @@ wiki/dist/
 site/node_modules/
 site/.astro/
 site/dist/
+site/.wrangler/
 
 # Local worktrees created by the worktree workflow (per-branch, not shared)
 .claude/worktrees/

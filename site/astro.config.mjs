@@ -1,5 +1,7 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import starlightLlmsTxt from 'starlight-llms-txt';
+import starlightPageActions from 'starlight-page-actions';
 
 export default defineConfig({
   site: 'https://shunt-docs.pages.dev',
@@ -9,6 +11,24 @@ export default defineConfig({
       description: 'Shunt Claude Code to any model — a spec-compliant Claude Code LLM gateway.',
       social: [
         { icon: 'github', label: 'GitHub', href: 'https://github.com/pleaseai/shunt' },
+      ],
+      plugins: [
+        starlightLlmsTxt({
+          projectName: 'shunt',
+          description:
+            'Shunt Claude Code to any model — a spec-compliant Claude Code LLM gateway.',
+          optionalLinks: [
+            {
+              label: 'GitHub repository',
+              url: 'https://github.com/pleaseai/shunt',
+              description: 'Source code, issues, and releases',
+            },
+          ],
+        }),
+        // No `baseUrl` on purpose: with it set, this plugin writes its own
+        // (simpler) llms.txt at build end, clobbering starlight-llms-txt's.
+        // It still emits the per-page `.md` twins and the page action buttons.
+        starlightPageActions(),
       ],
       editLink: {
         baseUrl: 'https://github.com/pleaseai/shunt/edit/main/site/',
