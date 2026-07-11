@@ -209,6 +209,7 @@ e.g. `RUST_LOG=shunt=debug cargo run -- run`.
 | `GET`  | `/`                           | Human-readable landing (version + endpoint list)    |
 | `GET`  | `/health`                     | Healthcheck — `{"status":"ok","version":"x.y.z"}`   |
 | `GET`  | `/v1/models`                  | Model discovery (returns your `[[models]]` entries) |
+| `GET`  | `/routes`                     | Route discovery (returns your `[[routes]]` table)   |
 | `POST` | `/v1/messages`                | Inference — routed per the request's `model` id     |
 | `POST` | `/v1/messages/count_tokens`   | Token counting (see below)                          |
 
@@ -640,8 +641,11 @@ export SHUNT_CLIENT_TOKENS="minsu:$(openssl rand -hex 32),alice:$(openssl rand -
 
 Startup **fails closed** if `[server.auth]` is present but the env var is unset or
 malformed. Requests to mapped models without a valid token get a 401
-`authentication_error`; `GET /v1/models`, `GET|HEAD /`, `GET /health`, and passthrough
-models stay open.
+`authentication_error`; `GET /v1/models`, `GET /routes`, `GET|HEAD /`, `GET /health`, and
+passthrough models stay open. `GET /routes` is unauthenticated by the same discovery-endpoint
+design as `GET /v1/models` — it exposes routing metadata (the configured provider/upstream-model
+mapping), never credentials, which live only in provider config and are never read by that
+handler.
 The token header is always stripped before forwarding, matching is constant-time, and
 token values are never logged (client *names* are, per request).
 
