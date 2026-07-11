@@ -20,5 +20,16 @@ output). Don't treat empty output as failure — verify with
 please pr list`, which errored with exit 1 / a stray `--json` flag artifact
 in this environment) before assuming the create failed and retrying.
 
+**Worse variant confirmed on PR #39**: `gh please pr create ... --body-file -`
+fed via a bash heredoc (`<<'PRBODY' ... PRBODY`) silently created the PR with
+an **empty body** — no error, exit 0, title set correctly, but
+`gh pr view <n> --json body` came back `""`. Always verify body content after
+create (`gh pr view <n> --json body --jq .body | head`), not just that the PR
+exists. Fix: write the body to a real file with the Write tool and run plain
+`gh pr edit <n> --repo <owner>/<repo> --body-file <path>` — that reliably set
+a 3000+ char body. Prefer writing the body to a file and using `--body-file
+<path>` (not `-`/stdin/heredoc) on the initial `gh please pr create` call too,
+to avoid the empty-body failure mode altogether.
+
 pleaseai/shunt is not a Graphite repo (`detect-stack-tool.sh` prints nothing) —
 plain `gh please pr create` / `gh pr create` is the right tool, no `gt submit`.
