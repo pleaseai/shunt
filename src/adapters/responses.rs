@@ -38,7 +38,8 @@ impl Adapter for ResponsesAdapter {
         // value because the adapter future may outlive the borrowed header map.
         let session_id = headers
             .get("x-claude-code-session-id")
-            .and_then(|value| value.to_str().ok());
+            .and_then(|value| value.to_str().ok())
+            .filter(|session_id| !session_id.is_empty());
         let pool_key = session_id.map(|session_id| {
             headers
                 .get("x-shunt-inbound-client")
@@ -254,7 +255,7 @@ async fn forward_websocket(
     thinking_enabled: bool,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let http_url = responses_url(&state.config, &route.provider);
-    let ws_url = codex_ws::to_websocket_url(&http_url).map_err(|error| own_error(error.message))?;
+    let ws_url = codex_ws::to_websocket_url(&http_url).map_err(ws_transport_error)?;
     let ctx = WsTurnContext {
         ws_url,
         session_id,
@@ -423,6 +424,14 @@ fn websocket_headers(credential: Credential) -> Result<HeaderMap, AdapterError> 
     Ok(headers)
 }
 
+fn ws_transport_error(error: CodexWsError) -> AdapterError {
+    let response = ShuntError::bad_gateway(error.message.clone()).into_response();
+    AdapterError {
+        message: error.message,
+        response: Box::new(response),
+    }
+}
+
 /// Map a websocket handshake failure to an [`AdapterError`]. A refused upgrade
 /// carries an HTTP status/body, so it re-shapes through the shared
 /// [`build_upstream_error`]; a pure transport failure (DNS, TLS, timeout) maps to
@@ -432,11 +441,7 @@ fn ws_connect_error(error: CodexWsError, auth: AuthMode) -> AdapterError {
         Some(status) => build_upstream_error(status, error.retry_after, error.body, auth),
         None => {
             tracing::warn!(reason = %error.message, "codex websocket transport failure");
-            let response = ShuntError::bad_gateway(error.message.clone()).into_response();
-            AdapterError {
-                message: error.message,
-                response: Box::new(response),
-            }
+            ws_transport_error(error)
         }
     }
 }
