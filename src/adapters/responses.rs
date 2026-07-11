@@ -399,8 +399,14 @@ async fn start_ws_turn(
 fn websocket_headers(credential: Credential) -> Result<HeaderMap, AdapterError> {
     let mut headers = HeaderMap::new();
     let mut set = |name: &'static str, value: String| -> Result<(), AdapterError> {
-        let value = HeaderValue::from_str(&value)
-            .map_err(|error| own_error(format!("invalid {name} header: {error}")))?;
+        let value = HeaderValue::from_str(&value).map_err(|error| {
+            let message = format!("invalid {name} header: {error}");
+            let response = ShuntError::bad_gateway(message.clone()).into_response();
+            AdapterError {
+                message,
+                response: Box::new(response),
+            }
+        })?;
         headers.insert(name, value);
         Ok(())
     };
