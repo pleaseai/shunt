@@ -1,0 +1,21 @@
+.claude/agent-memory/github-pr-manager/MEMORY.md
+  s_ebf5b1fad784d2::t_b352a2f623e163 1-3
+.claude/agent-memory/github-pr-manager/reference_shunt-pr-template-and-quirks.md
+  s_ebf5b1fad784d2::t_05c2af6e0618bd 1-24
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.11",
+  "base_commit_sha": "ef53c1509b9b3ab2fae09c60c5b7fca90f5977e7",
+  "prompts": {},
+  "sessions": {
+    "s_ebf5b1fad784d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f70ec991-7a22-48dd-8181-91f168d3a5a6",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
