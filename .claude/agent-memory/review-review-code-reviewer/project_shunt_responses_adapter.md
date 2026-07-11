@@ -5,7 +5,7 @@ metadata:
   type: project
 ---
 
-shunt (`/Users/lms/orca/workspaces/shunt/feat-adapters-forward-codex-session-identity-hea`) is a Rust/axum LLM
+shunt is a Rust/axum LLM
 gateway. Repo rule: read `AGENTS.md` before working in `src/` (both root and `src/CLAUDE.md` just point there).
 Key AGENTS.md points relevant to adapter review: keep gateway-owned errors in Anthropic error shape, preserve
 streaming semantics (don't buffer SSE unless client requested non-streaming), prefer table-driven config over

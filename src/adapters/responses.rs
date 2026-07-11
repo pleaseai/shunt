@@ -283,7 +283,7 @@ fn request_builder(
             // cross-checked against codex-rs/login/src/auth/default_client.rs).
             // Only sent when a session id is available; xAI/OpenAI-compatible
             // upstreams never reach this branch.
-            if let Some(session_id) = session_id {
+            if let Some(session_id) = session_id.filter(|s| !s.is_empty()) {
                 request = request
                     .header("accept", "text/event-stream")
                     .header("session_id", session_id)
@@ -481,6 +481,26 @@ mod tests {
             request.headers().get("x-codex-window-id").unwrap(),
             "session-123:0"
         );
+    }
+
+    #[test]
+    fn omits_session_headers_when_session_id_is_empty_string() {
+        let state = AppState::new(Config::default(), reqwest::Client::new()).unwrap();
+
+        let request = build_test_request(
+            &state,
+            &codex_route(),
+            Credential::ChatGptOAuth {
+                access_token: "access-token".to_string(),
+                account_id: "account-id".to_string(),
+            },
+            Some(""),
+        );
+
+        assert!(request.headers().get("accept").is_none());
+        assert!(request.headers().get("session_id").is_none());
+        assert!(request.headers().get("x-client-request-id").is_none());
+        assert!(request.headers().get("x-codex-window-id").is_none());
     }
 
     #[test]
