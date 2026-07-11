@@ -156,8 +156,12 @@ impl CursorToolUseXmlParser {
 
     /// Try to parse a complete `<tool_use ...>...</tool_use>` element.
     fn parse_tool_use(&mut self, raw: &str) -> Option<RecoveredCursorToolUse> {
-        let re = regex_lite::Regex::new(r"^<tool_use\b([^>]*)>([\s\S]*?)</tool_use>$").ok()?;
-        let caps = re.captures(raw)?;
+        // Compile once and reuse: regex compilation is expensive and this runs
+        // on every recovered tool_use element.
+        static RE: std::sync::LazyLock<regex_lite::Regex> = std::sync::LazyLock::new(|| {
+            regex_lite::Regex::new(r"^<tool_use\b([^>]*)>([\s\S]*?)</tool_use>$").unwrap()
+        });
+        let caps = RE.captures(raw)?;
         let attrs_str = caps.get(1).map(|m| m.as_str()).unwrap_or("");
         let body = caps.get(2).map(|m| m.as_str()).unwrap_or("");
 
@@ -251,12 +255,12 @@ fn default_id_factory() -> Box<dyn FnMut() -> String + Send> {
 
 fn parse_xml_attributes(source: &str) -> std::collections::HashMap<String, String> {
     let mut attrs = std::collections::HashMap::new();
-    let re = regex_lite::Regex::new(r#"([A-Za-z_][\w:.-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')"#).ok();
-    let re = match re {
-        Some(r) => r,
-        None => return attrs,
-    };
-    for cap in re.captures_iter(source) {
+    // Compile once and reuse: regex compilation is expensive and this runs on
+    // every parsed tool_use attribute string.
+    static RE: std::sync::LazyLock<regex_lite::Regex> = std::sync::LazyLock::new(|| {
+        regex_lite::Regex::new(r#"([A-Za-z_][\w:.-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')"#).unwrap()
+    });
+    for cap in RE.captures_iter(source) {
         let key = cap.get(1).map(|m| m.as_str()).unwrap_or("");
         let value = cap
             .get(2)

@@ -89,7 +89,10 @@ impl PendingCursorTool {
                 let cmd = if working_directory.is_empty() {
                     command.clone()
                 } else {
-                    format!("cd '{}' && {command}", working_directory)
+                    // Escape single quotes for POSIX single-quoted context so a
+                    // directory containing `'` cannot break out of `cd '...'`.
+                    let escaped_dir = working_directory.replace('\'', "'\\''");
+                    format!("cd '{escaped_dir}' && {command}")
                 };
                 serde_json::json!({
                     "command": cmd,
@@ -165,8 +168,13 @@ pub struct BridgeRegistry;
 
 impl BridgeRegistry {
     /// Insert a new bridge state for a session.
+    ///
+    /// Removes any existing state with the same `session_id` first so a client
+    /// starting a fresh request (rather than resuming) does not accumulate stale
+    /// duplicate sessions in the registry.
     pub fn insert(state: CursorBridgeState) {
         let mut reg = BRIDGE_REGISTRY.lock().unwrap();
+        reg.sessions.retain(|s| s.session_id != state.session_id);
         reg.sessions.push(state);
     }
 
@@ -696,9 +704,11 @@ pub fn resume_cursor_tool_bridge(
     // Generate SSE continuation from remaining events
     let mut framer = CursorSseFramer::new(new_message_id, new_model);
 
-    // Retrieve stored state for remaining events
-    let remaining: Vec<CursorStreamEvent> = BridgeRegistry::pending_tool(session_id)
-        .and_then(|_| BridgeRegistry::take(session_id))
+    // Retrieve stored state for remaining events. Take the state in a single
+    // lock acquisition and inspect its `pending_tool` field, avoiding the TOCTOU
+    // window between a separate `pending_tool` check and `take`.
+    let remaining: Vec<CursorStreamEvent> = BridgeRegistry::take(session_id)
+        .filter(|state| state.pending_tool.is_some())
         .map(|state| state.remaining_events)
         .unwrap_or_default();
 
@@ -708,20 +718,33 @@ pub fn resume_cursor_tool_bridge(
     } else {
         let mut xml_parser = CursorToolUseXmlParser::new(None);
         let mut paused_again = false;
+        // On a second pause, preserve the newly recovered tool and the events
+        // after the pause point so the next resume can continue the stream —
+        // mirroring `start_cursor_tool_bridge`. Dropping these loses the
+        // remaining response on sequential tool calls.
+        let mut new_pending_tool: Option<PendingCursorTool> = None;
+        let mut new_remaining_events: Vec<CursorStreamEvent> = Vec::new();
 
         for event in &remaining {
+            if paused_again {
+                new_remaining_events.push(event.clone());
+                continue;
+            }
+
             match event {
                 CursorStreamEvent::ThinkingDelta { text } => {
-                    if !paused_again {
-                        framer.emit_thinking_delta(text);
-                    }
+                    framer.emit_thinking_delta(text);
                 }
                 CursorStreamEvent::TextDelta { text } => {
-                    if paused_again {
-                        continue;
-                    }
                     let recovered = xml_parser.push(text);
                     for evt in &recovered {
+                        if paused_again {
+                            if let RecoveredCursorEvent::Text(t) = evt {
+                                new_remaining_events
+                                    .push(CursorStreamEvent::TextDelta { text: t.clone() });
+                            }
+                            continue;
+                        }
                         match evt {
                             RecoveredCursorEvent::Text(t) => {
                                 framer.emit_text_delta(t);
@@ -730,6 +753,9 @@ pub fn resume_cursor_tool_bridge(
                                 let input_json = serde_json::to_string(&tool_use.input)
                                     .unwrap_or_else(|_| "{}".to_string());
                                 framer.emit_tool_pause(&tool_use.id, &tool_use.name, &input_json);
+                                if let Some(pending) = pending_from_recovered_tool(tool_use) {
+                                    new_pending_tool = Some(pending);
+                                }
                                 paused_again = true;
                             }
                         }
@@ -740,26 +766,25 @@ pub fn resume_cursor_tool_bridge(
                     output_tokens,
                     ..
                 } => {
-                    if !paused_again {
-                        framer.record_usage(*input_tokens, *output_tokens, 0, 0);
-                    }
+                    framer.record_usage(*input_tokens, *output_tokens, 0, 0);
                 }
                 CursorStreamEvent::Session { .. } => {}
                 CursorStreamEvent::End => {
-                    if !paused_again {
-                        // Flush before finalizing
-                        let flushed = xml_parser.flush();
-                        for evt in &flushed {
-                            if let RecoveredCursorEvent::ToolUse(tool_use) = evt {
-                                let input_json = serde_json::to_string(&tool_use.input)
-                                    .unwrap_or_else(|_| "{}".to_string());
-                                framer.emit_tool_pause(&tool_use.id, &tool_use.name, &input_json);
-                                paused_again = true;
+                    // Flush before finalizing
+                    let flushed = xml_parser.flush();
+                    for evt in &flushed {
+                        if let RecoveredCursorEvent::ToolUse(tool_use) = evt {
+                            let input_json = serde_json::to_string(&tool_use.input)
+                                .unwrap_or_else(|_| "{}".to_string());
+                            framer.emit_tool_pause(&tool_use.id, &tool_use.name, &input_json);
+                            if let Some(pending) = pending_from_recovered_tool(tool_use) {
+                                new_pending_tool = Some(pending);
                             }
+                            paused_again = true;
                         }
-                        if !paused_again {
-                            framer.finalize();
-                        }
+                    }
+                    if !paused_again {
+                        framer.finalize();
                     }
                 }
             }
@@ -772,6 +797,9 @@ pub fn resume_cursor_tool_bridge(
                     let input_json =
                         serde_json::to_string(&tool_use.input).unwrap_or_else(|_| "{}".to_string());
                     framer.emit_tool_pause(&tool_use.id, &tool_use.name, &input_json);
+                    if let Some(pending) = pending_from_recovered_tool(tool_use) {
+                        new_pending_tool = Some(pending);
+                    }
                     paused_again = true;
                 }
             }
@@ -780,8 +808,8 @@ pub fn resume_cursor_tool_bridge(
             }
         }
 
-        if paused_again && !remaining.is_empty() {
-            let state = CursorBridgeState::new(
+        if paused_again {
+            let mut state = CursorBridgeState::new(
                 session_id.to_string(),
                 new_message_id.to_string(),
                 new_model.to_string(),
@@ -793,6 +821,8 @@ pub fn resume_cursor_tool_bridge(
                     )
                 }),
             );
+            state.pending_tool = new_pending_tool;
+            state.remaining_events = new_remaining_events;
             BridgeRegistry::insert(state);
         }
     }

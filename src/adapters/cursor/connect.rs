@@ -99,13 +99,22 @@ impl ConnectFrameDecoder {
     }
 }
 
+/// Maximum bytes we will decompress from a single gzipped Connect frame. Bounds
+/// decompression so a malicious "zip bomb" payload cannot exhaust memory.
+const MAX_DECOMPRESSED_FRAME_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Decode gzipped payload bytes. The caller decides when to call this based
 /// on frame flags & FLAG_GZIP.
+///
+/// Decompression is capped at [`MAX_DECOMPRESSED_FRAME_BYTES`] to guard against
+/// zip-bomb payloads.
 pub fn decode_gzip_frame(payload: &[u8]) -> Result<Vec<u8>, std::io::Error> {
     use std::io::Read;
-    let mut decoder = flate2::read::GzDecoder::new(payload);
+    let decoder = flate2::read::GzDecoder::new(payload);
     let mut out = Vec::new();
-    decoder.read_to_end(&mut out)?;
+    decoder
+        .take(MAX_DECOMPRESSED_FRAME_BYTES)
+        .read_to_end(&mut out)?;
     Ok(out)
 }
 
