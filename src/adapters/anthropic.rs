@@ -161,14 +161,14 @@ fn outbound_headers(headers: &HeaderMap, credential: &Credential) -> HeaderMap {
 /// (`sk-ant-oat…`), remove any `x-api-key` so a client that sends both — Claude
 /// Code's `apiKeyHelper` — still authenticates on passthrough.
 fn strip_duplicate_oauth_api_key(headers: &mut HeaderMap) {
+    // The `Bearer` scheme is case-insensitive (RFC 6750): match it without
+    // regard to case, and tolerate surrounding whitespace, so an OAuth token
+    // is recognized regardless of how the client spells the scheme.
     let bearer_is_oauth = headers
         .get("authorization")
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| {
-            value
-                .strip_prefix("Bearer ")
-                .or_else(|| value.strip_prefix("bearer "))
-        })
+        .and_then(|value| value.trim().split_once(' '))
+        .and_then(|(scheme, token)| scheme.eq_ignore_ascii_case("bearer").then_some(token))
         .map(|token| token.trim().starts_with("sk-ant-oat"))
         .unwrap_or(false);
     if bearer_is_oauth {
@@ -277,6 +277,20 @@ mod tests {
         // The scheme is matched case-insensitively (`Bearer ` / `bearer `); a
         // lowercase-prefixed OAuth token must still get its duplicate stripped.
         let oauth = auth("bearer", "sk-ant-oat01-abc");
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", oauth.parse().unwrap());
+        headers.insert("x-api-key", "sk-ant-oat01-abc".parse().unwrap());
+
+        let out = outbound_headers(&headers, &Credential::Passthrough);
+        assert_eq!(out.get("authorization").unwrap(), oauth.as_str());
+        assert!(out.get("x-api-key").is_none());
+    }
+
+    #[test]
+    fn passthrough_drops_duplicate_x_api_key_for_uppercase_bearer_oauth() {
+        // The `Bearer` scheme is case-insensitive (RFC 6750/7235); an
+        // upper-cased scheme must still strip the duplicate.
+        let oauth = auth("BEARER", "sk-ant-oat01-abc");
         let mut headers = HeaderMap::new();
         headers.insert("authorization", oauth.parse().unwrap());
         headers.insert("x-api-key", "sk-ant-oat01-abc".parse().unwrap());
