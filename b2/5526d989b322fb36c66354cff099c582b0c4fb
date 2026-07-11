@@ -1,0 +1,21 @@
+docs/running.md
+  s_a4d680fd10b8fa::t_7e77fb7921b2cd 56-60
+site/src/content/docs/guides/configuration.md
+  s_a4d680fd10b8fa::t_08f72b2ae93b6c 90-93
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "b25526d989b322fb36c66354cff099c582b0c4fb",
+  "prompts": {},
+  "sessions": {
+    "s_a4d680fd10b8fa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e7659de4-b0e9-440c-adbe-355361e44128",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
