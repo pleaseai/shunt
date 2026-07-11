@@ -468,7 +468,10 @@ mod tests {
             Some("session-123"),
         );
 
-        assert_eq!(request.headers().get("accept").unwrap(), "text/event-stream");
+        assert_eq!(
+            request.headers().get("accept").unwrap(),
+            "text/event-stream"
+        );
         assert_eq!(request.headers().get("session_id").unwrap(), "session-123");
         assert_eq!(
             request.headers().get("x-client-request-id").unwrap(),
