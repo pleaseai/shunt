@@ -323,34 +323,10 @@ pub fn start_cursor_tool_bridge(
             CursorStreamEvent::Session { .. } => {
                 // Session info is not mapped to SSE events
             }
-            CursorStreamEvent::End => {
-                // If we haven't paused, finalize normally
-                if !paused {
-                    // Process any remaining XML before finalizing
-                    let flushed = state.xml_parser.flush();
-                    for evt in &flushed {
-                        match evt {
-                            // Trailing text the parser held back (e.g. pending a
-                            // tag that never completed) must still be emitted.
-                            RecoveredCursorEvent::Text(text) => {
-                                framer.emit_text_delta(text);
-                            }
-                            RecoveredCursorEvent::ToolUse(tool_use) => {
-                                let input_json = serde_json::to_string(&tool_use.input)
-                                    .unwrap_or_else(|_| "{}".to_string());
-                                framer.emit_tool_pause(&tool_use.id, &tool_use.name, &input_json);
-                                if let Some(pending) = pending_from_recovered_tool(tool_use) {
-                                    state.pending_tool = Some(pending);
-                                }
-                                paused = true;
-                            }
-                        }
-                    }
-                    if !paused {
-                        framer.finalize();
-                    }
-                }
-            }
+            // The final XML flush and finalize happen once after the loop, so
+            // End needs no per-event handling (this also avoids a double flush
+            // when the upstream sends End before the stream truly ends).
+            CursorStreamEvent::End => {}
         }
     }
 
@@ -387,12 +363,7 @@ pub fn start_cursor_tool_bridge(
         let mut stored_state = CursorBridgeState::new(
             session_id.to_string(),
             state.allowed_tool_names.clone(),
-            Box::new(|| {
-                format!(
-                    "call_cursor_{}",
-                    uuid::Uuid::new_v4().to_string().replace('-', "")
-                )
-            }),
+            Box::new(|| format!("call_cursor_{}", uuid::Uuid::new_v4().simple())),
         );
         stored_state.pending_tool = Some(pending);
         BridgeRegistry::insert(stored_state);

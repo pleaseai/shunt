@@ -24,7 +24,7 @@ pub async fn run(provider: &str) -> anyhow::Result<()> {
 
 pub async fn run_with_base(base_url: &str) -> anyhow::Result<()> {
     let mut random = [0_u8; 32];
-    rand::thread_rng().fill_bytes(&mut random);
+    rand::rng().fill_bytes(&mut random);
     let verifier = URL_SAFE_NO_PAD.encode(random);
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
     let uuid = uuid::Uuid::new_v4().to_string();
