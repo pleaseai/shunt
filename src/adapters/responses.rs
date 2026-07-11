@@ -390,11 +390,7 @@ mod tests {
 
     #[test]
     fn builds_codex_url_and_headers_without_sending() {
-        let state = AppState {
-            config: Config::default(),
-            http_client: reqwest::Client::new(),
-            inbound_auth: None,
-        };
+        let state = AppState::new(Config::default(), reqwest::Client::new()).unwrap();
 
         let request = build_test_request(
             &state,
@@ -452,11 +448,7 @@ mod tests {
 
     #[test]
     fn builds_xai_request_bearer_only_without_openai_beta() {
-        let state = AppState {
-            config: Config::default(),
-            http_client: reqwest::Client::new(),
-            inbound_auth: None,
-        };
+        let state = AppState::new(Config::default(), reqwest::Client::new()).unwrap();
 
         let request = build_test_request(
             &state,

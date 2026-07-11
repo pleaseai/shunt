@@ -80,13 +80,16 @@ async fn token() -> anyhow::Result<()> {
 }
 
 fn run(config_path: Option<PathBuf>) -> anyhow::Result<()> {
-    let config = Config::load(config_path.as_deref()).context("failed to load config")?;
+    // Resolve the effective config path once at startup so reload/file-watch
+    // reuse the exact same file the initial load used.
+    let path = config_path.or_else(Config::find_config_file);
+    let config = Config::load(path.as_deref()).context("failed to load config")?;
     // The guard must outlive the runtime so buffered events flush on shutdown.
     let _sentry = init_sentry(config.sentry.as_ref());
-    runtime()?.block_on(serve(config))
+    runtime()?.block_on(serve(config, path))
 }
 
-async fn serve(config: Config) -> anyhow::Result<()> {
+async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     let bind = config
         .server
         .bind_addr()
@@ -98,7 +101,10 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         .local_addr()
         .context("failed to read bind address")?;
     tracing::info!(%local_addr, "shunt listening");
-    let router = server::build_router(config).context("failed to initialize gateway")?;
+    let (router, shared) = server::build_router(config).context("failed to initialize gateway")?;
+    // Reload triggers (SIGHUP and config-file watch) run as background tasks and
+    // hot-swap the shared runtime state that the router reads per request.
+    shunt::reload::spawn_reload_watchers(shared, path).await;
     axum::serve(listener, router).await?;
     Ok(())
 }
@@ -224,7 +230,7 @@ mod tests {
         config.server.bind = "not-an-address".to_string();
         let error = runtime()
             .expect("runtime builds")
-            .block_on(serve(config))
+            .block_on(serve(config, None))
             .expect_err("invalid bind must fail");
         assert!(error.to_string().contains("invalid server bind address"));
     }

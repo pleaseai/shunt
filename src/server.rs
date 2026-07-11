@@ -10,41 +10,69 @@ use crate::{
     auth::inbound::InboundAuth,
     config::{Config, ConfigError},
     discovery, proxy,
+    reload::{RuntimeState, SharedState},
 };
 
 #[derive(Clone)]
 pub struct AppState {
-    pub config: Config,
+    /// Per-request config snapshot (see [`AppState::refreshed`]).
+    pub config: Arc<Config>,
     pub http_client: reqwest::Client,
-    /// Inbound client-token auth, resolved once at startup (None ⇒ open).
+    /// Inbound client-token auth snapshot for this request (None ⇒ open).
     pub inbound_auth: Option<Arc<InboundAuth>>,
+    /// The live, hot-swappable runtime state a reload updates. Private so the
+    /// only way in is a snapshot method that keeps `config`/`inbound_auth`
+    /// consistent with it.
+    shared: SharedState,
 }
 
-pub fn build_router(config: Config) -> Result<Router, ConfigError> {
-    let inbound_auth = config
-        .server
-        .auth
-        .as_ref()
-        .map(|auth| auth.resolve())
-        .transpose()?
-        .map(Arc::new);
-    let state = AppState {
-        config,
-        http_client: reqwest::Client::new(),
-        inbound_auth,
-    };
+impl AppState {
+    /// Build state from a config, owning a fresh shared store. Used by tests and
+    /// by callers that do not thread an external [`SharedState`].
+    pub fn new(config: Config, http_client: reqwest::Client) -> Result<Self, ConfigError> {
+        let runtime = RuntimeState::from_config(config)?;
+        let shared: SharedState = Arc::new(arc_swap::ArcSwap::from_pointee(runtime));
+        Ok(Self::from_shared(shared, http_client))
+    }
+
+    /// Snapshot the current runtime state from an existing shared store.
+    pub fn from_shared(shared: SharedState, http_client: reqwest::Client) -> Self {
+        let current = shared.load();
+        Self {
+            config: current.config.clone(),
+            inbound_auth: current.inbound_auth.clone(),
+            http_client,
+            shared,
+        }
+    }
+
+    /// Re-snapshot the live shared state into a new `AppState`, so a request
+    /// entry picks up the latest reloaded config while holding one stable
+    /// snapshot for the whole request. Cheap: clones `Arc`s and the client.
+    pub(crate) fn refreshed(&self) -> Self {
+        Self::from_shared(self.shared.clone(), self.http_client.clone())
+    }
+}
+
+/// Build the router and return it alongside the [`SharedState`] it reads, so the
+/// caller can spawn reload watchers that hot-swap the same store.
+pub fn build_router(config: Config) -> Result<(Router, SharedState), ConfigError> {
+    let runtime = RuntimeState::from_config(config)?;
+    let shared: SharedState = Arc::new(arc_swap::ArcSwap::from_pointee(runtime));
+    let state = AppState::from_shared(shared.clone(), reqwest::Client::new());
 
     // `/` and `/health` stay unauthenticated even when `[server.auth]` is
     // configured (healthcheck tools rarely carry tokens); they must never
     // expose config, credentials, or upstream details — only version, status,
     // and the already-public endpoint list.
-    Ok(Router::new()
+    let router = Router::new()
         .route("/", get(root_index))
         .route("/health", get(health))
         .route("/v1/models", get(discovery::get))
         .route("/v1/messages", post(proxy::post))
         .route("/v1/messages/count_tokens", post(proxy::post))
-        .with_state(state))
+        .with_state(state);
+    Ok((router, shared))
 }
 
 /// Human-facing landing page; axum also serves HEAD `/` from this handler,

@@ -26,6 +26,10 @@ pub async fn post(
     headers: HeaderMap,
     body: Body,
 ) -> axum::response::Response {
+    // Snapshot the live config once, at request entry: a mid-request reload
+    // never changes config underneath an in-flight request, while a request that
+    // arrives after a reload sees the new config.
+    let state = state.refreshed();
     let started_at = Instant::now();
     let path = uri.path().to_string();
     let session_id = headers

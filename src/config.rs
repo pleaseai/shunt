@@ -425,8 +425,9 @@ impl Config {
     }
 
     /// First existing file from the standard search order used when no
-    /// `--config` is given.
-    fn find_config_file() -> Option<PathBuf> {
+    /// `--config` is given. Public so the binary can resolve the effective path
+    /// once at startup and reuse it for hot-reload/file-watch.
+    pub fn find_config_file() -> Option<PathBuf> {
         let xdg_config_home = match std::env::var_os("XDG_CONFIG_HOME") {
             Some(dir) if !dir.is_empty() => Some(PathBuf::from(dir)),
             _ => std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")),
@@ -526,6 +527,21 @@ impl Config {
             }
         }
         Ok(self)
+    }
+
+    /// Resolve `[server.auth]` into the runtime inbound-auth state, reading the
+    /// configured tokens env. `None` when inbound auth is not configured. Fails
+    /// closed (see [`InboundAuthConfig::resolve`]). Shared by `build_router` and
+    /// the hot-reload path so both re-resolve tokens identically.
+    pub fn resolve_inbound_auth(
+        &self,
+    ) -> Result<Option<std::sync::Arc<crate::auth::inbound::InboundAuth>>, ConfigError> {
+        self.server
+            .auth
+            .as_ref()
+            .map(|auth| auth.resolve())
+            .transpose()
+            .map(|auth| auth.map(std::sync::Arc::new))
     }
 
     /// Look up a provider by name.

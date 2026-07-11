@@ -1,0 +1,367 @@
+//! Hot configuration reload for a long-running shared gateway.
+//!
+//! The live config is held behind an [`arc_swap::ArcSwap`] so a reload swaps in
+//! a new [`RuntimeState`] atomically without locking readers. Two triggers call
+//! [`reload`]: a `SIGHUP` signal (`kill -HUP <pid>`) and automatic detection of
+//! config-file changes (a `notify` watcher on the file's parent directory).
+//!
+//! Reload is fail-safe: [`reload`] loads and validates the new config in full
+//! before swapping, and on any error it returns without touching the live state,
+//! so an invalid edit never takes the process down or leaves it running open.
+//! Each request snapshots the live state on entry (see `AppState::refreshed`),
+//! so an in-flight request never sees config change underneath it.
+
+use std::sync::Arc;
+
+use arc_swap::ArcSwap;
+
+use crate::{
+    auth::inbound::InboundAuth,
+    config::{Config, ConfigError, SentryConfig},
+};
+
+/// The hot-swappable runtime state derived from a loaded config: the config
+/// itself plus anything resolved from it that a request reads on every call.
+pub struct RuntimeState {
+    pub config: Arc<Config>,
+    /// Inbound client-token auth (`[server.auth]`), re-resolved on every reload
+    /// so token/header edits take effect. `None` ⇒ open (no inbound auth).
+    pub inbound_auth: Option<Arc<InboundAuth>>,
+}
+
+/// Shared handle to the live [`RuntimeState`]. Cloning is cheap (an `Arc`); a
+/// reload replaces the pointed-to state with [`ArcSwap::store`].
+pub type SharedState = Arc<ArcSwap<RuntimeState>>;
+
+impl RuntimeState {
+    /// Build runtime state from an already-loaded config. `Config::load`
+    /// validates, but a config constructed by other means might not have, so
+    /// validate defensively before resolving auth.
+    pub fn from_config(config: Config) -> Result<Self, ConfigError> {
+        let config = config.validate()?;
+        let inbound_auth = config.resolve_inbound_auth()?;
+        Ok(Self {
+            config: Arc::new(config),
+            inbound_auth,
+        })
+    }
+}
+
+/// Reload the config from `path` and, only on full success, atomically swap it
+/// into `shared`. On any error the currently-live config stays untouched and the
+/// error is returned for the caller to log — the gateway keeps running the last
+/// good config rather than going down or running open.
+///
+/// Fields that cannot be hot-applied (`server.bind`, `[sentry]`) are compared
+/// against the live config and a `warn!` is logged when they change; the new
+/// values are accepted into the swapped config but only take effect on restart.
+pub fn reload(shared: &SharedState, path: Option<&std::path::Path>) -> Result<(), ConfigError> {
+    // Load + validate the candidate before touching the live state.
+    let new_config = Config::load(path)?;
+    let previous = shared.load();
+    warn_on_restart_only_changes(&previous.config, &new_config);
+    let new_state = RuntimeState::from_config(new_config)?;
+    shared.store(Arc::new(new_state));
+    tracing::info!("configuration reloaded successfully");
+    Ok(())
+}
+
+/// Warn about fields that a hot reload cannot apply, so an operator relying on
+/// the change is not misled into thinking it took effect.
+fn warn_on_restart_only_changes(previous: &Config, next: &Config) {
+    if previous.server.bind != next.server.bind {
+        tracing::warn!(
+            previous = %previous.server.bind,
+            next = %next.server.bind,
+            "server.bind changed but requires a restart to apply; the listener is already bound"
+        );
+    }
+    if sentry_changed(previous.sentry.as_ref(), next.sentry.as_ref()) {
+        tracing::warn!(
+            "[sentry] configuration changed but requires a restart to apply; the Sentry client is initialized once at startup"
+        );
+    }
+}
+
+/// Structural comparison of two optional `[sentry]` sections. `SentryConfig`
+/// does not derive `PartialEq`, so compare the fields that matter.
+fn sentry_changed(previous: Option<&SentryConfig>, next: Option<&SentryConfig>) -> bool {
+    match (previous, next) {
+        (None, None) => false,
+        (Some(a), Some(b)) => {
+            a.dsn != b.dsn || a.environment != b.environment || a.metrics != b.metrics
+        }
+        _ => true,
+    }
+}
+
+/// Debounce window: filesystem writes arrive in bursts (editors write, rename,
+/// chmod; Kubernetes swaps a ConfigMap symlink), so a relevant event starts a
+/// quiet timer that later events restart, and the reload fires once the writes
+/// settle. Long enough to coalesce a burst, short enough to feel immediate.
+const DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// Spawn the reload triggers as background tasks and return. On Unix a `SIGHUP`
+/// handler reloads on each signal. When `path` is set, a `notify` watcher on the
+/// config file's parent directory reloads (debounced) on file changes. Watcher
+/// setup failures are logged and skipped — the gateway keeps running (and SIGHUP
+/// still works) rather than aborting.
+pub async fn spawn_reload_watchers(shared: SharedState, path: Option<std::path::PathBuf>) {
+    #[cfg(unix)]
+    spawn_sighup_task(shared.clone(), path.clone());
+
+    if let Some(path) = path {
+        spawn_file_watch_task(shared, path);
+    }
+}
+
+/// Reload on each `SIGHUP` (`kill -HUP <pid>`). Unix-only; on other platforms
+/// SIGHUP does not exist and only the file watcher drives reloads.
+#[cfg(unix)]
+fn spawn_sighup_task(shared: SharedState, path: Option<std::path::PathBuf>) {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let mut signal = match signal(SignalKind::hangup()) {
+        Ok(signal) => signal,
+        Err(error) => {
+            tracing::warn!(%error, "failed to install SIGHUP handler; reload-on-signal disabled");
+            return;
+        }
+    };
+    tokio::spawn(async move {
+        while signal.recv().await.is_some() {
+            tracing::info!("received SIGHUP, reloading configuration");
+            if let Err(error) = reload(&shared, path.as_deref()) {
+                tracing::error!(%error, "SIGHUP reload failed; keeping the running configuration");
+            }
+        }
+    });
+}
+
+/// Watch the config file's parent directory (not the file inode) so atomic-rename
+/// saves and Kubernetes ConfigMap symlink swaps — which replace the file rather
+/// than write in place — are still detected. Events are bridged from `notify`'s
+/// std channel onto a tokio channel and debounced before each reload.
+fn spawn_file_watch_task(shared: SharedState, path: std::path::PathBuf) {
+    use notify::{RecursiveMode, Watcher};
+
+    let watch_dir = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+
+    // notify calls the handler on its own thread with std types; forward raw
+    // events onto a tokio channel so the async task can debounce them.
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<notify::Event>();
+    let mut watcher = match notify::recommended_watcher(
+        move |result: notify::Result<notify::Event>| {
+            if let Ok(event) = result {
+                // A closed receiver just means the server is shutting down.
+                let _ = tx.send(event);
+            }
+        },
+    ) {
+        Ok(watcher) => watcher,
+        Err(error) => {
+            tracing::warn!(%error, "failed to create config file watcher; auto-reload on file change disabled (SIGHUP still works)");
+            return;
+        }
+    };
+    if let Err(error) = watcher.watch(&watch_dir, RecursiveMode::NonRecursive) {
+        tracing::warn!(%error, dir = %watch_dir.display(), "failed to watch config directory; auto-reload on file change disabled (SIGHUP still works)");
+        return;
+    }
+    tracing::info!(dir = %watch_dir.display(), "watching config directory for changes");
+
+    tokio::spawn(async move {
+        // Keep the watcher alive for the lifetime of this task; dropping it stops
+        // event delivery.
+        let _watcher = watcher;
+        loop {
+            // Block until an event that touches the config file arrives.
+            let Some(event) = rx.recv().await else {
+                break;
+            };
+            if !event_touches_path(&event, &path) {
+                continue;
+            }
+            // Debounce: keep draining until the writes go quiet, coalescing a
+            // burst of events into a single reload.
+            loop {
+                match tokio::time::timeout(DEBOUNCE, rx.recv()).await {
+                    Ok(Some(_)) => continue, // more events; keep waiting for quiet
+                    Ok(None) => break,       // channel closed; reload once below
+                    Err(_) => break,         // quiet period elapsed
+                }
+            }
+            tracing::info!("detected config file change, reloading configuration");
+            if let Err(error) = reload(&shared, Some(path.as_path())) {
+                tracing::error!(%error, "config file reload failed; keeping the running configuration");
+            }
+        }
+    });
+}
+
+/// Whether a filesystem event concerns the config file. Directory watching
+/// surfaces sibling files too, so filter by the config file's own path (matching
+/// its final component covers atomic renames whose event carries the temp path
+/// then the final path).
+fn event_touches_path(event: &notify::Event, path: &std::path::Path) -> bool {
+    let name = path.file_name();
+    event
+        .paths
+        .iter()
+        .any(|event_path| event_path == path || (name.is_some() && event_path.file_name() == name))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arc_swap::ArcSwap;
+
+    use super::{reload, RuntimeState, SharedState};
+    use crate::config::Config;
+
+    /// Unique temp dir per test so concurrent `cargo test` runs never collide.
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-reload-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    struct TempDirGuard(std::path::PathBuf);
+    impl Drop for TempDirGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn shared_from(config: Config) -> SharedState {
+        Arc::new(ArcSwap::from_pointee(
+            RuntimeState::from_config(config).expect("valid initial config"),
+        ))
+    }
+
+    /// Capture tracing output for a closure, so warn-path assertions can inspect
+    /// the emitted logs (mirrors config.rs's log-capture test).
+    fn capture_logs(run: impl FnOnce()) -> String {
+        use std::io::{self, Write};
+        use std::sync::Mutex;
+
+        struct BufferWriter {
+            buffer: Arc<Mutex<Vec<u8>>>,
+        }
+        impl Write for BufferWriter {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.buffer.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let writer_output = Arc::clone(&output);
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || BufferWriter {
+                buffer: Arc::clone(&writer_output),
+            })
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        tracing::subscriber::with_default(subscriber, run);
+        let bytes = output.lock().unwrap().clone();
+        String::from_utf8(bytes).unwrap()
+    }
+
+    #[test]
+    fn reload_swaps_in_a_valid_new_config() {
+        let dir = temp_dir("valid");
+        let _guard = TempDirGuard(dir.clone());
+        let path = dir.join("shunt.toml");
+
+        // Start from a config whose default_provider is anthropic.
+        std::fs::write(&path, "[server]\ndefault_provider = \"anthropic\"\n").unwrap();
+        let shared = shared_from(Config::load(Some(&path)).unwrap());
+        assert_eq!(shared.load().config.server.default_provider, "anthropic");
+
+        // Rewrite the file and reload; the live state must reflect the change.
+        std::fs::write(&path, "[server]\ndefault_provider = \"openai\"\n").unwrap();
+        reload(&shared, Some(&path)).expect("valid reload succeeds");
+        assert_eq!(shared.load().config.server.default_provider, "openai");
+    }
+
+    #[test]
+    fn reload_with_invalid_config_keeps_previous_state() {
+        let dir = temp_dir("invalid");
+        let _guard = TempDirGuard(dir.clone());
+        let path = dir.join("shunt.toml");
+
+        std::fs::write(&path, "[server]\ndefault_provider = \"anthropic\"\n").unwrap();
+        let shared = shared_from(Config::load(Some(&path)).unwrap());
+
+        // default_provider referencing an unknown provider fails validation.
+        std::fs::write(&path, "[server]\ndefault_provider = \"nonexistent\"\n").unwrap();
+        let error = reload(&shared, Some(&path)).expect_err("invalid reload must fail");
+        assert!(error.to_string().contains("unknown provider: nonexistent"));
+        // Fail-safe: the previously-live config is untouched.
+        assert_eq!(shared.load().config.server.default_provider, "anthropic");
+    }
+
+    #[test]
+    fn reload_reresolves_inbound_auth() {
+        let dir = temp_dir("auth");
+        let _guard = TempDirGuard(dir.clone());
+        let path = dir.join("shunt.toml");
+        let env = format!("SHUNT_RELOAD_TEST_TOKENS_{}", std::process::id());
+
+        // Start with no inbound auth.
+        std::fs::write(&path, "[server]\ndefault_provider = \"anthropic\"\n").unwrap();
+        let shared = shared_from(Config::load(Some(&path)).unwrap());
+        assert!(shared.load().inbound_auth.is_none());
+
+        // Add [server.auth] pointing at an env var holding a valid token.
+        std::env::set_var(&env, "alice:tok-a");
+        std::fs::write(
+            &path,
+            format!(
+                "[server]\ndefault_provider = \"anthropic\"\n\n[server.auth]\ntokens_env = \"{env}\"\n"
+            ),
+        )
+        .unwrap();
+        reload(&shared, Some(&path)).expect("reload with auth succeeds");
+        assert!(shared.load().inbound_auth.is_some());
+        std::env::remove_var(&env);
+    }
+
+    #[test]
+    fn bind_change_warns_and_reload_still_succeeds() {
+        let dir = temp_dir("bind");
+        let _guard = TempDirGuard(dir.clone());
+        let path = dir.join("shunt.toml");
+
+        std::fs::write(&path, "[server]\nbind = \"127.0.0.1:3001\"\n").unwrap();
+        let shared = shared_from(Config::load(Some(&path)).unwrap());
+
+        std::fs::write(&path, "[server]\nbind = \"127.0.0.1:4002\"\n").unwrap();
+        let logs = capture_logs(|| {
+            reload(&shared, Some(&path)).expect("reload succeeds despite bind change");
+        });
+
+        // The reload succeeded and the new bind is stored in the config...
+        assert_eq!(shared.load().config.server.bind, "127.0.0.1:4002");
+        // ...but the operator was warned it requires a restart to take effect.
+        assert!(logs.contains("server.bind changed"));
+        assert!(logs.contains("requires a restart"));
+    }
+}

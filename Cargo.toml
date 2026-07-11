@@ -23,11 +23,13 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
+arc-swap = "1.9.2"
 axum = "0.8"
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 figment = { version = "0.10", features = ["toml", "env"] }
 futures-util = "0.3"
+notify = "8.2.0"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 sentry = { version = "0.48.4", default-features = false, features = ["backtrace", "contexts", "metrics", "panic", "reqwest", "rustls", "tracing"] }
 serde = { version = "1", features = ["derive"] }
