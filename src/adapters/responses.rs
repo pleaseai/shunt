@@ -348,10 +348,12 @@ async fn start_ws_turn(
                         .clone()
                         .or_else(|| turn.handshake_turn_state().map(str::to_string))
                     {
-                        object.insert(
-                            "client_metadata".to_string(),
-                            json!({ "x-codex-turn-state": turn_state }),
-                        );
+                        let metadata = object
+                            .entry("client_metadata".to_string())
+                            .or_insert_with(|| json!({}));
+                        if let Some(metadata) = metadata.as_object_mut() {
+                            metadata.insert("x-codex-turn-state".to_string(), json!(turn_state));
+                        }
                     }
                 }
                 used_continuation = true;
@@ -491,9 +493,9 @@ fn stream_events_response(
 }
 
 /// Collect the full websocket event stream into a single Anthropic message for a
-/// non-streaming client. A mid-stream transport error ends collection early; the
-/// machine still finalizes whatever it accumulated. `buffered` is the peeked first
-/// event, if any.
+/// non-streaming client. A mid-stream transport error returns a gateway error
+/// instead of presenting partial output as a successful response. `buffered` is
+/// the peeked first event, if any.
 async fn json_events_response(
     buffered: BufferedEvent,
     mut events: CodexWsEvents,
@@ -513,7 +515,12 @@ async fn json_events_response(
             }
             Some(Err(error)) => {
                 tracing::warn!(error = %error.message, "codex websocket stream error");
-                break;
+                let message = if error.body.is_empty() {
+                    error.message
+                } else {
+                    error.body
+                };
+                return ShuntError::bad_gateway(message).into_response();
             }
             None => break,
         }

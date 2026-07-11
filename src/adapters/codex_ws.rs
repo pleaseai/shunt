@@ -110,8 +110,7 @@ pub fn invalidate_pool_key(key: &str) {
 fn pool_insert(key: String, entry: std::sync::Arc<PoolEntry>) {
     let mut guard = POOL.lock().unwrap();
     // Drop expired entries and enforce the size cap before inserting.
-    let now = Instant::now();
-    guard.retain(|_, entry| now.duration_since(entry.created_at) < POOL_IDLE_TTL);
+    guard.retain(|_, entry| entry.created_at.elapsed() < POOL_IDLE_TTL);
     if guard.len() >= MAX_POOL_ENTRIES {
         // Evict the actual oldest connection by creation time. `HashMap` iteration
         // order is unspecified, so `keys().next()` would drop an arbitrary (possibly
