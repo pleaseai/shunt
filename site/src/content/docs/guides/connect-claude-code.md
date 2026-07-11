@@ -83,9 +83,19 @@ export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
 
 Then pick it from `/model` in Claude Code. That id is what shunt routes on, so it must match a `[[routes]]`/`[[route_prefixes]]` rule in your config.
 
+The two picker-exposure methods split cleanly on the `claude-`/`anthropic-` prefix — they don't overlap. Discovery honors *only* `claude-`/`anthropic-` ids; `ANTHROPIC_CUSTOM_MODEL_OPTION` and the `CLAUDE_CODE_MAX_CONTEXT_TOKENS` window override apply *only* to ids that do **not** start with that prefix:
+
+| What | `claude-`/`anthropic-` id (discovery alias) | non-`claude-` id (e.g. `gpt-5.6-sol`) |
+| :-- | :-- | :-- |
+| [`/v1/models` discovery](/guides/model-discovery/) → `/model` picker | ✅ auto-listed ("From gateway"), many models | ❌ dropped by Claude Code |
+| `ANTHROPIC_CUSTOM_MODEL_OPTION` | ❌ not honored | ✅ adds to picker (**one id only**) |
+| `CLAUDE_CODE_MAX_CONTEXT_TOKENS` window | ❌ ignored → 200k default | ✅ applies → set the real window |
+
+So a `claude-…-via-codex` discovery alias is convenient (auto-listed, one-tap) but its context window is **stuck at the 200k default** — the override can't reach a `claude-`-prefixed id ([Effort & Context](/guides/effort-and-context/)). Pick the **discovery alias** for picker convenience across several models (accept the 200k denominator), or a **non-`claude-` id via `ANTHROPIC_CUSTOM_MODEL_OPTION`** for an accurate window, one model at a time.
+
 ### Per-agent diversion
 
-Per-context selection works via Claude Code's own knobs — a subagent's `model:` frontmatter, or `CLAUDE_CODE_SUBAGENT_MODEL` for all subagents — so you can divert only one agent while the main session stays on Claude:
+Per-context selection works via Claude Code's own knobs — divert one agent to a mapped model while the main session stays on Claude:
 
 ```yaml
 # .claude/agents/researcher.md
@@ -94,6 +104,8 @@ name: researcher
 model: gpt-5.6-sol   # this agent's inference is diverted; the main session stays on Claude
 ---
 ```
+
+A named subagent's `model:` frontmatter is the **only** way to put a subagent on a `gpt-*` id: that field takes any string, whereas the Agent/Task tool's `model` parameter is restricted to the built-in aliases (`opus`/`sonnet`/`haiku`/`fable`) and can't take a gateway id. Spawn the agent by its type **without** a `model` override — the tool parameter outranks frontmatter (`CLAUDE_CODE_SUBAGENT_MODEL` > tool `model` > frontmatter > `inherit`), so passing one would shadow the mapped model. `CLAUDE_CODE_SUBAGENT_MODEL` forces every subagent onto one model. The window follows the model id automatically, so one global `CLAUDE_CODE_MAX_CONTEXT_TOKENS` sizes the mapped subagent while the Claude main keeps its own.
 
 ## 5. Verify
 

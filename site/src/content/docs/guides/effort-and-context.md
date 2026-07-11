@@ -47,11 +47,15 @@ The 200k default can be overridden client-side with `CLAUDE_CODE_MAX_CONTEXT_TOK
 export CLAUDE_CODE_MAX_CONTEXT_TOKENS=372000
 ```
 
+Because the override applies **only** to ids that don't start with `claude-`, a [discovery alias](/guides/model-discovery/) (which *must* begin with `claude-`) can't take it — its window stays pinned at the 200k default. Convenient in the picker, but use a non-`claude-` id (via `ANTHROPIC_CUSTOM_MODEL_OPTION`) when you need the accurate window.
+
 :::caution
-The value is **global** — one value for every non-`claude-` model in the session — and setting it larger than the real upstream window delays auto-compact until the upstream rejects the request with a context-length error. shunt [rewrites that error](#context-overflow-recovery) so Claude Code compacts and retries automatically, but each overflow round-trip is wasted latency — match the value to the smallest real window among your mapped models.
+The value is **global** — one value for every non-`claude-` model in the session — and setting it larger than the real upstream window delays auto-compact until requests overflow the real limit. shunt [rewrites that overflow error](#context-overflow-recovery) so Claude Code compacts and retries automatically, but each overflow round-trip is wasted latency — match the value to the smallest real window among your mapped models.
+
+Live-verified boundary for `gpt-5.6-sol` (real window 372k): 365k input tokens answer normally; at 372k+ the streaming request returns a `prompt is too long` error that triggers auto-compaction (`gpt-5.5` is 272000). A *non*-streaming request instead degrades to an empty `200` with `input_tokens: 0`, but Claude Code's main loop always streams.
 :::
 
-The other client-side lever is the `[1m]` model-id suffix, which forces a 1M window — only use it when the upstream really has that window.
+The other client-side lever is the `[1m]` model-id suffix, which forces a 1M window — only use it when the upstream really has that window. (shunt strips a trailing `[1m]` before route matching and forwarding, so the hint stays purely client-side and the provider never sees it.)
 
 | Field | Mapped (`responses`) model | Claude passthrough |
 | :-- | :-- | :-- |
