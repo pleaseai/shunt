@@ -46,7 +46,31 @@ pub fn resolve(config: &Config, body: &[u8]) -> Result<Route, ShuntError> {
     Ok(resolve_model(config, &view.model))
 }
 
+/// Claude Code appends a `[1m]` suffix to a model id as a *client-side* hint that
+/// raises its own context-window / auto-compact threshold (see `docs/running.md`
+/// §5). The suffix is not part of the real model name: upstream `responses`
+/// providers (Codex/OpenAI) reject a `gpt-5.6-sol[1m]` slug, and an explicit
+/// `[[routes]]` entry would never match it. Strip a single trailing `[1m]`
+/// (ASCII case-insensitive) before route matching and before forwarding upstream
+/// so the documented `[1m]` lever works through the gateway. Byte-wise ASCII
+/// checks keep this panic-free on non-ASCII ids.
+fn strip_context_window_hint(model: &str) -> &str {
+    let bytes = model.as_bytes();
+    let n = bytes.len();
+    if n >= 4
+        && bytes[n - 4] == b'['
+        && bytes[n - 3] == b'1'
+        && (bytes[n - 2] == b'm' || bytes[n - 2] == b'M')
+        && bytes[n - 1] == b']'
+    {
+        &model[..n - 4]
+    } else {
+        model
+    }
+}
+
 pub fn resolve_model(config: &Config, model: &str) -> Route {
+    let model = strip_context_window_hint(model);
     for route in &config.routes {
         if route.model == model {
             return route_for(
@@ -93,7 +117,63 @@ fn route_for(
 mod tests {
     use crate::config::{Config, RouteConfig, RoutePrefixConfig};
 
-    use super::{resolve_model, AdapterKind};
+    use super::{resolve_model, strip_context_window_hint, AdapterKind};
+
+    #[test]
+    fn strip_context_window_hint_removes_only_a_trailing_1m_suffix() {
+        assert_eq!(strip_context_window_hint("gpt-5.6-sol[1m]"), "gpt-5.6-sol");
+        assert_eq!(strip_context_window_hint("gpt-5.6-sol[1M]"), "gpt-5.6-sol");
+        // Not a suffix / not the hint: left untouched.
+        assert_eq!(strip_context_window_hint("gpt-5.6-sol"), "gpt-5.6-sol");
+        assert_eq!(
+            strip_context_window_hint("[1m]gpt-5.6-sol"),
+            "[1m]gpt-5.6-sol"
+        );
+        assert_eq!(strip_context_window_hint("gpt-[1m]-sol"), "gpt-[1m]-sol");
+        assert_eq!(strip_context_window_hint("[1m]"), "");
+        // Non-ASCII id must not panic on the byte-index slice.
+        assert_eq!(strip_context_window_hint("모델[1m]"), "모델");
+        assert_eq!(strip_context_window_hint("모델"), "모델");
+    }
+
+    #[test]
+    fn one_million_suffix_is_stripped_before_matching_and_forwarding() {
+        let config = Config {
+            routes: vec![RouteConfig {
+                model: "claude-gpt-5.6-sol-via-codex".to_string(),
+                provider: "codex".to_string(),
+                upstream_model: Some("gpt-5.6-sol".to_string()),
+                effort: None,
+            }],
+            ..Config::default()
+        };
+
+        // The `[1m]` variant resolves to the same route, and the upstream slug
+        // never carries the suffix (Codex would reject it otherwise).
+        let route = resolve_model(&config, "claude-gpt-5.6-sol-via-codex[1m]");
+        assert_eq!(route.provider, "codex");
+        assert_eq!(route.adapter, AdapterKind::Responses);
+        assert_eq!(route.upstream_model, "gpt-5.6-sol");
+        assert_eq!(route.model, "claude-gpt-5.6-sol-via-codex");
+    }
+
+    #[test]
+    fn one_million_suffix_is_stripped_on_prefix_routes() {
+        let config = Config {
+            route_prefixes: vec![RoutePrefixConfig {
+                prefix: "gpt-".to_string(),
+                provider: "openai".to_string(),
+            }],
+            ..Config::default()
+        };
+
+        // Prefix routing forwards the incoming id as the upstream model, so the
+        // suffix must be gone before it reaches the provider.
+        let route = resolve_model(&config, "gpt-5.6-sol[1m]");
+        assert_eq!(route.provider, "openai");
+        assert_eq!(route.upstream_model, "gpt-5.6-sol");
+        assert_eq!(route.model, "gpt-5.6-sol");
+    }
 
     #[test]
     fn explicit_routes_win_before_prefix_and_default() {
