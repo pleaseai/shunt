@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.0](https://github.com/pleaseai/shunt/compare/v0.6.0...v0.7.0) (2026-07-11)
+
+
+### Features
+
+* **adapters:** forward codex session/identity headers on chatgpt oauth ([#33](https://github.com/pleaseai/shunt/issues/33)) ([2ce410d](https://github.com/pleaseai/shunt/commit/2ce410d3e5f9e53c54163432b726ba23e57081f6))
+* add GET /routes endpoint exposing routable model slugs ([#36](https://github.com/pleaseai/shunt/issues/36)) ([d95ee45](https://github.com/pleaseai/shunt/commit/d95ee45dc10a181eaf5bac4c00b0a52fb8ba8c82))
+
 ## [0.6.0](https://github.com/pleaseai/shunt/compare/v0.5.0...v0.6.0) (2026-07-11)
 
 
