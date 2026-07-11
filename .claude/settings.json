@@ -6,7 +6,7 @@
     "ENABLE_TOOL_SEARCH": "1"
   },
   "enabledPlugins": {
-    "claude-code-docs@passionfactory": true,
+    "claude-code-docs@pleaseai": true,
     "astro-lsp@code-intelligence": true,
     "astro@pleaseai": true
   },
