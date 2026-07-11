@@ -1,0 +1,21 @@
+.claude/agent-memory/review-review-silent-failure-hunter/shunt-codex-ws-error-handling.md
+  s_309ae3c4bc8469::t_d5b4222839ab31 1-16
+.claude/agent-memory/review-review-silent-failure-hunter/MEMORY.md
+  s_309ae3c4bc8469::t_43b1cbfca748de 1-3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "a55d7968ceef08f8b68f9e4e035cdc0b83e11898",
+  "prompts": {},
+  "sessions": {
+    "s_309ae3c4bc8469": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90b4a119-dbf5-48e6-8378-bcdfb190f8aa",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
