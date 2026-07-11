@@ -1,0 +1,21 @@
+src/adapters/anthropic.rs
+  s_52ab8577fad2c6::t_675f59e9aad0ee 164-166,170-171
+  s_52ab8577fad2c6::t_9e697628ec721a 290-302
+  s_52ab8577fad2c6::t_b3b22e48bbdda7 289
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "aa2c55f63891069b9cb633a4057485e015b535bc",
+  "prompts": {},
+  "sessions": {
+    "s_52ab8577fad2c6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "084e1c87-8afd-47e7-8fd0-d19e4f848a1c",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
