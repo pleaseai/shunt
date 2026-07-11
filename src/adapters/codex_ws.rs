@@ -52,6 +52,9 @@ const EVENT_CHANNEL_CAPACITY: usize = 64;
 /// How long a pooled connection may sit idle before it is evicted on the next
 /// insert. Matches the reference proxy's 30-minute window.
 const POOL_IDLE_TTL: Duration = Duration::from_secs(30 * 60);
+/// How often ordinary inserts may trigger an idle-entry sweep. This keeps stale
+/// sockets bounded without turning every insert into an O(pool size) operation.
+const POOL_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 /// Hard cap on pooled connections, a backstop against unbounded session churn.
 const MAX_POOL_ENTRIES: usize = 10_000;
 
@@ -97,6 +100,7 @@ impl PoolEntry {
 /// per-connection async mutex serializes turns on one session.
 static POOL: LazyLock<Mutex<HashMap<String, std::sync::Arc<PoolEntry>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+static LAST_POOL_SWEEP: LazyLock<Mutex<Instant>> = LazyLock::new(|| Mutex::new(Instant::now()));
 
 fn pool_get(key: &str) -> Option<std::sync::Arc<PoolEntry>> {
     POOL.lock().unwrap().get(key).cloned()
@@ -109,21 +113,25 @@ pub fn invalidate_pool_key(key: &str) {
 
 fn pool_insert(key: String, entry: std::sync::Arc<PoolEntry>) {
     let mut guard = POOL.lock().unwrap();
-    if guard.len() >= MAX_POOL_ENTRIES {
-        // Only scan the pool for idle/LRU entries when capacity pressure requires
-        // eviction; ordinary inserts remain O(1).
+    let mut last_sweep = LAST_POOL_SWEEP.lock().unwrap();
+    let sweep_due = last_sweep.elapsed() >= POOL_SWEEP_INTERVAL;
+    if sweep_due || guard.len() >= MAX_POOL_ENTRIES {
+        // Sweep at most once per interval during ordinary churn, but always sweep
+        // under capacity pressure before choosing an LRU victim.
         guard.retain(|_, entry| entry.last_used_at.lock().unwrap().elapsed() < POOL_IDLE_TTL);
-        if guard.len() >= MAX_POOL_ENTRIES {
-            // Evict the least recently used connection. `HashMap` iteration order is
-            // unspecified, so `keys().next()` would drop an arbitrary (possibly active)
-            // entry instead of the stalest one.
-            if let Some(oldest) = guard
-                .iter()
-                .min_by_key(|(_, entry)| *entry.last_used_at.lock().unwrap())
-                .map(|(key, _)| key.clone())
-            {
-                guard.remove(&oldest);
-            }
+        *last_sweep = Instant::now();
+    }
+    drop(last_sweep);
+    if guard.len() >= MAX_POOL_ENTRIES {
+        // Evict the least recently used connection. `HashMap` iteration order is
+        // unspecified, so `keys().next()` would drop an arbitrary (possibly active)
+        // entry instead of the stalest one.
+        if let Some(oldest) = guard
+            .iter()
+            .min_by_key(|(_, entry)| *entry.last_used_at.lock().unwrap())
+            .map(|(key, _)| key.clone())
+        {
+            guard.remove(&oldest);
         }
     }
     guard.insert(key, entry);
@@ -132,6 +140,7 @@ fn pool_insert(key: String, entry: std::sync::Arc<PoolEntry>) {
 #[cfg(test)]
 pub fn clear_pool_for_tests() {
     POOL.lock().unwrap().clear();
+    *LAST_POOL_SWEEP.lock().unwrap() = Instant::now();
 }
 
 #[cfg(test)]
