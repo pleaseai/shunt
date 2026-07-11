@@ -115,6 +115,27 @@ pub async fn spawn_reload_watchers(shared: SharedState, path: Option<std::path::
     }
 }
 
+/// Run a [`reload`] on the blocking thread pool so its synchronous file I/O
+/// (`Config::load` reads and parses the file) never stalls an async worker: a
+/// slow or network-mounted config could otherwise pause request handling on the
+/// shared runtime. Logs `failure_context` on a reload error, and separately if
+/// the blocking task itself panics.
+async fn reload_off_thread(
+    shared: &SharedState,
+    path: Option<&std::path::Path>,
+    failure_context: &'static str,
+) {
+    let shared = shared.clone();
+    let path = path.map(std::path::Path::to_path_buf);
+    match tokio::task::spawn_blocking(move || reload(&shared, path.as_deref())).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => tracing::error!(%error, "{failure_context}"),
+        Err(join_error) => {
+            tracing::error!(%join_error, "reload task panicked; keeping the running configuration")
+        }
+    }
+}
+
 /// Reload on each `SIGHUP` (`kill -HUP <pid>`). Unix-only; on other platforms
 /// SIGHUP does not exist and only the file watcher drives reloads.
 #[cfg(unix)]
@@ -131,9 +152,12 @@ fn spawn_sighup_task(shared: SharedState, path: Option<std::path::PathBuf>) {
     tokio::spawn(async move {
         while signal.recv().await.is_some() {
             tracing::info!("received SIGHUP, reloading configuration");
-            if let Err(error) = reload(&shared, path.as_deref()) {
-                tracing::error!(%error, "SIGHUP reload failed; keeping the running configuration");
-            }
+            reload_off_thread(
+                &shared,
+                path.as_deref(),
+                "SIGHUP reload failed; keeping the running configuration",
+            )
+            .await;
         }
     });
 }
@@ -212,9 +236,12 @@ fn spawn_file_watch_task(shared: SharedState, path: std::path::PathBuf) {
                 }
             }
             tracing::info!("detected config file change, reloading configuration");
-            if let Err(error) = reload(&shared, Some(path.as_path())) {
-                tracing::error!(%error, "config file reload failed; keeping the running configuration");
-            }
+            reload_off_thread(
+                &shared,
+                Some(path.as_path()),
+                "config file reload failed; keeping the running configuration",
+            )
+            .await;
         }
     });
 }
