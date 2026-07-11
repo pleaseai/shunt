@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/pleaseai/shunt/compare/v0.5.0...v0.6.0) (2026-07-11)
+
+
+### Features
+
+* add shunt-codex Claude Code plugin with GPT-5.6 subagents ([#21](https://github.com/pleaseai/shunt/issues/21)) ([d9adf41](https://github.com/pleaseai/shunt/commit/d9adf41a4eceabf050a5f4c6d36e020a31dfc087))
+
 ## [0.5.0](https://github.com/pleaseai/shunt/compare/v0.4.0...v0.5.0) (2026-07-11)
 
 
