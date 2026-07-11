@@ -18,10 +18,10 @@ pub struct RouteEntry {
     pub effort: Option<String>,
 }
 
-/// Shunt-native endpoint exposing the configured `[[routes]]` table (routable,
-/// non-`claude-` model slugs). Distinct from `/v1/models`, which serves the
-/// Anthropic-protocol model-discovery response and drops any id that doesn't
-/// begin with `claude`/`anthropic`.
+/// Shunt-native endpoint exposing the configured `[[routes]]` table verbatim,
+/// including any `claude-`/`anthropic-`-prefixed discovery aliases. Distinct
+/// from `/v1/models`, which serves the narrower Anthropic-protocol
+/// model-discovery response (only `id`/`display_name` from `[[models]]`).
 pub async fn get(State(state): State<AppState>) -> Json<RoutesResponse> {
     // Snapshot the live config so this response reflects the latest reload.
     let state = state.refreshed();

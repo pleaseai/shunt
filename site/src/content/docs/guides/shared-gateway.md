@@ -20,7 +20,7 @@ tokens_env = "SHUNT_CLIENT_TOKENS"
 export SHUNT_CLIENT_TOKENS="minsu:$(openssl rand -hex 32),alice:$(openssl rand -hex 32)"
 ```
 
-Startup **fails closed** if `[server.auth]` is present but the env var is unset or malformed. Requests to mapped models without a valid token get a 401 `authentication_error`; `GET /v1/models`, `GET|HEAD /`, `GET /health`, and passthrough models stay open.
+Startup **fails closed** if `[server.auth]` is present but the env var is unset or malformed. Requests to mapped models without a valid token get a 401 `authentication_error`; `GET /v1/models`, `GET /routes`, `GET|HEAD /`, `GET /health`, and passthrough models stay open. `GET /routes` is unauthenticated by the same discovery-endpoint design as `GET /v1/models` — it exposes routing metadata (the configured provider/upstream-model mapping), never credentials, which live only in provider config and are never read by that handler.
 
 The token header is always stripped before forwarding, matching is constant-time, and token values are never logged (client *names* are, per request).
 
