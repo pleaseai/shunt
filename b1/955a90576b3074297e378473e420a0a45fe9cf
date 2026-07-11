@@ -1,0 +1,50 @@
+src/config.rs
+  s_4f25e56081cfc7::t_a6823d80dd0c1b 532-546
+  s_4f25e56081cfc7::t_c876c511a8b026 428-430
+src/reload.rs
+  s_4f25e56081cfc7::t_3b1182227ac13f 58,212-215,316
+  s_4f25e56081cfc7::t_4b6813a268825a 1-57,59-211,216-315,317-367
+tests/inbound_auth.rs
+  s_4f25e56081cfc7::t_3c08529aacae9a 84
+src/adapters/responses.rs
+  s_4f25e56081cfc7::t_44096b57250b4d 451
+  s_4f25e56081cfc7::t_05108a341b8118 393
+Cargo.toml
+  s_4f25e56081cfc7::t_5679fb59d43c97 26,32
+src/main.rs
+  s_4f25e56081cfc7::t_d3bd31896dd8f9 83-86,89,92,104-107
+  s_4f25e56081cfc7::t_bfb19b3babd5de 233
+src/lib.rs
+  s_4f25e56081cfc7::t_21deb20b75998b 12
+src/server.rs
+  s_4f25e56081cfc7::t_2983a46b8dbf56 13,18-19,21,23-26,29-62,68,74-75
+tests/passthrough.rs
+  s_4f25e56081cfc7::t_9223862a1d6581 55
+docs/config-reload.md
+  s_4f25e56081cfc7::t_04bae0750ef051 1-59
+src/proxy.rs
+  s_4f25e56081cfc7::t_55e1b288f46cbd 29-32
+src/discovery.rs
+  s_4f25e56081cfc7::t_4775a4a2c21fd4 19-20
+  s_4f25e56081cfc7::t_a54981271bb5f3 89-90
+  s_4f25e56081cfc7::t_875fb3fad11070 100
+  s_4f25e56081cfc7::t_a0c3da230a8254 69
+Cargo.lock
+  s_4f25e56081cfc7::t_0bef5e940998ca 94-102,537-545,958-977,1066-1085,1168,1185-1211,2170,2176,2864-2873,2891-2915,2924-2929,2936-2941,2948-2953,2960-2965,2972-2977,2984-2989,2996-3001,3008-3013
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.11",
+  "base_commit_sha": "b1955a90576b3074297e378473e420a0a45fe9cf",
+  "prompts": {},
+  "sessions": {
+    "s_4f25e56081cfc7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dd28c0a8-eb3e-4fa5-b4d6-fec160064ecc",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
