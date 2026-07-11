@@ -1,0 +1,42 @@
+README.md
+  s_13fb2bda396ed1::t_49f7489b1b7577 94
+site/astro.config.mjs
+  s_13fb2bda396ed1::t_6ac341b96099d4 50
+site/src/content/docs/guides/connect-claude-code.md
+  s_13fb2bda396ed1::t_464134341d486c 97
+  s_13fb2bda396ed1::t_a1153a3aa8dced 96,98-99
+site/src/content/docs/guides/codex.md
+  s_13fb2bda396ed1::t_b77170c08464bf 1-137,142-143,197-274
+  s_13fb2bda396ed1::t_73ccab18fcf5c7 144
+  s_13fb2bda396ed1::t_d51dd2fc794e0c 145-196
+  s_13fb2bda396ed1::t_3db68e680e094a 138-141
+site/src/content/docs/guides/effort-and-context.md
+  s_13fb2bda396ed1::t_74bf1beb0f6528 50
+plugins/shunt-codex/README.md
+  s_13fb2bda396ed1::t_06508f42ac627b 68-72
+  s_13fb2bda396ed1::t_2c0d16ffac5033 100-110
+docs/codex-configuration.md
+  s_13fb2bda396ed1::t_14a16267f88c6c 303-364
+  s_13fb2bda396ed1::t_12a59aa5ccaec6 1-244,247-298,365-557
+  s_13fb2bda396ed1::t_90609085a7d0ec 299-302
+  s_13fb2bda396ed1::t_fdf01a72ab9fe1 245-246
+  s_13fb2bda396ed1::t_7ed5328fd34da3 558-559
+site/src/content/docs/guides/providers.md
+  s_13fb2bda396ed1::t_0cde459c2a3d07 29-30
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "ef4b1c2430a0020f376a1d9bca211d9515ee6467",
+  "prompts": {},
+  "sessions": {
+    "s_13fb2bda396ed1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8495e97b-29a3-4f1c-9792-58c90d6924e8",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
