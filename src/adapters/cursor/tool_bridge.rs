@@ -92,7 +92,11 @@ impl PendingCursorTool {
                     // Escape single quotes for POSIX single-quoted context so a
                     // directory containing `'` cannot break out of `cd '...'`.
                     let escaped_dir = working_directory.replace('\'', "'\\''");
-                    format!("cd '{escaped_dir}' && {command}")
+                    // Group the command with `{ ...; }` so compound commands
+                    // (e.g. `a; b`) all run in the target directory rather than
+                    // only the first — `cd d && a; b` would run `b` in the
+                    // original cwd.
+                    format!("cd '{escaped_dir}' && {{ {command}; }}")
                 };
                 serde_json::json!({
                     "command": cmd,
@@ -664,6 +668,14 @@ pub fn start_cursor_tool_bridge(
 ///
 /// Finds the stored state by session_id, resolves the pending tool with
 /// Claude's `tool_result`, and continues producing SSE from remaining events.
+///
+/// Returns `(result_messages, sse_bytes)`. The first element is the tool result
+/// rendered in Cursor's native protocol (`readResult` / `writeResult` /
+/// `shellStream`). It is **not currently consumed by the caller** — the tool
+/// result reaches the upstream through the next request's prompt history, so the
+/// caller (`cursor::mod::forward`) uses only `sse_bytes`. The protocol-message
+/// builders are retained for a potential future direct-feed path that would send
+/// results back over the Cursor protocol without a prompt round-trip.
 pub fn resume_cursor_tool_bridge(
     session_id: &str,
     new_message_id: &str,
@@ -944,7 +956,7 @@ mod tests {
             timeout_ms: 30_000,
         };
         let json = tool.input_json();
-        assert_eq!(json["command"], "cd '/tmp' && pwd");
+        assert_eq!(json["command"], "cd '/tmp' && { pwd; }");
         assert_eq!(json["timeout"], 30_000);
         assert_eq!(json["description"], "Run Cursor-requested shell command");
         assert_eq!(tool.name(), "Bash");

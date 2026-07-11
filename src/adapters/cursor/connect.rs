@@ -107,36 +107,63 @@ const MAX_DECOMPRESSED_FRAME_BYTES: u64 = 64 * 1024 * 1024;
 /// on frame flags & FLAG_GZIP.
 ///
 /// Decompression is capped at [`MAX_DECOMPRESSED_FRAME_BYTES`] to guard against
-/// zip-bomb payloads.
+/// zip-bomb payloads. Exceeding the cap returns an error rather than silently
+/// truncating, so a partial (corrupt) protobuf payload is never returned as
+/// `Ok`.
 pub fn decode_gzip_frame(payload: &[u8]) -> Result<Vec<u8>, std::io::Error> {
     use std::io::Read;
     let decoder = flate2::read::GzDecoder::new(payload);
     let mut out = Vec::new();
+    // Read one byte past the cap so an over-limit payload is detectable rather
+    // than truncated to exactly the cap.
     decoder
-        .take(MAX_DECOMPRESSED_FRAME_BYTES)
+        .take(MAX_DECOMPRESSED_FRAME_BYTES + 1)
         .read_to_end(&mut out)?;
+    if out.len() as u64 > MAX_DECOMPRESSED_FRAME_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "decompressed payload exceeds maximum allowed size",
+        ));
+    }
     Ok(out)
+}
+
+#[derive(serde::Deserialize)]
+struct ConnectErrorPayload {
+    error: ConnectErrorDetails,
+}
+
+#[derive(serde::Deserialize)]
+struct ConnectErrorDetails {
+    code: String,
+    message: Option<String>,
 }
 
 /// Parse a Connect end-frame JSON error payload into a structured error.
 ///
 /// Returns `None` if the payload is empty or not valid Connect error JSON.
+///
+/// Uses a lightweight struct deserializer (ignoring unknown fields) rather than
+/// parsing into `serde_json::Value`, and treats `message` as optional so a
+/// coded error without a message is still surfaced.
 pub fn parse_connect_error(payload: &[u8]) -> Option<ConnectEndError> {
     if payload.is_empty() {
         return None;
     }
-    let parsed: serde_json::Value = serde_json::from_slice(payload).ok()?;
-    let error = parsed.get("error")?;
-    let code = error.get("code")?.as_str()?;
-    let message = error.get("message")?.as_str().unwrap_or("Connect error");
-    let status = match code {
+    let parsed: ConnectErrorPayload = serde_json::from_slice(payload).ok()?;
+    let code = parsed.error.code;
+    let message = parsed
+        .error
+        .message
+        .unwrap_or_else(|| "Connect error".to_string());
+    let status = match code.as_str() {
         "resource_exhausted" => 429,
         _ => 502,
     };
     Some(ConnectEndError {
-        code: code.to_string(),
-        message: message.to_string(),
-        detail: parsed.to_string(),
+        code,
+        message,
+        detail: String::from_utf8_lossy(payload).into_owned(),
         status,
     })
 }
@@ -378,5 +405,35 @@ mod tests {
 
         let decompressed = decode_gzip_frame(&frames[0].payload).unwrap();
         assert_eq!(decompressed, b"hello gzip");
+    }
+
+    #[test]
+    fn connect_error_without_message_still_parses() {
+        // A coded error with no `message` field must still surface (not be
+        // dropped by an early return).
+        let json_err = serde_json::json!({ "error": { "code": "resource_exhausted" } });
+        let payload = serde_json::to_vec(&json_err).unwrap();
+        let err = parse_connect_error(&payload).unwrap();
+        assert_eq!(err.code, "resource_exhausted");
+        assert_eq!(err.status, 429);
+        assert_eq!(err.message, "Connect error");
+    }
+
+    #[test]
+    fn gzip_frame_rejects_oversized_payload() {
+        // A payload that decompresses beyond the cap must error rather than
+        // silently truncate.
+        let oversized = vec![b'a'; (MAX_DECOMPRESSED_FRAME_BYTES as usize) + 1024];
+        let mut compressed = Vec::new();
+        {
+            use std::io::Write;
+            let mut encoder =
+                flate2::write::GzEncoder::new(&mut compressed, flate2::Compression::fast());
+            encoder.write_all(&oversized).unwrap();
+            encoder.finish().unwrap();
+        }
+
+        let err = decode_gzip_frame(&compressed).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
 }

@@ -81,7 +81,11 @@ async fn forward(
     if let Some(session_id) = session_id {
         if let Some(pending) = BridgeRegistry::pending_tool(session_id) {
             if let Some(result) = find_tool_result(&request, pending.tool_use_id()) {
-                let (_, bytes) =
+                // Only the SSE bytes are used: the tool result reaches upstream
+                // via the next request's prompt history, so the native-protocol
+                // result messages returned here are intentionally unused (see
+                // `resume_cursor_tool_bridge` docs).
+                let (_result_messages, bytes) =
                     resume_cursor_tool_bridge(session_id, &message_id, model, result, &pending);
                 return Ok((StatusCode::OK, sse_bytes_response(bytes)));
             }
