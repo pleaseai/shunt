@@ -81,7 +81,7 @@ async fn start_gateway_with(mut config: Config) -> TestGateway {
         .await
         .unwrap();
     let addr: SocketAddr = listener.local_addr().unwrap();
-    let app = server::build_router(config).unwrap();
+    let (app, _shared) = server::build_router(config).unwrap();
     let task = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });

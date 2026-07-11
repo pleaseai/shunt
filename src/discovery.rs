@@ -16,6 +16,8 @@ pub struct ModelEntry {
 }
 
 pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Json<ModelsResponse> {
+    // Snapshot the live config so this response reflects the latest reload.
+    let state = state.refreshed();
     let _credential = discovery_credential(&headers);
     let data: Vec<ModelEntry> = state
         .config
@@ -64,11 +66,7 @@ mod tests {
             ],
             ..crate::config::Config::default()
         };
-        let state = AppState {
-            config,
-            http_client: reqwest::Client::new(),
-            inbound_auth: None,
-        };
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
         let mut headers = HeaderMap::new();
         headers.insert("authorization", "Bearer test".parse().unwrap());
 
@@ -88,11 +86,8 @@ mod tests {
 
     #[tokio::test]
     async fn returns_empty_data_when_models_are_unconfigured() {
-        let state = AppState {
-            config: crate::config::Config::default(),
-            http_client: reqwest::Client::new(),
-            inbound_auth: None,
-        };
+        let state =
+            AppState::new(crate::config::Config::default(), reqwest::Client::new()).unwrap();
 
         let response = get(State(state), HeaderMap::new()).await;
         let body = serde_json::to_value(response.0).unwrap();
@@ -102,6 +97,6 @@ mod tests {
 
     #[test]
     fn router_includes_get_models_route() {
-        let _router = server::build_router(crate::config::Config::default()).unwrap();
+        let (_router, _shared) = server::build_router(crate::config::Config::default()).unwrap();
     }
 }
