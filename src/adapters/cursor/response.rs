@@ -74,10 +74,11 @@ pub fn decode_upstream_response(body: &[u8]) -> Result<Vec<CursorStreamEvent>, C
             continue;
         }
 
-        let msg = match decode_frame_payload(frame) {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
+        // A frame that fails to decode signals upstream corruption or a protocol
+        // change; propagate it rather than silently dropping the frame and
+        // ending with a truncated stream that is hard to diagnose.
+        let msg = decode_frame_payload(frame)
+            .map_err(|error| CursorDecodeError::Decode(format!("frame payload decode: {error}")))?;
 
         events.extend(events_from_message(&msg));
     }
@@ -298,6 +299,16 @@ mod tests {
         let json = decode_cursor_upstream(&body, "msg_nousage", "cursor-test").unwrap();
         assert_eq!(json["usage"]["input_tokens"].as_u64(), Some(1));
         assert_eq!(json["usage"]["output_tokens"].as_u64(), Some(0));
+    }
+
+    #[test]
+    fn malformed_frame_payload_is_rejected_not_silently_dropped() {
+        // A non-end frame whose payload is not valid protobuf (field 1, wire
+        // type 2, length 0xFF but no data) must surface an error instead of
+        // being silently skipped.
+        let body = encode_connect_frame([0x0A, 0xFF], 0);
+        let error = decode_upstream_response(&body).unwrap_err();
+        assert!(matches!(error, CursorDecodeError::Decode(_)));
     }
 
     #[test]

@@ -182,9 +182,13 @@ fn env_token() -> Option<String> {
 }
 
 fn token_is_valid(token: &str, now: SystemTime) -> bool {
+    // A token we cannot parse an `exp` from is treated as invalid so it triggers
+    // a refresh rather than being sent upstream to fail with a 401. This matches
+    // the codex/xAI stores' fail-closed convention (see
+    // codex_auth::is_token_valid_at).
     let Some(exp) = jwt_claims(token).and_then(|claims| claims.get("exp").and_then(Value::as_u64))
     else {
-        return true;
+        return false;
     };
     let now = now
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -221,6 +225,15 @@ mod tests {
         let payload = URL_SAFE_NO_PAD.encode(br#"{"exp":4102444800,"sub":"user"}"#);
         let claims = jwt_claims(&format!("x.{payload}.y")).unwrap();
         assert_eq!(claims["sub"], "user");
+    }
+
+    #[test]
+    fn token_without_parseable_exp_is_invalid() {
+        // Fail-closed: a token we cannot read an exp from is treated as invalid
+        // so it refreshes instead of failing upstream with a 401.
+        assert!(!token_is_valid("not-a-jwt", SystemTime::now()));
+        let no_exp = format!("x.{}.y", URL_SAFE_NO_PAD.encode(br#"{"sub":"user"}"#));
+        assert!(!token_is_valid(&no_exp, SystemTime::now()));
     }
 
     fn jwt(exp: u64) -> String {

@@ -111,9 +111,11 @@ impl BridgeRegistry {
         reg.sessions.retain(|s| s.session_id != state.session_id);
         // Opportunistically evict abandoned sessions (idle past the TTL) so a
         // client that pauses but never resumes does not leak state indefinitely.
+        // saturating_duration_since (not duration_since) so a clock quirk that
+        // makes created_at appear to be in the future yields 0 instead of panicking.
         let now = Instant::now();
         reg.sessions
-            .retain(|s| now.duration_since(s.created_at) < SESSION_TTL);
+            .retain(|s| now.saturating_duration_since(s.created_at) < SESSION_TTL);
         // Backstop: if a burst of live sessions still exceeds the cap, drop the
         // oldest. `take`/`swap_remove` break insertion order, so find the min.
         while reg.sessions.len() >= MAX_SESSIONS {

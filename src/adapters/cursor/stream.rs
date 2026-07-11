@@ -43,9 +43,22 @@ impl CursorStreamMachine {
                 self.apply(CursorStreamEvent::End);
                 continue;
             }
-            if let Ok(message) = decode_frame_payload(&frame) {
-                for event in crate::adapters::cursor::response::events_from_message(&message) {
-                    self.apply(event);
+            match decode_frame_payload(&frame) {
+                Ok(message) => {
+                    for event in crate::adapters::cursor::response::events_from_message(&message) {
+                        self.apply(event);
+                    }
+                }
+                Err(error) => {
+                    // Surface a decode failure as an SSE error (flushing any
+                    // pending output first) instead of silently dropping the
+                    // frame and ending with a truncated, hard-to-debug stream.
+                    self.finished = true;
+                    let mut output = self.framer.take_output();
+                    output.extend_from_slice(&format_sse_error(&format!(
+                        "frame payload decode failed: {error}"
+                    )));
+                    return output;
                 }
             }
         }
@@ -98,6 +111,19 @@ mod tests {
         assert!(text.contains("hello"));
         let final_output = String::from_utf8(machine.finish()).unwrap();
         assert!(final_output.contains("message_stop"));
+    }
+
+    #[test]
+    fn malformed_frame_payload_emits_sse_error() {
+        // A non-end frame with an undecodable protobuf payload must surface an
+        // SSE error, not be silently dropped into a truncated stream.
+        let chunk = encode_connect_frame([0x0A, 0xFF], 0);
+        let mut machine = CursorStreamMachine::new("msg_test", "cursor");
+        let output = String::from_utf8(machine.push(&chunk)).unwrap();
+        assert!(output.contains("event: error"));
+        assert!(output.contains("frame payload decode failed"));
+        // The machine is finished; further pushes yield nothing.
+        assert!(machine.push(&chunk).is_empty());
     }
 
     #[test]
