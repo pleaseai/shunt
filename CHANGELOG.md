@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.0](https://github.com/pleaseai/shunt/compare/v0.4.0...v0.5.0) (2026-07-11)
+
+
+### Features
+
+* **config:** hot-reload config on SIGHUP and file change ([#18](https://github.com/pleaseai/shunt/issues/18)) ([17abe55](https://github.com/pleaseai/shunt/commit/17abe550d16ec873a19526a5db578d48465e9ceb))
+* strip [1m] context hint + document codex-path context accounting ([#19](https://github.com/pleaseai/shunt/issues/19)) ([01a0436](https://github.com/pleaseai/shunt/commit/01a043691e8319870132481e917d43dec371f870))
+
 ## [0.4.0](https://github.com/pleaseai/shunt/compare/v0.3.0...v0.4.0) (2026-07-10)
 
 
