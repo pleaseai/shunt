@@ -276,3 +276,62 @@ fn own_error(status: StatusCode, kind: &'static str, message: impl Into<String>)
         response: Box::new(ShuntError::new(status, kind, message).into_response()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::adapters::cursor::connect::ConnectEndError;
+
+    fn connect_end(status: u16) -> CursorDecodeError {
+        CursorDecodeError::ConnectEnd(ConnectEndError {
+            code: "x".to_string(),
+            message: "boom".to_string(),
+            detail: "boom".to_string(),
+            status,
+        })
+    }
+
+    #[test]
+    fn decode_error_maps_auth_and_rate_limit_statuses() {
+        assert_eq!(
+            map_decode_error(connect_end(401)).response.status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            map_decode_error(connect_end(403)).response.status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            map_decode_error(connect_end(429)).response.status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+    }
+
+    #[test]
+    fn decode_error_defaults_to_bad_gateway() {
+        assert_eq!(
+            map_decode_error(connect_end(500)).response.status(),
+            StatusCode::BAD_GATEWAY
+        );
+        assert_eq!(
+            map_decode_error(CursorDecodeError::Decode("nope".to_string()))
+                .response
+                .status(),
+            StatusCode::BAD_GATEWAY
+        );
+    }
+
+    #[test]
+    fn bad_gateway_and_own_error_carry_their_status() {
+        assert_eq!(
+            bad_gateway("boom".to_string()).response.status(),
+            StatusCode::BAD_GATEWAY
+        );
+        assert_eq!(
+            own_error(StatusCode::UNAUTHORIZED, "authentication_error", "no")
+                .response
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+}

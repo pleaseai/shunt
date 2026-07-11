@@ -178,3 +178,115 @@ impl std::fmt::Display for CursorError {
 }
 
 impl std::error::Error for CursorError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::adapters::cursor::connect::{ConnectFrameDecoder, FLAG_GZIP};
+    use crate::adapters::cursor::model::resolve_cursor_model;
+    use crate::adapters::cursor::test_frames;
+
+    fn image(uuid: &str) -> CursorSelectedImage {
+        CursorSelectedImage {
+            data: "base64data".to_string(),
+            uuid: uuid.to_string(),
+            path: "claude-image-1.png".to_string(),
+            mime_type: "image/png".to_string(),
+        }
+    }
+
+    #[test]
+    fn build_run_request_maps_images_into_selected_context() {
+        let resolved = resolve_cursor_model("cursor").unwrap();
+        let images = [image("img-1")];
+        let request = build_run_request("hello", &resolved, &images, "req-1");
+
+        let user = request
+            .action
+            .unwrap()
+            .user_message_action
+            .unwrap()
+            .user_message
+            .unwrap();
+        assert_eq!(user.text, "hello");
+        assert_eq!(user.message_id, "req-1");
+        let context = user.selected_context.expect("images populate context");
+        assert_eq!(context.selected_images.len(), 1);
+        assert_eq!(context.selected_images[0].uuid, "img-1");
+        assert_eq!(context.selected_images[0].mime_type, "image/png");
+        assert_eq!(request.requested_model.unwrap().model_id, resolved.model_id);
+        assert!(request.client_supports_inline_images);
+    }
+
+    #[test]
+    fn build_run_request_without_images_has_no_context() {
+        let resolved = resolve_cursor_model("cursor").unwrap();
+        let request = build_run_request("hi", &resolved, &[], "req-2");
+        let user = request
+            .action
+            .unwrap()
+            .user_message_action
+            .unwrap()
+            .user_message
+            .unwrap();
+        assert!(user.selected_context.is_none());
+    }
+
+    #[test]
+    fn decode_frame_payload_decodes_plain_frame() {
+        // A plain (non-gzip) text frame round-trips through the decoder.
+        let bytes = test_frames::text_frame("hello");
+        let mut decoder = ConnectFrameDecoder::new();
+        let frames = decoder.push(bytes).unwrap();
+        let message = decode_frame_payload(&frames[0]).unwrap();
+        assert!(message.interaction_update.is_some());
+    }
+
+    #[test]
+    fn decode_frame_payload_rejects_malformed_payload() {
+        // field 1, wire type 2 (length-delimited), length 0xFF but no data.
+        let bytes = crate::adapters::cursor::connect::encode_connect_frame([0x0A, 0xFF], 0);
+        let mut decoder = ConnectFrameDecoder::new();
+        let frames = decoder.push(bytes).unwrap();
+        let error = decode_frame_payload(&frames[0]).unwrap_err();
+        assert_eq!(error.status, 502);
+    }
+
+    #[test]
+    fn decode_frame_payload_handles_gzip_frame() {
+        // A gzip-flagged frame is decompressed before decoding.
+        let plain = test_frames::text_frame("gzipped");
+        let mut decoder = ConnectFrameDecoder::new();
+        let frame = decoder.push(plain).unwrap().remove(0);
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut gz, &frame.payload).unwrap();
+        let compressed = gz.finish().unwrap();
+        let gzip_bytes =
+            crate::adapters::cursor::connect::encode_connect_frame(&compressed, FLAG_GZIP);
+        let mut decoder = ConnectFrameDecoder::new();
+        let frames = decoder.push(gzip_bytes).unwrap();
+        let message = decode_frame_payload(&frames[0]).unwrap();
+        assert!(message.interaction_update.is_some());
+    }
+
+    #[tokio::test]
+    async fn run_agent_posts_to_agent_service() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/agent.v1.AgentService/Run"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(Vec::new()))
+            .mount(&server)
+            .await;
+
+        let client = CursorHttpClient::new(reqwest::Client::new(), server.uri());
+        let resolved = resolve_cursor_model("cursor").unwrap();
+        let response = client
+            .run_agent("token", "prompt", &resolved, &[image("i")])
+            .await
+            .unwrap();
+        assert!(response.status().is_success());
+    }
+}

@@ -124,3 +124,85 @@ fn open_url(url: &str) -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn poll_returns_tokens_on_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/auth/poll"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "accessToken": "access-1",
+                "refreshToken": "refresh-1"
+            })))
+            .mount(&server)
+            .await;
+
+        let auth = poll(
+            &reqwest::Client::new(),
+            &server.uri(),
+            "uuid-1",
+            "verifier-1",
+        )
+        .await
+        .unwrap();
+        assert_eq!(auth.access_token, "access-1");
+        assert_eq!(auth.refresh_token.as_deref(), Some("refresh-1"));
+    }
+
+    #[tokio::test]
+    async fn poll_retries_while_pending_then_succeeds() {
+        let server = MockServer::start().await;
+        // First call: 404 (login not completed yet); the poll loop retries.
+        Mock::given(method("GET"))
+            .and(path("/auth/poll"))
+            .respond_with(ResponseTemplate::new(404))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/auth/poll"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "accessToken": "access-2"
+            })))
+            .mount(&server)
+            .await;
+
+        let auth = poll(
+            &reqwest::Client::new(),
+            &server.uri(),
+            "uuid-2",
+            "verifier-2",
+        )
+        .await
+        .unwrap();
+        assert_eq!(auth.access_token, "access-2");
+    }
+
+    #[tokio::test]
+    async fn poll_fails_on_error_status() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/auth/poll"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": "bad request"
+            })))
+            .mount(&server)
+            .await;
+
+        let error = poll(
+            &reqwest::Client::new(),
+            &server.uri(),
+            "uuid-3",
+            "verifier-3",
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("Cursor login poll failed"));
+    }
+}
