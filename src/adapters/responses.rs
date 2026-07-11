@@ -25,10 +25,13 @@ impl Adapter for ResponsesAdapter {
         state: AppState,
         route: Route,
         _uri: &'a Uri,
-        _headers: &'a HeaderMap,
+        headers: &'a HeaderMap,
         body: Vec<u8>,
     ) -> AdapterFuture<'a> {
-        Box::pin(async move { forward(state, route, body).await })
+        let session_id = headers
+            .get("x-claude-code-session-id")
+            .and_then(|value| value.to_str().ok());
+        Box::pin(async move { forward(state, route, body, session_id).await })
     }
 }
 
@@ -36,6 +39,7 @@ async fn forward(
     state: AppState,
     route: Route,
     body: Vec<u8>,
+    session_id: Option<&str>,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let request_json = serde_json::from_slice::<Value>(&body).ok();
     let client_wants_stream = request_json
@@ -59,7 +63,7 @@ async fn forward(
         "responses upstream request"
     );
     let credential = resolve_credential(&state.config, &route, &state.http_client).await?;
-    let upstream = request_builder(&state, &route, credential)
+    let upstream = request_builder(&state, &route, credential, session_id)
         .body(upstream_body.to_string())
         .send()
         .await
@@ -246,6 +250,7 @@ fn request_builder(
     state: &AppState,
     route: &Route,
     credential: Credential,
+    session_id: Option<&str>,
 ) -> reqwest::RequestBuilder {
     let mut request = state
         .http_client
@@ -272,6 +277,18 @@ fn request_builder(
                 .header("originator", "codex_cli_rs")
                 .header("user-agent", CODEX_USER_AGENT)
                 .header("version", CODEX_CLIENT_VERSION);
+            // Session/identity headers the real Codex CLI sends alongside the
+            // client identity above (raine/claude-code-proxy build_codex_headers,
+            // cross-checked against codex-rs/login/src/auth/default_client.rs).
+            // Only sent when a session id is available; xAI/OpenAI-compatible
+            // upstreams never reach this branch.
+            if let Some(session_id) = session_id.filter(|s| !s.is_empty()) {
+                request = request
+                    .header("accept", "text/event-stream")
+                    .header("session_id", session_id)
+                    .header("x-client-request-id", session_id)
+                    .header("x-codex-window-id", format!("{session_id}:0"));
+            }
         }
         // xAI subscription OAuth: bearer only, no account-id/originator headers.
         Credential::XaiOauth { access_token } => {
@@ -304,8 +321,9 @@ pub fn build_test_request(
     state: &AppState,
     route: &Route,
     credential: Credential,
+    session_id: Option<&str>,
 ) -> reqwest::Request {
-    request_builder(state, route, credential)
+    request_builder(state, route, credential, session_id)
         .body("{}")
         .build()
         .expect("test request should build")
@@ -399,6 +417,7 @@ mod tests {
                 access_token: "access-token".to_string(),
                 account_id: "account-id".to_string(),
             },
+            None,
         );
 
         assert_eq!(
@@ -426,6 +445,61 @@ mod tests {
             request.headers().get("OpenAI-Beta").unwrap(),
             "responses=experimental"
         );
+        // No session id was supplied: the session/identity headers must not
+        // be sent, since a fabricated value would be worse than omitting them.
+        assert!(request.headers().get("session_id").is_none());
+        assert!(request.headers().get("x-client-request-id").is_none());
+        assert!(request.headers().get("x-codex-window-id").is_none());
+        assert!(request.headers().get("accept").is_none());
+    }
+
+    #[test]
+    fn forwards_session_headers_on_codex_backend_when_session_id_present() {
+        let state = AppState::new(Config::default(), reqwest::Client::new()).unwrap();
+
+        let request = build_test_request(
+            &state,
+            &codex_route(),
+            Credential::ChatGptOAuth {
+                access_token: "access-token".to_string(),
+                account_id: "account-id".to_string(),
+            },
+            Some("session-123"),
+        );
+
+        assert_eq!(
+            request.headers().get("accept").unwrap(),
+            "text/event-stream"
+        );
+        assert_eq!(request.headers().get("session_id").unwrap(), "session-123");
+        assert_eq!(
+            request.headers().get("x-client-request-id").unwrap(),
+            "session-123"
+        );
+        assert_eq!(
+            request.headers().get("x-codex-window-id").unwrap(),
+            "session-123:0"
+        );
+    }
+
+    #[test]
+    fn omits_session_headers_when_session_id_is_empty_string() {
+        let state = AppState::new(Config::default(), reqwest::Client::new()).unwrap();
+
+        let request = build_test_request(
+            &state,
+            &codex_route(),
+            Credential::ChatGptOAuth {
+                access_token: "access-token".to_string(),
+                account_id: "account-id".to_string(),
+            },
+            Some(""),
+        );
+
+        assert!(request.headers().get("accept").is_none());
+        assert!(request.headers().get("session_id").is_none());
+        assert!(request.headers().get("x-client-request-id").is_none());
+        assert!(request.headers().get("x-codex-window-id").is_none());
     }
 
     #[test]
@@ -456,6 +530,7 @@ mod tests {
             Credential::XaiOauth {
                 access_token: "xai-access".to_string(),
             },
+            Some("session-123"),
         );
 
         // Stock /responses path on the xAI base URL.
@@ -470,6 +545,12 @@ mod tests {
         assert!(request.headers().get("user-agent").is_none());
         assert!(request.headers().get("version").is_none());
         assert!(request.headers().get("OpenAI-Beta").is_none());
+        // Session/identity headers are ChatGPT/Codex-only, even when a
+        // session id is present on an xAI-routed request.
+        assert!(request.headers().get("session_id").is_none());
+        assert!(request.headers().get("x-client-request-id").is_none());
+        assert!(request.headers().get("x-codex-window-id").is_none());
+        assert!(request.headers().get("accept").is_none());
     }
 
     #[tokio::test]
