@@ -47,7 +47,7 @@ The 200k default can be overridden client-side with `CLAUDE_CODE_MAX_CONTEXT_TOK
 export CLAUDE_CODE_MAX_CONTEXT_TOKENS=372000
 ```
 
-Because the override applies **only** to ids that don't start with `claude-`, a [discovery alias](/guides/model-discovery/) (which *must* begin with `claude-`) can't take it — its window stays pinned at the 200k default. Convenient in the picker, but use a non-`claude-` id (via `ANTHROPIC_CUSTOM_MODEL_OPTION`) when you need the accurate window.
+Because the override applies **only** to ids that don't start with `claude-`, a [discovery alias](/guides/model-discovery/) (which *must* begin with `claude-`) can't take it — its window stays pinned at the 200k default. Convenient in the picker, but use a non-`claude-` id (via `ANTHROPIC_CUSTOM_MODEL_OPTION`, or by [remapping the tier aliases](/guides/codex/#remap-the-tier-aliases-to-codex)) when you need the accurate window. When two mapped tiers share a window — `gpt-5.6-sol` and `gpt-5.6-luna` are both 372k — one global value covers both.
 
 :::caution
 The value is **global** — one value for every non-`claude-` model in the session — and setting it larger than the real upstream window delays auto-compact until requests overflow the real limit. shunt [rewrites that overflow error](#context-overflow-recovery) so Claude Code compacts and retries automatically, but each overflow round-trip is wasted latency — match the value to the smallest real window among your mapped models.

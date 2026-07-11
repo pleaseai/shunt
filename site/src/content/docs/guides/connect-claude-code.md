@@ -93,6 +93,10 @@ The two picker-exposure methods split cleanly on the `claude-`/`anthropic-` pref
 
 So a `claude-…-via-codex` discovery alias is convenient (auto-listed, one-tap) but its context window is **stuck at the 200k default** — the override can't reach a `claude-`-prefixed id ([Effort & Context](/guides/effort-and-context/)). Pick the **discovery alias** for picker convenience across several models (accept the 200k denominator), or a **non-`claude-` id via `ANTHROPIC_CUSTOM_MODEL_OPTION`** for an accurate window, one model at a time.
 
+:::tip[Or remap the tier aliases]
+A third option repoints Claude Code's built-in `haiku`/`sonnet`/`opus` aliases at Codex slugs (e.g. `haiku → gpt-5.6-luna`, `sonnet → gpt-5.6-sol`), so the whole session's tier system resolves to your ChatGPT subscription without `ANTHROPIC_CUSTOM_MODEL_OPTION`. See [ChatGPT / Codex → Remap the tier aliases](/guides/codex/#remap-the-tier-aliases-to-codex).
+:::
+
 ### Per-agent diversion
 
 Per-context selection works via Claude Code's own knobs — divert one agent to a mapped model while the main session stays on Claude:

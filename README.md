@@ -91,7 +91,7 @@ Everything lives at **[shunt-docs.pages.dev](https://shunt-docs.pages.dev)**:
 - [Quickstart](https://shunt-docs.pages.dev/getting-started/quickstart/) · [Why shunt?](https://shunt-docs.pages.dev/getting-started/why-shunt/) · [Providers](https://shunt-docs.pages.dev/guides/providers/) · [Configuration](https://shunt-docs.pages.dev/guides/configuration/) · [Troubleshooting](https://shunt-docs.pages.dev/reference/troubleshooting/)
 - **For agents:** every page has a Markdown twin (append `.md` to any URL, or use the page's *Copy Markdown* / *Open in AI* buttons), and the site publishes [`/llms.txt`](https://shunt-docs.pages.dev/llms.txt), [`/llms-small.txt`](https://shunt-docs.pages.dev/llms-small.txt), and [`/llms-full.txt`](https://shunt-docs.pages.dev/llms-full.txt) per the [llms.txt spec](https://llmstxt.org/).
 
-Design notes and milestone specs live in [`docs/`](docs/) (start with [`docs/implementation-plan.md`](docs/implementation-plan.md)).
+Design notes and milestone specs live in [`docs/`](docs/) (start with [`docs/implementation-plan.md`](docs/implementation-plan.md)). To route Claude Code to your ChatGPT/Codex subscription, see the [Codex configuration reference](docs/codex-configuration.md).
 
 ## Why
 

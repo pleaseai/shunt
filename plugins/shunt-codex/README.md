@@ -65,6 +65,11 @@ and is configured to route the model ids above to the Codex provider:
    provider = "codex"
    ```
 
+   For the full setup — auth-file handling, effort, context-window sizing, and
+   troubleshooting — see the **Codex configuration reference**
+   ([site guide](https://shunt-docs.pages.dev/guides/codex/) ·
+   [`docs/codex-configuration.md`](https://github.com/pleaseai/shunt/blob/main/docs/codex-configuration.md)).
+
 > The ChatGPT-account backend only accepts the slugs your account is entitled to.
 > The latest are `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna`; older accounts
 > may only have `gpt-5.5` / `gpt-5.4` / `gpt-5.2`. The canonical catalog is
@@ -91,6 +96,17 @@ Or set every subagent to a Codex model for a session with
 
 Both require a running shunt gateway with the slug routed to the Codex provider —
 see [Prerequisites](#prerequisites). Without it the request fails against Anthropic.
+
+## Further reading
+
+- [Codex configuration reference](https://shunt-docs.pages.dev/guides/codex/) — the
+  full end-to-end setup ([Markdown source](https://github.com/pleaseai/shunt/blob/main/docs/codex-configuration.md)).
+- [Effort & Context](https://shunt-docs.pages.dev/guides/effort-and-context/) — reasoning
+  effort, `count_tokens`, and the 372k context window in depth.
+- [Model Discovery](https://shunt-docs.pages.dev/guides/model-discovery/) — auto-list
+  Codex models in the `/model` picker via a `claude-`-named alias.
+- [ChatGPT / Codex auth spec](https://github.com/pleaseai/shunt/blob/main/docs/m2-chatgpt-oauth.md)
+  — how shunt reads and refreshes `~/.codex/auth.json`.
 
 ## License
 

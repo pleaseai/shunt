@@ -47,6 +47,7 @@ export default defineConfig({
           items: [
             { label: 'Configuration', slug: 'guides/configuration' },
             { label: 'Providers', slug: 'guides/providers' },
+            { label: 'ChatGPT / Codex', slug: 'guides/codex' },
             { label: 'Connect Claude Code', slug: 'guides/connect-claude-code' },
             { label: 'Model Discovery', slug: 'guides/model-discovery' },
             { label: 'Effort & Context', slug: 'guides/effort-and-context' },

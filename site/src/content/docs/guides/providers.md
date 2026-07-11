@@ -26,6 +26,8 @@ codex login
 
 If the file is missing or expired, shunt returns an `authentication_error` telling you to run `codex login`.
 
+For the full setup — auth-file handling, model selection, effort, and context sizing — see the dedicated [ChatGPT / Codex guide](/guides/codex/).
+
 :::caution[Model slugs]
 The ChatGPT-account Codex backend **rejects** `gpt-*-codex` slugs — it only accepts the account's live-entitled slugs. The authoritative catalog is openai/codex's [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json). Current slugs are `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` (frontier) and `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.2`; older accounts may only be entitled to the earlier ones. Use `upstream_model` in a route to map any alias onto an entitled slug.
 :::
