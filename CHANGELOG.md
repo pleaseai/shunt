@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.8.0](https://github.com/pleaseai/shunt/compare/v0.7.0...v0.8.0) (2026-07-11)
+
+
+### Features
+
+* **codex-ws:** previous_response_id continuation + normalization for the Codex WebSocket v2 transport ([#39](https://github.com/pleaseai/shunt/issues/39)) ([5576c37](https://github.com/pleaseai/shunt/commit/5576c377aea956f8fc01609c47f13a12a1363f62))
+
+
+### Bug Fixes
+
+* **gateway:** strip duplicate x-api-key for OAuth bearer on passthrough ([#38](https://github.com/pleaseai/shunt/issues/38)) ([8a9954e](https://github.com/pleaseai/shunt/commit/8a9954e2fa6b6b3b95ddfa44ea6b9de0804f2080))
+
 ## [0.7.0](https://github.com/pleaseai/shunt/compare/v0.6.0...v0.7.0) (2026-07-11)
 
 
