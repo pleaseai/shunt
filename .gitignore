@@ -14,3 +14,6 @@ site/.wrangler/
 
 # Local worktrees created by the worktree workflow (per-branch, not shared)
 .claude/worktrees/
+
+# Personal Claude Code overrides (internal marketplaces, telemetry label) — never shared upstream
+.claude/settings.local.json
