@@ -37,33 +37,24 @@ impl PendingCursorTool {
     }
 }
 
-/// Bridge state stored per session.
+/// Transient state used only while processing one upstream response. It is not
+/// stored in the registry — only the resulting pending tool is (see
+/// [`ActiveSession`]). Holds the XML recovery parser and the tool (if any) that
+/// paused the stream.
 #[derive(Debug)]
 pub struct CursorBridgeState {
-    pub session_id: String,
     pub pending_tool: Option<PendingCursorTool>,
-    pub allowed_tool_names: Option<BTreeSet<String>>,
     pub xml_parser: CursorToolUseXmlParser,
-    /// When this session was inserted. Used to evict abandoned sessions — a
-    /// client that pauses on a tool_use but never resumes would otherwise leak
-    /// its state forever. Eviction is safe: a resume whose state was dropped
-    /// falls through to a fresh upstream run in `cursor::forward`, which still
-    /// carries the tool_result in the prompt history.
-    pub created_at: Instant,
 }
 
 impl CursorBridgeState {
     fn new(
-        session_id: String,
         allowed_tool_names: Option<BTreeSet<String>>,
         id_factory: Box<dyn FnMut() -> String + Send>,
     ) -> Self {
         Self {
-            session_id,
             pending_tool: None,
-            allowed_tool_names: allowed_tool_names.clone(),
             xml_parser: CursorToolUseXmlParser::new_with_id_factory(allowed_tool_names, id_factory),
-            created_at: Instant::now(),
         }
     }
 }
@@ -71,6 +62,20 @@ impl CursorBridgeState {
 // ---------------------------------------------------------------------------
 // Global bridge registry
 // ---------------------------------------------------------------------------
+
+/// A paused bridge session awaiting the client's `tool_result`. Only what resume
+/// needs is retained — the pending tool's id and the creation time for eviction
+/// — not the heavyweight `xml_parser`/`id_factory` used to produce it.
+#[derive(Debug, Clone)]
+struct ActiveSession {
+    session_id: String,
+    pending_tool: PendingCursorTool,
+    /// When this session was inserted. Abandoned sessions (paused on a tool_use
+    /// but never resumed) would otherwise leak forever. Eviction is safe: a
+    /// resume whose state was dropped falls through to a fresh upstream run in
+    /// `cursor::forward`, which still carries the tool_result in prompt history.
+    created_at: Instant,
+}
 
 /// Abandoned bridge sessions are evicted after this idle window. A paused
 /// tool_use normally resumes within seconds (the client executes one tool), so
@@ -86,7 +91,7 @@ static BRIDGE_REGISTRY: LazyLock<Mutex<BridgeRegistryInner>> =
     LazyLock::new(|| Mutex::new(BridgeRegistryInner::new()));
 
 struct BridgeRegistryInner {
-    sessions: Vec<CursorBridgeState>,
+    sessions: Vec<ActiveSession>,
 }
 
 impl BridgeRegistryInner {
@@ -97,27 +102,35 @@ impl BridgeRegistryInner {
     }
 }
 
-/// Global registry of active bridge sessions.
+/// Global registry of paused bridge sessions.
 pub struct BridgeRegistry;
 
 impl BridgeRegistry {
-    /// Insert a new bridge state for a session.
+    /// Record a paused session's pending tool, keyed by `session_id`.
     ///
-    /// Removes any existing state with the same `session_id` first so a client
-    /// starting a fresh request (rather than resuming) does not accumulate stale
-    /// duplicate sessions in the registry.
-    pub fn insert(state: CursorBridgeState) {
+    /// Removes any existing entry for the session first so a client starting a
+    /// fresh request (rather than resuming) does not accumulate duplicates, then
+    /// evicts abandoned sessions before pushing the new one.
+    pub fn insert(session_id: &str, pending_tool: PendingCursorTool) {
         let mut reg = BRIDGE_REGISTRY.lock().unwrap();
-        reg.sessions.retain(|s| s.session_id != state.session_id);
-        // Opportunistically evict abandoned sessions (idle past the TTL) so a
-        // client that pauses but never resumes does not leak state indefinitely.
+        reg.sessions.retain(|s| s.session_id != session_id);
+        Self::evict_locked(&mut reg);
+        reg.sessions.push(ActiveSession {
+            session_id: session_id.to_string(),
+            pending_tool,
+            created_at: Instant::now(),
+        });
+    }
+
+    /// Evict sessions idle past the TTL and, as a backstop, the oldest sessions
+    /// once the hard cap is reached.
+    fn evict_locked(reg: &mut BridgeRegistryInner) {
         // saturating_duration_since (not duration_since) so a clock quirk that
         // makes created_at appear to be in the future yields 0 instead of panicking.
         let now = Instant::now();
         reg.sessions
             .retain(|s| now.saturating_duration_since(s.created_at) < SESSION_TTL);
-        // Backstop: if a burst of live sessions still exceeds the cap, drop the
-        // oldest. `take`/`swap_remove` break insertion order, so find the min.
+        // swap_remove breaks insertion order, so find the actual oldest.
         while reg.sessions.len() >= MAX_SESSIONS {
             if let Some(oldest) = reg
                 .sessions
@@ -131,13 +144,6 @@ impl BridgeRegistry {
                 break;
             }
         }
-        reg.sessions.push(state);
-    }
-
-    /// Get the bridge state for a session.
-    pub fn get(session_id: &str) -> Option<usize> {
-        let reg = BRIDGE_REGISTRY.lock().unwrap();
-        reg.sessions.iter().position(|s| s.session_id == session_id)
     }
 
     /// Get the pending tool for a session (if any).
@@ -146,40 +152,44 @@ impl BridgeRegistry {
         reg.sessions
             .iter()
             .find(|s| s.session_id == session_id)
-            .and_then(|s| s.pending_tool.clone())
+            .map(|s| s.pending_tool.clone())
     }
 
-    /// Take the bridge state for a session (removes it).
-    pub fn take(session_id: &str) -> Option<CursorBridgeState> {
-        let mut reg = BRIDGE_REGISTRY.lock().unwrap();
-        let pos = reg
-            .sessions
-            .iter()
-            .position(|s| s.session_id == session_id)?;
-        Some(reg.sessions.swap_remove(pos))
-    }
-
-    /// Remove a bridge state for a session.
+    /// Remove a session from the registry.
     pub fn remove(session_id: &str) {
         let mut reg = BRIDGE_REGISTRY.lock().unwrap();
         reg.sessions.retain(|s| s.session_id != session_id);
     }
 
-    /// Insert or update the pending tool for a session.
-    pub fn set_pending_tool(session_id: &str, tool: PendingCursorTool) {
+    /// Whether a session is currently registered.
+    #[cfg(test)]
+    pub fn contains(session_id: &str) -> bool {
+        let reg = BRIDGE_REGISTRY.lock().unwrap();
+        reg.sessions.iter().any(|s| s.session_id == session_id)
+    }
+
+    /// Insert a session with an explicit creation time, bypassing eviction, so
+    /// tests can seed a stale entry.
+    #[cfg(test)]
+    fn insert_at(session_id: &str, pending_tool: PendingCursorTool, created_at: Instant) {
         let mut reg = BRIDGE_REGISTRY.lock().unwrap();
-        if let Some(state) = reg.sessions.iter_mut().find(|s| s.session_id == session_id) {
-            state.pending_tool = Some(tool);
-        }
+        reg.sessions.retain(|s| s.session_id != session_id);
+        reg.sessions.push(ActiveSession {
+            session_id: session_id.to_string(),
+            pending_tool,
+            created_at,
+        });
     }
 
     /// Clear all bridge state.
+    #[cfg(test)]
     pub fn clear() {
         let mut reg = BRIDGE_REGISTRY.lock().unwrap();
         reg.sessions.clear();
     }
 
     /// Number of active sessions.
+    #[cfg(test)]
     pub fn active_count() -> usize {
         let reg = BRIDGE_REGISTRY.lock().unwrap();
         reg.sessions.len()
@@ -273,7 +283,7 @@ pub fn start_cursor_tool_bridge(
 ) -> (Vec<u8>, bool) {
     let mut framer = CursorSseFramer::new(message_id, model);
 
-    let mut state = CursorBridgeState::new(session_id.to_string(), allowed_tool_names, id_factory);
+    let mut state = CursorBridgeState::new(allowed_tool_names, id_factory);
 
     let mut paused = false;
 
@@ -361,18 +371,12 @@ pub fn start_cursor_tool_bridge(
         }
     }
 
-    // If a native tool_use paused the stream, store minimal state so the next
-    // request is recognized as a resume (its tool_use id is matched against the
-    // incoming tool_result). No upstream events are stored — resume re-runs the
-    // agent with the tool result carried in the prompt history.
+    // If a native tool_use paused the stream, store the pending tool id so the
+    // next request is recognized as a resume (matched against the incoming
+    // tool_result). No upstream events are stored — resume re-runs the agent
+    // with the tool result carried in the prompt history.
     if let Some(pending) = state.pending_tool.clone() {
-        let mut stored_state = CursorBridgeState::new(
-            session_id.to_string(),
-            state.allowed_tool_names.clone(),
-            Box::new(|| format!("call_cursor_{}", uuid::Uuid::new_v4().simple())),
-        );
-        stored_state.pending_tool = Some(pending);
-        BridgeRegistry::insert(stored_state);
+        BridgeRegistry::insert(session_id, pending);
     }
 
     (framer.take_output(), paused)
@@ -527,19 +531,24 @@ mod tests {
     // BridgeRegistry tests
     // -----------------------------------------------------------------------
 
+    fn pending(id: &str) -> PendingCursorTool {
+        PendingCursorTool {
+            tool_use_id: id.into(),
+        }
+    }
+
     #[test]
     fn bridge_registry_manages_sessions() {
         let _lock = REGISTRY_LOCK.lock().unwrap();
         BridgeRegistry::clear();
         assert_eq!(BridgeRegistry::active_count(), 0);
 
-        let state = CursorBridgeState::new("session-test".into(), None, Box::new(|| "id".into()));
-        BridgeRegistry::insert(state);
+        BridgeRegistry::insert("session-test", pending("call_1"));
         assert_eq!(BridgeRegistry::active_count(), 1);
-        assert!(BridgeRegistry::get("session-test").is_some());
+        assert!(BridgeRegistry::contains("session-test"));
 
-        let state = BridgeRegistry::take("session-test");
-        assert!(state.is_some());
+        BridgeRegistry::remove("session-test");
+        assert!(!BridgeRegistry::contains("session-test"));
         assert_eq!(BridgeRegistry::active_count(), 0);
     }
 
@@ -556,34 +565,25 @@ mod tests {
             return;
         };
 
-        let mut stale =
-            CursorBridgeState::new("stale-session".into(), None, Box::new(|| "id".into()));
-        stale.created_at = stale_instant;
-        BridgeRegistry::insert(stale);
+        BridgeRegistry::insert_at("stale-session", pending("call_stale"), stale_instant);
         assert_eq!(BridgeRegistry::active_count(), 1);
 
         // Inserting a fresh session opportunistically evicts the abandoned one.
-        let fresh = CursorBridgeState::new("fresh-session".into(), None, Box::new(|| "id".into()));
-        BridgeRegistry::insert(fresh);
+        BridgeRegistry::insert("fresh-session", pending("call_fresh"));
 
         assert_eq!(BridgeRegistry::active_count(), 1);
-        assert!(BridgeRegistry::get("stale-session").is_none());
-        assert!(BridgeRegistry::get("fresh-session").is_some());
+        assert!(!BridgeRegistry::contains("stale-session"));
+        assert!(BridgeRegistry::contains("fresh-session"));
 
         BridgeRegistry::clear();
     }
 
     #[test]
-    fn bridge_registry_set_and_get_pending_tool() {
+    fn bridge_registry_stores_and_reads_pending_tool() {
         let _lock = REGISTRY_LOCK.lock().unwrap();
         BridgeRegistry::clear();
-        let state = CursorBridgeState::new("session-pt".into(), None, Box::new(|| "id".into()));
-        BridgeRegistry::insert(state);
 
-        let tool = PendingCursorTool {
-            tool_use_id: "call_1".into(),
-        };
-        BridgeRegistry::set_pending_tool("session-pt", tool);
+        BridgeRegistry::insert("session-pt", pending("call_1"));
 
         let retrieved = BridgeRegistry::pending_tool("session-pt");
         assert!(retrieved.is_some());
