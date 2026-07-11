@@ -1,0 +1,39 @@
+.claude/agents/gpt-5.6-sol.md
+  s_b4d7d603beca12::t_224b5227313183 1-14
+.claude/agents/gpt-5.6-terra.md
+  s_8d88f994d4f00e::t_56e8ee713e0757 1-14
+.claude/agents/gpt-5.6-luna.md
+  s_e2440474bf99c3::t_797dfe677d38c5 1-14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.11",
+  "base_commit_sha": "f9ae1d25de13f730189fa45523ee40fcefbe85d2",
+  "prompts": {},
+  "sessions": {
+    "s_8d88f994d4f00e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c4a23be4-eaa7-4787-8e78-c27d7d227246",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_b4d7d603beca12": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8d743f7-41c8-49f8-92eb-eaf9d1eee919",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_e2440474bf99c3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "19d317a9-2ce7-47f3-9029-31a6f319d6f5",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
