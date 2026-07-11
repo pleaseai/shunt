@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "shunt",
+  "owner": {
+    "name": "pleaseai",
+    "url": "https://github.com/pleaseai/shunt"
+  },
+  "metadata": {
+    "description": "Claude Code subagents for models the shunt gateway diverts to other providers."
+  },
+  "plugins": [
+    {
+      "name": "shunt-codex",
+      "source": "./plugins/shunt-codex",
+      "description": "Subagents on ChatGPT/Codex GPT-5.6 models (Luna, Sol, Terra), routed through shunt at the inference layer.",
+      "keywords": ["codex", "chatgpt", "gpt-5.6"]
+    }
+  ]
+}
