@@ -52,21 +52,13 @@ pub fn resolve(config: &Config, body: &[u8]) -> Result<Route, ShuntError> {
 /// providers (Codex/OpenAI) reject a `gpt-5.6-sol[1m]` slug, and an explicit
 /// `[[routes]]` entry would never match it. Strip a single trailing `[1m]`
 /// (ASCII case-insensitive) before route matching and before forwarding upstream
-/// so the documented `[1m]` lever works through the gateway. Byte-wise ASCII
-/// checks keep this panic-free on non-ASCII ids.
+/// so the documented `[1m]` lever works through the gateway. `strip_suffix`
+/// operates on char boundaries, so this stays panic-free on non-ASCII ids.
 fn strip_context_window_hint(model: &str) -> &str {
-    let bytes = model.as_bytes();
-    let n = bytes.len();
-    if n >= 4
-        && bytes[n - 4] == b'['
-        && bytes[n - 3] == b'1'
-        && (bytes[n - 2] == b'm' || bytes[n - 2] == b'M')
-        && bytes[n - 1] == b']'
-    {
-        &model[..n - 4]
-    } else {
-        model
-    }
+    model
+        .strip_suffix("[1m]")
+        .or_else(|| model.strip_suffix("[1M]"))
+        .unwrap_or(model)
 }
 
 pub fn resolve_model(config: &Config, model: &str) -> Route {
