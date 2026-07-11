@@ -1,0 +1,21 @@
+.claude/agent-memory/review-review-code-reviewer/MEMORY.md
+  s_309ae3c4bc8469::t_bfd770ef564149 1-3
+.claude/agent-memory/review-review-code-reviewer/shunt-codex-websocket-v2.md
+  s_309ae3c4bc8469::t_112cd7fddf1cc9 1-45
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "0bbdf203a01baee8302db0abe7be4e858c51af68",
+  "prompts": {},
+  "sessions": {
+    "s_309ae3c4bc8469": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90b4a119-dbf5-48e6-8378-bcdfb190f8aa",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
