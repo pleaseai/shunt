@@ -38,15 +38,26 @@ impl Adapter for ResponsesAdapter {
         // value because the adapter future may outlive the borrowed header map.
         let session_id = headers
             .get("x-claude-code-session-id")
-            .and_then(|value| value.to_str().ok())
-            .map(ToOwned::to_owned);
-        Box::pin(async move { forward(state, route, session_id, body).await })
+            .and_then(|value| value.to_str().ok());
+        let pool_key = session_id.map(|session_id| {
+            headers
+                .get("x-shunt-inbound-client")
+                .and_then(|value| value.to_str().ok())
+                .map_or_else(
+                    || session_id.to_string(),
+                    |client| format!("{client}:{session_id}"),
+                )
+        });
+        Box::pin(async move {
+            forward(state, route, pool_key, session_id.map(str::to_string), body).await
+        })
     }
 }
 
 async fn forward(
     state: AppState,
     route: Route,
+    pool_key: Option<String>,
     session_id: Option<String>,
     body: Vec<u8>,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
@@ -88,7 +99,7 @@ async fn forward(
         match forward_websocket(
             &state,
             &route,
-            session_id.as_deref(),
+            pool_key.as_deref(),
             upstream_body.clone(),
             credential.clone(),
             auth,
@@ -420,12 +431,12 @@ fn ws_connect_error(error: CodexWsError, auth: AuthMode) -> AdapterError {
     match error.status {
         Some(status) => build_upstream_error(status, error.retry_after, error.body, auth),
         None => {
-            // `own_error` collapses the detail into a generic message for the client
-            // envelope, so log the real transport reason (timeout, TLS, DNS, encode
-            // failure) here — otherwise the fallback-to-HTTP log downstream is
-            // content-free and an operator can't tell why the socket failed.
             tracing::warn!(reason = %error.message, "codex websocket transport failure");
-            own_error(error.message)
+            let response = ShuntError::bad_gateway(error.message.clone()).into_response();
+            AdapterError {
+                message: error.message,
+                response: Box::new(response),
+            }
         }
     }
 }

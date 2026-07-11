@@ -76,7 +76,15 @@ fn fake_jwt(exp: u64) -> String {
 /// Write a codex-style `auth.json` a valid ChatGPT credential can be read from,
 /// and point `CODEX_AUTH_FILE` at it. Returns the path for cleanup.
 fn write_fake_codex_auth() -> PathBuf {
-    let path = std::env::temp_dir().join("shunt-ws-fallback-auth.json");
+    let unique_name = format!(
+        "shunt-ws-fallback-auth-{}-{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(unique_name);
     let auth = serde_json::json!({
         "tokens": {
             "access_token": fake_jwt(4_000_000_000),

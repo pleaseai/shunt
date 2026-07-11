@@ -3,7 +3,7 @@ use std::time::Instant;
 use axum::{
     body::{to_bytes, Body},
     extract::{OriginalUri, State},
-    http::{HeaderMap, Method, StatusCode, Uri},
+    http::{HeaderMap, HeaderValue, Method, StatusCode, Uri},
     response::IntoResponse,
 };
 use tracing::Instrument;
@@ -191,10 +191,11 @@ fn check_inbound_auth(
     route: &routing::Route,
     headers: &HeaderMap,
 ) -> Result<HeaderMap, Box<ForwardError>> {
-    let Some(auth) = &state.inbound_auth else {
-        return Ok(headers.clone());
-    };
     let mut forwarded = headers.clone();
+    forwarded.remove("x-shunt-inbound-client");
+    let Some(auth) = &state.inbound_auth else {
+        return Ok(forwarded);
+    };
     forwarded.remove(auth.header());
 
     let injects_credential = state
@@ -209,6 +210,9 @@ fn check_inbound_auth(
     match auth.authenticate(headers) {
         Some(client) => {
             tracing::info!(client = %client, provider = %route.provider, "inbound client authenticated");
+            if let Ok(client) = HeaderValue::from_str(client) {
+                forwarded.insert("x-shunt-inbound-client", client);
+            }
             Ok(forwarded)
         }
         None => {
