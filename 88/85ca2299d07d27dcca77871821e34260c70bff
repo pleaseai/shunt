@@ -1,0 +1,50 @@
+src/adapters/cursor/mod.rs
+  s_e503fa9f261534::t_899f3e1be16e13 83-92
+  s_e503fa9f261534::t_dc996b79f01358 35
+src/adapters/cursor/tool_bridge.rs
+  s_e503fa9f261534::t_b4f59f986882e0 1,6-8
+  s_e503fa9f261534::t_93acd7248d1f36 22-27,29-30,35
+  s_e503fa9f261534::t_7909a1fc8debca 242-244
+  s_e503fa9f261534::t_526fe56fd276a7 536-538,540-557,559-560,562-565,567
+  s_e503fa9f261534::t_d111abc047943a 329-345
+  s_e503fa9f261534::t_9ed02399a5df89 236
+  s_e503fa9f261534::t_1ed991dfa6e472 506
+  s_e503fa9f261534::t_9ce000ff0e8192 520
+  s_e503fa9f261534::t_0059735f51e887 216
+  s_e503fa9f261534::t_7fa888a226fd95 356-359,364-366
+  s_e503fa9f261534::t_a28bace52724b0 523,530
+  s_924699b936eb40::t_868bb7f371e0e7 348
+src/auth/cursor_auth.rs
+  s_e503fa9f261534::t_72d0fbbf7fdc52 53,60,71-72,80-86
+  s_e503fa9f261534::t_eb02a72accedbb 114-121
+  s_e503fa9f261534::t_941206ea0db820 87-88
+src/auth/xai_auth.rs
+  s_e503fa9f261534::t_dddd8c5d4f78ce 88,99,118-125,138-161
+src/auth/codex_auth.rs
+  s_e503fa9f261534::t_1fea1fe92455d0 36,44,58-61,65-73
+  s_924699b936eb40::t_206e3729c65076 74
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.11",
+  "base_commit_sha": "8885ca2299d07d27dcca77871821e34260c70bff",
+  "prompts": {},
+  "sessions": {
+    "s_924699b936eb40": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3e9604da-1adf-4e5f-a3cc-918c2b80bc7f",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_e503fa9f261534": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "116e3e3e-ee93-411d-9281-2a9618117cca",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
