@@ -1,0 +1,33 @@
+plugins/shunt-codex/agents/gpt-5.6-terra.md
+  s_b36a574f17a5ce::t_ef86d48c3b14c8 3
+  s_b36a574f17a5ce::t_f4c9f6db9cfbef 1-2,4-14
+plugins/shunt-codex/.claude-plugin/plugin.json
+  s_b36a574f17a5ce::t_c0698027db8b53 1-16
+plugins/shunt-codex/agents/gpt-5.6-sol.md
+  s_b36a574f17a5ce::t_def611835cdbe3 3
+  s_b36a574f17a5ce::t_89deeae698b9bf 1-2,4-14
+plugins/shunt-codex/agents/gpt-5.6-luna.md
+  s_b36a574f17a5ce::t_96400fdf78658e 1-2,4-14
+  s_b36a574f17a5ce::t_80049adec00953 3
+plugins/shunt-codex/README.md
+  s_b36a574f17a5ce::t_2d831810f495be 14-18,21-32
+  s_b36a574f17a5ce::t_439ba80cdcc459 1-13,19-20,33-81
+.claude-plugin/marketplace.json
+  s_b36a574f17a5ce::t_4888a39167fcc3 1-19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.11",
+  "base_commit_sha": "f4f917842a5ab3bd6b48fb2a8ea4dbe5e2adb650",
+  "prompts": {},
+  "sessions": {
+    "s_b36a574f17a5ce": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "eea23519-7f14-49c2-9363-3a73f622abea",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
