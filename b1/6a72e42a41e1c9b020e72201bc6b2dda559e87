@@ -1,0 +1,21 @@
+wiki/astro.config.mjs
+  s_8119d9792e9f0e::t_79477cfba73995 38-39
+.github/workflows/deploy-wiki.yml
+  s_8119d9792e9f0e::t_c7da05b5dfb335 1-51
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.11",
+  "base_commit_sha": "b16a72e42a41e1c9b020e72201bc6b2dda559e87",
+  "prompts": {},
+  "sessions": {
+    "s_8119d9792e9f0e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5625f67c-b6ff-48fd-ae18-8a4a07a06a30",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
