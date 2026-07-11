@@ -109,18 +109,21 @@ pub fn invalidate_pool_key(key: &str) {
 
 fn pool_insert(key: String, entry: std::sync::Arc<PoolEntry>) {
     let mut guard = POOL.lock().unwrap();
-    // Drop idle entries and enforce the size cap before inserting.
-    guard.retain(|_, entry| entry.last_used_at.lock().unwrap().elapsed() < POOL_IDLE_TTL);
     if guard.len() >= MAX_POOL_ENTRIES {
-        // Evict the least recently used connection. `HashMap` iteration order is
-        // unspecified, so `keys().next()` would drop an arbitrary (possibly active)
-        // entry instead of the stalest one.
-        if let Some(oldest) = guard
-            .iter()
-            .min_by_key(|(_, entry)| *entry.last_used_at.lock().unwrap())
-            .map(|(key, _)| key.clone())
-        {
-            guard.remove(&oldest);
+        // Only scan the pool for idle/LRU entries when capacity pressure requires
+        // eviction; ordinary inserts remain O(1).
+        guard.retain(|_, entry| entry.last_used_at.lock().unwrap().elapsed() < POOL_IDLE_TTL);
+        if guard.len() >= MAX_POOL_ENTRIES {
+            // Evict the least recently used connection. `HashMap` iteration order is
+            // unspecified, so `keys().next()` would drop an arbitrary (possibly active)
+            // entry instead of the stalest one.
+            if let Some(oldest) = guard
+                .iter()
+                .min_by_key(|(_, entry)| *entry.last_used_at.lock().unwrap())
+                .map(|(key, _)| key.clone())
+            {
+                guard.remove(&oldest);
+            }
         }
     }
     guard.insert(key, entry);
