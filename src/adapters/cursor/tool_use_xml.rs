@@ -114,11 +114,10 @@ impl CursorToolUseXmlParser {
                     tool_use_prefix_suffix_length(&self.buffer)
                 };
                 let end = self.buffer.len().saturating_sub(hold);
-                let text = self.buffer[..end].to_string();
-                if !text.is_empty() {
-                    self.push_text(&mut events, &text);
+                if end > 0 {
+                    self.push_text(&mut events, &self.buffer[..end]);
+                    self.buffer.drain(..end);
                 }
-                self.buffer = self.buffer[end..].to_string();
                 break;
             }
 
@@ -127,7 +126,7 @@ impl CursorToolUseXmlParser {
             // Emit any text before the tag.
             if start > 0 {
                 self.push_text(&mut events, &self.buffer[..start]);
-                self.buffer = self.buffer[start..].to_string();
+                self.buffer.drain(..start);
                 continue;
             }
 
@@ -145,6 +144,8 @@ impl CursorToolUseXmlParser {
 
             let close_start = close_start.unwrap();
             let close_end = close_start + "</tool_use>".len();
+            // `raw` must be owned: parse_tool_use takes &mut self (it calls the
+            // id factory), so it cannot coexist with a borrow of self.buffer.
             let raw = self.buffer[..close_end].to_string();
 
             // Try to parse a complete <tool_use...>...</tool_use> element.
@@ -155,7 +156,7 @@ impl CursorToolUseXmlParser {
                 self.push_text(&mut events, &raw);
             }
 
-            self.buffer = self.buffer[close_end..].to_string();
+            self.buffer.drain(..close_end);
         }
 
         events
@@ -227,9 +228,11 @@ impl CursorToolUseXmlParser {
         // (split across chunks before its `>`) is held back by
         // `holding_partial_close_tag` in `drain` until it completes, so we never
         // strip half a tag and leave a stray `>` to be emitted as text.
-        if let Some(rest) = slice.strip_prefix("</tool_use>") {
-            let prefix = &self.buffer[..trimmed_start];
-            self.buffer = format!("{prefix}{rest}");
+        if slice.starts_with("</tool_use>") {
+            // Remove just the close tag in place, keeping the leading whitespace
+            // and any trailing content, instead of rebuilding the whole buffer.
+            self.buffer
+                .drain(trimmed_start..trimmed_start + "</tool_use>".len());
             true
         } else {
             false
