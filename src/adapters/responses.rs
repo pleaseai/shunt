@@ -30,8 +30,7 @@ impl Adapter for ResponsesAdapter {
     ) -> AdapterFuture<'a> {
         let session_id = headers
             .get("x-claude-code-session-id")
-            .and_then(|value| value.to_str().ok())
-            .map(ToOwned::to_owned);
+            .and_then(|value| value.to_str().ok());
         Box::pin(async move { forward(state, route, body, session_id).await })
     }
 }
@@ -40,7 +39,7 @@ async fn forward(
     state: AppState,
     route: Route,
     body: Vec<u8>,
-    session_id: Option<String>,
+    session_id: Option<&str>,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let request_json = serde_json::from_slice::<Value>(&body).ok();
     let client_wants_stream = request_json
@@ -64,7 +63,7 @@ async fn forward(
         "responses upstream request"
     );
     let credential = resolve_credential(&state.config, &route, &state.http_client).await?;
-    let upstream = request_builder(&state, &route, credential, session_id.as_deref())
+    let upstream = request_builder(&state, &route, credential, session_id)
         .body(upstream_body.to_string())
         .send()
         .await
