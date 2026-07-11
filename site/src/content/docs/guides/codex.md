@@ -131,21 +131,42 @@ rule. This is the recommended path — it's the only one that also lets you set 
 window. For auto-listing several Codex models in the picker instead, use a `claude-`-named
 [discovery alias](/guides/model-discovery/) (accepting the 200k window trade-off).
 
-:::tip[Put a subagent on a Codex slug]
-Set `model:` in a named subagent's `.claude/agents/<name>.md` frontmatter — it accepts any
-string, unlike the Agent/Task `model` parameter. Spawn it **without** a `model` override (the
-tool parameter outranks frontmatter). Or force every subagent with `CLAUDE_CODE_SUBAGENT_MODEL`.
+#### Put a subagent on a Codex slug
 
+A subagent can run on a Codex slug while the main session stays on Claude. The `model:` frontmatter
+field accepts **any string** (unlike the Agent/Task tool's `model` parameter, which only takes the
+built-in aliases). To point an **existing** subagent at `gpt-5.6-sol`, edit its
+`.claude/agents/<name>.md` and set `model:`:
+
+```markdown
+---
+name: researcher
+description: Deep research agent.
+model: gpt-5.6-sol        # was: sonnet (or absent → inherited)
+---
+
+<the agent's system prompt — unchanged>
+```
+
+Spawn it **without** a `model` override (the tool parameter outranks frontmatter). Resolution order:
+`CLAUDE_CODE_SUBAGENT_MODEL` > tool `model` > frontmatter > `inherit`. To force **every** subagent
+onto one slug, set `export CLAUDE_CODE_SUBAGENT_MODEL="gpt-5.6-sol"`.
+
+Either way the slug needs a `[[routes]]` entry and, being non-`claude-`, obeys
+`CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` and `CLAUDE_CODE_MAX_CONTEXT_TOKENS` — the window follows the id
+automatically.
+
+:::tip[Ready-made agents]
 The **[`shunt-codex` plugin](https://github.com/pleaseai/shunt/tree/main/plugins/shunt-codex)**
-ships ready-made subagents for `gpt-5.6-sol` / `-terra` / `-luna` — install with
+ships subagents for `gpt-5.6-sol` / `-terra` / `-luna` — install with
 `/plugin install shunt-codex@shunt` after `/plugin marketplace add pleaseai/shunt`.
 :::
 
 ### Remap the tier aliases to Codex
 
 Instead of adding one custom id, repoint Claude Code's **built-in tier aliases** at Codex slugs, so
-the whole session's tier system resolves to your ChatGPT subscription. Requires Claude Code
-**≥ 2.1.176** ([model-config env vars](https://code.claude.com/docs/en/model-config#environment-variables)).
+the whole session's tier system resolves to your ChatGPT subscription
+([model-config env vars](https://code.claude.com/docs/en/model-config#environment-variables)).
 
 | Env var | Controls |
 | :-- | :-- |
@@ -191,7 +212,8 @@ runs `gpt-5.6-luna` — the resolved id is exactly what shunt routes on, so no
   Routing it to a reasoning model is fine, but it spends ChatGPT quota on that frequent traffic and
   can be slower — pick your cheapest entitled slug there if that matters.
 - Remapping is **global and session-wide**; with an allowlist (`availableModels` /
-  `enforceAvailableModels`) an alias can't be redirected outside the list.
+  `enforceAvailableModels`) an alias can't be redirected outside the list (Claude Code enforces this
+  on the tier-alias env vars as of **v2.1.176**).
 :::
 
 ## 5. Reasoning effort
