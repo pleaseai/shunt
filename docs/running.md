@@ -53,6 +53,11 @@ shunt loads configuration from, in increasing precedence:
    `/usr/local` prefixes). A local `shunt.yaml` therefore still wins over a
    config file in a later directory. Boot logs report which file was loaded,
    or that defaults are in use.
+
+   > **YAML 1.1 caveat:** the YAML backend parses YAML 1.1, where bare `yes`,
+   > `no`, `on`, `off`, `y`, `n` (any case) become booleans. Quote any string
+   > value that is one of these tokens (e.g. `api_key_env: "no"`), or
+   > deserialization fails with a type error. TOML is unaffected.
 3. **Environment variables** prefixed `SHUNT_`, using `__` for nested keys
    (e.g. `SHUNT_SERVER__BIND=0.0.0.0:3001`).
 

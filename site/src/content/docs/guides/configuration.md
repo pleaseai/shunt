@@ -87,6 +87,10 @@ route_prefixes:
     provider: openai
 ```
 
+:::caution[Quote boolean-like string values]
+The YAML backend parses **YAML 1.1**, where the bare tokens `yes`, `no`, `on`, `off`, `y`, `n` (any case) are read as booleans, not strings. If a string field's value is one of these, quote it — e.g. `api_key_env: "no"` — or deserialization fails with an opaque type error. All the built-in keys take normal identifiers, so this only bites unusual values, but quoting is the safe habit. TOML is unaffected.
+:::
+
 ## Routing precedence
 
 1. Exact `[[routes]]` match on the request's `model` id.
