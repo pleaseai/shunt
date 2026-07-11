@@ -28,6 +28,16 @@ impl Match for ExactHeader {
     }
 }
 
+/// Asserts a header is *absent* from the forwarded request. wiremock has no
+/// built-in absence matcher.
+struct HeaderAbsent(&'static str);
+
+impl Match for HeaderAbsent {
+    fn matches(&self, request: &Request) -> bool {
+        !request.headers.contains_key(self.0)
+    }
+}
+
 struct TestGateway {
     base_url: String,
     task: JoinHandle<()>,
@@ -191,6 +201,39 @@ async fn messages_forwards_incoming_credentials_unchanged() {
         .post(format!("{}/v1/messages", gateway.base_url))
         .header("x-api-key", "sk-ant-test")
         .header("authorization", "Bearer gateway-token")
+        .body(r#"{"model":"claude-sonnet-4-5"}"#)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    upstream.verify().await;
+}
+
+#[tokio::test]
+async fn messages_drops_duplicate_x_api_key_for_oauth_bearer() {
+    // Claude Code's `apiKeyHelper` sends its value in BOTH `x-api-key` and
+    // `Authorization: Bearer`. For a subscription OAuth token (`sk-ant-oat…`)
+    // the copy in `x-api-key` would make api.anthropic.com reject the request,
+    // so shunt must forward only the bearer.
+    if !can_bind_loopback() {
+        return;
+    }
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(header("authorization", "Bearer sk-ant-oat01-abc"))
+        .and(HeaderAbsent("x-api-key"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let gateway = start_gateway(upstream.uri()).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .header("x-api-key", "sk-ant-oat01-abc")
+        .header("authorization", "Bearer sk-ant-oat01-abc")
         .body(r#"{"model":"claude-sonnet-4-5"}"#)
         .send()
         .await

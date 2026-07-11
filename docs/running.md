@@ -334,6 +334,17 @@ Claude Code calls the helper for its gateway credential, so discovery fires; `SH
 (static) vs. no override (auto-refresh) selects the mode. The refresh path touches your real login
 file, so the static + `setup-token` route stays the simplest and safest default.
 
+> **Why this works for Claude passthrough even though `apiKeyHelper` is an API-key mechanism.**
+> Claude Code sends an `apiKeyHelper` value in **both** the `x-api-key` and `Authorization: Bearer`
+> headers. A Claude subscription OAuth token (`sk-ant-oat…`) authenticates *only* as a bearer, so
+> the copy echoed into `x-api-key` would otherwise make `api.anthropic.com` reject the request as
+> an invalid API key. shunt normalizes this on the passthrough path: when the forwarded bearer is
+> an OAuth token it drops the duplicated `x-api-key` before forwarding, leaving the bearer to stand
+> alone (`outbound_headers`, `src/adapters/anthropic.rs`). A real API key (the `ANTHROPIC_API_KEY`
+> path, which sends `x-api-key` and no bearer) is never touched. Without this normalization,
+> `apiKeyHelper` + an OAuth token would only satisfy the discovery gate and mapped-model routes —
+> Claude passthrough would 401.
+
 ### 5.3 Provide the mapped provider's credential (to shunt, not Claude Code)
 
 - **OpenAI provider:** export the key named by `api_key_env` (default `OPENAI_API_KEY`) in the

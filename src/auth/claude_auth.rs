@@ -9,6 +9,11 @@
 //!
 //! Used to feed `apiKeyHelper`, so gateway model discovery fires (it needs a
 //! gateway credential) while Claude passthrough keeps billing to the subscription.
+//! Claude Code sends an `apiKeyHelper` value in both `x-api-key` and
+//! `Authorization: Bearer`; the OAuth token in `x-api-key` would be rejected by
+//! api.anthropic.com, so the passthrough adapter strips that duplicate (see
+//! `strip_duplicate_oauth_api_key` in [`crate::adapters::anthropic`]). Without
+//! it, this helper would satisfy discovery and mapped routes only, not passthrough.
 
 use std::{
     env, fs, io,

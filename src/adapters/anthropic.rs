@@ -123,23 +123,57 @@ fn normalize_upstream_model(body: Vec<u8>, upstream_model: &str) -> Vec<u8> {
 /// stripped and replaced with the provider's key in its configured header.
 fn outbound_headers(headers: &HeaderMap, credential: &Credential) -> HeaderMap {
     let mut out = headers::filtered(headers);
-    if let Credential::ApiKey { value, header } = credential {
-        out.remove("authorization");
-        out.remove("x-api-key");
-        match header {
-            ApiKeyHeader::Bearer => {
-                if let Ok(value) = HeaderValue::from_str(&format!("Bearer {value}")) {
-                    out.insert("authorization", value);
+    match credential {
+        Credential::ApiKey { value, header } => {
+            out.remove("authorization");
+            out.remove("x-api-key");
+            match header {
+                ApiKeyHeader::Bearer => {
+                    if let Ok(value) = HeaderValue::from_str(&format!("Bearer {value}")) {
+                        out.insert("authorization", value);
+                    }
                 }
-            }
-            ApiKeyHeader::XApiKey => {
-                if let Ok(value) = HeaderValue::from_str(value) {
-                    out.insert("x-api-key", value);
+                ApiKeyHeader::XApiKey => {
+                    if let Ok(value) = HeaderValue::from_str(value) {
+                        out.insert("x-api-key", value);
+                    }
                 }
             }
         }
+        // Passthrough forwards the client's own credential unchanged — with one
+        // fix-up. Claude Code's `apiKeyHelper` is an API-key mechanism: it sends
+        // its output in *both* `x-api-key` and `Authorization: Bearer`. When that
+        // output is a Claude *subscription OAuth* token (`sk-ant-oat…`, e.g. from
+        // `shunt token`), the copy in `x-api-key` makes api.anthropic.com reject
+        // the request — an OAuth token authenticates only as a bearer. Drop the
+        // duplicated `x-api-key` so the bearer stands alone. A real API key in
+        // `x-api-key` (the `ANTHROPIC_API_KEY` path, which sends no bearer) is
+        // left untouched.
+        Credential::Passthrough => strip_duplicate_oauth_api_key(&mut out),
+        _ => {}
     }
     out
+}
+
+/// api.anthropic.com authenticates a subscription OAuth token only via the
+/// `Authorization: Bearer` header; the same token echoed in `x-api-key` is
+/// rejected as an invalid API key. When the forwarded bearer is an OAuth token
+/// (`sk-ant-oat…`), remove any `x-api-key` so a client that sends both — Claude
+/// Code's `apiKeyHelper` — still authenticates on passthrough.
+fn strip_duplicate_oauth_api_key(headers: &mut HeaderMap) {
+    let bearer_is_oauth = headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| {
+            value
+                .strip_prefix("Bearer ")
+                .or_else(|| value.strip_prefix("bearer "))
+        })
+        .map(|token| token.trim().starts_with("sk-ant-oat"))
+        .unwrap_or(false);
+    if bearer_is_oauth {
+        headers.remove("x-api-key");
+    }
 }
 
 fn upstream_url(state: &AppState, route: &Route, uri: &Uri) -> String {
@@ -184,6 +218,48 @@ mod tests {
         let out = outbound_headers(&client_headers(), &Credential::Passthrough);
         assert_eq!(out.get("authorization").unwrap(), "Bearer client-token");
         assert_eq!(out.get("anthropic-version").unwrap(), "2023-06-01");
+    }
+
+    #[test]
+    fn passthrough_drops_duplicate_x_api_key_for_oauth_bearer() {
+        // Claude Code's `apiKeyHelper` sends its OAuth token in BOTH headers;
+        // the copy in `x-api-key` would make api.anthropic.com reject the token.
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", "Bearer sk-ant-oat01-abc".parse().unwrap());
+        headers.insert("x-api-key", "sk-ant-oat01-abc".parse().unwrap());
+        headers.insert("anthropic-version", "2023-06-01".parse().unwrap());
+
+        let out = outbound_headers(&headers, &Credential::Passthrough);
+        // Bearer OAuth token survives; the poisoned x-api-key is removed.
+        assert_eq!(out.get("authorization").unwrap(), "Bearer sk-ant-oat01-abc");
+        assert!(out.get("x-api-key").is_none());
+        assert_eq!(out.get("anthropic-version").unwrap(), "2023-06-01");
+    }
+
+    #[test]
+    fn passthrough_keeps_real_api_key_in_x_api_key() {
+        // The `ANTHROPIC_API_KEY` path sends a real key in x-api-key and no
+        // bearer — it must be forwarded untouched.
+        let mut headers = HeaderMap::new();
+        headers.insert("x-api-key", "sk-ant-api03-realkey".parse().unwrap());
+        headers.insert("anthropic-version", "2023-06-01".parse().unwrap());
+
+        let out = outbound_headers(&headers, &Credential::Passthrough);
+        assert_eq!(out.get("x-api-key").unwrap(), "sk-ant-api03-realkey");
+        assert!(out.get("authorization").is_none());
+    }
+
+    #[test]
+    fn passthrough_keeps_x_api_key_when_bearer_is_not_oauth() {
+        // A non-OAuth bearer (e.g. a real API key returned by apiKeyHelper, which
+        // Anthropic reads from x-api-key) leaves x-api-key in place.
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", "Bearer sk-ant-api03-key".parse().unwrap());
+        headers.insert("x-api-key", "sk-ant-api03-key".parse().unwrap());
+
+        let out = outbound_headers(&headers, &Credential::Passthrough);
+        assert_eq!(out.get("x-api-key").unwrap(), "sk-ant-api03-key");
+        assert_eq!(out.get("authorization").unwrap(), "Bearer sk-ant-api03-key");
     }
 
     #[test]

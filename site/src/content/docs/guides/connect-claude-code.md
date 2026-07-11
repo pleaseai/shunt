@@ -64,6 +64,10 @@ Once a gateway credential is active, Claude Code **stops refreshing its own logi
 
 The static + `setup-token` route stays the simplest and safest default.
 
+:::note[Why this authenticates Claude passthrough]
+Claude Code sends an `apiKeyHelper` value in **both** `x-api-key` and `Authorization: Bearer`. A subscription OAuth token (`sk-ant-oat…`) is valid only as a bearer, so the copy in `x-api-key` would make `api.anthropic.com` reject the request. On the passthrough path shunt strips that duplicated `x-api-key` when the bearer is an OAuth token, leaving it to stand alone. Without this, `apiKeyHelper` + an OAuth token would cover only discovery and mapped models — passthrough would 401.
+:::
+
 ## 3. Provide the mapped provider's credential
 
 These go to **shunt's environment**, not Claude Code's:
