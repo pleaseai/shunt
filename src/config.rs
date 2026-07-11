@@ -1040,6 +1040,17 @@ provider = "kimi"
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
+
+        // RAII guard so the temp dir is removed even if an assertion below
+        // panics (mirrors the pattern in main.rs's run test).
+        struct TempDirGuard(std::path::PathBuf);
+        impl Drop for TempDirGuard {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _guard = TempDirGuard(dir.clone());
+
         let path = dir.join("shunt.yaml");
         std::fs::write(
             &path,
@@ -1077,7 +1088,5 @@ routes:
             .routes
             .iter()
             .any(|route| route.model == "kimi-k2.7-code" && route.provider == "kimi"));
-
-        let _ = std::fs::remove_dir_all(dir);
     }
 }
