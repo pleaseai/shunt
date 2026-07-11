@@ -9,6 +9,7 @@ description: The endpoints shunt serves as a Claude Code LLM gateway.
 | `GET` | `/` | Human-readable landing (version + endpoint list) |
 | `GET` | `/health` | Healthcheck — `{"status":"ok","version":"x.y.z"}` |
 | `GET` | `/v1/models` | [Model discovery](/guides/model-discovery/) — returns your `[[models]]` entries |
+| `GET` | `/routes` | shunt-native route discovery — returns the configured `[[routes]]` table verbatim (model → provider/upstream_model/effort mapping, including claude-prefixed discovery aliases); distinct from `/v1/models`, which serves the narrower Anthropic-protocol discovery response (`id`/`display_name` only) |
 | `POST` | `/v1/messages` | Inference — routed per the request's `model` id |
 | `POST` | `/v1/messages/count_tokens` | [Token counting](/guides/effort-and-context/#token-counting-count_tokens) |
 

@@ -10,5 +10,6 @@ pub mod metrics;
 pub mod model;
 pub mod proxy;
 pub mod reload;
+pub mod routes;
 pub mod routing;
 pub mod server;
