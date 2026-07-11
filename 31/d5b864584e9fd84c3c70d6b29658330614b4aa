@@ -1,0 +1,39 @@
+src/adapters/anthropic.rs
+  s_52ab8577fad2c6::t_0c05aac5c48562 126-134,136-139,143-153,158-176
+  s_52ab8577fad2c6::t_5dedcb1e7d4678 223-264
+  s_7d28ac8528276c::t_da5bc0d835b8e1 177-178
+site/src/content/docs/guides/connect-claude-code.md
+  s_52ab8577fad2c6::t_3eea128829b4f2 67-70
+tests/passthrough.rs
+  s_52ab8577fad2c6::t_4737d8f2228e65 214-245
+  s_52ab8577fad2c6::t_aee54d92b9ebbd 31-40
+  s_52ab8577fad2c6::t_04735cf535680d 213
+src/auth/claude_auth.rs
+  s_52ab8577fad2c6::t_98051122c69de5 12-16
+docs/running.md
+  s_52ab8577fad2c6::t_d109ebf06b5ce2 337-347
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "31d5b864584e9fd84c3c70d6b29658330614b4aa",
+  "prompts": {},
+  "sessions": {
+    "s_52ab8577fad2c6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "084e1c87-8afd-47e7-8fd0-d19e4f848a1c",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_7d28ac8528276c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1bda35f0-d626-4470-9d90-6a0c35400fda",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
