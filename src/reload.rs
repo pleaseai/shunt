@@ -160,12 +160,21 @@ fn spawn_file_watch_task(shared: SharedState, path: std::path::PathBuf) {
     let watch_path = path.clone();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<notify::Event>();
     let mut watcher = match notify::recommended_watcher(
-        move |result: notify::Result<notify::Event>| {
-            if let Ok(event) = result {
-                if event_touches_path(&event, &watch_path) {
+        move |result: notify::Result<notify::Event>| match result {
+            Ok(event) => {
+                // Skip access (read/open) events: a reload reads the config file,
+                // and that read fires an access event on the watched directory —
+                // forwarding it would retrigger reload on our own read, a loop.
+                // Only forward real changes that touch the config file.
+                if !event.kind.is_access() && event_touches_path(&event, &watch_path) {
                     // A closed receiver just means the server is shutting down.
                     let _ = tx.send(event);
                 }
+            }
+            // Surface watcher errors rather than silently degrading: the watch may
+            // be impaired (e.g. inotify queue overflow) and the operator should know.
+            Err(error) => {
+                tracing::warn!(%error, "config file watcher error");
             }
         },
     ) {
