@@ -96,6 +96,13 @@ impl CursorToolUseXmlParser {
                 continue;
             }
 
+            // A redundant close tag may still be arriving in pieces; hold the
+            // partial prefix (unless flushing) until the full `</tool_use>` is
+            // buffered, so a fragment is never emitted as text.
+            if !flush && self.holding_partial_close_tag() {
+                break;
+            }
+
             // Look for the start of a <tool_use tag.
             let start = self.buffer.find("<tool_use");
             if start.is_none() {
@@ -216,17 +223,30 @@ impl CursorToolUseXmlParser {
         }
         let trimmed_start = self.buffer.len() - self.buffer.trim_start().len();
         let slice = &self.buffer[trimmed_start..];
+        // Only strip a *complete* redundant close tag. A partial `</tool_use`
+        // (split across chunks before its `>`) is held back by
+        // `holding_partial_close_tag` in `drain` until it completes, so we never
+        // strip half a tag and leave a stray `>` to be emitted as text.
         if let Some(rest) = slice.strip_prefix("</tool_use>") {
-            let prefix = &self.buffer[..trimmed_start];
-            self.buffer = format!("{prefix}{rest}");
-            true
-        } else if let Some(rest) = slice.strip_prefix("</tool_use") {
             let prefix = &self.buffer[..trimmed_start];
             self.buffer = format!("{prefix}{rest}");
             true
         } else {
             false
         }
+    }
+
+    /// Whether the buffer currently holds only the leading part of a redundant
+    /// `</tool_use>` close tag that is still arriving in chunks. When true, the
+    /// caller should wait for more data rather than emitting the fragment as
+    /// text. Only meaningful after a tool_use has been recovered.
+    fn holding_partial_close_tag(&self) -> bool {
+        if !self.recovered_tool_use {
+            return false;
+        }
+        let close = "</tool_use>";
+        let trimmed = self.buffer.trim_start();
+        !trimmed.is_empty() && trimmed.len() < close.len() && close.starts_with(trimmed)
     }
 
     /// Push text into events, filtering empty text and trailing whitespace
@@ -416,6 +436,23 @@ mod tests {
         let events = parser.push("</tool_use>");
         // Should be silently dropped, no text events.
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn redundant_close_tag_split_across_chunks_is_dropped() {
+        let mut parser = CursorToolUseXmlParser::new_with_id_factory(
+            Some(["Read".to_string()].into_iter().collect()),
+            test_id_factory(),
+        );
+        let events = parser.push(r#"<tool_use name="Read">{}</tool_use>"#);
+        assert_eq!(events.len(), 1);
+
+        // A redundant close tag split before its `>` must be held, not emitted
+        // as a `</tool_use` fragment or a stray `>`.
+        assert!(parser.push("</tool_use").is_empty());
+        assert!(parser.push(">").is_empty());
+        // Nothing stray should remain to flush.
+        assert!(parser.flush().is_empty());
     }
 
     #[test]

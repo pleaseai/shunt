@@ -92,11 +92,13 @@ impl PendingCursorTool {
                     // Escape single quotes for POSIX single-quoted context so a
                     // directory containing `'` cannot break out of `cd '...'`.
                     let escaped_dir = working_directory.replace('\'', "'\\''");
-                    // Group the command with `{ ...; }` so compound commands
-                    // (e.g. `a; b`) all run in the target directory rather than
-                    // only the first — `cd d && a; b` would run `b` in the
-                    // original cwd.
-                    format!("cd '{escaped_dir}' && {{ {command}; }}")
+                    // `cd --` prevents a directory starting with `-` from being
+                    // read as an option. Group the command with `{ ...\n}` so
+                    // compound commands (e.g. `a; b`) all run in the target
+                    // directory rather than only the first; a trailing newline
+                    // (rather than `;`) closes the group even when `command`
+                    // already ends in `;` — `{ cmd;; }` would be a syntax error.
+                    format!("cd -- '{escaped_dir}' && {{ {command}\n}}")
                 };
                 serde_json::json!({
                     "command": cmd,
@@ -956,7 +958,7 @@ mod tests {
             timeout_ms: 30_000,
         };
         let json = tool.input_json();
-        assert_eq!(json["command"], "cd '/tmp' && { pwd; }");
+        assert_eq!(json["command"], "cd -- '/tmp' && { pwd\n}");
         assert_eq!(json["timeout"], 30_000);
         assert_eq!(json["description"], "Run Cursor-requested shell command");
         assert_eq!(tool.name(), "Bash");
