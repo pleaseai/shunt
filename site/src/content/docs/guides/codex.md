@@ -80,7 +80,7 @@ A request's `model` id picks the provider. Precedence: exact `[[routes]]` →
 
 ```toml
 [[routes]]
-model = "gpt-5.6-sol"        # the id Claude Code sends (§below)
+model = "gpt-5.6-sol"        # the id Claude Code sends (see §4 below)
 provider = "codex"
 # upstream_model = "gpt-5.6-sol"   # optional: forward a different slug upstream
 # effort = "high"                  # optional: pin effort for this route

@@ -513,8 +513,9 @@ tracking), which is fine when routing to Codex.
 
 - **Tokens are never logged.** shunt logs only non-secret facts (auth mode, account-id presence,
   expiry, refresh success/failure).
-- **File permissions.** Any auth file shunt writes is created `0600` via an exclusive temp file +
-  atomic rename — tokens are never momentarily world-readable.
+- **File permissions.** On Unix/Linux/macOS any auth file shunt writes is created `0600` via an
+  exclusive temp file + atomic rename — tokens are never momentarily world-readable. On non-Unix
+  platforms the temp file is written with `fs::write` (no `0600` or exclusive-create guarantee).
 - **Treat `~/.codex/auth.json` as sensitive.** It is **not** in `.worktreeinclude`, so it isn't
   copied into Orca worktrees; don't copy it into logs, telemetry, or shared checkouts.
 - **The refresh endpoint is OpenAI's own** (`auth.openai.com/oauth/token`) with the public Codex
