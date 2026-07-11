@@ -1,0 +1,19 @@
+src/adapters/responses.rs
+  s_4d8e37bad39f00::t_4ee40e40ed0dcb 402-409
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "e4369ec6ecd3132413712caa44daaf554fe252fc",
+  "prompts": {},
+  "sessions": {
+    "s_4d8e37bad39f00": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d5bd8ee3-f4ee-446d-9328-812b3ca0579e",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
