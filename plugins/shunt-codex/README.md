@@ -28,8 +28,12 @@ context window.
 
 > The agents' system prompts are written for **Claude Code's harness** — these
 > models run inside Claude Code's tool loop (Read/Edit/Bash, skills), not Codex's.
-> The `gpt-5.6-*` entries in `models.json` ship no `instructions_template`, so
-> there is nothing Codex-specific to inherit; shunt only diverts token generation.
+> The `gpt-5.6-*` entries in `models.json` do carry a substantial Codex system
+> prompt (`model_messages.instructions_template`, ~16k chars, "You are Codex…"),
+> but it describes Codex's own tools, personality, and workflow — none of which
+> exist here. shunt diverts only token generation, not that prompt: Claude Code
+> supplies its own system prompt, so the Codex one is never sent and there is
+> nothing Codex-specific to reproduce in these agents.
 
 ## Prerequisites
 
