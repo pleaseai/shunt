@@ -35,8 +35,8 @@ const sidebar = [
 ];
 
 export default defineConfig({
-  site: 'https://chatbot-pf.github.io',
-  base: '/shunt/',
+  site: 'https://shunt-wiki.pages.dev',
+  base: '/',
   integrations: [
     mermaid({
       theme: 'dark',
