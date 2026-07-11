@@ -2,7 +2,6 @@ use crate::adapters::cursor::client::decode_frame_payload;
 use crate::adapters::cursor::connect::ConnectFrameDecoder;
 use crate::adapters::cursor::connect::{parse_connect_error, ConnectEndError, FLAG_END};
 use crate::adapters::cursor::proto::AgentServerMessage;
-use serde_json::Value;
 
 /// A decoded event from the Cursor upstream response stream.
 #[derive(Debug, Clone)]
@@ -183,13 +182,6 @@ pub(crate) fn events_from_message(msg: &AgentServerMessage) -> Vec<CursorStreamE
         }
     }
     events
-}
-
-/// Extract an estimate of input tokens from a MessagesRequest for usage
-/// reporting. This is a rough heuristic based on JSON string length.
-pub fn estimate_request_input_tokens(req: &Value) -> u64 {
-    let prompt = super::request::render_cursor_prompt(req);
-    (prompt.len() / 4).max(1) as u64
 }
 
 #[cfg(test)]

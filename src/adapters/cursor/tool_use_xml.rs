@@ -264,7 +264,7 @@ impl CursorToolUseXmlParser {
 
 fn default_id_factory() -> Box<dyn FnMut() -> String + Send> {
     Box::new(|| {
-        let id = uuid::Uuid::new_v4().to_string().replace('-', "");
+        let id = uuid::Uuid::new_v4().simple().to_string();
         format!("call_cursor_{id}")
     })
 }

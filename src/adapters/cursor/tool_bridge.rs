@@ -334,6 +334,12 @@ pub fn start_cursor_tool_bridge(
         // Flush any remaining text from XML parser
         let flushed = state.xml_parser.flush();
         for evt in &flushed {
+            // Once a tool_use pauses the stream, stop: emitting further events
+            // after the pause would append deltas past the SSE message_stop. The
+            // remaining events are handled when the upstream agent re-runs on resume.
+            if paused {
+                break;
+            }
             match evt {
                 // Trailing text the parser held back must still reach the client.
                 RecoveredCursorEvent::Text(text) => {

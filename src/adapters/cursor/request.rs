@@ -286,7 +286,7 @@ fn collect_image_blocks(
             .get("media_type")
             .and_then(|m| m.as_str())
             .unwrap_or("image/png");
-        let uuid = uuid::Uuid::new_v4().to_string();
+        let uuid = uuid::Uuid::new_v4().simple().to_string();
         *index += 1;
         let extension = image_extension(media_type);
         images.push(CursorSelectedImage {
