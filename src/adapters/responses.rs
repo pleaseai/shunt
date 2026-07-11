@@ -247,18 +247,19 @@ async fn json_response(
 async fn forward_websocket(
     state: &AppState,
     route: &Route,
-    session_id: Option<&str>,
+    pool_key: Option<&str>,
     upstream_body: Value,
     credential: Credential,
     auth: AuthMode,
     client_wants_stream: bool,
     thinking_enabled: bool,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
+    let pool_key = pool_key.filter(|key| !key.is_empty());
     let http_url = responses_url(&state.config, &route.provider);
     let ws_url = codex_ws::to_websocket_url(&http_url).map_err(ws_transport_error)?;
     let ctx = WsTurnContext {
         ws_url,
-        session_id,
+        pool_key,
         credential,
         auth,
         signature: codex_continuation::signature(&upstream_body),
@@ -269,7 +270,7 @@ async fn forward_websocket(
             .unwrap_or_default(),
         upstream_body,
     };
-    tracing::debug!(provider = %route.provider, ws_url = %ctx.ws_url, session_id = session_id.unwrap_or(""), "opening codex websocket");
+    tracing::debug!(provider = %route.provider, ws_url = %ctx.ws_url, pool_key = pool_key.unwrap_or(""), "opening codex websocket");
 
     let (buffered, events) = open_ws_turn(&ctx).await?;
     if client_wants_stream {
@@ -295,7 +296,7 @@ async fn forward_websocket(
 /// Everything needed to (re)start a websocket turn for a request.
 struct WsTurnContext<'a> {
     ws_url: String,
-    session_id: Option<&'a str>,
+    pool_key: Option<&'a str>,
     credential: Credential,
     auth: AuthMode,
     signature: String,
@@ -340,7 +341,7 @@ async fn start_ws_turn(
     allow_continuation: bool,
 ) -> Result<(CodexWsEvents, bool), AdapterError> {
     let headers = websocket_headers(ctx.credential.clone())?;
-    let turn = codex_ws::begin(&ctx.ws_url, headers, ctx.session_id)
+    let turn = codex_ws::begin(&ctx.ws_url, headers, ctx.pool_key)
         .await
         .map_err(|error| ws_connect_error(error, ctx.auth))?;
 
