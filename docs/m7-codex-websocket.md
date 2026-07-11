@@ -94,10 +94,13 @@ reproducing attestation.**
 
 ## 5. Connection pool (`codex_ws.rs`)
 
-- Process-global `HashMap<session_id, Arc<PoolEntry>>` keyed by
-  `x-claude-code-session-id`. A std mutex guards only map lookups/inserts (never
+- Process-global `HashMap<pool_key, Arc<PoolEntry>>` keyed by
+  `x-claude-code-session-id`, namespaced by the authenticated inbound client when
+  `[server.auth]` is configured. A std mutex guards only map lookups/inserts (never
   held across an await); a per-connection async mutex serializes turns of one
-  session.
+  session. On a multi-tenant deployment, enable inbound authentication whenever
+  `websocket = true`; without it, session IDs are client-provided and cannot isolate
+  different callers that choose the same value.
 - **Eviction.** 30-minute idle TTL (matches the reference proxy) enforced on
   insert, plus a 10 000-entry hard cap as a churn backstop.
 - **Reuse gate.** On a pooled hit, a cheap liveness `Ping` is sent; if it fails the
