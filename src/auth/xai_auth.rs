@@ -85,7 +85,7 @@ impl XaiAuthStore {
     /// Return a valid access token, refreshing (and persisting the rotated
     /// refresh token) when the stored one is within the 5-minute expiry buffer.
     pub async fn get_valid(&self) -> Result<XaiCred, AdapterError> {
-        let tokens = self.read_tokens()?;
+        let tokens = self.read_tokens_off_thread().await?;
         if is_token_valid_at(&tokens.access_token, SystemTime::now()) {
             return Ok(XaiCred {
                 access_token: tokens.access_token,
@@ -96,7 +96,7 @@ impl XaiAuthStore {
         // lock is refreshing right now, so once we acquire it, re-read — the
         // rotated pair it wrote is what we must use, not our stale one.
         let _refreshing = REFRESH_LOCK.lock().await;
-        let tokens = self.read_tokens()?;
+        let tokens = self.read_tokens_off_thread().await?;
         if is_token_valid_at(&tokens.access_token, SystemTime::now()) {
             return Ok(XaiCred {
                 access_token: tokens.access_token,
@@ -115,8 +115,14 @@ impl XaiAuthStore {
             ));
         };
         let id_token = refreshed.id_token.as_deref().or(tokens.id_token.as_deref());
-        write_tokens(&self.path, &refreshed.access_token, refresh_token, id_token)
-            .map_err(|error| auth_error(format!("failed to update xAI auth file: {error}")))?;
+        write_tokens_off_thread(
+            self.path.clone(),
+            refreshed.access_token.clone(),
+            refresh_token.to_string(),
+            id_token.map(ToOwned::to_owned),
+        )
+        .await
+        .map_err(|error| auth_error(format!("failed to update xAI auth file: {error}")))?;
         tracing::info!("refreshed xAI OAuth access token");
         Ok(XaiCred {
             access_token: refreshed.access_token,
@@ -129,6 +135,30 @@ impl XaiAuthStore {
         parse_tokens(&value)
             .ok_or_else(|| auth_error("xAI auth tokens missing; run shunt login xai"))
     }
+
+    /// Read + parse the credential file on the blocking thread pool so the
+    /// synchronous file I/O never stalls the async runtime.
+    async fn read_tokens_off_thread(&self) -> Result<TokenSet, AdapterError> {
+        let this = self.clone();
+        tokio::task::spawn_blocking(move || this.read_tokens())
+            .await
+            .map_err(|error| auth_error(format!("xAI auth read task failed: {error}")))?
+    }
+}
+
+/// Persist the rotated token pair on the blocking thread pool. Same content,
+/// path, and atomicity as [`write_tokens`] — only the executing thread differs.
+async fn write_tokens_off_thread(
+    path: PathBuf,
+    access_token: String,
+    refresh_token: String,
+    id_token: Option<String>,
+) -> io::Result<()> {
+    tokio::task::spawn_blocking(move || {
+        write_tokens(&path, &access_token, &refresh_token, id_token.as_deref())
+    })
+    .await
+    .map_err(|error| io::Error::other(format!("xAI auth write task failed: {error}")))?
 }
 
 /// User-facing message for a failed credential-file read. A missing file means

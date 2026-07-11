@@ -32,7 +32,7 @@ use self::{
     response::{decode_cursor_upstream, decode_upstream_response, CursorDecodeError},
     tool_bridge::{
         advertised_tool_names, can_bridge_cursor_native_tools, find_tool_result,
-        resume_cursor_tool_bridge, start_cursor_tool_bridge, BridgeRegistry,
+        start_cursor_tool_bridge, BridgeRegistry,
     },
 };
 
@@ -80,14 +80,16 @@ async fn forward(
 
     if let Some(session_id) = session_id {
         if let Some(pending) = BridgeRegistry::pending_tool(session_id) {
-            if let Some(result) = find_tool_result(&request, pending.tool_use_id()) {
-                // Only the SSE bytes are used: the tool result reaches upstream
-                // via the next request's prompt history, so the native-protocol
-                // result messages returned here are intentionally unused (see
-                // `resume_cursor_tool_bridge` docs).
-                let (_result_messages, bytes) =
-                    resume_cursor_tool_bridge(session_id, &message_id, model, result, &pending);
-                return Ok((StatusCode::OK, sse_bytes_response(bytes)));
+            if find_tool_result(&request, pending.tool_use_id()).is_some() {
+                // Resume: the client executed the pending tool and re-sent the
+                // full conversation, which now includes the `tool_result`. Drop
+                // the stale bridge state; the tool result reaches the upstream
+                // Cursor agent through the rendered prompt history below, and its
+                // fresh response is bridged like any other request (pausing again
+                // if it emits another tool_use). We deliberately do NOT replay
+                // the previous response's leftover events — those were generated
+                // before the agent saw the tool result and would be stale.
+                BridgeRegistry::remove(session_id);
             }
         }
     }

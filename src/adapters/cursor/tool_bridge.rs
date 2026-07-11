@@ -1,11 +1,11 @@
-//! Cursor tool bridge: state machine, result builders, pending tool tracking,
-//! stream re-entry, and SSE pause/resume.
+//! Cursor tool bridge: SSE pause state machine and pending tool tracking.
 //!
 //! The bridge coordinates the pause-and-continue lifecycle when the Cursor
 //! upstream emits a `<tool_use>` text block. The bridge pauses the SSE stream,
 //! stores the pending tool, and waits for Claude's `tool_result` in the next
-//! client request. On resume it builds Cursor protocol result messages and
-//! continues producing SSE output from stored upstream events.
+//! client request. The resume request is re-run against the upstream agent (in
+//! `cursor::forward`) with the tool result carried in the prompt history, so no
+//! stored upstream events are replayed.
 
 use std::collections::BTreeSet;
 use std::sync::{LazyLock, Mutex};
@@ -19,96 +19,20 @@ use serde_json::Value;
 // Types
 // ---------------------------------------------------------------------------
 
-/// Execution context for a Cursor tool.
-#[derive(Debug, Clone, PartialEq)]
-pub struct CursorExec {
-    pub id: Option<u64>,
-    pub exec_id: Option<String>,
-    pub args: serde_json::Value,
-}
-
-/// A tool result produced by Claude.
-#[derive(Debug, Clone, PartialEq)]
-pub struct CursorNativeToolResult {
-    pub content: String,
-    pub is_error: bool,
-}
-
-/// A pending Cursor tool that Claude must fulfill.
+/// A pending Cursor tool awaiting the client's `tool_result`.
+///
+/// Only the tool_use id is retained: it lets the next request be recognized as a
+/// resume (via `find_tool_result`). The tool's arguments are not stored — on
+/// resume the upstream agent is re-run with the full prompt history, which
+/// already carries both the `tool_use` and its `tool_result`.
 #[derive(Debug, Clone)]
-pub enum PendingCursorTool {
-    Read {
-        tool_use_id: String,
-        path: String,
-    },
-    Write {
-        tool_use_id: String,
-        path: String,
-        content: String,
-    },
-    Bash {
-        tool_use_id: String,
-        command: String,
-        working_directory: String,
-        timeout_ms: u64,
-    },
+pub struct PendingCursorTool {
+    pub tool_use_id: String,
 }
 
 impl PendingCursorTool {
-    pub fn name(&self) -> &'static str {
-        match self {
-            Self::Read { .. } => "Read",
-            Self::Write { .. } => "Write",
-            Self::Bash { .. } => "Bash",
-        }
-    }
-
     pub fn tool_use_id(&self) -> &str {
-        match self {
-            Self::Read { tool_use_id, .. }
-            | Self::Write { tool_use_id, .. }
-            | Self::Bash { tool_use_id, .. } => tool_use_id,
-        }
-    }
-
-    /// Build the JSON input that matches the Claude tool_use block.
-    pub fn input_json(&self) -> serde_json::Value {
-        match self {
-            Self::Read { path, .. } => {
-                serde_json::json!({ "file_path": path })
-            }
-            Self::Write { path, content, .. } => {
-                serde_json::json!({ "file_path": path, "content": content })
-            }
-            Self::Bash {
-                command,
-                working_directory,
-                timeout_ms,
-                ..
-            } => {
-                let cmd = if working_directory.is_empty() {
-                    command.clone()
-                } else {
-                    // Escape single quotes for POSIX single-quoted context so a
-                    // directory containing `'` cannot break out of `cd '...'`.
-                    let escaped_dir = working_directory.replace('\'', "'\\''");
-                    // `cd --` prevents a directory starting with `-` from being
-                    // read as an option. Group the command with `{ ...\n}` so
-                    // compound commands (e.g. `a; b`) all run in the target
-                    // directory rather than only the first; a trailing newline
-                    // (rather than `;`) closes the group even when `command`
-                    // already ends in `;` — `{ cmd;; }` would be a syntax error.
-                    format!("cd -- '{escaped_dir}' && {{ {command}\n}}")
-                };
-                serde_json::json!({
-                    "command": cmd,
-                    "timeout": timeout_ms,
-                    "description": "Run Cursor-requested shell command",
-                    "run_in_background": false,
-                    "dangerouslyDisableSandbox": false
-                })
-            }
-        }
+        &self.tool_use_id
     }
 }
 
@@ -116,13 +40,7 @@ impl PendingCursorTool {
 #[derive(Debug)]
 pub struct CursorBridgeState {
     pub session_id: String,
-    pub message_id: String,
-    pub model: String,
     pub pending_tool: Option<PendingCursorTool>,
-    pub remaining_events: Vec<CursorStreamEvent>,
-    pub event_cursor: usize,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
     pub allowed_tool_names: Option<BTreeSet<String>>,
     pub xml_parser: CursorToolUseXmlParser,
 }
@@ -130,20 +48,12 @@ pub struct CursorBridgeState {
 impl CursorBridgeState {
     fn new(
         session_id: String,
-        message_id: String,
-        model: String,
         allowed_tool_names: Option<BTreeSet<String>>,
         id_factory: Box<dyn FnMut() -> String + Send>,
     ) -> Self {
         Self {
             session_id,
-            message_id,
-            model,
             pending_tool: None,
-            remaining_events: Vec::new(),
-            event_cursor: 0,
-            input_tokens: 0,
-            output_tokens: 0,
             allowed_tool_names: allowed_tool_names.clone(),
             xml_parser: CursorToolUseXmlParser::new_with_id_factory(allowed_tool_names, id_factory),
         }
@@ -220,15 +130,6 @@ impl BridgeRegistry {
         let mut reg = BRIDGE_REGISTRY.lock().unwrap();
         if let Some(state) = reg.sessions.iter_mut().find(|s| s.session_id == session_id) {
             state.pending_tool = Some(tool);
-        }
-    }
-
-    /// Update usage for a session.
-    pub fn record_usage(session_id: &str, input_tokens: u64, output_tokens: u64) {
-        let mut reg = BRIDGE_REGISTRY.lock().unwrap();
-        if let Some(state) = reg.sessions.iter_mut().find(|s| s.session_id == session_id) {
-            state.input_tokens = input_tokens.max(state.input_tokens);
-            state.output_tokens = output_tokens.max(state.output_tokens);
         }
     }
 
@@ -311,213 +212,8 @@ pub fn find_tool_result<'a>(body: &'a Value, tool_use_id: &str) -> Option<&'a se
     None
 }
 
-/// Render the content of a `tool_result` block into a string.
-pub fn render_tool_result_content(result: &serde_json::Value) -> String {
-    let content = match result.get("content") {
-        Some(serde_json::Value::String(s)) => return s.clone(),
-        Some(serde_json::Value::Array(arr)) => arr.clone(),
-        _ => return String::new(),
-    };
-    let parts: Vec<String> = content
-        .iter()
-        .map(|block| match block.get("type").and_then(|t| t.as_str()) {
-            Some("text") => block
-                .get("text")
-                .and_then(|t| t.as_str())
-                .unwrap_or("")
-                .to_string(),
-            Some("image") => "[image result omitted]".to_string(),
-            Some("thinking") => block
-                .get("thinking")
-                .and_then(|t| t.as_str())
-                .unwrap_or("")
-                .to_string(),
-            _ => serde_json::to_string(block).unwrap_or_default(),
-        })
-        .collect();
-    parts.join("\n")
-}
-
-/// Whether a `tool_result` block indicates an error.
-pub fn tool_result_is_error(result: &serde_json::Value) -> bool {
-    result
-        .get("is_error")
-        .and_then(|e| e.as_bool())
-        .unwrap_or(false)
-}
-
-/// Build the partial JSON string for a pending tool's input (for the
-/// input_json_delta in the tool_use content block).
-pub fn build_tool_use_input_json(tool: &PendingCursorTool) -> String {
-    serde_json::to_string(&tool.input_json()).unwrap_or_else(|_| "{}".to_string())
-}
-
 // ---------------------------------------------------------------------------
-// Cursor protocol message builders
-// ---------------------------------------------------------------------------
-
-/// Inject `id` and `execId` fields into a JSON payload.
-pub fn with_exec_ids(
-    exec: &CursorExec,
-    mut payload: serde_json::Map<String, serde_json::Value>,
-) -> serde_json::Value {
-    if let Some(id) = exec.id {
-        payload.insert("id".into(), id.into());
-    }
-    if let Some(ref exec_id) = exec.exec_id {
-        payload.insert("execId".into(), exec_id.clone().into());
-    }
-    serde_json::Value::Object(payload)
-}
-
-/// Build the Cursor `readResult` message from a Claude `tool_result`.
-pub fn build_read_result_from_native(
-    exec: &CursorExec,
-    result: &CursorNativeToolResult,
-) -> serde_json::Value {
-    let path = exec
-        .args
-        .get("file_path")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let content = &result.content;
-    let lines = if content.is_empty() {
-        0
-    } else {
-        content.lines().count()
-    };
-    let file_size = content.len().to_string();
-
-    let read_result = serde_json::json!({
-        "success": {
-            "path": path,
-            "content": content,
-            "totalLines": lines,
-            "fileSize": file_size
-        }
-    });
-
-    let mut map = serde_json::Map::new();
-    map.insert("readResult".into(), read_result);
-    with_exec_ids(exec, map)
-}
-
-/// Build the Cursor `writeResult` message from a Claude `tool_result`.
-pub fn build_write_result_from_native(
-    exec: &CursorExec,
-    result: &CursorNativeToolResult,
-) -> serde_json::Value {
-    let path = exec
-        .args
-        .get("file_path")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-
-    let write_result = if result.is_error {
-        serde_json::json!({
-            "error": {
-                "path": path,
-                "error": result.content
-            }
-        })
-    } else {
-        let lines = if result.content.is_empty() {
-            0
-        } else {
-            result.content.lines().count()
-        };
-        serde_json::json!({
-            "success": {
-                "path": path,
-                "linesCreated": lines,
-                "fileSize": result.content.len()
-            }
-        })
-    };
-
-    let mut map = serde_json::Map::new();
-    map.insert("writeResult".into(), write_result);
-    with_exec_ids(exec, map)
-}
-
-/// Build the collection of Cursor `shellStream` messages from a Claude
-/// `tool_result`.
-///
-/// Returns: start, stdout/stderr, exit, streamClose.
-pub fn build_shell_stream_result(
-    exec: &CursorExec,
-    result: &CursorNativeToolResult,
-    local_execution_time: std::time::Duration,
-    cwd: &str,
-) -> Vec<serde_json::Value> {
-    let mut messages: Vec<serde_json::Value> = Vec::new();
-
-    // Start
-    let start_msg = with_exec_ids(
-        exec,
-        serde_json::json!({ "shellStream": { "start": {} } })
-            .as_object()
-            .cloned()
-            .unwrap_or_default(),
-    );
-    messages.push(start_msg);
-
-    // Content (stdout or stderr)
-    if !result.content.is_empty() {
-        let stream_key = if result.is_error { "stderr" } else { "stdout" };
-        let content_msg = with_exec_ids(
-            exec,
-            serde_json::json!({ "shellStream": { stream_key: { "data": result.content } } })
-                .as_object()
-                .cloned()
-                .unwrap_or_default(),
-        );
-        messages.push(content_msg);
-    }
-
-    // Exit
-    let exit_code: u32 = if result.is_error { 1 } else { 0 };
-    let exit_msg = with_exec_ids(
-        exec,
-        serde_json::json!({
-            "shellStream": {
-                "exit": {
-                    "code": exit_code,
-                    "cwd": cwd,
-                    "localExecutionTimeMs": local_execution_time.as_millis() as u64,
-                }
-            }
-        })
-        .as_object()
-        .cloned()
-        .unwrap_or_default(),
-    );
-    messages.push(exit_msg);
-
-    // Stream close
-    if let Some(id) = exec.id {
-        let close_msg = serde_json::json!({
-            "execClientControlMessage": {
-                "streamClose": {
-                    "id": id
-                }
-            }
-        });
-        messages.push(close_msg);
-    } else {
-        let close_msg = serde_json::json!({
-            "execClientControlMessage": {
-                "streamClose": {}
-            }
-        });
-        messages.push(close_msg);
-    }
-
-    messages
-}
-
-// ---------------------------------------------------------------------------
-// Bridge start and resume
+// Bridge start
 // ---------------------------------------------------------------------------
 
 /// Start a new tool bridge session.
@@ -537,19 +233,15 @@ pub fn start_cursor_tool_bridge(
 ) -> (Vec<u8>, bool) {
     let mut framer = CursorSseFramer::new(message_id, model);
 
-    let mut state = CursorBridgeState::new(
-        session_id.to_string(),
-        message_id.to_string(),
-        model.to_string(),
-        allowed_tool_names,
-        id_factory,
-    );
+    let mut state = CursorBridgeState::new(session_id.to_string(), allowed_tool_names, id_factory);
 
     let mut paused = false;
 
     for event in events {
         if paused {
-            state.remaining_events.push(event.clone());
+            // Already paused at a tool_use. The rest of this pre-generated stream
+            // is discarded — on resume the upstream agent is re-run with the tool
+            // result, rather than replaying these stale events.
             continue;
         }
 
@@ -561,11 +253,6 @@ pub fn start_cursor_tool_bridge(
                 let recovered = state.xml_parser.push(text);
                 for recovered_event in &recovered {
                     if paused {
-                        if let RecoveredCursorEvent::Text(t) = recovered_event {
-                            state
-                                .remaining_events
-                                .push(CursorStreamEvent::TextDelta { text: t.clone() });
-                        }
                         continue;
                     }
                     match recovered_event {
@@ -592,8 +279,6 @@ pub fn start_cursor_tool_bridge(
                 ..
             } => {
                 framer.record_usage(*input_tokens, *output_tokens, 0, 0);
-                state.input_tokens = *input_tokens;
-                state.output_tokens = *output_tokens;
             }
             CursorStreamEvent::Session { .. } => {
                 // Session info is not mapped to SSE events
@@ -622,28 +307,6 @@ pub fn start_cursor_tool_bridge(
         }
     }
 
-    if paused {
-        let remaining = state.remaining_events.clone();
-        let mut stored_state = CursorBridgeState::new(
-            session_id.to_string(),
-            message_id.to_string(),
-            model.to_string(),
-            state.allowed_tool_names.clone(),
-            Box::new(|| {
-                format!(
-                    "call_cursor_{}",
-                    uuid::Uuid::new_v4().to_string().replace('-', "")
-                )
-            }),
-        );
-        stored_state.pending_tool = state.pending_tool.clone();
-        stored_state.remaining_events = remaining;
-        stored_state.event_cursor = 0;
-        stored_state.input_tokens = state.input_tokens;
-        stored_state.output_tokens = state.output_tokens;
-        BridgeRegistry::insert(stored_state);
-    }
-
     if !paused {
         // Flush any remaining text from XML parser
         let flushed = state.xml_parser.flush();
@@ -663,185 +326,26 @@ pub fn start_cursor_tool_bridge(
         }
     }
 
-    (framer.take_output(), paused)
-}
-
-/// Resume a paused tool bridge session.
-///
-/// Finds the stored state by session_id, resolves the pending tool with
-/// Claude's `tool_result`, and continues producing SSE from remaining events.
-///
-/// Returns `(result_messages, sse_bytes)`. The first element is the tool result
-/// rendered in Cursor's native protocol (`readResult` / `writeResult` /
-/// `shellStream`). It is **not currently consumed by the caller** — the tool
-/// result reaches the upstream through the next request's prompt history, so the
-/// caller (`cursor::mod::forward`) uses only `sse_bytes`. The protocol-message
-/// builders are retained for a potential future direct-feed path that would send
-/// results back over the Cursor protocol without a prompt round-trip.
-pub fn resume_cursor_tool_bridge(
-    session_id: &str,
-    new_message_id: &str,
-    new_model: &str,
-    result: &serde_json::Value,
-    pending_tool: &PendingCursorTool,
-) -> (Vec<serde_json::Value>, Vec<u8>) {
-    let native_result = CursorNativeToolResult {
-        content: render_tool_result_content(result),
-        is_error: tool_result_is_error(result),
-    };
-
-    // Build Cursor protocol messages for the resolved tool
-    let exec = CursorExec {
-        id: None,
-        exec_id: None,
-        args: pending_tool.input_json(),
-    };
-    let result_messages = match pending_tool {
-        PendingCursorTool::Read { .. } => {
-            let msg = build_read_result_from_native(&exec, &native_result);
-            vec![msg]
-        }
-        PendingCursorTool::Write { .. } => {
-            let msg = build_write_result_from_native(&exec, &native_result);
-            vec![msg]
-        }
-        PendingCursorTool::Bash {
-            working_directory, ..
-        } => build_shell_stream_result(
-            &exec,
-            &native_result,
-            std::time::Duration::from_millis(0),
-            working_directory,
-        ),
-    };
-
-    // Generate SSE continuation from remaining events
-    let mut framer = CursorSseFramer::new(new_message_id, new_model);
-
-    // Retrieve stored state for remaining events. Take the state in a single
-    // lock acquisition and inspect its `pending_tool` field, avoiding the TOCTOU
-    // window between a separate `pending_tool` check and `take`.
-    let remaining: Vec<CursorStreamEvent> = BridgeRegistry::take(session_id)
-        .filter(|state| state.pending_tool.is_some())
-        .map(|state| state.remaining_events)
-        .unwrap_or_default();
-
-    if remaining.is_empty() {
-        // No remaining events: just finalize
-        framer.finalize();
-    } else {
-        let mut xml_parser = CursorToolUseXmlParser::new(None);
-        let mut paused_again = false;
-        // On a second pause, preserve the newly recovered tool and the events
-        // after the pause point so the next resume can continue the stream —
-        // mirroring `start_cursor_tool_bridge`. Dropping these loses the
-        // remaining response on sequential tool calls.
-        let mut new_pending_tool: Option<PendingCursorTool> = None;
-        let mut new_remaining_events: Vec<CursorStreamEvent> = Vec::new();
-
-        for event in &remaining {
-            if paused_again {
-                new_remaining_events.push(event.clone());
-                continue;
-            }
-
-            match event {
-                CursorStreamEvent::ThinkingDelta { text } => {
-                    framer.emit_thinking_delta(text);
-                }
-                CursorStreamEvent::TextDelta { text } => {
-                    let recovered = xml_parser.push(text);
-                    for evt in &recovered {
-                        if paused_again {
-                            if let RecoveredCursorEvent::Text(t) = evt {
-                                new_remaining_events
-                                    .push(CursorStreamEvent::TextDelta { text: t.clone() });
-                            }
-                            continue;
-                        }
-                        match evt {
-                            RecoveredCursorEvent::Text(t) => {
-                                framer.emit_text_delta(t);
-                            }
-                            RecoveredCursorEvent::ToolUse(tool_use) => {
-                                let input_json = serde_json::to_string(&tool_use.input)
-                                    .unwrap_or_else(|_| "{}".to_string());
-                                framer.emit_tool_pause(&tool_use.id, &tool_use.name, &input_json);
-                                if let Some(pending) = pending_from_recovered_tool(tool_use) {
-                                    new_pending_tool = Some(pending);
-                                }
-                                paused_again = true;
-                            }
-                        }
-                    }
-                }
-                CursorStreamEvent::Usage {
-                    input_tokens,
-                    output_tokens,
-                    ..
-                } => {
-                    framer.record_usage(*input_tokens, *output_tokens, 0, 0);
-                }
-                CursorStreamEvent::Session { .. } => {}
-                CursorStreamEvent::End => {
-                    // Flush before finalizing
-                    let flushed = xml_parser.flush();
-                    for evt in &flushed {
-                        if let RecoveredCursorEvent::ToolUse(tool_use) = evt {
-                            let input_json = serde_json::to_string(&tool_use.input)
-                                .unwrap_or_else(|_| "{}".to_string());
-                            framer.emit_tool_pause(&tool_use.id, &tool_use.name, &input_json);
-                            if let Some(pending) = pending_from_recovered_tool(tool_use) {
-                                new_pending_tool = Some(pending);
-                            }
-                            paused_again = true;
-                        }
-                    }
-                    if !paused_again {
-                        framer.finalize();
-                    }
-                }
-            }
-        }
-
-        if !paused_again {
-            let flushed = xml_parser.flush();
-            for evt in &flushed {
-                if let RecoveredCursorEvent::ToolUse(tool_use) = evt {
-                    let input_json =
-                        serde_json::to_string(&tool_use.input).unwrap_or_else(|_| "{}".to_string());
-                    framer.emit_tool_pause(&tool_use.id, &tool_use.name, &input_json);
-                    if let Some(pending) = pending_from_recovered_tool(tool_use) {
-                        new_pending_tool = Some(pending);
-                    }
-                    paused_again = true;
-                }
-            }
-            if !paused_again {
-                framer.finalize();
-            }
-        }
-
-        if paused_again {
-            let mut state = CursorBridgeState::new(
-                session_id.to_string(),
-                new_message_id.to_string(),
-                new_model.to_string(),
-                None,
-                Box::new(|| {
-                    format!(
-                        "call_cursor_{}",
-                        uuid::Uuid::new_v4().to_string().replace('-', "")
-                    )
-                }),
-            );
-            state.pending_tool = new_pending_tool;
-            state.remaining_events = new_remaining_events;
-            BridgeRegistry::insert(state);
-        }
+    // If a native tool_use paused the stream, store minimal state so the next
+    // request is recognized as a resume (its tool_use id is matched against the
+    // incoming tool_result). No upstream events are stored — resume re-runs the
+    // agent with the tool result carried in the prompt history.
+    if let Some(pending) = state.pending_tool.clone() {
+        let mut stored_state = CursorBridgeState::new(
+            session_id.to_string(),
+            state.allowed_tool_names.clone(),
+            Box::new(|| {
+                format!(
+                    "call_cursor_{}",
+                    uuid::Uuid::new_v4().to_string().replace('-', "")
+                )
+            }),
+        );
+        stored_state.pending_tool = Some(pending);
+        BridgeRegistry::insert(stored_state);
     }
 
-    (result_messages, framer.take_output())
+    (framer.take_output(), paused)
 }
 
 // ---------------------------------------------------------------------------
@@ -849,61 +353,17 @@ pub fn resume_cursor_tool_bridge(
 // ---------------------------------------------------------------------------
 
 /// Create a `PendingCursorTool` from a recovered XML tool_use event.
+///
+/// Returns `Some` only for the natively-bridged tools (Read / Write / Bash);
+/// only the tool_use id is captured, since resume re-runs the upstream agent
+/// with the tool result carried in the prompt history.
 fn pending_from_recovered_tool(
     tool_use: &crate::adapters::cursor::tool_use_xml::RecoveredCursorToolUse,
 ) -> Option<PendingCursorTool> {
     match tool_use.name.as_str() {
-        "Read" => {
-            let file_path = tool_use
-                .input
-                .get("file_path")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            Some(PendingCursorTool::Read {
-                tool_use_id: tool_use.id.clone(),
-                path: file_path,
-            })
-        }
-        "Write" => {
-            let file_path = tool_use
-                .input
-                .get("file_path")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let content = tool_use
-                .input
-                .get("content")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            Some(PendingCursorTool::Write {
-                tool_use_id: tool_use.id.clone(),
-                path: file_path,
-                content,
-            })
-        }
-        "Bash" => {
-            let command = tool_use
-                .input
-                .get("command")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let working_directory = String::new();
-            let timeout_ms = tool_use
-                .input
-                .get("timeout")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(30_000);
-            Some(PendingCursorTool::Bash {
-                tool_use_id: tool_use.id.clone(),
-                command,
-                working_directory,
-                timeout_ms,
-            })
-        }
+        "Read" | "Write" | "Bash" => Some(PendingCursorTool {
+            tool_use_id: tool_use.id.clone(),
+        }),
         _ => None,
     }
 }
@@ -919,203 +379,6 @@ mod tests {
 
     /// Serialize tests that share the global bridge registry.
     static REGISTRY_LOCK: Mutex<()> = Mutex::new(());
-
-    // -----------------------------------------------------------------------
-    // PendingCursorTool tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn pending_read_input_matches_claude_read_tool() {
-        let tool = PendingCursorTool::Read {
-            tool_use_id: "call_cursor_1".into(),
-            path: "/tmp/a".into(),
-        };
-        let json = tool.input_json();
-        assert_eq!(json["file_path"], "/tmp/a");
-        assert_eq!(tool.name(), "Read");
-        assert_eq!(tool.tool_use_id(), "call_cursor_1");
-    }
-
-    #[test]
-    fn pending_write_input_matches_claude_write_tool() {
-        let tool = PendingCursorTool::Write {
-            tool_use_id: "call_cursor_2".into(),
-            path: "/tmp/b".into(),
-            content: "hello".into(),
-        };
-        let json = tool.input_json();
-        assert_eq!(json["file_path"], "/tmp/b");
-        assert_eq!(json["content"], "hello");
-        assert_eq!(tool.name(), "Write");
-    }
-
-    #[test]
-    fn pending_bash_input_matches_claude_bash_tool() {
-        let tool = PendingCursorTool::Bash {
-            tool_use_id: "call_cursor_3".into(),
-            command: "pwd".into(),
-            working_directory: "/tmp".into(),
-            timeout_ms: 30_000,
-        };
-        let json = tool.input_json();
-        assert_eq!(json["command"], "cd -- '/tmp' && { pwd\n}");
-        assert_eq!(json["timeout"], 30_000);
-        assert_eq!(json["description"], "Run Cursor-requested shell command");
-        assert_eq!(tool.name(), "Bash");
-    }
-
-    #[test]
-    fn pending_bash_no_working_directory() {
-        let tool = PendingCursorTool::Bash {
-            tool_use_id: "call_cursor_4".into(),
-            command: "ls".into(),
-            working_directory: "".into(),
-            timeout_ms: 10_000,
-        };
-        let json = tool.input_json();
-        // Without a working directory, command is passed as-is
-        assert_eq!(json["command"], "ls");
-    }
-
-    // -----------------------------------------------------------------------
-    // Result builder tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn with_exec_ids_adds_id_and_exec_id() {
-        let exec = CursorExec {
-            id: Some(7),
-            exec_id: Some("exec-1".into()),
-            args: serde_json::json!({}),
-        };
-        let mut payload = serde_json::Map::new();
-        payload.insert("test".into(), serde_json::json!("value"));
-        let result = with_exec_ids(&exec, payload);
-        assert_eq!(result["id"], 7);
-        assert_eq!(result["execId"], "exec-1");
-        assert_eq!(result["test"], "value");
-    }
-
-    #[test]
-    fn with_exec_ids_omits_missing_fields() {
-        let exec = CursorExec {
-            id: None,
-            exec_id: None,
-            args: serde_json::json!({}),
-        };
-        let mut payload = serde_json::Map::new();
-        payload.insert("test".into(), serde_json::json!("v"));
-        let result = with_exec_ids(&exec, payload);
-        assert!(result.get("id").is_none());
-        assert!(result.get("execId").is_none());
-        assert_eq!(result["test"], "v");
-    }
-
-    #[test]
-    fn read_result_from_successful_result() {
-        let exec = CursorExec {
-            id: Some(1),
-            exec_id: None,
-            args: serde_json::json!({"file_path": "/tmp/a"}),
-        };
-        let result = CursorNativeToolResult {
-            content: "file content".into(),
-            is_error: false,
-        };
-        let msg = build_read_result_from_native(&exec, &result);
-        assert_eq!(msg["id"], 1);
-        assert_eq!(msg["readResult"]["success"]["path"], "/tmp/a");
-        assert_eq!(msg["readResult"]["success"]["content"], "file content");
-        assert_eq!(msg["readResult"]["success"]["totalLines"], 1);
-    }
-
-    #[test]
-    fn write_result_from_successful_result() {
-        let exec = CursorExec {
-            id: Some(2),
-            exec_id: None,
-            args: serde_json::json!({"file_path": "/tmp/b", "content": "hi"}),
-        };
-        let result = CursorNativeToolResult {
-            content: "success".into(),
-            is_error: false,
-        };
-        let msg = build_write_result_from_native(&exec, &result);
-        assert_eq!(msg["id"], 2);
-        assert_eq!(msg["writeResult"]["success"]["path"], "/tmp/b");
-        assert_eq!(msg["writeResult"]["success"]["linesCreated"], 1);
-    }
-
-    #[test]
-    fn write_result_from_error_result() {
-        let exec = CursorExec {
-            id: Some(3),
-            exec_id: None,
-            args: serde_json::json!({"file_path": "/tmp/c"}),
-        };
-        let result = CursorNativeToolResult {
-            content: "permission denied".into(),
-            is_error: true,
-        };
-        let msg = build_write_result_from_native(&exec, &result);
-        assert_eq!(msg["writeResult"]["error"]["path"], "/tmp/c");
-        assert_eq!(msg["writeResult"]["error"]["error"], "permission denied");
-    }
-
-    #[test]
-    fn shell_stream_result_emits_start_output_exit_and_close() {
-        let exec = CursorExec {
-            id: Some(7),
-            exec_id: Some("e".into()),
-            args: serde_json::json!({}),
-        };
-        let messages = build_shell_stream_result(
-            &exec,
-            &CursorNativeToolResult {
-                content: "hi".into(),
-                is_error: false,
-            },
-            std::time::Duration::from_millis(3),
-            "/tmp",
-        );
-        assert_eq!(messages.len(), 4);
-        // Start
-        assert!(messages[0]
-            .get("shellStream")
-            .and_then(|s| s.get("start"))
-            .is_some());
-        // Stdout content
-        assert_eq!(messages[1]["shellStream"]["stdout"]["data"], "hi");
-        // Exit
-        assert_eq!(messages[2]["shellStream"]["exit"]["code"], 0);
-        assert_eq!(messages[2]["shellStream"]["exit"]["cwd"], "/tmp");
-        // Stream close
-        assert_eq!(
-            messages[3]["execClientControlMessage"]["streamClose"]["id"],
-            7
-        );
-    }
-
-    #[test]
-    fn shell_stream_handles_error_result() {
-        let exec = CursorExec {
-            id: Some(8),
-            exec_id: None,
-            args: serde_json::json!({}),
-        };
-        let messages = build_shell_stream_result(
-            &exec,
-            &CursorNativeToolResult {
-                content: "error msg".into(),
-                is_error: true,
-            },
-            std::time::Duration::from_millis(5),
-            "/tmp",
-        );
-        assert_eq!(messages.len(), 4);
-        assert_eq!(messages[1]["shellStream"]["stderr"]["data"], "error msg");
-        assert_eq!(messages[2]["shellStream"]["exit"]["code"], 1);
-    }
 
     // -----------------------------------------------------------------------
     // find_tool_result tests
@@ -1240,13 +503,7 @@ mod tests {
         BridgeRegistry::clear();
         assert_eq!(BridgeRegistry::active_count(), 0);
 
-        let state = CursorBridgeState::new(
-            "session-test".into(),
-            "msg-1".into(),
-            "cursor-test".into(),
-            None,
-            Box::new(|| "id".into()),
-        );
+        let state = CursorBridgeState::new("session-test".into(), None, Box::new(|| "id".into()));
         BridgeRegistry::insert(state);
         assert_eq!(BridgeRegistry::active_count(), 1);
         assert!(BridgeRegistry::get("session-test").is_some());
@@ -1260,84 +517,53 @@ mod tests {
     fn bridge_registry_set_and_get_pending_tool() {
         let _lock = REGISTRY_LOCK.lock().unwrap();
         BridgeRegistry::clear();
-        let state = CursorBridgeState::new(
-            "session-pt".into(),
-            "msg-1".into(),
-            "cursor-test".into(),
-            None,
-            Box::new(|| "id".into()),
-        );
+        let state = CursorBridgeState::new("session-pt".into(), None, Box::new(|| "id".into()));
         BridgeRegistry::insert(state);
 
-        let tool = PendingCursorTool::Read {
+        let tool = PendingCursorTool {
             tool_use_id: "call_1".into(),
-            path: "/tmp/a".into(),
         };
         BridgeRegistry::set_pending_tool("session-pt", tool);
 
         let retrieved = BridgeRegistry::pending_tool("session-pt");
         assert!(retrieved.is_some());
-        assert_eq!(retrieved.unwrap().name(), "Read");
+        assert_eq!(retrieved.unwrap().tool_use_id(), "call_1");
 
         BridgeRegistry::clear();
     }
 
-    // -----------------------------------------------------------------------
-    // render_tool_result_content tests
-    // -----------------------------------------------------------------------
-
     #[test]
-    fn renders_string_content() {
-        let result = serde_json::json!({
-            "type": "tool_result",
-            "content": "plain string"
-        });
-        assert_eq!(render_tool_result_content(&result), "plain string");
-    }
+    fn start_bridge_pauses_and_stores_only_pending_tool_id() {
+        let _lock = REGISTRY_LOCK.lock().unwrap();
+        BridgeRegistry::clear();
 
-    #[test]
-    fn renders_array_content() {
-        let result = serde_json::json!({
-            "type": "tool_result",
-            "content": [
-                {"type": "text", "text": "part one"},
-                {"type": "text", "text": "part two"}
-            ]
-        });
-        let rendered = render_tool_result_content(&result);
-        assert!(rendered.contains("part one"));
-        assert!(rendered.contains("part two"));
-    }
+        // A recovered Read tool_use should pause the stream and store just the
+        // tool_use id for resume detection.
+        let events = vec![
+            CursorStreamEvent::TextDelta {
+                text: r#"<tool_use name="Read">{"file_path":"/tmp/a"}</tool_use>"#.into(),
+            },
+            CursorStreamEvent::End,
+        ];
+        let allowed = Some(["Read".to_string()].into_iter().collect());
+        let (_sse, paused) = start_cursor_tool_bridge(
+            "msg-1",
+            "cursor-test",
+            "sess-resume",
+            &events,
+            allowed,
+            Box::new(|| "call_1".into()),
+        );
+        assert!(paused);
 
-    #[test]
-    fn renders_mixed_content_types() {
-        let result = serde_json::json!({
-            "type": "tool_result",
-            "content": [
-                {"type": "text", "text": "text result"},
-                {"type": "image", "source": {"type": "base64", "data": "AAAA"}}
-            ]
-        });
-        let rendered = render_tool_result_content(&result);
-        assert!(rendered.contains("text result"));
-        assert!(rendered.contains("[image result omitted]"));
-    }
+        let pending = BridgeRegistry::pending_tool("sess-resume").expect("pending stored");
+        assert_eq!(pending.tool_use_id(), "call_1");
 
-    #[test]
-    fn render_empty_tool_result() {
-        let result = serde_json::json!({"type": "tool_result"});
-        assert_eq!(render_tool_result_content(&result), "");
-    }
+        // The resume path (see `cursor::forward`) drops the stored state before
+        // re-running the upstream agent; nothing is replayed.
+        BridgeRegistry::remove("sess-resume");
+        assert!(BridgeRegistry::pending_tool("sess-resume").is_none());
 
-    #[test]
-    fn detects_error_from_tool_result() {
-        let result = serde_json::json!({"type": "tool_result", "is_error": true});
-        assert!(tool_result_is_error(&result));
-
-        let result = serde_json::json!({"type": "tool_result", "is_error": false});
-        assert!(!tool_result_is_error(&result));
-
-        let result = serde_json::json!({"type": "tool_result"});
-        assert!(!tool_result_is_error(&result));
+        BridgeRegistry::clear();
     }
 }

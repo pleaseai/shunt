@@ -50,14 +50,14 @@ impl CursorAuthStore {
                 access_token: token,
             });
         }
-        let stored = self.read()?;
+        let stored = self.read_off_thread().await?;
         if token_is_valid(&stored.access_token, SystemTime::now()) {
             return Ok(CursorCred {
                 access_token: stored.access_token,
             });
         }
         let _guard = REFRESH_LOCK.lock().await;
-        let stored = self.read()?;
+        let stored = self.read_off_thread().await?;
         if token_is_valid(&stored.access_token, SystemTime::now()) {
             return Ok(CursorCred {
                 access_token: stored.access_token,
@@ -68,12 +68,22 @@ impl CursorAuthStore {
             .as_deref()
             .ok_or_else(|| auth_error("Cursor access token expired; run shunt login cursor"))?;
         let refreshed = refresh(&self.client, &self.base_url, refresh_token).await?;
-        write_auth(&self.path, &refreshed)
+        write_auth_off_thread(self.path.clone(), refreshed.clone())
+            .await
             .map_err(|error| auth_error(format!("failed to update Cursor auth file: {error}")))?;
         tracing::info!("refreshed Cursor OAuth access token");
         Ok(CursorCred {
             access_token: refreshed.access_token,
         })
+    }
+
+    /// Read the credential file on the blocking thread pool so the synchronous
+    /// file I/O never stalls the async runtime.
+    async fn read_off_thread(&self) -> Result<StoredCursorAuth, AdapterError> {
+        let this = self.clone();
+        tokio::task::spawn_blocking(move || this.read())
+            .await
+            .map_err(|error| auth_error(format!("Cursor auth read task failed: {error}")))?
     }
 
     fn read(&self) -> Result<StoredCursorAuth, AdapterError> {
@@ -99,6 +109,14 @@ pub(crate) fn write_auth(path: &std::path::Path, auth: &StoredCursorAuth) -> io:
     let value = serde_json::to_value(auth)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     write_auth_file_atomic(path, &value)
+}
+
+/// Persist the refreshed credential on the blocking thread pool. Same content,
+/// path, and atomicity as [`write_auth`] — only the executing thread differs.
+async fn write_auth_off_thread(path: PathBuf, auth: StoredCursorAuth) -> io::Result<()> {
+    tokio::task::spawn_blocking(move || write_auth(&path, &auth))
+        .await
+        .map_err(|error| io::Error::other(format!("Cursor auth write task failed: {error}")))?
 }
 
 async fn refresh(
