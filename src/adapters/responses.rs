@@ -712,7 +712,7 @@ fn request_builder(
         }
         // A Responses provider configured with passthrough auth is a
         // misconfiguration; send no credential and let the upstream reject it.
-        Credential::Passthrough => {}
+        Credential::CursorOauth { .. } | Credential::Passthrough => {}
     }
     request
 }

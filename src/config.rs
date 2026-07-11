@@ -157,8 +157,8 @@ pub struct ProviderConfig {
     pub websocket: bool,
 }
 
-/// How a provider answers `count_tokens`. Only meaningful for `responses`
-/// providers; Anthropic providers always pass the request through upstream.
+/// How a provider answers `count_tokens`. Only meaningful for `responses` and
+/// `cursor` providers; Anthropic providers always pass the request upstream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CountTokens {
@@ -187,6 +187,8 @@ pub enum ProviderKind {
     /// OpenAI Responses API — Anthropic Messages are translated to it (OpenAI,
     /// ChatGPT/Codex).
     Responses,
+    /// Cursor ConnectRPC AgentService protocol.
+    Cursor,
 }
 
 /// How shunt authenticates to an upstream.
@@ -203,6 +205,8 @@ pub enum AuthMode {
     /// xAI subscription OAuth (SuperGrok / X Premium+), acquired via the
     /// device-code flow (`shunt login xai`) and stored in ~/.shunt/xai-auth.json.
     XaiOauth,
+    /// Cursor OAuth acquired by `shunt login cursor`.
+    CursorOauth,
 }
 
 /// The dialect of the OpenAI Responses API an upstream speaks. Some backends
@@ -280,6 +284,8 @@ pub enum ConfigError {
     XaiOauthNotHttps { provider: String },
     #[error("providers.{provider} uses auth = \"xai_oauth\" but kind is not \"responses\"; the anthropic adapter would forward the client's own credential instead of the xAI token")]
     XaiOauthWrongKind { provider: String },
+    #[error("providers.{provider} uses auth = \"cursor_oauth\" but kind is not \"cursor\"")]
+    CursorOauthWrongKind { provider: String },
     #[error("server.default_provider references unknown provider: {0}")]
     UnknownDefaultProvider(String),
     #[error("route for model {model} references unknown provider: {provider}")]
@@ -342,6 +348,18 @@ impl Default for Config {
                     effort: None,
                     count_tokens: CountTokens::default(),
                     websocket: false,
+                },
+            ),
+            (
+                "cursor".to_string(),
+                ProviderConfig {
+                    kind: ProviderKind::Cursor,
+                    base_url: "https://api2.cursor.sh".to_string(),
+                    auth: AuthMode::CursorOauth,
+                    api_key_env: None,
+                    api_key_header: ApiKeyHeader::Bearer,
+                    effort: None,
+                    count_tokens: CountTokens::default(),
                 },
             ),
             (
@@ -517,6 +535,11 @@ impl Config {
                     .is_empty()
             {
                 return Err(ConfigError::MissingApiKeyEnv {
+                    provider: name.clone(),
+                });
+            }
+            if provider.auth == AuthMode::CursorOauth && provider.kind != ProviderKind::Cursor {
+                return Err(ConfigError::CursorOauthWrongKind {
                     provider: name.clone(),
                 });
             }
@@ -740,6 +763,23 @@ mod tests {
             AuthMode::ChatgptOauth
         );
         assert!(config.provider("kimi").is_none());
+    }
+
+    #[test]
+    fn default_seeds_builtin_cursor_provider() {
+        let config = Config::default();
+        let cursor = config.provider("cursor").unwrap();
+        assert_eq!(cursor.kind, ProviderKind::Cursor);
+        assert_eq!(cursor.base_url, "https://api2.cursor.sh");
+        assert_eq!(cursor.auth, AuthMode::CursorOauth);
+    }
+
+    #[test]
+    fn cursor_oauth_requires_cursor_kind() {
+        let mut config = Config::default();
+        config.providers.get_mut("cursor").unwrap().kind = ProviderKind::Responses;
+        let error = config.validate().unwrap_err();
+        assert!(matches!(error, ConfigError::CursorOauthWrongKind { .. }));
     }
 
     #[test]

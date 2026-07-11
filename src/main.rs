@@ -36,11 +36,10 @@ enum Command {
     /// `CLAUDE_CODE_OAUTH_TOKEN`; otherwise auto-refresh mode reads and refreshes
     /// `~/.claude/.credentials.json`.
     Token,
-    /// Log in to a subscription provider via its OAuth device-code flow and save
-    /// the credential for shunt to inject. Currently supports `xai` (SuperGrok /
-    /// X Premium+): `shunt login xai`.
+    /// Log in to a subscription provider and save its credential for shunt to
+    /// inject. Supports `xai` and `cursor`.
     Login {
-        /// Provider to log in to (currently: `xai`).
+        /// Provider to log in to (`xai` or `cursor`).
         provider: String,
     },
 }
@@ -53,9 +52,20 @@ fn main() -> anyhow::Result<()> {
         Some(Command::Run { config }) => run(config.or(cli.config)),
         Some(Command::Check { config }) => check(config.or(cli.config)),
         Some(Command::Token) => runtime()?.block_on(token()),
-        Some(Command::Login { provider }) => {
-            runtime()?.block_on(shunt::auth::xai_login::run(&provider))
-        }
+        Some(Command::Login { provider }) => runtime()?.block_on(async {
+            match provider.as_str() {
+                "xai" => shunt::auth::xai_login::run(&provider).await,
+                "cursor" => {
+                    let config = Config::load(cli.config.as_deref())?;
+                    let base_url = config
+                        .provider("cursor")
+                        .map(|provider| provider.base_url.as_str())
+                        .unwrap_or("https://api2.cursor.sh");
+                    shunt::auth::cursor_login::run_with_base(base_url).await
+                }
+                _ => anyhow::bail!("unknown login provider {provider:?}; supported: xai, cursor"),
+            }
+        }),
         None if cli.check => check(cli.config),
         None => run(cli.config),
     }
