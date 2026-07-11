@@ -64,6 +64,12 @@ auth = "chatgpt_oauth"         # reads + auto-refreshes ~/.codex/auth.json
 # effort = "high"              # low|medium|high|xhigh; gpt-5.6 slugs also accept "max"
 # count_tokens = "tiktoken"    # default: local o200k_base count for count_tokens.
                                # "estimate" opts out (404 -> client estimates).
+# websocket = true             # EXPERIMENTAL (issue #32): reach the Codex backend
+                               # over the Responses WebSocket v2 transport instead
+                               # of HTTP. Pools a connection per conversation and
+                               # reuses previous_response_id to upload only the new
+                               # input. Only honored for this ChatGPT/Codex backend;
+                               # falls back to HTTP if the socket can't be opened.
 
 # xAI Grok (EXPERIMENTAL — not yet verified against the live xAI API).
 # Built-in as an API-key provider (export XAI_API_KEY); to reuse a

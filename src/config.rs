@@ -146,6 +146,15 @@ pub struct ProviderConfig {
     /// How `POST /v1/messages/count_tokens` is answered for this provider.
     #[serde(default)]
     pub count_tokens: CountTokens,
+    /// Opt in to the Codex Responses WebSocket v2 transport for this provider
+    /// (issue #32). Only honored for the ChatGPT/Codex backend; ignored for
+    /// stock OpenAI/xAI upstreams, which have no v2 websocket endpoint. When on,
+    /// shunt reaches the backend over `wss://…/codex/responses` with the
+    /// `responses_websockets` beta protocol, transparently falling back to HTTP
+    /// if the websocket cannot be established (a mid-stream failure surfaces as an
+    /// error event). Off by default — HTTP stays the default transport.
+    #[serde(default)]
+    pub websocket: bool,
 }
 
 /// How a provider answers `count_tokens`. Only meaningful for `responses`
@@ -297,6 +306,7 @@ impl ProviderConfig {
             api_key_header: ApiKeyHeader::Bearer,
             effort: None,
             count_tokens: CountTokens::default(),
+            websocket: false,
         }
     }
 }
@@ -318,6 +328,7 @@ impl Default for Config {
                     api_key_header: ApiKeyHeader::Bearer,
                     effort: None,
                     count_tokens: CountTokens::default(),
+                    websocket: false,
                 },
             ),
             (
@@ -330,6 +341,7 @@ impl Default for Config {
                     api_key_header: ApiKeyHeader::Bearer,
                     effort: None,
                     count_tokens: CountTokens::default(),
+                    websocket: false,
                 },
             ),
             (
@@ -345,6 +357,7 @@ impl Default for Config {
                     api_key_header: ApiKeyHeader::Bearer,
                     effort: None,
                     count_tokens: CountTokens::default(),
+                    websocket: false,
                 },
             ),
         ]);
@@ -559,6 +572,16 @@ impl Config {
             .unwrap_or(false)
     }
 
+    /// Whether the Codex Responses WebSocket v2 transport should be used for
+    /// `provider`. Requires both the opt-in `websocket` flag and the ChatGPT/Codex
+    /// backend: only that backend serves the `responses_websockets` v2 endpoint,
+    /// so the flag is inert on stock OpenAI/xAI providers.
+    pub fn codex_websocket_enabled(&self, provider: &str) -> bool {
+        self.provider(provider)
+            .map(|config| config.websocket && config.auth == AuthMode::ChatgptOauth)
+            .unwrap_or(false)
+    }
+
     /// Which Responses dialect a provider speaks, so translation can gate the
     /// per-backend quirks (see [`ResponsesFlavor`]). Detected from `auth` and
     /// the base_url host rather than provider names: the ChatGPT/Codex backend
@@ -751,6 +774,27 @@ mod tests {
         provider.api_key_env = None;
         provider.base_url = "https://api.x.ai/v1".to_string();
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn codex_websocket_gated_on_flag_and_chatgpt_backend() {
+        // Off by default, even for the ChatGPT/Codex backend.
+        let config = Config::default();
+        assert!(!config.codex_websocket_enabled("codex"));
+
+        // Flag on + ChatGPT backend ⇒ enabled.
+        let mut config = Config::default();
+        config.providers.get_mut("codex").unwrap().websocket = true;
+        assert!(config.codex_websocket_enabled("codex"));
+
+        // Flag on but not the ChatGPT backend (stock OpenAI) ⇒ inert: no v2
+        // websocket endpoint exists there.
+        let mut config = Config::default();
+        config.providers.get_mut("openai").unwrap().websocket = true;
+        assert!(!config.codex_websocket_enabled("openai"));
+
+        // Unknown provider ⇒ false.
+        assert!(!config.codex_websocket_enabled("nope"));
     }
 
     #[test]

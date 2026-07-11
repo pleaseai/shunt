@@ -8,6 +8,8 @@ use axum::{
 use crate::{routing::Route, server::AppState};
 
 pub mod anthropic;
+pub mod codex_continuation;
+pub mod codex_ws;
 pub mod responses;
 
 pub type AdapterResult = Result<(StatusCode, Response), AdapterError>;
