@@ -263,6 +263,19 @@ mod tests {
     }
 
     #[test]
+    fn passthrough_drops_duplicate_x_api_key_for_lowercase_bearer_oauth() {
+        // The scheme is matched case-insensitively (`Bearer ` / `bearer `); a
+        // lowercase-prefixed OAuth token must still get its duplicate stripped.
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", "bearer sk-ant-oat01-abc".parse().unwrap());
+        headers.insert("x-api-key", "sk-ant-oat01-abc".parse().unwrap());
+
+        let out = outbound_headers(&headers, &Credential::Passthrough);
+        assert_eq!(out.get("authorization").unwrap(), "bearer sk-ant-oat01-abc");
+        assert!(out.get("x-api-key").is_none());
+    }
+
+    #[test]
     fn api_key_bearer_replaces_client_credential() {
         let out = outbound_headers(
             &client_headers(),
