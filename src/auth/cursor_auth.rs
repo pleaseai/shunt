@@ -67,7 +67,15 @@ impl CursorAuthStore {
             .refresh_token
             .as_deref()
             .ok_or_else(|| auth_error("Cursor access token expired; run shunt login cursor"))?;
-        let refreshed = refresh(&self.client, &self.base_url, refresh_token).await?;
+        let mut refreshed = refresh(&self.client, &self.base_url, refresh_token).await?;
+        // Per RFC 6749 §6, a refresh response MAY omit a new refresh token, in
+        // which case the existing one stays valid and must be retained. Cursor
+        // is not known to rotate+consume its refresh tokens (unlike xAI), so
+        // dropping the old token here would force an avoidable re-login on the
+        // next expiry. Preserve it when the response carries no replacement.
+        if refreshed.refresh_token.is_none() {
+            refreshed.refresh_token = Some(refresh_token.to_string());
+        }
         write_auth_off_thread(self.path.clone(), refreshed.clone())
             .await
             .map_err(|error| auth_error(format!("failed to update Cursor auth file: {error}")))?;
@@ -213,5 +221,94 @@ mod tests {
         let payload = URL_SAFE_NO_PAD.encode(br#"{"exp":4102444800,"sub":"user"}"#);
         let claims = jwt_claims(&format!("x.{payload}.y")).unwrap();
         assert_eq!(claims["sub"], "user");
+    }
+
+    fn jwt(exp: u64) -> String {
+        let payload = URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{exp}}}"#));
+        format!("x.{payload}.y")
+    }
+
+    fn temp_path(tag: &str) -> PathBuf {
+        std::env::temp_dir()
+            .join(format!(
+                "shunt-cursor-auth-{tag}-{}",
+                SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ))
+            .join("cursor-auth.json")
+    }
+
+    #[tokio::test]
+    async fn refresh_response_without_token_preserves_existing_refresh_token() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // Cursor's refresh may omit refreshToken; the existing one stays valid
+        // (RFC 6749 §6) and must survive the writeback so the next refresh works.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/refresh"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "accessToken": jwt(4_000_000_000)
+            })))
+            .mount(&server)
+            .await;
+
+        let file = temp_path("preserve");
+        write_auth(
+            &file,
+            &StoredCursorAuth {
+                access_token: jwt(0),
+                refresh_token: Some("old-refresh".to_string()),
+                api_key: None,
+            },
+        )
+        .unwrap();
+
+        let store = CursorAuthStore::new(file.clone(), reqwest::Client::new(), server.uri());
+        let cred = store.get_valid().await.unwrap();
+        assert!(token_is_valid(&cred.access_token, SystemTime::now()));
+
+        // The old refresh token was retained, not dropped.
+        let stored: StoredCursorAuth = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        assert_eq!(stored.refresh_token.as_deref(), Some("old-refresh"));
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn refresh_response_with_token_rotates_it() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // When Cursor does return a new refreshToken, it replaces the old one.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/refresh"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "accessToken": jwt(4_000_000_000),
+                "refreshToken": "new-refresh"
+            })))
+            .mount(&server)
+            .await;
+
+        let file = temp_path("rotate");
+        write_auth(
+            &file,
+            &StoredCursorAuth {
+                access_token: jwt(0),
+                refresh_token: Some("old-refresh".to_string()),
+                api_key: None,
+            },
+        )
+        .unwrap();
+
+        let store = CursorAuthStore::new(file.clone(), reqwest::Client::new(), server.uri());
+        store.get_valid().await.unwrap();
+
+        let stored: StoredCursorAuth = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        assert_eq!(stored.refresh_token.as_deref(), Some("new-refresh"));
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
     }
 }
