@@ -1033,7 +1033,8 @@ provider = "kimi"
     #[test]
     fn yaml_adds_a_provider_and_merges_builtin_overrides() {
         let dir = std::env::temp_dir().join(format!(
-            "shunt-config-yaml-test-{}",
+            "shunt-config-yaml-test-{}-{}",
+            std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
