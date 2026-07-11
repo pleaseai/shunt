@@ -221,8 +221,11 @@ mod tests {
 
     use arc_swap::ArcSwap;
 
-    use super::{reload, RuntimeState, SharedState};
-    use crate::config::Config;
+    use super::{
+        event_touches_path, reload, sentry_changed, spawn_reload_watchers, RuntimeState,
+        SharedState,
+    };
+    use crate::config::{Config, SentryConfig};
 
     /// Unique temp dir per test so concurrent `cargo test` runs never collide.
     fn temp_dir(tag: &str) -> std::path::PathBuf {
@@ -363,5 +366,127 @@ mod tests {
         // ...but the operator was warned it requires a restart to take effect.
         assert!(logs.contains("server.bind changed"));
         assert!(logs.contains("requires a restart"));
+    }
+
+    #[test]
+    fn sentry_change_warns_but_reload_still_succeeds() {
+        let dir = temp_dir("sentry");
+        let _guard = TempDirGuard(dir.clone());
+        let path = dir.join("shunt.toml");
+
+        // Start with no [sentry] section.
+        std::fs::write(&path, "[server]\ndefault_provider = \"anthropic\"\n").unwrap();
+        let shared = shared_from(Config::load(Some(&path)).unwrap());
+
+        // Add a (disabled, empty-DSN) [sentry] section: a change that only takes
+        // effect on restart, so the reload succeeds but warns.
+        std::fs::write(
+            &path,
+            "[server]\ndefault_provider = \"anthropic\"\n\n[sentry]\ndsn = \"\"\n",
+        )
+        .unwrap();
+        let logs = capture_logs(|| {
+            reload(&shared, Some(&path)).expect("reload succeeds despite sentry change");
+        });
+
+        assert!(shared.load().config.sentry.is_some());
+        assert!(logs.contains("[sentry] configuration changed"));
+        assert!(logs.contains("requires a restart"));
+    }
+
+    #[test]
+    fn sentry_changed_compares_presence_and_fields() {
+        let base = SentryConfig {
+            dsn: "https://public@o0.ingest.sentry.io/1".to_string(),
+            environment: Some("prod".to_string()),
+            metrics: false,
+        };
+        // Same values ⇒ unchanged; presence changes and field changes ⇒ changed.
+        assert!(!sentry_changed(None, None));
+        assert!(!sentry_changed(Some(&base), Some(&base.clone())));
+        assert!(sentry_changed(None, Some(&base)));
+        assert!(sentry_changed(Some(&base), None));
+
+        let other_dsn = SentryConfig {
+            dsn: "https://public@o0.ingest.sentry.io/2".to_string(),
+            ..base.clone()
+        };
+        assert!(sentry_changed(Some(&base), Some(&other_dsn)));
+        let other_env = SentryConfig {
+            environment: None,
+            ..base.clone()
+        };
+        assert!(sentry_changed(Some(&base), Some(&other_env)));
+        let other_metrics = SentryConfig {
+            metrics: true,
+            ..base.clone()
+        };
+        assert!(sentry_changed(Some(&base), Some(&other_metrics)));
+    }
+
+    #[test]
+    fn event_touches_path_matches_file_and_ignores_siblings() {
+        let dir = std::path::Path::new("/etc/shunt");
+        let config = dir.join("shunt.toml");
+
+        // Exact path match.
+        let exact = notify::Event::new(notify::EventKind::Any).add_path(config.clone());
+        assert!(event_touches_path(&exact, &config));
+
+        // Same filename under a different directory (atomic-rename / ConfigMap
+        // symlink swap surfaces the final component).
+        let by_name =
+            notify::Event::new(notify::EventKind::Any).add_path(dir.join("..data/shunt.toml"));
+        assert!(event_touches_path(&by_name, &config));
+
+        // An unrelated sibling in the watched directory must be ignored.
+        let sibling = notify::Event::new(notify::EventKind::Any).add_path(dir.join("other.toml"));
+        assert!(!event_touches_path(&sibling, &config));
+    }
+
+    #[test]
+    fn from_config_rejects_invalid_config() {
+        // default_provider pointing at an unknown provider fails validation, so
+        // building runtime state from it errors rather than swapping in bad state.
+        let mut config = Config::default();
+        config.server.default_provider = "nope".to_string();
+        // `RuntimeState` is not `Debug`, so match rather than `expect_err`.
+        let error = match RuntimeState::from_config(config) {
+            Ok(_) => panic!("invalid config must fail"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("unknown provider: nope"));
+    }
+
+    #[tokio::test]
+    async fn file_watch_task_hot_reloads_on_file_change() {
+        let dir = temp_dir("watch");
+        let _guard = TempDirGuard(dir.clone());
+        let path = dir.join("shunt.toml");
+
+        std::fs::write(&path, "[server]\ndefault_provider = \"anthropic\"\n").unwrap();
+        let shared = shared_from(Config::load(Some(&path)).unwrap());
+        assert_eq!(shared.load().config.server.default_provider, "anthropic");
+
+        // Start the watchers (SIGHUP + file watch) against the real file, then
+        // change the file and wait for the debounced watcher to hot-swap it.
+        spawn_reload_watchers(shared.clone(), Some(path.clone())).await;
+
+        std::fs::write(&path, "[server]\ndefault_provider = \"openai\"\n").unwrap();
+
+        // Poll for the reload rather than sleeping a fixed time: filesystem
+        // notifications and the debounce window make timing non-deterministic.
+        let mut reloaded = false;
+        for _ in 0..80 {
+            if shared.load().config.server.default_provider == "openai" {
+                reloaded = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert!(
+            reloaded,
+            "file watcher should have hot-reloaded the changed config"
+        );
     }
 }
