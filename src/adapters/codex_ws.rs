@@ -78,7 +78,7 @@ type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 /// is only ever replayed on the connection that produced it.
 struct PoolEntry {
     ws: std::sync::Arc<AsyncMutex<WsStream>>,
-    created_at: Instant,
+    last_used_at: Mutex<Instant>,
     continuation: Mutex<Option<StoredContinuation>>,
 }
 
@@ -86,7 +86,7 @@ impl PoolEntry {
     fn new(stream: WsStream) -> std::sync::Arc<Self> {
         std::sync::Arc::new(Self {
             ws: std::sync::Arc::new(AsyncMutex::new(stream)),
-            created_at: Instant::now(),
+            last_used_at: Mutex::new(Instant::now()),
             continuation: Mutex::new(None),
         })
     }
@@ -109,15 +109,15 @@ pub fn invalidate_pool_key(key: &str) {
 
 fn pool_insert(key: String, entry: std::sync::Arc<PoolEntry>) {
     let mut guard = POOL.lock().unwrap();
-    // Drop expired entries and enforce the size cap before inserting.
-    guard.retain(|_, entry| entry.created_at.elapsed() < POOL_IDLE_TTL);
+    // Drop idle entries and enforce the size cap before inserting.
+    guard.retain(|_, entry| entry.last_used_at.lock().unwrap().elapsed() < POOL_IDLE_TTL);
     if guard.len() >= MAX_POOL_ENTRIES {
-        // Evict the actual oldest connection by creation time. `HashMap` iteration
-        // order is unspecified, so `keys().next()` would drop an arbitrary (possibly
-        // freshly-established, actively-reused) entry instead of the stalest one.
+        // Evict the least recently used connection. `HashMap` iteration order is
+        // unspecified, so `keys().next()` would drop an arbitrary (possibly active)
+        // entry instead of the stalest one.
         if let Some(oldest) = guard
             .iter()
-            .min_by_key(|(_, entry)| entry.created_at)
+            .min_by_key(|(_, entry)| *entry.last_used_at.lock().unwrap())
             .map(|(key, _)| key.clone())
         {
             guard.remove(&oldest);
@@ -315,6 +315,7 @@ pub async fn begin(
             // (commonly idle-closed), so evict and open a fresh handshake — where
             // the stored `previous_response_id` no longer applies.
             if guard.send(Message::Ping(Vec::new())).await.is_ok() {
+                *entry.last_used_at.lock().unwrap() = Instant::now();
                 return Ok(Turn {
                     entry,
                     guard,
@@ -423,6 +424,7 @@ async fn run_reader(ctx: ReaderCtx, tx: mpsc::Sender<Result<ResponseEvent, Codex
                 };
                 *entry.continuation.lock().unwrap() = Some(stored);
             }
+            *entry.last_used_at.lock().unwrap() = Instant::now();
             if let Some(key) = pool_key {
                 // A pooled connection is already registered; a fresh one is added
                 // now that it has proven healthy. Its continuation was updated above.
