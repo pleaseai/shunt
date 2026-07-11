@@ -1,14 +1,19 @@
 use axum::{
     body::{Body, Bytes},
-    http::{HeaderMap, Response, StatusCode, Uri},
+    http::{HeaderMap, HeaderValue, Response, StatusCode, Uri},
     response::IntoResponse,
 };
 use futures_util::{stream, StreamExt};
 use serde_json::{json, Value};
 
 use crate::{
-    adapters::{Adapter, AdapterError, AdapterFuture},
+    adapters::{
+        codex_continuation,
+        codex_ws::{self, CodexWsError, CodexWsEvents},
+        Adapter, AdapterError, AdapterFuture,
+    },
     auth::{resolve_credential, Credential},
+    config::AuthMode,
     error::ShuntError,
     model::responses::{
         map_error_value, parse_sse_events, translate_request, AnthropicSseMachine, ResponseEvent,
@@ -28,18 +33,34 @@ impl Adapter for ResponsesAdapter {
         headers: &'a HeaderMap,
         body: Vec<u8>,
     ) -> AdapterFuture<'a> {
+        // The session id keys the websocket connection pool (issue #32) so turns
+        // of one Claude Code conversation reuse a live connection. Keep an owned
+        // value because the adapter future may outlive the borrowed header map.
         let session_id = headers
             .get("x-claude-code-session-id")
-            .and_then(|value| value.to_str().ok());
-        Box::pin(async move { forward(state, route, body, session_id).await })
+            .and_then(|value| value.to_str().ok())
+            .filter(|session_id| !session_id.is_empty());
+        let pool_key = session_id.map(|session_id| {
+            headers
+                .get("x-shunt-inbound-client")
+                .and_then(|value| value.to_str().ok())
+                .map_or_else(
+                    || session_id.to_string(),
+                    |client| format!("{client}:{session_id}"),
+                )
+        });
+        Box::pin(async move {
+            forward(state, route, pool_key, session_id.map(str::to_string), body).await
+        })
     }
 }
 
 async fn forward(
     state: AppState,
     route: Route,
+    pool_key: Option<String>,
+    session_id: Option<String>,
     body: Vec<u8>,
-    session_id: Option<&str>,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let request_json = serde_json::from_slice::<Value>(&body).ok();
     let client_wants_stream = request_json
@@ -63,30 +84,87 @@ async fn forward(
         "responses upstream request"
     );
     let credential = resolve_credential(&state.config, &route, &state.http_client).await?;
-    let upstream = request_builder(&state, &route, credential, session_id)
+    let auth = state
+        .config
+        .provider(&route.provider)
+        .map(|provider| provider.auth)
+        .unwrap_or_default();
+    // Codex WebSocket v2 transport (issue #32), opt-in per provider and only for
+    // the ChatGPT/Codex backend. HTTP stays the path for every other upstream, and
+    // is the documented safety net: a websocket connect/handshake/send failure —
+    // all of which happen before any event streams to the client — transparently
+    // falls back to the HTTP path below, so enabling the flag can never do worse
+    // than plain HTTP. (A mid-stream failure is surfaced as an Anthropic error
+    // event instead; by then the response has already begun.)
+    if state.config.codex_websocket_enabled(&route.provider) {
+        match forward_websocket(
+            &state,
+            &route,
+            pool_key.as_deref(),
+            upstream_body.clone(),
+            credential.clone(),
+            auth,
+            client_wants_stream,
+            thinking_enabled,
+        )
+        .await
+        {
+            Ok(response) => return Ok(response),
+            Err(error) => {
+                tracing::warn!(
+                    provider = %route.provider,
+                    error = %error.message,
+                    "codex websocket failed before streaming; falling back to HTTP"
+                );
+            }
+        }
+    }
+    forward_http(
+        &state,
+        &route,
+        upstream_body,
+        credential,
+        auth,
+        client_wants_stream,
+        thinking_enabled,
+        session_id.as_deref(),
+    )
+    .await
+}
+
+/// Drive a turn over the HTTP Responses path. The default transport for every
+/// provider, and the fallback when the opt-in websocket transport fails to
+/// connect (see [`forward`]).
+#[allow(clippy::too_many_arguments)]
+async fn forward_http(
+    state: &AppState,
+    route: &Route,
+    upstream_body: Value,
+    credential: Credential,
+    auth: AuthMode,
+    client_wants_stream: bool,
+    thinking_enabled: bool,
+    session_id: Option<&str>,
+) -> Result<(StatusCode, axum::response::Response), AdapterError> {
+    let upstream = request_builder(state, route, credential, session_id)
         .body(upstream_body.to_string())
         .send()
         .await
         .map_err(|error| own_error(error.to_string()))?;
     let status = upstream.status();
     if !status.is_success() {
-        let auth = state
-            .config
-            .provider(&route.provider)
-            .map(|provider| provider.auth)
-            .unwrap_or_default();
         return Err(mapped_upstream_error(status, upstream, auth).await);
     }
     if client_wants_stream {
         let keepalive = std::time::Duration::from_secs(state.config.server.sse_keepalive_seconds);
         Ok((
             StatusCode::OK,
-            stream_response(upstream, route.model, thinking_enabled, keepalive),
+            stream_response(upstream, route.model.clone(), thinking_enabled, keepalive),
         ))
     } else {
         Ok((
             StatusCode::OK,
-            json_response(upstream, route.model, thinking_enabled).await?,
+            json_response(upstream, route.model.clone(), thinking_enabled).await?,
         ))
     }
 }
@@ -159,6 +237,331 @@ async fn json_response(
     Ok((StatusCode::OK, axum::Json(machine.final_json())).into_response())
 }
 
+/// Drive a turn over the Codex Responses WebSocket v2 transport (issue #32).
+/// Reuses the session's pooled connection and, when the current input is an
+/// append-only extension of the previous turn, sends only the delta with
+/// `previous_response_id` (the payload-reduction lever). Events are re-encoded
+/// through the same [`AnthropicSseMachine`] the HTTP path uses; a rejected
+/// handshake is re-shaped exactly like an HTTP upstream error.
+#[allow(clippy::too_many_arguments)]
+async fn forward_websocket(
+    state: &AppState,
+    route: &Route,
+    pool_key: Option<&str>,
+    upstream_body: Value,
+    credential: Credential,
+    auth: AuthMode,
+    client_wants_stream: bool,
+    thinking_enabled: bool,
+) -> Result<(StatusCode, axum::response::Response), AdapterError> {
+    let pool_key = pool_key.filter(|key| !key.is_empty());
+    let http_url = responses_url(&state.config, &route.provider);
+    let ws_url = codex_ws::to_websocket_url(&http_url).map_err(ws_transport_error)?;
+    let ctx = WsTurnContext {
+        ws_url,
+        pool_key,
+        credential,
+        auth,
+        signature: codex_continuation::signature(&upstream_body),
+        full_input: upstream_body
+            .get("input")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default(),
+        upstream_body,
+    };
+    tracing::debug!(provider = %route.provider, ws_url = %ctx.ws_url, pool_key = pool_key.unwrap_or(""), "opening codex websocket");
+
+    let (buffered, events) = open_ws_turn(&ctx).await?;
+    if client_wants_stream {
+        let keepalive = std::time::Duration::from_secs(state.config.server.sse_keepalive_seconds);
+        Ok((
+            StatusCode::OK,
+            stream_events_response(
+                buffered,
+                events,
+                route.model.clone(),
+                thinking_enabled,
+                keepalive,
+            ),
+        ))
+    } else {
+        Ok((
+            StatusCode::OK,
+            json_events_response(buffered, events, route.model.clone(), thinking_enabled).await,
+        ))
+    }
+}
+
+/// Everything needed to (re)start a websocket turn for a request.
+struct WsTurnContext<'a> {
+    ws_url: String,
+    pool_key: Option<&'a str>,
+    credential: Credential,
+    auth: AuthMode,
+    signature: String,
+    full_input: Vec<Value>,
+    upstream_body: Value,
+}
+
+/// A buffered first event, peeked to catch a rejected `previous_response_id`.
+type BufferedEvent = Option<Result<ResponseEvent, CodexWsError>>;
+
+/// Open a websocket turn, applying `previous_response_id` continuation when the
+/// connection is reused and the input is an append-only extension. If the backend
+/// rejects the replayed id, retry once with the full input on a fresh connection.
+/// Returns a peeked first event (only when continuation was used) plus the rest of
+/// the stream.
+async fn open_ws_turn(
+    ctx: &WsTurnContext<'_>,
+) -> Result<(BufferedEvent, CodexWsEvents), AdapterError> {
+    let (mut events, used_continuation) = start_ws_turn(ctx, true).await?;
+    if !used_continuation {
+        return Ok((None, events));
+    }
+    // Peek the first event: a rejected previous_response_id arrives before any
+    // output, so we can transparently retry with the full input.
+    match events.recv().await {
+        Some(Err(error)) if error.previous_response_missing => {
+            tracing::info!("codex previous_response_id rejected; retrying with full input");
+            let (events, _) = start_ws_turn(ctx, false).await?;
+            Ok((None, events))
+        }
+        buffered => Ok((buffered, events)),
+    }
+}
+
+/// Begin a turn on the session's connection and send its frame. When
+/// `allow_continuation` and the reused connection's stored state make the input an
+/// append-only extension, send only the delta with `previous_response_id`;
+/// otherwise send the full input. Returns the event stream and whether the delta
+/// path was taken.
+async fn start_ws_turn(
+    ctx: &WsTurnContext<'_>,
+    allow_continuation: bool,
+) -> Result<(CodexWsEvents, bool), AdapterError> {
+    let headers = websocket_headers(ctx.credential.clone())?;
+    let turn = codex_ws::begin(&ctx.ws_url, headers, ctx.pool_key)
+        .await
+        .map_err(|error| ws_connect_error(error, ctx.auth))?;
+
+    let mut frame_body = ctx.upstream_body.clone();
+    let mut used_continuation = false;
+    if allow_continuation {
+        if let Some(stored) = turn.stored_continuation() {
+            if let Some(decision) = codex_continuation::decide(&stored, &ctx.upstream_body) {
+                if let Some(object) = frame_body.as_object_mut() {
+                    object.insert("input".to_string(), json!(decision.input_delta));
+                    object.insert(
+                        "previous_response_id".to_string(),
+                        json!(decision.previous_response_id),
+                    );
+                    if let Some(turn_state) = stored
+                        .turn_state
+                        .clone()
+                        .or_else(|| turn.handshake_turn_state().map(str::to_string))
+                    {
+                        let metadata = object
+                            .entry("client_metadata".to_string())
+                            .or_insert_with(|| json!({}));
+                        if let Some(metadata) = metadata.as_object_mut() {
+                            metadata.insert("x-codex-turn-state".to_string(), json!(turn_state));
+                        }
+                    }
+                }
+                used_continuation = true;
+                tracing::debug!(
+                    delta_items = decision.input_delta.len(),
+                    "codex websocket continuing with previous_response_id"
+                );
+            }
+        }
+    }
+
+    let frame = codex_ws::response_create_frame(frame_body);
+    let record = codex_ws::RecordPlan {
+        signature: ctx.signature.clone(),
+        request_input: ctx.full_input.clone(),
+    };
+    let events = turn
+        .stream(&frame, record)
+        .await
+        .map_err(|error| ws_connect_error(error, ctx.auth))?;
+    Ok((events, used_continuation))
+}
+
+/// Codex identity + beta-protocol headers for the websocket upgrade. Mirrors the
+/// ChatGPT/Codex arm of [`request_builder`] but swaps `OpenAI-Beta` for the
+/// websocket protocol value. Only the ChatGPT OAuth credential reaches here
+/// (the transport is gated to that backend); other credential shapes still send
+/// their bearer so a misconfiguration fails upstream rather than silently
+/// unauthenticated.
+fn websocket_headers(credential: Credential) -> Result<HeaderMap, AdapterError> {
+    let mut headers = HeaderMap::new();
+    let mut set = |name: &'static str, value: String| -> Result<(), AdapterError> {
+        let value = HeaderValue::from_str(&value).map_err(|error| {
+            let message = format!("invalid {name} header: {error}");
+            let response = ShuntError::bad_gateway(message.clone()).into_response();
+            AdapterError {
+                message,
+                response: Box::new(response),
+            }
+        })?;
+        headers.insert(name, value);
+        Ok(())
+    };
+    set("openai-beta", codex_ws::WEBSOCKET_BETA_PROTOCOL.to_string())?;
+    match credential {
+        Credential::ChatGptOAuth {
+            access_token,
+            account_id,
+        } => {
+            set("authorization", format!("Bearer {access_token}"))?;
+            set("chatgpt-account-id", account_id)?;
+            set("originator", "codex_cli_rs".to_string())?;
+            set("user-agent", CODEX_USER_AGENT.to_string())?;
+            set("version", CODEX_CLIENT_VERSION.to_string())?;
+        }
+        Credential::ApiKey { value, .. } => set("authorization", format!("Bearer {value}"))?,
+        Credential::XaiOauth { access_token } => {
+            set("authorization", format!("Bearer {access_token}"))?
+        }
+        Credential::Passthrough => {}
+    }
+    Ok(headers)
+}
+
+fn ws_transport_error(error: CodexWsError) -> AdapterError {
+    let response = ShuntError::bad_gateway(error.message.clone()).into_response();
+    AdapterError {
+        message: error.message,
+        response: Box::new(response),
+    }
+}
+
+/// Map a websocket handshake failure to an [`AdapterError`]. A refused upgrade
+/// carries an HTTP status/body, so it re-shapes through the shared
+/// [`build_upstream_error`]; a pure transport failure (DNS, TLS, timeout) maps to
+/// 502 like a failed HTTP send.
+fn ws_connect_error(error: CodexWsError, auth: AuthMode) -> AdapterError {
+    match error.status {
+        Some(status) => build_upstream_error(status, error.retry_after, error.body, auth),
+        None => {
+            tracing::warn!(reason = %error.message, "codex websocket transport failure");
+            ws_transport_error(error)
+        }
+    }
+}
+
+/// Stream translated events to the client as Anthropic SSE. Mirrors
+/// [`stream_response`] but reads from the websocket event channel; a mid-stream
+/// transport error is surfaced as an Anthropic `error` event so the client sees a
+/// reason rather than a silent truncation. `buffered` is the peeked first event,
+/// if any, replayed before the rest of the channel.
+fn stream_events_response(
+    buffered: BufferedEvent,
+    events: CodexWsEvents,
+    model: String,
+    thinking_enabled: bool,
+    keepalive: std::time::Duration,
+) -> axum::response::Response {
+    let machine = AnthropicSseMachine::new(model, thinking_enabled);
+    let output = stream::unfold(
+        (buffered, events, machine, false),
+        |(mut buffered, mut events, mut machine, finished)| async move {
+            if finished {
+                return None;
+            }
+            loop {
+                let item = match buffered.take() {
+                    Some(item) => Some(item),
+                    None => events.recv().await,
+                };
+                match item {
+                    Some(Ok(event)) => {
+                        let data = machine.apply(event).into_iter().collect::<String>();
+                        if !data.is_empty() {
+                            return Some((
+                                Ok::<_, std::convert::Infallible>(Bytes::from(data)),
+                                (buffered, events, machine, false),
+                            ));
+                        }
+                    }
+                    Some(Err(error)) => {
+                        return Some((
+                            Ok(Bytes::from(ws_error_sse(&error))),
+                            (buffered, events, machine, true),
+                        ));
+                    }
+                    None => {
+                        let data = machine.finish().join("");
+                        if data.is_empty() {
+                            return None;
+                        }
+                        return Some((Ok(Bytes::from(data)), (buffered, events, machine, true)));
+                    }
+                }
+            }
+        },
+    );
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "text/event-stream")
+        .body(Body::from_stream(crate::keepalive::with_pings(
+            output, keepalive,
+        )))
+        .expect("response builder uses valid status and headers")
+        .into_response()
+}
+
+/// Collect the full websocket event stream into a single Anthropic message for a
+/// non-streaming client. A mid-stream transport error returns a gateway error
+/// instead of presenting partial output as a successful response. `buffered` is
+/// the peeked first event, if any.
+async fn json_events_response(
+    buffered: BufferedEvent,
+    mut events: CodexWsEvents,
+    model: String,
+    thinking_enabled: bool,
+) -> axum::response::Response {
+    let mut machine = AnthropicSseMachine::new(model, thinking_enabled);
+    let mut buffered = buffered;
+    loop {
+        let item = match buffered.take() {
+            Some(item) => Some(item),
+            None => events.recv().await,
+        };
+        match item {
+            Some(Ok(event)) => {
+                let _ = machine.apply(event);
+            }
+            Some(Err(error)) => {
+                tracing::warn!(error = %error.message, "codex websocket stream error");
+                let message = if error.body.is_empty() {
+                    error.message
+                } else {
+                    error.body
+                };
+                return ShuntError::bad_gateway(message).into_response();
+            }
+            None => break,
+        }
+    }
+    (StatusCode::OK, axum::Json(machine.final_json())).into_response()
+}
+
+/// Render a websocket transport error as an Anthropic `error` SSE event.
+fn ws_error_sse(error: &CodexWsError) -> String {
+    let message = if error.body.is_empty() {
+        error.message.clone()
+    } else {
+        error.body.clone()
+    };
+    let value = map_error_value(&json!({ "message": message }), StatusCode::BAD_GATEWAY);
+    format!("event: error\ndata: {value}\n\n")
+}
+
 async fn mapped_upstream_error(
     status: StatusCode,
     upstream: reqwest::Response,
@@ -172,6 +575,19 @@ async fn mapped_upstream_error(
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
     let text = upstream.text().await.unwrap_or_default();
+    build_upstream_error(status, retry_after, text, auth)
+}
+
+/// Re-shape an upstream failure (status + body + `retry-after`) into an
+/// Anthropic-shaped [`AdapterError`]. Split out of [`mapped_upstream_error`] so
+/// both the HTTP path (which reads a `reqwest::Response`) and the websocket path
+/// (which surfaces the same fields from a failed handshake) share one mapping.
+fn build_upstream_error(
+    status: StatusCode,
+    retry_after: Option<String>,
+    text: String,
+    auth: crate::config::AuthMode,
+) -> AdapterError {
     tracing::warn!(%status, ?auth, upstream_error_body = %text, "responses upstream error");
     let value =
         if status == StatusCode::UNAUTHORIZED && auth == crate::config::AuthMode::ChatgptOauth {
