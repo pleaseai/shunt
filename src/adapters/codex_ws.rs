@@ -113,7 +113,14 @@ fn pool_insert(key: String, entry: std::sync::Arc<PoolEntry>) {
     let now = Instant::now();
     guard.retain(|_, entry| now.duration_since(entry.created_at) < POOL_IDLE_TTL);
     if guard.len() >= MAX_POOL_ENTRIES {
-        if let Some(oldest) = guard.keys().next().cloned() {
+        // Evict the actual oldest connection by creation time. `HashMap` iteration
+        // order is unspecified, so `keys().next()` would drop an arbitrary (possibly
+        // freshly-established, actively-reused) entry instead of the stalest one.
+        if let Some(oldest) = guard
+            .iter()
+            .min_by_key(|(_, entry)| entry.created_at)
+            .map(|(key, _)| key.clone())
+        {
             guard.remove(&oldest);
         }
     }
@@ -262,10 +269,21 @@ impl Turn {
         let payload = serde_json::to_string(frame).map_err(|error| {
             CodexWsError::transport(format!("failed to encode ws frame: {error}"))
         })?;
-        guard
-            .send(Message::Text(payload))
-            .await
-            .map_err(|error| CodexWsError::transport(format!("websocket send failed: {error}")))?;
+        if let Err(error) = guard.send(Message::Text(payload)).await {
+            // The liveness `Ping` in `begin` can false-positive on a half-open
+            // socket (the send buffers locally). If the real frame send then fails
+            // on a reused connection, evict it here so the next turn on this session
+            // opens a fresh socket instead of re-probing the same dead entry until
+            // its TTL expires. Mirrors the eviction in `begin` and `run_reader`.
+            if reused {
+                if let Some(key) = &pool_key {
+                    invalidate_pool_key(key);
+                }
+            }
+            return Err(CodexWsError::transport(format!(
+                "websocket send failed: {error}"
+            )));
+        }
         let (tx, rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
         tokio::spawn(run_reader(
             ReaderCtx {
@@ -494,9 +512,28 @@ async fn stream_events(
                     .await;
                 return Outcome::Failed;
             }
-            Some(Ok(Message::Close(_))) | None => {
-                // Closed before a terminal event: the machine will still emit a
-                // clean end_turn on finish, so end the channel quietly.
+            Some(Ok(Message::Close(frame))) => {
+                // Closed before a terminal event: the turn was truncated, not
+                // completed. Surface it as a transport error so the client sees an
+                // Anthropic `error` event (or the JSON path logs a failure) rather
+                // than a silently short, fake-success response.
+                tracing::warn!(close_frame = ?frame, "codex websocket closed before a terminal event");
+                let _ = tx
+                    .send(Err(CodexWsError::transport(
+                        "codex websocket closed before the response completed",
+                    )))
+                    .await;
+                return Outcome::Failed;
+            }
+            None => {
+                // Stream ended (EOF / dropped connection) before a terminal event —
+                // same truncation case as an explicit Close.
+                tracing::warn!("codex websocket stream ended before a terminal event");
+                let _ = tx
+                    .send(Err(CodexWsError::transport(
+                        "codex websocket ended before the response completed",
+                    )))
+                    .await;
                 return Outcome::Failed;
             }
             Some(Ok(Message::Pong(_))) | Some(Ok(Message::Frame(_))) => {}
@@ -846,6 +883,70 @@ mod tests {
 
         clear_pool_for_tests();
         server.abort();
+    }
+
+    /// A socket that closes before a terminal event must surface a transport error
+    /// on the channel — not end quietly — so the client sees a truncation failure
+    /// instead of a silently short, fake-success response.
+    #[tokio::test]
+    async fn close_before_terminal_event_surfaces_error() {
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            let Some(Ok(Message::Text(_))) = ws.next().await else {
+                panic!("expected a client frame");
+            };
+            // One non-terminal event, then close WITHOUT a terminal event.
+            ws.send(Message::Text(
+                r#"{"type":"response.created","response":{"id":"resp_1"}}"#.to_string(),
+            ))
+            .await
+            .unwrap();
+            ws.send(Message::Close(None)).await.unwrap();
+        });
+
+        let frame = response_create_frame(serde_json::json!({"model": "m", "input": []}));
+        let mut events = open_simple(
+            &format!("ws://{addr}/codex/responses"),
+            HeaderMap::new(),
+            &frame,
+            None,
+        )
+        .await
+        .expect("websocket should connect");
+
+        let mut saw_created = false;
+        let mut saw_error = false;
+        while let Some(item) = events.recv().await {
+            match item {
+                Ok(event) => {
+                    if event.event.as_deref() == Some("response.created") {
+                        saw_created = true;
+                    }
+                }
+                Err(error) => {
+                    assert!(
+                        error.message.contains("closed") || error.message.contains("ended"),
+                        "unexpected error: {}",
+                        error.message
+                    );
+                    saw_error = true;
+                }
+            }
+        }
+        assert!(
+            saw_created,
+            "the pre-close event was forwarded to the client"
+        );
+        assert!(
+            saw_error,
+            "a close before a terminal event surfaced a transport error"
+        );
+        server.await.unwrap();
     }
 
     /// Drain a receiver to exhaustion, returning how many `Ok` events arrived.

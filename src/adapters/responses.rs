@@ -414,7 +414,14 @@ fn websocket_headers(credential: Credential) -> Result<HeaderMap, AdapterError> 
 fn ws_connect_error(error: CodexWsError, auth: AuthMode) -> AdapterError {
     match error.status {
         Some(status) => build_upstream_error(status, error.retry_after, error.body, auth),
-        None => own_error(error.message),
+        None => {
+            // `own_error` collapses the detail into a generic message for the client
+            // envelope, so log the real transport reason (timeout, TLS, DNS, encode
+            // failure) here — otherwise the fallback-to-HTTP log downstream is
+            // content-free and an operator can't tell why the socket failed.
+            tracing::warn!(reason = %error.message, "codex websocket transport failure");
+            own_error(error.message)
+        }
     }
 }
 
