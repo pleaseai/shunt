@@ -151,14 +151,21 @@ fn spawn_file_watch_task(shared: SharedState, path: std::path::PathBuf) {
         .map(std::path::Path::to_path_buf)
         .unwrap_or_else(|| std::path::PathBuf::from("."));
 
-    // notify calls the handler on its own thread with std types; forward raw
-    // events onto a tokio channel so the async task can debounce them.
+    // notify calls the handler on its own thread with std types; forward only
+    // events that touch the config file onto a tokio channel so the async task
+    // can debounce them. Filtering here (rather than in the async task) means an
+    // unrelated sibling write in the watched directory never reaches the debounce
+    // timer and so cannot reset it — a continuously-active writer in the same
+    // directory can no longer starve a real config change indefinitely.
+    let watch_path = path.clone();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<notify::Event>();
     let mut watcher = match notify::recommended_watcher(
         move |result: notify::Result<notify::Event>| {
             if let Ok(event) = result {
-                // A closed receiver just means the server is shutting down.
-                let _ = tx.send(event);
+                if event_touches_path(&event, &watch_path) {
+                    // A closed receiver just means the server is shutting down.
+                    let _ = tx.send(event);
+                }
             }
         },
     ) {
@@ -179,15 +186,15 @@ fn spawn_file_watch_task(shared: SharedState, path: std::path::PathBuf) {
         // event delivery.
         let _watcher = watcher;
         loop {
-            // Block until an event that touches the config file arrives.
-            let Some(event) = rx.recv().await else {
+            // Block until a config-relevant event arrives. Sibling events are
+            // filtered out in the watcher callback, so every event delivered here
+            // touches the config file and may legitimately extend the debounce.
+            if rx.recv().await.is_none() {
                 break;
-            };
-            if !event_touches_path(&event, &path) {
-                continue;
             }
             // Debounce: keep draining until the writes go quiet, coalescing a
-            // burst of events into a single reload.
+            // burst of events into a single reload. Only config-relevant events
+            // reach the channel, so a sibling write can never restart this timer.
             loop {
                 match tokio::time::timeout(DEBOUNCE, rx.recv()).await {
                     Ok(Some(_)) => continue, // more events; keep waiting for quiet
@@ -206,13 +213,18 @@ fn spawn_file_watch_task(shared: SharedState, path: std::path::PathBuf) {
 /// Whether a filesystem event concerns the config file. Directory watching
 /// surfaces sibling files too, so filter by the config file's own path (matching
 /// its final component covers atomic renames whose event carries the temp path
-/// then the final path).
+/// then the final path). A Kubernetes ConfigMap mount is a special case: the
+/// config symlink itself never fires an event on update — kubelet atomically
+/// swaps the `..data` symlink that the config path resolves through, so accept a
+/// `..data` event too or a mounted ConfigMap change would never hot-reload.
 fn event_touches_path(event: &notify::Event, path: &std::path::Path) -> bool {
     let name = path.file_name();
-    event
-        .paths
-        .iter()
-        .any(|event_path| event_path == path || (name.is_some() && event_path.file_name() == name))
+    let configmap_data = std::ffi::OsStr::new("..data");
+    event.paths.iter().any(|event_path| {
+        event_path == path
+            || (name.is_some() && event_path.file_name() == name)
+            || event_path.file_name() == Some(configmap_data)
+    })
 }
 
 #[cfg(test)]
@@ -438,6 +450,13 @@ mod tests {
         let by_name =
             notify::Event::new(notify::EventKind::Any).add_path(dir.join("..data/shunt.toml"));
         assert!(event_touches_path(&by_name, &config));
+
+        // Kubernetes ConfigMap update: kubelet atomically swaps the `..data`
+        // symlink, and that rename — not the config symlink — is the only event
+        // that fires, so a bare `..data` event must count as touching the config.
+        let configmap_swap =
+            notify::Event::new(notify::EventKind::Any).add_path(dir.join("..data"));
+        assert!(event_touches_path(&configmap_swap, &config));
 
         // An unrelated sibling in the watched directory must be ignored.
         let sibling = notify::Event::new(notify::EventKind::Any).add_path(dir.join("other.toml"));
