@@ -1,0 +1,19 @@
+docs/m7-codex-websocket.md
+  s_4d8e37bad39f00::t_b1a25673052aa9 97-99,101-103
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "7aa68c03c479771b9d60c36c49db788d6cbbed15",
+  "prompts": {},
+  "sessions": {
+    "s_4d8e37bad39f00": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d5bd8ee3-f4ee-446d-9328-812b3ca0579e",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
