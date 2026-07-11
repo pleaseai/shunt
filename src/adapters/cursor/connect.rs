@@ -157,6 +157,10 @@ pub fn parse_connect_error(payload: &[u8]) -> Option<ConnectEndError> {
         .message
         .unwrap_or_else(|| "Connect error".to_string());
     let status = match code.as_str() {
+        // Preserve auth semantics so map_decode_error can surface 401/403 to the
+        // client instead of masking them as a generic 502 Bad Gateway.
+        "unauthenticated" => 401,
+        "permission_denied" => 403,
         "resource_exhausted" => 429,
         _ => 502,
     };
@@ -368,6 +372,21 @@ mod tests {
         let err = parse_connect_error(&payload).unwrap();
         assert_eq!(err.code, "unavailable");
         assert_eq!(err.status, 502);
+    }
+
+    #[test]
+    fn connect_auth_error_codes_map_to_http_auth_statuses() {
+        // Auth codes must keep their 401/403 semantics so the decode-error
+        // mapping surfaces them as authentication errors, not a generic 502.
+        for (code, expected) in [("unauthenticated", 401), ("permission_denied", 403)] {
+            let payload = serde_json::to_vec(&serde_json::json!({
+                "error": {"code": code, "message": "denied"}
+            }))
+            .unwrap();
+            let err = parse_connect_error(&payload).unwrap();
+            assert_eq!(err.code, code);
+            assert_eq!(err.status, expected);
+        }
     }
 
     #[test]

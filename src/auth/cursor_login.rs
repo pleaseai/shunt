@@ -110,8 +110,11 @@ fn open_url(url: &str) -> anyhow::Result<()> {
     let status = if cfg!(target_os = "macos") {
         std::process::Command::new("open").arg(url).status()?
     } else if cfg!(target_os = "windows") {
-        std::process::Command::new("cmd")
-            .args(["/c", "start", "", url])
+        // Open via rundll32 FileProtocolHandler rather than `cmd /c start`: the
+        // login URL contains `&` query separators, which cmd.exe would treat as
+        // command separators and truncate the URL.
+        std::process::Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", url])
             .status()?
     } else {
         std::process::Command::new("xdg-open").arg(url).status()?
