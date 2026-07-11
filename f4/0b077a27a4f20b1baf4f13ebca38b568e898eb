@@ -1,0 +1,22 @@
+src/adapters/responses.rs
+  s_4d8e37bad39f00::t_999963fd85d82c 444
+  s_4d8e37bad39f00::t_9c0fa3eaaac8bd 258
+  s_4d8e37bad39f00::t_67c5492368cdc7 427-434
+  s_4d8e37bad39f00::t_e6b7ae244fa9e2 41-42
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "f40b077a27a4f20b1baf4f13ebca38b568e898eb",
+  "prompts": {},
+  "sessions": {
+    "s_4d8e37bad39f00": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d5bd8ee3-f4ee-446d-9328-812b3ca0579e",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
