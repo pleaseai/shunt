@@ -11,6 +11,7 @@ use crate::{
     config::{Config, ConfigError},
     discovery, proxy,
     reload::{RuntimeState, SharedState},
+    routes,
 };
 
 #[derive(Clone)]
@@ -69,6 +70,7 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState), ConfigError
         .route("/", get(root_index))
         .route("/health", get(health))
         .route("/v1/models", get(discovery::get))
+        .route("/routes", get(routes::get))
         .route("/v1/messages", post(proxy::post))
         .route("/v1/messages/count_tokens", post(proxy::post))
         .with_state(state);
@@ -79,7 +81,7 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState), ConfigError
 /// which keeps the pre-existing liveness probe working.
 async fn root_index() -> String {
     format!(
-        "shunt v{} — Anthropic Messages proxy. Endpoints: /v1/models, /v1/messages, /v1/messages/count_tokens, /health\n",
+        "shunt v{} — Anthropic Messages proxy. Endpoints: /v1/models, /routes, /v1/messages, /v1/messages/count_tokens, /health\n",
         env!("CARGO_PKG_VERSION")
     )
 }
