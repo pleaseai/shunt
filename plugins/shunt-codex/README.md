@@ -51,8 +51,17 @@ and is configured to route the model ids above to the Codex provider:
 3. **Map the slugs** in your `shunt.toml` to the Codex provider (see
    [`shunt.toml.example`](https://github.com/pleaseai/shunt/blob/main/shunt.toml.example)):
    ```toml
+   # [[routes]] is a TOML array-of-tables: one block per model slug.
    [[routes]]
-   model = "gpt-5.6-sol"     # (and gpt-5.6-luna / gpt-5.6-terra)
+   model = "gpt-5.6-sol"
+   provider = "codex"
+
+   [[routes]]
+   model = "gpt-5.6-terra"
+   provider = "codex"
+
+   [[routes]]
+   model = "gpt-5.6-luna"
    provider = "codex"
    ```
 
@@ -79,6 +88,9 @@ Without a running shunt gateway mapping these ids, Claude Code will send the
 
 Or set every subagent to a Codex model for a session with
 `CLAUDE_CODE_SUBAGENT_MODEL=gpt-5.6-sol`.
+
+Both require a running shunt gateway with the slug routed to the Codex provider —
+see [Prerequisites](#prerequisites). Without it the request fails against Anthropic.
 
 ## License
 
