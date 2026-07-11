@@ -1,0 +1,19 @@
+src/adapters/codex_ws.rs
+  s_4d8e37bad39f00::t_4ef409927106cb 113-126
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "763960aef9ed11697843abb7234f3b81ad94f4cb",
+  "prompts": {},
+  "sessions": {
+    "s_4d8e37bad39f00": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d5bd8ee3-f4ee-446d-9328-812b3ca0579e",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
