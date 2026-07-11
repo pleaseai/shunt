@@ -1,19 +1,97 @@
 # shunt
 
+[![Crates.io](https://img.shields.io/crates/v/shunt-gateway.svg)](https://crates.io/crates/shunt-gateway)
+[![CI](https://github.com/pleaseai/shunt/actions/workflows/ci.yml/badge.svg)](https://github.com/pleaseai/shunt/actions/workflows/ci.yml)
 [![Socket Badge](https://socket.dev/api/badge/cargo/package/shunt-gateway)](https://socket.dev/cargo/package/shunt-gateway)
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=pleaseai_shunt&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=pleaseai_shunt)
 [![codecov](https://codecov.io/gh/pleaseai/shunt/graph/badge.svg)](https://codecov.io/gh/pleaseai/shunt)
-[![License](https://img.shields.io/crates/l/shunt-gateway.svg)](https://github.com/pleaseai/shunt#license)
+[![License](https://img.shields.io/crates/l/shunt-gateway.svg)](#license)
 
 > Shunt Claude Code to any model.
 
-`shunt` is a spec-compliant [Claude Code LLM gateway](https://code.claude.com/docs/en/llm-gateway-protocol): a transparent proxy that, for the **models you map**, diverts inference to another LLM provider at the **inference layer**. It routes by the request's `model` id — everything else passes through to Anthropic unchanged (the "shunt").
+`shunt` is a spec-compliant [Claude Code LLM gateway](https://code.claude.com/docs/en/llm-gateway-protocol): a transparent proxy that, for the **models you map**, diverts inference to another LLM provider at the **inference layer**. It routes by the request's `model` id — everything else passes through to Anthropic unchanged (the "shunt"; the fallback is configurable via `server.default_provider`).
 
 The name is the mechanism: an electrical/railway *shunt* diverts a selected part of the flow onto a parallel path. Here, a mapped model's inference is diverted to another provider while Claude Code's tools and skills stay intact.
 
-**Phase 1 target:** OpenAI / Codex / ChatGPT — translate Anthropic Messages ⇄ the OpenAI Responses API, over an OpenAI API key or a reused ChatGPT (`codex login`) subscription.
+It ships with **OpenAI**, **ChatGPT/Codex** (reuse your subscription via `codex login`), and **Anthropic** passthrough built in — and any Anthropic-Messages-compatible backend (Kimi, DeepSeek, GLM, MiniMax, OpenRouter, Vercel AI Gateway, …) is one TOML table away, no code changes.
 
-**Status:** private, early. May be open-sourced later. See [`docs/running.md`](docs/running.md) to build, configure, and connect Claude Code, and [`docs/implementation-plan.md`](docs/implementation-plan.md) for the design and milestones.
+## Install
+
+```bash
+# Homebrew (macOS / Linux)
+brew install pleaseai/tap/shunt
+
+# Cargo — the crate is `shunt-gateway`; the binary is still `shunt`
+cargo install shunt-gateway
+```
+
+Prebuilt binaries (macOS/Linux, arm64/x64) are attached to each [GitHub release](https://github.com/pleaseai/shunt/releases). See [Installation](https://shunt-docs.pages.dev/getting-started/installation/) for prebuilt-binary and from-source instructions.
+
+## Quickstart
+
+```toml
+# shunt.toml — route a gpt-* id to your ChatGPT subscription
+[[routes]]
+model = "gpt-5.6-sol"
+provider = "codex"        # reuses `codex login`; use `openai` for OPENAI_API_KEY
+```
+
+```bash
+codex login                                        # provider credential
+shunt run                                           # -> listening on 127.0.0.1:3001
+
+export ANTHROPIC_BASE_URL=http://127.0.0.1:3001
+export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
+claude                                              # /model -> pick gpt-5.6-sol
+```
+
+Unmapped models (all your `claude-*` ids) keep working exactly as before — shunt forwards them to Anthropic with your own credential. Full walkthrough: [Quickstart](https://shunt-docs.pages.dev/getting-started/quickstart/).
+
+## Providers
+
+A provider is a `[providers.<name>]` TOML table — two adapter kinds cover everything: `kind = "anthropic"` (the upstream speaks Anthropic Messages; passed through, optionally with a different key) and `kind = "responses"` (the upstream speaks the OpenAI Responses API; shunt translates Anthropic Messages ⇄ Responses, streaming included).
+
+**Built in:**
+
+| Name | Kind | Auth | Backend |
+| :-- | :-- | :-- | :-- |
+| `anthropic` | `anthropic` | passthrough | `api.anthropic.com` — forwards the caller's own credential |
+| `openai` | `responses` | `OPENAI_API_KEY` | `api.openai.com/v1` |
+| `codex` | `responses` | ChatGPT OAuth | `chatgpt.com/backend-api` — reuses `~/.codex/auth.json` (`codex login`) |
+
+**Any Anthropic-compatible backend** is one table away — no code changes:
+
+| Provider | `base_url` | Example model IDs |
+| :-- | :-- | :-- |
+| Kimi (Moonshot) | `https://api.moonshot.ai/anthropic` | `kimi-k2.7-code` |
+| DeepSeek | `https://api.deepseek.com/anthropic` | `deepseek-v4-pro`, `deepseek-v4-flash` |
+| Z.ai (GLM) | `https://api.z.ai/api/anthropic` | `glm-5.2`, `glm-4.7` |
+| MiniMax | `https://api.minimax.io/anthropic` | see [MiniMax docs](https://platform.minimax.io/docs/token-plan/claude-code) |
+| OpenRouter | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8` |
+| Vercel AI Gateway | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8` |
+
+```toml
+[providers.kimi]
+kind = "anthropic"
+base_url = "https://api.moonshot.ai/anthropic"
+auth = "api_key"
+api_key_env = "KIMI_API_KEY"
+
+[[routes]]
+model = "kimi-k2.7-code"
+provider = "kimi"
+```
+
+See [Providers](https://shunt-docs.pages.dev/guides/providers/) for the full list and per-provider notes.
+
+## Documentation
+
+Everything lives at **[shunt-docs.pages.dev](https://shunt-docs.pages.dev)**:
+
+- [Quickstart](https://shunt-docs.pages.dev/getting-started/quickstart/) · [Why shunt?](https://shunt-docs.pages.dev/getting-started/why-shunt/) · [Providers](https://shunt-docs.pages.dev/guides/providers/) · [Configuration](https://shunt-docs.pages.dev/guides/configuration/) · [Troubleshooting](https://shunt-docs.pages.dev/reference/troubleshooting/)
+- **For agents:** every page has a Markdown twin (append `.md` to any URL, or use the page's *Copy Markdown* / *Open in AI* buttons), and the site publishes [`/llms.txt`](https://shunt-docs.pages.dev/llms.txt), [`/llms-small.txt`](https://shunt-docs.pages.dev/llms-small.txt), and [`/llms-full.txt`](https://shunt-docs.pages.dev/llms-full.txt) per the [llms.txt spec](https://llmstxt.org/).
+
+Design notes and milestone specs live in [`docs/`](docs/) (start with [`docs/implementation-plan.md`](docs/implementation-plan.md)).
 
 ## Why
 
@@ -23,7 +101,18 @@ Contrast with the alternative approach (handing a `subagent_type` off to another
 
 ### Per-model, not per-agent — and not a global swap
 
-Selectivity is driven by the **`model` id on each request**, which Claude Code already lets you choose per context: the `/model` picker for the main session, a subagent definition's `model:` frontmatter, `CLAUDE_CODE_SUBAGENT_MODEL` for all subagents, or `ANTHROPIC_CUSTOM_MODEL_OPTION` to add a custom entry to the picker. So "divert only this agent / this session" is decided in Claude Code, and shunt just honors the model id it receives — no fragile per-agent system-prompt fingerprinting. Unlike the global model-swap proxies below, the main session can stay on Claude while only the models you name divert.
+Selectivity is driven by the **`model` id on each request**, which Claude Code already lets you choose per context: the `/model` picker for the main session, a subagent definition's `model:` frontmatter, `CLAUDE_CODE_SUBAGENT_MODEL` for all subagents, or `ANTHROPIC_CUSTOM_MODEL_OPTION` to add a custom entry to the picker. So "divert only this agent / this session" is decided in Claude Code, and shunt just honors the model id it receives — no fragile per-agent system-prompt fingerprinting. Unlike global model-swap proxies, the main session can stay on Claude while only the models you name divert.
+
+## Claude Code integration (official surface)
+
+Claude Code exposes a **first-class gateway contract** behind `ANTHROPIC_BASE_URL` — `shunt` implements this rather than the fragile "hash the subagent's system prompt" heuristic that earlier Claude Code proxies rely on.
+
+- [LLM Gateway Protocol](https://code.claude.com/docs/en/llm-gateway-protocol) — the API contract: endpoints, headers/body fields to forward vs consume, feature pass-through, and attribution. A running gateway serves the machine-readable spec at `GET /protocol`.
+  - [Model discovery](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery) — Claude Code queries `GET /v1/models?limit=1000` at startup (opt-in via `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`) and adds returned models to the `/model` picker. **Constraint:** entries whose `id` doesn't begin with `claude`/`anthropic` are ignored — non-Claude models must be aliased or added manually.
+  - **System prompt attribution block** — Claude Code prepends a client-version + conversation fingerprint to the system prompt; stable for the conversation lifetime (v2.1.181+). `shunt` forwards it unchanged (never strips it — that's the developer's call via `CLAUDE_CODE_ATTRIBUTION_HEADER=0`).
+- [Add a custom model option](https://code.claude.com/docs/en/model-config#add-a-custom-model-option) — `ANTHROPIC_CUSTOM_MODEL_OPTION` adds a gateway-routed entry to the `/model` picker without replacing built-in aliases; the ID skips validation, so any string the gateway accepts works. **This is the primary way to select a non-Claude model** (e.g. `gpt-5.6-sol`), since discovery ignores ids that don't begin with `claude`/`anthropic`.
+
+**Design principle:** be a spec-compliant Anthropic-Messages gateway (`/v1/messages`, `/v1/models`, correct header/attribution pass-through), route by the request's `model` id, and translate Anthropic Messages ⇄ the OpenAI Responses API for mapped models — no prompt-shape heuristics that break on every Claude Code prompt change.
 
 ## Related work / prior art
 
@@ -50,17 +139,10 @@ Selectivity is driven by the **`model` id on each request**, which Claude Code a
 
 Most Claude Code proxies above route **all** traffic to one alternative provider (a global model swap). `shunt`'s focus is **selective, per-model** diversion driven by the request's `model` id: keep the main session on Claude, and shunt only the models you name onto other providers — the switchboard/patchbay use case. Because Claude Code already lets you bind a model per context (main session, subagent `model:` frontmatter, `CLAUDE_CODE_SUBAGENT_MODEL`), that same selectivity reaches down to individual agents without shunt ever inspecting who the caller is.
 
-## Claude Code integration (official surface)
+## Contributing
 
-Claude Code exposes a **first-class gateway contract** behind `ANTHROPIC_BASE_URL` — `shunt` should implement this rather than the fragile "hash the subagent's system prompt" heuristic that earlier Claude Code proxies rely on.
-
-- [LLM Gateway Protocol](https://code.claude.com/docs/en/llm-gateway-protocol) — the API contract: endpoints, headers/body fields to forward vs consume, feature pass-through, and attribution. A running gateway serves the machine-readable spec at `GET /protocol`.
-  - [Model discovery](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery) — Claude Code queries `GET /v1/models?limit=1000` at startup (opt-in via `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`) and adds returned models to the `/model` picker. **Constraint:** entries whose `id` doesn't begin with `claude`/`anthropic` are ignored — non-Claude models must be aliased or added manually.
-  - **System prompt attribution block** — Claude Code prepends a client-version + conversation fingerprint to the system prompt; stable for the conversation lifetime (v2.1.181+). `shunt` forwards it unchanged (never strips it — that's the developer's call via `CLAUDE_CODE_ATTRIBUTION_HEADER=0`).
-- [Add a custom model option](https://code.claude.com/docs/en/model-config#add-a-custom-model-option) — `ANTHROPIC_CUSTOM_MODEL_OPTION` adds a gateway-routed entry to the `/model` picker without replacing built-in aliases; the ID skips validation, so any string the gateway accepts works. **This is the primary way to select a non-Claude model** (e.g. `gpt-5.2-codex`), since discovery ignores ids that don't begin with `claude`/`anthropic`.
-
-**Design implication for `shunt`:** be a spec-compliant Anthropic-Messages gateway (`/v1/messages`, `/v1/models`, correct header/attribution pass-through), route by the request's `model` id, and translate Anthropic Messages ⇄ the OpenAI Responses API for mapped models — no prompt-shape heuristics that break on every Claude Code prompt change. See [`docs/implementation-plan.md`](docs/implementation-plan.md).
+Issues and PRs are welcome. See [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`AGENTS.md`](AGENTS.md) for build/test commands and conventions, and [`SECURITY.md`](SECURITY.md) for reporting vulnerabilities.
 
 ## License
 
-TBD (private for now).
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT) at your option. Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this crate by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.
