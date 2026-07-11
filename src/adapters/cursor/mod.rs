@@ -222,7 +222,18 @@ async fn map_upstream_error(upstream: reqwest::Response) -> AdapterError {
         .and_then(|value| value.to_str().ok())
         .map(ToOwned::to_owned);
     let text = upstream.text().await.unwrap_or_default();
+    // Cursor may return a Connect JSON error body (`{"error":{"message":"…"}}`
+    // or a bare `{"message":"…"}`). Extract the human-readable message instead of
+    // surfacing the raw JSON to the client.
+    let parsed_message = serde_json::from_str::<Value>(&text).ok().and_then(|value| {
+        value
+            .pointer("/error/message")
+            .or_else(|| value.get("message"))
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+    });
     let message = grpc_message
+        .or(parsed_message)
         .or_else(|| (!text.is_empty()).then_some(text))
         .unwrap_or_else(|| format!("Cursor upstream returned HTTP {status}"));
     let (mapped_status, kind) = match status {

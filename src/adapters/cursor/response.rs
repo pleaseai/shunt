@@ -114,7 +114,10 @@ pub fn decode_cursor_upstream(
         }
     }
 
-    let input_tokens = final_input_tokens.max(estimate_input_tokens(&text_content));
+    // Upstream reports usage directly; when it omits input_tokens (0), fall back
+    // to a minimal 1. Estimating input tokens from `text_content` would be wrong
+    // — that text is the assistant's generated output, not the request prompt.
+    let input_tokens = final_input_tokens.max(1);
 
     Ok(serde_json::json!({
         "id": message_id,
@@ -133,11 +136,6 @@ pub fn decode_cursor_upstream(
             "cache_read_input_tokens": 0
         }
     }))
-}
-
-fn estimate_input_tokens(_content: &str) -> u64 {
-    // Rough upper bound: 4 chars per token for input estimation
-    (_content.len() / 4) as u64
 }
 
 pub(crate) fn events_from_message(msg: &AgentServerMessage) -> Vec<CursorStreamEvent> {
@@ -275,6 +273,31 @@ mod tests {
     fn empty_upstream_produces_empty_response() {
         let json = decode_cursor_upstream(&[], "msg_empty", "cursor-test").unwrap();
         assert_eq!(json["content"][0]["text"], "");
+    }
+
+    #[test]
+    fn input_tokens_are_not_inflated_by_long_output_text() {
+        // A long assistant output must not drive up the reported input_tokens:
+        // the upstream-reported input count is authoritative.
+        let long_output = "x".repeat(4000);
+        let mut body = Vec::new();
+        body.extend_from_slice(&test_frames::text_frame(&long_output));
+        body.extend_from_slice(&test_frames::usage_frame(12, 1000));
+        body.extend_from_slice(&test_frames::end_frame());
+        let json = decode_cursor_upstream(&body, "msg_tokens", "cursor-test").unwrap();
+        assert_eq!(json["usage"]["input_tokens"].as_u64(), Some(12));
+        assert_eq!(json["usage"]["output_tokens"].as_u64(), Some(1000));
+    }
+
+    #[test]
+    fn missing_usage_falls_back_to_one_input_token() {
+        // No usage frame: input_tokens falls back to a minimal 1, never 0.
+        let mut body = Vec::new();
+        body.extend_from_slice(&test_frames::text_frame("hi"));
+        body.extend_from_slice(&test_frames::end_frame());
+        let json = decode_cursor_upstream(&body, "msg_nousage", "cursor-test").unwrap();
+        assert_eq!(json["usage"]["input_tokens"].as_u64(), Some(1));
+        assert_eq!(json["usage"]["output_tokens"].as_u64(), Some(0));
     }
 
     #[test]
