@@ -1,0 +1,20 @@
+plugins/shunt-codex/README.md
+  s_b36a574f17a5ce::t_83641961d3ddee 92-94
+  s_b36a574f17a5ce::t_430543cbd19ea2 54,56-64
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.11",
+  "base_commit_sha": "b311731bc33901cb2c589ac9b0ebf7588d46dd67",
+  "prompts": {},
+  "sessions": {
+    "s_b36a574f17a5ce": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "eea23519-7f14-49c2-9363-3a73f622abea",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
