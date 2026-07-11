@@ -6,12 +6,12 @@ description: How shunt loads configuration — files, environment variables, and
 shunt loads configuration from, in increasing precedence:
 
 1. **Built-in defaults** — every provider (`anthropic`, `openai`, `codex`, …) is preconfigured.
-2. A **TOML file**. With `--config <path>` that exact file is used (a missing file is an error). Otherwise shunt takes the first file found in:
-   - `./shunt.toml`
-   - `$XDG_CONFIG_HOME/shunt/shunt.toml` (default `~/.config/shunt/shunt.toml`)
-   - `$HOMEBREW_PREFIX/etc/shunt.toml` (default `/opt/homebrew` and `/usr/local` prefixes)
+2. A **TOML or YAML file**. The format is chosen by extension — `.toml` is TOML, `.yaml`/`.yml` is YAML (any other extension is parsed as TOML). With `--config <path>` that exact file is used (a missing file is an error). Otherwise shunt probes each directory for `shunt.toml`, then `shunt.yaml`, then `shunt.yml`, and takes the first file found:
+   - `./`
+   - `$XDG_CONFIG_HOME/shunt/` (default `~/.config/shunt/`)
+   - `$HOMEBREW_PREFIX/etc/` (default `/opt/homebrew` and `/usr/local` prefixes)
 
-   Boot logs report which file was loaded, or that defaults are in use.
+   A local `shunt.yaml` therefore still wins over a config file in a later directory, while an existing `shunt.toml` alongside it takes priority within the same directory. Boot logs report which file was loaded, or that defaults are in use.
 3. **Environment variables** prefixed `SHUNT_`, using `__` for nested keys — e.g. `SHUNT_SERVER__BIND=0.0.0.0:3001`.
 
 Because the defaults already define every provider, your `shunt.toml` only needs the parts you want to change. Start from [`shunt.toml.example`](https://github.com/pleaseai/shunt/blob/main/shunt.toml.example).
@@ -60,6 +60,31 @@ provider = "openai"
 # [[models]]
 # id = "claude-opus-via-codex"
 # display_name = "Opus (via Codex)"
+```
+
+### YAML equivalent
+
+The same schema in YAML — save as `shunt.yaml` or `shunt.yml`. Tables become mappings and `[[...]]` arrays become lists:
+
+```yaml
+server:
+  bind: "127.0.0.1:3001"
+  default_provider: anthropic
+
+providers:
+  openai:
+    kind: responses
+    base_url: https://api.openai.com/v1
+    auth: api_key
+    api_key_env: OPENAI_API_KEY
+
+routes:
+  - model: gpt-5.6-sol
+    provider: codex
+
+route_prefixes:
+  - prefix: gpt-
+    provider: openai
 ```
 
 ## Routing precedence

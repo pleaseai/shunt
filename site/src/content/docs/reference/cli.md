@@ -14,7 +14,7 @@ shunt run --config /path/to/shunt.toml
 
 On start it logs `shunt listening` with the bound address (default `127.0.0.1:3001`). Set log verbosity with `RUST_LOG`, e.g. `RUST_LOG=shunt=debug shunt run`.
 
-Without `--config`, shunt searches `./shunt.toml` → `~/.config/shunt/shunt.toml` → `$HOMEBREW_PREFIX/etc/shunt.toml`; with `--config`, a missing file is an error. See [Configuration](/guides/configuration/).
+Config files may be TOML or YAML, chosen by extension (`.toml`, or `.yaml`/`.yml`). Without `--config`, shunt probes each directory for `shunt.toml` → `shunt.yaml` → `shunt.yml` across `./` → `~/.config/shunt/` → `$HOMEBREW_PREFIX/etc/`; with `--config`, a missing file is an error. See [Configuration](/guides/configuration/).
 
 ## `shunt check`
 
