@@ -329,14 +329,21 @@ pub fn start_cursor_tool_bridge(
                     // Process any remaining XML before finalizing
                     let flushed = state.xml_parser.flush();
                     for evt in &flushed {
-                        if let RecoveredCursorEvent::ToolUse(tool_use) = evt {
-                            let input_json = serde_json::to_string(&tool_use.input)
-                                .unwrap_or_else(|_| "{}".to_string());
-                            framer.emit_tool_pause(&tool_use.id, &tool_use.name, &input_json);
-                            if let Some(pending) = pending_from_recovered_tool(tool_use) {
-                                state.pending_tool = Some(pending);
+                        match evt {
+                            // Trailing text the parser held back (e.g. pending a
+                            // tag that never completed) must still be emitted.
+                            RecoveredCursorEvent::Text(text) => {
+                                framer.emit_text_delta(text);
                             }
-                            paused = true;
+                            RecoveredCursorEvent::ToolUse(tool_use) => {
+                                let input_json = serde_json::to_string(&tool_use.input)
+                                    .unwrap_or_else(|_| "{}".to_string());
+                                framer.emit_tool_pause(&tool_use.id, &tool_use.name, &input_json);
+                                if let Some(pending) = pending_from_recovered_tool(tool_use) {
+                                    state.pending_tool = Some(pending);
+                                }
+                                paused = true;
+                            }
                         }
                     }
                     if !paused {
@@ -351,14 +358,20 @@ pub fn start_cursor_tool_bridge(
         // Flush any remaining text from XML parser
         let flushed = state.xml_parser.flush();
         for evt in &flushed {
-            if let RecoveredCursorEvent::ToolUse(tool_use) = evt {
-                let input_json =
-                    serde_json::to_string(&tool_use.input).unwrap_or_else(|_| "{}".to_string());
-                framer.emit_tool_pause(&tool_use.id, &tool_use.name, &input_json);
-                if let Some(pending) = pending_from_recovered_tool(tool_use) {
-                    state.pending_tool = Some(pending);
+            match evt {
+                // Trailing text the parser held back must still reach the client.
+                RecoveredCursorEvent::Text(text) => {
+                    framer.emit_text_delta(text);
                 }
-                paused = true;
+                RecoveredCursorEvent::ToolUse(tool_use) => {
+                    let input_json =
+                        serde_json::to_string(&tool_use.input).unwrap_or_else(|_| "{}".to_string());
+                    framer.emit_tool_pause(&tool_use.id, &tool_use.name, &input_json);
+                    if let Some(pending) = pending_from_recovered_tool(tool_use) {
+                        state.pending_tool = Some(pending);
+                    }
+                    paused = true;
+                }
             }
         }
         if !paused {
@@ -633,6 +646,43 @@ mod tests {
         // re-running the upstream agent; nothing is replayed.
         BridgeRegistry::remove("sess-resume");
         assert!(BridgeRegistry::pending_tool("sess-resume").is_none());
+
+        BridgeRegistry::clear();
+    }
+
+    #[test]
+    fn trailing_held_text_is_flushed_not_dropped() {
+        let _lock = REGISTRY_LOCK.lock().unwrap();
+        BridgeRegistry::clear();
+
+        // An incomplete tool_use tag never closes: the parser emits the leading
+        // text, then holds the partial tag. It must be flushed as text at stream
+        // end rather than silently dropped, and the stream must not pause.
+        let events = vec![
+            CursorStreamEvent::TextDelta {
+                text: r#"some text <tool_use name="Read">{"a":1}"#.into(),
+            },
+            CursorStreamEvent::End,
+        ];
+        let allowed = Some(["Read".to_string()].into_iter().collect());
+        let (sse, paused) = start_cursor_tool_bridge(
+            "msg-flush",
+            "cursor-test",
+            "sess-flush",
+            &events,
+            allowed,
+            Box::new(|| "call_x".into()),
+        );
+        assert!(
+            !paused,
+            "an unclosed tool_use tag must not pause the stream"
+        );
+        let sse = String::from_utf8(sse).unwrap();
+        assert!(sse.contains("some text"), "leading text missing: {sse}");
+        assert!(
+            sse.contains("tool_use"),
+            "held partial-tag text was dropped: {sse}"
+        );
 
         BridgeRegistry::clear();
     }

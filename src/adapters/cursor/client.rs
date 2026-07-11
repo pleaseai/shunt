@@ -47,7 +47,7 @@ impl CursorHttpClient {
             .bearer_auth(token)
             .header("content-type", "application/connect+proto")
             .header("connect-protocol-version", "1")
-            .header("connect-accept-encoding", "gzip,br")
+            .header("connect-accept-encoding", "gzip")
             .header("x-cursor-client-type", "cli")
             .header("x-cursor-client-version", &self.client_version)
             .header("x-ghost-mode", "true")
