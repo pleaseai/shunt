@@ -40,6 +40,7 @@ async fn forward(
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let credential = resolve_credential(&state.config, &route, &state.http_client).await?;
     let request_headers = outbound_headers(headers, &credential);
+    let body = normalize_upstream_model(body, &route.upstream_model);
     let upstream = state
         .http_client
         .post(upstream_url(&state, &route, uri))
@@ -79,6 +80,41 @@ async fn forward(
         .expect("response builder uses valid upstream status and headers")
         .into_response();
     Ok((status, response))
+}
+
+/// Rewrite the outbound request body's `model` to the routed `upstream_model`
+/// when they differ. The passthrough adapter forwards the client body verbatim,
+/// so without this two things leak to the provider: a `[1m]` context-window hint
+/// (which `routing::strip_context_window_hint` removes from the routing key but
+/// not from the body — and api.anthropic.com does not recognize a `[1m]`-suffixed
+/// model id), and an explicit `[[routes]]` `upstream_model` remap (otherwise
+/// ignored for an Anthropic-provider route). The common case — body model already
+/// equal to `upstream_model` — re-serializes nothing and forwards the original
+/// bytes untouched, preserving byte-for-byte passthrough.
+fn normalize_upstream_model(body: Vec<u8>, upstream_model: &str) -> Vec<u8> {
+    #[derive(serde::Deserialize)]
+    struct ModelView {
+        model: String,
+    }
+
+    // Cheap guard: peek only the `model` field. A body that isn't JSON, has no
+    // `model`, or whose model already matches is forwarded unchanged.
+    match serde_json::from_slice::<ModelView>(&body) {
+        Ok(view) if view.model != upstream_model => {
+            let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&body) else {
+                return body;
+            };
+            let Some(object) = value.as_object_mut() else {
+                return body;
+            };
+            object.insert(
+                "model".to_string(),
+                serde_json::Value::String(upstream_model.to_string()),
+            );
+            serde_json::to_vec(&value).unwrap_or(body)
+        }
+        _ => body,
+    }
 }
 
 /// Build the headers sent upstream. For a passthrough provider (api.anthropic.com)
@@ -134,7 +170,7 @@ mod tests {
 
     use crate::config::ApiKeyHeader;
 
-    use super::{outbound_headers, Credential};
+    use super::{normalize_upstream_model, outbound_headers, Credential};
 
     fn client_headers() -> HeaderMap {
         let mut headers = HeaderMap::new();
@@ -176,5 +212,33 @@ mod tests {
         );
         assert_eq!(out.get("x-api-key").unwrap(), "provider-key");
         assert!(out.get("authorization").is_none());
+    }
+
+    #[test]
+    fn normalize_rewrites_model_when_upstream_differs() {
+        // A `[1m]` context-window hint must not reach the provider verbatim.
+        let body = br#"{"model":"claude-sonnet-4-6[1m]","max_tokens":1}"#.to_vec();
+        let out = normalize_upstream_model(body, "claude-sonnet-4-6");
+        let value: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(value["model"], "claude-sonnet-4-6");
+        // The rest of the body survives the rewrite.
+        assert_eq!(value["max_tokens"], 1);
+    }
+
+    #[test]
+    fn normalize_leaves_body_untouched_when_model_matches() {
+        // Common case: byte-for-byte passthrough, no re-serialization.
+        let body = br#"{"model":"claude-sonnet-4-6","max_tokens":1}"#.to_vec();
+        let original = body.clone();
+        let out = normalize_upstream_model(body, "claude-sonnet-4-6");
+        assert_eq!(out, original);
+    }
+
+    #[test]
+    fn normalize_leaves_non_json_body_untouched() {
+        let body = b"not json".to_vec();
+        let original = body.clone();
+        let out = normalize_upstream_model(body, "claude-sonnet-4-6");
+        assert_eq!(out, original);
     }
 }

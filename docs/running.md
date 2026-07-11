@@ -424,6 +424,23 @@ export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
 Then pick it from `/model` in Claude Code. That id is what shunt routes on, so it must match a
 `[[routes]]`/`[[route_prefixes]]` rule in your config.
 
+**The two picker-exposure methods split cleanly on the `claude-`/`anthropic-` prefix — they don't
+overlap.** Discovery honors *only* `claude-`/`anthropic-` ids; `ANTHROPIC_CUSTOM_MODEL_OPTION` and
+the `CLAUDE_CODE_MAX_CONTEXT_TOKENS` window override apply *only* to ids that do **not** start with
+that prefix. The consequence: a `claude-…-via-codex` discovery alias is convenient (auto-listed,
+one-tap selectable) but its context window is **stuck at the 200k default** — the override can't
+reach a `claude-`-prefixed id (§5.8).
+
+| What | `claude-`/`anthropic-` id (discovery alias) | non-`claude-` id (e.g. `gpt-5.6-sol`) |
+| :-- | :-- | :-- |
+| `/v1/models` discovery → `/model` picker | ✅ auto-listed ("From gateway"), many models | ❌ dropped by Claude Code |
+| `ANTHROPIC_CUSTOM_MODEL_OPTION` | ❌ not honored | ✅ adds to picker (**one id only**) |
+| `CLAUDE_CODE_MAX_CONTEXT_TOKENS` window | ❌ ignored → 200k default | ✅ applies → set the real window (e.g. 372k) |
+
+So choose by priority: the **discovery alias** for picker convenience across several models (accept
+the conservative 200k denominator), or a **non-`claude-` id via `ANTHROPIC_CUSTOM_MODEL_OPTION`** for
+an accurate window, one model at a time. (Subagents are a separate path — see below.)
+
 > **Model slugs:** the ChatGPT-account Codex backend **rejects** `gpt-*-codex` slugs (e.g.
 > `gpt-5.2-codex`) — it only accepts the account's live-entitled slugs. The authoritative catalog
 > of Codex slugs (and the reasoning levels each accepts) is openai/codex's
@@ -442,9 +459,20 @@ Then pick it from `/model` in Claude Code. That id is what shunt routes on, so i
 > openai/codex rust-v0.144.1**. If a future slug demands a newer client, bump the pinned
 > version in `src/adapters/responses.rs` (`CODEX_USER_AGENT` / `CODEX_CLIENT_VERSION`).
 
-Per-context selection also works via Claude Code's own knobs — a subagent's `model:`
-frontmatter, or `CLAUDE_CODE_SUBAGENT_MODEL` for all subagents — so you can divert only one
-agent while the main session stays on Claude.
+Per-context selection also works via Claude Code's own knobs — divert one agent to a mapped model
+while the main session stays on Claude:
+
+- **A named subagent's `model:` frontmatter** (`.claude/agents/<name>.md`) is the only way to put a
+  subagent on a `gpt-*` id: that field accepts any string, whereas the Agent/Task tool's `model`
+  parameter is restricted to the built-in aliases (`opus`/`sonnet`/`haiku`/`fable`) and cannot take
+  a gateway id. Spawn the agent by its type **without** a `model` override — the tool parameter
+  outranks frontmatter (resolution order: `CLAUDE_CODE_SUBAGENT_MODEL` > tool `model` > frontmatter
+  > `inherit`), so passing one would shadow the mapped model.
+- **`CLAUDE_CODE_SUBAGENT_MODEL`** forces every subagent onto one model (global).
+
+The context window follows the model automatically: `CLAUDE_CODE_MAX_CONTEXT_TOKENS` (§5.8) is keyed
+on the id, so one global value sizes the mapped subagent (e.g. 372k) while the Claude main keeps its
+own — no per-subagent env is needed, and the same overflow/compact behavior (§5.8) applies.
 
 ### 5.5 (Optional) Model discovery
 
@@ -559,14 +587,28 @@ export CLAUDE_CODE_MAX_CONTEXT_TOKENS=372000
 
 Caveats: it is **global** — one value for every non-`claude-` model in the session, so it can't be
 set per-model when routing models with different window sizes — and setting it **larger than the
-real upstream window delays auto-compact past the point where the upstream rejects the request**
-with a context-length error, so match it to the smallest real window among your mapped models.
-Claude passthrough models (`claude-*` ids) ignore it and keep their exact built-in sizes. (With
-`DISABLE_COMPACT` also set, the value applies unconditionally — `claude-*` ids included.)
+real upstream window** means auto-compact won't trigger in time, so requests overflow the real
+limit. On the streaming path Claude Code actually uses, the ChatGPT/Codex backend surfaces a
+`prompt is too long` error mid-stream, which shunt's context-overflow rewrite normalizes
+(`context_overflow_message`, `src/model/responses.rs`) and Claude Code auto-compacts + retries on —
+so the session recovers, but every overflow round-trip
+is wasted latency. Match it to the **smallest real window** among your mapped models to avoid the
+churn. (Live-verified for `gpt-5.6-sol`: 365k tokens answers normally, 372k+ overflows — the
+boundary is its `models.json` `context_window` of 372000; `gpt-5.5` is 272000. A *non*-streaming
+request instead degrades to an empty `200` with `input_tokens: 0`, but the main loop always
+streams.) Claude passthrough models
+(`claude-*` ids) ignore it and keep their exact built-in sizes. (With `DISABLE_COMPACT` also set,
+the value applies unconditionally — `claude-*` ids included.) This same `claude-` gate is why a
+**discovery alias** (which must begin with `claude-`, §5.4) can't take this override — its window
+stays pinned at the 200k default: safe (auto-compact fires early) but not raisable to the model's
+real size without `DISABLE_COMPACT`. Use a non-`claude-` id when you need the accurate window.
 
 The other client-side lever is the `[1m]` model-id suffix, which forces a **1M** window — useful
 for a genuinely 1M-context model, but misleading (under-reporting) for a smaller one, so avoid it
-unless the upstream really has that window.
+unless the upstream really has that window. shunt strips a trailing `[1m]` from the model id before
+route matching and before forwarding upstream (`routing.rs`), so `gpt-5.6-sol[1m]` (or a
+`claude-…-via-codex[1m]` discovery alias) still routes correctly and the provider never sees the
+suffix — the hint stays purely client-side.
 
 | Field | Mapped (`responses`) model | Claude passthrough |
 | :-- | :-- | :-- |
