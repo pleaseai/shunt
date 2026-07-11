@@ -1,0 +1,19 @@
+tests/passthrough.rs
+  s_52ab8577fad2c6::t_453c896ad7d5d6 222-225,229,239-240
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "d2175e53d0988edfbc763d0dca9ba03fce41d29e",
+  "prompts": {},
+  "sessions": {
+    "s_52ab8577fad2c6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "084e1c87-8afd-47e7-8fd0-d19e4f848a1c",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
