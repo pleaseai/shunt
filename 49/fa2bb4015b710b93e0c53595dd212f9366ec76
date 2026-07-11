@@ -1,0 +1,19 @@
+docs/m7-account-load-balancing.md
+  s_b1370b8b25cfc3::t_4f98ac29a8cebb 1-162
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.11",
+  "base_commit_sha": "49fa2bb4015b710b93e0c53595dd212f9366ec76",
+  "prompts": {},
+  "sessions": {
+    "s_b1370b8b25cfc3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5e235e56-f616-4c43-b507-e03a488f426f",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
