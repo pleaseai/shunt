@@ -1,0 +1,25 @@
+src/routes.rs
+  s_b91ae4a57a5d5b::t_a948f796aa77cc 1-105
+src/server.rs
+  s_b91ae4a57a5d5b::t_0d7c2eb357cbcd 73
+  s_b91ae4a57a5d5b::t_b94d99dc3dd590 14
+  s_b91ae4a57a5d5b::t_12eb076b4493ee 84
+src/lib.rs
+  s_b91ae4a57a5d5b::t_77ded54624c0f6 13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "e8a4906520b7810852cea8a2604f2aba72876f4e",
+  "prompts": {},
+  "sessions": {
+    "s_b91ae4a57a5d5b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1d87eca2-aa0f-4a6f-8c91-64370a154266",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
