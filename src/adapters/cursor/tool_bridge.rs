@@ -9,6 +9,7 @@
 
 use std::collections::BTreeSet;
 use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::adapters::cursor::response::CursorStreamEvent;
 use crate::adapters::cursor::sse::CursorSseFramer;
@@ -43,6 +44,12 @@ pub struct CursorBridgeState {
     pub pending_tool: Option<PendingCursorTool>,
     pub allowed_tool_names: Option<BTreeSet<String>>,
     pub xml_parser: CursorToolUseXmlParser,
+    /// When this session was inserted. Used to evict abandoned sessions — a
+    /// client that pauses on a tool_use but never resumes would otherwise leak
+    /// its state forever. Eviction is safe: a resume whose state was dropped
+    /// falls through to a fresh upstream run in `cursor::forward`, which still
+    /// carries the tool_result in the prompt history.
+    pub created_at: Instant,
 }
 
 impl CursorBridgeState {
@@ -56,6 +63,7 @@ impl CursorBridgeState {
             pending_tool: None,
             allowed_tool_names: allowed_tool_names.clone(),
             xml_parser: CursorToolUseXmlParser::new_with_id_factory(allowed_tool_names, id_factory),
+            created_at: Instant::now(),
         }
     }
 }
@@ -63,6 +71,16 @@ impl CursorBridgeState {
 // ---------------------------------------------------------------------------
 // Global bridge registry
 // ---------------------------------------------------------------------------
+
+/// Abandoned bridge sessions are evicted after this idle window. A paused
+/// tool_use normally resumes within seconds (the client executes one tool), so
+/// 30 minutes is generously above the legitimate window while still bounding
+/// memory for sessions that never resume.
+const SESSION_TTL: Duration = Duration::from_secs(30 * 60);
+
+/// Hard cap on retained sessions as a backstop against a burst of new sessions
+/// within the TTL window. When exceeded, the oldest session is dropped.
+const MAX_SESSIONS: usize = 1024;
 
 static BRIDGE_REGISTRY: LazyLock<Mutex<BridgeRegistryInner>> =
     LazyLock::new(|| Mutex::new(BridgeRegistryInner::new()));
@@ -91,6 +109,26 @@ impl BridgeRegistry {
     pub fn insert(state: CursorBridgeState) {
         let mut reg = BRIDGE_REGISTRY.lock().unwrap();
         reg.sessions.retain(|s| s.session_id != state.session_id);
+        // Opportunistically evict abandoned sessions (idle past the TTL) so a
+        // client that pauses but never resumes does not leak state indefinitely.
+        let now = Instant::now();
+        reg.sessions
+            .retain(|s| now.duration_since(s.created_at) < SESSION_TTL);
+        // Backstop: if a burst of live sessions still exceeds the cap, drop the
+        // oldest. `take`/`swap_remove` break insertion order, so find the min.
+        while reg.sessions.len() >= MAX_SESSIONS {
+            if let Some(oldest) = reg
+                .sessions
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, s)| s.created_at)
+                .map(|(index, _)| index)
+            {
+                reg.sessions.swap_remove(oldest);
+            } else {
+                break;
+            }
+        }
         reg.sessions.push(state);
     }
 
@@ -511,6 +549,36 @@ mod tests {
         let state = BridgeRegistry::take("session-test");
         assert!(state.is_some());
         assert_eq!(BridgeRegistry::active_count(), 0);
+    }
+
+    #[test]
+    fn insert_evicts_sessions_past_ttl() {
+        let _lock = REGISTRY_LOCK.lock().unwrap();
+        BridgeRegistry::clear();
+
+        // Build a timestamp older than the TTL. On a host booted less than the
+        // TTL ago the monotonic clock can't represent it — skip rather than
+        // assert against an impossible precondition.
+        let Some(stale_instant) = Instant::now().checked_sub(SESSION_TTL + Duration::from_secs(1))
+        else {
+            return;
+        };
+
+        let mut stale =
+            CursorBridgeState::new("stale-session".into(), None, Box::new(|| "id".into()));
+        stale.created_at = stale_instant;
+        BridgeRegistry::insert(stale);
+        assert_eq!(BridgeRegistry::active_count(), 1);
+
+        // Inserting a fresh session opportunistically evicts the abandoned one.
+        let fresh = CursorBridgeState::new("fresh-session".into(), None, Box::new(|| "id".into()));
+        BridgeRegistry::insert(fresh);
+
+        assert_eq!(BridgeRegistry::active_count(), 1);
+        assert!(BridgeRegistry::get("stale-session").is_none());
+        assert!(BridgeRegistry::get("fresh-session").is_some());
+
+        BridgeRegistry::clear();
     }
 
     #[test]

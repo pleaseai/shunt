@@ -114,12 +114,15 @@ fn build_run_request(
 pub fn decode_frame_payload(
     frame: &ConnectFrame,
 ) -> Result<proto::AgentServerMessage, CursorError> {
-    let payload = if frame.flags & FLAG_GZIP != 0 {
-        let decompressed = super::connect::decode_gzip_frame(&frame.payload)
-            .map_err(|e| CursorError::internal(format!("gzip decompress: {e}")))?;
-        decompressed
+    // Only gzip frames need an owned, decompressed buffer; uncompressed frames
+    // are decoded directly from the borrowed slice to avoid a per-frame copy.
+    let payload: std::borrow::Cow<[u8]> = if frame.flags & FLAG_GZIP != 0 {
+        std::borrow::Cow::Owned(
+            super::connect::decode_gzip_frame(&frame.payload)
+                .map_err(|e| CursorError::internal(format!("gzip decompress: {e}")))?,
+        )
     } else {
-        frame.payload.to_vec()
+        std::borrow::Cow::Borrowed(&frame.payload[..])
     };
 
     proto::AgentServerMessage::decode(&payload[..])

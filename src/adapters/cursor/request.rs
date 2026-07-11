@@ -305,11 +305,6 @@ fn collect_image_blocks(
             _ => return,
         };
         for child in &content {
-            let child_type = child.get("type").and_then(|t| t.as_str());
-            matches!(
-                child_type,
-                Some("text" | "image" | "tool_use" | "tool_result" | "thinking")
-            );
             collect_image_blocks(child, index, images);
         }
     }

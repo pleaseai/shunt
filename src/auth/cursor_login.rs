@@ -39,7 +39,12 @@ pub async fn run_with_base(base_url: &str) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
     let tokens = poll(&client, base_url, &uuid, &verifier).await?;
     let path = default_cursor_auth_path();
-    write_auth(&path, &tokens)
+    // Offload the blocking credential write to the blocking thread pool so it
+    // never stalls the async runtime (mirrors CursorAuthStore::write_auth_off_thread).
+    let write_path = path.clone();
+    tokio::task::spawn_blocking(move || write_auth(&write_path, &tokens))
+        .await
+        .map_err(|error| anyhow::anyhow!("Cursor auth write task failed: {error}"))?
         .with_context(|| format!("failed to write Cursor credentials to {}", path.display()))?;
     println!("Login successful. Credentials saved to {}", path.display());
     Ok(())
@@ -52,15 +57,29 @@ async fn poll(
     verifier: &str,
 ) -> anyhow::Result<crate::auth::cursor_auth::StoredCursorAuth> {
     let mut delay = Duration::from_secs(1);
+    let mut last_error: Option<reqwest::Error> = None;
     for _ in 0..150 {
-        let response = client
+        let response = match client
             .get(format!(
                 "{}/auth/poll?uuid={uuid}&verifier={verifier}",
                 base_url.trim_end_matches('/')
             ))
             .header("content-type", "application/json")
             .send()
-            .await?;
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                // A transient network error must not abort the login — the user
+                // may still be completing the browser flow. Keep polling, but
+                // remember the error so a persistent connectivity failure isn't
+                // masked by the generic timeout below.
+                last_error = Some(error);
+                tokio::time::sleep(delay).await;
+                delay = (delay.mul_f32(1.2)).min(Duration::from_secs(10));
+                continue;
+            }
+        };
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             tokio::time::sleep(delay).await;
             delay = (delay.mul_f32(1.2)).min(Duration::from_secs(10));
@@ -78,7 +97,13 @@ async fn poll(
         return parse_token_response(&value)
             .ok_or_else(|| anyhow::anyhow!("Cursor login response missing accessToken"));
     }
-    bail!("Cursor login timed out; run shunt login cursor to try again")
+    match last_error {
+        Some(error) => Err(anyhow::Error::new(error).context(
+            "Cursor login timed out after repeated network errors; \
+             run shunt login cursor to try again",
+        )),
+        None => bail!("Cursor login timed out; run shunt login cursor to try again"),
+    }
 }
 
 fn open_url(url: &str) -> anyhow::Result<()> {
