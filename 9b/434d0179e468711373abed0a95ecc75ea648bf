@@ -1,0 +1,19 @@
+src/routing.rs
+  s_ebf5b1fad784d2::t_a26ca9e3d0d337 55-56,58-61
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.11",
+  "base_commit_sha": "9b434d0179e468711373abed0a95ecc75ea648bf",
+  "prompts": {},
+  "sessions": {
+    "s_ebf5b1fad784d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f70ec991-7a22-48dd-8181-91f168d3a5a6",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
