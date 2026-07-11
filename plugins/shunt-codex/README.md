@@ -42,7 +42,7 @@ and is configured to route the model ids above to the Codex provider:
 
 1. **Run shunt** and point Claude Code at it:
    ```bash
-   export ANTHROPIC_BASE_URL=http://localhost:8787   # your shunt address
+   export ANTHROPIC_BASE_URL=http://127.0.0.1:3001   # shunt's default bind address
    ```
 2. **Authenticate the ChatGPT/Codex subscription** shunt reuses:
    ```bash
