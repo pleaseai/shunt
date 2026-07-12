@@ -595,6 +595,18 @@ impl Config {
                         message: error.to_string(),
                     }
                 })?;
+                // The exporter speaks OTLP/HTTP, so a syntactically valid but
+                // non-HTTP URL (e.g. `ftp://collector` or a scheme-only `mailto:`
+                // with no host) would parse here yet never deliver a single
+                // export. Reject it at boot rather than fail silently at runtime.
+                if !matches!(endpoint.scheme(), "http" | "https") || endpoint.host_str().is_none() {
+                    return Err(ConfigError::InvalidOtelEndpoint {
+                        message: format!(
+                            "endpoint must be an http(s) URL with a host, got `{}`",
+                            otel.endpoint
+                        ),
+                    });
+                }
                 if !(0.0..=1.0).contains(&otel.sample_ratio) {
                     return Err(ConfigError::InvalidOtelSampleRatio {
                         ratio: otel.sample_ratio,
@@ -1041,6 +1053,17 @@ mod tests {
     fn otel_invalid_endpoint_is_rejected_at_boot() {
         let config = Config {
             otel: Some(otel_config("not a url")),
+            ..Config::default()
+        };
+        let error = config.validate().unwrap_err();
+        assert!(matches!(error, ConfigError::InvalidOtelEndpoint { .. }));
+    }
+
+    #[test]
+    fn otel_non_http_endpoint_is_rejected_at_boot() {
+        // Parses as a URL but the OTLP/HTTP exporter can never use it.
+        let config = Config {
+            otel: Some(otel_config("ftp://collector.example")),
             ..Config::default()
         };
         let error = config.validate().unwrap_err();

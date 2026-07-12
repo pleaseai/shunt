@@ -78,9 +78,11 @@ pub fn record_proxied_request(provider: &str, model: &str, status: u16, latency_
 mod tests {
     use super::record_proxied_request;
 
-    /// The core opt-in contract: with neither a Sentry client nor an OTel meter
-    /// provider bound (the default), recording must be a silent no-op on every
-    /// proxied request, never a panic.
+    /// The core opt-in contract: recording a proxied request must never panic,
+    /// whatever the sink state — the default (no Sentry client, no OTel meter
+    /// provider) and any ambient global provider a sibling test may have
+    /// installed (globals are process-wide, so this test can't assume none is
+    /// bound). Emission stays a silent no-op when nothing is configured.
     #[test]
     fn record_is_noop_without_sinks() {
         record_proxied_request("openai", "gpt-5.2", 200, 123.4);

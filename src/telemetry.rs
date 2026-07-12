@@ -31,6 +31,7 @@
 //! `OTEL_RESOURCE_ATTRIBUTES` env var.
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use opentelemetry::{trace::TracerProvider as _, KeyValue};
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
@@ -50,6 +51,34 @@ use crate::config::OtelConfig;
 
 /// Instrumentation scope name for shunt-emitted telemetry.
 pub const SCOPE: &str = "shunt";
+
+/// Whether the client `session_id` must be withheld from request trace spans,
+/// pinned once at startup by [`init`]. Read via [`withhold_session_id`].
+static WITHHOLD_SESSION_ID: OnceLock<bool> = OnceLock::new();
+
+/// Whether the per-request client `session_id` must be kept off trace spans.
+///
+/// The decision is fixed for the process lifetime because the OTLP exporter is
+/// built exactly once at startup and never rebuilt on hot-reload — so the
+/// privacy rule that governs what that exporter emits must be pinned to the
+/// startup `[otel]` config, not read from the hot-swappable per-request config
+/// (which a mid-run edit could flip while the original exporter keeps running).
+///
+/// `true` only when the *trace bridge* is active (the sole signal that carries
+/// span fields to the collector) and the operator did not opt in via
+/// `include_session_id`. Stays `false` when `[otel]` is absent/disabled (`init`
+/// never ran) or exports only metrics/logs, so local stderr spans keep the id.
+pub fn withhold_session_id() -> bool {
+    WITHHOLD_SESSION_ID.get().copied().unwrap_or(false)
+}
+
+/// The startup withhold decision (see [`withhold_session_id`]). Withhold only
+/// when the trace bridge will actually export span fields (`traces`) and the
+/// operator has not opted in — a metrics/logs-only export leaves the id on the
+/// local span. Pure so it is unit-testable without touching the global.
+fn should_withhold_session_id(config: &OtelConfig) -> bool {
+    config.traces && !config.include_session_id
+}
 
 /// The subscriber-layer slot the OTel trace + logs bridges are injected into
 /// after config load. `None` until (and unless) `[otel]` is enabled; the
@@ -99,6 +128,13 @@ pub fn init(config: &OtelConfig) -> anyhow::Result<(TelemetryGuard, OtelReloadLa
     let resource = build_resource(config);
     let headers = header_map(config);
 
+    // Pin the session-id privacy decision for the process lifetime (see
+    // `withhold_session_id`). `init` runs only for an enabled section, so this
+    // config governs the exporter for its whole life even if `[otel]` is later
+    // hot-edited — the exporter itself is never rebuilt. `set` is idempotent
+    // (first call wins).
+    let _ = WITHHOLD_SESSION_ID.set(should_withhold_session_id(config));
+
     // Build every enabled exporter FIRST. Exporter construction is the only
     // fallible step, and none of the `opentelemetry::global::set_*` calls below
     // run until all three have succeeded — so a failure on any one signal
@@ -146,9 +182,12 @@ pub fn init(config: &OtelConfig) -> anyhow::Result<(TelemetryGuard, OtelReloadLa
     // the subscriber layers. Nothing below can fail.
     let (tracer, trace_layer) = match span_exporter {
         Some(exporter) => {
-            // Parent-based so a client-supplied `traceparent` is honored; the
-            // ratio governs root spans (shunt's request spans are roots unless
-            // the client propagates a trace). Clamp defensively so a caller that
+            // Parent-based: a span that already carries a parent context
+            // inherits its parent's sampling decision; otherwise the ratio
+            // governs the (root) request span. shunt does not yet extract an
+            // inbound W3C `traceparent` from request headers, so today every
+            // request span is a root — wiring inbound trace-context propagation
+            // is tracked as a follow-up. Clamp defensively so a caller that
             // built `OtelConfig` without `Config::validate()` can't hand an
             // out-of-range probability to the sampler.
             let sampler = Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(
@@ -266,7 +305,10 @@ fn signal_endpoint(base: &str, path: &str) -> String {
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{build_resource, header_map, init, signal_endpoint};
+    use super::{
+        build_resource, header_map, init, should_withhold_session_id, signal_endpoint,
+        withhold_session_id,
+    };
     use crate::config::OtelConfig;
 
     /// A minimal enabled `[otel]` config pointing at a loopback port with nothing
@@ -347,5 +389,22 @@ mod tests {
             "trace + logs bridges must compose into a subscriber layer"
         );
         drop(guard); // exercises the tracer/logger shutdown paths
+    }
+
+    #[test]
+    fn should_withhold_session_id_only_when_trace_bridge_active_and_not_opted_in() {
+        // Trace export on, no opt-in → withhold (the id would ride the span).
+        assert!(should_withhold_session_id(&config(true, true, true, None)));
+        // Opted in → keep, even with traces on.
+        let mut opted_in = config(true, true, true, None);
+        opted_in.include_session_id = true;
+        assert!(!should_withhold_session_id(&opted_in));
+        // Metrics/logs only (no trace bridge) → keep the id on local spans.
+        assert!(!should_withhold_session_id(&config(
+            false, true, true, None
+        )));
+        // Exercise the public getter (its value reflects process-global startup
+        // state, so only assert that the call itself is well-formed).
+        let _: bool = withhold_session_id();
     }
 }
