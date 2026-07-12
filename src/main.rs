@@ -72,7 +72,12 @@ fn main() -> anyhow::Result<()> {
             provider,
             name,
             long_lived,
-        }) => login(&provider, name.as_deref(), long_lived, cli.config.as_deref()),
+        }) => login(
+            &provider,
+            name.as_deref(),
+            long_lived,
+            cli.config.as_deref(),
+        ),
         None if cli.check => check(cli.config),
         None => run(cli.config),
     }
