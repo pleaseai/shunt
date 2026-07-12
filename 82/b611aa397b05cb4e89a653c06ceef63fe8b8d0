@@ -1,0 +1,82 @@
+src/main.rs
+  s_e503fa9f261534::t_91fddd6091017d 59-70
+src/auth/xai_auth.rs
+  s_e503fa9f261534::t_51626532ed41a8 98,106-142
+src/adapters/cursor/connect.rs
+  s_e503fa9f261534::t_ca6e0c2913265b 333,337-358
+  s_e503fa9f261534::t_b9e7c4349507dd 212,221-225
+  s_e503fa9f261534::t_41fafbb133d518 100-113
+  s_0534baa6715994::t_5617b82de3d44b 226,359
+src/adapters/cursor/request.rs
+  s_e503fa9f261534::t_609c5b057989e3 109-113
+src/auth/cursor_auth.rs
+  s_e503fa9f261534::t_60c56b86c0b1c5 160-166,168
+  s_e503fa9f261534::t_034a6eecc1910b 181,184-202
+src/adapters/cursor/response.rs
+  s_e503fa9f261534::t_b2705edddc8d6a 278-291
+  s_e503fa9f261534::t_90262d3736982e 147-148
+  s_e503fa9f261534::t_17bff1b267ddb6 107-108,116-117,121-122
+  s_e503fa9f261534::t_5e2dd0ae0b9872 85-91
+  s_6d472f030b35ac::t_401e89aea13430 277
+src/adapters/cursor/client.rs
+  s_e503fa9f261534::t_9ebfe52077fd58 20-25
+src/config.rs
+  s_e503fa9f261534::t_f6b0d50c926f93 299-302
+  s_e503fa9f261534::t_3f5de89351fa27 234-243
+  s_e503fa9f261534::t_9c798d3a5c4685 820-830,835-840,842-846
+  s_e503fa9f261534::t_fcbc59abec164b 831-834,841
+  s_e503fa9f261534::t_691aa7744ad100 556-579
+src/adapters/cursor/model.rs
+  s_e503fa9f261534::t_fcbc59abec164b 174-180
+  s_e503fa9f261534::t_f780ba9e713e40 171-173,181-187
+  s_e503fa9f261534::t_c41b0f6d246feb 46-66
+  s_e503fa9f261534::t_b681ea43ccc826 170
+src/adapters/cursor/tool_bridge.rs
+  s_e503fa9f261534::t_0404e734cef97b 381
+  s_e503fa9f261534::t_35aec41af19446 285-287
+src/adapters/cursor/sse.rs
+  s_e503fa9f261534::t_66878ebaacbe18 31-33
+  s_e503fa9f261534::t_5abc78609043e6 263-264,268-269
+  s_e503fa9f261534::t_d778785a19a729 466-482,484-486
+  s_e503fa9f261534::t_b89f420d7441ed 272-295
+  s_e503fa9f261534::t_8605e368f3f4c4 270,487-508
+  s_e503fa9f261534::t_69c70270233c83 123-124
+  s_e503fa9f261534::t_fb04b23496ffd3 104-105
+  s_e503fa9f261534::t_b535428c737871 362-363
+  s_e503fa9f261534::t_fcbc59abec164b 483
+  s_e503fa9f261534::t_c7fd70685a9e6c 271
+src/adapters/cursor/stream.rs
+  s_e503fa9f261534::t_a5841ca4cdd0f8 71-81
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "82b611aa397b05cb4e89a653c06ceef63fe8b8d0",
+  "prompts": {},
+  "sessions": {
+    "s_0534baa6715994": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "821347bb-d511-4e54-9ff3-8af267f942aa",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_6d472f030b35ac": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5d75ed12-527b-4fc0-90a2-0753be0d869e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_e503fa9f261534": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "116e3e3e-ee93-411d-9281-2a9618117cca",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
