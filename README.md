@@ -65,7 +65,7 @@ OpenAI's Thibault Sottiaux has publicly welcomed running Codex through other cod
 
 He [followed up](https://x.com/thsottiaux/status/2076119366647894371) by walking through pointing Claude Code ("your orange crab") at GPT-5.6 Sol himself — exactly the inference-layer swap `shunt` performs, no separate app required.
 
-That said, reusing your ChatGPT/Codex subscription (or the Kimi, Cursor, or other backends) from an unofficial client is your own call — a public welcome doesn't guarantee future policy or account enforcement. Use at your own risk.
+That said, reusing your ChatGPT/Codex subscription (or Kimi, Cursor, or other backends) from an unofficial client is your own call — a public welcome doesn't guarantee future policy or account enforcement. Use at your own risk.
 
 **Any Anthropic-compatible backend** is one table away — no code changes:
 
