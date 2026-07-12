@@ -11,7 +11,7 @@ readme = "README.md"
 keywords = ["claude", "gateway", "proxy", "anthropic", "openai"]
 categories = ["command-line-utilities", "web-programming::http-server"]
 # Keep the published tarball to what's needed to build and use the crate.
-include = ["src/**", "README.md", "LICENSE-MIT", "LICENSE-APACHE", "shunt.toml.example"]
+include = ["src/**", "README.md", "LICENSE-MIT", "LICENSE-APACHE", "shunt.toml.example", "shunt.yaml.example"]
 
 [lib]
 name = "shunt"
@@ -27,7 +27,7 @@ arc-swap = "1.9.2"
 axum = "0.8"
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
-figment = { version = "0.10", features = ["toml", "env"] }
+figment = { version = "0.10", features = ["toml", "yaml", "env"] }
 futures-util = "0.3"
 notify = "8.2.0"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }

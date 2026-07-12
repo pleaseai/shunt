@@ -5,7 +5,7 @@ use std::{
 };
 
 use figment::{
-    providers::{Env, Format, Serialized, Toml},
+    providers::{Env, Format, Serialized, Toml, Yaml},
     Figment,
 };
 use serde::{Deserialize, Serialize};
@@ -377,26 +377,57 @@ impl Default for Config {
     }
 }
 
-/// Standard config search order: `./shunt.toml`, then
-/// `$XDG_CONFIG_HOME/shunt/shunt.toml` (defaulting to `~/.config`), then
-/// `<homebrew prefix>/etc/shunt.toml` (`$HOMEBREW_PREFIX`, or the stock
-/// `/opt/homebrew` and `/usr/local` prefixes when unset).
+/// Config file basenames tried in each search directory, in priority order.
+/// TOML stays first so an existing `shunt.toml` always wins over a `.yaml`
+/// dropped alongside it; `.yaml` is preferred over the terser `.yml`.
+const CONFIG_FILENAMES: [&str; 3] = ["shunt.toml", "shunt.yaml", "shunt.yml"];
+
+/// Standard config search directories, in order: the current directory, then
+/// `$XDG_CONFIG_HOME/shunt` (defaulting to `~/.config`), then
+/// `<homebrew prefix>/etc` (`$HOMEBREW_PREFIX`, or the stock `/opt/homebrew`
+/// and `/usr/local` prefixes when unset). Each directory is probed for every
+/// name in [`CONFIG_FILENAMES`] before moving on, so a local `shunt.yaml`
+/// still wins over a config in a later directory.
 fn config_file_candidates(
     xdg_config_home: Option<PathBuf>,
     homebrew_prefix: Option<PathBuf>,
 ) -> Vec<PathBuf> {
-    let mut candidates = vec![PathBuf::from("./shunt.toml")];
+    let mut dirs = vec![PathBuf::from(".")];
     if let Some(dir) = xdg_config_home {
-        candidates.push(dir.join("shunt").join("shunt.toml"));
+        dirs.push(dir.join("shunt"));
     }
     let brew_prefixes = match homebrew_prefix {
         Some(prefix) => vec![prefix],
         None => vec![PathBuf::from("/opt/homebrew"), PathBuf::from("/usr/local")],
     };
     for prefix in brew_prefixes {
-        candidates.push(prefix.join("etc").join("shunt.toml"));
+        dirs.push(prefix.join("etc"));
     }
-    candidates
+    dirs.into_iter()
+        .flat_map(|dir| CONFIG_FILENAMES.iter().map(move |name| dir.join(name)))
+        .collect()
+}
+
+/// A config file's serialization format, selected by its extension so both
+/// `--config foo.yaml` and a discovered `shunt.yaml` are parsed as YAML.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigFormat {
+    Toml,
+    Yaml,
+}
+
+impl ConfigFormat {
+    /// Detect the format from a path's extension. `.yaml`/`.yml` (any case)
+    /// are YAML; everything else — including no extension — is TOML, which
+    /// preserves the historical `shunt.toml` default.
+    fn from_path(path: &Path) -> Self {
+        match path.extension().and_then(|ext| ext.to_str()) {
+            Some(ext) if ext.eq_ignore_ascii_case("yaml") || ext.eq_ignore_ascii_case("yml") => {
+                ConfigFormat::Yaml
+            }
+            _ => ConfigFormat::Toml,
+        }
+    }
 }
 
 impl Config {
@@ -421,7 +452,12 @@ impl Config {
                     }
                 }
             })?;
-            figment = figment.merge(Toml::string(&raw));
+            // The parser is chosen by extension so TOML and YAML configs are
+            // both accepted; an unknown extension is treated as TOML.
+            figment = match ConfigFormat::from_path(path) {
+                ConfigFormat::Toml => figment.merge(Toml::string(&raw)),
+                ConfigFormat::Yaml => figment.merge(Yaml::string(&raw)),
+            };
         }
         let config: Self = figment
             .merge(Env::prefixed("SHUNT_").split("__"))
@@ -641,8 +677,8 @@ mod tests {
     };
 
     use super::{
-        config_file_candidates, AuthMode, Config, ConfigError, ModelConfig, ProviderKind,
-        ResponsesFlavor,
+        config_file_candidates, AuthMode, Config, ConfigError, ConfigFormat, ModelConfig,
+        ProviderKind, ResponsesFlavor,
     };
 
     struct BufferWriter {
@@ -883,8 +919,14 @@ mod tests {
             candidates,
             [
                 "./shunt.toml",
+                "./shunt.yaml",
+                "./shunt.yml",
                 "/home/u/.config/shunt/shunt.toml",
+                "/home/u/.config/shunt/shunt.yaml",
+                "/home/u/.config/shunt/shunt.yml",
                 "/opt/homebrew/etc/shunt.toml",
+                "/opt/homebrew/etc/shunt.yaml",
+                "/opt/homebrew/etc/shunt.yml",
             ]
         );
     }
@@ -900,8 +942,14 @@ mod tests {
             candidates,
             [
                 "./shunt.toml",
+                "./shunt.yaml",
+                "./shunt.yml",
                 "/opt/homebrew/etc/shunt.toml",
+                "/opt/homebrew/etc/shunt.yaml",
+                "/opt/homebrew/etc/shunt.yml",
                 "/usr/local/etc/shunt.toml",
+                "/usr/local/etc/shunt.yaml",
+                "/usr/local/etc/shunt.yml",
             ]
         );
     }
@@ -950,5 +998,96 @@ provider = "kimi"
         assert_eq!(codex.effort.as_deref(), Some("high"));
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn config_format_is_selected_by_extension() {
+        use std::path::Path;
+        assert_eq!(
+            ConfigFormat::from_path(Path::new("shunt.toml")),
+            ConfigFormat::Toml
+        );
+        assert_eq!(
+            ConfigFormat::from_path(Path::new("shunt.yaml")),
+            ConfigFormat::Yaml
+        );
+        assert_eq!(
+            ConfigFormat::from_path(Path::new("shunt.yml")),
+            ConfigFormat::Yaml
+        );
+        // Case-insensitive, and an unknown/absent extension falls back to TOML.
+        assert_eq!(
+            ConfigFormat::from_path(Path::new("/etc/shunt.YAML")),
+            ConfigFormat::Yaml
+        );
+        assert_eq!(
+            ConfigFormat::from_path(Path::new("shunt.conf")),
+            ConfigFormat::Toml
+        );
+        assert_eq!(
+            ConfigFormat::from_path(Path::new("shunt")),
+            ConfigFormat::Toml
+        );
+    }
+
+    #[test]
+    fn yaml_adds_a_provider_and_merges_builtin_overrides() {
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-yaml-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // RAII guard so the temp dir is removed even if an assertion below
+        // panics (mirrors the pattern in main.rs's run test).
+        struct TempDirGuard(std::path::PathBuf);
+        impl Drop for TempDirGuard {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _guard = TempDirGuard(dir.clone());
+
+        let path = dir.join("shunt.yaml");
+        std::fs::write(
+            &path,
+            r#"
+providers:
+  kimi:
+    kind: anthropic
+    base_url: https://api.moonshot.ai/anthropic
+    auth: api_key
+    api_key_env: KIMI_API_KEY
+  codex:
+    effort: high
+routes:
+  - model: kimi-k2.7-code
+    provider: kimi
+"#,
+        )
+        .unwrap();
+
+        let config = Config::load(Some(&path)).unwrap();
+
+        // New provider added from YAML.
+        let kimi = config.provider("kimi").unwrap();
+        assert_eq!(kimi.kind, ProviderKind::Anthropic);
+        assert_eq!(kimi.auth, AuthMode::ApiKey);
+        assert_eq!(kimi.api_key_env.as_deref(), Some("KIMI_API_KEY"));
+        // Built-in codex kept its default base_url/auth while gaining effort,
+        // so YAML deep-merges over the seeded defaults just like TOML does.
+        let codex = config.provider("codex").unwrap();
+        assert_eq!(codex.base_url, "https://chatgpt.com/backend-api");
+        assert_eq!(codex.auth, AuthMode::ChatgptOauth);
+        assert_eq!(codex.effort.as_deref(), Some("high"));
+        // The YAML route is applied.
+        assert!(config
+            .routes
+            .iter()
+            .any(|route| route.model == "kimi-k2.7-code" && route.provider == "kimi"));
     }
 }

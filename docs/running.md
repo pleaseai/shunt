@@ -43,20 +43,30 @@ You can also run straight from the source tree with `cargo run -- <args>` (examp
 shunt loads configuration from, in increasing precedence:
 
 1. Built-in defaults (all providers preconfigured — see `src/config.rs`).
-2. A **TOML file**. With `--config <path>` that exact file is used (a missing
-   file is an error). Otherwise shunt takes the first file found in:
-   `./shunt.toml` → `$XDG_CONFIG_HOME/shunt/shunt.toml` (defaulting to
-   `~/.config/shunt/shunt.toml`) → `$HOMEBREW_PREFIX/etc/shunt.toml`
-   (defaulting to the `/opt/homebrew` and `/usr/local` prefixes). Boot
-   logs report which file was loaded, or that defaults are in use.
+2. A **TOML or YAML file**. The format is chosen by extension — `.toml` is
+   TOML, `.yaml`/`.yml` is YAML (any other extension is parsed as TOML). With
+   `--config <path>` that exact file is used (a missing file is an error).
+   Otherwise shunt takes the first file found, probing each directory for
+   `shunt.toml`, then `shunt.yaml`, then `shunt.yml`, in this directory order:
+   `./` → `$XDG_CONFIG_HOME/shunt/` (defaulting to `~/.config/shunt/`) →
+   `$HOMEBREW_PREFIX/etc/` (defaulting to the `/opt/homebrew` and
+   `/usr/local` prefixes). A local `shunt.yaml` therefore still wins over a
+   config file in a later directory. Boot logs report which file was loaded,
+   or that defaults are in use.
+
+   > **YAML 1.1 caveat:** the YAML backend parses YAML 1.1, where bare `yes`,
+   > `no`, `on`, `off`, `y`, `n` (any case) become booleans. Quote any string
+   > value that is one of these tokens (e.g. `api_key_env: "no"`), or
+   > deserialization fails with a type error. TOML is unaffected.
 3. **Environment variables** prefixed `SHUNT_`, using `__` for nested keys
    (e.g. `SHUNT_SERVER__BIND=0.0.0.0:3001`).
 
-Because the defaults already define every provider, your `shunt.toml` only needs the parts you
-want to change. Start from the template:
+Because the defaults already define every provider, your config only needs the parts you
+want to change. Start from either template:
 
 ```bash
-cp shunt.toml.example shunt.toml
+cp shunt.toml.example shunt.toml  # TOML
+cp shunt.yaml.example shunt.yaml  # YAML
 ```
 
 ### 3.1 Config reference
