@@ -122,9 +122,10 @@ provider = "xai"
 ## 모델 슬러그
 
 슬러그 카탈로그는 shunt의 것이 아니라 **xAI의 것**입니다 — shunt는 사용자가 라우팅하는 슬러그를 그대로
-전달합니다. 현재 코딩/프런티어 슬러그는 `grok-4.5`, `grok-4.3`, `grok-build-0.1`이며, shunt의 모델
-[디스커버리](/ko/guides/model-discovery/)는 `grok-4.5`와 `grok-4.3`을 노출합니다. 라우트에서
-`upstream_model`을 사용하면 Claude Code env를 건드리지 않고 별칭을 실제 슬러그로 매핑할 수 있습니다.
+전달합니다. 현재 코딩/프런티어 슬러그는 `grok-4.5`, `grok-4.3`, `grok-build-0.1`입니다. 라우트에서
+`upstream_model`을 사용하면 Claude Code env를 건드리지 않고 별칭을 실제 슬러그로 매핑할 수 있습니다. (모델
+[디스커버리](/ko/guides/model-discovery/)는 사용자가 선언한 `claude-` 이름의 별칭만 노출하므로 원시 Grok
+슬러그는 나열할 수 없습니다 — 아래의 `ANTHROPIC_CUSTOM_MODEL_OPTION`이나 티어 리매핑으로 접근하세요.)
 
 ## Claude Code에서 모델 선택
 
@@ -135,7 +136,7 @@ Grok 슬러그는 `claude-`로 시작하지 않으므로, Claude Code의 `/model
 export ANTHROPIC_CUSTOM_MODEL_OPTION="grok-4.5"   # must match a [[routes]] rule
 ```
 
-동일한 [Codex 섹션](/ko/guides/codex/#4-select-the-model-in-claude-code)이 나머지를 그대로 다룹니다:
+동일한 [Codex 섹션](/ko/guides/codex/#4-claude-code에서-모델-선택)이 나머지를 그대로 다룹니다:
 `model:` 프론트매터로 **서브에이전트**를 Grok 슬러그에 올리기, 그리고 세션 전체를 위해 **티어 별칭**
 (`ANTHROPIC_DEFAULT_SONNET_MODEL`, …)을 Grok 슬러그로 재매핑하기.
 
@@ -166,7 +167,7 @@ effort = "high"
 ```
 
 `grok-4.5`는 `reasoning.effort`를 받아들입니다(실시간 검증됨). `400`을 반환하는 슬러그에 대해서는
-`effort`를 설정하지 마세요. 전체 우선순위와 effort 테이블: [노력 & 컨텍스트](/ko/guides/effort-and-context/#reasoning-effort).
+`effort`를 설정하지 마세요. 전체 우선순위와 effort 테이블: [노력 & 컨텍스트](/ko/guides/effort-and-context/#추론-노력).
 
 ## 컨텍스트 윈도우
 
@@ -179,13 +180,13 @@ export CLAUDE_CODE_MAX_CONTEXT_TOKENS=<your-slug's real window>   # per xAI's mo
 
 이 값은 **전역**이며(세션당 하나의 값), 매핑된 모델 중 가장 작은 실제 윈도우에 맞추세요. 모델의 실제
 윈도우를 초과하면 `prompt is too long` 오버플로 churn을 유발하기 때문입니다. 자세한 내용과
-`count_tokens` 동작: [노력 & 컨텍스트](/ko/guides/effort-and-context/#context--usage-display-for-mapped-models).
+`count_tokens` 동작: [노력 & 컨텍스트](/ko/guides/effort-and-context/#매핑된-모델의-컨텍스트--사용량-표시).
 
 ## 웹 검색
 
 Claude Code의 내장 **웹 검색은 Grok 라우트에서 동작하지 않습니다.** xAI의 Responses API는 함수 도구만
 허용하므로, shunt는 `xai` 플레이버(`grok`과 `xai` 둘 다)에서 호스티드 `web_search` 도구를 제거합니다.
-호스티드 웹 검색이 필요하면 [`codex` 또는 `openai` 라우트](/ko/guides/codex/#web-search)를 사용하세요.
+호스티드 웹 검색이 필요하면 [`codex` 또는 `openai` 라우트](/ko/guides/codex/#웹-검색)를 사용하세요.
 
 ## 전체 예시 (구독 경로)
 
@@ -221,7 +222,7 @@ export ANTHROPIC_CUSTOM_MODEL_OPTION="grok-4.5"     # add to /model picker
 
 | 증상 | 원인 / 해결 |
 | :-- | :-- |
-| 시작 시 `run shunt login xai` | `~/.shunt/xai-auth.json`이 없음(또는 잘못된 `$XAI_AUTH_FILE`). `shunt login xai`를 실행하세요. |
+| 시작 시 `run shunt login xai` | `~/.shunt/xai-auth.json`이 없음(또는 잘못된 `$SHUNT_XAI_AUTH_FILE`). `shunt login xai`를 실행하세요. |
 | `xAI refresh response missing refresh_token; run shunt login xai` | 저장된 refresh 토큰이 소비/회전되어 사라졌습니다. 다시 로그인하세요. |
 | `402 … personal-team-blocked:spending-limit` / *"need a Grok subscription"* | API 크레딧 없이 **`xai`**(개발자 API) 경로에 있습니다. [console.x.ai](https://console.x.ai/)에서 크레딧을 추가하거나, 구독을 사용하려면 **`grok`**으로 라우팅하세요. |
 | `403 … not authorized for API access` (구독 티어 게이트) | **`grok`** 경로에서 사용자의 구독 티어에 API 액세스가 포함되지 않습니다 — **재로그인은 도움이 되지 않습니다**. `XAI_API_KEY`를 설정하고 `xai` 경로를 사용하거나, [x.ai/grok](https://x.ai/grok)에서 업그레이드하세요. |

@@ -124,9 +124,10 @@ entitle the developer API — an unfunded account returns `402 Payment Required`
 ## Model slugs
 
 The slug catalog is **xAI's**, not shunt's — shunt forwards whatever slug you route. Current
-coding/frontier slugs are `grok-4.5`, `grok-4.3`, and `grok-build-0.1`; shunt's model
-[discovery](/guides/model-discovery/) exposes `grok-4.5` and `grok-4.3`. Use `upstream_model` in a
-route to map an alias onto a live slug without touching your Claude Code env.
+coding/frontier slugs are `grok-4.5`, `grok-4.3`, and `grok-build-0.1`. Use `upstream_model` in a
+route to map an alias onto a live slug without touching your Claude Code env. (Model
+[discovery](/guides/model-discovery/) only surfaces `claude-`named aliases you declare, so it can't
+list a raw Grok slug — reach these via `ANTHROPIC_CUSTOM_MODEL_OPTION` or a tier remap below.)
 
 ## Select the model in Claude Code
 
@@ -223,7 +224,7 @@ only the mapped model's inference is answered by your SuperGrok subscription.
 
 | Symptom | Cause / Fix |
 | :-- | :-- |
-| `run shunt login xai` on startup | No `~/.shunt/xai-auth.json` (or wrong `$XAI_AUTH_FILE`). Run `shunt login xai`. |
+| `run shunt login xai` on startup | No `~/.shunt/xai-auth.json` (or wrong `$SHUNT_XAI_AUTH_FILE`). Run `shunt login xai`. |
 | `xAI refresh response missing refresh_token; run shunt login xai` | The stored refresh token was consumed/rotated away. Log in again. |
 | `402 … personal-team-blocked:spending-limit` / *"need a Grok subscription"* | On the **`xai`** (developer API) path without API credits. Add credits at [console.x.ai](https://console.x.ai/), or route to **`grok`** to use your subscription. |
 | `403 … not authorized for API access` (subscription tier gate) | On the **`grok`** path your subscription tier doesn't include API access — **re-logging in won't help**. Set `XAI_API_KEY` and use the `xai` path, or upgrade at [x.ai/grok](https://x.ai/grok). |
