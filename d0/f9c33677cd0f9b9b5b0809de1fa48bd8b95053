@@ -1,0 +1,31 @@
+site/src/content/docs/ja/guides/providers.md
+  s_245b3a871a2322::t_a929dc682b327a 45
+site/src/content/docs/ko/guides/providers.md
+  s_245b3a871a2322::t_4dd64b8b34825b 45
+shunt.toml.example
+  s_245b3a871a2322::t_1d76d28361eb05 113,115
+plugins/shunt-mimo/README.md
+  s_245b3a871a2322::t_f3822ce568ad21 40,53-57
+site/src/content/docs/zh-cn/guides/providers.md
+  s_245b3a871a2322::t_846eea9a47e87e 45
+site/src/content/docs/guides/providers.md
+  s_245b3a871a2322::t_f340354ea70c27 45
+docs/running.md
+  s_245b3a871a2322::t_d6eb802da5afb8 168
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "d0f9c33677cd0f9b9b5b0809de1fa48bd8b95053",
+  "prompts": {},
+  "sessions": {
+    "s_245b3a871a2322": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "57c33d35-36c6-4d51-8d2d-3b563002adc8",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
