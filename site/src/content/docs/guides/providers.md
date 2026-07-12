@@ -76,6 +76,7 @@ The [`pleaseai/shunt` marketplace](https://github.com/pleaseai/shunt/tree/main/p
 | `shunt-deepseek` | `deepseek-v4-pro`, `deepseek-v4-flash` | `deepseek` |
 | `shunt-zai` | `glm-5.2`, `glm-4.7` | `zai` |
 | `shunt-minimax` | `MiniMax-M3[1m]` | `minimax` |
+| `shunt-mimo` | `mimo-v2.5-pro` | `mimo` |
 
 ```bash
 /plugin marketplace add pleaseai/shunt

@@ -44,6 +44,12 @@
       "source": "./plugins/shunt-minimax",
       "description": "Subagent on MiniMax-M3 (1M context), routed through shunt at the inference layer via MiniMax's Anthropic-compatible endpoint.",
       "keywords": ["minimax"]
+    },
+    {
+      "name": "shunt-mimo",
+      "source": "./plugins/shunt-mimo",
+      "description": "Subagent on Xiaomi's mimo-v2.5-pro, routed through shunt at the inference layer via Mimo's Anthropic-compatible endpoint.",
+      "keywords": ["mimo", "xiaomi"]
     }
   ]
 }
