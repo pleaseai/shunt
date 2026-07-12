@@ -128,6 +128,11 @@ pub fn init(config: &OtelConfig) -> anyhow::Result<(TelemetryGuard, OtelReloadLa
     let resource = build_resource(config);
     let headers = header_map(config);
 
+    // Emit the plaintext-headers warning here, at the telemetry boundary, so it
+    // fires once at startup rather than on every `Config::validate` (which
+    // re-runs on each hot-reload).
+    warn_on_plaintext_headers(config);
+
     // Build every enabled exporter FIRST. Exporter construction is the only
     // fallible step, and none of the `opentelemetry::global::set_*` calls below
     // run until all three have succeeded — so a failure on any one signal
@@ -302,6 +307,40 @@ fn header_map(config: &OtelConfig) -> HashMap<String, String> {
     config.headers.clone().into_iter().collect()
 }
 
+/// Warn (once, at startup) when `[otel.headers]` — which can carry a secret like
+/// a collector bearer — would travel over plaintext http to a non-loopback host,
+/// where it would go out in the clear. Not a hard error: http to a local
+/// collector is a legitimate default, so this only surfaces a likely
+/// misconfiguration (mirroring the codebase's care about leaking bearers). The
+/// host is parsed as an IP so the whole 127.0.0.0/8 range and ::1 count as
+/// loopback — a `starts_with("127.")` prefix test would also match a public host
+/// like `127.example.com` and wrongly suppress the warning.
+fn warn_on_plaintext_headers(config: &OtelConfig) {
+    if config.headers.is_empty() {
+        return;
+    }
+    let Ok(endpoint) = reqwest::Url::parse(&config.endpoint) else {
+        return;
+    };
+    let host_is_loopback = endpoint
+        .host_str()
+        .map(|host| {
+            host == "localhost"
+                || host == "::1"
+                || host
+                    .parse::<std::net::IpAddr>()
+                    .map(|ip| ip.is_loopback())
+                    .unwrap_or(false)
+        })
+        .unwrap_or(false);
+    if endpoint.scheme() == "http" && !host_is_loopback {
+        tracing::warn!(
+            host = endpoint.host_str().unwrap_or_default(),
+            "[otel.headers] are sent over plaintext http to a non-loopback endpoint; use https so a collector token is not transmitted in the clear"
+        );
+    }
+}
+
 /// Join the configured base endpoint with a signal path. Programmatic
 /// `.with_endpoint()` is used verbatim by the exporter (unlike the env-var base
 /// endpoint, which auto-appends the signal path), so shunt appends it here to
@@ -316,7 +355,7 @@ mod tests {
 
     use super::{
         build_resource, header_map, init, should_withhold_session_id, signal_endpoint,
-        withhold_session_id,
+        warn_on_plaintext_headers, withhold_session_id,
     };
     use crate::config::OtelConfig;
 
@@ -408,6 +447,35 @@ mod tests {
         cfg.sample_ratio = f64::NAN;
         let (guard, _layer) = init(&cfg).expect("init should tolerate a NaN ratio");
         drop(guard);
+    }
+
+    #[test]
+    fn warn_on_plaintext_headers_covers_all_branches() {
+        // No panic across every arm: no headers (early return); headers over
+        // https (no warn); http to a loopback IP and to `localhost` (no warn);
+        // http to a non-loopback host (warns). A `127.`-prefixed public host is
+        // correctly treated as non-loopback (warns).
+        let mut with_headers = config(true, true, true, None);
+        with_headers
+            .headers
+            .insert("authorization".to_string(), "Bearer x".to_string());
+
+        warn_on_plaintext_headers(&config(true, true, true, None)); // headers empty
+        let mut https = with_headers.clone();
+        https.endpoint = "https://collector.example".to_string();
+        warn_on_plaintext_headers(&https);
+        let mut http_loopback = with_headers.clone();
+        http_loopback.endpoint = "http://127.0.0.1:4318".to_string();
+        warn_on_plaintext_headers(&http_loopback);
+        let mut http_localhost = with_headers.clone();
+        http_localhost.endpoint = "http://localhost:4318".to_string();
+        warn_on_plaintext_headers(&http_localhost);
+        let mut http_remote = with_headers.clone();
+        http_remote.endpoint = "http://collector.example".to_string();
+        warn_on_plaintext_headers(&http_remote);
+        let mut http_pseudo_loopback = with_headers.clone();
+        http_pseudo_loopback.endpoint = "http://127.example.com".to_string();
+        warn_on_plaintext_headers(&http_pseudo_loopback);
     }
 
     #[test]
