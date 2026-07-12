@@ -1,0 +1,24 @@
+src/main.rs
+  s_6286a7ecba29ef::t_03da9f4d021096 65-77
+  s_6286a7ecba29ef::t_cce153a63a4ad4 49
+Cargo.lock
+  s_6286a7ecba29ef::t_dbe4a17e9cacd2 2279
+Cargo.toml
+  s_6286a7ecba29ef::t_c3564f00f68a11 34-38
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "e08da3db9f1b4c700705fb50256d7713c5693b21",
+  "prompts": {},
+  "sessions": {
+    "s_6286a7ecba29ef": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "227ce361-f31b-4d70-bce8-9eec86770eb4",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
