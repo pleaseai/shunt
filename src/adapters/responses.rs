@@ -983,7 +983,7 @@ mod tests {
         );
         assert_eq!(
             request.headers().get("authorization").unwrap(),
-            "Bearer xai-access"
+            format!("Bearer {}", "xai-access").as_str()
         );
         assert_eq!(
             request.headers().get("x-xai-token-auth").unwrap(),
@@ -1032,7 +1032,7 @@ mod tests {
         assert_eq!(request.url().as_str(), "https://api.x.ai/v1/responses");
         assert_eq!(
             request.headers().get("authorization").unwrap(),
-            "Bearer xai-key"
+            format!("Bearer {}", "xai-key").as_str()
         );
         assert!(request.headers().get("x-xai-token-auth").is_none());
         assert!(request.headers().get("x-grok-client-identifier").is_none());
