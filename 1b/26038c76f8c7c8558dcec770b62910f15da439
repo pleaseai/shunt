@@ -1,0 +1,32 @@
+docs/implementation-plan.md
+  s_e0eb43cc1dd7e1::t_637f5dac97fdb4 247
+src/lib.rs
+  s_e0eb43cc1dd7e1::t_14a54c4e6f87a2 11
+tests/passthrough.rs
+  s_e0eb43cc1dd7e1::t_997464c619be3b 152-170
+  s_e0eb43cc1dd7e1::t_81172e82656726 151
+.claude/skills/run-shunt/SKILL.md
+  s_e0eb43cc1dd7e1::t_3df57904981bd0 159-161
+src/server.rs
+  s_e0eb43cc1dd7e1::t_77b60c9bbd5239 12
+  s_e0eb43cc1dd7e1::t_a9bbfcf5fbc481 72
+  s_e0eb43cc1dd7e1::t_dd34413877b39a 85
+src/protocol.rs
+  s_e0eb43cc1dd7e1::t_58cf32c81cd4c7 1-164
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "1b26038c76f8c7c8558dcec770b62910f15da439",
+  "prompts": {},
+  "sessions": {
+    "s_e0eb43cc1dd7e1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "18d3d96a-6b1b-4f2d-8038-a21e997d22c2",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
