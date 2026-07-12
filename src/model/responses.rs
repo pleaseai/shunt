@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use axum::http::StatusCode;
 use serde_json::{json, Value};
 
@@ -39,6 +41,7 @@ pub struct AnthropicSseMachine {
     text_buffer: String,
     tool_buffer: Option<ToolBuffer>,
     reasoning: Option<ReasoningBuffer>,
+    web_search_indexes: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -77,6 +80,7 @@ impl AnthropicSseMachine {
             text_buffer: String::new(),
             tool_buffer: None,
             reasoning: None,
+            web_search_indexes: HashMap::new(),
         }
     }
 
@@ -89,6 +93,7 @@ impl AnthropicSseMachine {
             "response.created" | "response.in_progress" => self.start(&event.data),
             "response.output_item.added" => self.output_item_added(&event.data),
             "response.output_text.delta" => self.text_delta(&event.data),
+            "response.output_text.annotation.added" => self.annotation_added(&event.data),
             "response.output_text.done" | "response.content_part.done" => {
                 self.close_current(BlockKind::Text)
             }
@@ -181,6 +186,9 @@ impl AnthropicSseMachine {
         let item = data.get("item").unwrap_or(data);
         if item.get("type").and_then(Value::as_str) == Some("reasoning") {
             return self.reasoning_done(item);
+        }
+        if item.get("type").and_then(Value::as_str) == Some("web_search_call") {
+            return self.web_search_done(item);
         }
         self.close_any()
     }
@@ -367,6 +375,103 @@ impl AnthropicSseMachine {
                 "delta": {"type": "text_delta", "text": delta}
             }),
         )]
+    }
+
+    fn annotation_added(&mut self, data: &Value) -> Vec<String> {
+        let annotation = data.get("annotation").unwrap_or(data);
+        if annotation.get("type").and_then(Value::as_str) != Some("url_citation") {
+            return Vec::new();
+        }
+        let url = annotation.get("url").and_then(Value::as_str).unwrap_or("");
+        let encrypted_index = annotation
+            .get("encrypted_index")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| self.web_search_indexes.get(url).cloned())
+            .unwrap_or_default();
+        let mut citation = json!({
+            "type": "web_search_result_location",
+            "url": url,
+            "title": annotation.get("title").cloned().unwrap_or(Value::Null),
+            "cited_text": annotation.get("cited_text").cloned().unwrap_or_else(|| json!("")),
+            "encrypted_index": encrypted_index,
+        });
+        citation
+            .as_object_mut()
+            .expect("citation is an object")
+            .retain(|_, value| !value.is_null());
+        vec![sse(
+            "content_block_delta",
+            &json!({
+                "type": "content_block_delta",
+                "index": self.open_index(),
+                "delta": {"type": "citations_delta", "citation": citation}
+            }),
+        )]
+    }
+
+    fn web_search_done(&mut self, item: &Value) -> Vec<String> {
+        let mut out = self.close_any();
+        let id = item
+            .get("id")
+            .or_else(|| item.get("call_id"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let input = item
+            .get("action")
+            .cloned()
+            .or_else(|| item.get("input").cloned())
+            .unwrap_or_else(|| json!({}));
+        out.push(sse(
+            "content_block_start",
+            &json!({
+                "type": "content_block_start",
+                "index": self.index,
+                "content_block": {"type": "server_tool_use", "id": id, "name": "web_search", "input": input}
+            }),
+        ));
+        self.content.push(json!({
+            "type": "server_tool_use", "id": id, "name": "web_search", "input": input
+        }));
+        out.push(sse(
+            "content_block_stop",
+            &json!({"type": "content_block_stop", "index": self.index}),
+        ));
+        self.index += 1;
+
+        let results = item
+            .get("results")
+            .or_else(|| item.get("output"))
+            .cloned()
+            .unwrap_or_else(|| json!([]));
+        if let Some(results) = results.as_array() {
+            for result in results {
+                if let (Some(url), Some(encrypted_content)) = (
+                    result.get("url").and_then(Value::as_str),
+                    result.get("encrypted_content").and_then(Value::as_str),
+                ) {
+                    self.web_search_indexes
+                        .insert(url.to_string(), encrypted_content.to_string());
+                }
+            }
+        }
+        out.push(sse(
+            "content_block_start",
+            &json!({
+                "type": "content_block_start",
+                "index": self.index,
+                "content_block": {"type": "web_search_tool_result", "tool_use_id": id, "content": results}
+            }),
+        ));
+        self.content.push(json!({
+            "type": "web_search_tool_result", "tool_use_id": id, "content": results
+        }));
+        out.push(sse(
+            "content_block_stop",
+            &json!({"type": "content_block_stop", "index": self.index}),
+        ));
+        self.index += 1;
+        out
     }
 
     fn arguments_delta(&mut self, data: &Value) -> Vec<String> {

@@ -685,7 +685,10 @@ fn request_builder(
         .header("content-type", "application/json");
     // `OpenAI-Beta: responses=experimental` is an OpenAI/ChatGPT header; xAI's
     // Responses API doesn't expect it and the reference clients don't send it.
-    if state.config.responses_flavor(&route.provider) != crate::config::ResponsesFlavor::Xai {
+    if !matches!(
+        state.config.responses_flavor(&route.provider),
+        crate::config::ResponsesFlavor::Xai | crate::config::ResponsesFlavor::Grok
+    ) {
         request = request.header("OpenAI-Beta", "responses=experimental");
     }
     match credential {

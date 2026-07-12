@@ -113,7 +113,7 @@ pub fn translate_request(
     // xAI also rejects the `summary` key, so it is omitted there. Other
     // flavors always request a reasoning summary, as before.
     match flavor {
-        ResponsesFlavor::Xai => {
+        ResponsesFlavor::Xai | ResponsesFlavor::Grok => {
             let client_effort = request
                 .pointer("/output_config/effort")
                 .and_then(Value::as_str)
@@ -134,7 +134,7 @@ pub fn translate_request(
     }
     // `text.verbosity` is a gpt-family knob; xAI's Responses API rejects the
     // `text` object, and Hermes never sends it there, so skip it for xai.
-    if flavor != ResponsesFlavor::Xai {
+    if !matches!(flavor, ResponsesFlavor::Xai | ResponsesFlavor::Grok) {
         out.insert("text".to_string(), json!({"verbosity": "medium"}));
     }
     // With store:false the Responses backend forgets each turn's reasoning, so ask
@@ -640,10 +640,9 @@ fn tools(request: &Value, flavor: ResponsesFlavor, context: &ToolSearchContext) 
             })
             .filter_map(|tool| {
                 if is_web_search_tool(tool) {
-                    // xAI's Responses API only accepts function tools and 400s
-                    // on the hosted web-search shape, so drop it there rather
-                    // than fail the whole request. The tool_choice below then
-                    // downgrades any web_search choice to `auto`.
+                    // Only the Grok CLI subscription proxy is verified to accept
+                    // hosted web search. Keep dropping it on the xAI developer
+                    // API until that surface is verified separately.
                     match flavor {
                         ResponsesFlavor::Xai => None,
                         _ => Some(web_search_tool(tool)),
@@ -705,11 +704,10 @@ fn tool_choice(
             Some("tool") => {
                 let name = choice.get("name").and_then(Value::as_str).unwrap_or("");
                 if names_web_search(request, name) {
-                    // xAI drops the hosted web-search tool (see `tools`), so a
-                    // `web_search` choice there would force a tool that was
-                    // never registered — the backend 502s on that. Downgrade to
-                    // `auto`. Elsewhere the tool is selected with a bare
-                    // `{"type":"web_search"}`, not a named function choice.
+                    // The xAI developer API drops the hosted tool (see `tools`),
+                    // so a `web_search` choice there would force a tool that was
+                    // never registered. The Grok CLI flavor keeps the hosted
+                    // selector because that surface supports it.
                     match flavor {
                         ResponsesFlavor::Xai => Some(json!("auto")),
                         _ => Some(json!({"type": "web_search"})),

@@ -574,6 +574,39 @@ fn forced_web_search_tool_choice_uses_web_search_selector() {
 }
 
 #[test]
+fn grok_forwards_web_search_tool_and_forced_choice() {
+    let out = translate_with_flavor(
+        json!({
+            "model": "grok-4.5",
+            "messages": [{"role": "user", "content": "find it"}],
+            "tools": [
+                {"name": "Bash", "input_schema": {}},
+                {"type": "web_search_20250305", "name": "web_search"}
+            ],
+            "tool_choice": {"type": "tool", "name": "web_search"}
+        }),
+        ResponsesFlavor::Grok,
+    );
+    assert_eq!(
+        out["tools"],
+        json!([
+            {
+                "type": "function",
+                "name": "Bash",
+                "description": "",
+                "parameters": {"type": "object", "properties": {}, "additionalProperties": true}
+            },
+            {
+                "type": "web_search",
+                "external_web_access": false,
+                "search_content_types": ["text", "image"]
+            }
+        ])
+    );
+    assert_eq!(out["tool_choice"], json!({"type": "web_search"}));
+}
+
+#[test]
 fn xai_drops_web_search_tool_and_downgrades_forced_choice() {
     // xAI's Responses API only accepts function tools, so the hosted
     // web-search tool is dropped and a forced choice for it falls back to
@@ -749,6 +782,48 @@ fn xai_includes_encrypted_reasoning_when_thinking_enabled() {
     let actual = translate_request(&body, &xai_route("grok-4.5"), ResponsesFlavor::Xai).unwrap();
 
     assert_eq!(actual["include"], json!(["reasoning.encrypted_content"]));
+}
+
+#[test]
+fn translates_grok_web_search_results_and_citations_to_anthropic_blocks() {
+    let fixture = concat!(
+        "event: response.created\n",
+        "data: {\"response\":{\"id\":\"resp_search\"}}\n\n",
+        "event: response.output_item.added\n",
+        "data: {\"item\":{\"type\":\"web_search_call\",\"id\":\"ws_1\",\"status\":\"in_progress\"}}\n\n",
+        "event: response.output_item.done\n",
+        "data: {\"item\":{\"type\":\"web_search_call\",\"id\":\"ws_1\",\"status\":\"completed\",\"action\":{\"type\":\"search\",\"query\":\"Rust language\"},\"results\":[{\"type\":\"web_search_result\",\"url\":\"https://www.rust-lang.org/\",\"title\":\"Rust\",\"encrypted_content\":\"enc\"}]}}\n\n",
+        "event: response.output_item.added\n",
+        "data: {\"item\":{\"type\":\"message\"}}\n\n",
+        "event: response.output_text.delta\n",
+        "data: {\"delta\":\"Rust is a systems language.\"}\n\n",
+        "event: response.output_text.annotation.added\n",
+        "data: {\"annotation\":{\"type\":\"url_citation\",\"url\":\"https://www.rust-lang.org/\",\"title\":\"Rust\",\"cited_text\":\"Rust is a systems language.\"}}\n\n",
+        "event: response.output_text.done\n",
+        "data: {}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}}\n\n"
+    );
+    let mut machine = AnthropicSseMachine::new("grok-4.5", false);
+    let emitted = parse_sse_events(fixture)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
+
+    assert!(emitted.contains("\"type\":\"server_tool_use\""));
+    assert!(emitted.contains("\"id\":\"ws_1\""));
+    assert!(emitted.contains("\"type\":\"web_search_tool_result\""));
+    assert!(emitted.contains("\"tool_use_id\":\"ws_1\""));
+    assert!(emitted.contains("\"type\":\"citations_delta\""));
+    assert!(emitted.contains("\"type\":\"web_search_result_location\""));
+    assert!(emitted.contains("\"encrypted_index\":\"enc\""));
+    assert!(emitted.contains("https://www.rust-lang.org/"));
+
+    let final_json = machine.final_json();
+    assert_eq!(final_json["content"][0]["type"], "server_tool_use");
+    assert_eq!(final_json["content"][1]["type"], "web_search_tool_result");
+    assert_eq!(final_json["content"][2]["type"], "text");
+    assert_eq!(final_json["stop_reason"], "end_turn");
 }
 
 #[test]

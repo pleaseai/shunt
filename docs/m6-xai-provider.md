@@ -26,7 +26,15 @@
     is not subject to API billing. Sends the Grok-CLI identity headers (§6).
 - A `shunt login xai` subcommand that runs the device-code flow and writes a shunt-owned
   credential file, refreshed automatically on expiry.
-- xAI-flavored request translation (a third [`ResponsesFlavor`] beside OpenAI and ChatGPT/Codex).
+- xAI-flavored request translation, with a distinct Grok CLI flavor for capabilities such as
+  hosted web search that are verified only on the subscription proxy.
+
+The Grok CLI proxy supports the Responses hosted `web_search` tool end-to-end. shunt forwards it
+only for the `grok` subscription provider and translates the resulting search call, results, and URL
+citations back into Anthropic `server_tool_use`, `web_search_tool_result`, and citation blocks. The
+same tool remains disabled for the API-key `xai` provider because `api.x.ai` support has not been
+verified. **Hosted search is billed separately by xAI (approximately $5 per 1,000 calls), even when
+the request uses a Grok subscription.**
 
 Out of scope: any change to the M1 response translation / SSE state machine.
 
@@ -117,9 +125,10 @@ All gateway-owned errors use the Anthropic error envelope via the `auth_error` h
 ## 6. Request shaping — the `xai` [`ResponsesFlavor`]
 
 Detected table-driven, not by provider name: `auth = chatgpt_oauth` → ChatGPT; `auth = xai_oauth`
-→ xAI (the OAuth `grok` provider, whose `grok.com` host isn't an `x.ai` host); a base_url host of
-`x.ai`/`*.x.ai` → xAI (the API-key `xai` provider); else OpenAI. The xai flavor differs from the
-stock OpenAI translation in three ways (learned from 400s in the reference impls):
+→ Grok CLI (the OAuth `grok` provider, whose `grok.com` host isn't an `x.ai` host); a base_url host
+of `x.ai`/`*.x.ai` → xAI (the API-key `xai` provider); else OpenAI. The Grok CLI flavor inherits
+the xAI request-shaping rules below and additionally enables hosted `web_search`, which is verified
+only on the subscription proxy.
 
 **Grok-CLI identity headers.** The subscription OAuth path (`Credential::XaiOauth`) additionally
 sends `x-xai-token-auth: xai-grok-cli`, `x-grok-client-identifier: grok-shell`,
@@ -176,6 +185,9 @@ stays as the safe choice for the families that still reject it.
 
 ## 10. Open questions
 
+- **Developer API hosted tools.** The Grok CLI proxy is verified to accept hosted `web_search`;
+  `api.x.ai` is not, so the API-key `xai` flavor continues to drop it pending a live probe with an
+  `XAI_API_KEY`. Related hosted tools such as `x_search` remain out of scope.
 - **`text.verbosity`.** Dropped for xai because Hermes never sends it and xAI is reported to
   reject the `text` object. If a future grok build accepts it, this is a safe place to re-enable.
 - **Refresh skew.** shunt uses the shared 5-minute buffer. Hermes uses an adaptive skew (up to
