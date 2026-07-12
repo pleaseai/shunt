@@ -1,0 +1,19 @@
+src/auth/claude_store.rs
+  s_9438d094b59628::t_e71319473e0d1e 158-168
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "5296b53fae674a6771f5a11564e21f7816783afb",
+  "prompts": {},
+  "sessions": {
+    "s_9438d094b59628": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0075ecc3-27dd-45c0-a16c-10dcd0636a6e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
