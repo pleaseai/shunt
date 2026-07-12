@@ -65,6 +65,29 @@ description: 모든 shunt.toml 키 — server, providers, routes, models.
 | `id` | ✅ | Claude Code에 노출되는 모델 id |
 | `display_name` | — | `/model` 선택기에 표시되는 레이블 |
 
+## `[otel]` (선택)
+
+트레이스·메트릭·로그를 자체 컬렉터로 내보내는 옵트인 OpenTelemetry(OTLP/HTTP) 익스포트([상세](/ko/guides/opentelemetry/)). `endpoint`를 설정하지 않으면 꺼짐이며, Sentry와 독립적입니다.
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `endpoint` | — | OTLP/HTTP base URL(예: `http://localhost:4318`); shunt가 `/v1/{traces,metrics,logs}`를 덧붙임. 비우면 비활성화, `http(s)`가 아닌 URL은 시작 오류. |
+| `service_name` | `shunt` | `service.name` 리소스 속성(`OTEL_SERVICE_NAME`보다 우선) |
+| `environment` | — | 선택: `deployment.environment.name` |
+| `sample_ratio` | `1.0` | `[0.0, 1.0]` 범위의 head-based 트레이스 샘플링; 범위 밖이면 시작 오류 |
+| `traces` | `true` | 요청별 `proxy_request` 스팬 내보내기 |
+| `metrics` | `true` | `shunt.requests` / `shunt.latency` 계열 내보내기 |
+| `logs` | `true` | `tracing` 로그 이벤트 내보내기(stderr 로그는 영향 없음) |
+| `include_session_id` | `false` | 요청 스팬에 클라이언트 세션 id 첨부 |
+
+## `[otel.headers]` (선택)
+
+모든 OTLP 요청에 붙는 추가 헤더(예: 호스팅 컬렉터 토큰). 표준 `OTEL_EXPORTER_OTLP_HEADERS` 아래로 병합됩니다.
+
+| 키 | 의미 |
+| :-- | :-- |
+| 임의 | 헤더 이름 → 값, 예: `authorization = "Bearer <token>"` |
+
 ## 라우팅 우선순위
 
 정확한 `[[routes]]` 일치 → `[[route_prefixes]]` 프리픽스 일치 → `server.default_provider`.

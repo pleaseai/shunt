@@ -65,6 +65,29 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 | `id` | ✅ | 暴露给 Claude Code 的模型 id |
 | `display_name` | — | 在 `/model` 选择器中显示的标签 |
 
+## `[otel]`(可选)
+
+可选启用的 OpenTelemetry(OTLP/HTTP)导出,将 trace、指标与日志发送到你自己的 collector([详情](/zh-cn/guides/opentelemetry/))。未设置 `endpoint` 时关闭;与 Sentry 相互独立。
+
+| 键 | 默认 | 含义 |
+| :-- | :-- | :-- |
+| `endpoint` | — | OTLP/HTTP 基础 URL(例如 `http://localhost:4318`);shunt 会追加 `/v1/{traces,metrics,logs}`。留空则关闭;非 `http(s)` 的 URL 为启动错误。 |
+| `service_name` | `shunt` | `service.name` 资源属性(优先于 `OTEL_SERVICE_NAME`) |
+| `environment` | — | 可选:`deployment.environment.name` |
+| `sample_ratio` | `1.0` | `[0.0, 1.0]` 范围内基于 head 的 trace 采样;超出范围为启动错误 |
+| `traces` | `true` | 导出每次请求的 `proxy_request` span |
+| `metrics` | `true` | 导出 `shunt.requests` / `shunt.latency` 序列 |
+| `logs` | `true` | 导出 `tracing` 日志事件(stderr 日志不受影响) |
+| `include_session_id` | `false` | 将客户端 session id 附加到请求 span |
+
+## `[otel.headers]`(可选)
+
+附加到每个 OTLP 请求的 header(例如托管 collector 的令牌)。会合并到标准 `OTEL_EXPORTER_OTLP_HEADERS` 之下。
+
+| 键 | 含义 |
+| :-- | :-- |
+| 任意 | header 名称 → 值,例如 `authorization = "Bearer <token>"` |
+
 ## 路由优先级
 
 精确 `[[routes]]` 匹配 → `[[route_prefixes]]` 前缀匹配 → `server.default_provider`。
