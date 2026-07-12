@@ -1,0 +1,38 @@
+src/config.rs
+  s_a4d680fd10b8fa::t_e32c6c89cf2d43 8
+  s_a4d680fd10b8fa::t_4e798d11c6ad10 380-390,395,397,404-429
+  s_a4d680fd10b8fa::t_94289bd127dd73 455-460
+  s_a4d680fd10b8fa::t_f1ea4b3c87390c 945-946,948-949,951-952
+  s_a4d680fd10b8fa::t_053b07ecccf0d2 680-681
+  s_a4d680fd10b8fa::t_0cd133547b0c02 1002-1082
+  s_a4d680fd10b8fa::t_2c6cb7428c3e26 922-923,925-926,928-929
+site/src/content/docs/guides/configuration.md
+  s_a4d680fd10b8fa::t_af19e1f630e7c7 9-12,14
+  s_a4d680fd10b8fa::t_e7d6ecfd875636 65-89
+site/src/content/docs/reference/cli.md
+  s_a4d680fd10b8fa::t_c20846c23b314c 17
+Cargo.toml
+  s_a4d680fd10b8fa::t_929d0ccc141cbf 30
+site/src/content/docs/reference/configuration.md
+  s_a4d680fd10b8fa::t_32fd04c3f276b5 6
+docs/running.md
+  s_a4d680fd10b8fa::t_0703f1151f17ea 46-55
+Cargo.lock
+  s_a4d680fd10b8fa::t_21201aa5d6d813 555,2241-2253,2793-2798
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "576c9b6d1f13102cc8c4c69dc4009c94569fed56",
+  "prompts": {},
+  "sessions": {
+    "s_a4d680fd10b8fa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e7659de4-b0e9-440c-adbe-355361e44128",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
