@@ -1,0 +1,20 @@
+src/adapters/cursor/tool_bridge.rs
+  s_e503fa9f261534::t_30fcf499f8f864 675-716
+  s_e503fa9f261534::t_c0b46a3eb14849 332-333,335-340
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "b0f736aa194e3350190da04826dd38ca1a4abaca",
+  "prompts": {},
+  "sessions": {
+    "s_e503fa9f261534": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "116e3e3e-ee93-411d-9281-2a9618117cca",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
