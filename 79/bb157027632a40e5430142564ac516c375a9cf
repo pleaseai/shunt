@@ -1,0 +1,59 @@
+site/astro.config.mjs
+  s_cfa76bcd6e9c3f::t_bb89d1308283b5 85-88
+  s_cfa76bcd6e9c3f::t_87fea5524ceedc 84
+site/src/content/docs/zh-cn/guides/xai.md
+  s_cfa76bcd6e9c3f::t_71b09240b68a28 1-234
+site/src/content/docs/ko/guides/providers.md
+  s_cfa76bcd6e9c3f::t_a44bb6c2b1f232 37-46
+  s_cfa76bcd6e9c3f::t_9c58aee79db24c 18-19
+  s_cfa76bcd6e9c3f::t_df15e29017b73d 78-98
+site/src/content/docs/ja/reference/configuration.md
+  s_cfa76bcd6e9c3f::t_415d9e9b040285 27
+  s_cfa76bcd6e9c3f::t_065688fb4978d3 33
+site/src/content/docs/ja/guides/providers.md
+  s_cfa76bcd6e9c3f::t_2510e663180776 37-43
+  s_cfa76bcd6e9c3f::t_800acb061716dc 75-95
+  s_cfa76bcd6e9c3f::t_468b327805625e 18-19
+site/src/content/docs/zh-cn/guides/providers.md
+  s_cfa76bcd6e9c3f::t_46983152d610b0 78-98
+  s_cfa76bcd6e9c3f::t_2a62ba5074818b 18-19
+  s_cfa76bcd6e9c3f::t_3faeaf24910589 37-46
+site/src/content/docs/ko/guides/xai.md
+  s_cfa76bcd6e9c3f::t_cee33155406c84 1-233
+site/src/content/docs/reference/configuration.md
+  s_cfa76bcd6e9c3f::t_c66b6acde03291 33
+  s_cfa76bcd6e9c3f::t_fb7a3bb8c45066 27
+site/src/content/docs/ja/guides/xai.md
+  s_cfa76bcd6e9c3f::t_bc37de7f618c5a 1-195
+site/src/content/docs/ko/reference/configuration.md
+  s_cfa76bcd6e9c3f::t_d0a2a7d6e1612a 27
+  s_cfa76bcd6e9c3f::t_7af83d9a07b15f 33
+site/src/content/docs/guides/providers.md
+  s_cfa76bcd6e9c3f::t_545f86b559ea01 86
+  s_cfa76bcd6e9c3f::t_cc535cdceb8547 18-19
+  s_cfa76bcd6e9c3f::t_ea563026822320 98
+  s_cfa76bcd6e9c3f::t_bbbda342c3b184 37-46
+site/src/content/docs/guides/xai.md
+  s_cfa76bcd6e9c3f::t_710eaf7f10c8fe 62,65
+  s_cfa76bcd6e9c3f::t_61cb115cb2b8da 1-61,63-64,66-227,230-235
+  s_cfa76bcd6e9c3f::t_1bed89d910cdf6 228-229
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_cfa76bcd6e9c3f::t_89e029e4ce5dae 27
+  s_cfa76bcd6e9c3f::t_4fe30fa3e49a89 33
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "79bb157027632a40e5430142564ac516c375a9cf",
+  "prompts": {},
+  "sessions": {
+    "s_cfa76bcd6e9c3f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "540f8f98-a567-4589-9821-7ebfa3895987",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
