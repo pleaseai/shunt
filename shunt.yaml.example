@@ -1,0 +1,42 @@
+# shunt configuration — copy to ./shunt.yaml and edit.
+# The full annotated template is shunt.toml.example; this file demonstrates the
+# equivalent YAML structure. Every provider has built-in defaults, so only
+# override values you need.
+
+server:
+  bind: "127.0.0.1:3001"
+  default_provider: anthropic
+
+providers:
+  anthropic:
+    kind: anthropic
+    base_url: https://api.anthropic.com
+
+  openai:
+    kind: responses
+    base_url: https://api.openai.com/v1
+    auth: api_key
+    api_key_env: OPENAI_API_KEY
+
+  codex:
+    kind: responses
+    base_url: https://chatgpt.com/backend-api
+    auth: chatgpt_oauth
+
+# Exact routes take precedence over prefix routes.
+routes:
+  - model: gpt-5.6-sol
+    provider: codex
+
+route_prefixes:
+  - prefix: gpt-
+    provider: openai
+
+# YAML 1.1 treats bare yes/no/on/off/y/n values as booleans. Quote one of
+# those tokens when using it in a string field, for example:
+# providers:
+#   custom:
+#     kind: anthropic
+#     base_url: https://example.com/anthropic
+#     auth: api_key
+#     api_key_env: "no"

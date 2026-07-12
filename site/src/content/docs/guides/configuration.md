@@ -14,7 +14,7 @@ shunt loads configuration from, in increasing precedence:
    A local `shunt.yaml` therefore still wins over a config file in a later directory, while an existing `shunt.toml` alongside it takes priority within the same directory. Boot logs report which file was loaded, or that defaults are in use.
 3. **Environment variables** prefixed `SHUNT_`, using `__` for nested keys — e.g. `SHUNT_SERVER__BIND=0.0.0.0:3001`.
 
-Because the defaults already define every provider, your `shunt.toml` only needs the parts you want to change. Start from [`shunt.toml.example`](https://github.com/pleaseai/shunt/blob/main/shunt.toml.example).
+Because the defaults already define every provider, your config only needs the parts you want to change. Start from [`shunt.toml.example`](https://github.com/pleaseai/shunt/blob/main/shunt.toml.example) for TOML or [`shunt.yaml.example`](https://github.com/pleaseai/shunt/blob/main/shunt.yaml.example) for YAML.
 
 ## Annotated example
 

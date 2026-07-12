@@ -61,11 +61,12 @@ shunt loads configuration from, in increasing precedence:
 3. **Environment variables** prefixed `SHUNT_`, using `__` for nested keys
    (e.g. `SHUNT_SERVER__BIND=0.0.0.0:3001`).
 
-Because the defaults already define every provider, your `shunt.toml` only needs the parts you
-want to change. Start from the template:
+Because the defaults already define every provider, your config only needs the parts you
+want to change. Start from either template:
 
 ```bash
-cp shunt.toml.example shunt.toml
+cp shunt.toml.example shunt.toml  # TOML
+cp shunt.yaml.example shunt.yaml  # YAML
 ```
 
 ### 3.1 Config reference
