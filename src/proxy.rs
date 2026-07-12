@@ -36,11 +36,26 @@ pub async fn post(
         .get("x-claude-code-session-id")
         .and_then(|value| value.to_str().ok())
         .map(ToOwned::to_owned);
+    // The `session_id` span field rides into any OTel trace export (the trace
+    // bridge exports every span field), so withhold the request-derived id
+    // there unless the operator opted in via `[otel] include_session_id`. With
+    // `[otel]` unset (no export) the id stays on the span for local stderr logs,
+    // exactly as before — the gate only applies once OTel is configured.
+    let expose_session_id = state
+        .config
+        .otel
+        .as_ref()
+        .is_none_or(|otel| otel.include_session_id);
+    let span_session_id = if expose_session_id {
+        session_id.as_deref().unwrap_or("")
+    } else {
+        ""
+    };
     let span = tracing::info_span!(
         "proxy_request",
         method = %method,
         path = %path,
-        session_id = session_id.as_deref().unwrap_or("")
+        session_id = span_session_id
     );
 
     async move {

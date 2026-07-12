@@ -210,10 +210,18 @@ fn init_telemetry(config: Option<&OtelConfig>) -> Option<TelemetryGuard> {
     let config = config.filter(|otel| otel.enabled())?;
     match telemetry::init(config) {
         Ok((guard, layer)) => {
-            if let Some(handle) = OTEL_RELOAD.get() {
-                if let Err(error) = handle.reload(layer) {
-                    tracing::warn!(%error, "failed to install otel trace/logs layer");
+            match OTEL_RELOAD.get() {
+                Some(handle) => {
+                    if let Err(error) = handle.reload(layer) {
+                        tracing::warn!(%error, "failed to install otel trace/logs layer; metrics still export");
+                    }
                 }
+                // Unreachable in the shipped binary (init_tracing runs first),
+                // but warn loudly rather than silently drop trace/logs export if
+                // a future reordering ever leaves the slot unset.
+                None => tracing::warn!(
+                    "otel reload slot unset (init_tracing did not run); trace/logs export disabled, metrics still export"
+                ),
             }
             tracing::info!(
                 endpoint = %config.endpoint,

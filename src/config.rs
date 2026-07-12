@@ -133,11 +133,14 @@ impl SentryConfig {
 /// `[otel]` — opt-in OpenTelemetry export to the operator's own OTLP endpoint
 /// (an OpenTelemetry Collector or a compatible backend). Absent (the default)
 /// means no exporter is created and nothing leaves the machine. Independent of
-/// `[sentry]`: both are separate opt-ins and can run together. Exported
-/// telemetry stays low-cardinality (provider/model/status on metrics, HTTP
-/// method/path on spans) and never carries request/response bodies, headers,
-/// credentials, or — unless `include_session_id` is set — the client session id.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+/// `[sentry]`: both are separate opt-ins and can run together. Metrics
+/// (provider/model/status) and traces (HTTP method/path; the client session id
+/// only when `include_session_id` is set) stay low-cardinality and carry no
+/// request/response bodies. The `logs` signal, when on, exports shunt's
+/// diagnostic log events as written — so it can include request-derived fields
+/// (an upstream error body, a client id); set `logs = false` for body-free
+/// export. All signals go only to the configured endpoint.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct OtelConfig {
     /// OTLP/HTTP endpoint base URL, e.g. `http://localhost:4318`. shunt appends
     /// the standard signal paths (`/v1/traces`, `/v1/metrics`, `/v1/logs`). An
@@ -587,7 +590,7 @@ impl Config {
         // the point of opting in. The sample ratio must be a valid probability.
         if let Some(otel) = &self.otel {
             if otel.enabled() {
-                reqwest::Url::parse(&otel.endpoint).map_err(|error| {
+                let endpoint = reqwest::Url::parse(&otel.endpoint).map_err(|error| {
                     ConfigError::InvalidOtelEndpoint {
                         message: error.to_string(),
                     }
@@ -596,6 +599,21 @@ impl Config {
                     return Err(ConfigError::InvalidOtelSampleRatio {
                         ratio: otel.sample_ratio,
                     });
+                }
+                // `[otel.headers]` can carry a secret (e.g. a collector bearer);
+                // over plaintext http to a non-loopback host it would travel in
+                // the clear. Warn (don't reject — http to a local collector is a
+                // legitimate default) so a misconfigured remote endpoint is not
+                // silent, mirroring the codebase's care about leaking bearers.
+                let host_is_loopback = endpoint
+                    .host_str()
+                    .map(|host| host == "localhost" || host == "::1" || host.starts_with("127."))
+                    .unwrap_or(false);
+                if !otel.headers.is_empty() && endpoint.scheme() == "http" && !host_is_loopback {
+                    tracing::warn!(
+                        host = endpoint.host_str().unwrap_or_default(),
+                        "[otel.headers] are sent over plaintext http to a non-loopback endpoint; use https so a collector token is not transmitted in the clear"
+                    );
                 }
             }
         }

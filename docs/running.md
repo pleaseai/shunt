@@ -137,13 +137,19 @@ provider = "openai"
 # unless an endpoint is set. Independent of [sentry] — both can run together.
 # Exports up to three signals over OTLP/HTTP (protobuf): request spans
 # (traces), the shunt.requests/shunt.latency series (metrics, same fields as
-# above), and shunt's log events (logs; the stderr logs are unaffected). The
-# resource carries only service.*/telemetry.sdk.* (no host or process
-# detector), and — like Sentry — bodies, headers, credentials, and (unless
-# `include_session_id`) the session id never leave. An empty endpoint (e.g.
-# SHUNT_OTEL__ENDPOINT="") disables again; an invalid endpoint or an out-of-range
-# sample_ratio is a startup error. Standard OTEL_EXPORTER_OTLP_* and
-# OTEL_SERVICE_NAME / OTEL_RESOURCE_ATTRIBUTES env vars are also honored.
+# above), and shunt's log events (logs; the stderr logs are unaffected).
+# Metrics and traces stay low-cardinality and carry no request/response bodies —
+# the span's client session id is attached only when `include_session_id = true`.
+# The logs signal exports shunt's diagnostic events as written, so like the
+# stderr logs it can include request-derived fields (an upstream error body, a
+# client id); set `logs = false` for body-free export. The resource carries
+# service.*/telemetry.sdk.* (no host or process detector) plus any
+# OTEL_RESOURCE_ATTRIBUTES you set. An empty endpoint (e.g. SHUNT_OTEL__ENDPOINT="")
+# disables again; an invalid endpoint or an out-of-range sample_ratio is a
+# startup error. The endpoint and service_name come from this config (they take
+# precedence over OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_SERVICE_NAME); the standard
+# OTEL_EXPORTER_OTLP_HEADERS and OTEL_RESOURCE_ATTRIBUTES env vars are merged in.
+# Editing [otel] then hot-reloading warns and needs a restart to take effect.
 # [otel]
 # endpoint = "http://localhost:4318"  # OTLP/HTTP base; /v1/{traces,metrics,logs} appended
 # service_name = "shunt"     # (default) service.name resource attribute

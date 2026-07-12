@@ -9,7 +9,9 @@
 //! - **metrics** — the `shunt.requests`/`shunt.latency` series (see
 //!   [`crate::metrics`]), mirroring the Sentry metrics.
 //! - **logs** — `tracing` events bridged to OTLP logs (stderr `fmt` logs are
-//!   unaffected).
+//!   unaffected). Unlike metrics/traces this mirrors shunt's diagnostic log
+//!   events verbatim, so it can carry request-derived fields (e.g. an upstream
+//!   error body, an authenticated client id) — see the privacy note below.
 //!
 //! The exporter uses reqwest's *blocking* client, so the SDK's batch span/log
 //! processors and periodic metric reader run on their own dedicated threads,
@@ -17,10 +19,16 @@
 //! (callable before the tokio runtime exists, like `init_sentry`) and lets the
 //! [`TelemetryGuard`] flush on shutdown without a runtime.
 //!
-//! Privacy: exported telemetry stays low-cardinality and carries no
-//! request/response bodies, headers, or credentials. The resource advertises
-//! only `service.*`/`telemetry.sdk.*` (no host or process detector runs), and
-//! the client session id rides on spans only when `include_session_id` is set.
+//! Privacy: **metrics** and **traces** stay low-cardinality and carry no
+//! request/response bodies, headers, or credentials — the request span's client
+//! session id is attached only when `include_session_id` is set (see
+//! [`crate::proxy`]). **Logs**, however, export shunt's own diagnostic events as
+//! written, so they can include request-derived fields the same way the stderr
+//! logs do; an operator wanting strictly body-free export can set `logs = false`
+//! and keep metrics/traces. All signals go only to the operator-configured OTLP
+//! endpoint. The resource advertises `service.*`/`telemetry.sdk.*` (no host or
+//! process detector runs) plus whatever the operator puts in the standard
+//! `OTEL_RESOURCE_ATTRIBUTES` env var.
 
 use std::collections::HashMap;
 
@@ -91,66 +99,99 @@ pub fn init(config: &OtelConfig) -> anyhow::Result<(TelemetryGuard, OtelReloadLa
     let resource = build_resource(config);
     let headers = header_map(config);
 
-    let (tracer, trace_layer) = if config.traces {
-        let exporter = SpanExporter::builder()
-            .with_http()
-            .with_protocol(Protocol::HttpBinary)
-            .with_endpoint(signal_endpoint(&config.endpoint, "/v1/traces"))
-            .with_headers(headers.clone())
-            .build()?;
-        // Parent-based so a client-supplied `traceparent` is honored; the ratio
-        // governs root spans (shunt's request spans are roots unless the client
-        // propagates a trace).
-        let sampler =
-            Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(config.sample_ratio)));
-        let provider = SdkTracerProvider::builder()
-            .with_resource(resource.clone())
-            .with_sampler(sampler)
-            .with_batch_exporter(exporter)
-            .build();
-        let layer = tracing_opentelemetry::layer()
-            .with_tracer(provider.tracer(SCOPE))
-            .boxed();
-        opentelemetry::global::set_tracer_provider(provider.clone());
-        (Some(provider), Some(layer))
-    } else {
-        (None, None)
+    // Build every enabled exporter FIRST. Exporter construction is the only
+    // fallible step, and none of the `opentelemetry::global::set_*` calls below
+    // run until all three have succeeded — so a failure on any one signal
+    // returns `Err` with no global provider installed and no background export
+    // thread leaked (a partial install would otherwise keep exporting, e.g.
+    // metrics, despite the caller logging "failed to initialize").
+    let span_exporter = config
+        .traces
+        .then(|| {
+            configure(
+                SpanExporter::builder().with_http(),
+                &config.endpoint,
+                "/v1/traces",
+                &headers,
+            )
+            .build()
+        })
+        .transpose()?;
+    let metric_exporter = config
+        .metrics
+        .then(|| {
+            configure(
+                MetricExporter::builder().with_http(),
+                &config.endpoint,
+                "/v1/metrics",
+                &headers,
+            )
+            .build()
+        })
+        .transpose()?;
+    let log_exporter = config
+        .logs
+        .then(|| {
+            configure(
+                LogExporter::builder().with_http(),
+                &config.endpoint,
+                "/v1/logs",
+                &headers,
+            )
+            .build()
+        })
+        .transpose()?;
+
+    // All exporters constructed — now install providers/globals and assemble
+    // the subscriber layers. Nothing below can fail.
+    let (tracer, trace_layer) = match span_exporter {
+        Some(exporter) => {
+            // Parent-based so a client-supplied `traceparent` is honored; the
+            // ratio governs root spans (shunt's request spans are roots unless
+            // the client propagates a trace). Clamp defensively so a caller that
+            // built `OtelConfig` without `Config::validate()` can't hand an
+            // out-of-range probability to the sampler.
+            let sampler = Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(
+                config.sample_ratio.clamp(0.0, 1.0),
+            )));
+            let provider = SdkTracerProvider::builder()
+                .with_resource(resource.clone())
+                .with_sampler(sampler)
+                .with_batch_exporter(exporter)
+                .build();
+            let layer = tracing_opentelemetry::layer()
+                .with_tracer(provider.tracer(SCOPE))
+                .boxed();
+            opentelemetry::global::set_tracer_provider(provider.clone());
+            (Some(provider), Some(layer))
+        }
+        None => (None, None),
     };
 
-    let meter = if config.metrics {
-        let exporter = MetricExporter::builder()
-            .with_http()
-            .with_protocol(Protocol::HttpBinary)
-            .with_endpoint(signal_endpoint(&config.endpoint, "/v1/metrics"))
-            .with_headers(headers.clone())
-            .build()?;
-        let provider = SdkMeterProvider::builder()
-            .with_resource(resource.clone())
-            .with_periodic_exporter(exporter)
-            .build();
-        // `crate::metrics` reads the global meter, so metric emission stays a
-        // no-op until this provider is installed.
-        opentelemetry::global::set_meter_provider(provider.clone());
-        Some(provider)
-    } else {
-        None
+    let meter = match metric_exporter {
+        Some(exporter) => {
+            let provider = SdkMeterProvider::builder()
+                .with_resource(resource.clone())
+                .with_periodic_exporter(exporter)
+                .build();
+            // `crate::metrics` reads the global meter, so metric emission stays
+            // a no-op until this provider is installed.
+            opentelemetry::global::set_meter_provider(provider.clone());
+            Some(provider)
+        }
+        None => None,
     };
 
-    let (logger, logs_layer) = if config.logs {
-        let exporter = LogExporter::builder()
-            .with_http()
-            .with_protocol(Protocol::HttpBinary)
-            .with_endpoint(signal_endpoint(&config.endpoint, "/v1/logs"))
-            .with_headers(headers)
-            .build()?;
-        let provider = SdkLoggerProvider::builder()
-            .with_resource(resource)
-            .with_batch_exporter(exporter)
-            .build();
-        let layer = OpenTelemetryTracingBridge::new(&provider).boxed();
-        (Some(provider), Some(layer))
-    } else {
-        (None, None)
+    let (logger, logs_layer) = match log_exporter {
+        Some(exporter) => {
+            let provider = SdkLoggerProvider::builder()
+                .with_resource(resource)
+                .with_batch_exporter(exporter)
+                .build();
+            let layer = OpenTelemetryTracingBridge::new(&provider).boxed();
+            (Some(provider), Some(layer))
+        }
+        None => (None, None),
     };
 
     // A `Vec<Box<dyn Layer>>` is itself a `Layer`, so the enabled bridges
@@ -174,10 +215,26 @@ pub fn init(config: &OtelConfig) -> anyhow::Result<(TelemetryGuard, OtelReloadLa
     ))
 }
 
-/// The resource attributes on every exported signal. `service.name` is
-/// overridable via config (or the standard `OTEL_SERVICE_NAME` env var picked
-/// up by the SDK's env detector); `service.version` is shunt's build version;
-/// `deployment.environment.name` is set only when configured.
+/// Apply the shared OTLP/HTTP settings (protobuf, base endpoint + signal path,
+/// headers) to a signal's exporter builder. The caller calls the concrete
+/// `.build()` (not a trait method) on the returned builder.
+fn configure<B>(builder: B, base: &str, path: &str, headers: &HashMap<String, String>) -> B
+where
+    B: WithExportConfig + WithHttpConfig,
+{
+    builder
+        .with_protocol(Protocol::HttpBinary)
+        .with_endpoint(signal_endpoint(base, path))
+        .with_headers(headers.clone())
+}
+
+/// The resource attributes on every exported signal. `service.name` comes from
+/// config (default "shunt"); because shunt always sets it explicitly it takes
+/// precedence over the SDK env detector, so `OTEL_SERVICE_NAME` does not
+/// override it — set `[otel] service_name` (or `SHUNT_OTEL__SERVICE_NAME`)
+/// instead. `service.version` is shunt's build version; `deployment.environment
+/// .name` is set only when configured. `OTEL_RESOURCE_ATTRIBUTES` is still
+/// merged in by the SDK's env detector for any extra attributes.
 fn build_resource(config: &OtelConfig) -> Resource {
     let mut builder = Resource::builder()
         .with_service_name(config.service_name.clone())
