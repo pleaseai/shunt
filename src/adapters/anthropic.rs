@@ -141,24 +141,32 @@ async fn forward_claude_oauth(
 
     for index in order {
         let account = &accounts[index];
-        let lock = state.accounts.refresh_lock(&route.provider, &account.name);
-        let _guard = lock.lock().await;
+        // The per-account refresh_lock serializes only credential refreshes for
+        // one account: resolve_claude_account can refresh-on-read and write the
+        // token back, and the explicit force_refresh in the RefreshRetry branch
+        // below. Hold it only around those two points — never across the upstream
+        // POSTs or the PauseSame back-off sleep — so concurrent same-account
+        // requests are not serialized behind an unrelated 429 retry-after wait.
+        let refresh_lock = state.accounts.refresh_lock(&route.provider, &account.name);
 
-        let credential = match resolve_claude_account(account, &state.http_client).await {
-            Ok(credential) => credential,
-            Err(error) => {
-                state.accounts.cooldown(
-                    &route.provider,
-                    &account.name,
-                    Duration::from_secs(5 * 60),
-                );
-                tracing::warn!(
-                    provider = %route.provider,
-                    account = %account.name,
-                    error = %error.message,
-                    "failed to resolve Claude OAuth account"
-                );
-                continue;
+        let credential = {
+            let _guard = refresh_lock.lock().await;
+            match resolve_claude_account(account, &state.http_client).await {
+                Ok(credential) => credential,
+                Err(error) => {
+                    state.accounts.cooldown(
+                        &route.provider,
+                        &account.name,
+                        Duration::from_secs(5 * 60),
+                    );
+                    tracing::warn!(
+                        provider = %route.provider,
+                        account = %account.name,
+                        error = %error.message,
+                        "failed to resolve Claude OAuth account"
+                    );
+                    continue;
+                }
             }
         };
         let account_uuid = match &credential {
@@ -282,22 +290,28 @@ async fn forward_claude_oauth(
                     .map(PathBuf::from)
                     .unwrap_or_else(|| auth::claude_store::account_path(&account.name));
                 let store = ClaudeAuthStore::new(credentials, state.http_client.clone());
-                let access_token = match store.force_refresh().await {
-                    Ok(token) => token,
-                    Err(error) => {
-                        state.accounts.cooldown(
-                            &route.provider,
-                            &account.name,
-                            Duration::from_secs(5 * 60),
-                        );
-                        tracing::warn!(
-                            provider = %route.provider,
-                            account = %account.name,
-                            error = %error,
-                            "failed to force-refresh Claude OAuth account"
-                        );
-                        last_response = Some(upstream);
-                        continue;
+                // Serialize the refresh + credential writeback for this account
+                // (see the refresh_lock note at the top of the loop); release the
+                // lock again before the retry POST below.
+                let access_token = {
+                    let _guard = refresh_lock.lock().await;
+                    match store.force_refresh().await {
+                        Ok(token) => token,
+                        Err(error) => {
+                            state.accounts.cooldown(
+                                &route.provider,
+                                &account.name,
+                                Duration::from_secs(5 * 60),
+                            );
+                            tracing::warn!(
+                                provider = %route.provider,
+                                account = %account.name,
+                                error = %error,
+                                "failed to force-refresh Claude OAuth account"
+                            );
+                            last_response = Some(upstream);
+                            continue;
+                        }
                     }
                 };
                 let refreshed = Credential::ClaudeOauth {
@@ -333,7 +347,11 @@ async fn forward_claude_oauth(
                 state
                     .accounts
                     .note_quota(&route.provider, &account.name, retry.headers());
-                if retry.status() == StatusCode::UNAUTHORIZED {
+                let retry_status = retry.status();
+                if retry_status == StatusCode::UNAUTHORIZED {
+                    // Refresh succeeded but the credential is still rejected — the
+                    // account is genuinely broken. Cool it down longer and rotate
+                    // rather than relaying the 401 to the client.
                     state.accounts.cooldown(
                         &route.provider,
                         &account.name,
@@ -342,28 +360,39 @@ async fn forward_claude_oauth(
                     last_response = Some(retry);
                     continue;
                 }
-                if retry.status().is_success() {
-                    state.accounts.mark_healthy(&route.provider, &account.name);
-                    return relay_response(&state, retry, Some(&account.name));
+                // Classify the refreshed retry the same way the initial response is
+                // classified, so a non-success outcome fails over to the remaining
+                // accounts instead of short-circuiting the pool. A non-429 4xx maps
+                // to Relay (a client error, not the account's fault) and goes
+                // straight back without a wrongful cooldown.
+                match accounts::classify(retry_status, retry.headers()) {
+                    FailoverAction::Relay => {
+                        if retry_status.is_success() {
+                            state.accounts.mark_healthy(&route.provider, &account.name);
+                        }
+                        return relay_response(&state, retry, Some(&account.name));
+                    }
+                    _ => {
+                        let cooldown = if retry_status == StatusCode::TOO_MANY_REQUESTS {
+                            accounts::retry_after(retry.headers())
+                                .unwrap_or(Duration::from_secs(60))
+                                .clamp(Duration::from_secs(1), Duration::from_secs(3600))
+                        } else {
+                            Duration::from_secs(30)
+                        };
+                        state
+                            .accounts
+                            .cooldown(&route.provider, &account.name, cooldown);
+                        tracing::warn!(
+                            provider = %route.provider,
+                            account = %account.name,
+                            status = %retry_status,
+                            "Claude OAuth refresh retry did not succeed; rotating to the next account"
+                        );
+                        last_response = Some(retry);
+                        continue;
+                    }
                 }
-                // The refresh succeeded but the retried request still failed with
-                // a non-401 status (a transient 5xx, or a quota-rejected 429 that
-                // is independent of the auth failure). Don't short-circuit the
-                // pool: cool this account down and continue failover to any
-                // remaining accounts, mirroring how an initial 5xx/429 rotates.
-                // last_response relays this response only if the pool is exhausted.
-                let status = retry.status();
-                state
-                    .accounts
-                    .cooldown(&route.provider, &account.name, Duration::from_secs(30));
-                tracing::warn!(
-                    provider = %route.provider,
-                    account = %account.name,
-                    %status,
-                    "Claude OAuth refresh retry returned a non-success status; rotating to the next account"
-                );
-                last_response = Some(retry);
-                continue;
             }
         }
     }

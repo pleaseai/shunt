@@ -127,10 +127,18 @@ pub async fn resolve_claude_account(
             .map_err(|error| auth_error(error.to_string()));
     }
 
-    let account_uuid = account
-        .uuid
-        .clone()
-        .or_else(|| claude_store::account_uuid(&account.name));
+    let account_uuid = match account.uuid.clone() {
+        Some(uuid) => Some(uuid),
+        None => {
+            // claude_store::account_uuid does a synchronous file read; run it on
+            // the blocking pool so it never stalls a runtime worker thread.
+            let name = account.name.clone();
+            tokio::task::spawn_blocking(move || claude_store::account_uuid(&name))
+                .await
+                .ok()
+                .flatten()
+        }
+    };
     let path = claude_store::account_path(&account.name);
     let store = claude_auth::ClaudeAuthStore::new(path, client.clone());
     store
