@@ -1,0 +1,21 @@
+src/adapters/codex_ws.rs
+  s_fc96560db42b59::t_17005adb2cbc46 356-373,380
+Cargo.toml
+  s_fc96560db42b59::t_94803b50326db3 38-40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "3df35d36d0bc09e483dd988b2f9a0e6732d3c7ae",
+  "prompts": {},
+  "sessions": {
+    "s_fc96560db42b59": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "97cdcf07-6557-46e8-83fd-aec8da7fe3e3",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
