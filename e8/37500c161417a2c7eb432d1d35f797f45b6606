@@ -1,0 +1,36 @@
+src/model/responses_request.rs
+  s_dfd45bd3f4b368::t_d37e35402fae01 484
+  s_dfd45bd3f4b368::t_a227a9e06fd28e 244-246
+  s_dfd45bd3f4b368::t_371148837af641 547
+  s_dfd45bd3f4b368::t_f4b4a2762b4174 78
+  s_dfd45bd3f4b368::t_6c9b5577186d19 224
+  s_dfd45bd3f4b368::t_7b64729ca09683 517
+  s_dfd45bd3f4b368::t_35a06f6c63c801 563,568-571
+  s_dfd45bd3f4b368::t_2d179f7bbef888 653-654
+  s_dfd45bd3f4b368::t_adb1fe7b95cfe9 726,744
+  s_dfd45bd3f4b368::t_21ee0ff6c8f895 470-477,479-483,485-490
+  s_dfd45bd3f4b368::t_67c4293852a005 1-2,9-70
+  s_dfd45bd3f4b368::t_dd836cd7621f56 388-394,399
+  s_dfd45bd3f4b368::t_ecd43e0ec361ce 84-88
+  s_dfd45bd3f4b368::t_6d7db88b38f0b4 496
+  s_dfd45bd3f4b368::t_7623a6c27f1a5c 71
+tests/responses_translate.rs
+  s_dfd45bd3f4b368::t_93528acffc54d2 192-351
+  s_dfd45bd3f4b368::t_af81e5fa3ac357 158-160,163-172
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "e837500c161417a2c7eb432d1d35f797f45b6606",
+  "prompts": {},
+  "sessions": {
+    "s_dfd45bd3f4b368": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "385e39df-0e9a-4cb7-864b-4706920d6f19",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
