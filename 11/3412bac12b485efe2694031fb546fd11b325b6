@@ -1,0 +1,46 @@
+src/auth/xai_auth.rs
+  s_6d472f030b35ac::t_90d6476befb378 28-33
+docs/m6-xai-provider.md
+  s_6d472f030b35ac::t_91a0318e99e99f 119-128
+  s_6d472f030b35ac::t_270ea05f5c9f25 3-9,12-17,21-26
+  s_6d472f030b35ac::t_74f59e432fe33e 41,43-48
+  s_6d472f030b35ac::t_9a469fb54cfb0c 148-150
+  s_6d472f030b35ac::t_72e7d4a046649e 154-156,160-162
+  s_6d472f030b35ac::t_d6c3bdf8b13733 185-190
+  s_6d472f030b35ac::t_dcfc15b4abdba3 191-196
+  s_6d472f030b35ac::t_54dc29e8fded3a 129
+  s_6d472f030b35ac::t_536e4948fd4c24 151
+src/adapters/responses.rs
+  s_6d472f030b35ac::t_b5e2fddd98b49d 665-672
+  s_6d472f030b35ac::t_3704cb6ca4c297 955-964,966,971,978-983,988-999,1003-1005,1014-1040
+  s_6d472f030b35ac::t_0185ae202c2091 1000-1002
+  s_6d472f030b35ac::t_f40144ef2c0689 717-720,722-727
+shunt.toml.example
+  s_6d472f030b35ac::t_7b15efd6e70f49 74-86
+src/config.rs
+  s_6d472f030b35ac::t_f6fbecff7b6262 230-239
+  s_6d472f030b35ac::t_ff853c57bed3a2 665-670
+  s_6d472f030b35ac::t_c496a7ec581dc6 287
+  s_6d472f030b35ac::t_f0b191a6ba725c 573
+  s_6d472f030b35ac::t_0e1d5aca3b9990 853-883
+  s_6d472f030b35ac::t_0d482898111bba 358-361,374-388
+  s_6d472f030b35ac::t_9afa8784afa3b2 389-391
+  s_6d472f030b35ac::t_2903292bd4da85 884
+  s_6d472f030b35ac::t_3e550a86b2da0b 392-394
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "113412bac12b485efe2694031fb546fd11b325b6",
+  "prompts": {},
+  "sessions": {
+    "s_6d472f030b35ac": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5d75ed12-527b-4fc0-90a2-0753be0d869e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
