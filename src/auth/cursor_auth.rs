@@ -178,28 +178,33 @@ pub(crate) fn parse_token_response(value: &Value) -> Option<StoredCursorAuth> {
 }
 
 fn env_token() -> Option<String> {
-    if let Some(token) = std::env::var("SHUNT_CURSOR_AUTH_TOKEN")
-        .ok()
-        .filter(|token| !token.trim().is_empty())
-    {
-        return Some(token);
-    }
-    // Fall back to the un-namespaced `CURSOR_AUTH_TOKEN`. The Cursor desktop app
-    // uses the same variable name, so a developer's shell may have it set for the
-    // IDE; consuming it here silently bypasses the stored `cursor-auth.json` and
-    // its refresh logic. Warn once so an unexpected 401 (from an expired IDE
-    // token) is traceable to the env var rather than the credential file.
-    let token = std::env::var("CURSOR_AUTH_TOKEN")
-        .ok()
-        .filter(|token| !token.trim().is_empty())?;
-    static WARNED: std::sync::Once = std::sync::Once::new();
-    WARNED.call_once(|| {
-        tracing::warn!(
-            "using CURSOR_AUTH_TOKEN from the environment (not SHUNT_CURSOR_AUTH_TOKEN); \
-             this bypasses the stored Cursor credential file and its token refresh"
-        );
-    });
-    Some(token)
+    // Resolve once process-wide: `get_valid` runs per request and `std::env::var`
+    // takes a global lock, so cache the lookup (the override is deploy-time
+    // config, not per-request).
+    static TOKEN: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    TOKEN
+        .get_or_init(|| {
+            if let Some(token) = std::env::var("SHUNT_CURSOR_AUTH_TOKEN")
+                .ok()
+                .filter(|token| !token.trim().is_empty())
+            {
+                return Some(token);
+            }
+            // Fall back to the un-namespaced `CURSOR_AUTH_TOKEN`. The Cursor desktop
+            // app uses the same variable name, so a developer's shell may have it
+            // set for the IDE; consuming it here silently bypasses the stored
+            // `cursor-auth.json` and its refresh logic. Warn so an unexpected 401
+            // (from an expired IDE token) is traceable to the env var.
+            let token = std::env::var("CURSOR_AUTH_TOKEN")
+                .ok()
+                .filter(|token| !token.trim().is_empty())?;
+            tracing::warn!(
+                "using CURSOR_AUTH_TOKEN from the environment (not SHUNT_CURSOR_AUTH_TOKEN); \
+                 this bypasses the stored Cursor credential file and its token refresh"
+            );
+            Some(token)
+        })
+        .clone()
 }
 
 fn token_is_valid(token: &str, now: SystemTime) -> bool {

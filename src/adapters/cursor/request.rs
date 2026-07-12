@@ -103,12 +103,21 @@ pub fn cursor_selected_images(req: &Value) -> Vec<CursorSelectedImage> {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+/// Whether a system-prompt line is an `x-anthropic-billing-header:` directive.
+/// Matched case-insensitively so a mixed-case header (e.g.
+/// `X-Anthropic-Billing-Header:`) can't slip through to the upstream prompt.
+fn is_billing_header_line(line: &str) -> bool {
+    const PREFIX: &str = "x-anthropic-billing-header:";
+    line.get(..PREFIX.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(PREFIX))
+}
+
 fn render_system(req: &Value) -> Option<String> {
     let system_value = req.get("system")?;
     let text = match system_value {
         serde_json::Value::String(s) => s
             .lines()
-            .filter(|line| !line.starts_with("x-anthropic-billing-header:"))
+            .filter(|line| !is_billing_header_line(line))
             .collect::<Vec<_>>()
             .join("\n"),
         serde_json::Value::Array(blocks) => {
@@ -124,7 +133,7 @@ fn render_system(req: &Value) -> Option<String> {
                     let text = b.get("text").and_then(|t| t.as_str())?;
                     let filtered = text
                         .lines()
-                        .filter(|line| !line.starts_with("x-anthropic-billing-header:"))
+                        .filter(|line| !is_billing_header_line(line))
                         .collect::<Vec<_>>()
                         .join("\n");
                     if filtered.is_empty() {
@@ -368,16 +377,19 @@ mod tests {
         assert!(rendered.contains("keep me too"));
         assert!(!rendered.contains("x-anthropic-billing-header"));
 
-        // Array form: a multi-line text block with a mid-block billing line.
+        // Array form: a multi-line text block with a mid-block billing line, and a
+        // mixed-case header to confirm case-insensitive matching.
         let req: Value = serde_json::json!({
             "model": "cursor:gpt-5.5",
-            "system": [{"type": "text", "text": "line one\nx-anthropic-billing-header: secret\nline two"}],
+            "system": [{"type": "text", "text": "line one\nX-Anthropic-Billing-Header: secret\nline two"}],
             "messages": [{"role": "user", "content": "hi"}]
         });
         let rendered = render_cursor_prompt(&req);
         assert!(rendered.contains("line one"));
         assert!(rendered.contains("line two"));
-        assert!(!rendered.contains("x-anthropic-billing-header"));
+        assert!(!rendered
+            .to_ascii_lowercase()
+            .contains("x-anthropic-billing-header"));
     }
 
     #[test]

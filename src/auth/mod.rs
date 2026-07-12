@@ -138,7 +138,11 @@ pub fn default_cursor_auth_path() -> PathBuf {
     env::var_os("SHUNT_CURSOR_AUTH_FILE")
         .map(PathBuf::from)
         .or_else(|| {
+            // `HOME` is unset on Windows, where `shunt login cursor` is supported;
+            // fall back to `USERPROFILE` so the credential lands in the user's home
+            // rather than a working-directory-relative path.
             env::var_os("HOME")
+                .or_else(|| env::var_os("USERPROFILE"))
                 .map(PathBuf::from)
                 .map(|home| home.join(".shunt").join("cursor-auth.json"))
         })
