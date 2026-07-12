@@ -110,9 +110,9 @@ auth = "chatgpt_oauth"         # reads + auto-refreshes ~/.codex/auth.json
 # auth = "api_key"
 # api_key_env = "MINIMAX_API_KEY"
 
-# [providers.mimo]              # see https://mimo.mi.com/docs/en-US/tokenplan/integration/claudecode
+# [providers.mimo]              # mimo-v2.5-pro; see https://mimo.mi.com/docs/en-US/tokenplan/integration/claudecode
 # kind = "anthropic"
-# base_url = "https://api-mimo.mi.com/anthropic"
+# base_url = "https://api.xiaomimimo.com/anthropic"       # pay-as-you-go; Token Plan: https://token-plan-cn.xiaomimimo.com/anthropic
 # auth = "api_key"
 # api_key_env = "MIMO_API_KEY"
 
