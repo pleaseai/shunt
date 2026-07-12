@@ -14,6 +14,42 @@
       "source": "./plugins/shunt-codex",
       "description": "Subagents on ChatGPT/Codex GPT-5.6 models (Luna, Sol, Terra), routed through shunt at the inference layer.",
       "keywords": ["codex", "chatgpt", "gpt-5.6"]
+    },
+    {
+      "name": "shunt-xai",
+      "source": "./plugins/shunt-xai",
+      "description": "Subagents on xAI Grok models (grok-build-0.1, grok-4.5, grok-4.3), routed through shunt at the inference layer. EXPERIMENTAL — the xAI provider is not yet verified against the live API.",
+      "keywords": ["xai", "grok"]
+    },
+    {
+      "name": "shunt-kimi",
+      "source": "./plugins/shunt-kimi",
+      "description": "Subagent on Moonshot AI's kimi-k2.7-code, routed through shunt at the inference layer via Moonshot's Anthropic-compatible endpoint.",
+      "keywords": ["kimi", "moonshot"]
+    },
+    {
+      "name": "shunt-deepseek",
+      "source": "./plugins/shunt-deepseek",
+      "description": "Subagents on DeepSeek models (deepseek-v4-pro, deepseek-v4-flash), routed through shunt at the inference layer via DeepSeek's Anthropic-compatible endpoint.",
+      "keywords": ["deepseek"]
+    },
+    {
+      "name": "shunt-zai",
+      "source": "./plugins/shunt-zai",
+      "description": "Subagents on Z.ai GLM models (glm-5.2, glm-4.7), routed through shunt at the inference layer via Z.ai's Anthropic-compatible endpoint.",
+      "keywords": ["zai", "glm"]
+    },
+    {
+      "name": "shunt-minimax",
+      "source": "./plugins/shunt-minimax",
+      "description": "Subagent on MiniMax-M3 (1M context), routed through shunt at the inference layer via MiniMax's Anthropic-compatible endpoint.",
+      "keywords": ["minimax"]
+    },
+    {
+      "name": "shunt-mimo",
+      "source": "./plugins/shunt-mimo",
+      "description": "Subagent on Xiaomi's mimo-v2.5-pro, routed through shunt at the inference layer via Mimo's Anthropic-compatible endpoint.",
+      "keywords": ["mimo", "xiaomi"]
     }
   ]
 }

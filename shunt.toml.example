@@ -79,14 +79,19 @@ auth = "chatgpt_oauth"         # reads + auto-refreshes ~/.codex/auth.json
 # auth = "cursor_oauth"
 # count_tokens = "tiktoken"
 
-# xAI Grok (EXPERIMENTAL — not yet verified against the live xAI API).
-# Built-in as an API-key provider (export XAI_API_KEY); to reuse a
-# SuperGrok / X Premium+ subscription instead, uncomment the auth line below and
-# run `shunt login xai`. See docs/m6-xai-provider.md.
-# [providers.xai]              # grok-build-0.1, grok-4.5, grok-4.3
-# kind = "responses"
-# base_url = "https://api.x.ai/v1"
-# auth = "xai_oauth"           # subscription OAuth (~/.shunt/xai-auth.json); omit to use XAI_API_KEY
+# xAI Grok (EXPERIMENTAL). Two built-in providers cover the two ways in — you
+# only need to add [[routes]] (grok-build-0.1, grok-4.5, grok-4.3). Pick one:
+#   • `xai`  — API key: the developer API (api.x.ai), billed per token.
+#              export XAI_API_KEY, then route models to provider = "xai".
+#   • `grok` — SuperGrok / X Premium+ subscription: the Grok CLI chat proxy
+#              (cli-chat-proxy.grok.com), no API billing. Run `shunt login xai`
+#              once, then route models to provider = "grok". The developer API
+#              rejects a subscription bearer (402/403), so the OAuth path targets
+#              the CLI surface and sends the Grok-CLI identity headers.
+# xAI may gate OAuth API access by tier (SuperGrok Heavy); if `grok` returns 403,
+# use the `xai` API-key path instead. See docs/m6-xai-provider.md.
+# Override a built-in only to change a default, e.g. a route-level effort:
+# [providers.grok]
 # effort = "high"              # opt-in: several grok models 400 on reasoning.effort, so it is
                                # only sent when you configure an effort here or on a route.
 
@@ -118,9 +123,9 @@ auth = "chatgpt_oauth"         # reads + auto-refreshes ~/.codex/auth.json
 # auth = "api_key"
 # api_key_env = "MINIMAX_API_KEY"
 
-# [providers.mimo]              # see https://mimo.mi.com/docs/en-US/tokenplan/integration/claudecode
+# [providers.mimo]              # mimo-v2.5-pro; see https://mimo.mi.com/docs/en-US/tokenplan/integration/claudecode
 # kind = "anthropic"
-# base_url = "https://api-mimo.mi.com/anthropic"
+# base_url = "https://api.xiaomimimo.com/anthropic"       # pay-as-you-go; Token Plan: https://token-plan-cn.xiaomimimo.com/anthropic
 # auth = "api_key"
 # api_key_env = "MIMO_API_KEY"
 

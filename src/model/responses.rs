@@ -553,13 +553,16 @@ pub fn anthropic_error_type(status: StatusCode) -> &'static str {
 fn error_message(value: &Value) -> String {
     // OpenAI Responses errors use {"error":{"message":...}} or {"message":...};
     // streaming `response.failed` events nest it at {"response":{"error":...}};
-    // the ChatGPT Codex backend uses {"detail":...}. Surface whichever is present
-    // so the client sees the real reason (e.g. "The 'X' model is not supported").
+    // the ChatGPT Codex backend uses {"detail":...}; xAI puts the human-readable
+    // reason in a top-level STRING `error` (e.g. a 402 out-of-credits body:
+    // {"error":"...upgrade at grok.com/supergrok","code":"..."}). Surface whichever
+    // is present so the client sees the real reason instead of a generic fallback.
     value
         .pointer("/error/message")
         .or_else(|| value.pointer("/response/error/message"))
         .or_else(|| value.get("message"))
         .or_else(|| value.get("detail"))
+        .or_else(|| value.get("error").filter(|error| error.is_string()))
         .and_then(Value::as_str)
         .unwrap_or("upstream request failed")
         .to_string()

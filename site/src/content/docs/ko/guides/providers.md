@@ -42,7 +42,7 @@ ChatGPT 계정 Codex 백엔드는 `gpt-*-codex` 슬러그를 **거부**합니다
 | DeepSeek | `https://api.deepseek.com/anthropic` | `deepseek-v4-pro`, `deepseek-v4-flash` |
 | Z.ai (GLM) | `https://api.z.ai/api/anthropic` | `glm-5.2`, `glm-4.7` |
 | MiniMax | `https://api.minimax.io/anthropic` | [MiniMax 문서](https://platform.minimax.io/docs/token-plan/claude-code) 참고 |
-| Mimo (Xiaomi) | `https://api-mimo.mi.com/anthropic` | [Mimo 문서](https://mimo.mi.com/docs/en-US/tokenplan/integration/claudecode) 참고 |
+| Mimo (Xiaomi) | `https://api.xiaomimimo.com/anthropic` | `mimo-v2.5-pro` — [Mimo 문서](https://mimo.mi.com/docs/en-US/tokenplan/integration/claudecode) 참고 |
 | OpenRouter | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8` |
 | Vercel AI Gateway | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8`(`x_api_key`를 받아들임) |
 

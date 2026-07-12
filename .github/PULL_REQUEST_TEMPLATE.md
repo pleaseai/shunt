@@ -15,6 +15,7 @@
 - [ ] Source files stay under 500 lines
 - [ ] English only; matches surrounding style
 - [ ] Frozen spec in `docs/` updated if this change deviates from it
+- [ ] User-facing docs updated for behavior/config/endpoint/CLI/provider/model changes — `README.md` / `site/` as applicable (`wiki/` is generated; don't hand-edit)
 - [ ] Any new GitHub Action is pinned to a full commit SHA
 
 ## Notes for reviewers
