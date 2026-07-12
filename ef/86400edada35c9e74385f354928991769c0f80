@@ -1,0 +1,189 @@
+tests/inbound_auth.rs
+  s_6ee5cbcd209d13::t_a677e4bae779c9 60
+src/auth/claude_login.rs
+  s_6ee5cbcd209d13::t_fa72e52897727b 92,95-97
+  s_6ee5cbcd209d13::t_abc9ebad85d0ac 1-91,93-94,98-122
+src/auth/mod.rs
+  s_6ee5cbcd209d13::t_2a96ed6e5d7d12 13-14
+  s_6ee5cbcd209d13::t_7de16d86e8dcf7 35-38
+  s_6ee5cbcd209d13::t_5abfeff2868fbb 215,217-226,234,236-245
+  s_6ee5cbcd209d13::t_2ea07abe4b1438 109-112,120
+  s_6ee5cbcd209d13::t_00023c0f6f36ac 113-119,121-122
+  s_6ee5cbcd209d13::t_dfde6b574d8ff8 75-106,108
+  s_6ee5cbcd209d13::t_aab16d99ff469a 216
+  s_6ee5cbcd209d13::t_6730c0043b7879 185-187
+  s_6ee5cbcd209d13::t_27f1f0ee0d2379 189-214,227-233,235,246
+site/src/content/docs/reference/configuration.md
+  s_6ee5cbcd209d13::t_cb492fcc2f0cf8 68,70-71
+  s_6ee5cbcd209d13::t_47309df99a37ce 67
+  s_6ee5cbcd209d13::t_8b8e48559710e1 62
+  s_6ee5cbcd209d13::t_f74ce5cb7bed8f 69
+  s_6ee5cbcd209d13::t_e76063ced1f7b8 33,36
+  s_6ee5cbcd209d13::t_abafef366999b6 40-61,63-66,72
+site/astro.config.mjs
+  s_6ee5cbcd209d13::t_6bf91cb057b882 85-88
+  s_0534baa6715994::t_c81d24325ae3c9 84
+src/auth/claude_store.rs
+  s_6ee5cbcd209d13::t_7112239a2386d1 173-174
+  s_6ee5cbcd209d13::t_97b5b68c7a93d2 230-232
+  s_6ee5cbcd209d13::t_ad13ebcef91419 1-75,77-82,96-171,175-199,203-229,233-257
+  s_6ee5cbcd209d13::t_90723545b5cc80 76
+  s_6ee5cbcd209d13::t_b3ec76d1f0ed19 200-202
+  s_6ee5cbcd209d13::t_08a41250f15b5e 83-95
+  s_6ee5cbcd209d13::t_2c91aa4bc09f74 172
+src/server.rs
+  s_6ee5cbcd209d13::t_adb60fedc5037e 10
+  s_6ee5cbcd209d13::t_70be1528c1df09 38-42,46-50
+  s_6ee5cbcd209d13::t_1525559a6aa842 78-82
+  s_6ee5cbcd209d13::t_22584ad5a1be00 23
+  s_6ee5cbcd209d13::t_21140f2f0aa2af 56
+  s_6ee5cbcd209d13::t_2d921e527fcf95 65-69
+README.md
+  s_6ee5cbcd209d13::t_1516378b517b8e 60
+  s_6ee5cbcd209d13::t_769a5876ee0481 64
+  s_6ee5cbcd209d13::t_8e1822e654fa52 65
+site/src/content/docs/reference/cli.md
+  s_6ee5cbcd209d13::t_23f98c498a265b 59,61,78,80
+  s_6ee5cbcd209d13::t_b166b4ef019e4b 3
+  s_6ee5cbcd209d13::t_3090f16bdcfbed 89-90
+  s_6ee5cbcd209d13::t_76202ebffafa7a 46-58,60,62-77,79
+  s_6ee5cbcd209d13::t_e84d3b3fd1d604 91
+src/auth/claude_auth.rs
+  s_6ee5cbcd209d13::t_b94af7957df05d 272-318
+  s_6ee5cbcd209d13::t_ad2475b999c453 103-113,119
+  s_6ee5cbcd209d13::t_b5d7934abf9b25 70,75-88
+  s_6ee5cbcd209d13::t_2120d74e4f78e9 207
+  s_6ee5cbcd209d13::t_63b0a437f9f7f8 195-199
+Cargo.toml
+  s_6ee5cbcd209d13::t_e9b00e33aa849e 34
+src/lib.rs
+  s_6ee5cbcd209d13::t_630f80dba1c324 1
+tests/multi_account.rs
+  s_6ee5cbcd209d13::t_1a573038f63fd1 1-54,56-212,215-276
+  s_6ee5cbcd209d13::t_51fdafeab1c3e3 55,213-214
+src/main.rs
+  s_6ee5cbcd209d13::t_f972a937b1ba71 39,41,43-48
+  s_6ee5cbcd209d13::t_5ea654fdff84ae 60-64
+  s_6ee5cbcd209d13::t_1445daafafbcd1 70-85
+  s_6ee5cbcd209d13::t_47bb564fe618fe 209-228
+  s_6ee5cbcd209d13::t_9a60e3385e59c1 208
+docs/m8-anthropic-multi-account.md
+  s_6ee5cbcd209d13::t_69048945005da5 84
+  s_6ee5cbcd209d13::t_e38f34b4c7373e 107
+  s_6ee5cbcd209d13::t_98c3205834980d 1-2,4-11,18-22,24-51,53-56,60-77,79,81,83,93-106,108-129,131-137,139,141,145
+  s_6ee5cbcd209d13::t_9f536f22a66333 12-17,23
+  s_6ee5cbcd209d13::t_441c20cb427b7e 52
+  s_6ee5cbcd209d13::t_7844d30a365eeb 3
+  s_6ee5cbcd209d13::t_98afae0e272d59 78,80,82,85-92
+  s_6ee5cbcd209d13::t_4e0c850869de54 138,140,142-143
+  s_6ee5cbcd209d13::t_ec2ee341b3d0ea 130
+  s_6ee5cbcd209d13::t_cb3d02c61aa79c 144,146
+  s_6ee5cbcd209d13::t_218ef8a0c004d1 57-59
+src/adapters/responses.rs
+  s_6ee5cbcd209d13::t_e803b193504121 716-718
+  s_6ee5cbcd209d13::t_21d2cd7bca2e95 429-431
+src/adapters/anthropic.rs
+  s_6ee5cbcd209d13::t_6be907ca94daf3 408,414,451-484
+  s_6ee5cbcd209d13::t_2cbcd096cd0746 10,12-14
+  s_6ee5cbcd209d13::t_82d14b0073c377 15
+  s_6ee5cbcd209d13::t_f795fcc32e99b2 176-178,195,216-236,241,323,335-336,370,520,596
+  s_6ee5cbcd209d13::t_e875c84de1b4bd 246
+  s_6ee5cbcd209d13::t_c4c350792e270e 508-519,521-531
+  s_6ee5cbcd209d13::t_95273c387da850 397-398,720-791
+  s_6ee5cbcd209d13::t_2bbfe2fc442d8c 44-51,96-106,118,120-126,133-175,179-188,192-194,196-215,240,242-245,247-255,262-309,313-322,324-334,337-345,364-369,371-396
+  s_6ee5cbcd209d13::t_ed0f91d7d094e6 127-132
+  s_6ee5cbcd209d13::t_f1060305f8d967 346-363
+  s_6ee5cbcd209d13::t_cc85a97be902ec 256-261
+  s_6ee5cbcd209d13::t_7daa089ce6b203 237-239,310-312
+  s_6ee5cbcd209d13::t_3ffbeb616a7baa 107-117,119,406
+  s_6ee5cbcd209d13::t_72b3b3b99956f2 1
+  s_6ee5cbcd209d13::t_3e8a147df5de3b 189-191
+  s_6ee5cbcd209d13::t_7e349b03c69d4c 399-401,403-405
+  s_6ee5cbcd209d13::t_ad8e8db76d3b4c 407
+  s_6ee5cbcd209d13::t_fab865962c0e40 409-413
+  s_6ee5cbcd209d13::t_d808092e284e68 415
+  s_88354d2c777431::t_954e43734fff19 402
+src/accounts.rs
+  s_6ee5cbcd209d13::t_731f88150c9c45 38,40
+  s_6ee5cbcd209d13::t_7daa089ce6b203 142-161,164-168,363,420,433,509-510,512
+  s_6ee5cbcd209d13::t_91b14873b1ab46 427,429
+  s_6ee5cbcd209d13::t_b4335dd9ee8d33 422-426
+  s_6ee5cbcd209d13::t_7f62c78a9eb27e 1-4,6-12,29-31,33-37,39,41-53,55-73,80-82,92-95,97-98,102,139,176-207,273-342,351-354,356-357,359-361,365-366,528-534,539-542,544-551,557-598
+  s_6ee5cbcd209d13::t_859f1e8c7dea36 13-15
+  s_6ee5cbcd209d13::t_a81f8a70e2ba13 5,16-28,32,54,74-79,83-91,96,99-101,103-138,140-141,162-163,169-175,208-272,343-350,355,358,362,364,367-419,421,428,430-432,434-508,511,513-527,535-538,543,552-556
+site/src/content/docs/guides/anthropic-multi-account.md
+  s_6ee5cbcd209d13::t_3d6c5ca14b785d 80
+  s_6ee5cbcd209d13::t_bda5a095975757 100
+  s_6ee5cbcd209d13::t_65a39ce203d68d 1-2,4-5,7-40,42,53,57,59,62,64-68,70-75,77,79,89,91-99,101-124,126-140,142,144-145
+  s_6ee5cbcd209d13::t_5fdf7f6f26aacb 3
+  s_6ee5cbcd209d13::t_6f97ea2c06e7b5 41,43-52,54-56,58,60-61,63
+  s_6ee5cbcd209d13::t_cbcd8904fa4835 69
+  s_6ee5cbcd209d13::t_8a19af306ce4af 143
+  s_6ee5cbcd209d13::t_b14248de654f34 76,78,81-88,90
+  s_6ee5cbcd209d13::t_d5579d357cf042 141
+  s_6ee5cbcd209d13::t_8651724d8a2244 125
+  s_6ee5cbcd209d13::t_79f40a1c73a711 6
+src/config.rs
+  s_6ee5cbcd209d13::t_24f8aff7b008f6 599-610,626-630,634-652
+  s_6ee5cbcd209d13::t_4beaa52ce31514 631-633
+  s_6ee5cbcd209d13::t_3e71db5096a144 831-871,882-888,890,893-899,908-964,1000
+  s_6ee5cbcd209d13::t_97f411a4b72161 2
+  s_6ee5cbcd209d13::t_8d1f756a5c08af 271-275
+  s_6ee5cbcd209d13::t_739d3f4c8745a1 276-287
+  s_6ee5cbcd209d13::t_86cfa660080032 812-813
+  s_6ee5cbcd209d13::t_115cb9dba7e5c1 341-354
+  s_6ee5cbcd209d13::t_626aa7869389e8 164-198
+  s_6ee5cbcd209d13::t_b014861ead4bf1 242-243
+  s_6ee5cbcd209d13::t_168c7f17ee2651 872-881,889,891-892,900-907
+  s_6ee5cbcd209d13::t_bdec9a621f08d7 149-152
+  s_6ee5cbcd209d13::t_a92f875e122e07 1001-1003
+  s_6ee5cbcd209d13::t_c37c298d04c84c 381
+  s_6ee5cbcd209d13::t_3d71d0187d34f5 809-810
+  s_6ee5cbcd209d13::t_5fdfcf37be84cf 404,418,435
+  s_6ee5cbcd209d13::t_b75e572b3712b1 611-625
+docs/comparison.md
+  s_6ee5cbcd209d13::t_0efe4edf520a56 139
+  s_6ee5cbcd209d13::t_3d5fe145783788 227,231
+  s_6ee5cbcd209d13::t_9f8fcc901bf432 83
+  s_6ee5cbcd209d13::t_5ec5e18448d0c9 52
+  s_6ee5cbcd209d13::t_ab24d033b2c239 24-26
+  s_6ee5cbcd209d13::t_df85b7118c721e 229-230
+  s_6ee5cbcd209d13::t_83f939f4f51670 219-220
+  s_6ee5cbcd209d13::t_55a71cbfa2b156 134-138,140-142
+  s_6ee5cbcd209d13::t_44a6d7d4730470 84-87
+  s_6ee5cbcd209d13::t_6114d20950c80d 228
+Cargo.lock
+  s_88354d2c777431::t_402a1b0520fb51 1906-1926,2314,3089-3097
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "ef86400edada35c9e74385f354928991769c0f80",
+  "prompts": {},
+  "sessions": {
+    "s_0534baa6715994": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "821347bb-d511-4e54-9ff3-8af267f942aa",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_6ee5cbcd209d13": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a38645ed-51be-407c-8d53-8ec95af26ce1",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_88354d2c777431": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a7a68362e8a1fe123",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
