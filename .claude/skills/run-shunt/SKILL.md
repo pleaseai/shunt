@@ -156,9 +156,9 @@ use `smoke.sh` (mock upstream) rather than this path.
   defaults, so you only need to specify what differs.
 - **A discovery `[[models]]` entry with no matching `[[routes]]`** logs a `WARN` at
   startup/`check` but is not fatal.
-- **No `/protocol` endpoint yet.** The README references the spec's `GET /protocol`,
-  but the current router (`src/server.rs`) only serves `/`, `/v1/models`,
-  `/v1/messages`, and `/v1/messages/count_tokens`. Don't assume `/protocol` exists.
+- **`GET /protocol` is the machine-readable gateway contract.** It is unauthenticated
+  and reports shunt's package version, Anthropic-Messages format, supported endpoints,
+  header handling, attribution behavior, and model-discovery constraints.
 - **zsh quoting:** quote URLs containing `?` (globbing) and mind `noclobber` on `>`
   redirects when driving by hand in this repo's shell.
 

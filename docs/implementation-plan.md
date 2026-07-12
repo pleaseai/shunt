@@ -244,7 +244,7 @@ layer, not stored in the file.
 | **M1** | **Anthropic ⇄ OpenAI Responses translation + `openai` (API key)** | Config + `routing.rs`; the `responses` adapter (request + **streaming** response converter, tool calls, reasoning effort); drive an OpenAI model end-to-end from Claude Code with `OPENAI_API_KEY`. **Core translation lands here.** |
 | **M2** | **`codex` / `chatgpt` backend (ChatGPT OAuth)** | Reuse M1 translation; add `TokenStore` over `~/.codex/auth.json` (auto-refresh) + `chatgpt-account-id` header + `chatgpt.com/backend-api/codex/responses`; `shunt login` fallback. Delivers OpenAI-family via ChatGPT subscription. |
 | **M3** | **Model map + discovery UX** | `codex/models.rs` (id→codex model + effort); `GET /v1/models`; document `ANTHROPIC_CUSTOM_MODEL_OPTION` path; optional `count_tokens`. |
-| **M4** | **Hardening + observability** | tracing spans on session id; timeouts, upstream retry/backoff, graceful shutdown; optional request capture behind a flag; optional `GET /protocol`. |
+| **M4** | **Hardening + observability** | tracing spans on session id; timeouts, upstream retry/backoff, graceful shutdown; optional request capture behind a flag; shipped `GET /protocol` descriptor. |
 
 MVP for the stated goal = **M0 + M1 + M2** (drive OpenAI **and** Codex/ChatGPT). M3 is UX
 polish; M4 is production-readiness.
