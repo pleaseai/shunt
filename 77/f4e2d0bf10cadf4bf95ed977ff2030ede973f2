@@ -1,0 +1,25 @@
+site/src/content/docs/zh-cn/guides/xai.md
+  s_cfa76bcd6e9c3f::t_5dfff9cbe5b938 179
+site/src/content/docs/ja/guides/xai.md
+  s_cfa76bcd6e9c3f::t_fe3657ebcedb08 144
+site/src/content/docs/ko/guides/xai.md
+  s_cfa76bcd6e9c3f::t_d1a3e18bf64b78 178
+site/src/content/docs/guides/xai.md
+  s_cfa76bcd6e9c3f::t_0fdbb0aa1d356d 180
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "77f4e2d0bf10cadf4bf95ed977ff2030ede973f2",
+  "prompts": {},
+  "sessions": {
+    "s_cfa76bcd6e9c3f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "540f8f98-a567-4589-9821-7ebfa3895987",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
