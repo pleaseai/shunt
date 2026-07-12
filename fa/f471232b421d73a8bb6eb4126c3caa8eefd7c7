@@ -1,0 +1,20 @@
+src/telemetry.rs
+  s_0534baa6715994::t_cbe1e1826be0dd 267-288,305-311,316-350
+  s_0534baa6715994::t_35fd45ba75d4d9 312-315
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "faf471232b421d73a8bb6eb4126c3caa8eefd7c7",
+  "prompts": {},
+  "sessions": {
+    "s_0534baa6715994": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "821347bb-d511-4e54-9ff3-8af267f942aa",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
