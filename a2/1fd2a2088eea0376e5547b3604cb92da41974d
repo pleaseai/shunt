@@ -1,0 +1,19 @@
+docs/comparison.md
+  s_9697de443bc5d4::t_540ed3e0824b47 70-79
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "a21fd2a2088eea0376e5547b3604cb92da41974d",
+  "prompts": {},
+  "sessions": {
+    "s_9697de443bc5d4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6efd3bcf-92a5-4422-ae1a-e29f991dabbc",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
