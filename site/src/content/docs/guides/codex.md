@@ -282,6 +282,19 @@ export CLAUDE_CODE_MAX_CONTEXT_TOKENS=372000         # gpt-5.6-sol's real window
 Pick **gpt-5.6-sol** from `/model`. Everything else in the session still flows to Anthropic
 unchanged; only the mapped model's inference is answered by your ChatGPT/Codex subscription.
 
+## Web search
+
+Claude Code's built-in **web search** works through the Codex path with no extra setup. When you
+enable it, Claude Code sends the hosted `web_search_20250305` tool; shunt registers it as the
+Responses API's hosted **`web_search`** tool, so the backend actually performs the search instead
+of handing it back as an unfulfilled tool call.
+
+- Domain filters carry over — Claude Code's `allowed_domains` / `blocked_domains` become the
+  Responses `web_search` `filters`.
+- Applies to the `codex` (ChatGPT) and `openai` (stock Responses) providers.
+- **xAI / Grok routes don't support it** — Grok's Responses API only accepts function tools, so
+  shunt drops the hosted web-search tool there; use a `codex` or `openai` route for web search.
+
 ## Troubleshooting
 
 | Symptom | Cause / Fix |
@@ -292,5 +305,6 @@ unchanged; only the mapped model's inference is answered by your ChatGPT/Codex s
 | `Model not found <slug>` | Client-version gating or an unentitled slug — confirm via `models.json`. |
 | Effort slider ignored on a `gpt-*` id | Set `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1`, or a route/provider `effort` override is winning. |
 | Context bar over-reports / compacts early | Set `CLAUDE_CODE_MAX_CONTEXT_TOKENS`; a discovery alias can't take it — use a non-`claude-` id. |
+| Web search returns nothing on a Grok route | xAI/Grok's Responses API doesn't support web search; shunt drops the tool. Use a `codex` or `openai` route. |
 
 See the full [Troubleshooting](/reference/troubleshooting/) reference for more.

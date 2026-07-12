@@ -25,3 +25,12 @@ When reviewing claims in code comments here about "what the real Codex CLI sends
 known third-party Codex proxies (icebear0828/codex-proxy, tailcallhq/forgecode, Wei-Shaw/sub2api) rather than
 trusting the comment at face value — in the one case checked (2026-07-11), the claims held up (multiple
 independent proxy implementations mirror the same header shape).
+
+`src/model/responses_request.rs` (translate_request / tools() / tool_choice()) already contains multiple
+pre-existing `match flavor { ResponsesFlavor::Xai => ..., _ => ... }` / `if flavor != ResponsesFlavor::Xai`
+branches (service_tier, reasoning.effort, OpenAI-Beta header gating in adapters/responses.rs). This is the
+established convention for flavor-specific quirks in this codebase, not a violation of the AGENTS.md "prefer
+table-driven config over hardcoded provider logic" rule — that rule is aimed at avoiding stringly-typed
+provider-name checks (`route.provider == "xai"`), not at the typed `ResponsesFlavor` enum match arms. Do not
+flag new `match flavor` arms added to this file as a table-driven-config violation (confirmed 2026-07-12 while
+reviewing the hosted-web-search-tool PR).

@@ -235,6 +235,19 @@ export CLAUDE_CODE_MAX_CONTEXT_TOKENS=372000         # gpt-5.6-sol's real window
 
 `/model` から **gpt-5.6-sol** を選びます。セッション内のそれ以外のすべては引き続き変更なしで Anthropic へ流れます。マッピングされたモデルの推論だけが、あなたの ChatGPT/Codex サブスクリプションによって応答されます。
 
+## ウェブ検索
+
+Claude Code の組み込み **ウェブ検索** は、追加設定なしで Codex 経路で動作します。有効にすると Claude Code
+はホスト型の `web_search_20250305` ツールを送り、shunt はそれを Responses API のホスト型
+**`web_search`** ツールとして登録します。そのため検索は、未処理のツール呼び出しとして返されるのではなく、
+バックエンドで実際に実行されます。
+
+- ドメインフィルターはそのまま引き継がれます — Claude Code の `allowed_domains` / `blocked_domains`
+  が Responses `web_search` の `filters` になります。
+- `codex`(ChatGPT)および `openai`(標準 Responses)プロバイダーに適用されます。
+- **xAI / Grok ルートは非対応** — Grok の Responses API は関数ツールのみを受け付けるため、shunt は
+  ホスト型ウェブ検索ツールを削除します。ウェブ検索には `codex` または `openai` ルートを使ってください。
+
 ## トラブルシューティング
 
 | 症状 | 原因 / 対処 |
@@ -245,5 +258,6 @@ export CLAUDE_CODE_MAX_CONTEXT_TOKENS=372000         # gpt-5.6-sol's real window
 | `Model not found <slug>` | クライアントバージョンのゲーティングか entitle されていないスラッグ — `models.json` で確認。 |
 | `gpt-*` id でエフォートスライダーが無視される | `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` を設定する。または route/provider の `effort` オーバーライドが優先されている。 |
 | コンテキストバーが過大報告 / 早期にコンパクト | `CLAUDE_CODE_MAX_CONTEXT_TOKENS` を設定する。discovery エイリアスはこれを取れない — 非 `claude-` id を使う。 |
+| Grok ルートでウェブ検索が何も返さない | xAI/Grok の Responses API はウェブ検索に非対応で、shunt がツールを削除します。ウェブ検索には `codex` または `openai` ルートを使う。 |
 
 さらに詳しくは完全な [Troubleshooting](/ja/reference/troubleshooting/) リファレンスを参照してください。

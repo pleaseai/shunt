@@ -16,11 +16,18 @@ pub fn translate_request(
         out.insert("instructions".to_string(), json!(instructions));
     }
     out.insert("input".to_string(), json!(input_items(&request)));
-    if let Some(tools) = tools(&request) {
+    // Only emit tools/tool_choice when at least one tool survives translation.
+    // The hosted web-search tool is dropped on flavors that reject it (xAI); if
+    // it was the sole tool the set is now empty, and an empty `tools: []` array
+    // is rejected by OpenAI-compatible backends ("expected an array with at
+    // least one element"), while a `tool_choice` with no tools is meaningless.
+    if let Some(tools) =
+        tools(&request, flavor).filter(|t| t.as_array().is_some_and(|a| !a.is_empty()))
+    {
         out.insert("tools".to_string(), tools);
-    }
-    if let Some(tool_choice) = tool_choice(&request) {
-        out.insert("tool_choice".to_string(), tool_choice);
+        if let Some(tool_choice) = tool_choice(&request, flavor) {
+            out.insert("tool_choice".to_string(), tool_choice);
+        }
     }
     if let Some(value) = request.get("parallel_tool_calls") {
         out.insert("parallel_tool_calls".to_string(), value.clone());
@@ -472,18 +479,77 @@ fn tool_result_output(block: &Value) -> Value {
     }
 }
 
-fn tools(request: &Value) -> Option<Value> {
+/// The Anthropic tool `type` for the hosted web search tool Claude Code sends
+/// when a user enables web search.
+const WEB_SEARCH_TYPE: &str = "web_search_20250305";
+
+fn is_web_search_tool(tool: &Value) -> bool {
+    tool.get("type").and_then(Value::as_str) == Some(WEB_SEARCH_TYPE)
+}
+
+/// Anthropic's `web_search_20250305` is a server-hosted tool: the model runs
+/// the search upstream, the client never executes it. Naively forwarding it as
+/// a `function` tool (shunt's default for every tool) registers a phantom
+/// function the client can't fulfill, so the search never runs. Instead emit
+/// the Responses hosted web-search tool so the backend performs the search.
+///
+/// The wire shape (`external_web_access` + `search_content_types`, filters
+/// nested under `filters`) mirrors what the ChatGPT/Codex backend accepts.
+fn web_search_tool(tool: &Value) -> Value {
+    let mut filters = Map::new();
+    for key in ["allowed_domains", "blocked_domains"] {
+        let domains: Vec<Value> = tool
+            .get(key)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|value| value.is_string())
+            .cloned()
+            .collect();
+        if !domains.is_empty() {
+            filters.insert(key.to_string(), Value::Array(domains));
+        }
+    }
+    let mut out = json!({
+        "type": "web_search",
+        "external_web_access": false,
+        "search_content_types": ["text", "image"],
+    });
+    if !filters.is_empty() {
+        out.as_object_mut()
+            .expect("web_search tool is a JSON object")
+            .insert("filters".to_string(), Value::Object(filters));
+    }
+    out
+}
+
+fn function_tool(tool: &Value) -> Value {
+    json!({
+        "type": "function",
+        "name": tool.get("name").and_then(Value::as_str).unwrap_or(""),
+        "description": tool.get("description").and_then(Value::as_str).unwrap_or(""),
+        "parameters": normalize_schema(tool.get("input_schema").cloned().unwrap_or_else(|| json!({})))
+    })
+}
+
+fn tools(request: &Value, flavor: ResponsesFlavor) -> Option<Value> {
     let tools = request.get("tools")?.as_array()?;
     Some(Value::Array(
         tools
             .iter()
-            .map(|tool| {
-                json!({
-                    "type": "function",
-                    "name": tool.get("name").and_then(Value::as_str).unwrap_or(""),
-                    "description": tool.get("description").and_then(Value::as_str).unwrap_or(""),
-                    "parameters": normalize_schema(tool.get("input_schema").cloned().unwrap_or_else(|| json!({})))
-                })
+            .filter_map(|tool| {
+                if is_web_search_tool(tool) {
+                    // xAI's Responses API only accepts function tools and 400s
+                    // on the hosted web-search shape, so drop it there rather
+                    // than fail the whole request. The tool_choice below then
+                    // downgrades any web_search choice to `auto`.
+                    match flavor {
+                        ResponsesFlavor::Xai => None,
+                        _ => Some(web_search_tool(tool)),
+                    }
+                } else {
+                    Some(function_tool(tool))
+                }
             })
             .collect(),
     ))
@@ -507,7 +573,21 @@ fn normalize_schema(schema: Value) -> Value {
     Value::Object(object)
 }
 
-fn tool_choice(request: &Value) -> Option<Value> {
+/// Whether the request registered a hosted web-search tool under `name`,
+/// regardless of flavor. A `tool` choice naming it must not become a named
+/// `function` choice — the backend has no such function registered.
+fn names_web_search(request: &Value, name: &str) -> bool {
+    request
+        .get("tools")
+        .and_then(Value::as_array)
+        .is_some_and(|tools| {
+            tools.iter().any(|tool| {
+                is_web_search_tool(tool) && tool.get("name").and_then(Value::as_str) == Some(name)
+            })
+        })
+}
+
+fn tool_choice(request: &Value, flavor: ResponsesFlavor) -> Option<Value> {
     let has_tools = request
         .get("tools")
         .and_then(Value::as_array)
@@ -517,10 +597,22 @@ fn tool_choice(request: &Value) -> Option<Value> {
             Some("auto") => Some(json!("auto")),
             Some("none") => Some(json!("none")),
             Some("any") => Some(json!("required")),
-            Some("tool") => Some(json!({
-                "type": "function",
-                "name": choice.get("name").and_then(Value::as_str).unwrap_or("")
-            })),
+            Some("tool") => {
+                let name = choice.get("name").and_then(Value::as_str).unwrap_or("");
+                if names_web_search(request, name) {
+                    // xAI drops the hosted web-search tool (see `tools`), so a
+                    // `web_search` choice there would force a tool that was
+                    // never registered — the backend 502s on that. Downgrade to
+                    // `auto`. Elsewhere the tool is selected with a bare
+                    // `{"type":"web_search"}`, not a named function choice.
+                    match flavor {
+                        ResponsesFlavor::Xai => Some(json!("auto")),
+                        _ => Some(json!({"type": "web_search"})),
+                    }
+                } else {
+                    Some(json!({"type": "function", "name": name}))
+                }
+            }
             _ => None,
         },
         None if has_tools => Some(json!("auto")),
