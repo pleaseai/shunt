@@ -248,6 +248,33 @@ Claude Code の組み込み **ウェブ検索** は、追加設定なしで Code
 - **xAI / Grok ルートは非対応** — Grok の Responses API は関数ツールのみを受け付けるため、shunt は
   ホスト型ウェブ検索ツールを削除します。ウェブ検索には `codex` または `openai` ルートを使ってください。
 
+## ツール検索
+
+Claude Code の **ツール検索** — MCP / LSP のツールスキーマを遅延させ、`ToolSearch` ツールで必要なときだけ
+明らかにすることで、呼び出さないツールにコンテキストを使わせない機能 — も Codex 経路で動作しますが、shunt
+の背後では **デフォルトで無効** です。有効化するには:
+
+```bash
+export ENABLE_TOOL_SEARCH=true
+```
+
+Claude Code は base URL がファーストパーティの Anthropic ホストでない場合、楽観的なツール検索を無効化します。
+shunt はそれに該当しません。したがってこのフラグがないと、最初のターンからすべてのツールの完全なスキーマが
+アップストリームへ送られ、機能が無意味になります（動作はしますが、何も削減されません）。クライアント自身の
+規約は、**プロキシが `tool_reference` ブロックを転送するなら** `ENABLE_TOOL_SEARCH=true` を設定せよ、
+というものであり、shunt はこれを転送します。
+
+有効にすると、Claude Code は遅延可能なツールをプロンプトに **名前** だけ列挙し、スキーマは保留します。shunt は
+まだロードされていないこれらのツールを、モデルが `ToolSearch` でロードするまでアップストリームのツール集合から
+除外し、その結果生成される `tool_reference` が当該ツールの完全なスキーマを必要なときに明らかにします。これに
+より、遅延したスキーマが最初のターンから占有していたはずのコンテキストウィンドウを取り戻します — ツール検索の
+本来の目的です。
+
+- `shunt.toml` の変更は不要です — 純粋に Claude Code の環境変数です。
+- `codex`(ChatGPT)および `openai`(標準 Responses)プロバイダーに適用されます。
+- 遅延しないツール(および上記のホスト型 `web_search` ツール)は常に転送されます。段階的に明らかにされるのは
+  遅延可能なツールだけです。
+
 ## トラブルシューティング
 
 | 症状 | 原因 / 対処 |
@@ -259,5 +286,6 @@ Claude Code の組み込み **ウェブ検索** は、追加設定なしで Code
 | `gpt-*` id でエフォートスライダーが無視される | `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` を設定する。または route/provider の `effort` オーバーライドが優先されている。 |
 | コンテキストバーが過大報告 / 早期にコンパクト | `CLAUDE_CODE_MAX_CONTEXT_TOKENS` を設定する。discovery エイリアスはこれを取れない — 非 `claude-` id を使う。 |
 | Grok ルートでウェブ検索が何も返さない | xAI/Grok の Responses API はウェブ検索に非対応で、shunt がツールを削除します。ウェブ検索には `codex` または `openai` ルートを使う。 |
+| ツール検索が効かない / 毎ターン全ツールのスキーマが送られる | `ENABLE_TOOL_SEARCH=true` を設定。Claude Code はファーストパーティでない base URL の背後ではツール検索をデフォルトで無効化します。shunt は `tool_reference` ブロックを転送し、遅延スキーマを必要なときに明らかにします。 |
 
 さらに詳しくは完全な [Troubleshooting](/ja/reference/troubleshooting/) リファレンスを参照してください。

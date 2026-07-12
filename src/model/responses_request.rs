@@ -1,8 +1,75 @@
+use std::collections::{HashMap, HashSet};
+
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::{json, Map, Value};
 
 use crate::config::ResponsesFlavor;
 use crate::routing::Route;
+
+/// Request-scoped state for Claude Code's tool-search feature (progressive tool
+/// reveal). Borrows from the request `Value` the whole translator already parses
+/// and traverses — a separate typed deserialization pass would only add a second
+/// parse — so the pre-scan allocates nothing beyond the map/set entries.
+#[derive(Default)]
+struct ToolSearchContext<'a> {
+    schema_map: HashMap<&'a str, (&'a str, &'a Value)>,
+    deferred_names: HashSet<&'a str>,
+    loaded_tools: HashSet<&'a str>,
+}
+
+impl<'a> ToolSearchContext<'a> {
+    fn from_request(request: &'a Value) -> Self {
+        // Placeholder for a tool without an input_schema; renders as `{}` in the
+        // reveal text, matching what normalize_schema forwards for such a tool.
+        static NO_SCHEMA: Value = Value::Null;
+        let mut context = Self::default();
+        if let Some(tools) = request.get("tools").and_then(Value::as_array) {
+            for tool in tools {
+                let name = tool.get("name").and_then(Value::as_str).unwrap_or("");
+                let description = tool
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let input_schema = tool.get("input_schema").unwrap_or(&NO_SCHEMA);
+                context.schema_map.insert(name, (description, input_schema));
+                if tool.get("defer_loading").and_then(Value::as_bool) == Some(true) {
+                    context.deferred_names.insert(name);
+                }
+            }
+        }
+
+        if let Some(messages) = request.get("messages").and_then(Value::as_array) {
+            for message in messages {
+                // Iterate the blocks by reference — content_blocks() clones, and
+                // string-shaped content can't carry a tool_result anyway.
+                let Some(blocks) = message.get("content").and_then(Value::as_array) else {
+                    continue;
+                };
+                for block in blocks {
+                    if block.get("type").and_then(Value::as_str) != Some("tool_result") {
+                        continue;
+                    }
+                    let Some(result_blocks) = block.get("content").and_then(Value::as_array) else {
+                        continue;
+                    };
+                    for result_block in result_blocks {
+                        if result_block.get("type").and_then(Value::as_str)
+                            == Some("tool_reference")
+                        {
+                            if let Some(name) =
+                                result_block.get("tool_name").and_then(Value::as_str)
+                            {
+                                context.loaded_tools.insert(name);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        context
+    }
+}
 
 pub fn translate_request(
     body: &[u8],
@@ -10,22 +77,27 @@ pub fn translate_request(
     flavor: ResponsesFlavor,
 ) -> Result<Value, serde_json::Error> {
     let request: Value = serde_json::from_slice(body)?;
+    let tool_search = ToolSearchContext::from_request(&request);
     let mut out = Map::new();
     out.insert("model".to_string(), json!(route.upstream_model));
     if let Some(instructions) = instructions(&request) {
         out.insert("instructions".to_string(), json!(instructions));
     }
-    out.insert("input".to_string(), json!(input_items(&request)));
+    out.insert(
+        "input".to_string(),
+        json!(input_items(&request, &tool_search.schema_map)),
+    );
     // Only emit tools/tool_choice when at least one tool survives translation.
-    // The hosted web-search tool is dropped on flavors that reject it (xAI); if
-    // it was the sole tool the set is now empty, and an empty `tools: []` array
-    // is rejected by OpenAI-compatible backends ("expected an array with at
-    // least one element"), while a `tool_choice` with no tools is meaningless.
-    if let Some(tools) =
-        tools(&request, flavor).filter(|t| t.as_array().is_some_and(|a| !a.is_empty()))
+    // The hosted web-search tool is dropped on flavors that reject it (xAI), and
+    // deferred tools are withheld until loaded via a `tool_reference` (progressive
+    // tool reveal); if the set is now empty, an empty `tools: []` array is rejected
+    // by OpenAI-compatible backends ("expected an array with at least one
+    // element"), while a `tool_choice` with no tools is meaningless.
+    if let Some(tools) = tools(&request, flavor, &tool_search)
+        .filter(|t| t.as_array().is_some_and(|a| !a.is_empty()))
     {
         out.insert("tools".to_string(), tools);
-        if let Some(tool_choice) = tool_choice(&request, flavor) {
+        if let Some(tool_choice) = tool_choice(&request, flavor, &tool_search) {
             out.insert("tool_choice".to_string(), tool_choice);
         }
     }
@@ -159,7 +231,7 @@ fn instructions(request: &Value) -> Option<String> {
     }
 }
 
-fn input_items(request: &Value) -> Vec<Value> {
+fn input_items(request: &Value, schema_map: &HashMap<&str, (&str, &Value)>) -> Vec<Value> {
     let mut out = Vec::new();
     let Some(messages) = request.get("messages").and_then(Value::as_array) else {
         return out;
@@ -179,7 +251,9 @@ fn input_items(request: &Value) -> Vec<Value> {
                 Some("image") => image_part(&block, &mut pending),
                 Some("document") => document_part(&block, &mut pending),
                 Some("tool_use") => tool_use_item(&mut out, role, &mut pending, &block),
-                Some("tool_result") => tool_result_item(&mut out, role, &mut pending, &block),
+                Some("tool_result") => {
+                    tool_result_item(&mut out, role, &mut pending, &block, schema_map)
+                }
                 Some("thinking") => reasoning_item(&mut out, role, &mut pending, &block),
                 Some("redacted_thinking") => {
                     redacted_reasoning_item(&mut out, role, &mut pending, &block)
@@ -321,12 +395,18 @@ fn tool_use_item(out: &mut Vec<Value>, role: &str, pending: &mut Vec<Value>, blo
     }));
 }
 
-fn tool_result_item(out: &mut Vec<Value>, role: &str, pending: &mut Vec<Value>, block: &Value) {
+fn tool_result_item(
+    out: &mut Vec<Value>,
+    role: &str,
+    pending: &mut Vec<Value>,
+    block: &Value,
+    schema_map: &HashMap<&str, (&str, &Value)>,
+) {
     flush_message(out, role, pending);
     out.push(json!({
         "type": "function_call_output",
         "call_id": block.get("tool_use_id").and_then(Value::as_str).unwrap_or(""),
-        "output": tool_result_output(block)
+        "output": tool_result_output(block, schema_map)
     }));
 }
 
@@ -397,22 +477,36 @@ fn flush_message(out: &mut Vec<Value>, role: &str, pending: &mut Vec<Value>) {
     pending.clear();
 }
 
-/// Claude Code's tool-search feature (ENABLE_TOOL_SEARCH) puts
-/// `{type:"tool_reference", tool_name}` blocks in ToolSearch tool_results. The
-/// Anthropic API expands each reference into the tool's schema server-side; the
-/// Responses API can't, but doesn't need to — Claude Code adds every discovered
-/// tool's full definition to the next request's `tools` array. Render the
-/// reference as text so the model sees the search succeeded (a dropped block
-/// would read as "no tools found" and kill the discovery loop).
-fn tool_reference_text(block: &Value) -> Option<String> {
+/// Claude Code's tool-search feature puts `{type:"tool_reference", tool_name}`
+/// blocks in ToolSearch results. Render known references with the tool definition,
+/// emulating Anthropic's server-side progressive reveal. Unknown references retain
+/// the legacy name-only text so malformed or schema-less requests remain usable.
+fn tool_reference_text(
+    block: &Value,
+    schema_map: &HashMap<&str, (&str, &Value)>,
+) -> Option<String> {
     let name = block.get("tool_name").and_then(Value::as_str)?;
-    Some(format!("Loaded tool: {name}"))
+    let Some((description, input_schema)) = schema_map.get(name) else {
+        return Some(format!("Loaded tool: {name}"));
+    };
+    // Serialize the full input_schema (not just `properties`): `required` and the
+    // other constraints must reach the model at reveal time, or a tool with
+    // mandatory parameters reads as all-optional. Serialized from the borrowed
+    // schema — no clone.
+    let parameters = if input_schema.is_object() {
+        serde_json::to_string_pretty(input_schema).unwrap_or_else(|_| "{}".to_string())
+    } else {
+        "{}".to_string()
+    };
+    Some(format!(
+        "Tool '{name}' is now available.\n\nDescription: {description}\n\nParameters:\n{parameters}"
+    ))
 }
 
 /// The `output` of a `function_call_output`. Text-only results collapse to a plain
 /// string (what most tools return); results carrying an image or document are sent
 /// as the Responses content-item array (text/image/file) so they are not dropped.
-fn tool_result_output(block: &Value) -> Value {
+fn tool_result_output(block: &Value, schema_map: &HashMap<&str, (&str, &Value)>) -> Value {
     let is_error = block.get("is_error").and_then(Value::as_bool) == Some(true);
     match block.get("content") {
         Some(Value::String(text)) => json!(text),
@@ -433,7 +527,7 @@ fn tool_result_output(block: &Value) -> Value {
                             .map(|text| json!({"type": "input_text", "text": text})),
                         Some("image") => image_content_item(inner),
                         Some("document") => file_content_item(inner),
-                        Some("tool_reference") => tool_reference_text(inner)
+                        Some("tool_reference") => tool_reference_text(inner, schema_map)
                             .map(|text| json!({"type": "input_text", "text": text})),
                         _ => None,
                     })
@@ -463,7 +557,7 @@ fn tool_result_output(block: &Value) -> Value {
                         .get("text")
                         .and_then(Value::as_str)
                         .map(str::to_string),
-                    Some("tool_reference") => tool_reference_text(inner),
+                    Some("tool_reference") => tool_reference_text(inner, schema_map),
                     _ => None,
                 })
                 .collect::<Vec<_>>()
@@ -532,11 +626,18 @@ fn function_tool(tool: &Value) -> Value {
     })
 }
 
-fn tools(request: &Value, flavor: ResponsesFlavor) -> Option<Value> {
+fn tools(request: &Value, flavor: ResponsesFlavor, context: &ToolSearchContext) -> Option<Value> {
     let tools = request.get("tools")?.as_array()?;
     Some(Value::Array(
         tools
             .iter()
+            // Progressive tool reveal: withhold a deferred tool until it has been
+            // loaded via a `tool_reference`. Non-deferred tools (including the
+            // hosted web-search tool) always pass this gate.
+            .filter(|tool| {
+                let name = tool.get("name").and_then(Value::as_str).unwrap_or("");
+                !context.deferred_names.contains(name) || context.loaded_tools.contains(name)
+            })
             .filter_map(|tool| {
                 if is_web_search_tool(tool) {
                     // xAI's Responses API only accepts function tools and 400s
@@ -587,7 +688,11 @@ fn names_web_search(request: &Value, name: &str) -> bool {
         })
 }
 
-fn tool_choice(request: &Value, flavor: ResponsesFlavor) -> Option<Value> {
+fn tool_choice(
+    request: &Value,
+    flavor: ResponsesFlavor,
+    context: &ToolSearchContext,
+) -> Option<Value> {
     let has_tools = request
         .get("tools")
         .and_then(Value::as_array)
@@ -609,6 +714,14 @@ fn tool_choice(request: &Value, flavor: ResponsesFlavor) -> Option<Value> {
                         ResponsesFlavor::Xai => Some(json!("auto")),
                         _ => Some(json!({"type": "web_search"})),
                     }
+                } else if context.deferred_names.contains(name)
+                    && !context.loaded_tools.contains(name)
+                {
+                    // Progressive tool reveal withheld this tool from `tools`
+                    // (deferred, not yet loaded), so a named function choice
+                    // would force a function the backend never saw. Downgrade
+                    // to `auto`, mirroring the dropped-web-search case.
+                    Some(json!("auto"))
                 } else {
                     Some(json!({"type": "function", "name": name}))
                 }
@@ -650,6 +763,8 @@ fn effort(request: &Value, route: &Route) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use serde_json::json;
 
     use super::{effort, input_items};
@@ -721,7 +836,7 @@ mod tests {
             ]
         });
 
-        let items = input_items(&request);
+        let items = input_items(&request, &HashMap::new());
 
         assert_eq!(items.len(), 2);
         assert_eq!(items[0]["role"], "user");
@@ -739,7 +854,7 @@ mod tests {
             ]
         });
 
-        let items = input_items(&request);
+        let items = input_items(&request, &HashMap::new());
 
         assert_eq!(items[0]["role"], "user");
         assert_eq!(items[0]["content"][0]["type"], "input_text");
