@@ -28,7 +28,8 @@ not for breadth of backends or multi-tenant fleet operation.
 
 | Group | Examples | Relationship to shunt |
 |---|---|---|
-| **Broad Claude-Code proxy w/ Codex OAuth** | **CLIProxyAPI** (router-for-me) | Closest broad peer — overlaps on Codex/ChatGPT OAuth, Codex WebSocket v2, tool translation |
+| **Subscription-backed CC proxy (same class)** | **raine/claude-code-proxy** | **Closest peer overall** — Rust single binary, per-`model` routing, Codex WebSocket + `previous_response_id` continuation, 4 subscription-OAuth backends (Codex/Kimi/Grok/Cursor) |
+| **Broad Claude-Code proxy w/ Codex OAuth** | **CLIProxyAPI** (router-for-me) | Closest *broad* peer — overlaps on Codex/ChatGPT OAuth, Codex WebSocket v2, tool translation |
 | **Narrow Claude Code → Codex swap** | insightflo/chatgpt-codex-proxy | Same inference-layer swap, single backend |
 | **General Claude-Code routers** | musistudio/claude-code-router, 1rgs/fuergaosi233 claude-code-proxy | Usually a *global* model swap, not per-model diversion |
 | **General AI gateways** | LiteLLM, Portkey, bifrost, modelgate | Adjacent infra — possible *backends*, not Claude-Code-native |
@@ -37,29 +38,41 @@ not for breadth of backends or multi-tenant fleet operation.
 
 Legend: ● full · ◐ partial / workaround · ○ none · — n/a by design
 
-| Capability | shunt | CLIProxyAPI | General CC routers | General gateways (LiteLLM/Portkey) |
-|---|:--:|:--:|:--:|:--:|
-| Claude Code gateway-protocol compliance (`/v1/models` discovery, attribution pass-through) | ● | ◐ | ◐ | ○ |
-| Selective per-`model`-id diversion (not a global swap) | ● | ◐ | ○ | ◐ |
-| Anthropic Messages ⇄ OpenAI Responses translation | ● | ● | ◐ (mostly chat-completions) | ◐ (chat-completions) |
-| ChatGPT/Codex **subscription** (OAuth) backend | ● | ● | rare | ○ |
-| Codex **WebSocket v2** transport (`responses_websockets=2026-02-06`) | ● | ● | ○ | ○ |
-| Upload trimming (`previous_response_id` continuation) **on the translation path** | ● | ○ (passthrough only) | ○ | ○ |
-| tool-search / `defer_loading` / `tool_reference` handling | ◐ (works, no ctx savings) | ◐ (upstream) / ● (fork) | ○ | ○ |
-| Multi-account load balancing / failover | ○ | ● | some | ● |
-| Backend breadth | 4 kinds¹ | 11 backends² | varies | 100–1600+ |
-| Management API / dashboard | ○ | ● | some | ● |
-| Usage / quota / cost tracking | ○ (Sentry metrics only) | ● | some | ● |
-| Plugin / interceptor system | ○ | ● | some | ● |
-| Guardrails / policy / RBAC | ○ | ◐ | rare | ● |
-| Language / footprint | Rust, single binary | Go | Node/Python | Go/Node/Python |
-| Config model | TOML + env, hot-reload | YAML + management API | varies | YAML/UI |
+| Capability | shunt | raine/ccp | CLIProxyAPI | Gen. CC routers | Gen. gateways |
+|---|:--:|:--:|:--:|:--:|:--:|
+| Claude Code gateway-protocol compliance (`/v1/models` discovery, attribution pass-through) | ● | ◐ | ◐ | ◐ | ○ |
+| Selective per-`model`-id diversion, main session stays on Claude (not a global swap) | ● | ◐³ | ◐ | ○ | ◐ |
+| Anthropic Messages ⇄ OpenAI Responses translation | ● | ● | ● | ◐ (mostly chat-completions) | ◐ (chat-completions) |
+| ChatGPT/Codex **subscription** (OAuth) backend | ● | ●⁴ | ● | rare | ○ |
+| Codex **WebSocket** Responses transport | ● | ● | ● | ○ | ○ |
+| Upload trimming (`previous_response_id` continuation) **on the translation path** | ● | ● | ○ (passthrough only) | ○ | ○ |
+| tool-search / `defer_loading` / `tool_reference` handling | ◐ (works, no ctx savings) | ○⁵ | ◐ (upstream) / ● (fork) | ○ | ○ |
+| Reasoning round-trip to Claude Code `thinking` | ● (encrypted) | ◐ (Kimi/Grok; **Codex dropped**) | ◐ | ○ | ◐ |
+| Multi-account load balancing / failover | ○ | ○ | ● | some | ● |
+| Backend breadth | 4 kinds¹ | 4 subs⁶ | 11 backends² | varies | 100–1600+ |
+| Management API / dashboard | ○ | ◐ (monitor TUI) | ● | some | ● |
+| Usage / quota / cost tracking | ○ (Sentry metrics only) | ○ | ● | some | ● |
+| Plugin / interceptor system | ○ | ○ | ● | some | ● |
+| Language / footprint | Rust, 1 binary | Rust, 1 binary | Go | Node/Python | Go/Node/Python |
+| Config model | TOML + env, hot-reload | env + config file | YAML + mgmt API | varies | YAML/UI |
 
 ¹ shunt: two adapter *kinds* (`anthropic` passthrough, `responses` translation) with
 4 built-in providers (Anthropic, OpenAI, ChatGPT/Codex, xAI) — any Anthropic-Messages
 or OpenAI-Responses endpoint is config-only (`src/config.rs:180-190,316-363`).
 ² CLIProxyAPI: aistudio, antigravity, claude, codex, codex-ws, gemini, gemini-vertex,
 kimi, openai-compat, xai, xai-ws.
+³ raine/ccp routes by `ANTHROPIC_MODEL` per-model like shunt, but has **no
+Anthropic-passthrough adapter** — an unknown model id returns 400, so you cannot keep
+the main session on Claude while diverting only the models you name.
+⁴ raine/ccp implements its **own** ChatGPT OAuth (PKCE browser + device-code login);
+shunt reuses the Codex CLI login (`~/.codex/auth.json`) and its own PKCE flow is an
+open TODO (`src/auth/mod.rs:18-19`).
+⁵ tool-search / `defer_loading` / `tool_reference` handling is not documented for
+raine/ccp; marked ○ conservatively (absence of evidence, not evidence of absence).
+⁶ raine/ccp subscription backends: Codex (ChatGPT Plus/Pro), Kimi (kimi.com), Grok
+(grok.com), Cursor Agent — all via subscription OAuth.
+
+> "raine/ccp" = [raine/claude-code-proxy](https://github.com/raine/claude-code-proxy).
 
 ## 4. Where shunt leads
 
@@ -70,26 +83,30 @@ kimi, openai-compat, xai, xai-ws.
   routers and gateways are OpenAI-chat-completions-centric and don't honor Claude
   Code's discovery/attribution surface.
 
-- **Upload trimming on the *translation* path (the standout).** Both shunt and
-  CLIProxyAPI speak Codex WebSocket v2, but they occupy different roles:
-  - **shunt actively synthesizes continuation.** Because it translates
-    Anthropic ⇄ Responses (Claude Code never sends `previous_response_id`), shunt
-    stores the transcript on the pooled connection, diffs the next request against
-    it with type-aware normalization to defeat translation drift, and injects
-    `previous_response_id` + input-delta — achieving real upload trimming on the
-    Claude→Codex path (`src/adapters/codex_continuation.rs:79-114`,
-    `src/adapters/codex_ws.rs`).
-  - **CLIProxyAPI's WS is a warm-socket passthrough.** Its session struct stores no
-    transcript/response-id; it relies on the client (Codex CLI) to send
-    `previous_response_id`. On its *translation* path (Claude→Codex) it re-sends full
-    input every turn — connection reuse only, no upload trimming — and needs a
-    separate tool-output "repair" cache to keep tool-call pairing consistent.
+- **Upload trimming on the *translation* path.** Because shunt translates
+  Anthropic ⇄ Responses (Claude Code never sends `previous_response_id`), it
+  *synthesizes* continuation: it stores the transcript on the pooled connection,
+  diffs the next request against it with type-aware normalization, and injects
+  `previous_response_id` + input-delta — real upload trimming on the Claude→Codex
+  path (`src/adapters/codex_continuation.rs:79-114`). This is **not** unique:
+  **raine/claude-code-proxy does the same class of thing** (opt-in
+  `CCP_CODEX_PREVIOUS_RESPONSE_ID`, session-keyed, append-only). The two Rust
+  subscription proxies share it — the real contrast is with **passthrough** proxies
+  like **CLIProxyAPI**, whose Codex WS stores no transcript/response-id, relies on
+  the Codex CLI client to send `previous_response_id`, and therefore re-sends full
+  input every turn on *its* translation path (plus a tool-output "repair" cache to
+  keep tool-call pairing consistent).
 
-- **Translation drift correctness.** shunt's normalization (strips backend-only
-  `id/phase/status`, parses `function_call.arguments`, round-trips reasoning
-  `encrypted_content`) makes echoed turns match backend items so continuation
-  actually fires; any unforeseen shape falls back to full input — never wrong
-  context, only a missed optimization (`src/adapters/codex_continuation.rs:11-48`).
+- **Normalization depth + reasoning fidelity (vs the nearest peer).** Within that
+  shared-continuation pair, shunt goes further than raine/claude-code-proxy on two
+  axes: (1) its continuation normalization parses `function_call.arguments` and
+  round-trips reasoning `encrypted_content`/signature, so continuation keeps firing
+  across tool turns where a shape-only comparison would drop it
+  (`src/adapters/codex_continuation.rs:11-48`); and (2) it **forwards Codex reasoning
+  to Claude Code as `thinking`**, whereas raine/claude-code-proxy **drops Codex
+  reasoning blocks entirely** (its README lists this as a limitation). Any unforeseen
+  shape still falls back to full input — never wrong context, only a missed
+  optimization.
 
 - **Small, auditable footprint.** Single Rust binary, TOML+env config with
   fail-closed boot validation and hot-reload; no runtime plugin surface to secure.
@@ -112,7 +129,14 @@ possible backends*, not the same product.
   `/`, `/health`, `/v1/models`, `/routes`, `/v1/messages`, `/v1/messages/count_tokens`
   (`src/server.rs:69-75`); observability is opt-in Sentry metrics only
   (`src/metrics.rs`). CLIProxyAPI ships a full management API + quota/usage manager
-  and a third-party dashboard ecosystem.
+  and a third-party dashboard ecosystem; even the same-class peer
+  raine/claude-code-proxy ships a built-in **monitor TUI** (live sessions, active /
+  recent requests, error events) that shunt has no equivalent of.
+- **No own ChatGPT OAuth login.** shunt reuses the Codex CLI login
+  (`~/.codex/auth.json`); a first-party PKCE flow is an open TODO
+  (`src/auth/mod.rs:18-19`). raine/claude-code-proxy is prior art here — it ships its
+  own `codex auth login` (PKCE) **and** `codex auth device` (device-code), so it works
+  without the Codex CLI installed.
 - **No plugin / interceptor system.** The adapter set is a fixed two-variant `match`
   (`src/proxy.rs:152-163`); CLIProxyAPI has a full plugin host (RPC ABI, auth
   providers, executor routing, request/response translators).
@@ -175,12 +199,17 @@ toward being a fleet gateway and warrant a conscious decision first.
 ## 7. One-line takeaway
 
 shunt is the **high-fidelity, single-subscription, Claude-Code-native** end of the
-spectrum: it wins on translation correctness and on *upload trimming over the
-translation path* (where CLIProxyAPI's WS is only a passthrough), and it trades away
-fleet features (multi-account LB, management, plugins, backend breadth) by design.
-The highest-value in-scope work is finishing the tool-search context savings
-([#43]) and hardening the Codex WS continuation (live-probe + mid-stream fallback);
-the biggest deliberate gap to weigh is minimal fill-first multi-account for
-ChatGPT/Codex.
+spectrum. Its nearest peer is **raine/claude-code-proxy** — same class (Rust,
+subscription OAuth, per-`model` routing, Codex WS + `previous_response_id`
+continuation) — against which shunt's edge is deeper continuation normalization,
+Codex reasoning fidelity (raine drops it), an Anthropic-passthrough path (keep the
+main session on Claude), and xAI OAuth; raine's edge is a built-in monitor TUI, a
+first-party ChatGPT OAuth login, and Kimi/Cursor breadth. Against **CLIProxyAPI**,
+shunt wins on translation-path upload trimming (CLIProxyAPI's WS is a passthrough)
+and trades away fleet features (multi-account LB, management, plugins, backend
+breadth) by design. The highest-value in-scope work is finishing the tool-search
+context savings ([#43]) and hardening the Codex WS continuation (live-probe +
+mid-stream fallback); the biggest deliberate gap to weigh is minimal fill-first
+multi-account for ChatGPT/Codex.
 
 [#43]: https://github.com/pleaseai/shunt/issues/43
