@@ -1,0 +1,38 @@
+---
+title: shunt
+description: 将 Claude Code 分流到任意模型 —— 一个符合规范的 Claude Code LLM 网关。
+template: splash
+hero:
+  tagline: 将 Claude Code 分流到任意模型。一个透明网关,只将你映射的模型分流到另一个提供方 —— 其余一切均原样透传给 Anthropic。
+  actions:
+    - text: 快速开始
+      link: /zh-cn/getting-started/quickstart/
+      icon: right-arrow
+    - text: 为什么选 shunt?
+      link: /zh-cn/getting-started/why-shunt/
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<CardGrid stagger>
+  <Card title="按模型,而非全局" icon="setting">
+    路由由每个请求的 `model` id 驱动。让主会话留在
+    Claude 上,只分流你指名的模型 —— 精确到单个子 agent ——
+    无需任何提示指纹识别。
+  </Card>
+  <Card title="符合规范的网关" icon="approve-check">
+    实现官方的 [Claude Code LLM 网关
+    协议](https://code.claude.com/docs/en/llm-gateway-protocol):
+    `/v1/messages`、`/v1/models` 发现、token 计数以及归属
+    透传。
+  </Card>
+  <Card title="OpenAI 与 ChatGPT/Codex" icon="rocket">
+    在 Anthropic Messages ⇄ OpenAI Responses API 之间转换 —— 通过 OpenAI
+    API 密钥,或通过 `codex login` 复用的 ChatGPT 订阅。
+  </Card>
+  <Card title="任何兼容 Anthropic 的后端" icon="puzzle">
+    Kimi、DeepSeek、GLM、MiniMax、OpenRouter、Vercel AI Gateway 及同类
+    只需一个 `[providers.<name>]` 表即可接入 —— 无需改动代码。
+  </Card>
+</CardGrid>

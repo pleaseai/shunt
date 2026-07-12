@@ -1,0 +1,52 @@
+---
+title: 安装
+description: 通过 Homebrew、cargo、预构建二进制文件或从源码安装 shunt。
+---
+
+## Homebrew (macOS / Linux)
+
+```bash
+brew install pleaseai/tap/shunt
+```
+
+## Cargo
+
+crate 以 `shunt-gateway` 名称发布(二进制文件仍是 `shunt`):
+
+```bash
+cargo install shunt-gateway
+```
+
+## 预构建二进制文件
+
+每个 [GitHub release](https://github.com/pleaseai/shunt/releases) 都附有面向 macOS(arm64/x64)和 Linux(arm64/x64)的独立二进制文件,以及一个 `SHA256SUMS` 文件:
+
+```bash
+# 为你的 OS/CPU 选择正确的资产 (darwin/linux × arm64/x64)
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+ARCH=$(uname -m); case "$ARCH" in x86_64) ARCH=x64 ;; aarch64) ARCH=arm64 ;; esac
+curl -fsSLO "https://github.com/pleaseai/shunt/releases/latest/download/shunt-${OS}-${ARCH}"
+chmod +x "shunt-${OS}-${ARCH}" && mv "shunt-${OS}-${ARCH}" /usr/local/bin/shunt
+```
+
+## 从源码构建
+
+需要带 `cargo` 的 stable Rust:
+
+```bash
+git clone https://github.com/pleaseai/shunt
+cd shunt
+cargo build --release   # -> target/release/shunt
+```
+
+你也可以用 `cargo run -- <args>` 直接从源码树运行。
+
+## 连接 Claude Code 的前置条件
+
+- **Claude Code** —— 任何近期版本;仅当你想使用 [模型发现](/zh-cn/guides/model-discovery/) 时才需要 v2.1.129+。
+- 你所映射的那个提供方的凭据:
+  - `openai` 提供方所需的 **OpenAI API 密钥**,或
+  - `codex` 提供方所需的、通过 Codex CLI(`codex login`)完成的 **ChatGPT 登录**。
+- 你正常的 **Anthropic 凭据**(claude.ai 登录或 API 密钥) —— 对于每个你*未*映射的模型,shunt 都会将其转发出去。
+
+下一步:[快速开始](/zh-cn/getting-started/quickstart/)。

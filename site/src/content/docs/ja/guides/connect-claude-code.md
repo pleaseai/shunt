@@ -1,0 +1,135 @@
+---
+title: Connect Claude Code
+description: Claude Code を shunt へ向け、適切な Anthropic 認証情報を選び、マッピングされたモデルを選択する。
+---
+
+公式の [Connect Claude Code to an LLM gateway](https://code.claude.com/docs/en/llm-gateway-connect) ガイドに基づいています — shunt *こそ*が、あなたが接続するゲートウェイです。
+
+## 1. Claude Code を shunt へ向ける
+
+稼働中のゲートウェイ（デフォルトのバインド `127.0.0.1:3001`）へ base URL を設定します。シェル内、または [設定ファイル](https://code.claude.com/docs/en/settings)の `env` ブロックに永続化します。
+
+```bash
+export ANTHROPIC_BASE_URL=http://127.0.0.1:3001
+```
+
+```json
+// ~/.claude/settings.json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:3001"
+  }
+}
+```
+
+既存の Anthropic 認証情報はそのまま保ってください — shunt は、マッピングしなかったすべてのモデルについて、それを**変更なしで** `api.anthropic.com` へ転送するため、マッピングされていないモデルはこれまでとまったく同じように動作します。マッピングされたモデルのプロバイダー認証情報は shunt 自身が注入します。Claude Code がそれらを送ることは決してありません。
+
+## 2. Anthropic 認証情報を選ぶ
+
+Claude Code が shunt へ送る認証情報は 2 つの役割を果たします。**Claude パススルーモデル**を認証すること、そして [model discovery](/ja/guides/model-discovery/) を**ゲート**することです — Claude Code は `ANTHROPIC_AUTH_TOKEN`、API キー、または `apiKeyHelper` が設定されているときのみ `GET /v1/models` リクエストを発行します。マッピングされたモデル（`gpt-*` など）はどちらの場合も影響を受けません。
+
+| 認証情報 | トークンのリフレッシュ | Discovery | Claude パススルー | 課金 |
+| :-- | :-- | :-- | :-- | :-- |
+| claude.ai OAuth **ログイン**のみ | 自動 | ❌ 発火しない | ✅ | サブスクリプション |
+| `claude setup-token` による `ANTHROPIC_AUTH_TOKEN` — **推奨** | 不要（1 年トークン） | ✅ | ✅ | サブスクリプション |
+| `apiKeyHelper` = `shunt token` | ヘルパーがリフレッシュ | ✅ | ✅ | サブスクリプション |
+| `ANTHROPIC_AUTH_TOKEN=<real API key>` | 不要 | ✅ | ✅ | **API（サブスクリプションではない）** |
+
+`sk-dummy` のようなダミー値は discovery ゲートを満たしますがパススルーを壊します — それは Anthropic へ転送され、401 を返します。
+
+**`claude setup-token` を推奨します。** これは**1 年**の OAuth トークンを発行するため（[authentication docs](https://code.claude.com/docs/en/authentication#generate-a-long-lived-token)）、リフレッシュするものは何もなく、1 つの値で両方の役割をカバーします。
+
+```bash
+claude setup-token                        # browser sign-in → prints sk-ant-oat…
+export ANTHROPIC_AUTH_TOKEN=sk-ant-oat…   # or persist it in a settings `env` block
+```
+
+:::caution[リフレッシュの罠]
+ゲートウェイの認証情報がアクティブになると、Claude Code は**自身のログインのリフレッシュを停止**するため、`~/.claude/.credentials.json` 内の短命なアクセストークンは数時間以内に期限切れになり、そのファイルを*読むだけ*のヘルパーは壊れます。手動でもリフレッシュしないでください — `platform.claude.com/v1/oauth/token` は強くレート制限されています。ライブのサブスクリプションログインを再利用するには、組み込みの [`shunt token`](/ja/reference/cli/#shunt-token) ヘルパーを使ってください。安全にリフレッシュします。
+:::
+
+### `shunt token` 認証情報ヘルパー
+
+`shunt token` は Claude サブスクリプションの OAuth トークンを stdout に出力するため、Claude Code の `apiKeyHelper` に直接組み込めます。
+
+```json
+// ~/.claude/settings.json
+{
+  "apiKeyHelper": "/path/to/shunt token"
+}
+```
+
+- **静的モード** — `SHUNT_GATEWAY_TOKEN` または `CLAUDE_CODE_OAUTH_TOKEN` が設定されている場合、その値を変更せずにそのまま出力します。`claude setup-token` の値を指定すれば、何もリフレッシュされません。
+- **自動リフレッシュモード** — それ以外の場合、`~/.claude/.credentials.json`（`CLAUDE_CREDENTIALS` でオーバーライド）を読み込み、アクセストークンを返し、期限切れの 5 分前以内のときのみリフレッシュして、`0600` でアトミックに書き戻します。
+
+静的 + `setup-token` のルートが、最もシンプルで安全なデフォルトのままです。
+
+:::note[なぜこれが Claude パススルーを認証するのか]
+Claude Code は `apiKeyHelper` の値を `x-api-key` と `Authorization: Bearer` の**両方**で送ります。サブスクリプションの OAuth トークン（`sk-ant-oat…`）はベアラーとしてのみ有効なので、`x-api-key` のコピーがあると `api.anthropic.com` がリクエストを拒否してしまいます。パススルーパスでは、ベアラーが OAuth トークンのとき shunt がその重複した `x-api-key` を除去し、それを単独で立たせます。これがないと、`apiKeyHelper` + OAuth トークンは discovery とマッピングされたモデルだけをカバーし、パススルーは 401 になります。
+:::
+
+## 3. マッピングされたプロバイダーの認証情報を用意する
+
+これらは Claude Code ではなく **shunt の環境**へ渡します。
+
+```bash
+export OPENAI_API_KEY=sk-...   # openai provider
+codex login                    # codex/ChatGPT provider (auto-refreshed thereafter)
+```
+
+## 4. マッピングされたモデルを選択する
+
+Claude Code の model discovery は `claude`/`anthropic` で始まる id のみを尊重するため、OpenAI/Codex の id（`gpt-*`）には `ANTHROPIC_CUSTOM_MODEL_OPTION` を使います — これは、id が検証をスキップするピッカーエントリを追加します。
+
+```bash
+export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
+```
+
+そして Claude Code で `/model` から選びます。その id は shunt がルーティングに使うものなので、設定内の `[[routes]]`/`[[route_prefixes]]` ルールにマッチする必要があります。
+
+2 つのピッカー公開方法は `claude-`/`anthropic-` プレフィックスできれいに分かれます — 重複しません。discovery は `claude-`/`anthropic-` の id *のみ*を尊重します。`ANTHROPIC_CUSTOM_MODEL_OPTION` と `CLAUDE_CODE_MAX_CONTEXT_TOKENS` のウィンドウオーバーライドは、そのプレフィックスで**始まらない** id *のみ*に適用されます。
+
+| 何 | `claude-`/`anthropic-` id（discovery エイリアス） | 非 `claude-` id（例 `gpt-5.6-sol`） |
+| :-- | :-- | :-- |
+| [`/v1/models` discovery](/ja/guides/model-discovery/) → `/model` ピッカー | ✅ 自動リスト（「From gateway」）、多数のモデル | ❌ Claude Code が落とす |
+| `ANTHROPIC_CUSTOM_MODEL_OPTION` | ❌ 尊重されない | ✅ ピッカーに追加（**1 つの id のみ**） |
+| `CLAUDE_CODE_MAX_CONTEXT_TOKENS` ウィンドウ | ❌ 無視 → 200k デフォルト | ✅ 適用 → 実際のウィンドウを設定 |
+
+したがって、`claude-…-via-codex` の discovery エイリアスは便利（自動リスト、ワンタップ）ですが、そのコンテキストウィンドウは **200k デフォルトに固定**されます — オーバーライドは `claude-` プレフィックスの id には届きません（[Effort & Context](/ja/guides/effort-and-context/)）。複数のモデルにまたがるピッカーの便利さには **discovery エイリアス**を選び（200k の分母を受け入れる）、正確なウィンドウには **`ANTHROPIC_CUSTOM_MODEL_OPTION` 経由の非 `claude-` id** を、一度に 1 モデルずつ選んでください。
+
+:::tip[または tier エイリアスをリマップする]
+第 3 の選択肢は、Claude Code の組み込み `haiku`/`sonnet`/`opus` エイリアスを Codex スラッグへ再度向けること（例 `haiku → gpt-5.6-luna`、`sonnet → gpt-5.6-sol`）で、セッション全体の tier システムを `ANTHROPIC_CUSTOM_MODEL_OPTION` なしであなたの ChatGPT サブスクリプションへ解決させます。[ChatGPT / Codex → tier エイリアスをリマップする](/ja/guides/codex/#remap-the-tier-aliases-to-codex)を参照してください。
+:::
+
+### エージェント単位の振り分け
+
+コンテキスト単位の選択は Claude Code 自身のノブで機能します — メインセッションが Claude のまま残る一方で、1 つのエージェントをマッピングされたモデルへ振り分けます。
+
+```yaml
+# .claude/agents/researcher.md
+---
+name: researcher
+model: gpt-5.6-sol   # this agent's inference is diverted; the main session stays on Claude
+---
+```
+
+名前付きサブエージェントの `model:` フロントマターは、サブエージェントを `gpt-*` id に乗せる**唯一の**方法です。そのフィールドは任意の文字列を取りますが、Agent/Task ツールの `model` パラメータは組み込みエイリアス（`opus`/`sonnet`/`haiku`/`fable`）に制限され、ゲートウェイ id を取れません。エージェントをそのタイプで `model` オーバーライド**なし**にスポーンしてください — ツールパラメータがフロントマターより優先されるため（`CLAUDE_CODE_SUBAGENT_MODEL` > ツールの `model` > フロントマター > `inherit`）、渡すとマッピングされたモデルを覆い隠してしまいます。`CLAUDE_CODE_SUBAGENT_MODEL` はすべてのサブエージェントを 1 つのモデルに強制します。ウィンドウはモデル id に自動的に追随するため、1 つのグローバルな `CLAUDE_CODE_MAX_CONTEXT_TOKENS` がマッピングされたサブエージェントをサイズし、Claude のメインは自身のものを保ちます。
+
+## 5. 検証
+
+```bash
+# Unmapped model -> forwarded to Anthropic (uses your Anthropic credential)
+curl -s -X POST "$ANTHROPIC_BASE_URL/v1/messages" \
+  -H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "content-type: application/json" \
+  -d '{"model":"claude-sonnet-4-6","max_tokens":1,"messages":[{"role":"user","content":"."}]}'
+
+# Mapped model -> diverted to the provider (uses shunt's provider credential)
+curl -s -X POST "$ANTHROPIC_BASE_URL/v1/messages" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "content-type: application/json" \
+  -d '{"model":"gpt-5.6-sol","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}'
+```
+
+その後 `claude` を起動し、`/status` を実行して、**Anthropic base URL** の行にあなたのゲートウェイが表示されていることを確認します。reasoning エフォートとコンテキストウィンドウのチューニングについては [Effort & Context](/ja/guides/effort-and-context/) も参照してください。

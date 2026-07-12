@@ -1,0 +1,20 @@
+---
+title: HTTP 엔드포인트
+description: shunt가 Claude Code LLM 게이트웨이로서 제공하는 엔드포인트.
+---
+
+| 메서드 | 경로 | 용도 |
+| :-- | :-- | :-- |
+| `HEAD` | `/` | Liveness 프로브 |
+| `GET` | `/` | 사람이 읽을 수 있는 랜딩(버전 + 엔드포인트 목록) |
+| `GET` | `/health` | 헬스체크 — `{"status":"ok","version":"x.y.z"}` |
+| `GET` | `/v1/models` | [모델 디스커버리](/ko/guides/model-discovery/) — `[[models]]` 항목을 반환 |
+| `GET` | `/routes` | shunt 네이티브 라우트 디스커버리 — 구성된 `[[routes]]` 테이블을 그대로 반환(model → provider/upstream_model/effort 매핑, claude 프리픽스 디스커버리 별칭 포함); 더 좁은 Anthropic 프로토콜 디스커버리 응답(`id`/`display_name`만)을 제공하는 `/v1/models`와 구별됨 |
+| `POST` | `/v1/messages` | 추론 — 요청의 `model` id에 따라 라우팅 |
+| `POST` | `/v1/messages/count_tokens` | [토큰 카운팅](/ko/guides/effort-and-context/#token-counting-count_tokens) |
+
+`GET /`와 `GET /health`는 [`[server.auth]`](/ko/guides/shared-gateway/)가 활성화되어 있어도 열린 채로 유지되며(헬스체크 도구는 보통 토큰을 첨부할 수 없음) 민감한 것을 노출하지 않습니다 — 오직 상태, 버전, 그리고 이미 공개된 엔드포인트 목록만입니다.
+
+## 게이트웨이 프로토콜
+
+shunt는 공식 [Claude Code LLM 게이트웨이 프로토콜](https://code.claude.com/docs/en/llm-gateway-protocol)을 구현합니다: 올바른 헤더 및 바디 필드 전달, 기능 패스스루, 시스템 프롬프트 어트리뷰션 처리. 게이트웨이 소유 오류는 Anthropic 오류 형태로 반환되고, 업스트림 컨텍스트 오버플로 오류는 Anthropic의 `prompt is too long` 표현으로 다시 쓰여 Claude Code의 [압축-재시도](/ko/guides/effort-and-context/#context-overflow-recovery)가 발동하며, 스트리밍 응답은 버퍼링 없이 릴레이됩니다(선택적 [keepalive ping](/ko/guides/shared-gateway/#sse-keepalive-pings) 포함).

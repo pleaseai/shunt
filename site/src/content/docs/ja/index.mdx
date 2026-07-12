@@ -1,0 +1,38 @@
+---
+title: shunt
+description: Claude Code を任意のモデルへ shunt する — 仕様準拠の Claude Code LLM ゲートウェイ。
+template: splash
+hero:
+  tagline: Claude Code を任意のモデルへ shunt する。マッピングしたモデルだけを別プロバイダーへ振り分け、それ以外はすべて変更なしで Anthropic へパススルーする透過的なゲートウェイ。
+  actions:
+    - text: クイックスタート
+      link: /ja/getting-started/quickstart/
+      icon: right-arrow
+    - text: Why shunt?
+      link: /ja/getting-started/why-shunt/
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<CardGrid stagger>
+  <Card title="グローバルではなくモデル単位" icon="setting">
+    ルーティングは各リクエストの `model` id によって駆動されます。メインセッションを
+    Claude のまま残し、あなたが指名したモデルだけを — 単一のサブエージェントに至るまで —
+    プロンプトのフィンガープリンティングなしで振り分けます。
+  </Card>
+  <Card title="仕様準拠のゲートウェイ" icon="approve-check">
+    公式の [Claude Code LLM ゲートウェイ
+    プロトコル](https://code.claude.com/docs/en/llm-gateway-protocol)を実装:
+    `/v1/messages`、`/v1/models` discovery、トークンカウント、アトリビューションの
+    パススルー。
+  </Card>
+  <Card title="OpenAI & ChatGPT/Codex" icon="rocket">
+    Anthropic Messages ⇄ OpenAI Responses API を変換 — OpenAI
+    API キー経由、または `codex login` で再利用した ChatGPT サブスクリプション経由。
+  </Card>
+  <Card title="あらゆる Anthropic 互換バックエンド" icon="puzzle">
+    Kimi、DeepSeek、GLM、MiniMax、OpenRouter、Vercel AI Gateway などは
+    `[providers.<name>]` テーブルを 1 つ書くだけ — コード変更なし。
+  </Card>
+</CardGrid>
