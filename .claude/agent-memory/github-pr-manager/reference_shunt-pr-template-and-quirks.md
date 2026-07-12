@@ -23,10 +23,10 @@ in this environment) before assuming the create failed and retrying.
 **Worse variant confirmed on PR #39**: `gh please pr create ... --body-file -`
 fed via a bash heredoc (`<<'PRBODY' ... PRBODY`) silently created the PR with
 an **empty body** — no error, exit 0, title set correctly, but
-`gh pr view <n> --json body` came back `""`. Always verify body content after
-create (`gh pr view <n> --json body --jq .body | head`), not just that the PR
+`gh pr view {number} --json body` came back `""`. Always verify body content after
+create (`gh pr view {number} --json body --jq .body | head`), not just that the PR
 exists. Fix: write the body to a real file with the Write tool and run plain
-`gh pr edit <n> --repo <owner>/<repo> --body-file <path>` — that reliably set
+`gh pr edit {number} --repo <owner>/<repo> --body-file <path>` — that reliably set
 a 3000+ char body. Prefer writing the body to a file and using `--body-file
 <path>` (not `-`/stdin/heredoc) on the initial `gh please pr create` call too,
 to avoid the empty-body failure mode altogether.
@@ -37,7 +37,7 @@ plain `gh please pr create` / `gh pr create` is the right tool, no `gt submit`.
 **Confirmed fix works on initial create too (PR #44)**: passing
 `--body-file <path>` (Write-tool-authored file, not stdin/heredoc) directly on
 the first `gh please pr create --draft ...` call produced a correct non-empty
-body (verified via `gh pr view <n> --json body --jq '.body | length'`) —
+body (verified via `gh pr view {number} --json body --jq '.body | length'`) —
 no need to create-then-edit. Command still printed no stdout on success;
 `gh pr list --head <branch> --repo pleaseai/shunt --json number,title,isDraft,url`
 (plain gh) is the reliable way to confirm the PR exists and get its number.
