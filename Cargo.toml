@@ -32,6 +32,17 @@ figment = { version = "0.10", features = ["toml", "yaml", "env"] }
 flate2 = "1"
 futures-util = "0.3"
 notify = "8.2.0"
+# OpenTelemetry export (opt-in `[otel]`). The OTLP exporter speaks HTTP/protobuf
+# over reqwest's *blocking* client so the SDK's dedicated-thread batch span/log
+# processors and periodic metric reader run fully independent of the axum
+# serving runtime — no tokio handle threading, and telemetry init stays
+# synchronous like `init_sentry`. reqwest-rustls-webpki-roots reuses reqwest's
+# ring-backed rustls with bundled roots, matching the tokio-tungstenite TLS.
+opentelemetry = "0.32"
+opentelemetry_sdk = "0.32"
+opentelemetry-otlp = { version = "0.32", default-features = false, features = ["trace", "metrics", "logs", "http-proto", "reqwest-blocking-client", "reqwest-rustls-webpki-roots"] }
+opentelemetry-appender-tracing = "0.32"
+opentelemetry-semantic-conventions = "0.32"
 prost = "0.13"
 rand = "0.9"
 regex-lite = "0.1"
@@ -56,6 +67,7 @@ tokio = { version = "1", features = ["full"] }
 # no OpenSSL/native-tls system dependency.
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 tracing = "0.1"
+tracing-opentelemetry = "0.33"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1", features = ["v4"] }
 

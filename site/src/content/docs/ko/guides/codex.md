@@ -232,6 +232,32 @@ Code가 호스티드 `web_search_20250305` 도구를 보내고, shunt는 이를 
 - **xAI / Grok 라우트는 지원하지 않습니다** — Grok의 Responses API는 함수 도구만 허용하므로 shunt가
   호스티드 웹 검색 도구를 제거합니다. 웹 검색에는 `codex` 또는 `openai` 라우트를 사용하세요.
 
+## 도구 검색
+
+Claude Code의 **도구 검색** — MCP / LSP 도구 스키마를 미뤄 두었다가 `ToolSearch` 도구로 필요할 때만
+드러내어, 호출하지 않을 도구에 컨텍스트를 쓰지 않게 하는 기능 — 도 Codex 경로에서 동작하지만 shunt 뒤에서는
+**기본적으로 꺼져 있습니다**. 활성화하려면:
+
+```bash
+export ENABLE_TOOL_SEARCH=true
+```
+
+Claude Code는 base URL이 퍼스트파티 Anthropic 호스트가 아니면 낙관적 도구 검색을 비활성화하는데, shunt는
+그에 해당하지 않습니다. 따라서 이 플래그가 없으면 첫 턴부터 모든 도구의 전체 스키마가 업스트림으로 전송되어
+기능이 무의미해집니다(동작은 하지만 절약되는 것이 없습니다). 클라이언트 자체 규약은 **프록시가
+`tool_reference` 블록을 전달한다면** `ENABLE_TOOL_SEARCH=true`를 설정하라는 것이며, shunt는 이를
+전달합니다.
+
+활성화하면 Claude Code는 미룰 수 있는 도구를 프롬프트에 **이름**만 나열하고 스키마는 보류합니다. shunt는
+아직 로드되지 않은 이 도구들을 모델이 `ToolSearch`로 로드하기 전까지 업스트림 도구 집합에서 제외하며, 그
+결과 생성된 `tool_reference`가 해당 도구의 전체 스키마를 필요할 때 드러냅니다. 이로써 미뤄 둔 스키마가 첫
+턴부터 차지했을 컨텍스트 윈도우를 되찾습니다 — 도구 검색의 핵심 목적입니다.
+
+- `shunt.toml` 변경은 필요 없습니다 — 순수하게 Claude Code 환경 변수입니다.
+- `codex`(ChatGPT) 및 `openai`(스톡 Responses) 프로바이더에 적용됩니다.
+- 미루지 않는 도구(및 위의 호스티드 `web_search` 도구)는 항상 전달됩니다. 점진적으로 드러나는 것은 미룰 수
+  있는 도구뿐입니다.
+
 ## 문제 해결
 
 | 증상 | 원인 / 해결 |
@@ -243,5 +269,6 @@ Code가 호스티드 `web_search_20250305` 도구를 보내고, shunt는 이를 
 | `gpt-*` id에서 effort 슬라이더가 무시됨 | `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1`을 설정하거나, 라우트/프로바이더 `effort` 오버라이드가 이기고 있습니다. |
 | 컨텍스트 바가 과다 보고 / 조기 압축 | `CLAUDE_CODE_MAX_CONTEXT_TOKENS`를 설정하세요. 디스커버리 별칭은 이를 받을 수 없습니다 — 비-`claude-` id를 사용하세요. |
 | Grok 라우트에서 웹 검색 결과가 비어 있음 | xAI/Grok의 Responses API는 웹 검색을 지원하지 않아 shunt가 도구를 제거합니다. 웹 검색에는 `codex` 또는 `openai` 라우트를 사용하세요. |
+| 도구 검색이 동작하지 않음 / 매 턴 모든 도구 스키마가 전송됨 | `ENABLE_TOOL_SEARCH=true`를 설정하세요 — Claude Code는 퍼스트파티가 아닌 base URL 뒤에서 도구 검색을 기본적으로 비활성화합니다. shunt는 `tool_reference` 블록을 전달하며 미뤄 둔 스키마를 필요할 때 드러냅니다. |
 
 더 많은 내용은 전체 [문제 해결](/ko/reference/troubleshooting/) 레퍼런스를 참고하세요.

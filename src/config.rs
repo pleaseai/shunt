@@ -25,6 +25,10 @@ pub struct Config {
     /// Sentry client is created and nothing ever leaves the machine.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sentry: Option<SentryConfig>,
+    /// Optional opt-in OpenTelemetry (OTLP) export. Absent (the default) means
+    /// no exporter is created and nothing ever leaves the machine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub otel: Option<OtelConfig>,
 }
 
 /// Providers are a name → config map, so a new upstream is just another
@@ -123,6 +127,75 @@ impl SentryConfig {
     /// Whether this section actually enables reporting (non-empty DSN).
     pub fn enabled(&self) -> bool {
         !self.dsn.trim().is_empty()
+    }
+}
+
+/// `[otel]` — opt-in OpenTelemetry export to the operator's own OTLP endpoint
+/// (an OpenTelemetry Collector or a compatible backend). Absent (the default)
+/// means no exporter is created and nothing leaves the machine. Independent of
+/// `[sentry]`: both are separate opt-ins and can run together. Metrics
+/// (provider/model/status) and traces (HTTP method/path; the client session id
+/// only when `include_session_id` is set) stay low-cardinality and carry no
+/// request/response bodies. The `logs` signal, when on, exports shunt's
+/// diagnostic log events as written — so it can include request-derived fields
+/// (an upstream error body, a client id); set `logs = false` for body-free
+/// export. All signals go only to the configured endpoint.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct OtelConfig {
+    /// OTLP/HTTP endpoint base URL, e.g. `http://localhost:4318`. shunt appends
+    /// the standard signal paths (`/v1/traces`, `/v1/metrics`, `/v1/logs`). An
+    /// empty string disables export, so `SHUNT_OTEL__ENDPOINT=""` turns a
+    /// file-configured section off without editing it.
+    pub endpoint: String,
+    /// `service.name` resource attribute on all exported telemetry.
+    #[serde(default = "default_otel_service_name")]
+    pub service_name: String,
+    /// Optional `deployment.environment` resource attribute (e.g. "prod").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<String>,
+    /// Head-based trace sampling ratio in `[0.0, 1.0]`. `1.0` (default) samples
+    /// every request span; lower values reduce export volume.
+    #[serde(default = "default_otel_sample_ratio")]
+    pub sample_ratio: f64,
+    /// Extra headers on every OTLP request — e.g. an auth token for a hosted
+    /// collector: `authorization = "Bearer …"`. Values can be secrets; keep
+    /// them out of shared configs (prefer `SHUNT_OTEL__HEADERS__…` in the env).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
+    /// Export trace spans (the per-request `proxy_request` span). On by default.
+    #[serde(default = "default_true")]
+    pub traces: bool,
+    /// Export usage metrics (request counts + latency). On by default. Mirrors
+    /// the Sentry `shunt.requests`/`shunt.latency` series to OTLP.
+    #[serde(default = "default_true")]
+    pub metrics: bool,
+    /// Export `tracing` log events as OTLP logs. On by default; independent of
+    /// the stderr `fmt` logs, which are unaffected.
+    #[serde(default = "default_true")]
+    pub logs: bool,
+    /// Attach the client session id to request spans. Off by default: session
+    /// ids are request-derived and — like the Sentry span filter — are withheld
+    /// unless the operator opts in for their own backend.
+    #[serde(default)]
+    pub include_session_id: bool,
+}
+
+fn default_otel_service_name() -> String {
+    "shunt".to_string()
+}
+
+fn default_otel_sample_ratio() -> f64 {
+    1.0
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl OtelConfig {
+    /// Whether this section actually enables export (non-empty endpoint).
+    pub fn enabled(&self) -> bool {
+        !self.endpoint.trim().is_empty()
     }
 }
 
@@ -324,6 +397,10 @@ pub enum ConfigError {
     InvalidClientTokens { env: String, message: String },
     #[error("sentry.dsn is not a valid DSN: {message}")]
     InvalidSentryDsn { message: String },
+    #[error("otel.endpoint is not a valid URL: {message}")]
+    InvalidOtelEndpoint { message: String },
+    #[error("otel.sample_ratio must be between 0.0 and 1.0, got {ratio}")]
+    InvalidOtelSampleRatio { ratio: f64 },
 }
 
 impl ProviderConfig {
@@ -434,6 +511,7 @@ impl Default for Config {
             routes: Vec::new(),
             route_prefixes: Vec::new(),
             sentry: None,
+            otel: None,
         }
     }
 }
@@ -566,6 +644,39 @@ impl Config {
                         message: error.to_string(),
                     }
                 })?;
+            }
+        }
+        // An [otel] section with a non-empty endpoint must parse as a URL at
+        // boot; a typo'd endpoint silently dropping every export would defeat
+        // the point of opting in. The sample ratio must be a valid probability.
+        if let Some(otel) = &self.otel {
+            if otel.enabled() {
+                let endpoint = reqwest::Url::parse(&otel.endpoint).map_err(|error| {
+                    ConfigError::InvalidOtelEndpoint {
+                        message: error.to_string(),
+                    }
+                })?;
+                // The exporter speaks OTLP/HTTP, so a syntactically valid but
+                // non-HTTP URL (e.g. `ftp://collector` or a scheme-only `mailto:`
+                // with no host) would parse here yet never deliver a single
+                // export. Reject it at boot rather than fail silently at runtime.
+                if !matches!(endpoint.scheme(), "http" | "https") || endpoint.host_str().is_none() {
+                    return Err(ConfigError::InvalidOtelEndpoint {
+                        message: format!(
+                            "endpoint must be an http(s) URL with a host, got `{}`",
+                            otel.endpoint
+                        ),
+                    });
+                }
+                if !(0.0..=1.0).contains(&otel.sample_ratio) {
+                    return Err(ConfigError::InvalidOtelSampleRatio {
+                        ratio: otel.sample_ratio,
+                    });
+                }
+                // The plaintext-`[otel.headers]` warning is emitted once at the
+                // telemetry boundary (`crate::telemetry::init`), not here: this
+                // validator re-runs on every hot-reload, so warning here would
+                // repeat the log and mix a side effect into pure validation.
             }
         }
         for (name, provider) in &self.providers {
@@ -1063,6 +1174,97 @@ mod tests {
         };
         let config = config.validate().unwrap();
         assert!(!config.sentry.as_ref().unwrap().enabled());
+    }
+
+    fn otel_config(endpoint: &str) -> super::OtelConfig {
+        super::OtelConfig {
+            endpoint: endpoint.to_string(),
+            service_name: super::default_otel_service_name(),
+            environment: None,
+            sample_ratio: super::default_otel_sample_ratio(),
+            headers: std::collections::BTreeMap::new(),
+            traces: true,
+            metrics: true,
+            logs: true,
+            include_session_id: false,
+        }
+    }
+
+    #[test]
+    fn otel_is_disabled_by_default() {
+        let config = Config::default();
+        assert!(config.otel.is_none());
+    }
+
+    #[test]
+    fn otel_section_with_valid_endpoint_validates() {
+        let config = Config {
+            otel: Some(otel_config("http://localhost:4318")),
+            ..Config::default()
+        };
+        let config = config.validate().unwrap();
+        assert!(config.otel.as_ref().unwrap().enabled());
+    }
+
+    #[test]
+    fn otel_invalid_endpoint_is_rejected_at_boot() {
+        let config = Config {
+            otel: Some(otel_config("not a url")),
+            ..Config::default()
+        };
+        let error = config.validate().unwrap_err();
+        assert!(matches!(error, ConfigError::InvalidOtelEndpoint { .. }));
+    }
+
+    #[test]
+    fn otel_non_http_endpoint_is_rejected_at_boot() {
+        // Parses as a URL but the OTLP/HTTP exporter can never use it.
+        let config = Config {
+            otel: Some(otel_config("ftp://collector.example")),
+            ..Config::default()
+        };
+        let error = config.validate().unwrap_err();
+        assert!(matches!(error, ConfigError::InvalidOtelEndpoint { .. }));
+    }
+
+    #[test]
+    fn otel_sample_ratio_out_of_range_is_rejected() {
+        let mut otel = otel_config("http://localhost:4318");
+        otel.sample_ratio = 1.5;
+        let config = Config {
+            otel: Some(otel),
+            ..Config::default()
+        };
+        let error = config.validate().unwrap_err();
+        assert!(matches!(error, ConfigError::InvalidOtelSampleRatio { .. }));
+    }
+
+    #[test]
+    fn otel_empty_endpoint_disables_export_and_validates() {
+        // SHUNT_OTEL__ENDPOINT="" must be able to switch a file section off,
+        // and a disabled section skips endpoint/ratio validation entirely.
+        let mut otel = otel_config("");
+        otel.sample_ratio = 99.0; // ignored while disabled
+        let config = Config {
+            otel: Some(otel),
+            ..Config::default()
+        };
+        let config = config.validate().unwrap();
+        assert!(!config.otel.as_ref().unwrap().enabled());
+    }
+
+    #[test]
+    fn otel_defaults_parse_from_toml() {
+        use figment::providers::{Format, Toml};
+        let otel: super::OtelConfig =
+            figment::Figment::from(Toml::string("endpoint = \"http://localhost:4318\""))
+                .extract()
+                .unwrap();
+        assert_eq!(otel.service_name, "shunt");
+        assert_eq!(otel.sample_ratio, 1.0);
+        assert!(otel.traces && otel.metrics && otel.logs);
+        assert!(!otel.include_session_id);
+        assert!(otel.headers.is_empty());
     }
 
     #[test]

@@ -65,6 +65,29 @@ Entries returned by `GET /v1/models` for [model discovery](/guides/model-discove
 | `id` | ✅ | Model id exposed to Claude Code |
 | `display_name` | — | Label shown in the `/model` picker |
 
+## `[otel]` (optional)
+
+Opt-in OpenTelemetry (OTLP/HTTP) export of traces, metrics, and logs to your own collector ([details](/guides/opentelemetry/)). Off unless `endpoint` is set; independent of Sentry.
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `endpoint` | — | OTLP/HTTP base URL (e.g. `http://localhost:4318`); shunt appends `/v1/{traces,metrics,logs}`. Empty disables; a non-`http(s)` URL is a startup error. |
+| `service_name` | `shunt` | `service.name` resource attribute (takes precedence over `OTEL_SERVICE_NAME`) |
+| `environment` | — | Optional `deployment.environment.name` |
+| `sample_ratio` | `1.0` | Head-based trace sampling in `[0.0, 1.0]`; out of range is a startup error |
+| `traces` | `true` | Export the per-request `proxy_request` span |
+| `metrics` | `true` | Export the `shunt.requests` / `shunt.latency` series |
+| `logs` | `true` | Export `tracing` log events (stderr logs unaffected) |
+| `include_session_id` | `false` | Attach the client session id to request spans |
+
+## `[otel.headers]` (optional)
+
+Extra headers on every OTLP request (e.g. a hosted-collector token). Merged under the standard `OTEL_EXPORTER_OTLP_HEADERS`.
+
+| Key | Meaning |
+| :-- | :-- |
+| any | Header name → value, e.g. `authorization = "Bearer <token>"` |
+
 ## Routing precedence
 
 Exact `[[routes]]` match → `[[route_prefixes]]` prefix match → `server.default_provider`.

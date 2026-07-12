@@ -32,6 +32,16 @@ route_prefixes:
   - prefix: gpt-
     provider: openai
 
+# Optional OpenTelemetry (OTLP) export to your own collector/backend. Off
+# unless an endpoint is set; see shunt.toml.example for the full annotated
+# reference and every key's default.
+# otel:
+#   endpoint: "http://localhost:4318"
+#   service_name: shunt
+#   environment: prod
+#   headers:
+#     authorization: "Bearer <token>"
+
 # YAML 1.1 treats bare yes/no/on/off/y/n values as booleans. Quote one of
 # those tokens when using it in a string field, for example:
 # providers:

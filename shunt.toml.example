@@ -32,6 +32,30 @@ default_provider = "anthropic" # provider for any model with no route -> pass-th
                                # model, `http.response.status_code` (aggregates only;
                                # no prompts, client names, or session ids)
 
+# --- Optional: OpenTelemetry (OTLP) export to YOUR OWN collector/backend
+# (docs/running.md §3.1). Off unless you set an endpoint. Independent of
+# [sentry] — both can run together. Exports up to three signals over OTLP/HTTP
+# (protobuf): request spans (traces), the shunt.requests/shunt.latency series
+# (metrics), and shunt's log events (logs). Metrics + traces are low-cardinality
+# and body-free (the span session id only when include_session_id = true); the
+# logs signal exports shunt's diagnostic events as written, so it can carry
+# request-derived fields (upstream error bodies, client ids) — set logs = false
+# for body-free export. SHUNT_OTEL__ENDPOINT="" disables again. endpoint and
+# service_name come from this config (over OTEL_EXPORTER_OTLP_ENDPOINT /
+# OTEL_SERVICE_NAME); OTEL_EXPORTER_OTLP_HEADERS and OTEL_RESOURCE_ATTRIBUTES are
+# merged in. Editing [otel] then hot-reloading needs a restart to take effect.
+# [otel]
+# endpoint = "http://localhost:4318"  # OTLP/HTTP base URL; /v1/{traces,metrics,logs} appended
+# service_name = "shunt"       # (default) service.name resource attribute
+# environment = "prod"         # optional deployment.environment.name
+# sample_ratio = 1.0           # (default) head-based trace sampling in [0.0, 1.0]
+# traces = true                # (default) export request spans
+# metrics = true               # (default) export usage metrics
+# logs = true                  # (default) export log events (stderr logs unaffected)
+# include_session_id = false   # (default) withhold the client session id from spans
+# [otel.headers]               # optional per-request headers, e.g. a hosted-collector token
+# authorization = "Bearer <token>"
+
 # --- Providers: each is a `[providers.<name>]` table. Add a new upstream by
 # adding a table — no code change. Every provider has these keys:
 #   kind           = "anthropic" | "responses" | "cursor" (which upstream protocol)

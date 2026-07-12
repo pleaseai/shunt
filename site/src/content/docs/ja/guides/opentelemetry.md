@@ -1,0 +1,68 @@
+---
+title: OpenTelemetry
+description: トレース・メトリクス・ログを自分のコレクター/バックエンドへ送るオプトインの OTLP エクスポート。
+---
+
+shunt は **トレース・メトリクス・ログ** を OTLP/HTTP で自分の OpenTelemetry Collector(または OTLP 互換バックエンド)へエクスポートできます。**オプトインで、デフォルトはオフ** です — `[otel]` セクションがなければ、何もマシンの外に出ません — そして Sentry とは独立して動作するため、どちらか一方でも両方でも有効にできます。
+
+## 有効化
+
+キー 1 つで有効になります。コレクターの OTLP/HTTP レシーバーを指定してください:
+
+```toml
+[otel]
+endpoint = "http://localhost:4318"   # OTLP/HTTP のベース URL。shunt が /v1/{traces,metrics,logs} を付加
+```
+
+それ以外はすべて妥当なデフォルトを持ちます:
+
+```toml
+[otel]
+endpoint = "http://localhost:4318"
+service_name = "shunt"     # (デフォルト) service.name リソース属性
+environment = "prod"       # 任意: deployment.environment.name
+sample_ratio = 1.0         # (デフォルト) ヘッドベースのトレースサンプリング、0.0–1.0
+traces = true              # (デフォルト) リクエストスパンをエクスポート
+metrics = true             # (デフォルト) 使用量メトリクスをエクスポート
+logs = true                # (デフォルト) ログイベントをエクスポート(stderr ログには影響なし)
+include_session_id = false # (デフォルト) クライアントのセッション id をスパンから除外
+
+[otel.headers]             # 任意: リクエストごとのヘッダー(例: ホスト型コレクターのトークン)
+authorization = "Bearer <token>"
+```
+
+`endpoint = ""`(例: `SHUNT_OTEL__ENDPOINT=""`)にすると、セクションを削除せずにエクスポートを再び無効化できます。無効なエンドポイント、`http(s)` 以外の URL、範囲外の `sample_ratio` は **起動エラー** になるため、タイプミスですべてのエクスポートが黙って失われることはありません。
+
+## 3 つのシグナル
+
+| シグナル | エクスポートされるもの | 備考 |
+| :-- | :-- | :-- |
+| **トレース** | リクエストごとの `proxy_request` スパン | `sample_ratio` によるヘッドベースサンプリング。低カーディナリティで、リクエスト/レスポンス本文は含まない。 |
+| **メトリクス** | `shunt.requests`(カウント)と `shunt.latency`(ms) | `provider`、`model`、`http.response.status_code` を付与 — shunt が Sentry へ送るものと同じ系列。 |
+| **ログ** | shunt の `tracing` ログイベントを OTLP にブリッジ | stderr ログには影響しない。 |
+
+各シグナルは `traces` / `metrics` / `logs` で個別にオン/オフできます。
+
+## プライバシー
+
+shunt は **メトリクスとトレース** においてリクエスト/レスポンス本文・ヘッダー・認証情報を一切エクスポートしません。
+
+- **メトリクスとトレース** は低カーディナリティで本文を含みません。OTLP トレースエクスポートでは、リクエストスパンのクライアント **セッション id** は、`include_session_id = true`(デフォルトはオフ)のときのみ、しかもトレースエクスポートが有効な間だけコレクターへ送られます。`[otel]` がない、または無効な場合、id は従来どおりローカルのリクエストスパンに残ります(そのため Sentry など他の tracing サブスクライバーにも渡ります)。
+- **ログ** は shunt 自身の診断イベントをそのまま反映するため、stderr ログと同様に、リクエスト由来のフィールド(アップストリームのエラー本文、認証済みクライアント id)を含みうる点に注意してください。厳密に本文なしでエクスポートしたい場合は `logs = false` にして、メトリクス/トレースだけを残します。
+
+エクスポートされるリソースは `service.*`、`telemetry.sdk.*`、および `environment` が設定されている場合は `deployment.environment.name` を広告します — host や process detector は動かないため、マシンのホスト名は付与されません — これに標準の `OTEL_RESOURCE_ATTRIBUTES` で設定した値が加わります。
+
+:::caution
+`[otel.headers]` が秘密の値(例: コレクターの bearer トークン)を含み、エンドポイントが非ループバックホストへの平文 `http://` の場合、shunt は起動時に警告を出します。トークンが平文で送信されるためです。リモートコレクターには `https://` を使ってください。
+:::
+
+## 標準の `OTEL_` 環境変数
+
+- `endpoint` と `service_name` はこの設定から取得され、`OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_SERVICE_NAME` より **優先されます**。
+- 標準の `OTEL_EXPORTER_OTLP_HEADERS` と `OTEL_RESOURCE_ATTRIBUTES` は、`[otel.headers]` と組み込みのリソース属性の上に **マージされます**。
+
+:::note
+エクスポーターは起動時に一度だけ初期化されます。`[otel]` を編集してホットリロードすると警告が出て、反映には **再起動が必要** です — ライブでリロードされる多くの設定とは異なります。
+:::
+
+すべてのキーは [`[otel]` 設定リファレンス](/ja/reference/configuration/) を参照してください。

@@ -14,3 +14,4 @@ pub mod reload;
 pub mod routes;
 pub mod routing;
 pub mod server;
+pub mod telemetry;

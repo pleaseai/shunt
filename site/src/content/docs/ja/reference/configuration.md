@@ -65,6 +65,29 @@ description: すべての shunt.toml キー — server、providers、routes、mo
 | `id` | ✅ | Claude Code に公開されるモデル id |
 | `display_name` | — | `/model` ピッカーに表示されるラベル |
 
+## `[otel]`(任意)
+
+トレース・メトリクス・ログを自分のコレクターへ送るオプトインの OpenTelemetry(OTLP/HTTP)エクスポート([詳細](/ja/guides/opentelemetry/))。`endpoint` を設定しない限りオフで、Sentry とは独立しています。
+
+| キー | デフォルト | 意味 |
+| :-- | :-- | :-- |
+| `endpoint` | — | OTLP/HTTP のベース URL(例: `http://localhost:4318`)。shunt が `/v1/{traces,metrics,logs}` を付加。空で無効化、`http(s)` 以外の URL は起動エラー。 |
+| `service_name` | `shunt` | `service.name` リソース属性(`OTEL_SERVICE_NAME` より優先) |
+| `environment` | — | 任意: `deployment.environment.name` |
+| `sample_ratio` | `1.0` | `[0.0, 1.0]` のヘッドベースのトレースサンプリング。範囲外は起動エラー |
+| `traces` | `true` | リクエストごとの `proxy_request` スパンをエクスポート |
+| `metrics` | `true` | `shunt.requests` / `shunt.latency` 系列をエクスポート |
+| `logs` | `true` | `tracing` ログイベントをエクスポート(stderr ログには影響なし) |
+| `include_session_id` | `false` | リクエストスパンにクライアントのセッション id を付与 |
+
+## `[otel.headers]`(任意)
+
+すべての OTLP リクエストに付くヘッダー(例: ホスト型コレクターのトークン)。標準の `OTEL_EXPORTER_OTLP_HEADERS` の下にマージされます。
+
+| キー | 意味 |
+| :-- | :-- |
+| 任意 | ヘッダー名 → 値、例: `authorization = "Bearer <token>"` |
+
 ## ルーティング優先順位
 
 厳密な `[[routes]]` マッチ → `[[route_prefixes]]` プレフィックスマッチ → `server.default_provider`。

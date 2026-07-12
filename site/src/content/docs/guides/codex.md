@@ -295,6 +295,32 @@ of handing it back as an unfulfilled tool call.
 - **xAI / Grok routes don't support it** — Grok's Responses API only accepts function tools, so
   shunt drops the hosted web-search tool there; use a `codex` or `openai` route for web search.
 
+## Tool search
+
+Claude Code's **tool search** — deferring MCP / LSP tool schemas and revealing them on demand via a
+`ToolSearch` tool, so the model's context isn't spent on tools it never calls — works through the
+Codex path, but it is **off by default** behind shunt. Opt in:
+
+```bash
+export ENABLE_TOOL_SEARCH=true
+```
+
+Claude Code disables its optimistic tool search whenever the base URL is not a first-party Anthropic
+host — shunt isn't one — so without this flag every tool's full schema is sent upstream from turn 1
+and the feature is inert (it still works, it just reclaims nothing). The client's own contract is to
+set `ENABLE_TOOL_SEARCH=true` **if your proxy forwards `tool_reference` blocks** — shunt does.
+
+With it on, Claude Code lists the deferrable tools by **name** in the prompt but withholds their
+schemas. shunt keeps those not-yet-loaded tools out of the upstream tool set until the model loads
+one via `ToolSearch`; the resulting `tool_reference` then reveals that tool's full schema on demand.
+That reclaims the context window the deferred schemas would otherwise occupy from the first turn —
+the whole point of tool search.
+
+- No `shunt.toml` change is needed — it's purely a Claude Code environment variable.
+- Applies to the `codex` (ChatGPT) and `openai` (stock Responses) providers.
+- Non-deferred tools (and the hosted `web_search` tool above) are always forwarded; only deferrable
+  tools are progressively revealed.
+
 ## Troubleshooting
 
 | Symptom | Cause / Fix |
@@ -306,5 +332,6 @@ of handing it back as an unfulfilled tool call.
 | Effort slider ignored on a `gpt-*` id | Set `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1`, or a route/provider `effort` override is winning. |
 | Context bar over-reports / compacts early | Set `CLAUDE_CODE_MAX_CONTEXT_TOKENS`; a discovery alias can't take it — use a non-`claude-` id. |
 | Web search returns nothing on a Grok route | xAI/Grok's Responses API doesn't support web search; shunt drops the tool. Use a `codex` or `openai` route. |
+| Tool search does nothing / all tool schemas sent every turn | Set `ENABLE_TOOL_SEARCH=true` — Claude Code disables tool search by default behind a non-Anthropic base URL. shunt forwards `tool_reference` blocks and reveals deferred schemas on demand. |
 
 See the full [Troubleshooting](/reference/troubleshooting/) reference for more.

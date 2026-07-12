@@ -16,6 +16,8 @@ Providers are a **name → config map**: a new upstream is just another `[provid
 | `anthropic` | `anthropic` | `passthrough` | `api.anthropic.com` — forwards the caller's own credential |
 | `openai` | `responses` | `api_key` (`OPENAI_API_KEY`) | `api.openai.com/v1` |
 | `codex` | `responses` | `chatgpt_oauth` | `chatgpt.com/backend-api` — reuses `~/.codex/auth.json` |
+| `xai` | `responses` | `api_key` (`XAI_API_KEY`) | `api.x.ai/v1` — the developer API, billed per token |
+| `grok` | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` — the Grok CLI proxy; reuses `~/.shunt/xai-auth.json` |
 | `cursor` | `cursor` | `cursor_oauth` | `api2.cursor.sh` — reuses `~/.shunt/cursor-auth.json` (`shunt login cursor`) |
 
 ### The codex provider (ChatGPT subscription)
@@ -29,6 +31,16 @@ codex login
 If the file is missing or expired, shunt returns an `authentication_error` telling you to run `codex login`.
 
 For the full setup — auth-file handling, model selection, effort, and context sizing — see the dedicated [ChatGPT / Codex guide](/guides/codex/).
+
+### The grok provider (SuperGrok / X Premium+ subscription)
+
+Log in once with the built-in device-code flow; shunt writes and auto-refreshes `~/.shunt/xai-auth.json`:
+
+```bash
+shunt login xai
+```
+
+xAI may gate OAuth access by subscription tier — if `grok` returns 403, use the `xai` API-key provider instead (`export XAI_API_KEY=…`).
 
 :::caution[Model slugs]
 The ChatGPT-account Codex backend **rejects** `gpt-*-codex` slugs — it only accepts the account's live-entitled slugs. The authoritative catalog is openai/codex's [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json). Current slugs are `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` (frontier) and `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.2`; older accounts may only be entitled to the earlier ones. Use `upstream_model` in a route to map any alias onto an entitled slug.
@@ -109,7 +121,7 @@ The [`pleaseai/shunt` marketplace](https://github.com/pleaseai/shunt/tree/main/p
 | Plugin | Models (one agent each) | Provider |
 | :-- | :-- | :-- |
 | `shunt-codex` | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` | `codex` (ChatGPT subscription) |
-| `shunt-xai` ⚠️ | `grok-build-0.1`, `grok-4.5`, `grok-4.3` | `xai` (experimental) |
+| `shunt-xai` | `grok-build-0.1`, `grok-4.5`, `grok-4.3` | `xai` (API key) or `grok` (subscription) |
 | `shunt-kimi` | `kimi-k2.7-code` | `kimi` |
 | `shunt-deepseek` | `deepseek-v4-pro`, `deepseek-v4-flash` | `deepseek` |
 | `shunt-zai` | `glm-5.2`, `glm-4.7` | `zai` |
@@ -121,4 +133,4 @@ The [`pleaseai/shunt` marketplace](https://github.com/pleaseai/shunt/tree/main/p
 /plugin install shunt-xai@shunt
 ```
 
-Each plugin still needs its provider routed in `shunt.toml` (see the sections above) and the matching credential exported — the plugin's own README lists the exact route and env var. ⚠️ `shunt-xai` is **experimental**: the xAI provider is not yet verified against the live API.
+Each plugin still needs its provider routed in `shunt.toml` (see the sections above) and the matching credential exported — the plugin's own README lists the exact route and env var. The grok models can be served by either xAI provider: `xai` (API key, billed per token) or `grok` (SuperGrok / X Premium+ subscription via `shunt login xai`; tier-gated — fall back to `xai` on 403).

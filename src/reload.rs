@@ -81,6 +81,16 @@ fn warn_on_restart_only_changes(previous: &Config, next: &Config) {
             "[sentry] configuration changed but requires a restart to apply; the Sentry client is initialized once at startup"
         );
     }
+    // `[otel]` is initialized once at startup (`init_telemetry`, before the
+    // hot-reload state exists) and its OTLP providers are never reconstructed on
+    // reload, so — like `[sentry]` — warn rather than silently accept an edit
+    // that won't take effect. `OtelConfig` derives `PartialEq`, so compare the
+    // optional sections directly.
+    if previous.otel != next.otel {
+        tracing::warn!(
+            "[otel] configuration changed but requires a restart to apply; the OpenTelemetry exporters are initialized once at startup"
+        );
+    }
 }
 
 /// Structural comparison of two optional `[sentry]` sections. `SentryConfig`

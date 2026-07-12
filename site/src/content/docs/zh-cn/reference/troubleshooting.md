@@ -13,6 +13,7 @@ description: 常见的 shunt 错误及其修复方法。
 | `config check failed` | 运行 `shunt check` 查看确切原因(bind 地址、路由中的未知提供方、错误的适配器/认证)。 |
 | Claude Code 要求你登录 | 设置一个 shunt 能为未映射模型转发的 Anthropic 凭据(`ANTHROPIC_AUTH_TOKEN` / 登录)。仅有一个 base URL 不是凭据。 |
 | 映射模型上力度卡在 `medium` | 设置 `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` —— 见 [力度与上下文](/zh-cn/guides/effort-and-context/#reasoning-effort)。 |
+| 映射模型上工具搜索未生效(每轮都发送全部工具 schema) | 设置 `ENABLE_TOOL_SEARCH=true`。Claude Code 在非第一方 base URL 背后会自动禁用乐观式工具搜索;shunt 会转发 `tool_reference` 块并按需揭示延迟的 schema —— 见 [ChatGPT / Codex → 工具搜索](/zh-cn/guides/codex/#工具搜索)。 |
 | 映射模型上下文长度错误后会话卡住 | shunt 会把上游溢出错误重写为 `prompt is too long …`,使 Claude Code 自动压缩并重试 —— 见 [上下文溢出恢复](/zh-cn/guides/effort-and-context/#context-overflow-recovery)。如果每隔几轮就复现,把 `CLAUDE_CODE_MAX_CONTEXT_TOKENS` 降到模型的真实窗口。 |
 | Cloudflare 后流断掉(524) | 把 [`sse_keepalive_seconds`](/zh-cn/guides/shared-gateway/#sse-keepalive-pings) 保持在默认值(30)而非 `0`。 |
 | 共享网关上映射模型返回 401 | 客户端 token 缺失/无效 —— 设置 `ANTHROPIC_CUSTOM_HEADERS="x-shunt-token: <token>"`;见 [共享网关](/zh-cn/guides/shared-gateway/)。 |

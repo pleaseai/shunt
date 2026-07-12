@@ -15,7 +15,7 @@
 
 The name is the mechanism: an electrical/railway *shunt* diverts a selected part of the flow onto a parallel path. Here, a mapped model's inference is diverted to another provider while Claude Code's tools and skills stay intact.
 
-It ships with **OpenAI**, **ChatGPT/Codex** (reuse your subscription via `codex login`), **Cursor** (reuse your subscription via `shunt login cursor`), and **Anthropic** passthrough built in — and any Anthropic-Messages-compatible backend (Kimi, DeepSeek, GLM, MiniMax, OpenRouter, Vercel AI Gateway, …) is one TOML table or YAML mapping away, no code changes.
+It ships with **OpenAI**, **ChatGPT/Codex** (reuse your subscription via `codex login`), **xAI** (API key), **Grok** (reuse your SuperGrok / X Premium+ subscription via `shunt login xai`), **Cursor** (reuse your subscription via `shunt login cursor`), and **Anthropic** passthrough built in — and any Anthropic-Messages-compatible backend (Kimi, DeepSeek, GLM, MiniMax, OpenRouter, Vercel AI Gateway, …) is one TOML table or YAML mapping away, no code changes.
 
 ## Install
 
@@ -60,7 +60,11 @@ A provider is a `[providers.<name>]` TOML table (or an entry under the YAML `pro
 | `anthropic` | `anthropic` | passthrough | `api.anthropic.com` — forwards the caller's own credential |
 | `openai` | `responses` | `OPENAI_API_KEY` | `api.openai.com/v1` |
 | `codex` | `responses` | ChatGPT OAuth | `chatgpt.com/backend-api` — reuses `~/.codex/auth.json` (`codex login`) |
+| `xai` | `responses` | `XAI_API_KEY` | `api.x.ai/v1` — the developer API, billed per token |
+| `grok` | `responses` | xAI OAuth | `cli-chat-proxy.grok.com/v1` — the Grok CLI proxy; reuses `~/.shunt/xai-auth.json` (`shunt login xai` with a SuperGrok / X Premium+ subscription) |
 | `cursor` | `cursor` | Cursor OAuth | `api2.cursor.sh` — reuses `~/.shunt/cursor-auth.json` (`shunt login cursor`) |
+
+xAI may gate OAuth access by subscription tier — if `grok` returns 403, use the `xai` API-key provider instead. Details in [`docs/m6-xai-provider.md`](docs/m6-xai-provider.md).
 
 OpenAI's Thibault Sottiaux has publicly welcomed running Codex through other coding harnesses:
 
@@ -68,7 +72,7 @@ OpenAI's Thibault Sottiaux has publicly welcomed running Codex through other cod
 
 He [followed up](https://x.com/thsottiaux/status/2076119366647894371) by walking through pointing Claude Code ("your orange crab") at GPT-5.6 Sol himself — exactly the inference-layer swap `shunt` performs, no separate app required.
 
-That said, reusing your ChatGPT/Codex subscription (or Kimi, Cursor, or other backends) from an unofficial client is your own call — a public welcome doesn't guarantee future policy or account enforcement. Use at your own risk.
+That said, reusing your ChatGPT/Codex or SuperGrok subscription (or Kimi, Cursor, or other backends) from an unofficial client is your own call — a public welcome doesn't guarantee future policy or account enforcement. Use at your own risk.
 
 **Cursor** works the same way — log in once and route a `cursor:*` model id:
 
@@ -137,6 +141,7 @@ Claude Code exposes a **first-class gateway contract** behind `ANTHROPIC_BASE_UR
   - [Model discovery](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery) — Claude Code queries `GET /v1/models?limit=1000` at startup (opt-in via `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`) and adds returned models to the `/model` picker. **Constraint:** entries whose `id` doesn't begin with `claude`/`anthropic` are ignored — non-Claude models must be aliased or added manually.
   - **System prompt attribution block** — Claude Code prepends a client-version + conversation fingerprint to the system prompt; stable for the conversation lifetime (v2.1.181+). `shunt` forwards it unchanged (never strips it — that's the developer's call via `CLAUDE_CODE_ATTRIBUTION_HEADER=0`).
 - [Add a custom model option](https://code.claude.com/docs/en/model-config#add-a-custom-model-option) — `ANTHROPIC_CUSTOM_MODEL_OPTION` adds a gateway-routed entry to the `/model` picker without replacing built-in aliases; the ID skips validation, so any string the gateway accepts works. **This is the primary way to select a non-Claude model** (e.g. `gpt-5.6-sol`), since discovery ignores ids that don't begin with `claude`/`anthropic`.
+- **Tool search** (`ENABLE_TOOL_SEARCH`) — Claude Code defers MCP/LSP tool schemas and reveals them on demand via a `ToolSearch` tool, reclaiming context the model would otherwise spend on tools it never calls. Because shunt isn't a first-party Anthropic host, Claude Code keeps this **off** unless you opt in with `ENABLE_TOOL_SEARCH=true`; shunt then forwards the `tool_reference` blocks and emulates the server-side progressive reveal on the Codex/Responses path. See the [Tool search](https://shunt-docs.pages.dev/guides/codex/#tool-search) guide.
 
 **Design principle:** be a spec-compliant Anthropic-Messages gateway (`/v1/messages`, `/v1/models`, correct header/attribution pass-through), route by the request's `model` id, and translate Anthropic Messages ⇄ the OpenAI Responses API for mapped models — no prompt-shape heuristics that break on every Claude Code prompt change.
 
