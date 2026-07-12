@@ -165,27 +165,27 @@ toward being a fleet gateway and warrant a conscious decision first.
   deferred+unloaded tools, inject full schema on `tool_reference`) — reference implementation:
   CLIProxyAPI PR #1892 (`Adamcf123/CLIProxyAPI@main`).
 
-- **B. Codex WS: live-probe the continuation normalization.** Reasoning/`function_call`
+- **B. Codex WS: live-probe the continuation normalization (already tracked: [#45]).** Reasoning/`function_call`
   normalization is schema-validated against 3 sources but not yet live-probed
   (`docs/m7-codex-websocket.md:250-270`). Any unaccounted field silently falls back to the
   safe full-input fallback — correctness-safe, but a *latent missed optimization*. A
   probe pass would confirm continuation fires as often as it should.
 
-- **C. Codex WS: mid-stream failure resumption.** A WS failure *before* streaming
+- **C. Codex WS: mid-stream failure resumption (already tracked: [#46]).** A WS failure *before* streaming
   falls back to HTTP transparently, but a *mid-stream* failure surfaces as an error
   SSE event, not a fallback (`src/adapters/responses.rs:92-135`). Consider
   resuming/replaying so a dropped socket mid-turn degrades to HTTP instead of erroring.
 
-- **D. Codex WS: speculative prewarm (`generate:false`).** Explicitly out of scope
+- **D. Codex WS: speculative prewarm (`generate:false`) (already tracked: [#47]).** Explicitly out of scope
   today (`docs/m7-codex-websocket.md:53-58`), but it is a real Codex latency
   optimization — prewarming the socket/context before the first token. Worth
   revisiting once continuation is live-probed.
 
-- **E. Upstream retry/backoff.** The M4-planned bounded retry/backoff is not
+- **E. Upstream retry/backoff (already tracked: [#48]).** The M4-planned bounded retry/backoff is not
   implemented (`docs/implementation-plan.md:247`); transient upstream 429/5xx errors surface
   directly. A small, idempotent retry would improve resilience without adding scope.
 
-- **F. Doc drift: `GET /protocol`.** README advertises a machine-readable spec at
+- **F. Doc drift: `GET /protocol` (already tracked: [#49]).** README advertises a machine-readable spec at
   `GET /protocol` (`README.md:110`) but no such route exists in `src/server.rs`.
   Implement it (cheap, and it's part of the gateway-protocol story) or correct the docs.
 
@@ -221,3 +221,8 @@ mid-stream fallback); the biggest deliberate gap to weigh is minimal fill-first
 multi-account for ChatGPT/Codex.
 
 [#43]: https://github.com/pleaseai/shunt/issues/43
+[#45]: https://github.com/pleaseai/shunt/issues/45
+[#46]: https://github.com/pleaseai/shunt/issues/46
+[#47]: https://github.com/pleaseai/shunt/issues/47
+[#48]: https://github.com/pleaseai/shunt/issues/48
+[#49]: https://github.com/pleaseai/shunt/issues/49
