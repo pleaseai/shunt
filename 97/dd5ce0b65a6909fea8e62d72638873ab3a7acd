@@ -1,0 +1,35 @@
+site/src/content/docs/ja/reference/configuration.md
+  s_0534baa6715994::t_529df9744106a4 68-90
+site/src/content/docs/guides/opentelemetry.md
+  s_0534baa6715994::t_60c991c18dfbd5 1-68
+site/src/content/docs/ja/guides/opentelemetry.md
+  s_0534baa6715994::t_7f5344d99031d5 1-68
+site/src/content/docs/ko/guides/opentelemetry.md
+  s_0534baa6715994::t_34157f47b4b0e3 1-68
+site/src/content/docs/reference/configuration.md
+  s_0534baa6715994::t_f808b1a66adc82 68-90
+site/astro.config.mjs
+  s_0534baa6715994::t_40e7adf400caf9 104-108
+site/src/content/docs/zh-cn/guides/opentelemetry.md
+  s_0534baa6715994::t_b4809529820c5a 1-68
+site/src/content/docs/ko/reference/configuration.md
+  s_0534baa6715994::t_fdff1c59723945 68-90
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_0534baa6715994::t_4d746b7ee76a12 68-90
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "97dd5ce0b65a6909fea8e62d72638873ab3a7acd",
+  "prompts": {},
+  "sessions": {
+    "s_0534baa6715994": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "821347bb-d511-4e54-9ff3-8af267f942aa",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
