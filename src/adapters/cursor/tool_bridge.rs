@@ -329,9 +329,15 @@ pub fn start_cursor_tool_bridge(
             CursorStreamEvent::Usage {
                 input_tokens,
                 output_tokens,
-                ..
+                cache_read_tokens,
+                cache_write_tokens,
             } => {
-                framer.record_usage(*input_tokens, *output_tokens, 0, 0);
+                framer.record_usage(
+                    *input_tokens,
+                    *output_tokens,
+                    *cache_read_tokens,
+                    *cache_write_tokens,
+                );
             }
             CursorStreamEvent::Session { .. } => {
                 // Session info is not mapped to SSE events
@@ -662,6 +668,48 @@ mod tests {
         assert!(
             sse.contains("tool_use"),
             "held partial-tag text was dropped: {sse}"
+        );
+
+        BridgeRegistry::clear();
+    }
+
+    #[test]
+    fn bridge_preserves_cache_usage_in_message_delta() {
+        let _lock = REGISTRY_LOCK.lock().unwrap();
+        BridgeRegistry::clear();
+
+        // A plain-text (non-paused) stream carrying cache usage must surface the
+        // cache counts, not overwrite them with zeros in the emit loop.
+        let events = vec![
+            CursorStreamEvent::TextDelta {
+                text: "hello".into(),
+            },
+            CursorStreamEvent::Usage {
+                input_tokens: 20,
+                output_tokens: 5,
+                cache_read_tokens: 7,
+                cache_write_tokens: 9,
+            },
+            CursorStreamEvent::End,
+        ];
+        let (sse, paused) = start_cursor_tool_bridge(
+            "msg-cache",
+            "cursor-test",
+            "sess-cache",
+            &events,
+            None,
+            Box::new(|| "call_c".into()),
+        );
+        assert!(!paused);
+        let sse = String::from_utf8(sse).unwrap();
+        // The final message_delta must carry the real cache counts.
+        assert!(
+            sse.contains("\"cache_creation_input_tokens\":9"),
+            "missing cache_creation: {sse}"
+        );
+        assert!(
+            sse.contains("\"cache_read_input_tokens\":7"),
+            "missing cache_read: {sse}"
         );
 
         BridgeRegistry::clear();
