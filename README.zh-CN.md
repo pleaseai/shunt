@@ -61,6 +61,14 @@ claude                                              # /model -> 选择 gpt-5.6-s
 | `openai` | `responses` | `OPENAI_API_KEY` | `api.openai.com/v1` |
 | `codex` | `responses` | ChatGPT OAuth | `chatgpt.com/backend-api` —— 复用 `~/.codex/auth.json`(`codex login`) |
 
+OpenAI 的 Thibault Sottiaux 已公开欢迎通过其他编码 harness 运行 Codex：
+
+> Share the recipe. People want to know how to use GPT-5.6 Sol in CC. We don't discriminate on the harness. ([来源](https://x.com/thsottiaux/status/2075830097488249060))
+
+他还[进一步演示](https://x.com/thsottiaux/status/2076119366647894371)了如何亲自将 Claude Code（“你那只橙色的螃蟹”）指向 GPT-5.6 Sol —— 这正是 `shunt` 所做的推理层替换，无需单独的应用。
+
+话虽如此，是否从非官方客户端复用你的 ChatGPT/Codex 订阅（或 Kimi、Cursor 等其他后端），由你自己决定 —— 公开的欢迎并不保证未来的政策或账号层面的处置。使用风险自负。
+
 **任何兼容 Anthropic 的后端**只需一个表即可接入 —— 无需改动代码:
 
 | 提供方 | `base_url` | 示例模型 ID |

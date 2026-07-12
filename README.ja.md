@@ -61,6 +61,14 @@ claude                                              # /model -> pick gpt-5.6-sol
 | `openai` | `responses` | `OPENAI_API_KEY` | `api.openai.com/v1` |
 | `codex` | `responses` | ChatGPT OAuth | `chatgpt.com/backend-api` — `~/.codex/auth.json`（`codex login`）を再利用 |
 
+OpenAI の Thibault Sottiaux は、他のコーディングハーネスを通じて Codex を実行することを公に歓迎しています。
+
+> Share the recipe. People want to know how to use GPT-5.6 Sol in CC. We don't discriminate on the harness. ([出典](https://x.com/thsottiaux/status/2075830097488249060))
+
+彼は[その後の投稿](https://x.com/thsottiaux/status/2076119366647894371)で、Claude Code（「あなたのオレンジ色のカニ」）を GPT-5.6 Sol に向ける方法を自ら解説しています。これはまさに `shunt` が行う推論レイヤーの切り替えであり、別途アプリは不要です。
+
+とはいえ、非公式なクライアントから ChatGPT/Codex サブスクリプション（あるいは Kimi、Cursor などの他のバックエンド）を再利用するかどうかは、あなた自身の判断です。公の歓迎は、将来のポリシーやアカウントに対する措置がないことを保証するものではありません。ご利用は自己責任でお願いします。
+
 **あらゆる Anthropic 互換バックエンド**が、テーブルを 1 つ書くだけで使えます。コード変更は不要です。
 
 | プロバイダー | `base_url` | モデル ID の例 |
