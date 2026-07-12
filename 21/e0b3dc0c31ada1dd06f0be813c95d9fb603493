@@ -1,0 +1,23 @@
+plugins/shunt-codex/agents/gpt-5.6-terra.md
+  s_245b3a871a2322::t_ce92bd2c6eb998 7-9,11-13,15-30
+plugins/shunt-codex/agents/gpt-5.6-sol.md
+  s_245b3a871a2322::t_d6ea1738fe6acf 7-9,11-13,15-30
+plugins/shunt-codex/agents/gpt-5.6-luna.md
+  s_245b3a871a2322::t_ed1101ec6e051b 7-9,11-13,15-30
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "21e0b3dc0c31ada1dd06f0be813c95d9fb603493",
+  "prompts": {},
+  "sessions": {
+    "s_245b3a871a2322": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "57c33d35-36c6-4d51-8d2d-3b563002adc8",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
