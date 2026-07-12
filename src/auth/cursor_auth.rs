@@ -9,7 +9,10 @@ use crate::{
     auth::{auth_error, codex_auth::write_auth_file_atomic},
 };
 
-const EXPIRY_SKEW_SECONDS: u64 = 60;
+// Match the 5-minute buffer used by the codex/xAI stores (codex_auth::EXPIRY_BUFFER)
+// so clock drift, network latency, or a long-running request cannot let a
+// nearly-expired token slip through and fail upstream with a 401.
+const EXPIRY_SKEW_SECONDS: u64 = 300;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,7 +59,7 @@ impl CursorAuthStore {
                 access_token: stored.access_token,
             });
         }
-        let _guard = REFRESH_LOCK.lock().await;
+        let refreshing = REFRESH_LOCK.lock().await;
         let stored = self.read_off_thread().await?;
         if token_is_valid(&stored.access_token, SystemTime::now()) {
             return Ok(CursorCred {
@@ -66,23 +69,41 @@ impl CursorAuthStore {
         let refresh_token = stored
             .refresh_token
             .as_deref()
-            .ok_or_else(|| auth_error("Cursor access token expired; run shunt login cursor"))?;
-        let mut refreshed = refresh(&self.client, &self.base_url, refresh_token).await?;
-        // Per RFC 6749 §6, a refresh response MAY omit a new refresh token, in
-        // which case the existing one stays valid and must be retained. Cursor
-        // is not known to rotate+consume its refresh tokens (unlike xAI), so
-        // dropping the old token here would force an avoidable re-login on the
-        // next expiry. Preserve it when the response carries no replacement.
-        if refreshed.refresh_token.is_none() {
-            refreshed.refresh_token = Some(refresh_token.to_string());
-        }
-        write_auth_off_thread(self.path.clone(), refreshed.clone())
+            .ok_or_else(|| auth_error("Cursor access token expired; run shunt login cursor"))?
+            .to_string();
+
+        // Run the refresh + writeback in a detached task that owns the lock, so a
+        // cancelled request (e.g. client disconnect) cannot abort the critical
+        // section mid-flight — which would release the lock early into a writeback
+        // race and, if Cursor ever consumes the old refresh token server-side,
+        // strand a spent token in the file. Mirrors the cancellation-safe pattern
+        // in `xai_auth`.
+        let client = self.client.clone();
+        let base_url = self.base_url.clone();
+        let path = self.path.clone();
+        let handle = tokio::spawn(async move {
+            let _refreshing = refreshing; // hold the lock until the write completes
+            let mut refreshed = refresh(&client, &base_url, &refresh_token).await?;
+            // Per RFC 6749 §6, a refresh response MAY omit a new refresh token, in
+            // which case the existing one stays valid and must be retained. Cursor
+            // is not known to rotate+consume its refresh tokens (unlike xAI), so
+            // dropping the old token here would force an avoidable re-login on the
+            // next expiry. Preserve it when the response carries no replacement.
+            if refreshed.refresh_token.is_none() {
+                refreshed.refresh_token = Some(refresh_token);
+            }
+            write_auth_off_thread(path, refreshed.clone())
+                .await
+                .map_err(|error| {
+                    auth_error(format!("failed to update Cursor auth file: {error}"))
+                })?;
+            tracing::info!("refreshed Cursor OAuth access token");
+            Ok::<String, AdapterError>(refreshed.access_token)
+        });
+        let access_token = handle
             .await
-            .map_err(|error| auth_error(format!("failed to update Cursor auth file: {error}")))?;
-        tracing::info!("refreshed Cursor OAuth access token");
-        Ok(CursorCred {
-            access_token: refreshed.access_token,
-        })
+            .map_err(|error| auth_error(format!("Cursor refresh task failed: {error}")))??;
+        Ok(CursorCred { access_token })
     }
 
     /// Read the credential file on the blocking thread pool so the synchronous
