@@ -1,0 +1,21 @@
+Cargo.toml
+  s_fc96560db42b59::t_02717fca58e46d 35-39
+src/main.rs
+  s_fc96560db42b59::t_7691484bf308e5 66-72
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "ac62f48ba4ebc3e5a66a7b40a16f954e856a15c9",
+  "prompts": {},
+  "sessions": {
+    "s_fc96560db42b59": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "97cdcf07-6557-46e8-83fd-aec8da7fe3e3",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
