@@ -155,22 +155,20 @@ pub fn store_setup_token(name: &str, token: &str) -> anyhow::Result<PathBuf> {
 fn write_account(name: &str, value: &Value) -> anyhow::Result<PathBuf> {
     let path = account_path(name);
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-        set_private_directory_permissions(parent)?;
+        // Create the account directory born-private (0700 on Unix) rather than
+        // chmod-ing after creation, so there is no window where it sits at the
+        // umask default on a multi-user host.
+        let mut builder = fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder.create(parent)?;
     }
     write_auth_file_atomic(&path, value)?;
     Ok(path)
-}
-
-#[cfg(unix)]
-fn set_private_directory_permissions(path: &Path) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-}
-
-#[cfg(not(unix))]
-fn set_private_directory_permissions(_path: &Path) -> io::Result<()> {
-    Ok(())
 }
 
 #[cfg(test)]
