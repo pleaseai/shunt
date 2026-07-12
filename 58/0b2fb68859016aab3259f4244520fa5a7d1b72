@@ -1,0 +1,28 @@
+site/src/content/docs/ko/guides/opentelemetry.md
+  s_0534baa6715994::t_1d67edff86d999 48,50,53
+site/src/content/docs/ja/guides/opentelemetry.md
+  s_0534baa6715994::t_6f0a18d8d2dbe2 48,50,53
+site/src/content/docs/zh-cn/guides/opentelemetry.md
+  s_0534baa6715994::t_7e982efc635971 48,50,53
+site/src/content/docs/guides/opentelemetry.md
+  s_0534baa6715994::t_c3fd0e6ff419a9 48,50,53
+src/telemetry.rs
+  s_0534baa6715994::t_cbef43a6fd9a1c 463-465,468
+  s_0534baa6715994::t_5a9a917451fe83 399-401,403,405,408
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "580b2fb68859016aab3259f4244520fa5a7d1b72",
+  "prompts": {},
+  "sessions": {
+    "s_0534baa6715994": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "821347bb-d511-4e54-9ff3-8af267f942aa",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
