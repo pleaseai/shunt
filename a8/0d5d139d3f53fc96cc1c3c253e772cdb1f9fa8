@@ -1,0 +1,19 @@
+.claude/agent-memory/review-review-code-reviewer/project_shunt_responses_adapter.md
+  s_554e351aa3e902::t_b8838d10b44fc1 28-36
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "a80d5d139d3f53fc96cc1c3c253e772cdb1f9fa8",
+  "prompts": {},
+  "sessions": {
+    "s_554e351aa3e902": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "175200e6-8855-4264-9f7d-43110f839e18",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
