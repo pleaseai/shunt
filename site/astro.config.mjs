@@ -82,6 +82,11 @@ export default defineConfig({
               slug: 'guides/codex',
             },
             {
+              label: 'xAI / Grok',
+              translations: { ko: 'xAI / Grok', ja: 'xAI / Grok', 'zh-CN': 'xAI / Grok' },
+              slug: 'guides/xai',
+            },
+            {
               label: 'Connect Claude Code',
               translations: { ko: 'Claude Code 연결', ja: 'Claude Code の接続', 'zh-CN': '连接 Claude Code' },
               slug: 'guides/connect-claude-code',

@@ -16,6 +16,8 @@ description: 内置的提供方,以及如何用一个 TOML 表添加任意兼容
 | `anthropic` | `anthropic` | `passthrough` | `api.anthropic.com` —— 转发调用方自己的凭据 |
 | `openai` | `responses` | `api_key` (`OPENAI_API_KEY`) | `api.openai.com/v1` |
 | `codex` | `responses` | `chatgpt_oauth` | `chatgpt.com/backend-api` —— 复用 `~/.codex/auth.json` |
+| `xai` | `responses` | `api_key` (`XAI_API_KEY`) | `api.x.ai/v1` —— xAI 开发者 API |
+| `grok` | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` —— 通过 `shunt login xai` 使用 SuperGrok / X Premium+ 订阅 |
 | `cursor` | `cursor` | `cursor_oauth` | `api2.cursor.sh` —— 复用 `~/.shunt/cursor-auth.json`(`shunt login cursor`) |
 
 ### codex 提供方(ChatGPT 订阅)
@@ -70,6 +72,16 @@ provider = "cursor"
 从非官方客户端复用 Cursor 订阅由你自己决定 —— 这可能违反 Cursor 的条款或触发账号层面的处置。使用风险自负。
 :::
 
+### xai / grok 提供方(Grok)
+
+两个内置提供方触达 xAI 的 **Grok** 模型,按凭据划分:**`grok`** 经由 OAuth 消费你的
+**SuperGrok / X Premium+** 订阅(`shunt login xai`,无按 token 计费),而
+**`xai`** 用一个 `XAI_API_KEY` 对接计量的开发者 API。订阅 bearer 和 API 密钥
+**不可**互换 —— 各自只对其自己的提供方有效。
+
+完整设置 —— 登录、两个提供方块、模型 slug、选择性启用的力度旋钮,以及
+授权方面的坑 —— 见专门的 [xAI / Grok 指南](/zh-cn/guides/xai/)。
+
 ## 添加一个兼容 Anthropic 的后端
 
 大多数第三方“在 Claude Code 中使用 X”网关都兼容 Anthropic-Messages:`kind = "anthropic"` 搭配 `auth = "api_key"`,仅在 `base_url` 和密钥环境变量上不同。开箱即用的 base:
@@ -101,3 +113,24 @@ provider = "kimi"
 然后 `export KIMI_API_KEY=…`,[将 Claude Code 指向 shunt](/zh-cn/guides/connect-claude-code/),并选择 `kimi-k2.7-code`(通过 `ANTHROPIC_CUSTOM_MODEL_OPTION` 或 `ANTHROPIC_MODEL`)。运行 `shunt check` 校验 —— 它会报告路由中的未知提供方、缺失的 `api_key_env` 或错误的 `base_url`。
 
 每个提供方键(`kind`、`auth`、`api_key_header`、`count_tokens`……)都在 [配置参考](/zh-cn/reference/configuration/) 中有文档。
+
+## 子 agent 插件
+
+[`pleaseai/shunt` 市场](https://github.com/pleaseai/shunt/tree/main/plugins) 提供了固定到各提供方模型的现成 Claude Code 子 agent —— 每个模型一个 agent。安装一个插件,然后用 `@` 提及一个模型或设置 `CLAUDE_CODE_SUBAGENT_MODEL`。每个 agent 的 `model:` frontmatter 只让该子 agent 分流;主会话仍留在 Claude。
+
+| 插件 | 模型(每个一个 agent) | 提供方 |
+| :-- | :-- | :-- |
+| `shunt-codex` | `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna` | `codex`(ChatGPT 订阅) |
+| `shunt-xai` | `grok-build-0.1`、`grok-4.5`、`grok-4.3` | `xai`(API 密钥)或 `grok`(订阅) |
+| `shunt-kimi` | `kimi-k2.7-code` | `kimi` |
+| `shunt-deepseek` | `deepseek-v4-pro`、`deepseek-v4-flash` | `deepseek` |
+| `shunt-zai` | `glm-5.2`、`glm-4.7` | `zai` |
+| `shunt-minimax` | `MiniMax-M3[1m]` | `minimax` |
+| `shunt-mimo` | `mimo-v2.5-pro` | `mimo` |
+
+```bash
+/plugin marketplace add pleaseai/shunt
+/plugin install shunt-xai@shunt
+```
+
+每个插件仍需要在 `shunt.toml` 中路由其提供方(见上文各节)并导出匹配的凭据 —— 插件自己的 README 会列出确切的路由和环境变量。grok 模型可由任一 xAI 提供方提供:`xai`(API 密钥,按 token 计费)或 `grok`(通过 `shunt login xai` 使用 SuperGrok / X Premium+ 订阅;按等级设限 —— 遇到 403 时回退到 `xai`)。

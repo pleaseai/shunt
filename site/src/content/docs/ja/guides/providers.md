@@ -16,6 +16,8 @@ description: 組み込みプロバイダーと、TOML テーブルで任意の A
 | `anthropic` | `anthropic` | `passthrough` | `api.anthropic.com` — 呼び出し元自身の認証情報を転送 |
 | `openai` | `responses` | `api_key`（`OPENAI_API_KEY`） | `api.openai.com/v1` |
 | `codex` | `responses` | `chatgpt_oauth` | `chatgpt.com/backend-api` — `~/.codex/auth.json` を再利用 |
+| `xai` | `responses` | `api_key`（`XAI_API_KEY`） | `api.x.ai/v1` — xAI 開発者 API |
+| `grok` | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` — `shunt login xai` 経由の SuperGrok / X Premium+ サブスクリプション |
 | `cursor` | `cursor` | `cursor_oauth` | `api2.cursor.sh` — `~/.shunt/cursor-auth.json`（`shunt login cursor`）を再利用 |
 
 ### codex プロバイダー（ChatGPT サブスクリプション）
@@ -70,6 +72,13 @@ provider = "cursor"
 非公式なクライアントから Cursor サブスクリプションを再利用するかどうかは、あなた自身の判断です — Cursor の利用規約やアカウントに対する措置に抵触する可能性があります。ご利用は自己責任でお願いします。
 :::
 
+### xai / grok プロバイダー（Grok）
+
+2 つの組み込みプロバイダーが xAI の **Grok** モデルにアクセスします。認証情報で分かれます。**`grok`** は
+OAuth 経由であなたの **SuperGrok / X Premium+** サブスクリプションを消費し（`shunt login xai`、トークン単位の課金なし）、一方 **`xai`** は従量制の開発者 API に対して `XAI_API_KEY` を使います。サブスクリプションの bearer と API キーは**互換ではありません** — それぞれ自身のプロバイダーに対してのみ機能します。
+
+ログイン、両方のプロバイダーブロック、モデルスラッグ、オプトインのエフォートダイヤル、entitlement の落とし穴を含む完全なセットアップについては、専用の [xAI / Grok ガイド](/ja/guides/xai/)を参照してください。
+
 ## Anthropic 互換バックエンドを追加する
 
 「Claude Code を X で使う」系のサードパーティゲートウェイのほとんどは Anthropic Messages 互換です。`auth = "api_key"` を伴う `kind = "anthropic"` で、違いは `base_url` とキーの環境変数だけです。すぐ使えるベース URL:
@@ -101,3 +110,24 @@ provider = "kimi"
 そして `export KIMI_API_KEY=…` し、[Claude Code を shunt へ向け](/ja/guides/connect-claude-code/)、`kimi-k2.7-code` を選択します（`ANTHROPIC_CUSTOM_MODEL_OPTION` または `ANTHROPIC_MODEL` 経由）。`shunt check` を実行して検証してください — ルート内の未知のプロバイダー、`api_key_env` の欠落、不正な `base_url` を報告します。
 
 すべてのプロバイダーキー（`kind`、`auth`、`api_key_header`、`count_tokens`、…）は [Configuration Reference](/ja/reference/configuration/) に記載されています。
+
+## サブエージェントプラグイン
+
+[`pleaseai/shunt` マーケットプレイス](https://github.com/pleaseai/shunt/tree/main/plugins)は、各プロバイダーのモデルに固定された既製の Claude Code サブエージェントを出荷しています — モデルごとに 1 つのエージェントです。プラグインをインストールし、モデルを `@` メンションするか `CLAUDE_CODE_SUBAGENT_MODEL` を設定します。各エージェントの `model:` フロントマターはそのサブエージェントだけを迂回させ、メインセッションは Claude のまま残ります。
+
+| プラグイン | モデル（各 1 エージェント） | プロバイダー |
+| :-- | :-- | :-- |
+| `shunt-codex` | `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna` | `codex`（ChatGPT サブスクリプション） |
+| `shunt-xai` | `grok-build-0.1`、`grok-4.5`、`grok-4.3` | `xai`（API キー）または `grok`（サブスクリプション） |
+| `shunt-kimi` | `kimi-k2.7-code` | `kimi` |
+| `shunt-deepseek` | `deepseek-v4-pro`、`deepseek-v4-flash` | `deepseek` |
+| `shunt-zai` | `glm-5.2`、`glm-4.7` | `zai` |
+| `shunt-minimax` | `MiniMax-M3[1m]` | `minimax` |
+| `shunt-mimo` | `mimo-v2.5-pro` | `mimo` |
+
+```bash
+/plugin marketplace add pleaseai/shunt
+/plugin install shunt-xai@shunt
+```
+
+各プラグインは依然として `shunt.toml` でそのプロバイダーをルーティングし（上記のセクションを参照）、対応する認証情報をエクスポートする必要があります — プラグイン自身の README に正確なルートと環境変数が記載されています。grok モデルはどちらの xAI プロバイダーでも提供できます: `xai`（API キー、トークン単位で課金）または `grok`（`shunt login xai` 経由の SuperGrok / X Premium+ サブスクリプション。ティアでゲートされます — 403 の場合は `xai` にフォールバック）。

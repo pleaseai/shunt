@@ -82,6 +82,16 @@ Legacy bare names are also accepted: `cursor`, `cursor-agent`, `cursor-composer`
 Reusing a Cursor subscription from an unofficial client is your own call — it may run afoul of Cursor's terms or account enforcement. Use at your own risk.
 :::
 
+### The xai / grok providers (Grok)
+
+Two built-in providers reach xAI's **Grok** models, split by credential: **`grok`** spends your
+**SuperGrok / X Premium+** subscription over OAuth (`shunt login xai`, no per-token billing), while
+**`xai`** uses an `XAI_API_KEY` against the metered developer API. A subscription bearer and an API
+key are **not** interchangeable — each works only against its own provider.
+
+For the full setup — login, both provider blocks, model slugs, the opt-in effort dial, and the
+entitlement gotchas — see the dedicated [xAI / Grok guide](/guides/xai/).
+
 ## Adding an Anthropic-compatible backend
 
 Most third-party "use Claude Code with X" gateways are Anthropic-Messages-compatible: `kind = "anthropic"` with `auth = "api_key"`, differing only in `base_url` and the key env var. Ready-to-use bases:

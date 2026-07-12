@@ -24,13 +24,13 @@ Presence of this table enables inbound client-token auth ([details](/guides/shar
 
 ## `[providers.<name>]`
 
-Each provider is a table under a name of your choosing. Built-ins (`anthropic`, `openai`, `codex`, `cursor`) can be partially overridden — config maps deep-merge.
+Each provider is a table under a name of your choosing. Built-ins (`anthropic`, `openai`, `codex`, `xai`, `grok`, `cursor`) can be partially overridden — config maps deep-merge.
 
 | Key | Values | Meaning |
 | :-- | :-- | :-- |
 | `kind` | `anthropic` \| `responses` \| `cursor` | Upstream protocol / adapter. `anthropic` = Messages API (passed through, optionally re-keyed); `responses` = Anthropic Messages translated to the OpenAI Responses API; `cursor` = the native Cursor ConnectRPC/protobuf AgentService adapter. |
 | `base_url` | URL | Upstream base; shunt appends the endpoint path. |
-| `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `cursor_oauth` | `passthrough` forwards the client's own credential; `api_key` injects a key from `api_key_env`; `chatgpt_oauth` reuses `~/.codex/auth.json`; `cursor_oauth` reuses `~/.shunt/cursor-auth.json` (`shunt login cursor`). |
+| `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `xai_oauth` \| `cursor_oauth` | `passthrough` forwards the client's own credential; `api_key` injects a key from `api_key_env`; `chatgpt_oauth` reuses `~/.codex/auth.json`; `xai_oauth` reuses `~/.shunt/xai-auth.json` from `shunt login xai` (only sent to x.ai/grok.com hosts over HTTPS); `cursor_oauth` reuses `~/.shunt/cursor-auth.json` (`shunt login cursor`). |
 | `api_key_env` | env var name | Where the key is read from, when `auth = "api_key"`. |
 | `api_key_header` | `bearer` (default) \| `x_api_key` | Header the injected key is sent in. |
 | `effort` | `low` … `max` | Optional default reasoning effort (`responses` providers). |

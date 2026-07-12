@@ -16,6 +16,8 @@ description: 내장 프로바이더와 TOML 테이블로 Anthropic 호환 백엔
 | `anthropic` | `anthropic` | `passthrough` | `api.anthropic.com` — 호출자 본인의 자격 증명을 전달 |
 | `openai` | `responses` | `api_key` (`OPENAI_API_KEY`) | `api.openai.com/v1` |
 | `codex` | `responses` | `chatgpt_oauth` | `chatgpt.com/backend-api` — `~/.codex/auth.json` 재사용 |
+| `xai` | `responses` | `api_key` (`XAI_API_KEY`) | `api.x.ai/v1` — xAI 개발자 API |
+| `grok` | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` — `shunt login xai`를 통한 SuperGrok / X Premium+ 구독 |
 | `cursor` | `cursor` | `cursor_oauth` | `api2.cursor.sh` — `~/.shunt/cursor-auth.json` 재사용 (`shunt login cursor`) |
 
 ### codex 프로바이더 (ChatGPT 구독)
@@ -70,6 +72,16 @@ provider = "cursor"
 비공식 클라이언트에서 Cursor 구독을 재사용하는 것은 본인의 판단입니다 — Cursor의 약관이나 계정 제재에 저촉될 수 있습니다. 사용에 따른 책임은 본인에게 있습니다.
 :::
 
+### xai / grok 프로바이더 (Grok)
+
+두 개의 내장 프로바이더가 xAI의 **Grok** 모델에 도달하며, 자격 증명으로 갈립니다: **`grok`**은
+OAuth를 통해 사용자의 **SuperGrok / X Premium+** 구독을 사용하고(`shunt login xai`, 토큰당 과금 없음),
+**`xai`**는 측정된 개발자 API에 대해 `XAI_API_KEY`를 사용합니다. 구독 bearer와 API 키는 서로 교체할 수
+**없습니다** — 각각은 자신의 프로바이더에서만 동작합니다.
+
+전체 설정 — 로그인, 두 프로바이더 블록, 모델 슬러그, 옵트인 노력 다이얼, 자격 관련 함정 — 은 전용
+[xAI / Grok 가이드](/ko/guides/xai/)를 참고하세요.
+
 ## Anthropic 호환 백엔드 추가
 
 대부분의 서드파티 "Claude Code를 X와 함께 쓰기" 게이트웨이는 Anthropic-Messages 호환입니다: `kind = "anthropic"`에 `auth = "api_key"`이며, `base_url`과 키 env 변수만 다릅니다. 바로 사용할 수 있는 base:
@@ -101,3 +113,24 @@ provider = "kimi"
 그런 다음 `export KIMI_API_KEY=…`를 실행하고, [Claude Code를 shunt에 연결](/ko/guides/connect-claude-code/)한 뒤, `kimi-k2.7-code`를 선택하세요(`ANTHROPIC_CUSTOM_MODEL_OPTION` 또는 `ANTHROPIC_MODEL`을 통해). `shunt check`를 실행하여 검증하세요 — 라우트의 알 수 없는 프로바이더, 누락된 `api_key_env`, 잘못된 `base_url`을 보고합니다.
 
 모든 프로바이더 키(`kind`, `auth`, `api_key_header`, `count_tokens` 등)는 [구성 레퍼런스](/ko/reference/configuration/)에 문서화되어 있습니다.
+
+## 서브에이전트 플러그인
+
+[`pleaseai/shunt` 마켓플레이스](https://github.com/pleaseai/shunt/tree/main/plugins)는 각 프로바이더의 모델에 고정된, 미리 만들어진 Claude Code 서브에이전트를 제공합니다 — 모델당 하나의 에이전트. 플러그인을 설치한 뒤, 모델을 `@`로 멘션하거나 `CLAUDE_CODE_SUBAGENT_MODEL`을 설정하세요. 각 에이전트의 `model:` 프론트매터는 그 서브에이전트만 우회시키며, 메인 세션은 Claude에 머뭅니다.
+
+| 플러그인 | 모델 (에이전트당 하나) | 프로바이더 |
+| :-- | :-- | :-- |
+| `shunt-codex` | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` | `codex` (ChatGPT 구독) |
+| `shunt-xai` | `grok-build-0.1`, `grok-4.5`, `grok-4.3` | `xai` (API 키) 또는 `grok` (구독) |
+| `shunt-kimi` | `kimi-k2.7-code` | `kimi` |
+| `shunt-deepseek` | `deepseek-v4-pro`, `deepseek-v4-flash` | `deepseek` |
+| `shunt-zai` | `glm-5.2`, `glm-4.7` | `zai` |
+| `shunt-minimax` | `MiniMax-M3[1m]` | `minimax` |
+| `shunt-mimo` | `mimo-v2.5-pro` | `mimo` |
+
+```bash
+/plugin marketplace add pleaseai/shunt
+/plugin install shunt-xai@shunt
+```
+
+각 플러그인은 여전히 `shunt.toml`에서 해당 프로바이더가 라우팅되어야 하고(위 섹션 참고) 일치하는 자격 증명이 내보내져야 합니다 — 플러그인 자체의 README가 정확한 라우트와 env 변수를 나열합니다. grok 모델은 두 xAI 프로바이더 중 어느 쪽으로도 제공할 수 있습니다: `xai`(API 키, 토큰당 과금) 또는 `grok`(`shunt login xai`를 통한 SuperGrok / X Premium+ 구독; 티어로 게이트됨 — 403 시 `xai`로 폴백).
