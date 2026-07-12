@@ -6,35 +6,32 @@ use serde_json::{json, Map, Value};
 use crate::config::ResponsesFlavor;
 use crate::routing::Route;
 
+/// Request-scoped state for Claude Code's tool-search feature (progressive tool
+/// reveal). Borrows from the request `Value` the whole translator already parses
+/// and traverses — a separate typed deserialization pass would only add a second
+/// parse — so the pre-scan allocates nothing beyond the map/set entries.
 #[derive(Default)]
-struct ToolSearchContext {
-    schema_map: HashMap<String, (String, Value)>,
-    deferred_names: HashSet<String>,
-    loaded_tools: HashSet<String>,
+struct ToolSearchContext<'a> {
+    schema_map: HashMap<&'a str, (&'a str, &'a Value)>,
+    deferred_names: HashSet<&'a str>,
+    loaded_tools: HashSet<&'a str>,
 }
 
-impl ToolSearchContext {
-    fn from_request(request: &Value) -> Self {
+impl<'a> ToolSearchContext<'a> {
+    fn from_request(request: &'a Value) -> Self {
+        // Placeholder for a tool without an input_schema; renders as `{}` in the
+        // reveal text, matching what normalize_schema forwards for such a tool.
+        static NO_SCHEMA: Value = Value::Null;
         let mut context = Self::default();
         if let Some(tools) = request.get("tools").and_then(Value::as_array) {
             for tool in tools {
-                let name = tool
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
+                let name = tool.get("name").and_then(Value::as_str).unwrap_or("");
                 let description = tool
                     .get("description")
                     .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                let input_schema = tool
-                    .get("input_schema")
-                    .cloned()
-                    .unwrap_or_else(|| json!({}));
-                context
-                    .schema_map
-                    .insert(name.clone(), (description, input_schema));
+                    .unwrap_or("");
+                let input_schema = tool.get("input_schema").unwrap_or(&NO_SCHEMA);
+                context.schema_map.insert(name, (description, input_schema));
                 if tool.get("defer_loading").and_then(Value::as_bool) == Some(true) {
                     context.deferred_names.insert(name);
                 }
@@ -43,7 +40,12 @@ impl ToolSearchContext {
 
         if let Some(messages) = request.get("messages").and_then(Value::as_array) {
             for message in messages {
-                for block in content_blocks(message.get("content")) {
+                // Iterate the blocks by reference — content_blocks() clones, and
+                // string-shaped content can't carry a tool_result anyway.
+                let Some(blocks) = message.get("content").and_then(Value::as_array) else {
+                    continue;
+                };
+                for block in blocks {
                     if block.get("type").and_then(Value::as_str) != Some("tool_result") {
                         continue;
                     }
@@ -57,7 +59,7 @@ impl ToolSearchContext {
                             if let Some(name) =
                                 result_block.get("tool_name").and_then(Value::as_str)
                             {
-                                context.loaded_tools.insert(name.to_string());
+                                context.loaded_tools.insert(name);
                             }
                         }
                     }
@@ -95,7 +97,7 @@ pub fn translate_request(
         .filter(|t| t.as_array().is_some_and(|a| !a.is_empty()))
     {
         out.insert("tools".to_string(), tools);
-        if let Some(tool_choice) = tool_choice(&request, flavor) {
+        if let Some(tool_choice) = tool_choice(&request, flavor, &tool_search) {
             out.insert("tool_choice".to_string(), tool_choice);
         }
     }
@@ -229,7 +231,7 @@ fn instructions(request: &Value) -> Option<String> {
     }
 }
 
-fn input_items(request: &Value, schema_map: &HashMap<String, (String, Value)>) -> Vec<Value> {
+fn input_items(request: &Value, schema_map: &HashMap<&str, (&str, &Value)>) -> Vec<Value> {
     let mut out = Vec::new();
     let Some(messages) = request.get("messages").and_then(Value::as_array) else {
         return out;
@@ -398,7 +400,7 @@ fn tool_result_item(
     role: &str,
     pending: &mut Vec<Value>,
     block: &Value,
-    schema_map: &HashMap<String, (String, Value)>,
+    schema_map: &HashMap<&str, (&str, &Value)>,
 ) {
     flush_message(out, role, pending);
     out.push(json!({
@@ -481,18 +483,21 @@ fn flush_message(out: &mut Vec<Value>, role: &str, pending: &mut Vec<Value>) {
 /// the legacy name-only text so malformed or schema-less requests remain usable.
 fn tool_reference_text(
     block: &Value,
-    schema_map: &HashMap<String, (String, Value)>,
+    schema_map: &HashMap<&str, (&str, &Value)>,
 ) -> Option<String> {
     let name = block.get("tool_name").and_then(Value::as_str)?;
     let Some((description, input_schema)) = schema_map.get(name) else {
         return Some(format!("Loaded tool: {name}"));
     };
-    let properties = input_schema
-        .get("properties")
-        .filter(|properties| properties.is_object())
-        .cloned()
-        .unwrap_or_else(|| json!({}));
-    let parameters = serde_json::to_string_pretty(&properties).unwrap_or_else(|_| "{}".to_string());
+    // Serialize the full input_schema (not just `properties`): `required` and the
+    // other constraints must reach the model at reveal time, or a tool with
+    // mandatory parameters reads as all-optional. Serialized from the borrowed
+    // schema — no clone.
+    let parameters = if input_schema.is_object() {
+        serde_json::to_string_pretty(input_schema).unwrap_or_else(|_| "{}".to_string())
+    } else {
+        "{}".to_string()
+    };
     Some(format!(
         "Tool '{name}' is now available.\n\nDescription: {description}\n\nParameters:\n{parameters}"
     ))
@@ -501,7 +506,7 @@ fn tool_reference_text(
 /// The `output` of a `function_call_output`. Text-only results collapse to a plain
 /// string (what most tools return); results carrying an image or document are sent
 /// as the Responses content-item array (text/image/file) so they are not dropped.
-fn tool_result_output(block: &Value, schema_map: &HashMap<String, (String, Value)>) -> Value {
+fn tool_result_output(block: &Value, schema_map: &HashMap<&str, (&str, &Value)>) -> Value {
     let is_error = block.get("is_error").and_then(Value::as_bool) == Some(true);
     match block.get("content") {
         Some(Value::String(text)) => json!(text),
@@ -683,7 +688,11 @@ fn names_web_search(request: &Value, name: &str) -> bool {
         })
 }
 
-fn tool_choice(request: &Value, flavor: ResponsesFlavor) -> Option<Value> {
+fn tool_choice(
+    request: &Value,
+    flavor: ResponsesFlavor,
+    context: &ToolSearchContext,
+) -> Option<Value> {
     let has_tools = request
         .get("tools")
         .and_then(Value::as_array)
@@ -705,6 +714,14 @@ fn tool_choice(request: &Value, flavor: ResponsesFlavor) -> Option<Value> {
                         ResponsesFlavor::Xai => Some(json!("auto")),
                         _ => Some(json!({"type": "web_search"})),
                     }
+                } else if context.deferred_names.contains(name)
+                    && !context.loaded_tools.contains(name)
+                {
+                    // Progressive tool reveal withheld this tool from `tools`
+                    // (deferred, not yet loaded), so a named function choice
+                    // would force a function the backend never saw. Downgrade
+                    // to `auto`, mirroring the dropped-web-search case.
+                    Some(json!("auto"))
                 } else {
                     Some(json!({"type": "function", "name": name}))
                 }

@@ -232,7 +232,8 @@ fn loaded_deferred_tool_is_forwarded_and_revealed_with_schema() {
             "description": "Find an issue",
             "input_schema": {
                 "type": "object",
-                "properties": {"number": {"type": "integer"}}
+                "properties": {"number": {"type": "integer"}},
+                "required": ["number"]
             },
             "defer_loading": true
         }]
@@ -241,13 +242,78 @@ fn loaded_deferred_tool_is_forwarded_and_revealed_with_schema() {
     assert_eq!(actual["tools"].as_array().unwrap().len(), 1);
     assert_eq!(actual["tools"][0]["name"], "find_issue");
     assert!(actual["tools"][0].get("defer_loading").is_none());
+    // The reveal carries the FULL input_schema — `required` included — not just
+    // `properties`: a tool with mandatory parameters must not read as
+    // all-optional at reveal time.
+    let expected_schema = serde_json::to_string_pretty(&json!({
+        "type": "object",
+        "properties": {"number": {"type": "integer"}},
+        "required": ["number"]
+    }))
+    .unwrap();
     assert_eq!(
         actual["input"][1]["output"],
-        json!(concat!(
-            "Tool 'find_issue' is now available.\n\n",
-            "Description: Find an issue\n\n",
-            "Parameters:\n{\n  \"number\": {\n    \"type\": \"integer\"\n  }\n}"
+        json!(format!(
+            "Tool 'find_issue' is now available.\n\nDescription: Find an issue\n\nParameters:\n{expected_schema}"
         ))
+    );
+}
+
+#[test]
+fn forced_choice_on_unloaded_deferred_tool_downgrades_to_auto() {
+    // A `tool` choice naming a deferred-and-unloaded tool would force a function
+    // the filtered `tools` array no longer contains — the backend rejects a
+    // choice for an unregistered function. Downgrade to `auto`, mirroring the
+    // dropped-web-search case.
+    let actual = translate(json!({
+        "model": "gpt-5.2-codex",
+        "messages": [],
+        "tools": [
+            {
+                "name": "deferred",
+                "description": "Deferred tool",
+                "input_schema": {"type": "object", "properties": {}},
+                "defer_loading": true
+            },
+            {
+                "name": "eager",
+                "description": "Eager tool",
+                "input_schema": {"type": "object", "properties": {}}
+            }
+        ],
+        "tool_choice": {"type": "tool", "name": "deferred"}
+    }));
+
+    assert_eq!(actual["tools"].as_array().unwrap().len(), 1);
+    assert_eq!(actual["tools"][0]["name"], "eager");
+    assert_eq!(actual["tool_choice"], json!("auto"));
+}
+
+#[test]
+fn forced_choice_on_loaded_deferred_tool_stays_named() {
+    // Once a deferred tool is loaded via a tool_reference it is forwarded in
+    // `tools`, so a forced choice for it remains a named function choice.
+    let actual = translate(json!({
+        "model": "gpt-5.2-codex",
+        "messages": [{"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "toolu_ts", "content": [
+                {"type": "tool_reference", "tool_name": "deferred"}
+            ]}
+        ]}],
+        "tools": [{
+            "name": "deferred",
+            "description": "Deferred tool",
+            "input_schema": {"type": "object", "properties": {}},
+            "defer_loading": true
+        }],
+        "tool_choice": {"type": "tool", "name": "deferred"}
+    }));
+
+    assert_eq!(actual["tools"].as_array().unwrap().len(), 1);
+    assert_eq!(actual["tools"][0]["name"], "deferred");
+    assert_eq!(
+        actual["tool_choice"],
+        json!({"type": "function", "name": "deferred"})
     );
 }
 
