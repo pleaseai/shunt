@@ -223,10 +223,9 @@ pub fn advertised_tool_names(body: &Value) -> Option<BTreeSet<String>> {
 /// Returns `true` when the request is streaming, has a session id, and
 /// advertises at least one of Read, Write, or Bash.
 pub fn can_bridge_cursor_native_tools(body: &Value, session_id: Option<&str>) -> bool {
-    let _sid = match session_id {
-        Some(id) if !id.is_empty() => id,
-        _ => return false,
-    };
+    if session_id.filter(|id| !id.is_empty()).is_none() {
+        return false;
+    }
     if !body.get("stream").and_then(Value::as_bool).unwrap_or(false) {
         return false;
     }

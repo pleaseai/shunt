@@ -272,7 +272,14 @@ fn render_tool_result_content(block: &serde_json::Value) -> String {
 fn render_tool_result_block(block: &serde_json::Value) -> Option<String> {
     let block_type = block.get("type").and_then(|t| t.as_str())?;
     match block_type {
-        "text" | "image" | "tool_use" | "tool_result" | "thinking" => render_block(block),
+        // Deliberately NOT dispatching "tool_result" back to `render_block`:
+        // `render_block` renders a tool_result by calling `render_tool_result_content`,
+        // which calls back here, so a tool_result nested inside another
+        // tool_result's content would mutually recurse with no base case and
+        // exhaust the thread stack (a process-killing SIGABRT under Tokio).
+        // Well-formed tool_result content never nests tool_result blocks, so
+        // treating it as unsupported here is behaviour-preserving.
+        "text" | "image" | "tool_use" | "thinking" => render_block(block),
         _ => {
             let type_str = block_type.to_string();
             Some(format!("[unsupported tool result block: {type_str}]"))
@@ -542,6 +549,26 @@ mod tests {
         assert_eq!(images.len(), 1);
         assert_eq!(images[0].mime_type, "image/jpeg");
         assert_eq!(images[0].data, "BBBB");
+    }
+
+    #[test]
+    fn tool_result_nested_tool_result_does_not_recurse() {
+        // A tool_result whose content nests another tool_result must not send
+        // `render_tool_result_block` back into `render_block` (mutual recursion
+        // with no base case → stack overflow / process abort). The inner block
+        // is rendered as an unsupported placeholder instead.
+        let req: Value = serde_json::json!({
+            "model": "cursor:gpt-5.5",
+            "messages": [{"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "tu1", "content": [
+                    {"type": "tool_result", "tool_use_id": "tu2", "content": "inner"}
+                ]}
+            ]}]
+        });
+        let rendered = render_cursor_prompt(&req);
+        assert!(rendered.contains("[unsupported tool result block: tool_result]"));
+        // The inner tool_result's own content must not leak through.
+        assert!(!rendered.contains("inner"));
     }
 
     #[test]
