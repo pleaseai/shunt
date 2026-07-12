@@ -258,17 +258,15 @@ fn render_block(block: &serde_json::Value) -> Option<String> {
 }
 
 fn render_tool_result_content(block: &serde_json::Value) -> String {
-    let content = match block.get("content") {
-        Some(serde_json::Value::String(s)) => return s.clone(),
-        Some(serde_json::Value::Array(arr)) => arr.clone(),
-        _ => return String::new(),
-    };
-
-    let parts: Vec<String> = content
-        .iter()
-        .filter_map(render_tool_result_block)
-        .collect();
-    parts.join("\n\n")
+    match block.get("content") {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(serde_json::Value::Array(arr)) => arr
+            .iter()
+            .filter_map(render_tool_result_block)
+            .collect::<Vec<String>>()
+            .join("\n\n"),
+        _ => String::new(),
+    }
 }
 
 fn render_tool_result_block(block: &serde_json::Value) -> Option<String> {
@@ -324,12 +322,10 @@ fn collect_image_blocks(
 
     // Recurse into tool_result blocks for nested images
     if block.get("type").and_then(|t| t.as_str()) == Some("tool_result") {
-        let content = match block.get("content") {
-            Some(serde_json::Value::Array(arr)) => arr.clone(),
-            _ => return,
-        };
-        for child in &content {
-            collect_image_blocks(child, index, images);
+        if let Some(serde_json::Value::Array(arr)) = block.get("content") {
+            for child in arr {
+                collect_image_blocks(child, index, images);
+            }
         }
     }
 }

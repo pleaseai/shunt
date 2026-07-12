@@ -142,7 +142,8 @@ pub fn default_cursor_auth_path() -> PathBuf {
             // fall back to `USERPROFILE` so the credential lands in the user's home
             // rather than a working-directory-relative path.
             env::var_os("HOME")
-                .or_else(|| env::var_os("USERPROFILE"))
+                .filter(|home| !home.is_empty())
+                .or_else(|| env::var_os("USERPROFILE").filter(|home| !home.is_empty()))
                 .map(PathBuf::from)
                 .map(|home| home.join(".shunt").join("cursor-auth.json"))
         })
