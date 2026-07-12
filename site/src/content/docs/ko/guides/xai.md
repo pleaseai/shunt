@@ -72,9 +72,9 @@ export SHUNT_XAI_AUTH_FILE=/etc/shunt/xai-auth.json
 ```toml
 [providers.grok]
 kind = "responses"
-base_url = "https://cli-chat-proxy.grok.com/v1"   # shunt appends /responses
-auth = "xai_oauth"                                # read + auto-refresh ~/.shunt/xai-auth.json
-# effort = "high"                                  # optional — opt in to reasoning effort (§ Reasoning effort)
+base_url = "https://cli-chat-proxy.grok.com/v1"   # shunt가 뒤에 /responses를 붙임
+auth = "xai_oauth"                                # ~/.shunt/xai-auth.json 읽기 + 자동 갱신
+# effort = "high"                                  # 선택 — 추론 노력 활성화 (§ 추론 노력)
 ```
 
 ### 3. 모델을 `grok`으로 라우팅
@@ -83,7 +83,7 @@ auth = "xai_oauth"                                # read + auto-refresh ~/.shunt
 [[routes]]
 model = "grok-4.5"
 provider = "grok"
-# upstream_model = "grok-4.5"   # optional: forward a different slug upstream
+# upstream_model = "grok-4.5"   # 선택: 다른 슬러그를 업스트림으로 전달
 ```
 
 ## 경로 B — xAI 개발자 API (`xai`)
@@ -99,7 +99,7 @@ export XAI_API_KEY=xai-…
 ```toml
 [providers.xai]
 kind = "responses"
-base_url = "https://api.x.ai/v1"   # shunt appends /responses
+base_url = "https://api.x.ai/v1"   # shunt가 뒤에 /responses를 붙임
 auth = "api_key"
 api_key_env = "XAI_API_KEY"
 ```
@@ -133,7 +133,7 @@ Grok 슬러그는 `claude-`로 시작하지 않으므로, Claude Code의 `/model
 나열하지 않습니다. 메커니즘은 **Codex와 동일합니다** — id를 선택기에 직접 추가하세요:
 
 ```bash
-export ANTHROPIC_CUSTOM_MODEL_OPTION="grok-4.5"   # must match a [[routes]] rule
+export ANTHROPIC_CUSTOM_MODEL_OPTION="grok-4.5"   # [[routes]] 규칙과 일치해야 함
 ```
 
 동일한 [Codex 섹션](/ko/guides/codex/#4-claude-code에서-모델-선택)이 나머지를 그대로 다룹니다:
@@ -157,9 +157,9 @@ export ANTHROPIC_CUSTOM_MODEL_OPTION="grok-4.5"   # must match a [[routes]] rule
 
 ```toml
 [providers.grok]
-effort = "high"        # applies to all grok traffic
+effort = "high"        # 모든 grok 트래픽에 적용
 
-# …or per route
+# …또는 라우트별
 [[routes]]
 model = "grok-4.5"
 provider = "grok"
@@ -175,7 +175,7 @@ Claude Code는 매핑된 id에 대해 컨텍스트 바를 고정된 **200k**로 
 윈도우가 더 크면 올려주세요 — 값은 비-`claude-` id를 자동으로 따라갑니다:
 
 ```bash
-export CLAUDE_CODE_MAX_CONTEXT_TOKENS=YOUR_WINDOW   # your slug's real window, per xAI's model docs
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS=YOUR_WINDOW   # 슬러그의 실제 윈도우, xAI 모델 문서 참고
 ```
 
 이 값은 **전역**이며(세션당 하나의 값), 매핑된 모델 중 가장 작은 실제 윈도우에 맞추세요. 모델의 실제
@@ -198,7 +198,7 @@ bind = "127.0.0.1:3001"
 default_provider = "anthropic"
 
 [providers.grok]
-effort = "high"     # optional: opt in to reasoning effort for all Grok traffic
+effort = "high"     # 선택: 모든 Grok 트래픽에 추론 노력 활성화
 
 [[routes]]
 model = "grok-4.5"
@@ -208,11 +208,11 @@ provider = "grok"
 셸(shunt와 Claude Code 모두 이 설정으로 실행):
 
 ```bash
-shunt login xai                                     # one-time device-code login
-./target/release/shunt run                          # start the gateway
+shunt login xai                                     # 일회성 디바이스 코드 로그인
+./target/release/shunt run                          # 게이트웨이 시작
 
 export ANTHROPIC_BASE_URL=http://127.0.0.1:3001
-export ANTHROPIC_CUSTOM_MODEL_OPTION="grok-4.5"     # add to /model picker
+export ANTHROPIC_CUSTOM_MODEL_OPTION="grok-4.5"     # /model 선택기에 추가
 ```
 
 `/model`에서 **grok-4.5**를 선택하세요. 세션의 나머지는 모두 여전히 변경 없이 Anthropic으로 흐르며,
