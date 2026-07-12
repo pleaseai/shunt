@@ -617,9 +617,20 @@ impl Config {
                 // the clear. Warn (don't reject — http to a local collector is a
                 // legitimate default) so a misconfigured remote endpoint is not
                 // silent, mirroring the codebase's care about leaking bearers.
+                // Parse the host as an IP so the whole 127.0.0.0/8 range and
+                // ::1 count as loopback, without a `starts_with("127.")` prefix
+                // test that would also match a public host like `127.example.com`
+                // and wrongly suppress the plaintext-header warning.
                 let host_is_loopback = endpoint
                     .host_str()
-                    .map(|host| host == "localhost" || host == "::1" || host.starts_with("127."))
+                    .map(|host| {
+                        host == "localhost"
+                            || host == "::1"
+                            || host
+                                .parse::<std::net::IpAddr>()
+                                .map(|ip| ip.is_loopback())
+                                .unwrap_or(false)
+                    })
                     .unwrap_or(false);
                 if !otel.headers.is_empty() && endpoint.scheme() == "http" && !host_is_loopback {
                     tracing::warn!(
