@@ -1,0 +1,39 @@
+site/src/content/docs/guides/codex.md
+  s_dfd45bd3f4b368::t_abef3fb0771fa4 298-323
+  s_dfd45bd3f4b368::t_42efec5319581a 335
+site/src/content/docs/zh-cn/reference/troubleshooting.md
+  s_dfd45bd3f4b368::t_0440bf317f0432 16
+site/src/content/docs/ko/reference/troubleshooting.md
+  s_dfd45bd3f4b368::t_7022fec7325caf 16
+site/src/content/docs/ko/guides/codex.md
+  s_dfd45bd3f4b368::t_83092082132a06 272
+  s_dfd45bd3f4b368::t_154b8e8cb322b2 235-260
+site/src/content/docs/zh-cn/guides/codex.md
+  s_dfd45bd3f4b368::t_e53686f888b674 295-317
+  s_dfd45bd3f4b368::t_a8fc0d065149b7 329
+site/src/content/docs/ja/reference/troubleshooting.md
+  s_dfd45bd3f4b368::t_731ef400cc7629 16
+README.md
+  s_dfd45bd3f4b368::t_cf712859f95e3f 124
+site/src/content/docs/reference/troubleshooting.md
+  s_dfd45bd3f4b368::t_433500f6c40434 16
+site/src/content/docs/ja/guides/codex.md
+  s_dfd45bd3f4b368::t_417af9604ed0c7 251-277
+  s_dfd45bd3f4b368::t_9763c0099aa804 289
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "63168501b0c547ece58b996679157a046294827e",
+  "prompts": {},
+  "sessions": {
+    "s_dfd45bd3f4b368": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "385e39df-0e9a-4cb7-864b-4706920d6f19",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
