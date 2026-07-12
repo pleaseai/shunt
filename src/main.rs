@@ -43,6 +43,24 @@ enum Command {
         /// Provider to log in to (currently: `xai`).
         provider: String,
     },
+    /// Scaffold config for a known backend. `shunt add provider <name>` prints a
+    /// ready-to-paste `[providers.<name>]` block (valid TOML, so it can be piped
+    /// into a config file); omit the name to list the known providers.
+    Add {
+        #[command(subcommand)]
+        target: AddTarget,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AddTarget {
+    /// Print a `[providers.<name>]` block for a known provider (omit NAME to
+    /// list the catalog). Never writes files — redirect the output yourself:
+    /// `shunt add provider kimi >> shunt.toml`.
+    Provider {
+        /// Provider name or alias (e.g. `openai`, `kimi`, `zai`).
+        name: Option<String>,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -56,6 +74,9 @@ fn main() -> anyhow::Result<()> {
         Some(Command::Login { provider }) => {
             runtime()?.block_on(shunt::auth::xai_login::run(&provider))
         }
+        Some(Command::Add {
+            target: AddTarget::Provider { name },
+        }) => shunt::catalog::add_provider(name.as_deref()),
         None if cli.check => check(cli.config),
         None => run(cli.config),
     }

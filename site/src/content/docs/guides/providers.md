@@ -46,7 +46,13 @@ Most third-party "use Claude Code with X" gateways are Anthropic-Messages-compat
 | OpenRouter | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8` |
 | Vercel AI Gateway | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8` (accepts `x_api_key`) |
 
-For example, to route Kimi's model through shunt:
+Don't want to look up the exact `base_url`/`auth`? [`shunt add provider <name>`](/reference/cli/#shunt-add-provider) prints a ready-to-paste block for any of these (plus the built-ins). The output is valid TOML — hints ride along as comments — so you can append it straight to your config:
+
+```bash
+shunt add provider kimi >> shunt.toml
+```
+
+For example, to route Kimi's model through shunt by hand:
 
 ```toml
 [providers.kimi]

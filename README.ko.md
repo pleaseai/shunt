@@ -80,6 +80,12 @@ OpenAI의 Thibault Sottiaux는 다른 코딩 하네스를 통해 Codex를 실행
 | OpenRouter | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8` |
 | Vercel AI Gateway | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8` |
 
+`base_url`·`auth`가 기억나지 않으면 `shunt add provider <name>`가 붙여넣기 좋은 블록을 출력합니다(유효한 TOML이라 그대로 파이핑 가능):
+
+```console
+$ shunt add provider kimi >> shunt.toml
+```
+
 ```toml
 [providers.kimi]
 kind = "anthropic"
@@ -92,7 +98,7 @@ model = "kimi-k2.7-code"
 provider = "kimi"
 ```
 
-전체 목록과 프로바이더별 참고 사항은 [프로바이더](https://shunt-docs.pages.dev/guides/providers/)를 참고하세요.
+전체 목록과 프로바이더별 참고 사항은 [프로바이더](https://shunt-docs.pages.dev/guides/providers/)를, `shunt add provider`는 [CLI 레퍼런스](https://shunt-docs.pages.dev/reference/cli/#shunt-add-provider)를 참고하세요.
 
 ## 문서
 

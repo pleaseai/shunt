@@ -80,6 +80,12 @@ That said, reusing your ChatGPT/Codex subscription (or Kimi, Cursor, or other ba
 | OpenRouter | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8` |
 | Vercel AI Gateway | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8` |
 
+Don't remember the exact `base_url`/`auth`? `shunt add provider <name>` prints a ready-to-paste block (valid TOML, so pipe it straight in):
+
+```console
+$ shunt add provider kimi >> shunt.toml
+```
+
 ```toml
 [providers.kimi]
 kind = "anthropic"
@@ -92,7 +98,7 @@ model = "kimi-k2.7-code"
 provider = "kimi"
 ```
 
-See [Providers](https://shunt-docs.pages.dev/guides/providers/) for the full list and per-provider notes.
+See [Providers](https://shunt-docs.pages.dev/guides/providers/) for the full list and per-provider notes, or the [CLI reference](https://shunt-docs.pages.dev/reference/cli/#shunt-add-provider) for `shunt add provider`.
 
 ## Documentation
 

@@ -43,6 +43,38 @@ Print a Claude subscription OAuth token to **stdout** (logs go to stderr), desig
 
 See [Connect Claude Code](/guides/connect-claude-code/#2-choose-the-anthropic-credential) for when you need this.
 
+## `shunt add provider`
+
+Print a ready-to-paste `[providers.<name>]` block for a known backend — the built-in providers (`openai`, `codex`, `xai`, `grok`, `anthropic`) plus the Anthropic-compatible gateways from the [Providers](/guides/providers/) table (`kimi`, `deepseek`, `glm`, `minimax`, `mimo`, `openrouter`, `vercel`). It fills in the right `kind`, `base_url`, `auth`, and `api_key_env`, and adds a commented example route.
+
+```bash
+shunt add provider kimi
+```
+
+```toml
+[providers.kimi]
+kind = "anthropic"
+base_url = "https://api.moonshot.ai/anthropic"
+auth = "api_key"
+api_key_env = "KIMI_API_KEY"
+
+# Set the API key in your environment:
+#   export KIMI_API_KEY=...
+
+# Example route — map a model ID to this provider:
+# [[routes]]
+# model = "kimi-k2.7-code"
+# provider = "kimi"
+```
+
+The command **never writes files** — the whole output is valid TOML (setup hints ride along as `#` comments), so append it yourself:
+
+```bash
+shunt add provider kimi >> shunt.toml
+```
+
+Names are case-insensitive and accept aliases (e.g. `zai`/`z.ai` → `glm`, `moonshot` → `kimi`, `chatgpt` → `codex`). Run `shunt add provider` with no name to list the known providers; an unknown name errors and lists them.
+
 ## Environment variables
 
 | Variable | Effect |

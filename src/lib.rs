@@ -1,5 +1,6 @@
 pub mod adapters;
 pub mod auth;
+pub mod catalog;
 pub mod config;
 pub mod count_tokens;
 pub mod discovery;
