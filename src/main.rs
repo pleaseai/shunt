@@ -63,12 +63,13 @@ fn main() -> anyhow::Result<()> {
 }
 
 /// Install the rustls process-wide crypto provider once, up front. Feature
-/// unification compiles two providers into the binary — aws-lc-rs (reqwest,
-/// sentry) and ring (the tokio-tungstenite chain) — so rustls 0.23 refuses to
-/// auto-select one. reqwest builds its `ClientConfig` with an explicit provider
-/// and is unaffected, but `tokio_tungstenite::connect_async` relies on the
-/// process default and panics on the first `wss://` Codex turn without this.
-/// Pin aws-lc-rs to match reqwest/sentry.
+/// unification compiles two providers into the binary — aws-lc-rs (via sentry's
+/// reqwest `rustls` feature) and ring (via reqwest's own `rustls-tls` feature) —
+/// so rustls 0.23 refuses to auto-select one. reqwest supplies a provider to the
+/// client config it builds and never panics, but `tokio_tungstenite::connect_async`
+/// pulls tokio-rustls with no provider feature of its own and relies on the
+/// process-wide default, so it panics on the first `wss://` Codex turn without
+/// this. Pin aws-lc-rs to match reqwest/sentry.
 fn install_crypto_provider() {
     // `install_default` errors only if a provider is already installed, which is
     // harmless — keep it idempotent rather than panicking.

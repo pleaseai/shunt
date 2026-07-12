@@ -32,9 +32,11 @@ futures-util = "0.3"
 notify = "8.2.0"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 # Feature unification compiles both rustls crypto providers into the binary
-# (aws-lc-rs via reqwest/sentry, ring via the tokio-tungstenite chain), so
-# rustls refuses to auto-select one. Depend on rustls directly to install the
-# process-wide default at startup — see `install_crypto_provider` in main.rs.
+# (aws-lc-rs via sentry's reqwest `rustls` feature, ring via reqwest's own
+# `rustls-tls` feature), so rustls refuses to auto-select one. tokio-tungstenite
+# pulls rustls/tokio-rustls with no provider feature, so it needs the default
+# installed. Depend on rustls directly to install the process-wide default at
+# startup — see `install_crypto_provider` in main.rs.
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 sentry = { version = "0.48.4", default-features = false, features = ["backtrace", "contexts", "metrics", "panic", "reqwest", "rustls", "tracing"] }
 serde = { version = "1", features = ["derive"] }
