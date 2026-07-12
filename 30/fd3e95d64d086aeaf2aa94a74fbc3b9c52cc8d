@@ -14,9 +14,11 @@ src/model/responses_request.rs
   s_dfd45bd3f4b368::t_ecd43e0ec361ce 84-87
   s_dfd45bd3f4b368::t_6d7db88b38f0b4 504
   s_dfd45bd3f4b368::t_7623a6c27f1a5c 71
+  s_dfd45bd3f4b368::t_374fcb0e0c525b 89-95
 tests/responses_translate.rs
   s_dfd45bd3f4b368::t_93528acffc54d2 192-269,275-285,288-356
   s_dfd45bd3f4b368::t_af81e5fa3ac357 158-160,163-172
+  s_dfd45bd3f4b368::t_0516b2152396b5 270-274,286-287
 ---
 {
   "schema_version": "authorship/3.0.0",
