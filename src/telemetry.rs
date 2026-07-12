@@ -128,13 +128,6 @@ pub fn init(config: &OtelConfig) -> anyhow::Result<(TelemetryGuard, OtelReloadLa
     let resource = build_resource(config);
     let headers = header_map(config);
 
-    // Pin the session-id privacy decision for the process lifetime (see
-    // `withhold_session_id`). `init` runs only for an enabled section, so this
-    // config governs the exporter for its whole life even if `[otel]` is later
-    // hot-edited — the exporter itself is never rebuilt. `set` is idempotent
-    // (first call wins).
-    let _ = WITHHOLD_SESSION_ID.set(should_withhold_session_id(config));
-
     // Build every enabled exporter FIRST. Exporter construction is the only
     // fallible step, and none of the `opentelemetry::global::set_*` calls below
     // run until all three have succeeded — so a failure on any one signal
@@ -180,6 +173,17 @@ pub fn init(config: &OtelConfig) -> anyhow::Result<(TelemetryGuard, OtelReloadLa
 
     // All exporters constructed — now install providers/globals and assemble
     // the subscriber layers. Nothing below can fail.
+
+    // Pin the session-id privacy decision for the process lifetime (see
+    // `withhold_session_id`), only now that construction has succeeded: a
+    // fallible exporter build above returns `Err` and `init_telemetry` then runs
+    // without any export, so pinning earlier would leave the flag `true` and
+    // silently strip `session_id` from local stderr spans with nothing exported.
+    // On the success path this config governs the exporter for its whole life
+    // even if `[otel]` is later hot-edited — the exporter is never rebuilt.
+    // `set` is idempotent (first call wins).
+    let _ = WITHHOLD_SESSION_ID.set(should_withhold_session_id(config));
+
     let (tracer, trace_layer) = match span_exporter {
         Some(exporter) => {
             // Parent-based: a span that already carries a parent context
@@ -188,11 +192,16 @@ pub fn init(config: &OtelConfig) -> anyhow::Result<(TelemetryGuard, OtelReloadLa
             // inbound W3C `traceparent` from request headers, so today every
             // request span is a root — wiring inbound trace-context propagation
             // is tracked as a follow-up. Clamp defensively so a caller that
-            // built `OtelConfig` without `Config::validate()` can't hand an
-            // out-of-range probability to the sampler.
-            let sampler = Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(
-                config.sample_ratio.clamp(0.0, 1.0),
-            )));
+            // built `OtelConfig` without `Config::validate()` (which already
+            // rejects out-of-range and NaN ratios) can't hand a bad probability
+            // to the sampler; map NaN — which `clamp` would pass through — to
+            // full sampling rather than feed the sampler an undefined ratio.
+            let ratio = if config.sample_ratio.is_nan() {
+                1.0
+            } else {
+                config.sample_ratio.clamp(0.0, 1.0)
+            };
+            let sampler = Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(ratio)));
             let provider = SdkTracerProvider::builder()
                 .with_resource(resource.clone())
                 .with_sampler(sampler)
@@ -389,6 +398,16 @@ mod tests {
             "trace + logs bridges must compose into a subscriber layer"
         );
         drop(guard); // exercises the tracer/logger shutdown paths
+    }
+
+    #[test]
+    fn init_tolerates_nan_sample_ratio() {
+        // A caller that skipped `Config::validate()` could pass a NaN ratio;
+        // the sampler must be built without panicking (NaN maps to full sampling).
+        let mut cfg = config(true, false, false, None);
+        cfg.sample_ratio = f64::NAN;
+        let (guard, _layer) = init(&cfg).expect("init should tolerate a NaN ratio");
+        drop(guard);
     }
 
     #[test]
