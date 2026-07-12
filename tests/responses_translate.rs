@@ -244,6 +244,141 @@ fn translates_tools_and_tool_choice_variants() {
     }
 }
 
+fn translate_with_flavor(input: Value, flavor: ResponsesFlavor) -> Value {
+    let body = serde_json::to_vec(&input).unwrap();
+    translate_request(&body, &route("gpt-5.2-codex"), flavor).unwrap()
+}
+
+#[test]
+fn translates_hosted_web_search_tool_to_responses_web_search() {
+    // Claude Code sends the hosted `web_search_20250305` tool when a user
+    // enables web search. It must become the Responses hosted web-search tool,
+    // not a phantom `function` the client can't execute.
+    let base = json!({
+        "model": "gpt-5.2-codex",
+        "messages": [{"role": "user", "content": "find it"}],
+        "tools": [
+            {"name": "Bash", "input_schema": {}},
+            {"type": "web_search_20250305", "name": "web_search"}
+        ]
+    });
+
+    for flavor in [ResponsesFlavor::OpenAi, ResponsesFlavor::Chatgpt] {
+        let out = translate_with_flavor(base.clone(), flavor);
+        assert_eq!(
+            out["tools"],
+            json!([
+                {
+                    "type": "function",
+                    "name": "Bash",
+                    "description": "",
+                    "parameters": {"type": "object", "properties": {}, "additionalProperties": true}
+                },
+                {
+                    "type": "web_search",
+                    "external_web_access": false,
+                    "search_content_types": ["text", "image"]
+                }
+            ]),
+            "flavor {flavor:?}"
+        );
+    }
+}
+
+#[test]
+fn hosted_web_search_forwards_domain_filters() {
+    let out = translate_with_flavor(
+        json!({
+            "model": "gpt-5.2-codex",
+            "messages": [{"role": "user", "content": "find it"}],
+            "tools": [{
+                "type": "web_search_20250305",
+                "name": "web_search",
+                "allowed_domains": ["example.com"],
+                "blocked_domains": ["spam.example"]
+            }]
+        }),
+        ResponsesFlavor::Chatgpt,
+    );
+    assert_eq!(
+        out["tools"],
+        json!([{
+            "type": "web_search",
+            "external_web_access": false,
+            "search_content_types": ["text", "image"],
+            "filters": {
+                "allowed_domains": ["example.com"],
+                "blocked_domains": ["spam.example"]
+            }
+        }])
+    );
+}
+
+#[test]
+fn forced_web_search_tool_choice_uses_web_search_selector() {
+    // A `tool` choice naming the hosted web-search tool selects it with a bare
+    // `{"type":"web_search"}`, never a named `function` choice (which the
+    // backend 502s on because no such function is registered).
+    let out = translate_with_flavor(
+        json!({
+            "model": "gpt-5.2-codex",
+            "messages": [{"role": "user", "content": "find it"}],
+            "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+            "tool_choice": {"type": "tool", "name": "web_search"}
+        }),
+        ResponsesFlavor::Chatgpt,
+    );
+    assert_eq!(out["tool_choice"], json!({"type": "web_search"}));
+}
+
+#[test]
+fn xai_drops_web_search_tool_and_downgrades_forced_choice() {
+    // xAI's Responses API only accepts function tools, so the hosted
+    // web-search tool is dropped and a forced choice for it falls back to
+    // `auto` rather than referencing a tool that was never registered.
+    let out = translate_with_flavor(
+        json!({
+            "model": "gpt-5.2-codex",
+            "messages": [{"role": "user", "content": "find it"}],
+            "tools": [
+                {"name": "Bash", "input_schema": {}},
+                {"type": "web_search_20250305", "name": "web_search"}
+            ],
+            "tool_choice": {"type": "tool", "name": "web_search"}
+        }),
+        ResponsesFlavor::Xai,
+    );
+    assert_eq!(
+        out["tools"],
+        json!([{
+            "type": "function",
+            "name": "Bash",
+            "description": "",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": true}
+        }])
+    );
+    assert_eq!(out["tool_choice"], json!("auto"));
+}
+
+#[test]
+fn xai_web_search_only_tool_list_becomes_empty_tools_with_auto_choice() {
+    // When the hosted web-search tool is the *only* tool and the route is xAI,
+    // dropping it leaves an empty tool set. The emitted shape is an empty
+    // `tools` array with `tool_choice: "auto"` — `auto` against no tools simply
+    // means "no tool is forced", so this degrades to a plain completion rather
+    // than forcing a tool the backend never received.
+    let out = translate_with_flavor(
+        json!({
+            "model": "gpt-5.2-codex",
+            "messages": [{"role": "user", "content": "find it"}],
+            "tools": [{"type": "web_search_20250305", "name": "web_search"}]
+        }),
+        ResponsesFlavor::Xai,
+    );
+    assert_eq!(out["tools"], json!([]));
+    assert_eq!(out["tool_choice"], json!("auto"));
+}
+
 #[test]
 fn maps_thinking_and_route_override_to_effort() {
     let thinking = translate(json!({
