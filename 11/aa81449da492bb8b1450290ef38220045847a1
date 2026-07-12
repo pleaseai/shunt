@@ -1,0 +1,29 @@
+src/adapters/anthropic.rs
+  s_9438d094b59628::t_a84cbf3a58e268 347,349-366
+  s_9438d094b59628::t_313a290a1fb810 266-274
+docs/m8-anthropic-multi-account.md
+  s_9438d094b59628::t_1ad14008762ef5 69-70,74
+site/src/content/docs/reference/configuration.md
+  s_9438d094b59628::t_032b2045c01249 67
+site/src/content/docs/guides/anthropic-multi-account.md
+  s_9438d094b59628::t_84d2dca79276eb 139
+tests/multi_account.rs
+  s_9438d094b59628::t_e881d7d4d27c66 181-237
+  s_9438d094b59628::t_4686fe5d9bdd4b 180
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "11aa81449da492bb8b1450290ef38220045847a1",
+  "prompts": {},
+  "sessions": {
+    "s_9438d094b59628": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0075ecc3-27dd-45c0-a16c-10dcd0636a6e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
