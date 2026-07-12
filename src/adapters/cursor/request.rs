@@ -106,7 +106,11 @@ pub fn cursor_selected_images(req: &Value) -> Vec<CursorSelectedImage> {
 fn render_system(req: &Value) -> Option<String> {
     let system_value = req.get("system")?;
     let text = match system_value {
-        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::String(s) => s
+            .lines()
+            .filter(|line| !line.starts_with("x-anthropic-billing-header:"))
+            .collect::<Vec<_>>()
+            .join("\n"),
         serde_json::Value::Array(blocks) => {
             let parts: Vec<&str> = blocks
                 .iter()

@@ -28,6 +28,9 @@ pub fn frame_cursor_stream(body: &[u8], message_id: &str, model: &str) -> Vec<u8
     };
 
     let mut framer = CursorSseFramer::new(message_id, model);
+    // Buffered path: seed usage before the first emit so message_start carries
+    // the real input-token count instead of the placeholder 1.
+    framer.preseed_usage(&events);
 
     for event in &events {
         match event {
@@ -98,6 +101,8 @@ pub struct CursorSseFramer {
     text_index: i32,
     usage_input_tokens: u64,
     usage_output_tokens: u64,
+    usage_cache_read_tokens: u64,
+    usage_cache_write_tokens: u64,
     finalized: bool,
 }
 
@@ -115,6 +120,8 @@ impl CursorSseFramer {
             text_index: -1,
             usage_input_tokens: 0,
             usage_output_tokens: 0,
+            usage_cache_read_tokens: 0,
+            usage_cache_write_tokens: 0,
             finalized: false,
         }
     }
@@ -253,11 +260,39 @@ impl CursorSseFramer {
         &mut self,
         input_tokens: u64,
         output_tokens: u64,
-        _cache_read_tokens: u64,
-        _cache_write_tokens: u64,
+        cache_read_tokens: u64,
+        cache_write_tokens: u64,
     ) {
         self.usage_input_tokens = input_tokens;
         self.usage_output_tokens = output_tokens;
+        self.usage_cache_read_tokens = cache_read_tokens;
+        self.usage_cache_write_tokens = cache_write_tokens;
+    }
+
+    /// Pre-seed usage from a fully-buffered event list so the `message_start`
+    /// event reports the real input-token count. Cursor only reports usage in the
+    /// terminal `turn_ended`, but the buffered paths hold every event before any
+    /// SSE is emitted, so scan ahead for the `Usage` event first. Idempotent: the
+    /// same event is re-applied when the emit loop reaches it. (The true streaming
+    /// path has no lookahead and cannot do this.)
+    pub fn preseed_usage(&mut self, events: &[CursorStreamEvent]) {
+        for event in events {
+            if let CursorStreamEvent::Usage {
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                cache_write_tokens,
+            } = event
+            {
+                self.record_usage(
+                    *input_tokens,
+                    *output_tokens,
+                    *cache_read_tokens,
+                    *cache_write_tokens,
+                );
+                break;
+            }
+        }
     }
 
     pub fn next_content_block_index(&mut self) -> i32 {
@@ -324,8 +359,8 @@ impl CursorSseFramer {
             "usage": {
                 "input_tokens": self.usage_input_tokens.max(1),
                 "output_tokens": self.usage_output_tokens,
-                "cache_creation_input_tokens": 0,
-                "cache_read_input_tokens": 0
+                "cache_creation_input_tokens": self.usage_cache_write_tokens,
+                "cache_read_input_tokens": self.usage_cache_read_tokens
             }
         });
         self.output
@@ -426,6 +461,49 @@ mod tests {
             Some(0)
         );
         assert_eq!(delta["usage"]["cache_read_input_tokens"].as_u64(), Some(0));
+    }
+
+    #[test]
+    fn sse_message_start_reports_real_input_tokens() {
+        // Usage arrives at end-of-stream, but the buffered path pre-seeds it so
+        // message_start carries the real input count, not the placeholder 1.
+        let mut body = Vec::new();
+        body.extend_from_slice(&test_frames::text_frame("hi"));
+        body.extend_from_slice(&test_frames::usage_frame(25, 7));
+        body.extend_from_slice(&test_frames::end_frame());
+        let sse = frame_cursor_stream(&body, "msg_1", "cursor-test");
+        let sse_str = String::from_utf8_lossy(&sse);
+        let events = parse_sse_events(&sse_str);
+
+        let start = events
+            .iter()
+            .find(|(name, _)| *name == "message_start")
+            .map(|(_, data)| data.clone())
+            .expect("message_start present");
+        assert_eq!(start["message"]["usage"]["input_tokens"].as_u64(), Some(25));
+    }
+
+    #[test]
+    fn sse_maps_cache_usage_into_message_delta() {
+        let mut body = Vec::new();
+        body.extend_from_slice(&test_frames::text_frame("hi"));
+        body.extend_from_slice(&test_frames::usage_frame_full(25, 7, 11, 13));
+        body.extend_from_slice(&test_frames::end_frame());
+        let sse = frame_cursor_stream(&body, "msg_1", "cursor-test");
+        let sse_str = String::from_utf8_lossy(&sse);
+        let events = parse_sse_events(&sse_str);
+
+        let delta = events
+            .iter()
+            .find(|(name, _)| *name == "message_delta")
+            .map(|(_, data)| data.clone())
+            .expect("message_delta present");
+        // cache_write → cache_creation_input_tokens, cache_read → cache_read_input_tokens
+        assert_eq!(
+            delta["usage"]["cache_creation_input_tokens"].as_u64(),
+            Some(13)
+        );
+        assert_eq!(delta["usage"]["cache_read_input_tokens"].as_u64(), Some(11));
     }
 
     #[test]

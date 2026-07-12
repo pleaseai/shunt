@@ -157,8 +157,15 @@ async fn refresh(
 }
 
 pub(crate) fn parse_token_response(value: &Value) -> Option<StoredCursorAuth> {
+    // An empty accessToken is not a usable credential; treat a malformed success
+    // response as invalid rather than persisting a broken token that then fails
+    // every request.
+    let access_token = value.get("accessToken")?.as_str()?;
+    if access_token.is_empty() {
+        return None;
+    }
     Some(StoredCursorAuth {
-        access_token: value.get("accessToken")?.as_str()?.to_string(),
+        access_token: access_token.to_string(),
         refresh_token: value
             .get("refreshToken")
             .and_then(Value::as_str)
@@ -171,14 +178,28 @@ pub(crate) fn parse_token_response(value: &Value) -> Option<StoredCursorAuth> {
 }
 
 fn env_token() -> Option<String> {
-    std::env::var("SHUNT_CURSOR_AUTH_TOKEN")
+    if let Some(token) = std::env::var("SHUNT_CURSOR_AUTH_TOKEN")
         .ok()
         .filter(|token| !token.trim().is_empty())
-        .or_else(|| {
-            std::env::var("CURSOR_AUTH_TOKEN")
-                .ok()
-                .filter(|token| !token.trim().is_empty())
-        })
+    {
+        return Some(token);
+    }
+    // Fall back to the un-namespaced `CURSOR_AUTH_TOKEN`. The Cursor desktop app
+    // uses the same variable name, so a developer's shell may have it set for the
+    // IDE; consuming it here silently bypasses the stored `cursor-auth.json` and
+    // its refresh logic. Warn once so an unexpected 401 (from an expired IDE
+    // token) is traceable to the env var rather than the credential file.
+    let token = std::env::var("CURSOR_AUTH_TOKEN")
+        .ok()
+        .filter(|token| !token.trim().is_empty())?;
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    WARNED.call_once(|| {
+        tracing::warn!(
+            "using CURSOR_AUTH_TOKEN from the environment (not SHUNT_CURSOR_AUTH_TOKEN); \
+             this bypasses the stored Cursor credential file and its token refresh"
+        );
+    });
+    Some(token)
 }
 
 fn token_is_valid(token: &str, now: SystemTime) -> bool {

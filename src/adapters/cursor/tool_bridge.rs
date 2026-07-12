@@ -282,6 +282,9 @@ pub fn start_cursor_tool_bridge(
     id_factory: Box<dyn FnMut() -> String + Send>,
 ) -> (Vec<u8>, bool) {
     let mut framer = CursorSseFramer::new(message_id, model);
+    // Buffered path: seed usage before the first emit so message_start carries
+    // the real input-token count instead of the placeholder 1.
+    framer.preseed_usage(events);
 
     let mut state = CursorBridgeState::new(allowed_tool_names, id_factory);
 
@@ -375,7 +378,7 @@ pub fn start_cursor_tool_bridge(
     // next request is recognized as a resume (matched against the incoming
     // tool_result). No upstream events are stored — resume re-runs the agent
     // with the tool result carried in the prompt history.
-    if let Some(pending) = state.pending_tool.clone() {
+    if let Some(pending) = state.pending_tool {
         BridgeRegistry::insert(session_id, pending);
     }
 

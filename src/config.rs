@@ -231,6 +231,16 @@ pub fn host_is_xai(host: &str) -> bool {
     host == "x.ai" || host.ends_with(".x.ai")
 }
 
+/// Whether `host` belongs to Cursor (`cursor.sh`/`cursor.com` or any subdomain).
+/// Used to reject a `cursor_oauth` provider pointed at a non-Cursor host, so
+/// shunt never leaks the stored Cursor subscription bearer to another origin.
+pub fn host_is_cursor(host: &str) -> bool {
+    host == "cursor.sh"
+        || host.ends_with(".cursor.sh")
+        || host == "cursor.com"
+        || host.ends_with(".cursor.com")
+}
+
 /// Which header an injected API key is sent in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -286,6 +296,10 @@ pub enum ConfigError {
     XaiOauthWrongKind { provider: String },
     #[error("providers.{provider} uses auth = \"cursor_oauth\" but kind is not \"cursor\"")]
     CursorOauthWrongKind { provider: String },
+    #[error("providers.{provider} uses auth = \"cursor_oauth\" but base_url host {host} is not cursor.sh/cursor.com; refusing to send a subscription token off-origin")]
+    CursorOauthNonCursorHost { provider: String, host: String },
+    #[error("providers.{provider} uses auth = \"cursor_oauth\" but base_url is not https; refusing to send a subscription token over plaintext")]
+    CursorOauthNotHttps { provider: String },
     #[error("server.default_provider references unknown provider: {0}")]
     UnknownDefaultProvider(String),
     #[error("route for model {model} references unknown provider: {provider}")]
@@ -539,10 +553,30 @@ impl Config {
                     provider: name.clone(),
                 });
             }
-            if provider.auth == AuthMode::CursorOauth && provider.kind != ProviderKind::Cursor {
-                return Err(ConfigError::CursorOauthWrongKind {
-                    provider: name.clone(),
-                });
+            // A cursor_oauth provider injects the operator's stored Cursor
+            // subscription bearer, so — like xai_oauth below — its base_url must
+            // stay on a Cursor host over https, never a gateway or plaintext
+            // endpoint that would receive the token. It must also be a Cursor-kind
+            // provider so the request goes through the Cursor adapter's auth
+            // injection rather than forwarding the client's own credential.
+            if provider.auth == AuthMode::CursorOauth {
+                if provider.kind != ProviderKind::Cursor {
+                    return Err(ConfigError::CursorOauthWrongKind {
+                        provider: name.clone(),
+                    });
+                }
+                if url.scheme() != "https" {
+                    return Err(ConfigError::CursorOauthNotHttps {
+                        provider: name.clone(),
+                    });
+                }
+                let host = url.host_str().unwrap_or_default();
+                if !host_is_cursor(host) {
+                    return Err(ConfigError::CursorOauthNonCursorHost {
+                        provider: name.clone(),
+                        host: host.to_string(),
+                    });
+                }
             }
             // An xai_oauth provider injects the operator's subscription bearer,
             // so its base_url must stay on an xAI host over https (mirrors
@@ -781,6 +815,33 @@ mod tests {
         config.providers.get_mut("cursor").unwrap().kind = ProviderKind::Responses;
         let error = config.validate().unwrap_err();
         assert!(matches!(error, ConfigError::CursorOauthWrongKind { .. }));
+    }
+
+    #[test]
+    fn cursor_oauth_rejects_non_cursor_host() {
+        // The built-in cursor provider (api2.cursor.sh over https) is accepted.
+        let config = Config::default();
+        assert!(config.validate().is_ok());
+
+        // Pointing a cursor_oauth provider off-origin is refused (bearer-leak guard).
+        let mut config = Config::default();
+        config.providers.get_mut("cursor").unwrap().base_url =
+            "https://evil.example.com".to_string();
+        let error = config.validate().unwrap_err();
+        assert!(matches!(
+            error,
+            ConfigError::CursorOauthNonCursorHost { .. }
+        ));
+        assert!(error.to_string().contains("evil.example.com"));
+    }
+
+    #[test]
+    fn cursor_oauth_requires_https_base_url() {
+        let mut config = Config::default();
+        config.providers.get_mut("cursor").unwrap().base_url = "http://api2.cursor.sh".to_string();
+        let error = config.validate().unwrap_err();
+        assert!(matches!(error, ConfigError::CursorOauthNotHttps { .. }));
+        assert!(error.to_string().contains("plaintext"));
     }
 
     #[test]

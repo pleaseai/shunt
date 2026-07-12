@@ -17,7 +17,12 @@ impl CursorHttpClient {
         Self {
             client,
             base_url: base_url.into(),
-            client_version: "0.48.5".to_string(),
+            // Cursor's backend can start rejecting stale client versions; an env
+            // override lets operators bump it without a rebuild/redeploy.
+            client_version: std::env::var("SHUNT_CURSOR_CLIENT_VERSION")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "0.48.5".to_string()),
         }
     }
 

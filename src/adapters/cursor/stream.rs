@@ -67,8 +67,18 @@ impl CursorStreamMachine {
 
     pub fn finish(&mut self) -> Vec<u8> {
         if !self.finished {
-            self.framer.finalize();
             self.finished = true;
+            // Leftover buffered bytes mean the upstream stream was cut off
+            // mid-frame; surface that as an error instead of emitting a clean
+            // message_stop over truncated data.
+            if let Err(error) = self.decoder.finish() {
+                let mut output = self.framer.take_output();
+                output.extend_from_slice(&format_sse_error(&format!(
+                    "Cursor frame decode failed: {error}"
+                )));
+                return output;
+            }
+            self.framer.finalize();
         }
         self.framer.take_output()
     }

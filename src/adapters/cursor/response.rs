@@ -82,6 +82,13 @@ pub fn decode_upstream_response(body: &[u8]) -> Result<Vec<CursorStreamEvent>, C
         events.extend(events_from_message(&msg));
     }
 
+    // A complete Connect response ends on a frame boundary; leftover buffered
+    // bytes mean the body was cut off mid-frame. Reject it rather than returning
+    // a partial response that looks successful.
+    decoder
+        .finish()
+        .map_err(|error| CursorDecodeError::Decode(error.to_string()))?;
+
     Ok(events)
 }
 
@@ -97,6 +104,8 @@ pub fn decode_cursor_upstream(
     let mut text_content = String::new();
     let mut final_input_tokens: u64 = 0;
     let mut final_output_tokens: u64 = 0;
+    let mut final_cache_read_tokens: u64 = 0;
+    let mut final_cache_write_tokens: u64 = 0;
 
     for event in &events {
         match event {
@@ -104,10 +113,13 @@ pub fn decode_cursor_upstream(
             CursorStreamEvent::Usage {
                 input_tokens,
                 output_tokens,
-                ..
+                cache_read_tokens,
+                cache_write_tokens,
             } => {
                 final_input_tokens = *input_tokens;
                 final_output_tokens = *output_tokens;
+                final_cache_read_tokens = *cache_read_tokens;
+                final_cache_write_tokens = *cache_write_tokens;
             }
             CursorStreamEvent::End => break,
             _ => {}
@@ -132,8 +144,8 @@ pub fn decode_cursor_upstream(
         "usage": {
             "input_tokens": input_tokens,
             "output_tokens": final_output_tokens,
-            "cache_creation_input_tokens": 0,
-            "cache_read_input_tokens": 0
+            "cache_creation_input_tokens": final_cache_write_tokens,
+            "cache_read_input_tokens": final_cache_read_tokens
         }
     }))
 }
@@ -260,6 +272,21 @@ mod tests {
         );
         assert_eq!(json["usage"]["cache_read_input_tokens"].as_u64(), Some(0));
         assert_eq!(json["stop_reason"], "end_turn");
+    }
+
+    #[test]
+    fn accumulate_response_maps_cache_usage() {
+        let mut body = Vec::new();
+        body.extend_from_slice(&test_frames::text_frame("hi"));
+        body.extend_from_slice(&test_frames::usage_frame_full(15, 3, 8, 9));
+        body.extend_from_slice(&test_frames::end_frame());
+        let json = decode_cursor_upstream(&body, "msg_test", "cursor-test").unwrap();
+        // cache_write → cache_creation_input_tokens, cache_read → cache_read_input_tokens
+        assert_eq!(
+            json["usage"]["cache_creation_input_tokens"].as_u64(),
+            Some(9)
+        );
+        assert_eq!(json["usage"]["cache_read_input_tokens"].as_u64(), Some(8));
     }
 
     #[test]

@@ -43,30 +43,27 @@ impl CursorAgentMode {
 pub fn resolve_cursor_model(model: &str) -> Result<CursorModelResolution, String> {
     let model = model.trim();
 
-    // Strip known prefixes
-    if let Some(rest) = model.strip_prefix("cursor-agent:") {
-        return Ok(CursorModelResolution {
-            model_id: rest.to_string(),
-            mode: CursorAgentMode::Agent,
-        });
-    }
-    if let Some(rest) = model.strip_prefix("cursor-plan:") {
-        return Ok(CursorModelResolution {
-            model_id: rest.to_string(),
-            mode: CursorAgentMode::Plan,
-        });
-    }
-    if let Some(rest) = model.strip_prefix("cursor-ask:") {
-        return Ok(CursorModelResolution {
-            model_id: rest.to_string(),
-            mode: CursorAgentMode::Ask,
-        });
-    }
-    if let Some(rest) = model.strip_prefix("cursor:") {
-        return Ok(CursorModelResolution {
-            model_id: rest.to_string(),
-            mode: CursorAgentMode::Agent,
-        });
+    // Strip known prefixes. A prefixed form with an empty suffix (e.g. bare
+    // `cursor-agent:`) carries no model id, so reject it locally instead of
+    // forwarding an empty id upstream.
+    for (prefix, mode) in [
+        ("cursor-agent:", CursorAgentMode::Agent),
+        ("cursor-plan:", CursorAgentMode::Plan),
+        ("cursor-ask:", CursorAgentMode::Ask),
+        ("cursor:", CursorAgentMode::Agent),
+    ] {
+        if let Some(rest) = model.strip_prefix(prefix) {
+            let rest = rest.trim();
+            if rest.is_empty() {
+                return Err(format!(
+                    "unknown cursor model: {model}. Supported: cursor:<id>, cursor-plan:<id>, cursor-ask:<id>, cursor-agent"
+                ));
+            }
+            return Ok(CursorModelResolution {
+                model_id: rest.to_string(),
+                mode,
+            });
+        }
     }
 
     // Legacy exact names
@@ -168,6 +165,24 @@ mod tests {
     fn resolve_unknown_model_errors() {
         let r = resolve_cursor_model("unknown-model");
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn resolve_empty_prefixed_suffix_errors() {
+        // A bare prefix with no model id must be rejected locally, not forwarded
+        // upstream as an empty model.
+        for model in [
+            "cursor-agent:",
+            "cursor-plan:",
+            "cursor-ask:",
+            "cursor:",
+            "cursor:   ",
+        ] {
+            assert!(
+                resolve_cursor_model(model).is_err(),
+                "expected error for {model:?}"
+            );
+        }
     }
 
     #[test]

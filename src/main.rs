@@ -56,12 +56,18 @@ fn main() -> anyhow::Result<()> {
             match provider.as_str() {
                 "xai" => shunt::auth::xai_login::run(&provider).await,
                 "cursor" => {
-                    let config = Config::load(cli.config.as_deref())?;
-                    let base_url = config
-                        .provider("cursor")
-                        .map(|provider| provider.base_url.as_str())
-                        .unwrap_or("https://api2.cursor.sh");
-                    shunt::auth::cursor_login::run_with_base(base_url).await
+                    // Logging in should not require a fully valid gateway config:
+                    // read the optional override best-effort and fall back to the
+                    // default Cursor host if the config fails to load or omits it.
+                    let base_url = Config::load(cli.config.as_deref())
+                        .ok()
+                        .and_then(|config| {
+                            config
+                                .provider("cursor")
+                                .map(|provider| provider.base_url.clone())
+                        })
+                        .unwrap_or_else(|| "https://api2.cursor.sh".to_string());
+                    shunt::auth::cursor_login::run_with_base(&base_url).await
                 }
                 _ => anyhow::bail!("unknown login provider {provider:?}; supported: xai, cursor"),
             }

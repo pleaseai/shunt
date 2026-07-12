@@ -97,6 +97,20 @@ impl ConnectFrameDecoder {
     pub fn buffered(&self) -> usize {
         self.buffer.len()
     }
+
+    /// Assert the input ended on a frame boundary. Leftover buffered bytes are an
+    /// incomplete trailing frame — i.e. the upstream body/stream was truncated —
+    /// so this returns an error rather than letting the caller treat partial data
+    /// as a complete response.
+    pub fn finish(&self) -> Result<(), ConnectError> {
+        if self.buffer.is_empty() {
+            Ok(())
+        } else {
+            Err(ConnectError::TruncatedFrame {
+                buffered: self.buffer.len(),
+            })
+        }
+    }
 }
 
 /// Maximum bytes we will decompress from a single gzipped Connect frame. Bounds
@@ -195,6 +209,7 @@ impl std::error::Error for ConnectEndError {}
 #[derive(Debug, Clone)]
 pub enum ConnectError {
     PayloadTooLarge { length: usize, max: usize },
+    TruncatedFrame { buffered: usize },
 }
 
 impl std::fmt::Display for ConnectError {
@@ -202,6 +217,12 @@ impl std::fmt::Display for ConnectError {
         match self {
             ConnectError::PayloadTooLarge { length, max } => {
                 write!(f, "Connect frame payload {length} exceeds max {max}")
+            }
+            ConnectError::TruncatedFrame { buffered } => {
+                write!(
+                    f,
+                    "Cursor response truncated: {buffered} byte(s) of an incomplete frame remain"
+                )
             }
         }
     }
@@ -309,7 +330,31 @@ mod tests {
                 assert_eq!(length, 100);
                 assert_eq!(max, 10);
             }
+            other => panic!("expected PayloadTooLarge, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn finish_rejects_truncated_trailing_frame() {
+        let mut decoder = ConnectFrameDecoder::new();
+        let frame = encode_connect_frame(b"complete", 0);
+        // Feed one full frame plus a partial header of a second frame.
+        let mut input = frame.to_vec();
+        input.extend_from_slice(&[0u8, 0, 0, 1]); // 4 bytes — short of the 5-byte header
+        let frames = decoder.push(&input).unwrap();
+        assert_eq!(frames.len(), 1);
+        assert!(matches!(
+            decoder.finish(),
+            Err(ConnectError::TruncatedFrame { buffered: 4 })
+        ));
+    }
+
+    #[test]
+    fn finish_accepts_frame_boundary() {
+        let mut decoder = ConnectFrameDecoder::new();
+        let frame = encode_connect_frame(b"complete", 0);
+        decoder.push(&frame).unwrap();
+        assert!(decoder.finish().is_ok());
     }
 
     #[test]
