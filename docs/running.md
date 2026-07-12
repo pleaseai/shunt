@@ -132,6 +132,29 @@ provider = "openai"
 #                            # provider, model (the requested id), and
 #                            # `http.response.status_code`. Aggregates only — no
 #                            # prompts, client names, or session ids.
+
+# Optional: OpenTelemetry (OTLP) export to your own collector/backend. Off
+# unless an endpoint is set. Independent of [sentry] — both can run together.
+# Exports up to three signals over OTLP/HTTP (protobuf): request spans
+# (traces), the shunt.requests/shunt.latency series (metrics, same fields as
+# above), and shunt's log events (logs; the stderr logs are unaffected). The
+# resource carries only service.*/telemetry.sdk.* (no host or process
+# detector), and — like Sentry — bodies, headers, credentials, and (unless
+# `include_session_id`) the session id never leave. An empty endpoint (e.g.
+# SHUNT_OTEL__ENDPOINT="") disables again; an invalid endpoint or an out-of-range
+# sample_ratio is a startup error. Standard OTEL_EXPORTER_OTLP_* and
+# OTEL_SERVICE_NAME / OTEL_RESOURCE_ATTRIBUTES env vars are also honored.
+# [otel]
+# endpoint = "http://localhost:4318"  # OTLP/HTTP base; /v1/{traces,metrics,logs} appended
+# service_name = "shunt"     # (default) service.name resource attribute
+# environment = "prod"       # optional deployment.environment.name
+# sample_ratio = 1.0         # (default) head-based trace sampling in [0.0, 1.0]
+# traces = true              # (default) export request spans
+# metrics = true             # (default) export usage metrics
+# logs = true                # (default) export log events
+# include_session_id = false # (default) withhold the client session id from spans
+# [otel.headers]             # optional per-request headers (e.g. a hosted-collector token)
+# authorization = "Bearer <token>"
 ```
 
 **Routing precedence** (`src/routing.rs`): exact `[[routes]]` match → `[[route_prefixes]]`

@@ -1,12 +1,22 @@
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use shunt::{
-    config::{Config, SentryConfig},
+    config::{Config, OtelConfig, SentryConfig},
     server,
+    telemetry::{self, OtelReloadLayer, TelemetryGuard},
 };
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{
+    layer::SubscriberExt, reload, util::SubscriberInitExt, EnvFilter, Registry,
+};
+
+/// Handle to the subscriber's reloadable OTel layer slot, set once by
+/// [`init_tracing`]. Stored globally so [`run`] can inject the OTel bridges
+/// after config load without threading it through unrelated call sites.
+type OtelReloadHandle = reload::Handle<OtelReloadLayer, Registry>;
+static OTEL_RELOAD: OnceLock<OtelReloadHandle> = OnceLock::new();
 
 #[derive(Debug, Parser)]
 #[command(name = "shunt", about = "Claude Code LLM gateway")]
@@ -84,8 +94,9 @@ fn run(config_path: Option<PathBuf>) -> anyhow::Result<()> {
     // reuse the exact same file the initial load used.
     let path = config_path.or_else(Config::find_config_file);
     let config = Config::load(path.as_deref()).context("failed to load config")?;
-    // The guard must outlive the runtime so buffered events flush on shutdown.
+    // Both guards must outlive the runtime so buffered events flush on shutdown.
     let _sentry = init_sentry(config.sentry.as_ref());
+    let _telemetry = init_telemetry(config.otel.as_ref());
     runtime()?.block_on(serve(config, path))
 }
 
@@ -165,7 +176,16 @@ fn scrub_event(
 
 fn init_tracing() {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("shunt=info"));
+    // Empty OTel slot, swapped for the trace+logs bridges by `init_telemetry`
+    // once config is loaded (the exporters need the endpoint). Placing the
+    // reload layer first pins its subscriber type to `Registry`, so the layer
+    // swapped in is a plain `Box<dyn Layer<Registry>>`. The global `filter`
+    // still gates it — a disabled event is dropped for every layer, OTel
+    // included — so exports stay scoped to `shunt` targets like the stderr logs.
+    let none: OtelReloadLayer = None;
+    let (otel_layer, otel_handle) = reload::Layer::new(none);
     tracing_subscriber::registry()
+        .with(otel_layer)
         .with(filter)
         // Logs go to stderr so command stdout (e.g. the `token` subcommand's
         // apiKeyHelper output) stays free of log noise.
@@ -177,6 +197,38 @@ fn init_tracing() {
         // otherwise ride into error events via the trace context.
         .with(sentry::integrations::tracing::layer().span_filter(|_| false))
         .init();
+    // Only the first init wins (later calls in tests are ignored); a failure to
+    // store the handle just leaves OTel disabled, never a crash.
+    let _ = OTEL_RELOAD.set(otel_handle);
+}
+
+/// Opt-in OpenTelemetry export: build the OTLP pipeline only when the operator
+/// configured a non-empty `[otel] endpoint`, then swap the trace+logs bridges
+/// into the subscriber's reload slot. Export failures are non-fatal — shunt
+/// keeps serving without telemetry rather than refusing to boot.
+fn init_telemetry(config: Option<&OtelConfig>) -> Option<TelemetryGuard> {
+    let config = config.filter(|otel| otel.enabled())?;
+    match telemetry::init(config) {
+        Ok((guard, layer)) => {
+            if let Some(handle) = OTEL_RELOAD.get() {
+                if let Err(error) = handle.reload(layer) {
+                    tracing::warn!(%error, "failed to install otel trace/logs layer");
+                }
+            }
+            tracing::info!(
+                endpoint = %config.endpoint,
+                traces = config.traces,
+                metrics = config.metrics,
+                logs = config.logs,
+                "opentelemetry export enabled"
+            );
+            Some(guard)
+        }
+        Err(error) => {
+            tracing::error!(%error, "failed to initialize opentelemetry export; continuing without it");
+            None
+        }
+    }
 }
 
 #[cfg(test)]
