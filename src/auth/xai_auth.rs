@@ -25,7 +25,12 @@ use crate::auth::codex_auth::{format_iso8601, is_token_valid_at, write_auth_file
 pub(crate) const CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
 pub(crate) const TOKEN_URL: &str = "https://auth.x.ai/oauth2/token";
 pub(crate) const DEVICE_CODE_URL: &str = "https://auth.x.ai/oauth2/device/code";
-pub(crate) const SCOPE: &str = "openid profile email offline_access grok-cli:access api:access";
+/// Grok-CLI OAuth scopes. Includes `conversations:read`/`conversations:write`
+/// alongside `grok-cli:access`/`api:access` so the minted token is accepted by
+/// the Grok CLI chat proxy (`cli-chat-proxy.grok.com`), the subscription
+/// surface the `grok` provider targets. Mirrors the official Grok CLI
+/// (raine/claude-code-proxy `src/providers/grok/auth/login.rs`).
+pub(crate) const SCOPE: &str = "openid profile email offline_access grok-cli:access api:access conversations:read conversations:write";
 pub(crate) const DEVICE_CODE_GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
 
 #[derive(Debug, Clone, PartialEq, Eq)]

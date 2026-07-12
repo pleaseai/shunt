@@ -662,6 +662,14 @@ fn own_error(message: String) -> AdapterError {
 const CODEX_USER_AGENT: &str = "codex_cli_rs/0.144.1";
 const CODEX_CLIENT_VERSION: &str = "0.144.1";
 
+/// Grok CLI identity, mirrored from the official Grok CLI (via
+/// raine/claude-code-proxy `src/providers/grok/client.rs`). The subscription
+/// surface (`cli-chat-proxy.grok.com`) gates on these headers: without them it
+/// answers as if the caller were an unentitled API client. Sent only with the
+/// `XaiOauth` (subscription bearer) credential.
+const GROK_CLIENT_IDENTIFIER: &str = "grok-shell";
+const GROK_CLIENT_VERSION: &str = "0.2.93";
+
 fn request_builder(
     state: &AppState,
     route: &Route,
@@ -706,9 +714,17 @@ fn request_builder(
                     .header("x-codex-window-id", format!("{session_id}:0"));
             }
         }
-        // xAI subscription OAuth: bearer only, no account-id/originator headers.
+        // xAI subscription OAuth: the subscription bearer plus the Grok-CLI
+        // identity headers the CLI chat proxy expects (no ChatGPT/Codex
+        // account-id/originator headers). `accept: text/event-stream` matches
+        // the real Grok CLI; the upstream is always consumed as SSE.
         Credential::XaiOauth { access_token } => {
-            request = request.bearer_auth(access_token);
+            request = request
+                .bearer_auth(access_token)
+                .header("accept", "text/event-stream")
+                .header("x-xai-token-auth", "xai-grok-cli")
+                .header("x-grok-client-identifier", GROK_CLIENT_IDENTIFIER)
+                .header("x-grok-client-version", GROK_CLIENT_VERSION);
         }
         // A Responses provider configured with passthrough auth is a
         // misconfiguration; send no credential and let the upstream reject it.
@@ -936,37 +952,92 @@ mod tests {
         }
     }
 
+    fn grok_route() -> Route {
+        Route {
+            provider: "grok".to_string(),
+            adapter: AdapterKind::Responses,
+            model: "grok-4.5".to_string(),
+            upstream_model: "grok-4.5".to_string(),
+            effort: None,
+        }
+    }
+
     #[test]
-    fn builds_xai_request_bearer_only_without_openai_beta() {
+    fn builds_grok_oauth_request_with_cli_identity_headers() {
         let state = AppState::new(Config::default(), reqwest::Client::new()).unwrap();
 
         let request = build_test_request(
             &state,
-            &xai_route(),
+            &grok_route(),
             Credential::XaiOauth {
                 access_token: "xai-access".to_string(),
             },
             Some("session-123"),
         );
 
-        // Stock /responses path on the xAI base URL.
-        assert_eq!(request.url().as_str(), "https://api.x.ai/v1/responses");
+        // The subscription OAuth path targets the Grok CLI chat proxy, not
+        // api.x.ai, and carries the Grok-CLI identity headers it gates on.
+        assert_eq!(
+            request.url().as_str(),
+            "https://cli-chat-proxy.grok.com/v1/responses"
+        );
         assert_eq!(
             request.headers().get("authorization").unwrap(),
             "Bearer xai-access"
         );
-        // No ChatGPT/Codex headers and no OpenAI-Beta for the xai flavor.
+        assert_eq!(
+            request.headers().get("x-xai-token-auth").unwrap(),
+            "xai-grok-cli"
+        );
+        assert_eq!(
+            request.headers().get("x-grok-client-identifier").unwrap(),
+            "grok-shell"
+        );
+        assert_eq!(
+            request.headers().get("x-grok-client-version").unwrap(),
+            "0.2.93"
+        );
+        assert_eq!(
+            request.headers().get("accept").unwrap(),
+            "text/event-stream"
+        );
+        // No ChatGPT/Codex headers and no OpenAI-Beta for the xai flavor, even
+        // when a session id is present on the request.
         assert!(request.headers().get("chatgpt-account-id").is_none());
         assert!(request.headers().get("originator").is_none());
         assert!(request.headers().get("user-agent").is_none());
         assert!(request.headers().get("version").is_none());
         assert!(request.headers().get("OpenAI-Beta").is_none());
-        // Session/identity headers are ChatGPT/Codex-only, even when a
-        // session id is present on an xAI-routed request.
         assert!(request.headers().get("session_id").is_none());
         assert!(request.headers().get("x-client-request-id").is_none());
         assert!(request.headers().get("x-codex-window-id").is_none());
-        assert!(request.headers().get("accept").is_none());
+    }
+
+    #[test]
+    fn builds_xai_api_key_request_bearer_only_without_cli_headers() {
+        let state = AppState::new(Config::default(), reqwest::Client::new()).unwrap();
+
+        let request = build_test_request(
+            &state,
+            &xai_route(),
+            Credential::ApiKey {
+                value: "xai-key".to_string(),
+                header: crate::config::ApiKeyHeader::Bearer,
+            },
+            None,
+        );
+
+        // The API-key path stays on the developer API and sends the bearer
+        // only — no Grok-CLI identity headers, no OpenAI-Beta (xai flavor).
+        assert_eq!(request.url().as_str(), "https://api.x.ai/v1/responses");
+        assert_eq!(
+            request.headers().get("authorization").unwrap(),
+            "Bearer xai-key"
+        );
+        assert!(request.headers().get("x-xai-token-auth").is_none());
+        assert!(request.headers().get("x-grok-client-identifier").is_none());
+        assert!(request.headers().get("x-grok-client-version").is_none());
+        assert!(request.headers().get("OpenAI-Beta").is_none());
     }
 
     #[tokio::test]

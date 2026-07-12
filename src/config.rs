@@ -227,6 +227,16 @@ pub fn host_is_xai(host: &str) -> bool {
     host == "x.ai" || host.ends_with(".x.ai")
 }
 
+/// Hosts a subscription (`xai_oauth`) bearer may legitimately be sent to: xAI's
+/// own API (`x.ai`) and the Grok CLI chat proxy (`grok.com`) that honors a
+/// SuperGrok / X Premium+ subscription. Used to reject an `xai_oauth` provider
+/// pointed at any other origin, so shunt never leaks the subscription token
+/// off-origin, while still allowing the subscription surface the real Grok CLI
+/// uses (`cli-chat-proxy.grok.com`).
+pub fn host_is_grok_subscription(host: &str) -> bool {
+    host_is_xai(host) || host == "grok.com" || host.ends_with(".grok.com")
+}
+
 /// Which header an injected API key is sent in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -274,7 +284,7 @@ pub enum ConfigError {
     ProviderBaseUrlMissingHost { provider: String },
     #[error("providers.{provider} uses auth = \"api_key\" but api_key_env is not set")]
     MissingApiKeyEnv { provider: String },
-    #[error("providers.{provider} uses auth = \"xai_oauth\" but base_url host {host} is not x.ai; refusing to send a subscription token off-origin")]
+    #[error("providers.{provider} uses auth = \"xai_oauth\" but base_url host {host} is not an xAI/Grok host (x.ai or grok.com); refusing to send a subscription token off-origin")]
     XaiOauthNonXaiHost { provider: String, host: String },
     #[error("providers.{provider} uses auth = \"xai_oauth\" but base_url is not https; refusing to send a subscription token over plaintext")]
     XaiOauthNotHttps { provider: String },
@@ -345,15 +355,37 @@ impl Default for Config {
                 },
             ),
             (
-                // xAI Grok. Defaults to the API-key path (XAI_API_KEY); a
-                // subscription user flips `auth = "xai_oauth"` in shunt.toml to
-                // reuse a SuperGrok / X Premium+ login (`shunt login xai`).
+                // xAI Grok, API-key path: the developer API (api.x.ai), billed
+                // per token against an XAI_API_KEY. A SuperGrok / X Premium+
+                // subscription is NOT honored here — use the `grok` provider for
+                // that (it targets the subscription surface).
                 "xai".to_string(),
                 ProviderConfig {
                     kind: ProviderKind::Responses,
                     base_url: "https://api.x.ai/v1".to_string(),
                     auth: AuthMode::ApiKey,
                     api_key_env: Some("XAI_API_KEY".to_string()),
+                    api_key_header: ApiKeyHeader::Bearer,
+                    effort: None,
+                    count_tokens: CountTokens::default(),
+                    websocket: false,
+                },
+            ),
+            (
+                // xAI Grok, subscription OAuth path: the Grok CLI chat proxy
+                // (cli-chat-proxy.grok.com), which honors a SuperGrok / X
+                // Premium+ login (`shunt login xai`) instead of API billing.
+                // The developer API (api.x.ai) rejects a subscription bearer
+                // with 402/403, so the OAuth path targets the CLI surface and
+                // sends the Grok-CLI identity headers, exactly like the `codex`
+                // provider reaches chatgpt.com/backend-api rather than
+                // api.openai.com.
+                "grok".to_string(),
+                ProviderConfig {
+                    kind: ProviderKind::Responses,
+                    base_url: "https://cli-chat-proxy.grok.com/v1".to_string(),
+                    auth: AuthMode::XaiOauth,
+                    api_key_env: None,
                     api_key_header: ApiKeyHeader::Bearer,
                     effort: None,
                     count_tokens: CountTokens::default(),
@@ -538,7 +570,7 @@ impl Config {
                     });
                 }
                 let host = url.host_str().unwrap_or_default();
-                if !host_is_xai(host) {
+                if !host_is_grok_subscription(host) {
                     return Err(ConfigError::XaiOauthNonXaiHost {
                         provider: name.clone(),
                         host: host.to_string(),
@@ -629,6 +661,12 @@ impl Config {
         };
         if provider.auth == AuthMode::ChatgptOauth {
             return ResponsesFlavor::Chatgpt;
+        }
+        // The subscription OAuth path (Grok CLI proxy on grok.com) speaks the
+        // same xAI dialect as api.x.ai but its host isn't an x.ai host, so key
+        // the flavor on the auth mode as well as the host.
+        if provider.auth == AuthMode::XaiOauth {
+            return ResponsesFlavor::Xai;
         }
         let host = reqwest::Url::parse(&provider.base_url)
             .ok()
@@ -810,6 +848,38 @@ mod tests {
         provider.api_key_env = None;
         provider.base_url = "https://api.x.ai/v1".to_string();
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn default_seeds_builtin_grok_subscription_provider() {
+        let config = Config::default();
+        let grok = config.provider("grok").unwrap();
+        // Subscription OAuth path: the Grok CLI chat proxy, not api.x.ai.
+        assert_eq!(grok.kind, ProviderKind::Responses);
+        assert_eq!(grok.base_url, "https://cli-chat-proxy.grok.com/v1");
+        assert_eq!(grok.auth, AuthMode::XaiOauth);
+        assert!(grok.api_key_env.is_none());
+        // The grok.com host isn't an x.ai host, so the flavor keys on the
+        // auth mode — it still speaks the xai Responses dialect.
+        assert_eq!(config.responses_flavor("grok"), ResponsesFlavor::Xai);
+        // The default config validates: the bearer-leak guard allows grok.com.
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn xai_oauth_accepts_grok_com_host_but_still_rejects_other_origins() {
+        // The Grok CLI chat proxy host is accepted for the subscription bearer.
+        let mut config = Config::default();
+        let provider = config.providers.get_mut("grok").unwrap();
+        provider.base_url = "https://cli-chat-proxy.grok.com/v1".to_string();
+        assert!(config.validate().is_ok());
+
+        // A non-xAI, non-grok host is still refused off-origin.
+        let mut config = Config::default();
+        let provider = config.providers.get_mut("grok").unwrap();
+        provider.base_url = "https://evil.example.com/v1".to_string();
+        let error = config.validate().unwrap_err();
+        assert!(matches!(error, ConfigError::XaiOauthNonXaiHost { .. }));
     }
 
     #[test]
