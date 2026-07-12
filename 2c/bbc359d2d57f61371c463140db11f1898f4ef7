@@ -1,0 +1,19 @@
+README.md
+  s_17ba820a78e33b::t_0113288107d8bc 64
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "2cbbc359d2d57f61371c463140db11f1898f4ef7",
+  "prompts": {},
+  "sessions": {
+    "s_17ba820a78e33b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ce008449-6776-492d-a66d-a4d44e700070",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
