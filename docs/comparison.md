@@ -67,8 +67,16 @@ the main session on Claude while diverting only the models you name.
 ⁴ raine/ccp implements its **own** ChatGPT OAuth (PKCE browser + device-code login);
 shunt reuses the Codex CLI login (`~/.codex/auth.json`) and its own PKCE flow is an
 open TODO (`src/auth/mod.rs:18-19`).
-⁵ tool-search / `defer_loading` / `tool_reference` handling is not documented for
-raine/ccp; marked ○ conservatively (absence of evidence, not evidence of absence).
+⁵ **Confirmed by reading raine/ccp source** (`fe80a6b`, 2026-07-11): no tool-search
+handling exists (zero matches for `defer_loading` / `tool_reference` / `tool_search` /
+`advanced-tool-use`). Tools are whitelist-rebuilt to `{name, description, parameters}`
+(`src/providers/codex/translate/request.rs:476-494`), so `defer_loading:true` is
+silently dropped — no 400, but no context saved; a `tool_reference` block in a
+ToolSearch result renders as `[unsupported content block omitted: tool_reference]`
+(`request.rs:836-842`) rather than shunt's clean `"Loaded tool: X"`. Hence ○ (vs
+shunt's ◐): force-enabling `ENABLE_TOOL_SEARCH` against raine/ccp degrades the
+discovery-loop result to a placeholder. By default Claude Code's own gate keeps tool
+search off behind a non-first-party base URL, so this stays latent.
 ⁶ raine/ccp subscription backends: Codex (ChatGPT Plus/Pro), Kimi (kimi.com), Grok
 (grok.com), Cursor Agent — all via subscription OAuth.
 
