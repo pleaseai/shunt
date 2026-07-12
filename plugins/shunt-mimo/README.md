@@ -37,7 +37,7 @@ is **not** a built-in provider, so you add both the provider table and a route:
    ```toml
    [providers.mimo]
    kind = "anthropic"
-   base_url = "https://api-mimo.mi.com/anthropic"
+   base_url = "https://api.xiaomimimo.com/anthropic"
    auth = "api_key"
    api_key_env = "MIMO_API_KEY"
 
@@ -50,11 +50,11 @@ is **not** a built-in provider, so you add both the provider table and a route:
    [`docs/running.md` §3](https://github.com/pleaseai/shunt/blob/main/docs/running.md)
    and [`shunt.toml.example`](https://github.com/pleaseai/shunt/blob/main/shunt.toml.example).
 
-   > **base_url note.** The value above matches `shunt.toml.example`. Xiaomi's
-   > current [Claude Code integration docs](https://mimo.mi.com/docs/en-US/tokenplan/integration/claudecode)
-   > show `https://api.xiaomimimo.com/anthropic` (pay-as-you-go) and
-   > `https://token-plan-cn.xiaomimimo.com/anthropic` (Token Plan). Use whichever
-   > your account/plan requires — set `base_url` accordingly.
+   > **base_url note.** `https://api.xiaomimimo.com/anthropic` is the
+   > pay-as-you-go host. If you're on a **Token Plan**, use
+   > `https://token-plan-cn.xiaomimimo.com/anthropic` instead — set `base_url` to
+   > whichever your account requires. Hosts are from Xiaomi's current
+   > [Claude Code integration docs](https://mimo.mi.com/docs/en-US/tokenplan/integration/claudecode).
 
 Without a running shunt gateway mapping this id, Claude Code will send
 `mimo-v2.5-pro` straight to Anthropic and the request will fail.
