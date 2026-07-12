@@ -141,7 +141,7 @@ effort = "high"
 Claude Code はマッピングされた id に対して、コンテキストバーを固定の **200k** でサイズします。Grok スラッグの実際のウィンドウがそれより大きい場合は引き上げてください — 値は非 `claude-` id に自動的に追随します。
 
 ```bash
-export CLAUDE_CODE_MAX_CONTEXT_TOKENS=<your-slug's real window>   # per xAI's model docs
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS=YOUR_WINDOW   # your slug's real window, per xAI's model docs
 ```
 
 これは**グローバル**（セッションごとに 1 つの値）です。実際のウィンドウを超えると `prompt is too long` のオーバーフローによる無駄なやり取りが発生するため、マッピングされたモデルのうち最も小さい実ウィンドウに合わせてください。詳細と `count_tokens` の挙動: [Effort & Context](/ja/guides/effort-and-context/#マッピングされたモデルのコンテキスト--使用量表示)。

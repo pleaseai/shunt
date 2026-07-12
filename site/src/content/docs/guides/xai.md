@@ -177,7 +177,7 @@ Claude Code sizes its context bar at a fixed **200k** for a mapped id. If your G
 window is larger, raise it — the value follows a non-`claude-` id automatically:
 
 ```bash
-export CLAUDE_CODE_MAX_CONTEXT_TOKENS=<your-slug's real window>   # per xAI's model docs
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS=YOUR_WINDOW   # your slug's real window, per xAI's model docs
 ```
 
 It's **global** (one value per session); set it to the smallest real window among your mapped
