@@ -1,0 +1,19 @@
+site/src/content/docs/zh-cn/guides/codex.md
+  s_293e9a3adba56f::t_37af970e3f21da 291
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "c8d34dfbfae8bc9d9a43e1f17294c4e4df028254",
+  "prompts": {},
+  "sessions": {
+    "s_293e9a3adba56f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3b9e6efe-6e96-4a94-80b4-c4e56d6424a7",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
