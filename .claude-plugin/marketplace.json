@@ -38,6 +38,12 @@
       "source": "./plugins/shunt-zai",
       "description": "Subagents on Z.ai GLM models (glm-5.2, glm-4.7), routed through shunt at the inference layer via Z.ai's Anthropic-compatible endpoint.",
       "keywords": ["zai", "glm"]
+    },
+    {
+      "name": "shunt-minimax",
+      "source": "./plugins/shunt-minimax",
+      "description": "Subagent on MiniMax-M3 (1M context), routed through shunt at the inference layer via MiniMax's Anthropic-compatible endpoint.",
+      "keywords": ["minimax"]
     }
   ]
 }
