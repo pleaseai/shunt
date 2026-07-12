@@ -45,12 +45,12 @@ Each signal toggles independently via `traces` / `metrics` / `logs`.
 
 ## Privacy
 
-shunt never exports request/response bodies, headers, or credentials.
+shunt never exports request/response bodies, headers, or credentials in **metrics and traces**.
 
-- **Metrics and traces** stay low-cardinality and body-free. The request span's client **session id** is attached **only** when `include_session_id = true` (default off), and even then only while trace export is active.
+- **Metrics and traces** stay low-cardinality and body-free. With OTLP trace export, the request span's client **session id** is sent to the collector **only** when `include_session_id = true` (default off), and only while trace export is active. With `[otel]` absent or disabled the id stays on the local request span as before (so it still reaches any other tracing subscriber, e.g. Sentry).
 - **Logs** mirror shunt's own diagnostic events as written, so — like the stderr logs — they can include request-derived fields (an upstream error body, an authenticated client id). For strictly body-free export, set `logs = false` and keep metrics/traces.
 
-The exported resource advertises `service.*` and `telemetry.sdk.*` only — no host or process detector runs, so the machine's hostname is not attached — plus whatever you put in the standard `OTEL_RESOURCE_ATTRIBUTES`.
+The exported resource advertises `service.*`, `telemetry.sdk.*`, and — when `environment` is set — `deployment.environment.name`; no host or process detector runs, so the machine's hostname is not attached, plus whatever you put in the standard `OTEL_RESOURCE_ATTRIBUTES`.
 
 :::caution
 If `[otel.headers]` carries a secret (e.g. a collector bearer token) and the endpoint is plaintext `http://` to a non-loopback host, shunt logs a warning at startup: the token would travel in the clear. Use `https://` for a remote collector.
