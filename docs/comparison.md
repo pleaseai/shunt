@@ -49,7 +49,7 @@ Legend: ● full · ◐ partial / workaround · ○ none · — n/a by design
 | tool-search / `defer_loading` / `tool_reference` handling | ◐ (works, no ctx savings) | ○⁵ | ◐ (upstream) / ● (fork) | ○ | ○ |
 | Reasoning round-trip to Claude Code `thinking` | ● (encrypted) | ◐ (Kimi/Grok; **Codex dropped**) | ◐ | ○ | ◐ |
 | Multi-account load balancing / failover | ○ | ○ | ● | some | ● |
-| Backend breadth | 4 kinds¹ | 4 subs⁶ | 11 backends² | varies | 100–1600+ |
+| Backend breadth | 4 providers¹ | 4 subs⁶ | 11 backends² | varies | 100–1600+ |
 | Management API / dashboard | ○ | ◐ (monitor TUI) | ● | some | ● |
 | Usage / quota / cost tracking | ○ (Sentry metrics only) | ○ | ● | some | ● |
 | Plugin / interceptor system | ○ | ○ | ● | some | ● |
