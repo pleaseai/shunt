@@ -33,3 +33,11 @@ to avoid the empty-body failure mode altogether.
 
 pleaseai/shunt is not a Graphite repo (`detect-stack-tool.sh` prints nothing) —
 plain `gh please pr create` / `gh pr create` is the right tool, no `gt submit`.
+
+**Confirmed fix works on initial create too (PR #44)**: passing
+`--body-file <path>` (Write-tool-authored file, not stdin/heredoc) directly on
+the first `gh please pr create --draft ...` call produced a correct non-empty
+body (verified via `gh pr view <n> --json body --jq '.body | length'`) —
+no need to create-then-edit. Command still printed no stdout on success;
+`gh pr list --head <branch> --repo pleaseai/shunt --json number,title,isDraft,url`
+(plain gh) is the reliable way to confirm the PR exists and get its number.
