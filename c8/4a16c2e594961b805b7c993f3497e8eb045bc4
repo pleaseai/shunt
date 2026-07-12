@@ -1,0 +1,53 @@
+site/src/content/docs/guides/providers.md
+  s_245b3a871a2322::t_390db3f0b659b0 66-84
+plugins/shunt-deepseek/agents/deepseek-v4-flash.md
+  s_245b3a871a2322::t_8c9f8d906176a7 1-32
+plugins/shunt-zai/.claude-plugin/plugin.json
+  s_245b3a871a2322::t_0866e14902cea4 1-16
+plugins/shunt-kimi/.claude-plugin/plugin.json
+  s_245b3a871a2322::t_2b100c7f560994 1-16
+plugins/shunt-deepseek/agents/deepseek-v4-pro.md
+  s_245b3a871a2322::t_1e86ad7f296726 1-31
+plugins/shunt-zai/agents/glm-4.7.md
+  s_245b3a871a2322::t_903f57d21a32e7 1-31
+.claude-plugin/marketplace.json
+  s_245b3a871a2322::t_806d199eb38304 17-40
+plugins/shunt-xai/agents/grok-build-0.1.md
+  s_245b3a871a2322::t_b6abbec662cd6e 1-32
+plugins/shunt-zai/agents/glm-5.2.md
+  s_245b3a871a2322::t_7d9a3bb8dc37c6 1-31
+plugins/shunt-kimi/agents/kimi-k2.7-code.md
+  s_245b3a871a2322::t_9f4bc4943e8ad4 1-32
+plugins/shunt-xai/README.md
+  s_245b3a871a2322::t_15c3def6c563ec 1-92
+plugins/shunt-xai/agents/grok-4.5.md
+  s_245b3a871a2322::t_3225a04e139e0b 1-31
+plugins/shunt-deepseek/.claude-plugin/plugin.json
+  s_245b3a871a2322::t_142332fb0f17aa 1-16
+plugins/shunt-xai/agents/grok-4.3.md
+  s_245b3a871a2322::t_635e52c73837ff 1-31
+plugins/shunt-kimi/README.md
+  s_245b3a871a2322::t_39e7193729c127 1-76
+plugins/shunt-deepseek/README.md
+  s_245b3a871a2322::t_3601416cb8f365 1-83
+plugins/shunt-zai/README.md
+  s_245b3a871a2322::t_02d1a62719930e 1-81
+plugins/shunt-xai/.claude-plugin/plugin.json
+  s_245b3a871a2322::t_440e02af811c5f 1-16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "c84a16c2e594961b805b7c993f3497e8eb045bc4",
+  "prompts": {},
+  "sessions": {
+    "s_245b3a871a2322": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "57c33d35-36c6-4d51-8d2d-3b563002adc8",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
