@@ -149,6 +149,26 @@ async fn get_health_returns_ok_status_and_version() {
 }
 
 #[tokio::test]
+async fn get_protocol_returns_descriptor_format_and_version() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let upstream = MockServer::start().await;
+    let gateway = start_gateway(upstream.uri()).await;
+
+    let response = reqwest::Client::new()
+        .get(format!("{}/protocol", gateway.base_url))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    assert_eq!(body["format"], "anthropic-messages");
+    assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
+}
+
+#[tokio::test]
 async fn messages_forwards_anthropic_headers_verbatim_and_preserves_query() {
     if !can_bind_loopback() {
         return;
