@@ -21,8 +21,9 @@ Anthropic unchanged. Routing is purely by the request's `model` id — no
 prompt-shape fingerprinting (`README.md:104-131`).
 
 That focus is the axis every comparison below turns on. shunt optimizes for
-**translation fidelity and Claude-Code-native behavior on a single subscription**,
-not for breadth of backends or multi-tenant fleet operation.
+**translation fidelity and Claude-Code-native behavior**, with an Anthropic
+OAuth account pool that combines model-aware proactive quota rotation with reactive
+failover rather than broad multi-tenant fleet operation.
 
 ## 2. The peer groups
 
@@ -48,7 +49,7 @@ Legend: ● full · ◐ partial / workaround · ○ none · — n/a by design
 | Upload trimming (`previous_response_id` continuation) **on the translation path** | ● | ● | ○ (passthrough only) | ○ | ○ |
 | tool-search / `defer_loading` / `tool_reference` handling | ◐ (works, no ctx savings) | ○⁵ | ◐ (upstream) / ● (fork) | ○ | ○ |
 | Reasoning round-trip to Claude Code `thinking` | ● (encrypted) | ◐ (Kimi/Grok; **Codex dropped**) | ◐ | ○ | ◐ |
-| Multi-account load balancing / failover | ○ | ○ | ● | some | ● |
+| Multi-account load balancing / failover | ◐⁷ | ○ | ● | some | ● |
 | Backend breadth | 4 providers¹ | 4 subs⁶ | 11 backends² | varies | 100–1600+ |
 | Management API / dashboard | ○ | ◐ (monitor TUI) | ● | some | ● |
 | Usage / quota / cost tracking | ○ (Sentry metrics only) | ○ | ● | some | ● |
@@ -79,6 +80,11 @@ discovery-loop result to a placeholder. By default Claude Code's own gate keeps 
 search off behind a non-first-party base URL, so this stays latent.
 ⁶ raine/ccp subscription backends: Codex (ChatGPT Plus/Pro), Kimi (kimi.com), Grok
 (grok.com), Cursor Agent — all via subscription OAuth.
+⁷ shunt pools explicit accounts only for Anthropic `claude_oauth`: session-sticky
+selection, per-provider round-robin, model-aware proactive rotation from per-account
+5h/7d quota headers, cooldowns, forced refresh after 401, and reactive failover on
+quota-rejected 429s and 5xx responses. ChatGPT/Codex remains single-account;
+per-account usage reporting is not implemented.
 
 > "raine/ccp" = [raine/claude-code-proxy](https://github.com/raine/claude-code-proxy).
 
@@ -125,11 +131,15 @@ Most gaps are **deliberate scope boundaries**, not oversights. shunt's own READM
 positions general gateways (LiteLLM/Portkey/bifrost) as *adjacent infrastructure /
 possible backends*, not the same product.
 
-- **No multi-account load balancing / failover.** shunt resolves exactly one
-  credential per provider (`src/auth/mod.rs:36-70`); there is no account pool,
-  selector, round-robin/fill-first, or cross-credential cooldown. CLIProxyAPI,
-  LiteLLM, Portkey all do. *Deliberate* — but see §6, item G (heavy ChatGPT/Codex
-  rolling-window users are the case where this hurts most).
+- **Anthropic OAuth multi-account is deliberately narrow.** shunt has a proactive
+  and reactive account pool for `auth = "claude_oauth"`: `x-claude-code-session-id`
+  stickiness, per-provider round-robin, model-aware rotation before the 5h or governing
+  weekly bucket reaches the wall, account cooldowns, credentials-file force-refresh
+  after 401, and failover after quota-rejected 429s or 5xx responses
+  (`docs/m8-anthropic-multi-account.md`). It does **not** pool ChatGPT/Codex accounts,
+  ramp concurrency on a freshly switched account, or expose per-account usage.
+  CLIProxyAPI, LiteLLM, and Portkey provide broader fleet-oriented balancing and
+  visibility; see §6, items G–H for the remaining gap.
 - **Narrow backend breadth.** Only Anthropic-Messages passthrough or OpenAI-Responses
   translation; no native Gemini/Bedrock/Azure/Ollama unless they expose one of those
   two protocols.
@@ -206,16 +216,19 @@ toward being a fleet gateway and warrant a conscious decision first.
 
 ## 7. One-line takeaway
 
-shunt is the **high-fidelity, single-subscription, Claude-Code-native** end of the
-spectrum. Its nearest peer is **raine/claude-code-proxy** — same class (Rust,
+shunt is the **high-fidelity, Claude-Code-native** end of the spectrum. Its nearest
+peer is **raine/claude-code-proxy** — same class (Rust,
 subscription OAuth, per-`model` routing, Codex WS + `previous_response_id`
 continuation) — against which shunt's edge is deeper continuation normalization,
 Codex reasoning fidelity (raine drops it), an Anthropic-passthrough path (keep the
 main session on Claude), and xAI OAuth; raine's edge is a built-in monitor TUI, a
 first-party ChatGPT OAuth login, and Kimi/Cursor breadth. Against **CLIProxyAPI**,
 shunt wins on translation-path upload trimming (CLIProxyAPI's WS is a passthrough)
-and trades away fleet features (multi-account LB, management, plugins, backend
-breadth) by design. The highest-value in-scope work is finishing the tool-search
+and trades away most fleet features (broad multi-account LB, management, plugins,
+backend breadth) by design. It now provides a narrow Anthropic OAuth account
+pool with model-aware proactive quota scheduling plus reactive failover, but
+ChatGPT/Codex pooling remains a deliberate gap.
+The highest-value in-scope work is finishing the tool-search
 context savings ([#43]) and hardening the Codex WS continuation (live-probe +
 mid-stream fallback); the biggest deliberate gap to weigh is minimal fill-first
 multi-account for ChatGPT/Codex.

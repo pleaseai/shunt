@@ -429,6 +429,9 @@ fn websocket_headers(credential: Credential) -> Result<HeaderMap, AdapterError> 
         Credential::CursorOauth { access_token } => {
             set("authorization", format!("Bearer {access_token}"))?
         }
+        Credential::ClaudeOauth { access_token, .. } => {
+            set("authorization", format!("Bearer {access_token}"))?
+        }
         Credential::Passthrough => {}
     }
     Ok(headers)
@@ -728,6 +731,9 @@ fn request_builder(
                 .header("x-xai-token-auth", "xai-grok-cli")
                 .header("x-grok-client-identifier", GROK_CLIENT_IDENTIFIER)
                 .header("x-grok-client-version", GROK_CLIENT_VERSION);
+        }
+        Credential::ClaudeOauth { access_token, .. } => {
+            request = request.bearer_auth(access_token);
         }
         // A Responses provider configured with passthrough auth is a
         // misconfiguration; send no credential and let the upstream reject it.

@@ -1,6 +1,6 @@
 ---
 title: CLI
-description: The shunt command line — run, check, and token.
+description: The shunt command line — run, check, token, and provider login.
 ---
 
 ## `shunt run`
@@ -43,6 +43,41 @@ Print a Claude subscription OAuth token to **stdout** (logs go to stderr), desig
 
 See [Connect Claude Code](/guides/connect-claude-code/#2-choose-the-anthropic-credential) for when you need this.
 
+## `shunt login claude`
+
+Create a shunt-managed Anthropic pool account:
+
+```bash
+# Import the current refreshable Claude Code login.
+shunt login claude --name primary
+
+# Run Claude's one-year setup-token flow and store the result.
+shunt login claude --name ci --long-lived
+```
+
+The default form copies `~/.claude/.credentials.json` (or `CLAUDE_CREDENTIALS`) into `~/.shunt/accounts/claude/<name>.json`. It preserves refresh tokens, and shunt refreshes that private copy rather than changing Claude Code's source file.
+
+`--long-lived` requires the `claude` executable in `PATH`. shunt runs the official interactive `claude setup-token` browser flow on your terminal, then asks you to paste its token into a hidden prompt. shunt never prints the token. The file is written atomically at `0600` inside a `0700` directory on Unix. `SHUNT_CLAUDE_ACCOUNTS_DIR` overrides the store directory; reusing a name replaces its file.
+
+Reference the result with a name-only pool entry, or leave the provider's account list empty to scan every store file:
+
+```toml
+[[providers.anthropic.accounts]]
+name = "primary"
+```
+
+## `shunt login xai`
+
+Run xAI's device-code OAuth flow and save its refreshable credential:
+
+```bash
+shunt login xai
+```
+
+## Anthropic account-pool authentication
+
+For an Anthropic provider with `auth = "claude_oauth"`, an account can use a name-only store entry, `credentials = "~/.claude/.credentials.json"`, or `token_env = "YOUR_ENV_NAME"`. See [Anthropic Multi-Account](/guides/anthropic-multi-account/) for complete configuration and failover rules.
+
 ## Environment variables
 
 | Variable | Effect |
@@ -51,5 +86,7 @@ See [Connect Claude Code](/guides/connect-claude-code/#2-choose-the-anthropic-cr
 | `RUST_LOG` | Log filter, e.g. `shunt=debug` |
 | `SHUNT_CLIENT_TOKENS` | Client tokens for [`[server.auth]`](/guides/shared-gateway/) (name configurable via `tokens_env`) |
 | `SHUNT_GATEWAY_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN` | Static token for `shunt token` |
-| `CLAUDE_CREDENTIALS` | Alternate credentials file path for `shunt token` |
+| `CLAUDE_CREDENTIALS` | Alternate credentials file path for `shunt token` and refreshable `shunt login claude` import |
+| `SHUNT_CLAUDE_ACCOUNTS_DIR` | Alternate shunt-managed Claude account-store directory |
+| Account-specific variable named by `token_env` | Setup token for an Anthropic `claude_oauth` pool entry; used verbatim |
 | `OPENAI_API_KEY` | Default key env for the `openai` provider (per-provider via `api_key_env`) |

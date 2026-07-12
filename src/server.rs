@@ -7,6 +7,7 @@ use axum::{
 use serde::Serialize;
 
 use crate::{
+    accounts::AccountPool,
     auth::inbound::InboundAuth,
     config::{Config, ConfigError},
     discovery, protocol, proxy,
@@ -19,6 +20,7 @@ pub struct AppState {
     /// Per-request config snapshot (see [`AppState::refreshed`]).
     pub config: Arc<Config>,
     pub http_client: reqwest::Client,
+    pub accounts: Arc<AccountPool>,
     /// Inbound client-token auth snapshot for this request (None ⇒ open).
     pub inbound_auth: Option<Arc<InboundAuth>>,
     /// The live, hot-swappable runtime state a reload updates. Private so the
@@ -33,16 +35,25 @@ impl AppState {
     pub fn new(config: Config, http_client: reqwest::Client) -> Result<Self, ConfigError> {
         let runtime = RuntimeState::from_config(config)?;
         let shared: SharedState = Arc::new(arc_swap::ArcSwap::from_pointee(runtime));
-        Ok(Self::from_shared(shared, http_client))
+        Ok(Self::from_shared(
+            shared,
+            http_client,
+            Arc::new(AccountPool::new()),
+        ))
     }
 
     /// Snapshot the current runtime state from an existing shared store.
-    pub fn from_shared(shared: SharedState, http_client: reqwest::Client) -> Self {
+    pub fn from_shared(
+        shared: SharedState,
+        http_client: reqwest::Client,
+        accounts: Arc<AccountPool>,
+    ) -> Self {
         let current = shared.load();
         Self {
             config: current.config.clone(),
             inbound_auth: current.inbound_auth.clone(),
             http_client,
+            accounts,
             shared,
         }
     }
@@ -51,7 +62,11 @@ impl AppState {
     /// entry picks up the latest reloaded config while holding one stable
     /// snapshot for the whole request. Cheap: clones `Arc`s and the client.
     pub(crate) fn refreshed(&self) -> Self {
-        Self::from_shared(self.shared.clone(), self.http_client.clone())
+        Self::from_shared(
+            self.shared.clone(),
+            self.http_client.clone(),
+            self.accounts.clone(),
+        )
     }
 }
 
@@ -60,7 +75,11 @@ impl AppState {
 pub fn build_router(config: Config) -> Result<(Router, SharedState), ConfigError> {
     let runtime = RuntimeState::from_config(config)?;
     let shared: SharedState = Arc::new(arc_swap::ArcSwap::from_pointee(runtime));
-    let state = AppState::from_shared(shared.clone(), reqwest::Client::new());
+    let state = AppState::from_shared(
+        shared.clone(),
+        reqwest::Client::new(),
+        Arc::new(AccountPool::new()),
+    );
 
     // `/` and `/health` stay unauthenticated even when `[server.auth]` is
     // configured (healthcheck tools rarely carry tokens); they must never

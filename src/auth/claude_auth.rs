@@ -67,11 +67,25 @@ pub fn default_credentials_path() -> PathBuf {
 pub struct ClaudeAuthStore {
     path: PathBuf,
     client: reqwest::Client,
+    token_url: String,
 }
 
 impl ClaudeAuthStore {
     pub fn new(path: PathBuf, client: reqwest::Client) -> Self {
-        Self { path, client }
+        Self {
+            path,
+            client,
+            token_url: TOKEN_URL.to_string(),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_token_url(path: PathBuf, client: reqwest::Client, token_url: String) -> Self {
+        Self {
+            path,
+            client,
+            token_url,
+        }
     }
 
     pub async fn get_valid_access_token(&self) -> anyhow::Result<String> {
@@ -86,13 +100,23 @@ impl ClaudeAuthStore {
             return Ok(tokens.access_token);
         }
 
-        let refresh_token = tokens.refresh_token.clone().ok_or_else(|| {
+        self.refresh_and_write_back(tokens).await
+    }
+
+    /// Refresh and persist the stored OAuth token regardless of its expiry.
+    pub async fn force_refresh(&self) -> anyhow::Result<String> {
+        let tokens = self.read_tokens()?;
+        self.refresh_and_write_back(tokens).await
+    }
+
+    async fn refresh_and_write_back(&self, tokens: Tokens) -> anyhow::Result<String> {
+        let refresh_token = tokens.refresh_token.ok_or_else(|| {
             anyhow::anyhow!(
                 "no refresh token in {}; run `claude` then /login",
                 self.path.display()
             )
         })?;
-        let refreshed = refresh(&self.client, &refresh_token).await?;
+        let refreshed = refresh(&self.client, &self.token_url, &refresh_token).await?;
         write_back(&self.path, &refreshed)?;
         Ok(refreshed.access_token)
     }
@@ -168,7 +192,11 @@ fn parse_refresh(value: &Value, refresh_token: &str, now: SystemTime) -> Option<
     })
 }
 
-async fn refresh(client: &reqwest::Client, refresh_token: &str) -> anyhow::Result<Refreshed> {
+async fn refresh(
+    client: &reqwest::Client,
+    token_url: &str,
+    refresh_token: &str,
+) -> anyhow::Result<Refreshed> {
     let body = json!({
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
@@ -176,7 +204,7 @@ async fn refresh(client: &reqwest::Client, refresh_token: &str) -> anyhow::Resul
         "scope": SCOPE,
     });
     let response = client
-        .post(TOKEN_URL)
+        .post(token_url)
         .header("content-type", "application/json")
         .body(serde_json::to_string(&body)?)
         .send()
@@ -240,6 +268,53 @@ fn set_private_permissions(_path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn force_refresh_refreshes_a_still_valid_token() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": "new-access",
+                "refresh_token": "new-refresh",
+                "expires_in": 3600
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-claude-force-refresh-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".credentials.json");
+        std::fs::write(
+            &path,
+            r#"{"claudeAiOauth":{"accessToken":"still-valid","refreshToken":"old-refresh","expiresAt":4000000000000}}"#,
+        )
+        .unwrap();
+        let store = ClaudeAuthStore::with_token_url(
+            path.clone(),
+            reqwest::Client::new(),
+            format!("{}/token", server.uri()),
+        );
+
+        let token = store.force_refresh().await.unwrap();
+
+        assert_eq!(token, "new-access");
+        let stored = read_file(&path).unwrap();
+        assert_eq!(stored["claudeAiOauth"]["accessToken"], "new-access");
+        assert_eq!(stored["claudeAiOauth"]["refreshToken"], "new-refresh");
+        server.verify().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn valid_when_beyond_expiry_buffer() {

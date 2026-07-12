@@ -30,11 +30,45 @@ Each provider is a table under a name of your choosing. Built-ins (`anthropic`, 
 | :-- | :-- | :-- |
 | `kind` | `anthropic` \| `responses` \| `cursor` | Upstream protocol / adapter. `anthropic` = Messages API (passed through, optionally re-keyed); `responses` = Anthropic Messages translated to the OpenAI Responses API; `cursor` = the native Cursor ConnectRPC/protobuf AgentService adapter. |
 | `base_url` | URL | Upstream base; shunt appends the endpoint path. |
-| `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `xai_oauth` \| `cursor_oauth` | `passthrough` forwards the client's own credential; `api_key` injects a key from `api_key_env`; `chatgpt_oauth` reuses `~/.codex/auth.json`; `xai_oauth` reuses `~/.shunt/xai-auth.json` from `shunt login xai` (only sent to x.ai/grok.com hosts over HTTPS); `cursor_oauth` reuses `~/.shunt/cursor-auth.json` (`shunt login cursor`). |
+| `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `claude_oauth` \| `xai_oauth` \| `cursor_oauth` | `passthrough` forwards the client's own credential; `api_key` injects a key from `api_key_env`; `chatgpt_oauth` reuses `~/.codex/auth.json`; `claude_oauth` selects from explicit Anthropic accounts; `xai_oauth` reuses `~/.shunt/xai-auth.json` from `shunt login xai` (only sent to x.ai/grok.com hosts over HTTPS); `cursor_oauth` reuses `~/.shunt/cursor-auth.json` (`shunt login cursor`). |
 | `api_key_env` | env var name | Where the key is read from, when `auth = "api_key"`. |
 | `api_key_header` | `bearer` (default) \| `x_api_key` | Header the injected key is sent in. |
+| `accounts` | array of account tables | Anthropic OAuth account pool. Valid only with `kind = "anthropic"` and `auth = "claude_oauth"`; see below. |
 | `effort` | `low` … `max` | Optional default reasoning effort (`responses` providers). |
 | `count_tokens` | `tiktoken` (default) \| `estimate` | `responses` providers only: local tiktoken count vs. 404 fallback ([details](/guides/effort-and-context/#token-counting-count_tokens)). |
+
+### `[[providers.<name>.accounts]]`
+
+Explicit account entries for an Anthropic provider using `auth = "claude_oauth"`:
+
+```toml
+[providers.anthropic]
+kind = "anthropic"
+base_url = "https://api.anthropic.com"
+auth = "claude_oauth"
+
+[[providers.anthropic.accounts]]
+name = "primary"
+credentials = "~/.claude/.credentials.json"
+uuid = "00000000-0000-0000-0000-000000000000"
+
+[[providers.anthropic.accounts]]
+name = "backup"
+token_env = "CLAUDE_BACKUP_OAUTH_TOKEN"
+```
+
+| Key | Required | Meaning |
+| :-- | :-- | :-- |
+| `name` | yes | Unique account label containing only lowercase ASCII letters, digits, and hyphens. A name-only entry resolves from the shunt-managed store. Returned to the client in `x-shunt-account`; avoid personal information. |
+| `credentials` | one usable source | Path to a Claude Code `.credentials.json`-shaped file. `~/` is expanded. shunt refreshes near expiry and atomically writes refreshed tokens back. |
+| `token_env` | one usable source | Environment variable holding a setup token. Used verbatim and not refreshable. Mutually exclusive with `credentials`. |
+| `uuid` | no | Replaces an existing `metadata.user_id.account_uuid` in requests selected for this account. |
+
+A name-only entry reads `~/.shunt/accounts/claude/<name>.json`, created with `shunt login claude --name <name>`; `SHUNT_CLAUDE_ACCOUNTS_DIR` overrides that directory. An empty account list scans all valid store files. `claude_oauth` additionally requires an HTTPS `base_url` whose host is `anthropic.com` or a subdomain, preventing bearer leakage to another origin.
+
+Account selection is session-sticky and quota-aware. On every upstream response handled by the `claude_oauth` account pool, shunt records `anthropic-ratelimit-unified-5h-utilization`, `anthropic-ratelimit-unified-7d-utilization`, `anthropic-ratelimit-unified-7d_oi-utilization`, `anthropic-ratelimit-unified-5h-reset`, `anthropic-ratelimit-unified-7d-reset`, `anthropic-ratelimit-unified-7d_oi-reset`, and `anthropic-ratelimit-unified-status`. At the fixed `0.98` switch threshold, status `rejected`, shared 5-hour utilization at or above threshold, or the model's governing weekly utilization at or above threshold makes an account near quota. Fable models use `7d_oi` when available, falling back to `7d`; all other families, including Sonnet, use shared `7d`. shunt keeps a healthy under-threshold sticky account, but rotates off a near-quota or cooled one and prefers available under-threshold accounts by soonest governing-weekly reset, then near-quota accounts, then cooled accounts. Expired quota buckets clear automatically, and every account remains selectable. Reactive failover remains active. Storm-control for freshly switched account concurrency is not implemented.
+
+See [Anthropic Multi-Account](/guides/anthropic-multi-account/) for the complete selection and failover behavior. The behavior reference is [KarpelesLab/teamclaude](https://github.com/KarpelesLab/teamclaude); shunt has no runtime dependency on it.
 
 ## `[[routes]]`
 

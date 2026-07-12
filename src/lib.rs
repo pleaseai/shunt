@@ -1,3 +1,4 @@
+pub mod accounts;
 pub mod adapters;
 pub mod auth;
 pub mod config;

@@ -47,6 +47,7 @@ prost = "0.13"
 rand = "0.9"
 regex-lite = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+rpassword = "7"
 # Feature unification compiles both rustls crypto providers into the binary
 # (aws-lc-rs via sentry's reqwest `rustls` feature, ring via reqwest's own
 # `rustls-tls` feature), so rustls refuses to auto-select one. tokio-tungstenite

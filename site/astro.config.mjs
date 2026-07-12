@@ -87,6 +87,11 @@ export default defineConfig({
               slug: 'guides/xai',
             },
             {
+              label: 'Anthropic Multi-Account',
+              translations: { ko: 'Anthropic 멀티 계정', ja: 'Anthropic マルチアカウント', 'zh-CN': 'Anthropic 多账户' },
+              slug: 'guides/anthropic-multi-account',
+            },
+            {
               label: 'Connect Claude Code',
               translations: { ko: 'Claude Code 연결', ja: 'Claude Code の接続', 'zh-CN': '连接 Claude Code' },
               slug: 'guides/connect-claude-code',
