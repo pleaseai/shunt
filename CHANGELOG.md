@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.10.0](https://github.com/pleaseai/shunt/compare/v0.9.0...v0.10.0) (2026-07-12)
+
+
+### Features
+
+* add Cursor provider (ConnectRPC/protobuf adapter, OAuth, tool bridging) ([#23](https://github.com/pleaseai/shunt/issues/23)) ([72c1d94](https://github.com/pleaseai/shunt/commit/72c1d9475645af694007eae33439798121e408f1))
+* **codex:** emulate defer_loading for progressive tool reveal ([#43](https://github.com/pleaseai/shunt/issues/43)) ([#63](https://github.com/pleaseai/shunt/issues/63)) ([6a141d9](https://github.com/pleaseai/shunt/commit/6a141d97c815eef2a94712165c40cb36ec0f7d86))
+* **otel:** opt-in OpenTelemetry (OTLP) export for traces, metrics, and logs ([#64](https://github.com/pleaseai/shunt/issues/64)) ([0bb4fdf](https://github.com/pleaseai/shunt/commit/0bb4fdfef84aaed122e3dee1244970206f6aa221))
+
 ## [0.9.0](https://github.com/pleaseai/shunt/compare/v0.8.0...v0.9.0) (2026-07-12)
 
 
