@@ -426,6 +426,9 @@ fn websocket_headers(credential: Credential) -> Result<HeaderMap, AdapterError> 
         Credential::XaiOauth { access_token } => {
             set("authorization", format!("Bearer {access_token}"))?
         }
+        Credential::CursorOauth { access_token } => {
+            set("authorization", format!("Bearer {access_token}"))?
+        }
         Credential::Passthrough => {}
     }
     Ok(headers)

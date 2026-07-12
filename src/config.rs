@@ -360,6 +360,7 @@ impl Default for Config {
                     api_key_header: ApiKeyHeader::Bearer,
                     effort: None,
                     count_tokens: CountTokens::default(),
+                    websocket: false,
                 },
             ),
             (
