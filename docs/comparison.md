@@ -128,7 +128,7 @@ possible backends*, not the same product.
 - **No multi-account load balancing / failover.** shunt resolves exactly one
   credential per provider (`src/auth/mod.rs:36-70`); there is no account pool,
   selector, round-robin/fill-first, or cross-credential cooldown. CLIProxyAPI,
-  LiteLLM, Portkey all do. *Deliberate* — but see §6, item B (heavy ChatGPT/Codex
+  LiteLLM, Portkey all do. *Deliberate* — but see §6, item G (heavy ChatGPT/Codex
   rolling-window users are the case where this hurts most).
 - **Narrow backend breadth.** Only Anthropic-Messages passthrough or OpenAI-Responses
   translation; no native Gemini/Bedrock/Azure/Ollama unless they expose one of those
