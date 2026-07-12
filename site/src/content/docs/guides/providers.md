@@ -63,3 +63,22 @@ provider = "kimi"
 Then `export KIMI_API_KEY=…`, [point Claude Code at shunt](/guides/connect-claude-code/), and select `kimi-k2.7-code` (via `ANTHROPIC_CUSTOM_MODEL_OPTION` or `ANTHROPIC_MODEL`). Run `shunt check` to validate — it reports an unknown provider in a route, a missing `api_key_env`, or a bad `base_url`.
 
 Every provider key (`kind`, `auth`, `api_key_header`, `count_tokens`, …) is documented in the [Configuration Reference](/reference/configuration/).
+
+## Subagent plugins
+
+The [`pleaseai/shunt` marketplace](https://github.com/pleaseai/shunt/tree/main/plugins) ships ready-made Claude Code subagents pinned to each provider's models — one agent per model. Install a plugin, then `@`-mention a model or set `CLAUDE_CODE_SUBAGENT_MODEL`. Each agent's `model:` frontmatter diverts only that subagent; the main session stays on Claude.
+
+| Plugin | Models (one agent each) | Provider |
+| :-- | :-- | :-- |
+| `shunt-codex` | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` | `codex` (ChatGPT subscription) |
+| `shunt-xai` ⚠️ | `grok-build-0.1`, `grok-4.5`, `grok-4.3` | `xai` (experimental) |
+| `shunt-kimi` | `kimi-k2.7-code` | `kimi` |
+| `shunt-deepseek` | `deepseek-v4-pro`, `deepseek-v4-flash` | `deepseek` |
+| `shunt-zai` | `glm-5.2`, `glm-4.7` | `zai` |
+
+```bash
+/plugin marketplace add pleaseai/shunt
+/plugin install shunt-xai@shunt
+```
+
+Each plugin still needs its provider routed in `shunt.toml` (see the sections above) and the matching credential exported — the plugin's own README lists the exact route and env var. ⚠️ `shunt-xai` is **experimental**: the xAI provider is not yet verified against the live API.

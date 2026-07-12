@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "shunt-kimi",
+  "displayName": "shunt · Kimi (Moonshot) models",
+  "version": "0.1.0",
+  "description": "Subagent that runs on Moonshot AI's kimi-k2.7-code, routed through the shunt gateway at the inference layer while staying inside Claude Code's harness.",
+  "author": {
+    "name": "Minsu Lee",
+    "email": "minsu.lee@pleaseai.dev",
+    "url": "https://github.com/amondnet"
+  },
+  "homepage": "https://github.com/pleaseai/shunt",
+  "repository": "https://github.com/pleaseai/shunt",
+  "license": "MIT OR Apache-2.0",
+  "keywords": ["shunt", "kimi", "moonshot", "subagent", "llm-gateway"]
+}

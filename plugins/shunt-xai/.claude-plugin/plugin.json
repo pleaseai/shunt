@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "shunt-xai",
+  "displayName": "shunt · xAI Grok models",
+  "version": "0.1.0",
+  "description": "Subagents that run on xAI Grok models (grok-build-0.1, grok-4.5, grok-4.3), routed through the shunt gateway at the inference layer while staying inside Claude Code's harness. EXPERIMENTAL — the xAI provider is not yet verified against the live xAI API.",
+  "author": {
+    "name": "Minsu Lee",
+    "email": "minsu.lee@pleaseai.dev",
+    "url": "https://github.com/amondnet"
+  },
+  "homepage": "https://github.com/pleaseai/shunt",
+  "repository": "https://github.com/pleaseai/shunt",
+  "license": "MIT OR Apache-2.0",
+  "keywords": ["shunt", "xai", "grok", "subagent", "llm-gateway"]
+}
