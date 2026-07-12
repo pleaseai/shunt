@@ -162,12 +162,12 @@ toward being a fleet gateway and warrant a conscious decision first.
   `tool_reference` as name-only `"Loaded tool: X"` text and forwards *all* deferred
   tool schemas upfront (`src/model/responses_request.rs:393-403,475-508`) — the loop
   works but reclaims zero context. Port the server-side emulation (filter
-  deferred+unloaded tools, inject full schema on `tool_reference`) — reference impl:
+  deferred+unloaded tools, inject full schema on `tool_reference`) — reference implementation:
   CLIProxyAPI PR #1892 (`Adamcf123/CLIProxyAPI@main`).
 
 - **B. Codex WS: live-probe the continuation normalization.** Reasoning/`function_call`
   normalization is schema-validated against 3 sources but not yet live-probed
-  (`docs/m7-codex-websocket.md:250-270`). Any unaccounted field silently drops to the
+  (`docs/m7-codex-websocket.md:250-270`). Any unaccounted field silently falls back to the
   safe full-input fallback — correctness-safe, but a *latent missed optimization*. A
   probe pass would confirm continuation fires as often as it should.
 
@@ -182,7 +182,7 @@ toward being a fleet gateway and warrant a conscious decision first.
   revisiting once continuation is live-probed.
 
 - **E. Upstream retry/backoff.** The M4-planned bounded retry/backoff is not
-  implemented (`docs/implementation-plan.md:247`); transient upstream 429/5xx surface
+  implemented (`docs/implementation-plan.md:247`); transient upstream 429/5xx errors surface
   directly. A small, idempotent retry would improve resilience without adding scope.
 
 - **F. Doc drift: `GET /protocol`.** README advertises a machine-readable spec at
