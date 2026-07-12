@@ -35,8 +35,9 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # (aws-lc-rs via sentry's reqwest `rustls` feature, ring via reqwest's own
 # `rustls-tls` feature), so rustls refuses to auto-select one. tokio-tungstenite
 # pulls rustls/tokio-rustls with no provider feature, so it needs the default
-# installed. Depend on rustls directly to install the process-wide default at
-# startup — see `install_crypto_provider` in main.rs.
+# installed. Depend on rustls directly to install the process-wide default on
+# the first websocket handshake — see `ensure_crypto_provider` in
+# src/adapters/codex_ws.rs.
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 sentry = { version = "0.48.4", default-features = false, features = ["backtrace", "contexts", "metrics", "panic", "reqwest", "rustls", "tracing"] }
 serde = { version = "1", features = ["derive"] }
