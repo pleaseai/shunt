@@ -1,0 +1,20 @@
+.claude/agent-memory/github-pr-manager/reference_shunt-pr-template-and-quirks.md
+  s_17ba820a78e33b::t_7a14bef5e73445 26-27,29
+  s_17ba820a78e33b::t_0d272e0531fce6 40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "e374498099484c21919df222fa3f7c14b8e0adf2",
+  "prompts": {},
+  "sessions": {
+    "s_17ba820a78e33b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ce008449-6776-492d-a66d-a4d44e700070",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
