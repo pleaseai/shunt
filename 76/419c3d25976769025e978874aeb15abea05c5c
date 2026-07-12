@@ -1,0 +1,28 @@
+site/src/content/docs/guides/configuration.md
+  s_666b76d2408b41::t_c2bde41763e302 17
+docs/running.md
+  s_666b76d2408b41::t_a0ec0dd9fc4f3e 64-65,68-69
+shunt.yaml.example
+  s_666b76d2408b41::t_19d4190b2d0a7e 1-42
+Cargo.toml
+  s_666b76d2408b41::t_cbd60d70c2cc7f 14
+README.md
+  s_666b76d2408b41::t_e932031b66f84c 18
+  s_666b76d2408b41::t_fcec05eb18aac4 54
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "76419c3d25976769025e978874aeb15abea05c5c",
+  "prompts": {},
+  "sessions": {
+    "s_666b76d2408b41": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "05c8cbce-513c-43ca-8b25-be666d33eba3",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
