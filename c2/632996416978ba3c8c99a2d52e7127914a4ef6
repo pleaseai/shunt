@@ -1,0 +1,160 @@
+site/src/content/docs/zh-cn/getting-started/why-shunt.md
+  s_293e9a3adba56f::t_6b5f23621114bb 34,36-37,39
+  s_293e9a3adba56f::t_85aaf961c2c27c 1-33,35,38
+site/src/content/docs/ko/getting-started/installation.md
+  s_293e9a3adba56f::t_6b5f23621114bb 46,52
+  s_293e9a3adba56f::t_3af14b9f5b9496 1-45,47-51
+site/src/content/docs/zh-cn/guides/configuration.md
+  s_293e9a3adba56f::t_076e9809b65eb4 1-89
+  s_293e9a3adba56f::t_6b5f23621114bb 90
+site/src/content/docs/ko/guides/configuration.md
+  s_293e9a3adba56f::t_b8153049bf46e5 1-89
+  s_293e9a3adba56f::t_6b5f23621114bb 90
+site/src/content/docs/zh-cn/getting-started/quickstart.md
+  s_293e9a3adba56f::t_c67a369d180235 1-5,7-74
+  s_293e9a3adba56f::t_6b5f23621114bb 6,75-78
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_293e9a3adba56f::t_6b5f23621114bb 1-20
+site/src/content/docs/ko/guides/shared-gateway.md
+  s_293e9a3adba56f::t_f7b903faa7d47f 1-46
+site/src/content/docs/ja/getting-started/installation.md
+  s_293e9a3adba56f::t_6b5f23621114bb 46,52
+  s_293e9a3adba56f::t_f7f1ef2c4605a1 1-45,47-51
+README.md
+  s_293e9a3adba56f::t_9d12e68bbc4069 10-11
+site/src/content/docs/ko/index.mdx
+  s_293e9a3adba56f::t_6b5f23621114bb 9,12
+  s_293e9a3adba56f::t_e810bad256c268 1-8,10-11,13-38
+site/src/content/docs/ja/guides/configuration.md
+  s_293e9a3adba56f::t_99262f52e17860 1-89
+  s_293e9a3adba56f::t_6b5f23621114bb 90
+site/src/content/docs/ja/reference/configuration.md
+  s_293e9a3adba56f::t_d02529b1104162 1-5,7-13,15-17,19-36,38-60,62-70
+  s_293e9a3adba56f::t_6b5f23621114bb 6,14,18,37,61
+site/src/content/docs/ko/getting-started/quickstart.md
+  s_293e9a3adba56f::t_d12eea06eacdaf 1-5,7-74
+  s_293e9a3adba56f::t_6b5f23621114bb 6,75-78
+site/src/content/docs/ja/guides/codex.md
+  s_293e9a3adba56f::t_1c8274324afc88 1-8,10-54,56-73,75-101,103-192,194-204,206-248
+  s_293e9a3adba56f::t_6b5f23621114bb 9,55,74,102,193,205,249
+site/src/content/docs/ko/getting-started/why-shunt.md
+  s_293e9a3adba56f::t_0a2e84ef563654 1-33,35,38
+  s_293e9a3adba56f::t_6b5f23621114bb 34,36-37,39
+site/src/content/docs/ko/guides/connect-claude-code.md
+  s_293e9a3adba56f::t_bf255b1a428822 1-28,30-47,49-93,95-97,99-100,102-134
+  s_293e9a3adba56f::t_6b5f23621114bb 29,48,94,98,101,135
+site/src/content/docs/ja/getting-started/quickstart.md
+  s_293e9a3adba56f::t_6b5f23621114bb 6,75-78
+  s_293e9a3adba56f::t_6d1cc5df5af38d 1-5,7-74
+site/src/content/docs/zh-cn/guides/model-discovery.md
+  s_293e9a3adba56f::t_7a36531b941cc5 1-26,28-30,32-35
+  s_293e9a3adba56f::t_6b5f23621114bb 27,31
+site/src/content/docs/ja/index.mdx
+  s_293e9a3adba56f::t_479e2577bd2617 1-8,10-11,13-38
+  s_293e9a3adba56f::t_6b5f23621114bb 9,12
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_293e9a3adba56f::t_d755389daeeace 1-5,7-13,15-17,19-36,38-60,62-70
+  s_293e9a3adba56f::t_6b5f23621114bb 6,14,18,37,61
+site/src/content/docs/ko/reference/cli.md
+  s_293e9a3adba56f::t_b5ccab822e0461 1-16,18-43,45-51,53-55
+  s_293e9a3adba56f::t_6b5f23621114bb 17,44,52
+site/src/content/docs/ja/reference/endpoints.md
+  s_293e9a3adba56f::t_5bae4dd24e6f66 1-10,12-13,15,17-19
+  s_293e9a3adba56f::t_6b5f23621114bb 11,14,16,20
+site/src/content/docs/ko/reference/troubleshooting.md
+  s_293e9a3adba56f::t_89e4b840600527 1-10,12-14,19-20
+  s_293e9a3adba56f::t_6b5f23621114bb 11,15-18
+site/src/content/docs/ja/guides/connect-claude-code.md
+  s_293e9a3adba56f::t_4e325b7970d527 1-28,30-47,49-93,95-97,99-100,102-134
+  s_293e9a3adba56f::t_6b5f23621114bb 29,48,94,98,101,135
+README.ja.md
+  s_293e9a3adba56f::t_2eaf3c9d9c8a98 1-150
+site/src/content/docs/zh-cn/index.mdx
+  s_293e9a3adba56f::t_6b5f23621114bb 9,12
+  s_293e9a3adba56f::t_20edd762e1e852 1-8,10-11,13-38
+site/astro.config.mjs
+  s_293e9a3adba56f::t_85eb377bda730a 15-21
+  s_293e9a3adba56f::t_ce0a0061257f7e 46,48-62,67,69-103,108,110-129
+site/src/content/docs/zh-cn/guides/effort-and-context.md
+  s_293e9a3adba56f::t_8ea180b62ac309 1-49,51-87
+  s_293e9a3adba56f::t_6b5f23621114bb 50
+site/src/content/docs/ko/reference/endpoints.md
+  s_293e9a3adba56f::t_9baa85413fba83 1-10,12-13,15,17-19
+  s_293e9a3adba56f::t_6b5f23621114bb 11,14,16,20
+site/src/content/docs/ja/reference/troubleshooting.md
+  s_293e9a3adba56f::t_a4f20b873376a9 1-10,12-14,19-20
+  s_293e9a3adba56f::t_6b5f23621114bb 11,15-18
+site/src/content/docs/ja/getting-started/why-shunt.md
+  s_293e9a3adba56f::t_9bb34db9e5be3b 1-33,35,38
+  s_293e9a3adba56f::t_6b5f23621114bb 34,36-37,39
+site/src/content/docs/zh-cn/reference/cli.md
+  s_293e9a3adba56f::t_6b5f23621114bb 17,44,52
+  s_293e9a3adba56f::t_39932fe524b33e 1-16,18-43,45-51,53-55
+site/src/content/docs/zh-cn/guides/codex.md
+  s_293e9a3adba56f::t_1d5bbadfdde662 1-10,13-64,66-87,89-129,131-233,235-248,250-293
+  s_293e9a3adba56f::t_6b5f23621114bb 11-12,65,88,130,234,249,294
+site/src/content/docs/zh-cn/reference/troubleshooting.md
+  s_293e9a3adba56f::t_6b5f23621114bb 11,15-18
+  s_293e9a3adba56f::t_04b04bef7cefa5 1-10,12-14,19-20
+site/src/content/docs/ja/reference/cli.md
+  s_293e9a3adba56f::t_0eefb76ec2e377 1-16,18-43,45-51,53-55
+  s_293e9a3adba56f::t_6b5f23621114bb 17,44,52
+site/src/content/docs/ko/guides/model-discovery.md
+  s_293e9a3adba56f::t_6b5f23621114bb 27,31
+  s_293e9a3adba56f::t_b968c761b23682 1-26,28-30,32-35
+site/src/content/docs/ko/reference/configuration.md
+  s_293e9a3adba56f::t_6b5f23621114bb 6,14,18,37,61
+  s_293e9a3adba56f::t_6871209920108f 1-5,7-13,15-17,19-36,38-60,62-70
+site/src/content/docs/zh-cn/getting-started/installation.md
+  s_293e9a3adba56f::t_5c8d48806861af 1-45,47-51
+  s_293e9a3adba56f::t_6b5f23621114bb 46,52
+site/src/content/docs/ja/guides/effort-and-context.md
+  s_293e9a3adba56f::t_e4a5d8daa27950 1-49,51-87
+  s_293e9a3adba56f::t_6b5f23621114bb 50
+site/src/content/docs/ko/guides/codex.md
+  s_293e9a3adba56f::t_ccdcfac57cfdb5 1-7,9-53,55-71,73-97,99-178,180-188,190-232
+  s_293e9a3adba56f::t_6b5f23621114bb 8,54,72,98,179,189,233
+README.zh-CN.md
+  s_293e9a3adba56f::t_ea719e7b68fc76 1-150
+site/src/content/docs/zh-cn/guides/connect-claude-code.md
+  s_293e9a3adba56f::t_28c75ffba6db64 1-28,30-47,49-93,95-97,99-100,102-134
+  s_293e9a3adba56f::t_6b5f23621114bb 29,48,94,98,101,135
+README.ko.md
+  s_293e9a3adba56f::t_31dda317d140bd 1-25,27-150
+  s_293e9a3adba56f::t_beb551fb9f2db8 26
+site/src/content/docs/ja/guides/model-discovery.md
+  s_293e9a3adba56f::t_dbff0e293c7e5a 1-26,28-30,32-35
+  s_293e9a3adba56f::t_6b5f23621114bb 27,31
+site/src/content/docs/ja/guides/shared-gateway.md
+  s_293e9a3adba56f::t_c2d629f8c53284 1-46
+site/src/content/docs/ko/guides/providers.md
+  s_293e9a3adba56f::t_6b5f23621114bb 29,63,65
+  s_293e9a3adba56f::t_adc05d7ace60cf 1-28,30-62,64
+site/src/content/docs/ko/guides/effort-and-context.md
+  s_293e9a3adba56f::t_9388aa54c09ad1 1-49,51-87
+  s_293e9a3adba56f::t_6b5f23621114bb 50
+site/src/content/docs/ja/guides/providers.md
+  s_293e9a3adba56f::t_51d96d68e28315 1-28,30-62,64
+  s_293e9a3adba56f::t_6b5f23621114bb 29,63,65
+site/src/content/docs/zh-cn/guides/providers.md
+  s_293e9a3adba56f::t_6b5f23621114bb 29,63,65
+  s_293e9a3adba56f::t_7dd892bbab2116 1-28,30-62,64
+site/src/content/docs/zh-cn/guides/shared-gateway.md
+  s_293e9a3adba56f::t_382befecf38e41 1-46
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "c2632996416978ba3c8c99a2d52e7127914a4ef6",
+  "prompts": {},
+  "sessions": {
+    "s_293e9a3adba56f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3b9e6efe-6e96-4a94-80b4-c4e56d6424a7",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
