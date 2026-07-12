@@ -361,22 +361,44 @@ fn xai_drops_web_search_tool_and_downgrades_forced_choice() {
 }
 
 #[test]
-fn xai_web_search_only_tool_list_becomes_empty_tools_with_auto_choice() {
+fn xai_web_search_only_tool_list_omits_tools_and_tool_choice() {
     // When the hosted web-search tool is the *only* tool and the route is xAI,
-    // dropping it leaves an empty tool set. The emitted shape is an empty
-    // `tools` array with `tool_choice: "auto"` — `auto` against no tools simply
-    // means "no tool is forced", so this degrades to a plain completion rather
-    // than forcing a tool the backend never received.
+    // dropping it leaves an empty tool set. An empty `tools: []` array is
+    // rejected by OpenAI-compatible backends ("expected an array with at least
+    // one element"), so translation must omit both `tools` and `tool_choice`
+    // entirely rather than emit an empty array.
     let out = translate_with_flavor(
         json!({
             "model": "gpt-5.2-codex",
             "messages": [{"role": "user", "content": "find it"}],
-            "tools": [{"type": "web_search_20250305", "name": "web_search"}]
+            "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+            "tool_choice": {"type": "tool", "name": "web_search"}
         }),
         ResponsesFlavor::Xai,
     );
-    assert_eq!(out["tools"], json!([]));
-    assert_eq!(out["tool_choice"], json!("auto"));
+    assert!(
+        out.get("tools").is_none(),
+        "tools should be omitted, got {:?}",
+        out.get("tools")
+    );
+    assert!(
+        out.get("tool_choice").is_none(),
+        "tool_choice should be omitted, got {:?}",
+        out.get("tool_choice")
+    );
+}
+
+#[test]
+fn empty_tools_array_is_omitted_not_forwarded() {
+    // An explicit empty `tools: []` from the client must not be forwarded as
+    // `tools: []` (OpenAI-compatible backends reject it); it is omitted.
+    let out = translate(json!({
+        "model": "gpt-5.2-codex",
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": []
+    }));
+    assert!(out.get("tools").is_none());
+    assert!(out.get("tool_choice").is_none());
 }
 
 #[test]

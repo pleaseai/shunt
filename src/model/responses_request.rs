@@ -16,11 +16,18 @@ pub fn translate_request(
         out.insert("instructions".to_string(), json!(instructions));
     }
     out.insert("input".to_string(), json!(input_items(&request)));
-    if let Some(tools) = tools(&request, flavor) {
+    // Only emit tools/tool_choice when at least one tool survives translation.
+    // The hosted web-search tool is dropped on flavors that reject it (xAI); if
+    // it was the sole tool the set is now empty, and an empty `tools: []` array
+    // is rejected by OpenAI-compatible backends ("expected an array with at
+    // least one element"), while a `tool_choice` with no tools is meaningless.
+    if let Some(tools) =
+        tools(&request, flavor).filter(|t| t.as_array().is_some_and(|a| !a.is_empty()))
+    {
         out.insert("tools".to_string(), tools);
-    }
-    if let Some(tool_choice) = tool_choice(&request, flavor) {
-        out.insert("tool_choice".to_string(), tool_choice);
+        if let Some(tool_choice) = tool_choice(&request, flavor) {
+            out.insert("tool_choice".to_string(), tool_choice);
+        }
     }
     if let Some(value) = request.get("parallel_tool_calls") {
         out.insert("parallel_tool_calls".to_string(), value.clone());
