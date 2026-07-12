@@ -15,7 +15,7 @@
 
 The name is the mechanism: an electrical/railway *shunt* diverts a selected part of the flow onto a parallel path. Here, a mapped model's inference is diverted to another provider while Claude Code's tools and skills stay intact.
 
-It ships with **OpenAI**, **ChatGPT/Codex** (reuse your subscription via `codex login`), **xAI Grok** (API key, or reuse your SuperGrok / X Premium+ subscription via `shunt login xai`), and **Anthropic** passthrough built in — and any Anthropic-Messages-compatible backend (Kimi, DeepSeek, GLM, MiniMax, OpenRouter, Vercel AI Gateway, …) is one TOML table or YAML mapping away, no code changes.
+It ships with **OpenAI**, **ChatGPT/Codex** (reuse your subscription via `codex login`), **xAI** (API key), **Grok** (reuse your SuperGrok / X Premium+ subscription via `shunt login xai`), and **Anthropic** passthrough built in — and any Anthropic-Messages-compatible backend (Kimi, DeepSeek, GLM, MiniMax, OpenRouter, Vercel AI Gateway, …) is one TOML table or YAML mapping away, no code changes.
 
 ## Install
 
@@ -61,7 +61,7 @@ A provider is a `[providers.<name>]` TOML table (or an entry under the YAML `pro
 | `openai` | `responses` | `OPENAI_API_KEY` | `api.openai.com/v1` |
 | `codex` | `responses` | ChatGPT OAuth | `chatgpt.com/backend-api` — reuses `~/.codex/auth.json` (`codex login`) |
 | `xai` | `responses` | `XAI_API_KEY` | `api.x.ai/v1` — the developer API, billed per token |
-| `grok` | `responses` | xAI OAuth | `cli-chat-proxy.grok.com` — the Grok CLI proxy; reuses a SuperGrok / X Premium+ subscription (`shunt login xai`) |
+| `grok` | `responses` | xAI OAuth | `cli-chat-proxy.grok.com` — the Grok CLI proxy; reuses `~/.shunt/xai-auth.json` (`shunt login xai` with a SuperGrok / X Premium+ subscription) |
 
 xAI may gate OAuth access by subscription tier — if `grok` returns 403, use the `xai` API-key provider instead. Details in [`docs/m6-xai-provider.md`](docs/m6-xai-provider.md).
 

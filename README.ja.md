@@ -15,7 +15,7 @@
 
 この名前が仕組みそのものを表しています。電気回路や鉄道の *shunt*（分岐器）が、選んだ一部の流れを並行した経路へ振り分けるのと同じように、ここではマッピングされたモデルの推論を別のプロバイダーへ振り分けつつ、Claude Code のツールやスキルはそのまま保たれます。
 
-**OpenAI**、**ChatGPT/Codex**（`codex login` でサブスクリプションを再利用）、**xAI Grok**（API キー、または `shunt login xai` で SuperGrok / X Premium+ サブスクリプションを再利用）、そして **Anthropic** パススルーが標準搭載されており、さらに Anthropic Messages 互換のバックエンド（Kimi、DeepSeek、GLM、MiniMax、OpenRouter、Vercel AI Gateway、…）は TOML テーブルを 1 つ書くだけで、コード変更なしに追加できます。
+**OpenAI**、**ChatGPT/Codex**（`codex login` でサブスクリプションを再利用）、**xAI**（API キー）、**Grok**（`shunt login xai` で SuperGrok / X Premium+ サブスクリプションを再利用）、そして **Anthropic** パススルーが標準搭載されており、さらに Anthropic Messages 互換のバックエンド（Kimi、DeepSeek、GLM、MiniMax、OpenRouter、Vercel AI Gateway、…）は TOML テーブルを 1 つ書くだけで、コード変更なしに追加できます。
 
 ## インストール
 
@@ -61,7 +61,7 @@ claude                                              # /model -> pick gpt-5.6-sol
 | `openai` | `responses` | `OPENAI_API_KEY` | `api.openai.com/v1` |
 | `codex` | `responses` | ChatGPT OAuth | `chatgpt.com/backend-api` — `~/.codex/auth.json`（`codex login`）を再利用 |
 | `xai` | `responses` | `XAI_API_KEY` | `api.x.ai/v1` — 開発者向け API、トークン単位の課金 |
-| `grok` | `responses` | xAI OAuth | `cli-chat-proxy.grok.com` — Grok CLI プロキシ。SuperGrok / X Premium+ サブスクリプションを再利用（`shunt login xai`） |
+| `grok` | `responses` | xAI OAuth | `cli-chat-proxy.grok.com` — Grok CLI プロキシ。`~/.shunt/xai-auth.json` を再利用（SuperGrok / X Premium+ サブスクリプションで `shunt login xai`） |
 
 xAI はサブスクリプションのティアによって OAuth アクセスを制限する場合があります。`grok` が 403 を返す場合は、代わりに `xai` API キープロバイダーを使用してください。詳細は [`docs/m6-xai-provider.md`](docs/m6-xai-provider.md) を参照してください。
 
