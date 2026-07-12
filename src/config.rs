@@ -262,8 +262,11 @@ fn expand_tilde(path: &str) -> String {
     let Some(suffix) = path.strip_prefix("~/") else {
         return path.to_string();
     };
+    // `HOME` is unset on Windows; fall back to `USERPROFILE` so `~/` expands to
+    // the user's home there too (mirrors the auth credential-path helpers).
     std::env::var_os("HOME")
         .filter(|home| !home.is_empty())
+        .or_else(|| std::env::var_os("USERPROFILE").filter(|home| !home.is_empty()))
         .map(PathBuf::from)
         .map(|home| home.join(suffix).to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_string())

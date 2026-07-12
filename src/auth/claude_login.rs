@@ -64,8 +64,20 @@ fn find_claude_cli() -> anyhow::Result<std::path::PathBuf> {
 
 fn find_executable(command: &str, path: Option<&std::ffi::OsStr>) -> Option<std::path::PathBuf> {
     let path = path?;
+    // On Windows, npm-installed CLIs land as `claude.cmd`/`claude.bat` (or an
+    // `.exe`), so search the standard executable extensions in addition to the
+    // bare name. On Unix the bare name is the only candidate.
+    let extensions: &[&str] = if cfg!(windows) {
+        &["", ".exe", ".cmd", ".bat"]
+    } else {
+        &[""]
+    };
     std::env::split_paths(path)
-        .map(|directory| directory.join(command))
+        .flat_map(|directory| {
+            extensions
+                .iter()
+                .map(move |ext| directory.join(format!("{command}{ext}")))
+        })
         .find(|candidate| is_executable(candidate))
 }
 

@@ -105,12 +105,17 @@ async fn forward_claude_oauth(
         .provider(&route.provider)
         .expect("route provider was validated");
     let accounts = if provider.accounts.is_empty() {
-        auth::claude_store::scan_accounts().map_err(|error| {
-            auth::auth_error(format!(
-                "failed to scan Claude account store {}: {error}",
-                auth::claude_store::default_accounts_dir().display()
-            ))
-        })?
+        // scan_accounts() does synchronous directory + file I/O; run it on the
+        // blocking pool so it never stalls a runtime worker thread.
+        tokio::task::spawn_blocking(auth::claude_store::scan_accounts)
+            .await
+            .map_err(|error| auth::auth_error(format!("account store scan task failed: {error}")))?
+            .map_err(|error| {
+                auth::auth_error(format!(
+                    "failed to scan Claude account store {}: {error}",
+                    auth::claude_store::default_accounts_dir().display()
+                ))
+            })?
     } else {
         provider.accounts.clone()
     };
@@ -243,7 +248,16 @@ async fn forward_claude_oauth(
                 return relay_response(&state, retry, Some(&account.name));
             }
             FailoverAction::RefreshRetry => {
-                if account.token_env.is_some() || account_is_static_store_token(account) {
+                // account_is_static_store_token() reads the account file from
+                // disk; run it on the blocking pool. A join failure defaults to
+                // false (treat as refreshable), which is the safe fallback.
+                let is_static = {
+                    let account = account.clone();
+                    tokio::task::spawn_blocking(move || account_is_static_store_token(&account))
+                        .await
+                        .unwrap_or(false)
+                };
+                if account.token_env.is_some() || is_static {
                     state.accounts.cooldown(
                         &route.provider,
                         &account.name,

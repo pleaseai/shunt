@@ -23,7 +23,12 @@ pub fn default_accounts_dir() -> PathBuf {
     env::var_os("SHUNT_CLAUDE_ACCOUNTS_DIR")
         .map(PathBuf::from)
         .or_else(|| {
+            // `HOME` is unset on Windows; fall back to `USERPROFILE` so the store
+            // lands in the user's home rather than a working-directory-relative
+            // path (mirrors `default_cursor_auth_path` in auth/mod.rs).
             env::var_os("HOME")
+                .filter(|home| !home.is_empty())
+                .or_else(|| env::var_os("USERPROFILE").filter(|home| !home.is_empty()))
                 .map(PathBuf::from)
                 .map(|home| home.join(".shunt").join("accounts").join("claude"))
         })
