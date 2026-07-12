@@ -132,6 +132,35 @@ provider = "openai"
 #                            # provider, model (the requested id), and
 #                            # `http.response.status_code`. Aggregates only — no
 #                            # prompts, client names, or session ids.
+
+# Optional: OpenTelemetry (OTLP) export to your own collector/backend. Off
+# unless an endpoint is set. Independent of [sentry] — both can run together.
+# Exports up to three signals over OTLP/HTTP (protobuf): request spans
+# (traces), the shunt.requests/shunt.latency series (metrics, same fields as
+# above), and shunt's log events (logs; the stderr logs are unaffected).
+# Metrics and traces stay low-cardinality and carry no request/response bodies —
+# the span's client session id is attached only when `include_session_id = true`.
+# The logs signal exports shunt's diagnostic events as written, so like the
+# stderr logs it can include request-derived fields (an upstream error body, a
+# client id); set `logs = false` for body-free export. The resource carries
+# service.*/telemetry.sdk.* (no host or process detector) plus any
+# OTEL_RESOURCE_ATTRIBUTES you set. An empty endpoint (e.g. SHUNT_OTEL__ENDPOINT="")
+# disables again; an invalid endpoint or an out-of-range sample_ratio is a
+# startup error. The endpoint and service_name come from this config (they take
+# precedence over OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_SERVICE_NAME); the standard
+# OTEL_EXPORTER_OTLP_HEADERS and OTEL_RESOURCE_ATTRIBUTES env vars are merged in.
+# Editing [otel] then hot-reloading warns and needs a restart to take effect.
+# [otel]
+# endpoint = "http://localhost:4318"  # OTLP/HTTP base; /v1/{traces,metrics,logs} appended
+# service_name = "shunt"     # (default) service.name resource attribute
+# environment = "prod"       # optional deployment.environment.name
+# sample_ratio = 1.0         # (default) head-based trace sampling in [0.0, 1.0]
+# traces = true              # (default) export request spans
+# metrics = true             # (default) export usage metrics
+# logs = true                # (default) export log events
+# include_session_id = false # (default) withhold the client session id from spans
+# [otel.headers]             # optional per-request headers (e.g. a hosted-collector token)
+# authorization = "Bearer <token>"
 ```
 
 **Routing precedence** (`src/routing.rs`): exact `[[routes]]` match → `[[route_prefixes]]`

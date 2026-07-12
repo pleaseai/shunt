@@ -101,6 +101,11 @@ export default defineConfig({
               translations: { ko: '게이트웨이 공유', ja: 'ゲートウェイの共有', 'zh-CN': '共享网关' },
               slug: 'guides/shared-gateway',
             },
+            {
+              label: 'OpenTelemetry',
+              translations: { ko: 'OpenTelemetry', ja: 'OpenTelemetry', 'zh-CN': 'OpenTelemetry' },
+              slug: 'guides/opentelemetry',
+            },
           ],
         },
         {
