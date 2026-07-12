@@ -1,0 +1,47 @@
+.claude/agent-memory/review-review-comment-analyzer/shunt-otel-privacy-claim-rot.md
+  s_0534baa6715994::t_489858c3353c2f 3,14-28,46
+src/proxy.rs
+  s_0534baa6715994::t_d563345694950e 40-47,49-50
+src/metrics.rs
+  s_0534baa6715994::t_8f7b5ff831b35e 81-85
+src/config.rs
+  s_0534baa6715994::t_65ca2a8cb6afe3 1063-1072
+  s_0534baa6715994::t_f6bc16358d5c62 598-609
+  s_9d8e22c0ab587d::t_85ba3c0314387e 1062
+src/telemetry.rs
+  s_0534baa6715994::t_e5abec355983d4 132-136
+  s_0534baa6715994::t_36706624fcb785 55-66,71-72,81-82
+  s_0534baa6715994::t_d54db57abe6cf6 185-190
+  s_0534baa6715994::t_ce6b86a145526f 131,137
+  s_0534baa6715994::t_f48f7b846c9867 393-402
+  s_0534baa6715994::t_eff2d8608adeae 308-311
+  s_0534baa6715994::t_a5faddfde86ca0 34
+  s_0534baa6715994::t_938bc860cf7cc8 67-70,73-80
+  s_0534baa6715994::t_d2a44a49d9c80d 403-405
+  s_0534baa6715994::t_b10066acf55008 406-408
+  s_0534baa6715994::t_29d864a932dabd 409
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "4b1e390e5a34f3488e6bb23ef49e0e79cbe75e79",
+  "prompts": {},
+  "sessions": {
+    "s_0534baa6715994": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "821347bb-d511-4e54-9ff3-8af267f942aa",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_9d8e22c0ab587d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "eba1a9c8-6d6b-4cd8-95fe-0cafd6f59451",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
