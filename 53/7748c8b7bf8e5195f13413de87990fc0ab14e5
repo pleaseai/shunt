@@ -1,0 +1,25 @@
+.claude/agent-memory/review-review-code-reviewer/MEMORY.md
+  s_9438d094b59628::t_8041f97b1eb7f0 5
+.claude/agent-memory/review-review-security-reviewer/project_token-file-writers.md
+  s_9438d094b59628::t_845a36fa428cfc 1-16
+.claude/agent-memory/review-review-security-reviewer/MEMORY.md
+  s_9438d094b59628::t_faf7d55102621e 7
+.claude/agent-memory/review-review-code-reviewer/shunt-anthropic-multi-account-refresh-lock.md
+  s_9438d094b59628::t_f03fbe31c0bd91 1-40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "537748c8b7bf8e5195f13413de87990fc0ab14e5",
+  "prompts": {},
+  "sessions": {
+    "s_9438d094b59628": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0075ecc3-27dd-45c0-a16c-10dcd0636a6e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
