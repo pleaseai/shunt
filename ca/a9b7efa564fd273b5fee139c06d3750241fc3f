@@ -1,0 +1,45 @@
+README.zh-CN.md
+  s_0c8c502c1c13e8::t_41919665c33110 101
+  s_0c8c502c1c13e8::t_43b4b4dd1a2338 83-88
+README.md
+  s_0c8c502c1c13e8::t_af0bad5900fc11 83-88,101
+src/catalog.rs
+  s_0c8c502c1c13e8::t_aea72cb1d96027 149-161
+  s_0c8c502c1c13e8::t_6953a98db57fe3 44
+  s_0c8c502c1c13e8::t_5bee0a489f920a 1-4,6-43,45-148,162-354,385-402
+  s_0c8c502c1c13e8::t_a65b84f4fe250d 5
+  s_0c8c502c1c13e8::t_e791732e146d23 355-373,379-384
+  s_0c8c502c1c13e8::t_c56dbb32000730 374-378
+src/main.rs
+  s_0c8c502c1c13e8::t_63f57f75c23dda 77-79
+  s_0c8c502c1c13e8::t_ca5d4059ce16c7 46-63
+src/lib.rs
+  s_0c8c502c1c13e8::t_c87baa870470c1 3
+README.ja.md
+  s_0c8c502c1c13e8::t_fc33ff3e9eff86 83-88
+  s_0c8c502c1c13e8::t_41493c27ff2c72 101
+README.ko.md
+  s_0c8c502c1c13e8::t_fd61a712c7562d 83-88
+  s_0c8c502c1c13e8::t_195602c99bd1f0 101
+site/src/content/docs/guides/providers.md
+  s_0c8c502c1c13e8::t_b5d6c55b5bf723 49-55
+site/src/content/docs/reference/cli.md
+  s_0c8c502c1c13e8::t_a50bf880ccfbf7 46-47,49-77
+  s_0c8c502c1c13e8::t_ffc6003116ec85 48
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "caa9b7efa564fd273b5fee139c06d3750241fc3f",
+  "prompts": {},
+  "sessions": {
+    "s_0c8c502c1c13e8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ec48f0e7-8177-4f2d-88dc-83e6c99a84e4",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
