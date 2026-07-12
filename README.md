@@ -61,7 +61,7 @@ A provider is a `[providers.<name>]` TOML table — two adapter kinds cover ever
 
 OpenAI's Thibault Sottiaux has publicly welcomed running Codex through other coding harnesses:
 
-> [Share the recipe. People want to know how to use GPT-5.6 Sol in CC. We don't discriminate on the harness.](https://x.com/thsottiaux/status/2075830097488249060)
+> Share the recipe. People want to know how to use GPT-5.6 Sol in CC. We don't discriminate on the harness. ([Source](https://x.com/thsottiaux/status/2075830097488249060))
 
 He [followed up](https://x.com/thsottiaux/status/2076119366647894371) by walking through pointing Claude Code ("your orange crab") at GPT-5.6 Sol himself — exactly the inference-layer swap `shunt` performs, no separate app required.
 
