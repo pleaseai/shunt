@@ -1,23 +1,29 @@
 # M6 — xAI Grok provider (spec)
 
-> **⚠️ Experimental — not yet verified against the live xAI API.** The flow is validated
-> against the reference implementations (Hermes, OpenCode) and unit tests with mocked
-> endpoints only; it has not been exercised with a real SuperGrok account or `XAI_API_KEY`.
-> Endpoints, request quirks, and error semantics may change once verified live.
+> **⚠️ Experimental.** Live-tested against a real SuperGrok OAuth login (2026-07): the device
+> flow, token store, refresh, and bearer injection all work end-to-end. The key correction from
+> that test is baked in below — the subscription OAuth path targets the **Grok CLI chat proxy**
+> (`cli-chat-proxy.grok.com`), not the developer API (`api.x.ai`), which rejects a subscription
+> bearer with a **402** (`personal-team-blocked:spending-limit`) / **403** tier gate. Whether a
+> given account can use the OAuth path at all depends on its tier (xAI has gated it to SuperGrok
+> Heavy at times); accounts without API entitlement should use the `XAI_API_KEY` path.
 
 > Companion to [`m2-chatgpt-oauth.md`](m2-chatgpt-oauth.md) and
-> [`m1-responses-translation.md`](m1-responses-translation.md). Adds the `xai` provider: the
-> xAI Grok Responses API, reachable two ways — an **API key** (`XAI_API_KEY`) or a
-> **subscription OAuth** login (SuperGrok / X Premium+) via the RFC 8628 device-code flow.
-> Reuses the whole M1 translation core; only the per-backend quirks and a new credential
-> source are added. Reference implementations: OpenCode's `xai.ts` and Hermes' `auth.py` /
-> `transports/codex.py` (device flow, refresh, request shaping).
+> [`m1-responses-translation.md`](m1-responses-translation.md). Adds two built-in providers for
+> xAI Grok — an **API key** `xai` (developer API, `XAI_API_KEY`) and a **subscription OAuth**
+> `grok` (SuperGrok / X Premium+, RFC 8628 device-code flow). Reuses the whole M1 translation
+> core; only the per-backend quirks and a new credential source are added. Reference
+> implementations: OpenCode's `xai.ts`, Hermes' `auth.py`, and raine/claude-code-proxy's
+> `src/providers/grok` (which pinned down the CLI-proxy endpoint + identity headers).
 
 ## 1. Scope
 
-- A built-in `xai` provider (`kind = "responses"`, `base_url = https://api.x.ai/v1`) that
-  defaults to the **API-key** path (`XAI_API_KEY`) and can be flipped to **subscription OAuth**
-  (`auth = "xai_oauth"`) in `shunt.toml`.
+- Two built-in providers (`kind = "responses"`):
+  - `xai` — the **API-key** path, `base_url = https://api.x.ai/v1`, `auth = api_key`
+    (`XAI_API_KEY`). The developer API, billed per token.
+  - `grok` — the **subscription OAuth** path, `base_url = https://cli-chat-proxy.grok.com/v1`,
+    `auth = xai_oauth`. The Grok CLI chat proxy, which honors a SuperGrok / X Premium+ login and
+    is not subject to API billing. Sends the Grok-CLI identity headers (§6).
 - A `shunt login xai` subcommand that runs the device-code flow and writes a shunt-owned
   credential file, refreshed automatically on expiry.
 - xAI-flavored request translation (a third [`ResponsesFlavor`] beside OpenAI and ChatGPT/Codex).
@@ -32,9 +38,14 @@ Out of scope: any change to the M1 response translation / SSE state machine.
 | device authorization URL | `https://auth.x.ai/oauth2/device/code` |
 | token URL | `https://auth.x.ai/oauth2/token` |
 | `client_id` | `b1a00492-073a-47ea-816f-4c329264a828` (public Grok-CLI client, no secret) |
-| scope | `openid profile email offline_access grok-cli:access api:access` |
+| scope | `openid profile email offline_access grok-cli:access api:access conversations:read conversations:write` |
 | device-code grant | `urn:ietf:params:oauth:grant-type:device_code` |
-| API endpoint | `POST https://api.x.ai/v1/responses` (OpenAI Responses shape) |
+| API endpoint (OAuth `grok`) | `POST https://cli-chat-proxy.grok.com/v1/responses` (Grok CLI proxy) |
+| API endpoint (API-key `xai`) | `POST https://api.x.ai/v1/responses` (developer API) |
+
+The `conversations:read`/`conversations:write` scopes are required by the CLI proxy; the OpenAI
+Responses shape is identical on both surfaces. The subscription request also carries the Grok-CLI
+identity headers (§6).
 
 All token/device requests are `application/x-www-form-urlencoded` with `Accept: application/json`.
 The API request carries `Authorization: Bearer <access_token>` only — no account-id or
@@ -105,10 +116,17 @@ All gateway-owned errors use the Anthropic error envelope via the `auth_error` h
 
 ## 6. Request shaping — the `xai` [`ResponsesFlavor`]
 
-Detected table-driven, not by provider name: `auth = chatgpt_oauth` → ChatGPT; a base_url host
-of `x.ai`/`*.x.ai` → xAI (covers both the API-key and OAuth `xai` providers); else OpenAI. The
-xai flavor differs from the stock OpenAI translation in three ways (learned from 400s in the
-reference impls):
+Detected table-driven, not by provider name: `auth = chatgpt_oauth` → ChatGPT; `auth = xai_oauth`
+→ xAI (the OAuth `grok` provider, whose `grok.com` host isn't an `x.ai` host); a base_url host of
+`x.ai`/`*.x.ai` → xAI (the API-key `xai` provider); else OpenAI. The xai flavor differs from the
+stock OpenAI translation in three ways (learned from 400s in the reference impls):
+
+**Grok-CLI identity headers.** The subscription OAuth path (`Credential::XaiOauth`) additionally
+sends `x-xai-token-auth: xai-grok-cli`, `x-grok-client-identifier: grok-shell`,
+`x-grok-client-version: 0.2.93`, and `accept: text/event-stream` — the CLI proxy
+(`cli-chat-proxy.grok.com`) gates on them and otherwise answers as if the caller were an
+unentitled API client. The API-key `xai` path sends the bearer only. Neither sends `OpenAI-Beta`.
+
 
 | Field | OpenAI | ChatGPT/Codex | **xAI** |
 | :-- | :-- | :-- | :-- |
@@ -127,17 +145,21 @@ or sent per-request via `output_config.effort`. Derived defaults (thinking flag,
 stay off. Encrypted-reasoning
 replay (`include`) stays gated on the client's extended-thinking flag, exactly like the codex path.
 
+Live note (2026-07): `grok-4.5` on the CLI proxy **accepts** `reasoning.effort` (HTTP 200 with a
+configured `effort = "high"` route), so it is not among the models that 400; the opt-in default
+stays as the safe choice for the families that still reject it.
+
 ## 7. Config & validation (`config.rs`)
 
-- New `AuthMode::XaiOauth`. Built-in `xai` provider seeded in `Config::default()`
-  (`kind = responses`, `base_url = https://api.x.ai/v1`, `auth = api_key`,
-  `api_key_env = XAI_API_KEY`).
+- `AuthMode::XaiOauth`. Two built-in providers seeded in `Config::default()`: `xai`
+  (`base_url = https://api.x.ai/v1`, `auth = api_key`, `api_key_env = XAI_API_KEY`) and `grok`
+  (`base_url = https://cli-chat-proxy.grok.com/v1`, `auth = xai_oauth`). Both `kind = responses`.
 - **Bearer-leak guard:** a provider with `auth = "xai_oauth"` must be `kind = "responses"`
   (the anthropic adapter has no XaiOauth injection and would forward the client's own
   credential), use an **https** base_url (never plaintext), and have a base_url host of
-  `x.ai` or `*.x.ai` — else startup fails with `XaiOauthWrongKind` / `XaiOauthNotHttps` /
-  `XaiOauthNonXaiHost`. shunt refuses to inject a subscription token toward another origin
-  (mirrors Hermes' endpoint re-validation).
+  `x.ai`/`*.x.ai` **or** `grok.com`/`*.grok.com` (`host_is_grok_subscription`) — else startup
+  fails with `XaiOauthWrongKind` / `XaiOauthNotHttps` / `XaiOauthNonXaiHost`. shunt refuses to
+  inject a subscription token toward any other origin.
 
 ## 8. Security
 
@@ -160,5 +182,15 @@ replay (`include`) stays gated on the client's extended-thinking flag, exactly l
   1h for long-lived SuperGrok tokens, tightened for ~15-min device-code JWTs) to avoid burning
   single-use refresh tokens on every call. If device-code tokens prove very short-lived in
   practice, revisit the buffer.
-- **Live-API validation.** The flow is verified against the reference implementations and unit
-  tests (mocked token endpoint); it has not been exercised against a live SuperGrok account.
+- **Live-API validation.** ✅ Confirmed end-to-end against a live SuperGrok account (2026-07):
+  `grok-4.5` returns HTTP 200 through the `grok` provider (`cli-chat-proxy.grok.com`) for
+  non-streaming, streaming, and `reasoning.effort` requests. The `api.x.ai` surface returned a 402
+  entitlement gate for the same token, which is what motivated retargeting the OAuth path to the CLI
+  proxy with the Grok-CLI headers. (Whether every account tier is entitled on the CLI proxy still
+  varies — see below.)
+- **Tier gate.** xAI has restricted OAuth API access to SuperGrok Heavy at times (Hermes #26847),
+  surfacing as a 402/403 even for active standard subscribers. shunt keeps both paths so an
+  un-entitled account can fall back to `XAI_API_KEY`. If the CLI proxy proves to honor all tiers,
+  this note can be relaxed.
+- **`grok_client_version` pinning.** `0.2.93` is hardcoded (mirrors the reference Grok CLI). If the
+  proxy starts rejecting stale client versions, make it configurable like the base_url.

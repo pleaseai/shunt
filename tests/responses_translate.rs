@@ -610,6 +610,20 @@ fn surfaces_upstream_error_detail_and_message() {
     );
     assert_eq!(openai["error"]["message"], "invalid model");
 
+    // xAI shape: the reason is a top-level STRING `error` (e.g. a 402
+    // out-of-credits body) — surfaced instead of the generic fallback.
+    let xai = map_error_value(
+        &json!({
+            "code": "personal-team-blocked:spending-limit",
+            "error": "You have run out of credits or need a Grok subscription. Add credits at https://grok.com/?_s=usage or upgrade at https://grok.com/supergrok."
+        }),
+        StatusCode::PAYMENT_REQUIRED,
+    );
+    assert_eq!(
+        xai["error"]["message"],
+        "You have run out of credits or need a Grok subscription. Add credits at https://grok.com/?_s=usage or upgrade at https://grok.com/supergrok."
+    );
+
     // Unknown shape falls back to a generic message.
     let unknown = map_error_value(&json!({"weird": true}), StatusCode::BAD_GATEWAY);
     assert_eq!(unknown["error"]["message"], "upstream request failed");
