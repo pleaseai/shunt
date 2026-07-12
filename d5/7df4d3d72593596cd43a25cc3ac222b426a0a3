@@ -1,0 +1,48 @@
+docs/m6-xai-provider.md
+  s_cedad569f6d895::t_c929a0f0d75cdb 188-190
+  s_cedad569f6d895::t_929c75f87ef7c9 128-131
+  s_cedad569f6d895::t_f2f4aab50a0223 29-37
+src/model/responses.rs
+  s_cedad569f6d895::t_613bbf6a362e64 385-391,394,397
+  s_cedad569f6d895::t_ad634c7c247052 83
+  s_cedad569f6d895::t_938cbfe40aa75a 96
+  s_cedad569f6d895::t_cf19675aae6569 447-457
+  s_cedad569f6d895::t_4e35ddc5281601 1-2
+  s_cedad569f6d895::t_0e9522aebaafa3 44
+  s_cedad569f6d895::t_d7f7f0604d147a 380-384,392-393,395-396,398-446,458-476
+  s_cedad569f6d895::t_68e3ffd8ef4635 190-192
+src/model/responses_request.rs
+  s_cedad569f6d895::t_1a359d961f3d95 643-645
+  s_cedad569f6d895::t_1d9bc2411e79f6 707-710
+  s_cedad569f6d895::t_d06f0d87541026 116
+  s_cedad569f6d895::t_59f70ce9927530 137
+src/adapters/responses.rs
+  s_cedad569f6d895::t_1583ae4f015ceb 688-691
+src/config.rs
+  s_cedad569f6d895::t_4bd19f7d8f8acc 295,298-300
+  s_cedad569f6d895::t_7becc325ba97fd 833-835,837
+  s_cedad569f6d895::t_2f121b22f9eb6f 1075-1076
+  s_cedad569f6d895::t_7386cc18a78276 1016
+tests/responses_translate.rs
+  s_cedad569f6d895::t_7e0732498a1000 819
+  s_cedad569f6d895::t_a9863214f82952 788-818,820-828
+  s_cedad569f6d895::t_ae1ba8f2a53ed5 577-608
+  s_cedad569f6d895::t_00231c8af184c8 576
+  s_cedad569f6d895::t_143bf992c3f44b 787
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "d57df4d3d72593596cd43a25cc3ac222b426a0a3",
+  "prompts": {},
+  "sessions": {
+    "s_cedad569f6d895": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4c808346-a1f4-4610-b3eb-3da79a1e48c9",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
