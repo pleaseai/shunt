@@ -1,0 +1,103 @@
+src/config.rs
+  s_e503fa9f261534::t_03b7450a89f44f 28-31,133-201,400-403,514,649-681,1179-1268
+  s_e503fa9f261534::t_080d4bf9df57f1 1269
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_e503fa9f261534::t_03b7450a89f44f 68-90
+site/src/content/docs/reference/troubleshooting.md
+  s_e503fa9f261534::t_03b7450a89f44f 16
+site/src/content/docs/ko/guides/codex.md
+  s_e503fa9f261534::t_03b7450a89f44f 235-260,272
+.claude/agent-memory/review-review-security-reviewer/project_otel-pii-egress.md
+  s_e503fa9f261534::t_03b7450a89f44f 1-14
+src/lib.rs
+  s_e503fa9f261534::t_03b7450a89f44f 17
+site/src/content/docs/zh-cn/reference/troubleshooting.md
+  s_e503fa9f261534::t_03b7450a89f44f 16
+.claude/agent-memory/review-review-security-reviewer/MEMORY.md
+  s_e503fa9f261534::t_03b7450a89f44f 5
+Cargo.toml
+  s_e503fa9f261534::t_03b7450a89f44f 35-45,70
+README.ja.md
+  s_e503fa9f261534::t_6ef42197be118b 18
+  s_e503fa9f261534::t_03b7450a89f44f 63-64,67-68,75
+site/src/content/docs/zh-cn/guides/codex.md
+  s_e503fa9f261534::t_03b7450a89f44f 295-317,329
+.claude/agent-memory/review-review-comment-analyzer/shunt-otel-privacy-claim-rot.md
+  s_e503fa9f261534::t_03b7450a89f44f 1-46
+site/src/content/docs/guides/providers.md
+  s_e503fa9f261534::t_03b7450a89f44f 19-20,35-44,124,136
+site/src/content/docs/ko/guides/opentelemetry.md
+  s_e503fa9f261534::t_03b7450a89f44f 1-68
+src/metrics.rs
+  s_e503fa9f261534::t_03b7450a89f44f 3-14,16-21,24-49,52-53,66-74,81-85,87
+src/proxy.rs
+  s_e503fa9f261534::t_03b7450a89f44f 42-54,59
+src/telemetry.rs
+  s_e503fa9f261534::t_03b7450a89f44f 1-504
+site/src/content/docs/ja/reference/configuration.md
+  s_e503fa9f261534::t_03b7450a89f44f 68-90
+src/main.rs
+  s_e503fa9f261534::t_03b7450a89f44f 2,7,9,11-19,113,115,195-202,204,216-255
+site/src/content/docs/ja/reference/troubleshooting.md
+  s_e503fa9f261534::t_03b7450a89f44f 16
+shunt.yaml.example
+  s_e503fa9f261534::t_03b7450a89f44f 35-44
+site/src/content/docs/guides/opentelemetry.md
+  s_e503fa9f261534::t_03b7450a89f44f 1-68
+.claude/agent-memory/review-review-comment-analyzer/MEMORY.md
+  s_e503fa9f261534::t_03b7450a89f44f 1-3
+README.md
+  s_e503fa9f261534::t_b893817e6d9d7c 18
+  s_e503fa9f261534::t_03b7450a89f44f 63-64,67-68,75,144
+README.ko.md
+  s_e503fa9f261534::t_df933e86953648 18
+  s_e503fa9f261534::t_03b7450a89f44f 63-64,67-68,75
+site/astro.config.mjs
+  s_e503fa9f261534::t_03b7450a89f44f 104-108
+site/src/content/docs/reference/configuration.md
+  s_e503fa9f261534::t_03b7450a89f44f 68-90
+site/src/content/docs/ko/reference/troubleshooting.md
+  s_e503fa9f261534::t_03b7450a89f44f 16
+site/src/content/docs/guides/codex.md
+  s_e503fa9f261534::t_03b7450a89f44f 298-323,335
+site/src/content/docs/ko/reference/configuration.md
+  s_e503fa9f261534::t_03b7450a89f44f 68-90
+src/model/responses_request.rs
+  s_e503fa9f261534::t_03b7450a89f44f 1-2,9-73,80,86-89,91-97,100,234,254-256,398-404,409,480-487,489-503,509,530,560,629,634-640,691-695,717-724,766-767,839,857
+docs/running.md
+  s_e503fa9f261534::t_03b7450a89f44f 135-163
+shunt.toml.example
+  s_e503fa9f261534::t_03b7450a89f44f 35-58
+src/reload.rs
+  s_e503fa9f261534::t_03b7450a89f44f 84-93
+site/src/content/docs/ja/guides/codex.md
+  s_e503fa9f261534::t_03b7450a89f44f 251-277,289
+site/src/content/docs/zh-cn/guides/opentelemetry.md
+  s_e503fa9f261534::t_03b7450a89f44f 1-68
+README.zh-CN.md
+  s_e503fa9f261534::t_ff8b37abaad5c5 18
+  s_e503fa9f261534::t_03b7450a89f44f 63-64,67-68,75
+site/src/content/docs/ja/guides/opentelemetry.md
+  s_e503fa9f261534::t_03b7450a89f44f 1-68
+tests/responses_translate.rs
+  s_e503fa9f261534::t_03b7450a89f44f 158-160,163-172,192-421
+  s_e503fa9f261534::t_8047c3a2f1984d 422
+Cargo.lock
+  s_e503fa9f261534::t_7376218b11014f 113-123,321-326,1110,1112,1114,1117,1119,1121,1125-1126,1128,1130,1531-1618,1699-1704,1758-1768,1784-1796,2047,2049,2083,2161,2163,2271,2500-2505,2519,2929-2944,3284-3292,3320-3334,3368-3373,3386-3391,3404-3409,3434-3439,3452-3457,3470-3475,3488-3493
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "0bebc0cc42d4e4a3f30f2f0d66c692abb7e462a2",
+  "prompts": {},
+  "sessions": {
+    "s_e503fa9f261534": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "116e3e3e-ee93-411d-9281-2a9618117cca",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
