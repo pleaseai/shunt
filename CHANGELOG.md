@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.9.0](https://github.com/pleaseai/shunt/compare/v0.8.0...v0.9.0) (2026-07-12)
+
+
+### Features
+
+* **config:** support YAML config files alongside TOML ([#41](https://github.com/pleaseai/shunt/issues/41)) ([0fc3a41](https://github.com/pleaseai/shunt/commit/0fc3a41541472f8960389dd57f0a9298428d6f2a))
+* **plugins:** add per-provider shunt subagent plugins ([#55](https://github.com/pleaseai/shunt/issues/55)) ([b7aa935](https://github.com/pleaseai/shunt/commit/b7aa935366d278ddc07d437780d0b0f5f2729f80))
+* **responses:** route hosted web_search off the phantom-function path ([#53](https://github.com/pleaseai/shunt/issues/53)) ([5dc7d14](https://github.com/pleaseai/shunt/commit/5dc7d14c7aa39bb0055f1ced5e6c41264b292cfd))
+* **server:** serve GET /protocol gateway-protocol descriptor ([#57](https://github.com/pleaseai/shunt/issues/57)) ([e68a673](https://github.com/pleaseai/shunt/commit/e68a67304255d5b26dff0a28586a039bc7f6b9a0)), closes [#49](https://github.com/pleaseai/shunt/issues/49)
+* **xai:** add grok subscription-OAuth provider via the Grok CLI proxy ([#58](https://github.com/pleaseai/shunt/issues/58)) ([90e7110](https://github.com/pleaseai/shunt/commit/90e711059fc727f56352d2fc10d81bd6e6f95db6))
+
+
+### Bug Fixes
+
+* **codex-ws:** install rustls crypto provider to prevent wss panic ([#51](https://github.com/pleaseai/shunt/issues/51)) ([2c06425](https://github.com/pleaseai/shunt/commit/2c064250faba1053fcdfed8173a3dbf1d14ddd75))
+
 ## [0.8.0](https://github.com/pleaseai/shunt/compare/v0.7.0...v0.8.0) (2026-07-11)
 
 
