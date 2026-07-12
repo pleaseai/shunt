@@ -40,5 +40,5 @@ on the first `gh please pr create --draft ...` call produced a correct non-empty
 body (verified via
 `gh pr view "$PR_NUMBER" --json body --jq '.body | length'`) — no need to
 create-then-edit. Command still printed no stdout on success;
-`gh pr list --head "$BRANCH" --repo pleaseai/shunt --json number,title,isDraft,url`
+`gh pr list --head "$BRANCH" --repo "$OWNER_REPO" --json number,title,isDraft,url`
 (plain gh) is the reliable way to confirm the PR exists and get its number.
