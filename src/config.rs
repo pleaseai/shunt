@@ -319,6 +319,22 @@ impl ProviderConfig {
             websocket: false,
         }
     }
+
+    /// A `Responses`-kind provider on the OpenAI-compatible surface, differing
+    /// only in target URL, auth mode, and API-key env var. Used for the built-in
+    /// `openai`/`codex`/`xai`/`grok` providers, which are otherwise identical.
+    fn responses(base_url: &str, auth: AuthMode, api_key_env: Option<&str>) -> Self {
+        Self {
+            kind: ProviderKind::Responses,
+            base_url: base_url.to_string(),
+            auth,
+            api_key_env: api_key_env.map(str::to_string),
+            api_key_header: ApiKeyHeader::Bearer,
+            effort: None,
+            count_tokens: CountTokens::default(),
+            websocket: false,
+        }
+    }
 }
 
 impl Default for Config {
@@ -330,29 +346,19 @@ impl Default for Config {
             ),
             (
                 "openai".to_string(),
-                ProviderConfig {
-                    kind: ProviderKind::Responses,
-                    base_url: "https://api.openai.com/v1".to_string(),
-                    auth: AuthMode::ApiKey,
-                    api_key_env: Some("OPENAI_API_KEY".to_string()),
-                    api_key_header: ApiKeyHeader::Bearer,
-                    effort: None,
-                    count_tokens: CountTokens::default(),
-                    websocket: false,
-                },
+                ProviderConfig::responses(
+                    "https://api.openai.com/v1",
+                    AuthMode::ApiKey,
+                    Some("OPENAI_API_KEY"),
+                ),
             ),
             (
                 "codex".to_string(),
-                ProviderConfig {
-                    kind: ProviderKind::Responses,
-                    base_url: "https://chatgpt.com/backend-api".to_string(),
-                    auth: AuthMode::ChatgptOauth,
-                    api_key_env: None,
-                    api_key_header: ApiKeyHeader::Bearer,
-                    effort: None,
-                    count_tokens: CountTokens::default(),
-                    websocket: false,
-                },
+                ProviderConfig::responses(
+                    "https://chatgpt.com/backend-api",
+                    AuthMode::ChatgptOauth,
+                    None,
+                ),
             ),
             (
                 // xAI Grok, API-key path: the developer API (api.x.ai), billed
@@ -360,16 +366,11 @@ impl Default for Config {
                 // subscription is NOT honored here — use the `grok` provider for
                 // that (it targets the subscription surface).
                 "xai".to_string(),
-                ProviderConfig {
-                    kind: ProviderKind::Responses,
-                    base_url: "https://api.x.ai/v1".to_string(),
-                    auth: AuthMode::ApiKey,
-                    api_key_env: Some("XAI_API_KEY".to_string()),
-                    api_key_header: ApiKeyHeader::Bearer,
-                    effort: None,
-                    count_tokens: CountTokens::default(),
-                    websocket: false,
-                },
+                ProviderConfig::responses(
+                    "https://api.x.ai/v1",
+                    AuthMode::ApiKey,
+                    Some("XAI_API_KEY"),
+                ),
             ),
             (
                 // xAI Grok, subscription OAuth path: the Grok CLI chat proxy
@@ -381,16 +382,11 @@ impl Default for Config {
                 // provider reaches chatgpt.com/backend-api rather than
                 // api.openai.com.
                 "grok".to_string(),
-                ProviderConfig {
-                    kind: ProviderKind::Responses,
-                    base_url: "https://cli-chat-proxy.grok.com/v1".to_string(),
-                    auth: AuthMode::XaiOauth,
-                    api_key_env: None,
-                    api_key_header: ApiKeyHeader::Bearer,
-                    effort: None,
-                    count_tokens: CountTokens::default(),
-                    websocket: false,
-                },
+                ProviderConfig::responses(
+                    "https://cli-chat-proxy.grok.com/v1",
+                    AuthMode::XaiOauth,
+                    None,
+                ),
             ),
         ]);
         Self {
