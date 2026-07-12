@@ -175,7 +175,7 @@ Claude Code는 매핑된 id에 대해 컨텍스트 바를 고정된 **200k**로 
 윈도우가 더 크면 올려주세요 — 값은 비-`claude-` id를 자동으로 따라갑니다:
 
 ```bash
-export CLAUDE_CODE_MAX_CONTEXT_TOKENS=YOUR_WINDOW   # 슬러그의 실제 윈도우, xAI 모델 문서 참고
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS=256000   # 슬러그의 실제 윈도우로 설정, xAI 모델 문서 참고
 ```
 
 이 값은 **전역**이며(세션당 하나의 값), 매핑된 모델 중 가장 작은 실제 윈도우에 맞추세요. 모델의 실제
