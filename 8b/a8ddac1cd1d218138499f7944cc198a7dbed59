@@ -1,0 +1,27 @@
+site/src/content/docs/guides/providers.md
+  s_245b3a871a2322::t_1214da1f4cec45 79
+.claude-plugin/marketplace.json
+  s_245b3a871a2322::t_0920e52c7b380e 47-52
+plugins/shunt-mimo/README.md
+  s_245b3a871a2322::t_55c9a97edea6a8 1-83
+plugins/shunt-mimo/.claude-plugin/plugin.json
+  s_245b3a871a2322::t_e2b9cac8a77523 1-16
+plugins/shunt-mimo/agents/mimo-v2.5-pro.md
+  s_245b3a871a2322::t_c341b9198f9154 1-31
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "8ba8ddac1cd1d218138499f7944cc198a7dbed59",
+  "prompts": {},
+  "sessions": {
+    "s_245b3a871a2322": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "57c33d35-36c6-4d51-8d2d-3b563002adc8",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
