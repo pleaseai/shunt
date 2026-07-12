@@ -264,7 +264,28 @@ fn signal_endpoint(base: &str, path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::signal_endpoint;
+    use std::collections::BTreeMap;
+
+    use super::{build_resource, header_map, init, signal_endpoint};
+    use crate::config::OtelConfig;
+
+    /// A minimal enabled `[otel]` config pointing at a loopback port with nothing
+    /// listening. `init` only *constructs* exporters (it never connects), so the
+    /// unreachable endpoint is irrelevant here — no telemetry is emitted in these
+    /// tests, so shutdown flushes nothing.
+    fn config(traces: bool, metrics: bool, logs: bool, environment: Option<&str>) -> OtelConfig {
+        OtelConfig {
+            endpoint: "http://127.0.0.1:4318".to_string(),
+            service_name: "shunt-test".to_string(),
+            environment: environment.map(ToOwned::to_owned),
+            sample_ratio: 0.5,
+            headers: BTreeMap::new(),
+            traces,
+            metrics,
+            logs,
+            include_session_id: false,
+        }
+    }
 
     #[test]
     fn signal_endpoint_appends_path() {
@@ -280,5 +301,51 @@ mod tests {
             signal_endpoint("http://localhost:4318/", "/v1/metrics"),
             "http://localhost:4318/v1/metrics"
         );
+    }
+
+    #[test]
+    fn header_map_carries_configured_headers() {
+        let mut cfg = config(true, true, true, None);
+        cfg.headers
+            .insert("authorization".to_string(), "Bearer token".to_string());
+        let headers = header_map(&cfg);
+        assert_eq!(
+            headers.get("authorization").map(String::as_str),
+            Some("Bearer token")
+        );
+    }
+
+    #[test]
+    fn build_resource_succeeds_with_and_without_environment() {
+        // Exercises both the environment `Some` (attribute added) and `None`
+        // (attribute skipped) arms of `build_resource`.
+        let _with_env = build_resource(&config(true, true, true, Some("prod")));
+        let _without_env = build_resource(&config(true, true, true, None));
+    }
+
+    #[test]
+    fn init_metrics_only_installs_provider_without_layer() {
+        // Only metrics enabled: the meter provider is installed, but there is no
+        // trace or logs subscriber bridge, so the reload layer stays `None`.
+        let (guard, layer) = init(&config(false, true, false, None)).expect("init should succeed");
+        assert!(
+            layer.is_none(),
+            "no trace/logs bridge means no subscriber layer to inject"
+        );
+        drop(guard); // exercises the meter-provider shutdown path
+    }
+
+    #[test]
+    fn init_traces_and_logs_builds_subscriber_layer() {
+        // Traces + logs enabled (metrics off): both the trace and logs bridges
+        // are assembled into the single reload layer, and the guard shuts down
+        // the tracer and logger providers on drop.
+        let (guard, layer) =
+            init(&config(true, false, true, Some("staging"))).expect("init should succeed");
+        assert!(
+            layer.is_some(),
+            "trace + logs bridges must compose into a subscriber layer"
+        );
+        drop(guard); // exercises the tracer/logger shutdown paths
     }
 }
