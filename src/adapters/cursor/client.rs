@@ -5,6 +5,19 @@ use crate::adapters::cursor::model::CursorModelResolution;
 use crate::adapters::cursor::proto::{self, AgentClientMessage, RunRequest};
 use crate::adapters::cursor::request::CursorSelectedImage;
 
+/// Resolve the Cursor client version once, process-wide. `CursorHttpClient::new`
+/// runs per request and `std::env::var` takes a global lock, so cache the lookup
+/// in a `OnceLock` (the version is deploy-time config, not per-request).
+fn cursor_client_version() -> &'static String {
+    static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    VERSION.get_or_init(|| {
+        std::env::var("SHUNT_CURSOR_CLIENT_VERSION")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "0.48.5".to_string())
+    })
+}
+
 /// HTTP client for the Cursor AgentService/Run endpoint.
 pub struct CursorHttpClient {
     client: reqwest::Client,
@@ -18,11 +31,10 @@ impl CursorHttpClient {
             client,
             base_url: base_url.into(),
             // Cursor's backend can start rejecting stale client versions; an env
-            // override lets operators bump it without a rebuild/redeploy.
-            client_version: std::env::var("SHUNT_CURSOR_CLIENT_VERSION")
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| "0.48.5".to_string()),
+            // override lets operators bump it without a rebuild/redeploy. Resolve
+            // it once process-wide (this constructor runs per request, and
+            // std::env::var takes a global lock), caching in a OnceLock.
+            client_version: cursor_client_version().clone(),
         }
     }
 

@@ -112,16 +112,27 @@ fn render_system(req: &Value) -> Option<String> {
             .collect::<Vec<_>>()
             .join("\n"),
         serde_json::Value::Array(blocks) => {
-            let parts: Vec<&str> = blocks
+            // Filter billing-header directives line-by-line within each block, not
+            // just whole blocks, so a multi-line text block with a mid-block
+            // header is handled the same as the string form above.
+            let parts: Vec<String> = blocks
                 .iter()
                 .filter_map(|b| {
-                    if b.get("type").and_then(|t| t.as_str()) == Some("text") {
-                        b.get("text").and_then(|t| t.as_str())
-                    } else {
+                    if b.get("type").and_then(|t| t.as_str()) != Some("text") {
+                        return None;
+                    }
+                    let text = b.get("text").and_then(|t| t.as_str())?;
+                    let filtered = text
+                        .lines()
+                        .filter(|line| !line.starts_with("x-anthropic-billing-header:"))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if filtered.is_empty() {
                         None
+                    } else {
+                        Some(filtered)
                     }
                 })
-                .filter(|line| !line.starts_with("x-anthropic-billing-header:"))
                 .collect();
             if parts.is_empty() {
                 return None;
@@ -342,6 +353,31 @@ mod tests {
         assert!(rendered.contains("<user>"));
         assert!(rendered.contains("hello"));
         assert!(rendered.contains("</user>"));
+    }
+
+    #[test]
+    fn filters_billing_header_lines_in_both_system_forms() {
+        // String form: mid-string billing line is dropped, rest kept.
+        let req: Value = serde_json::json!({
+            "model": "cursor:gpt-5.5",
+            "system": "keep me\nx-anthropic-billing-header: secret\nkeep me too",
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+        let rendered = render_cursor_prompt(&req);
+        assert!(rendered.contains("keep me"));
+        assert!(rendered.contains("keep me too"));
+        assert!(!rendered.contains("x-anthropic-billing-header"));
+
+        // Array form: a multi-line text block with a mid-block billing line.
+        let req: Value = serde_json::json!({
+            "model": "cursor:gpt-5.5",
+            "system": [{"type": "text", "text": "line one\nx-anthropic-billing-header: secret\nline two"}],
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+        let rendered = render_cursor_prompt(&req);
+        assert!(rendered.contains("line one"));
+        assert!(rendered.contains("line two"));
+        assert!(!rendered.contains("x-anthropic-billing-header"));
     }
 
     #[test]

@@ -27,8 +27,15 @@ impl CursorStreamMachine {
         let frames = match self.decoder.push(chunk) {
             Ok(frames) => frames,
             Err(error) => {
+                // Flush any already-emitted output before the error, matching the
+                // other error branches below, so valid data generated before the
+                // failure still reaches the client.
                 self.finished = true;
-                return format_sse_error(&format!("Cursor frame decode failed: {error}"));
+                let mut output = self.framer.take_output();
+                output.extend_from_slice(&format_sse_error(&format!(
+                    "Cursor frame decode failed: {error}"
+                )));
+                return output;
             }
         };
         for frame in frames {
