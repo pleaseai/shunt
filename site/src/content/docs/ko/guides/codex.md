@@ -219,6 +219,19 @@ export CLAUDE_CODE_MAX_CONTEXT_TOKENS=372000         # gpt-5.6-sol의 실제 윈
 
 `/model`에서 **gpt-5.6-sol**을 선택하세요. 세션의 나머지는 모두 여전히 변경 없이 Anthropic으로 흐르며, 오직 매핑된 모델의 추론만 ChatGPT/Codex 구독이 응답합니다.
 
+## 웹 검색
+
+Claude Code의 내장 **웹 검색**은 별도 설정 없이 Codex 경로에서 동작합니다. 웹 검색을 활성화하면 Claude
+Code가 호스티드 `web_search_20250305` 도구를 보내고, shunt는 이를 Responses API의 호스티드
+**`web_search`** 도구로 등록합니다. 따라서 검색이 처리되지 않은 도구 호출로 되돌아오는 대신 백엔드에서
+실제로 수행됩니다.
+
+- 도메인 필터가 그대로 전달됩니다 — Claude Code의 `allowed_domains` / `blocked_domains`가 Responses
+  `web_search`의 `filters`가 됩니다.
+- `codex`(ChatGPT) 및 `openai`(스톡 Responses) 프로바이더에 적용됩니다.
+- **xAI / Grok 라우트는 지원하지 않습니다** — Grok의 Responses API는 함수 도구만 허용하므로 shunt가
+  호스티드 웹 검색 도구를 제거합니다. 웹 검색에는 `codex` 또는 `openai` 라우트를 사용하세요.
+
 ## 문제 해결
 
 | 증상 | 원인 / 해결 |
@@ -229,5 +242,6 @@ export CLAUDE_CODE_MAX_CONTEXT_TOKENS=372000         # gpt-5.6-sol의 실제 윈
 | `Model not found <slug>` | 클라이언트 버전 게이팅 또는 부여되지 않은 슬러그 — `models.json`으로 확인하세요. |
 | `gpt-*` id에서 effort 슬라이더가 무시됨 | `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1`을 설정하거나, 라우트/프로바이더 `effort` 오버라이드가 이기고 있습니다. |
 | 컨텍스트 바가 과다 보고 / 조기 압축 | `CLAUDE_CODE_MAX_CONTEXT_TOKENS`를 설정하세요. 디스커버리 별칭은 이를 받을 수 없습니다 — 비-`claude-` id를 사용하세요. |
+| Grok 라우트에서 웹 검색 결과가 비어 있음 | xAI/Grok의 Responses API는 웹 검색을 지원하지 않아 shunt가 도구를 제거합니다. 웹 검색에는 `codex` 또는 `openai` 라우트를 사용하세요. |
 
 더 많은 내용은 전체 [문제 해결](/ko/reference/troubleshooting/) 레퍼런스를 참고하세요.
