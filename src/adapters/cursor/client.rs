@@ -8,21 +8,23 @@ use crate::adapters::cursor::request::CursorSelectedImage;
 /// Resolve the Cursor client version once, process-wide. `CursorHttpClient::new`
 /// runs per request and `std::env::var` takes a global lock, so cache the lookup
 /// in a `OnceLock` (the version is deploy-time config, not per-request).
-fn cursor_client_version() -> &'static String {
+fn cursor_client_version() -> &'static str {
     static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    VERSION.get_or_init(|| {
-        std::env::var("SHUNT_CURSOR_CLIENT_VERSION")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| "0.48.5".to_string())
-    })
+    VERSION
+        .get_or_init(|| {
+            std::env::var("SHUNT_CURSOR_CLIENT_VERSION")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "0.48.5".to_string())
+        })
+        .as_str()
 }
 
 /// HTTP client for the Cursor AgentService/Run endpoint.
 pub struct CursorHttpClient {
     client: reqwest::Client,
     base_url: String,
-    client_version: String,
+    client_version: &'static str,
 }
 
 impl CursorHttpClient {
@@ -34,7 +36,7 @@ impl CursorHttpClient {
             // override lets operators bump it without a rebuild/redeploy. Resolve
             // it once process-wide (this constructor runs per request, and
             // std::env::var takes a global lock), caching in a OnceLock.
-            client_version: cursor_client_version().clone(),
+            client_version: cursor_client_version(),
         }
     }
 
@@ -66,7 +68,7 @@ impl CursorHttpClient {
             .header("connect-protocol-version", "1")
             .header("connect-accept-encoding", "gzip")
             .header("x-cursor-client-type", "cli")
-            .header("x-cursor-client-version", &self.client_version)
+            .header("x-cursor-client-version", self.client_version)
             .header("x-ghost-mode", "true")
             .header("x-request-id", &request_id)
             .header("x-original-request-id", &request_id)
