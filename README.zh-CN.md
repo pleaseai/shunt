@@ -15,7 +15,7 @@
 
 名字即机制:电气/铁路中的 *shunt(分流)* 将流量中被选中的部分导向一条并行路径。在这里,被映射模型的推理被分流到另一个提供方,而 Claude Code 的工具和技能保持完好。
 
-它内置了 **OpenAI**、**ChatGPT/Codex**(通过 `codex login` 复用你的订阅)以及 **Anthropic** 透传 —— 而任何兼容 Anthropic-Messages 的后端(Kimi、DeepSeek、GLM、MiniMax、OpenRouter、Vercel AI Gateway……)只需一个 TOML 表即可接入,无需改动代码。
+它内置了 **OpenAI**、**ChatGPT/Codex**(通过 `codex login` 复用你的订阅)、**xAI**(API 密钥)、**Grok**(通过 `shunt login xai` 复用你的 SuperGrok / X Premium+ 订阅)以及 **Anthropic** 透传 —— 而任何兼容 Anthropic-Messages 的后端(Kimi、DeepSeek、GLM、MiniMax、OpenRouter、Vercel AI Gateway……)只需一个 TOML 表即可接入,无需改动代码。
 
 ## 安装
 
@@ -60,6 +60,10 @@ claude                                              # /model -> 选择 gpt-5.6-s
 | `anthropic` | `anthropic` | 透传 | `api.anthropic.com` —— 转发调用方自己的凭据 |
 | `openai` | `responses` | `OPENAI_API_KEY` | `api.openai.com/v1` |
 | `codex` | `responses` | ChatGPT OAuth | `chatgpt.com/backend-api` —— 复用 `~/.codex/auth.json`(`codex login`) |
+| `xai` | `responses` | `XAI_API_KEY` | `api.x.ai/v1` —— 开发者 API,按 token 计费 |
+| `grok` | `responses` | xAI OAuth | `cli-chat-proxy.grok.com/v1` —— Grok CLI 代理;复用 `~/.shunt/xai-auth.json`(使用 SuperGrok / X Premium+ 订阅执行 `shunt login xai`) |
+
+xAI 可能按订阅层级限制 OAuth 访问 —— 如果 `grok` 返回 403,请改用 `xai` API 密钥提供方。详见 [`docs/m6-xai-provider.md`](docs/m6-xai-provider.md)。
 
 OpenAI 的 Thibault Sottiaux 已公开欢迎通过其他编码 harness 运行 Codex：
 
@@ -67,7 +71,7 @@ OpenAI 的 Thibault Sottiaux 已公开欢迎通过其他编码 harness 运行 Co
 
 他还[进一步演示](https://x.com/thsottiaux/status/2076119366647894371)了如何亲自将 Claude Code（“你那只橙色的螃蟹”）指向 GPT-5.6 Sol —— 这正是 `shunt` 所做的推理层替换，无需单独的应用。
 
-话虽如此，是否从非官方客户端复用你的 ChatGPT/Codex 订阅（或 Kimi、Cursor 等其他后端），由你自己决定 —— 公开的欢迎并不保证未来的政策或账号层面的处置。使用风险自负。
+话虽如此，是否从非官方客户端复用你的 ChatGPT/Codex 或 SuperGrok 订阅（或 Kimi、Cursor 等其他后端），由你自己决定 —— 公开的欢迎并不保证未来的政策或账号层面的处置。使用风险自负。
 
 **任何兼容 Anthropic 的后端**只需一个表即可接入 —— 无需改动代码:
 
