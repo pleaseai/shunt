@@ -1,0 +1,22 @@
+site/src/content/docs/guides/providers.md
+  s_d58456c0cfb820::t_1136c6cb3315a8 33-42
+  s_d58456c0cfb820::t_e6eac42319e360 18-19
+  s_d58456c0cfb820::t_c729ef2e63b3ca 98
+  s_d58456c0cfb820::t_7ef66984f1dfff 86
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "6166bfd2b154843cd0b4b90c53c8f3129a1e80ea",
+  "prompts": {},
+  "sessions": {
+    "s_d58456c0cfb820": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e5e84a2a-1e72-43c1-bdf9-74e6c5c58536",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
