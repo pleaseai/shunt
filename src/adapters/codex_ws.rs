@@ -353,12 +353,31 @@ pub async fn begin(
     })
 }
 
+/// Install the rustls process-wide crypto provider on the first websocket
+/// handshake. Feature unification compiles two providers into the binary —
+/// aws-lc-rs (via sentry's reqwest `rustls` feature) and ring (via reqwest's own
+/// `rustls-tls` feature) — so rustls 0.23 refuses to auto-select one, and
+/// `tokio_tungstenite::connect_async` — which pulls tokio-rustls with no provider
+/// feature of its own — panics without an installed default. Doing it here rather
+/// than only in `main` covers the library target: integration tests and external
+/// consumers reach this path without running `main`. `Once` keeps it idempotent
+/// and race-free across concurrent first turns; pin aws-lc-rs to match reqwest/sentry.
+fn ensure_crypto_provider() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        // `install_default` errors only if a provider is already installed, which
+        // is harmless — discard it rather than panicking.
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    });
+}
+
 /// Perform the websocket handshake, mapping a refused upgrade to a status-bearing
 /// [`CodexWsError`] and capturing the handshake `x-codex-turn-state` if present.
 async fn connect(
     ws_url: &str,
     headers: HeaderMap,
 ) -> Result<(WsStream, Option<String>), CodexWsError> {
+    ensure_crypto_provider();
     let mut request = ws_url
         .into_client_request()
         .map_err(|error| CodexWsError::transport(format!("invalid websocket request: {error}")))?;
