@@ -1,0 +1,27 @@
+site/src/content/docs/zh-cn/guides/xai.md
+  s_cfa76bcd6e9c3f::t_8417b5f3197f02 179
+site/src/content/docs/guides/xai.md
+  s_cfa76bcd6e9c3f::t_3ec447b4c95292 180
+.please/state/review-threads-66.json
+  s_cfa76bcd6e9c3f::t_da78c3ed206ccb 1-11
+site/src/content/docs/ja/guides/xai.md
+  s_cfa76bcd6e9c3f::t_57ce1afed8ba70 144
+site/src/content/docs/ko/guides/xai.md
+  s_cfa76bcd6e9c3f::t_dcca6ce7c6e203 178
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "5eec665cdb398ff38d9eb23bbb986d6d711273af",
+  "prompts": {},
+  "sessions": {
+    "s_cfa76bcd6e9c3f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "540f8f98-a567-4589-9821-7ebfa3895987",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}

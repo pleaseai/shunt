@@ -1,0 +1,44 @@
+site/astro.config.mjs
+  s_cfa76bcd6e9c3f::t_bb89d1308283b5 85-88
+  s_cfa76bcd6e9c3f::t_87fea5524ceedc 84
+site/src/content/docs/zh-cn/guides/xai.md
+  s_cfa76bcd6e9c3f::t_71b09240b68a28 1-234
+site/src/content/docs/ko/guides/providers.md
+  s_cfa76bcd6e9c3f::t_a44bb6c2b1f232 75-84
+  s_cfa76bcd6e9c3f::t_9c58aee79db24c 19-20
+  s_cfa76bcd6e9c3f::t_df15e29017b73d 116-123,125-135
+site/src/content/docs/ja/guides/providers.md
+  s_cfa76bcd6e9c3f::t_2510e663180776 75-81
+  s_cfa76bcd6e9c3f::t_800acb061716dc 113-120,122-132
+  s_cfa76bcd6e9c3f::t_468b327805625e 19-20
+site/src/content/docs/zh-cn/guides/providers.md
+  s_cfa76bcd6e9c3f::t_46983152d610b0 116-123,125-135
+  s_cfa76bcd6e9c3f::t_2a62ba5074818b 19-20
+  s_cfa76bcd6e9c3f::t_3faeaf24910589 75-84
+site/src/content/docs/ko/guides/xai.md
+  s_cfa76bcd6e9c3f::t_cee33155406c84 1-233
+site/src/content/docs/ja/guides/xai.md
+  s_cfa76bcd6e9c3f::t_bc37de7f618c5a 1-195
+site/src/content/docs/guides/providers.md
+  s_cfa76bcd6e9c3f::t_bbbda342c3b184 85-94
+site/src/content/docs/guides/xai.md
+  s_cfa76bcd6e9c3f::t_710eaf7f10c8fe 62,65
+  s_cfa76bcd6e9c3f::t_61cb115cb2b8da 1-61,63-64,66-227,230-235
+  s_cfa76bcd6e9c3f::t_1bed89d910cdf6 228-229
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "467c9951ee7c3edb898b600cb91b94afe405cc99",
+  "prompts": {},
+  "sessions": {
+    "s_cfa76bcd6e9c3f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "540f8f98-a567-4589-9821-7ebfa3895987",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
