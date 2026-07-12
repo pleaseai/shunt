@@ -31,7 +31,7 @@ not for breadth of backends or multi-tenant fleet operation.
 | **Subscription-backed CC proxy (same class)** | **raine/claude-code-proxy** | **Closest peer overall** — Rust single binary, per-`model` routing, Codex WebSocket + `previous_response_id` continuation, 4 subscription-OAuth backends (Codex/Kimi/Grok/Cursor) |
 | **Broad Claude-Code proxy w/ Codex OAuth** | **CLIProxyAPI** (router-for-me) | Closest *broad* peer — overlaps on Codex/ChatGPT OAuth, Codex WebSocket v2, tool translation |
 | **Narrow Claude Code → Codex swap** | insightflo/chatgpt-codex-proxy | Same inference-layer swap, single backend |
-| **General Claude-Code routers** | musistudio/claude-code-router, 1rgs/fuergaosi233 claude-code-proxy | Usually a *global* model swap, not per-model diversion |
+| **General Claude-Code routers** | musistudio/claude-code-router, 1rgs/claude-code-proxy, fuergaosi233/claude-code-proxy | Usually a *global* model swap, not per-model diversion |
 | **General AI gateways** | LiteLLM, Portkey, bifrost, modelgate | Adjacent infra — possible *backends*, not Claude-Code-native |
 
 ## 3. Feature matrix
