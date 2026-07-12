@@ -1,0 +1,41 @@
+site/src/content/docs/ko/guides/xai.md
+  s_cfa76bcd6e9c3f::t_d3b8bc785709fd 225
+  s_cfa76bcd6e9c3f::t_598762c6584846 183
+  s_cfa76bcd6e9c3f::t_0fcc5bb2292774 139
+  s_cfa76bcd6e9c3f::t_f28565e45e549f 125-128
+  s_cfa76bcd6e9c3f::t_e742737db044c3 189
+  s_cfa76bcd6e9c3f::t_a2b71f019edcdd 170
+site/src/content/docs/ja/guides/xai.md
+  s_cfa76bcd6e9c3f::t_562ab516d5ab33 147
+  s_cfa76bcd6e9c3f::t_963f9ad7ba643a 186
+  s_cfa76bcd6e9c3f::t_15393b15b880d4 137
+  s_cfa76bcd6e9c3f::t_55f75dcc4e580e 116
+  s_cfa76bcd6e9c3f::t_7ea156818d9e99 106
+  s_cfa76bcd6e9c3f::t_d1e507b3a43be7 151
+site/src/content/docs/zh-cn/guides/xai.md
+  s_cfa76bcd6e9c3f::t_105fa210839bf0 184
+  s_cfa76bcd6e9c3f::t_9142dc8166a363 190
+  s_cfa76bcd6e9c3f::t_3f08481b9c78c2 226
+  s_cfa76bcd6e9c3f::t_ae624121d6456b 140
+  s_cfa76bcd6e9c3f::t_adede5091062b8 171
+  s_cfa76bcd6e9c3f::t_c16cd6e9b285ee 126-129
+site/src/content/docs/guides/xai.md
+  s_cfa76bcd6e9c3f::t_549d119f148c35 127-130
+  s_cfa76bcd6e9c3f::t_9e67a6da5ddea0 227
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "fe9e21e903e68b6c288ffe86110f887feb54aaf6",
+  "prompts": {},
+  "sessions": {
+    "s_cfa76bcd6e9c3f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "540f8f98-a567-4589-9821-7ebfa3895987",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
