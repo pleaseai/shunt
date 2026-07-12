@@ -15,7 +15,7 @@
 
 The name is the mechanism: an electrical/railway *shunt* diverts a selected part of the flow onto a parallel path. Here, a mapped model's inference is diverted to another provider while Claude Code's tools and skills stay intact.
 
-It ships with **OpenAI**, **ChatGPT/Codex** (reuse your subscription via `codex login`), **xAI** (API key), **Grok** (reuse your SuperGrok / X Premium+ subscription via `shunt login xai`), and **Anthropic** passthrough built in — and any Anthropic-Messages-compatible backend (Kimi, DeepSeek, GLM, MiniMax, OpenRouter, Vercel AI Gateway, …) is one TOML table or YAML mapping away, no code changes.
+It ships with **OpenAI**, **ChatGPT/Codex** (reuse your subscription via `codex login`), **xAI** (API key), **Grok** (reuse your SuperGrok / X Premium+ subscription via `shunt login xai`), **Cursor** (reuse your subscription via `shunt login cursor`), and **Anthropic** passthrough built in — and any Anthropic-Messages-compatible backend (Kimi, DeepSeek, GLM, MiniMax, OpenRouter, Vercel AI Gateway, …) is one TOML table or YAML mapping away, no code changes.
 
 ## Install
 
@@ -51,7 +51,7 @@ Unmapped models (all your `claude-*` ids) keep working exactly as before — shu
 
 ## Providers
 
-A provider is a `[providers.<name>]` TOML table (or an entry under the YAML `providers` mapping) — two adapter kinds cover everything: `kind = "anthropic"` (the upstream speaks Anthropic Messages; passed through, optionally with a different key) and `kind = "responses"` (the upstream speaks the OpenAI Responses API; shunt translates Anthropic Messages ⇄ Responses, streaming included).
+A provider is a `[providers.<name>]` TOML table (or an entry under the YAML `providers` mapping). Two adapter kinds cover most upstreams: `kind = "anthropic"` (the upstream speaks Anthropic Messages; passed through, optionally with a different key) and `kind = "responses"` (the upstream speaks the OpenAI Responses API; shunt translates Anthropic Messages ⇄ Responses, streaming included). A third native kind, `kind = "cursor"`, bridges Cursor's ConnectRPC/protobuf AgentService so a Cursor subscription is reachable through the same Anthropic-Messages interface.
 
 **Built in:**
 
@@ -62,6 +62,7 @@ A provider is a `[providers.<name>]` TOML table (or an entry under the YAML `pro
 | `codex` | `responses` | ChatGPT OAuth | `chatgpt.com/backend-api` — reuses `~/.codex/auth.json` (`codex login`) |
 | `xai` | `responses` | `XAI_API_KEY` | `api.x.ai/v1` — the developer API, billed per token |
 | `grok` | `responses` | xAI OAuth | `cli-chat-proxy.grok.com/v1` — the Grok CLI proxy; reuses `~/.shunt/xai-auth.json` (`shunt login xai` with a SuperGrok / X Premium+ subscription) |
+| `cursor` | `cursor` | Cursor OAuth | `api2.cursor.sh` — reuses `~/.shunt/cursor-auth.json` (`shunt login cursor`) |
 
 xAI may gate OAuth access by subscription tier — if `grok` returns 403, use the `xai` API-key provider instead. Details in [`docs/m6-xai-provider.md`](docs/m6-xai-provider.md).
 
@@ -72,6 +73,21 @@ OpenAI's Thibault Sottiaux has publicly welcomed running Codex through other cod
 He [followed up](https://x.com/thsottiaux/status/2076119366647894371) by walking through pointing Claude Code ("your orange crab") at GPT-5.6 Sol himself — exactly the inference-layer swap `shunt` performs, no separate app required.
 
 That said, reusing your ChatGPT/Codex or SuperGrok subscription (or Kimi, Cursor, or other backends) from an unofficial client is your own call — a public welcome doesn't guarantee future policy or account enforcement. Use at your own risk.
+
+**Cursor** works the same way — log in once and route a `cursor:*` model id:
+
+```bash
+shunt login cursor                                  # OAuth -> ~/.shunt/cursor-auth.json
+```
+
+```toml
+# shunt.toml — route a cursor:<id> to your Cursor subscription
+[[routes]]
+model = "cursor:gpt-5.5"                             # cursor-plan:<id> / cursor-ask:<id> select the agent mode
+provider = "cursor"
+```
+
+The `cursor:` / `cursor-agent:` / `cursor-plan:` / `cursor-ask:` prefixes pick Cursor's agent mode; the suffix is the Cursor model id. See [Providers → Cursor](https://shunt-docs.pages.dev/guides/providers/#the-cursor-provider-cursor-subscription) for details.
 
 **Any Anthropic-compatible backend** is one table away — no code changes:
 

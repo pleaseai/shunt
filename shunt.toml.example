@@ -58,9 +58,9 @@ default_provider = "anthropic" # provider for any model with no route -> pass-th
 
 # --- Providers: each is a `[providers.<name>]` table. Add a new upstream by
 # adding a table — no code change. Every provider has these keys:
-#   kind           = "anthropic" | "responses"   (which upstream protocol)
+#   kind           = "anthropic" | "responses" | "cursor" (which upstream protocol)
 #   base_url       = "https://…"                  (Claude Code appends /v1/messages)
-#   auth           = "passthrough" | "api_key" | "chatgpt_oauth"
+#   auth           = "passthrough" | "api_key" | "chatgpt_oauth" | "cursor_oauth"
 #   api_key_env    = "ENV_NAME"                   (when auth = "api_key")
 #   api_key_header = "bearer" | "x_api_key"       (default bearer)
 #   effort         = "low|medium|high|xhigh|max"  (optional; responses providers)
@@ -94,6 +94,14 @@ auth = "chatgpt_oauth"         # reads + auto-refreshes ~/.codex/auth.json
                                # reuses previous_response_id to upload only the new
                                # input. Only honored for this ChatGPT/Codex backend;
                                # falls back to HTTP if the socket can't be opened.
+
+# Cursor subscription via ConnectRPC. Run `shunt login cursor`; credentials are
+# stored in ~/.shunt/cursor-auth.json and refreshed automatically.
+# [providers.cursor]
+# kind = "cursor"
+# base_url = "https://api2.cursor.sh"
+# auth = "cursor_oauth"
+# count_tokens = "tiktoken"
 
 # xAI Grok (EXPERIMENTAL). Two built-in providers cover the two ways in — you
 # only need to add [[routes]] (grok-build-0.1, grok-4.5, grok-4.3). Pick one:
@@ -179,7 +187,13 @@ provider = "openai"
 # model = "gpt-5.6-sol"
 # provider = "codex"
 
-# Example C — route to an Anthropic-compatible gateway (see the providers above).
+# Example C — route to Cursor. Prefixes select agent mode and the suffix is the
+# Cursor model id (for example cursor:gpt-5.5 or cursor-plan:gpt-5.5).
+# [[routes]]
+# model = "cursor:gpt-5.5"
+# provider = "cursor"
+
+# Example D — route to an Anthropic-compatible gateway (see the providers above).
 # The model id is whatever that gateway expects; select it in Claude Code with
 # ANTHROPIC_MODEL / the /model picker. shunt injects the provider's api_key_env.
 # [[routes]]

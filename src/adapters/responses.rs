@@ -426,6 +426,9 @@ fn websocket_headers(credential: Credential) -> Result<HeaderMap, AdapterError> 
         Credential::XaiOauth { access_token } => {
             set("authorization", format!("Bearer {access_token}"))?
         }
+        Credential::CursorOauth { access_token } => {
+            set("authorization", format!("Bearer {access_token}"))?
+        }
         Credential::Passthrough => {}
     }
     Ok(headers)
@@ -728,7 +731,7 @@ fn request_builder(
         }
         // A Responses provider configured with passthrough auth is a
         // misconfiguration; send no credential and let the upstream reject it.
-        Credential::Passthrough => {}
+        Credential::CursorOauth { .. } | Credential::Passthrough => {}
     }
     request
 }

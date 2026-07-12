@@ -3,10 +3,11 @@ title: Providers
 description: The built-in providers and how to add any Anthropic-compatible backend with a TOML table.
 ---
 
-Providers are a **name → config map**: a new upstream is just another `[providers.<name>]` table — no code change. Two adapter kinds cover everything:
+Providers are a **name → config map**: a new upstream is just another `[providers.<name>]` table — no code change. Three adapter kinds cover everything:
 
 - **`kind = "anthropic"`** — the upstream speaks the Anthropic Messages API. shunt passes the request through, optionally injecting a different API key.
 - **`kind = "responses"`** — the upstream speaks the OpenAI Responses API. shunt translates Anthropic Messages ⇄ Responses, including streaming.
+- **`kind = "cursor"`** — the native Cursor adapter. shunt bridges Cursor's ConnectRPC/protobuf AgentService (and its tool protocol) to the Anthropic Messages API, streaming included. Used by the built-in `cursor` provider.
 
 ## Built-in providers
 
@@ -17,6 +18,7 @@ Providers are a **name → config map**: a new upstream is just another `[provid
 | `codex` | `responses` | `chatgpt_oauth` | `chatgpt.com/backend-api` — reuses `~/.codex/auth.json` |
 | `xai` | `responses` | `api_key` (`XAI_API_KEY`) | `api.x.ai/v1` — the developer API, billed per token |
 | `grok` | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` — the Grok CLI proxy; reuses `~/.shunt/xai-auth.json` |
+| `cursor` | `cursor` | `cursor_oauth` | `api2.cursor.sh` — reuses `~/.shunt/cursor-auth.json` (`shunt login cursor`) |
 
 ### The codex provider (ChatGPT subscription)
 
@@ -42,6 +44,42 @@ xAI may gate OAuth access by subscription tier — if `grok` returns 403, use th
 
 :::caution[Model slugs]
 The ChatGPT-account Codex backend **rejects** `gpt-*-codex` slugs — it only accepts the account's live-entitled slugs. The authoritative catalog is openai/codex's [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json). Current slugs are `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` (frontier) and `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.2`; older accounts may only be entitled to the earlier ones. Use `upstream_model` in a route to map any alias onto an entitled slug.
+:::
+
+### The cursor provider (Cursor subscription)
+
+The built-in `cursor` provider reaches your **Cursor** subscription through Cursor's own ConnectRPC/protobuf AgentService (`api2.cursor.sh`) — the `kind = "cursor"` native adapter translates it to and from Anthropic Messages, streaming and Cursor's native tool calls included. Log in once:
+
+```bash
+shunt login cursor
+```
+
+This runs the Cursor OAuth flow and writes `~/.shunt/cursor-auth.json`, which shunt reads and auto-refreshes. If the file is missing or expired, shunt returns an `authentication_error` telling you to run `shunt login cursor`.
+
+Route a `cursor:*` model id to it — the provider is seeded by default, so no `[providers.cursor]` table is required:
+
+```toml
+[[routes]]
+model = "cursor:gpt-5.5"
+provider = "cursor"
+```
+
+**Model ids and agent modes.** The prefix selects Cursor's agent mode and the suffix is the Cursor model id:
+
+| Form | Agent mode | Example |
+| :-- | :-- | :-- |
+| `cursor:<id>` / `cursor-agent:<id>` | Agent | `cursor:gpt-5.5` |
+| `cursor-plan:<id>` | Plan | `cursor-plan:gpt-5.5` |
+| `cursor-ask:<id>` | Ask | `cursor-ask:gpt-5.5` |
+
+Legacy bare names are also accepted: `cursor`, `cursor-agent`, `cursor-composer`, `cursor-composer-fast` (Agent); `cursor-plan`, `composer-2.5` (Plan); `cursor-ask`, `composer-2.5-fast` (Ask). Any other model id is rejected with an `invalid_request_error`.
+
+:::note[Overrides]
+`SHUNT_CURSOR_BASE_URL` overrides the endpoint, `SHUNT_CURSOR_AUTH_FILE` the credential path, and `SHUNT_CURSOR_CLIENT_VERSION` the `x-cursor-client-version` header (bump it without a rebuild if Cursor starts rejecting a stale client version). A `cursor_oauth` provider is pinned to a Cursor host over HTTPS — pointing `base_url` off-origin is refused so the bearer token cannot leak.
+:::
+
+:::caution[Your own call]
+Reusing a Cursor subscription from an unofficial client is your own call — it may run afoul of Cursor's terms or account enforcement. Use at your own risk.
 :::
 
 ## Adding an Anthropic-compatible backend

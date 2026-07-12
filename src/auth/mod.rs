@@ -11,6 +11,8 @@ use crate::{
 
 pub mod claude_auth;
 pub mod codex_auth;
+pub mod cursor_auth;
+pub mod cursor_login;
 pub mod inbound;
 pub mod xai_auth;
 pub mod xai_login;
@@ -30,6 +32,8 @@ pub enum Credential {
     },
     /// xAI subscription OAuth: bearer only, no account-id header.
     XaiOauth { access_token: String },
+    /// Cursor OAuth bearer.
+    CursorOauth { access_token: String },
 }
 
 /// Resolve the credential for a route from its provider's configured `auth`.
@@ -55,6 +59,23 @@ pub async fn resolve_credential(
                 .map(|credential| Credential::ChatGptOAuth {
                     access_token: credential.access_token,
                     account_id: credential.account_id,
+                })
+        }
+        AuthMode::CursorOauth => {
+            let base_url = env::var("SHUNT_CURSOR_BASE_URL")
+                .ok()
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| provider.base_url.clone());
+            let store = cursor_auth::CursorAuthStore::new(
+                default_cursor_auth_path(),
+                client.clone(),
+                base_url,
+            );
+            store
+                .get_valid()
+                .await
+                .map(|credential| Credential::CursorOauth {
+                    access_token: credential.access_token,
                 })
         }
         AuthMode::XaiOauth => {
@@ -111,6 +132,22 @@ fn default_codex_auth_path() -> PathBuf {
                 .map(|home| home.join(".codex").join("auth.json"))
         })
         .unwrap_or_else(|| PathBuf::from(".codex/auth.json"))
+}
+
+pub fn default_cursor_auth_path() -> PathBuf {
+    env::var_os("SHUNT_CURSOR_AUTH_FILE")
+        .map(PathBuf::from)
+        .or_else(|| {
+            // `HOME` is unset on Windows, where `shunt login cursor` is supported;
+            // fall back to `USERPROFILE` so the credential lands in the user's home
+            // rather than a working-directory-relative path.
+            env::var_os("HOME")
+                .filter(|home| !home.is_empty())
+                .or_else(|| env::var_os("USERPROFILE").filter(|home| !home.is_empty()))
+                .map(PathBuf::from)
+                .map(|home| home.join(".shunt").join("cursor-auth.json"))
+        })
+        .unwrap_or_else(|| PathBuf::from(".shunt/cursor-auth.json"))
 }
 
 /// shunt-owned xAI credential file: `$SHUNT_XAI_AUTH_FILE`, else

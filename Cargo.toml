@@ -26,8 +26,10 @@ anyhow = "1"
 arc-swap = "1.9.2"
 axum = "0.8"
 base64 = "0.22"
+bytes = "1"
 clap = { version = "4", features = ["derive"] }
 figment = { version = "0.10", features = ["toml", "yaml", "env"] }
+flate2 = "1"
 futures-util = "0.3"
 notify = "8.2.0"
 # OpenTelemetry export (opt-in `[otel]`). The OTLP exporter speaks HTTP/protobuf
@@ -41,6 +43,9 @@ opentelemetry_sdk = "0.32"
 opentelemetry-otlp = { version = "0.32", default-features = false, features = ["trace", "metrics", "logs", "http-proto", "reqwest-blocking-client", "reqwest-rustls-webpki-roots"] }
 opentelemetry-appender-tracing = "0.32"
 opentelemetry-semantic-conventions = "0.32"
+prost = "0.13"
+rand = "0.9"
+regex-lite = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 # Feature unification compiles both rustls crypto providers into the binary
 # (aws-lc-rs via sentry's reqwest `rustls` feature, ring via reqwest's own
@@ -53,6 +58,7 @@ rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] 
 sentry = { version = "0.48.4", default-features = false, features = ["backtrace", "contexts", "metrics", "panic", "reqwest", "rustls", "tracing"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 thiserror = "2"
 tiktoken-rs = "0.12.0"
 tokio = { version = "1", features = ["full"] }
@@ -63,7 +69,9 @@ tokio-tungstenite = { version = "0.24", default-features = false, features = ["c
 tracing = "0.1"
 tracing-opentelemetry = "0.33"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
+hex = "0.4"
 tokio = { version = "1", features = ["full", "test-util"] }
 wiremock = "0.6"

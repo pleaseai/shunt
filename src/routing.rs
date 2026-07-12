@@ -10,6 +10,7 @@ use crate::{
 pub enum AdapterKind {
     Anthropic,
     Responses,
+    Cursor,
 }
 
 impl From<ProviderKind> for AdapterKind {
@@ -17,6 +18,7 @@ impl From<ProviderKind> for AdapterKind {
         match kind {
             ProviderKind::Anthropic => AdapterKind::Anthropic,
             ProviderKind::Responses => AdapterKind::Responses,
+            ProviderKind::Cursor => AdapterKind::Cursor,
         }
     }
 }

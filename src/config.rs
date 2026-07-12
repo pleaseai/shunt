@@ -230,8 +230,8 @@ pub struct ProviderConfig {
     pub websocket: bool,
 }
 
-/// How a provider answers `count_tokens`. Only meaningful for `responses`
-/// providers; Anthropic providers always pass the request through upstream.
+/// How a provider answers `count_tokens`. Only meaningful for `responses` and
+/// `cursor` providers; Anthropic providers always pass the request upstream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CountTokens {
@@ -260,6 +260,8 @@ pub enum ProviderKind {
     /// OpenAI Responses API — Anthropic Messages are translated to it (OpenAI,
     /// ChatGPT/Codex).
     Responses,
+    /// Cursor ConnectRPC AgentService protocol.
+    Cursor,
 }
 
 /// How shunt authenticates to an upstream.
@@ -276,6 +278,8 @@ pub enum AuthMode {
     /// xAI subscription OAuth (SuperGrok / X Premium+), acquired via the
     /// device-code flow (`shunt login xai`) and stored in ~/.shunt/xai-auth.json.
     XaiOauth,
+    /// Cursor OAuth acquired by `shunt login cursor`.
+    CursorOauth,
 }
 
 /// The dialect of the OpenAI Responses API an upstream speaks. Some backends
@@ -298,6 +302,16 @@ pub enum ResponsesFlavor {
 /// non-xAI host, so shunt never leaks a subscription bearer to another origin.
 pub fn host_is_xai(host: &str) -> bool {
     host == "x.ai" || host.ends_with(".x.ai")
+}
+
+/// Whether `host` belongs to Cursor (`cursor.sh`/`cursor.com` or any subdomain).
+/// Used to reject a `cursor_oauth` provider pointed at a non-Cursor host, so
+/// shunt never leaks the stored Cursor subscription bearer to another origin.
+pub fn host_is_cursor(host: &str) -> bool {
+    host == "cursor.sh"
+        || host.ends_with(".cursor.sh")
+        || host == "cursor.com"
+        || host.ends_with(".cursor.com")
 }
 
 /// Hosts a subscription (`xai_oauth`) bearer may legitimately be sent to: xAI's
@@ -363,6 +377,12 @@ pub enum ConfigError {
     XaiOauthNotHttps { provider: String },
     #[error("providers.{provider} uses auth = \"xai_oauth\" but kind is not \"responses\"; the anthropic adapter would forward the client's own credential instead of the xAI token")]
     XaiOauthWrongKind { provider: String },
+    #[error("providers.{provider} uses auth = \"cursor_oauth\" but kind is not \"cursor\"")]
+    CursorOauthWrongKind { provider: String },
+    #[error("providers.{provider} uses auth = \"cursor_oauth\" but base_url host {host} is not cursor.sh/cursor.com; refusing to send a subscription token off-origin")]
+    CursorOauthNonCursorHost { provider: String, host: String },
+    #[error("providers.{provider} uses auth = \"cursor_oauth\" but base_url is not https; refusing to send a subscription token over plaintext")]
+    CursorOauthNotHttps { provider: String },
     #[error("server.default_provider references unknown provider: {0}")]
     UnknownDefaultProvider(String),
     #[error("route for model {model} references unknown provider: {provider}")]
@@ -436,6 +456,19 @@ impl Default for Config {
                     AuthMode::ChatgptOauth,
                     None,
                 ),
+            ),
+            (
+                "cursor".to_string(),
+                ProviderConfig {
+                    kind: ProviderKind::Cursor,
+                    base_url: "https://api2.cursor.sh".to_string(),
+                    auth: AuthMode::CursorOauth,
+                    api_key_env: None,
+                    api_key_header: ApiKeyHeader::Bearer,
+                    effort: None,
+                    count_tokens: CountTokens::default(),
+                    websocket: false,
+                },
             ),
             (
                 // xAI Grok, API-key path: the developer API (api.x.ai), billed
@@ -658,6 +691,31 @@ impl Config {
                 return Err(ConfigError::MissingApiKeyEnv {
                     provider: name.clone(),
                 });
+            }
+            // A cursor_oauth provider injects the operator's stored Cursor
+            // subscription bearer, so — like xai_oauth below — its base_url must
+            // stay on a Cursor host over https, never a gateway or plaintext
+            // endpoint that would receive the token. It must also be a Cursor-kind
+            // provider so the request goes through the Cursor adapter's auth
+            // injection rather than forwarding the client's own credential.
+            if provider.auth == AuthMode::CursorOauth {
+                if provider.kind != ProviderKind::Cursor {
+                    return Err(ConfigError::CursorOauthWrongKind {
+                        provider: name.clone(),
+                    });
+                }
+                if url.scheme() != "https" {
+                    return Err(ConfigError::CursorOauthNotHttps {
+                        provider: name.clone(),
+                    });
+                }
+                let host = url.host_str().unwrap_or_default();
+                if !host_is_cursor(host) {
+                    return Err(ConfigError::CursorOauthNonCursorHost {
+                        provider: name.clone(),
+                        host: host.to_string(),
+                    });
+                }
             }
             // An xai_oauth provider injects the operator's subscription bearer,
             // so its base_url must stay on an xAI host over https (mirrors
@@ -885,6 +943,50 @@ mod tests {
             AuthMode::ChatgptOauth
         );
         assert!(config.provider("kimi").is_none());
+    }
+
+    #[test]
+    fn default_seeds_builtin_cursor_provider() {
+        let config = Config::default();
+        let cursor = config.provider("cursor").unwrap();
+        assert_eq!(cursor.kind, ProviderKind::Cursor);
+        assert_eq!(cursor.base_url, "https://api2.cursor.sh");
+        assert_eq!(cursor.auth, AuthMode::CursorOauth);
+    }
+
+    #[test]
+    fn cursor_oauth_requires_cursor_kind() {
+        let mut config = Config::default();
+        config.providers.get_mut("cursor").unwrap().kind = ProviderKind::Responses;
+        let error = config.validate().unwrap_err();
+        assert!(matches!(error, ConfigError::CursorOauthWrongKind { .. }));
+    }
+
+    #[test]
+    fn cursor_oauth_rejects_non_cursor_host() {
+        // The built-in cursor provider (api2.cursor.sh over https) is accepted.
+        let config = Config::default();
+        assert!(config.validate().is_ok());
+
+        // Pointing a cursor_oauth provider off-origin is refused (bearer-leak guard).
+        let mut config = Config::default();
+        config.providers.get_mut("cursor").unwrap().base_url =
+            "https://evil.example.com".to_string();
+        let error = config.validate().unwrap_err();
+        assert!(matches!(
+            error,
+            ConfigError::CursorOauthNonCursorHost { .. }
+        ));
+        assert!(error.to_string().contains("evil.example.com"));
+    }
+
+    #[test]
+    fn cursor_oauth_requires_https_base_url() {
+        let mut config = Config::default();
+        config.providers.get_mut("cursor").unwrap().base_url = "http://api2.cursor.sh".to_string();
+        let error = config.validate().unwrap_err();
+        assert!(matches!(error, ConfigError::CursorOauthNotHttps { .. }));
+        assert!(error.to_string().contains("plaintext"));
     }
 
     #[test]

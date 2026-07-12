@@ -90,7 +90,7 @@ impl XaiAuthStore {
     /// Return a valid access token, refreshing (and persisting the rotated
     /// refresh token) when the stored one is within the 5-minute expiry buffer.
     pub async fn get_valid(&self) -> Result<XaiCred, AdapterError> {
-        let tokens = self.read_tokens()?;
+        let tokens = self.read_tokens_off_thread().await?;
         if is_token_valid_at(&tokens.access_token, SystemTime::now()) {
             return Ok(XaiCred {
                 access_token: tokens.access_token,
@@ -100,32 +100,51 @@ impl XaiAuthStore {
         // Single-flight the refresh: a concurrent caller that already holds the
         // lock is refreshing right now, so once we acquire it, re-read — the
         // rotated pair it wrote is what we must use, not our stale one.
-        let _refreshing = REFRESH_LOCK.lock().await;
-        let tokens = self.read_tokens()?;
+        let refreshing = REFRESH_LOCK.lock().await;
+        let tokens = self.read_tokens_off_thread().await?;
         if is_token_valid_at(&tokens.access_token, SystemTime::now()) {
             return Ok(XaiCred {
                 access_token: tokens.access_token,
             });
         }
 
-        let refreshed =
-            refresh_tokens(&self.client, &self.token_url, &tokens.refresh_token).await?;
-        // xAI rotates the refresh token on every refresh and consumes the old
-        // one. A success that omits refresh_token would leave the consumed
-        // token on disk and break the next refresh, so treat it as an invalid
-        // response instead of persisting a broken pair.
-        let Some(refresh_token) = refreshed.refresh_token.as_deref() else {
-            return Err(auth_error(
-                "xAI refresh response missing refresh_token; run shunt login xai",
-            ));
-        };
-        let id_token = refreshed.id_token.as_deref().or(tokens.id_token.as_deref());
-        write_tokens(&self.path, &refreshed.access_token, refresh_token, id_token)
+        // Run the refresh + rotated-pair write in a detached task that owns the
+        // single-flight guard. `tokio::spawn` keeps running when its JoinHandle
+        // is dropped, so a cancelled request (client disconnect) can no longer
+        // release the lock mid-write and let another caller re-refresh with the
+        // already-consumed refresh token (token-replay race). The lock is held
+        // until the write completes, regardless of caller cancellation.
+        let client = self.client.clone();
+        let token_url = self.token_url.clone();
+        let path = self.path.clone();
+        let handle = tokio::spawn(async move {
+            let _refreshing = refreshing; // held until the write below completes
+            let refreshed = refresh_tokens(&client, &token_url, &tokens.refresh_token).await?;
+            // xAI rotates the refresh token on every refresh and consumes the old
+            // one. A success that omits refresh_token would leave the consumed
+            // token on disk and break the next refresh, so treat it as an invalid
+            // response instead of persisting a broken pair.
+            let Some(refresh_token) = refreshed.refresh_token.as_deref() else {
+                return Err(auth_error(
+                    "xAI refresh response missing refresh_token; run shunt login xai",
+                ));
+            };
+            let id_token = refreshed.id_token.as_deref().or(tokens.id_token.as_deref());
+            write_tokens_off_thread(
+                path,
+                refreshed.access_token.clone(),
+                refresh_token.to_string(),
+                id_token.map(ToOwned::to_owned),
+            )
+            .await
             .map_err(|error| auth_error(format!("failed to update xAI auth file: {error}")))?;
-        tracing::info!("refreshed xAI OAuth access token");
-        Ok(XaiCred {
-            access_token: refreshed.access_token,
-        })
+            tracing::info!("refreshed xAI OAuth access token");
+            Ok::<String, AdapterError>(refreshed.access_token)
+        });
+        let access_token = handle
+            .await
+            .map_err(|error| auth_error(format!("xAI refresh task failed: {error}")))??;
+        Ok(XaiCred { access_token })
     }
 
     fn read_tokens(&self) -> Result<TokenSet, AdapterError> {
@@ -134,6 +153,30 @@ impl XaiAuthStore {
         parse_tokens(&value)
             .ok_or_else(|| auth_error("xAI auth tokens missing; run shunt login xai"))
     }
+
+    /// Read + parse the credential file on the blocking thread pool so the
+    /// synchronous file I/O never stalls the async runtime.
+    async fn read_tokens_off_thread(&self) -> Result<TokenSet, AdapterError> {
+        let this = self.clone();
+        tokio::task::spawn_blocking(move || this.read_tokens())
+            .await
+            .map_err(|error| auth_error(format!("xAI auth read task failed: {error}")))?
+    }
+}
+
+/// Persist the rotated token pair on the blocking thread pool. Same content,
+/// path, and atomicity as [`write_tokens`] — only the executing thread differs.
+async fn write_tokens_off_thread(
+    path: PathBuf,
+    access_token: String,
+    refresh_token: String,
+    id_token: Option<String>,
+) -> io::Result<()> {
+    tokio::task::spawn_blocking(move || {
+        write_tokens(&path, &access_token, &refresh_token, id_token.as_deref())
+    })
+    .await
+    .map_err(|error| io::Error::other(format!("xAI auth write task failed: {error}")))?
 }
 
 /// User-facing message for a failed credential-file read. A missing file means

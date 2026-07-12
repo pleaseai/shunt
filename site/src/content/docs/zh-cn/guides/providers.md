@@ -3,10 +3,11 @@ title: 提供方
 description: 内置的提供方,以及如何用一个 TOML 表添加任意兼容 Anthropic 的后端。
 ---
 
-提供方是一个**名称 → 配置的映射**:一个新的上游只不过是又一个 `[providers.<name>]` 表 —— 无需改动代码。两种适配器类型即可覆盖一切:
+提供方是一个**名称 → 配置的映射**:一个新的上游只不过是又一个 `[providers.<name>]` 表 —— 无需改动代码。三种适配器类型即可覆盖一切:
 
 - **`kind = "anthropic"`** —— 上游讲 Anthropic Messages API。shunt 将请求透传,可选择注入一个不同的 API 密钥。
 - **`kind = "responses"`** —— 上游讲 OpenAI Responses API。shunt 在 Anthropic Messages ⇄ Responses 之间转换,含流式传输。
+- **`kind = "cursor"`** —— 原生 Cursor 适配器。shunt 将 Cursor 的 ConnectRPC/protobuf AgentService(及其工具协议)桥接到 Anthropic Messages API,含流式传输。由内置的 `cursor` 提供方使用。
 
 ## 内置提供方
 
@@ -15,6 +16,7 @@ description: 内置的提供方,以及如何用一个 TOML 表添加任意兼容
 | `anthropic` | `anthropic` | `passthrough` | `api.anthropic.com` —— 转发调用方自己的凭据 |
 | `openai` | `responses` | `api_key` (`OPENAI_API_KEY`) | `api.openai.com/v1` |
 | `codex` | `responses` | `chatgpt_oauth` | `chatgpt.com/backend-api` —— 复用 `~/.codex/auth.json` |
+| `cursor` | `cursor` | `cursor_oauth` | `api2.cursor.sh` —— 复用 `~/.shunt/cursor-auth.json`(`shunt login cursor`) |
 
 ### codex 提供方(ChatGPT 订阅)
 
@@ -30,6 +32,42 @@ codex login
 
 :::caution[模型 slug]
 ChatGPT 账户的 Codex 后端**拒绝** `gpt-*-codex` slug —— 它只接受该账户实时授权的 slug。权威目录是 openai/codex 的 [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json)。当前的 slug 有 `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`(前沿)以及 `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.2`;较老的账户可能只被授权使用较早的那些。在路由中使用 `upstream_model` 可将任意别名映射到一个已授权的 slug。
+:::
+
+### cursor 提供方(Cursor 订阅)
+
+内置的 `cursor` 提供方通过 Cursor 自己的 ConnectRPC/protobuf AgentService(`api2.cursor.sh`)访问你的 **Cursor** 订阅 —— `kind = "cursor"` 原生适配器在其与 Anthropic Messages 之间双向转换,含流式传输和 Cursor 的原生工具调用。登录一次:
+
+```bash
+shunt login cursor
+```
+
+这会运行 Cursor OAuth 流程并写入 `~/.shunt/cursor-auth.json`,shunt 会读取并自动刷新它。如果该文件缺失或过期,shunt 会返回一个 `authentication_error`,提示你运行 `shunt login cursor`。
+
+将一个 `cursor:*` 模型 id 路由到它 —— 该提供方默认已预置,因此无需 `[providers.cursor]` 表:
+
+```toml
+[[routes]]
+model = "cursor:gpt-5.5"
+provider = "cursor"
+```
+
+**模型 id 与 agent 模式。** 前缀用于选择 Cursor 的 agent 模式,后缀是 Cursor 模型 id:
+
+| 形式 | Agent 模式 | 示例 |
+| :-- | :-- | :-- |
+| `cursor:<id>` / `cursor-agent:<id>` | Agent | `cursor:gpt-5.5` |
+| `cursor-plan:<id>` | Plan | `cursor-plan:gpt-5.5` |
+| `cursor-ask:<id>` | Ask | `cursor-ask:gpt-5.5` |
+
+同样接受旧式的裸名称:`cursor`、`cursor-agent`、`cursor-composer`、`cursor-composer-fast`(Agent);`cursor-plan`、`composer-2.5`(Plan);`cursor-ask`、`composer-2.5-fast`(Ask)。任何其他模型 id 都会以 `invalid_request_error` 被拒绝。
+
+:::note[覆盖项]
+`SHUNT_CURSOR_BASE_URL` 覆盖端点,`SHUNT_CURSOR_AUTH_FILE` 覆盖凭据路径,`SHUNT_CURSOR_CLIENT_VERSION` 覆盖 `x-cursor-client-version` 头部(若 Cursor 开始拒绝过时的客户端版本,可无需重新构建即予以提升)。`cursor_oauth` 提供方被固定到某个 Cursor 主机并使用 HTTPS —— 将 `base_url` 指向非同源地址会被拒绝,以防 bearer token 泄露。
+:::
+
+:::caution[由你自己决定]
+从非官方客户端复用 Cursor 订阅由你自己决定 —— 这可能违反 Cursor 的条款或触发账号层面的处置。使用风险自负。
 :::
 
 ## 添加一个兼容 Anthropic 的后端

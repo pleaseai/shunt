@@ -33,8 +33,7 @@ impl CodexAuthStore {
     }
 
     pub async fn get_valid_chatgpt(&self) -> Result<ChatGptCred, AdapterError> {
-        let mut auth = read_auth_file(&self.path)
-            .map_err(|_| auth_error("ChatGPT auth not found; run codex login"))?;
+        let auth = self.read_auth_off_thread().await?;
         let tokens = auth
             .tokens()
             .ok_or_else(|| auth_error("ChatGPT auth tokens missing; run codex login"))?;
@@ -42,8 +41,7 @@ impl CodexAuthStore {
             return tokens.to_credential();
         }
 
-        auth = read_auth_file(&self.path)
-            .map_err(|_| auth_error("ChatGPT auth not found; run codex login"))?;
+        let auth = self.read_auth_off_thread().await?;
         let tokens = auth
             .tokens()
             .ok_or_else(|| auth_error("ChatGPT auth tokens missing; run codex login"))?;
@@ -57,9 +55,22 @@ impl CodexAuthStore {
             .ok_or_else(|| auth_error("ChatGPT refresh token missing; run codex login"))?;
         let refreshed = refresh_tokens(&self.client, &refresh_token).await?;
         let credential = refreshed.to_credential()?;
-        write_refreshed_auth(&self.path, refreshed)
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || write_refreshed_auth(&path, refreshed))
+            .await
+            .map_err(|error| auth_error(format!("ChatGPT auth write task failed: {error}")))?
             .map_err(|error| auth_error(format!("failed to update ChatGPT auth file: {error}")))?;
         Ok(credential)
+    }
+
+    /// Read the credential file on the blocking thread pool so the synchronous
+    /// file I/O never stalls the async runtime.
+    async fn read_auth_off_thread(&self) -> Result<AuthFile, AdapterError> {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || read_auth_file(&path))
+            .await
+            .map_err(|error| auth_error(format!("ChatGPT auth read task failed: {error}")))?
+            .map_err(|_| auth_error("ChatGPT auth not found; run codex login"))
     }
 }
 

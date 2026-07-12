@@ -9,7 +9,10 @@ use axum::{
 use tracing::Instrument;
 
 use crate::{
-    adapters::{anthropic::AnthropicAdapter, responses::ResponsesAdapter, Adapter, AdapterError},
+    adapters::{
+        anthropic::AnthropicAdapter, cursor::CursorAdapter, responses::ResponsesAdapter, Adapter,
+        AdapterError,
+    },
     config::{AuthMode, CountTokens},
     count_tokens,
     error::{ShuntError, UpstreamError},
@@ -142,7 +145,8 @@ async fn forward(
     // the request reach the responses adapter, which would translate it into — and
     // bill it as — a full inference call. Anthropic-routed models still pass
     // through to the upstream count_tokens endpoint below.
-    if is_count_tokens(uri) && route.adapter == AdapterKind::Responses {
+    if is_count_tokens(uri) && matches!(route.adapter, AdapterKind::Responses | AdapterKind::Cursor)
+    {
         let mode = state
             .config
             .provider(&route.provider)
@@ -170,6 +174,11 @@ async fn forward(
         }
         AdapterKind::Responses => {
             ResponsesAdapter
+                .forward(state, route, uri, headers, body)
+                .await
+        }
+        AdapterKind::Cursor => {
+            CursorAdapter
                 .forward(state, route, uri, headers, body)
                 .await
         }
