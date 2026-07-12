@@ -145,8 +145,11 @@ impl CursorSseFramer {
                 "usage": {
                     "input_tokens": self.usage_input_tokens.max(1),
                     "output_tokens": 0,
-                    "cache_creation_input_tokens": 0,
-                    "cache_read_input_tokens": 0
+                    // On the buffered paths usage is pre-seeded, so these carry the
+                    // real cache counts; on the true streaming path they are 0
+                    // until a Usage event arrives (correct — no data yet).
+                    "cache_creation_input_tokens": self.usage_cache_write_tokens,
+                    "cache_read_input_tokens": self.usage_cache_read_tokens
                 }
             }
         });
@@ -504,6 +507,21 @@ mod tests {
             Some(13)
         );
         assert_eq!(delta["usage"]["cache_read_input_tokens"].as_u64(), Some(11));
+
+        // message_start (buffered path pre-seed) carries the same cache counts.
+        let start = events
+            .iter()
+            .find(|(name, _)| *name == "message_start")
+            .map(|(_, data)| data.clone())
+            .expect("message_start present");
+        assert_eq!(
+            start["message"]["usage"]["cache_creation_input_tokens"].as_u64(),
+            Some(13)
+        );
+        assert_eq!(
+            start["message"]["usage"]["cache_read_input_tokens"].as_u64(),
+            Some(11)
+        );
     }
 
     #[test]
