@@ -52,7 +52,7 @@ shunt 不会把订阅 token 泄露给任意 `base_url`。
 shunt login xai
 ```
 
-成功后 shunt 会将 token 以 `0600` 写入 **`~/.shunt/xai-auth.json`**,并自动
+成功后 shunt 会将 token 以 `0600` 权限写入 **`~/.shunt/xai-auth.json`**,并自动
 刷新它们(5 分钟的过期缓冲;xAI 在每次刷新时轮换刷新 token,因此 shunt
 在单飞锁下持久化轮换后的那个)。如果刷新 token 丢失或响应
 省略了轮换后的 token,shunt 会提示你再次运行 `shunt login xai`。

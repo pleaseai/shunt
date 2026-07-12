@@ -53,8 +53,8 @@ any device — no loopback callback server:
 shunt login xai
 ```
 
-On success shunt writes the tokens `0600` to **`~/.shunt/xai-auth.json`** and refreshes them
-automatically (a 5-minute expiry buffer; xAI rotates the refresh token on every refresh, so shunt
+On success shunt writes the tokens to **`~/.shunt/xai-auth.json`** with `0600` permissions and
+refreshes them automatically (a 5-minute expiry buffer; xAI rotates the refresh token on every refresh, so shunt
 persists the rotated one under a single-flight lock). If the refresh token is gone or the response
 omits a rotated token, shunt tells you to run `shunt login xai` again.
 
