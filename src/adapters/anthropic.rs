@@ -263,6 +263,15 @@ async fn forward_claude_oauth(
                         &account.name,
                         Duration::from_secs(5 * 60),
                     );
+                    // A static credential (token_env or a long-lived setup token)
+                    // cannot be refreshed, so a 401 here means it is expired or
+                    // revoked. Log it — otherwise the account cycles in and out of
+                    // this cooldown indefinitely with no operator-visible signal.
+                    tracing::warn!(
+                        provider = %route.provider,
+                        account = %account.name,
+                        "Claude OAuth account returned 401 but its credential is not refreshable (token_env or long-lived setup token); cooling down"
+                    );
                     last_response = Some(upstream);
                     continue;
                 }
@@ -335,8 +344,26 @@ async fn forward_claude_oauth(
                 }
                 if retry.status().is_success() {
                     state.accounts.mark_healthy(&route.provider, &account.name);
+                    return relay_response(&state, retry, Some(&account.name));
                 }
-                return relay_response(&state, retry, Some(&account.name));
+                // The refresh succeeded but the retried request still failed with
+                // a non-401 status (a transient 5xx, or a quota-rejected 429 that
+                // is independent of the auth failure). Don't short-circuit the
+                // pool: cool this account down and continue failover to any
+                // remaining accounts, mirroring how an initial 5xx/429 rotates.
+                // last_response relays this response only if the pool is exhausted.
+                let status = retry.status();
+                state
+                    .accounts
+                    .cooldown(&route.provider, &account.name, Duration::from_secs(30));
+                tracing::warn!(
+                    provider = %route.provider,
+                    account = %account.name,
+                    %status,
+                    "Claude OAuth refresh retry returned a non-success status; rotating to the next account"
+                );
+                last_response = Some(retry);
+                continue;
             }
         }
     }

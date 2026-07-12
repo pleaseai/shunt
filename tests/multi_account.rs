@@ -178,6 +178,64 @@ async fn quota_429_rotates_and_cools_down_the_rejected_account() {
 }
 
 #[tokio::test]
+async fn unauthorized_static_account_cools_down_and_rotates() {
+    // A 401 classifies as RefreshRetry, but a token_env (static, non-refreshable)
+    // account cannot be refreshed — it must be cooled down and the pool must
+    // rotate to the next account rather than relaying the 401 to the client.
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = ["fake-oauth-", "unauth-a"].concat();
+    let token_b = ["fake-oauth-", "unauth-b"].concat();
+    std::env::set_var("SHUNT_TEST_MULTI_UNAUTH_A", &token_a);
+    std::env::set_var("SHUNT_TEST_MULTI_UNAUTH_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(
+            ResponseTemplate::new(401).set_body_string(r#"{"error":"account a token revoked"}"#),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"b"}"#))
+        .expect(2)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        account("account-a", "SHUNT_TEST_MULTI_UNAUTH_A", "uuid-a"),
+        account("account-b", "SHUNT_TEST_MULTI_UNAUTH_B", "uuid-b"),
+    ))
+    .await;
+
+    // First request rotates off the 401'd account to the healthy one.
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+
+    // A session that hashes to account-a still lands on account-b because
+    // account-a is now cooled down (so the upstream never sees a second a call).
+    let session_id = session_id_for_account(0, 2);
+    let response = post_messages(&gateway, Some(&session_id)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+    upstream.verify().await;
+}
+
+#[tokio::test]
 async fn plain_429_retries_the_same_account_without_rotating() {
     if !can_bind_loopback() {
         return;

@@ -66,12 +66,12 @@ Configuration validation rejects:
 
 - `accounts` on a provider whose auth mode is not `claude_oauth`;
 - `claude_oauth` on a provider whose `kind` is not `anthropic`;
-- a non-HTTPS `base_url`;
-- a host other than `anthropic.com` or one of its subdomains;
+- a non-HTTPS `base_url` (unless the host is loopback — see below);
+- a host other than `anthropic.com` or one of its subdomains (unless loopback);
 - duplicate or invalid account names; and
 - an account that sets both `credentials` and `token_env`.
 
-The HTTPS and host checks are bearer-leak guards: a Claude subscription OAuth token is never injected toward an arbitrary gateway or over plaintext.
+The HTTPS and host checks are bearer-leak guards: a Claude subscription OAuth token is never injected toward an arbitrary gateway or over plaintext. Both checks are **skipped when the `base_url` host is a loopback address** (`localhost`, `127.0.0.1`, `[::1]`, etc.), so a local debugging proxy or mock can be pointed at over plaintext HTTP — the bearer cannot egress the operator's own machine directly. Every non-loopback host is still held to HTTPS + `anthropic.com`.
 
 Because `claude_oauth` is an injected-credential mode, a configured `[server.auth]` also protects it on a shared shunt gateway. Configure inbound client tokens before exposing the gateway beyond loopback.
 
