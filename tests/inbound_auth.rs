@@ -283,10 +283,11 @@ async fn models_discovery_requires_valid_token_when_inbound_auth_is_configured()
             .contains("x-shunt-token"));
     }
 
+    let bearer_token = format!("Bearer {}", "tok-a");
     for header in [
         ("x-shunt-token", "tok-a"),
         ("x-api-key", "tok-a"),
-        ("authorization", "Bearer tok-a"),
+        ("authorization", bearer_token.as_str()),
     ] {
         let response = get_models(&gateway, Some(header)).await;
         assert_eq!(response.status(), StatusCode::OK);
