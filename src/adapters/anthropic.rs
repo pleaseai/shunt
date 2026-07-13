@@ -50,6 +50,14 @@ async fn forward(
         .await
         .map_err(upstream_error)?;
     let status = upstream.status();
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        tracing::warn!(
+            provider = %route.provider,
+            model = %route.model,
+            rate_limit_kind = rate_limit_kind(upstream.headers()),
+            "upstream returned 429"
+        );
+    }
     let response_headers = headers::filtered(upstream.headers());
     let is_sse = upstream
         .headers()
@@ -80,6 +88,28 @@ async fn forward(
         .expect("response builder uses valid upstream status and headers")
         .into_response();
     Ok((status, response))
+}
+
+/// Classify an upstream Anthropic 429 for the request log. api.anthropic.com
+/// returns two very different failures under the same status: a genuine quota
+/// rate limit carries `retry-after` and/or `anthropic-ratelimit-*` response
+/// headers, while a subscription-OAuth request that does not look like Claude
+/// Code (client identity headers or system-prompt prefix missing) is rejected
+/// as a bare `rate_limit_error` with body `"Error"` and none of those headers.
+/// Labeling the two lets a 429 burst be triaged from the gateway log alone:
+/// `quota` means back off or rotate accounts; `client-shape-rejection` means a
+/// non-Claude-Code client is calling through with an OAuth credential and
+/// should use an API key instead.
+fn rate_limit_kind(headers: &HeaderMap) -> &'static str {
+    let has_quota_signal = headers.contains_key("retry-after")
+        || headers
+            .keys()
+            .any(|name| name.as_str().starts_with("anthropic-ratelimit-"));
+    if has_quota_signal {
+        "quota"
+    } else {
+        "client-shape-rejection"
+    }
 }
 
 /// Rewrite the outbound request body's `model` to the routed `upstream_model`
@@ -204,7 +234,7 @@ mod tests {
 
     use crate::config::ApiKeyHeader;
 
-    use super::{normalize_upstream_model, outbound_headers, Credential};
+    use super::{normalize_upstream_model, outbound_headers, rate_limit_kind, Credential};
 
     fn client_headers() -> HeaderMap {
         let mut headers = HeaderMap::new();
@@ -326,6 +356,33 @@ mod tests {
         );
         assert_eq!(out.get("x-api-key").unwrap(), "provider-key");
         assert!(out.get("authorization").is_none());
+    }
+
+    #[test]
+    fn rate_limit_with_retry_after_is_quota() {
+        let mut headers = HeaderMap::new();
+        headers.insert("retry-after", "7".parse().unwrap());
+        assert_eq!(rate_limit_kind(&headers), "quota");
+    }
+
+    #[test]
+    fn rate_limit_with_anthropic_ratelimit_headers_is_quota() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "anthropic-ratelimit-unified-status",
+            "allowed_warning".parse().unwrap(),
+        );
+        assert_eq!(rate_limit_kind(&headers), "quota");
+    }
+
+    #[test]
+    fn rate_limit_without_quota_headers_is_client_shape_rejection() {
+        // The OAuth "must look like Claude Code" gate returns a bare 429 with
+        // neither retry-after nor any anthropic-ratelimit-* header.
+        let mut headers = HeaderMap::new();
+        headers.insert("content-type", "application/json".parse().unwrap());
+        headers.insert("request-id", "req_123".parse().unwrap());
+        assert_eq!(rate_limit_kind(&headers), "client-shape-rejection");
     }
 
     #[test]
