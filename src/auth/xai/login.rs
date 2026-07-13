@@ -247,6 +247,28 @@ mod tests {
         assert_eq!(device.interval, DEFAULT_INTERVAL_SECS);
         assert_eq!(device.expires_in, DEFAULT_EXPIRES_SECS);
         assert!(device.verification_uri_complete.is_none());
+
+        // A zero/garbage interval is treated as absent and falls back to the
+        // default (guarding the poll loop from a 0-second busy spin).
+        let device = parse_device_code(&json!({
+            "device_code": "d",
+            "user_code": "u",
+            "verification_uri": "https://x.ai/device",
+            "interval": 0
+        }))
+        .unwrap();
+        assert_eq!(device.interval, DEFAULT_INTERVAL_SECS);
+    }
+
+    #[test]
+    fn parse_device_code_requires_core_fields() {
+        // Missing any of device_code / user_code / verification_uri yields None
+        // rather than a half-built DeviceCode.
+        assert!(parse_device_code(&json!({
+            "user_code": "u",
+            "verification_uri": "https://x.ai/device"
+        }))
+        .is_none());
     }
 
     #[test]
@@ -267,8 +289,17 @@ mod tests {
             classify_poll_error(&json!({"error": "expired_token"})),
             PollOutcome::Failed(_)
         ));
+        assert!(matches!(
+            classify_poll_error(&json!({"error": "authorization_denied"})),
+            PollOutcome::Failed(_)
+        ));
         match classify_poll_error(&json!({"error": "boom", "error_description": "kaboom"})) {
             PollOutcome::Failed(reason) => assert!(reason.contains("kaboom")),
+            other => panic!("expected failure, got {other:?}"),
+        }
+        // An unknown error with no description still fails, using the raw code.
+        match classify_poll_error(&json!({"error": "boom"})) {
+            PollOutcome::Failed(reason) => assert!(reason.contains("boom")),
             other => panic!("expected failure, got {other:?}"),
         }
     }

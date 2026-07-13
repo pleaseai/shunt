@@ -429,6 +429,12 @@ mod tests {
         );
         assert!(refresh_error_message(reqwest::StatusCode::UNAUTHORIZED)
             .contains("run shunt login xai"));
+
+        // Any other status falls back to the generic HTTP-code message.
+        let other = refresh_error_message(reqwest::StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(other.contains("500"));
+        assert!(other.contains("run shunt login xai"));
+        assert!(!other.contains("tier gate"));
     }
 
     #[tokio::test]

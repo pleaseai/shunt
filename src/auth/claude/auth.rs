@@ -342,6 +342,15 @@ mod tests {
     }
 
     #[test]
+    fn refresh_rejects_response_without_access_token() {
+        // A malformed refresh response (no access_token) yields None, which the
+        // caller surfaces as an "invalid refresh response" error rather than
+        // persisting a broken token.
+        let now = UNIX_EPOCH + Duration::from_secs(1_000);
+        assert!(parse_refresh(&json!({"expires_in": 3600}), "old-refresh", now).is_none());
+    }
+
+    #[test]
     fn write_back_updates_tokens_and_preserves_other_fields() {
         let dir = std::env::temp_dir().join(format!(
             "shunt-claude-auth-{}",

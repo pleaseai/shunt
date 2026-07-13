@@ -245,6 +245,14 @@ mod tests {
     }
 
     #[test]
+    fn rejects_missing_or_empty_access_token() {
+        // A response with no accessToken is not a usable credential.
+        assert!(parse_token_response(&json!({"refreshToken": "refresh"})).is_none());
+        // An empty accessToken is rejected rather than persisted as a broken token.
+        assert!(parse_token_response(&json!({"accessToken": ""})).is_none());
+    }
+
+    #[test]
     fn parses_jwt_claims() {
         let payload = URL_SAFE_NO_PAD.encode(br#"{"exp":4102444800,"sub":"user"}"#);
         let claims = jwt_claims(&format!("x.{payload}.y")).unwrap();
