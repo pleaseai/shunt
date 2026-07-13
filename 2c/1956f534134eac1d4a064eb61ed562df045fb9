@@ -1,0 +1,89 @@
+docs/comparison.md
+  s_470874e8046fa4::t_3ff81f17f5dd54 211-224
+  s_470874e8046fa4::t_a0c2fd867bd417 18,53-55,60-64,72,90,100-107,124,138,165-174,177,180-181,243-247,260,278-279
+site/src/content/docs/ja/guides/providers.md
+  s_470874e8046fa4::t_a0c2fd867bd417 2
+site/src/content/docs/ko/getting-started/comparison.md
+  s_470874e8046fa4::t_a0c2fd867bd417 1-118
+site/astro.config.mjs
+  s_470874e8046fa4::t_a0c2fd867bd417 54-57,101
+  s_470874e8046fa4::t_1a290149747065 53
+site/src/content/docs/ko/reference/configuration.md
+  s_470874e8046fa4::t_a0c2fd867bd417 25-41
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_470874e8046fa4::t_a0c2fd867bd417 25-41
+site/src/content/docs/ja/guides/connect-claude-code.md
+  s_470874e8046fa4::t_a0c2fd867bd417 2
+site/src/content/docs/ja/getting-started/installation.md
+  s_470874e8046fa4::t_a0c2fd867bd417 2
+site/src/content/docs/ko/reference/endpoints.md
+  s_470874e8046fa4::t_a0c2fd867bd417 15-24
+site/src/content/docs/ja/guides/model-discovery.md
+  s_470874e8046fa4::t_a0c2fd867bd417 2
+site/src/content/docs/ja/guides/configuration.md
+  s_470874e8046fa4::t_a0c2fd867bd417 2
+site/src/content/docs/ko/guides/anthropic-multi-account.md
+  s_470874e8046fa4::t_a0c2fd867bd417 1-147
+site/src/content/docs/ja/guides/anthropic-multi-account.md
+  s_470874e8046fa4::t_a0c2fd867bd417 1-147
+site/src/content/docs/ja/guides/shared-gateway.md
+  s_470874e8046fa4::t_a0c2fd867bd417 2,37
+  s_470874e8046fa4::t_0a6776877322be 38
+site/src/content/docs/zh-cn/getting-started/comparison.md
+  s_470874e8046fa4::t_a0c2fd867bd417 1-118
+site/src/content/docs/ja/guides/admin-remote-provisioning.md
+  s_470874e8046fa4::t_a0c2fd867bd417 1-81
+site/src/content/docs/ja/reference/configuration.md
+  s_470874e8046fa4::t_a0c2fd867bd417 2,25-40
+  s_470874e8046fa4::t_c66124b34d0b8b 41
+site/src/content/docs/ja/reference/troubleshooting.md
+  s_470874e8046fa4::t_a0c2fd867bd417 2
+site/src/content/docs/zh-cn/guides/shared-gateway.md
+  s_470874e8046fa4::t_a0c2fd867bd417 37-38
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_470874e8046fa4::t_a0c2fd867bd417 15-24
+.claude/agent-memory/review-review-documentation-analyzer/project_shunt_pr103_i18n_comparison_review.md
+  s_470874e8046fa4::t_a0c2fd867bd417 1-36
+site/src/content/docs/ja/getting-started/why-shunt.md
+  s_470874e8046fa4::t_a0c2fd867bd417 2
+site/src/content/docs/ja/getting-started/quickstart.md
+  s_470874e8046fa4::t_a0c2fd867bd417 2
+.please/docs/review/rejected-findings.jsonl
+  s_470874e8046fa4::t_a0c2fd867bd417 7
+site/src/content/docs/zh-cn/guides/admin-remote-provisioning.md
+  s_470874e8046fa4::t_a0c2fd867bd417 1-81
+site/src/content/docs/zh-cn/guides/anthropic-multi-account.md
+  s_470874e8046fa4::t_a0c2fd867bd417 1-147
+site/src/content/docs/ja/reference/endpoints.md
+  s_470874e8046fa4::t_a0c2fd867bd417 2,15-24
+.claude/agent-memory/review-review-documentation-analyzer/MEMORY.md
+  s_470874e8046fa4::t_a0c2fd867bd417 5
+site/src/content/docs/ja/guides/effort-and-context.md
+  s_470874e8046fa4::t_a0c2fd867bd417 2
+site/src/content/docs/ja/getting-started/comparison.md
+  s_470874e8046fa4::t_a0c2fd867bd417 1-118
+site/src/content/docs/getting-started/comparison.md
+  s_470874e8046fa4::t_a0c2fd867bd417 1-118
+site/src/content/docs/ko/guides/admin-remote-provisioning.md
+  s_470874e8046fa4::t_a0c2fd867bd417 1-81
+site/src/content/docs/ko/guides/shared-gateway.md
+  s_470874e8046fa4::t_a0c2fd867bd417 37-38
+site/package-lock.json
+  s_470874e8046fa4::t_ee73c8e9dd7cfb 19-21
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "2c1956f534134eac1d4a064eb61ed562df045fb9",
+  "prompts": {},
+  "sessions": {
+    "s_470874e8046fa4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c6c53327-752e-4f04-a4dc-10b802e6445f",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
