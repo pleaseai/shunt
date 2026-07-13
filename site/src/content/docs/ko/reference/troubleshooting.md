@@ -17,5 +17,6 @@ description: 흔한 shunt 오류와 해결 방법.
 | 매핑된 모델에서 컨텍스트 길이 오류 후 세션이 멈춤 | shunt는 업스트림 오버플로 오류를 `prompt is too long …`으로 다시 써서 Claude Code가 자동 압축하고 재시도하도록 합니다 — [컨텍스트 오버플로 복구](/ko/guides/effort-and-context/#context-overflow-recovery)를 참고하세요. 몇 턴마다 반복되면 `CLAUDE_CODE_MAX_CONTEXT_TOKENS`를 모델의 실제 윈도우로 낮추세요. |
 | Cloudflare 뒤에서 스트림이 죽음(524) | [`sse_keepalive_seconds`](/ko/guides/shared-gateway/#sse-keepalive-pings)를 `0` 대신 기본값(30)으로 유지하세요. |
 | 공유 게이트웨이에서 매핑된 모델에 401 | 누락/유효하지 않은 클라이언트 토큰 — `ANTHROPIC_CUSTOM_HEADERS="x-shunt-token: <token>"`을 설정하세요; [게이트웨이 공유](/ko/guides/shared-gateway/)를 참고하세요. |
+| Anthropic 어댑터 모델에서 429 | 게이트웨이 로그의 `rate_limit_kind`를 확인하세요. `quota`(`retry-after` / `anthropic-ratelimit-*` 헤더 동반)는 실제 rate limit입니다 — 백오프하거나 병렬 부하를 줄이세요. `client-shape-rejection`(OAuth 요청, 두 헤더 모두 없고 바디가 `"Error"`뿐)은 api.anthropic.com이 Claude Code처럼 보이지 않는 구독 OAuth 요청을 거부한 것입니다 — Claude Code가 아닌 클라이언트는 OAuth 토큰 대신 API 키를 사용해야 하며, 이 429가 몰리면 Claude Code의 auto-mode classifier도 함께 실패할 수 있습니다("model temporarily unavailable"). `no-ratelimit-headers`(비-OAuth 자격 증명)는 rate-limit 메타데이터 없는 프로바이더 429입니다 — `quota`처럼 취급하세요. |
 
 전체 게이트웨이 문제 해결 표는 [Connect Claude Code to an LLM gateway](https://code.claude.com/docs/en/llm-gateway-connect#troubleshoot-gateway-errors)를 참고하세요.
