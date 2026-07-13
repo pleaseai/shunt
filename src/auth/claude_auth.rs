@@ -24,7 +24,7 @@ use std::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::auth::codex_auth::write_auth_file_atomic;
+use crate::auth::shared::write_auth_file_atomic;
 
 pub(crate) const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 pub(crate) const TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";

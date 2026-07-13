@@ -1,3 +1,6 @@
+pub mod codex_continuation;
+pub mod codex_ws;
+
 use axum::{
     body::{Body, Bytes},
     http::{HeaderMap, HeaderValue, Response, StatusCode, Uri},
@@ -6,12 +9,9 @@ use axum::{
 use futures_util::{stream, StreamExt};
 use serde_json::{json, Value};
 
+use self::codex_ws::{CodexWsError, CodexWsEvents};
 use crate::{
-    adapters::{
-        codex_continuation,
-        codex_ws::{self, CodexWsError, CodexWsEvents},
-        Adapter, AdapterError, AdapterFuture,
-    },
+    adapters::{Adapter, AdapterError, AdapterFuture},
     auth::{resolve_credential, Credential},
     config::AuthMode,
     error::ShuntError,

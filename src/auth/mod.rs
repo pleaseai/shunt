@@ -16,6 +16,7 @@ pub mod codex_auth;
 pub mod cursor_auth;
 pub mod cursor_login;
 pub mod inbound;
+pub mod shared;
 pub mod xai_auth;
 pub mod xai_login;
 
