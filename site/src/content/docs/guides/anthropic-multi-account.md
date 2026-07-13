@@ -60,6 +60,8 @@ name = "backup"
 
 Store files live at `~/.shunt/accounts/claude/<name>.json`; set `SHUNT_CLAUDE_ACCOUNTS_DIR` to override the directory. If the configured `accounts` list is empty, shunt scans the store and uses all valid JSON account files in filename order. Store files are private (`0600`, with a `0700` directory on Unix).
 
+For remote operators, the opt-in [admin web surface](/guides/admin-remote-provisioning/) can provision one-year setup-token accounts in a browser and show the pool's current health; the refreshable import flow remains CLI-only.
+
 The non-`--long-lived` command copies the current `~/.claude/.credentials.json` login into shunt's store, preserves its refresh capability, and records the current account UUID. `--long-lived` runs the same one-year, inference-only PKCE flow as `claude setup-token`; after approval, shunt exchanges the displayed authorization code and stores both the token and its issuing account UUID without printing the token. This keeps `metadata.user_id.account_uuid` aligned when the pool selects a different account. Reusing a name replaces that account's store file. Existing external setup tokens still need `token_env` plus an explicit `uuid`.
 
 ## Account fields

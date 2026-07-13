@@ -31,6 +31,14 @@ impl InboundAuth {
     /// reveal which entry matched.
     pub fn authenticate(&self, headers: &HeaderMap) -> Option<&str> {
         let presented = headers.get(&self.header)?.as_bytes();
+        self.authenticate_value(presented)
+    }
+
+    /// Constant-time check a raw presented value (not read from a header) against
+    /// every configured token. Shared by [`Self::authenticate`] and the admin
+    /// surface's login-form / token-header checks. Every entry is compared (no
+    /// early exit) so timing does not reveal which matched.
+    pub fn authenticate_value(&self, presented: &[u8]) -> Option<&str> {
         let mut matched = None;
         for (name, token) in &self.tokens {
             if constant_time_eq(presented, token.as_bytes()) {
@@ -51,9 +59,11 @@ pub fn parse_tokens(raw: &str) -> Result<Vec<(String, String)>, String> {
         if entry.is_empty() {
             continue;
         }
-        let (name, token) = entry
-            .split_once(':')
-            .ok_or_else(|| format!("entry {entry:?} is not a name:token pair"))?;
+        // Do not echo the raw entry: a colonless value is often a bare token
+        // pasted by mistake, and this message reaches startup logs.
+        let (name, token) = entry.split_once(':').ok_or_else(|| {
+            "an entry is not a name:token pair (expected \"name:token\")".to_string()
+        })?;
         let name = name.trim();
         let token = token.trim();
         if name.is_empty() {
@@ -76,7 +86,7 @@ pub fn parse_tokens(raw: &str) -> Result<Vec<(String, String)>, String> {
 /// Constant-time equality: runs over the longer input and folds every byte
 /// difference (and the length difference) into one accumulator, so timing does
 /// not depend on where the first mismatch occurs.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     let mut diff = a.len() ^ b.len();
     for i in 0..a.len().max(b.len()) {
         let x = a.get(i).copied().unwrap_or(0);

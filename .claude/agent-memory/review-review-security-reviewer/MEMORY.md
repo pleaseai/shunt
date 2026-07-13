@@ -7,3 +7,4 @@
 - [Codex WS pool isolation](project_codex-ws-pool-isolation.md) — WS v2 conn pool keyed only on client-supplied x-claude-code-session-id, not the authenticated inbound client.
 - [Token file writers](project_token-file-writers.md) — two credential-file writers; claude_auth's chmod-after-write leaves a world-readable window (vs codex_auth's born-private). Plus verified-safe list for the multi-account path.
 - [Claude token URL egress](project_claude-token-url-egress.md) — SHUNT_CLAUDE_TOKEN_URL override sends refresh_token to any host with no anthropic/https guard (base_url IS guarded); env-gated, minor.
+- [M9 admin surface security](project_m9-admin-surface-security.md) — src/admin/ posture: CSRF triple-layered + traversal-safe + no secret leak; gaps = no /admin/login rate-limit, Host-derived Secure flag, no security headers.

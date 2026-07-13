@@ -19,6 +19,16 @@ default_provider = "anthropic" # provider for any model with no route -> pass-th
 # header = "x-shunt-token"           # (default) header the client sends
 # tokens_env = "SHUNT_CLIENT_TOKENS" # (default) env var with name:token pairs
 
+# --- Optional: admin web surface for browser account provisioning and pool health.
+# Separate from client auth: admin credentials live in the env, never here, as
+# SHUNT_ADMIN_TOKENS="ops:<token>,backup:<token>". Startup fails if this table
+# is present but the env var is unset or empty (never silently open).
+# [server.admin]
+# header = "x-shunt-admin-token"       # (default) header for API/curl calls
+# tokens_env = "SHUNT_ADMIN_TOKENS"    # (default) env var with name:token pairs
+# session_ttl_secs = 3600              # (default) browser session lifetime
+# pending_ttl_secs = 600               # (default) provisioning-flow lifetime
+
 # --- Optional: Sentry error reporting to YOUR OWN Sentry project (docs/running.md §3.1).
 # Off unless you set a DSN. Reports gateway-owned diagnostics only — fatal
 # gateway startup/serve errors, panics, and error-level log events (warn/info as

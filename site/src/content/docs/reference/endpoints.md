@@ -12,6 +12,16 @@ description: The endpoints shunt serves as a Claude Code LLM gateway.
 | `GET` | `/routes` | shunt-native route discovery — returns the configured `[[routes]]` table verbatim (model → provider/upstream_model/effort mapping, including claude-prefixed discovery aliases); distinct from `/v1/models`, which serves the narrower Anthropic-protocol discovery response (`id`/`display_name` only) |
 | `POST` | `/v1/messages` | Inference — routed per the request's `model` id |
 | `POST` | `/v1/messages/count_tokens` | [Token counting](/guides/effort-and-context/#token-counting-count_tokens) |
+| `GET` | `/admin` | Admin dashboard (HTML); redirects to `/admin/login` when not signed in |
+| `GET`, `POST` | `/admin/login` | Admin-token login form and browser-session creation |
+| `POST` | `/admin/logout` | Clear the browser session |
+| `GET` | `/admin/accounts` | Account-store metadata: name, kind, expiry, and UUID; never token material |
+| `GET` | `/admin/pool` | Per-`claude_oauth`-provider pool health: quota utilization, status, cooldown, and availability |
+| `POST` | `/admin/accounts/claude` | Start browser setup-token provisioning with `{name}`; returns `{authorize_url}` |
+| `POST` | `/admin/accounts/claude/{name}/complete` | Complete provisioning with `{code}` containing `<code>#<state>`; stores the account and reports whether it is live |
+| `DELETE` | `/admin/accounts/claude/{name}` | Remove the named account's store file |
+
+The `/admin*` routes exist only when [`[server.admin]`](/reference/configuration/#serveradmin-optional) is configured; without that table, none of them are registered.
 
 `GET /` and `GET /health` stay open even when [`[server.auth]`](/guides/shared-gateway/) is enabled (healthcheck tools usually cannot attach tokens) and expose nothing sensitive — only status, version, and the already-public endpoint list.
 

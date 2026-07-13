@@ -5,6 +5,7 @@ use std::{
 };
 
 use reqwest::{header::HeaderMap, StatusCode};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex as AsyncMutex;
 
@@ -30,6 +31,55 @@ pub struct QuotaState {
 struct AccountHealth {
     cooldown_until: Option<Instant>,
     quota: QuotaState,
+    /// Whether the pool has processed at least one upstream response for this
+    /// account (a quota update, a cooldown, or a healthy-mark). `select_order`
+    /// inserts a default entry on selection, so entry existence alone does not
+    /// mean an account has been observed — the admin dashboard's `has_state`
+    /// keys off this flag instead of mere entry presence.
+    observed: bool,
+}
+
+/// Token-free, serializable view of one account's pool health for the admin
+/// dashboard (`GET /admin/pool`). Derived from [`AccountHealth`]; see
+/// [`AccountPool::snapshot`].
+#[derive(Debug, Clone, Serialize)]
+pub struct AccountSnapshot {
+    pub name: String,
+    /// Whether the pool has recorded at least one upstream response for this
+    /// account. When `false`, the quota/cooldown fields are all absent.
+    pub has_state: bool,
+    /// Derived: not cooling down and not at or above the switch threshold.
+    pub available: bool,
+    pub near_quota: bool,
+    /// Seconds until the current cooldown expires, when the account is cooling.
+    pub cooldown_secs_remaining: Option<u64>,
+    pub utilization_5h: Option<f64>,
+    pub reset_5h: Option<u64>,
+    pub utilization_7d: Option<f64>,
+    pub reset_7d: Option<u64>,
+    pub utilization_7d_oi: Option<f64>,
+    pub reset_7d_oi: Option<u64>,
+    pub status: Option<String>,
+}
+
+impl AccountSnapshot {
+    /// A clean slot for an account the pool has never selected.
+    fn unseen(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            has_state: false,
+            available: true,
+            near_quota: false,
+            cooldown_secs_remaining: None,
+            utilization_5h: None,
+            reset_5h: None,
+            utilization_7d: None,
+            reset_7d: None,
+            utilization_7d_oi: None,
+            reset_7d_oi: None,
+            status: None,
+        }
+    }
 }
 
 /// Process-lifetime health and scheduling state for configured accounts.
@@ -130,10 +180,11 @@ impl AccountPool {
 
     pub fn note_quota(&self, provider: &str, account: &str, headers: &HeaderMap) {
         let mut entries = self.entries.lock().expect("account health lock poisoned");
-        let quota = &mut entries
+        let health = entries
             .entry((provider.to_string(), account.to_string()))
-            .or_default()
-            .quota;
+            .or_default();
+        health.observed = true;
+        let quota = &mut health.quota;
 
         update_header(
             headers,
@@ -175,18 +226,80 @@ impl AccountPool {
 
     pub fn cooldown(&self, provider: &str, account: &str, duration: Duration) {
         let mut entries = self.entries.lock().expect("account health lock poisoned");
-        entries
+        let health = entries
             .entry((provider.to_string(), account.to_string()))
-            .or_default()
-            .cooldown_until = Some(Instant::now() + duration);
+            .or_default();
+        health.observed = true;
+        health.cooldown_until = Some(Instant::now() + duration);
     }
 
     pub fn mark_healthy(&self, provider: &str, account: &str) {
         let mut entries = self.entries.lock().expect("account health lock poisoned");
-        entries
+        let health = entries
             .entry((provider.to_string(), account.to_string()))
-            .or_default()
-            .cooldown_until = None;
+            .or_default();
+        health.observed = true;
+        health.cooldown_until = None;
+    }
+
+    /// Drop all pool health for `account` across every provider. The admin
+    /// surface calls this when it re-provisions or removes an account so
+    /// cooldown/quota accumulated under a prior token does not carry onto the
+    /// replacement (pool state is process-lifetime and keyed only by name).
+    pub fn forget(&self, account: &str) {
+        let mut entries = self.entries.lock().expect("account health lock poisoned");
+        entries.retain(|(_, name), _| name != account);
+    }
+
+    /// Read-only per-account health snapshot for the admin dashboard, in the
+    /// given account order. Never mutates the round-robin cursor and never
+    /// inserts entries for accounts the pool has not yet seen; it only clears
+    /// quota buckets whose reset has already passed, exactly as the next
+    /// `select_order` would. Carries no token material.
+    pub fn snapshot(
+        &self,
+        provider: &str,
+        accounts: &[AccountConfig],
+        model: Option<&str>,
+    ) -> Vec<AccountSnapshot> {
+        let now = Instant::now();
+        let unix_now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let mut entries = self.entries.lock().expect("account health lock poisoned");
+        accounts
+            .iter()
+            .map(|account| {
+                let key = (provider.to_string(), account.name.clone());
+                let Some(health) = entries.get_mut(&key).filter(|health| health.observed) else {
+                    // Never selected, or selected but not yet answered (a default
+                    // entry from `select_order`): report a clean, available slot.
+                    return AccountSnapshot::unseen(&account.name);
+                };
+                expire_stale_quota(&mut health.quota, unix_now);
+                let near = near_quota(health, model, SWITCH_THRESHOLD);
+                let cooldown_secs_remaining = health
+                    .cooldown_until
+                    .and_then(|until| until.checked_duration_since(now))
+                    .map(|remaining| remaining.as_secs());
+                let cooling = cooldown_secs_remaining.is_some();
+                AccountSnapshot {
+                    name: account.name.clone(),
+                    has_state: true,
+                    available: !cooling && !near,
+                    near_quota: near,
+                    cooldown_secs_remaining,
+                    utilization_5h: health.quota.utilization_5h,
+                    reset_5h: health.quota.reset_5h,
+                    utilization_7d: health.quota.utilization_7d,
+                    reset_7d: health.quota.reset_7d,
+                    utilization_7d_oi: health.quota.utilization_7d_oi,
+                    reset_7d_oi: health.quota.reset_7d_oi,
+                    status: health.quota.status.clone(),
+                }
+            })
+            .collect()
     }
 
     /// Get the async mutex that serializes token refreshes for one account.
@@ -410,6 +523,47 @@ mod tests {
         let rotated = pool.select_order("anthropic", &accounts, Some(session), None);
         assert_ne!(rotated[0], sticky);
         assert_eq!(rotated.last(), Some(&sticky));
+    }
+
+    #[test]
+    fn snapshot_reports_health_for_seen_accounts() {
+        let pool = AccountPool::new();
+        let accounts = vec![
+            account("seen-near"),
+            account("seen-cool"),
+            account("unseen"),
+        ];
+
+        // One account near its 5h quota, one on cooldown; the third is never
+        // touched, so it must report as an unseen, available slot.
+        pool.note_quota(
+            "anthropic",
+            "seen-near",
+            &quota_headers(&[(
+                "anthropic-ratelimit-unified-5h-utilization",
+                "0.99".to_string(),
+            )]),
+        );
+        pool.cooldown("anthropic", "seen-cool", Duration::from_secs(45));
+
+        let snaps = pool.snapshot("anthropic", &accounts, None);
+        assert_eq!(snaps.len(), 3);
+
+        let near = &snaps[0];
+        assert!(near.has_state);
+        assert!(near.near_quota);
+        assert!(!near.available, "a near-quota account is not available");
+        assert!(near.utilization_5h.unwrap() > 0.98);
+
+        let cool = &snaps[1];
+        assert!(cool.has_state);
+        assert!(!cool.available, "a cooling account is not available");
+        assert!(cool.cooldown_secs_remaining.unwrap() > 0);
+
+        let unseen = &snaps[2];
+        assert!(!unseen.has_state);
+        assert!(unseen.available);
+        assert!(unseen.cooldown_secs_remaining.is_none());
     }
 
     #[test]

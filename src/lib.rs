@@ -1,5 +1,6 @@
 pub mod accounts;
 pub mod adapters;
+pub mod admin;
 pub mod auth;
 pub mod config;
 pub mod count_tokens;
