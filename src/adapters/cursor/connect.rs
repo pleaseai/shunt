@@ -176,6 +176,10 @@ pub fn parse_connect_error(payload: &[u8]) -> Option<ConnectEndError> {
         "unauthenticated" => 401,
         "permission_denied" => 403,
         "resource_exhausted" => 429,
+        // Cursor reports prompt-size failures as a Connect application code.
+        // Treat them as client input errors so Claude Code can auto-compact and
+        // retry instead of seeing a misleading gateway failure.
+        "context_length_exceeded" => 400,
         _ => 502,
     };
     Some(ConnectEndError {
@@ -233,6 +237,20 @@ impl std::error::Error for ConnectError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_context_overflow_as_bad_request() {
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "error": {
+                "code": "context_length_exceeded",
+                "message": "maximum context length exceeded"
+            }
+        }))
+        .unwrap();
+        let error = parse_connect_error(&payload).unwrap();
+        assert_eq!(error.status, 400);
+        assert_eq!(error.code, "context_length_exceeded");
+    }
 
     #[test]
     fn encode_roundtrip() {

@@ -730,14 +730,11 @@ pub fn map_error_value(value: &Value, status: StatusCode) -> Value {
     })
 }
 
-/// HTTP 529 ("upstream overloaded") has no named constant in the `http`
-/// crate — it isn't in the IANA registry. Anthropic uses it to mean "the
-/// upstream is at capacity"; Claude Code backs off and retries on it instead
-/// of failing the turn, so it must reach the client as its own status rather
-/// than folding into a generic `api_error`.
-fn overloaded_status() -> StatusCode {
-    StatusCode::from_u16(529).expect("529 is a valid HTTP status code")
-}
+// HTTP 529 ("upstream overloaded") has no named constant in the `http`
+// crate — it isn't in the IANA registry. Anthropic uses it to mean "the
+// upstream is at capacity"; Claude Code backs off and retries on it instead
+// of failing the turn, so it must reach the client as its own status rather
+// than folding into a generic `api_error`.
 
 /// Map an upstream HTTP status to the Anthropic error envelope's
 /// `error.type`, per the table in `docs/gateway-protocol.md#error-envelopes`.
@@ -751,7 +748,7 @@ pub fn anthropic_error_type(status: StatusCode) -> &'static str {
         StatusCode::PAYLOAD_TOO_LARGE => "request_too_large",
         StatusCode::TOO_MANY_REQUESTS => "rate_limit_error",
         StatusCode::NOT_IMPLEMENTED => "not_supported",
-        _ if status == overloaded_status() => "overloaded_error",
+        _ if status.as_u16() == 529 => "overloaded_error",
         _ => "api_error",
     }
 }
@@ -775,7 +772,7 @@ pub fn client_facing_status(status: StatusCode) -> StatusCode {
         StatusCode::SERVICE_UNAVAILABLE,
         StatusCode::GATEWAY_TIMEOUT,
     ];
-    if PRESERVED.contains(&status) || status == overloaded_status() {
+    if PRESERVED.contains(&status) || status.as_u16() == 529 {
         status
     } else {
         StatusCode::BAD_GATEWAY

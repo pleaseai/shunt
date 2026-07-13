@@ -1,7 +1,7 @@
 use crate::adapters::cursor::{
     client::decode_frame_payload,
     connect::{parse_connect_error, ConnectFrameDecoder, FLAG_END},
-    response::{CursorDecodeError, CursorStreamEvent},
+    response::CursorStreamEvent,
     sse::{format_sse_error, CursorSseFramer},
 };
 
@@ -42,9 +42,12 @@ impl CursorStreamMachine {
             if frame.flags & FLAG_END != 0 {
                 if let Some(error) = parse_connect_error(&frame.payload) {
                     self.finished = true;
-                    let error = CursorDecodeError::ConnectEnd(error);
+                    let value = serde_json::json!({ "error": { "code": error.code } });
+                    let raw = error.to_string();
+                    let message = crate::model::responses::context_overflow_message(&value, &raw)
+                        .unwrap_or(raw);
                     let mut output = self.framer.take_output();
-                    output.extend_from_slice(&format_sse_error(&error.to_string()));
+                    output.extend_from_slice(&format_sse_error(&message));
                     return output;
                 }
                 self.apply(CursorStreamEvent::End);
@@ -141,6 +144,26 @@ mod tests {
         assert!(output.contains("frame payload decode failed"));
         // The machine is finished; further pushes yield nothing.
         assert!(machine.push(&chunk).is_empty());
+    }
+
+    #[test]
+    fn end_context_overflow_rewrites_streamed_error() {
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "error": {
+                "code": "context_length_exceeded",
+                "message": "This model's maximum context length is 272000 tokens. However, your messages resulted in 372982 tokens."
+            }
+        }))
+        .unwrap();
+        let chunk = encode_connect_frame(&payload, FLAG_END);
+        let mut machine = CursorStreamMachine::new("msg_test", "cursor");
+        let output = String::from_utf8(machine.push(&chunk)).unwrap();
+        assert!(output.contains("event: error"));
+        assert!(
+            output.contains("prompt is too long: 372982 tokens &gt; 272000 maximum")
+                || output.contains("prompt is too long: 372982 tokens > 272000 maximum")
+        );
+        assert!(!output.contains("Connect error 400"));
     }
 
     #[test]

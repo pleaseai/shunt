@@ -274,9 +274,11 @@ the `ANTHROPIC_BASE_URL` surface, and belong to the separate `/login` device-flo
 - `/v1/models` returns the `{"data":[{id,display_name}]}` shape.
 - Table-driven model-id remap, including body rewrite.
 - On the translated backends (Responses/Codex, xAI, Cursor), upstream
-  `403`/`413`/`429`/`529`/`5xx` reach the client with their true status and Anthropic
-  `error.type` (`permission_error`/`request_too_large`/`rate_limit_error`/`overloaded_error`/
-  `api_error`) rather than being flattened to `502`/`401` — landed in #88.
+  `403`/`413`/`429`/`500`/`501`/`502`/`503`/`504`/`529` reach the client with their
+  preserved status and Anthropic `error.type` (`permission_error`/`request_too_large`/
+  `rate_limit_error`/`not_supported`/`overloaded_error`/`api_error`) rather than being
+  flattened to `502`/`401`; other unexpected statuses are intentionally normalized to
+  `502 api_error` — landed in #88.
 
 Not forwarding `anthropic-beta` to the Responses/Cursor backends is correct, not a gap — that
 path is format translation rather than header passthrough, so there is nothing to relay as-is.
