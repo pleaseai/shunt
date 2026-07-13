@@ -345,9 +345,17 @@ impl RecordPlan {
 /// dropped without streaming).
 pub struct Turn {
     conn: Arc<Connection>,
-    slot: OwnedMutexGuard<()>,
+    /// The held turn slot, taken by [`Turn::stream`] when it dispatches the turn to
+    /// the reader. Wrapped in `Option` so `stream` can move it out even though
+    /// `Turn` has a `Drop` impl (a field cannot be moved out of a `Drop` type).
+    slot: Option<OwnedMutexGuard<()>>,
     reused: bool,
     pool_key: Option<String>,
+    /// Set by [`Turn::stream`] once the turn is handed to the reader. A fresh
+    /// connection whose `Turn` is dropped before this is set has no `PoolEntry` to
+    /// fire `shutdown`, so [`Turn`]'s `Drop` wakes the reader itself to avoid
+    /// leaking the reader task and its socket.
+    streamed: bool,
 }
 
 impl Turn {
@@ -371,19 +379,24 @@ impl Turn {
     /// continuation state on a clean completion, and returns the connection to
     /// idle keepalive duty (or evicts it on any failure).
     pub async fn stream(
-        self,
+        mut self,
         frame: &Value,
         record: RecordPlan,
     ) -> Result<CodexWsEvents, CodexWsError> {
-        let Turn {
-            conn,
-            slot,
-            reused,
-            pool_key,
-        } = self;
         let payload = serde_json::to_string(frame).map_err(|error| {
             CodexWsError::transport(format!("failed to encode ws frame: {error}"))
         })?;
+        // Past the last fallible step before dispatch: mark the turn streamed so
+        // `Drop` does not also signal shutdown for the connection we are about to
+        // hand to the reader, then take the slot to move it into the command.
+        self.streamed = true;
+        let slot = self
+            .slot
+            .take()
+            .expect("turn slot is present until the turn is streamed");
+        let conn = self.conn.clone();
+        let reused = self.reused;
+        let pool_key = self.pool_key.take();
         let (tx, rx) = mpsc::unbounded_channel();
         let command = StartTurn {
             frame: Message::Text(payload),
@@ -403,6 +416,20 @@ impl Turn {
             return Err(CodexWsError::transport("codex websocket reader is gone"));
         }
         Ok(rx)
+    }
+}
+
+impl Drop for Turn {
+    fn drop(&mut self) {
+        // A fresh connection whose `Turn` is abandoned before `stream` dispatched it
+        // has no pooled `PoolEntry` to fire `shutdown` on drop, and the reader holds
+        // the only `Arc<Connection>` (so its `commands.recv()` never ends). Without a
+        // nudge the reader task and its socket would leak, so wake it to exit. A
+        // reused connection is already pooled — its `PoolEntry` owns shutdown — and a
+        // streamed turn is owned by the reader, so both are left untouched.
+        if !self.reused && !self.streamed {
+            self.conn.shutdown.notify_one();
+        }
     }
 }
 
@@ -428,9 +455,10 @@ pub async fn begin(
                 *conn.last_used_at.lock().unwrap() = Instant::now();
                 return Ok(Turn {
                     conn,
-                    slot,
+                    slot: Some(slot),
                     reused: true,
                     pool_key: Some(key.to_string()),
+                    streamed: false,
                 });
             }
             // Stale: the reader saw a close, or no Pong returned in time. Evict and
@@ -445,9 +473,10 @@ pub async fn begin(
     let slot = conn.turn_lock.clone().lock_owned().await;
     Ok(Turn {
         conn,
-        slot,
+        slot: Some(slot),
         reused: false,
         pool_key: pool_key.map(str::to_string),
+        streamed: false,
     })
 }
 
@@ -577,7 +606,12 @@ async fn run_connection(
                 let end = run_turn(&conn, &mut source, &events, record, &mut pooled).await;
                 drop(events); // end the client's stream (receiver observes None)
                 drop(slot); // release the turn slot for the next turn
-                if matches!(end, TurnEnd::Dead) {
+                if matches!(end, TurnEnd::Dead) || conn.pool_key.is_none() {
+                    // A non-pooled connection (no session key) is used for exactly
+                    // one turn — it is never registered for reuse — so once that
+                    // turn ends there is nothing left to serve. Exit instead of
+                    // idling forever answering pings, which would leak the reader
+                    // task and its socket for every session-less request.
                     break;
                 }
             }
@@ -610,6 +644,12 @@ async fn run_connection(
     }
 
     conn.alive.store(false, Ordering::SeqCst);
+    // Catch-all eviction for every exit reason (shutdown, close/EOF/error while
+    // idle, commands channel exhausted, send failure). The `TurnEnd::Dead` branches
+    // in `run_turn` also evict, deliberately: they run *before* the turn slot is
+    // released above, so a concurrent `begin` waiting on `turn_lock` can never reuse
+    // a dying connection. `invalidate_pool_key` is idempotent, so the overlap on the
+    // Dead path is harmless.
     evict(&conn);
     // Dropping `source` closes the read half; best-effort close the write half so
     // the backend sees a clean shutdown.
@@ -1532,5 +1572,84 @@ mod tests {
             count >= 9,
             "queued events delivered after backpressure: {count}"
         );
+    }
+
+    /// A non-pooled turn (no session key) is used for exactly one turn, so once it
+    /// completes the connection-owned reader must exit and close the socket rather
+    /// than idling forever answering pings. The mock observes the client-side close
+    /// the reader performs on exit; a leaked reader would keep the socket open and
+    /// the read loop would hang until the timeout.
+    #[tokio::test]
+    async fn non_pooled_completed_turn_releases_socket() {
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            let Some(Ok(Message::Text(_))) = ws.next().await else {
+                panic!("expected a client frame");
+            };
+            for event in [
+                r#"{"type":"response.created","response":{"id":"resp_1"}}"#,
+                r#"{"type":"response.completed","response":{"id":"resp_1"}}"#,
+            ] {
+                ws.send(Message::Text(event.to_string())).await.unwrap();
+            }
+            // Read to the close/EOF the reader performs after the single turn ends.
+            loop {
+                match ws.next().await {
+                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                    Some(Ok(_)) => continue,
+                }
+            }
+        });
+
+        let url = format!("ws://{addr}/codex/responses");
+        let frame = response_create_frame(serde_json::json!({"model": "m", "input": []}));
+        let mut events = open_simple(&url, HeaderMap::new(), &frame, None)
+            .await
+            .expect("websocket should connect");
+        drain(&mut events).await;
+
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("reader closes the non-pooled socket after the turn completes")
+            .unwrap();
+    }
+
+    /// A fresh `Turn` dropped without ever calling `stream()` must not leak its
+    /// reader task and socket: `Turn`'s `Drop` signals the reader to shut down. The
+    /// mock observes the client-side close the reader performs on exit.
+    #[tokio::test]
+    async fn abandoned_fresh_turn_releases_socket() {
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            // The client never sends a response.create frame; dropping the Turn must
+            // still close the socket. A leaked reader would keep it open and hang.
+            loop {
+                match ws.next().await {
+                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                    Some(Ok(_)) => continue,
+                }
+            }
+        });
+
+        let url = format!("ws://{addr}/codex/responses");
+        let turn = begin(&url, HeaderMap::new(), None)
+            .await
+            .expect("handshake connects");
+        drop(turn); // abandon the turn without streaming
+
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("dropping a fresh turn closes its socket")
+            .unwrap();
     }
 }
