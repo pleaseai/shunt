@@ -1,12 +1,14 @@
 use std::{fs, io, path::PathBuf, time::SystemTime};
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
     adapters::AdapterError,
-    auth::{auth_error, shared::write_auth_file_atomic},
+    auth::{
+        auth_error,
+        shared::{jwt_claims, write_auth_file_atomic},
+    },
 };
 
 // Match the 5-minute buffer used by the codex/xAI stores (shared::EXPIRY_BUFFER)
@@ -244,15 +246,10 @@ fn token_is_valid(token: &str, now: SystemTime) -> bool {
     exp > now.saturating_add(EXPIRY_SKEW_SECONDS)
 }
 
-pub(crate) fn jwt_claims(token: &str) -> Option<Value> {
-    let payload = token.split('.').nth(1)?;
-    let bytes = URL_SAFE_NO_PAD.decode(payload).ok()?;
-    serde_json::from_slice(&bytes).ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
     use serde_json::json;
 
     #[test]

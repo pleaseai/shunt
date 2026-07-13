@@ -50,10 +50,13 @@ pub(crate) fn write_auth_file_atomic(path: &Path, value: &Value) -> io::Result<(
         std::process::id(),
         counter
     ));
+    let bytes = serde_json::to_vec_pretty(value)?;
     // The temp file must be born private: chmod-after-write would leave a
     // window where the tokens sit at the umask default on multi-user hosts.
-    write_private(&temp, &serde_json::to_vec_pretty(value)?)?;
-    fs::rename(&temp, path)?;
+    if let Err(error) = write_private(&temp, &bytes).and_then(|()| fs::rename(&temp, path)) {
+        let _ = fs::remove_file(&temp);
+        return Err(error);
+    }
     set_private_permissions(path)?;
     Ok(())
 }
