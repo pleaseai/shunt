@@ -14,7 +14,7 @@ use std::{
 
 use serde_json::{json, Value};
 
-use crate::auth::codex_auth::write_auth_file_atomic;
+use crate::auth::shared::write_auth_file_atomic;
 use crate::config::AccountConfig;
 
 const SETUP_TOKEN_LIFETIME: Duration = Duration::from_secs(365 * 24 * 60 * 60);

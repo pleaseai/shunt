@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 
 use crate::adapters::AdapterError;
 use crate::auth::auth_error;
-use crate::auth::codex_auth::{format_iso8601, is_token_valid_at, write_auth_file_atomic};
+use crate::auth::shared::{format_iso8601, is_token_valid_at, write_auth_file_atomic};
 
 /// Public Grok-CLI OAuth client (no secret). xAI's auth server only allows this
 /// allowlisted client for the device-code flow. Source: Hermes / OpenCode.

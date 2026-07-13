@@ -6,10 +6,10 @@ use serde_json::Value;
 
 use crate::{
     adapters::AdapterError,
-    auth::{auth_error, codex_auth::write_auth_file_atomic},
+    auth::{auth_error, shared::write_auth_file_atomic},
 };
 
-// Match the 5-minute buffer used by the codex/xAI stores (codex_auth::EXPIRY_BUFFER)
+// Match the 5-minute buffer used by the codex/xAI stores (shared::EXPIRY_BUFFER)
 // so clock drift, network latency, or a long-running request cannot let a
 // nearly-expired token slip through and fail upstream with a 401.
 const EXPIRY_SKEW_SECONDS: u64 = 300;
@@ -232,7 +232,7 @@ fn token_is_valid(token: &str, now: SystemTime) -> bool {
     // A token we cannot parse an `exp` from is treated as invalid so it triggers
     // a refresh rather than being sent upstream to fail with a 401. This matches
     // the codex/xAI stores' fail-closed convention (see
-    // codex_auth::is_token_valid_at).
+    // shared::is_token_valid_at).
     let Some(exp) = jwt_claims(token).and_then(|claims| claims.get("exp").and_then(Value::as_u64))
     else {
         return false;
