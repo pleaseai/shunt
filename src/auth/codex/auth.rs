@@ -357,8 +357,10 @@ mod tests {
 
     #[test]
     fn token_set_to_credential_prefers_stored_account_id() {
+        // The JWT carries a *different* account-id claim, so this genuinely proves
+        // the stored account_id wins over the token claim (not just that one exists).
         let tokens = TokenSet {
-            access_token: token(2_000_000_000, None),
+            access_token: token(2_000_000_000, Some("acct_claim")),
             refresh_token: None,
             account_id: Some("acct_stored".to_string()),
         };
