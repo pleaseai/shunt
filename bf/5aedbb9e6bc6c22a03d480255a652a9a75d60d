@@ -1,0 +1,47 @@
+site/src/content/docs/ja/getting-started/comparison.md
+  s_8f20232f2e5a50::t_ec9d2aa703f6a6 2
+site/src/content/docs/ja/guides/model-discovery.md
+  s_8f20232f2e5a50::t_ec9d2aa703f6a6 2
+site/src/content/docs/ja/guides/effort-and-context.md
+  s_8f20232f2e5a50::t_ec9d2aa703f6a6 2
+site/src/content/docs/ja/guides/configuration.md
+  s_8f20232f2e5a50::t_ec9d2aa703f6a6 2
+site/src/content/docs/ja/getting-started/installation.md
+  s_8f20232f2e5a50::t_ec9d2aa703f6a6 2
+site/src/content/docs/ja/reference/troubleshooting.md
+  s_8f20232f2e5a50::t_ec9d2aa703f6a6 2
+site/src/content/docs/ja/guides/connect-claude-code.md
+  s_8f20232f2e5a50::t_ec9d2aa703f6a6 2
+site/src/content/docs/ja/guides/providers.md
+  s_8f20232f2e5a50::t_ec9d2aa703f6a6 2
+site/src/content/docs/ja/reference/endpoints.md
+  s_8f20232f2e5a50::t_ec9d2aa703f6a6 2
+site/src/content/docs/ja/getting-started/quickstart.md
+  s_8f20232f2e5a50::t_ec9d2aa703f6a6 2
+site/src/content/docs/ja/guides/anthropic-multi-account.md
+  s_8f20232f2e5a50::t_ec9d2aa703f6a6 2
+site/src/content/docs/ja/getting-started/why-shunt.md
+  s_8f20232f2e5a50::t_ec9d2aa703f6a6 2
+site/src/content/docs/ja/guides/shared-gateway.md
+  s_8f20232f2e5a50::t_ec9d2aa703f6a6 2
+site/src/content/docs/ja/reference/configuration.md
+  s_8f20232f2e5a50::t_ec9d2aa703f6a6 2
+site/src/content/docs/ja/guides/admin-remote-provisioning.md
+  s_8f20232f2e5a50::t_ec9d2aa703f6a6 2
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "bf5aedbb9e6bc6c22a03d480255a652a9a75d60d",
+  "prompts": {},
+  "sessions": {
+    "s_8f20232f2e5a50": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dbdeab54-bb1d-4c77-a5b3-0e800a2fea13",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
