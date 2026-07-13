@@ -66,8 +66,13 @@ pub fn scan_accounts() -> io::Result<Vec<AccountConfig>> {
     };
     let mut accounts = Vec::new();
     for entry in entries {
-        let entry = entry?;
-        if !entry.file_type()?.is_file() {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_file() {
             continue;
         }
         let path = entry.path();

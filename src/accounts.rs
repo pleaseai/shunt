@@ -1,11 +1,11 @@
 use std::{
-    collections::{hash_map::DefaultHasher, HashMap},
-    hash::{Hash, Hasher},
-    sync::{atomic::AtomicUsize, Arc, Mutex},
+    collections::HashMap,
+    sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use reqwest::{header::HeaderMap, StatusCode};
+use sha2::{Digest, Sha256};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::config::AccountConfig;
@@ -36,7 +36,7 @@ struct AccountHealth {
 #[derive(Debug, Default)]
 pub struct AccountPool {
     entries: Mutex<HashMap<AccountKey, AccountHealth>>,
-    rr: Mutex<HashMap<String, AtomicUsize>>,
+    rr: Mutex<HashMap<String, usize>>,
     refresh_locks: Mutex<HashMap<AccountKey, RefreshLock>>,
 }
 
@@ -58,15 +58,13 @@ impl AccountPool {
         }
 
         let start = match session_id {
-            Some(session_id) => {
-                let mut hasher = DefaultHasher::new();
-                session_id.hash(&mut hasher);
-                hasher.finish() as usize % accounts.len()
-            }
+            Some(session_id) => stable_session_index(session_id, accounts.len()),
             None => {
                 let mut counters = self.rr.lock().expect("account round-robin lock poisoned");
                 let counter = counters.entry(provider.to_string()).or_default();
-                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % accounts.len()
+                let start = *counter % accounts.len();
+                *counter = counter.wrapping_add(1);
+                start
             }
         };
 
@@ -206,6 +204,12 @@ impl AccountPool {
                 .or_insert_with(|| Arc::new(AsyncMutex::new(()))),
         )
     }
+}
+
+fn stable_session_index(session_id: &str, account_count: usize) -> usize {
+    let digest = Sha256::digest(session_id.as_bytes());
+    let prefix = u64::from_be_bytes(digest[..8].try_into().expect("SHA-256 prefix is 8 bytes"));
+    (prefix % account_count as u64) as usize
 }
 
 fn update_header<T: std::str::FromStr>(headers: &HeaderMap, name: &str, field: &mut Option<T>) {
@@ -349,7 +353,7 @@ mod tests {
     }
 
     #[test]
-    fn session_selection_is_sticky_and_spreads_across_sessions() {
+    fn session_selection_is_stable_and_spreads_across_sessions() {
         let pool = AccountPool::new();
         let accounts = accounts();
         let first = pool.select_order("anthropic", &accounts, Some("session-a"), None);
@@ -357,6 +361,7 @@ mod tests {
             first,
             pool.select_order("anthropic", &accounts, Some("session-a"), None)
         );
+        assert_eq!(first[0], stable_session_index("session-a", accounts.len()));
 
         let starts = (0..64)
             .map(|id| {
@@ -531,14 +536,19 @@ mod tests {
     fn cooldown_skips_accounts_and_all_cooled_uses_soonest_expiry() {
         let pool = AccountPool::new();
         let accounts = vec![account("a"), account("b"), account("c")];
-        pool.cooldown("anthropic", "a", Duration::from_secs(30));
+        let sticky = pool.select_order("anthropic", &accounts, Some("sticky"), None)[0];
+        pool.cooldown("anthropic", &accounts[sticky].name, Duration::from_secs(30));
         let available = pool.select_order("anthropic", &accounts, Some("sticky"), None);
         assert_eq!(available.len(), 3);
-        assert!(!available[..2].contains(&0));
-        assert_eq!(available[2], 0);
+        assert_eq!(available[2], sticky);
 
-        pool.cooldown("anthropic", "b", Duration::from_secs(20));
-        pool.cooldown("anthropic", "c", Duration::from_secs(10));
+        for (index, seconds) in [(0, 30), (1, 20), (2, 10)] {
+            pool.cooldown(
+                "anthropic",
+                &accounts[index].name,
+                Duration::from_secs(seconds),
+            );
+        }
         assert_eq!(
             pool.select_order("anthropic", &accounts, Some("sticky"), None),
             vec![2, 1, 0]

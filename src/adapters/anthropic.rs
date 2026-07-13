@@ -270,8 +270,22 @@ async fn forward_claude_oauth(
                 state
                     .accounts
                     .note_quota(&route.provider, &account.name, retry.headers());
-                if retry.status().is_success() {
+                let retry_status = retry.status();
+                if retry_status.is_success() {
                     state.accounts.mark_healthy(&route.provider, &account.name);
+                } else {
+                    let cooldown = accounts::retry_after(retry.headers())
+                        .unwrap_or(delay)
+                        .clamp(Duration::from_secs(1), Duration::from_secs(300));
+                    state
+                        .accounts
+                        .cooldown(&route.provider, &account.name, cooldown);
+                    tracing::warn!(
+                        provider = %route.provider,
+                        account = %account.name,
+                        status = %retry_status,
+                        "Claude OAuth throttle retry did not succeed; cooling down account"
+                    );
                 }
                 return relay_response(&state, retry, Some(&account.name));
             }

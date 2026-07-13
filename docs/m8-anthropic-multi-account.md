@@ -8,13 +8,19 @@ The behavior is based on [KarpelesLab/teamclaude](https://github.com/KarpelesLab
 
 Set `auth = "claude_oauth"` on an Anthropic provider and configure one or more `[[providers.<name>.accounts]]` entries:
 
-```toml
+Provision store-managed accounts before editing the provider configuration:
+
+```bash
 # Store-managed refreshable account: imports the current Claude Code login.
 shunt login claude --name main
 
 # Store-managed one-year token: runs the interactive Claude setup-token flow.
 shunt login claude --name ci --long-lived
+```
 
+Then configure the provider and its accounts:
+
+```toml
 [providers.anthropic]
 kind = "anthropic"
 base_url = "https://api.anthropic.com"
@@ -79,7 +85,7 @@ Because `claude_oauth` is an injected-credential mode, a configured `[server.aut
 
 Selection state is per provider and survives config hot reloads for the life of the shunt process. Quota state is tracked per configured account.
 
-- If the request includes `x-claude-code-session-id`, shunt hashes it to choose the sticky account. A healthy sticky account that is available and under the switch threshold stays first, preserving Phase 1 session stickiness.
+- If the request includes `x-claude-code-session-id`, shunt hashes it with SHA-256 to choose the sticky account. The mapping is deterministic across process restarts while the ordered account list is unchanged. A healthy sticky account that is available and under the switch threshold stays first, preserving Phase 1 session stickiness.
 - Without that header, shunt uses an independent round-robin counter for each provider.
 - On every upstream response handled by the `claude_oauth` account pool, shunt parses the following headers when present:
   - utilization: `anthropic-ratelimit-unified-5h-utilization`, `anthropic-ratelimit-unified-7d-utilization`, and `anthropic-ratelimit-unified-7d_oi-utilization` as floating-point values;
@@ -102,7 +108,7 @@ shunt classifies the upstream response before streaming its body. It never retri
 | :-- | :-- |
 | 2xx | Relay immediately and mark the selected account healthy. |
 | 429 with any `anthropic-ratelimit-unified-5h-status`, `-7d-status`, or `-7d_oi-status` equal to `rejected` | Treat as quota exhaustion, cool the account for numeric `retry-after` (default 60 seconds, clamped to 1–3600 seconds), and rotate. |
-| Plain 429 without a rejected quota status | Treat as transient throttling, sleep for numeric `retry-after` (default 1 second, capped at 300 seconds), retry the same account once, then relay that retry response without rotating. |
+| Plain 429 without a rejected quota status | Treat as transient throttling, sleep for numeric `retry-after` (default 1 second, capped at 300 seconds), retry the same account once, then relay that retry response. If the retry is still unsuccessful, cool the account for that retry's numeric `retry-after` (falling back to the initial delay, clamped to 1–300 seconds) so the next request can prefer another account. |
 | 401 from a `credentials` account | Force-refresh the credentials file even if its token has not expired, retry the same account once, then cool it for five minutes and rotate if it is still 401. |
 | 401 from a `token_env` or store-managed setup-token account | It cannot be refreshed; cool it for five minutes and rotate. |
 | 5xx | Cool the account for 30 seconds and rotate. |

@@ -24,6 +24,8 @@ use std::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::auth::codex_auth::write_auth_file_atomic;
+
 const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
 const SCOPE: &str =
@@ -242,34 +244,7 @@ fn write_back(path: &Path, refreshed: &Refreshed) -> io::Result<()> {
     oauth.insert("accessToken".to_string(), json!(refreshed.access_token));
     oauth.insert("refreshToken".to_string(), json!(refreshed.refresh_token));
     oauth.insert("expiresAt".to_string(), json!(refreshed.expires_at_ms));
-    write_atomic(path, &value)
-}
-
-fn write_atomic(path: &Path, value: &Value) -> io::Result<()> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let temp = parent.join(format!(
-        ".{}.tmp-{}",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("credentials"),
-        std::process::id()
-    ));
-    fs::write(&temp, serde_json::to_vec_pretty(value)?)?;
-    set_private_permissions(&temp)?;
-    fs::rename(&temp, path)?;
-    set_private_permissions(path)?;
-    Ok(())
-}
-
-#[cfg(unix)]
-fn set_private_permissions(path: &Path) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-}
-
-#[cfg(not(unix))]
-fn set_private_permissions(_path: &Path) -> io::Result<()> {
-    Ok(())
+    write_auth_file_atomic(path, &value)
 }
 
 #[cfg(test)]
