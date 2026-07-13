@@ -27,7 +27,7 @@ shunt run
 
 認証情報は `SHUNT_CLIENT_TOKENS` と同じカンマ区切りの `name:token` 形式を使いますが、別個のセキュリティ境界です。`[server.auth]` のクライアントトークンを管理トークンとして再利用しないでください。`[server.admin]` が存在するのにそのトークン環境変数が未設定・空・不正な場合、起動はフェイルクローズします。
 
-すべてのキーとデフォルトは[設定リファレンス](/ja/reference/configuration/#serveradmin-optional)を参照してください。ブラウザーおよび JSON のルートは[エンドポイントリファレンス](/ja/reference/endpoints/)に一覧があります。
+すべてのキーとデフォルトは[設定リファレンス](/ja/reference/configuration/#serveradminオプション)を参照してください。ブラウザーおよび JSON のルートは[エンドポイントリファレンス](/ja/reference/endpoints/)に一覧があります。
 
 ## ブラウザーでアカウントをプロビジョニングする
 
@@ -50,7 +50,7 @@ shunt run
 
 ダッシュボードは、`auth = "claude_oauth"` で設定された各プロバイダーについて、アカウントストアのメタデータと現在の健全性を表示します。上流レスポンスから観測した 5 時間・共有 7 日・`7d_oi` の使用率に加え、unified status、残りのクールダウン、クォータ接近状態、そのアカウントが現在利用可能かどうかを含みます。
 
-アカウント一覧が公開するのはメタデータのみです。アカウント名、認証情報の種類（`setup_token` または `imported`）、有効期限、UUID。トークン本体を返すことはありません。shunt がアカウント選択時にクォータ状態・クールダウン・モデルを認識した週次バケットをどう使うかは [Anthropic マルチアカウント](/ja/guides/anthropic-multi-account/#selection-and-proactive-rotation)を参照してください。
+アカウント一覧が公開するのはメタデータのみです。アカウント名、認証情報の種類（`setup_token` または `imported`）、有効期限、UUID。トークン本体を返すことはありません。shunt がアカウント選択時にクォータ状態・クールダウン・モデルを認識した週次バケットをどう使うかは [Anthropic マルチアカウント](/ja/guides/anthropic-multi-account/#選択とプロアクティブなローテーション)を参照してください。
 
 アカウントメタデータ、プールの健全性、アカウント削除に API/curl でアクセスするには、設定したヘッダー（デフォルト `x-shunt-admin-token`）で管理トークンを送り、[HTTP エンドポイント](/ja/reference/endpoints/)に記載の JSON ルートを使ってください。ヘッダー認証されたリクエストはブラウザーセッションを使わず、CSRF チェックの対象外です。setup トークンのプロビジョニングは上記のダッシュボードフローで行ってください。
 

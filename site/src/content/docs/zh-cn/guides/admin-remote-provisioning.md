@@ -27,7 +27,7 @@ shunt run
 
 凭据使用与 `SHUNT_CLIENT_TOKENS` 相同的逗号分隔 `name:token` 格式,但它们是相互独立的安全边界。不要把 `[server.auth]` 的客户端 token 复用为管理员 token。如果存在 `[server.admin]` 但其 token 环境变量未设置、为空或格式错误,启动会安全失败(fail closed)。
 
-每个键与默认值见[配置参考](/zh-cn/reference/configuration/#serveradmin-optional)。[端点参考](/zh-cn/reference/endpoints/)列出了浏览器路由和 JSON 路由。
+每个键与默认值见[配置参考](/zh-cn/reference/configuration/#serveradmin可选)。[端点参考](/zh-cn/reference/endpoints/)列出了浏览器路由和 JSON 路由。
 
 ## 在浏览器中预配账户
 
@@ -50,7 +50,7 @@ shunt run
 
 仪表盘展示每个配置了 `auth = "claude_oauth"` 的提供方的账户存储元数据与当前健康状况。其中包括从上游响应观测到的 5 小时、共享 7 天和 `7d_oi` 使用率,以及 unified status、剩余冷却时间、接近配额状态,和该账户当前是否可用。
 
-账户列表只暴露元数据:账户名、凭据类型(`setup_token` 或 `imported`)、过期时间和 UUID。它绝不返回 token 材料。shunt 在选择账户时如何使用配额状态、冷却和感知模型的周桶,见 [Anthropic 多账户](/zh-cn/guides/anthropic-multi-account/#selection-and-proactive-rotation)。
+账户列表只暴露元数据:账户名、凭据类型(`setup_token` 或 `imported`)、过期时间和 UUID。它绝不返回 token 材料。shunt 在选择账户时如何使用配额状态、冷却和感知模型的周桶,见 [Anthropic 多账户](/zh-cn/guides/anthropic-multi-account/#选择与主动轮换)。
 
 要通过 API/curl 访问账户元数据、池健康状况或删除账户,请在配置的头部(默认 `x-shunt-admin-token`)中发送管理员 token,并使用 [HTTP 端点](/zh-cn/reference/endpoints/)中记录的 JSON 路由。头部认证的请求不使用浏览器会话,免于 CSRF 检查;setup token 的预配请通过上面的仪表盘流程进行。
 

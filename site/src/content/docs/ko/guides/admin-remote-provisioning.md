@@ -27,7 +27,7 @@ shunt run
 
 자격 증명은 `SHUNT_CLIENT_TOKENS`와 같은 쉼표 구분 `name:token` 형식을 쓰지만, 별도의 보안 경계입니다. `[server.auth]` 클라이언트 토큰을 관리자 토큰으로 재사용하지 마세요. `[server.admin]`이 있는데 토큰 환경 변수가 설정되지 않았거나, 비어 있거나, 형식이 잘못되면 시작은 닫힌 채로 실패(fail closed)합니다.
 
-모든 키와 기본값은 [설정 레퍼런스](/ko/reference/configuration/#serveradmin-optional)를 참고하세요. 브라우저 라우트와 JSON 라우트는 [엔드포인트 레퍼런스](/ko/reference/endpoints/)에 나열되어 있습니다.
+모든 키와 기본값은 [설정 레퍼런스](/ko/reference/configuration/#serveradmin-선택)를 참고하세요. 브라우저 라우트와 JSON 라우트는 [엔드포인트 레퍼런스](/ko/reference/endpoints/)에 나열되어 있습니다.
 
 ## 브라우저에서 계정 프로비저닝
 
@@ -50,7 +50,7 @@ shunt run
 
 대시보드는 `auth = "claude_oauth"`로 구성된 각 프로바이더의 계정 스토어 메타데이터와 현재 상태를 보여 줍니다. 업스트림 응답에서 관측된 5시간, 공유 7일, `7d_oi` 사용률과 함께 통합(unified) status, 남은 쿨다운, 쿼터 근접 상태, 그리고 계정이 현재 사용 가능한지가 포함됩니다.
 
-계정 목록은 메타데이터만 노출합니다: 계정 이름, 자격 증명 종류(`setup_token` 또는 `imported`), 만료, UUID. 토큰 자체는 절대 반환하지 않습니다. shunt가 계정을 고를 때 쿼터 상태, 쿨다운, 모델 인지 주간 버킷을 어떻게 쓰는지는 [Anthropic 멀티 계정](/ko/guides/anthropic-multi-account/#selection-and-proactive-rotation)을 참고하세요.
+계정 목록은 메타데이터만 노출합니다: 계정 이름, 자격 증명 종류(`setup_token` 또는 `imported`), 만료, UUID. 토큰 자체는 절대 반환하지 않습니다. shunt가 계정을 고를 때 쿼터 상태, 쿨다운, 모델 인지 주간 버킷을 어떻게 쓰는지는 [Anthropic 멀티 계정](/ko/guides/anthropic-multi-account/#선택과-선제-로테이션)을 참고하세요.
 
 계정 메타데이터, 풀 상태, 계정 제거에 API/curl로 접근하려면 구성된 헤더(기본 `x-shunt-admin-token`)로 관리자 토큰을 보내고 [HTTP 엔드포인트](/ko/reference/endpoints/)에 문서화된 JSON 라우트를 사용하세요. 헤더로 인증된 요청은 브라우저 세션을 쓰지 않으며 CSRF 검사에서 제외됩니다; setup token 프로비저닝은 위의 대시보드 플로우로 수행하세요.
 

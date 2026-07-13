@@ -21,7 +21,7 @@ description: shunt 作为 Claude Code LLM 网关所提供的端点。
 | `POST` | `/admin/accounts/claude/{name}/complete` | 用包含 `<code>#<state>` 的 `{code}` 完成预配;存储账户并报告其是否生效 |
 | `DELETE` | `/admin/accounts/claude/{name}` | 删除指定名称账户的存储文件 |
 
-`/admin*` 路由仅在配置了 [`[server.admin]`](/zh-cn/reference/configuration/#serveradmin-optional) 时存在;没有该表时,它们一个都不会注册。
+`/admin*` 路由仅在配置了 [`[server.admin]`](/zh-cn/reference/configuration/#serveradmin可选) 时存在;没有该表时,它们一个都不会注册。
 
 即使启用了 [`[server.auth]`](/zh-cn/guides/shared-gateway/),`GET /` 和 `GET /health` 也保持开放(健康检查工具通常无法附带 token),并且不暴露任何敏感信息 —— 只有状态、版本以及已经公开的端点列表。
 
