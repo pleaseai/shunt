@@ -48,13 +48,28 @@ by `usage_value()` which feeds both the terminal `message_delta` and the non-str
 emitting `message_start`). Since Responses only reports real usage at completion, `message_start` would
 otherwise always carry `input_tokens: 0`; PR #112 seeds it with a local tiktoken estimate so Claude Code's
 per-subagent progress tracker (which reads only that first snapshot, not the merged completion usage) shows
-nonzero context for codex subagents. When reviewing changes here, confirm `usage_value()` never reads
-`input_tokens_estimate` and `read_usage()` never writes it — that separation is what keeps the estimate from
-leaking into the authoritative `message_delta`/`final_json` total. The estimate is computed once per turn in
-`adapters/responses/mod.rs::forward()` (via `count_tokens::count_input_tokens`, gated on the provider's
-`count_tokens = "tiktoken"` config, the default) and threaded only to the streaming constructors
-(`stream_response`/`stream_events_response`); the non-streaming `json_response`/`json_events_response` paths
-don't take it, since `final_json` doesn't need a placeholder. One accepted-tradeoff nit worth knowing about: the
-estimate is computed unconditionally (even for non-streaming requests that then discard it) and re-parses the
-request body as JSON a second time (it was already parsed once earlier in `forward()` for `client_wants_stream`/
-`thinking_enabled`) — flagged as a minor perf nit in the #112 review, not blocking.
+nonzero context for codex subagents. `usage_value()` also holds an explicit `usage_observed: bool` flag (set
+by `read_usage()` only when `response.completed`/`response.done` actually carries `input_tokens`) so a
+truncated stream's terminal `message_delta` falls back to the estimate instead of reverting to a bare `0`, while
+a genuine upstream `input_tokens: 0` still reports as 0 — this was a real bug found and fixed within PR #112
+itself (see [[shunt-codex-subagent-msgstart-input-review]]), not something to re-flag unless it regresses.
+When reviewing changes here, confirm `read_usage()` still sets `usage_observed = true` in the same branch that
+writes `input_tokens`/`cache_read_tokens` — that pairing is what keeps the two in sync.
+
+The estimate is computed once per turn in `adapters/responses/mod.rs::forward()` (via
+`count_tokens::count_input_tokens_value(&Value)`, gated on `client_wants_stream && count_tokens == "tiktoken"`,
+the provider default) from the already-parsed `request_json` (reused as `Arc<Value>`, no second JSON parse),
+and threaded only to the streaming constructors (`stream_response`/`stream_events_response`); the non-streaming
+`json_response`/`json_events_response` paths don't take it, since `final_json` doesn't need a placeholder. As
+of commit `d1eda88` ("perf(codex): overlap message_start token estimate with upstream I/O") the CPU-bound
+tiktoken encode is kicked off via `spawn_blocking` *before* `forward_http`'s upstream request / `forward_websocket`'s
+websocket connect, so it overlaps that round-trip; its `JoinHandle` is only awaited once the response stream
+begins. **Previously flagged, now fixed**: an earlier revision computed the estimate unconditionally (even for
+non-streaming requests that then discarded it) and re-parsed the request body as JSON a second time — both
+resolved by the `client_wants_stream` gate and the `count_input_tokens_value(&Value)` extraction, respectively.
+One residual low-severity nit: on `forward_websocket`'s `open_ws_turn(...).await?` early-return (documented in a
+code comment as an accepted rare ws→http double-encode) and on `forward_http`'s early-return-on-non-success-
+upstream-status path (not commented), the spawned blocking task's `JoinHandle` is dropped without ever being
+awaited — the task keeps running detached and its result is discarded. Same best-effort/cosmetic-estimate
+category as the already-accepted `spawn_blocking(...).await.unwrap_or(0)` JoinError-drop pattern elsewhere in
+this file; not blocking, but worth a low-confidence mention on future passes rather than omitting entirely.
