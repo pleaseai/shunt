@@ -1,0 +1,86 @@
+site/src/content/docs/guides/admin-remote-provisioning.md
+  s_7c4ccfe416853e::t_1d023a4a7248cb 1-54,56-81
+  s_7c4ccfe416853e::t_a890fab73a2f2d 55
+site/astro.config.mjs
+  s_7c4ccfe416853e::t_6f2535930fe907 95-97
+  s_7c4ccfe416853e::t_bc620ddf3654ff 94
+site/src/content/docs/guides/anthropic-multi-account.md
+  s_7c4ccfe416853e::t_e237cf2f53c307 63-64
+docs/m9-admin-surface.md
+  s_7c4ccfe416853e::t_339f27490b8329 1-197
+src/config.rs
+  s_7c4ccfe416853e::t_52c21f66d40973 817-821
+  s_7c4ccfe416853e::t_182902dff5f87b 685
+  s_7c4ccfe416853e::t_b5559cf59f2d52 48-52
+  s_7c4ccfe416853e::t_3db4b4166e9a50 111-179
+  s_7c4ccfe416853e::t_ecf41f9c162621 561-566
+  s_7c4ccfe416853e::t_47bdb5893df146 1039-1053
+src/admin/mod.rs
+  s_7c4ccfe416853e::t_ce400ef12444f7 1-96,101-134,139,141-142,144-149,151,153-354,356-392,394-409,411-479,481-486,492-511,513-615
+  s_7c4ccfe416853e::t_26b0e9cf6e56c7 355,393,480
+  s_7c4ccfe416853e::t_4bb84e8318e924 97-100,410,487-491,512
+  s_7c4ccfe416853e::t_d35e1596800a11 135-138,140,143,150,152
+site/src/content/docs/guides/shared-gateway.md
+  s_7c4ccfe416853e::t_c41c91b88257e9 37-38
+src/lib.rs
+  s_7c4ccfe416853e::t_e04cbf98df86e7 3
+tests/admin_surface.rs
+  s_7c4ccfe416853e::t_7905343c43a29b 1-7,9-20,24-152,154-187,189-229,231-239,241-243,248-311
+  s_7c4ccfe416853e::t_443d783255c633 21-23
+  s_7c4ccfe416853e::t_26eb21bd52cbba 153
+  s_7c4ccfe416853e::t_4bb84e8318e924 188,230,240,244-247
+  s_7c4ccfe416853e::t_849c77af123b41 8
+src/auth/claude_store.rs
+  s_7c4ccfe416853e::t_a790e902771fb7 103-182
+src/admin/session.rs
+  s_7c4ccfe416853e::t_34b662ad14e771 1-252,259-269,274-292
+  s_7c4ccfe416853e::t_4bb84e8318e924 253-258,270-273
+src/reload.rs
+  s_7c4ccfe416853e::t_c5635b663c76d2 86-95
+  s_7c4ccfe416853e::t_8de44b82ac97eb 19,31-34
+  s_7c4ccfe416853e::t_c305732633a6a6 48,52
+src/admin/html.rs
+  s_7c4ccfe416853e::t_e94c174d2f1aad 1-201
+src/auth/inbound.rs
+  s_7c4ccfe416853e::t_f9f1810b3ceae3 87
+  s_7c4ccfe416853e::t_ced1e9297fb187 34-41
+shunt.toml.example
+  s_7c4ccfe416853e::t_c0dd60bbd0547f 22-31
+src/server.rs
+  s_7c4ccfe416853e::t_4d8d471c33f1cb 11,27-33,35-36
+  s_7c4ccfe416853e::t_2cb7bcaea6c7e0 50,59,65,68,81
+  s_7c4ccfe416853e::t_5df0501c127e82 89-91,98,105,112-121
+site/src/content/docs/reference/configuration.md
+  s_7c4ccfe416853e::t_588aa0b2ea3691 25-28,30-41
+  s_7c4ccfe416853e::t_aec5ceec25154e 29
+README.md
+  s_7c4ccfe416853e::t_897cb4c1f3f4a7 72
+  s_7c4ccfe416853e::t_96c7b4956b35ad 71
+src/auth/claude_login.rs
+  s_7c4ccfe416853e::t_653da14b7a0221 14-16
+  s_7c4ccfe416853e::t_81b32f9903dcb7 56-60
+  s_7c4ccfe416853e::t_54b4fab795c983 97-119
+  s_7c4ccfe416853e::t_7889f6bc7aad57 140-142,146-147,150
+site/src/content/docs/reference/endpoints.md
+  s_7c4ccfe416853e::t_4fada729deea7c 15-24
+src/accounts.rs
+  s_7c4ccfe416853e::t_1779bbef776769 8
+  s_7c4ccfe416853e::t_db155d4b0b5e4c 236-285
+  s_7c4ccfe416853e::t_bc6397ac45c703 36-78
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "1e81c1a2a9dc2b89a52902c3b109f3a8a2ff9984",
+  "prompts": {},
+  "sessions": {
+    "s_7c4ccfe416853e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07cd6a1a-b6c0-4bc2-a4d0-526ac616604e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
