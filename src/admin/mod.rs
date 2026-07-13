@@ -173,11 +173,12 @@ fn same_origin(headers: &HeaderMap) -> bool {
                 .get(header::HOST)
                 .and_then(|value| value.to_str().ok())
                 .unwrap_or_default();
-            // Compare host names only: a proxy/port-forward can leave the Origin
-            // and Host ports inconsistent (e.g. a default port omitted on one
-            // side), which would otherwise reject a legitimate same-origin call.
-            !host.is_empty()
-                && host_without_port(origin_authority).eq_ignore_ascii_case(host_without_port(host))
+            // Compare the full authority, port included: browsers keep the
+            // Origin and Host port representation consistent for a direct
+            // connection, so this matches legitimate same-origin requests while
+            // still rejecting a different port (a distinct origin). This is only
+            // the fallback — `Sec-Fetch-Site` above is the primary signal.
+            !host.is_empty() && origin_authority.eq_ignore_ascii_case(host)
         }
     }
 }

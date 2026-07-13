@@ -119,9 +119,10 @@ process-lifetime state:
 - **Emergency token rotation:** browser sessions are validated only against the
   in-memory session store, so rotating/removing `SHUNT_ADMIN_TOKENS` does **not**
   invalidate already-issued sessions — they persist until `session_ttl_secs`
-  (default 1h) expires. If an admin token is compromised, **restart the process**
-  (not just a config reload) to drop all active sessions immediately. Rejecting
-  stale sessions on reload is tracked in #100.
+  (default 1h) expires. If an admin token is compromised, **rotate/remove the
+  compromised token first** (so it can no longer mint a new session), then
+  **restart the process** (not just a config reload) to drop the sessions it had
+  already issued. Rejecting stale sessions on reload is tracked in #100.
 
 ## Endpoints (registered only when `[server.admin]` is set)
 
