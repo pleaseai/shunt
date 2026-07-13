@@ -89,7 +89,7 @@ shunt 是一个**符合规范的 Claude Code LLM 网关**:它实现 Claude Code 
 
 - **B. Codex WS:实时探测续传规范化(已跟踪:[#45])。** Reasoning/`function_call` 规范化已对照 3 个来源做过 schema 校验,但尚未实时探测(`docs/m7-codex-websocket.md:250-270`)。任何未纳入的字段都会静默落入安全的全量输入回退 —— 正确性无虞,但是*潜在错过的优化*。一轮探测能确认续传是否按应有的频率触发。
 
-- **C. Codex WS:流中途失败的回退(已解决:[#46])。** 两处修复共同解决了它。**[#93]** 在签出(checkout)阶段移除了一个*成因*:半开(half-open)的池化套接字现在无法通过复用存活探测(要求及时返回 `Pong`,而不仅是本地写入成功),并在发送本轮帧之前被替换为一次全新握手,因此陈旧连接不再会在流中途断开。随后 **[#46]** 堵上了签出探测无法覆盖的残余窗口(帧发送*之后*、首个 token 之前套接字死亡的 send→first-token 窗口):`open_ws_turn` 会先探读(peek)首个事件,`commit_or_fallback` 在首 token 之前的传输错误时将本轮改由 HTTP 重新驱动(`src/adapters/responses/mod.rs`)。首个事件已流式发出*之后*的失败才是真正的流中途失败——重启会重复已发出的输出——因此以干净的 Anthropic `error` SSE 事件浮出,而不是重放;通过 `previous_response_id` 的轮次中途续传是刻意的非目标(部分输出已提交给客户端)。已由 `tests/codex_websocket_fallback.rs` 覆盖。
+- **C. Codex WS:流中途失败的回退(已解决:[#46])。** 两处修复共同解决了它。**[#93]** 在签出(checkout)阶段移除了一个*成因*:半开(half-open)的池化套接字现在无法通过复用存活探测(要求及时返回 `Pong`,而不仅是本地写入成功),并在发送本轮帧之前被替换为一次全新握手,因此陈旧连接不再会在流中途断开。随后 **[#46]** 堵上了签出探测无法覆盖的残余窗口(帧发送*之后*、首个事件之前套接字死亡的 send→first-event 窗口):`open_ws_turn` 会先探读(peek)首个事件,`commit_or_fallback` 在首个事件之前的传输错误时将本轮改由 HTTP 重新驱动(`src/adapters/responses/mod.rs`)。首个事件已流式发出*之后*的失败才是真正的流中途失败——重启会重复已发出的输出——因此以干净的 Anthropic `error` SSE 事件浮出,而不是重放;通过 `previous_response_id` 的轮次中途续传是刻意的非目标(部分输出已提交给客户端)。已由 `tests/codex_websocket_fallback.rs` 覆盖。
 
 - **D. Codex WS:投机预热(`generate:false`)(已跟踪:[#47])。** 今天明确不在范围内(`docs/m7-codex-websocket.md:53-58`),但它是真实的 Codex 延迟优化 —— 在第一个 token 之前预热套接字/上下文。等续传经过实时探测后值得重新审视。
 
@@ -107,7 +107,7 @@ shunt 是一个**符合规范的 Claude Code LLM 网关**:它实现 Claude Code 
 
 ## 7. 一句话总结
 
-shunt 处于光谱中**高保真、Claude Code 原生**的一端。它最近的同类是 **raine/claude-code-proxy** —— 同一类(Rust、订阅 OAuth、按 `model` 路由、Codex WS + `previous_response_id` 续传) —— 相对它,shunt 的优势是更深的续传规范化、Codex reasoning 保真度(raine 丢弃它)、Anthropic 透传路径(把主会话留在 Claude)以及 xAI OAuth;raine 的优势是内置监控 TUI、第一方 ChatGPT OAuth 登录和 Kimi/Cursor 的广度。相对 **CLIProxyAPI**,shunt 在转换路径的上传裁剪上占优(CLIProxyAPI 的 WS 是透传),并按设计舍弃了大部分机群功能(广泛的多账户负载均衡、完整的管理 API、插件、后端广度)。它现在提供一个带感知模型的主动配额调度加被动故障转移的窄 Anthropic OAuth 账户池,但 ChatGPT/Codex 的池化仍是刻意留下的缺口。范围内价值最高的工作是完成 tool-search 上下文节省([#43]) —— 已由 Codex/OpenAI 上可选启用的原生 `tool_search` 路径([#82])部分解决。此后 Codex WS 传输的首 token 之前 HTTP 回退缺口已被填补([#46]);续传规范化实时探测([#45])仍未完成。最值得权衡的刻意缺口是 ChatGPT/Codex 的最小 fill-first 多账户。
+shunt 处于光谱中**高保真、Claude Code 原生**的一端。它最近的同类是 **raine/claude-code-proxy** —— 同一类(Rust、订阅 OAuth、按 `model` 路由、Codex WS + `previous_response_id` 续传) —— 相对它,shunt 的优势是更深的续传规范化、Codex reasoning 保真度(raine 丢弃它)、Anthropic 透传路径(把主会话留在 Claude)以及 xAI OAuth;raine 的优势是内置监控 TUI、第一方 ChatGPT OAuth 登录和 Kimi/Cursor 的广度。相对 **CLIProxyAPI**,shunt 在转换路径的上传裁剪上占优(CLIProxyAPI 的 WS 是透传),并按设计舍弃了大部分机群功能(广泛的多账户负载均衡、完整的管理 API、插件、后端广度)。它现在提供一个带感知模型的主动配额调度加被动故障转移的窄 Anthropic OAuth 账户池,但 ChatGPT/Codex 的池化仍是刻意留下的缺口。范围内价值最高的工作是完成 tool-search 上下文节省([#43]) —— 已由 Codex/OpenAI 上可选启用的原生 `tool_search` 路径([#82])部分解决。此后 Codex WS 传输的首个事件之前 HTTP 回退缺口已被填补([#46]);续传规范化实时探测([#45])仍未完成。最值得权衡的刻意缺口是 ChatGPT/Codex 的最小 fill-first 多账户。
 
 [#43]: https://github.com/pleaseai/shunt/issues/43
 [#82]: https://github.com/pleaseai/shunt/issues/82

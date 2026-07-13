@@ -213,9 +213,9 @@ toward being a fleet gateway and warrant a conscious decision first.
   fails the reuse liveness probe (a timely `Pong` is required, not just a local
   write) and is replaced with a fresh handshake before the turn's frame is sent, so
   a stale connection can no longer break mid-stream. **[#46]** then closed the
-  residual send→first-token window the checkout probe cannot cover (the socket dies
-  *after* the frame is sent, before the first token): `open_ws_turn` peeks the first
-  event and `commit_or_fallback` re-drives the turn over HTTP on a pre-first-token
+  residual send→first-event window the checkout probe cannot cover (the socket dies
+  *after* the frame is sent, before the first event): `open_ws_turn` peeks the first
+  event and `commit_or_fallback` re-drives the turn over HTTP on a pre-first-event
   transport error (`src/adapters/responses/mod.rs`), extending the pre-handshake
   safety net across that window. A failure *after* the first event has streamed is
   genuinely mid-stream — restarting would duplicate output — so it is surfaced as a
@@ -265,7 +265,7 @@ pool with model-aware proactive quota scheduling plus reactive failover, but
 ChatGPT/Codex pooling remains a deliberate gap.
 The highest-value in-scope work is finishing the tool-search
 context savings ([#43]) — now partly addressed by an opt-in native `tool_search` path on
-Codex/OpenAI ([#82]). The Codex WS transport's pre-first-token HTTP fallback gap
+Codex/OpenAI ([#82]). The Codex WS transport's pre-first-event HTTP fallback gap
 has since been closed ([#46]); its continuation-normalization live-probe ([#45])
 remains open. The biggest deliberate gap left to weigh is minimal fill-first
 multi-account for ChatGPT/Codex.

@@ -98,7 +98,7 @@ async fn forward(
     // the ChatGPT/Codex backend. HTTP stays the path for every other upstream, and
     // is the documented safety net: any websocket failure before the first event
     // reaches the client — connect, handshake, send, or a socket that drops before
-    // the first token (issue #46) — transparently falls back to the HTTP path
+    // the first event (issue #46) — transparently falls back to the HTTP path
     // below, so enabling the flag can never do worse than plain HTTP. Only a
     // failure *after* the first event surfaces mid-stream — an Anthropic `error`
     // event to a streaming client, or a gateway error to a non-streaming one —
@@ -347,10 +347,10 @@ type BufferedEvent = Option<Result<ResponseEvent, CodexWsError>>;
 /// rejects the replayed id, retry once with the full input on a fresh connection.
 ///
 /// The first event is always peeked before the response is committed, extending
-/// the pre-handshake HTTP safety net across the send→first-token window (issue
+/// the pre-handshake HTTP safety net across the send→first-event window (issue
 /// #46). `Turn::stream` only *queues* the frame; the connection reader sends it
 /// and produces the first event asynchronously, so a socket that dies between the
-/// send and the first token — an idle-eviction race, a backend hiccup, a network
+/// send and the first event — an idle-eviction race, a backend hiccup, a network
 /// blip — would otherwise surface as an error event on an already-committed
 /// stream. Peeking lets [`commit_or_fallback`] catch that failure while nothing
 /// has reached the client yet and return `Err`, so [`forward`] transparently
@@ -389,7 +389,7 @@ async fn peek_first_event(mut events: CodexWsEvents) -> (BufferedEvent, CodexWsE
 /// response or fall back to HTTP. A delivered first event (`Ok`) means the turn is
 /// under way: buffer it for replay and stream the socket. A transport error or an
 /// empty stream means nothing ever reached the client, so return `Err` to let
-/// [`forward`] re-drive the turn over HTTP transparently — the send→first-token
+/// [`forward`] re-drive the turn over HTTP transparently — the send→first-event
 /// analogue of the pre-handshake fallback. Backend-sent error *events* (a rate
 /// limit, a content-policy refusal) arrive as `Ok` and are streamed through rather
 /// than retried; only genuine transport failures reach the `Err` arm here.
@@ -604,6 +604,12 @@ fn stream_events_response(
 /// pre-first-event failure already fell back to HTTP), so a transport error here
 /// is mid-stream: return a gateway error instead of presenting partial output as
 /// a successful response. `buffered` is the replayed first event, if any.
+///
+/// Note the asymmetry: a mid-stream *transport* error surfaces as a gateway
+/// error, but a backend-sent error *event* (arriving as `Ok`, e.g. rate-limit or
+/// content-policy) is currently applied by `machine` like any other event and not
+/// surfaced as a gateway error — a pre-existing limitation shared with the HTTP
+/// `json_response` path, tracked separately.
 async fn json_events_response(
     buffered: BufferedEvent,
     mut events: CodexWsEvents,
@@ -1297,7 +1303,7 @@ mod tests {
             status: None,
             retry_after: None,
             body: String::new(),
-            message: "socket dropped before first token".to_string(),
+            message: "socket dropped before first event".to_string(),
             previous_response_missing: false,
         };
         assert!(

@@ -248,14 +248,17 @@ The issue frames this as "prewarm". Two separable things:
   `json_response`. A transport error *after* the first event is genuinely
   mid-stream and is surfaced as an Anthropic `error` SSE event so the client sees a
   reason, not a silent truncation — restarting over HTTP is no longer safe because
-  output has already been streamed.
+  output has already been streamed. That `error` SSE event is specific to the
+  streaming path (`stream_events_response`); the non-streaming path
+  (`json_events_response`) instead returns a gateway error for the same
+  post-first-event transport failure.
 - **HTTP fallback.** Any websocket failure *before the first event reaches the
   client* — connect timeout, refused/failed handshake, a failed frame send, or a
-  socket that drops between the send and the first token (an idle-eviction race, a
+  socket that drops between the send and the first event (an idle-eviction race, a
   backend hiccup; issue #46) — is caught in `forward()` (which retried the turn with
   cloned inputs) and transparently re-driven over the HTTP path via `forward_http`.
   Because `Turn::stream` only queues the frame and the reader sends it
-  asynchronously, catching the post-send/pre-first-token window requires the
+  asynchronously, catching the post-send/pre-first-event window requires the
   first-event peek above; without it that failure would surface on an
   already-committed stream. Enabling the flag therefore can never do worse than
   plain HTTP; only a failure after the first event has streamed is surfaced to the

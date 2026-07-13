@@ -53,7 +53,7 @@ Each provider is a table under a name of your choosing. Built-ins (`anthropic`, 
 | `accounts` | array of account tables | Anthropic OAuth account pool. Valid only with `kind = "anthropic"` and `auth = "claude_oauth"`; see below. |
 | `effort` | `low` … `max` | Optional default reasoning effort (`responses` providers). |
 | `count_tokens` | `tiktoken` (default) \| `estimate` | `responses` providers only: local tiktoken count vs. 404 fallback ([details](/guides/effort-and-context/#token-counting-count_tokens)). |
-| `websocket` | `true` \| `false` (default) | Opt in to the Codex Responses WebSocket v2 transport (ChatGPT/Codex backend only; falls back to HTTP on any failure before the first token reaches the client, so it can never do worse than plain HTTP). |
+| `websocket` | `true` \| `false` (default) | Opt in to the Codex Responses WebSocket v2 transport (ChatGPT/Codex backend only; falls back to HTTP on any transport failure before the first event reaches the client, so it can never do worse than plain HTTP). |
 | `tool_search` | `true` \| `false` (default) | Opt in to the native client-executed `tool_search` protocol for Claude Code's tool search (stock OpenAI / ChatGPT-Codex flavors on GPT-5.4+ models; otherwise the text-based shim is kept). See [Codex → Tool search](/guides/codex/#native-protocol-opt-in). |
 
 ### `[[providers.<name>.accounts]]`
