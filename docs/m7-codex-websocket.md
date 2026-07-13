@@ -230,26 +230,39 @@ The issue frames this as "prewarm". Two separable things:
    ships. A stateless proxy has no "user typing" phase; forcing prewarm would mean
    **two** round-trips per turn (worse). **Not implemented, by design.**
 
-## 8. Adapter wiring (`responses.rs`)
+## 8. Adapter wiring (`responses/mod.rs`)
 
 - `forward()` branches to `forward_websocket` when
   `Config::codex_websocket_enabled` (flag && ChatGPT/Codex backend); otherwise the
   HTTP path is unchanged.
-- `open_ws_turn` starts a turn with continuation allowed, peeks the first event, and
-  retries with full input on `previous_response_missing` (§6). `start_ws_turn`
-  applies the [`decide`] result: on a hit it replaces `input` with the delta and
-  inserts `previous_response_id` (+ the turn_state echo).
+- `open_ws_turn` starts a turn with continuation allowed and **always peeks the
+  first event** before committing the response, retrying with full input on
+  `previous_response_missing` (§6). `start_ws_turn` applies the [`decide`] result:
+  on a hit it replaces `input` with the delta and inserts `previous_response_id`
+  (+ the turn_state echo). `commit_or_fallback` then decides from that peeked event:
+  a delivered event (`Ok`) commits to the WebSocket stream; a transport error or an
+  empty stream returns `Err` so `forward()` re-drives the turn over HTTP.
 - The buffered first event is replayed ahead of the channel by both the streaming
   (`stream_events_response`) and non-streaming (`json_events_response`) drivers,
   which are otherwise the WebSocket analogs of the HTTP `stream_response` /
-  `json_response`. A mid-stream transport error is surfaced as an Anthropic `error`
-  SSE event so the client sees a reason, not a silent truncation.
-- **HTTP fallback.** A websocket failure that happens *before* streaming begins —
-  connect timeout, refused/failed handshake, or a failed frame send — is caught in
-  `forward()` (which retried the turn with cloned inputs) and transparently
-  re-driven over the HTTP path via `forward_http`. Enabling the flag therefore can
-  never do worse than plain HTTP; only a failure after the first event has streamed
-  is surfaced to the client (it is then too late to fall back).
+  `json_response`. A transport error *after* the first event is genuinely
+  mid-stream and is surfaced as an Anthropic `error` SSE event so the client sees a
+  reason, not a silent truncation — restarting over HTTP is no longer safe because
+  output has already been streamed. That `error` SSE event is specific to the
+  streaming path (`stream_events_response`); the non-streaming path
+  (`json_events_response`) instead returns a gateway error for the same
+  post-first-event transport failure.
+- **HTTP fallback.** Any websocket failure *before the first event reaches the
+  client* — connect timeout, refused/failed handshake, a failed frame send, or a
+  socket that drops between the send and the first event (an idle-eviction race, a
+  backend hiccup; issue #46) — is caught in `forward()` (which retried the turn with
+  cloned inputs) and transparently re-driven over the HTTP path via `forward_http`.
+  Because `Turn::stream` only queues the frame and the reader sends it
+  asynchronously, catching the post-send/pre-first-event window requires the
+  first-event peek above; without it that failure would surface on an
+  already-committed stream. Enabling the flag therefore can never do worse than
+  plain HTTP; only a failure after the first event has streamed is surfaced to the
+  client (it is then too late to fall back).
 
 ## 9. Config & validation
 

@@ -213,14 +213,20 @@ toward being a fleet gateway and warrant a conscious decision first.
   one residual is namespaced/MCP tool calls (need a live MCP server to trigger); their `namespace` strip
   stays schema-grounded until probed.
 
-- **C. Codex WS: mid-stream failure resumption (already tracked: [#46]).** A WS failure *before* streaming
-  falls back to HTTP transparently, but a *mid-stream* failure surfaces as an error
-  SSE event, not a fallback (`src/adapters/responses/mod.rs:97-134`). **[#93]** removed
-  one major *cause* — a half-open pooled socket now fails the reuse liveness probe
-  (a timely `Pong` is required, not just a local write) and is replaced with a fresh
-  handshake before the turn's frame is sent, so a stale connection can no longer break
-  mid-stream. The residual gap stands: a socket that genuinely drops *during* a turn
-  still errors rather than resuming/replaying over HTTP.
+- **C. Codex WS: mid-stream failure fallback (resolved: [#46]).** Two fixes closed
+  this. **[#93]** removed one *cause* at checkout: a half-open pooled socket now
+  fails the reuse liveness probe (a timely `Pong` is required, not just a local
+  write) and is replaced with a fresh handshake before the turn's frame is sent, so
+  a stale connection can no longer break mid-stream. **[#46]** then closed the
+  residual send→first-event window the checkout probe cannot cover (the socket dies
+  *after* the frame is sent, before the first event): `open_ws_turn` peeks the first
+  event and `commit_or_fallback` re-drives the turn over HTTP on a pre-first-event
+  transport error (`src/adapters/responses/mod.rs`), extending the pre-handshake
+  safety net across that window. A failure *after* the first event has streamed is
+  genuinely mid-stream — restarting would duplicate output — so it is surfaced as a
+  clean Anthropic `error` SSE event rather than replayed; mid-turn resume via
+  `previous_response_id` is a deliberate non-goal (partial output is already
+  committed to the client). Covered by `tests/codex_websocket_fallback.rs`.
 
 - **D. Codex WS: speculative prewarm (`generate:false`) (already tracked: [#47]).** Explicitly out of scope
   today (`docs/m7-codex-websocket.md:53-58`), but it is a real Codex latency
@@ -264,8 +270,9 @@ pool with model-aware proactive quota scheduling plus reactive failover, but
 ChatGPT/Codex pooling remains a deliberate gap.
 The highest-value in-scope work is finishing the tool-search
 context savings ([#43]) — now partly addressed by an opt-in native `tool_search` path on
-Codex/OpenAI ([#82]) — and hardening the Codex WS continuation (live-probe +
-mid-stream fallback); the biggest deliberate gap to weigh is minimal fill-first
+Codex/OpenAI ([#82]). The Codex WS transport's pre-first-event HTTP fallback gap
+has since been closed ([#46]); its continuation-normalization live-probe ([#45])
+remains open. The biggest deliberate gap left to weigh is minimal fill-first
 multi-account for ChatGPT/Codex.
 
 [#43]: https://github.com/pleaseai/shunt/issues/43
