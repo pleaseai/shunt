@@ -544,18 +544,19 @@ async fn remove_account_handler(
         return bad_request("account name must match [a-z0-9-]+");
     }
     let target = name.clone();
-    let removed =
-        match tokio::task::spawn_blocking(move || claude_store::remove_account(&target)).await {
-            Ok(Ok(removed)) => removed,
-            Ok(Err(error)) => {
-                tracing::error!(account = %name, %error, "admin: failed to remove account");
-                return internal("failed to remove account");
-            }
-            Err(join_error) => {
-                tracing::error!(account = %name, %join_error, "admin: remove_account task panicked");
-                return internal("failed to remove account");
-            }
-        };
+    let removed = match tokio::task::spawn_blocking(move || claude_store::remove_account(&target))
+        .await
+    {
+        Ok(Ok(removed)) => removed,
+        Ok(Err(error)) => {
+            tracing::error!(account = %name, %error, "admin: failed to remove account");
+            return internal("failed to remove account");
+        }
+        Err(join_error) => {
+            tracing::error!(account = %name, %join_error, "admin: remove_account task panicked");
+            return internal("failed to remove account");
+        }
+    };
     tracing::info!(account = %name, removed, "admin: account removed");
     Json(json!({ "name": name, "removed": removed })).into_response()
 }
