@@ -9,6 +9,7 @@ use axum::{
 use futures_util::{stream, StreamExt};
 use serde_json::{json, Value};
 
+use self::codex_ws::{CodexWsError, CodexWsEvents};
 use crate::{
     adapters::{Adapter, AdapterError, AdapterFuture},
     auth::{resolve_credential, Credential},
@@ -20,7 +21,6 @@ use crate::{
     routing::Route,
     server::AppState,
 };
-use self::codex_ws::{CodexWsError, CodexWsEvents};
 
 pub struct ResponsesAdapter;
 
