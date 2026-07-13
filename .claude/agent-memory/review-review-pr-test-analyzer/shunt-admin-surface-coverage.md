@@ -5,11 +5,12 @@ metadata:
   type: project
 ---
 
-Reviewed `tests/admin_surface.rs` (5 integration tests + 1 startup-validation test)
+Reviewed `tests/admin_surface.rs` (7 integration tests + 1 startup-validation test)
 against `src/admin/{mod,session,html}.rs` and the new `claude_store.rs` metadata
 functions. Strong: default-off gate, header-token 401 rejection, and the full
 provisioning happy path (add → complete → list → pool → delete) with explicit
-no-token-leak assertions on both the JSON response and the store file contents.
+assertions that the setup token is absent from the JSON response yet persisted in
+the store file.
 
 Real gaps found (see PR #85 review output for full confidence/severity):
 1. No test proves a session-cookie + *correct* CSRF token actually succeeds — the
