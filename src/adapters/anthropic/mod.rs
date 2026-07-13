@@ -758,6 +758,76 @@ mod tests {
         format!("{scheme} {token}")
     }
 
+    fn claude_route() -> super::Route {
+        super::Route {
+            provider: "claude".to_string(),
+            adapter: crate::routing::AdapterKind::Anthropic,
+            model: "claude-test".to_string(),
+            upstream_model: "claude-test".to_string(),
+            effort: None,
+        }
+    }
+
+    fn claude_account() -> crate::config::AccountConfig {
+        crate::config::AccountConfig {
+            name: "acct".to_string(),
+            credentials: None,
+            token_env: None,
+            uuid: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn retry_upstream_returns_response_on_success() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let state =
+            super::AppState::new(crate::config::Config::default(), reqwest::Client::new()).unwrap();
+
+        let response = super::retry_upstream(
+            &state,
+            &claude_route(),
+            &claude_account(),
+            &server.uri(),
+            HeaderMap::new(),
+            Vec::new(),
+            "retry failed",
+        )
+        .await
+        .expect("a 200 upstream should be handed back to the caller");
+        assert!(response.status().is_success());
+    }
+
+    #[tokio::test]
+    async fn retry_upstream_signals_failover_on_transport_error() {
+        let state =
+            super::AppState::new(crate::config::Config::default(), reqwest::Client::new()).unwrap();
+
+        // Port 1 refuses immediately, so post_upstream returns a transport error
+        // and the helper must cool the account down and return None (fail over).
+        let outcome = super::retry_upstream(
+            &state,
+            &claude_route(),
+            &claude_account(),
+            "http://127.0.0.1:1/v1/messages",
+            HeaderMap::new(),
+            Vec::new(),
+            "retry failed",
+        )
+        .await;
+        assert!(
+            outcome.is_none(),
+            "a transport error should signal fail-over"
+        );
+    }
+
     #[test]
     fn passthrough_forwards_client_credential_unchanged() {
         let out = outbound_headers(&client_headers(), &Credential::Passthrough);
