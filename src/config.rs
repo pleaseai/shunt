@@ -830,16 +830,17 @@ impl Config {
         if provider.auth == AuthMode::ChatgptOauth {
             return ResponsesFlavor::Chatgpt;
         }
-        // The subscription OAuth path targets the Grok CLI proxy. It mostly
-        // speaks the xAI dialect, but supports hosted tools the developer API
-        // has not been verified to accept, so keep it as a distinct flavor.
-        if provider.auth == AuthMode::XaiOauth {
-            return ResponsesFlavor::Grok;
-        }
         let host = reqwest::Url::parse(&provider.base_url)
             .ok()
             .and_then(|url| url.host_str().map(ToOwned::to_owned))
             .unwrap_or_default();
+        // Hosted tools are a Grok CLI-proxy capability, not an OAuth capability:
+        // an xai_oauth provider may still target the developer API at api.x.ai.
+        if provider.auth == AuthMode::XaiOauth
+            && (host == "grok.com" || host.ends_with(".grok.com"))
+        {
+            return ResponsesFlavor::Grok;
+        }
         if host_is_xai(&host) {
             ResponsesFlavor::Xai
         } else {
@@ -1013,7 +1014,7 @@ mod tests {
         config.providers.get_mut("xai").unwrap().auth = AuthMode::XaiOauth;
         config.providers.get_mut("xai").unwrap().api_key_env = None;
         let config = config.validate().unwrap();
-        assert_eq!(config.responses_flavor("xai"), ResponsesFlavor::Grok);
+        assert_eq!(config.responses_flavor("xai"), ResponsesFlavor::Xai);
 
         // Pointing an xai_oauth provider off-origin is refused (bearer-leak guard).
         let mut config = Config::default();
@@ -1071,8 +1072,8 @@ mod tests {
         assert_eq!(grok.base_url, "https://cli-chat-proxy.grok.com/v1");
         assert_eq!(grok.auth, AuthMode::XaiOauth);
         assert!(grok.api_key_env.is_none());
-        // The grok.com host isn't an x.ai host, so the flavor keys on the
-        // auth mode and enables CLI-proxy-only capabilities.
+        // The Grok flavor keys on the CLI proxy host and enables
+        // proxy-only capabilities.
         assert_eq!(config.responses_flavor("grok"), ResponsesFlavor::Grok);
         // The default config validates: the bearer-leak guard allows grok.com.
         assert!(config.validate().is_ok());

@@ -39,6 +39,7 @@ pub struct AnthropicSseMachine {
     output_tokens: u64,
     content: Vec<Value>,
     text_buffer: String,
+    text_citations: Vec<Value>,
     tool_buffer: Option<ToolBuffer>,
     reasoning: Option<ReasoningBuffer>,
     web_search_indexes: HashMap<String, String>,
@@ -78,6 +79,7 @@ impl AnthropicSseMachine {
             output_tokens: 0,
             content: Vec::new(),
             text_buffer: String::new(),
+            text_citations: Vec::new(),
             tool_buffer: None,
             reasoning: None,
             web_search_indexes: HashMap::new(),
@@ -317,6 +319,7 @@ impl AnthropicSseMachine {
             kind: BlockKind::Text,
         });
         self.text_buffer.clear();
+        self.text_citations.clear();
         out.push(sse(
             "content_block_start",
             &json!({
@@ -382,13 +385,18 @@ impl AnthropicSseMachine {
         if annotation.get("type").and_then(Value::as_str) != Some("url_citation") {
             return Vec::new();
         }
+        let mut out = Vec::new();
+        if self.open.as_ref().map(|block| block.kind) != Some(BlockKind::Text) {
+            out.extend(self.open_text());
+        }
         let url = annotation.get("url").and_then(Value::as_str).unwrap_or("");
         let encrypted_index = annotation
             .get("encrypted_index")
             .and_then(Value::as_str)
             .map(str::to_string)
             .or_else(|| self.web_search_indexes.get(url).cloned())
-            .unwrap_or_default();
+            .map(Value::String)
+            .unwrap_or(Value::Null);
         let mut citation = json!({
             "type": "web_search_result_location",
             "url": url,
@@ -400,14 +408,16 @@ impl AnthropicSseMachine {
             .as_object_mut()
             .expect("citation is an object")
             .retain(|_, value| !value.is_null());
-        vec![sse(
+        self.text_citations.push(citation.clone());
+        out.push(sse(
             "content_block_delta",
             &json!({
                 "type": "content_block_delta",
                 "index": self.open_index(),
                 "delta": {"type": "citations_delta", "citation": citation}
             }),
-        )]
+        ));
+        out
     }
 
     fn web_search_done(&mut self, item: &Value) -> Vec<String> {
@@ -502,9 +512,13 @@ impl AnthropicSseMachine {
         };
         match open.kind {
             BlockKind::Text => {
-                self.content
-                    .push(json!({"type": "text", "text": self.text_buffer}));
+                let mut block = json!({"type": "text", "text": self.text_buffer});
+                if !self.text_citations.is_empty() {
+                    block["citations"] = json!(self.text_citations);
+                }
+                self.content.push(block);
                 self.text_buffer.clear();
+                self.text_citations.clear();
             }
             BlockKind::Tool => {
                 if let Some(tool) = self.tool_buffer.take() {

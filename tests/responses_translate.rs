@@ -823,7 +823,54 @@ fn translates_grok_web_search_results_and_citations_to_anthropic_blocks() {
     assert_eq!(final_json["content"][0]["type"], "server_tool_use");
     assert_eq!(final_json["content"][1]["type"], "web_search_tool_result");
     assert_eq!(final_json["content"][2]["type"], "text");
+    assert_eq!(
+        final_json["content"][2]["citations"][0]["encrypted_index"],
+        "enc"
+    );
     assert_eq!(final_json["stop_reason"], "end_turn");
+}
+
+#[test]
+fn citation_without_open_text_block_opens_one_and_omits_missing_encrypted_index() {
+    let fixture = concat!(
+        "event: response.created\n",
+        "data: {\"response\":{\"id\":\"resp_search\"}}\n\n",
+        "event: response.output_text.annotation.added\n",
+        "data: {\"annotation\":{\"type\":\"url_citation\",\"url\":\"https://example.com/\",\"title\":\"Example\",\"cited_text\":\"Example text\"}}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{}}\n\n"
+    );
+    let mut machine = AnthropicSseMachine::new("grok-4.5", false);
+    let emitted = parse_sse_events(fixture)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
+
+    let names = event_names(&emitted);
+    assert_eq!(
+        names,
+        vec![
+            "message_start",
+            "ping",
+            "content_block_start",
+            "content_block_delta",
+            "content_block_stop",
+            "message_delta",
+            "message_stop"
+        ]
+    );
+    assert!(!emitted.contains("encrypted_index"));
+
+    let final_json = machine.final_json();
+    assert_eq!(final_json["content"][0]["type"], "text");
+    assert_eq!(final_json["content"][0]["text"], "");
+    assert_eq!(
+        final_json["content"][0]["citations"][0]["url"],
+        "https://example.com/"
+    );
+    assert!(final_json["content"][0]["citations"][0]
+        .get("encrypted_index")
+        .is_none());
 }
 
 #[test]
