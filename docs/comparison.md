@@ -98,10 +98,10 @@ given backend accepts the shapes shunt emits. xAI/Grok routes and gpt-5.2-and-be
 the #43 shim regardless of the flag.
 
 ⁹ **[#77]** adds an opt-in `[server.admin]` browser surface, registered only when the
-`[server.admin]` table is present (`src/server.rs:117-118`, `src/admin/mod.rs:87-101`). It
+`[server.admin]` table is present (`src/server.rs:117-118`, `src/admin/mod.rs:87-103`). It
 provisions Anthropic `claude_oauth` accounts (add/list/replace/remove) through the existing
 `claude_login` flow and renders a **read-only account-pool dashboard** — per-account 5h/7d
-quota utilization, cooldown, and near-quota flags (`src/accounts.rs:46-78`).
+quota utilization, cooldown, and near-quota flags (`src/accounts.rs:46-63`).
 Deliberately narrow: Anthropic accounts only (no ChatGPT/Codex), and no request/token usage
 or cost accounting — well short of CLIProxyAPI's full management API + quota/usage manager.
 
@@ -166,7 +166,7 @@ possible backends*, not the same product.
   endpoints are just `/`, `/health`, `/protocol`, `/v1/models`, `/routes`,
   `/v1/messages`, `/v1/messages/count_tokens` (`src/server.rs:106-112`). An opt-in
   `[server.admin]` surface ([#77]) adds browser-based Anthropic-account provisioning
-  and a **read-only account-pool dashboard** (`src/admin/mod.rs:87-101`), but there is
+  and a **read-only account-pool dashboard** (`src/admin/mod.rs:87-103`), but there is
   still no request/token usage or cost accounting; observability beyond that is opt-in
   Sentry metrics only (`src/metrics.rs`). CLIProxyAPI ships a full management API +
   quota/usage manager and a third-party dashboard ecosystem; raine/claude-code-proxy
@@ -236,7 +236,7 @@ toward being a fleet gateway and warrant a conscious decision first.
 
 - **H. Per-account quota/usage visibility.** Follows G. For Anthropic accounts the
   opt-in admin dashboard ([#77]) already surfaces each account's 5h/7d window and
-  cooldown state (`src/accounts.rs:46-78`); extending the same per-account view to
+  cooldown state (`src/accounts.rs:46-63`); extending the same per-account view to
   ChatGPT/Codex subscription accounts (as CLIProxyAPI's ecosystem does) is the part
   still missing. Ties to the observability gap.
 
