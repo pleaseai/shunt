@@ -1,0 +1,20 @@
+docs/comparison.md
+  s_cb538981510d30::t_05e5f620095ae2 104,239
+  s_cb538981510d30::t_e6c35bc9fc103e 101,169
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "78262e4888f151c423fdfdfeb29541b70ac7d323",
+  "prompts": {},
+  "sessions": {
+    "s_cb538981510d30": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b660ef02-51ec-48ec-aadc-5771ce3bb412",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
