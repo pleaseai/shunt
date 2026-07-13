@@ -384,6 +384,12 @@ fn apply_continuation(
             let metadata = object
                 .entry("client_metadata".to_string())
                 .or_insert_with(|| json!({}));
+            // Defensive: a pre-existing non-object `client_metadata` would make
+            // `as_object_mut()` return None and silently drop the turn-state token;
+            // reset it to an object so the token is always recorded.
+            if !metadata.is_object() {
+                *metadata = json!({});
+            }
             if let Some(metadata) = metadata.as_object_mut() {
                 metadata.insert("x-codex-turn-state".to_string(), json!(turn_state));
             }
@@ -944,6 +950,19 @@ mod tests {
         assert_eq!(frame["input"], json!(["a", "b"]));
         assert_eq!(frame["previous_response_id"], json!("r"));
         assert!(frame.get("client_metadata").is_none());
+    }
+
+    #[test]
+    fn apply_continuation_overwrites_non_object_client_metadata() {
+        // A pre-existing non-object `client_metadata` is reset to an object so the
+        // turn-state token is recorded rather than silently dropped.
+        let mut frame = json!({"input": [], "client_metadata": "not-an-object"});
+        let decision = Decision {
+            previous_response_id: "r".to_string(),
+            input_delta: vec![json!("x")],
+        };
+        apply_continuation(&mut frame, &decision, Some("ts"));
+        assert_eq!(frame["client_metadata"]["x-codex-turn-state"], json!("ts"));
     }
 
     #[test]
