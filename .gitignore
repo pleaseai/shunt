@@ -20,3 +20,6 @@ site/.wrangler/
 
 # Machine-local review/apply-loop state (regenerated per run; not shared)
 .please/state/
+
+# Per-developer config override (overlays .please/config.yml)
+.please/config.local.yml
