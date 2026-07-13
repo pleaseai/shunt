@@ -1,0 +1,33 @@
+site/src/content/docs/ja/getting-started/comparison.md
+  s_470874e8046fa4::t_c3950b3e92783f 92
+  s_470874e8046fa4::t_72ac293e3216c5 110
+  s_470874e8046fa4::t_dfac73bc51999f 119
+site/src/content/docs/getting-started/comparison.md
+  s_470874e8046fa4::t_c63fecf6f4ca29 110
+  s_470874e8046fa4::t_3a2d9dd9250f14 92
+  s_470874e8046fa4::t_397c82830cb703 119
+site/src/content/docs/zh-cn/getting-started/comparison.md
+  s_470874e8046fa4::t_5e9836f9e6bb9f 92
+  s_470874e8046fa4::t_78f3663b94e9c5 110
+  s_470874e8046fa4::t_ffd81356430c61 119
+site/src/content/docs/ko/getting-started/comparison.md
+  s_470874e8046fa4::t_1c86f49466a87a 92
+  s_470874e8046fa4::t_180e24044a368a 110
+  s_470874e8046fa4::t_e9c2f6aad1c53b 119
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "c6a31e2b372e0dc90c88b68a590c12328b115d27",
+  "prompts": {},
+  "sessions": {
+    "s_470874e8046fa4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c6c53327-752e-4f04-a4dc-10b802e6445f",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
