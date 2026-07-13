@@ -12,9 +12,7 @@ use sha2::{Digest, Sha256};
 use crate::auth::{claude_auth, claude_store};
 
 const AUTHORIZE_URL: &str = "https://claude.com/cai/oauth/authorize";
-const TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
 const MANUAL_REDIRECT_URL: &str = "https://platform.claude.com/oauth/code/callback";
-const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const SETUP_TOKEN_EXPIRES_SECS: u64 = 365 * 24 * 60 * 60;
 
 pub async fn run(name: &str, long_lived: bool) -> anyhow::Result<()> {
@@ -77,7 +75,14 @@ async fn run_setup_token(name: &str) -> anyhow::Result<PathBuf> {
         bail!("invalid Claude authorization code or OAuth state mismatch");
     }
 
-    let tokens = exchange_code(&reqwest::Client::new(), code, &state, &verifier, TOKEN_URL).await?;
+    let tokens = exchange_code(
+        &reqwest::Client::new(),
+        code,
+        &state,
+        &verifier,
+        claude_auth::TOKEN_URL,
+    )
+    .await?;
     let account_uuid = tokens
         .account
         .as_ref()
@@ -91,7 +96,7 @@ fn build_authorize_url(challenge: &str, state: &str) -> anyhow::Result<reqwest::
     let mut url = reqwest::Url::parse(AUTHORIZE_URL)?;
     url.query_pairs_mut()
         .append_pair("code", "true")
-        .append_pair("client_id", CLIENT_ID)
+        .append_pair("client_id", claude_auth::CLIENT_ID)
         .append_pair("response_type", "code")
         .append_pair("redirect_uri", MANUAL_REDIRECT_URL)
         .append_pair("scope", "user:inference")
@@ -129,7 +134,7 @@ async fn exchange_code(
         "grant_type": "authorization_code",
         "code": code,
         "redirect_uri": MANUAL_REDIRECT_URL,
-        "client_id": CLIENT_ID,
+        "client_id": claude_auth::CLIENT_ID,
         "code_verifier": verifier,
         "state": state,
         "expires_in": SETUP_TOKEN_EXPIRES_SECS,
@@ -274,7 +279,7 @@ mod tests {
                 "grant_type": "authorization_code",
                 "code": "code",
                 "redirect_uri": MANUAL_REDIRECT_URL,
-                "client_id": CLIENT_ID,
+                "client_id": claude_auth::CLIENT_ID,
                 "code_verifier": "verifier",
                 "state": "state",
                 "expires_in": SETUP_TOKEN_EXPIRES_SECS,
