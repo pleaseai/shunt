@@ -426,6 +426,27 @@ pub fn classify(status: StatusCode, headers: &HeaderMap) -> FailoverAction {
     FailoverAction::Relay
 }
 
+/// Classify a Codex/ChatGPT upstream response for account-pool failover.
+/// Takes the same `(status, headers)` shape as [`classify`] so both adapters
+/// share one call site, but Codex responses carry no per-account
+/// quota-rejection header — unlike Anthropic, every 429 rotates rather than
+/// pausing the same account, so `headers` goes unused for now.
+pub fn classify_codex(status: StatusCode, _headers: &HeaderMap) -> FailoverAction {
+    if status.is_success() {
+        return FailoverAction::Relay;
+    }
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        return FailoverAction::Rotate;
+    }
+    if status == StatusCode::UNAUTHORIZED {
+        return FailoverAction::RefreshRetry;
+    }
+    if status.is_server_error() {
+        return FailoverAction::Rotate;
+    }
+    FailoverAction::Relay
+}
+
 pub fn retry_after(headers: &HeaderMap) -> Option<Duration> {
     headers
         .get(reqwest::header::RETRY_AFTER)?
@@ -749,6 +770,32 @@ mod tests {
         );
         assert_eq!(
             classify(StatusCode::BAD_REQUEST, &HeaderMap::new()),
+            FailoverAction::Relay
+        );
+    }
+
+    #[test]
+    fn classifies_upstream_responses_codex() {
+        // Codex has no per-account quota-rejection header, so every 429
+        // rotates — unlike Anthropic's PauseSame-without-a-rejected-header.
+        assert_eq!(
+            classify_codex(StatusCode::TOO_MANY_REQUESTS, &HeaderMap::new()),
+            FailoverAction::Rotate
+        );
+        assert_eq!(
+            classify_codex(StatusCode::UNAUTHORIZED, &HeaderMap::new()),
+            FailoverAction::RefreshRetry
+        );
+        assert_eq!(
+            classify_codex(StatusCode::SERVICE_UNAVAILABLE, &HeaderMap::new()),
+            FailoverAction::Rotate
+        );
+        assert_eq!(
+            classify_codex(StatusCode::OK, &HeaderMap::new()),
+            FailoverAction::Relay
+        );
+        assert_eq!(
+            classify_codex(StatusCode::BAD_REQUEST, &HeaderMap::new()),
             FailoverAction::Relay
         );
     }

@@ -112,6 +112,19 @@ auth = "chatgpt_oauth"         # reads + auto-refreshes ~/.codex/auth.json
                                # input. Only honored for this ChatGPT/Codex backend;
                                # falls back to HTTP if the socket can't be opened.
 
+# --- Optional: pool several ChatGPT accounts behind [providers.codex] instead of
+# one ~/.codex/auth.json. Session-sticky selection + cooldown-based reactive
+# failover only (no per-account quota headers -> no proactive rotation).
+# See docs/m10-codex-multi-account.md.
+# `shunt login codex --name main` imports an existing `codex login` into the
+# store; SHUNT_CODEX_ACCOUNTS_DIR overrides the store directory.
+# [[providers.codex.accounts]]
+# name = "main"                 # store-managed: resolves ~/.shunt/accounts/codex/main.json
+#
+# [[providers.codex.accounts]]
+# name = "backup"
+# token_env = "CODEX_BACKUP_ACCESS_TOKEN"  # raw ChatGPT access token, used verbatim (not refreshed)
+
 # Cursor subscription via ConnectRPC. Run `shunt login cursor`; credentials are
 # stored in ~/.shunt/cursor-auth.json and refreshed automatically.
 # [providers.cursor]

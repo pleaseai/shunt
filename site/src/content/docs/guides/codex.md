@@ -10,7 +10,8 @@ authenticated as your ChatGPT account and answered by the same backend the `code
 
 This page is the end-to-end setup. It links out to the deeper topic pages
 ([Effort & Context](/guides/effort-and-context/), [Model Discovery](/guides/model-discovery/),
-[Providers](/guides/providers/)) rather than repeating them.
+[Providers](/guides/providers/)) rather than repeating them. To pool several ChatGPT accounts
+behind this provider instead of a single login, see [Codex Multi-Account](/guides/codex-multi-account/).
 
 ## How it works
 

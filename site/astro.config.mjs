@@ -92,6 +92,10 @@ export default defineConfig({
               slug: 'guides/anthropic-multi-account',
             },
             {
+              label: 'Codex Multi-Account',
+              slug: 'guides/codex-multi-account',
+            },
+            {
               label: 'Admin & Remote Provisioning',
               slug: 'guides/admin-remote-provisioning',
             },

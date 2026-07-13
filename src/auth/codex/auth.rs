@@ -1,5 +1,5 @@
 use std::{
-    fs, io,
+    env, fs, io,
     path::{Path, PathBuf},
     time::SystemTime,
 };
@@ -24,11 +24,34 @@ pub struct ChatGptCred {
 pub struct CodexAuthStore {
     path: PathBuf,
     client: reqwest::Client,
+    token_url: String,
 }
 
 impl CodexAuthStore {
     pub fn new(path: PathBuf, client: reqwest::Client) -> Self {
-        Self { path, client }
+        // `SHUNT_CODEX_TOKEN_URL` overrides the OAuth refresh endpoint, mirroring
+        // `ClaudeAuthStore::new`'s `SHUNT_CLAUDE_TOKEN_URL`. It exists purely as a
+        // test seam (see `force_refresh_refreshes_a_still_valid_chatgpt_token`
+        // below) — left unset, production always refreshes against the real
+        // `auth.openai.com` endpoint.
+        let token_url = env::var("SHUNT_CODEX_TOKEN_URL")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| TOKEN_URL.to_string());
+        Self {
+            path,
+            client,
+            token_url,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_token_url(path: PathBuf, client: reqwest::Client, token_url: String) -> Self {
+        Self {
+            path,
+            client,
+            token_url,
+        }
     }
 
     pub async fn get_valid_chatgpt(&self) -> Result<ChatGptCred, AdapterError> {
@@ -48,11 +71,28 @@ impl CodexAuthStore {
             return tokens.to_credential();
         }
 
+        self.refresh_and_write_back(tokens).await
+    }
+
+    /// Refresh and persist the stored ChatGPT credential unconditionally,
+    /// skipping the local expiry check `get_valid_chatgpt` performs. Used by
+    /// the account pool's `RefreshRetry` failover arm after an upstream 401 —
+    /// the cached token may still look unexpired locally, but the backend has
+    /// already rejected it, so the cache can't be trusted here.
+    pub async fn force_refresh(&self) -> Result<ChatGptCred, AdapterError> {
+        let auth = self.read_auth_off_thread().await?;
+        let tokens = auth
+            .tokens()
+            .ok_or_else(|| auth_error("ChatGPT auth tokens missing; run codex login"))?;
+        self.refresh_and_write_back(tokens).await
+    }
+
+    async fn refresh_and_write_back(&self, tokens: TokenSet) -> Result<ChatGptCred, AdapterError> {
         let refresh_token = tokens
             .refresh_token
             .clone()
             .ok_or_else(|| auth_error("ChatGPT refresh token missing; run codex login"))?;
-        let refreshed = refresh_tokens(&self.client, &refresh_token).await?;
+        let refreshed = refresh_tokens(&self.client, &self.token_url, &refresh_token).await?;
         let credential = refreshed.to_credential()?;
         let path = self.path.clone();
         tokio::task::spawn_blocking(move || write_refreshed_auth(&path, refreshed))
@@ -162,10 +202,11 @@ pub fn apply_refresh(value: &mut Value, response: RefreshResponse, now: SystemTi
 
 async fn refresh_tokens(
     client: &reqwest::Client,
+    token_url: &str,
     refresh_token: &str,
 ) -> Result<RefreshResponse, AdapterError> {
     let response = client
-        .post(TOKEN_URL)
+        .post(token_url)
         .form(&[
             ("grant_type", "refresh_token"),
             ("refresh_token", refresh_token),
@@ -440,6 +481,67 @@ mod tests {
         assert_eq!(value["tokens"]["id_token"], "keep-id");
         assert_eq!(value["tokens"]["account_id"], "acct_kept");
         assert_eq!(value["last_refresh"], "1970-01-01T00:00:00Z");
+    }
+
+    #[tokio::test]
+    async fn force_refresh_refreshes_a_still_valid_chatgpt_token() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let new_access = token(2_000_000_000, Some("acct_new"));
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": new_access,
+                "refresh_token": "new-refresh",
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-codex-force-refresh-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("auth.json");
+        // The stored access token still looks unexpired — proving force_refresh
+        // bypasses the validity check `get_valid_chatgpt` performs.
+        let still_valid = token(2_000_000_000, Some("acct_old"));
+        std::fs::write(
+            &path,
+            json!({
+                "auth_mode": "ChatGPT",
+                "tokens": {
+                    "access_token": still_valid,
+                    "refresh_token": "old-refresh",
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let store = CodexAuthStore::with_token_url(
+            path.clone(),
+            reqwest::Client::new(),
+            format!("{}/token", server.uri()),
+        );
+
+        let credential = store.force_refresh().await.unwrap();
+
+        assert_eq!(credential.access_token, new_access);
+        assert_eq!(credential.account_id, "acct_new");
+        let stored: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(stored["tokens"]["access_token"], new_access);
+        assert_eq!(stored["tokens"]["refresh_token"], "new-refresh");
+        server.verify().await;
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

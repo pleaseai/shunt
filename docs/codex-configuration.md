@@ -20,9 +20,10 @@ This page consolidates every Codex-specific knob. For the broader gateway workfl
 - [9. Context window & usage display](#9-context-window--usage-display)
 - [10. `count_tokens` behavior](#10-count_tokens-behavior)
 - [11. Attribution header](#11-attribution-header)
-- [12. Security](#12-security)
-- [13. Troubleshooting](#13-troubleshooting)
-- [14. End-to-end example](#14-end-to-end-example)
+- [12. Multi-account pooling](#12-multi-account-pooling)
+- [13. Security](#13-security)
+- [14. Troubleshooting](#14-troubleshooting)
+- [15. End-to-end example](#15-end-to-end-example)
 
 ---
 
@@ -509,7 +510,31 @@ tracking), which is fine when routing to Codex.
 
 ---
 
-## 12. Security
+## 12. Multi-account pooling
+
+Everything above describes a single `chatgpt_oauth` credential (`~/.codex/auth.json`). The
+`codex` provider (or any `chatgpt_oauth` provider) can instead pool several ChatGPT accounts with
+session-sticky selection and reactive failover:
+
+```bash
+# Log in with the Codex CLI, then import that login into shunt's account store.
+codex login
+shunt login codex --name main
+```
+
+```toml
+[[providers.codex.accounts]]
+name = "main"   # resolves ~/.shunt/accounts/codex/main.json (override dir: SHUNT_CODEX_ACCOUNTS_DIR)
+```
+
+A provider with no `accounts` configured behaves exactly as described above — this is purely
+opt-in. See [`m10-codex-multi-account.md`](m10-codex-multi-account.md) for account fields,
+cooldown/failover rules, and how this differs from the Anthropic (`claude_oauth`) pool in
+[`m8-anthropic-multi-account.md`](m8-anthropic-multi-account.md).
+
+---
+
+## 13. Security
 
 - **Tokens are never logged.** shunt logs only non-secret facts (auth mode, account-id presence,
   expiry, refresh success/failure).
@@ -523,7 +548,7 @@ tracking), which is fine when routing to Codex.
 
 ---
 
-## 13. Troubleshooting
+## 14. Troubleshooting
 
 | Symptom | Likely cause / fix |
 | :-- | :-- |
@@ -540,7 +565,7 @@ Validate config before running: `cargo run -- check` (or `./target/release/shunt
 
 ---
 
-## 14. End-to-end example
+## 15. End-to-end example
 
 `shunt.toml`:
 
@@ -584,4 +609,5 @@ unchanged; only the mapped model's inference is answered by your ChatGPT/Codex s
 [`m2-chatgpt-oauth.md`](m2-chatgpt-oauth.md) (credential spec) ·
 [`m1-responses-translation.md`](m1-responses-translation.md) (Anthropic ↔ Responses translation) ·
 [`m3-discovery.md`](m3-discovery.md) (model discovery) ·
+[`m10-codex-multi-account.md`](m10-codex-multi-account.md) (multi-account pooling) ·
 [`plugins/shunt-codex/`](../plugins/shunt-codex/) (ready-made GPT-5.6 subagents).
