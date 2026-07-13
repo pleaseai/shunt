@@ -65,6 +65,18 @@ description: すべての shunt.toml キー — server、providers、routes、mo
 | `id` | ✅ | Claude Code に公開されるモデル id |
 | `display_name` | — | `/model` ピッカーに表示されるラベル |
 
+## `[sentry]`(任意)
+
+自分の Sentry プロジェクトへのオプトインのエラーレポーティング。`dsn` を設定しない限りオフで、`[otel]` とは独立しています。ゲートウェイ自身の診断情報のみを報告します — 致命的なゲートウェイの起動/サーブエラー、パニック、`error` レベルのログイベント(`warn`/`info` はブレッドクラムとして、メッセージのみ);リクエスト/レスポンスの本文、ヘッダー、認証情報は決して送信されません。メトリクスとトレーシングはそれぞれ別個の追加オプトインです。
+
+| キー | デフォルト | 意味 |
+| :-- | :-- | :-- |
+| `dsn` | — | Sentry プロジェクトの DSN。空で無効化、不正な DSN は起動エラー。 |
+| `environment` | — | 報告イベントに付く任意の environment タグ |
+| `metrics` | `false` | 使用量メトリクスも送信 — `shunt.requests` / `shunt.latency` 系列(集計値のみ) |
+| `traces_sample_rate` | `0.0` | パフォーマンストレースも送信: リクエストごとのスパンが Sentry トランザクションになり、`[0.0, 1.0]` のこのレートでヘッドサンプリング。`0.0` はスパンを一切送らず、範囲外は起動エラー。 |
+| `include_session_id` | `false` | Sentry へ送るリクエストスパンにクライアントのセッション id を付与 |
+
 ## `[otel]`(任意)
 
 トレース・メトリクス・ログを自分のコレクターへ送るオプトインの OpenTelemetry(OTLP/HTTP)エクスポート([詳細](/ja/guides/opentelemetry/))。`endpoint` を設定しない限りオフで、Sentry とは独立しています。

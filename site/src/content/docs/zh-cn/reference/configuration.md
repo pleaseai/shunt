@@ -65,6 +65,18 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 | `id` | ✅ | 暴露给 Claude Code 的模型 id |
 | `display_name` | — | 在 `/model` 选择器中显示的标签 |
 
+## `[sentry]`(可选)
+
+可选启用的错误上报,发送到你自己的 Sentry 项目。未设置 `dsn` 时关闭;与 `[otel]` 相互独立。只上报网关自身的诊断信息 — 致命的网关启动/服务错误、panic 和 `error` 级日志事件(`warn`/`info` 作为 breadcrumb,仅含消息);请求/响应正文、头部和凭证永远不会发送。指标和 tracing 各自是进一步的独立可选项。
+
+| 键 | 默认 | 含义 |
+| :-- | :-- | :-- |
+| `dsn` | — | Sentry 项目 DSN。留空则关闭;无效 DSN 为启动错误。 |
+| `environment` | — | 上报事件上的可选 environment 标签 |
+| `metrics` | `false` | 同时发送用量指标 — `shunt.requests` / `shunt.latency` 序列(仅聚合值) |
+| `traces_sample_rate` | `0.0` | 同时发送性能 trace:每个请求的 span 成为一个 Sentry 事务,按 `[0.0, 1.0]` 范围内的该比率做头部采样。`0.0` 完全不发送 span;超出范围为启动错误。 |
+| `include_session_id` | `false` | 在发送给 Sentry 的请求 span 上附加客户端会话 id |
+
 ## `[otel]`(可选)
 
 可选启用的 OpenTelemetry(OTLP/HTTP)导出,将 trace、指标与日志发送到你自己的 collector([详情](/zh-cn/guides/opentelemetry/))。未设置 `endpoint` 时关闭;与 Sentry 相互独立。

@@ -116,12 +116,13 @@ provider = "openai"
 
 # Optional: error reporting to your own Sentry project. Off unless a DSN is
 # set; nothing is ever sent by default. Only gateway-owned diagnostics are
-# reported — panics and error-level log events, with warn/info as breadcrumbs.
-# Request/response bodies, headers, credentials, and the host name are never
-# sent: breadcrumbs keep only the log message (field values are stripped), and
-# tracing spans never attach, so request-derived data has no path off the
-# machine. An empty DSN (e.g. SHUNT_SENTRY__DSN="") disables reporting again;
-# an invalid DSN is a startup error.
+# reported — fatal gateway startup/serve errors, panics, and error-level log
+# events, with warn/info as breadcrumbs. Request/response bodies, headers,
+# credentials, and the host name are never sent: breadcrumbs keep only the log
+# message (field values are stripped), and tracing spans attach only when you
+# opt into tracing via traces_sample_rate below. An empty DSN (e.g.
+# SHUNT_SENTRY__DSN="") disables reporting again; an invalid DSN or an
+# out-of-range traces_sample_rate is a startup error.
 # [sentry]
 # dsn = "https://<key>@<org>.ingest.sentry.io/<project>"
 # environment = "home-lab"   # optional environment tag on events
@@ -132,6 +133,13 @@ provider = "openai"
 #                            # provider, model (the requested id), and
 #                            # `http.response.status_code`. Aggregates only — no
 #                            # prompts, client names, or session ids.
+# traces_sample_rate = 0.0   # (default) separate opt-in: also send performance
+#                            # traces. The per-request span (method, path) becomes
+#                            # a Sentry transaction, head-sampled at this rate in
+#                            # [0.0, 1.0]; 0.0 sends no spans at all. Mirrors
+#                            # [otel] sample_ratio.
+# include_session_id = false # (default) withhold the client session id from
+#                            # spans sent to Sentry (mirrors [otel])
 
 # Optional: OpenTelemetry (OTLP) export to your own collector/backend. Off
 # unless an endpoint is set. Independent of [sentry] — both can run together.

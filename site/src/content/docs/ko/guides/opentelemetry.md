@@ -47,7 +47,7 @@ authorization = "Bearer <token>"
 
 shunt는 **메트릭과 트레이스**에서 요청/응답 본문, 헤더, 자격 증명을 절대 내보내지 않습니다.
 
-- **메트릭과 트레이스**는 저카디널리티이며 본문이 없습니다. OTLP 트레이스 익스포트에서 요청 스팬의 클라이언트 **세션 id**는 `include_session_id = true`(기본 꺼짐)일 때만, 그리고 트레이스 익스포트가 활성화된 동안에만 컬렉터로 전송됩니다. `[otel]`이 없거나 비활성화된 경우 id는 예전처럼 로컬 요청 스팬에 남으며(따라서 Sentry 등 다른 tracing 구독자에도 전달됩니다).
+- **메트릭과 트레이스**는 저카디널리티이며 본문이 없습니다. OTLP 트레이스 익스포트에서 요청 스팬의 클라이언트 **세션 id**는 `include_session_id = true`(기본 꺼짐)일 때만, 그리고 트레이스 익스포트가 활성화된 동안에만 컬렉터로 전송됩니다. 같은 규칙이 Sentry 트레이스 익스포트(`[sentry] traces_sample_rate` / `include_session_id`)에도 적용됩니다. 어떤 스팬 익스포트도 활성화되지 않은 경우 id는 예전처럼 로컬 요청 스팬에만 남습니다.
 - **로그**는 shunt 자체 진단 이벤트를 있는 그대로 반영하므로, stderr 로그처럼 요청에서 파생된 필드(업스트림 오류 본문, 인증된 클라이언트 id)를 포함할 수 있습니다. 엄격하게 본문 없는 익스포트를 원하면 `logs = false`로 두고 메트릭/트레이스만 유지하세요.
 
 내보내는 리소스는 `service.*`, `telemetry.sdk.*`, 그리고 `environment`가 설정된 경우 `deployment.environment.name`을 광고합니다 — host나 process detector가 실행되지 않아 머신 호스트네임은 붙지 않습니다 — 여기에 표준 `OTEL_RESOURCE_ATTRIBUTES`로 설정한 값이 더해집니다.

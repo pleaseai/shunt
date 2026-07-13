@@ -47,7 +47,7 @@ Each signal toggles independently via `traces` / `metrics` / `logs`.
 
 shunt never exports request/response bodies, headers, or credentials in **metrics and traces**.
 
-- **Metrics and traces** stay low-cardinality and body-free. With OTLP trace export, the request span's client **session id** is sent to the collector **only** when `include_session_id = true` (default off), and only while trace export is active. With `[otel]` absent or disabled the id stays on the local request span as before (so it still reaches any other tracing subscriber, e.g. Sentry).
+- **Metrics and traces** stay low-cardinality and body-free. With OTLP trace export, the request span's client **session id** is sent to the collector **only** when `include_session_id = true` (default off), and only while trace export is active. The same rule governs Sentry trace export (`[sentry] traces_sample_rate` / `include_session_id`); with no span export active at all, the id stays on the local request span as before.
 - **Logs** mirror shunt's own diagnostic events as written, so — like the stderr logs — they can include request-derived fields (an upstream error body, an authenticated client id). For strictly body-free export, set `logs = false` and keep metrics/traces.
 
 The exported resource advertises `service.*`, `telemetry.sdk.*`, and — when `environment` is set — `deployment.environment.name`; no host or process detector runs, so the machine's hostname is not attached, plus whatever you put in the standard `OTEL_RESOURCE_ATTRIBUTES`.
