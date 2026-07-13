@@ -14,6 +14,7 @@ description: よくある shunt のエラーとその修正方法。
 | Claude Code がログインを求めてくる | shunt がマッピングされていないモデル向けに転送できる Anthropic 認証情報（`ANTHROPIC_AUTH_TOKEN` / ログイン）を設定。base URL だけでは認証情報になりません。 |
 | マッピングされたモデルでエフォートが `medium` に固定される | `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` を設定 — [Effort & Context](/ja/guides/effort-and-context/#reasoning-effort) を参照。 |
 | マッピングされたモデルでツール検索が無効(毎ターン全ツールのスキーマが送られる) | `ENABLE_TOOL_SEARCH=true` を設定。Claude Code はファーストパーティでない base URL の背後で楽観的なツール検索を自動で無効化します。shunt は `tool_reference` ブロックを転送し、遅延スキーマを必要なときに明らかにします — [ChatGPT / Codex → ツール検索](/ja/guides/codex/#ツール検索) を参照。 |
+| ツール検索は動くがコンテキストを削減しない(シムは完全なスキーマの送信を遅らせるだけ) | ネイティブな Responses `tool_search` プロトコルにオプトインする — 標準 OpenAI または ChatGPT/Codex 系のプロバイダーで gpt-5.4 以降のモデルへルーティングしている場合、`[providers.<name>]` に `tool_search = true` を設定します。非対応のフレーバー/モデルは静かにテキストシムのままです — [ChatGPT / Codex → ツール検索 → オプトインのネイティブプロトコル](/ja/guides/codex/#オプトインのネイティブプロトコル) を参照。 |
 | マッピングされたモデルでコンテキスト長エラーの後にセッションが立ち往生 | shunt は上流のオーバーフローエラーを `prompt is too long …` へ書き換えるため Claude Code は自動コンパクトして再試行します — [コンテキストオーバーフローの回復](/ja/guides/effort-and-context/#context-overflow-recovery) を参照。数ターンごとに再発する場合は `CLAUDE_CODE_MAX_CONTEXT_TOKENS` をモデルの実ウィンドウへ下げてください。 |
 | Cloudflare の背後でストリームが切れる（524） | [`sse_keepalive_seconds`](/ja/guides/shared-gateway/#sse-keepalive-pings) を `0` ではなくデフォルト（30）のままにする。 |
 | 共有ゲートウェイでマッピングされたモデルに 401 | クライアントトークンが欠落／無効 — `ANTHROPIC_CUSTOM_HEADERS="x-shunt-token: <token>"` を設定。[Sharing a Gateway](/ja/guides/shared-gateway/) を参照。 |

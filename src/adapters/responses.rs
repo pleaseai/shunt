@@ -75,8 +75,13 @@ async fn forward(
         .and_then(|value| value.pointer("/thinking/type").and_then(Value::as_str))
         == Some("enabled");
     let flavor = state.config.responses_flavor(&route.provider);
-    let upstream_body =
-        translate_request(&body, &route, flavor).map_err(|error| own_error(error.to_string()))?;
+    // Native client-executed tool_search (issue #82) is opt-in per provider and
+    // gated on flavor + model; otherwise the #43 progressive-reveal shim is used.
+    let tool_search_native = state
+        .config
+        .native_tool_search(&route.provider, &route.upstream_model);
+    let upstream_body = translate_request(&body, &route, flavor, tool_search_native)
+        .map_err(|error| own_error(error.to_string()))?;
     tracing::debug!(
         provider = %route.provider,
         upstream_model = %route.upstream_model,
@@ -106,6 +111,7 @@ async fn forward(
             auth,
             client_wants_stream,
             thinking_enabled,
+            tool_search_native,
         )
         .await
         {
@@ -127,6 +133,7 @@ async fn forward(
         auth,
         client_wants_stream,
         thinking_enabled,
+        tool_search_native,
         session_id.as_deref(),
     )
     .await
@@ -144,6 +151,7 @@ async fn forward_http(
     auth: AuthMode,
     client_wants_stream: bool,
     thinking_enabled: bool,
+    tool_search_native: bool,
     session_id: Option<&str>,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let upstream = request_builder(state, route, credential, session_id)
@@ -159,12 +167,24 @@ async fn forward_http(
         let keepalive = std::time::Duration::from_secs(state.config.server.sse_keepalive_seconds);
         Ok((
             StatusCode::OK,
-            stream_response(upstream, route.model.clone(), thinking_enabled, keepalive),
+            stream_response(
+                upstream,
+                route.model.clone(),
+                thinking_enabled,
+                tool_search_native,
+                keepalive,
+            ),
         ))
     } else {
         Ok((
             StatusCode::OK,
-            json_response(upstream, route.model.clone(), thinking_enabled).await?,
+            json_response(
+                upstream,
+                route.model.clone(),
+                thinking_enabled,
+                tool_search_native,
+            )
+            .await?,
         ))
     }
 }
@@ -173,11 +193,12 @@ fn stream_response(
     upstream: reqwest::Response,
     model: String,
     thinking_enabled: bool,
+    tool_search_native: bool,
     keepalive: std::time::Duration,
 ) -> axum::response::Response {
     let bytes = upstream.bytes_stream();
     let parser = SseParser::default();
-    let machine = AnthropicSseMachine::new(model, thinking_enabled);
+    let machine = AnthropicSseMachine::new(model, thinking_enabled, tool_search_native);
     let output = stream::unfold((bytes, parser, machine, false), |state| async move {
         let (mut bytes, mut parser, mut machine, mut finished) = state;
         if finished {
@@ -225,12 +246,13 @@ async fn json_response(
     upstream: reqwest::Response,
     model: String,
     thinking_enabled: bool,
+    tool_search_native: bool,
 ) -> Result<axum::response::Response, AdapterError> {
     let body = upstream
         .text()
         .await
         .map_err(|error| own_error(error.to_string()))?;
-    let mut machine = AnthropicSseMachine::new(model, thinking_enabled);
+    let mut machine = AnthropicSseMachine::new(model, thinking_enabled, tool_search_native);
     for event in parse_sse_events(&body) {
         let _ = machine.apply(event);
     }
@@ -253,6 +275,7 @@ async fn forward_websocket(
     auth: AuthMode,
     client_wants_stream: bool,
     thinking_enabled: bool,
+    tool_search_native: bool,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let pool_key = pool_key.filter(|key| !key.is_empty());
     let http_url = responses_url(&state.config, &route.provider);
@@ -282,13 +305,21 @@ async fn forward_websocket(
                 events,
                 route.model.clone(),
                 thinking_enabled,
+                tool_search_native,
                 keepalive,
             ),
         ))
     } else {
         Ok((
             StatusCode::OK,
-            json_events_response(buffered, events, route.model.clone(), thinking_enabled).await,
+            json_events_response(
+                buffered,
+                events,
+                route.model.clone(),
+                thinking_enabled,
+                tool_search_native,
+            )
+            .await,
         ))
     }
 }
@@ -469,9 +500,10 @@ fn stream_events_response(
     events: CodexWsEvents,
     model: String,
     thinking_enabled: bool,
+    tool_search_native: bool,
     keepalive: std::time::Duration,
 ) -> axum::response::Response {
-    let machine = AnthropicSseMachine::new(model, thinking_enabled);
+    let machine = AnthropicSseMachine::new(model, thinking_enabled, tool_search_native);
     let output = stream::unfold(
         (buffered, events, machine, false),
         |(mut buffered, mut events, mut machine, finished)| async move {
@@ -530,8 +562,9 @@ async fn json_events_response(
     mut events: CodexWsEvents,
     model: String,
     thinking_enabled: bool,
+    tool_search_native: bool,
 ) -> axum::response::Response {
-    let mut machine = AnthropicSseMachine::new(model, thinking_enabled);
+    let mut machine = AnthropicSseMachine::new(model, thinking_enabled, tool_search_native);
     let mut buffered = buffered;
     loop {
         let item = match buffered.take() {

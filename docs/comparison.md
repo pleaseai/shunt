@@ -47,7 +47,7 @@ Legend: ● full · ◐ partial / workaround · ○ none · — n/a by design
 | ChatGPT/Codex **subscription** (OAuth) backend | ● | ●⁴ | ● | rare | ○ |
 | Codex **WebSocket** Responses transport | ● | ● | ● | ○ | ○ |
 | Upload trimming (`previous_response_id` continuation) **on the translation path** | ● | ● | ○ (passthrough only) | ○ | ○ |
-| tool-search / `defer_loading` / `tool_reference` handling | ◐ (works, no ctx savings) | ○⁵ | ◐ (upstream) / ● (fork) | ○ | ○ |
+| tool-search / `defer_loading` / `tool_reference` handling | ◐ (shim: works, no ctx savings; native opt-in⁸) | ○⁵ | ◐ (upstream) / ● (fork) | ○ | ○ |
 | Reasoning round-trip to Claude Code `thinking` | ● (encrypted) | ◐ (Kimi/Grok; **Codex dropped**) | ◐ | ○ | ◐ |
 | Multi-account load balancing / failover | ◐⁷ | ○ | ● | some | ● |
 | Backend breadth | 4 providers¹ | 4 subs⁶ | 11 backends² | varies | 100–1600+ |
@@ -85,6 +85,15 @@ selection, per-provider round-robin, model-aware proactive rotation from per-acc
 5h/7d quota headers, cooldowns, forced refresh after 401, and reactive failover on
 quota-rejected 429s and 5xx responses. ChatGPT/Codex remains single-account;
 per-account usage reporting is not implemented.
+⁸ **[#82]** adds an opt-in, per-provider `tool_search` flag (`src/config.rs:250-261,1041-1049`)
+that maps Claude Code's tool search onto the OpenAI Responses API's own native,
+client-executed `tool_search` protocol — `ToolSearch` → `tool_search`, its `tool_use` →
+`tool_search_call`, and `tool_reference` → a `tool_search_output` item carrying the loaded
+tools' full schemas as structured JSON (`src/model/responses_request.rs`) — instead of folding
+schema into text. Off by default: it only applies for a stock OpenAI or ChatGPT/Codex Responses
+flavor routing to a gpt-5.4+ model, and is gated behind the flag until a live probe confirms a
+given backend accepts the shapes shunt emits. xAI/Grok routes and gpt-5.2-and-below models keep
+the #43 shim regardless of the flag.
 
 > "raine/ccp" = [raine/claude-code-proxy](https://github.com/raine/claude-code-proxy).
 
@@ -171,9 +180,14 @@ toward being a fleet gateway and warrant a conscious decision first.
 - **A. tool-search context savings (already tracked: [#43]).** shunt renders
   `tool_reference` as name-only `"Loaded tool: X"` text and forwards *all* deferred
   tool schemas upfront (`src/model/responses_request.rs:393-403,475-508`) — the loop
-  works but reclaims zero context. Port the server-side emulation (filter
+  works but reclaims zero context by default. Port the server-side emulation (filter
   deferred+unloaded tools, inject full schema on `tool_reference`) — reference implementation:
-  CLIProxyAPI PR #1892 (`Adamcf123/CLIProxyAPI@main`).
+  CLIProxyAPI PR #1892 (`Adamcf123/CLIProxyAPI@main`). **Partially addressed by [#82]**:
+  an opt-in `tool_search = true` per-provider flag now maps tool search onto the Responses
+  API's native, client-executed `tool_search` protocol instead of the text shim, for a stock
+  OpenAI or ChatGPT/Codex provider routing to a gpt-5.4+ model (see footnote 8 above). It's
+  off by default pending a live probe of backend acceptance, so the shim (and the zero-savings
+  gap for xAI/Grok and older models) remains the baseline until operators opt in.
 
 - **B. Codex WS: live-probe the continuation normalization (already tracked: [#45]).** Reasoning/`function_call`
   normalization is schema-validated against 3 sources but not yet live-probed
@@ -229,11 +243,13 @@ backend breadth) by design. It now provides a narrow Anthropic OAuth account
 pool with model-aware proactive quota scheduling plus reactive failover, but
 ChatGPT/Codex pooling remains a deliberate gap.
 The highest-value in-scope work is finishing the tool-search
-context savings ([#43]) and hardening the Codex WS continuation (live-probe +
+context savings ([#43]) — now partly addressed by an opt-in native `tool_search` path on
+Codex/OpenAI ([#82]) — and hardening the Codex WS continuation (live-probe +
 mid-stream fallback); the biggest deliberate gap to weigh is minimal fill-first
 multi-account for ChatGPT/Codex.
 
 [#43]: https://github.com/pleaseai/shunt/issues/43
+[#82]: https://github.com/pleaseai/shunt/issues/82
 [#45]: https://github.com/pleaseai/shunt/issues/45
 [#46]: https://github.com/pleaseai/shunt/issues/46
 [#47]: https://github.com/pleaseai/shunt/issues/47

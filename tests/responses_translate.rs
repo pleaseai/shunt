@@ -22,7 +22,13 @@ fn route(model: &str) -> Route {
 fn translate(input: Value) -> Value {
     let body = serde_json::to_vec(&input).unwrap();
     // provider "openai" is the stock Responses API (not the ChatGPT backend).
-    translate_request(&body, &route("gpt-5.2-codex"), ResponsesFlavor::OpenAi).unwrap()
+    translate_request(
+        &body,
+        &route("gpt-5.2-codex"),
+        ResponsesFlavor::OpenAi,
+        false,
+    )
+    .unwrap()
 }
 
 #[test]
@@ -64,8 +70,13 @@ fn omits_max_output_tokens_for_chatgpt_backend() {
     }))
     .unwrap();
 
-    let actual =
-        translate_request(&body, &route("gpt-5.2-codex"), ResponsesFlavor::Chatgpt).unwrap();
+    let actual = translate_request(
+        &body,
+        &route("gpt-5.2-codex"),
+        ResponsesFlavor::Chatgpt,
+        false,
+    )
+    .unwrap();
 
     assert!(
         actual.get("max_output_tokens").is_none(),
@@ -488,7 +499,7 @@ fn translates_tools_and_tool_choice_variants() {
 
 fn translate_with_flavor(input: Value, flavor: ResponsesFlavor) -> Value {
     let body = serde_json::to_vec(&input).unwrap();
-    translate_request(&body, &route("gpt-5.2-codex"), flavor).unwrap()
+    translate_request(&body, &route("gpt-5.2-codex"), flavor, false).unwrap()
 }
 
 #[test]
@@ -688,7 +699,7 @@ fn maps_thinking_and_route_override_to_effort() {
     let mut route = route("gpt-5.2-codex-low");
     route.effort = Some("xhigh".to_string());
     let body = serde_json::to_vec(&json!({"model": "gpt-5.2-codex-low", "messages": []})).unwrap();
-    let override_effort = translate_request(&body, &route, ResponsesFlavor::OpenAi).unwrap();
+    let override_effort = translate_request(&body, &route, ResponsesFlavor::OpenAi, false).unwrap();
     assert_eq!(override_effort["reasoning"]["effort"], "xhigh");
 }
 
@@ -714,7 +725,8 @@ fn xai_omits_reasoning_and_text_without_configured_effort() {
     }))
     .unwrap();
 
-    let actual = translate_request(&body, &xai_route("grok-4.3"), ResponsesFlavor::Xai).unwrap();
+    let actual =
+        translate_request(&body, &xai_route("grok-4.3"), ResponsesFlavor::Xai, false).unwrap();
 
     assert!(
         actual.get("reasoning").is_none(),
@@ -742,7 +754,8 @@ fn xai_honors_explicit_client_effort_without_route_config() {
     }))
     .unwrap();
 
-    let actual = translate_request(&body, &xai_route("grok-4.3"), ResponsesFlavor::Xai).unwrap();
+    let actual =
+        translate_request(&body, &xai_route("grok-4.3"), ResponsesFlavor::Xai, false).unwrap();
 
     assert_eq!(actual["reasoning"], json!({"effort": "high"}));
 
@@ -754,7 +767,8 @@ fn xai_honors_explicit_client_effort_without_route_config() {
         "thinking": {"type": "enabled", "budget_tokens": 1024}
     }))
     .unwrap();
-    let actual = translate_request(&body, &xai_route("grok-4.3"), ResponsesFlavor::Xai).unwrap();
+    let actual =
+        translate_request(&body, &xai_route("grok-4.3"), ResponsesFlavor::Xai, false).unwrap();
     assert!(actual.get("reasoning").is_none());
 }
 
@@ -766,7 +780,7 @@ fn xai_sends_reasoning_without_summary_when_effort_configured() {
     route.effort = Some("high".to_string());
     let body = serde_json::to_vec(&json!({"model": "grok-4.5", "messages": []})).unwrap();
 
-    let actual = translate_request(&body, &route, ResponsesFlavor::Xai).unwrap();
+    let actual = translate_request(&body, &route, ResponsesFlavor::Xai, false).unwrap();
 
     assert_eq!(actual["reasoning"], json!({"effort": "high"}));
 }
@@ -779,7 +793,8 @@ fn xai_includes_encrypted_reasoning_when_thinking_enabled() {
     }))
     .unwrap();
 
-    let actual = translate_request(&body, &xai_route("grok-4.5"), ResponsesFlavor::Xai).unwrap();
+    let actual =
+        translate_request(&body, &xai_route("grok-4.5"), ResponsesFlavor::Xai, false).unwrap();
 
     assert_eq!(actual["include"], json!(["reasoning.encrypted_content"]));
 }
@@ -804,7 +819,7 @@ fn translates_grok_web_search_results_and_citations_to_anthropic_blocks() {
         "event: response.completed\n",
         "data: {\"response\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}}\n\n"
     );
-    let mut machine = AnthropicSseMachine::new("grok-4.5", false);
+    let mut machine = AnthropicSseMachine::new("grok-4.5", false, false);
     let emitted = parse_sse_events(fixture)
         .into_iter()
         .flat_map(|event| machine.apply(event))
@@ -840,7 +855,7 @@ fn citation_without_open_text_block_opens_one_and_omits_missing_encrypted_index(
         "event: response.completed\n",
         "data: {\"response\":{}}\n\n"
     );
-    let mut machine = AnthropicSseMachine::new("grok-4.5", false);
+    let mut machine = AnthropicSseMachine::new("grok-4.5", false, false);
     let emitted = parse_sse_events(fixture)
         .into_iter()
         .flat_map(|event| machine.apply(event))
@@ -885,7 +900,7 @@ fn non_array_web_search_results_become_an_empty_result_array() {
         "event: response.completed\n",
         "data: {\"response\":{}}\n\n"
     );
-    let mut machine = AnthropicSseMachine::new("grok-4.5", false);
+    let mut machine = AnthropicSseMachine::new("grok-4.5", false, false);
     let emitted = parse_sse_events(fixture)
         .into_iter()
         .flat_map(|event| machine.apply(event))
@@ -922,7 +937,7 @@ fn streaming_state_machine_emits_incremental_anthropic_events() {
         "data: {\"response\":{\"usage\":{\"input_tokens\":1200,\"input_tokens_details\":{\"cached_tokens\":800},\"output_tokens\":9}}}\n\n",
         "data: [DONE]\n\n"
     );
-    let mut machine = AnthropicSseMachine::new("gpt-5.2-codex", false);
+    let mut machine = AnthropicSseMachine::new("gpt-5.2-codex", false, false);
     let emitted = parse_sse_events(fixture)
         .into_iter()
         .flat_map(|event| machine.apply(event))
@@ -1153,7 +1168,7 @@ fn streams_reasoning_as_thinking_block_and_round_trips() {
         "data: [DONE]\n\n"
     );
 
-    let mut machine = AnthropicSseMachine::new("gpt-5.2-codex", true);
+    let mut machine = AnthropicSseMachine::new("gpt-5.2-codex", true, false);
     let emitted = parse_sse_events(fixture)
         .into_iter()
         .flat_map(|event| machine.apply(event))
@@ -1228,7 +1243,7 @@ fn ignores_reasoning_when_thinking_disabled() {
         "event: response.completed\n",
         "data: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
     );
-    let mut machine = AnthropicSseMachine::new("gpt-5.2-codex", false);
+    let mut machine = AnthropicSseMachine::new("gpt-5.2-codex", false, false);
     let emitted = parse_sse_events(fixture)
         .into_iter()
         .flat_map(|event| machine.apply(event))
@@ -1407,7 +1422,7 @@ fn reasoning_id_falls_back_to_done_event_when_added_missing() {
         "event: response.completed\n",
         "data: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
     );
-    let mut machine = AnthropicSseMachine::new("gpt-5.2-codex", true);
+    let mut machine = AnthropicSseMachine::new("gpt-5.2-codex", true, false);
     let emitted = parse_sse_events(fixture)
         .into_iter()
         .flat_map(|event| machine.apply(event))
@@ -1417,4 +1432,326 @@ fn reasoning_id_falls_back_to_done_event_when_added_missing() {
         emitted.contains(&expected),
         "signature should encode the id from the done event"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Native client-executed tool_search protocol (issue #82). These exercise the
+// `tool_search_native = true` path; every shim test above runs it `false`.
+// ---------------------------------------------------------------------------
+
+/// Translate with the native tool_search path enabled (the opt-in provider flag
+/// on, a supported flavor + model). The shim tests use [`translate`] (native off).
+fn native_translate(input: Value) -> Value {
+    let body = serde_json::to_vec(&input).unwrap();
+    translate_request(&body, &route("gpt-5.6-sol"), ResponsesFlavor::Chatgpt, true).unwrap()
+}
+
+#[test]
+fn native_maps_tool_search_tool_definition() {
+    // Claude Code's ToolSearch tool -> the Responses native client tool: no
+    // `name`, execution "client", description/parameters carried through.
+    let actual = native_translate(json!({
+        "model": "gpt-5.6-sol",
+        "messages": [],
+        "tools": [{
+            "name": "ToolSearch",
+            "description": "Search for tools",
+            "input_schema": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"]
+            }
+        }]
+    }));
+
+    assert_eq!(
+        actual["tools"],
+        json!([{
+            "type": "tool_search",
+            "execution": "client",
+            "description": "Search for tools",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+                "additionalProperties": true
+            }
+        }])
+    );
+}
+
+#[test]
+fn native_tool_use_becomes_tool_search_call() {
+    // An assistant ToolSearch tool_use replayed from history -> a native
+    // tool_search_call. `arguments` is a JSON object (not a stringified one, as a
+    // function_call would be), execution is "client", and the tool_use id is the
+    // call_id.
+    let actual = native_translate(json!({
+        "model": "gpt-5.6-sol",
+        "messages": [
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "call_ts", "name": "ToolSearch", "input": {"query": "github"}}
+            ]}
+        ]
+    }));
+
+    assert_eq!(
+        actual["input"][0],
+        json!({
+            "type": "tool_search_call",
+            "call_id": "call_ts",
+            "execution": "client",
+            "status": "completed",
+            "arguments": {"query": "github"}
+        })
+    );
+}
+
+#[test]
+fn native_tool_result_becomes_tool_search_output_with_ordered_schemas() {
+    // A ToolSearch tool_result -> a native tool_search_output. The ordered
+    // tool_reference blocks become an ordered `tools` array of loadable function
+    // specs with each tool's FULL schema (required included) + defer_loading:true.
+    // Deferred tools stay withheld from the callable set (only ToolSearch remains).
+    let actual = native_translate(json!({
+        "model": "gpt-5.6-sol",
+        "messages": [
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "call_ts", "name": "ToolSearch", "input": {"query": "issues"}}
+            ]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "call_ts", "content": [
+                    {"type": "tool_reference", "tool_name": "find_issue"},
+                    {"type": "tool_reference", "tool_name": "list_issues"}
+                ]}
+            ]}
+        ],
+        "tools": [
+            {"name": "ToolSearch", "description": "Search", "input_schema": {"type": "object", "properties": {}}},
+            {"name": "find_issue", "description": "Find an issue",
+             "input_schema": {"type": "object", "properties": {"number": {"type": "integer"}}, "required": ["number"]},
+             "defer_loading": true},
+            {"name": "list_issues", "description": "List issues",
+             "input_schema": {"type": "object", "properties": {}}, "defer_loading": true}
+        ]
+    }));
+
+    assert_eq!(actual["input"][0]["type"], "tool_search_call");
+    assert_eq!(
+        actual["input"][1],
+        json!({
+            "type": "tool_search_output",
+            "call_id": "call_ts",
+            "status": "completed",
+            "execution": "client",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "find_issue",
+                    "description": "Find an issue",
+                    "defer_loading": true,
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"number": {"type": "integer"}},
+                        "required": ["number"],
+                        "additionalProperties": true
+                    }
+                },
+                {
+                    "type": "function",
+                    "name": "list_issues",
+                    "description": "List issues",
+                    "defer_loading": true,
+                    "parameters": {"type": "object", "properties": {}, "additionalProperties": true}
+                }
+            ]
+        })
+    );
+    assert_eq!(
+        actual["tools"],
+        json!([{
+            "type": "tool_search",
+            "execution": "client",
+            "description": "Search",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": true}
+        }])
+    );
+}
+
+#[test]
+fn native_tool_search_output_skips_unknown_reference() {
+    // A reference to a tool not in the current inventory is dropped, not emitted
+    // as a malformed loadable spec.
+    let actual = native_translate(json!({
+        "model": "gpt-5.6-sol",
+        "messages": [
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "call_ts", "name": "ToolSearch", "input": {"query": "x"}}
+            ]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "call_ts", "content": [
+                    {"type": "tool_reference", "tool_name": "known"},
+                    {"type": "tool_reference", "tool_name": "ghost"}
+                ]}
+            ]}
+        ],
+        "tools": [
+            {"name": "ToolSearch", "description": "s", "input_schema": {"type": "object", "properties": {}}},
+            {"name": "known", "description": "Known", "input_schema": {"type": "object", "properties": {}}, "defer_loading": true}
+        ]
+    }));
+
+    let tools = actual["input"][1]["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0]["name"], "known");
+}
+
+#[test]
+fn native_empty_search_result_yields_empty_tools() {
+    // A search that found nothing still emits a well-formed tool_search_output
+    // with an empty `tools` array (no panic, no malformed input).
+    let actual = native_translate(json!({
+        "model": "gpt-5.6-sol",
+        "messages": [
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "call_ts", "name": "ToolSearch", "input": {"query": "none"}}
+            ]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "call_ts", "content": []}
+            ]}
+        ],
+        "tools": [
+            {"name": "ToolSearch", "description": "s", "input_schema": {"type": "object", "properties": {}}}
+        ]
+    }));
+
+    assert_eq!(
+        actual["input"][1],
+        json!({
+            "type": "tool_search_output",
+            "call_id": "call_ts",
+            "status": "completed",
+            "execution": "client",
+            "tools": []
+        })
+    );
+}
+
+#[test]
+fn native_forced_tool_search_choice_downgrades_to_auto() {
+    // ToolSearch is a native tool_search tool, not a function, so a forced named
+    // function choice for it downgrades to auto rather than referencing an
+    // unregistered function.
+    let actual = native_translate(json!({
+        "model": "gpt-5.6-sol",
+        "messages": [],
+        "tools": [
+            {"name": "ToolSearch", "description": "s", "input_schema": {"type": "object", "properties": {}}}
+        ],
+        "tool_choice": {"type": "tool", "name": "ToolSearch"}
+    }));
+
+    assert_eq!(actual["tool_choice"], json!("auto"));
+}
+
+#[test]
+fn native_off_keeps_tool_search_as_plain_function() {
+    // Capability fallback: with the native path off (default), ToolSearch is
+    // forwarded as an ordinary function tool (the #43 shim), not a tool_search.
+    let actual = translate(json!({
+        "model": "gpt-5.2-codex",
+        "messages": [],
+        "tools": [{
+            "name": "ToolSearch",
+            "description": "Search for tools",
+            "input_schema": {"type": "object", "properties": {}}
+        }]
+    }));
+
+    assert_eq!(actual["tools"][0]["type"], "function");
+    assert_eq!(actual["tools"][0]["name"], "ToolSearch");
+}
+
+#[test]
+fn native_streamed_tool_search_call_becomes_tool_use() {
+    // An upstream tool_search_call streamed over SSE -> an Anthropic ToolSearch
+    // tool_use whose id is the call_id and whose input is the search arguments.
+    let fixture = concat!(
+        "event: response.created\n",
+        "data: {\"response\":{\"id\":\"resp_1\"}}\n\n",
+        "event: response.output_item.added\n",
+        "data: {\"item\":{\"type\":\"tool_search_call\",\"call_id\":\"call_ts\",\"execution\":\"client\",\"status\":\"in_progress\",\"arguments\":{}}}\n\n",
+        "event: response.output_item.done\n",
+        "data: {\"item\":{\"type\":\"tool_search_call\",\"call_id\":\"call_ts\",\"execution\":\"client\",\"arguments\":{\"query\":\"github issues\"}}}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":3}}}\n\n"
+    );
+    let mut machine = AnthropicSseMachine::new("gpt-5.6-sol", false, true);
+    let emitted = parse_sse_events(fixture)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
+    let names = event_names(&emitted);
+
+    assert_eq!(
+        names,
+        vec![
+            "message_start",
+            "ping",
+            "content_block_start",
+            "content_block_delta",
+            "content_block_stop",
+            "message_delta",
+            "message_stop"
+        ]
+    );
+    assert!(emitted.contains("\"type\":\"tool_use\""));
+    assert!(emitted.contains("\"name\":\"ToolSearch\""));
+    assert!(emitted.contains("\"id\":\"call_ts\""));
+    assert!(emitted.contains("github issues"));
+    assert!(emitted.contains("\"stop_reason\":\"tool_use\""));
+}
+
+#[test]
+fn native_non_streaming_tool_search_call_in_final_json() {
+    // The non-streaming path surfaces the same ToolSearch tool_use in the
+    // collected message content, with stop_reason tool_use.
+    let fixture = concat!(
+        "event: response.output_item.done\n",
+        "data: {\"item\":{\"type\":\"tool_search_call\",\"call_id\":\"call_ts\",\"execution\":\"client\",\"arguments\":{\"query\":\"gh\"}}}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":3}}}\n\n"
+    );
+    let mut machine = AnthropicSseMachine::new("gpt-5.6-sol", false, true);
+    for event in parse_sse_events(fixture) {
+        let _ = machine.apply(event);
+    }
+    let final_json = machine.final_json();
+
+    assert_eq!(final_json["stop_reason"], "tool_use");
+    assert_eq!(final_json["content"][0]["type"], "tool_use");
+    assert_eq!(final_json["content"][0]["name"], "ToolSearch");
+    assert_eq!(final_json["content"][0]["id"], "call_ts");
+    assert_eq!(final_json["content"][0]["input"], json!({"query": "gh"}));
+}
+
+#[test]
+fn native_off_ignores_tool_search_call_item() {
+    // Under the shim the upstream never emits a tool_search_call, but if one
+    // somehow arrived it must not be surfaced as a tool_use — the machine only
+    // translates it when the request used the native path.
+    let fixture = concat!(
+        "event: response.output_item.done\n",
+        "data: {\"item\":{\"type\":\"tool_search_call\",\"call_id\":\"call_ts\",\"execution\":\"client\",\"arguments\":{\"query\":\"gh\"}}}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
+    );
+    let mut machine = AnthropicSseMachine::new("gpt-5.6-sol", false, false);
+    for event in parse_sse_events(fixture) {
+        let _ = machine.apply(event);
+    }
+    let final_json = machine.final_json();
+
+    assert_eq!(final_json["stop_reason"], "end_turn");
+    assert!(final_json["content"].as_array().unwrap().is_empty());
 }

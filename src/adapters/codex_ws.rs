@@ -783,7 +783,8 @@ mod tests {
         .expect("websocket should connect");
 
         // Drive the received events through the same machine the adapter uses.
-        let mut machine = crate::model::responses::AnthropicSseMachine::new("gpt-5.2-codex", false);
+        let mut machine =
+            crate::model::responses::AnthropicSseMachine::new("gpt-5.2-codex", false, false);
         let mut names = Vec::new();
         let mut sse = String::new();
         while let Some(item) = events.recv().await {

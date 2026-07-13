@@ -57,6 +57,7 @@ fn test_config(upstream_base_url: &str, api_key_env: &'static str) -> Config {
             effort: None,
             count_tokens: CountTokens::default(),
             websocket: false,
+            tool_search: false,
             accounts: Vec::new(),
         },
     );
