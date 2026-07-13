@@ -209,7 +209,12 @@ impl RateLimiter {
 pub struct AdminStores {
     pub sessions: SessionStore,
     pub pending: PendingStore,
+    /// Guards the completion endpoint against code-guessing storms.
     pub complete_rate: RateLimiter,
+    /// Guards the login endpoint against admin-token brute-force. Coarse and
+    /// process-global (like `complete_rate`): throttles guessing throughput as
+    /// defense-in-depth behind the constant-time token compare.
+    pub login_rate: RateLimiter,
 }
 
 impl AdminStores {
@@ -218,6 +223,7 @@ impl AdminStores {
             sessions: SessionStore::new(),
             pending: PendingStore::new(),
             complete_rate: RateLimiter::new(Duration::from_secs(60), 30),
+            login_rate: RateLimiter::new(Duration::from_secs(60), 30),
         }
     }
 }

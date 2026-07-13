@@ -137,11 +137,26 @@ pub fn list_account_meta() -> io::Result<Vec<AccountMeta>> {
 }
 
 fn read_account_meta(name: &str, path: &Path) -> Option<AccountMeta> {
-    let value: Value = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            tracing::warn!(account = %name, %error, "admin: failed to read account file; omitting from dashboard");
+            return None;
+        }
+    };
+    let value: Value = match serde_json::from_slice(&bytes) {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::warn!(account = %name, %error, "admin: account file is not valid JSON; omitting from dashboard");
+            return None;
+        }
+    };
     let oauth = value.get("claudeAiOauth");
-    // Setup tokens carry the explicit kind marker and no refresh token; an
-    // imported login always carries a non-empty refresh token. Fall back to
-    // setup-token when neither signal is present (a static, non-refreshable file).
+    // Kind is decided by the refresh token: an imported login always carries a
+    // non-empty `refreshToken`, while a setup-token file has none. (Setup-token
+    // files also write `shuntCredentialKind`, but its absence is not relied on
+    // here — refresh-token presence is the single sufficient signal.)
     let is_imported = oauth
         .and_then(|oauth| oauth.get("refreshToken"))
         .and_then(Value::as_str)

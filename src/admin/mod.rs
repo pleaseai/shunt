@@ -46,7 +46,9 @@ const SESSION_COOKIE: &str = "shunt_admin_session";
 /// `RuntimeState` (hot-reloaded so token edits apply); the session and pending
 /// stores live in `AppState` (process lifetime). The token check reuses the
 /// inbound-auth constant-time compare.
-#[derive(Debug, Clone)]
+/// No `Debug`: `InboundAuth` holds the raw admin token values, so a derived
+/// `Debug` would risk leaking them (matches the secret-carrying `PendingLogin`).
+#[derive(Clone)]
 pub struct AdminAuth {
     inbound: InboundAuth,
     session_ttl: Duration,
@@ -224,6 +226,10 @@ fn clear_cookie() -> String {
 // --- page routes ---------------------------------------------------------------
 
 async fn login_page(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    // Re-snapshot the hot-reloaded runtime state so admin_auth/config track the
+    // live config (matches proxy.rs/routes.rs/discovery.rs); without this every
+    // admin route would run on the boot-time snapshot forever.
+    let state = state.refreshed();
     if state.admin_auth.is_none() {
         return not_found();
     }
@@ -243,9 +249,15 @@ async fn login_submit(
     headers: HeaderMap,
     form: Result<Form<LoginForm>, axum::extract::rejection::FormRejection>,
 ) -> Response {
+    let state = state.refreshed();
     let Some(auth) = state.admin_auth.clone() else {
         return not_found();
     };
+    // Throttle admin-token guessing (defense-in-depth behind the constant-time
+    // compare); every POST counts, before the token is checked.
+    if !state.admin_stores.login_rate.check() {
+        return too_many_requests("too many login attempts; slow down");
+    }
     let token = match form {
         Ok(Form(form)) => form.token,
         Err(_) => String::new(),
@@ -270,6 +282,14 @@ async fn login_submit(
 }
 
 async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let state = state.refreshed();
+    // Logout is a navigation form POST, so it cannot carry the `x-csrf-token`
+    // header the JSON mutations use; guard it with a same-origin check instead
+    // (plus the `SameSite=Strict` cookie) so a cross-site page cannot force a
+    // logout. See docs/m9-admin-surface.md.
+    if !same_origin(&headers) {
+        return forbidden("cross-origin admin request rejected");
+    }
     if let Some(sid) = session_cookie(&headers) {
         state.admin_stores.sessions.remove(&sid);
     }
@@ -284,6 +304,7 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
 }
 
 async fn dashboard(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let state = state.refreshed();
     let Some(authok) = authenticate(&state, &headers) else {
         return redirect("/admin/login");
     };
@@ -299,16 +320,25 @@ async fn dashboard(State(state): State<AppState>, headers: HeaderMap) -> Respons
 // --- JSON API routes -----------------------------------------------------------
 
 async fn list_accounts(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let state = state.refreshed();
     if authenticate(&state, &headers).is_none() {
         return unauthorized();
     }
     match tokio::task::spawn_blocking(claude_store::list_account_meta).await {
         Ok(Ok(accounts)) => Json(json!({ "accounts": accounts })).into_response(),
-        _ => internal("failed to list accounts"),
+        Ok(Err(error)) => {
+            tracing::error!(%error, "admin: failed to list account metadata");
+            internal("failed to list accounts")
+        }
+        Err(join_error) => {
+            tracing::error!(%join_error, "admin: list_account_meta task panicked");
+            internal("failed to list accounts")
+        }
     }
 }
 
 async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let state = state.refreshed();
     if authenticate(&state, &headers).is_none() {
         return unauthorized();
     }
@@ -323,7 +353,13 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
                 continue;
             }
             let resolved = if provider.accounts.is_empty() {
-                claude_store::scan_accounts().unwrap_or_default()
+                match claude_store::scan_accounts() {
+                    Ok(accounts) => accounts,
+                    Err(error) => {
+                        tracing::warn!(provider = %name, %error, "admin: failed to scan accounts store; reporting empty pool for this provider");
+                        Vec::new()
+                    }
+                }
             } else {
                 provider.accounts.clone()
             };
@@ -335,7 +371,10 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
     .await;
     match result {
         Ok(providers) => Json(json!({ "providers": providers })).into_response(),
-        Err(_) => internal("failed to read pool state"),
+        Err(join_error) => {
+            tracing::error!(%join_error, "admin: pool snapshot task panicked");
+            internal("failed to read pool state")
+        }
     }
 }
 
@@ -349,6 +388,7 @@ async fn add_account(
     headers: HeaderMap,
     body: Result<Json<AddBody>, JsonRejection>,
 ) -> Response {
+    let state = state.refreshed();
     let Some(authok) = authenticate(&state, &headers) else {
         return unauthorized();
     };
@@ -364,7 +404,10 @@ async fn add_account(
     let pkce = claude_login::generate_pkce();
     let authorize_url = match claude_login::build_authorize_url(&pkce.challenge, &pkce.state) {
         Ok(url) => url,
-        Err(_) => return internal("failed to build authorize URL"),
+        Err(error) => {
+            tracing::error!(account = %body.name, %error, "admin: failed to build authorize URL");
+            return internal("failed to build authorize URL");
+        }
     };
     state.admin_stores.pending.start(
         &body.name,
@@ -387,6 +430,7 @@ async fn complete_account(
     headers: HeaderMap,
     body: Result<Json<CompleteBody>, JsonRejection>,
 ) -> Response {
+    let state = state.refreshed();
     let Some(authok) = authenticate(&state, &headers) else {
         return unauthorized();
     };
@@ -394,7 +438,7 @@ async fn complete_account(
         return response;
     }
     if !state.admin_stores.complete_rate.check() {
-        return rate_limited();
+        return too_many_requests("too many completion attempts; slow down");
     }
     let Ok(Json(body)) = body else {
         return bad_request("invalid JSON body");
@@ -429,8 +473,12 @@ async fn complete_account(
     .await
     {
         Ok(tokens) => tokens,
-        // Deliberately generic: never echo upstream detail (may carry hints).
-        Err(_) => return bad_gateway("Claude token exchange failed"),
+        // Log full detail server-side; keep the browser response deliberately
+        // generic (never echo upstream detail, which may carry hints).
+        Err(error) => {
+            tracing::warn!(account = %name, %error, "admin: Claude token exchange failed");
+            return bad_gateway("Claude token exchange failed");
+        }
     };
     let Some(uuid) = tokens
         .account
@@ -448,8 +496,19 @@ async fn complete_account(
         claude_store::store_setup_token(&account_name, &access_token, Some(&uuid))
     })
     .await;
-    if !matches!(stored, Ok(Ok(_))) {
-        return internal("failed to store account");
+    // The OAuth code is already consumed (single-use) by the time we get here, so
+    // a persist failure is unrecoverable for this attempt — log the real cause
+    // (disk full, permission denied, serialization) instead of swallowing it.
+    match stored {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => {
+            tracing::error!(account = %name, %error, "admin: failed to persist account after successful token exchange");
+            return internal("failed to store account");
+        }
+        Err(join_error) => {
+            tracing::error!(account = %name, %join_error, "admin: store_setup_token task panicked");
+            return internal("failed to store account");
+        }
     }
     state.admin_stores.pending.remove(&name);
     tracing::info!(account = %name, "admin: account stored");
@@ -474,6 +533,7 @@ async fn remove_account_handler(
     Path(name): Path<String>,
     headers: HeaderMap,
 ) -> Response {
+    let state = state.refreshed();
     let Some(authok) = authenticate(&state, &headers) else {
         return unauthorized();
     };
@@ -487,7 +547,14 @@ async fn remove_account_handler(
     let removed =
         match tokio::task::spawn_blocking(move || claude_store::remove_account(&target)).await {
             Ok(Ok(removed)) => removed,
-            _ => return internal("failed to remove account"),
+            Ok(Err(error)) => {
+                tracing::error!(account = %name, %error, "admin: failed to remove account");
+                return internal("failed to remove account");
+            }
+            Err(join_error) => {
+                tracing::error!(account = %name, %join_error, "admin: remove_account task panicked");
+                return internal("failed to remove account");
+            }
         };
     tracing::info!(account = %name, removed, "admin: account removed");
     Json(json!({ "name": name, "removed": removed })).into_response()
@@ -541,13 +608,8 @@ fn bad_gateway(message: &str) -> Response {
     ShuntError::bad_gateway(message).into_response()
 }
 
-fn rate_limited() -> Response {
-    ShuntError::new(
-        StatusCode::TOO_MANY_REQUESTS,
-        "rate_limit_error",
-        "too many completion attempts; slow down",
-    )
-    .into_response()
+fn too_many_requests(message: &str) -> Response {
+    ShuntError::new(StatusCode::TOO_MANY_REQUESTS, "rate_limit_error", message).into_response()
 }
 
 fn not_found() -> Response {

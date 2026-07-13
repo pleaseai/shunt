@@ -98,14 +98,17 @@ process-lifetime state:
 - **API/curl:** send the admin token in the configured header
   (`x-shunt-admin-token`). Header-token callers carry no ambient cookie and are
   therefore **CSRF-exempt**.
-- **CSRF** on every cookie-authenticated mutation: a per-session synchronizer
+- **CSRF** on every cookie-authenticated JSON mutation: a per-session synchronizer
   token, presented as `x-csrf-token`, plus a same-origin check (`Sec-Fetch-Site`,
-  falling back to comparing `Origin`'s authority to `Host`). No CORS.
+  falling back to comparing `Origin`'s authority to `Host`). No CORS. `POST
+  /admin/logout` is a plain navigation form that cannot send the header, so it is
+  guarded by the same-origin check plus the `SameSite=Strict` cookie instead of
+  the synchronizer token.
 - **Pending-login store** is in-memory only, single-use, and TTL-bound; each
   completion attempt is counted and the entry is discarded after a small cap. The
   256-bit OAuth `state` already makes guessing infeasible.
-- **Rate-limit** on the completion endpoint (a coarse global fixed window) against
-  code-guessing storms.
+- **Rate-limit** on the completion and login endpoints (a coarse global fixed
+  window each) against code- and admin-token-guessing storms.
 - **Secrets never leak:** the verifier, state, session id, and setup token are
   never logged and never returned to the browser. Account add/remove is
   audit-logged by name only.
