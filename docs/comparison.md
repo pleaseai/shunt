@@ -265,9 +265,10 @@ pool with model-aware proactive quota scheduling plus reactive failover, but
 ChatGPT/Codex pooling remains a deliberate gap.
 The highest-value in-scope work is finishing the tool-search
 context savings ([#43]) — now partly addressed by an opt-in native `tool_search` path on
-Codex/OpenAI ([#82]). The Codex WS transport has since been hardened on both fronts
-(continuation live-probe [#45] and pre-first-token HTTP fallback [#46]); the biggest
-deliberate gap left to weigh is minimal fill-first multi-account for ChatGPT/Codex.
+Codex/OpenAI ([#82]). The Codex WS transport's pre-first-token HTTP fallback gap
+has since been closed ([#46]); its continuation-normalization live-probe ([#45])
+remains open. The biggest deliberate gap left to weigh is minimal fill-first
+multi-account for ChatGPT/Codex.
 
 [#43]: https://github.com/pleaseai/shunt/issues/43
 [#82]: https://github.com/pleaseai/shunt/issues/82

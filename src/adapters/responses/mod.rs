@@ -100,8 +100,9 @@ async fn forward(
     // reaches the client — connect, handshake, send, or a socket that drops before
     // the first token (issue #46) — transparently falls back to the HTTP path
     // below, so enabling the flag can never do worse than plain HTTP. Only a
-    // failure *after* the first event is surfaced as an Anthropic error event; by
-    // then the response has already begun and cannot be safely restarted.
+    // failure *after* the first event surfaces mid-stream — an Anthropic `error`
+    // event to a streaming client, or a gateway error to a non-streaming one —
+    // since by then the response has already begun and cannot be safely restarted.
     if state.config.codex_websocket_enabled(&route.provider) {
         match forward_websocket(
             &state,
@@ -353,9 +354,14 @@ type BufferedEvent = Option<Result<ResponseEvent, CodexWsError>>;
 /// blip — would otherwise surface as an error event on an already-committed
 /// stream. Peeking lets [`commit_or_fallback`] catch that failure while nothing
 /// has reached the client yet and return `Err`, so [`forward`] transparently
-/// re-drives the whole turn over HTTP. Only once the first event is in hand is the
-/// turn under way; a failure after that is genuinely mid-stream and surfaces as a
-/// clean error event ([`stream_events_response`]).
+/// re-drives the whole turn over HTTP. If instead the backend accepts the frame
+/// but never produces a first event, the peek waits up to the reader's idle
+/// timeout before falling back — a bounded cost that still never does worse than
+/// plain HTTP against the same unresponsive backend. Only once the first event is
+/// in hand is the turn under way; a failure after that is genuinely mid-stream and
+/// surfaces as a clean error: an Anthropic `error` event for a streaming client
+/// ([`stream_events_response`]), a gateway error for a non-streaming one
+/// ([`json_events_response`]).
 async fn open_ws_turn(
     ctx: &WsTurnContext<'_>,
 ) -> Result<(BufferedEvent, CodexWsEvents), AdapterError> {
@@ -1259,5 +1265,51 @@ mod tests {
             mapped_upstream_error(StatusCode::TOO_MANY_REQUESTS, upstream, AuthMode::ApiKey).await;
         assert_eq!(error.response.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(error.response.headers().get("retry-after").unwrap(), "7");
+    }
+
+    /// `commit_or_fallback` classifies the peeked first event: a delivered event
+    /// commits to the websocket (buffered for replay), while a transport error or
+    /// an empty stream returns `Err` so [`super::forward`] re-drives over HTTP. The
+    /// empty-stream arm is unreachable from the integration mocks (which always
+    /// send an event or a transport error before closing), so it is exercised here.
+    #[test]
+    fn commit_or_fallback_classifies_the_peeked_first_event() {
+        use super::{commit_or_fallback, CodexWsError, ResponseEvent};
+        use tokio::sync::mpsc;
+
+        // A delivered first event commits: it is buffered for replay and the
+        // channel is handed back intact.
+        let (_tx, rx) = mpsc::unbounded_channel();
+        let event = ResponseEvent {
+            event: Some("response.created".to_string()),
+            data: Value::Null,
+        };
+        let (buffered, _events) =
+            commit_or_fallback(Some(Ok(event)), rx).expect("a delivered event commits");
+        assert!(
+            matches!(buffered, Some(Ok(_))),
+            "the first event is buffered for replay"
+        );
+
+        // A transport error before the first event falls back to HTTP.
+        let (_tx, rx) = mpsc::unbounded_channel();
+        let error = CodexWsError {
+            status: None,
+            retry_after: None,
+            body: String::new(),
+            message: "socket dropped before first token".to_string(),
+            previous_response_missing: false,
+        };
+        assert!(
+            commit_or_fallback(Some(Err(error)), rx).is_err(),
+            "a pre-first-event transport error falls back to HTTP"
+        );
+
+        // An empty stream (channel closed before any event) also falls back.
+        let (_tx, rx) = mpsc::unbounded_channel();
+        assert!(
+            commit_or_fallback(None, rx).is_err(),
+            "an empty stream falls back to HTTP"
+        );
     }
 }

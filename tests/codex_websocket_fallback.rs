@@ -362,9 +362,10 @@ async fn websocket_drop_before_first_event_falls_back_to_http() {
         body.contains("served over HTTP fallback"),
         "the recovered response carries the HTTP upstream's translated text; got: {body}"
     );
-    assert!(
-        http_hits.load(Ordering::SeqCst) >= 1,
-        "the HTTP Responses endpoint was hit by the fallback"
+    assert_eq!(
+        http_hits.load(Ordering::SeqCst),
+        1,
+        "the fallback POSTs the turn to the HTTP endpoint exactly once (no double-send)"
     );
 
     std::env::remove_var("CODEX_AUTH_FILE");
@@ -418,6 +419,47 @@ async fn websocket_drop_after_first_event_surfaces_clean_error() {
         http_hits.load(Ordering::SeqCst),
         0,
         "no HTTP fallback POST is made after streaming has begun"
+    );
+
+    std::env::remove_var("CODEX_AUTH_FILE");
+    let _ = std::fs::remove_file(auth_path);
+}
+
+/// The non-streaming analogue of the mid-stream drop: a `stream:false` client
+/// whose socket drops after the first event. The turn is already committed (the
+/// first event was peeked), so `json_events_response` must surface the truncation
+/// as a gateway error rather than presenting the partial output as a successful
+/// 200 — and it must NOT fall back to HTTP once the turn is under way (issue #46).
+#[tokio::test]
+async fn websocket_drop_after_first_event_json_surfaces_gateway_error() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = ENV_LOCK.lock().await;
+
+    let (base_url, http_hits) = spawn_dual_upstream(WsDrop::AfterFirstEvent).await;
+    let auth_path = write_fake_codex_auth();
+    let gateway = start_gateway_with(codex_ws_config(base_url)).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .header("content-type", "application/json")
+        .body(
+            r#"{"model":"codex-fallback-model","max_tokens":16,"stream":false,"messages":[{"role":"user","content":"hi"}]}"#,
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_GATEWAY,
+        "a non-streaming mid-stream drop surfaces as a gateway error, not a 200 with partial output"
+    );
+    assert_eq!(
+        http_hits.load(Ordering::SeqCst),
+        0,
+        "no HTTP fallback POST is made once the turn has committed to the websocket"
     );
 
     std::env::remove_var("CODEX_AUTH_FILE");
