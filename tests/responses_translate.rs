@@ -1607,6 +1607,35 @@ fn native_tool_search_output_skips_unknown_reference() {
 }
 
 #[test]
+fn native_tool_search_output_dedups_repeated_reference() {
+    // A tool referenced twice yields a single loadable spec: duplicate specs
+    // share the same function `name`, wasting upstream context and tripping
+    // stricter backends' validation.
+    let actual = native_translate(json!({
+        "model": "gpt-5.6-sol",
+        "messages": [
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "call_ts", "name": "ToolSearch", "input": {"query": "x"}}
+            ]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "call_ts", "content": [
+                    {"type": "tool_reference", "tool_name": "known"},
+                    {"type": "tool_reference", "tool_name": "known"}
+                ]}
+            ]}
+        ],
+        "tools": [
+            {"name": "ToolSearch", "description": "s", "input_schema": {"type": "object", "properties": {}}},
+            {"name": "known", "description": "Known", "input_schema": {"type": "object", "properties": {}}, "defer_loading": true}
+        ]
+    }));
+
+    let tools = actual["input"][1]["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0]["name"], "known");
+}
+
+#[test]
 fn native_empty_search_result_yields_empty_tools() {
     // A search that found nothing still emits a well-formed tool_search_output
     // with an empty `tools` array (no panic, no malformed input).

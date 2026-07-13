@@ -492,10 +492,15 @@ fn tool_search_output_item(call_id: &str, block: &Value, context: &ToolSearchCon
         .get("content")
         .and_then(Value::as_array)
         .map(|blocks| {
+            // Keep the first reference to each tool: a duplicate `tool_name`
+            // would serialize two function specs with the same `name`, wasting
+            // upstream context and tripping stricter backends' validation.
+            let mut seen = std::collections::HashSet::new();
             blocks
                 .iter()
                 .filter(|inner| inner.get("type").and_then(Value::as_str) == Some("tool_reference"))
                 .filter_map(|inner| inner.get("tool_name").and_then(Value::as_str))
+                .filter(|name| seen.insert(*name))
                 .filter_map(|name| loadable_tool_spec(name, context))
                 .collect::<Vec<_>>()
         })
