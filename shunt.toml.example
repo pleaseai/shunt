@@ -12,12 +12,24 @@ default_provider = "anthropic" # provider for any model with no route -> pass-th
 
 # --- Optional: inbound client tokens for a shared gateway (docs/running.md §5.9).
 # When set, models routed to a credential-injecting provider (api_key /
-# chatgpt_oauth) require a client token; passthrough models stay open. Tokens
-# live in the env, never here: SHUNT_CLIENT_TOKENS="alice:<token>,bob:<token>".
+# chatgpt_oauth) and GET /v1/models require a client token; passthrough models
+# stay open. Discovery accepts the configured header plus x-api-key and bearer
+# authorization. Tokens live in the env, never here:
+# SHUNT_CLIENT_TOKENS="alice:<token>,bob:<token>".
 # Startup fails if the env var is unset (never silently open).
 # [server.auth]
 # header = "x-shunt-token"           # (default) header the client sends
 # tokens_env = "SHUNT_CLIENT_TOKENS" # (default) env var with name:token pairs
+
+# --- Optional: admin web surface for browser account provisioning and pool health.
+# Separate from client auth: admin credentials live in the env, never here, as
+# SHUNT_ADMIN_TOKENS="ops:<token>,backup:<token>". Startup fails if this table
+# is present but the env var is unset or empty (never silently open).
+# [server.admin]
+# header = "x-shunt-admin-token"       # (default) header for API/curl calls
+# tokens_env = "SHUNT_ADMIN_TOKENS"    # (default) env var with name:token pairs
+# session_ttl_secs = 3600              # (default) browser session lifetime
+# pending_ttl_secs = 600               # (default) provisioning-flow lifetime
 
 # --- Optional: Sentry error reporting to YOUR OWN Sentry project (docs/running.md §3.1).
 # Off unless you set a DSN. Reports gateway-owned diagnostics only — fatal

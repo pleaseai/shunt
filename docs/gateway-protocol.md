@@ -261,7 +261,7 @@ the `ANTHROPIC_BASE_URL` surface, and belong to the separate `/login` device-flo
 
 | Gap | Severity | Evidence | Tracking |
 | :-- | :-- | :-- | :-- |
-| `GET /v1/models` always unauthenticated, even under `[server.auth]` (model-list exposure on shared-key gateways; spec allows optional auth) | Low (posture) | `src/discovery.rs:35-40`, `src/proxy.rs:224-231` | #90 |
+| `GET /v1/models` requires a valid inbound token under `[server.auth]`; accepts the configured header, `x-api-key`, or bearer authorization; stays open when auth is absent | Resolved | `src/discovery.rs`, `src/auth/inbound.rs` | #90 |
 | (info) ChatGPT/xAI `401` message replaced with a fixed re-login hint — intentional (`401` → re-login is the recovery) | Info | `src/adapters/responses.rs:599-602` | folded into #88 |
 
 ### Confirmed conformant (no action)
@@ -282,7 +282,7 @@ the `ANTHROPIC_BASE_URL` surface, and belong to the separate `/login` device-flo
 Not forwarding `anthropic-beta` to the Responses/Cursor backends is correct, not a gap — that
 path is format translation rather than header passthrough, so there is nothing to relay as-is.
 
-This table tracks known gaps under epic #87 and shrinks as #88/#89/#90 land.
+This table records the conformance review under epic #87, including resolved gaps.
 
 ## Reproducing the capture
 

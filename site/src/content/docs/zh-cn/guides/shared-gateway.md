@@ -34,6 +34,8 @@ export ANTHROPIC_CUSTOM_HEADERS="x-shunt-token: <your token>"
 这仅是应用层识别 —— 传输加密仍来自部署(WireGuard/Tailscale 隧道,或前置的 TLS 终止);shunt 本身提供纯 HTTP。
 :::
 
+如果你还启用了可选的[管理 Web 界面](/zh-cn/guides/admin-remote-provisioning/),请用独立的管理员 token 保护它,并且只通过 HTTPS 或可信隧道暴露。
+
 ## SSE keepalive ping
 
 中间盒会中断安静的流 —— Cloudflare 的代理在**100 秒无字节后返回 524**(Enterprise 以下固定如此),而长时间的推理过程可能安静那么久。因此,每当一个流式响应闲置时,shunt 会注入 Anthropic 协议自身的 `ping` 事件(`api.anthropic.com` 自己也会发出它,而每个客户端都会忽略它):

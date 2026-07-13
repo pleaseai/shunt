@@ -1,5 +1,5 @@
 ---
-title: Troubleshooting
+title: トラブルシューティング
 description: よくある shunt のエラーとその修正方法。
 ---
 

@@ -1,19 +1,47 @@
 ---
 name: shunt-codex-websocket-v2
-description: shunt repo (pleaseai/shunt) — Codex Responses WebSocket v2 transport (issue #32, PR #39) architecture and the unresolved silent-phantom-success bug found in review.
+description: shunt repo (pleaseai/shunt) — Codex Responses WebSocket v2 transport (issue #32, PR #39) architecture; the PR #39 silent-phantom-success bug was RESOLVED by the time of PR #111 (issue #46, verified 2026-07-14) — see [[shunt-codex-ws-peek-fallback-issue46]] for the current design.
 metadata:
   type: project
 ---
 
 `src/adapters/codex_ws.rs` (transport: handshake, per-session connection pool,
 reader task) + `src/adapters/codex_continuation.rs` (pure `decide()` prefix-match
-decision layer) + `src/adapters/responses.rs` (`forward_websocket`/`open_ws_turn`
-wiring) implement an opt-in (`provider.websocket = true`, ChatGPT/Codex backend
-only, gated by `Config::codex_websocket_enabled`) websocket transport that reuses
-a pooled connection and replays `previous_response_id` to cut per-turn upload.
+decision layer) + `src/adapters/responses/mod.rs` (`forward_websocket`/`open_ws_turn`
+wiring — note: `responses.rs` became a `responses/` directory module at some point
+after PR #39; the file path in older notes below is stale) implement an opt-in
+(`provider.websocket = true`, ChatGPT/Codex backend only, gated by
+`Config::codex_websocket_enabled`) websocket transport that reuses a pooled
+connection and replays `previous_response_id` to cut per-turn upload.
 
-**Unresolved bug found in review (2026-07-12, PR #39 diff):** in
-`codex_ws.rs::stream_events()`, the `Some(Ok(Message::Close(_))) | None` arm
+**RESOLVED as of PR #111 / issue #46 (verified 2026-07-14):** the bug described
+below (`stream_events()`'s `Close(_) | None` arm sending nothing into `tx`) no
+longer exists in the current `codex_ws.rs`. The reader loop is now named
+`run_turn`, and EVERY transport-failure exit (idle timeout via `IDLE_TIMEOUT`,
+`Message::Close` before a terminal event, unexpected `Message::Binary`, a raw
+stream error, or a send failure) explicitly sends
+`Err(CodexWsError::transport(...))` into the channel before tearing down —
+confirmed by reading `run_turn` end-to-end and cross-checked by a sibling
+`review-silent-failure-hunter` pass on the same PR ("no leak, no silent
+swallow"). Separately, business-logic failures reported *by the backend itself*
+(`event.event == "error"` or `"response.failed"`) are always forwarded as
+`Ok(ResponseEvent)`, never `Err(CodexWsError)` — only genuine transport/socket
+failures use the `Err` variant, with one deliberate exception: a backend
+`previous_response_not_found` rejection is intentionally emitted as
+`Err(CodexWsError::previous_response_missing())` (not `Ok`) so `open_ws_turn`
+can detect it and retry the continuation with the full input on a fresh
+connection — so not every `Err` here is a transport failure. This `Ok`-vs-`Err`
+split is otherwise the invariant the
+new `commit_or_fallback` helper (issue #46) depends on to correctly route
+transport errors to HTTP-fallback while letting backend-reported errors stream
+through as a clean Anthropic `error` SSE event. **Do not re-flag the old PR #39
+description below as a live bug** — kept only as historical context for what
+issue #46's fix built on top of.
+
+<details>
+<summary>Original PR #39 finding (2026-07-12), since fixed</summary>
+
+in `codex_ws.rs::stream_events()`, the `Some(Ok(Message::Close(_))) | None` arm
 returns `Outcome::Failed` *without* sending anything into the `tx` channel — the
 comment says "end the channel quietly" on the theory the machine's `finish()`
 will produce a clean end. But `AnthropicSseMachine::finish()`
@@ -27,10 +55,9 @@ fake-success body**, and the streaming path emits a protocol-invalid SSE stream
 (message_delta/message_stop with no preceding message_start) — both silently
 mask an upstream failure as a successful empty turn, contradicting the
 `forward()` docstring's own claim that "a mid-stream failure is surfaced as an
-Anthropic error event." No test in `tests/codex_websocket_fallback.rs` covers
-this path (it only covers handshake-failure-before-connect, which correctly
-falls back to HTTP). Worth re-checking whether a fix landed before reviewing
-follow-up PRs in this area.
+Anthropic error event."
+
+</details>
 
 Secondary, lower-confidence finding: if `Turn::stream()`'s initial
 `guard.send(Message::Text(frame))` fails (a stale pooled connection that passed

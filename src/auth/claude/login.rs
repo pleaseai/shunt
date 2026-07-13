@@ -11,9 +11,9 @@ use sha2::{Digest, Sha256};
 
 use super::{auth, store};
 
-const AUTHORIZE_URL: &str = "https://claude.com/cai/oauth/authorize";
-const MANUAL_REDIRECT_URL: &str = "https://platform.claude.com/oauth/code/callback";
-const SETUP_TOKEN_EXPIRES_SECS: u64 = 365 * 24 * 60 * 60;
+pub(crate) const AUTHORIZE_URL: &str = "https://claude.com/cai/oauth/authorize";
+pub(crate) const MANUAL_REDIRECT_URL: &str = "https://platform.claude.com/oauth/code/callback";
+pub(crate) const SETUP_TOKEN_EXPIRES_SECS: u64 = 365 * 24 * 60 * 60;
 
 pub async fn run(name: &str, long_lived: bool) -> anyhow::Result<()> {
     store::validate_account_name(name)?;
@@ -53,9 +53,11 @@ async fn import_current_login(name: &str) -> anyhow::Result<PathBuf> {
 }
 
 async fn run_setup_token(name: &str) -> anyhow::Result<PathBuf> {
-    let verifier = random_urlsafe(32);
-    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
-    let state = random_urlsafe(32);
+    let PkceChallenge {
+        verifier,
+        challenge,
+        state,
+    } = generate_pkce();
     let authorize_url = build_authorize_url(&challenge, &state)?;
 
     println!("Open this URL to authorize shunt with the Claude account to store:\n");
@@ -92,7 +94,29 @@ async fn run_setup_token(name: &str) -> anyhow::Result<PathBuf> {
     store::store_setup_token(name, &tokens.access_token, Some(account_uuid))
 }
 
-fn build_authorize_url(challenge: &str, state: &str) -> anyhow::Result<reqwest::Url> {
+/// A freshly generated PKCE verifier/challenge plus the OAuth `state`. Shared by
+/// the CLI `--long-lived` flow and the admin web provisioning endpoint so the two
+/// derive the setup-token authorization identically.
+pub(crate) struct PkceChallenge {
+    pub verifier: String,
+    pub challenge: String,
+    pub state: String,
+}
+
+/// Generate a fresh PKCE verifier + S256 challenge and an independent `state`,
+/// each 32 random bytes URL-safe base64 (no padding).
+pub(crate) fn generate_pkce() -> PkceChallenge {
+    let verifier = random_urlsafe(32);
+    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+    let state = random_urlsafe(32);
+    PkceChallenge {
+        verifier,
+        challenge,
+        state,
+    }
+}
+
+pub(crate) fn build_authorize_url(challenge: &str, state: &str) -> anyhow::Result<reqwest::Url> {
     let mut url = reqwest::Url::parse(AUTHORIZE_URL)?;
     url.query_pairs_mut()
         .append_pair("code", "true")
@@ -113,17 +137,17 @@ fn random_urlsafe(bytes: usize) -> String {
 }
 
 #[derive(Debug, Deserialize)]
-struct TokenExchangeResponse {
-    access_token: String,
-    account: Option<TokenAccount>,
+pub(crate) struct TokenExchangeResponse {
+    pub access_token: String,
+    pub account: Option<TokenAccount>,
 }
 
 #[derive(Debug, Deserialize)]
-struct TokenAccount {
-    uuid: String,
+pub(crate) struct TokenAccount {
+    pub uuid: String,
 }
 
-async fn exchange_code(
+pub(crate) async fn exchange_code(
     client: &reqwest::Client,
     code: &str,
     state: &str,

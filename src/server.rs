@@ -8,6 +8,7 @@ use serde::Serialize;
 
 use crate::{
     accounts::AccountPool,
+    admin::{self, AdminAuth, AdminStores},
     auth::inbound::InboundAuth,
     config::{Config, ConfigError},
     discovery, protocol, proxy,
@@ -23,9 +24,16 @@ pub struct AppState {
     pub accounts: Arc<AccountPool>,
     /// Inbound client-token auth snapshot for this request (None ⇒ open).
     pub inbound_auth: Option<Arc<InboundAuth>>,
+    /// Admin-surface auth snapshot for this request (None ⇒ admin disabled).
+    /// Re-snapshotted per request so token/header edits hot-apply.
+    pub admin_auth: Option<Arc<AdminAuth>>,
+    /// Process-lifetime admin session/pending/rate-limit stores. Like
+    /// [`AppState::accounts`], created once and kept across reloads so an
+    /// operator's browser session is not dropped by an unrelated config edit.
+    pub admin_stores: Arc<AdminStores>,
     /// The live, hot-swappable runtime state a reload updates. Private so the
-    /// only way in is a snapshot method that keeps `config`/`inbound_auth`
-    /// consistent with it.
+    /// only way in is a snapshot method that keeps `config`/`inbound_auth`/
+    /// `admin_auth` consistent with it.
     shared: SharedState,
 }
 
@@ -39,6 +47,7 @@ impl AppState {
             shared,
             http_client,
             Arc::new(AccountPool::new()),
+            Arc::new(AdminStores::new()),
         ))
     }
 
@@ -47,13 +56,16 @@ impl AppState {
         shared: SharedState,
         http_client: reqwest::Client,
         accounts: Arc<AccountPool>,
+        admin_stores: Arc<AdminStores>,
     ) -> Self {
         let current = shared.load();
         Self {
             config: current.config.clone(),
             inbound_auth: current.inbound_auth.clone(),
+            admin_auth: current.admin_auth.clone(),
             http_client,
             accounts,
+            admin_stores,
             shared,
         }
     }
@@ -66,6 +78,7 @@ impl AppState {
             self.shared.clone(),
             self.http_client.clone(),
             self.accounts.clone(),
+            self.admin_stores.clone(),
         )
     }
 }
@@ -73,28 +86,40 @@ impl AppState {
 /// Build the router and return it alongside the [`SharedState`] it reads, so the
 /// caller can spawn reload watchers that hot-swap the same store.
 pub fn build_router(config: Config) -> Result<(Router, SharedState), ConfigError> {
+    // Whether the admin surface exists is decided once here, from the initial
+    // config: a reload cannot add or drop routes (it only re-resolves tokens).
+    let admin_enabled = config.server.admin.is_some();
     let runtime = RuntimeState::from_config(config)?;
     let shared: SharedState = Arc::new(arc_swap::ArcSwap::from_pointee(runtime));
     let state = AppState::from_shared(
         shared.clone(),
         reqwest::Client::new(),
         Arc::new(AccountPool::new()),
+        Arc::new(AdminStores::new()),
     );
 
     // `/` and `/health` stay unauthenticated even when `[server.auth]` is
     // configured (healthcheck tools rarely carry tokens); they must never
     // expose config, credentials, or upstream details — only version, status,
-    // and the already-public endpoint list.
-    let router = Router::new()
+    // and the already-public endpoint list. Discovery handlers enforce their
+    // own endpoint-specific auth policy against the same refreshed state.
+    let mut router = Router::new()
         .route("/", get(root_index))
         .route("/health", get(health))
         .route("/protocol", get(protocol::get))
         .route("/v1/models", get(discovery::get))
         .route("/routes", get(routes::get))
         .route("/v1/messages", post(proxy::post))
-        .route("/v1/messages/count_tokens", post(proxy::post))
-        .with_state(state);
-    Ok((router, shared))
+        .route("/v1/messages/count_tokens", post(proxy::post));
+
+    // Opt-in admin surface (M9): registered only when `[server.admin]` is set,
+    // so the default HTTP surface is unchanged. Its handlers authenticate every
+    // request against the separate `[server.admin]` credential.
+    if admin_enabled {
+        router = router.merge(admin::admin_router());
+    }
+
+    Ok((router.with_state(state), shared))
 }
 
 /// Human-facing landing page; axum also serves HEAD `/` from this handler,

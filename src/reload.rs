@@ -16,6 +16,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 
 use crate::{
+    admin::AdminAuth,
     auth::inbound::InboundAuth,
     config::{Config, ConfigError, SentryConfig},
 };
@@ -27,6 +28,10 @@ pub struct RuntimeState {
     /// Inbound client-token auth (`[server.auth]`), re-resolved on every reload
     /// so token/header edits take effect. `None` ⇒ open (no inbound auth).
     pub inbound_auth: Option<Arc<InboundAuth>>,
+    /// Admin-surface auth (`[server.admin]`), re-resolved on every reload so
+    /// admin token/header edits take effect. `None` ⇒ admin surface disabled
+    /// (its routes, when registered at boot, then reject every request).
+    pub admin_auth: Option<Arc<AdminAuth>>,
 }
 
 /// Shared handle to the live [`RuntimeState`]. Cloning is cheap (an `Arc`); a
@@ -40,9 +45,11 @@ impl RuntimeState {
     pub fn from_config(config: Config) -> Result<Self, ConfigError> {
         let config = config.validate()?;
         let inbound_auth = config.resolve_inbound_auth()?;
+        let admin_auth = config.resolve_admin_auth()?;
         Ok(Self {
             config: Arc::new(config),
             inbound_auth,
+            admin_auth,
         })
     }
 }
@@ -74,6 +81,16 @@ fn warn_on_restart_only_changes(previous: &Config, next: &Config) {
             previous = %previous.server.bind,
             next = %next.server.bind,
             "server.bind changed but requires a restart to apply; the listener is already bound"
+        );
+    }
+    // Whether the admin route tree is registered is decided once at boot from
+    // the initial config (like `server.bind`). Token/header edits within an
+    // already-enabled `[server.admin]` hot-apply via `admin_auth`, but toggling
+    // the block on or off cannot add or remove the routes without a restart.
+    if previous.server.admin.is_some() != next.server.admin.is_some() {
+        tracing::warn!(
+            "[server.admin] was enabled or disabled but requires a restart to register or drop its routes; \
+             on a still-registered surface, disabling it makes every admin route reject requests"
         );
     }
     if sentry_changed(previous.sentry.as_ref(), next.sentry.as_ref()) {

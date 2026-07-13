@@ -1,5 +1,5 @@
 ---
-title: Installation
+title: インストール
 description: Homebrew、cargo、ビルド済みバイナリ、またはソースから shunt をインストールする。
 ---
 

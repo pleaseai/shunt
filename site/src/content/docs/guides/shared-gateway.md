@@ -7,7 +7,7 @@ description: Per-client tokens for shared deployments, and SSE keepalive pings f
 
 By default shunt has no inbound auth — fine for a loopback-only personal gateway, but once you share it over a VPN/tunnel, anyone who can reach it can spend the **operator's** account on mapped models (shunt injects its own `api_key`/`chatgpt_oauth` credential for those). Passthrough models are not the concern: they forward each caller's own Anthropic credential.
 
-`[server.auth]` gates exactly the injected-credential routes with per-client tokens:
+`[server.auth]` gates injected-credential routes and model discovery with per-client tokens:
 
 ```toml
 [server.auth]                        # both keys optional; defaults shown
@@ -20,7 +20,7 @@ tokens_env = "SHUNT_CLIENT_TOKENS"
 export SHUNT_CLIENT_TOKENS="minsu:$(openssl rand -hex 32),alice:$(openssl rand -hex 32)"
 ```
 
-Startup **fails closed** if `[server.auth]` is present but the env var is unset or malformed. Requests to mapped models without a valid token get a 401 `authentication_error`; `GET /v1/models`, `GET /routes`, `GET|HEAD /`, `GET /health`, and passthrough models stay open. `GET /routes` is unauthenticated by the same discovery-endpoint design as `GET /v1/models` — it exposes routing metadata (the configured provider/upstream-model mapping), never credentials, which live only in provider config and are never read by that handler.
+Startup **fails closed** if `[server.auth]` is present but the env var is unset or malformed. Requests to mapped models and `GET /v1/models` without a valid token get a 401 `authentication_error`; discovery accepts the configured header plus `x-api-key` and `Authorization: Bearer`. `GET /routes`, `GET|HEAD /`, `GET /health`, and passthrough models stay open. `GET /routes` remains unauthenticated because it is a shunt-native endpoint exposing routing metadata (the configured provider/upstream-model mapping), never credentials, which live only in provider config and are never read by that handler.
 
 The token header is always stripped before forwarding, matching is constant-time, and token values are never logged (client *names* are, per request).
 
@@ -33,6 +33,8 @@ export ANTHROPIC_CUSTOM_HEADERS="x-shunt-token: <your token>"
 :::note
 This is application-layer identification only — transport encryption still comes from the deployment (WireGuard/Tailscale tunnel, or TLS termination in front); shunt itself serves plain HTTP.
 :::
+
+If you also enable the opt-in [admin web surface](/guides/admin-remote-provisioning/), protect it with a separate admin token and expose it only through HTTPS or a trusted tunnel.
 
 ## SSE keepalive pings
 
