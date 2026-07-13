@@ -1,0 +1,21 @@
+.claude/agent-memory/review-review-code-reviewer/MEMORY.md
+  s_682cc0cbaaf81a::t_5fe5b07d81e5bf 5
+.claude/agent-memory/review-review-code-reviewer/project_shunt_sentry_transaction_bypass.md
+  s_682cc0cbaaf81a::t_a2d2e52d36e2b3 1-14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "dfb80c8b2852abfa7220ebf80037accce180274e",
+  "prompts": {},
+  "sessions": {
+    "s_682cc0cbaaf81a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d897fd56-d628-4179-970f-afc3d3144f1c",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
