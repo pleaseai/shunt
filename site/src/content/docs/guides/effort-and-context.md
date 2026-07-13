@@ -37,8 +37,10 @@ Either way the request never reaches the responses adapter, so a count request i
 
 Claude Code computes the context indicator locally from the assistant message's token `usage` divided by the model's context-window size. For models routed to a `responses` provider:
 
-- **Token count (the numerator) is accurate.** shunt reads `input_tokens` (and cached tokens) from the Responses `usage` and forwards them in the Anthropic `message_delta`, peeling the cached part into `cache_read_input_tokens`.
+- **Token count (the numerator) is accurate.** shunt reads `input_tokens` (and cached tokens) from the Responses `usage` and forwards them in the Anthropic `message_delta`, peeling the cached part into `cache_read_input_tokens`. This is what the main-loop context bar and `/context` chart against.
 - **The window (the denominator) defaults to a fixed 200k for unrecognized ids.** A model with a larger real window (e.g. `gpt-5.6-sol` at 372k) shows a conservative, over-reported percentage — this only makes auto-compact trigger a little early.
+
+The agent panel's **per-subagent** token indicator (and the `subagentStatusLine` `tokenCount`) is a separate consumer: it reads the `usage` from the *opening* `message_start` snapshot, not the merged completion usage the main bar uses. The Responses API only reports usage at `response.completed`, so shunt seeds `message_start`'s `usage.input_tokens` with the same local tiktoken estimate used for `count_tokens` (gated on `count_tokens = "tiktoken"`, the default). Without that seed a codex subagent would sit at a stuck `0` in the agent panel even while its main context bar was correct, because Claude Code reads that first snapshot once and never re-reads the merged total. The accurate figure still arrives in `message_delta`; the `message_start` value is a text-only estimate (same caveats as [`count_tokens`](#token-counting-count_tokens)) that a provider set to `count_tokens = "estimate"` opts out of (leaving `message_start` at `0`).
 
 The 200k default can be overridden client-side with `CLAUDE_CODE_MAX_CONTEXT_TOKENS` (Claude Code 2.1.205+); it applies to any model id that does **not** start with `claude-`:
 
