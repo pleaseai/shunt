@@ -166,9 +166,18 @@ impl ClaudeAuthStore {
             let _refreshing = refreshing;
             let refreshed = refresh(&client, &token_url, &refresh_token).await?;
             let access_token = refreshed.access_token.clone();
-            write_back_off_thread(path, refreshed)
-                .await
-                .map_err(|error| anyhow::anyhow!("failed to update Claude auth file: {error}"))?;
+            if let Err(error) = write_back_off_thread(path, refreshed).await {
+                // The upstream refresh already consumed the old refresh token, so a
+                // failed writeback leaves the file holding a now-invalid token. Log
+                // here (not only via the returned Err) so the failure stays visible
+                // even when the caller's future was dropped and the JoinHandle —
+                // carrying this Err — is discarded with it.
+                tracing::warn!(
+                    %error,
+                    "Claude OAuth token refreshed upstream but writeback failed; stored refresh token is now stale until re-login"
+                );
+                return Err(anyhow::anyhow!("failed to update Claude auth file: {error}"));
+            }
             Ok::<String, anyhow::Error>(access_token)
         })
         .await
