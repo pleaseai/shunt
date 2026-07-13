@@ -57,7 +57,6 @@ pub(crate) fn write_auth_file_atomic(path: &Path, value: &Value) -> io::Result<(
         let _ = fs::remove_file(&temp);
         return Err(error);
     }
-    set_private_permissions(path)?;
     Ok(())
 }
 
@@ -83,17 +82,6 @@ fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
 #[cfg(not(unix))]
 fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     fs::write(path, bytes)
-}
-
-#[cfg(unix)]
-fn set_private_permissions(path: &Path) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-}
-
-#[cfg(not(unix))]
-fn set_private_permissions(_path: &Path) -> io::Result<()> {
-    Ok(())
 }
 
 pub(crate) fn format_iso8601(time: SystemTime) -> String {
