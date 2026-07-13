@@ -1,0 +1,24 @@
+src/auth/xai_login.rs
+  s_8fcbb5045af0e9::t_cd4c1c13e76fdb 19
+src/auth/shared.rs
+  s_8fcbb5045af0e9::t_6c39c4c5d1096b 12
+  s_8fcbb5045af0e9::t_c006d1a64d731d 33
+  s_8fcbb5045af0e9::t_74bc03d7cb3d3a 20
+  s_8fcbb5045af0e9::t_62c58a4bdb854e 44,46,50-51
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "28a52a2194f6e95a2ef8f4302dfe5ee1f9b835cd",
+  "prompts": {},
+  "sessions": {
+    "s_8fcbb5045af0e9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "57db19d9-b48c-4b3d-ad2b-56cd99397e09",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
