@@ -34,6 +34,8 @@ export ANTHROPIC_CUSTOM_HEADERS="x-shunt-token: <your token>"
 이는 애플리케이션 계층 식별일 뿐입니다 — 전송 암호화는 여전히 배포(WireGuard/Tailscale 터널, 또는 앞단의 TLS 종료)에서 옵니다; shunt 자체는 평문 HTTP를 제공합니다.
 :::
 
+옵트인 [관리자 웹 화면](/ko/guides/admin-remote-provisioning/)도 활성화한다면, 별도의 관리자 토큰으로 보호하고 HTTPS 또는 신뢰할 수 있는 터널을 통해서만 노출하세요.
+
 ## SSE keepalive ping
 
 미들박스는 조용한 스트림을 끊습니다 — Cloudflare의 프록시는 **한 바이트도 없이 100초가 지나면 524를 반환**하며(Enterprise 미만에서는 고정), 긴 추론 구간은 그만큼 조용할 수 있습니다. 그래서 shunt는 스트리밍 응답이 유휴 상태일 때마다 Anthropic 프로토콜 자체의 `ping` 이벤트를 주입합니다(`api.anthropic.com`이 직접 방출하며 모든 클라이언트가 무시하는 것):

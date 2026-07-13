@@ -45,6 +45,11 @@ pub struct ServerConfig {
     /// Absent ⇒ no inbound auth (loopback-only personal use).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<InboundAuthConfig>,
+    /// Optional opt-in admin web surface (M9). Absent ⇒ no admin routes are
+    /// registered at all (today's HTTP surface unchanged). See
+    /// `docs/m9-admin-surface.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admin: Option<AdminConfig>,
     /// Idle seconds before shunt injects an SSE `ping` event into a streaming
     /// response so middlebox timers (Cloudflare's 100s → 524) never expire.
     /// `0` disables injection (M5).
@@ -101,6 +106,75 @@ impl InboundAuthConfig {
             }
         })?;
         Ok(crate::auth::inbound::InboundAuth::new(header, tokens))
+    }
+}
+
+/// `[server.admin]` — opt-in admin web surface (M9). A **separate** credential
+/// from `[server.auth]`: client tokens are handed to devices, admin tokens add
+/// upstream accounts. Tokens live in the environment as `name:token` pairs
+/// (`SHUNT_ADMIN_TOKENS="ops:3f9c…"`), reusing the inbound-auth format and
+/// constant-time compare. Absent ⇒ no admin routes exist. See
+/// `docs/m9-admin-surface.md`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AdminConfig {
+    /// Header carrying the admin token for API/curl calls.
+    #[serde(default = "default_admin_header")]
+    pub header: String,
+    /// Env var holding the `name:token` admin pairs.
+    #[serde(default = "default_admin_tokens_env")]
+    pub tokens_env: String,
+    /// Browser session lifetime after login.
+    #[serde(default = "default_admin_session_ttl_secs")]
+    pub session_ttl_secs: u64,
+    /// Pending-login lifetime (time to open the authorize URL and paste back).
+    #[serde(default = "default_admin_pending_ttl_secs")]
+    pub pending_ttl_secs: u64,
+}
+
+fn default_admin_header() -> String {
+    "x-shunt-admin-token".to_string()
+}
+
+fn default_admin_tokens_env() -> String {
+    "SHUNT_ADMIN_TOKENS".to_string()
+}
+
+fn default_admin_session_ttl_secs() -> u64 {
+    3600
+}
+
+fn default_admin_pending_ttl_secs() -> u64 {
+    600
+}
+
+impl AdminConfig {
+    /// Resolve the configured admin tokens from the environment into the runtime
+    /// admin-auth state. Fails closed exactly like [`InboundAuthConfig::resolve`]:
+    /// a present `[server.admin]` with an unset/empty/malformed env var is a
+    /// startup error, never a silently-open admin surface.
+    pub fn resolve(&self) -> Result<crate::admin::AdminAuth, ConfigError> {
+        let header = axum::http::HeaderName::from_bytes(self.header.as_bytes()).map_err(|_| {
+            ConfigError::InvalidAdminHeader {
+                header: self.header.clone(),
+            }
+        })?;
+        let raw = std::env::var(&self.tokens_env).unwrap_or_default();
+        if raw.trim().is_empty() {
+            return Err(ConfigError::MissingAdminTokens {
+                env: self.tokens_env.clone(),
+            });
+        }
+        let tokens = crate::auth::inbound::parse_tokens(&raw).map_err(|message| {
+            ConfigError::InvalidAdminTokens {
+                env: self.tokens_env.clone(),
+                message,
+            }
+        })?;
+        Ok(crate::admin::AdminAuth::new(
+            crate::auth::inbound::InboundAuth::new(header, tokens),
+            std::time::Duration::from_secs(self.session_ttl_secs),
+            std::time::Duration::from_secs(self.pending_ttl_secs),
+        ))
     }
 }
 
@@ -519,6 +593,12 @@ pub enum ConfigError {
     UnknownPrefixProvider { prefix: String, provider: String },
     #[error("server.auth.header is not a valid header name: {header}")]
     InvalidAuthHeader { header: String },
+    #[error("server.admin.header is not a valid header name: {header}")]
+    InvalidAdminHeader { header: String },
+    #[error("[server.admin] is set but {env} is unset or empty; refusing to run open")]
+    MissingAdminTokens { env: String },
+    #[error("[server.admin] tokens in {env} are invalid: {message}")]
+    InvalidAdminTokens { env: String, message: String },
     #[error("[server.auth] is set but {env} is unset or empty; refusing to run open")]
     MissingClientTokens { env: String },
     #[error("invalid client tokens in {env}: {message}")]
@@ -640,6 +720,7 @@ impl Default for Config {
                 bind: "127.0.0.1:3001".to_string(),
                 default_provider: "anthropic".to_string(),
                 auth: None,
+                admin: None,
                 sse_keepalive_seconds: default_sse_keepalive_seconds(),
             },
             providers,
@@ -770,6 +851,11 @@ impl Config {
         // error, not an open gateway.
         if let Some(auth) = &self.server.auth {
             auth.resolve()?;
+        }
+        // Fail closed at boot: [server.admin] without resolvable tokens would be
+        // an unauthenticated admin surface. Reject it rather than run open.
+        if let Some(admin) = &self.server.admin {
+            admin.resolve()?;
         }
         // A [sentry] section with a non-empty DSN must parse at boot; a typo'd
         // DSN silently dropping every report would defeat the point of opting
@@ -988,6 +1074,21 @@ impl Config {
             .map(|auth| auth.map(std::sync::Arc::new))
     }
 
+    /// Resolve `[server.admin]` into the runtime admin-auth state, reading the
+    /// configured tokens env. `None` when the admin surface is not configured.
+    /// Fails closed (see [`AdminConfig::resolve`]). Shared by `build_router` and
+    /// the hot-reload path so both re-resolve admin tokens identically.
+    pub fn resolve_admin_auth(
+        &self,
+    ) -> Result<Option<std::sync::Arc<crate::admin::AdminAuth>>, ConfigError> {
+        self.server
+            .admin
+            .as_ref()
+            .map(|admin| admin.resolve())
+            .transpose()
+            .map(|admin| admin.map(std::sync::Arc::new))
+    }
+
     /// Look up a provider by name.
     pub fn provider(&self, name: &str) -> Option<&ProviderConfig> {
         self.providers.get(name)
@@ -1098,9 +1199,61 @@ mod tests {
     use figment::providers::Format;
 
     use super::{
-        config_file_candidates, AccountConfig, AuthMode, Config, ConfigError, ConfigFormat,
-        ModelConfig, ProviderKind, ResponsesFlavor,
+        config_file_candidates, AccountConfig, AdminConfig, AuthMode, Config, ConfigError,
+        ConfigFormat, ModelConfig, ProviderKind, ResponsesFlavor,
     };
+
+    #[test]
+    fn admin_config_uses_defaults_for_missing_fields() {
+        // An empty object exercises every `#[serde(default)]` helper.
+        let admin: AdminConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(admin.header, "x-shunt-admin-token");
+        assert_eq!(admin.tokens_env, "SHUNT_ADMIN_TOKENS");
+        assert_eq!(admin.session_ttl_secs, 3600);
+        assert_eq!(admin.pending_ttl_secs, 600);
+    }
+
+    #[test]
+    fn admin_config_resolve_succeeds_and_fails_closed() {
+        let base = AdminConfig {
+            header: "x-shunt-admin-token".to_string(),
+            tokens_env: "SHUNT_TEST_ADMIN_RESOLVE".to_string(),
+            session_ttl_secs: 1800,
+            pending_ttl_secs: 300,
+        };
+
+        // Success: a valid `name:token` env resolves with the configured TTLs.
+        std::env::set_var("SHUNT_TEST_ADMIN_RESOLVE", "ops:secret-xyz");
+        let auth = base.resolve().expect("valid tokens resolve");
+        assert_eq!(auth.session_ttl(), std::time::Duration::from_secs(1800));
+        assert_eq!(auth.pending_ttl(), std::time::Duration::from_secs(300));
+
+        // Malformed token pairs are a startup error.
+        std::env::set_var("SHUNT_TEST_ADMIN_RESOLVE", "no-colon-here");
+        assert!(matches!(
+            base.resolve(),
+            Err(ConfigError::InvalidAdminTokens { .. })
+        ));
+
+        // An unset env is a startup error, never a silently-open surface.
+        std::env::remove_var("SHUNT_TEST_ADMIN_RESOLVE");
+        assert!(matches!(
+            base.resolve(),
+            Err(ConfigError::MissingAdminTokens { .. })
+        ));
+
+        // An invalid header name is rejected.
+        std::env::set_var("SHUNT_TEST_ADMIN_RESOLVE", "ops:secret-xyz");
+        let bad_header = AdminConfig {
+            header: "invalid header".to_string(),
+            ..base.clone()
+        };
+        assert!(matches!(
+            bad_header.resolve(),
+            Err(ConfigError::InvalidAdminHeader { .. })
+        ));
+        std::env::remove_var("SHUNT_TEST_ADMIN_RESOLVE");
+    }
 
     struct BufferWriter {
         buffer: Arc<Mutex<Vec<u8>>>,

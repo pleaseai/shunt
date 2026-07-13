@@ -1,0 +1,118 @@
+---
+title: 비교
+description: shunt가 다른 Claude Code 게이트웨이 및 LLM 프록시와 어떻게 다른가 — 피어 그룹, 기능 매트릭스, 강점, 그리고 의도적인 범위 경계.
+---
+
+shunt와 가장 가까운 도구들을 근거에 기반해 비교합니다. 목표는 shunt의 설계 경계를 명시적으로 드러내는 것입니다: 의도적으로 하지 *않는* 것은 무엇이고, 범위 안의 실질적인 개선 기회는 어디에 있는지.
+
+:::note[범위]
+shunt에 대한 주장은 [shunt 저장소](https://github.com/pleaseai/shunt)의 `file:line`을 인용합니다. CLIProxyAPI에 대한 주장은 `router-for-me/CLIProxyAPI@main`에서 검증했습니다. 일반 게이트웨이(LiteLLM/Portkey/bifrost)에 대한 주장은 각 프로젝트가 스스로 내세우는 수준으로 유지하며 shunt 자체 README의 "Related work" 프레이밍과 일치합니다.
+:::
+
+## 1. shunt는 무엇인가 (그리고 무엇이 아닌가)
+
+shunt는 **스펙을 준수하는 Claude Code LLM 게이트웨이**입니다: Claude Code의 공식 `ANTHROPIC_BASE_URL` 게이트웨이 계약(`/v1/messages`, `/v1/models` 디스커버리, 어트리뷰션/헤더 패스스루)을 구현하고, **`model` id 단위의 선택적** 우회를 수행합니다 — 메인 세션은 Claude에 유지하고, 지정한 모델만 다른 프로바이더(ChatGPT/Codex, OpenAI, xAI)로 돌립니다. 매핑된 모델에 대해서는 Anthropic Messages ⇄ OpenAI Responses API를 변환하고, 그 외는 모두 Anthropic으로 그대로 패스스루합니다. 라우팅은 순수하게 요청의 `model` id로만 합니다 — 프롬프트 형태 핑거프린팅이 없습니다(`README.md:104-131`).
+
+이 초점이 아래 모든 비교의 축입니다. shunt는 광범위한 멀티 테넌트 플릿 운영이 아니라, **변환 충실도와 Claude Code 네이티브 동작**에 최적화하며, 모델 인지 선제 쿼터 로테이션과 반응형 페일오버를 결합한 Anthropic OAuth 계정 풀을 갖습니다.
+
+## 2. 피어 그룹
+
+| 그룹 | 예시 | shunt와의 관계 |
+|---|---|---|
+| **구독 기반 CC 프록시 (동일 클래스)** | **raine/claude-code-proxy** | **전체적으로 가장 가까운 피어** — Rust 단일 바이너리, `model` 단위 라우팅, Codex WebSocket + `previous_response_id` continuation, 구독 OAuth 백엔드 4개(Codex/Kimi/Grok/Cursor) |
+| **Codex OAuth를 갖춘 광범위한 Claude Code 프록시** | **CLIProxyAPI** (router-for-me) | 가장 가까운 *광범위* 피어 — Codex/ChatGPT OAuth, Codex WebSocket v2, 도구 변환에서 겹침 |
+| **좁은 Claude Code → Codex 스왑** | insightflo/chatgpt-codex-proxy | 같은 추론 계층 스왑, 단일 백엔드 |
+| **일반 Claude Code 라우터** | musistudio/claude-code-router, 1rgs/claude-code-proxy, fuergaosi233/claude-code-proxy | 보통 모델 단위 우회가 아닌 *전역* 모델 스왑 |
+| **일반 AI 게이트웨이** | LiteLLM, Portkey, bifrost, modelgate | 인접 인프라 — *백엔드*가 될 수 있지만 Claude Code 네이티브가 아님 |
+
+## 3. 기능 매트릭스
+
+범례: ● 완전 · ◐ 부분 / 우회책 · ○ 없음 · — 설계상 해당 없음
+
+| 기능 | shunt | raine/ccp | CLIProxyAPI | 일반 CC 라우터 | 일반 게이트웨이 |
+|---|:--:|:--:|:--:|:--:|:--:|
+| Claude Code 게이트웨이 프로토콜 준수(`/v1/models` 디스커버리, 어트리뷰션 패스스루) | ● | ◐ | ◐ | ◐ | ○ |
+| `model` id 단위 선택적 우회, 메인 세션은 Claude 유지(전역 스왑 아님) | ● | ◐³ | ◐ | ○ | ◐ |
+| Anthropic Messages ⇄ OpenAI Responses 변환 | ● | ● | ● | ◐ (대부분 chat-completions) | ◐ (chat-completions) |
+| ChatGPT/Codex **구독**(OAuth) 백엔드 | ● | ●⁴ | ● | 드묾 | ○ |
+| Codex **WebSocket** Responses 전송 | ● | ● | ● | ○ | ○ |
+| **변환 경로에서의** 업로드 트리밍(`previous_response_id` continuation) | ● | ● | ○ (패스스루만) | ○ | ○ |
+| tool-search / `defer_loading` / `tool_reference` 처리 | ◐ (심: 동작하지만 컨텍스트 절약 없음; 네이티브 옵트인⁸) | ○⁵ | ◐ (업스트림) / ● (포크) | ○ | ○ |
+| Claude Code `thinking`으로의 reasoning 왕복 | ● (암호화) | ◐ (Kimi/Grok; **Codex는 버림**) | ◐ | ○ | ◐ |
+| 멀티 계정 로드 밸런싱 / 페일오버 | ◐⁷ | ○ | ● | 일부 | ● |
+| 백엔드 폭 | 프로바이더 4개¹ | 구독 4개⁶ | 백엔드 11개² | 다양 | 100–1600+ |
+| 관리 API / 대시보드 | ◐ (옵트인 관리자 화면) | ◐ (모니터 TUI) | ● | 일부 | ● |
+| 사용량 / 쿼터 / 비용 추적 | ○ (Sentry 메트릭만) | ○ | ● | 일부 | ● |
+| 플러그인 / 인터셉터 시스템 | ○ | ○ | ● | 일부 | ● |
+| 언어 / 풋프린트 | Rust, 바이너리 1개 | Rust, 바이너리 1개 | Go | Node/Python | Go/Node/Python |
+| 구성 모델 | TOML + env, 핫 리로드 | env + 구성 파일 | YAML + 관리 API | 다양 | YAML/UI |
+
+¹ shunt: 두 가지 어댑터 *종류*(`anthropic` 패스스루, `responses` 변환)와 4개 내장 프로바이더(Anthropic, OpenAI, ChatGPT/Codex, xAI) — Anthropic-Messages 또는 OpenAI-Responses 엔드포인트라면 구성만으로 추가 가능(`src/config.rs:180-190,316-363`).
+² CLIProxyAPI: aistudio, antigravity, claude, codex, codex-ws, gemini, gemini-vertex, kimi, openai-compat, xai, xai-ws.
+³ raine/ccp는 shunt처럼 `ANTHROPIC_MODEL`로 모델 단위 라우팅을 하지만 **Anthropic 패스스루 어댑터가 없습니다** — 알 수 없는 model id는 400을 반환하므로, 지정한 모델만 우회하면서 메인 세션을 Claude에 유지할 수 없습니다.
+⁴ raine/ccp는 **자체** ChatGPT OAuth(PKCE 브라우저 + 디바이스 코드 로그인)를 구현합니다; shunt는 Codex CLI 로그인(`~/.codex/auth.json`)을 재사용하며 자체 PKCE 플로우는 미해결 TODO입니다(`src/auth/mod.rs:18-19`).
+⁵ **raine/ccp 소스를 읽어 확인함**(`fe80a6b`, 2026-07-11): tool-search 처리가 존재하지 않습니다(`defer_loading` / `tool_reference` / `tool_search` / `advanced-tool-use`에 대한 매치 0건). 도구는 `{name, description, parameters}`로 화이트리스트 재구성되므로(`src/providers/codex/translate/request.rs:476-494`) `defer_loading:true`는 조용히 버려집니다 — 400은 아니지만 컨텍스트 절약도 없음; ToolSearch 결과의 `tool_reference` 블록은 shunt의 깔끔한 `"Loaded tool: X"` 대신 `[unsupported content block omitted: tool_reference]`로 렌더링됩니다(`request.rs:836-842`). 그래서 ○(shunt의 ◐ 대비): raine/ccp에 대해 `ENABLE_TOOL_SEARCH`를 강제로 켜면 디스커버리 루프 결과가 플레이스홀더로 격하됩니다. 기본적으로는 Claude Code 자체 게이트가 퍼스트파티가 아닌 base URL 뒤에서 tool search를 꺼 두므로 이 문제는 잠재된 채로 남습니다.
+⁶ raine/ccp 구독 백엔드: Codex(ChatGPT Plus/Pro), Kimi(kimi.com), Grok(grok.com), Cursor Agent — 모두 구독 OAuth 경유.
+⁷ shunt는 Anthropic `claude_oauth`에 대해서만 명시적 계정을 풀링합니다: 세션 스티키 선택, 프로바이더별 라운드 로빈, 계정별 5h/7d 쿼터 헤더에 기반한 모델 인지 선제 로테이션, 쿨다운, 401 후 강제 갱신, 그리고 쿼터 거부 429와 5xx 응답에 대한 반응형 페일오버. ChatGPT/Codex는 단일 계정으로 남아 있고, 계정별 사용량 리포팅은 구현되지 않았습니다.
+⁸ **[#82]**는 옵트인 프로바이더별 `tool_search` 플래그(`src/config.rs:250-261,1041-1049`)를 추가해, Claude Code의 tool search를 스키마를 텍스트로 접어 넣는 대신 OpenAI Responses API 자체의 네이티브 클라이언트 실행 `tool_search` 프로토콜로 매핑합니다 — `ToolSearch` → `tool_search`, 그 `tool_use` → `tool_search_call`, `tool_reference` → 로드된 도구들의 전체 스키마를 구조화 JSON으로 담는 `tool_search_output` 아이템(`src/model/responses_request.rs`). 기본은 꺼짐: 스톡 OpenAI 또는 ChatGPT/Codex Responses 플레이버가 gpt-5.4+ 모델로 라우팅될 때만 적용되며, 특정 백엔드가 shunt가 방출하는 형태를 수용하는지 라이브 프로브로 확인될 때까지 플래그 뒤에 게이팅됩니다. xAI/Grok 라우트와 gpt-5.2 이하 모델은 플래그와 무관하게 #43 심을 유지합니다.
+
+> "raine/ccp" = [raine/claude-code-proxy](https://github.com/raine/claude-code-proxy).
+
+## 4. shunt가 앞서는 곳
+
+- **Claude Code 네이티브 충실도.** shunt는 옛 CC 프록시들이 쓰는 "서브에이전트 시스템 프롬프트를 해싱"하는 휴리스틱 대신 *공식* 게이트웨이 계약을 구현합니다; 세션은 Claude Code의 하니스 안에 그대로 남고(같은 도구 루프, 스킬, 스크립트 경로) 토큰 생성만 외부로 나갑니다(`README.md:97-131`). 대부분의 일반 라우터와 게이트웨이는 OpenAI chat-completions 중심이라 Claude Code의 디스커버리/어트리뷰션 표면을 존중하지 않습니다.
+
+- ***변환* 경로에서의 업로드 트리밍.** shunt는 Anthropic ⇄ Responses를 변환하므로(Claude Code는 `previous_response_id`를 절대 보내지 않음) continuation을 *합성*합니다: 풀링된 연결에 트랜스크립트를 저장하고, 다음 요청을 타입 인지 정규화로 그것과 diff한 뒤, `previous_response_id` + 입력 델타를 주입합니다 — Claude→Codex 경로의 실질적인 업로드 트리밍입니다(`src/adapters/codex_continuation.rs:79-114`). 이는 **고유하지 않습니다**: **raine/claude-code-proxy도 같은 부류를 수행합니다**(옵트인 `CCP_CODEX_PREVIOUS_RESPONSE_ID`, 세션 키, append-only). 이 두 Rust 구독 프록시가 이를 공유합니다 — 진짜 대비는 **CLIProxyAPI** 같은 **패스스루** 프록시와의 대비입니다. CLIProxyAPI의 Codex WS는 트랜스크립트/response-id를 저장하지 않고 Codex CLI 클라이언트가 `previous_response_id`를 보내는 데 의존하므로, *자신의* 변환 경로에서는 매 턴 전체 입력을 다시 보냅니다(더불어 tool-call 페어링 일관성을 위한 도구 출력 "수리" 캐시도 있음).
+
+- **정규화 깊이 + reasoning 충실도 (가장 가까운 피어 대비).** continuation을 공유하는 그 짝 안에서, shunt는 두 축에서 raine/claude-code-proxy보다 더 나아갑니다: (1) continuation 정규화가 `function_call.arguments`를 파싱하고 reasoning `encrypted_content`/signature를 왕복시키므로, 형태만 비교했다면 끊겼을 도구 턴들을 가로질러 continuation이 계속 발동합니다(`src/adapters/codex_continuation.rs:11-48`); (2) **Codex reasoning을 `thinking`으로 Claude Code에 전달**하는 반면, raine/claude-code-proxy는 **Codex reasoning 블록을 통째로 버립니다**(자체 README가 이를 한계로 명시). 예상 못 한 형태는 여전히 전체 입력으로 폴백합니다 — 잘못된 컨텍스트는 절대 없고, 놓친 최적화만 있을 뿐입니다.
+
+- **작고 감사 가능한 풋프린트.** 단일 Rust 바이너리, 닫힌 채 실패(fail-closed)하는 부팅 검증과 핫 리로드를 갖춘 TOML+env 구성; 보안을 신경 써야 할 런타임 플러그인 표면이 없습니다.
+
+## 5. shunt가 뒤처지는 곳 — 그리고 그 이유
+
+대부분의 격차는 실수가 아니라 **의도적인 범위 경계**입니다. shunt 자체 README가 일반 게이트웨이(LiteLLM/Portkey/bifrost)를 같은 제품이 아닌 *인접 인프라 / 가능한 백엔드*로 자리매김합니다.
+
+- **Anthropic OAuth 멀티 계정은 의도적으로 좁습니다.** shunt는 `auth = "claude_oauth"`에 대한 선제적·반응형 계정 풀을 갖습니다: `x-claude-code-session-id` 스티키니스, 프로바이더별 라운드 로빈, 5시간 또는 적용 주간 버킷이 벽에 닿기 전의 모델 인지 로테이션, 계정 쿨다운, 401 후 자격 증명 파일 강제 갱신, 쿼터 거부 429 또는 5xx 응답 후 페일오버([상세](/ko/guides/anthropic-multi-account/)). ChatGPT/Codex 계정 풀링, 새로 전환된 계정의 동시성 램프업, 계정별 사용량 노출은 **하지 않습니다**. CLIProxyAPI, LiteLLM, Portkey는 더 광범위한 플릿 지향 밸런싱과 가시성을 제공합니다; 남은 격차는 §6의 G–H 항목을 보세요.
+- **좁은 백엔드 폭.** Anthropic-Messages 패스스루 또는 OpenAI-Responses 변환만; 두 프로토콜 중 하나를 노출하지 않는 한 네이티브 Gemini/Bedrock/Azure/Ollama는 없습니다.
+- **완전한 관리 API / 사용량-쿼터 / 비용 추적 없음.** 옵트인 [관리자 웹 화면](/ko/guides/admin-remote-provisioning/)이 `claude_oauth` 프로바이더의 브라우저 계정 프로비저닝과 읽기 전용 계정 풀 상태를 다루지만, 범용 관리 API, 요청별 사용량 계측, 비용 추적은 없습니다; 관측성은 옵트인 Sentry 메트릭뿐입니다(`src/metrics.rs`). 전체 HTTP 표면은 [HTTP 엔드포인트](/ko/reference/endpoints/)에 나열되어 있습니다. CLIProxyAPI는 완전한 관리 API + 쿼터/사용량 매니저와 서드파티 대시보드 생태계를 제공합니다; 같은 클래스 피어인 raine/claude-code-proxy조차 shunt에 상응물이 없는 내장 **모니터 TUI**(라이브 세션, 활성/최근 요청, 오류 이벤트)를 제공합니다.
+- **자체 ChatGPT OAuth 로그인 없음.** shunt는 Codex CLI 로그인(`~/.codex/auth.json`)을 재사용합니다; 퍼스트파티 PKCE 플로우는 미해결 TODO입니다(`src/auth/mod.rs:18-19`). raine/claude-code-proxy가 여기서 선행 사례입니다 — 자체 `codex auth login`(PKCE)과 `codex auth device`(디바이스 코드)를 모두 제공해 Codex CLI 설치 없이 동작합니다.
+- **플러그인 / 인터셉터 시스템 없음.** 어댑터 집합은 고정된 두 변형의 `match`입니다(`src/proxy.rs:152-163`); CLIProxyAPI는 완전한 플러그인 호스트(RPC ABI, 인증 프로바이더, 실행기 라우팅, 요청/응답 변환기)를 갖고 있습니다.
+- **평문 HTTP만**(TLS는 범위 밖, `docs/m4-inbound-auth.md:13`).
+
+## 6. 개선 기회 (이 비교로부터)
+
+shunt의 미션 적합도 순으로 정렬. **범위 안** 항목은 고충실도 변환 / Claude Code 네이티브 동작을 진전시키고, **범위 경계** 항목은 shunt를 플릿 게이트웨이 쪽으로 움직이므로 먼저 의식적인 결정이 필요합니다.
+
+### 범위 안
+
+- **A. tool-search 컨텍스트 절약 (추적 중: [#43]).** shunt는 `tool_reference`를 이름만 있는 `"Loaded tool: X"` 텍스트로 렌더링하고 *모든* 지연 도구 스키마를 선불로 전달합니다(`src/model/responses_request.rs:393-403,475-508`) — 루프는 동작하지만 기본적으로 컨텍스트를 전혀 회수하지 못합니다. 서버 측 에뮬레이션(지연+미로드 도구 필터링, `tool_reference`에 전체 스키마 주입)을 이식하세요 — 참조 구현: CLIProxyAPI PR #1892(`Adamcf123/CLIProxyAPI@main`). **[#82]로 부분 해결**: 옵트인 프로바이더별 `tool_search = true` 플래그가 이제 텍스트 심 대신 tool search를 Responses API의 네이티브 클라이언트 실행 `tool_search` 프로토콜로 매핑합니다(스톡 OpenAI 또는 ChatGPT/Codex 프로바이더가 gpt-5.4+ 모델로 라우팅될 때; 위 각주 8 참조). 백엔드 수용에 대한 라이브 프로브 전까지 기본은 꺼짐이므로, 운영자가 옵트인하기 전에는 심(그리고 xAI/Grok과 구형 모델의 제로 절약 격차)이 기준선으로 남습니다.
+
+- **B. Codex WS: continuation 정규화 라이브 프로브 (추적 중: [#45]).** Reasoning/`function_call` 정규화는 3개 소스에 대해 스키마 검증됐지만 아직 라이브 프로브되지 않았습니다(`docs/m7-codex-websocket.md:250-270`). 계산에 없던 필드는 조용히 안전한 전체 입력 폴백으로 떨어집니다 — 정확성은 안전하지만 *잠재적으로 놓치는 최적화*입니다. 프로브 패스가 continuation이 마땅한 만큼 자주 발동하는지 확인해 줄 것입니다.
+
+- **C. Codex WS: 스트림 중간 실패 재개 (추적 중: [#46]).** 스트리밍 *전* WS 실패는 투명하게 HTTP로 폴백하지만, *스트림 중간* 실패는 폴백이 아니라 오류 SSE 이벤트로 표면화됩니다(`src/adapters/responses.rs:92-135`). 턴 중간에 끊긴 소켓이 오류 대신 HTTP로 강등되도록 재개/재생을 고려하세요.
+
+- **D. Codex WS: 투기적 프리웜(`generate:false`) (추적 중: [#47]).** 오늘은 명시적으로 범위 밖이지만(`docs/m7-codex-websocket.md:53-58`), 첫 토큰 전에 소켓/컨텍스트를 예열하는 실질적인 Codex 지연 최적화입니다. continuation이 라이브 프로브된 후 재검토할 가치가 있습니다.
+
+- **E. 업스트림 재시도/백오프 (추적 중: [#48]).** M4에서 계획된 유한 재시도/백오프는 구현되지 않았습니다(`docs/implementation-plan.md:247`); 일시적인 업스트림 429/5xx 오류가 그대로 표면화됩니다. 작고 멱등한 재시도가 범위를 늘리지 않으면서 회복탄력성을 개선할 것입니다.
+
+- **F. 문서 드리프트: `GET /protocol` (추적 중: [#49]).** README는 `GET /protocol`의 기계 판독 가능 스펙을 광고하지만(`README.md:110`) `src/server.rs`에 그런 라우트가 없습니다. 구현하거나(저렴하고 게이트웨이 프로토콜 스토리의 일부) 문서를 바로잡으세요.
+
+### 범위 경계 (하기 전에 결정할 것)
+
+- **G. ChatGPT/Codex 최소 멀티 계정.** 완전한 LB는 범위 밖이지만, 헤비 유저는 ChatGPT/Codex 롤링 윈도우 한도에 부딪히며, 이때 소수의 `~/.codex/auth.json`류 로그인에 걸친 *fill-first* 로테이션(한 계정의 윈도우를 소진한 뒤 다음으로 이동)이 불균형하게 가치 있습니다. CLIProxyAPI 대비 단일 최대 기능 격차이자 설계 논의 가치가 가장 큰 항목입니다.
+
+- **H. 계정별 쿼터/사용량 가시성.** G의 후속 — 여러 구독 계정이 쓰이면 각 계정의 5h/7d 윈도우를 노출하는 것(CLIProxyAPI 생태계처럼)이 유용해집니다. 관측성 격차와 연결됩니다.
+
+- **I. 네이티브 Gemini(및 기타) 백엔드.** shunt가 Anthropic-Messages / OpenAI-Responses 이원 구조를 넘어 넓어질 때만 관련 있습니다. 현재 범위 아님.
+
+## 7. 한 줄 요약
+
+shunt는 스펙트럼의 **고충실도, Claude Code 네이티브** 끝단입니다. 가장 가까운 피어는 **raine/claude-code-proxy**로 같은 클래스(Rust, 구독 OAuth, `model` 단위 라우팅, Codex WS + `previous_response_id` continuation)이며, 이에 대한 shunt의 우위는 더 깊은 continuation 정규화, Codex reasoning 충실도(raine은 버림), Anthropic 패스스루 경로(메인 세션을 Claude에 유지), xAI OAuth입니다; raine의 우위는 내장 모니터 TUI, 퍼스트파티 ChatGPT OAuth 로그인, Kimi/Cursor 폭입니다. **CLIProxyAPI** 대비 shunt는 변환 경로 업로드 트리밍에서 이기고(CLIProxyAPI의 WS는 패스스루), 대부분의 플릿 기능(광범위한 멀티 계정 LB, 완전한 관리 API, 플러그인, 백엔드 폭)은 설계상 내줍니다. 이제 모델 인지 선제 쿼터 스케줄링과 반응형 페일오버를 갖춘 좁은 Anthropic OAuth 계정 풀을 제공하지만, ChatGPT/Codex 풀링은 의도적인 격차로 남습니다. 범위 안에서 가장 가치 있는 작업은 tool-search 컨텍스트 절약 완성([#43]) — Codex/OpenAI의 옵트인 네이티브 `tool_search` 경로([#82])로 일부 해결됨 — 과 Codex WS continuation 강화(라이브 프로브 + 스트림 중간 폴백)이며, 저울질할 가장 큰 의도적 격차는 ChatGPT/Codex의 최소 fill-first 멀티 계정입니다.
+
+[#43]: https://github.com/pleaseai/shunt/issues/43
+[#82]: https://github.com/pleaseai/shunt/issues/82
+[#45]: https://github.com/pleaseai/shunt/issues/45
+[#46]: https://github.com/pleaseai/shunt/issues/46
+[#47]: https://github.com/pleaseai/shunt/issues/47
+[#48]: https://github.com/pleaseai/shunt/issues/48
+[#49]: https://github.com/pleaseai/shunt/issues/49

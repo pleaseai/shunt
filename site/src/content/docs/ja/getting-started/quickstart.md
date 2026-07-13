@@ -1,5 +1,5 @@
 ---
-title: Quickstart
+title: クイックスタート
 description: shunt を設定し、ゲートウェイを起動し、5 分で Claude Code をそこへ向ける。
 ---
 

@@ -27,7 +27,9 @@
 //!
 //! - **All items** shed the additive backend-only keys `id`/`phase`/`status`. Both
 //!   schemas mark `status`/`id` as "populated when returned via API"; a live probe
-//!   (text turn) confirmed the reconstruction is otherwise a strict subset.
+//!   over the WebSocket transport (issue #45, 2026-07-13) captured real
+//!   `message`/`reasoning`/`function_call` items and confirmed the reconstruction
+//!   is otherwise a strict subset, with no unaccounted field.
 //! - **`message`** content parts shed `annotations`/`logprobs` (probe-confirmed).
 //! - **`function_call`** items parse their `arguments` JSON *string* into a value
 //!   and drop `namespace`. The backend sends the model's raw argument string
@@ -41,10 +43,13 @@
 //!   normalization; shunt is the outlier because Anthropic's `tool_use.input` is a
 //!   parsed object. `namespace` appears only for namespaced/MCP tools and is not
 //!   reconstructed; `call_id` already identifies the call.
-//! - **`reasoning`** items round-trip `encrypted_content` and `id` verbatim (via
-//!   the thinking-block signature) and shed `status` and the plaintext `content`
-//!   array (`Optional[List[reasoning_text]]`, which shunt does not reconstruct);
-//!   their `summary` array is normalized part-by-part like `content`.
+//! - **`reasoning`** items round-trip `encrypted_content` verbatim (via the
+//!   thinking-block signature) and shed the plaintext `content` array
+//!   (`Optional[List[reasoning_text]]`, which shunt does not reconstruct) along
+//!   with `id`/`status` like every item; their `summary` array is normalized
+//!   part-by-part like `content`. The live probe found the backend actually omits
+//!   `status` entirely and sends an empty `content` array under `store:false`, so
+//!   the strip rules hold whether or not either field is present.
 //!
 //! [`translate_request`]: crate::model::responses::translate_request
 
@@ -246,8 +251,9 @@ mod tests {
         json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": text}]})
     }
 
-    /// The backend's assistant message item, as captured live from the ChatGPT
-    /// backend (extra id/phase/status + content annotations/logprobs).
+    /// The backend's assistant message item, as captured live over the Codex
+    /// WebSocket (issue #45, 2026-07-13): keys `content`/`id`/`phase`/`role`/
+    /// `status`/`type`, with each content part carrying `annotations`/`logprobs`.
     fn backend_assistant(text: &str) -> Value {
         json!({
             "type": "message",
@@ -279,8 +285,11 @@ mod tests {
         })
     }
 
-    /// The backend's `function_call` output item: extra `id`/`status`, and an
-    /// `arguments` string in the model's own formatting (spaces, source key order).
+    /// The backend's `function_call` output item, as captured live over the Codex
+    /// WebSocket (issue #45, 2026-07-13): keys `arguments`/`call_id`/`id`/`name`/
+    /// `status`/`type`, with `arguments` a JSON string in the model's own
+    /// formatting (here spaced/reordered to exercise the structural comparison).
+    /// A plain function tool carries no `namespace` (that appears only for MCP).
     fn backend_function_call() -> Value {
         json!({
             "type": "function_call",
@@ -304,16 +313,19 @@ mod tests {
         })
     }
 
-    /// The backend's `reasoning` output item: extra `id`/`status` and a plaintext
-    /// `content` array; `summary` and `encrypted_content` round-trip verbatim
-    /// through the thinking-block signature.
+    /// The backend's `reasoning` output item, as captured live over the Codex
+    /// WebSocket (issue #45, 2026-07-13): keys `content`/`encrypted_content`/`id`/
+    /// `summary`/`type`. Under `store:false` the backend omits `status` and sends
+    /// an empty `content` array (the plaintext chain of thought is not returned);
+    /// `summary` and `encrypted_content` round-trip through the thinking-block
+    /// signature. The `content`/`status` strip is exercised defensively in
+    /// [`normalize_reasoning_matches_reconstruction`].
     fn backend_reasoning() -> Value {
         json!({
             "type": "reasoning",
             "id": "rs_1",
-            "status": "completed",
             "summary": [{"type": "summary_text", "text": "think about it"}],
-            "content": [{"type": "reasoning_text", "text": "long private chain of thought"}],
+            "content": [],
             "encrypted_content": "ENC"
         })
     }
@@ -372,10 +384,21 @@ mod tests {
 
     #[test]
     fn normalize_reasoning_matches_reconstruction() {
-        // The backend item carries `status` and a plaintext `content` array the
-        // reconstruction never produces; both are shed for the comparison.
+        // The live-captured item (empty `content`, no `status`) matches the
+        // reconstruction once normalized.
         assert_eq!(
             normalize_item(&backend_reasoning()),
+            normalize_item(&reconstructed_reasoning())
+        );
+        // Defensive: even if the backend ever returns `status` and a populated
+        // plaintext `content` array (the API-returned shape), both are shed so the
+        // append-only match still holds.
+        let mut verbose = backend_reasoning();
+        verbose["status"] = json!("completed");
+        verbose["content"] =
+            json!([{"type": "reasoning_text", "text": "long private chain of thought"}]);
+        assert_eq!(
+            normalize_item(&verbose),
             normalize_item(&reconstructed_reasoning())
         );
     }

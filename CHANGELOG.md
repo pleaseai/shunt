@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.12.0](https://github.com/pleaseai/shunt/compare/v0.11.0...v0.12.0) (2026-07-13)
+
+
+### Features
+
+* **codex:** map Claude ToolSearch to native Responses client tool_search ([#82](https://github.com/pleaseai/shunt/issues/82)) ([#86](https://github.com/pleaseai/shunt/issues/86)) ([ab777f2](https://github.com/pleaseai/shunt/commit/ab777f2ed266467a5b3946d71a93fda9bda5cf62))
+
+
+### Bug Fixes
+
+* **adapters:** map upstream error statuses to Anthropic error types on translated backends ([#94](https://github.com/pleaseai/shunt/issues/94)) ([057be52](https://github.com/pleaseai/shunt/commit/057be5259dbf4d06b8e52fb8a86d200e655ef17e))
+* **codex-ws:** keep pooled WebSockets responsive to upstream pings ([#96](https://github.com/pleaseai/shunt/issues/96)) ([fbba7de](https://github.com/pleaseai/shunt/commit/fbba7de1f71f803a14210bd202b2c015689b5ddf))
+
 ## [0.11.0](https://github.com/pleaseai/shunt/compare/v0.10.0...v0.11.0) (2026-07-13)
 
 

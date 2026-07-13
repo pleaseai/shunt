@@ -34,6 +34,8 @@ export ANTHROPIC_CUSTOM_HEADERS="x-shunt-token: <your token>"
 This is application-layer identification only — transport encryption still comes from the deployment (WireGuard/Tailscale tunnel, or TLS termination in front); shunt itself serves plain HTTP.
 :::
 
+If you also enable the opt-in [admin web surface](/guides/admin-remote-provisioning/), protect it with a separate admin token and expose it only through HTTPS or a trusted tunnel.
+
 ## SSE keepalive pings
 
 Middleboxes kill quiet streams — Cloudflare's proxy returns **524 after 100 seconds without a byte** (fixed below Enterprise), and long reasoning stretches can be silent that long. shunt therefore injects the Anthropic protocol's own `ping` event (which `api.anthropic.com` itself emits and every client ignores) whenever a streaming response has been idle:

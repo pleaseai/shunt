@@ -51,6 +51,11 @@ export default defineConfig({
               slug: 'getting-started/why-shunt',
             },
             {
+              label: 'Comparison',
+              translations: { ko: '비교', ja: '比較', 'zh-CN': '对比' },
+              slug: 'getting-started/comparison',
+            },
+            {
               label: 'Installation',
               translations: { ko: '설치', ja: 'インストール', 'zh-CN': '安装' },
               slug: 'getting-started/installation',
@@ -90,6 +95,11 @@ export default defineConfig({
               label: 'Anthropic Multi-Account',
               translations: { ko: 'Anthropic 멀티 계정', ja: 'Anthropic マルチアカウント', 'zh-CN': 'Anthropic 多账户' },
               slug: 'guides/anthropic-multi-account',
+            },
+            {
+              label: 'Admin & Remote Provisioning',
+              translations: { ko: '관리자 & 원격 프로비저닝', ja: '管理とリモートプロビジョニング', 'zh-CN': '管理与远程预配' },
+              slug: 'guides/admin-remote-provisioning',
             },
             {
               label: 'Connect Claude Code',

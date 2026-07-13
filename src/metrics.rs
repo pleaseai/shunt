@@ -27,6 +27,7 @@ use sentry::protocol::Unit;
 struct OtelInstruments {
     requests: Counter<u64>,
     latency: Histogram<f64>,
+    continuation: Counter<u64>,
 }
 
 fn otel_instruments() -> &'static OtelInstruments {
@@ -43,8 +44,35 @@ fn otel_instruments() -> &'static OtelInstruments {
                 .with_unit("ms")
                 .with_description("Proxied inference request latency")
                 .build(),
+            continuation: meter
+                .u64_counter("shunt.codex_continuation")
+                .with_description(
+                    "Codex WebSocket continuation decisions (hit vs full-input fallback)",
+                )
+                .build(),
         }
     })
+}
+
+/// The outcome of a Codex WebSocket continuation decision on a *reused*
+/// connection (one that carried stored `previous_response_id` state).
+#[derive(Clone, Copy, Debug)]
+pub enum ContinuationOutcome {
+    /// The input was an append-only extension, so only the delta was sent with
+    /// `previous_response_id` — the payload-trimming win.
+    Hit,
+    /// The input was not an append-only extension of the stored transcript, so
+    /// the full input was re-sent. Correctness-safe, but a missed optimization.
+    Fallback,
+}
+
+impl ContinuationOutcome {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Hit => "hit",
+            Self::Fallback => "fallback",
+        }
+    }
 }
 
 /// Record one proxied inference request: a `shunt.requests` count and a
@@ -74,9 +102,33 @@ pub fn record_proxied_request(provider: &str, model: &str, status: u16, latency_
     instruments.latency.record(latency_ms, &attributes);
 }
 
+/// Record a Codex WebSocket continuation decision on a reused connection: a
+/// `hit` (continued from `previous_response_id`, delta only) or a `fallback`
+/// (input was not an append-only extension, full input re-sent). Emitted only
+/// when the pooled connection actually held continuation state, so the two
+/// series are directly comparable — a fresh connection (no stored state) is not
+/// counted. A rising `fallback` share on a warm pool is the signal that the
+/// append-only normalization has drifted from the backend's item shapes (issue
+/// #45): correctness-safe, but a latent lost optimization. Emitted to Sentry and
+/// OpenTelemetry; each sink is inert unless configured.
+pub fn record_continuation_outcome(provider: &str, outcome: ContinuationOutcome) {
+    let provider = provider.to_owned();
+    let outcome = outcome.as_str();
+    sentry::metrics::counter("shunt.codex_continuation", 1)
+        .attribute("provider", provider.clone())
+        .attribute("outcome", outcome.to_owned())
+        .capture();
+
+    let attributes = [
+        KeyValue::new("provider", provider),
+        KeyValue::new("outcome", outcome),
+    ];
+    otel_instruments().continuation.add(1, &attributes);
+}
+
 #[cfg(test)]
 mod tests {
-    use super::record_proxied_request;
+    use super::{record_continuation_outcome, record_proxied_request, ContinuationOutcome};
 
     /// The core opt-in contract: recording a proxied request must never panic,
     /// whatever the sink state — the default (no Sentry client, no OTel meter
@@ -87,5 +139,12 @@ mod tests {
     fn record_is_noop_without_sinks() {
         record_proxied_request("openai", "gpt-5.2", 200, 123.4);
         record_proxied_request("anthropic", "claude-opus-4-8", 502, 0.0);
+    }
+
+    /// The continuation counter honors the same opt-in no-op contract.
+    #[test]
+    fn record_continuation_is_noop_without_sinks() {
+        record_continuation_outcome("codex", ContinuationOutcome::Hit);
+        record_continuation_outcome("codex", ContinuationOutcome::Fallback);
     }
 }

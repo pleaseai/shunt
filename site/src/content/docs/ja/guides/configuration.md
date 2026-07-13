@@ -1,5 +1,5 @@
 ---
-title: Configuration
+title: 設定
 description: shunt が設定を読み込む方法 — ファイル、環境変数、ルーティング。
 ---
 
