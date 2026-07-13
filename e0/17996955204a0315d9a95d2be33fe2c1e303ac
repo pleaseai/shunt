@@ -1,0 +1,196 @@
+src/lib.rs
+  s_c87397868ebc32::t_7c3cc071303fb9 3
+docs/gateway-protocol.md
+  s_c87397868ebc32::t_7c3cc071303fb9 264,285
+site/src/content/docs/reference/endpoints.md
+  s_c87397868ebc32::t_7c3cc071303fb9 15-22,24-26
+src/reload.rs
+  s_c87397868ebc32::t_7c3cc071303fb9 19,31-34,48,52,86-93
+  s_c87397868ebc32::t_6f7d997ab985ac 94-95
+site/src/content/docs/guides/shared-gateway.md
+  s_c87397868ebc32::t_7c3cc071303fb9 10,23,37
+  s_c87397868ebc32::t_817a576193d10f 38
+.claude/agent-memory/review-review-documentation-analyzer/shunt_comparison_md_self_contradiction_pattern.md
+  s_c87397868ebc32::t_7c3cc071303fb9 1-43
+site/src/content/docs/guides/admin-remote-provisioning.md
+  s_c87397868ebc32::t_7c3cc071303fb9 1-81
+site/src/content/docs/ja/guides/connect-claude-code.md
+  s_c87397868ebc32::t_7c3cc071303fb9 2
+.claude/agent-memory/review-review-silent-failure-hunter/MEMORY.md
+  s_c87397868ebc32::t_7c3cc071303fb9 4
+site/src/content/docs/ja/guides/model-discovery.md
+  s_c87397868ebc32::t_7c3cc071303fb9 2
+.release-please-manifest.json
+  s_c87397868ebc32::t_7c3cc071303fb9 2
+.claude/agent-memory/review-review-documentation-analyzer/project_shunt_pr103_i18n_comparison_review.md
+  s_c87397868ebc32::t_7c3cc071303fb9 1-36
+.claude/agent-memory/review-review-pr-test-analyzer/shunt-codex-ws-fallback-coverage.md
+  s_c87397868ebc32::t_7c3cc071303fb9 1-63
+site/src/content/docs/ko/guides/anthropic-multi-account.md
+  s_c87397868ebc32::t_7c3cc071303fb9 1-147
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_c87397868ebc32::t_7c3cc071303fb9 15-24
+site/astro.config.mjs
+  s_c87397868ebc32::t_7c3cc071303fb9 53-57,99-103
+src/admin/session.rs
+  s_c87397868ebc32::t_7c3cc071303fb9 1-298
+site/src/content/docs/ja/getting-started/quickstart.md
+  s_c87397868ebc32::t_7c3cc071303fb9 2
+README.md
+  s_c87397868ebc32::t_7c3cc071303fb9 71-72
+site/src/content/docs/ko/getting-started/comparison.md
+  s_c87397868ebc32::t_7c3cc071303fb9 1-119
+shunt.toml.example
+  s_c87397868ebc32::t_7c3cc071303fb9 15-18,24-32
+  s_c87397868ebc32::t_334edd6256c2ff 33
+docs/running.md
+  s_c87397868ebc32::t_7c3cc071303fb9 685,700-705
+site/src/content/docs/zh-cn/getting-started/comparison.md
+  s_c87397868ebc32::t_7c3cc071303fb9 1-119
+src/config.rs
+  s_c87397868ebc32::t_7c3cc071303fb9 48-52,64-65,112-180,596-601,723,855-859,1077-1091,1202-1203,1206-1256
+  s_c87397868ebc32::t_1f4647a3d5ee3d 1257
+site/src/content/docs/ja/guides/anthropic-multi-account.md
+  s_c87397868ebc32::t_7c3cc071303fb9 1-147
+tests/admin_surface.rs
+  s_c87397868ebc32::t_7c3cc071303fb9 1-578
+site/src/content/docs/guides/model-discovery.md
+  s_c87397868ebc32::t_7c3cc071303fb9 33-34
+site/src/content/docs/ja/reference/configuration.md
+  s_c87397868ebc32::t_7c3cc071303fb9 2,25-40
+  s_c87397868ebc32::t_77c827e2efe8cb 41
+site/src/content/docs/zh-cn/guides/admin-remote-provisioning.md
+  s_c87397868ebc32::t_7c3cc071303fb9 1-81
+src/adapters/responses/mod.rs
+  s_c87397868ebc32::t_7c3cc071303fb9 99-105,288,334,342-344,350-366,370-378,380-439,442,462-464,466-468,470-494,582-587,647-656,918,929-930,974-1034,1381-1426
+src/auth/inbound.rs
+  s_c87397868ebc32::t_7c3cc071303fb9 3-6,28-30,32-77,98-102,125,206-246
+site/src/content/docs/ja/getting-started/comparison.md
+  s_c87397868ebc32::t_7c3cc071303fb9 1-119
+site/src/content/docs/guides/anthropic-multi-account.md
+  s_c87397868ebc32::t_7c3cc071303fb9 63-64
+.claude/agent-memory/review-review-pr-test-analyzer/shunt-admin-surface-coverage.md
+  s_c87397868ebc32::t_7c3cc071303fb9 1-51
+site/src/content/docs/zh-cn/guides/shared-gateway.md
+  s_c87397868ebc32::t_7c3cc071303fb9 37-38
+site/src/content/docs/getting-started/comparison.md
+  s_c87397868ebc32::t_7c3cc071303fb9 1-119
+src/metrics.rs
+  s_c87397868ebc32::t_7c3cc071303fb9 30,47-52,57-77,105-128,131,143-149
+.claude/agent-memory/review-review-pr-test-analyzer/MEMORY.md
+  s_c87397868ebc32::t_7c3cc071303fb9 4-5
+.claude/agent-memory/review-review-security-reviewer/MEMORY.md
+  s_c87397868ebc32::t_7c3cc071303fb9 10
+.claude/agent-memory/review-review-code-reviewer/shunt-codex-ws-peek-fallback-issue46.md
+  s_c87397868ebc32::t_7c3cc071303fb9 1-65
+site/src/content/docs/ja/reference/endpoints.md
+  s_c87397868ebc32::t_7c3cc071303fb9 2,15-24
+site/src/content/docs/ko/guides/shared-gateway.md
+  s_c87397868ebc32::t_7c3cc071303fb9 37-38
+src/adapters/responses/codex_continuation.rs
+  s_c87397868ebc32::t_7c3cc071303fb9 30-32,46-52,254-256,288-292,316-322,328,387-388,393-401
+  s_c87397868ebc32::t_272043a060099e 402-403
+CHANGELOG.md
+  s_c87397868ebc32::t_7c3cc071303fb9 3-15
+.claude/agent-memory/review-review-documentation-analyzer/MEMORY.md
+  s_c87397868ebc32::t_7c3cc071303fb9 4-6
+site/src/content/docs/ko/reference/endpoints.md
+  s_c87397868ebc32::t_7c3cc071303fb9 15-24
+.claude/agent-memory/review-review-documentation-analyzer/project_shunt_m9_admin_docs_review.md
+  s_c87397868ebc32::t_7c3cc071303fb9 1-38
+site/src/content/docs/ja/getting-started/why-shunt.md
+  s_c87397868ebc32::t_7c3cc071303fb9 2
+docs/comparison.md
+  s_c87397868ebc32::t_7c3cc071303fb9 18,53-55,60-64,72,90,100-107,124,138,165-174,177,180-181,205-229,248-252,265,273-275,284-285
+src/server.rs
+  s_c87397868ebc32::t_7c3cc071303fb9 11,27-33,35-36,50,59,65,68,81,89-91,98,104-106,113-122
+Cargo.toml
+  s_c87397868ebc32::t_7c3cc071303fb9 5
+docs/m3-discovery.md
+  s_c87397868ebc32::t_7c3cc071303fb9 32-37
+docs/m7-codex-websocket.md
+  s_c87397868ebc32::t_7c3cc071303fb9 172,174-175,233,238-244,248-265,295-306
+site/src/content/docs/ja/guides/effort-and-context.md
+  s_c87397868ebc32::t_7c3cc071303fb9 2
+src/auth/claude/login.rs
+  s_c87397868ebc32::t_7c3cc071303fb9 14-16,56-60,97-119,140-142,146-147,150
+tests/inbound_auth.rs
+  s_c87397868ebc32::t_7c3cc071303fb9 81-88,137-144,255-315
+  s_c87397868ebc32::t_d4c8b18e201195 316
+.claude/agent-memory/review-review-comment-analyzer/MEMORY.md
+  s_c87397868ebc32::t_7c3cc071303fb9 4
+.claude/agent-memory/review-review-silent-failure-hunter/pr85-admin-surface-error-handling.md
+  s_c87397868ebc32::t_7c3cc071303fb9 1-45
+site/src/content/docs/ja/guides/admin-remote-provisioning.md
+  s_c87397868ebc32::t_7c3cc071303fb9 1-81
+src/auth/claude/store.rs
+  s_c87397868ebc32::t_7c3cc071303fb9 103-197,327-357
+  s_c87397868ebc32::t_b07327439d9eca 358
+site/src/content/docs/ko/reference/configuration.md
+  s_c87397868ebc32::t_7c3cc071303fb9 25-41
+.claude/agent-memory/review-review-code-reviewer/shunt-codex-websocket-v2.md
+  s_c87397868ebc32::t_7c3cc071303fb9 3,10-15,17-44,58-60
+site/src/content/docs/ja/guides/providers.md
+  s_c87397868ebc32::t_7c3cc071303fb9 2
+site/src/content/docs/ja/getting-started/installation.md
+  s_c87397868ebc32::t_7c3cc071303fb9 2
+src/discovery.rs
+  s_c87397868ebc32::t_7c3cc071303fb9 1-6,9,23,26-39,50,85-88,107-110
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_c87397868ebc32::t_7c3cc071303fb9 25-41
+site/src/content/docs/ja/guides/shared-gateway.md
+  s_c87397868ebc32::t_7c3cc071303fb9 2,37
+  s_c87397868ebc32::t_560d286276844c 38
+.please/docs/review/rejected-findings.jsonl
+  s_c87397868ebc32::t_7c3cc071303fb9 7
+docs/m4-inbound-auth.md
+  s_c87397868ebc32::t_7c3cc071303fb9 48-49,52-54
+site/src/content/docs/zh-cn/guides/anthropic-multi-account.md
+  s_c87397868ebc32::t_7c3cc071303fb9 1-147
+.claude/agent-memory/review-review-security-reviewer/project_m9-admin-surface-security.md
+  s_c87397868ebc32::t_7c3cc071303fb9 1-21
+src/accounts.rs
+  s_c87397868ebc32::t_7c3cc071303fb9 8,34-82,183,185-187,229,231-233,238,240-302,528-567
+  s_c87397868ebc32::t_a510356d1834fc 568
+.claude/agent-memory/review-review-comment-analyzer/shunt-responses-adapter-stream-json-doc-generalization.md
+  s_c87397868ebc32::t_7c3cc071303fb9 1-16
+site/src/content/docs/ja/guides/configuration.md
+  s_c87397868ebc32::t_7c3cc071303fb9 2
+site/src/content/docs/ko/guides/admin-remote-provisioning.md
+  s_c87397868ebc32::t_7c3cc071303fb9 1-81
+.claude/agent-memory/review-review-code-reviewer/MEMORY.md
+  s_c87397868ebc32::t_7c3cc071303fb9 3-4
+src/admin/mod.rs
+  s_c87397868ebc32::t_7c3cc071303fb9 1-805
+site/src/content/docs/reference/configuration.md
+  s_c87397868ebc32::t_7c3cc071303fb9 25-41,56
+src/admin/html.rs
+  s_c87397868ebc32::t_7c3cc071303fb9 1-201
+site/src/content/docs/ja/reference/troubleshooting.md
+  s_c87397868ebc32::t_7c3cc071303fb9 2
+docs/m9-admin-surface.md
+  s_c87397868ebc32::t_7c3cc071303fb9 1-212
+tests/codex_websocket_fallback.rs
+  s_c87397868ebc32::t_7c3cc071303fb9 12-13,16,22-24,26,32-37,134,198-471,473-475
+  s_c87397868ebc32::t_b274562fae7189 472
+Cargo.lock
+  s_c87397868ebc32::t_b228ed4ebb1d02 2520
+site/package-lock.json
+  s_c87397868ebc32::t_31d82fcc79aeb8 19-21
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "e017996955204a0315d9a95d2be33fe2c1e303ac",
+  "prompts": {},
+  "sessions": {
+    "s_c87397868ebc32": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d1e0790a-c689-41f7-ad94-aa65c48e506f",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
