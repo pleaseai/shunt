@@ -529,3 +529,216 @@ async fn refresh_retry_non_success_rotates_to_next_account() {
     std::env::remove_var("SHUNT_TEST_MULTI_ROTATE_B");
     fs::remove_dir_all(&accounts_dir).ok();
 }
+
+#[tokio::test]
+async fn unresolvable_account_cools_down_and_rotates() {
+    // An account whose token_env is unset cannot be resolved: the pool must cool
+    // it down and rotate to the next account rather than failing the request.
+    if !can_bind_loopback() {
+        return;
+    }
+    // account-a points at an env var that is never set; account-b is healthy.
+    std::env::remove_var("SHUNT_TEST_MULTI_MISSING_A");
+    let token_b = ["fake-oauth-", "resolve-b"].concat();
+    std::env::set_var("SHUNT_TEST_MULTI_RESOLVE_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"b"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        account("account-a", "SHUNT_TEST_MULTI_MISSING_A", "uuid-a"),
+        account("account-b", "SHUNT_TEST_MULTI_RESOLVE_B", "uuid-b"),
+    ))
+    .await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+    upstream.verify().await;
+
+    std::env::remove_var("SHUNT_TEST_MULTI_RESOLVE_B");
+}
+
+#[tokio::test]
+async fn server_error_rotates_and_cools_down_the_failing_account() {
+    // A 5xx classifies as Rotate (not the 429 sub-branch): the account is cooled
+    // down for the fixed non-throttle window and the pool moves to the next one.
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = ["fake-oauth-", "server-a"].concat();
+    let token_b = ["fake-oauth-", "server-b"].concat();
+    std::env::set_var("SHUNT_TEST_MULTI_SERVER_A", &token_a);
+    std::env::set_var("SHUNT_TEST_MULTI_SERVER_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(
+            ResponseTemplate::new(500).set_body_string(r#"{"error":"account a upstream error"}"#),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"b"}"#))
+        .expect(2)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        account("account-a", "SHUNT_TEST_MULTI_SERVER_A", "uuid-a"),
+        account("account-b", "SHUNT_TEST_MULTI_SERVER_B", "uuid-b"),
+    ))
+    .await;
+
+    // First request rotates off the 500'd account to the healthy one.
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+
+    // A session that hashes to account-a still lands on account-b because
+    // account-a is cooled down (the upstream never sees a second a call).
+    let session_id = session_id_for_account(0, 2);
+    let response = post_messages(&gateway, Some(&session_id)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+    upstream.verify().await;
+
+    std::env::remove_var("SHUNT_TEST_MULTI_SERVER_A");
+    std::env::remove_var("SHUNT_TEST_MULTI_SERVER_B");
+}
+
+#[tokio::test]
+async fn refresh_retry_still_unauthorized_cools_down_and_rotates() {
+    // Refresh succeeds but the refreshed token is still rejected with 401: the
+    // account is genuinely broken, so it is cooled down and the pool rotates
+    // rather than relaying the second 401 to the client.
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = REFRESH_ENV_LOCK.lock().await;
+    let stale = ["fake-oauth-", "still401-stale"].concat();
+    let fresh = ["fake-oauth-", "still401-fresh"].concat();
+    let token_b = ["fake-oauth-", "still401-b"].concat();
+    std::env::set_var("SHUNT_TEST_MULTI_STILL401_B", &token_b);
+
+    let accounts_dir = unique_temp_dir("still401");
+    write_store_account(
+        &accounts_dir,
+        "account-a",
+        &stale,
+        "refresh-token-a",
+        "uuid-a",
+    );
+    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
+
+    let auth = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(format!(r#"{{"access_token":"{fresh}","expires_in":3600}}"#)),
+        )
+        .expect(1)
+        .mount(&auth)
+        .await;
+    std::env::set_var(
+        "SHUNT_CLAUDE_TOKEN_URL",
+        format!("{}/oauth/token", auth.uri()),
+    );
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(stale.clone()))
+        .respond_with(ResponseTemplate::new(401).set_body_string(r#"{"error":"expired token"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(fresh.clone()))
+        .respond_with(ResponseTemplate::new(401).set_body_string(r#"{"error":"still revoked"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"b"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        store_account("account-a"),
+        account("account-b", "SHUNT_TEST_MULTI_STILL401_B", "uuid-b"),
+    ))
+    .await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+    upstream.verify().await;
+    auth.verify().await;
+
+    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
+    std::env::remove_var("SHUNT_TEST_MULTI_STILL401_B");
+    fs::remove_dir_all(&accounts_dir).ok();
+}
+
+#[tokio::test]
+async fn all_accounts_unresolvable_returns_bad_gateway() {
+    // When every account fails to resolve, the pool never reaches an upstream:
+    // it surfaces a 502 and the upstream is never called.
+    if !can_bind_loopback() {
+        return;
+    }
+    std::env::remove_var("SHUNT_TEST_MULTI_MISSING_ALL_A");
+    std::env::remove_var("SHUNT_TEST_MULTI_MISSING_ALL_B");
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"unexpected":true}"#))
+        .expect(0)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        account("account-a", "SHUNT_TEST_MULTI_MISSING_ALL_A", "uuid-a"),
+        account("account-b", "SHUNT_TEST_MULTI_MISSING_ALL_B", "uuid-b"),
+    ))
+    .await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    upstream.verify().await;
+}
