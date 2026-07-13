@@ -9,7 +9,7 @@
 use std::{
     fs, io,
     path::Path,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicUsize, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -17,7 +17,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::Value;
 
 const EXPIRY_BUFFER: Duration = Duration::from_secs(5 * 60);
-static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 pub fn jwt_claims(token: &str) -> Option<Value> {
     let payload = token.split('.').nth(1)?;
