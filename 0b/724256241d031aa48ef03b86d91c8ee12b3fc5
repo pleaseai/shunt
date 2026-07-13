@@ -1,0 +1,19 @@
+docs/gateway-protocol.md
+  s_6fd9acf0878ad9::t_b2aaa3808d7b2b 276-279
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "0b724256241d031aa48ef03b86d91c8ee12b3fc5",
+  "prompts": {},
+  "sessions": {
+    "s_6fd9acf0878ad9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0775953a-1425-4551-bb42-2e5f6701d525",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
