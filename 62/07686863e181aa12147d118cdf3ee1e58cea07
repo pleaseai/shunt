@@ -1,0 +1,40 @@
+src/config.rs
+  s_7c8f3392527f8f::t_e390c6adf93004 1001-1006,1008-1012
+  s_7c8f3392527f8f::t_04fd14e3010cf3 594-595
+  s_7c8f3392527f8f::t_65f04407065752 1486-1498
+  s_5fd23b176485f0::t_e3c4a593488adc 1485
+site/src/content/docs/guides/codex-multi-account.md
+  s_7c8f3392527f8f::t_fc0c611642c387 146
+src/adapters/responses/mod.rs
+  s_7c8f3392527f8f::t_7979f125aa5b65 345-347
+  s_7c8f3392527f8f::t_c8dcdc09137b2e 458-462
+docs/m10-codex-multi-account.md
+  s_7c8f3392527f8f::t_c9c59ab59512a3 86,92
+tests/codex_multi_account.rs
+  s_7c8f3392527f8f::t_25a1d04cc06fb6 35
+  s_7c8f3392527f8f::t_f28408f875e229 213-218,223-225
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "6207686863e181aa12147d118cdf3ee1e58cea07",
+  "prompts": {},
+  "sessions": {
+    "s_5fd23b176485f0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4b944997-7865-4eda-9195-e747b7068750",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_7c8f3392527f8f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ab01b4b8-bc36-407a-ae5d-852f02606bc2",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
