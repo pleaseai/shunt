@@ -29,7 +29,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
                 "inbound auth failed for GET /v1/models: missing or invalid client token"
             );
             let message = format!(
-                "missing or invalid {} header: this gateway requires a client token for model discovery; ask the operator for one",
+                "missing or invalid credential: this gateway requires a client token (via {}, x-api-key, or Authorization: Bearer) for model discovery; ask the operator for one",
                 auth.header()
             );
             return ShuntError::new(StatusCode::UNAUTHORIZED, "authentication_error", message)
