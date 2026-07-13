@@ -373,13 +373,24 @@ pub enum ResponsesFlavor {
 
 /// Whether `model` advertises native Responses `tool_search` support. OpenAI
 /// documents GPT-5.4 and later; codex's `models.json` flags the gpt-5.4/5.5/5.6
-/// families with `supports_search_tool: true`. Kept a substring check (no table)
-/// like the effort ceiling in `responses_request.rs`. Earlier slugs (gpt-5.2 and
-/// below) fall back to the #43 progressive-reveal shim even with the provider
-/// flag on, so the native path only fires for combinations documented to accept
-/// it.
+/// families with `supports_search_tool: true`. Kept a boundary-guarded substring
+/// check (no table) like the effort ceiling in `responses_request.rs`. Earlier
+/// slugs (gpt-5.2 and below) fall back to the #43 progressive-reveal shim even
+/// with the provider flag on, so the native path only fires for combinations
+/// documented to accept it.
 fn model_supports_tool_search(model: &str) -> bool {
-    model.contains("gpt-5.4") || model.contains("gpt-5.5") || model.contains("gpt-5.6")
+    // Match each documented "gpt-5.N" family as a whole minor version: the digit
+    // must be followed by a non-digit (or end of string), so "gpt-5.4" matches
+    // but an undocumented "gpt-5.40" does not silently borrow 5.4's flag and get
+    // a native wire shape its backend may reject.
+    ["gpt-5.4", "gpt-5.5", "gpt-5.6"].iter().any(|family| {
+        model.match_indices(family).any(|(index, matched)| {
+            model[index + matched.len()..]
+                .chars()
+                .next()
+                .is_none_or(|next| !next.is_ascii_digit())
+        })
+    })
 }
 
 /// Whether `host` belongs to xAI (`x.ai` or any subdomain). Used both to gate
@@ -1360,6 +1371,13 @@ mod tests {
         // Opted in + supported flavor (Chatgpt / OpenAi) + supported model.
         assert!(config.native_tool_search("codex", "gpt-5.6-sol"));
         assert!(config.native_tool_search("openai", "gpt-5.4"));
+        // A trailing non-digit still counts as the documented minor.
+        assert!(config.native_tool_search("openai", "gpt-5.4-turbo"));
+
+        // Boundary guard: a multi-digit minor must NOT borrow 5.4's flag — those
+        // are undocumented families whose backend may reject the native wire.
+        assert!(!config.native_tool_search("openai", "gpt-5.40"));
+        assert!(!config.native_tool_search("openai", "gpt-5.41-turbo"));
 
         // Unsupported model keeps the #43 shim (gpt-5.2 and below).
         assert!(!config.native_tool_search("codex", "gpt-5.2-codex"));

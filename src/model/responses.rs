@@ -220,7 +220,14 @@ impl AnthropicSseMachine {
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string())
             .unwrap_or_else(|| format!("toolu_ts_{}", self.index));
-        let arguments = item.get("arguments").cloned().unwrap_or_else(|| json!({}));
+        // Anthropic requires tool_use `input` to be a JSON object; if upstream
+        // omits `arguments` or sends a non-object, fall back to `{}` rather than
+        // forward an invalid input.
+        let arguments = item
+            .get("arguments")
+            .filter(|value| value.is_object())
+            .cloned()
+            .unwrap_or_else(|| json!({}));
         self.saw_tool = true;
         out.push(sse(
             "content_block_start",

@@ -1759,6 +1759,28 @@ fn native_tool_search_call_missing_call_id_gets_synthetic_id() {
 }
 
 #[test]
+fn native_tool_search_call_non_object_arguments_falls_back_to_empty() {
+    // Anthropic requires tool_use `input` to be a JSON object. If upstream sends
+    // a non-object (here null) `arguments`, the machine must emit `{}` rather
+    // than forward the invalid value.
+    let fixture = concat!(
+        "event: response.output_item.done\n",
+        "data: {\"item\":{\"type\":\"tool_search_call\",\"call_id\":\"call_ts\",\"execution\":\"client\",\"arguments\":null}}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":3}}}\n\n"
+    );
+    let mut machine = AnthropicSseMachine::new("gpt-5.6-sol", false, true);
+    for event in parse_sse_events(fixture) {
+        let _ = machine.apply(event);
+    }
+    let final_json = machine.final_json();
+
+    assert_eq!(final_json["content"][0]["type"], "tool_use");
+    assert_eq!(final_json["content"][0]["id"], "call_ts");
+    assert_eq!(final_json["content"][0]["input"], json!({}));
+}
+
+#[test]
 fn native_off_ignores_tool_search_call_item() {
     // Under the shim the upstream never emits a tool_search_call, but if one
     // somehow arrived it must not be surfaced as a tool_use — the machine only
