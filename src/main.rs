@@ -191,6 +191,14 @@ fn init_sentry(config: Option<&SentryConfig>) -> Option<sentry::ClientInitGuard>
             breadcrumb.data.clear();
             Some(breadcrumb)
         })),
+        // Performance transactions (unlike error events) go straight from the
+        // SDK to `send_envelope` and never pass through `before_send` — sentry
+        // 0.48.4 has no `before_send_transaction` — so `scrub_event` cannot
+        // strip the hostname from them. The `contexts` feature's
+        // `ContextIntegration::setup` only auto-fills `server_name` with the
+        // machine hostname `if options.server_name.is_none()`, so pin it to
+        // empty here to preempt that at the source for both event kinds.
+        server_name: Some("".into()),
         ..Default::default()
     });
     // Pin whether the subscriber's Sentry layer forwards spans — and whether
@@ -205,7 +213,10 @@ fn init_sentry(config: Option<&SentryConfig>) -> Option<sentry::ClientInitGuard>
     Some(guard)
 }
 
-/// The host name identifies the operator's machine; withhold it.
+/// The host name identifies the operator's machine; withhold it. This covers
+/// error events (the only kind that reaches `before_send`); the transaction
+/// path is instead handled by pinning `ClientOptions.server_name` to empty in
+/// `init_sentry`, since transactions never pass through `before_send`.
 fn scrub_event(
     mut event: sentry::protocol::Event<'static>,
 ) -> Option<sentry::protocol::Event<'static>> {
@@ -321,10 +332,15 @@ mod tests {
             include_session_id: false,
         };
         let guard = init_sentry(Some(&config));
-        assert!(guard.is_some());
+        let guard = guard.expect("valid dsn binds a client");
         // Tracing stayed at its 0.0 default, so the pinned policy keeps the
         // subscriber's Sentry span filter closed — the pre-tracing behavior.
         assert!(!telemetry::sentry_span_export_enabled());
+        // The empty server_name pin must survive client init: transactions
+        // bypass before_send/scrub_event, so this field is the only thing
+        // standing between a traced request and the machine hostname (the
+        // contexts integration auto-fills it only when left None).
+        assert_eq!(guard.options().server_name, Some("".into()));
     }
 
     #[test]
