@@ -81,7 +81,15 @@ fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
 
 #[cfg(not(unix))]
 fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    fs::write(path, bytes)
+    use std::io::Write;
+
+    let _ = fs::remove_file(path);
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
 }
 
 pub(crate) fn format_iso8601(time: SystemTime) -> String {
