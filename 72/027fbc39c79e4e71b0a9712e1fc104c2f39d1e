@@ -1,0 +1,47 @@
+src/adapters/responses/codex_continuation.rs
+  s_a191d9423ea701::t_464d9964a574c3 46-52
+  s_a191d9423ea701::t_d6e88cf9c02af9 288-292
+  s_a191d9423ea701::t_5d1f699723453e 254-256
+  s_a191d9423ea701::t_e23e6de2e5799a 30-32
+  s_a191d9423ea701::t_b9a7bae17e5040 316-322,328
+  s_a191d9423ea701::t_ffb4f4d2279978 387-388,393-401
+  s_7c8f3392527f8f::t_eb253742b645ae 402-403
+src/adapters/responses/mod.rs
+  s_a191d9423ea701::t_efaed35d954908 286
+  s_a191d9423ea701::t_585166ee01b6e9 384-386,388-407,410-431
+  s_a191d9423ea701::t_e3e42e3659cf02 332
+docs/comparison.md
+  s_a191d9423ea701::t_4beb5836829899 192-201
+docs/m7-codex-websocket.md
+  s_a191d9423ea701::t_4130841ca3d4b5 172,174-175
+  s_a191d9423ea701::t_5c0d79f202aa3b 282-293
+src/metrics.rs
+  s_a191d9423ea701::t_483e44b5ff340f 130,142-147
+  s_a191d9423ea701::t_47ea30b361307a 30,47-52,57-75,148
+  s_a191d9423ea701::t_51630382b75b64 76,105-127
+  s_a191d9423ea701::t_1447aadcb5cf30 77
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "72027fbc39c79e4e71b0a9712e1fc104c2f39d1e",
+  "prompts": {},
+  "sessions": {
+    "s_7c8f3392527f8f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ab01b4b8-bc36-407a-ae5d-852f02606bc2",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_a191d9423ea701": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8c671912-6ad0-4c1c-b338-58e08bc8544d",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
