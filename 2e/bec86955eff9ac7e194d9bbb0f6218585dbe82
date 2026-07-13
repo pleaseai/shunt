@@ -1,0 +1,34 @@
+src/auth/shared.rs
+  s_8fcbb5045af0e9::t_ce9527939f1961 12
+  s_8fcbb5045af0e9::t_6843191d5d3d59 20
+src/auth/cursor_auth.rs
+  s_8fcbb5045af0e9::t_727b492438926d 309
+  s_8fcbb5045af0e9::t_21ac5258134c23 258,260
+  s_8fcbb5045af0e9::t_d4e757cbd91386 10
+  s_8fcbb5045af0e9::t_fab759cfc25686 54,61
+  s_d1cd8e7a9f7119::t_d1cf529bd5f07d 231
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "2ebec86955eff9ac7e194d9bbb0f6218585dbe82",
+  "prompts": {},
+  "sessions": {
+    "s_8fcbb5045af0e9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "57db19d9-b48c-4b3d-ad2b-56cd99397e09",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_d1cd8e7a9f7119": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ff930504-6cbf-40e6-90cf-2c0b085efd8e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
