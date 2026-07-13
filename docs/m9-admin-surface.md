@@ -116,6 +116,12 @@ process-lifetime state:
   add/remove is audit-logged by name only.
 - Docs recommend binding the admin surface behind HTTPS / a tunnel, same as the
   shared-gateway guide.
+- **Emergency token rotation:** browser sessions are validated only against the
+  in-memory session store, so rotating/removing `SHUNT_ADMIN_TOKENS` does **not**
+  invalidate already-issued sessions — they persist until `session_ttl_secs`
+  (default 1h) expires. If an admin token is compromised, **restart the process**
+  (not just a config reload) to drop all active sessions immediately. Rejecting
+  stale sessions on reload is tracked in #100.
 
 ## Endpoints (registered only when `[server.admin]` is set)
 

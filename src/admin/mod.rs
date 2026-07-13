@@ -173,7 +173,11 @@ fn same_origin(headers: &HeaderMap) -> bool {
                 .get(header::HOST)
                 .and_then(|value| value.to_str().ok())
                 .unwrap_or_default();
-            !host.is_empty() && origin_authority.eq_ignore_ascii_case(host)
+            // Compare host names only: a proxy/port-forward can leave the Origin
+            // and Host ports inconsistent (e.g. a default port omitted on one
+            // side), which would otherwise reject a legitimate same-origin call.
+            !host.is_empty()
+                && host_without_port(origin_authority).eq_ignore_ascii_case(host_without_port(host))
         }
     }
 }
@@ -330,7 +334,7 @@ async fn list_accounts(State(state): State<AppState>, headers: HeaderMap) -> Res
         return unauthorized();
     }
     match tokio::task::spawn_blocking(claude_store::list_account_meta).await {
-        Ok(Ok(accounts)) => Json(json!({ "accounts": accounts })).into_response(),
+        Ok(Ok(accounts)) => json_secure(json!({ "accounts": accounts })),
         Ok(Err(error)) => {
             tracing::error!(%error, "admin: failed to list account metadata");
             internal("failed to list accounts")
@@ -375,7 +379,7 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
     })
     .await;
     match result {
-        Ok(Ok(providers)) => Json(json!({ "providers": providers })).into_response(),
+        Ok(Ok(providers)) => json_secure(json!({ "providers": providers })),
         Ok(Err(_)) => internal("failed to read pool state"),
         Err(join_error) => {
             tracing::error!(%join_error, "admin: pool snapshot task panicked");
@@ -422,7 +426,7 @@ async fn add_account(
         authok.auth.pending_ttl(),
     );
     tracing::info!(account = %body.name, "admin: account provisioning started");
-    Json(json!({ "name": body.name, "authorize_url": authorize_url.to_string() })).into_response()
+    json_secure(json!({ "name": body.name, "authorize_url": authorize_url.to_string() }))
 }
 
 #[derive(Deserialize)]
@@ -492,6 +496,7 @@ async fn complete_account(
         .map(|account| account.uuid.as_str())
         .filter(|uuid| !uuid.is_empty())
     else {
+        tracing::warn!(account = %name, "admin: Claude token exchange did not return an account UUID");
         return bad_gateway("Claude token exchange did not return an account UUID");
     };
 
@@ -535,7 +540,7 @@ async fn complete_account(
     } else {
         "Account stored. Add a name-only [[providers.<name>.accounts]] entry and reload to activate it."
     };
-    Json(json!({ "name": name, "stored": true, "live": live, "message": message })).into_response()
+    json_secure(json!({ "name": name, "stored": true, "live": live, "message": message }))
 }
 
 async fn remove_account_handler(
@@ -571,7 +576,7 @@ async fn remove_account_handler(
     // Drop any process-lifetime pool health for the removed name so a later
     // re-add does not inherit stale cooldown/quota state.
     state.accounts.forget(&name);
-    Json(json!({ "name": name, "removed": removed })).into_response()
+    json_secure(json!({ "name": name, "removed": removed }))
 }
 
 /// The Claude token-exchange endpoint, honoring `SHUNT_CLAUDE_TOKEN_URL` (used by
@@ -588,21 +593,25 @@ fn admin_token_url() -> String {
     else {
         return default();
     };
-    match raw.parse::<reqwest::Url>() {
-        Ok(url)
-            if url.scheme() == "https"
-                || (url.scheme() == "http"
-                    && crate::config::host_is_loopback(url.host_str().unwrap_or_default())) =>
-        {
-            raw
-        }
-        _ => {
-            tracing::warn!(
-                url = %raw,
-                "admin: ignoring SHUNT_CLAUDE_TOKEN_URL (only https, or http to loopback, is allowed)"
-            );
-            default()
-        }
+    // Never log the raw URL — it may embed credentials in userinfo
+    // (`https://user:pass@host`); the rejection turns only on scheme/host, so
+    // log just those.
+    let Ok(url) = raw.parse::<reqwest::Url>() else {
+        tracing::warn!("admin: ignoring SHUNT_CLAUDE_TOKEN_URL (not a valid URL)");
+        return default();
+    };
+    let allowed = url.scheme() == "https"
+        || (url.scheme() == "http"
+            && crate::config::host_is_loopback(url.host_str().unwrap_or_default()));
+    if allowed {
+        raw
+    } else {
+        tracing::warn!(
+            scheme = url.scheme(),
+            host = url.host_str().unwrap_or_default(),
+            "admin: ignoring SHUNT_CLAUDE_TOKEN_URL (only https, or http to loopback, is allowed)"
+        );
+        default()
     }
 }
 
@@ -631,6 +640,20 @@ base-uri 'none'; frame-ancestors 'none'";
             (header::CACHE_CONTROL, "no-store"),
         ],
         body,
+    )
+        .into_response()
+}
+
+/// A JSON API response carrying admin data, with the same no-sniff / no-store
+/// guards as the HTML pages — account metadata and pool state are sensitive and
+/// must not be MIME-sniffed or cached by the browser or a shared intermediary.
+fn json_secure(value: serde_json::Value) -> Response {
+    (
+        [
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        Json(value),
     )
         .into_response()
 }
