@@ -62,8 +62,8 @@ impl InboundAuth {
         presented: impl IntoIterator<Item = &'value [u8]>,
     ) -> Option<&str> {
         let mut matched = None;
-        for presented in presented {
-            if let Some(name) = self.authenticate_value(presented) {
+        for value in presented {
+            if let Some(name) = self.authenticate_value(value) {
                 matched = Some(name);
             }
         }
