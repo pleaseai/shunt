@@ -72,10 +72,17 @@ pub struct ClaudeAuthStore {
 
 impl ClaudeAuthStore {
     pub fn new(path: PathBuf, client: reqwest::Client) -> Self {
+        // `SHUNT_CLAUDE_TOKEN_URL` overrides the OAuth refresh endpoint. It exists
+        // so the refresh path can be pointed at a local mock in tests; production
+        // deployments leave it unset and use the real platform.claude.com URL.
+        let token_url = env::var("SHUNT_CLAUDE_TOKEN_URL")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| TOKEN_URL.to_string());
         Self {
             path,
             client,
-            token_url: TOKEN_URL.to_string(),
+            token_url,
         }
     }
 

@@ -1,8 +1,11 @@
 use std::{
     collections::hash_map::DefaultHasher,
+    fs,
     hash::{Hash, Hasher},
     io::ErrorKind,
     net::SocketAddr,
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use reqwest::StatusCode;
@@ -50,6 +53,44 @@ fn account(name: &str, token_env: &str, uuid: &str) -> AccountConfig {
         token_env: Some(token_env.to_string()),
         uuid: Some(uuid.to_string()),
     }
+}
+
+/// A name-only pool entry that resolves against the shunt account store
+/// (`SHUNT_CLAUDE_ACCOUNTS_DIR/<name>.json`).
+fn store_account(name: &str) -> AccountConfig {
+    AccountConfig {
+        name: name.to_string(),
+        credentials: None,
+        token_env: None,
+        uuid: None,
+    }
+}
+
+/// Serializes the refresh-path tests, which set the process-global
+/// `SHUNT_CLAUDE_ACCOUNTS_DIR` / `SHUNT_CLAUDE_TOKEN_URL` env vars.
+static REFRESH_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+fn unique_temp_dir(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "shunt-multi-refresh-{tag}-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// Write a refreshable store account file whose access token is valid far into
+/// the future, so it is used verbatim on the first upstream POST (the 401 is
+/// what drives the RefreshRetry path) rather than being refreshed on read.
+fn write_store_account(dir: &std::path::Path, name: &str, access: &str, refresh: &str, uuid: &str) {
+    let body = format!(
+        r#"{{"claudeAiOauth":{{"accessToken":"{access}","refreshToken":"{refresh}","expiresAt":4102444800000}},"shuntAccountUuid":"{uuid}"}}"#
+    );
+    fs::write(dir.join(format!("{name}.json")), body).unwrap();
 }
 
 fn test_config(upstream_base_url: &str, first: AccountConfig, second: AccountConfig) -> Config {
@@ -331,4 +372,160 @@ async fn exhausted_pool_relays_the_last_upstream_body_verbatim() {
     assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(response.text().await.unwrap(), last_body);
     upstream.verify().await;
+}
+
+#[tokio::test]
+async fn refresh_retry_refreshes_then_succeeds_on_401() {
+    // A refreshable store account whose upstream returns 401 forces a token
+    // refresh; the retry with the refreshed token then succeeds.
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = REFRESH_ENV_LOCK.lock().await;
+    let stale = ["fake-oauth-", "refresh-stale"].concat();
+    let fresh = ["fake-oauth-", "refresh-fresh"].concat();
+
+    let accounts_dir = unique_temp_dir("succeeds");
+    write_store_account(
+        &accounts_dir,
+        "account-a",
+        &stale,
+        "refresh-token-a",
+        "uuid-a",
+    );
+    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
+
+    let auth = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(format!(r#"{{"access_token":"{fresh}","expires_in":3600}}"#)),
+        )
+        .expect(1)
+        .mount(&auth)
+        .await;
+    std::env::set_var(
+        "SHUNT_CLAUDE_TOKEN_URL",
+        format!("{}/oauth/token", auth.uri()),
+    );
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(stale.clone()))
+        .respond_with(ResponseTemplate::new(401).set_body_string(r#"{"error":"expired token"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(fresh.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"a"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        store_account("account-a"),
+        account("account-b", "SHUNT_TEST_MULTI_REFRESH_B", "uuid-b"),
+    ))
+    .await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-a"
+    );
+    upstream.verify().await;
+    auth.verify().await;
+
+    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
+    fs::remove_dir_all(&accounts_dir).ok();
+}
+
+#[tokio::test]
+async fn refresh_retry_non_success_rotates_to_next_account() {
+    // If the refreshed retry still fails with a non-401/non-2xx status (5xx),
+    // the pool must fail over to the next account instead of relaying it.
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = REFRESH_ENV_LOCK.lock().await;
+    let stale = ["fake-oauth-", "rotate-stale"].concat();
+    let fresh = ["fake-oauth-", "rotate-fresh"].concat();
+    let token_b = ["fake-oauth-", "rotate-b"].concat();
+    std::env::set_var("SHUNT_TEST_MULTI_ROTATE_B", &token_b);
+
+    let accounts_dir = unique_temp_dir("rotates");
+    write_store_account(
+        &accounts_dir,
+        "account-a",
+        &stale,
+        "refresh-token-a",
+        "uuid-a",
+    );
+    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
+
+    let auth = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(format!(r#"{{"access_token":"{fresh}","expires_in":3600}}"#)),
+        )
+        .expect(1)
+        .mount(&auth)
+        .await;
+    std::env::set_var(
+        "SHUNT_CLAUDE_TOKEN_URL",
+        format!("{}/oauth/token", auth.uri()),
+    );
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(stale.clone()))
+        .respond_with(ResponseTemplate::new(401).set_body_string(r#"{"error":"expired token"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(fresh.clone()))
+        .respond_with(ResponseTemplate::new(503).set_body_string(r#"{"error":"upstream down"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"b"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        store_account("account-a"),
+        account("account-b", "SHUNT_TEST_MULTI_ROTATE_B", "uuid-b"),
+    ))
+    .await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+    upstream.verify().await;
+    auth.verify().await;
+
+    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
+    std::env::remove_var("SHUNT_TEST_MULTI_ROTATE_B");
+    fs::remove_dir_all(&accounts_dir).ok();
 }
