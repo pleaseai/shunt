@@ -283,6 +283,7 @@ async fn forward_websocket(
     let ctx = WsTurnContext {
         ws_url,
         pool_key,
+        provider: &route.provider,
         credential,
         auth,
         signature: codex_continuation::signature(&upstream_body),
@@ -328,6 +329,7 @@ async fn forward_websocket(
 struct WsTurnContext<'a> {
     ws_url: String,
     pool_key: Option<&'a str>,
+    provider: &'a str,
     credential: Credential,
     auth: AuthMode,
     signature: String,
@@ -379,32 +381,55 @@ async fn start_ws_turn(
     let mut frame_body = ctx.upstream_body.clone();
     let mut used_continuation = false;
     if allow_continuation {
+        // Only a reused connection carries stored continuation state; a fresh
+        // connection has no chance to continue and is not counted, so the hit/
+        // fallback series stay directly comparable (issue #45).
         if let Some(stored) = turn.stored_continuation() {
-            if let Some(decision) = codex_continuation::decide(&stored, &ctx.upstream_body) {
-                if let Some(object) = frame_body.as_object_mut() {
-                    object.insert("input".to_string(), json!(decision.input_delta));
-                    object.insert(
-                        "previous_response_id".to_string(),
-                        json!(decision.previous_response_id),
-                    );
-                    if let Some(turn_state) = stored
-                        .turn_state
-                        .clone()
-                        .or_else(|| turn.handshake_turn_state().map(str::to_string))
-                    {
-                        let metadata = object
-                            .entry("client_metadata".to_string())
-                            .or_insert_with(|| json!({}));
-                        if let Some(metadata) = metadata.as_object_mut() {
-                            metadata.insert("x-codex-turn-state".to_string(), json!(turn_state));
+            match codex_continuation::decide(&stored, &ctx.upstream_body) {
+                Some(decision) => {
+                    if let Some(object) = frame_body.as_object_mut() {
+                        object.insert("input".to_string(), json!(decision.input_delta));
+                        object.insert(
+                            "previous_response_id".to_string(),
+                            json!(decision.previous_response_id),
+                        );
+                        if let Some(turn_state) = stored
+                            .turn_state
+                            .clone()
+                            .or_else(|| turn.handshake_turn_state().map(str::to_string))
+                        {
+                            let metadata = object
+                                .entry("client_metadata".to_string())
+                                .or_insert_with(|| json!({}));
+                            if let Some(metadata) = metadata.as_object_mut() {
+                                metadata
+                                    .insert("x-codex-turn-state".to_string(), json!(turn_state));
+                            }
                         }
                     }
+                    used_continuation = true;
+                    tracing::debug!(
+                        delta_items = decision.input_delta.len(),
+                        "codex websocket continuing with previous_response_id"
+                    );
+                    crate::metrics::record_continuation_outcome(
+                        ctx.provider,
+                        crate::metrics::ContinuationOutcome::Hit,
+                    );
                 }
-                used_continuation = true;
-                tracing::debug!(
-                    delta_items = decision.input_delta.len(),
-                    "codex websocket continuing with previous_response_id"
-                );
+                None => {
+                    // The reused connection's stored transcript was not an
+                    // append-only prefix of this input (history rewrite, a changed
+                    // non-input field, or normalization drift), so re-send the full
+                    // input. Correct, but the payload-trim was missed.
+                    tracing::debug!(
+                        "codex websocket reused connection but input diverged; re-sending full input"
+                    );
+                    crate::metrics::record_continuation_outcome(
+                        ctx.provider,
+                        crate::metrics::ContinuationOutcome::Fallback,
+                    );
+                }
             }
         }
     }

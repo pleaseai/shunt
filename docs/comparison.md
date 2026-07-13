@@ -189,11 +189,16 @@ toward being a fleet gateway and warrant a conscious decision first.
   off by default pending a live probe of backend acceptance, so the shim (and the zero-savings
   gap for xAI/Grok and older models) remains the baseline until operators opt in.
 
-- **B. Codex WS: live-probe the continuation normalization (already tracked: [#45]).** Reasoning/`function_call`
-  normalization is schema-validated against 3 sources but not yet live-probed
-  (`docs/m7-codex-websocket.md:250-270`). Any unaccounted field silently falls back to the
-  safe full-input fallback — correctness-safe, but a *latent missed optimization*. A
-  probe pass would confirm continuation fires as often as it should.
+- **B. Codex WS: live-probe the continuation normalization (already tracked: [#45]).** **Done (2026-07-13).**
+  Reasoning/`function_call` normalization was schema-validated against 3 sources; a live probe over the
+  WebSocket transport then captured real `message`/`reasoning`/`function_call` output items and diffed
+  them against `normalize_item` — **no unaccounted field**. The probe corrected two assumptions: the
+  backend omits reasoning `status` and returns an empty plaintext `content` array under `store:false`
+  (both already stripped, so the match is unaffected). End-to-end, all three item kinds continued from
+  `previous_response_id` on a warm pool (delta-only turns, zero `previous_response_not_found` rejects).
+  A new `shunt.codex_continuation` counter (hit vs full-input fallback) makes future drift visible. The
+  one residual is namespaced/MCP tool calls (need a live MCP server to trigger); their `namespace` strip
+  stays schema-grounded until probed.
 
 - **C. Codex WS: mid-stream failure resumption (already tracked: [#46]).** A WS failure *before* streaming
   falls back to HTTP transparently, but a *mid-stream* failure surfaces as an error

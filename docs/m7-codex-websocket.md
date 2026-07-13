@@ -169,10 +169,10 @@ own reconstruction code:
 
 | Item type | Backend `output_item.done` extras | Canonicalization | Source |
 | :-- | :-- | :-- | :-- |
-| all | `id`, `phase`, `status` | strip | live probe (text turn), 2026-07-12 `gpt-5.6-sol` |
+| all | `id`, `phase`, `status` | strip | live probe (message/reasoning/function_call), 2026-07-13 `gpt-5.6-sol` |
 | `message` content part | `annotations`, `logprobs` | strip | live probe |
-| `function_call` | `id`, `status`, `namespace`; `arguments` as raw model string | strip keys; **parse `arguments`** to a value | code + `openai/codex` `ResponseItem::FunctionCall` / openai-python `ResponseFunctionToolCall` (`arguments: str`) |
-| `reasoning` | `id`, `status`, plaintext `content` array; `summary` parts | strip keys; normalize `summary` parts; `encrypted_content`/`id` round-trip verbatim | code + `openai/codex` `ResponseItem::Reasoning` / openai-python `ResponseReasoningItem` (`content: Optional[List[reasoning_text]]`) |
+| `function_call` | `id`, `status`, `namespace`; `arguments` as raw model string | strip keys; **parse `arguments`** to a value | live probe (plain tool) + `openai/codex` `ResponseItem::FunctionCall` / openai-python `ResponseFunctionToolCall` (`arguments: str`); `namespace` schema-grounded (MCP not yet probed) |
+| `reasoning` | `id`; `summary` parts; (`status` and plaintext `content` absent under `store:false`) | strip `id`/`status`; normalize `summary` parts; drop plaintext `content`; `encrypted_content` round-trips verbatim | live probe 2026-07-13 + `openai/codex` `ResponseItem::Reasoning` / openai-python `ResponseReasoningItem` (`content: Optional[List[reasoning_text]]`) |
 
 For the text/message case the reconstruction is a strict **subset**, so stripping
 suffices. For `function_call` the `arguments` string is *not* a subset — the backend
@@ -279,19 +279,18 @@ websocket = true   # opt-in; effective only on the ChatGPT/Codex backend
 
 ## 11. Open questions / follow-ups
 
-- **Reasoning / function_call normalization is schema-validated (three sources),
-  not yet live-probed.** The text/message rules were live-probed. The `reasoning`
-  and `function_call` rules (§6) are derived from shunt's own reconstruction code
-  and cross-checked against three independent authoritative sources that agree:
-  `openai/codex` `ResponseItem` (the type codex round-trips as input under
-  `store:false`), openai-python `ResponseReasoningItem` / `ResponseFunctionToolCall`,
-  and LiteLLM's Responses transformation. That cross-check confirmed and closed the
-  two gaps the earlier draft flagged — a reasoning item's optional plaintext
-  `content` array and a `function_call.namespace` are now stripped — and surfaced no
-  field shunt fails to handle. A live thinking/tool turn would still be the final
-  confirmation (the probe account is `prolite` and usage-capped), but any
-  unaccounted field only causes the **safe** full-input fallback — correct, just
-  unoptimized.
+- **Reasoning / function_call normalization — live-probed (issue #45, 2026-07-13).**
+  The text/message rules were live-probed earlier; the `reasoning` and `function_call`
+  rules are now confirmed too. A probe over the WebSocket transport captured real
+  `message`, `reasoning`, and `function_call` output items and diffed them against
+  `normalize_item`: **no unaccounted field**. It corrected two assumptions — the backend
+  omits reasoning `status` entirely and returns an empty plaintext `content` array under
+  `store:false` (both already stripped, so the append-only match is unaffected). All
+  three item kinds then continued from `previous_response_id` end-to-end on a warm pool
+  (delta-only turns, zero `previous_response_not_found` rejects). The remaining gap is
+  namespaced/MCP tool calls, which need a live MCP server to trigger; the `namespace`
+  strip stays schema-grounded until then. A `shunt.codex_continuation` counter (hit vs
+  full-input fallback, per provider) now surfaces any future drift.
 - **Payoff measurement.** Correctness is proven; the actual per-turn byte savings on
   long real conversations should be measured before the flag is recommended broadly.
 - **Multi-process pools.** The pool is process-local; a multi-replica deployment
