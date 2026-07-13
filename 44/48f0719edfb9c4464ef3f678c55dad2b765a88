@@ -1,0 +1,29 @@
+.claude/agent-memory/review-review-documentation-analyzer/project_shunt_m9_admin_docs_review.md
+  s_18f0eea5e38b80::t_434d1db58fb712 1-38
+.claude/agent-memory/review-review-documentation-analyzer/MEMORY.md
+  s_18f0eea5e38b80::t_dc10c124fef0c3 4
+.claude/agent-memory/review-review-silent-failure-hunter/MEMORY.md
+  s_18f0eea5e38b80::t_d771ed8ca69311 4
+.claude/agent-memory/review-review-pr-test-analyzer/shunt-admin-surface-coverage.md
+  s_18f0eea5e38b80::t_cd17474e5c4157 1-50
+.claude/agent-memory/review-review-pr-test-analyzer/MEMORY.md
+  s_18f0eea5e38b80::t_cede9211affc70 4
+.claude/agent-memory/review-review-silent-failure-hunter/pr85-admin-surface-error-handling.md
+  s_18f0eea5e38b80::t_ae56a853f6d311 1-45
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "4448f0719edfb9c4464ef3f678c55dad2b765a88",
+  "prompts": {},
+  "sessions": {
+    "s_18f0eea5e38b80": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9ced28d7-2fc4-4823-9034-b1700c49530e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
