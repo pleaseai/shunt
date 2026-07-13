@@ -195,10 +195,16 @@ toward being a fleet gateway and warrant a conscious decision first.
   safe full-input fallback — correctness-safe, but a *latent missed optimization*. A
   probe pass would confirm continuation fires as often as it should.
 
-- **C. Codex WS: mid-stream failure resumption (already tracked: [#46]).** A WS failure *before* streaming
-  falls back to HTTP transparently, but a *mid-stream* failure surfaces as an error
-  SSE event, not a fallback (`src/adapters/responses.rs:92-135`). Consider
-  resuming/replaying so a dropped socket mid-turn degrades to HTTP instead of erroring.
+- **C. Codex WS: mid-stream failure fallback (resolved: [#46]).** A WS failure
+  *before the first event reaches the client* now falls back to HTTP transparently:
+  `open_ws_turn` peeks the first event and `commit_or_fallback` re-drives the turn
+  over HTTP on a pre-first-token transport error (`src/adapters/responses/mod.rs`),
+  which extends the pre-handshake safety net across the send→first-token window (an
+  idle-eviction race, a backend hiccup). A failure *after* the first event has
+  streamed is genuinely mid-stream — restarting would duplicate output — so it is
+  surfaced as a clean Anthropic `error` SSE event rather than replayed. Mid-turn
+  resume via `previous_response_id` is a deliberate non-goal (partial output is
+  already committed to the client). Covered by `tests/codex_websocket_fallback.rs`.
 
 - **D. Codex WS: speculative prewarm (`generate:false`) (already tracked: [#47]).** Explicitly out of scope
   today (`docs/m7-codex-websocket.md:53-58`), but it is a real Codex latency
@@ -244,9 +250,9 @@ pool with model-aware proactive quota scheduling plus reactive failover, but
 ChatGPT/Codex pooling remains a deliberate gap.
 The highest-value in-scope work is finishing the tool-search
 context savings ([#43]) — now partly addressed by an opt-in native `tool_search` path on
-Codex/OpenAI ([#82]) — and hardening the Codex WS continuation (live-probe +
-mid-stream fallback); the biggest deliberate gap to weigh is minimal fill-first
-multi-account for ChatGPT/Codex.
+Codex/OpenAI ([#82]). The Codex WS transport has since been hardened on both fronts
+(continuation live-probe [#45] and pre-first-token HTTP fallback [#46]); the biggest
+deliberate gap left to weigh is minimal fill-first multi-account for ChatGPT/Codex.
 
 [#43]: https://github.com/pleaseai/shunt/issues/43
 [#82]: https://github.com/pleaseai/shunt/issues/82

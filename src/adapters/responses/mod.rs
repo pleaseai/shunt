@@ -96,11 +96,12 @@ async fn forward(
         .unwrap_or_default();
     // Codex WebSocket v2 transport (issue #32), opt-in per provider and only for
     // the ChatGPT/Codex backend. HTTP stays the path for every other upstream, and
-    // is the documented safety net: a websocket connect/handshake/send failure —
-    // all of which happen before any event streams to the client — transparently
-    // falls back to the HTTP path below, so enabling the flag can never do worse
-    // than plain HTTP. (A mid-stream failure is surfaced as an Anthropic error
-    // event instead; by then the response has already begun.)
+    // is the documented safety net: any websocket failure before the first event
+    // reaches the client — connect, handshake, send, or a socket that drops before
+    // the first token (issue #46) — transparently falls back to the HTTP path
+    // below, so enabling the flag can never do worse than plain HTTP. Only a
+    // failure *after* the first event is surfaced as an Anthropic error event; by
+    // then the response has already begun and cannot be safely restarted.
     if state.config.codex_websocket_enabled(&route.provider) {
         match forward_websocket(
             &state,
@@ -335,30 +336,67 @@ struct WsTurnContext<'a> {
     upstream_body: Value,
 }
 
-/// A buffered first event, peeked to catch a rejected `previous_response_id`.
+/// The first event, peeked off the stream before the websocket response is
+/// committed, then replayed ahead of the rest of the channel so the peek costs no
+/// event. See [`open_ws_turn`] for why every turn is peeked.
 type BufferedEvent = Option<Result<ResponseEvent, CodexWsError>>;
 
 /// Open a websocket turn, applying `previous_response_id` continuation when the
 /// connection is reused and the input is an append-only extension. If the backend
 /// rejects the replayed id, retry once with the full input on a fresh connection.
-/// Returns a peeked first event (only when continuation was used) plus the rest of
-/// the stream.
+///
+/// The first event is always peeked before the response is committed, extending
+/// the pre-handshake HTTP safety net across the send→first-token window (issue
+/// #46). `Turn::stream` only *queues* the frame; the connection reader sends it
+/// and produces the first event asynchronously, so a socket that dies between the
+/// send and the first token — an idle-eviction race, a backend hiccup, a network
+/// blip — would otherwise surface as an error event on an already-committed
+/// stream. Peeking lets [`commit_or_fallback`] catch that failure while nothing
+/// has reached the client yet and return `Err`, so [`forward`] transparently
+/// re-drives the whole turn over HTTP. Only once the first event is in hand is the
+/// turn under way; a failure after that is genuinely mid-stream and surfaces as a
+/// clean error event ([`stream_events_response`]).
 async fn open_ws_turn(
     ctx: &WsTurnContext<'_>,
 ) -> Result<(BufferedEvent, CodexWsEvents), AdapterError> {
-    let (mut events, used_continuation) = start_ws_turn(ctx, true).await?;
-    if !used_continuation {
-        return Ok((None, events));
+    let (events, used_continuation) = start_ws_turn(ctx, true).await?;
+    let (first, events) = peek_first_event(events).await;
+    // A rejected previous_response_id arrives before any output: retry once with
+    // the full input on a fresh connection, then evaluate that stream instead.
+    if used_continuation && matches!(&first, Some(Err(error)) if error.previous_response_missing) {
+        tracing::info!("codex previous_response_id rejected; retrying with full input");
+        let (events, _) = start_ws_turn(ctx, false).await?;
+        let (first, events) = peek_first_event(events).await;
+        return commit_or_fallback(first, events);
     }
-    // Peek the first event: a rejected previous_response_id arrives before any
-    // output, so we can transparently retry with the full input.
-    match events.recv().await {
-        Some(Err(error)) if error.previous_response_missing => {
-            tracing::info!("codex previous_response_id rejected; retrying with full input");
-            let (events, _) = start_ws_turn(ctx, false).await?;
-            Ok((None, events))
-        }
-        buffered => Ok((buffered, events)),
+    commit_or_fallback(first, events)
+}
+
+/// Await the first event of a freshly opened turn, returning it alongside the
+/// still-live channel so it can be replayed before the remainder of the stream.
+async fn peek_first_event(mut events: CodexWsEvents) -> (BufferedEvent, CodexWsEvents) {
+    let first = events.recv().await;
+    (first, events)
+}
+
+/// Decide, from the peeked first event, whether to commit to the websocket
+/// response or fall back to HTTP. A delivered first event (`Ok`) means the turn is
+/// under way: buffer it for replay and stream the socket. A transport error or an
+/// empty stream means nothing ever reached the client, so return `Err` to let
+/// [`forward`] re-drive the turn over HTTP transparently — the send→first-token
+/// analogue of the pre-handshake fallback. Backend-sent error *events* (a rate
+/// limit, a content-policy refusal) arrive as `Ok` and are streamed through rather
+/// than retried; only genuine transport failures reach the `Err` arm here.
+fn commit_or_fallback(
+    first: BufferedEvent,
+    events: CodexWsEvents,
+) -> Result<(BufferedEvent, CodexWsEvents), AdapterError> {
+    match first {
+        Some(Ok(event)) => Ok((Some(Ok(event)), events)),
+        Some(Err(error)) => Err(ws_transport_error(error)),
+        None => Err(own_error(
+            "codex websocket closed before any event".to_string(),
+        )),
     }
 }
 
@@ -491,10 +529,12 @@ fn ws_connect_error(error: CodexWsError, auth: AuthMode) -> AdapterError {
 }
 
 /// Stream translated events to the client as Anthropic SSE. Mirrors
-/// [`stream_response`] but reads from the websocket event channel; a mid-stream
-/// transport error is surfaced as an Anthropic `error` event so the client sees a
-/// reason rather than a silent truncation. `buffered` is the peeked first event,
-/// if any, replayed before the rest of the channel.
+/// [`stream_response`] but reads from the websocket event channel. By the time
+/// this runs the first event has already been delivered (peeked in
+/// [`open_ws_turn`], replayed here via `buffered`), so a transport error at this
+/// point is genuinely mid-stream: it is surfaced as an Anthropic `error` event so
+/// the client sees a reason rather than a silent truncation — an HTTP restart is
+/// no longer safe because output has already been streamed.
 fn stream_events_response(
     buffered: BufferedEvent,
     events: CodexWsEvents,
@@ -554,9 +594,10 @@ fn stream_events_response(
 }
 
 /// Collect the full websocket event stream into a single Anthropic message for a
-/// non-streaming client. A mid-stream transport error returns a gateway error
-/// instead of presenting partial output as a successful response. `buffered` is
-/// the peeked first event, if any.
+/// non-streaming client. The first event was peeked in [`open_ws_turn`] (a
+/// pre-first-event failure already fell back to HTTP), so a transport error here
+/// is mid-stream: return a gateway error instead of presenting partial output as
+/// a successful response. `buffered` is the replayed first event, if any.
 async fn json_events_response(
     buffered: BufferedEvent,
     mut events: CodexWsEvents,
