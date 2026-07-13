@@ -51,7 +51,7 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 | `api_key_env` | 环境变量名 | 当 `auth = "api_key"` 时,从何处读取密钥。 |
 | `api_key_header` | `bearer`(默认) \| `x_api_key` | 注入的密钥在哪个头部中发送。 |
 | `effort` | `low` … `max` | 可选的默认推理力度(`responses` 提供方)。 |
-| `count_tokens` | `tiktoken`(默认) \| `estimate` | 仅 `responses` 提供方:本地 tiktoken 计数 vs. `501 not_supported` 回退([详情](/zh-cn/guides/effort-and-context/#token-counting-count_tokens))。 |
+| `count_tokens` | `tiktoken`(默认) \| `estimate` | `responses` 与 `cursor` 提供方:本地 tiktoken 计数 vs. `501 not_supported` 回退([详情](/zh-cn/guides/effort-and-context/#token-counting-count_tokens))。 |
 
 ## `[[routes]]`
 

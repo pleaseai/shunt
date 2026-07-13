@@ -163,7 +163,7 @@ async fn forward(
                     axum::Json(serde_json::json!({ "input_tokens": input_tokens })).into_response(),
                 )
             }
-            CountTokens::Estimate => (StatusCode::NOT_IMPLEMENTED, count_tokens_unsupported()),
+            CountTokens::Estimate => count_tokens_unsupported(),
         });
     }
     let body = body.to_vec();
@@ -263,14 +263,17 @@ fn is_count_tokens(uri: &Uri) -> bool {
     uri.path().ends_with("/count_tokens")
 }
 
-fn count_tokens_unsupported() -> axum::response::Response {
+fn count_tokens_unsupported() -> (StatusCode, axum::response::Response) {
     let status = StatusCode::NOT_IMPLEMENTED;
-    ShuntError::new(
+    (
         status,
-        anthropic_error_type(status),
-        "count_tokens is not available for this model; Claude Code estimates tokens locally",
+        ShuntError::new(
+            status,
+            anthropic_error_type(status),
+            "count_tokens is not available for this model; Claude Code estimates tokens locally",
+        )
+        .into_response(),
     )
-    .into_response()
 }
 
 #[cfg(test)]

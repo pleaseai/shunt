@@ -189,7 +189,7 @@ a brand-new table adds a provider. Every provider takes these keys:
 | `api_key_env` | env var name | Where the key is read from, when `auth = "api_key"`. |
 | `api_key_header` | `bearer` (default) \| `x_api_key` | Header the injected key is sent in. |
 | `effort` | `low`…`max` | Optional default reasoning effort (`responses` providers). |
-| `count_tokens` | `tiktoken` (default) \| `estimate` | For `responses` providers: `tiktoken` computes a local count (o200k_base) and returns `{"input_tokens": N}`; `estimate` returns `501 not_supported` so the client falls back on its own. See §4. |
+| `count_tokens` | `tiktoken` (default) \| `estimate` | For `responses` and `cursor` providers: `tiktoken` computes a local count (o200k_base) and returns `{"input_tokens": N}`; `estimate` returns `501 not_supported` so the client falls back on its own. See §4. |
 
 Most third-party "use Claude Code with X" gateways are **Anthropic-Messages-compatible**: they are
 `kind = "anthropic"` with `auth = "api_key"`, differing only in `base_url` and the key env var.
