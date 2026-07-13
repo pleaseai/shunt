@@ -106,7 +106,7 @@ Upstream Responses events to handle (names as emitted by the Codex backend / Res
 
 | Upstream event | Carries | Emit (Anthropic) |
 | :-- | :-- | :-- |
-| `response.created` / `response.in_progress` | response shell | `message_start` (once): `{message:{id,role,model,content:[],stop_reason:null,usage:{...0}}}` + an initial `ping`. |
+| `response.created` / `response.in_progress` | response shell | `message_start` (once): `{message:{id,role,model,content:[],stop_reason:null,usage:{input_tokens,output_tokens:0}}}` + an initial `ping`. `input_tokens` seeds a local tiktoken estimate (0 unless the provider's `count_tokens = "tiktoken"`) so Claude Code's per-subagent progress indicator isn't stuck at 0; the accurate total still arrives in the terminal `message_delta`. |
 | `response.output_item.added` (`type:"message"`) | new text item | open a `text` block: `content_block_start {index, content_block:{type:"text",text:""}}`. |
 | `response.output_text.delta` | `delta` (string) | `content_block_delta {index, delta:{type:"text_delta", text:delta}}`. |
 | `response.output_text.done` / `response.content_part.done` | — | `content_block_stop {index}`; advance index. |

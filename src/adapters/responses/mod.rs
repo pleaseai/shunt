@@ -1,6 +1,8 @@
 pub mod codex_continuation;
 pub mod codex_ws;
 
+use std::sync::Arc;
+
 use axum::{
     body::{Body, Bytes},
     http::{HeaderMap, HeaderValue, Response, StatusCode, Uri},
@@ -80,21 +82,31 @@ async fn forward(
     let tool_search_native = state
         .config
         .native_tool_search(&route.provider, &route.upstream_model);
-    // Seed message_start's usage.input_tokens with a local tiktoken estimate.
-    // The Responses API reports real usage only at response.completed, so
-    // message_start would carry 0 — and Claude Code's per-subagent progress
-    // tracker reads that first snapshot, leaving codex subagents at 0 context in
-    // the agent panel. Gated on the provider's local-counting opt-in (the same
-    // CountTokens knob as the count_tokens endpoint); the accurate total still
-    // lands in the terminal message_delta. See model/responses.rs.
-    let input_tokens_estimate = match state
-        .config
-        .provider(&route.provider)
-        .map(|provider| provider.count_tokens)
-        .unwrap_or(CountTokens::Estimate)
-    {
-        CountTokens::Tiktoken => crate::count_tokens::count_input_tokens(&body),
-        CountTokens::Estimate => 0,
+    // Seed message_start's usage.input_tokens with a local tiktoken estimate of
+    // the (already-parsed) request so Claude Code's per-subagent progress
+    // tracker — which reads that first snapshot and never re-reads the merged
+    // total — shows a live context figure for codex subagents instead of a stuck
+    // 0. The Responses API only reports real usage at response.completed, by
+    // which point message_start is long sent; the accurate total still lands in
+    // the terminal message_delta. Only streaming turns emit message_start, so
+    // non-streaming requests carry `None` and skip the work; gated on the
+    // provider's local-counting opt-in (the same CountTokens knob as the
+    // count_tokens endpoint). The CPU-bound tiktoken encode itself is deferred to
+    // each transport, where it runs on the blocking pool overlapped with the
+    // upstream round-trip rather than serially in front of it (see forward_http /
+    // forward_websocket). See model/responses.rs.
+    let estimate_input = if client_wants_stream
+        && matches!(
+            state
+                .config
+                .provider(&route.provider)
+                .map(|provider| provider.count_tokens)
+                .unwrap_or(CountTokens::Estimate),
+            CountTokens::Tiktoken
+        ) {
+        request_json.map(Arc::new)
+    } else {
+        None
     };
     let upstream_body = translate_request(&body, &route, flavor, tool_search_native)
         .map_err(|error| own_error(error.to_string()))?;
@@ -128,7 +140,7 @@ async fn forward(
             client_wants_stream,
             thinking_enabled,
             tool_search_native,
-            input_tokens_estimate,
+            estimate_input.clone(),
         )
         .await
         {
@@ -151,7 +163,7 @@ async fn forward(
         client_wants_stream,
         thinking_enabled,
         tool_search_native,
-        input_tokens_estimate,
+        estimate_input,
         session_id.as_deref(),
     )
     .await
@@ -170,9 +182,16 @@ async fn forward_http(
     client_wants_stream: bool,
     thinking_enabled: bool,
     tool_search_native: bool,
-    input_tokens_estimate: u64,
+    estimate_input: Option<Arc<Value>>,
     session_id: Option<&str>,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
+    // Kick off the CPU-bound tiktoken encode on the blocking pool *before* the
+    // upstream request so it overlaps that round-trip; the result is not needed
+    // until the response stream (and thus message_start) begins. `None` on
+    // non-streaming turns and non-tiktoken providers (gated in `forward`).
+    let estimate_handle = estimate_input.map(|request| {
+        tokio::task::spawn_blocking(move || crate::count_tokens::count_input_tokens_value(&request))
+    });
     let upstream = request_builder(state, route, credential, session_id)
         .body(upstream_body.to_string())
         .send()
@@ -183,6 +202,10 @@ async fn forward_http(
         return Err(mapped_upstream_error(status, upstream, auth).await);
     }
     if client_wants_stream {
+        let input_tokens_estimate = match estimate_handle {
+            Some(handle) => handle.await.unwrap_or(0),
+            None => 0,
+        };
         let keepalive = std::time::Duration::from_secs(state.config.server.sse_keepalive_seconds);
         Ok((
             StatusCode::OK,
@@ -298,7 +321,7 @@ async fn forward_websocket(
     client_wants_stream: bool,
     thinking_enabled: bool,
     tool_search_native: bool,
-    input_tokens_estimate: u64,
+    estimate_input: Option<Arc<Value>>,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let pool_key = pool_key.filter(|key| !key.is_empty());
     let http_url = responses_url(&state.config, &route.provider);
@@ -318,8 +341,21 @@ async fn forward_websocket(
     };
     tracing::debug!(provider = %route.provider, ws_url = %ctx.ws_url, pool_key = pool_key.unwrap_or(""), "opening codex websocket");
 
+    // Overlap the CPU-bound tiktoken encode with the websocket connect (same
+    // rationale as forward_http); its result is only consumed once the event
+    // stream begins. If open_ws_turn fails, this handle is dropped un-awaited and
+    // forward_http re-spawns its own encode on the fallback path — a rare,
+    // off-executor double-encode we accept rather than thread the handle back out
+    // through the Err path (which would couple the transport signatures).
+    let estimate_handle = estimate_input.map(|request| {
+        tokio::task::spawn_blocking(move || crate::count_tokens::count_input_tokens_value(&request))
+    });
     let (buffered, events) = open_ws_turn(&ctx).await?;
     if client_wants_stream {
+        let input_tokens_estimate = match estimate_handle {
+            Some(handle) => handle.await.unwrap_or(0),
+            None => 0,
+        };
         let keepalive = std::time::Duration::from_secs(state.config.server.sse_keepalive_seconds);
         Ok((
             StatusCode::OK,

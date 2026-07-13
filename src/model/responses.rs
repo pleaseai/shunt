@@ -47,6 +47,11 @@ pub struct AnthropicSseMachine {
     /// panel. Seeding an estimate mirrors Anthropic; the accurate value still
     /// lands in the terminal `message_delta` (see [`Self::usage_value`]).
     input_tokens_estimate: u64,
+    /// Whether real prompt usage was observed from a `response.completed`
+    /// event. Distinguishes "upstream reported `input_tokens: 0`" from "the
+    /// stream ended before usage arrived", so [`Self::usage_value`] substitutes
+    /// the estimate only in the latter case.
+    usage_observed: bool,
     content: Vec<Value>,
     text_buffer: String,
     text_citations: Vec<Value>,
@@ -92,6 +97,7 @@ impl AnthropicSseMachine {
             cache_read_tokens: 0,
             output_tokens: 0,
             input_tokens_estimate: 0,
+            usage_observed: false,
             content: Vec::new(),
             text_buffer: String::new(),
             text_citations: Vec::new(),
@@ -679,8 +685,21 @@ impl AnthropicSseMachine {
     /// total. OpenAI's `input_tokens` already includes cached tokens, so
     /// cache_read is peeled off and input_tokens holds the uncached remainder.
     fn usage_value(&self) -> Value {
+        // Fall back to the message_start estimate only when real usage was never
+        // observed — i.e. the stream ended before response.completed, so
+        // read_usage never ran. Without this a truncated turn's final usage would
+        // drop back to 0 and undo the seed message_start already reported. The
+        // explicit `usage_observed` flag (not a zero-check) means a genuine
+        // upstream `input_tokens: 0` is still reported as 0, not overwritten by
+        // the estimate. On non-streaming machines the estimate is never seeded
+        // (it stays 0), so this preserves the real-0 behaviour.
+        let input_tokens = if self.usage_observed {
+            self.input_tokens
+        } else {
+            self.input_tokens_estimate
+        };
         json!({
-            "input_tokens": self.input_tokens,
+            "input_tokens": input_tokens,
             "cache_read_input_tokens": self.cache_read_tokens,
             "cache_creation_input_tokens": 0,
             "output_tokens": self.output_tokens,
@@ -707,6 +726,7 @@ impl AnthropicSseMachine {
         if let Some(total_input) = usage.get("input_tokens").and_then(Value::as_u64) {
             self.cache_read_tokens = cached.min(total_input);
             self.input_tokens = total_input - self.cache_read_tokens;
+            self.usage_observed = true;
         }
     }
 
