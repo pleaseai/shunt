@@ -55,6 +55,7 @@ async fn forward(
         tracing::warn!(
             provider = %route.provider,
             model = %route.model,
+            upstream_model = %route.upstream_model,
             rate_limit_kind = rate_limit_kind(upstream.headers(), oauth_client),
             "upstream returned 429"
         );
