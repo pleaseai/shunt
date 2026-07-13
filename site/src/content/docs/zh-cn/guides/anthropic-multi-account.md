@@ -33,7 +33,7 @@ uuid = "11111111-1111-1111-1111-111111111111" # 可选
 ```
 
 ```bash
-export CLAUDE_BACKUP_OAUTH_TOKEN='<来自 claude setup-token 的值>'
+export CLAUDE_BACKUP_OAUTH_TOKEN='<value from claude setup-token>'
 shunt check
 shunt run
 ```

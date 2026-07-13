@@ -33,7 +33,7 @@ uuid = "11111111-1111-1111-1111-111111111111" # 선택
 ```
 
 ```bash
-export CLAUDE_BACKUP_OAUTH_TOKEN='<claude setup-token으로 얻은 값>'
+export CLAUDE_BACKUP_OAUTH_TOKEN='<value from claude setup-token>'
 shunt check
 shunt run
 ```
