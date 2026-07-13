@@ -321,6 +321,35 @@ the whole point of tool search.
 - Non-deferred tools (and the hosted `web_search` tool above) are always forwarded; only deferrable
   tools are progressively revealed.
 
+### Native protocol (opt-in)
+
+The shim above works by rendering `tool_reference` as schema text — it reclaims nothing from the
+upstream context, it just defers *when* the full schemas are sent. As an **opt-in alternative**
+(issue #82), shunt can instead map tool search onto the OpenAI Responses API's own **native,
+client-executed `tool_search`** protocol: Claude Code's `ToolSearch` tool becomes a `tool_search`
+(`execution: "client"`) tool, its `tool_use` becomes a `tool_search_call`, and the `tool_reference`
+result becomes a `tool_search_output` item carrying the loaded tools' full schemas as structured
+JSON — preserving real tool-loading semantics and cache behavior instead of folding schema into
+text. Turn it on per provider:
+
+```toml
+[providers.codex]
+tool_search = true
+```
+
+Requirements — unsupported combinations silently keep the #43 shim, never error:
+
+- The upstream must be a stock OpenAI or ChatGPT/Codex-flavored Responses backend. xAI/Grok routes
+  always keep the shim.
+- The routed model must be **gpt-5.4 or later** (`gpt-5.4`, `gpt-5.5`, or the `gpt-5.6` family).
+  Earlier slugs (`gpt-5.2` and below) fall back to the shim even with `tool_search = true` set.
+- `ENABLE_TOOL_SEARCH=true` is still required on the Claude Code side — this flag only changes
+  *how* shunt translates that feature upstream, not whether Claude Code defers tools at all.
+
+`tool_search` defaults to `false`: the native shapes are gated behind this flag until a live probe
+confirms a given backend accepts them, so it's an explicit per-provider opt-in rather than shunt
+switching every Codex/OpenAI route automatically.
+
 ## Troubleshooting
 
 | Symptom | Cause / Fix |
@@ -333,5 +362,6 @@ the whole point of tool search.
 | Context bar over-reports / compacts early | Set `CLAUDE_CODE_MAX_CONTEXT_TOKENS`; a discovery alias can't take it — use a non-`claude-` id. |
 | Web search returns nothing on a Grok route | xAI/Grok's Responses API doesn't support web search; shunt drops the tool. Use a `codex` or `openai` route. |
 | Tool search does nothing / all tool schemas sent every turn | Set `ENABLE_TOOL_SEARCH=true` — Claude Code disables tool search by default behind a non-Anthropic base URL. shunt forwards `tool_reference` blocks and reveals deferred schemas on demand. |
+| Want tool search to reclaim context instead of just deferring it | Set `tool_search = true` under `[providers.codex]` for the native protocol — requires a stock OpenAI/ChatGPT-Codex flavor and a gpt-5.4+ model; see [Tool search → Native protocol](#native-protocol-opt-in) above. |
 
 See the full [Troubleshooting](/reference/troubleshooting/) reference for more.

@@ -247,6 +247,18 @@ pub struct ProviderConfig {
     /// error event). Off by default — HTTP stays the default transport.
     #[serde(default)]
     pub websocket: bool,
+    /// Opt in to the OpenAI Responses native client-executed `tool_search`
+    /// protocol for Claude Code's tool search (issue #82). Off by default: when
+    /// off, shunt keeps the #43 text-based progressive-reveal compatibility shim
+    /// (ToolSearch forwarded as a plain function, `tool_reference` revealed as
+    /// schema text). When on — and the upstream flavor and model support it (see
+    /// [`Config::native_tool_search`]) — shunt maps Claude Code's `ToolSearch` to
+    /// the native `tool_search`/`tool_search_call`/`tool_search_output` items so
+    /// tool-loading semantics and cache behavior are preserved. Gated behind this
+    /// flag until a live probe confirms a given backend accepts the shapes shunt
+    /// emits; unsupported flavors/models fall back to the shim regardless.
+    #[serde(default)]
+    pub tool_search: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -357,6 +369,28 @@ pub enum ResponsesFlavor {
     /// Grok CLI subscription proxy. It otherwise speaks the xAI dialect, but
     /// additionally accepts the hosted `web_search` tool.
     Grok,
+}
+
+/// Whether `model` advertises native Responses `tool_search` support. OpenAI
+/// documents GPT-5.4 and later; codex's `models.json` flags the gpt-5.4/5.5/5.6
+/// families with `supports_search_tool: true`. Kept a boundary-guarded substring
+/// check (no table) like the effort ceiling in `responses_request.rs`. Earlier
+/// slugs (gpt-5.2 and below) fall back to the #43 progressive-reveal shim even
+/// with the provider flag on, so the native path only fires for combinations
+/// documented to accept it.
+fn model_supports_tool_search(model: &str) -> bool {
+    // Match each documented "gpt-5.N" family as a whole minor version: the digit
+    // must be followed by a non-digit (or end of string), so "gpt-5.4" matches
+    // but an undocumented "gpt-5.40" does not silently borrow 5.4's flag and get
+    // a native wire shape its backend may reject.
+    ["gpt-5.4", "gpt-5.5", "gpt-5.6"].iter().any(|family| {
+        model.match_indices(family).any(|(index, matched)| {
+            model[index + matched.len()..]
+                .chars()
+                .next()
+                .is_none_or(|next| !next.is_ascii_digit())
+        })
+    })
 }
 
 /// Whether `host` belongs to xAI (`x.ai` or any subdomain). Used both to gate
@@ -510,6 +544,7 @@ impl ProviderConfig {
             count_tokens: CountTokens::default(),
             accounts: Vec::new(),
             websocket: false,
+            tool_search: false,
         }
     }
 
@@ -527,6 +562,7 @@ impl ProviderConfig {
             count_tokens: CountTokens::default(),
             accounts: Vec::new(),
             websocket: false,
+            tool_search: false,
         }
     }
 }
@@ -566,6 +602,7 @@ impl Default for Config {
                     count_tokens: CountTokens::default(),
                     accounts: Vec::new(),
                     websocket: false,
+                    tool_search: false,
                 },
             ),
             (
@@ -1005,6 +1042,23 @@ impl Config {
         }
     }
 
+    /// Whether `provider`'s Responses translation should use the native
+    /// client-executed `tool_search` protocol (issue #82) for a request routed
+    /// to `model`, rather than the #43 text-based progressive-reveal shim.
+    /// Requires all three: the provider opted in (`tool_search = true`), the
+    /// upstream speaks a flavor known to accept it (stock OpenAI or the
+    /// ChatGPT/Codex backend — xAI/Grok keep the shim), and the model advertises
+    /// support (see [`model_supports_tool_search`]).
+    pub fn native_tool_search(&self, provider: &str, model: &str) -> bool {
+        self.provider(provider)
+            .is_some_and(|config| config.tool_search)
+            && matches!(
+                self.responses_flavor(provider),
+                ResponsesFlavor::OpenAi | ResponsesFlavor::Chatgpt
+            )
+            && model_supports_tool_search(model)
+    }
+
     pub fn provider_base_url(
         &self,
         provider: &str,
@@ -1302,6 +1356,35 @@ mod tests {
         assert_eq!(config.responses_flavor("xai"), ResponsesFlavor::Xai);
         assert_eq!(config.responses_flavor("openai"), ResponsesFlavor::OpenAi);
         assert_eq!(config.responses_flavor("codex"), ResponsesFlavor::Chatgpt);
+    }
+
+    #[test]
+    fn native_tool_search_requires_opt_in_flavor_and_model() {
+        let mut config = Config::default();
+        // Off by default, even for a supported flavor + model.
+        assert!(!config.native_tool_search("codex", "gpt-5.6-sol"));
+
+        config.providers.get_mut("codex").unwrap().tool_search = true;
+        config.providers.get_mut("openai").unwrap().tool_search = true;
+        config.providers.get_mut("xai").unwrap().tool_search = true;
+
+        // Opted in + supported flavor (Chatgpt / OpenAi) + supported model.
+        assert!(config.native_tool_search("codex", "gpt-5.6-sol"));
+        assert!(config.native_tool_search("openai", "gpt-5.4"));
+        // A trailing non-digit still counts as the documented minor.
+        assert!(config.native_tool_search("openai", "gpt-5.4-turbo"));
+
+        // Boundary guard: a multi-digit minor must NOT borrow 5.4's flag — those
+        // are undocumented families whose backend may reject the native wire.
+        assert!(!config.native_tool_search("openai", "gpt-5.40"));
+        assert!(!config.native_tool_search("openai", "gpt-5.41-turbo"));
+
+        // Unsupported model keeps the #43 shim (gpt-5.2 and below).
+        assert!(!config.native_tool_search("codex", "gpt-5.2-codex"));
+        // Unsupported flavor keeps the shim (xAI), even opted in.
+        assert!(!config.native_tool_search("xai", "gpt-5.6-sol"));
+        // Unknown provider is never native.
+        assert!(!config.native_tool_search("nope", "gpt-5.6-sol"));
     }
 
     #[test]

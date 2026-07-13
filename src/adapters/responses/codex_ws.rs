@@ -15,7 +15,7 @@
 //! connection this module also records the completed turn's response id and
 //! output items as [`StoredContinuation`], so the next turn can replay
 //! `previous_response_id` and upload only the input delta (the decision itself
-//! lives in [`crate::adapters::codex_continuation`]). `previous_response_id` is
+//! lives in [`crate::adapters::responses::codex_continuation`]). `previous_response_id` is
 //! only ever valid on the exact connection that produced it, which is why the
 //! continuation state is stored on the [`PoolEntry`] rather than globally.
 
@@ -31,7 +31,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::{self, Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
-use crate::adapters::codex_continuation::{build_transcript, StoredContinuation};
+use super::codex_continuation::{build_transcript, StoredContinuation};
 use crate::model::responses::ResponseEvent;
 
 /// Header the backend uses to hand back (and codex echoes back) the per-turn
@@ -783,7 +783,8 @@ mod tests {
         .expect("websocket should connect");
 
         // Drive the received events through the same machine the adapter uses.
-        let mut machine = crate::model::responses::AnthropicSseMachine::new("gpt-5.2-codex", false);
+        let mut machine =
+            crate::model::responses::AnthropicSseMachine::new("gpt-5.2-codex", false, false);
         let mut names = Vec::new();
         let mut sse = String::new();
         while let Some(item) = events.recv().await {
