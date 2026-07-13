@@ -1,0 +1,39 @@
+src/model/responses.rs
+  s_10e287f8b7de33::t_a32565b186ab05 322
+  s_10e287f8b7de33::t_b956af54f9f695 82
+  s_10e287f8b7de33::t_ad74549eebe8b4 388-391,398-399
+  s_10e287f8b7de33::t_c8a83aeeb1de98 42
+  s_10e287f8b7de33::t_1bb6925efe384f 411-412,419-420
+  s_10e287f8b7de33::t_8f69ce7444229d 515-519,521
+src/config.rs
+  s_10e287f8b7de33::t_52a395124c8a58 1017
+  s_10e287f8b7de33::t_080a9fcd0fd511 837-843
+  s_10e287f8b7de33::t_485e9cbb7a458c 1075-1076
+tests/responses_translate.rs
+  s_10e287f8b7de33::t_37a1bb260e6ff0 826-829,833-873
+  s_34d99b10cb7c5a::t_c970af792cdcfd 874-875
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "5031d280994ab405e822627393942b51f283d8e1",
+  "prompts": {},
+  "sessions": {
+    "s_10e287f8b7de33": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f3fe3d9b-8670-4df4-9e5f-975a09be3cca",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_34d99b10cb7c5a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e4c49b28-f934-40c5-b060-861d6c0d1e8b",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
