@@ -211,11 +211,15 @@ impl AnthropicSseMachine {
     /// open/delta/stop shape, and records the block for the non-streaming path.
     fn tool_search_call_done(&mut self, item: &Value) -> Vec<String> {
         let mut out = self.close_any();
+        // Claude Code needs a non-empty tool_use id to match the tool_result it
+        // sends back; if upstream ever omits `call_id`, fall back to a synthetic
+        // per-block id rather than emit an empty (invalid) one.
         let id = item
             .get("call_id")
             .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("toolu_ts_{}", self.index));
         let arguments = item.get("arguments").cloned().unwrap_or_else(|| json!({}));
         self.saw_tool = true;
         out.push(sse(

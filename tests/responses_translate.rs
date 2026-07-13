@@ -1736,6 +1736,29 @@ fn native_non_streaming_tool_search_call_in_final_json() {
 }
 
 #[test]
+fn native_tool_search_call_missing_call_id_gets_synthetic_id() {
+    // Claude Code matches a tool_result to its tool_use by id, so an empty id is
+    // invalid. If upstream ever omits call_id, the machine synthesizes a
+    // non-empty per-block id (toolu_ts_<index>) instead of emitting "".
+    let fixture = concat!(
+        "event: response.output_item.done\n",
+        "data: {\"item\":{\"type\":\"tool_search_call\",\"execution\":\"client\",\"arguments\":{\"query\":\"gh\"}}}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":3}}}\n\n"
+    );
+    let mut machine = AnthropicSseMachine::new("gpt-5.6-sol", false, true);
+    for event in parse_sse_events(fixture) {
+        let _ = machine.apply(event);
+    }
+    let final_json = machine.final_json();
+
+    assert_eq!(final_json["content"][0]["type"], "tool_use");
+    assert_eq!(final_json["content"][0]["name"], "ToolSearch");
+    assert_eq!(final_json["content"][0]["id"], "toolu_ts_0");
+    assert_eq!(final_json["content"][0]["input"], json!({"query": "gh"}));
+}
+
+#[test]
 fn native_off_ignores_tool_search_call_item() {
     // Under the shim the upstream never emits a tool_search_call, but if one
     // somehow arrived it must not be surfaced as a tool_use — the machine only
