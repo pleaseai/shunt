@@ -1,0 +1,19 @@
+src/auth/shared.rs
+  s_8fcbb5045af0e9::t_6f1f09d4e1bd8c 84-92
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "c7101a3484be50d3012ad8f503f68e5a180e6d56",
+  "prompts": {},
+  "sessions": {
+    "s_8fcbb5045af0e9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "57db19d9-b48c-4b3d-ad2b-56cd99397e09",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
