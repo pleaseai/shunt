@@ -68,6 +68,8 @@ xAI may gate OAuth access by subscription tier — if `grok` returns 403, use th
 
 **Anthropic multi-account.** An Anthropic provider with `auth = "claude_oauth"` can load explicit accounts from Claude Code credentials files or setup-token environment variables, or use private store-managed accounts created by `shunt login claude --name <name>` (add `--long-lived` to run and store a one-year `claude setup-token`). An empty configured account list scans the shunt account store. shunt keeps healthy `x-claude-code-session-id` sessions sticky, uses per-provider round-robin otherwise, and proactively rotates off a near-quota sticky account using model-aware 5-hour/weekly quota state before the wall when possible. Reactive handling of quota-rejected 429s, 401s, and 5xx responses remains the failover floor. Storm-control is a later follow-up. See the [how-to](https://shunt-docs.pages.dev/guides/anthropic-multi-account/) and [M8 behavior specification](docs/m8-anthropic-multi-account.md).
 
+**Opt-in admin web surface.** Configure `[server.admin]` to add an admin-authenticated web surface for provisioning Claude accounts from a browser (the setup-token flow) and viewing account-pool health, without SSH. It is off by default — absent the table, no `/admin*` routes are registered — and uses a credential separate from `[server.auth]`. See the [how-to](https://shunt-docs.pages.dev/guides/admin-remote-provisioning/) and [M9 design note](docs/m9-admin-surface.md).
+
 OpenAI's Thibault Sottiaux has publicly welcomed running Codex through other coding harnesses:
 
 > Share the recipe. People want to know how to use GPT-5.6 Sol in CC. We don't discriminate on the harness. ([Source](https://x.com/thsottiaux/status/2075830097488249060))

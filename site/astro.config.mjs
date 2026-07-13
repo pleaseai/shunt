@@ -92,6 +92,10 @@ export default defineConfig({
               slug: 'guides/anthropic-multi-account',
             },
             {
+              label: 'Admin & Remote Provisioning',
+              slug: 'guides/admin-remote-provisioning',
+            },
+            {
               label: 'Connect Claude Code',
               translations: { ko: 'Claude Code 연결', ja: 'Claude Code の接続', 'zh-CN': '连接 Claude Code' },
               slug: 'guides/connect-claude-code',

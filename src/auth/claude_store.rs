@@ -100,6 +100,86 @@ pub fn account_uuid(name: &str) -> Option<String> {
     read_account_uuid(&account_path(name))
 }
 
+/// Whether a store account holds a long-lived setup token or an imported,
+/// refreshable Claude Code login. Reported by the admin surface; never carries
+/// token material.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountKind {
+    SetupToken,
+    Imported,
+}
+
+/// Token-free account metadata for the admin surface: name, kind, expiry, and
+/// UUID read from the store JSON. The access/refresh token is never read here.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AccountMeta {
+    pub name: String,
+    pub kind: AccountKind,
+    /// `claudeAiOauth.expiresAt` in Unix epoch milliseconds, when present.
+    pub expires_at: Option<i64>,
+    pub uuid: Option<String>,
+}
+
+/// Read one store account's metadata without loading its token. `None` when the
+/// file is missing or unparseable.
+pub fn account_meta(name: &str) -> Option<AccountMeta> {
+    read_account_meta(name, &account_path(name))
+}
+
+/// List store-managed accounts with token-free metadata, in deterministic name
+/// order. Mirrors [`scan_accounts`] but reports kind/expiry for the dashboard.
+pub fn list_account_meta() -> io::Result<Vec<AccountMeta>> {
+    Ok(scan_accounts()?
+        .into_iter()
+        .filter_map(|account| account_meta(&account.name))
+        .collect())
+}
+
+fn read_account_meta(name: &str, path: &Path) -> Option<AccountMeta> {
+    let value: Value = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
+    let oauth = value.get("claudeAiOauth");
+    // Setup tokens carry the explicit kind marker and no refresh token; an
+    // imported login always carries a non-empty refresh token. Fall back to
+    // setup-token when neither signal is present (a static, non-refreshable file).
+    let is_imported = oauth
+        .and_then(|oauth| oauth.get("refreshToken"))
+        .and_then(Value::as_str)
+        .is_some_and(|token| !token.is_empty());
+    let kind = if is_imported {
+        AccountKind::Imported
+    } else {
+        AccountKind::SetupToken
+    };
+    let expires_at = oauth
+        .and_then(|oauth| oauth.get("expiresAt"))
+        .and_then(Value::as_i64);
+    let uuid = value
+        .get("shuntAccountUuid")
+        .and_then(Value::as_str)
+        .filter(|uuid| !uuid.is_empty())
+        .map(ToOwned::to_owned);
+    Some(AccountMeta {
+        name: name.to_string(),
+        kind,
+        expires_at,
+        uuid,
+    })
+}
+
+/// Remove a store account file. Returns whether a file was actually removed
+/// (`false` when it did not exist). The name is validated so a caller-supplied
+/// value can never escape the accounts directory. This deletes an operator-owned
+/// setup-token/import file only; it never touches the account's upstream state.
+pub fn remove_account(name: &str) -> anyhow::Result<bool> {
+    validate_account_name(name)?;
+    match fs::remove_file(account_path(name)) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
 fn read_account_uuid(path: &Path) -> Option<String> {
     let value: Value = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
     value

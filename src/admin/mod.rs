@@ -1,0 +1,615 @@
+//! Opt-in admin web surface (M9): browser account provisioning + a read-only
+//! account-pool dashboard. Registered only when `[server.admin]` is configured
+//! (see `crate::server::build_router`); absent ⇒ none of these routes exist.
+//!
+//! Two credentials never mix: `[server.auth]` client tokens are handed to devices,
+//! `[server.admin]` admin tokens add upstream accounts. Browsers authenticate with
+//! a session cookie minted after a login form and are CSRF-protected; API/curl
+//! callers pass the admin token header and are CSRF-exempt (no ambient cookie).
+//! The provisioning flow reuses the CLI setup-token internals in
+//! `crate::auth::claude_login`; the token value is never returned to the browser
+//! and never logged. See `docs/m9-admin-surface.md`.
+
+pub mod session;
+
+mod html;
+
+use std::{sync::Arc, time::Duration};
+
+use axum::{
+    extract::{rejection::JsonRejection, Path, State},
+    http::{header, HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
+    routing::{delete, get, post},
+    Form, Json, Router,
+};
+use serde::Deserialize;
+use serde_json::json;
+
+use crate::{
+    auth::{
+        claude_auth, claude_login, claude_store,
+        inbound::{constant_time_eq, InboundAuth},
+    },
+    config::AuthMode,
+    error::ShuntError,
+    server::AppState,
+};
+
+pub use session::AdminStores;
+
+use session::PendingAttempt;
+
+const SESSION_COOKIE: &str = "shunt_admin_session";
+
+/// Resolved admin credential plus session/pending lifetimes. Held in
+/// `RuntimeState` (hot-reloaded so token edits apply); the session and pending
+/// stores live in `AppState` (process lifetime). The token check reuses the
+/// inbound-auth constant-time compare.
+#[derive(Debug, Clone)]
+pub struct AdminAuth {
+    inbound: InboundAuth,
+    session_ttl: Duration,
+    pending_ttl: Duration,
+}
+
+impl AdminAuth {
+    pub fn new(inbound: InboundAuth, session_ttl: Duration, pending_ttl: Duration) -> Self {
+        Self {
+            inbound,
+            session_ttl,
+            pending_ttl,
+        }
+    }
+
+    pub fn session_ttl(&self) -> Duration {
+        self.session_ttl
+    }
+
+    pub fn pending_ttl(&self) -> Duration {
+        self.pending_ttl
+    }
+
+    /// Whether the request carries a valid admin token in the configured header.
+    fn authenticate_header(&self, headers: &HeaderMap) -> bool {
+        self.inbound.authenticate(headers).is_some()
+    }
+
+    /// Whether a raw token (from the login form) matches a configured admin token.
+    fn authenticate_token(&self, token: &str) -> bool {
+        self.inbound.authenticate_value(token.as_bytes()).is_some()
+    }
+}
+
+/// The admin route tree, merged into the main router only when admin is enabled.
+pub fn admin_router() -> Router<AppState> {
+    Router::new()
+        .route("/admin", get(dashboard))
+        .route("/admin/login", get(login_page).post(login_submit))
+        .route("/admin/logout", post(logout))
+        .route("/admin/accounts", get(list_accounts))
+        .route("/admin/pool", get(pool))
+        .route("/admin/accounts/claude", post(add_account))
+        .route(
+            "/admin/accounts/claude/{name}/complete",
+            post(complete_account),
+        )
+        .route(
+            "/admin/accounts/claude/{name}",
+            delete(remove_account_handler),
+        )
+}
+
+/// How a request authenticated, which decides whether CSRF applies.
+enum Authenticated {
+    /// Admin token header (API/curl): no ambient cookie, so CSRF-exempt.
+    Header,
+    /// Session cookie (browser): CSRF-protected.
+    Session { csrf: String },
+}
+
+struct AuthOk {
+    kind: Authenticated,
+    auth: Arc<AdminAuth>,
+}
+
+/// Resolve the request's admin authentication, or `None` when unauthenticated (or
+/// the admin surface has been disabled by a reload).
+fn authenticate(state: &AppState, headers: &HeaderMap) -> Option<AuthOk> {
+    let auth = state.admin_auth.clone()?;
+    if auth.authenticate_header(headers) {
+        return Some(AuthOk {
+            kind: Authenticated::Header,
+            auth,
+        });
+    }
+    let sid = session_cookie(headers)?;
+    let csrf = state.admin_stores.sessions.csrf_for(&sid)?;
+    Some(AuthOk {
+        kind: Authenticated::Session { csrf },
+        auth,
+    })
+}
+
+/// Enforce CSRF on cookie-authenticated mutations: a same-origin request bearing
+/// the session's CSRF token. Header-token callers are exempt. Returns the
+/// rejection response when the check fails, or `None` when the request may
+/// proceed.
+fn check_csrf(kind: &Authenticated, headers: &HeaderMap) -> Option<Response> {
+    let Authenticated::Session { csrf } = kind else {
+        return None;
+    };
+    if !same_origin(headers) {
+        return Some(forbidden("cross-origin admin request rejected"));
+    }
+    let presented = headers
+        .get("x-csrf-token")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    if constant_time_eq(presented.as_bytes(), csrf.as_bytes()) {
+        None
+    } else {
+        Some(forbidden("missing or invalid CSRF token"))
+    }
+}
+
+/// Same-origin check: prefer Fetch Metadata (`Sec-Fetch-Site`), fall back to
+/// comparing the `Origin` authority to `Host`. A missing `Origin` (non-browser)
+/// is allowed — the CSRF token and `SameSite=Strict` cookie still gate the call.
+fn same_origin(headers: &HeaderMap) -> bool {
+    if let Some(site) = headers
+        .get("sec-fetch-site")
+        .and_then(|value| value.to_str().ok())
+    {
+        return matches!(site, "same-origin" | "none");
+    }
+    match headers.get("origin").and_then(|value| value.to_str().ok()) {
+        None => true,
+        Some(origin) => {
+            let origin_authority = origin.split_once("://").map_or(origin, |(_, rest)| rest);
+            let host = headers
+                .get(header::HOST)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default();
+            !host.is_empty() && origin_authority.eq_ignore_ascii_case(host)
+        }
+    }
+}
+
+fn session_cookie(headers: &HeaderMap) -> Option<String> {
+    let cookies = headers.get(header::COOKIE)?.to_str().ok()?;
+    let prefix = format!("{SESSION_COOKIE}=");
+    cookies.split(';').find_map(|part| {
+        part.trim()
+            .strip_prefix(&prefix)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+    })
+}
+
+/// Whether the session cookie should carry `Secure`: yes unless the request
+/// targets a loopback host, so local HTTP dev (and tests) still work while any
+/// real deployment host gets a Secure cookie. Mirrors the M8 loopback carve-out.
+fn secure_cookie(headers: &HeaderMap) -> bool {
+    let host = headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    !crate::config::host_is_loopback(host_without_port(host))
+}
+
+fn host_without_port(host: &str) -> &str {
+    if let Some(rest) = host.strip_prefix('[') {
+        // IPv6 literal `[addr]` or `[addr]:port`.
+        return rest.split_once(']').map_or(rest, |(addr, _)| addr);
+    }
+    host.rsplit_once(':').map_or(host, |(name, _)| name)
+}
+
+fn set_cookie(sid: &str, secure: bool, ttl: Duration) -> String {
+    let mut cookie = format!(
+        "{SESSION_COOKIE}={sid}; HttpOnly; SameSite=Strict; Path=/admin; Max-Age={}",
+        ttl.as_secs()
+    );
+    if secure {
+        cookie.push_str("; Secure");
+    }
+    cookie
+}
+
+fn clear_cookie() -> String {
+    format!("{SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=0")
+}
+
+// --- page routes ---------------------------------------------------------------
+
+async fn login_page(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if state.admin_auth.is_none() {
+        return not_found();
+    }
+    if authenticate(&state, &headers).is_some() {
+        return redirect("/admin");
+    }
+    html_page(html::login_page(None))
+}
+
+#[derive(Deserialize)]
+struct LoginForm {
+    token: String,
+}
+
+async fn login_submit(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    form: Result<Form<LoginForm>, axum::extract::rejection::FormRejection>,
+) -> Response {
+    let Some(auth) = state.admin_auth.clone() else {
+        return not_found();
+    };
+    let token = match form {
+        Ok(Form(form)) => form.token,
+        Err(_) => String::new(),
+    };
+    if !auth.authenticate_token(&token) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            html_body(html::login_page(Some("Invalid admin token."))),
+        )
+            .into_response();
+    }
+    let (sid, _csrf) = state.admin_stores.sessions.create(auth.session_ttl());
+    let cookie = set_cookie(&sid, secure_cookie(&headers), auth.session_ttl());
+    (
+        StatusCode::SEE_OTHER,
+        [
+            (header::SET_COOKIE, cookie),
+            (header::LOCATION, "/admin".to_string()),
+        ],
+    )
+        .into_response()
+}
+
+async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Some(sid) = session_cookie(&headers) {
+        state.admin_stores.sessions.remove(&sid);
+    }
+    (
+        StatusCode::SEE_OTHER,
+        [
+            (header::SET_COOKIE, clear_cookie()),
+            (header::LOCATION, "/admin/login".to_string()),
+        ],
+    )
+        .into_response()
+}
+
+async fn dashboard(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let Some(authok) = authenticate(&state, &headers) else {
+        return redirect("/admin/login");
+    };
+    // Header-token callers hitting the HTML page have no CSRF token; render with
+    // an empty one (mutations from the page then require a real session).
+    let csrf = match authok.kind {
+        Authenticated::Session { csrf } => csrf,
+        Authenticated::Header => String::new(),
+    };
+    html_page(html::dashboard_page(&csrf))
+}
+
+// --- JSON API routes -----------------------------------------------------------
+
+async fn list_accounts(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if authenticate(&state, &headers).is_none() {
+        return unauthorized();
+    }
+    match tokio::task::spawn_blocking(claude_store::list_account_meta).await {
+        Ok(Ok(accounts)) => Json(json!({ "accounts": accounts })).into_response(),
+        _ => internal("failed to list accounts"),
+    }
+}
+
+async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if authenticate(&state, &headers).is_none() {
+        return unauthorized();
+    }
+    let config = state.config.clone();
+    let accounts = state.accounts.clone();
+    // scan_accounts does file I/O and snapshot locks a std mutex; run off the
+    // async workers. Model is unset — the dashboard governs weekly quota on 7d.
+    let result = tokio::task::spawn_blocking(move || {
+        let mut providers = Vec::new();
+        for (name, provider) in &config.providers {
+            if provider.auth != AuthMode::ClaudeOauth {
+                continue;
+            }
+            let resolved = if provider.accounts.is_empty() {
+                claude_store::scan_accounts().unwrap_or_default()
+            } else {
+                provider.accounts.clone()
+            };
+            let snapshots = accounts.snapshot(name, &resolved, None);
+            providers.push(json!({ "provider": name, "accounts": snapshots }));
+        }
+        providers
+    })
+    .await;
+    match result {
+        Ok(providers) => Json(json!({ "providers": providers })).into_response(),
+        Err(_) => internal("failed to read pool state"),
+    }
+}
+
+#[derive(Deserialize)]
+struct AddBody {
+    name: String,
+}
+
+async fn add_account(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Result<Json<AddBody>, JsonRejection>,
+) -> Response {
+    let Some(authok) = authenticate(&state, &headers) else {
+        return unauthorized();
+    };
+    if let Some(response) = check_csrf(&authok.kind, &headers) {
+        return response;
+    }
+    let Ok(Json(body)) = body else {
+        return bad_request("invalid JSON body");
+    };
+    if claude_store::validate_account_name(&body.name).is_err() {
+        return bad_request("account name must match [a-z0-9-]+");
+    }
+    let pkce = claude_login::generate_pkce();
+    let authorize_url = match claude_login::build_authorize_url(&pkce.challenge, &pkce.state) {
+        Ok(url) => url,
+        Err(_) => return internal("failed to build authorize URL"),
+    };
+    state.admin_stores.pending.start(
+        &body.name,
+        pkce.verifier,
+        pkce.state,
+        authok.auth.pending_ttl(),
+    );
+    tracing::info!(account = %body.name, "admin: account provisioning started");
+    Json(json!({ "name": body.name, "authorize_url": authorize_url.to_string() })).into_response()
+}
+
+#[derive(Deserialize)]
+struct CompleteBody {
+    code: String,
+}
+
+async fn complete_account(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+    body: Result<Json<CompleteBody>, JsonRejection>,
+) -> Response {
+    let Some(authok) = authenticate(&state, &headers) else {
+        return unauthorized();
+    };
+    if let Some(response) = check_csrf(&authok.kind, &headers) {
+        return response;
+    }
+    if !state.admin_stores.complete_rate.check() {
+        return rate_limited();
+    }
+    let Ok(Json(body)) = body else {
+        return bad_request("invalid JSON body");
+    };
+    if claude_store::validate_account_name(&name).is_err() {
+        return bad_request("account name must match [a-z0-9-]+");
+    }
+    let pending = match state.admin_stores.pending.attempt(&name) {
+        PendingAttempt::Ready(pending) => pending,
+        PendingAttempt::NotFound => {
+            return bad_request("no pending login for this account; start again")
+        }
+        PendingAttempt::TooManyAttempts => return bad_request("too many attempts; start again"),
+    };
+
+    let pasted = body.code.trim();
+    let Some((code, returned_state)) = pasted.split_once('#') else {
+        return bad_request("authorization code must have the form <code>#<state>");
+    };
+    if code.is_empty() || !constant_time_eq(returned_state.as_bytes(), pending.state.as_bytes()) {
+        return bad_request("invalid authorization code or OAuth state mismatch");
+    }
+
+    let token_url = admin_token_url();
+    let tokens = match claude_login::exchange_code(
+        &state.http_client,
+        code,
+        &pending.state,
+        &pending.verifier,
+        &token_url,
+    )
+    .await
+    {
+        Ok(tokens) => tokens,
+        // Deliberately generic: never echo upstream detail (may carry hints).
+        Err(_) => return bad_gateway("Claude token exchange failed"),
+    };
+    let Some(uuid) = tokens
+        .account
+        .as_ref()
+        .map(|account| account.uuid.as_str())
+        .filter(|uuid| !uuid.is_empty())
+    else {
+        return bad_gateway("Claude token exchange did not return an account UUID");
+    };
+
+    let account_name = name.clone();
+    let access_token = tokens.access_token;
+    let uuid = uuid.to_string();
+    let stored = tokio::task::spawn_blocking(move || {
+        claude_store::store_setup_token(&account_name, &access_token, Some(&uuid))
+    })
+    .await;
+    if !matches!(stored, Ok(Ok(_))) {
+        return internal("failed to store account");
+    }
+    state.admin_stores.pending.remove(&name);
+    tracing::info!(account = %name, "admin: account stored");
+
+    // Empty-accounts providers scan the store per request → live immediately;
+    // otherwise the operator must add a name-only entry and reload.
+    let live = state
+        .config
+        .providers
+        .values()
+        .any(|provider| provider.auth == AuthMode::ClaudeOauth && provider.accounts.is_empty());
+    let message = if live {
+        "Account stored and live now (an empty-accounts provider scans the store each request)."
+    } else {
+        "Account stored. Add a name-only [[providers.<name>.accounts]] entry and reload to activate it."
+    };
+    Json(json!({ "name": name, "stored": true, "live": live, "message": message })).into_response()
+}
+
+async fn remove_account_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(authok) = authenticate(&state, &headers) else {
+        return unauthorized();
+    };
+    if let Some(response) = check_csrf(&authok.kind, &headers) {
+        return response;
+    }
+    if claude_store::validate_account_name(&name).is_err() {
+        return bad_request("account name must match [a-z0-9-]+");
+    }
+    let target = name.clone();
+    let removed =
+        match tokio::task::spawn_blocking(move || claude_store::remove_account(&target)).await {
+            Ok(Ok(removed)) => removed,
+            _ => return internal("failed to remove account"),
+        };
+    tracing::info!(account = %name, removed, "admin: account removed");
+    Json(json!({ "name": name, "removed": removed })).into_response()
+}
+
+/// The Claude token-exchange endpoint, honoring `SHUNT_CLAUDE_TOKEN_URL` (used by
+/// `ClaudeAuthStore` and integration tests) so the completion flow is mockable.
+fn admin_token_url() -> String {
+    std::env::var("SHUNT_CLAUDE_TOKEN_URL")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| claude_auth::TOKEN_URL.to_string())
+}
+
+// --- response helpers ----------------------------------------------------------
+
+fn html_page(body: String) -> Response {
+    html_body(body).into_response()
+}
+
+fn html_body(body: String) -> Response {
+    ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], body).into_response()
+}
+
+fn redirect(location: &'static str) -> Response {
+    (StatusCode::SEE_OTHER, [(header::LOCATION, location)]).into_response()
+}
+
+fn unauthorized() -> Response {
+    ShuntError::new(
+        StatusCode::UNAUTHORIZED,
+        "authentication_error",
+        "admin authentication required",
+    )
+    .into_response()
+}
+
+fn forbidden(message: &str) -> Response {
+    ShuntError::new(StatusCode::FORBIDDEN, "permission_error", message).into_response()
+}
+
+fn bad_request(message: &str) -> Response {
+    ShuntError::new(StatusCode::BAD_REQUEST, "invalid_request_error", message).into_response()
+}
+
+fn internal(message: &str) -> Response {
+    ShuntError::new(StatusCode::INTERNAL_SERVER_ERROR, "api_error", message).into_response()
+}
+
+fn bad_gateway(message: &str) -> Response {
+    ShuntError::bad_gateway(message).into_response()
+}
+
+fn rate_limited() -> Response {
+    ShuntError::new(
+        StatusCode::TOO_MANY_REQUESTS,
+        "rate_limit_error",
+        "too many completion attempts; slow down",
+    )
+    .into_response()
+}
+
+fn not_found() -> Response {
+    ShuntError::new(StatusCode::NOT_FOUND, "not_found_error", "not found").into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut map = HeaderMap::new();
+        for (name, value) in pairs {
+            map.insert(
+                axum::http::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                HeaderValue::from_str(value).unwrap(),
+            );
+        }
+        map
+    }
+
+    #[test]
+    fn parses_session_cookie() {
+        let h = headers(&[("cookie", "a=1; shunt_admin_session=abc; b=2")]);
+        assert_eq!(session_cookie(&h).as_deref(), Some("abc"));
+        assert!(session_cookie(&headers(&[("cookie", "other=1")])).is_none());
+        assert!(session_cookie(&HeaderMap::new()).is_none());
+    }
+
+    #[test]
+    fn secure_cookie_off_for_loopback_only() {
+        assert!(!secure_cookie(&headers(&[("host", "127.0.0.1:3001")])));
+        assert!(!secure_cookie(&headers(&[("host", "localhost:3001")])));
+        assert!(!secure_cookie(&headers(&[("host", "[::1]:3001")])));
+        assert!(secure_cookie(&headers(&[("host", "shunt.example.com")])));
+        assert!(secure_cookie(&headers(&[("host", "10.0.0.5:8080")])));
+    }
+
+    #[test]
+    fn same_origin_honors_fetch_metadata_then_origin() {
+        assert!(same_origin(&headers(&[("sec-fetch-site", "same-origin")])));
+        assert!(same_origin(&headers(&[("sec-fetch-site", "none")])));
+        assert!(!same_origin(&headers(&[("sec-fetch-site", "cross-site")])));
+        assert!(same_origin(&headers(&[
+            ("origin", "https://admin.example.com"),
+            ("host", "admin.example.com"),
+        ])));
+        assert!(!same_origin(&headers(&[
+            ("origin", "https://evil.example.com"),
+            ("host", "admin.example.com"),
+        ])));
+        // No Origin at all (non-browser client): allowed; CSRF token still gates.
+        assert!(same_origin(&HeaderMap::new()));
+    }
+
+    #[test]
+    fn host_without_port_strips_port_and_ipv6_brackets() {
+        assert_eq!(host_without_port("127.0.0.1:3001"), "127.0.0.1");
+        assert_eq!(host_without_port("localhost"), "localhost");
+        assert_eq!(host_without_port("[::1]:3001"), "::1");
+        assert_eq!(host_without_port("[::1]"), "::1");
+        assert_eq!(host_without_port("example.com"), "example.com");
+    }
+}

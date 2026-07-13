@@ -22,6 +22,23 @@ Presence of this table enables inbound client-token auth ([details](/guides/shar
 | `header` | `x-shunt-token` | Header carrying the client token |
 | `tokens_env` | `SHUNT_CLIENT_TOKENS` | Env var holding comma-separated `name:token` pairs |
 
+The named environment variable must contain one or more credentials, for example `SHUNT_CLIENT_TOKENS="alice:<token>,bob:<token>"`. Startup fails closed if the table is present but the variable is unset, empty, or malformed.
+
+## `[server.admin]` (optional)
+
+Presence of this table enables the admin web surface for browser account provisioning and account-pool health ([details](/guides/admin-remote-provisioning/)). When the table is absent, none of the `/admin*` routes are registered.
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `header` | `x-shunt-admin-token` | Header carrying the admin token for API/curl calls |
+| `tokens_env` | `SHUNT_ADMIN_TOKENS` | Env var holding comma-separated `name:token` pairs |
+| `session_ttl_secs` | `3600` | Browser session lifetime after login, in seconds |
+| `pending_ttl_secs` | `600` | Time allowed to finish a started provisioning flow, in seconds |
+
+The named environment variable must contain one or more credentials, for example `SHUNT_ADMIN_TOKENS="ops:<token>"`. Startup fails closed if the table is present but the variable is unset, empty, or malformed.
+
+Admin tokens are separate credentials from the client tokens configured under `[server.auth]`; do not reuse one credential for both surfaces.
+
 ## `[providers.<name>]`
 
 Each provider is a table under a name of your choosing. Built-ins (`anthropic`, `openai`, `codex`, `xai`, `grok`, `cursor`) can be partially overridden — config maps deep-merge.
