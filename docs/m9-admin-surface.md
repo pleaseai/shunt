@@ -117,12 +117,15 @@ process-lifetime state:
 - Docs recommend binding the admin surface behind HTTPS / a tunnel, same as the
   shared-gateway guide.
 - **Emergency token rotation:** browser sessions are validated only against the
-  in-memory session store, so rotating/removing `SHUNT_ADMIN_TOKENS` does **not**
-  invalidate already-issued sessions — they persist until `session_ttl_secs`
-  (default 1h) expires. If an admin token is compromised, **rotate/remove the
-  compromised token first** (so it can no longer mint a new session), then
-  **restart the process** (not just a config reload) to drop the sessions it had
-  already issued. Rejecting stale sessions on reload is tracked in #100.
+  in-memory session store, and the running process's environment is fixed — a
+  config reload re-reads `SHUNT_ADMIN_TOKENS` from the *same* startup environment,
+  so it neither rotates the token nor drops issued sessions (those persist until
+  `session_ttl_secs`, default 1h). If an admin token is compromised, replace it in
+  the environment source (systemd unit, `.env`, …) and **restart the process**: the
+  restart both loads the new token set and drops every session the old token
+  minted. To disable the last admin credential, remove the `[server.admin]` block
+  before restarting (an empty `SHUNT_ADMIN_TOKENS` fails closed at startup).
+  Rejecting stale sessions on reload is tracked in #100.
 
 ## Endpoints (registered only when `[server.admin]` is set)
 

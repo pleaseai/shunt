@@ -168,17 +168,25 @@ fn same_origin(headers: &HeaderMap) -> bool {
     match headers.get("origin").and_then(|value| value.to_str().ok()) {
         None => true,
         Some(origin) => {
-            let origin_authority = origin.split_once("://").map_or(origin, |(_, rest)| rest);
+            let (scheme, origin_authority) = origin
+                .split_once("://")
+                .map_or(("", origin), |(scheme, rest)| (scheme, rest));
             let host = headers
                 .get(header::HOST)
                 .and_then(|value| value.to_str().ok())
                 .unwrap_or_default();
-            // Compare the full authority, port included: browsers keep the
-            // Origin and Host port representation consistent for a direct
-            // connection, so this matches legitimate same-origin requests while
-            // still rejecting a different port (a distinct origin). This is only
-            // the fallback — `Sec-Fetch-Site` above is the primary signal.
-            !host.is_empty() && origin_authority.eq_ignore_ascii_case(host)
+            // Compare effective authorities: strip only the scheme's DEFAULT port
+            // so a proxy that adds/omits it on one side still matches, while a
+            // genuinely different explicit port stays a distinct origin. This is
+            // only the fallback — `Sec-Fetch-Site` above is the primary signal.
+            let default_port = match scheme {
+                "https" => ":443",
+                "http" => ":80",
+                _ => "",
+            };
+            !host.is_empty()
+                && strip_default_port(origin_authority, default_port)
+                    .eq_ignore_ascii_case(strip_default_port(host, default_port))
         }
     }
 }
@@ -194,20 +202,42 @@ fn session_cookie(headers: &HeaderMap) -> Option<String> {
     })
 }
 
-/// Whether the session cookie should carry `Secure`: yes unless the request
-/// targets a loopback host, so local HTTP dev (and tests) still work while any
-/// real deployment host gets a Secure cookie. Mirrors the M8 loopback carve-out.
+/// Whether the session cookie should carry `Secure`. A TLS-terminating reverse
+/// proxy is honored first via `X-Forwarded-Proto: https`; otherwise `Secure` is
+/// set unless the request targets a loopback host, so local HTTP dev (and tests)
+/// still work while any real deployment host gets a Secure cookie. Mirrors the M8
+/// loopback carve-out.
 ///
-/// NOTE: this trusts the `Host` header. A reverse proxy that rewrites `Host` to
-/// a loopback value (e.g. `proxy_set_header Host 127.0.0.1`) silently drops
-/// `Secure` on a public HTTPS deployment — front admin with a proxy that
-/// preserves the external `Host`.
+/// NOTE: absent `X-Forwarded-Proto`, this trusts the `Host` header — a reverse
+/// proxy that rewrites `Host` to a loopback value without forwarding the proto
+/// would drop `Secure` on a public HTTPS deployment, so front admin with a proxy
+/// that sends `X-Forwarded-Proto` or preserves the external `Host`. Trusting
+/// `X-Forwarded-Proto` only ever *adds* `Secure`, so a spoofed value cannot
+/// weaken the cookie.
 fn secure_cookie(headers: &HeaderMap) -> bool {
+    if headers
+        .get("x-forwarded-proto")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|proto| proto.eq_ignore_ascii_case("https"))
+    {
+        return true;
+    }
     let host = headers
         .get(header::HOST)
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default();
     !crate::config::host_is_loopback(host_without_port(host))
+}
+
+/// Strip a trailing scheme-default port (`:443` / `:80`) so `example.com` and
+/// `example.com:443` compare equal, without collapsing a genuinely different
+/// (non-default) port. `default_port` empty ⇒ no stripping.
+fn strip_default_port<'a>(authority: &'a str, default_port: &str) -> &'a str {
+    if default_port.is_empty() {
+        authority
+    } else {
+        authority.strip_suffix(default_port).unwrap_or(authority)
+    }
 }
 
 fn host_without_port(host: &str) -> &str {
@@ -741,6 +771,24 @@ mod tests {
         assert!(!same_origin(&headers(&[
             ("origin", "https://evil.example.com"),
             ("host", "admin.example.com"),
+        ])));
+        // Scheme default port on one side only still matches (proxy normalization).
+        assert!(same_origin(&headers(&[
+            ("origin", "https://admin.example.com:443"),
+            ("host", "admin.example.com"),
+        ])));
+        assert!(same_origin(&headers(&[
+            ("origin", "http://admin.example.com"),
+            ("host", "admin.example.com:80"),
+        ])));
+        // A genuinely different (non-default) port is a distinct origin.
+        assert!(!same_origin(&headers(&[
+            ("origin", "https://admin.example.com:8443"),
+            ("host", "admin.example.com:9000"),
+        ])));
+        assert!(same_origin(&headers(&[
+            ("origin", "https://admin.example.com:8443"),
+            ("host", "admin.example.com:8443"),
         ])));
         // No Origin at all (non-browser client): allowed; CSRF token still gates.
         assert!(same_origin(&HeaderMap::new()));
