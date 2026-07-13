@@ -34,6 +34,8 @@ export ANTHROPIC_CUSTOM_HEADERS="x-shunt-token: <your token>"
 これはアプリケーションレイヤーの識別にすぎません — トランスポート暗号化はデプロイ側から来ます（WireGuard/Tailscale トンネル、または前段での TLS 終端）。shunt 自身は平文 HTTP を提供します。
 :::
 
+オプトインの[管理 Web サーフェス](/ja/guides/admin-remote-provisioning/)も有効にする場合は、別個の管理トークンで保護し、HTTPS または信頼できるトンネル経由でのみ公開してください。
+
 ## SSE キープアライブ ping
 
 中間装置は静かなストリームを切断します — Cloudflare のプロキシは **1 バイトも来ないまま 100 秒で 524** を返し（Enterprise 未満では固定）、長い reasoning の合間はそれだけ静かになりえます。そのため shunt は、ストリーミングレスポンスがアイドルになるたびに、Anthropic プロトコル自身の `ping` イベント（`api.anthropic.com` 自身が発行し、すべてのクライアントが無視するもの）を注入します。
