@@ -1,0 +1,55 @@
+site/src/content/docs/ja/guides/effort-and-context.md
+  s_2ec45aad184dcb::t_fad4750f4b809d 32
+site/src/content/docs/ko/reference/configuration.md
+  s_2ec45aad184dcb::t_691ab4b1491077 37
+site/src/content/docs/ko/guides/effort-and-context.md
+  s_2ec45aad184dcb::t_cbba28e8e6c247 32
+site/src/content/docs/reference/configuration.md
+  s_2ec45aad184dcb::t_440d35a58ea1a3 38
+site/src/content/docs/ja/reference/configuration.md
+  s_2ec45aad184dcb::t_356def2b9c2738 37
+site/src/content/docs/zh-cn/guides/effort-and-context.md
+  s_2ec45aad184dcb::t_7fcdecea58d6db 32
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_2ec45aad184dcb::t_2d20ee3253c82e 37
+docs/m3-discovery.md
+  s_2ec45aad184dcb::t_feda94c6e87d9f 83-87
+docs/running.md
+  s_2ec45aad184dcb::t_de1c588a91a2c9 192
+  s_2ec45aad184dcb::t_6641cab1c35f1c 277-281
+src/proxy.rs
+  s_2ec45aad184dcb::t_2bf9d808d2f277 145-150
+  s_2ec45aad184dcb::t_82641f2df166a7 166
+  s_2ec45aad184dcb::t_43ca7d238b76da 19
+  s_2ec45aad184dcb::t_bc45076d8010f5 267,269-270
+src/config.rs
+  s_2ec45aad184dcb::t_09f598adc75c53 307-311
+tests/passthrough.rs
+  s_2ec45aad184dcb::t_239d1a48704abd 368,373-375,399-410
+site/src/content/docs/guides/effort-and-context.md
+  s_7c8f3392527f8f::t_4dca4d181e2f04 32
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "ad27fa4de9507a77cc391cd05c827629dde3215a",
+  "prompts": {},
+  "sessions": {
+    "s_2ec45aad184dcb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d21798c-b7b6-41e2-b52c-a49c1db33d97",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_7c8f3392527f8f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ab01b4b8-bc36-407a-ae5d-852f02606bc2",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
