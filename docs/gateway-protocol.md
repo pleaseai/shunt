@@ -261,7 +261,6 @@ the `ANTHROPIC_BASE_URL` surface, and belong to the separate `/login` device-flo
 
 | Gap | Severity | Evidence | Tracking |
 | :-- | :-- | :-- | :-- |
-| Upstream `529`/`5xx` flattened to `502 api_error` on translated backends (no `overloaded_error`/`permission_error`) | Medium | `src/model/responses.rs:672-679`, `src/adapters/responses.rs:629-637`, `src/adapters/cursor/mod.rs:239-266` | #88 |
 | `count_tokens` `Estimate` mode returns `404 not_found_error` instead of `501 not_supported` (default `Tiktoken` mode is fine) | Low | `src/proxy.rs:264-271`, `src/config.rs:295-296` | #89 |
 | `GET /v1/models` always unauthenticated, even under `[server.auth]` (model-list exposure on shared-key gateways; spec allows optional auth) | Low (posture) | `src/discovery.rs:35-40`, `src/proxy.rs:224-231` | #90 |
 | (info) ChatGPT/xAI `401` message replaced with a fixed re-login hint — intentional (`401` → re-login is the recovery) | Info | `src/adapters/responses.rs:599-602` | folded into #88 |
@@ -274,6 +273,10 @@ the `ANTHROPIC_BASE_URL` surface, and belong to the separate `/login` device-flo
 - `429` + `Retry-After`.
 - `/v1/models` returns the `{"data":[{id,display_name}]}` shape.
 - Table-driven model-id remap, including body rewrite.
+- On the translated backends (Responses/Codex, xAI, Cursor), upstream
+  `403`/`413`/`429`/`529`/`5xx` reach the client with their true status and Anthropic
+  `error.type` (`permission_error`/`request_too_large`/`rate_limit_error`/`overloaded_error`/
+  `api_error`) rather than being flattened to `502`/`401` — landed in #88.
 
 Not forwarding `anthropic-beta` to the Responses/Cursor backends is correct, not a gap — that
 path is format translation rather than header passthrough, so there is nothing to relay as-is.
