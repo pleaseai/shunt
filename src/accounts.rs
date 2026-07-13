@@ -31,6 +31,12 @@ pub struct QuotaState {
 struct AccountHealth {
     cooldown_until: Option<Instant>,
     quota: QuotaState,
+    /// Whether the pool has processed at least one upstream response for this
+    /// account (a quota update, a cooldown, or a healthy-mark). `select_order`
+    /// inserts a default entry on selection, so entry existence alone does not
+    /// mean an account has been observed — the admin dashboard's `has_state`
+    /// keys off this flag instead of mere entry presence.
+    observed: bool,
 }
 
 /// Token-free, serializable view of one account's pool health for the admin
@@ -174,10 +180,11 @@ impl AccountPool {
 
     pub fn note_quota(&self, provider: &str, account: &str, headers: &HeaderMap) {
         let mut entries = self.entries.lock().expect("account health lock poisoned");
-        let quota = &mut entries
+        let health = entries
             .entry((provider.to_string(), account.to_string()))
-            .or_default()
-            .quota;
+            .or_default();
+        health.observed = true;
+        let quota = &mut health.quota;
 
         update_header(
             headers,
@@ -219,18 +226,29 @@ impl AccountPool {
 
     pub fn cooldown(&self, provider: &str, account: &str, duration: Duration) {
         let mut entries = self.entries.lock().expect("account health lock poisoned");
-        entries
+        let health = entries
             .entry((provider.to_string(), account.to_string()))
-            .or_default()
-            .cooldown_until = Some(Instant::now() + duration);
+            .or_default();
+        health.observed = true;
+        health.cooldown_until = Some(Instant::now() + duration);
     }
 
     pub fn mark_healthy(&self, provider: &str, account: &str) {
         let mut entries = self.entries.lock().expect("account health lock poisoned");
-        entries
+        let health = entries
             .entry((provider.to_string(), account.to_string()))
-            .or_default()
-            .cooldown_until = None;
+            .or_default();
+        health.observed = true;
+        health.cooldown_until = None;
+    }
+
+    /// Drop all pool health for `account` across every provider. The admin
+    /// surface calls this when it re-provisions or removes an account so
+    /// cooldown/quota accumulated under a prior token does not carry onto the
+    /// replacement (pool state is process-lifetime and keyed only by name).
+    pub fn forget(&self, account: &str) {
+        let mut entries = self.entries.lock().expect("account health lock poisoned");
+        entries.retain(|(_, name), _| name != account);
     }
 
     /// Read-only per-account health snapshot for the admin dashboard, in the
@@ -254,8 +272,9 @@ impl AccountPool {
             .iter()
             .map(|account| {
                 let key = (provider.to_string(), account.name.clone());
-                let Some(health) = entries.get_mut(&key) else {
-                    // Never selected yet: report a clean, available slot.
+                let Some(health) = entries.get_mut(&key).filter(|health| health.observed) else {
+                    // Never selected, or selected but not yet answered (a default
+                    // entry from `select_order`): report a clean, available slot.
                     return AccountSnapshot::unseen(&account.name);
                 };
                 expire_stale_quota(&mut health.quota, unix_now);

@@ -192,6 +192,11 @@ fn session_cookie(headers: &HeaderMap) -> Option<String> {
 /// Whether the session cookie should carry `Secure`: yes unless the request
 /// targets a loopback host, so local HTTP dev (and tests) still work while any
 /// real deployment host gets a Secure cookie. Mirrors the M8 loopback carve-out.
+///
+/// NOTE: this trusts the `Host` header. A reverse proxy that rewrites `Host` to
+/// a loopback value (e.g. `proxy_set_header Host 127.0.0.1`) silently drops
+/// `Secure` on a public HTTPS deployment — front admin with a proxy that
+/// preserves the external `Host`.
 fn secure_cookie(headers: &HeaderMap) -> bool {
     let host = headers
         .get(header::HOST)
@@ -353,24 +358,25 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
                 continue;
             }
             let resolved = if provider.accounts.is_empty() {
-                match claude_store::scan_accounts() {
-                    Ok(accounts) => accounts,
-                    Err(error) => {
-                        tracing::warn!(provider = %name, %error, "admin: failed to scan accounts store; reporting empty pool for this provider");
-                        Vec::new()
-                    }
-                }
+                // Surface a store read failure as an error (5xx) instead of an
+                // empty pool: a permission/I/O problem must not masquerade as
+                // "no accounts configured" on the dashboard.
+                claude_store::scan_accounts().map_err(|error| {
+                    tracing::error!(provider = %name, %error, "admin: failed to scan accounts store");
+                    format!("failed to scan accounts store for provider {name}")
+                })?
             } else {
                 provider.accounts.clone()
             };
             let snapshots = accounts.snapshot(name, &resolved, None);
             providers.push(json!({ "provider": name, "accounts": snapshots }));
         }
-        providers
+        Ok::<_, String>(providers)
     })
     .await;
     match result {
-        Ok(providers) => Json(json!({ "providers": providers })).into_response(),
+        Ok(Ok(providers)) => Json(json!({ "providers": providers })).into_response(),
+        Ok(Err(_)) => internal("failed to read pool state"),
         Err(join_error) => {
             tracing::error!(%join_error, "admin: pool snapshot task panicked");
             internal("failed to read pool state")
@@ -511,6 +517,10 @@ async fn complete_account(
         }
     }
     state.admin_stores.pending.remove(&name);
+    // Re-provisioning reuses the account name; clear any process-lifetime pool
+    // health carried over from a prior token so the fresh credential is not
+    // treated as cooling/near-quota.
+    state.accounts.forget(&name);
     tracing::info!(account = %name, "admin: account stored");
 
     // Empty-accounts providers scan the store per request → live immediately;
@@ -558,16 +568,42 @@ async fn remove_account_handler(
         }
     };
     tracing::info!(account = %name, removed, "admin: account removed");
+    // Drop any process-lifetime pool health for the removed name so a later
+    // re-add does not inherit stale cooldown/quota state.
+    state.accounts.forget(&name);
     Json(json!({ "name": name, "removed": removed })).into_response()
 }
 
 /// The Claude token-exchange endpoint, honoring `SHUNT_CLAUDE_TOKEN_URL` (used by
 /// `ClaudeAuthStore` and integration tests) so the completion flow is mockable.
+///
+/// The override is validated as an SSRF guard: only `https`, or `http` to a
+/// loopback host (the integration tests point it at a local wiremock). Anything
+/// else is ignored with a warning and the built-in endpoint is used instead.
 fn admin_token_url() -> String {
-    std::env::var("SHUNT_CLAUDE_TOKEN_URL")
+    let default = || claude_auth::TOKEN_URL.to_string();
+    let Some(raw) = std::env::var("SHUNT_CLAUDE_TOKEN_URL")
         .ok()
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| claude_auth::TOKEN_URL.to_string())
+    else {
+        return default();
+    };
+    match raw.parse::<reqwest::Url>() {
+        Ok(url)
+            if url.scheme() == "https"
+                || (url.scheme() == "http"
+                    && crate::config::host_is_loopback(url.host_str().unwrap_or_default())) =>
+        {
+            raw
+        }
+        _ => {
+            tracing::warn!(
+                url = %raw,
+                "admin: ignoring SHUNT_CLAUDE_TOKEN_URL (only https, or http to loopback, is allowed)"
+            );
+            default()
+        }
+    }
 }
 
 // --- response helpers ----------------------------------------------------------
@@ -577,7 +613,26 @@ fn html_page(body: String) -> Response {
 }
 
 fn html_body(body: String) -> Response {
-    ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], body).into_response()
+    // Defense-in-depth headers for the admin pages: a tight CSP (the pages use
+    // only same-origin fetch plus inline script/style, no external resources),
+    // clickjacking/sniffing guards, a conservative referrer policy, and
+    // `no-store` so the session-specific CSRF token and account data are never
+    // cached by the browser or a shared intermediary.
+    const CSP: &str = "default-src 'none'; script-src 'unsafe-inline'; \
+style-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; form-action 'self'; \
+base-uri 'none'; frame-ancestors 'none'";
+    (
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CONTENT_SECURITY_POLICY, CSP),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (header::X_FRAME_OPTIONS, "DENY"),
+            (header::REFERRER_POLICY, "strict-origin-when-cross-origin"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 fn redirect(location: &'static str) -> Response {

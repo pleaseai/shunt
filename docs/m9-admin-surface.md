@@ -109,9 +109,11 @@ process-lifetime state:
   256-bit OAuth `state` already makes guessing infeasible.
 - **Rate-limit** on the completion and login endpoints (a coarse global fixed
   window each) against code- and admin-token-guessing storms.
-- **Secrets never leak:** the verifier, state, session id, and setup token are
-  never logged and never returned to the browser. Account add/remove is
-  audit-logged by name only.
+- **Secrets never leak:** the verifier and setup token are never logged and never
+  returned to the browser. The OAuth `state` is intentionally carried in the
+  authorize URL and the opaque session id only in the `HttpOnly` session cookie —
+  both are protocol values the browser must receive, not bearer secrets. Account
+  add/remove is audit-logged by name only.
 - Docs recommend binding the admin surface behind HTTPS / a tunnel, same as the
   shared-gateway guide.
 

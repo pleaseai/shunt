@@ -59,9 +59,11 @@ pub fn parse_tokens(raw: &str) -> Result<Vec<(String, String)>, String> {
         if entry.is_empty() {
             continue;
         }
-        let (name, token) = entry
-            .split_once(':')
-            .ok_or_else(|| format!("entry {entry:?} is not a name:token pair"))?;
+        // Do not echo the raw entry: a colonless value is often a bare token
+        // pasted by mistake, and this message reaches startup logs.
+        let (name, token) = entry.split_once(':').ok_or_else(|| {
+            "an entry is not a name:token pair (expected \"name:token\")".to_string()
+        })?;
         let name = name.trim();
         let token = token.trim();
         if name.is_empty() {
