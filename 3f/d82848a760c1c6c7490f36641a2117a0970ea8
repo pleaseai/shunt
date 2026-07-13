@@ -1,0 +1,59 @@
+src/server.rs
+  s_2ec45aad184dcb::t_22a4a4f8231541 87-88
+docs/m4-inbound-auth.md
+  s_2ec45aad184dcb::t_24babb4c699ebd 52-53
+  s_2ec45aad184dcb::t_003bdfb810c18f 48-49,54
+docs/running.md
+  s_2ec45aad184dcb::t_74b5be4a1acc36 701-706
+  s_2ec45aad184dcb::t_07125ade0ef5a4 686
+docs/m3-discovery.md
+  s_2ec45aad184dcb::t_f49ad2bf8fa717 32-34
+  s_2ec45aad184dcb::t_1851a3cc2af0b4 35-37
+site/src/content/docs/guides/model-discovery.md
+  s_2ec45aad184dcb::t_86e9ad1092d9d0 34
+  s_2ec45aad184dcb::t_63ed15267f10ec 33
+shunt.toml.example
+  s_2ec45aad184dcb::t_42e58f4ef9d274 15-18
+tests/inbound_auth.rs
+  s_2ec45aad184dcb::t_12d3144628201b 137
+  s_2ec45aad184dcb::t_43f3cd8941db2f 81-88
+  s_2ec45aad184dcb::t_50981e4be33663 139-140
+  s_2ec45aad184dcb::t_609f0a9bdf8f94 255-268,275-285,297-305,307-315
+  s_2ec45aad184dcb::t_c1bf5380bb07ac 269-274,286-296
+  s_2ec45aad184dcb::t_f78e19fb6c8061 138,141-144
+  s_2ec45aad184dcb::t_85bf421883ca13 306
+src/config.rs
+  s_2ec45aad184dcb::t_b8ae705fab87e1 59-60
+src/auth/inbound.rs
+  s_2ec45aad184dcb::t_4bc5d000a46b87 3-6
+  s_2ec45aad184dcb::t_9fffab0b1b1b1b 28-30,32-52,54-63,65-69
+  s_2ec45aad184dcb::t_12d3144628201b 53
+src/discovery.rs
+  s_2ec45aad184dcb::t_2274a2712b34a5 27
+  s_2ec45aad184dcb::t_fd1df9bbaea578 1-6,9,23,26,31-39,50,85-88,107-110
+  s_2ec45aad184dcb::t_85bf421883ca13 28-30
+site/src/content/docs/reference/endpoints.md
+  s_2ec45aad184dcb::t_acd31fdecd5d19 16
+site/src/content/docs/guides/shared-gateway.md
+  s_2ec45aad184dcb::t_38df6867ee9e64 23
+  s_2ec45aad184dcb::t_272c4d96898499 10
+docs/gateway-protocol.md
+  s_2ec45aad184dcb::t_5da094d18202b6 265
+  s_2ec45aad184dcb::t_75378d548e590e 286
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "3fd82848a760c1c6c7490f36641a2117a0970ea8",
+  "prompts": {},
+  "sessions": {
+    "s_2ec45aad184dcb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d21798c-b7b6-41e2-b52c-a49c1db33d97",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
