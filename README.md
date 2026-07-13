@@ -57,7 +57,7 @@ A provider is a `[providers.<name>]` TOML table (or an entry under the YAML `pro
 
 | Name | Kind | Auth | Backend |
 | :-- | :-- | :-- | :-- |
-| `anthropic` | `anthropic` | passthrough | `api.anthropic.com` — forwards the caller's own credential |
+| `anthropic` | `anthropic` | passthrough or Claude OAuth account pool | `api.anthropic.com` — forwards the caller's credential by default; `auth = "claude_oauth"` enables pooled subscription credentials |
 | `openai` | `responses` | `OPENAI_API_KEY` | `api.openai.com/v1` |
 | `codex` | `responses` | ChatGPT OAuth | `chatgpt.com/backend-api` — reuses `~/.codex/auth.json` (`codex login`) |
 | `xai` | `responses` | `XAI_API_KEY` | `api.x.ai/v1` — the developer API, billed per token |
@@ -65,6 +65,8 @@ A provider is a `[providers.<name>]` TOML table (or an entry under the YAML `pro
 | `cursor` | `cursor` | Cursor OAuth | `api2.cursor.sh` — reuses `~/.shunt/cursor-auth.json` (`shunt login cursor`) |
 
 xAI may gate OAuth access by subscription tier — if `grok` returns 403, use the `xai` API-key provider instead. Details in [`docs/m6-xai-provider.md`](docs/m6-xai-provider.md).
+
+**Anthropic multi-account.** An Anthropic provider with `auth = "claude_oauth"` can load explicit accounts from Claude Code credentials files or setup-token environment variables, or use private store-managed accounts created by `shunt login claude --name <name>` (add `--long-lived` to run and store a one-year `claude setup-token`). An empty configured account list scans the shunt account store. shunt keeps healthy `x-claude-code-session-id` sessions sticky, uses per-provider round-robin otherwise, and proactively rotates off a near-quota sticky account using model-aware 5-hour/weekly quota state before the wall when possible. Reactive handling of quota-rejected 429s, 401s, and 5xx responses remains the failover floor. Storm-control is a later follow-up. See the [how-to](https://shunt-docs.pages.dev/guides/anthropic-multi-account/) and [M8 behavior specification](docs/m8-anthropic-multi-account.md).
 
 OpenAI's Thibault Sottiaux has publicly welcomed running Codex through other coding harnesses:
 

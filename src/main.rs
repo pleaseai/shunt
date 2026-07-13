@@ -47,10 +47,16 @@ enum Command {
     /// `~/.claude/.credentials.json`.
     Token,
     /// Log in to a subscription provider and save its credential for shunt to
-    /// inject. Supports `xai` and `cursor`.
+    /// inject. Supports `xai`, `cursor`, and `claude`.
     Login {
-        /// Provider to log in to (`xai` or `cursor`).
+        /// Provider to log in to (`xai`, `cursor`, or `claude`).
         provider: String,
+        /// Stable Claude account name used by a name-only pool entry.
+        #[arg(long)]
+        name: Option<String>,
+        /// Generate and store a one-year `claude setup-token` value.
+        #[arg(long)]
+        long_lived: bool,
     },
 }
 
@@ -62,28 +68,58 @@ fn main() -> anyhow::Result<()> {
         Some(Command::Run { config }) => run(config.or(cli.config)),
         Some(Command::Check { config }) => check(config.or(cli.config)),
         Some(Command::Token) => runtime()?.block_on(token()),
-        Some(Command::Login { provider }) => runtime()?.block_on(async {
-            match provider.as_str() {
-                "xai" => shunt::auth::xai_login::run(&provider).await,
-                "cursor" => {
-                    // Logging in should not require a fully valid gateway config:
-                    // read the optional override best-effort and fall back to the
-                    // default Cursor host if the config fails to load or omits it.
-                    let base_url = Config::load(cli.config.as_deref())
-                        .ok()
-                        .and_then(|config| {
-                            config
-                                .provider("cursor")
-                                .map(|provider| provider.base_url.clone())
-                        })
-                        .unwrap_or_else(|| "https://api2.cursor.sh".to_string());
-                    shunt::auth::cursor_login::run_with_base(&base_url).await
-                }
-                _ => anyhow::bail!("unknown login provider {provider:?}; supported: xai, cursor"),
-            }
-        }),
+        Some(Command::Login {
+            provider,
+            name,
+            long_lived,
+        }) => login(
+            &provider,
+            name.as_deref(),
+            long_lived,
+            cli.config.as_deref(),
+        ),
         None if cli.check => check(cli.config),
         None => run(cli.config),
+    }
+}
+
+fn login(
+    provider: &str,
+    name: Option<&str>,
+    long_lived: bool,
+    config_path: Option<&std::path::Path>,
+) -> anyhow::Result<()> {
+    match provider {
+        "xai" if name.is_none() && !long_lived => {
+            runtime()?.block_on(shunt::auth::xai_login::run(provider))
+        }
+        "xai" => anyhow::bail!("--name and --long-lived are only valid for `shunt login claude`"),
+        "cursor" if name.is_none() && !long_lived => runtime()?.block_on(async {
+            // Logging in should not require a fully valid gateway config:
+            // read the optional override best-effort and fall back to the
+            // default Cursor host if the config fails to load or omits it.
+            let base_url = Config::load(config_path)
+                .ok()
+                .and_then(|config| {
+                    config
+                        .provider("cursor")
+                        .map(|provider| provider.base_url.clone())
+                })
+                .unwrap_or_else(|| "https://api2.cursor.sh".to_string());
+            shunt::auth::cursor_login::run_with_base(&base_url).await
+        }),
+        "cursor" => {
+            anyhow::bail!("--name and --long-lived are only valid for `shunt login claude`")
+        }
+        "claude" => {
+            let name = name.ok_or_else(|| {
+                anyhow::anyhow!("`shunt login claude` requires --name <account-name>")
+            })?;
+            runtime()?.block_on(shunt::auth::claude_login::run(name, long_lived))
+        }
+        _ => {
+            anyhow::bail!("unknown login provider {provider:?}; supported: claude, cursor, xai")
+        }
     }
 }
 
@@ -299,6 +335,27 @@ fn init_telemetry(config: Option<&OtelConfig>) -> Option<TelemetryGuard> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_login_requires_name_and_accepts_long_lived() {
+        assert!(Cli::try_parse_from(["shunt", "login", "claude", "--name", "ci"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["shunt", "login", "claude", "--name", "ci", "--long-lived"])
+                .is_ok()
+        );
+        let parsed = Cli::try_parse_from(["shunt", "login", "claude"]).unwrap();
+        let Some(Command::Login {
+            provider,
+            name,
+            long_lived,
+        }) = parsed.command
+        else {
+            panic!("expected login command");
+        };
+        assert_eq!(provider, "claude");
+        assert!(name.is_none());
+        assert!(!long_lived);
+    }
 
     #[test]
     fn runtime_builds() {

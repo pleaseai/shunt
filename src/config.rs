@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     net::SocketAddr,
     path::{Path, PathBuf},
 };
@@ -234,6 +234,10 @@ pub struct ProviderConfig {
     /// How `POST /v1/messages/count_tokens` is answered for this provider.
     #[serde(default)]
     pub count_tokens: CountTokens,
+    /// Explicit Claude OAuth accounts. An empty list means the account store
+    /// directory will be scanned by the account-pool layer.
+    #[serde(default)]
+    pub accounts: Vec<AccountConfig>,
     /// Opt in to the Codex Responses WebSocket v2 transport for this provider
     /// (issue #32). Only honored for the ChatGPT/Codex backend; ignored for
     /// stock OpenAI/xAI upstreams, which have no v2 websocket endpoint. When on,
@@ -243,6 +247,44 @@ pub struct ProviderConfig {
     /// error event). Off by default — HTTP stays the default transport.
     #[serde(default)]
     pub websocket: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AccountConfig {
+    pub name: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_credentials_path"
+    )]
+    pub credentials: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uuid: Option<String>,
+}
+
+fn deserialize_optional_credentials_path<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(|path| path.map(|path| expand_tilde(&path)))
+}
+
+fn expand_tilde(path: &str) -> String {
+    let Some(suffix) = path.strip_prefix("~/") else {
+        return path.to_string();
+    };
+    // `HOME` is unset on Windows; fall back to `USERPROFILE` so `~/` expands to
+    // the user's home there too (mirrors the auth credential-path helpers).
+    std::env::var_os("HOME")
+        .filter(|home| !home.is_empty())
+        .or_else(|| std::env::var_os("USERPROFILE").filter(|home| !home.is_empty()))
+        .map(PathBuf::from)
+        .map(|home| home.join(suffix).to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string())
 }
 
 /// How a provider answers `count_tokens`. Only meaningful for `responses` and
@@ -290,6 +332,8 @@ pub enum AuthMode {
     ApiKey,
     /// Reuse the ChatGPT/Codex OAuth login in ~/.codex/auth.json.
     ChatgptOauth,
+    /// Inject a Claude subscription OAuth bearer selected from `accounts`.
+    ClaudeOauth,
     /// xAI subscription OAuth (SuperGrok / X Premium+), acquired via the
     /// device-code flow (`shunt login xai`) and stored in ~/.shunt/xai-auth.json.
     XaiOauth,
@@ -337,6 +381,23 @@ pub fn host_is_cursor(host: &str) -> bool {
 /// uses (`cli-chat-proxy.grok.com`).
 pub fn host_is_grok_subscription(host: &str) -> bool {
     host_is_xai(host) || host == "grok.com" || host.ends_with(".grok.com")
+}
+
+/// Whether `host` belongs to Anthropic (`anthropic.com` or any subdomain).
+pub fn host_is_anthropic(host: &str) -> bool {
+    host == "anthropic.com" || host.ends_with(".anthropic.com")
+}
+
+/// Whether `host` identifies the local machine.
+pub fn host_is_loopback(host: &str) -> bool {
+    let host = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
 }
 
 /// Which header an injected API key is sent in.
@@ -398,6 +459,20 @@ pub enum ConfigError {
     CursorOauthNonCursorHost { provider: String, host: String },
     #[error("providers.{provider} uses auth = \"cursor_oauth\" but base_url is not https; refusing to send a subscription token over plaintext")]
     CursorOauthNotHttps { provider: String },
+    #[error("providers.{provider}.accounts requires auth = \"claude_oauth\"")]
+    AccountsRequireClaudeOauth { provider: String },
+    #[error("providers.{provider} uses auth = \"claude_oauth\" but kind is not \"anthropic\"")]
+    ClaudeOauthWrongKind { provider: String },
+    #[error("providers.{provider} uses auth = \"claude_oauth\" but base_url host {host} is not anthropic.com; refusing to send a subscription token off-origin")]
+    ClaudeOauthNonAnthropicHost { provider: String, host: String },
+    #[error("providers.{provider} uses auth = \"claude_oauth\" but base_url is not https; refusing to send a subscription token over plaintext")]
+    ClaudeOauthNotHttps { provider: String },
+    #[error("providers.{provider}.accounts contains duplicate account name \"{name}\"")]
+    DuplicateAccountName { provider: String, name: String },
+    #[error("providers.{provider}.accounts account name \"{name}\" must match [a-z0-9-]+")]
+    InvalidAccountName { provider: String, name: String },
+    #[error("providers.{provider}.accounts account \"{name}\" sets both credentials and token_env; set at most one credential source")]
+    AccountMultipleCredentialSources { provider: String, name: String },
     #[error("server.default_provider references unknown provider: {0}")]
     UnknownDefaultProvider(String),
     #[error("route for model {model} references unknown provider: {provider}")]
@@ -430,6 +505,7 @@ impl ProviderConfig {
             api_key_header: ApiKeyHeader::Bearer,
             effort: None,
             count_tokens: CountTokens::default(),
+            accounts: Vec::new(),
             websocket: false,
         }
     }
@@ -446,6 +522,7 @@ impl ProviderConfig {
             api_key_header: ApiKeyHeader::Bearer,
             effort: None,
             count_tokens: CountTokens::default(),
+            accounts: Vec::new(),
             websocket: false,
         }
     }
@@ -484,6 +561,7 @@ impl Default for Config {
                     api_key_header: ApiKeyHeader::Bearer,
                     effort: None,
                     count_tokens: CountTokens::default(),
+                    accounts: Vec::new(),
                     websocket: false,
                 },
             ),
@@ -742,6 +820,60 @@ impl Config {
                     });
                 }
             }
+            if !provider.accounts.is_empty() && provider.auth != AuthMode::ClaudeOauth {
+                return Err(ConfigError::AccountsRequireClaudeOauth {
+                    provider: name.clone(),
+                });
+            }
+            if provider.auth == AuthMode::ClaudeOauth {
+                if provider.kind != ProviderKind::Anthropic {
+                    return Err(ConfigError::ClaudeOauthWrongKind {
+                        provider: name.clone(),
+                    });
+                }
+                let host = url.host_str().unwrap_or_default();
+                // Subscription bearers must never leak to a remote third party.
+                // Loopback is the operator's own machine and cannot egress the
+                // bearer directly, while allowing local debugging proxies.
+                if !host_is_loopback(host) {
+                    if url.scheme() != "https" {
+                        return Err(ConfigError::ClaudeOauthNotHttps {
+                            provider: name.clone(),
+                        });
+                    }
+                    if !host_is_anthropic(host) {
+                        return Err(ConfigError::ClaudeOauthNonAnthropicHost {
+                            provider: name.clone(),
+                            host: host.to_string(),
+                        });
+                    }
+                }
+            }
+            let mut account_names = HashSet::new();
+            for account in &provider.accounts {
+                if account.name.is_empty()
+                    || !account.name.bytes().all(|byte| {
+                        byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'
+                    })
+                {
+                    return Err(ConfigError::InvalidAccountName {
+                        provider: name.clone(),
+                        name: account.name.clone(),
+                    });
+                }
+                if !account_names.insert(&account.name) {
+                    return Err(ConfigError::DuplicateAccountName {
+                        provider: name.clone(),
+                        name: account.name.clone(),
+                    });
+                }
+                if account.credentials.is_some() && account.token_env.is_some() {
+                    return Err(ConfigError::AccountMultipleCredentialSources {
+                        provider: name.clone(),
+                        name: account.name.clone(),
+                    });
+                }
+            }
             // An xai_oauth provider injects the operator's subscription bearer,
             // so its base_url must stay on an xAI host over https (mirrors
             // Hermes' endpoint re-validation) — never a gateway that would
@@ -904,9 +1036,11 @@ mod tests {
         sync::{Arc, Mutex},
     };
 
+    use figment::providers::Format;
+
     use super::{
-        config_file_candidates, AuthMode, Config, ConfigError, ConfigFormat, ModelConfig,
-        ProviderKind, ResponsesFlavor,
+        config_file_candidates, AccountConfig, AuthMode, Config, ConfigError, ConfigFormat,
+        ModelConfig, ProviderKind, ResponsesFlavor,
     };
 
     struct BufferWriter {
@@ -922,6 +1056,140 @@ mod tests {
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
         }
+    }
+
+    fn account(name: &str) -> AccountConfig {
+        AccountConfig {
+            name: name.to_string(),
+            credentials: None,
+            token_env: None,
+            uuid: None,
+        }
+    }
+
+    fn claude_oauth_config() -> Config {
+        let mut config = Config::default();
+        config.providers.get_mut("anthropic").unwrap().auth = AuthMode::ClaudeOauth;
+        config
+    }
+
+    #[test]
+    fn accounts_require_claude_oauth() {
+        let mut config = Config::default();
+        config
+            .providers
+            .get_mut("anthropic")
+            .unwrap()
+            .accounts
+            .push(account("main"));
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::AccountsRequireClaudeOauth { .. }
+        ));
+    }
+
+    #[test]
+    fn claude_oauth_requires_anthropic_kind() {
+        let mut config = claude_oauth_config();
+        config.providers.get_mut("anthropic").unwrap().kind = ProviderKind::Responses;
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::ClaudeOauthWrongKind { .. }
+        ));
+    }
+
+    #[test]
+    fn claude_oauth_accepts_plaintext_loopback_base_urls() {
+        for base_url in ["http://127.0.0.1:8080", "http://localhost:9000"] {
+            let mut config = claude_oauth_config();
+            config.providers.get_mut("anthropic").unwrap().base_url = base_url.to_string();
+            config.validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn claude_oauth_rejects_plaintext_remote_base_url() {
+        let mut config = claude_oauth_config();
+        config.providers.get_mut("anthropic").unwrap().base_url =
+            "http://api.anthropic.com".to_string();
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::ClaudeOauthNotHttps { .. }
+        ));
+    }
+
+    #[test]
+    fn claude_oauth_rejects_remote_non_anthropic_base_url() {
+        let mut config = claude_oauth_config();
+        config.providers.get_mut("anthropic").unwrap().base_url =
+            "https://evil.example.com".to_string();
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::ClaudeOauthNonAnthropicHost { .. }
+        ));
+    }
+
+    #[test]
+    fn claude_oauth_accepts_anthropic_https_base_url() {
+        let mut config = claude_oauth_config();
+        config.providers.get_mut("anthropic").unwrap().base_url =
+            "https://api.anthropic.com".to_string();
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn claude_oauth_rejects_duplicate_and_invalid_account_names() {
+        let mut config = claude_oauth_config();
+        config.providers.get_mut("anthropic").unwrap().accounts =
+            vec![account("main"), account("main")];
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::DuplicateAccountName { .. }
+        ));
+
+        for invalid in ["", "Main", "main_account", "main.account"] {
+            let mut config = claude_oauth_config();
+            config.providers.get_mut("anthropic").unwrap().accounts = vec![account(invalid)];
+            assert!(matches!(
+                config.validate().unwrap_err(),
+                ConfigError::InvalidAccountName { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn claude_oauth_rejects_multiple_credential_sources() {
+        let mut config = claude_oauth_config();
+        let mut configured = account("main");
+        configured.credentials = Some("/tmp/credentials.json".to_string());
+        configured.token_env = Some("CLAUDE_TOKEN".to_string());
+        config.providers.get_mut("anthropic").unwrap().accounts = vec![configured];
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::AccountMultipleCredentialSources { .. }
+        ));
+    }
+
+    #[test]
+    fn claude_oauth_accepts_empty_accounts_and_default_anthropic_origin() {
+        let config = claude_oauth_config().validate().unwrap();
+        let anthropic = config.provider("anthropic").unwrap();
+        assert!(anthropic.accounts.is_empty());
+        assert_eq!(anthropic.base_url, "https://api.anthropic.com");
+    }
+
+    #[test]
+    fn account_credentials_expand_home_tilde() {
+        let home = std::env::var("HOME").expect("HOME must be set for this test");
+        let account: AccountConfig = figment::Figment::from(figment::providers::Toml::string(
+            "name = \"main\"\ncredentials = \"~/.claude/.credentials.json\"",
+        ))
+        .extract()
+        .unwrap();
+        assert_eq!(
+            account.credentials.as_deref(),
+            Some(format!("{home}/.claude/.credentials.json").as_str())
+        );
     }
 
     #[test]
@@ -958,6 +1226,10 @@ mod tests {
         assert_eq!(
             config.provider("anthropic").unwrap().kind,
             ProviderKind::Anthropic
+        );
+        assert_eq!(
+            config.provider("anthropic").unwrap().auth,
+            AuthMode::Passthrough
         );
         assert_eq!(
             config.provider("openai").unwrap().kind,

@@ -10,6 +10,8 @@ use crate::{
 };
 
 pub mod claude_auth;
+pub mod claude_login;
+pub mod claude_store;
 pub mod codex_auth;
 pub mod cursor_auth;
 pub mod cursor_login;
@@ -34,6 +36,10 @@ pub enum Credential {
     XaiOauth { access_token: String },
     /// Cursor OAuth bearer.
     CursorOauth { access_token: String },
+    ClaudeOauth {
+        access_token: String,
+        account_uuid: Option<String>,
+    },
 }
 
 /// Resolve the credential for a route from its provider's configured `auth`.
@@ -87,7 +93,62 @@ pub async fn resolve_credential(
                     access_token: credential.access_token,
                 })
         }
+        AuthMode::ClaudeOauth => Err(auth_error(
+            "claude_oauth is resolved per-account by the account pool, not resolve_credential",
+        )),
     }
+}
+
+/// Resolve one Claude OAuth account for the account pool.
+pub async fn resolve_claude_account(
+    account: &crate::config::AccountConfig,
+    client: &reqwest::Client,
+) -> Result<Credential, AdapterError> {
+    if let Some(token_env) = account.token_env.as_deref() {
+        let access_token = env::var(token_env)
+            .ok()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| auth_error(format!("{token_env} is not set")))?;
+        return Ok(Credential::ClaudeOauth {
+            access_token,
+            account_uuid: account.uuid.clone(),
+        });
+    }
+
+    if let Some(credentials) = account.credentials.as_deref() {
+        let store = claude_auth::ClaudeAuthStore::new(PathBuf::from(credentials), client.clone());
+        return store
+            .get_valid_access_token()
+            .await
+            .map(|access_token| Credential::ClaudeOauth {
+                access_token,
+                account_uuid: account.uuid.clone(),
+            })
+            .map_err(|error| auth_error(error.to_string()));
+    }
+
+    let account_uuid = match account.uuid.clone() {
+        Some(uuid) => Some(uuid),
+        None => {
+            // claude_store::account_uuid does a synchronous file read; run it on
+            // the blocking pool so it never stalls a runtime worker thread.
+            let name = account.name.clone();
+            tokio::task::spawn_blocking(move || claude_store::account_uuid(&name))
+                .await
+                .ok()
+                .flatten()
+        }
+    };
+    let path = claude_store::account_path(&account.name);
+    let store = claude_auth::ClaudeAuthStore::new(path, client.clone());
+    store
+        .get_valid_access_token()
+        .await
+        .map(|access_token| Credential::ClaudeOauth {
+            access_token,
+            account_uuid,
+        })
+        .map_err(|error| auth_error(error.to_string()))
 }
 
 /// Read an `auth = "api_key"` provider's key from its `api_key_env`. As a
@@ -166,9 +227,73 @@ pub fn default_xai_auth_path() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use crate::config::Config;
+    use crate::config::{AccountConfig, Config};
 
-    use super::resolve_api_key;
+    use super::{resolve_api_key, resolve_claude_account, Credential};
+
+    #[tokio::test]
+    async fn resolves_claude_account_token_env_verbatim_with_uuid() {
+        let env_name = format!("SHUNT_TEST_CLAUDE_TOKEN_{}", std::process::id());
+        std::env::set_var(&env_name, "  setup-token-verbatim  ");
+        let account = AccountConfig {
+            name: "ci".to_string(),
+            credentials: None,
+            token_env: Some(env_name.clone()),
+            uuid: Some("account-uuid".to_string()),
+        };
+
+        let credential = resolve_claude_account(&account, &reqwest::Client::new())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            credential,
+            Credential::ClaudeOauth {
+                access_token: "  setup-token-verbatim  ".to_string(),
+                account_uuid: Some("account-uuid".to_string()),
+            }
+        );
+        std::env::remove_var(env_name);
+    }
+
+    #[tokio::test]
+    async fn name_only_claude_account_resolves_store_token() {
+        let _guard = crate::auth::claude_store::TEST_ENV_LOCK.lock().await;
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-name-only-auth-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+        crate::auth::claude_store::store_setup_token(
+            "main",
+            "store-token",
+            Some("stored-account-uuid"),
+        )
+        .unwrap();
+        let account = AccountConfig {
+            name: "main".to_string(),
+            credentials: None,
+            token_env: None,
+            uuid: None,
+        };
+
+        let credential = resolve_claude_account(&account, &reqwest::Client::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            credential,
+            Credential::ClaudeOauth {
+                access_token: "store-token".to_string(),
+                account_uuid: Some("stored-account-uuid".to_string()),
+            }
+        );
+        std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn resolves_openai_key_from_codex_auth_json_when_env_missing() {
