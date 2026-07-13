@@ -1092,6 +1092,54 @@ fn truncated_stream_falls_back_to_input_token_estimate() {
 }
 
 #[test]
+fn observed_zero_input_tokens_is_reported_not_overwritten_by_estimate() {
+    // The counterpart to the truncation case: when real usage IS observed at
+    // response.completed and it is a genuine input_tokens:0, the terminal
+    // message_delta must report 0 — NOT the seeded estimate. This is the exact
+    // distinction the explicit `usage_observed` flag protects over a naive
+    // `self.input_tokens > 0` zero-check: message_start still shows the estimate,
+    // but once real usage arrives (even a real 0) message_delta reflects it.
+    // Guards against a future "collapse the flag into a zero-check" refactor
+    // silently regressing the real-zero case.
+    let fixture = concat!(
+        "event: response.created\n",
+        "data: {\"response\":{\"id\":\"resp_1\"}}\n\n",
+        "event: response.output_item.added\n",
+        "data: {\"item\":{\"type\":\"message\"}}\n\n",
+        "event: response.output_text.delta\n",
+        "data: {\"delta\":\"hi\"}\n\n",
+        "event: response.output_text.done\n",
+        "data: {}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{\"usage\":{\"input_tokens\":0,\"output_tokens\":9}}}\n\n",
+        "data: [DONE]\n\n"
+    );
+
+    let mut machine =
+        AnthropicSseMachine::new("gpt-5.6-sol", false, false).with_input_estimate(4321);
+    let emitted = parse_sse_events(fixture)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
+
+    // message_start still carries the seeded estimate (the opening snapshot).
+    let start_usage = event_usage(&emitted, "message_start");
+    assert_eq!(
+        start_usage["input_tokens"],
+        json!(4321),
+        "seeded message_start should carry the estimate, got: {emitted}"
+    );
+    // message_delta must report the REAL observed 0, not the estimate — proving
+    // the fallback keys off the explicit `usage_observed` flag, not a zero-check.
+    let delta_usage = event_usage(&emitted, "message_delta");
+    assert_eq!(
+        delta_usage["input_tokens"],
+        json!(0),
+        "an observed upstream input_tokens:0 must report 0, not the estimate, got: {emitted}"
+    );
+}
+
+#[test]
 fn maps_upstream_error_statuses() {
     assert_eq!(
         anthropic_error_type(StatusCode::BAD_REQUEST),
