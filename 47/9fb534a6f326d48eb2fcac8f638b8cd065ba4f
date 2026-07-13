@@ -1,0 +1,26 @@
+src/adapters/anthropic.rs
+  s_1ea3e991926d99::t_74c7455178c583 53-60,93-112
+  s_1ea3e991926d99::t_48e703b0efccb2 237
+  s_1ea3e991926d99::t_82074162f1fbfa 361-387
+  s_1ea3e991926d99::t_4d52c34a7efd21 113-114
+site/src/content/docs/ko/reference/troubleshooting.md
+  s_1ea3e991926d99::t_8735dd03067fa6 20
+site/src/content/docs/reference/troubleshooting.md
+  s_1ea3e991926d99::t_42c35abd41854c 20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "479fb534a6f326d48eb2fcac8f638b8cd065ba4f",
+  "prompts": {},
+  "sessions": {
+    "s_1ea3e991926d99": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "933a206e-41de-47fc-a5e0-a89ea4dc5bcb",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
