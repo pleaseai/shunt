@@ -1,0 +1,28 @@
+.claude/agent-memory/review-review-silent-failure-hunter/pr112-message-start-estimate.md
+  s_806d272ffe620a::t_748a1ab5c273f6 1-59
+.claude/agent-memory/review-review-documentation-analyzer/MEMORY.md
+  s_806d272ffe620a::t_4b275fcfd5e4f6 5
+.claude/agent-memory/review-review-silent-failure-hunter/MEMORY.md
+  s_806d272ffe620a::t_45427abc0bccfd 5
+.claude/agent-memory/review-review-code-reviewer/project_shunt_responses_adapter.md
+  s_806d272ffe620a::t_9ec591c8b7c116 3,15-21
+  s_806d272ffe620a::t_69e7e3f920c153 43-60
+.claude/agent-memory/review-review-documentation-analyzer/shunt_pr112_doc_drift_pattern.md
+  s_806d272ffe620a::t_a49a2e8c7bec8b 1-37
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "e84a601bb0a7a3072b4ded55fa178a65baee2d1b",
+  "prompts": {},
+  "sessions": {
+    "s_806d272ffe620a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "787544a5-b14a-4ca2-b975-bea3397374a2",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
