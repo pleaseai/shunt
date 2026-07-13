@@ -1,0 +1,20 @@
+site/src/content/docs/guides/effort-and-context.md
+  s_806d272ffe620a::t_6ce5d7a3b9bf7a 40,43
+  s_806d272ffe620a::t_f40fbfa5e2c8a3 44
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "32e9172683ff06885fda0c3aa5077b80e85646d7",
+  "prompts": {},
+  "sessions": {
+    "s_806d272ffe620a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "787544a5-b14a-4ca2-b975-bea3397374a2",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
