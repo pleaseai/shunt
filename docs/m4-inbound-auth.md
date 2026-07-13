@@ -45,10 +45,13 @@ Rules:
 
 Checked in the `/v1/messages` and `/v1/messages/count_tokens` handlers **after routing
 resolves the provider**, and only when that provider's `auth` mode injects a server-side
-credential (`ApiKey` or `ChatgptOauth`):
+credential (`ApiKey` or `ChatgptOauth`). `GET /v1/models` is checked whenever
+`[server.auth]` is configured, because it exposes the configured model list:
 
 - `Passthrough` provider ⇒ no check (caller uses their own credential), regardless of config.
-- `GET /v1/models` and `HEAD /` ⇒ never checked (metadata, no credential spent).
+- `GET /v1/models` with a valid inbound token in the configured header, `x-api-key`, or
+  `Authorization: Bearer` ⇒ serve discovery; missing or invalid token ⇒ 401.
+- `HEAD /` and `GET /routes` ⇒ never checked (`/` is liveness; `/routes` remains shunt-native metadata).
 - Injected-credential route with valid token ⇒ proceed; log the client **name** (never the
   token) as a tracing field on the request span / relevant log lines.
 - Missing or unknown token ⇒ `401` with an Anthropic-shaped error body:

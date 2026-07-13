@@ -23,7 +23,7 @@ description: The endpoints shunt serves as a Claude Code LLM gateway.
 
 The `/admin*` routes exist only when [`[server.admin]`](/reference/configuration/#serveradmin-optional) is configured; without that table, none of them are registered.
 
-`GET /` and `GET /health` stay open even when [`[server.auth]`](/guides/shared-gateway/) is enabled (healthcheck tools usually cannot attach tokens) and expose nothing sensitive — only status, version, and the already-public endpoint list.
+`GET /` and `GET /health` stay open even when [`[server.auth]`](/guides/shared-gateway/) is enabled (healthcheck tools usually cannot attach tokens) and expose nothing sensitive — only status, version, and the already-public endpoint list. With `[server.auth]` enabled, `GET /v1/models` requires a valid client token in the configured header, `x-api-key`, or `Authorization: Bearer`; it stays open when inbound auth is not configured. `GET /routes` remains open as shunt-native routing metadata.
 
 ## Gateway protocol
 
