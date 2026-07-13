@@ -1,0 +1,39 @@
+tests/codex_websocket_fallback.rs
+  s_470874e8046fa4::t_92b0b9db935a91 365-368
+  s_470874e8046fa4::t_7ab46677a57cef 427-463
+  s_470874e8046fa4::t_f5714da0ec6af4 464-466
+  s_470874e8046fa4::t_45311b69f09309 467
+src/adapters/responses/mod.rs
+  s_470874e8046fa4::t_f4afa51fe0f088 103-105
+  s_470874e8046fa4::t_aebb566780948a 1269-1313
+  s_470874e8046fa4::t_b6377441fea792 357-364
+  s_470874e8046fa4::t_f7719ea2011d19 1314
+site/src/content/docs/zh-cn/getting-started/comparison.md
+  s_470874e8046fa4::t_81bf4fb4deb794 110
+docs/comparison.md
+  s_470874e8046fa4::t_2bb9e6eed7f5e8 268-271
+site/src/content/docs/getting-started/comparison.md
+  s_470874e8046fa4::t_5fd9783b0e3dbd 110
+docs/m7-codex-websocket.md
+  s_470874e8046fa4::t_a82c34f210d8ff 233
+site/src/content/docs/ko/getting-started/comparison.md
+  s_470874e8046fa4::t_1e938cb4c7b816 110
+site/src/content/docs/ja/getting-started/comparison.md
+  s_470874e8046fa4::t_4a048cbb7ee686 110
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "abd89392548cd8f87fd383886764f4c523f0ddba",
+  "prompts": {},
+  "sessions": {
+    "s_470874e8046fa4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c6c53327-752e-4f04-a4dc-10b802e6445f",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
