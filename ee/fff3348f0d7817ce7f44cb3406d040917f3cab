@@ -1,0 +1,19 @@
+.gitignore
+  s_45841bdcc1ae2a::t_abba965655d93e 20-22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "eefff3348f0d7817ce7f44cb3406d040917f3cab",
+  "prompts": {},
+  "sessions": {
+    "s_45841bdcc1ae2a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7d2dc58b-5ee7-4b3d-bb2e-965a8d2dd3ea",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
