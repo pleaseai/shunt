@@ -1,18 +1,15 @@
 use std::{fs, io, path::PathBuf, time::SystemTime};
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
     adapters::AdapterError,
-    auth::{auth_error, codex_auth::write_auth_file_atomic},
+    auth::{
+        auth_error,
+        shared::{is_token_valid_at, write_auth_file_atomic},
+    },
 };
-
-// Match the 5-minute buffer used by the codex/xAI stores (codex_auth::EXPIRY_BUFFER)
-// so clock drift, network latency, or a long-running request cannot let a
-// nearly-expired token slip through and fail upstream with a 401.
-const EXPIRY_SKEW_SECONDS: u64 = 300;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -54,14 +51,14 @@ impl CursorAuthStore {
             });
         }
         let stored = self.read_off_thread().await?;
-        if token_is_valid(&stored.access_token, SystemTime::now()) {
+        if is_token_valid_at(&stored.access_token, SystemTime::now()) {
             return Ok(CursorCred {
                 access_token: stored.access_token,
             });
         }
         let refreshing = REFRESH_LOCK.lock().await;
         let stored = self.read_off_thread().await?;
-        if token_is_valid(&stored.access_token, SystemTime::now()) {
+        if is_token_valid_at(&stored.access_token, SystemTime::now()) {
             return Ok(CursorCred {
                 access_token: stored.access_token,
             });
@@ -77,7 +74,7 @@ impl CursorAuthStore {
         // section mid-flight — which would release the lock early into a writeback
         // race and, if Cursor ever consumes the old refresh token server-side,
         // strand a spent token in the file. Mirrors the cancellation-safe pattern
-        // in `xai_auth`.
+        // in `xai::auth`.
         let client = self.client.clone();
         let base_url = self.base_url.clone();
         let path = self.path.clone();
@@ -228,31 +225,11 @@ fn env_token() -> Option<String> {
         .clone()
 }
 
-fn token_is_valid(token: &str, now: SystemTime) -> bool {
-    // A token we cannot parse an `exp` from is treated as invalid so it triggers
-    // a refresh rather than being sent upstream to fail with a 401. This matches
-    // the codex/xAI stores' fail-closed convention (see
-    // codex_auth::is_token_valid_at).
-    let Some(exp) = jwt_claims(token).and_then(|claims| claims.get("exp").and_then(Value::as_u64))
-    else {
-        return false;
-    };
-    let now = now
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    exp > now.saturating_add(EXPIRY_SKEW_SECONDS)
-}
-
-pub(crate) fn jwt_claims(token: &str) -> Option<Value> {
-    let payload = token.split('.').nth(1)?;
-    let bytes = URL_SAFE_NO_PAD.decode(payload).ok()?;
-    serde_json::from_slice(&bytes).ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::shared::jwt_claims;
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
     use serde_json::json;
 
     #[test]
@@ -268,6 +245,14 @@ mod tests {
     }
 
     #[test]
+    fn rejects_missing_or_empty_access_token() {
+        // A response with no accessToken is not a usable credential.
+        assert!(parse_token_response(&json!({"refreshToken": "refresh"})).is_none());
+        // An empty accessToken is rejected rather than persisted as a broken token.
+        assert!(parse_token_response(&json!({"accessToken": ""})).is_none());
+    }
+
+    #[test]
     fn parses_jwt_claims() {
         let payload = URL_SAFE_NO_PAD.encode(br#"{"exp":4102444800,"sub":"user"}"#);
         let claims = jwt_claims(&format!("x.{payload}.y")).unwrap();
@@ -278,9 +263,9 @@ mod tests {
     fn token_without_parseable_exp_is_invalid() {
         // Fail-closed: a token we cannot read an exp from is treated as invalid
         // so it refreshes instead of failing upstream with a 401.
-        assert!(!token_is_valid("not-a-jwt", SystemTime::now()));
+        assert!(!is_token_valid_at("not-a-jwt", SystemTime::now()));
         let no_exp = format!("x.{}.y", URL_SAFE_NO_PAD.encode(br#"{"sub":"user"}"#));
-        assert!(!token_is_valid(&no_exp, SystemTime::now()));
+        assert!(!is_token_valid_at(&no_exp, SystemTime::now()));
     }
 
     fn jwt(exp: u64) -> String {
@@ -329,7 +314,7 @@ mod tests {
 
         let store = CursorAuthStore::new(file.clone(), reqwest::Client::new(), server.uri());
         let cred = store.get_valid().await.unwrap();
-        assert!(token_is_valid(&cred.access_token, SystemTime::now()));
+        assert!(is_token_valid_at(&cred.access_token, SystemTime::now()));
 
         // The old refresh token was retained, not dropped.
         let stored: StoredCursorAuth = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();

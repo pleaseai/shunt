@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use axum::http::StatusCode;
 use serde_json::{json, Value};
 
+use crate::model::responses_request::TOOL_SEARCH_NAME;
 pub use crate::model::responses_request::{encode_reasoning_signature, translate_request};
 
 #[derive(Debug, Clone)]
@@ -43,6 +44,10 @@ pub struct AnthropicSseMachine {
     tool_buffer: Option<ToolBuffer>,
     reasoning: Option<ReasoningBuffer>,
     web_search_indexes: HashMap<String, String>,
+    /// Whether the request used the native `tool_search` protocol (issue #82).
+    /// Only then is an upstream `tool_search_call` item surfaced as a `ToolSearch`
+    /// `tool_use`; under the shim the upstream never emits one.
+    tool_search_native: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -64,7 +69,7 @@ struct ReasoningBuffer {
 }
 
 impl AnthropicSseMachine {
-    pub fn new(model: impl Into<String>, thinking_enabled: bool) -> Self {
+    pub fn new(model: impl Into<String>, thinking_enabled: bool, tool_search_native: bool) -> Self {
         Self {
             id: "msg_responses".to_string(),
             model: model.into(),
@@ -83,6 +88,7 @@ impl AnthropicSseMachine {
             tool_buffer: None,
             reasoning: None,
             web_search_indexes: HashMap::new(),
+            tool_search_native,
         }
     }
 
@@ -186,13 +192,68 @@ impl AnthropicSseMachine {
     /// and message items just close.
     fn output_item_done(&mut self, data: &Value) -> Vec<String> {
         let item = data.get("item").unwrap_or(data);
-        if item.get("type").and_then(Value::as_str) == Some("reasoning") {
-            return self.reasoning_done(item);
+        match item.get("type").and_then(Value::as_str) {
+            Some("reasoning") => self.reasoning_done(item),
+            Some("web_search_call") => self.web_search_done(item),
+            // The native tool_search_call carries its full `arguments` (a JSON
+            // object) only at `done` — codex ignores the `added`/delta events too
+            // — so the whole ToolSearch tool_use is emitted here in one shot.
+            Some("tool_search_call") if self.tool_search_native => self.tool_search_call_done(item),
+            _ => self.close_any(),
         }
-        if item.get("type").and_then(Value::as_str) == Some("web_search_call") {
-            return self.web_search_done(item);
-        }
-        self.close_any()
+    }
+
+    /// An upstream `tool_search_call` -> an Anthropic `tool_use` for `ToolSearch`,
+    /// so Claude Code runs its inventory search and returns `tool_reference`s. The
+    /// `call_id` becomes the tool_use id (round-tripping back to the request's
+    /// `tool_search_call`/`tool_search_output`), and `arguments` (a JSON object)
+    /// is emitted as one `input_json_delta`. Mirrors `web_search_done`'s
+    /// open/delta/stop shape, and records the block for the non-streaming path.
+    fn tool_search_call_done(&mut self, item: &Value) -> Vec<String> {
+        let mut out = self.close_any();
+        // Claude Code needs a non-empty tool_use id to match the tool_result it
+        // sends back; if upstream ever omits `call_id`, fall back to a synthetic
+        // per-block id rather than emit an empty (invalid) one.
+        let id = item
+            .get("call_id")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("toolu_ts_{}", self.index));
+        // Anthropic requires tool_use `input` to be a JSON object; if upstream
+        // omits `arguments` or sends a non-object, fall back to `{}` rather than
+        // forward an invalid input.
+        let arguments = item
+            .get("arguments")
+            .filter(|value| value.is_object())
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        self.saw_tool = true;
+        out.push(sse(
+            "content_block_start",
+            &json!({
+                "type": "content_block_start",
+                "index": self.index,
+                "content_block": {"type": "tool_use", "id": id, "name": TOOL_SEARCH_NAME, "input": {}}
+            }),
+        ));
+        out.push(sse(
+            "content_block_delta",
+            &json!({
+                "type": "content_block_delta",
+                "index": self.index,
+                "delta": {"type": "input_json_delta", "partial_json": arguments.to_string()}
+            }),
+        ));
+        self.content.push(json!({
+            "type": "tool_use", "id": id, "name": TOOL_SEARCH_NAME, "input": arguments
+        }));
+        out.push(sse(
+            "content_block_stop",
+            &json!({"type": "content_block_stop", "index": self.index}),
+        ));
+        self.index += 1;
+        out
     }
 
     /// Record the reasoning item's id; defer opening the thinking block until the
@@ -669,12 +730,52 @@ pub fn map_error_value(value: &Value, status: StatusCode) -> Value {
     })
 }
 
+// HTTP 529 ("upstream overloaded") has no named constant in the `http`
+// crate — it isn't in the IANA registry. Anthropic uses it to mean "the
+// upstream is at capacity"; Claude Code backs off and retries on it instead
+// of failing the turn, so it must reach the client as its own status rather
+// than folding into a generic `api_error`.
+
+/// Map an upstream HTTP status to the Anthropic error envelope's
+/// `error.type`, per the table in `docs/gateway-protocol.md#error-envelopes`.
+/// Shared by every translated backend (Responses/Codex, xAI, Cursor) so they
+/// surface the same vocabulary the Anthropic-direct path streams verbatim.
 pub fn anthropic_error_type(status: StatusCode) -> &'static str {
     match status {
-        StatusCode::UNAUTHORIZED => "authentication_error",
-        StatusCode::TOO_MANY_REQUESTS => "rate_limit_error",
         StatusCode::BAD_REQUEST => "invalid_request_error",
+        StatusCode::UNAUTHORIZED => "authentication_error",
+        StatusCode::FORBIDDEN => "permission_error",
+        StatusCode::PAYLOAD_TOO_LARGE => "request_too_large",
+        StatusCode::TOO_MANY_REQUESTS => "rate_limit_error",
+        StatusCode::NOT_IMPLEMENTED => "not_supported",
+        _ if status.as_u16() == 529 => "overloaded_error",
         _ => "api_error",
+    }
+}
+
+/// Client-facing HTTP status for a mapped upstream error. The standard error
+/// statuses reach the client unchanged so status-based client behavior (the
+/// `529` overload backoff, distinguishing `503`/`500` from a generic gateway
+/// failure) sees the real upstream signal; anything outside that set
+/// collapses to `502` rather than leaking an unexpected upstream status
+/// verbatim.
+pub fn client_facing_status(status: StatusCode) -> StatusCode {
+    const PRESERVED: &[StatusCode] = &[
+        StatusCode::BAD_REQUEST,
+        StatusCode::UNAUTHORIZED,
+        StatusCode::FORBIDDEN,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        StatusCode::TOO_MANY_REQUESTS,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        StatusCode::NOT_IMPLEMENTED,
+        StatusCode::BAD_GATEWAY,
+        StatusCode::SERVICE_UNAVAILABLE,
+        StatusCode::GATEWAY_TIMEOUT,
+    ];
+    if PRESERVED.contains(&status) || status.as_u16() == 529 {
+        status
+    } else {
+        StatusCode::BAD_GATEWAY
     }
 }
 
@@ -703,7 +804,7 @@ fn error_message(value: &Value) -> String {
 /// case-insensitively), and it parses "N tokens > M maximum" from it to
 /// size the retry. Upstream providers phrase the same failure in their own
 /// words, which would otherwise strand the session until a manual /compact.
-fn context_overflow_message(value: &Value, message: &str) -> Option<String> {
+pub fn context_overflow_message(value: &Value, message: &str) -> Option<String> {
     let code = value
         .pointer("/error/code")
         .or_else(|| value.pointer("/response/error/code"))

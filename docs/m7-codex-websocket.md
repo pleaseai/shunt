@@ -45,7 +45,9 @@ flag, with a conservative fallback that never sends wrong context.
   [`AnthropicSseMachine`], and handshake-error re-shaping identical to the HTTP
   path.
 - A per-`x-claude-code-session-id` connection pool with TTL/size eviction, a
-  liveness ping on reuse, and invalidation on any error.
+  connection-owned reader task that keeps each pooled socket responsive to
+  upstream keepalive pings, a `Pong`-verified liveness probe on reuse, and
+  invalidation on any error.
 - `previous_response_id` continuation (`src/adapters/codex_continuation.rs`): the
   pure decision layer that decides whether the current input is an append-only
   extension of the previous turn and, if so, computes the delta.
@@ -82,7 +84,9 @@ reproducing attestation.**
   `type` field equals the SSE `event:` name. shunt builds
   `ResponseEvent { event: payload["type"], data: payload }` and feeds the existing
   [`AnthropicSseMachine`] directly — no re-parse, no divergence from the HTTP path.
-  `Ping → Pong`; a `Binary` frame is a protocol error and ends the turn.
+  Upstream `Ping` frames are answered with `Pong` by the connection-owned reader
+  (§5) whether or not a turn is active, so an idle pooled socket stays alive; a
+  `Binary` frame is a protocol error and ends the turn.
 - **Terminal events.** `response.completed | incomplete | failed | error`. Only
   `response.completed` leaves the socket healthy enough to pool
   ([`REUSABLE_TERMINAL`]); the others evict it.
@@ -97,19 +101,38 @@ reproducing attestation.**
 - Process-global `HashMap<pool_key, Arc<PoolEntry>>` keyed by
   `x-claude-code-session-id`, namespaced by the authenticated inbound client when
   `[server.auth]` is configured. A std mutex guards only map lookups/inserts (never
-  held across an await); a per-connection async mutex serializes turns of one
+  held across an await); a per-connection async turn lock serializes turns of one
   session. On a multi-tenant deployment, enable inbound authentication whenever
   `websocket = true`; without it, session IDs are client-provided and cannot isolate
   different callers that choose the same value.
+- **Connection-owned reader (issue #93).** On connect the socket is split and a
+  dedicated reader task takes sole ownership of the read half for the connection's
+  whole lifetime. It answers upstream `Ping` frames with `Pong` even while the
+  connection sits **idle** between turns, so the Codex backend never closes a
+  pooled socket with `keepalive ping timeout`. A turn is dispatched to that reader
+  over a bounded command channel (the turn lock guarantees at most one outstanding
+  turn); the reader streams the turn's events, records continuation on a clean
+  completion, then returns to idle keepalive duty. The reader forwards a turn's
+  events over an **unbounded** channel, so downstream backpressure (a slow or
+  stalled client) never blocks the read loop and therefore never starves
+  control-frame handling; the buffer is bounded in practice by one turn's output,
+  after which the reader is idle again.
 - **Eviction.** 30-minute idle TTL (matches the reference proxy) enforced on
-  insert, plus a 10 000-entry hard cap as a churn backstop.
-- **Reuse gate.** On a pooled hit, a cheap liveness `Ping` is sent; if it fails the
-  socket was idle-closed, so the entry is evicted and a fresh handshake runs. A
-  turn holds the connection's `OwnedMutexGuard` for its whole duration and releases
-  it when the stream ends.
+  insert, plus a 10 000-entry hard cap as a churn backstop. Removing an entry from
+  the pool (TTL sweep, capacity eviction, or explicit invalidation) signals the
+  reader to shut down and close the socket, so neither the task nor the connection
+  leaks.
+- **Reuse gate.** On a pooled hit the caller acquires the turn lock, then verifies
+  the socket is still live: a remote close already observed by the reader is
+  rejected outright, and otherwise a `Ping` is sent and a **timely `Pong`** is
+  required (a half-open socket buffers the local write and would otherwise pass, so
+  a successful write alone is never treated as proof of remote liveness). If the
+  reader saw a close or no `Pong` returns within the probe window, the entry is
+  evicted and a fresh handshake runs before the turn's frame is ever sent — a stale
+  socket cannot leak partial output into a new turn.
 - **Invalidation.** Any non-clean end (error/incomplete terminal, close, transport
   error, or a rejected `previous_response_id`) evicts the connection and clears its
-  continuation state. A clean `response.completed` re-pools the connection and
+  continuation state. A clean `response.completed` re-pools a fresh connection and
   records fresh continuation state on it.
 
 ## 6. `previous_response_id` continuation
@@ -119,7 +142,8 @@ holds the prior context per live connection, so a replayed id is valid **only on
 the exact connection that produced it**. Continuation is therefore gated on
 connection **reuse** — a fresh handshake always sends the full input with no
 `previous_response_id`. This also nearly eliminates `previous_response_not_found`.
-The continuation state lives on the [`PoolEntry`], not globally.
+The continuation state lives on the `Connection` (shared with its reader task),
+not globally.
 
 **Reuse gate** (mirrors `responses_request_properties_match` in `openai/codex`,
 which excludes `input`): the current request continues only when

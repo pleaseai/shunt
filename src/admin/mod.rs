@@ -7,7 +7,7 @@
 //! a session cookie minted after a login form and are CSRF-protected; API/curl
 //! callers pass the admin token header and are CSRF-exempt (no ambient cookie).
 //! The provisioning flow reuses the CLI setup-token internals in
-//! `crate::auth::claude_login`; the token value is never returned to the browser
+//! `crate::auth::claude::login`; the token value is never returned to the browser
 //! and never logged. See `docs/m9-admin-surface.md`.
 
 pub mod session;
@@ -28,7 +28,7 @@ use serde_json::json;
 
 use crate::{
     auth::{
-        claude_auth, claude_login, claude_store,
+        claude::{auth as claude_auth, login as claude_login, store as claude_store},
         inbound::{constant_time_eq, InboundAuth},
     },
     config::AuthMode,

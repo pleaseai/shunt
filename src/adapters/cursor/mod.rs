@@ -223,9 +223,10 @@ async fn map_upstream_error(upstream: reqwest::Response) -> AdapterError {
         .map(ToOwned::to_owned);
     let text = upstream.text().await.unwrap_or_default();
     // Cursor may return a Connect JSON error body (`{"error":{"message":"…"}}`
-    // or a bare `{"message":"…"}`). Extract the human-readable message instead of
-    // surfacing the raw JSON to the client.
-    let parsed_message = serde_json::from_str::<Value>(&text).ok().and_then(|value| {
+    // or a bare `{"message":"…"}`). Parse it once: the body feeds both the
+    // human-readable message and the context-overflow detection below.
+    let body: Option<Value> = serde_json::from_str(&text).ok();
+    let parsed_message = body.as_ref().and_then(|value| {
         value
             .pointer("/error/message")
             .or_else(|| value.get("message"))
@@ -236,13 +237,21 @@ async fn map_upstream_error(upstream: reqwest::Response) -> AdapterError {
         .or(parsed_message)
         .or_else(|| (!text.is_empty()).then_some(text))
         .unwrap_or_else(|| format!("Cursor upstream returned HTTP {status}"));
-    let (mapped_status, kind) = match status {
-        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
-            (StatusCode::UNAUTHORIZED, "authentication_error")
-        }
-        StatusCode::TOO_MANY_REQUESTS => (status, "rate_limit_error"),
-        _ => (StatusCode::BAD_GATEWAY, "api_error"),
-    };
+    // Reuse the Responses path's context-overflow rewrite so a Cursor
+    // "context length exceeded" surfaces as Anthropic's "prompt is too long"
+    // wording that triggers Claude Code's auto-compact-and-retry (see
+    // `map_error_value`).
+    let message = crate::model::responses::context_overflow_message(
+        body.as_ref().unwrap_or(&Value::Null),
+        &message,
+    )
+    .unwrap_or(message);
+    // Shares the status -> `error.type` table with the other translated
+    // backends (Responses/Codex, xAI) so Cursor surfaces the same vocabulary
+    // the Anthropic-direct path streams verbatim; see
+    // `docs/gateway-protocol.md#error-envelopes`.
+    let mapped_status = crate::model::responses::client_facing_status(status);
+    let kind = crate::model::responses::anthropic_error_type(status);
     let mut error = ShuntError::new(mapped_status, kind, message).into_response();
     if let Some(value) = retry_after {
         error.headers_mut().insert("retry-after", value);
@@ -258,12 +267,26 @@ fn map_client_error(error: client::CursorError) -> AdapterError {
 }
 
 fn map_decode_error(error: CursorDecodeError) -> AdapterError {
-    let (status, kind) = match error.status() {
-        Some(401 | 403) => (StatusCode::UNAUTHORIZED, "authentication_error"),
-        Some(429) => (StatusCode::TOO_MANY_REQUESTS, "rate_limit_error"),
-        _ => (StatusCode::BAD_GATEWAY, "api_error"),
+    // `error.status()` is the Connect-code-derived status from
+    // `parse_connect_error` (401/403/429/502 in practice); reuse the same
+    // status -> `error.type` table as `map_upstream_error` rather than a
+    // second hardcoded mapping.
+    let status = error
+        .status()
+        .and_then(|code| StatusCode::from_u16(code).ok())
+        .unwrap_or(StatusCode::BAD_GATEWAY);
+    let mapped_status = crate::model::responses::client_facing_status(status);
+    let kind = crate::model::responses::anthropic_error_type(status);
+    // A model context-overflow can arrive as a Connect error frame; surface the
+    // Connect code so the shared rewrite fires even when the message text lacks
+    // the OpenAI-style phrasing, matching the Responses path's auto-compact hook.
+    let value = match &error {
+        CursorDecodeError::ConnectEnd(err) => serde_json::json!({ "error": { "code": err.code } }),
+        CursorDecodeError::Decode(_) => Value::Null,
     };
-    own_error(status, kind, error.to_string())
+    let raw = error.to_string();
+    let message = crate::model::responses::context_overflow_message(&value, &raw).unwrap_or(raw);
+    own_error(mapped_status, kind, message)
 }
 
 fn bad_gateway(message: String) -> AdapterError {
@@ -279,6 +302,13 @@ fn own_error(status: StatusCode, kind: &'static str, message: impl Into<String>)
 
 #[cfg(test)]
 mod tests {
+    use axum::body::to_bytes;
+    use serde_json::Value;
+    use wiremock::{
+        matchers::{method, path},
+        Mock, MockServer, ResponseTemplate,
+    };
+
     use super::*;
     use crate::adapters::cursor::connect::ConnectEndError;
 
@@ -291,15 +321,47 @@ mod tests {
         })
     }
 
+    /// Serves an empty `status` response from a mock server and returns the
+    /// resulting `reqwest::Response`, mirroring what `map_upstream_error`
+    /// sees in production (a response read off the wire, not built
+    /// in-process).
+    async fn upstream_response(status: u16, headers: &[(&str, &str)]) -> reqwest::Response {
+        let server = MockServer::start().await;
+        let mut template = ResponseTemplate::new(status).set_body_string("boom");
+        for (name, value) in headers {
+            template = template.insert_header(*name, *value);
+        }
+        Mock::given(method("GET"))
+            .and(path("/e"))
+            .respond_with(template)
+            .mount(&server)
+            .await;
+        reqwest::Client::new()
+            .get(format!("{}/e", server.uri()))
+            .send()
+            .await
+            .expect("mock request should succeed")
+    }
+
+    async fn body_json(error: AdapterError) -> Value {
+        let bytes = to_bytes(error.response.into_body(), usize::MAX)
+            .await
+            .expect("response body should be readable");
+        serde_json::from_slice(&bytes).expect("error body should be JSON")
+    }
+
     #[test]
-    fn decode_error_maps_auth_and_rate_limit_statuses() {
+    fn decode_error_maps_auth_rate_limit_and_permission_statuses() {
         assert_eq!(
             map_decode_error(connect_end(401)).response.status(),
             StatusCode::UNAUTHORIZED
         );
+        // Connect's `permission_denied` (403) is "authenticated but not
+        // allowed" — a distinct error from 401 that must not be folded into
+        // `authentication_error`.
         assert_eq!(
             map_decode_error(connect_end(403)).response.status(),
-            StatusCode::UNAUTHORIZED
+            StatusCode::FORBIDDEN
         );
         assert_eq!(
             map_decode_error(connect_end(429)).response.status(),
@@ -308,9 +370,19 @@ mod tests {
     }
 
     #[test]
-    fn decode_error_defaults_to_bad_gateway() {
+    fn decode_error_preserves_upstream_5xx_status() {
+        // A real upstream 500 must reach the client as 500, not flattened to
+        // a generic 502 that hides the actual signal.
         assert_eq!(
             map_decode_error(connect_end(500)).response.status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[test]
+    fn decode_error_defaults_to_bad_gateway_for_unmapped_status() {
+        assert_eq!(
+            map_decode_error(connect_end(418)).response.status(),
             StatusCode::BAD_GATEWAY
         );
         assert_eq!(
@@ -318,6 +390,96 @@ mod tests {
                 .response
                 .status(),
             StatusCode::BAD_GATEWAY
+        );
+    }
+
+    #[tokio::test]
+    async fn upstream_error_maps_403_to_permission_error() {
+        let upstream = upstream_response(403, &[]).await;
+        let error = map_upstream_error(upstream).await;
+        assert_eq!(error.response.status(), StatusCode::FORBIDDEN);
+        let body = body_json(error).await;
+        assert_eq!(body["error"]["type"], "permission_error");
+    }
+
+    #[tokio::test]
+    async fn upstream_error_maps_529_to_overloaded_error() {
+        let upstream = upstream_response(529, &[]).await;
+        let error = map_upstream_error(upstream).await;
+        assert_eq!(error.response.status().as_u16(), 529);
+        let body = body_json(error).await;
+        assert_eq!(body["error"]["type"], "overloaded_error");
+    }
+
+    #[tokio::test]
+    async fn upstream_error_preserves_503_instead_of_bad_gateway() {
+        let upstream = upstream_response(503, &[]).await;
+        let error = map_upstream_error(upstream).await;
+        assert_eq!(error.response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = body_json(error).await;
+        assert_eq!(body["error"]["type"], "api_error");
+    }
+
+    #[tokio::test]
+    async fn upstream_error_maps_413_to_request_too_large() {
+        let upstream = upstream_response(413, &[]).await;
+        let error = map_upstream_error(upstream).await;
+        assert_eq!(error.response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let body = body_json(error).await;
+        assert_eq!(body["error"]["type"], "request_too_large");
+    }
+
+    #[tokio::test]
+    async fn upstream_error_preserves_retry_after_on_429() {
+        let upstream = upstream_response(429, &[("retry-after", "3")]).await;
+        let error = map_upstream_error(upstream).await;
+        assert_eq!(error.response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(error.response.headers().get("retry-after").unwrap(), "3");
+    }
+
+    #[tokio::test]
+    async fn upstream_error_rewrites_context_overflow_to_anthropic_wording() {
+        // A Cursor HTTP context-overflow must surface as Anthropic's "prompt is
+        // too long" wording so Claude Code auto-compacts and retries instead of
+        // stranding the session on the raw upstream message.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/e"))
+            .respond_with(ResponseTemplate::new(400).set_body_string(
+                r#"{"error":{"message":"This model's maximum context length is 272000 tokens. However, your messages resulted in 372982 tokens."}}"#,
+            ))
+            .mount(&server)
+            .await;
+        let upstream = reqwest::Client::new()
+            .get(format!("{}/e", server.uri()))
+            .send()
+            .await
+            .expect("mock request should succeed");
+        let error = map_upstream_error(upstream).await;
+        let body = body_json(error).await;
+        assert_eq!(
+            body["error"]["message"],
+            "prompt is too long: 372982 tokens > 272000 maximum"
+        );
+    }
+
+    #[tokio::test]
+    async fn decode_error_rewrites_context_overflow_to_anthropic_wording() {
+        // The same rewrite must fire when the overflow arrives as a Connect
+        // error frame (the streaming path), not just an HTTP error.
+        let error = map_decode_error(CursorDecodeError::ConnectEnd(ConnectEndError {
+            code: "context_length_exceeded".to_string(),
+            message: "This model's maximum context length is 272000 tokens. \
+                      However, your messages resulted in 372982 tokens."
+                .to_string(),
+            detail: String::new(),
+            status: 400,
+        }));
+        assert_eq!(error.response.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(error).await;
+        assert_eq!(
+            body["error"]["message"],
+            "prompt is too long: 372982 tokens > 272000 maximum"
         );
     }
 

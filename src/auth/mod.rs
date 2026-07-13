@@ -9,15 +9,12 @@ use crate::{
     routing::Route,
 };
 
-pub mod claude_auth;
-pub mod claude_login;
-pub mod claude_store;
-pub mod codex_auth;
-pub mod cursor_auth;
-pub mod cursor_login;
+pub mod claude;
+pub mod codex;
+pub mod cursor;
 pub mod inbound;
-pub mod xai_auth;
-pub mod xai_login;
+pub mod shared;
+pub mod xai;
 
 // TODO(M2): Add the optional `shunt login` PKCE loopback fallback. M2 currently
 // reuses the Codex CLI-owned ~/.codex/auth.json credential source.
@@ -58,7 +55,7 @@ pub async fn resolve_credential(
             header: provider.api_key_header,
         }),
         AuthMode::ChatgptOauth => {
-            let store = codex_auth::CodexAuthStore::new(default_codex_auth_path(), client.clone());
+            let store = codex::auth::CodexAuthStore::new(default_codex_auth_path(), client.clone());
             store
                 .get_valid_chatgpt()
                 .await
@@ -72,7 +69,7 @@ pub async fn resolve_credential(
                 .ok()
                 .filter(|value| !value.is_empty())
                 .unwrap_or_else(|| provider.base_url.clone());
-            let store = cursor_auth::CursorAuthStore::new(
+            let store = cursor::auth::CursorAuthStore::new(
                 default_cursor_auth_path(),
                 client.clone(),
                 base_url,
@@ -85,7 +82,7 @@ pub async fn resolve_credential(
                 })
         }
         AuthMode::XaiOauth => {
-            let store = xai_auth::XaiAuthStore::new(default_xai_auth_path(), client.clone());
+            let store = xai::auth::XaiAuthStore::new(default_xai_auth_path(), client.clone());
             store
                 .get_valid()
                 .await
@@ -116,7 +113,7 @@ pub async fn resolve_claude_account(
     }
 
     if let Some(credentials) = account.credentials.as_deref() {
-        let store = claude_auth::ClaudeAuthStore::new(PathBuf::from(credentials), client.clone());
+        let store = claude::auth::ClaudeAuthStore::new(PathBuf::from(credentials), client.clone());
         return store
             .get_valid_access_token()
             .await
@@ -130,17 +127,17 @@ pub async fn resolve_claude_account(
     let account_uuid = match account.uuid.clone() {
         Some(uuid) => Some(uuid),
         None => {
-            // claude_store::account_uuid does a synchronous file read; run it on
+            // claude::store::account_uuid does a synchronous file read; run it on
             // the blocking pool so it never stalls a runtime worker thread.
             let name = account.name.clone();
-            tokio::task::spawn_blocking(move || claude_store::account_uuid(&name))
+            tokio::task::spawn_blocking(move || claude::store::account_uuid(&name))
                 .await
                 .ok()
                 .flatten()
         }
     };
-    let path = claude_store::account_path(&account.name);
-    let store = claude_auth::ClaudeAuthStore::new(path, client.clone());
+    let path = claude::store::account_path(&account.name);
+    let store = claude::auth::ClaudeAuthStore::new(path, client.clone());
     store
         .get_valid_access_token()
         .await
@@ -168,7 +165,7 @@ fn resolve_api_key(name: &str, provider: &ProviderConfig) -> Result<String, Adap
     }
 
     if env_name == "OPENAI_API_KEY" {
-        if let Some(value) = codex_auth::read_openai_api_key(&default_codex_auth_path()) {
+        if let Some(value) = codex::auth::read_openai_api_key(&default_codex_auth_path()) {
             return Ok(value);
         }
     }
@@ -258,7 +255,7 @@ mod tests {
 
     #[tokio::test]
     async fn name_only_claude_account_resolves_store_token() {
-        let _guard = crate::auth::claude_store::TEST_ENV_LOCK.lock().await;
+        let _guard = crate::auth::claude::store::TEST_ENV_LOCK.lock().await;
         let dir = std::env::temp_dir().join(format!(
             "shunt-name-only-auth-{}-{}",
             std::process::id(),
@@ -268,7 +265,7 @@ mod tests {
                 .as_nanos()
         ));
         std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
-        crate::auth::claude_store::store_setup_token(
+        crate::auth::claude::store::store_setup_token(
             "main",
             "store-token",
             Some("stored-account-uuid"),

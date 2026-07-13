@@ -315,6 +315,31 @@ export ENABLE_TOOL_SEARCH=true
 - 适用于 `codex`(ChatGPT)与 `openai`(标准 Responses)提供方。
 - 不延迟的工具(以及上文的托管 `web_search` 工具)始终会被转发;仅可延迟的工具才会被渐进揭示。
 
+### 可选开启的原生协议
+
+上面的 shim 通过把 `tool_reference` 渲染为 schema 文本来工作 —— 它不会从上游上下文中收回任何东西,只是
+推迟了完整 schema *何时* 被发送。作为一个**可选开启的替代方案**(issue #82),shunt 可以改为把工具搜索
+映射到 OpenAI Responses API 自身的**原生、客户端执行的 `tool_search`**协议:Claude Code 的 `ToolSearch`
+工具变为 `tool_search`(`execution: "client"`)工具,其 `tool_use` 变为 `tool_search_call`,而
+`tool_reference` 结果变为一个 `tool_search_output` 条目,以结构化 JSON 携带已加载工具的完整 schema ——
+从而保留真实的工具加载语义和缓存行为,而不是把 schema 折叠进文本。按提供方启用:
+
+```toml
+[providers.codex]
+tool_search = true
+```
+
+要求 —— 不受支持的组合会静默保留 #43 的 shim,不会报错:
+
+- 上游必须是标准 OpenAI 或 ChatGPT/Codex 风格的 Responses 后端。xAI / Grok 路由始终保留 shim。
+- 路由到的模型必须是 **gpt-5.4 及以上**(`gpt-5.4`、`gpt-5.5`,或 `gpt-5.6` 系列)。更早的 slug
+  (`gpt-5.2` 及以下)即便设置了 `tool_search = true` 也会回退到 shim。
+- Claude Code 一侧仍然需要 `ENABLE_TOOL_SEARCH=true` —— 这个标志只改变 shunt *如何* 把该功能转译到
+  上游,不改变 Claude Code 是否延迟工具本身。
+
+`tool_search` 默认是 `false`:原生形状被这个标志门控,直到有一次实时探测确认某个后端确实接受它们为止,
+因此这是按提供方显式的可选开启,而不是 shunt 自动切换所有 Codex/OpenAI 路由。
+
 ## 故障排查
 
 | 症状 | 原因 / 修复 |
@@ -327,5 +352,6 @@ export ENABLE_TOOL_SEARCH=true
 | 上下文栏读数过高 / 过早压缩 | 设置 `CLAUDE_CODE_MAX_CONTEXT_TOKENS`;发现别名无法接收它 —— 请用一个非 `claude-` id。 |
 | Grok 路由上网页搜索无结果 | xAI/Grok 的 Responses API 不支持网页搜索,shunt 会丢弃该工具。网页搜索请使用 `codex` 或 `openai` 路由。 |
 | 工具搜索无效 / 每轮都发送全部工具 schema | 设置 `ENABLE_TOOL_SEARCH=true` —— Claude Code 在非第一方 base URL 背后默认禁用工具搜索。shunt 会转发 `tool_reference` 块并按需揭示延迟的 schema。 |
+| 想让工具搜索真正收回上下文,而不只是推迟发送时机 | 为原生协议在 `[providers.codex]` 下设置 `tool_search = true` —— 需要标准 OpenAI/ChatGPT-Codex 风格,且模型为 gpt-5.4 及以上;见上文 [工具搜索 → 可选开启的原生协议](#可选开启的原生协议)。 |
 
 更多内容见完整的 [故障排查](/zh-cn/reference/troubleshooting/) 参考。

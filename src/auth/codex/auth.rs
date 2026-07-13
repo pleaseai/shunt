@@ -1,19 +1,18 @@
 use std::{
     fs, io,
     path::{Path, PathBuf},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::SystemTime,
 };
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::adapters::AdapterError;
 use crate::auth::auth_error;
+use crate::auth::shared::{format_iso8601, is_token_valid_at, jwt_claims, write_auth_file_atomic};
 
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
-const EXPIRY_BUFFER: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatGptCred {
@@ -112,32 +111,12 @@ pub fn read_openai_api_key(path: &Path) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-pub fn jwt_claims(token: &str) -> Option<Value> {
-    let payload = token.split('.').nth(1)?;
-    let bytes = URL_SAFE_NO_PAD.decode(payload).ok()?;
-    serde_json::from_slice(&bytes).ok()
-}
-
-pub fn jwt_exp(token: &str) -> Option<SystemTime> {
-    let seconds = jwt_claims(token)?.get("exp")?.as_i64()?;
-    if seconds < 0 {
-        return None;
-    }
-    Some(UNIX_EPOCH + Duration::from_secs(seconds as u64))
-}
-
 pub fn jwt_account_id(token: &str) -> Option<String> {
     jwt_claims(token)?
         .pointer("/https:~1~1api.openai.com~1auth/chatgpt_account_id")
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
-}
-
-pub fn is_token_valid_at(token: &str, now: SystemTime) -> bool {
-    jwt_exp(token)
-        .and_then(|exp| exp.checked_sub(EXPIRY_BUFFER))
-        .is_some_and(|refresh_at| now < refresh_at)
 }
 
 pub fn parse_refresh_response(value: &Value) -> Option<RefreshResponse> {
@@ -222,57 +201,6 @@ fn write_refreshed_auth(path: &Path, response: RefreshResponse) -> io::Result<()
     write_auth_file_atomic(path, &auth)
 }
 
-pub(crate) fn write_auth_file_atomic(path: &Path, value: &Value) -> io::Result<()> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let temp = parent.join(format!(
-        ".{}.tmp-{}",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("auth"),
-        std::process::id()
-    ));
-    // The temp file must be born private: chmod-after-write would leave a
-    // window where the tokens sit at the umask default on multi-user hosts.
-    write_private(&temp, &serde_json::to_vec_pretty(value)?)?;
-    fs::rename(&temp, path)?;
-    set_private_permissions(path)?;
-    Ok(())
-}
-
-#[cfg(unix)]
-fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    // `mode(0o600)` only applies when the file is created, so a stale or
-    // pre-created temp at this predictable path would keep its old mode.
-    // Remove any leftover, then require exclusive creation: if something
-    // recreates the path in between, fail instead of writing tokens into a
-    // file someone else owns.
-    let _ = fs::remove_file(path);
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)?;
-    file.write_all(bytes)
-}
-
-#[cfg(not(unix))]
-fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    fs::write(path, bytes)
-}
-
-#[cfg(unix)]
-fn set_private_permissions(path: &Path) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-}
-
-#[cfg(not(unix))]
-fn set_private_permissions(_path: &Path) -> io::Result<()> {
-    Ok(())
-}
-
 impl AuthFile {
     fn tokens(&self) -> Option<TokenSet> {
         let tokens = self.value.get("tokens")?;
@@ -322,37 +250,14 @@ impl RefreshResponse {
     }
 }
 
-pub(crate) fn format_iso8601(time: SystemTime) -> String {
-    let seconds = time
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
-    let days = seconds.div_euclid(86_400);
-    let day_seconds = seconds.rem_euclid(86_400);
-    let (year, month, day) = civil_from_days(days);
-    let hour = day_seconds / 3_600;
-    let minute = (day_seconds % 3_600) / 60;
-    let second = day_seconds % 60;
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
-}
-
-fn civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
-    let z = days_since_epoch + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = mp + if mp < 10 { 3 } else { -9 };
-    let y = y + if m <= 2 { 1 } else { 0 };
-    (y, m, d)
-}
-
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, UNIX_EPOCH};
+
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+
     use super::*;
+    use crate::auth::shared::jwt_exp;
 
     fn token(exp: u64, account_id: Option<&str>) -> String {
         let payload = if let Some(account_id) = account_id {
@@ -430,6 +335,111 @@ mod tests {
         assert_eq!(parsed.access_token, "access");
         assert_eq!(parsed.refresh_token.as_deref(), Some("refresh"));
         assert_eq!(parsed.id_token.as_deref(), Some("id"));
+    }
+
+    #[test]
+    fn token_set_is_valid_at_wraps_expiry_check() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_000);
+        let just_inside = TokenSet {
+            access_token: token(1_299, None),
+            refresh_token: None,
+            account_id: None,
+        };
+        let just_outside = TokenSet {
+            access_token: token(1_301, None),
+            refresh_token: None,
+            account_id: None,
+        };
+
+        assert!(!just_inside.is_valid_at(now));
+        assert!(just_outside.is_valid_at(now));
+    }
+
+    #[test]
+    fn token_set_to_credential_prefers_stored_account_id() {
+        // The JWT carries a *different* account-id claim, so this genuinely proves
+        // the stored account_id wins over the token claim (not just that one exists).
+        let tokens = TokenSet {
+            access_token: token(2_000_000_000, Some("acct_claim")),
+            refresh_token: None,
+            account_id: Some("acct_stored".to_string()),
+        };
+
+        let credential = tokens.to_credential().unwrap();
+
+        assert_eq!(credential.access_token, tokens.access_token);
+        assert_eq!(credential.account_id, "acct_stored");
+    }
+
+    #[test]
+    fn token_set_to_credential_errors_without_account_id() {
+        let tokens = TokenSet {
+            access_token: token(2_000_000_000, None),
+            refresh_token: None,
+            account_id: None,
+        };
+
+        assert!(tokens.to_credential().is_err());
+    }
+
+    #[test]
+    fn refresh_response_to_credential_reads_account_id_from_jwt() {
+        let response = RefreshResponse {
+            access_token: token(2_000_000_000, Some("acct_jwt")),
+            refresh_token: None,
+            id_token: None,
+        };
+
+        let credential = response.to_credential().unwrap();
+
+        assert_eq!(credential.account_id, "acct_jwt");
+    }
+
+    #[test]
+    fn refresh_response_to_credential_errors_without_claim() {
+        let response = RefreshResponse {
+            access_token: token(2_000_000_000, None),
+            refresh_token: None,
+            id_token: None,
+        };
+
+        assert!(response.to_credential().is_err());
+    }
+
+    #[test]
+    fn parse_refresh_response_rejects_missing_access_token() {
+        assert!(parse_refresh_response(&json!({"refresh_token": "r"})).is_none());
+    }
+
+    #[test]
+    fn writeback_omitting_fields_keeps_existing_tokens() {
+        let access = token(2_000_000_000, None);
+        let mut value = json!({
+            "tokens": {
+                "access_token": "old",
+                "refresh_token": "keep-refresh",
+                "id_token": "keep-id",
+                "account_id": "acct_kept"
+            }
+        });
+
+        // A refresh that omits refresh_token/id_token and whose access token carries
+        // no account-id claim must leave the previously stored values untouched.
+        apply_refresh(
+            &mut value,
+            RefreshResponse {
+                access_token: access.clone(),
+                refresh_token: None,
+                id_token: None,
+            },
+            UNIX_EPOCH + Duration::from_secs(0),
+        );
+
+        assert_eq!(value["tokens"]["access_token"], access);
+        assert_eq!(value["tokens"]["refresh_token"], "keep-refresh");
+        assert_eq!(value["tokens"]["id_token"], "keep-id");
+        assert_eq!(value["tokens"]["account_id"], "acct_kept");
+        assert_eq!(value["last_refresh"], "1970-01-01T00:00:00Z");
     }
 
     #[test]

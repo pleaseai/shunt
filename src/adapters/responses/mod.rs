@@ -1,3 +1,6 @@
+pub mod codex_continuation;
+pub mod codex_ws;
+
 use axum::{
     body::{Body, Bytes},
     http::{HeaderMap, HeaderValue, Response, StatusCode, Uri},
@@ -6,12 +9,9 @@ use axum::{
 use futures_util::{stream, StreamExt};
 use serde_json::{json, Value};
 
+use self::codex_ws::{CodexWsError, CodexWsEvents};
 use crate::{
-    adapters::{
-        codex_continuation,
-        codex_ws::{self, CodexWsError, CodexWsEvents},
-        Adapter, AdapterError, AdapterFuture,
-    },
+    adapters::{Adapter, AdapterError, AdapterFuture},
     auth::{resolve_credential, Credential},
     config::AuthMode,
     error::ShuntError,
@@ -75,8 +75,13 @@ async fn forward(
         .and_then(|value| value.pointer("/thinking/type").and_then(Value::as_str))
         == Some("enabled");
     let flavor = state.config.responses_flavor(&route.provider);
-    let upstream_body =
-        translate_request(&body, &route, flavor).map_err(|error| own_error(error.to_string()))?;
+    // Native client-executed tool_search (issue #82) is opt-in per provider and
+    // gated on flavor + model; otherwise the #43 progressive-reveal shim is used.
+    let tool_search_native = state
+        .config
+        .native_tool_search(&route.provider, &route.upstream_model);
+    let upstream_body = translate_request(&body, &route, flavor, tool_search_native)
+        .map_err(|error| own_error(error.to_string()))?;
     tracing::debug!(
         provider = %route.provider,
         upstream_model = %route.upstream_model,
@@ -106,6 +111,7 @@ async fn forward(
             auth,
             client_wants_stream,
             thinking_enabled,
+            tool_search_native,
         )
         .await
         {
@@ -127,6 +133,7 @@ async fn forward(
         auth,
         client_wants_stream,
         thinking_enabled,
+        tool_search_native,
         session_id.as_deref(),
     )
     .await
@@ -144,6 +151,7 @@ async fn forward_http(
     auth: AuthMode,
     client_wants_stream: bool,
     thinking_enabled: bool,
+    tool_search_native: bool,
     session_id: Option<&str>,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let upstream = request_builder(state, route, credential, session_id)
@@ -159,12 +167,24 @@ async fn forward_http(
         let keepalive = std::time::Duration::from_secs(state.config.server.sse_keepalive_seconds);
         Ok((
             StatusCode::OK,
-            stream_response(upstream, route.model.clone(), thinking_enabled, keepalive),
+            stream_response(
+                upstream,
+                route.model.clone(),
+                thinking_enabled,
+                tool_search_native,
+                keepalive,
+            ),
         ))
     } else {
         Ok((
             StatusCode::OK,
-            json_response(upstream, route.model.clone(), thinking_enabled).await?,
+            json_response(
+                upstream,
+                route.model.clone(),
+                thinking_enabled,
+                tool_search_native,
+            )
+            .await?,
         ))
     }
 }
@@ -173,11 +193,12 @@ fn stream_response(
     upstream: reqwest::Response,
     model: String,
     thinking_enabled: bool,
+    tool_search_native: bool,
     keepalive: std::time::Duration,
 ) -> axum::response::Response {
     let bytes = upstream.bytes_stream();
     let parser = SseParser::default();
-    let machine = AnthropicSseMachine::new(model, thinking_enabled);
+    let machine = AnthropicSseMachine::new(model, thinking_enabled, tool_search_native);
     let output = stream::unfold((bytes, parser, machine, false), |state| async move {
         let (mut bytes, mut parser, mut machine, mut finished) = state;
         if finished {
@@ -225,12 +246,13 @@ async fn json_response(
     upstream: reqwest::Response,
     model: String,
     thinking_enabled: bool,
+    tool_search_native: bool,
 ) -> Result<axum::response::Response, AdapterError> {
     let body = upstream
         .text()
         .await
         .map_err(|error| own_error(error.to_string()))?;
-    let mut machine = AnthropicSseMachine::new(model, thinking_enabled);
+    let mut machine = AnthropicSseMachine::new(model, thinking_enabled, tool_search_native);
     for event in parse_sse_events(&body) {
         let _ = machine.apply(event);
     }
@@ -253,6 +275,7 @@ async fn forward_websocket(
     auth: AuthMode,
     client_wants_stream: bool,
     thinking_enabled: bool,
+    tool_search_native: bool,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let pool_key = pool_key.filter(|key| !key.is_empty());
     let http_url = responses_url(&state.config, &route.provider);
@@ -282,13 +305,21 @@ async fn forward_websocket(
                 events,
                 route.model.clone(),
                 thinking_enabled,
+                tool_search_native,
                 keepalive,
             ),
         ))
     } else {
         Ok((
             StatusCode::OK,
-            json_events_response(buffered, events, route.model.clone(), thinking_enabled).await,
+            json_events_response(
+                buffered,
+                events,
+                route.model.clone(),
+                thinking_enabled,
+                tool_search_native,
+            )
+            .await,
         ))
     }
 }
@@ -469,9 +500,10 @@ fn stream_events_response(
     events: CodexWsEvents,
     model: String,
     thinking_enabled: bool,
+    tool_search_native: bool,
     keepalive: std::time::Duration,
 ) -> axum::response::Response {
-    let machine = AnthropicSseMachine::new(model, thinking_enabled);
+    let machine = AnthropicSseMachine::new(model, thinking_enabled, tool_search_native);
     let output = stream::unfold(
         (buffered, events, machine, false),
         |(mut buffered, mut events, mut machine, finished)| async move {
@@ -530,8 +562,9 @@ async fn json_events_response(
     mut events: CodexWsEvents,
     model: String,
     thinking_enabled: bool,
+    tool_search_native: bool,
 ) -> axum::response::Response {
-    let mut machine = AnthropicSseMachine::new(model, thinking_enabled);
+    let mut machine = AnthropicSseMachine::new(model, thinking_enabled, tool_search_native);
     let mut buffered = buffered;
     loop {
         let item = match buffered.take() {
@@ -619,22 +652,12 @@ fn build_upstream_error(
                 .filter(|message| !message.is_empty());
             match upstream_message {
                 Some(message) => json!({"message": format!("{message} ({hint})")}),
-                None => json!({"message": crate::auth::xai_auth::refresh_error_message(status)}),
+                None => json!({"message": crate::auth::xai::auth::refresh_error_message(status)}),
             }
         } else {
             serde_json::from_str(&text).unwrap_or_else(|_| json!({"message": text}))
         };
-    let xai_tier_gate =
-        status == StatusCode::FORBIDDEN && auth == crate::config::AuthMode::XaiOauth;
-    let shunt_status = if status == StatusCode::UNAUTHORIZED
-        || status == StatusCode::TOO_MANY_REQUESTS
-        || status == StatusCode::BAD_REQUEST
-        || xai_tier_gate
-    {
-        status
-    } else {
-        StatusCode::BAD_GATEWAY
-    };
+    let shunt_status = crate::model::responses::client_facing_status(status);
     let mut response = (shunt_status, axum::Json(map_error_value(&value, status))).into_response();
     if let Some(retry_after) = retry_after.and_then(|value| value.parse().ok()) {
         response.headers_mut().insert("retry-after", retry_after);
@@ -1101,10 +1124,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn maps_403_to_bad_gateway_for_other_auth_modes() {
+    async fn maps_403_to_permission_error_for_other_auth_modes() {
+        // Outside the xAI tier-gate special case, a 403 is still a real
+        // "authenticated but not allowed" signal and must reach the client
+        // as its own status/type rather than a generic 502 `api_error`.
         let upstream = upstream_response(403, "forbidden", &[]).await;
         let error = mapped_upstream_error(StatusCode::FORBIDDEN, upstream, AuthMode::ApiKey).await;
-        assert_eq!(error.response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(error.response.status(), StatusCode::FORBIDDEN);
+        let body = body_json(error).await;
+        assert_eq!(body["error"]["type"], "permission_error");
     }
 
     #[tokio::test]
@@ -1121,17 +1149,66 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remaps_5xx_to_bad_gateway_but_passes_429_through() {
+    async fn preserves_upstream_503_status_and_type_instead_of_bad_gateway() {
+        // A real upstream 503 must reach the client as 503 `api_error`, not
+        // flattened to a generic 502 that hides the actual signal.
         let upstream = upstream_response(503, "service unavailable", &[]).await;
         let error =
             mapped_upstream_error(StatusCode::SERVICE_UNAVAILABLE, upstream, AuthMode::ApiKey)
                 .await;
-        assert_eq!(error.response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(error.response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = body_json(error).await;
+        assert_eq!(body["error"]["type"], "api_error");
+    }
+
+    #[tokio::test]
+    async fn maps_529_to_overloaded_error() {
+        // Claude Code backs off and retries on 529 `overloaded_error`; folding
+        // it into a generic 502 would suppress that retry path.
+        let upstream = upstream_response(529, "{}", &[]).await;
+        let error = mapped_upstream_error(
+            StatusCode::from_u16(529).unwrap(),
+            upstream,
+            AuthMode::ApiKey,
+        )
+        .await;
+        assert_eq!(error.response.status().as_u16(), 529);
+        let body = body_json(error).await;
+        assert_eq!(body["error"]["type"], "overloaded_error");
+    }
+
+    #[tokio::test]
+    async fn maps_413_to_request_too_large() {
+        let upstream = upstream_response(413, "{}", &[]).await;
+        let error =
+            mapped_upstream_error(StatusCode::PAYLOAD_TOO_LARGE, upstream, AuthMode::ApiKey).await;
+        assert_eq!(error.response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let body = body_json(error).await;
+        assert_eq!(body["error"]["type"], "request_too_large");
+    }
+
+    #[tokio::test]
+    async fn passes_401_429_and_400_through_unchanged() {
+        let upstream = upstream_response(400, "{}", &[]).await;
+        let error =
+            mapped_upstream_error(StatusCode::BAD_REQUEST, upstream, AuthMode::ApiKey).await;
+        assert_eq!(error.response.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(error).await;
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+
+        let upstream = upstream_response(401, "{}", &[]).await;
+        let error =
+            mapped_upstream_error(StatusCode::UNAUTHORIZED, upstream, AuthMode::ApiKey).await;
+        assert_eq!(error.response.status(), StatusCode::UNAUTHORIZED);
+        let body = body_json(error).await;
+        assert_eq!(body["error"]["type"], "authentication_error");
 
         let upstream = upstream_response(429, "{}", &[]).await;
         let error =
             mapped_upstream_error(StatusCode::TOO_MANY_REQUESTS, upstream, AuthMode::ApiKey).await;
         assert_eq!(error.response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let body = body_json(error).await;
+        assert_eq!(body["error"]["type"], "rate_limit_error");
     }
 
     #[tokio::test]

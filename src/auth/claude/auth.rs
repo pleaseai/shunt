@@ -1,6 +1,6 @@
 //! Claude subscription OAuth token source for the `shunt token` helper.
 //!
-//! Mirrors [`super::codex_auth`] but for the Claude Code login stored in
+//! Mirrors [`crate::auth::codex::auth`] but for the Claude Code login stored in
 //! `~/.claude/.credentials.json` under `claudeAiOauth`. Reads the access token,
 //! and when it is within a 5-minute buffer of `expiresAt`, refreshes it via the
 //! same grant Claude Code itself uses (`platform.claude.com/v1/oauth/token`,
@@ -24,7 +24,7 @@ use std::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::auth::codex_auth::write_auth_file_atomic;
+use crate::auth::shared::write_auth_file_atomic;
 
 pub(crate) const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 pub(crate) const TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
@@ -339,6 +339,15 @@ mod tests {
         assert_eq!(refreshed.access_token, "new-access");
         assert_eq!(refreshed.refresh_token, "old-refresh");
         assert_eq!(refreshed.expires_at_ms, 1_000 * 1000 + 3600 * 1000);
+    }
+
+    #[test]
+    fn refresh_rejects_response_without_access_token() {
+        // A malformed refresh response (no access_token) yields None, which the
+        // caller surfaces as an "invalid refresh response" error rather than
+        // persisting a broken token.
+        let now = UNIX_EPOCH + Duration::from_secs(1_000);
+        assert!(parse_refresh(&json!({"expires_in": 3600}), "old-refresh", now).is_none());
     }
 
     #[test]

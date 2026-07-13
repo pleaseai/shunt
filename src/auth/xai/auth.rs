@@ -1,12 +1,12 @@
 //! xAI subscription OAuth credential store.
 //!
-//! Mirrors [`super::codex_auth`]: read the shunt-owned credential file fresh on
+//! Mirrors [`crate::auth::codex::auth`]: read the shunt-owned credential file fresh on
 //! every call, decide expiry from the access token's JWT `exp` (5-minute
 //! buffer), refresh against xAI's token endpoint when stale, and write the
 //! rotated pair back atomically at `0600`. Token values are never logged — only
 //! refresh outcomes. The credential file (`~/.shunt/xai-auth.json`, overridable
 //! via `SHUNT_XAI_AUTH_FILE`) is written by `shunt login xai` (see
-//! [`super::xai_login`]) and owned solely by shunt.
+//! [`super::login`]) and owned solely by shunt.
 
 use std::{
     fs, io,
@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 
 use crate::adapters::AdapterError;
 use crate::auth::auth_error;
-use crate::auth::codex_auth::{format_iso8601, is_token_valid_at, write_auth_file_atomic};
+use crate::auth::shared::{format_iso8601, is_token_valid_at, write_auth_file_atomic};
 
 /// Public Grok-CLI OAuth client (no secret). xAI's auth server only allows this
 /// allowlisted client for the device-code flow. Source: Hermes / OpenCode.
@@ -429,6 +429,12 @@ mod tests {
         );
         assert!(refresh_error_message(reqwest::StatusCode::UNAUTHORIZED)
             .contains("run shunt login xai"));
+
+        // Any other status falls back to the generic HTTP-code message.
+        let other = refresh_error_message(reqwest::StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(other.contains("500"));
+        assert!(other.contains("run shunt login xai"));
+        assert!(!other.contains("tier gate"));
     }
 
     #[tokio::test]

@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.11.0](https://github.com/pleaseai/shunt/compare/v0.10.0...v0.11.0) (2026-07-13)
+
+
+### Features
+
+* **anthropic:** label upstream 429s with rate_limit_kind in the request log ([#74](https://github.com/pleaseai/shunt/issues/74)) ([382fdb7](https://github.com/pleaseai/shunt/commit/382fdb76791d553b80492f1bf4be4f027975a707))
+* **anthropic:** multi-account load balancing with quota-aware rotation ([#70](https://github.com/pleaseai/shunt/issues/70)) ([34cb9c8](https://github.com/pleaseai/shunt/commit/34cb9c860c6e10f0bc21af9d1b61e84739417f1e))
+* **sentry:** opt-in performance tracing and fatal-error capture ([#75](https://github.com/pleaseai/shunt/issues/75)) ([23a175a](https://github.com/pleaseai/shunt/commit/23a175a7ca3ac9ac2a9d120b721b27e7720c0a2d))
+* **xai:** enable hosted web search for Grok OAuth ([#71](https://github.com/pleaseai/shunt/issues/71)) ([908a195](https://github.com/pleaseai/shunt/commit/908a1950a66212520ab72632111fef6cb9a72a01))
+
 ## [0.10.0](https://github.com/pleaseai/shunt/compare/v0.9.0...v0.10.0) (2026-07-12)
 
 

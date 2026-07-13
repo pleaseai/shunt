@@ -6,10 +6,9 @@ use rand::RngCore;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::auth::{
-    cursor_auth::{parse_token_response, write_auth},
-    default_cursor_auth_path,
-};
+use crate::auth::default_cursor_auth_path;
+
+use super::auth::{parse_token_response, write_auth};
 
 pub async fn run(provider: &str) -> anyhow::Result<()> {
     if provider != "cursor" {
@@ -55,7 +54,7 @@ async fn poll(
     base_url: &str,
     uuid: &str,
     verifier: &str,
-) -> anyhow::Result<crate::auth::cursor_auth::StoredCursorAuth> {
+) -> anyhow::Result<super::auth::StoredCursorAuth> {
     let mut delay = Duration::from_secs(1);
     let mut last_error: Option<reqwest::Error> = None;
     for _ in 0..150 {

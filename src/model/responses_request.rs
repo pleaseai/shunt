@@ -6,23 +6,42 @@ use serde_json::{json, Map, Value};
 use crate::config::ResponsesFlavor;
 use crate::routing::Route;
 
-/// Request-scoped state for Claude Code's tool-search feature (progressive tool
-/// reveal). Borrows from the request `Value` the whole translator already parses
-/// and traverses — a separate typed deserialization pass would only add a second
-/// parse — so the pre-scan allocates nothing beyond the map/set entries.
+/// Claude Code's name for its tool-search tool (`ENABLE_TOOL_SEARCH`). Under the
+/// native protocol this maps to the Responses `tool_search` client tool, its
+/// `tool_use` to a `tool_search_call`, and its `tool_result` to a
+/// `tool_search_output`. Shared with the response translator, which surfaces an
+/// upstream `tool_search_call` as a `tool_use` under this same name.
+pub(crate) const TOOL_SEARCH_NAME: &str = "ToolSearch";
+
+/// Request-scoped state for Claude Code's tool-search feature. Borrows from the
+/// request `Value` the whole translator already parses and traverses — a separate
+/// typed deserialization pass would only add a second parse — so the pre-scan
+/// allocates nothing beyond the map/set entries.
+///
+/// `native` selects between two translations of the same client contract: the
+/// #82 native `tool_search` protocol (when the provider/model/flavor support it)
+/// or the #43 text-based progressive-reveal shim otherwise.
 #[derive(Default)]
 struct ToolSearchContext<'a> {
+    native: bool,
     schema_map: HashMap<&'a str, (&'a str, &'a Value)>,
     deferred_names: HashSet<&'a str>,
     loaded_tools: HashSet<&'a str>,
+    /// `tool_use` ids of `ToolSearch` calls in the history. A `tool_result` whose
+    /// `tool_use_id` is one of these is a search result to translate into a
+    /// `tool_search_output` (native) rather than a `function_call_output` (shim).
+    search_call_ids: HashSet<&'a str>,
 }
 
 impl<'a> ToolSearchContext<'a> {
-    fn from_request(request: &'a Value) -> Self {
+    fn from_request(request: &'a Value, native: bool) -> Self {
         // Placeholder for a tool without an input_schema; renders as `{}` in the
         // reveal text, matching what normalize_schema forwards for such a tool.
         static NO_SCHEMA: Value = Value::Null;
-        let mut context = Self::default();
+        let mut context = Self {
+            native,
+            ..Self::default()
+        };
         if let Some(tools) = request.get("tools").and_then(Value::as_array) {
             for tool in tools {
                 let name = tool.get("name").and_then(Value::as_str).unwrap_or("");
@@ -41,27 +60,41 @@ impl<'a> ToolSearchContext<'a> {
         if let Some(messages) = request.get("messages").and_then(Value::as_array) {
             for message in messages {
                 // Iterate the blocks by reference — content_blocks() clones, and
-                // string-shaped content can't carry a tool_result anyway.
+                // string-shaped content can't carry a tool_use/tool_result anyway.
                 let Some(blocks) = message.get("content").and_then(Value::as_array) else {
                     continue;
                 };
                 for block in blocks {
-                    if block.get("type").and_then(Value::as_str) != Some("tool_result") {
-                        continue;
-                    }
-                    let Some(result_blocks) = block.get("content").and_then(Value::as_array) else {
-                        continue;
-                    };
-                    for result_block in result_blocks {
-                        if result_block.get("type").and_then(Value::as_str)
-                            == Some("tool_reference")
+                    match block.get("type").and_then(Value::as_str) {
+                        // Remember which tool_use ids are ToolSearch calls so the
+                        // matching tool_result becomes a tool_search_output.
+                        Some("tool_use")
+                            if block.get("name").and_then(Value::as_str)
+                                == Some(TOOL_SEARCH_NAME) =>
                         {
-                            if let Some(name) =
-                                result_block.get("tool_name").and_then(Value::as_str)
-                            {
-                                context.loaded_tools.insert(name);
+                            if let Some(id) = block.get("id").and_then(Value::as_str) {
+                                context.search_call_ids.insert(id);
                             }
                         }
+                        Some("tool_result") => {
+                            let Some(result_blocks) =
+                                block.get("content").and_then(Value::as_array)
+                            else {
+                                continue;
+                            };
+                            for result_block in result_blocks {
+                                if result_block.get("type").and_then(Value::as_str)
+                                    == Some("tool_reference")
+                                {
+                                    if let Some(name) =
+                                        result_block.get("tool_name").and_then(Value::as_str)
+                                    {
+                                        context.loaded_tools.insert(name);
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -75,9 +108,10 @@ pub fn translate_request(
     body: &[u8],
     route: &Route,
     flavor: ResponsesFlavor,
+    tool_search_native: bool,
 ) -> Result<Value, serde_json::Error> {
     let request: Value = serde_json::from_slice(body)?;
-    let tool_search = ToolSearchContext::from_request(&request);
+    let tool_search = ToolSearchContext::from_request(&request, tool_search_native);
     let mut out = Map::new();
     out.insert("model".to_string(), json!(route.upstream_model));
     if let Some(instructions) = instructions(&request) {
@@ -85,7 +119,7 @@ pub fn translate_request(
     }
     out.insert(
         "input".to_string(),
-        json!(input_items(&request, &tool_search.schema_map)),
+        json!(input_items(&request, &tool_search)),
     );
     // Only emit tools/tool_choice when at least one tool survives translation.
     // The hosted web-search tool is dropped on flavors that reject it (xAI), and
@@ -231,7 +265,7 @@ fn instructions(request: &Value) -> Option<String> {
     }
 }
 
-fn input_items(request: &Value, schema_map: &HashMap<&str, (&str, &Value)>) -> Vec<Value> {
+fn input_items(request: &Value, context: &ToolSearchContext) -> Vec<Value> {
     let mut out = Vec::new();
     let Some(messages) = request.get("messages").and_then(Value::as_array) else {
         return out;
@@ -250,9 +284,9 @@ fn input_items(request: &Value, schema_map: &HashMap<&str, (&str, &Value)>) -> V
                 Some("text") => text_part(role, &block, &mut pending),
                 Some("image") => image_part(&block, &mut pending),
                 Some("document") => document_part(&block, &mut pending),
-                Some("tool_use") => tool_use_item(&mut out, role, &mut pending, &block),
+                Some("tool_use") => tool_use_item(&mut out, role, &mut pending, &block, context),
                 Some("tool_result") => {
-                    tool_result_item(&mut out, role, &mut pending, &block, schema_map)
+                    tool_result_item(&mut out, role, &mut pending, &block, context)
                 }
                 Some("thinking") => reasoning_item(&mut out, role, &mut pending, &block),
                 Some("redacted_thinking") => {
@@ -385,12 +419,24 @@ fn source_url(source: &Value, default_media_type: &str) -> Option<String> {
     }
 }
 
-fn tool_use_item(out: &mut Vec<Value>, role: &str, pending: &mut Vec<Value>, block: &Value) {
+fn tool_use_item(
+    out: &mut Vec<Value>,
+    role: &str,
+    pending: &mut Vec<Value>,
+    block: &Value,
+    context: &ToolSearchContext,
+) {
     flush_message(out, role, pending);
+    let name = block.get("name").and_then(Value::as_str).unwrap_or("");
+    if context.native && name == TOOL_SEARCH_NAME {
+        // A ToolSearch call replayed from history -> native tool_search_call.
+        out.push(tool_search_call_item(block));
+        return;
+    }
     out.push(json!({
         "type": "function_call",
         "call_id": block.get("id").and_then(Value::as_str).unwrap_or(""),
-        "name": block.get("name").and_then(Value::as_str).unwrap_or(""),
+        "name": name,
         "arguments": block.get("input").map(Value::to_string).unwrap_or_else(|| "{}".to_string())
     }));
 }
@@ -400,14 +446,87 @@ fn tool_result_item(
     role: &str,
     pending: &mut Vec<Value>,
     block: &Value,
-    schema_map: &HashMap<&str, (&str, &Value)>,
+    context: &ToolSearchContext,
 ) {
     flush_message(out, role, pending);
+    let call_id = block
+        .get("tool_use_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if context.native && context.search_call_ids.contains(call_id) {
+        // The result of a ToolSearch call -> native tool_search_output carrying
+        // the loaded tools' full schemas (see tool_search_output_item).
+        out.push(tool_search_output_item(call_id, block, context));
+        return;
+    }
     out.push(json!({
         "type": "function_call_output",
-        "call_id": block.get("tool_use_id").and_then(Value::as_str).unwrap_or(""),
-        "output": tool_result_output(block, schema_map)
+        "call_id": call_id,
+        "output": tool_result_output(block, &context.schema_map)
     }));
+}
+
+/// A ToolSearch `tool_use` -> Responses `tool_search_call` input item. Unlike a
+/// `function_call` (whose `arguments` is a JSON-encoded string), a
+/// `tool_search_call` carries `arguments` as a native JSON object, `execution`
+/// is always `"client"`, and the Anthropic `tool_use` id becomes `call_id`.
+fn tool_search_call_item(block: &Value) -> Value {
+    json!({
+        "type": "tool_search_call",
+        "call_id": block.get("id").and_then(Value::as_str).unwrap_or(""),
+        "execution": "client",
+        "status": "completed",
+        "arguments": block.get("input").cloned().unwrap_or_else(|| json!({})),
+    })
+}
+
+/// A ToolSearch `tool_result` -> Responses `tool_search_output` input item. The
+/// ordered `tool_reference` blocks become an ordered `tools` array of loadable
+/// function specs carrying each tool's full schema (from `schema_map`), so the
+/// upstream model can call the loaded tool on the next turn. `call_id` echoes the
+/// originating search call; `status`/`execution` are the constants codex emits.
+/// Unknown references (no matching tool in `schema_map`) are skipped rather than
+/// serialized as an invalid loadable tool; an empty result yields `tools: []`.
+fn tool_search_output_item(call_id: &str, block: &Value, context: &ToolSearchContext) -> Value {
+    let tools = block
+        .get("content")
+        .and_then(Value::as_array)
+        .map(|blocks| {
+            // Keep the first reference to each tool: a duplicate `tool_name`
+            // would serialize two function specs with the same `name`, wasting
+            // upstream context and tripping stricter backends' validation.
+            let mut seen = std::collections::HashSet::new();
+            blocks
+                .iter()
+                .filter(|inner| inner.get("type").and_then(Value::as_str) == Some("tool_reference"))
+                .filter_map(|inner| inner.get("tool_name").and_then(Value::as_str))
+                .filter(|name| seen.insert(*name))
+                .filter_map(|name| loadable_tool_spec(name, context))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    json!({
+        "type": "tool_search_output",
+        "call_id": call_id,
+        "status": "completed",
+        "execution": "client",
+        "tools": tools,
+    })
+}
+
+/// A loadable `{type:"function", …, defer_loading:true}` spec for a revealed tool,
+/// or `None` when `name` is not a known tool (so an unknown reference is dropped
+/// rather than emitted as a malformed spec). Mirrors the wire shape codex puts in
+/// `tool_search_output.tools`, including the full normalized parameter schema.
+fn loadable_tool_spec(name: &str, context: &ToolSearchContext) -> Option<Value> {
+    let (description, input_schema) = context.schema_map.get(name)?;
+    Some(json!({
+        "type": "function",
+        "name": name,
+        "description": description,
+        "defer_loading": true,
+        "parameters": normalize_schema((*input_schema).clone()),
+    }))
 }
 
 /// An assistant `thinking` block carries a Responses reasoning item's state in its
@@ -626,19 +745,42 @@ fn function_tool(tool: &Value) -> Value {
     })
 }
 
+/// Claude Code's ToolSearch tool definition -> the Responses native
+/// client-executed `tool_search` tool. It has no `name` (the `type` is its
+/// identity), `execution` is always `"client"`, and description/parameters carry
+/// through — normalized like any function tool — so the model sees the same
+/// search contract Claude Code executes.
+fn tool_search_tool_def(tool: &Value) -> Value {
+    json!({
+        "type": "tool_search",
+        "execution": "client",
+        "description": tool.get("description").and_then(Value::as_str).unwrap_or(""),
+        "parameters": normalize_schema(tool.get("input_schema").cloned().unwrap_or_else(|| json!({}))),
+    })
+}
+
 fn tools(request: &Value, flavor: ResponsesFlavor, context: &ToolSearchContext) -> Option<Value> {
     let tools = request.get("tools")?.as_array()?;
     Some(Value::Array(
         tools
             .iter()
-            // Progressive tool reveal: withhold a deferred tool until it has been
-            // loaded via a `tool_reference`. Non-deferred tools (including the
-            // hosted web-search tool) always pass this gate.
+            // Progressive tool reveal: withhold deferred tools. The shim forwards
+            // a deferred tool once a `tool_reference` has loaded it; the native
+            // path withholds every deferred tool from the initial callable set
+            // (loaded ones ride in the `tool_search_output` instead). ToolSearch
+            // itself is never deferred, so it always passes this gate.
             .filter(|tool| {
                 let name = tool.get("name").and_then(Value::as_str).unwrap_or("");
-                !context.deferred_names.contains(name) || context.loaded_tools.contains(name)
+                if !context.deferred_names.contains(name) {
+                    return true;
+                }
+                !context.native && context.loaded_tools.contains(name)
             })
             .filter_map(|tool| {
+                let name = tool.get("name").and_then(Value::as_str).unwrap_or("");
+                if context.native && name == TOOL_SEARCH_NAME {
+                    return Some(tool_search_tool_def(tool));
+                }
                 if is_web_search_tool(tool) {
                     // Only the Grok CLI subscription proxy is verified to accept
                     // hosted web search. Keep dropping it on the xAI developer
@@ -712,13 +854,20 @@ fn tool_choice(
                         ResponsesFlavor::Xai => Some(json!("auto")),
                         _ => Some(json!({"type": "web_search"})),
                     }
+                } else if context.native && name == TOOL_SEARCH_NAME {
+                    // ToolSearch is emitted as a native `tool_search` tool, not a
+                    // function, so forcing it as a named function choice would
+                    // reference an unregistered function (and the tool_search
+                    // force shape is unverified). Downgrade to `auto`.
+                    Some(json!("auto"))
                 } else if context.deferred_names.contains(name)
-                    && !context.loaded_tools.contains(name)
+                    && (context.native || !context.loaded_tools.contains(name))
                 {
                     // Progressive tool reveal withheld this tool from `tools`
-                    // (deferred, not yet loaded), so a named function choice
-                    // would force a function the backend never saw. Downgrade
-                    // to `auto`, mirroring the dropped-web-search case.
+                    // (the native path withholds every deferred tool; the shim
+                    // withholds an unloaded one), so a named function choice would
+                    // force a function the backend never saw. Downgrade to
+                    // `auto`, mirroring the dropped-web-search case.
                     Some(json!("auto"))
                 } else {
                     Some(json!({"type": "function", "name": name}))
@@ -761,11 +910,9 @@ fn effort(request: &Value, route: &Route) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use serde_json::json;
 
-    use super::{effort, input_items};
+    use super::{effort, input_items, ToolSearchContext};
     use crate::routing::{AdapterKind, Route};
 
     fn codex_route() -> Route {
@@ -834,7 +981,7 @@ mod tests {
             ]
         });
 
-        let items = input_items(&request, &HashMap::new());
+        let items = input_items(&request, &ToolSearchContext::default());
 
         assert_eq!(items.len(), 2);
         assert_eq!(items[0]["role"], "user");
@@ -852,7 +999,7 @@ mod tests {
             ]
         });
 
-        let items = input_items(&request, &HashMap::new());
+        let items = input_items(&request, &ToolSearchContext::default());
 
         assert_eq!(items[0]["role"], "user");
         assert_eq!(items[0]["content"][0]["type"], "input_text");

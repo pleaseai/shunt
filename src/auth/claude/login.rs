@@ -9,14 +9,14 @@ use rand::RngCore;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use crate::auth::{claude_auth, claude_store};
+use super::{auth, store};
 
 pub(crate) const AUTHORIZE_URL: &str = "https://claude.com/cai/oauth/authorize";
 pub(crate) const MANUAL_REDIRECT_URL: &str = "https://platform.claude.com/oauth/code/callback";
 pub(crate) const SETUP_TOKEN_EXPIRES_SECS: u64 = 365 * 24 * 60 * 60;
 
 pub async fn run(name: &str, long_lived: bool) -> anyhow::Result<()> {
-    claude_store::validate_account_name(name)?;
+    store::validate_account_name(name)?;
     let path = if long_lived {
         run_setup_token(name).await?
     } else {
@@ -30,7 +30,7 @@ pub async fn run(name: &str, long_lived: bool) -> anyhow::Result<()> {
 }
 
 async fn import_current_login(name: &str) -> anyhow::Result<PathBuf> {
-    let source = claude_auth::default_credentials_path();
+    let source = auth::default_credentials_path();
     let metadata_source = claude_global_config_path();
     let account_uuid = tokio::task::spawn_blocking(move || {
         read_current_account_uuid(&metadata_source).with_context(|| {
@@ -42,7 +42,7 @@ async fn import_current_login(name: &str) -> anyhow::Result<PathBuf> {
     let name = name.to_string();
     let source_display = source.display().to_string();
     tokio::task::spawn_blocking(move || {
-        claude_store::import_credentials(&name, &source, Some(&account_uuid)).with_context(|| {
+        store::import_credentials(&name, &source, Some(&account_uuid)).with_context(|| {
             format!(
                 "failed to import {source_display}; run `claude auth login` first, or use `shunt login claude --name {name} --long-lived`"
             )
@@ -82,7 +82,7 @@ async fn run_setup_token(name: &str) -> anyhow::Result<PathBuf> {
         code,
         &state,
         &verifier,
-        claude_auth::TOKEN_URL,
+        auth::TOKEN_URL,
     )
     .await?;
     let account_uuid = tokens
@@ -91,7 +91,7 @@ async fn run_setup_token(name: &str) -> anyhow::Result<PathBuf> {
         .map(|account| account.uuid.as_str())
         .filter(|uuid| !uuid.is_empty())
         .ok_or_else(|| anyhow::anyhow!("Claude token exchange did not return an account UUID"))?;
-    claude_store::store_setup_token(name, &tokens.access_token, Some(account_uuid))
+    store::store_setup_token(name, &tokens.access_token, Some(account_uuid))
 }
 
 /// A freshly generated PKCE verifier/challenge plus the OAuth `state`. Shared by
@@ -120,7 +120,7 @@ pub(crate) fn build_authorize_url(challenge: &str, state: &str) -> anyhow::Resul
     let mut url = reqwest::Url::parse(AUTHORIZE_URL)?;
     url.query_pairs_mut()
         .append_pair("code", "true")
-        .append_pair("client_id", claude_auth::CLIENT_ID)
+        .append_pair("client_id", auth::CLIENT_ID)
         .append_pair("response_type", "code")
         .append_pair("redirect_uri", MANUAL_REDIRECT_URL)
         .append_pair("scope", "user:inference")
@@ -158,7 +158,7 @@ pub(crate) async fn exchange_code(
         "grant_type": "authorization_code",
         "code": code,
         "redirect_uri": MANUAL_REDIRECT_URL,
-        "client_id": claude_auth::CLIENT_ID,
+        "client_id": auth::CLIENT_ID,
         "code_verifier": verifier,
         "state": state,
         "expires_in": SETUP_TOKEN_EXPIRES_SECS,
@@ -303,7 +303,7 @@ mod tests {
                 "grant_type": "authorization_code",
                 "code": "code",
                 "redirect_uri": MANUAL_REDIRECT_URL,
-                "client_id": claude_auth::CLIENT_ID,
+                "client_id": auth::CLIENT_ID,
                 "code_verifier": "verifier",
                 "state": "state",
                 "expires_in": SETUP_TOKEN_EXPIRES_SECS,
