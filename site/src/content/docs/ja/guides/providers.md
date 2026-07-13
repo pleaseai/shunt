@@ -1,5 +1,5 @@
 ---
-title: Providers
+title: プロバイダー
 description: 組み込みプロバイダーと、TOML テーブルで任意の Anthropic 互換バックエンドを追加する方法。
 ---
 

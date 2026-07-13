@@ -1,0 +1,12 @@
+review:
+  cubic:
+    enabled: true
+    default-flags: "--json -b"
+  agy:
+    enabled: false
+  coderabbit:
+    enabled: false
+  greptile:
+    enabled: true
+  gemini:
+    enabled: false

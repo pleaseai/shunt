@@ -483,7 +483,7 @@ pre-flight `POST /v1/messages/count_tokens` itself. Controlled by `count_tokens`
 | Value | Behavior |
 | :-- | :-- |
 | `"tiktoken"` (**default**) | Count locally with the `o200k_base` encoder (the GPT-family tokenizer) and return `{"input_tokens": N}`. Near-exact for text; it can't see the backend's image/tool-schema encoding, reasoning tokens, or cache accounting. |
-| `"estimate"` | Return `404` so Claude Code falls back to its own estimate. Its `/context` then re-counts every category against Haiku over the network — slow, and silently zero without an Anthropic credential — so this is opt-in. |
+| `"estimate"` | Return `501 not_supported` so Claude Code falls back to its own estimate. Its `/context` then re-counts every category against Haiku over the network — slow, and silently zero without an Anthropic credential — so this is opt-in. |
 
 ```toml
 [providers.codex]

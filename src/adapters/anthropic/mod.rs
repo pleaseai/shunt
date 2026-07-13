@@ -71,36 +71,10 @@ async fn forward(
             "upstream returned 429"
         );
     }
-    let response_headers = headers::filtered(upstream.headers());
-    let is_sse = upstream
-        .headers()
-        .get("content-type")
-        .and_then(|value| value.to_str().ok())
-        .map(|value| value.starts_with("text/event-stream"))
-        .unwrap_or(false);
-    let stream = upstream.bytes_stream();
-
-    let mut builder = Response::builder().status(status);
-    for (name, value) in response_headers {
-        if let Some(name) = name {
-            builder = builder.header(name, value);
-        }
-    }
-
-    // Keepalive pings apply only to SSE relays; JSON bodies pass untouched.
-    let body = if is_sse {
-        Body::from_stream(keepalive::with_pings(
-            stream,
-            Duration::from_secs(state.config.server.sse_keepalive_seconds),
-        ))
-    } else {
-        Body::from_stream(stream)
-    };
-    let response = builder
-        .body(body)
-        .expect("response builder uses valid upstream status and headers")
-        .into_response();
-    Ok((status, response))
+    // The non-pooled path builds its response exactly like the pooled path's
+    // relay_response (header filtering, SSE keepalive, status passthrough), so
+    // reuse it with no account attribution instead of duplicating that logic.
+    relay_response(&state, upstream, None)
 }
 
 async fn forward_claude_oauth(
@@ -246,30 +220,20 @@ async fn forward_claude_oauth(
                     .unwrap_or(Duration::from_secs(1))
                     .min(Duration::from_secs(300));
                 tokio::time::sleep(delay).await;
-                let retry =
-                    match post_upstream(&state.http_client, &url, request_headers, request_body)
-                        .await
-                    {
-                        Ok(response) => response,
-                        Err(error) => {
-                            state.accounts.cooldown(
-                                &route.provider,
-                                &account.name,
-                                Duration::from_secs(30),
-                            );
-                            tracing::warn!(
-                                provider = %route.provider,
-                                account = %account.name,
-                                error = %error,
-                                "Claude OAuth throttle retry failed"
-                            );
-                            last_response = Some(upstream);
-                            continue;
-                        }
-                    };
-                state
-                    .accounts
-                    .note_quota(&route.provider, &account.name, retry.headers());
+                let Some(retry) = retry_upstream(
+                    &state,
+                    &route,
+                    account,
+                    &url,
+                    request_headers,
+                    request_body,
+                    "Claude OAuth throttle retry failed",
+                )
+                .await
+                else {
+                    last_response = Some(upstream);
+                    continue;
+                };
                 let retry_status = retry.status();
                 if retry_status.is_success() {
                     state.accounts.mark_healthy(&route.provider, &account.name);
@@ -318,6 +282,23 @@ async fn forward_claude_oauth(
                     continue;
                 }
 
+                let failed_access_token = match &credential {
+                    Credential::ClaudeOauth { access_token, .. } => access_token.as_str(),
+                    // resolve_claude_account only ever yields ClaudeOauth, so this
+                    // is unreachable today — but this is a request-handling path in
+                    // a failover proxy, so degrade gracefully (log loudly + fail
+                    // over to the next account) instead of panicking if a future
+                    // refactor ever breaks that invariant.
+                    _ => {
+                        tracing::error!(
+                            provider = %route.provider,
+                            account = %account.name,
+                            "claude_oauth account resolved a non-OAuth credential"
+                        );
+                        last_response = Some(upstream);
+                        continue;
+                    }
+                };
                 let credentials = account
                     .credentials
                     .as_deref()
@@ -329,7 +310,10 @@ async fn forward_claude_oauth(
                 // lock again before the retry POST below.
                 let access_token = {
                     let _guard = refresh_lock.lock().await;
-                    match store.force_refresh().await {
+                    match store
+                        .force_refresh_if_access_token(failed_access_token)
+                        .await
+                    {
                         Ok(token) => token,
                         Err(error) => {
                             state.accounts.cooldown(
@@ -353,34 +337,20 @@ async fn forward_claude_oauth(
                     account_uuid: account.uuid.clone(),
                 };
                 let retry_headers = outbound_headers(headers, &refreshed);
-                let retry = match post_upstream(
-                    &state.http_client,
+                let Some(retry) = retry_upstream(
+                    &state,
+                    &route,
+                    account,
                     &url,
                     retry_headers,
                     request_body,
+                    "Claude OAuth refresh retry failed",
                 )
                 .await
-                {
-                    Ok(response) => response,
-                    Err(error) => {
-                        state.accounts.cooldown(
-                            &route.provider,
-                            &account.name,
-                            Duration::from_secs(30),
-                        );
-                        tracing::warn!(
-                            provider = %route.provider,
-                            account = %account.name,
-                            error = %error,
-                            "Claude OAuth refresh retry failed"
-                        );
-                        last_response = Some(upstream);
-                        continue;
-                    }
+                else {
+                    last_response = Some(upstream);
+                    continue;
                 };
-                state
-                    .accounts
-                    .note_quota(&route.provider, &account.name, retry.headers());
                 let retry_status = retry.status();
                 if retry_status == StatusCode::UNAUTHORIZED {
                     // Refresh succeeded but the credential is still rejected — the
@@ -478,6 +448,43 @@ async fn post_upstream(
     body: Vec<u8>,
 ) -> Result<reqwest::Response, reqwest::Error> {
     client.post(url).headers(headers).body(body).send().await
+}
+
+/// Send a per-account retry POST, noting quota headers on success. On a
+/// transport error it cools the account down for 30s, logs `fail_msg`, and
+/// returns `None` so the caller fails over to the next account. Shared by the
+/// throttle-retry and refresh-retry arms, whose transport-error handling is
+/// otherwise identical.
+async fn retry_upstream(
+    state: &AppState,
+    route: &Route,
+    account: &crate::config::AccountConfig,
+    url: &str,
+    headers: HeaderMap,
+    body: Vec<u8>,
+    fail_msg: &str,
+) -> Option<reqwest::Response> {
+    match post_upstream(&state.http_client, url, headers, body).await {
+        Ok(response) => {
+            state
+                .accounts
+                .note_quota(&route.provider, &account.name, response.headers());
+            Some(response)
+        }
+        Err(error) => {
+            state
+                .accounts
+                .cooldown(&route.provider, &account.name, Duration::from_secs(30));
+            tracing::warn!(
+                provider = %route.provider,
+                account = %account.name,
+                error = %error,
+                "{}",
+                fail_msg
+            );
+            None
+        }
+    }
 }
 
 fn relay_response(
@@ -749,6 +756,76 @@ mod tests {
     // and these are throwaway fakes.
     fn auth(scheme: &str, token: &str) -> String {
         format!("{scheme} {token}")
+    }
+
+    fn claude_route() -> super::Route {
+        super::Route {
+            provider: "claude".to_string(),
+            adapter: crate::routing::AdapterKind::Anthropic,
+            model: "claude-test".to_string(),
+            upstream_model: "claude-test".to_string(),
+            effort: None,
+        }
+    }
+
+    fn claude_account() -> crate::config::AccountConfig {
+        crate::config::AccountConfig {
+            name: "acct".to_string(),
+            credentials: None,
+            token_env: None,
+            uuid: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn retry_upstream_returns_response_on_success() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let state =
+            super::AppState::new(crate::config::Config::default(), reqwest::Client::new()).unwrap();
+
+        let response = super::retry_upstream(
+            &state,
+            &claude_route(),
+            &claude_account(),
+            &server.uri(),
+            HeaderMap::new(),
+            Vec::new(),
+            "retry failed",
+        )
+        .await
+        .expect("a 200 upstream should be handed back to the caller");
+        assert!(response.status().is_success());
+    }
+
+    #[tokio::test]
+    async fn retry_upstream_signals_failover_on_transport_error() {
+        let state =
+            super::AppState::new(crate::config::Config::default(), reqwest::Client::new()).unwrap();
+
+        // Port 1 refuses immediately, so post_upstream returns a transport error
+        // and the helper must cool the account down and return None (fail over).
+        let outcome = super::retry_upstream(
+            &state,
+            &claude_route(),
+            &claude_account(),
+            "http://127.0.0.1:1/v1/messages",
+            HeaderMap::new(),
+            Vec::new(),
+            "retry failed",
+        )
+        .await;
+        assert!(
+            outcome.is_none(),
+            "a transport error should signal fail-over"
+        );
     }
 
     #[test]

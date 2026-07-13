@@ -22,6 +22,23 @@ description: 모든 shunt.toml 키 — server, providers, routes, models.
 | `header` | `x-shunt-token` | 클라이언트 토큰을 담는 헤더 |
 | `tokens_env` | `SHUNT_CLIENT_TOKENS` | 쉼표로 구분된 `name:token` 쌍을 담는 env 변수 |
 
+지정된 환경 변수에는 하나 이상의 자격 증명이 있어야 합니다. 예: `SHUNT_CLIENT_TOKENS="alice:<token>,bob:<token>"`. 테이블이 있는데 변수가 설정되지 않았거나, 비어 있거나, 형식이 잘못되면 시작은 닫힌 채로 실패(fail closed)합니다.
+
+## `[server.admin]` (선택)
+
+이 테이블의 존재가 브라우저 계정 프로비저닝과 계정 풀 상태를 위한 관리자 웹 화면을 활성화합니다([상세](/ko/guides/admin-remote-provisioning/)). 테이블이 없으면 `/admin*` 라우트는 하나도 등록되지 않습니다.
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `header` | `x-shunt-admin-token` | API/curl 호출용 관리자 토큰을 담는 헤더 |
+| `tokens_env` | `SHUNT_ADMIN_TOKENS` | 쉼표로 구분된 `name:token` 쌍을 담는 env 변수 |
+| `session_ttl_secs` | `3600` | 로그인 후 브라우저 세션 수명(초) |
+| `pending_ttl_secs` | `600` | 시작된 프로비저닝 플로우를 끝낼 수 있는 시간(초) |
+
+지정된 환경 변수에는 하나 이상의 자격 증명이 있어야 합니다. 예: `SHUNT_ADMIN_TOKENS="ops:<token>"`. 테이블이 있는데 변수가 설정되지 않았거나, 비어 있거나, 형식이 잘못되면 시작은 닫힌 채로 실패(fail closed)합니다.
+
+관리자 토큰은 `[server.auth]` 아래에 구성되는 클라이언트 토큰과 별개의 자격 증명입니다; 하나의 자격 증명을 두 표면에 재사용하지 마세요.
+
 ## `[providers.<name>]`
 
 각 프로바이더는 원하는 이름의 테이블입니다. 내장(`anthropic`, `openai`, `codex`, `xai`, `grok`, `cursor`)은 부분 오버라이드할 수 있습니다 — 구성 맵은 깊은 병합됩니다.
@@ -34,7 +51,7 @@ description: 모든 shunt.toml 키 — server, providers, routes, models.
 | `api_key_env` | env 변수 이름 | `auth = "api_key"`일 때 키를 읽어오는 곳. |
 | `api_key_header` | `bearer`(기본) \| `x_api_key` | 주입된 키가 전송되는 헤더. |
 | `effort` | `low` … `max` | 선택적 기본 추론 노력(`responses` 프로바이더). |
-| `count_tokens` | `tiktoken`(기본) \| `estimate` | `responses` 프로바이더 전용: 로컬 tiktoken 카운트 대 404 폴백([상세](/ko/guides/effort-and-context/#token-counting-count_tokens)). |
+| `count_tokens` | `tiktoken`(기본) \| `estimate` | `responses` 및 `cursor` 프로바이더: 로컬 tiktoken 카운트 대 `501 not_supported` 폴백([상세](/ko/guides/effort-and-context/#token-counting-count_tokens)). |
 
 ## `[[routes]]`
 

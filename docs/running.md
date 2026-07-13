@@ -189,7 +189,7 @@ a brand-new table adds a provider. Every provider takes these keys:
 | `api_key_env` | env var name | Where the key is read from, when `auth = "api_key"`. |
 | `api_key_header` | `bearer` (default) \| `x_api_key` | Header the injected key is sent in. |
 | `effort` | `low`…`max` | Optional default reasoning effort (`responses` providers). |
-| `count_tokens` | `tiktoken` (default) \| `estimate` | For `responses` providers: `tiktoken` computes a local count (o200k_base) and returns `{"input_tokens": N}`; `estimate` returns 404 so the client falls back on its own. See §4. |
+| `count_tokens` | `tiktoken` (default) \| `estimate` | For `responses` and `cursor` providers: `tiktoken` computes a local count (o200k_base) and returns `{"input_tokens": N}`; `estimate` returns `501 not_supported` so the client falls back on its own. See §4. |
 
 Most third-party "use Claude Code with X" gateways are **Anthropic-Messages-compatible**: they are
 `kind = "anthropic"` with `auth = "api_key"`, differing only in `base_url` and the key env var.
@@ -274,12 +274,11 @@ there is no equivalent upstream endpoint, so the provider's `count_tokens` setti
   image/tool-schema encoding or cache accounting. Each count is answered in-process (~ms), which
   matters because Claude Code's `/context` issues one `count_tokens` call **per displayed item**
   (system-prompt section, memory file, agent, deferred tool, …) — 30–50 calls per invocation.
-- `count_tokens = "estimate"` (opt-in) — shunt returns **404**, which the
-  [gateway protocol](https://code.claude.com/docs/en/llm-gateway-protocol) explicitly allows for an
-  absent endpoint. Note what Claude Code actually does then: the main-loop context bar estimates
-  locally, but `/context` re-runs **every** category count against Haiku over the network — slow,
-  and silently reported as 0 tokens when no Anthropic credential is available. Use it only if you
-  want shunt to carry no tokenizer.
+- `count_tokens = "estimate"` (opt-in) — shunt returns **501 `not_supported`**, telling Claude
+  Code that the endpoint is unavailable and triggering its fallback. Note what Claude Code actually
+  does then: the main-loop context bar estimates locally, but `/context` re-runs **every** category
+  count against Haiku over the network — slow, and silently reported as 0 tokens when no Anthropic
+  credential is available. Use it only if you want shunt to carry no tokenizer.
 
 Either way the request never reaches the responses adapter, so a count request is never turned into
 (and billed as) a full inference call. Opt out per provider:
@@ -683,7 +682,7 @@ you share it over a VPN/tunnel, anyone who can reach it can spend the **operator
 on mapped models (shunt injects its own `api_key`/`chatgpt_oauth` credential for those).
 Passthrough models are not the concern: they forward each caller's own Anthropic credential.
 
-`[server.auth]` gates exactly the injected-credential routes with per-client tokens
+`[server.auth]` gates injected-credential routes and model discovery with per-client tokens
 (spec: [`m4-inbound-auth.md`](m4-inbound-auth.md)):
 
 ```toml
@@ -698,12 +697,12 @@ export SHUNT_CLIENT_TOKENS="minsu:$(openssl rand -hex 32),alice:$(openssl rand -
 ```
 
 Startup **fails closed** if `[server.auth]` is present but the env var is unset or
-malformed. Requests to mapped models without a valid token get a 401
-`authentication_error`; `GET /v1/models`, `GET /routes`, `GET|HEAD /`, `GET /health`, and
-passthrough models stay open. `GET /routes` is unauthenticated by the same discovery-endpoint
-design as `GET /v1/models` — it exposes routing metadata (the configured provider/upstream-model
-mapping), never credentials, which live only in provider config and are never read by that
-handler.
+malformed. Requests to mapped models and `GET /v1/models` without a valid token get a 401
+`authentication_error`; discovery accepts the configured header plus `x-api-key` and
+`Authorization: Bearer`. `GET /routes`, `GET|HEAD /`, `GET /health`, and passthrough models
+stay open. `GET /routes` remains unauthenticated because it is a shunt-native endpoint exposing
+routing metadata (the configured provider/upstream-model mapping), never credentials, which live
+only in provider config and are never read by that handler.
 The token header is always stripped before forwarding, matching is constant-time, and
 token values are never logged (client *names* are, per request).
 

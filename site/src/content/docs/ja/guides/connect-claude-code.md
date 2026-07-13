@@ -1,5 +1,5 @@
 ---
-title: Connect Claude Code
+title: Claude Code の接続
 description: Claude Code を shunt へ向け、適切な Anthropic 認証情報を選び、マッピングされたモデルを選択する。
 ---
 

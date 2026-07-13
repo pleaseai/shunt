@@ -169,10 +169,10 @@ own reconstruction code:
 
 | Item type | Backend `output_item.done` extras | Canonicalization | Source |
 | :-- | :-- | :-- | :-- |
-| all | `id`, `phase`, `status` | strip | live probe (text turn), 2026-07-12 `gpt-5.6-sol` |
+| all | `id`, `phase`, `status` | strip | live probe (message/reasoning/function_call), 2026-07-13 `gpt-5.6-sol` |
 | `message` content part | `annotations`, `logprobs` | strip | live probe |
-| `function_call` | `id`, `status`, `namespace`; `arguments` as raw model string | strip keys; **parse `arguments`** to a value | code + `openai/codex` `ResponseItem::FunctionCall` / openai-python `ResponseFunctionToolCall` (`arguments: str`) |
-| `reasoning` | `id`, `status`, plaintext `content` array; `summary` parts | strip keys; normalize `summary` parts; `encrypted_content`/`id` round-trip verbatim | code + `openai/codex` `ResponseItem::Reasoning` / openai-python `ResponseReasoningItem` (`content: Optional[List[reasoning_text]]`) |
+| `function_call` | `id`, `status`, `namespace`; `arguments` as raw model string | strip keys; **parse `arguments`** to a value | live probe (plain tool) + `openai/codex` `ResponseItem::FunctionCall` / openai-python `ResponseFunctionToolCall` (`arguments: str`); `namespace` schema-grounded (MCP not yet probed) |
+| `reasoning` | `id`; `summary` parts; (`status` and plaintext `content` absent under `store:false`) | strip `id`/`status`; normalize `summary` parts; drop plaintext `content`; `encrypted_content` round-trips verbatim | live probe 2026-07-13 + `openai/codex` `ResponseItem::Reasoning` / openai-python `ResponseReasoningItem` (`content: Optional[List[reasoning_text]]`) |
 
 For the text/message case the reconstruction is a strict **subset**, so stripping
 suffices. For `function_call` the `arguments` string is *not* a subset — the backend
@@ -230,26 +230,39 @@ The issue frames this as "prewarm". Two separable things:
    ships. A stateless proxy has no "user typing" phase; forcing prewarm would mean
    **two** round-trips per turn (worse). **Not implemented, by design.**
 
-## 8. Adapter wiring (`responses.rs`)
+## 8. Adapter wiring (`responses/mod.rs`)
 
 - `forward()` branches to `forward_websocket` when
   `Config::codex_websocket_enabled` (flag && ChatGPT/Codex backend); otherwise the
   HTTP path is unchanged.
-- `open_ws_turn` starts a turn with continuation allowed, peeks the first event, and
-  retries with full input on `previous_response_missing` (§6). `start_ws_turn`
-  applies the [`decide`] result: on a hit it replaces `input` with the delta and
-  inserts `previous_response_id` (+ the turn_state echo).
+- `open_ws_turn` starts a turn with continuation allowed and **always peeks the
+  first event** before committing the response, retrying with full input on
+  `previous_response_missing` (§6). `start_ws_turn` applies the [`decide`] result:
+  on a hit it replaces `input` with the delta and inserts `previous_response_id`
+  (+ the turn_state echo). `commit_or_fallback` then decides from that peeked event:
+  a delivered event (`Ok`) commits to the WebSocket stream; a transport error or an
+  empty stream returns `Err` so `forward()` re-drives the turn over HTTP.
 - The buffered first event is replayed ahead of the channel by both the streaming
   (`stream_events_response`) and non-streaming (`json_events_response`) drivers,
   which are otherwise the WebSocket analogs of the HTTP `stream_response` /
-  `json_response`. A mid-stream transport error is surfaced as an Anthropic `error`
-  SSE event so the client sees a reason, not a silent truncation.
-- **HTTP fallback.** A websocket failure that happens *before* streaming begins —
-  connect timeout, refused/failed handshake, or a failed frame send — is caught in
-  `forward()` (which retried the turn with cloned inputs) and transparently
-  re-driven over the HTTP path via `forward_http`. Enabling the flag therefore can
-  never do worse than plain HTTP; only a failure after the first event has streamed
-  is surfaced to the client (it is then too late to fall back).
+  `json_response`. A transport error *after* the first event is genuinely
+  mid-stream and is surfaced as an Anthropic `error` SSE event so the client sees a
+  reason, not a silent truncation — restarting over HTTP is no longer safe because
+  output has already been streamed. That `error` SSE event is specific to the
+  streaming path (`stream_events_response`); the non-streaming path
+  (`json_events_response`) instead returns a gateway error for the same
+  post-first-event transport failure.
+- **HTTP fallback.** Any websocket failure *before the first event reaches the
+  client* — connect timeout, refused/failed handshake, a failed frame send, or a
+  socket that drops between the send and the first event (an idle-eviction race, a
+  backend hiccup; issue #46) — is caught in `forward()` (which retried the turn with
+  cloned inputs) and transparently re-driven over the HTTP path via `forward_http`.
+  Because `Turn::stream` only queues the frame and the reader sends it
+  asynchronously, catching the post-send/pre-first-event window requires the
+  first-event peek above; without it that failure would surface on an
+  already-committed stream. Enabling the flag therefore can never do worse than
+  plain HTTP; only a failure after the first event has streamed is surfaced to the
+  client (it is then too late to fall back).
 
 ## 9. Config & validation
 
@@ -279,19 +292,18 @@ websocket = true   # opt-in; effective only on the ChatGPT/Codex backend
 
 ## 11. Open questions / follow-ups
 
-- **Reasoning / function_call normalization is schema-validated (three sources),
-  not yet live-probed.** The text/message rules were live-probed. The `reasoning`
-  and `function_call` rules (§6) are derived from shunt's own reconstruction code
-  and cross-checked against three independent authoritative sources that agree:
-  `openai/codex` `ResponseItem` (the type codex round-trips as input under
-  `store:false`), openai-python `ResponseReasoningItem` / `ResponseFunctionToolCall`,
-  and LiteLLM's Responses transformation. That cross-check confirmed and closed the
-  two gaps the earlier draft flagged — a reasoning item's optional plaintext
-  `content` array and a `function_call.namespace` are now stripped — and surfaced no
-  field shunt fails to handle. A live thinking/tool turn would still be the final
-  confirmation (the probe account is `prolite` and usage-capped), but any
-  unaccounted field only causes the **safe** full-input fallback — correct, just
-  unoptimized.
+- **Reasoning / function_call normalization — live-probed (issue #45, 2026-07-13).**
+  The text/message rules were live-probed earlier; the `reasoning` and `function_call`
+  rules are now confirmed too. A probe over the WebSocket transport captured real
+  `message`, `reasoning`, and `function_call` output items and diffed them against
+  `normalize_item`: **no unaccounted field**. It corrected two assumptions — the backend
+  omits reasoning `status` entirely and returns an empty plaintext `content` array under
+  `store:false` (both already stripped, so the append-only match is unaffected). All
+  three item kinds then continued from `previous_response_id` end-to-end on a warm pool
+  (delta-only turns, zero `previous_response_not_found` rejects). The remaining gap is
+  namespaced/MCP tool calls, which need a live MCP server to trigger; the `namespace`
+  strip stays schema-grounded until then. A `shunt.codex_continuation` counter (hit vs
+  full-input fallback, per provider) now surfaces any future drift.
 - **Payoff measurement.** Correctness is proven; the actual per-turn byte savings on
   long real conversations should be measured before the flag is recommended broadly.
 - **Multi-process pools.** The pool is process-local; a multi-replica deployment

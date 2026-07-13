@@ -15,7 +15,7 @@ shunt is a **spec-compliant Claude Code LLM gateway**: it implements Claude Code
 official `ANTHROPIC_BASE_URL` gateway contract (`/v1/messages`, `/v1/models`
 discovery, attribution/header pass-through) and does **selective, per-`model`-id**
 diversion — keep the main session on Claude, divert only the models you name onto
-another provider (ChatGPT/Codex, OpenAI, xAI). It translates Anthropic Messages ⇄
+another provider (ChatGPT/Codex, OpenAI, Cursor, xAI, Grok). It translates Anthropic Messages ⇄
 the OpenAI Responses API for mapped models, and passes everything else through to
 Anthropic unchanged. Routing is purely by the request's `model` id — no
 prompt-shape fingerprinting (`README.md:104-131`).
@@ -50,16 +50,18 @@ Legend: ● full · ◐ partial / workaround · ○ none · — n/a by design
 | tool-search / `defer_loading` / `tool_reference` handling | ◐ (shim: works, no ctx savings; native opt-in⁸) | ○⁵ | ◐ (upstream) / ● (fork) | ○ | ○ |
 | Reasoning round-trip to Claude Code `thinking` | ● (encrypted) | ◐ (Kimi/Grok; **Codex dropped**) | ◐ | ○ | ◐ |
 | Multi-account load balancing / failover | ◐⁷ | ○ | ● | some | ● |
-| Backend breadth | 4 providers¹ | 4 subs⁶ | 11 backends² | varies | 100–1600+ |
-| Management API / dashboard | ○ | ◐ (monitor TUI) | ● | some | ● |
-| Usage / quota / cost tracking | ○ (Sentry metrics only) | ○ | ● | some | ● |
+| Backend breadth | 6 providers¹ | 4 subs⁶ | 11 backends² | varies | 100–1600+ |
+| Management API / dashboard | ◐⁹ | ◐ (monitor TUI) | ● | some | ● |
+| Usage / quota / cost tracking | ◐⁹ (pool quota state; no usage/cost) | ○ | ● | some | ● |
 | Plugin / interceptor system | ○ | ○ | ● | some | ● |
 | Language / footprint | Rust, 1 binary | Rust, 1 binary | Go | Node/Python | Go/Node/Python |
 | Config model | TOML + env, hot-reload | env + config file | YAML + mgmt API | varies | YAML/UI |
 
-¹ shunt: two adapter *kinds* (`anthropic` passthrough, `responses` translation) with
-4 built-in providers (Anthropic, OpenAI, ChatGPT/Codex, xAI) — any Anthropic-Messages
-or OpenAI-Responses endpoint is config-only (`src/config.rs:180-190,316-363`).
+¹ shunt: three adapter *kinds* (`anthropic` passthrough, `responses` translation, and
+`cursor` ConnectRPC/protobuf translation — `src/config.rs:395-408`) with 6 built-in providers
+seeded by default (Anthropic, OpenAI, ChatGPT/Codex, Cursor, and xAI Grok on two surfaces —
+`xai` API-key and `grok` subscription-OAuth — `src/config.rs:652-716`); any other
+Anthropic-Messages or OpenAI-Responses endpoint is config-only.
 ² CLIProxyAPI: aistudio, antigravity, claude, codex, codex-ws, gemini, gemini-vertex,
 kimi, openai-compat, xai, xai-ws.
 ³ raine/ccp routes by `ANTHROPIC_MODEL` per-model like shunt, but has **no
@@ -67,7 +69,7 @@ Anthropic-passthrough adapter** — an unknown model id returns 400, so you cann
 the main session on Claude while diverting only the models you name.
 ⁴ raine/ccp implements its **own** ChatGPT OAuth (PKCE browser + device-code login);
 shunt reuses the Codex CLI login (`~/.codex/auth.json`) and its own PKCE flow is an
-open TODO (`src/auth/mod.rs:18-19`).
+open TODO (`src/auth/mod.rs:19-20`).
 ⁵ **Confirmed by reading raine/ccp source** (`fe80a6b`, 2026-07-11): no tool-search
 handling exists (zero matches for `defer_loading` / `tool_reference` / `tool_search` /
 `advanced-tool-use`). Tools are whitelist-rebuilt to `{name, description, parameters}`
@@ -90,7 +92,7 @@ session-sticky/round-robin selection, cooldowns, forced refresh after 401, rotat
 429/5xx/credential-resolution failure — because the backend sends no per-account quota
 headers, so there is no proactive near-quota switch and no fill-first ordering across
 accounts. Per-account usage reporting is not implemented for either pool.
-⁸ **[#82]** adds an opt-in, per-provider `tool_search` flag (`src/config.rs:250-261,1041-1049`)
+⁸ **[#82]** adds an opt-in, per-provider `tool_search` flag (`src/config.rs:326-337,1198-1211`)
 that maps Claude Code's tool search onto the OpenAI Responses API's own native,
 client-executed `tool_search` protocol — `ToolSearch` → `tool_search`, its `tool_use` →
 `tool_search_call`, and `tool_reference` → a `tool_search_output` item carrying the loaded
@@ -99,6 +101,14 @@ schema into text. Off by default: it only applies for a stock OpenAI or ChatGPT/
 flavor routing to a gpt-5.4+ model, and is gated behind the flag until a live probe confirms a
 given backend accepts the shapes shunt emits. xAI/Grok routes and gpt-5.2-and-below models keep
 the #43 shim regardless of the flag.
+
+⁹ **[#77]** adds an opt-in `[server.admin]` browser surface, registered only when the
+`[server.admin]` table is present (`src/server.rs:117-118`, `src/admin/mod.rs:87-103`). It
+provisions Anthropic `claude_oauth` accounts (add/list/replace/remove) through the existing
+`claude_login` flow and renders a **read-only account-pool dashboard** — per-account 5h/7d
+quota utilization, cooldown, and near-quota flags (`src/accounts.rs:46-63`).
+Deliberately narrow: Anthropic accounts only (no ChatGPT/Codex), and no request/token usage
+or cost accounting — well short of CLIProxyAPI's full management API + quota/usage manager.
 
 > "raine/ccp" = [raine/claude-code-proxy](https://github.com/raine/claude-code-proxy).
 
@@ -116,7 +126,7 @@ the #43 shim regardless of the flag.
   *synthesizes* continuation: it stores the transcript on the pooled connection,
   diffs the next request against it with type-aware normalization, and injects
   `previous_response_id` + input-delta — real upload trimming on the Claude→Codex
-  path (`src/adapters/codex_continuation.rs:79-114`). This is **not** unique:
+  path (`src/adapters/responses/codex_continuation.rs:79-114`). This is **not** unique:
   **raine/claude-code-proxy does the same class of thing** (opt-in
   `CCP_CODEX_PREVIOUS_RESPONSE_ID`, session-keyed, append-only). The two Rust
   subscription proxies share it — the real contrast is with **passthrough** proxies
@@ -130,7 +140,7 @@ the #43 shim regardless of the flag.
   axes: (1) its continuation normalization parses `function_call.arguments` and
   round-trips reasoning `encrypted_content`/signature, so continuation keeps firing
   across tool turns where a shape-only comparison would drop it
-  (`src/adapters/codex_continuation.rs:11-48`); and (2) it **forwards Codex reasoning
+  (`src/adapters/responses/codex_continuation.rs:11-48`); and (2) it **forwards Codex reasoning
   to Claude Code as `thinking`**, whereas raine/claude-code-proxy **drops Codex
   reasoning blocks entirely** (its README lists this as a limitation). Any unforeseen
   shape still falls back to full input — never wrong context, only a missed
@@ -162,20 +172,23 @@ possible backends*, not the same product.
 - **Narrow backend breadth.** Only Anthropic-Messages passthrough or OpenAI-Responses
   translation; no native Gemini/Bedrock/Azure/Ollama unless they expose one of those
   two protocols.
-- **No management API / dashboard / usage-quota / cost tracking.** Endpoints are just
-  `/`, `/health`, `/v1/models`, `/routes`, `/v1/messages`, `/v1/messages/count_tokens`
-  (`src/server.rs:69-75`); observability is opt-in Sentry metrics only
-  (`src/metrics.rs`). CLIProxyAPI ships a full management API + quota/usage manager
-  and a third-party dashboard ecosystem; even the same-class peer
-  raine/claude-code-proxy ships a built-in **monitor TUI** (live sessions, active /
-  recent requests, error events) that shunt has no equivalent of.
+- **Narrow, opt-in management surface; no usage/cost tracking.** The always-on
+  endpoints are just `/`, `/health`, `/protocol`, `/v1/models`, `/routes`,
+  `/v1/messages`, `/v1/messages/count_tokens` (`src/server.rs:106-112`). An opt-in
+  `[server.admin]` surface ([#77]) adds browser-based Anthropic-account provisioning
+  and a **read-only account-pool dashboard** (`src/admin/mod.rs:87-103`), but there is
+  still no request/token usage or cost accounting; observability beyond that is opt-in
+  Sentry metrics only (`src/metrics.rs`). CLIProxyAPI ships a full management API +
+  quota/usage manager and a third-party dashboard ecosystem; raine/claude-code-proxy
+  ships a built-in **monitor TUI** (live sessions, active / recent requests, error
+  events) — a live-traffic view shunt's account-oriented dashboard doesn't replace.
 - **No own ChatGPT OAuth login.** shunt reuses the Codex CLI login
   (`~/.codex/auth.json`); a first-party PKCE flow is an open TODO
-  (`src/auth/mod.rs:18-19`). raine/claude-code-proxy is prior art here — it ships its
+  (`src/auth/mod.rs:19-20`). raine/claude-code-proxy is prior art here — it ships its
   own `codex auth login` (PKCE) **and** `codex auth device` (device-code), so it works
   without the Codex CLI installed.
-- **No plugin / interceptor system.** The adapter set is a fixed two-variant `match`
-  (`src/proxy.rs:152-163`); CLIProxyAPI has a full plugin host (RPC ABI, auth
+- **No plugin / interceptor system.** The adapter set is a fixed three-variant `match`
+  (`src/proxy.rs:170-186`); CLIProxyAPI has a full plugin host (RPC ABI, auth
   providers, executor routing, request/response translators).
 - **Plain HTTP only** (TLS out of scope, `docs/m4-inbound-auth.md:13`).
 
@@ -199,16 +212,31 @@ toward being a fleet gateway and warrant a conscious decision first.
   off by default pending a live probe of backend acceptance, so the shim (and the zero-savings
   gap for xAI/Grok and older models) remains the baseline until operators opt in.
 
-- **B. Codex WS: live-probe the continuation normalization (already tracked: [#45]).** Reasoning/`function_call`
-  normalization is schema-validated against 3 sources but not yet live-probed
-  (`docs/m7-codex-websocket.md:250-270`). Any unaccounted field silently falls back to the
-  safe full-input fallback — correctness-safe, but a *latent missed optimization*. A
-  probe pass would confirm continuation fires as often as it should.
+- **B. Codex WS: live-probe the continuation normalization (already tracked: [#45]).** **Done (2026-07-13).**
+  Reasoning/`function_call` normalization was schema-validated against 3 sources; a live probe over the
+  WebSocket transport then captured real `message`/`reasoning`/`function_call` output items and diffed
+  them against `normalize_item` — **no unaccounted field**. The probe corrected two assumptions: the
+  backend omits reasoning `status` and returns an empty plaintext `content` array under `store:false`
+  (both already stripped, so the match is unaffected). End-to-end, all three item kinds continued from
+  `previous_response_id` on a warm pool (delta-only turns, zero `previous_response_not_found` rejects).
+  A new `shunt.codex_continuation` counter (hit vs full-input fallback) makes future drift visible. The
+  one residual is namespaced/MCP tool calls (need a live MCP server to trigger); their `namespace` strip
+  stays schema-grounded until probed.
 
-- **C. Codex WS: mid-stream failure resumption (already tracked: [#46]).** A WS failure *before* streaming
-  falls back to HTTP transparently, but a *mid-stream* failure surfaces as an error
-  SSE event, not a fallback (`src/adapters/responses.rs:92-135`). Consider
-  resuming/replaying so a dropped socket mid-turn degrades to HTTP instead of erroring.
+- **C. Codex WS: mid-stream failure fallback (resolved: [#46]).** Two fixes closed
+  this. **[#93]** removed one *cause* at checkout: a half-open pooled socket now
+  fails the reuse liveness probe (a timely `Pong` is required, not just a local
+  write) and is replaced with a fresh handshake before the turn's frame is sent, so
+  a stale connection can no longer break mid-stream. **[#46]** then closed the
+  residual send→first-event window the checkout probe cannot cover (the socket dies
+  *after* the frame is sent, before the first event): `open_ws_turn` peeks the first
+  event and `commit_or_fallback` re-drives the turn over HTTP on a pre-first-event
+  transport error (`src/adapters/responses/mod.rs`), extending the pre-handshake
+  safety net across that window. A failure *after* the first event has streamed is
+  genuinely mid-stream — restarting would duplicate output — so it is surfaced as a
+  clean Anthropic `error` SSE event rather than replayed; mid-turn resume via
+  `previous_response_id` is a deliberate non-goal (partial output is already
+  committed to the client). Covered by `tests/codex_websocket_fallback.rs`.
 
 - **D. Codex WS: speculative prewarm (`generate:false`) (already tracked: [#47]).** Explicitly out of scope
   today (`docs/m7-codex-websocket.md:53-58`), but it is a real Codex latency
@@ -218,10 +246,6 @@ toward being a fleet gateway and warrant a conscious decision first.
 - **E. Upstream retry/backoff (already tracked: [#48]).** The M4-planned bounded retry/backoff is not
   implemented (`docs/implementation-plan.md:247`); transient upstream 429/5xx errors surface
   directly. A small, idempotent retry would improve resilience without adding scope.
-
-- **F. Doc drift: `GET /protocol` (already tracked: [#49]).** README advertises a machine-readable spec at
-  `GET /protocol` (`README.md:110`) but no such route exists in `src/server.rs`.
-  Implement it (cheap, and it's part of the gateway-protocol story) or correct the docs.
 
 ### Scope-boundary (decide before doing)
 
@@ -235,11 +259,11 @@ toward being a fleet gateway and warrant a conscious decision first.
   request has already failed on the current account, mirroring only the reactive
   half of the Anthropic (`claude_oauth`) pool's proactive-plus-reactive design.
 
-- **H. Per-account quota/usage visibility.** The prerequisite for closing G's
-  remaining fill-first gap on both pools — if multiple subscription accounts are in
-  play, surfacing each account's window (as CLIProxyAPI's ecosystem does, and as
-  shunt already does for Anthropic's 5h/7d headers internally, just not exposed)
-  becomes useful. Ties to the observability gap.
+- **H. Per-account quota/usage visibility.** Follows G. For Anthropic accounts the
+  opt-in admin dashboard ([#77]) already surfaces each account's 5h/7d window and
+  cooldown state (`src/accounts.rs:46-63`); extending the same per-account view to
+  ChatGPT/Codex subscription accounts (as CLIProxyAPI's ecosystem does) is the part
+  still missing. Ties to the observability gap.
 
 - **I. Native Gemini (and other) backends.** Only relevant if shunt broadens past the
   Anthropic-Messages / OpenAI-Responses duality. Not currently in scope.
@@ -252,7 +276,7 @@ subscription OAuth, per-`model` routing, Codex WS + `previous_response_id`
 continuation) — against which shunt's edge is deeper continuation normalization,
 Codex reasoning fidelity (raine drops it), an Anthropic-passthrough path (keep the
 main session on Claude), and xAI OAuth; raine's edge is a built-in monitor TUI, a
-first-party ChatGPT OAuth login, and Kimi/Cursor breadth. Against **CLIProxyAPI**,
+first-party ChatGPT OAuth login, and Kimi breadth. Against **CLIProxyAPI**,
 shunt wins on translation-path upload trimming (CLIProxyAPI's WS is a passthrough)
 and trades away most fleet features (broad multi-account LB, management, plugins,
 backend breadth) by design. It now provides a narrow Anthropic OAuth account pool
@@ -262,9 +286,12 @@ rotation across Codex accounts remains a deliberate gap pending per-account
 rate-limit visibility (§6, items G–H).
 The highest-value in-scope work is finishing the tool-search
 context savings ([#43]) — now partly addressed by an opt-in native `tool_search` path on
-Codex/OpenAI ([#82]) — and hardening the Codex WS continuation (live-probe +
-mid-stream fallback); the biggest deliberate gap to weigh is quota-aware fill-first
-rotation for the ChatGPT/Codex account pool.
+Codex/OpenAI ([#82]). The Codex WS transport's pre-first-event HTTP fallback gap
+has since been closed ([#46]); its continuation-normalization live-probe ([#45])
+remains open. The biggest deliberate gap left to weigh is quota-aware fill-first
+rotation across the ChatGPT/Codex account pool — the pool itself now exists
+(`docs/m10-codex-multi-account.md`, reactive-only), so only the proactive
+fill-first half remains.
 
 [#43]: https://github.com/pleaseai/shunt/issues/43
 [#82]: https://github.com/pleaseai/shunt/issues/82
@@ -272,4 +299,5 @@ rotation for the ChatGPT/Codex account pool.
 [#46]: https://github.com/pleaseai/shunt/issues/46
 [#47]: https://github.com/pleaseai/shunt/issues/47
 [#48]: https://github.com/pleaseai/shunt/issues/48
-[#49]: https://github.com/pleaseai/shunt/issues/49
+[#77]: https://github.com/pleaseai/shunt/issues/77
+[#93]: https://github.com/pleaseai/shunt/issues/93

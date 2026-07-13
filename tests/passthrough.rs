@@ -365,14 +365,14 @@ async fn count_tokens_is_passed_through() {
 }
 
 #[tokio::test]
-async fn count_tokens_returns_404_for_responses_model() {
+async fn count_tokens_returns_501_not_supported_for_responses_model() {
     if !can_bind_loopback() {
         return;
     }
     // The upstream must never be hit: with the opt-in estimate mode, a
-    // responses-model count_tokens is short-circuited to 404 (so the client
-    // falls back on its own) rather than translated into a billed inference
-    // call.
+    // responses-model count_tokens is short-circuited to 501 not_supported
+    // (so the client falls back on its own) rather than translated into a
+    // billed inference call.
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(500))
@@ -396,8 +396,18 @@ async fn count_tokens_returns_404_for_responses_model() {
         .await
         .unwrap();
 
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    assert!(response.text().await.unwrap().contains("count_tokens"));
+    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "type": "error",
+            "error": {
+                "type": "not_supported",
+                "message": "count_tokens is not available for this model; Claude Code estimates tokens locally"
+            }
+        })
+    );
     upstream.verify().await;
 }
 

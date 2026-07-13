@@ -29,9 +29,12 @@ is the documented default. Discovery is only useful if shunt exposes a **Claude-
 - Request: `GET /v1/models?limit=1000`, **3-second timeout**, **any redirect is treated as
   failure** (even `http`→`https`). Serve it **directly** at the configured base URL — no proxy
   hop, no redirect, fast.
-- Auth: exactly **one** credential header — `ANTHROPIC_AUTH_TOKEN` as bearer if set, else the
-  resolved API key in `x-api-key`. (Differs from inference, which sends both.) Accept both;
-  M-scope: do not require auth to succeed for a local gateway, but read it if present.
+- Auth: exactly **one** gateway credential header is sent by Claude Code —
+  `ANTHROPIC_AUTH_TOKEN` as bearer if set, else the resolved API key in `x-api-key`.
+  (Differs from inference, which sends both.) shunt keeps discovery open when
+  `[server.auth]` is absent; when it is configured, discovery accepts a valid
+  inbound token from the configured header, `x-api-key`, or `Authorization:
+  Bearer`. Missing/invalid credentials return `401 authentication_error`.
 - Response body:
   ```json
   { "data": [ { "id": "claude-opus-via-codex", "display_name": "Opus (via Codex)" } ] }
@@ -80,11 +83,11 @@ Referenced by M1 §5/§7. Provide:
 `POST /v1/messages/count_tokens` passes through to the upstream for Anthropic-routed models.
 For a `responses`-routed model there is no exact Responses token-count endpoint, so
 `proxy::forward` short-circuits before the adapter based on the provider's `count_tokens` setting:
-`estimate` (default) returns **404** and Claude Code estimates locally (the protocol allows this
-for an absent endpoint), while `tiktoken` returns an approximate local o200k_base count as
-`{"input_tokens": N}` (see `src/count_tokens.rs`). Either way a count request is never turned into
-(and billed as) a full inference call. Covered by `count_tokens_returns_404_for_responses_model`
-and `count_tokens_uses_tiktoken_when_enabled` in `tests/passthrough.rs`.
+`tiktoken` (default) returns an approximate local o200k_base count as `{"input_tokens": N}`
+(see `src/count_tokens.rs`), while `estimate` returns **501 `not_supported`** so Claude Code
+falls back to estimating locally. Either way a count request is never turned into (and billed as)
+a full inference call. Covered by `count_tokens_returns_501_not_supported_for_responses_model`
+and `count_tokens_uses_tiktoken_by_default` in `tests/passthrough.rs`.
 
 ## 7. Interactions to document
 
