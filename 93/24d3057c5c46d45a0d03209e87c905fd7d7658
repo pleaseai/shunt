@@ -1,0 +1,112 @@
+src/admin/mod.rs
+  s_35dd4db39d7d09::t_91bc6cd4dae29b 10
+  s_35dd4db39d7d09::t_89f2b4e1dc4afe 31
+.gitignore
+  s_35dd4db39d7d09::t_5ae3214da60b03 20-22
+.release-please-manifest.json
+  s_35dd4db39d7d09::t_0dd1e5387a0a66 2
+CHANGELOG.md
+  s_35dd4db39d7d09::t_7a2c3bf7cb69a7 3-12
+Cargo.lock
+  s_35dd4db39d7d09::t_2dadc6c72ce777 2520
+Cargo.toml
+  s_35dd4db39d7d09::t_cabdfdf2d1e560 5
+README.md
+  s_35dd4db39d7d09::t_bbf6225ff56cbb 148
+docs/comparison.md
+  s_35dd4db39d7d09::t_0b81621cf2909a 50,88-96,183,185-190,246-247,252
+docs/gateway-protocol.md
+  s_35dd4db39d7d09::t_d675f3770964ea 1-308
+docs/gateway-protocol.raw.md
+  s_35dd4db39d7d09::t_1db7c5fb639352 1-218
+docs/m1-responses-translation.md
+  s_35dd4db39d7d09::t_711dadb12e3656 139-141,145,147-148,150-158
+docs/m7-codex-websocket.md
+  s_35dd4db39d7d09::t_b053a42d60c2e9 48-50,87-89,104,108-119,121-132,135,145-146
+site/src/content/docs/guides/codex.md
+  s_35dd4db39d7d09::t_7d5cb68b5b220b 324-352,365
+site/src/content/docs/ja/guides/codex.md
+  s_35dd4db39d7d09::t_cdb280ee989506 278-308,321
+site/src/content/docs/ja/reference/troubleshooting.md
+  s_35dd4db39d7d09::t_554b29818fa101 17
+site/src/content/docs/ko/guides/codex.md
+  s_35dd4db39d7d09::t_55c9d1be79dbcb 261-288,301
+site/src/content/docs/ko/reference/troubleshooting.md
+  s_35dd4db39d7d09::t_7de5fdc06a332b 17
+site/src/content/docs/reference/configuration.md
+  s_35dd4db39d7d09::t_2f6a7e582fc224 56-57
+site/src/content/docs/reference/troubleshooting.md
+  s_35dd4db39d7d09::t_ad928aaa489e69 17
+site/src/content/docs/zh-cn/guides/codex.md
+  s_35dd4db39d7d09::t_774ae4fbdef9dc 318-342,355
+site/src/content/docs/zh-cn/reference/troubleshooting.md
+  s_35dd4db39d7d09::t_5ea73c04b04d8a 17
+src/adapters/anthropic/mod.rs
+  s_35dd4db39d7d09::t_d579d07fe9b577 13,120,126,325,460,471
+src/adapters/cursor/connect.rs
+  s_35dd4db39d7d09::t_9add0d460b9e37 179-182,241-254
+src/adapters/cursor/mod.rs
+  s_35dd4db39d7d09::t_38546145f1e5eb 226-229,240-254,270-285,287-289,305-311,324-352,354,359-361,364,373-375,378-385,396-485
+src/adapters/cursor/stream.rs
+  s_35dd4db39d7d09::t_c1c6f3eba1589d 4,45-48,50,149-168
+src/adapters/responses/codex_ws.rs
+  s_35dd4db39d7d09::t_987ce36cc969c6 14-25,27,29,32-33,37,40,45,58-62,64-67,92-112,114-137,139-144,147-164,166-195,201-202,206,215,222,232,291-294,343-345,347-351,354-358,369,374,377-380,382,389-410,416,422-435,437-440,448-455,457-458,461,464-467,472-473,475-476,479,483-515,567-573,576-590,593-612,614-632,635-658,662-678,681-694,699,702-707,722-725,731-734,737-755,757-761,765,767,769-773,781-785,791-795,797,799-803,1011-1012,1092,1107-1108,1248-1249,1335-1336,1373-1893
+src/adapters/responses/mod.rs
+  s_35dd4db39d7d09::t_0cf3f5a1813800 1-3,12,14,78-84,114,136,154,170-176,181-187,196,201,249,255,278,308,315-322,503,506,565,567,655,660,1127-1130,1133-1135,1152-1154,1159-1204,1210-1211
+src/auth/claude/auth.rs
+  s_35dd4db39d7d09::t_e5b2b2c6433f15 3,27,344-352
+src/auth/claude/login.rs
+  s_35dd4db39d7d09::t_8559c8b7eeae94 12,19,33,45,85,94,123,161,306
+src/auth/claude/mod.rs
+  s_35dd4db39d7d09::t_3188cbfa225e2d 1-3
+src/auth/claude/store.rs
+  s_35dd4db39d7d09::t_6d170dc0f6cec2 6,17
+src/auth/codex/auth.rs
+  s_35dd4db39d7d09::t_20c09cdf49952a 4,12,255-258,260,340-444
+src/auth/codex/mod.rs
+  s_35dd4db39d7d09::t_ba6eaefeeea83e 1
+src/auth/cursor/auth.rs
+  s_35dd4db39d7d09::t_ef9837a243c612 8-11,54,61,77,231-232,247-254,266,268,317
+src/auth/cursor/login.rs
+  s_35dd4db39d7d09::t_bd015aaab53001 9-11,57
+src/auth/cursor/mod.rs
+  s_35dd4db39d7d09::t_d8235ea232cb9c 1-2
+src/auth/mod.rs
+  s_35dd4db39d7d09::t_c45bf573c45f12 12-14,16-17,58,72,85,116,130,133,139-140,168,258,268
+src/auth/shared.rs
+  s_35dd4db39d7d09::t_2ad6605e717981 1-121
+src/auth/xai/auth.rs
+  s_35dd4db39d7d09::t_184d684b9caf9b 3,9,21,432-437
+src/auth/xai/login.rs
+  s_35dd4db39d7d09::t_3e1243d3b04ad4 7,18,22-23,96,149,250-271,292-295,300-304
+src/auth/xai/mod.rs
+  s_35dd4db39d7d09::t_d61a3e59934c9b 1-2
+src/config.rs
+  s_35dd4db39d7d09::t_1833ab457a16e4 324-335,448-469,627,645,685,1146-1162,1514-1542
+src/main.rs
+  s_35dd4db39d7d09::t_54024ee205decb 94,109,118,136,139
+src/model/responses.rs
+  s_35dd4db39d7d09::t_db901c2a206b22 6,47-50,72,91,195-202,204-256,733-742,745,747-748,750-751,756-781,807
+src/model/responses_request.rs
+  s_35dd4db39d7d09::t_6fb02189b32b5d 9-23,26,30-33,37,41-44,63,68-73,75-94,97,111,114,122,268,287,289,422-428,430-435,439,449,452-461,464-465,469-531,748-761,767-771,774-777,780-783,857-862,864,867-870,915,984,1002
+tests/inbound_auth.rs
+  s_35dd4db39d7d09::t_e5c6bc10725f77 60
+tests/responses_translate.rs
+  s_35dd4db39d7d09::t_11ec74431c6b1d 6-7,25-31,73-79,502,702,728-729,757-758,770-771,783,796-797,822,858,903,940,978-981,986-993,999-1004,1010-1040,1218,1293,1472,1483-1878
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "9324d3057c5c46d45a0d03209e87c905fd7d7658",
+  "prompts": {},
+  "sessions": {
+    "s_35dd4db39d7d09": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4208fba1-3037-44f2-b03a-0d3d537ab311",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
