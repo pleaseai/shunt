@@ -1,0 +1,27 @@
+.claude/agent-memory/review-review-code-reviewer/project_shunt_responses_adapter.md
+  s_5fd23b176485f0::t_71d68bf56caf75 51-75
+.claude/agent-memory/review-review-code-reviewer/shunt-codex-subagent-msgstart-input-review.md
+  s_5fd23b176485f0::t_815ead57668ef4 3
+  s_5fd23b176485f0::t_33db5b267c9d4d 25,27-50,57-64
+.claude/agent-memory/review-review-documentation-analyzer/shunt_pr112_doc_drift_pattern.md
+  s_5fd23b176485f0::t_b8ee2c7ae7fe03 38-42
+  s_5fd23b176485f0::t_990ae4eb3e0869 24-29
+.claude/agent-memory/review-review-code-reviewer/MEMORY.md
+  s_5fd23b176485f0::t_f2b3aa7d1f6725 8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "5f96215cc7933435308137014f3be7acf6311714",
+  "prompts": {},
+  "sessions": {
+    "s_5fd23b176485f0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4b944997-7865-4eda-9195-e747b7068750",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
