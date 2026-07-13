@@ -974,6 +974,62 @@ fn streaming_state_machine_emits_incremental_anthropic_events() {
 }
 
 #[test]
+fn message_start_seeds_input_token_estimate() {
+    // Responses reports usage only at response.completed, so without a seed the
+    // message_start usage is {input_tokens:0}. Claude Code's per-subagent
+    // progress tracker reads that first snapshot, so codex subagents show 0
+    // context. `with_input_estimate` mirrors native Anthropic by seeding a
+    // prompt-size estimate into message_start; the accurate upstream total must
+    // still flow to message_delta unchanged.
+    let fixture = concat!(
+        "event: response.created\n",
+        "data: {\"response\":{\"id\":\"resp_1\"}}\n\n",
+        "event: response.output_item.added\n",
+        "data: {\"item\":{\"type\":\"message\"}}\n\n",
+        "event: response.output_text.delta\n",
+        "data: {\"delta\":\"hi\"}\n\n",
+        "event: response.output_text.done\n",
+        "data: {}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{\"usage\":{\"input_tokens\":1200,\"output_tokens\":9}}}\n\n",
+        "data: [DONE]\n\n"
+    );
+
+    // Default (no seed): message_start carries the {input_tokens:0} placeholder.
+    let mut default_machine = AnthropicSseMachine::new("gpt-5.6-sol", false, false);
+    let default_emitted = parse_sse_events(fixture)
+        .into_iter()
+        .flat_map(|event| default_machine.apply(event))
+        .collect::<String>();
+    assert!(
+        default_emitted.contains("\"usage\":{\"input_tokens\":0,\"output_tokens\":0}"),
+        "unseeded message_start should keep the input_tokens:0 placeholder"
+    );
+
+    // Seeded: message_start carries the estimate, while message_delta still
+    // reports the real upstream total (1200) — proving the seed touches only the
+    // opening snapshot and never the authoritative completion usage.
+    let mut seeded_machine =
+        AnthropicSseMachine::new("gpt-5.6-sol", false, false).with_input_estimate(4321);
+    let seeded_emitted = parse_sse_events(fixture)
+        .into_iter()
+        .flat_map(|event| seeded_machine.apply(event))
+        .collect::<String>();
+    assert!(
+        seeded_emitted.contains("\"usage\":{\"input_tokens\":4321,\"output_tokens\":0}"),
+        "seeded message_start should carry the estimate, got: {seeded_emitted}"
+    );
+    assert!(
+        seeded_emitted.contains("\"input_tokens\":1200"),
+        "message_delta must still carry the real upstream input_tokens"
+    );
+    assert!(
+        !seeded_emitted.contains("\"input_tokens\":4321,\"cache_read_input_tokens\""),
+        "the estimate must not leak into the message_delta usage"
+    );
+}
+
+#[test]
 fn maps_upstream_error_statuses() {
     assert_eq!(
         anthropic_error_type(StatusCode::BAD_REQUEST),

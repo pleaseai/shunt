@@ -38,6 +38,15 @@ pub struct AnthropicSseMachine {
     input_tokens: u64,
     cache_read_tokens: u64,
     output_tokens: u64,
+    /// Prompt-size estimate (local tiktoken) surfaced in the `message_start`
+    /// `usage.input_tokens`. The Responses API only reports real usage at
+    /// `response.completed`, so `message_start` would otherwise carry `0`.
+    /// Native Anthropic puts a real `input_tokens` there, and Claude Code's
+    /// per-subagent progress tracker reads usage from that first (yield-time)
+    /// snapshot — so a `0` leaves codex subagents showing 0 context in the agent
+    /// panel. Seeding an estimate mirrors Anthropic; the accurate value still
+    /// lands in the terminal `message_delta` (see [`Self::usage_value`]).
+    input_tokens_estimate: u64,
     content: Vec<Value>,
     text_buffer: String,
     text_citations: Vec<Value>,
@@ -82,6 +91,7 @@ impl AnthropicSseMachine {
             input_tokens: 0,
             cache_read_tokens: 0,
             output_tokens: 0,
+            input_tokens_estimate: 0,
             content: Vec::new(),
             text_buffer: String::new(),
             text_citations: Vec::new(),
@@ -90,6 +100,15 @@ impl AnthropicSseMachine {
             web_search_indexes: HashMap::new(),
             tool_search_native,
         }
+    }
+
+    /// Seed the `message_start` prompt-size estimate (see
+    /// [`Self::input_tokens_estimate`]). The streaming paths set this from a
+    /// local tiktoken count of the request; it defaults to `0` (unknown).
+    #[must_use]
+    pub fn with_input_estimate(mut self, input_tokens: u64) -> Self {
+        self.input_tokens_estimate = input_tokens;
+        self
     }
 
     pub fn apply(&mut self, event: ResponseEvent) -> Vec<String> {
@@ -169,7 +188,12 @@ impl AnthropicSseMachine {
                         "content": [],
                         "stop_reason": null,
                         "stop_sequence": null,
-                        "usage": {"input_tokens": 0, "output_tokens": 0}
+                        // Seed the prompt-size estimate here (Responses reports
+                        // real usage only at completion). Mirrors Anthropic so
+                        // Claude Code's subagent progress tracker, which reads
+                        // this first snapshot, shows nonzero context; the
+                        // accurate total still arrives in `message_delta`.
+                        "usage": {"input_tokens": self.input_tokens_estimate, "output_tokens": 0}
                     }
                 }),
             ),

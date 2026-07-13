@@ -13,7 +13,7 @@ use self::codex_ws::{CodexWsError, CodexWsEvents};
 use crate::{
     adapters::{Adapter, AdapterError, AdapterFuture},
     auth::{resolve_credential, Credential},
-    config::AuthMode,
+    config::{AuthMode, CountTokens},
     error::ShuntError,
     model::responses::{
         map_error_value, parse_sse_events, translate_request, AnthropicSseMachine, ResponseEvent,
@@ -80,6 +80,22 @@ async fn forward(
     let tool_search_native = state
         .config
         .native_tool_search(&route.provider, &route.upstream_model);
+    // Seed message_start's usage.input_tokens with a local tiktoken estimate.
+    // The Responses API reports real usage only at response.completed, so
+    // message_start would carry 0 — and Claude Code's per-subagent progress
+    // tracker reads that first snapshot, leaving codex subagents at 0 context in
+    // the agent panel. Gated on the provider's local-counting opt-in (the same
+    // CountTokens knob as the count_tokens endpoint); the accurate total still
+    // lands in the terminal message_delta. See model/responses.rs.
+    let input_tokens_estimate = match state
+        .config
+        .provider(&route.provider)
+        .map(|provider| provider.count_tokens)
+        .unwrap_or(CountTokens::Estimate)
+    {
+        CountTokens::Tiktoken => crate::count_tokens::count_input_tokens(&body),
+        CountTokens::Estimate => 0,
+    };
     let upstream_body = translate_request(&body, &route, flavor, tool_search_native)
         .map_err(|error| own_error(error.to_string()))?;
     tracing::debug!(
@@ -112,6 +128,7 @@ async fn forward(
             client_wants_stream,
             thinking_enabled,
             tool_search_native,
+            input_tokens_estimate,
         )
         .await
         {
@@ -134,6 +151,7 @@ async fn forward(
         client_wants_stream,
         thinking_enabled,
         tool_search_native,
+        input_tokens_estimate,
         session_id.as_deref(),
     )
     .await
@@ -152,6 +170,7 @@ async fn forward_http(
     client_wants_stream: bool,
     thinking_enabled: bool,
     tool_search_native: bool,
+    input_tokens_estimate: u64,
     session_id: Option<&str>,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let upstream = request_builder(state, route, credential, session_id)
@@ -172,6 +191,7 @@ async fn forward_http(
                 route.model.clone(),
                 thinking_enabled,
                 tool_search_native,
+                input_tokens_estimate,
                 keepalive,
             ),
         ))
@@ -194,11 +214,13 @@ fn stream_response(
     model: String,
     thinking_enabled: bool,
     tool_search_native: bool,
+    input_tokens_estimate: u64,
     keepalive: std::time::Duration,
 ) -> axum::response::Response {
     let bytes = upstream.bytes_stream();
     let parser = SseParser::default();
-    let machine = AnthropicSseMachine::new(model, thinking_enabled, tool_search_native);
+    let machine = AnthropicSseMachine::new(model, thinking_enabled, tool_search_native)
+        .with_input_estimate(input_tokens_estimate);
     let output = stream::unfold((bytes, parser, machine, false), |state| async move {
         let (mut bytes, mut parser, mut machine, mut finished) = state;
         if finished {
@@ -276,6 +298,7 @@ async fn forward_websocket(
     client_wants_stream: bool,
     thinking_enabled: bool,
     tool_search_native: bool,
+    input_tokens_estimate: u64,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let pool_key = pool_key.filter(|key| !key.is_empty());
     let http_url = responses_url(&state.config, &route.provider);
@@ -306,6 +329,7 @@ async fn forward_websocket(
                 route.model.clone(),
                 thinking_enabled,
                 tool_search_native,
+                input_tokens_estimate,
                 keepalive,
             ),
         ))
@@ -501,9 +525,11 @@ fn stream_events_response(
     model: String,
     thinking_enabled: bool,
     tool_search_native: bool,
+    input_tokens_estimate: u64,
     keepalive: std::time::Duration,
 ) -> axum::response::Response {
-    let machine = AnthropicSseMachine::new(model, thinking_enabled, tool_search_native);
+    let machine = AnthropicSseMachine::new(model, thinking_enabled, tool_search_native)
+        .with_input_estimate(input_tokens_estimate);
     let output = stream::unfold(
         (buffered, events, machine, false),
         |(mut buffered, mut events, mut machine, finished)| async move {
