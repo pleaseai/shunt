@@ -1,5 +1,5 @@
 ---
-title: Why shunt
+title: shunt とは
 description: shunt とは何か、他の Claude Code プロキシとどう違うか、いつ使うか。
 ---
 

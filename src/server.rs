@@ -101,7 +101,8 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState), ConfigError
     // `/` and `/health` stay unauthenticated even when `[server.auth]` is
     // configured (healthcheck tools rarely carry tokens); they must never
     // expose config, credentials, or upstream details — only version, status,
-    // and the already-public endpoint list.
+    // and the already-public endpoint list. Discovery handlers enforce their
+    // own endpoint-specific auth policy against the same refreshed state.
     let mut router = Router::new()
         .route("/", get(root_index))
         .route("/health", get(health))

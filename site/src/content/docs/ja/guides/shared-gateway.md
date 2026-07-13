@@ -1,5 +1,5 @@
 ---
-title: Sharing a Gateway
+title: ゲートウェイの共有
 description: 共有デプロイ向けのクライアント単位トークンと、プロキシやトンネル向けの SSE キープアライブ ping。
 ---
 
@@ -33,6 +33,8 @@ export ANTHROPIC_CUSTOM_HEADERS="x-shunt-token: <your token>"
 :::note
 これはアプリケーションレイヤーの識別にすぎません — トランスポート暗号化はデプロイ側から来ます（WireGuard/Tailscale トンネル、または前段での TLS 終端）。shunt 自身は平文 HTTP を提供します。
 :::
+
+オプトインの[管理 Web サーフェス](/ja/guides/admin-remote-provisioning/)も有効にする場合は、別個の管理トークンで保護し、HTTPS または信頼できるトンネル経由でのみ公開してください。
 
 ## SSE キープアライブ ping
 

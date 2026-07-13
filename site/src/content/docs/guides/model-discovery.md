@@ -30,6 +30,8 @@ For `gpt-*` ids without an alias, use `ANTHROPIC_CUSTOM_MODEL_OPTION` instead �
 
 A claude.ai OAuth *login* alone won't trigger discovery. Claude Code only issues the `/v1/models` request when `ANTHROPIC_AUTH_TOKEN`, an API key, or an `apiKeyHelper` is set; under a plain Max/Pro subscription login it sends nothing — no request reaches shunt, no cache is written — even with the flag on. See [choosing the credential](/guides/connect-claude-code/#2-choose-the-anthropic-credential); `claude setup-token` is the recommended route.
 
+When shunt has [`[server.auth]`](/guides/shared-gateway/) enabled, discovery also requires a valid client token. It accepts the configured client-token header (for example through `ANTHROPIC_CUSTOM_HEADERS`) and Claude Code's discovery credential forms: `x-api-key` or `Authorization: Bearer`. Missing or invalid inbound credentials return `401 authentication_error`. Without `[server.auth]`, discovery remains open.
+
 ## Debugging
 
 Discovery fails **silently** (3-second timeout, any redirect counts as failure) and falls back to the cached/built-in list. Run `claude --debug` and look for `[gatewayDiscovery]` lines to confirm it ran.
