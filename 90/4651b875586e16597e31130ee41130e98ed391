@@ -1,0 +1,29 @@
+.claude/agent-memory/review-review-security-reviewer/project_m9-admin-surface-security.md
+  s_18f0eea5e38b80::t_d4abbd989b8835 13
+.claude/agent-memory/review-review-pr-test-analyzer/shunt-admin-surface-coverage.md
+  s_69686c27ca701c::t_391c78be9b34eb 8,12-13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "904651b875586e16597e31130ee41130e98ed391",
+  "prompts": {},
+  "sessions": {
+    "s_18f0eea5e38b80": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9ced28d7-2fc4-4823-9034-b1700c49530e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_69686c27ca701c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2f71c35a-6548-4c76-a384-46dd4f77ac01",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
