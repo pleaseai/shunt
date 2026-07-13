@@ -101,7 +101,7 @@ the #43 shim regardless of the flag.
 `[server.admin]` table is present (`src/server.rs:117-118`, `src/admin/mod.rs:87-101`). It
 provisions Anthropic `claude_oauth` accounts (add/list/replace/remove) through the existing
 `claude_login` flow and renders a **read-only account-pool dashboard** — per-account 5h/7d
-quota utilization, reset times, cooldown, and near-quota flags (`src/accounts.rs:46-78`).
+quota utilization, cooldown, and near-quota flags (`src/accounts.rs:46-78`).
 Deliberately narrow: Anthropic accounts only (no ChatGPT/Codex), and no request/token usage
 or cost accounting — well short of CLIProxyAPI's full management API + quota/usage manager.
 
