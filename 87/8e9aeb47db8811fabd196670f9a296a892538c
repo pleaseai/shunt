@@ -1,0 +1,21 @@
+site/src/content/docs/ko/guides/anthropic-multi-account.md
+  s_8f20232f2e5a50::t_af94a25974dd24 36
+site/src/content/docs/zh-cn/guides/anthropic-multi-account.md
+  s_8f20232f2e5a50::t_67f6e93e54b92f 36
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "878e9aeb47db8811fabd196670f9a296a892538c",
+  "prompts": {},
+  "sessions": {
+    "s_8f20232f2e5a50": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dbdeab54-bb1d-4c77-a5b3-0e800a2fea13",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
