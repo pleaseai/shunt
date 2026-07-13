@@ -19,6 +19,12 @@ use crate::config::AccountConfig;
 
 const SETUP_TOKEN_LIFETIME: Duration = Duration::from_secs(365 * 24 * 60 * 60);
 
+/// `claudeAiOauth.shuntCredentialKind` value marking a long-lived, non-refreshable
+/// setup token. Written here by [`store_setup_token`] and read back by
+/// `account_is_static_store_token` in the Anthropic adapter — shared so the two
+/// sides cannot silently drift.
+pub(crate) const SETUP_TOKEN_KIND: &str = "setup_token";
+
 pub fn default_accounts_dir() -> PathBuf {
     env::var_os("SHUNT_CLAUDE_ACCOUNTS_DIR")
         .map(PathBuf::from)
@@ -146,7 +152,7 @@ pub fn store_setup_token(name: &str, token: &str) -> anyhow::Result<PathBuf> {
             "claudeAiOauth": {
                 "accessToken": token,
                 "expiresAt": expires_at,
-                "shuntCredentialKind": "setup_token"
+                "shuntCredentialKind": SETUP_TOKEN_KIND
             }
         }),
     )

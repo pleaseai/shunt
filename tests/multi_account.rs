@@ -742,3 +742,155 @@ async fn all_accounts_unresolvable_returns_bad_gateway() {
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     upstream.verify().await;
 }
+
+#[tokio::test]
+async fn pause_same_retry_succeeds_and_relays_without_rotating() {
+    // A plain 429 (no quota header) pauses and retries the SAME account; when the
+    // retry clears (200), that response is relayed and the account marked healthy.
+    // The pool never rotates to account-b.
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = ["fake-oauth-", "pauseok-a"].concat();
+    let token_b = ["fake-oauth-", "pauseok-b"].concat();
+    std::env::set_var("SHUNT_TEST_MULTI_PAUSEOK_A", &token_a);
+    std::env::set_var("SHUNT_TEST_MULTI_PAUSEOK_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    // First call to account-a: a plain 429 (throttle). Higher priority + capped at
+    // one response so the post-sleep retry falls through to the 200 mock below.
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("retry-after", "0")
+                .set_body_string(r#"{"error":"transient throttle"}"#),
+        )
+        .up_to_n_times(1)
+        .with_priority(1)
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    // The retry on the same account succeeds.
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"a"}"#))
+        .with_priority(2)
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    // account-b must never be touched.
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"b"}"#))
+        .expect(0)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        account("account-a", "SHUNT_TEST_MULTI_PAUSEOK_A", "uuid-a"),
+        account("account-b", "SHUNT_TEST_MULTI_PAUSEOK_B", "uuid-b"),
+    ))
+    .await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-a"
+    );
+    assert_eq!(response.text().await.unwrap(), r#"{"account":"a"}"#);
+    upstream.verify().await;
+
+    std::env::remove_var("SHUNT_TEST_MULTI_PAUSEOK_A");
+    std::env::remove_var("SHUNT_TEST_MULTI_PAUSEOK_B");
+}
+
+/// Write a store account file marked as a long-lived, non-refreshable setup token
+/// (`shuntCredentialKind: "setup_token"`, no refreshToken) with a far-future
+/// expiry so its access token is used verbatim on the upstream POST.
+fn write_setup_token_account(dir: &std::path::Path, name: &str, access: &str) {
+    let body = format!(
+        r#"{{"claudeAiOauth":{{"accessToken":"{access}","expiresAt":4102444800000,"shuntCredentialKind":"setup_token"}}}}"#
+    );
+    fs::write(dir.join(format!("{name}.json")), body).unwrap();
+}
+
+#[tokio::test]
+async fn static_setup_token_account_cools_down_without_refreshing() {
+    // A store account flagged as a setup token is non-refreshable: a 401 must cool
+    // it down and rotate WITHOUT attempting a token refresh. This exercises
+    // account_is_static_store_token()'s store path (vs. the token_env short-circuit
+    // covered by unauthorized_static_account_cools_down_and_rotates).
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = REFRESH_ENV_LOCK.lock().await;
+    let setup = ["fake-oauth-", "setup-static"].concat();
+    let token_b = ["fake-oauth-", "setupstatic-b"].concat();
+    std::env::set_var("SHUNT_TEST_MULTI_SETUPSTATIC_B", &token_b);
+
+    let accounts_dir = unique_temp_dir("setupstatic");
+    write_setup_token_account(&accounts_dir, "account-a", &setup);
+    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
+
+    // The refresh endpoint must never be called for a setup token.
+    let auth = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(r#"{"access_token":"unexpected","expires_in":3600}"#),
+        )
+        .expect(0)
+        .mount(&auth)
+        .await;
+    std::env::set_var(
+        "SHUNT_CLAUDE_TOKEN_URL",
+        format!("{}/oauth/token", auth.uri()),
+    );
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(setup.clone()))
+        .respond_with(
+            ResponseTemplate::new(401).set_body_string(r#"{"error":"revoked setup token"}"#),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"b"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        store_account("account-a"),
+        account("account-b", "SHUNT_TEST_MULTI_SETUPSTATIC_B", "uuid-b"),
+    ))
+    .await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+    upstream.verify().await;
+    // expect(0) on the refresh endpoint: a setup token is never refreshed.
+    auth.verify().await;
+
+    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
+    std::env::remove_var("SHUNT_TEST_MULTI_SETUPSTATIC_B");
+    fs::remove_dir_all(&accounts_dir).ok();
+}

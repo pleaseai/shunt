@@ -219,6 +219,16 @@ async fn forward_claude_oauth(
                 state
                     .accounts
                     .cooldown(&route.provider, &account.name, cooldown);
+                // Log on the way out like every other failover arm in this loop
+                // (resolve/post/refresh errors all warn) — this is the most common
+                // failover trigger (quota-rejected 429 or any 5xx), so an operator
+                // watching logs during an incident sees why traffic shifted.
+                tracing::warn!(
+                    provider = %route.provider,
+                    account = %account.name,
+                    status = %status,
+                    "Claude OAuth account failed over; cooling down and rotating to the next account"
+                );
                 last_response = Some(upstream);
             }
             FailoverAction::PauseSame => {
@@ -372,7 +382,13 @@ async fn forward_claude_oauth(
                         }
                         return relay_response(&state, retry, Some(&account.name));
                     }
-                    _ => {
+                    // Exhaustive rather than `_` so a new FailoverAction variant
+                    // forces a decision here. RefreshRetry cannot recur (a 401 is
+                    // special-cased just above), but listing it keeps this
+                    // compiler-checked without a panic-on-invariant-break arm.
+                    FailoverAction::Rotate
+                    | FailoverAction::PauseSame
+                    | FailoverAction::RefreshRetry => {
                         let cooldown = if retry_status == StatusCode::TOO_MANY_REQUESTS {
                             accounts::retry_after(retry.headers())
                                 .unwrap_or(Duration::from_secs(60))
@@ -428,7 +444,7 @@ fn account_is_static_store_token(account: &crate::config::AccountConfig) -> bool
                 .map(str::to_owned)
         })
         .as_deref()
-        == Some("setup_token")
+        == Some(auth::claude_store::SETUP_TOKEN_KIND)
 }
 
 async fn post_upstream(
