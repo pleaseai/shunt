@@ -1,0 +1,21 @@
+.claude/agent-memory/review-review-documentation-analyzer/project_shunt_pr103_i18n_comparison_review.md
+  s_8f20232f2e5a50::t_0b376f9535ec3f 1-36
+.claude/agent-memory/review-review-documentation-analyzer/MEMORY.md
+  s_8f20232f2e5a50::t_d4ef1e3127da27 5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "a16afe1b28bc5cc319c4139e24bf6625d629ce12",
+  "prompts": {},
+  "sessions": {
+    "s_8f20232f2e5a50": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dbdeab54-bb1d-4c77-a5b3-0e800a2fea13",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
