@@ -15,7 +15,7 @@ shunt is a **spec-compliant Claude Code LLM gateway**: it implements Claude Code
 official `ANTHROPIC_BASE_URL` gateway contract (`/v1/messages`, `/v1/models`
 discovery, attribution/header pass-through) and does **selective, per-`model`-id**
 diversion — keep the main session on Claude, divert only the models you name onto
-another provider (ChatGPT/Codex, OpenAI, Cursor, xAI). It translates Anthropic Messages ⇄
+another provider (ChatGPT/Codex, OpenAI, Cursor, xAI, Grok). It translates Anthropic Messages ⇄
 the OpenAI Responses API for mapped models, and passes everything else through to
 Anthropic unchanged. Routing is purely by the request's `model` id — no
 prompt-shape fingerprinting (`README.md:104-131`).
@@ -50,7 +50,7 @@ Legend: ● full · ◐ partial / workaround · ○ none · — n/a by design
 | tool-search / `defer_loading` / `tool_reference` handling | ◐ (shim: works, no ctx savings; native opt-in⁸) | ○⁵ | ◐ (upstream) / ● (fork) | ○ | ○ |
 | Reasoning round-trip to Claude Code `thinking` | ● (encrypted) | ◐ (Kimi/Grok; **Codex dropped**) | ◐ | ○ | ◐ |
 | Multi-account load balancing / failover | ◐⁷ | ○ | ● | some | ● |
-| Backend breadth | 5 providers¹ | 4 subs⁶ | 11 backends² | varies | 100–1600+ |
+| Backend breadth | 6 providers¹ | 4 subs⁶ | 11 backends² | varies | 100–1600+ |
 | Management API / dashboard | ◐⁹ | ◐ (monitor TUI) | ● | some | ● |
 | Usage / quota / cost tracking | ◐⁹ (pool quota state; no usage/cost) | ○ | ● | some | ● |
 | Plugin / interceptor system | ○ | ○ | ● | some | ● |
@@ -58,9 +58,10 @@ Legend: ● full · ◐ partial / workaround · ○ none · — n/a by design
 | Config model | TOML + env, hot-reload | env + config file | YAML + mgmt API | varies | YAML/UI |
 
 ¹ shunt: three adapter *kinds* (`anthropic` passthrough, `responses` translation, and
-`cursor` ConnectRPC/protobuf translation — `src/config.rs:395-408`) with 5 built-in providers
-seeded by default (Anthropic, OpenAI, ChatGPT/Codex, Cursor, xAI — `src/config.rs:654-693`);
-any other Anthropic-Messages or OpenAI-Responses endpoint is config-only.
+`cursor` ConnectRPC/protobuf translation — `src/config.rs:395-408`) with 6 built-in providers
+seeded by default (Anthropic, OpenAI, ChatGPT/Codex, Cursor, and xAI Grok on two surfaces —
+`xai` API-key and `grok` subscription-OAuth — `src/config.rs:652-716`); any other
+Anthropic-Messages or OpenAI-Responses endpoint is config-only.
 ² CLIProxyAPI: aistudio, antigravity, claude, codex, codex-ws, gemini, gemini-vertex,
 kimi, openai-compat, xai, xai-ws.
 ³ raine/ccp routes by `ANTHROPIC_MODEL` per-model like shunt, but has **no
