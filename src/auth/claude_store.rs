@@ -110,9 +110,13 @@ fn read_account_uuid(path: &Path) -> Option<String> {
 }
 
 /// Import a refreshable Claude Code credential file without changing the source.
-pub fn import_credentials(name: &str, source: &Path) -> anyhow::Result<PathBuf> {
+pub fn import_credentials(
+    name: &str,
+    source: &Path,
+    account_uuid: Option<&str>,
+) -> anyhow::Result<PathBuf> {
     validate_account_name(name)?;
-    let value: Value = serde_json::from_slice(&fs::read(source)?).map_err(|error| {
+    let mut value: Value = serde_json::from_slice(&fs::read(source)?).map_err(|error| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!("invalid Claude credentials JSON: {error}"),
@@ -135,11 +139,21 @@ pub fn import_credentials(name: &str, source: &Path) -> anyhow::Result<PathBuf> 
             source.display()
         );
     }
+    if let Some(account_uuid) = account_uuid.filter(|uuid| !uuid.is_empty()) {
+        value
+            .as_object_mut()
+            .expect("validated credential file is a JSON object")
+            .insert("shuntAccountUuid".to_string(), json!(account_uuid));
+    }
     write_account(name, &value)
 }
 
 /// Store a one-year token in the shape consumed by `ClaudeAuthStore`.
-pub fn store_setup_token(name: &str, token: &str) -> anyhow::Result<PathBuf> {
+pub fn store_setup_token(
+    name: &str,
+    token: &str,
+    account_uuid: Option<&str>,
+) -> anyhow::Result<PathBuf> {
     validate_account_name(name)?;
     let token = token.trim();
     if token.is_empty() || token.chars().any(char::is_whitespace) {
@@ -151,16 +165,20 @@ pub fn store_setup_token(name: &str, token: &str) -> anyhow::Result<PathBuf> {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64;
-    write_account(
-        name,
-        &json!({
-            "claudeAiOauth": {
-                "accessToken": token,
-                "expiresAt": expires_at,
-                "shuntCredentialKind": SETUP_TOKEN_KIND
-            }
-        }),
-    )
+    let mut value = json!({
+        "claudeAiOauth": {
+            "accessToken": token,
+            "expiresAt": expires_at,
+            "shuntCredentialKind": SETUP_TOKEN_KIND
+        }
+    });
+    if let Some(account_uuid) = account_uuid.filter(|uuid| !uuid.is_empty()) {
+        value
+            .as_object_mut()
+            .expect("setup-token credential is a JSON object")
+            .insert("shuntAccountUuid".to_string(), json!(account_uuid));
+    }
+    write_account(name, &value)
 }
 
 fn write_account(name: &str, value: &Value) -> anyhow::Result<PathBuf> {
@@ -217,11 +235,12 @@ mod tests {
         let dir = temp_dir("setup");
         std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
 
-        let path = store_setup_token("ci", "token-one").unwrap();
-        store_setup_token("ci", "token-two").unwrap();
+        let path = store_setup_token("ci", "token-one", Some("uuid-one")).unwrap();
+        store_setup_token("ci", "token-two", Some("uuid-two")).unwrap();
         let value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(value["claudeAiOauth"]["accessToken"], "token-two");
         assert_eq!(value["claudeAiOauth"]["shuntCredentialKind"], "setup_token");
+        assert_eq!(value["shuntAccountUuid"], "uuid-two");
         assert!(value["claudeAiOauth"]["expiresAt"].as_i64().unwrap() > 0);
 
         #[cfg(unix)]
@@ -255,15 +274,14 @@ mod tests {
         let accounts_dir = dir.join("accounts");
         std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
 
-        import_credentials("zeta", &source).unwrap();
-        import_credentials("alpha", &source).unwrap();
+        import_credentials("zeta", &source, Some("uuid-zeta")).unwrap();
+        import_credentials("alpha", &source, Some("uuid-alpha")).unwrap();
         fs::write(accounts_dir.join("ignore.txt"), "not an account").unwrap();
-        let names = scan_accounts()
-            .unwrap()
-            .into_iter()
-            .map(|account| account.name)
-            .collect::<Vec<_>>();
-        assert_eq!(names, ["alpha", "zeta"]);
+        let accounts = scan_accounts().unwrap();
+        assert_eq!(accounts[0].name, "alpha");
+        assert_eq!(accounts[0].uuid.as_deref(), Some("uuid-alpha"));
+        assert_eq!(accounts[1].name, "zeta");
+        assert_eq!(accounts[1].uuid.as_deref(), Some("uuid-zeta"));
 
         std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
         let _ = fs::remove_dir_all(dir);

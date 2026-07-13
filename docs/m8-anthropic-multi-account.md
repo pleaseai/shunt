@@ -62,7 +62,7 @@ Each account has these fields:
 
 `credentials` and `token_env` are mutually exclusive. A name-only account reads `~/.shunt/accounts/claude/<name>.json` (override the directory with `SHUNT_CLAUDE_ACCOUNTS_DIR`). With an entirely empty `accounts` list, shunt scans that directory and uses every valid `*.json` account in filename order. Store files are written atomically at `0600`, and the store directory is `0700` on Unix.
 
-`shunt login claude --name <name>` imports the current refreshable Claude Code credential from `~/.claude/.credentials.json` (or `CLAUDE_CREDENTIALS`) into that store without modifying the source. `--long-lived` launches the installed `claude setup-token` command on the terminal, then asks you to paste its generated token into a hidden prompt. Claude's command does not save the token itself; shunt stores it without printing it. Reusing a name replaces that store file.
+`shunt login claude --name <name>` imports the current refreshable Claude Code credential from `~/.claude/.credentials.json` (or `CLAUDE_CREDENTIALS`) into that store without modifying the source and associates it with the current account UUID from Claude Code's global configuration. `--long-lived` runs shunt's equivalent of Claude Code's one-year, inference-only PKCE setup-token flow, obtains the access token and its issuing account UUID from the token exchange, and stores both without printing the token. Reusing a name replaces that store file. If you already have an external setup token rather than provisioning through shunt, use `token_env` and configure `uuid` explicitly because an inference-only token cannot be introspected afterward.
 
 The built-in `anthropic` provider remains `auth = "passthrough"` by default. Multi-account behavior is opt-in.
 

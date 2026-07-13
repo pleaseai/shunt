@@ -55,9 +55,9 @@ shunt login claude --name primary
 shunt login claude --name ci --long-lived
 ```
 
-The default form copies `~/.claude/.credentials.json` (or `CLAUDE_CREDENTIALS`) into `~/.shunt/accounts/claude/<name>.json`. It preserves refresh tokens, and shunt refreshes that private copy rather than changing Claude Code's source file.
+The default form copies `~/.claude/.credentials.json` (or `CLAUDE_CREDENTIALS`) into `~/.shunt/accounts/claude/<name>.json`. It preserves refresh tokens, associates the copy with the current account UUID from Claude Code's global configuration, and shunt refreshes that private copy rather than changing Claude Code's source file.
 
-`--long-lived` requires the `claude` executable in `PATH`. shunt runs the official interactive `claude setup-token` browser flow on your terminal, then asks you to paste its token into a hidden prompt. shunt never prints the token. The file is written atomically at `0600` inside a `0700` directory on Unix. `SHUNT_CLAUDE_ACCOUNTS_DIR` overrides the store directory; reusing a name replaces its file.
+`--long-lived` runs the same one-year, inference-only PKCE flow as `claude setup-token`. After browser approval, paste the displayed authorization code into shunt's hidden prompt; shunt exchanges it directly and stores both the opaque token and the issuing account UUID, never printing the token. The file is written atomically at `0600` inside a `0700` directory on Unix. `SHUNT_CLAUDE_ACCOUNTS_DIR` overrides the store directory; reusing a name replaces its file. Existing external setup tokens still require `token_env` plus an explicit `uuid`, because their account UUID cannot be recovered after issuance.
 
 Reference the result with a name-only pool entry, or leave the provider's account list empty to scan every store file:
 

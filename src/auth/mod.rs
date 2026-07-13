@@ -268,7 +268,12 @@ mod tests {
                 .as_nanos()
         ));
         std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
-        crate::auth::claude_store::store_setup_token("main", "store-token").unwrap();
+        crate::auth::claude_store::store_setup_token(
+            "main",
+            "store-token",
+            Some("stored-account-uuid"),
+        )
+        .unwrap();
         let account = AccountConfig {
             name: "main".to_string(),
             credentials: None,
@@ -283,7 +288,7 @@ mod tests {
             credential,
             Credential::ClaudeOauth {
                 access_token: "store-token".to_string(),
-                account_uuid: None,
+                account_uuid: Some("stored-account-uuid".to_string()),
             }
         );
         std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");

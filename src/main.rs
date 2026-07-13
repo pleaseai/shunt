@@ -115,7 +115,7 @@ fn login(
             let name = name.ok_or_else(|| {
                 anyhow::anyhow!("`shunt login claude` requires --name <account-name>")
             })?;
-            shunt::auth::claude_login::run(name, long_lived)
+            runtime()?.block_on(shunt::auth::claude_login::run(name, long_lived))
         }
         _ => {
             anyhow::bail!("unknown login provider {provider:?}; supported: claude, cursor, xai")
