@@ -1,0 +1,46 @@
+site/src/content/docs/ko/getting-started/comparison.md
+  s_470874e8046fa4::t_a35e88280f8999 110
+  s_470874e8046fa4::t_2254c72a51d693 92
+site/src/content/docs/ja/getting-started/comparison.md
+  s_470874e8046fa4::t_41042dd16ef101 110
+  s_470874e8046fa4::t_164b472197a4bc 92
+docs/comparison.md
+  s_470874e8046fa4::t_4173bcca0e0535 268
+  s_470874e8046fa4::t_77ae5719cffc73 216-218
+tests/codex_websocket_fallback.rs
+  s_470874e8046fa4::t_9e7297ac223a75 285-290
+site/src/content/docs/reference/configuration.md
+  s_470874e8046fa4::t_d4ab27ff779023 56
+docs/m7-codex-websocket.md
+  s_470874e8046fa4::t_e7158a5043e39f 251-254
+  s_470874e8046fa4::t_fd554ff7ad8403 257
+  s_470874e8046fa4::t_6cd776f2fac13d 261
+src/adapters/responses/mod.rs
+  s_470874e8046fa4::t_2259b9fb68092f 101
+  s_470874e8046fa4::t_f3287edb92eaea 350,353
+  s_470874e8046fa4::t_d39bf26601067b 607-612
+  s_470874e8046fa4::t_da98fee151f8e2 392
+  s_470874e8046fa4::t_58ba124ab98a33 1306
+site/src/content/docs/zh-cn/getting-started/comparison.md
+  s_470874e8046fa4::t_6d052c0ce585b2 110
+  s_470874e8046fa4::t_747815d98405d7 92
+site/src/content/docs/getting-started/comparison.md
+  s_470874e8046fa4::t_c3164961d5b94c 92
+  s_470874e8046fa4::t_c74c5db0dfc5cf 110
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "b74a2a87f42a69b4b6c8e735220cc8c933509553",
+  "prompts": {},
+  "sessions": {
+    "s_470874e8046fa4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c6c53327-752e-4f04-a4dc-10b802e6445f",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
