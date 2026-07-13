@@ -74,7 +74,7 @@ impl CursorAuthStore {
         // section mid-flight — which would release the lock early into a writeback
         // race and, if Cursor ever consumes the old refresh token server-side,
         // strand a spent token in the file. Mirrors the cancellation-safe pattern
-        // in `xai_auth`.
+        // in `xai::auth`.
         let client = self.client.clone();
         let base_url = self.base_url.clone();
         let path = self.path.clone();

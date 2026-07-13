@@ -10,7 +10,7 @@ use crate::{
     accounts::{self, FailoverAction},
     adapters::{Adapter, AdapterError, AdapterFuture},
     auth::{
-        self, claude_auth::ClaudeAuthStore, resolve_claude_account, resolve_credential, Credential,
+        self, claude::auth::ClaudeAuthStore, resolve_claude_account, resolve_credential, Credential,
     },
     config::{ApiKeyHeader, AuthMode},
     error::UpstreamError,
@@ -117,13 +117,13 @@ async fn forward_claude_oauth(
     let accounts = if provider.accounts.is_empty() {
         // scan_accounts() does synchronous directory + file I/O; run it on the
         // blocking pool so it never stalls a runtime worker thread.
-        tokio::task::spawn_blocking(auth::claude_store::scan_accounts)
+        tokio::task::spawn_blocking(auth::claude::store::scan_accounts)
             .await
             .map_err(|error| auth::auth_error(format!("account store scan task failed: {error}")))?
             .map_err(|error| {
                 auth::auth_error(format!(
                     "failed to scan Claude account store {}: {error}",
-                    auth::claude_store::default_accounts_dir().display()
+                    auth::claude::store::default_accounts_dir().display()
                 ))
             })?
     } else {
@@ -322,7 +322,7 @@ async fn forward_claude_oauth(
                     .credentials
                     .as_deref()
                     .map(PathBuf::from)
-                    .unwrap_or_else(|| auth::claude_store::account_path(&account.name));
+                    .unwrap_or_else(|| auth::claude::store::account_path(&account.name));
                 let store = ClaudeAuthStore::new(credentials, state.http_client.clone());
                 // Serialize the refresh + credential writeback for this account
                 // (see the refresh_lock note at the top of the loop); release the
@@ -457,7 +457,7 @@ fn account_is_static_store_token(account: &crate::config::AccountConfig) -> bool
     if account.credentials.is_some() || account.token_env.is_some() {
         return false;
     }
-    let path = auth::claude_store::account_path(&account.name);
+    let path = auth::claude::store::account_path(&account.name);
     std::fs::read(path)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
@@ -468,7 +468,7 @@ fn account_is_static_store_token(account: &crate::config::AccountConfig) -> bool
                 .map(str::to_owned)
         })
         .as_deref()
-        == Some(auth::claude_store::SETUP_TOKEN_KIND)
+        == Some(auth::claude::store::SETUP_TOKEN_KIND)
 }
 
 async fn post_upstream(

@@ -1,12 +1,12 @@
 //! xAI subscription OAuth credential store.
 //!
-//! Mirrors [`super::codex_auth`]: read the shunt-owned credential file fresh on
+//! Mirrors [`crate::auth::codex::auth`]: read the shunt-owned credential file fresh on
 //! every call, decide expiry from the access token's JWT `exp` (5-minute
 //! buffer), refresh against xAI's token endpoint when stale, and write the
 //! rotated pair back atomically at `0600`. Token values are never logged — only
 //! refresh outcomes. The credential file (`~/.shunt/xai-auth.json`, overridable
 //! via `SHUNT_XAI_AUTH_FILE`) is written by `shunt login xai` (see
-//! [`super::xai_login`]) and owned solely by shunt.
+//! [`super::login`]) and owned solely by shunt.
 
 use std::{
     fs, io,

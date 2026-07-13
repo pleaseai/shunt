@@ -1,6 +1,6 @@
 //! Claude subscription OAuth token source for the `shunt token` helper.
 //!
-//! Mirrors [`super::codex_auth`] but for the Claude Code login stored in
+//! Mirrors [`crate::auth::codex::auth`] but for the Claude Code login stored in
 //! `~/.claude/.credentials.json` under `claudeAiOauth`. Reads the access token,
 //! and when it is within a 5-minute buffer of `expiresAt`, refreshes it via the
 //! same grant Claude Code itself uses (`platform.claude.com/v1/oauth/token`,

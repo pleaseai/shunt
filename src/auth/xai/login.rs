@@ -4,7 +4,7 @@
 //! No loopback callback server is needed: shunt requests a device code, prints
 //! a verification URL and short user code, and long-polls xAI's token endpoint
 //! until the user approves in a browser (on any device). The resulting tokens
-//! are written to the shunt-owned credential file (see [`super::xai_auth`]).
+//! are written to the shunt-owned credential file (see [`super::auth`]).
 //!
 //! Logs go to stderr (the crate convention); the URL and user code are printed
 //! to stdout with plain `println!` so they are always visible to the operator.
@@ -15,12 +15,12 @@ use anyhow::{anyhow, bail, Context};
 use serde_json::Value;
 use tokio::time::{sleep, Instant};
 
-use crate::auth::default_xai_auth_path;
-use crate::auth::shared::jwt_exp;
-use crate::auth::xai_auth::{
+use super::auth::{
     parse_token_response, write_tokens, CLIENT_ID, DEVICE_CODE_GRANT_TYPE, DEVICE_CODE_URL, SCOPE,
     TOKEN_URL,
 };
+use crate::auth::default_xai_auth_path;
+use crate::auth::shared::jwt_exp;
 
 const DEFAULT_INTERVAL_SECS: u64 = 5;
 const MIN_INTERVAL_SECS: u64 = 1;
@@ -146,7 +146,7 @@ async fn poll_for_tokens(
     client: &reqwest::Client,
     device: &DeviceCode,
     token_url: &str,
-) -> anyhow::Result<crate::auth::xai_auth::TokenResponse> {
+) -> anyhow::Result<super::auth::TokenResponse> {
     let deadline = Instant::now() + Duration::from_secs(device.expires_in);
     let mut interval = device.interval.max(MIN_INTERVAL_SECS);
     while Instant::now() < deadline {

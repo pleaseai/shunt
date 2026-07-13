@@ -3,7 +3,7 @@
 //! Each account is stored as a Claude Code `.credentials.json`-shaped file at
 //! `~/.shunt/accounts/claude/<name>.json` (or
 //! `$SHUNT_CLAUDE_ACCOUNTS_DIR/<name>.json`). This keeps the existing
-//! [`super::claude_auth::ClaudeAuthStore`] as the single reader/refresher for
+//! [`super::auth::ClaudeAuthStore`] as the single reader/refresher for
 //! both imported refreshable logins and long-lived setup tokens.
 
 use std::{
