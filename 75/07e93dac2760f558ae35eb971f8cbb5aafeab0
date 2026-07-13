@@ -1,0 +1,33 @@
+docs/comparison.md
+  s_cb538981510d30::t_d0eaaa736c2955 71,176
+  s_cb538981510d30::t_8a8f5d4be7ee68 271-272
+  s_cb538981510d30::t_bc0e563676b7a3 212-217
+  s_cb538981510d30::t_6985a397467fbd 236-240
+  s_cb538981510d30::t_49ed5c824fef44 164-173
+  s_cb538981510d30::t_850ddc991b2c77 89
+  s_cb538981510d30::t_accaadad5368df 54-55
+  s_cb538981510d30::t_f576400c9fada1 137
+  s_cb538981510d30::t_a780b7deae4b4c 60-63
+  s_cb538981510d30::t_7d593fde953b51 123
+  s_cb538981510d30::t_69cc0344e8b299 99-106
+  s_cb538981510d30::t_b363a7869f6334 179-180
+  s_cb538981510d30::t_5e1a62cdb00a70 18
+  s_cb538981510d30::t_5fae2d51ab9d32 53
+  s_cb538981510d30::t_494b3d0bb5dafb 253
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "7507e93dac2760f558ae35eb971f8cbb5aafeab0",
+  "prompts": {},
+  "sessions": {
+    "s_cb538981510d30": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b660ef02-51ec-48ec-aadc-5771ce3bb412",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
