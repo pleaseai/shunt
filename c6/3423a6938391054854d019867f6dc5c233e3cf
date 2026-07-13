@@ -1,0 +1,24 @@
+src/auth/claude_auth.rs
+  s_9438d094b59628::t_280918cd61c915 75-81,85
+tests/multi_account.rs
+  s_9438d094b59628::t_cb5a27dc05d1cc 376-513
+  s_9438d094b59628::t_f292199c9b59b3 58-95
+  s_9438d094b59628::t_60ae8de76ba332 3,7-8
+  s_9438d094b59628::t_68e47307fb56d8 514-531
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "c63423a6938391054854d019867f6dc5c233e3cf",
+  "prompts": {},
+  "sessions": {
+    "s_9438d094b59628": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0075ecc3-27dd-45c0-a16c-10dcd0636a6e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
