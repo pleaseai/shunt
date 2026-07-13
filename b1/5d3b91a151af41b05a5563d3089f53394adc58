@@ -1,0 +1,170 @@
+site/src/content/docs/guides/shared-gateway.md
+  s_7c8f3392527f8f::t_9341850687e663 10,23
+src/auth/inbound.rs
+  s_7c8f3392527f8f::t_9341850687e663 3-6,28-30,32-70,206-246
+docs/running.md
+  s_7c8f3392527f8f::t_9341850687e663 192,277-281,685,700-705
+site/src/content/docs/ko/guides/admin-remote-provisioning.md
+  s_7c8f3392527f8f::t_9341850687e663 1-81
+.please/docs/review/rejected-findings.jsonl
+  s_7c8f3392527f8f::t_9341850687e663 7
+src/adapters/responses/codex_continuation.rs
+  s_7c8f3392527f8f::t_9341850687e663 30-32,46-52,254-256,288-292,316-322,328,387-388,393-401
+  s_7c8f3392527f8f::t_473a55012fdb62 402-403
+site/astro.config.mjs
+  s_7c8f3392527f8f::t_9341850687e663 54-57,105
+  s_7c8f3392527f8f::t_663cbe30e008ce 53
+src/auth/claude/auth/tests.rs
+  s_7c8f3392527f8f::t_9341850687e663 1-271
+site/src/content/docs/ja/guides/shared-gateway.md
+  s_7c8f3392527f8f::t_9341850687e663 2,37
+  s_7c8f3392527f8f::t_23c8d8538ca735 38
+site/src/content/docs/reference/endpoints.md
+  s_7c8f3392527f8f::t_9341850687e663 26
+site/src/content/docs/ko/guides/shared-gateway.md
+  s_7c8f3392527f8f::t_9341850687e663 37-38
+docs/gateway-protocol.md
+  s_7c8f3392527f8f::t_9341850687e663 264,285
+site/src/content/docs/ja/reference/endpoints.md
+  s_7c8f3392527f8f::t_9341850687e663 2,15-24
+site/src/content/docs/ja/guides/admin-remote-provisioning.md
+  s_7c8f3392527f8f::t_9341850687e663 1-81
+.claude/agent-memory/review-review-code-reviewer/MEMORY.md
+  s_7c8f3392527f8f::t_9341850687e663 3-4
+site/src/content/docs/ko/reference/endpoints.md
+  s_7c8f3392527f8f::t_9341850687e663 15-24
+tests/inbound_auth.rs
+  s_7c8f3392527f8f::t_9341850687e663 81-88,137-144,255-315
+  s_7c8f3392527f8f::t_ec29fedc620ebf 316
+site/src/content/docs/getting-started/comparison.md
+  s_7c8f3392527f8f::t_9341850687e663 1-119
+site/src/content/docs/ja/reference/troubleshooting.md
+  s_7c8f3392527f8f::t_9341850687e663 2
+src/proxy.rs
+  s_7c8f3392527f8f::t_9341850687e663 19,145-150,166,266-275
+site/src/content/docs/ko/guides/effort-and-context.md
+  s_7c8f3392527f8f::t_9341850687e663 32
+src/server.rs
+  s_7c8f3392527f8f::t_9341850687e663 104-105
+site/src/content/docs/ja/getting-started/quickstart.md
+  s_7c8f3392527f8f::t_9341850687e663 2
+site/src/content/docs/zh-cn/getting-started/comparison.md
+  s_7c8f3392527f8f::t_9341850687e663 1-119
+site/src/content/docs/ko/reference/configuration.md
+  s_7c8f3392527f8f::t_9341850687e663 25-41,54
+site/src/content/docs/ko/guides/anthropic-multi-account.md
+  s_7c8f3392527f8f::t_9341850687e663 1-147
+site/src/content/docs/guides/effort-and-context.md
+  s_7c8f3392527f8f::t_9341850687e663 32
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_7c8f3392527f8f::t_9341850687e663 15-24
+.claude/agent-memory/review-review-comment-analyzer/MEMORY.md
+  s_7c8f3392527f8f::t_9341850687e663 5
+.claude/agent-memory/review-review-documentation-analyzer/MEMORY.md
+  s_7c8f3392527f8f::t_9341850687e663 5-6
+.claude/agent-memory/review-review-pr-test-analyzer/MEMORY.md
+  s_7c8f3392527f8f::t_9341850687e663 6
+site/src/content/docs/ja/getting-started/installation.md
+  s_7c8f3392527f8f::t_9341850687e663 2
+site/src/content/docs/ko/getting-started/comparison.md
+  s_7c8f3392527f8f::t_9341850687e663 1-119
+site/src/content/docs/ja/guides/configuration.md
+  s_7c8f3392527f8f::t_9341850687e663 2
+tests/codex_websocket_fallback.rs
+  s_7c8f3392527f8f::t_9341850687e663 12-13,16,22-24,26,32-37,134,198-471,473-475
+  s_7c8f3392527f8f::t_45099894659322 472
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_7c8f3392527f8f::t_9341850687e663 25-41,54
+site/src/content/docs/ja/guides/connect-claude-code.md
+  s_7c8f3392527f8f::t_9341850687e663 2
+tests/passthrough.rs
+  s_7c8f3392527f8f::t_9341850687e663 368,373-375,399-410
+.claude/agent-memory/review-review-code-reviewer/shunt-codex-websocket-v2.md
+  s_7c8f3392527f8f::t_9341850687e663 3,10-15,17-44,58-60
+docs/m4-inbound-auth.md
+  s_7c8f3392527f8f::t_9341850687e663 48-49,52-54
+.claude/agent-memory/review-review-pr-test-analyzer/shunt-codex-ws-fallback-coverage.md
+  s_7c8f3392527f8f::t_9341850687e663 1-63
+.gitignore
+  s_7c8f3392527f8f::t_9341850687e663 23-25
+site/src/content/docs/ja/getting-started/comparison.md
+  s_7c8f3392527f8f::t_9341850687e663 1-119
+site/src/content/docs/ja/reference/configuration.md
+  s_7c8f3392527f8f::t_9341850687e663 2,25-41,54
+site/src/content/docs/zh-cn/guides/effort-and-context.md
+  s_7c8f3392527f8f::t_9341850687e663 32
+site/src/content/docs/ja/guides/effort-and-context.md
+  s_7c8f3392527f8f::t_9341850687e663 2,32
+site/src/content/docs/reference/configuration.md
+  s_7c8f3392527f8f::t_9341850687e663 55-56
+site/src/content/docs/ja/guides/model-discovery.md
+  s_7c8f3392527f8f::t_9341850687e663 2
+.please/config.yml
+  s_7c8f3392527f8f::t_9341850687e663 1-12
+site/src/content/docs/zh-cn/guides/admin-remote-provisioning.md
+  s_7c8f3392527f8f::t_9341850687e663 1-81
+site/src/content/docs/ja/guides/providers.md
+  s_7c8f3392527f8f::t_9341850687e663 2
+src/discovery.rs
+  s_7c8f3392527f8f::t_9341850687e663 1-6,9,23,26-39,50,85-88,107-110
+.claude/agent-memory/review-review-documentation-analyzer/shunt_comparison_md_self_contradiction_pattern.md
+  s_7c8f3392527f8f::t_9341850687e663 1-43
+docs/comparison.md
+  s_7c8f3392527f8f::t_1784ea5c77d229 291
+  s_7c8f3392527f8f::t_9341850687e663 18,53-55,60-64,72,105-112,129,143,175-184,187,190-191,215-239,262-266,279,289-290,302-303
+  s_7c8f3392527f8f::t_e353550c243d28 95
+  s_7c8f3392527f8f::t_d32badf56794f2 292-294
+site/src/content/docs/zh-cn/guides/anthropic-multi-account.md
+  s_7c8f3392527f8f::t_9341850687e663 1-147
+src/auth/claude/auth.rs
+  s_7c8f3392527f8f::t_9341850687e663 69,76-81,108,113-116,121,126-143,146-150,157-193,313-318,320-322
+site/src/content/docs/ja/guides/anthropic-multi-account.md
+  s_7c8f3392527f8f::t_9341850687e663 1-147
+shunt.toml.example
+  s_7c8f3392527f8f::t_9341850687e663 15-18
+.claude/agent-memory/review-review-documentation-analyzer/project_shunt_pr103_i18n_comparison_review.md
+  s_7c8f3392527f8f::t_9341850687e663 1-36
+.claude/agent-memory/review-review-code-reviewer/shunt-codex-ws-peek-fallback-issue46.md
+  s_7c8f3392527f8f::t_9341850687e663 1-65
+site/src/content/docs/guides/model-discovery.md
+  s_7c8f3392527f8f::t_9341850687e663 33-34
+src/adapters/responses/mod.rs
+  s_7c8f3392527f8f::t_9341850687e663 151-157,750,796,804-806,812-828,832-869,871-901,904,924-926,928-930,932-956,1044-1049,1109-1118,1380,1391-1392,1436-1496,1843-1888
+src/adapters/anthropic/mod.rs
+  s_7c8f3392527f8f::t_9341850687e663 74-77,223-236,285-301,313-316,340-343,347,350-352,453-489,761-829
+  s_7c8f3392527f8f::t_928058e8ba0559 830
+site/src/content/docs/ja/getting-started/why-shunt.md
+  s_7c8f3392527f8f::t_9341850687e663 2
+src/config.rs
+  s_7c8f3392527f8f::t_9341850687e663 64-65,383-387
+src/metrics.rs
+  s_7c8f3392527f8f::t_9341850687e663 30,47-52,57-77,105-128,131,143-149
+site/src/content/docs/zh-cn/guides/shared-gateway.md
+  s_7c8f3392527f8f::t_9341850687e663 37-38
+docs/codex-configuration.md
+  s_7c8f3392527f8f::t_9341850687e663 486
+docs/m3-discovery.md
+  s_7c8f3392527f8f::t_9341850687e663 32-37,86-90
+.claude/agent-memory/review-review-comment-analyzer/shunt-responses-adapter-stream-json-doc-generalization.md
+  s_7c8f3392527f8f::t_9341850687e663 1-16
+docs/m7-codex-websocket.md
+  s_7c8f3392527f8f::t_9341850687e663 172,174-175,233,238-244,248-265,295-306
+site/package-lock.json
+  s_7c8f3392527f8f::t_9bcda485fb0d8a 19-21
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "b15d3b91a151af41b05a5563d3089f53394adc58",
+  "prompts": {},
+  "sessions": {
+    "s_7c8f3392527f8f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ab01b4b8-bc36-407a-ae5d-852f02606bc2",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
