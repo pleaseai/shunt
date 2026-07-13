@@ -746,7 +746,7 @@ fn error_message(value: &Value) -> String {
 /// case-insensitively), and it parses "N tokens > M maximum" from it to
 /// size the retry. Upstream providers phrase the same failure in their own
 /// words, which would otherwise strand the session until a manual /compact.
-fn context_overflow_message(value: &Value, message: &str) -> Option<String> {
+pub fn context_overflow_message(value: &Value, message: &str) -> Option<String> {
     let code = value
         .pointer("/error/code")
         .or_else(|| value.pointer("/response/error/code"))

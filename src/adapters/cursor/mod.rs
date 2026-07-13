@@ -223,9 +223,10 @@ async fn map_upstream_error(upstream: reqwest::Response) -> AdapterError {
         .map(ToOwned::to_owned);
     let text = upstream.text().await.unwrap_or_default();
     // Cursor may return a Connect JSON error body (`{"error":{"message":"…"}}`
-    // or a bare `{"message":"…"}`). Extract the human-readable message instead of
-    // surfacing the raw JSON to the client.
-    let parsed_message = serde_json::from_str::<Value>(&text).ok().and_then(|value| {
+    // or a bare `{"message":"…"}`). Parse it once: the body feeds both the
+    // human-readable message and the context-overflow detection below.
+    let body: Option<Value> = serde_json::from_str(&text).ok();
+    let parsed_message = body.as_ref().and_then(|value| {
         value
             .pointer("/error/message")
             .or_else(|| value.get("message"))
@@ -236,6 +237,15 @@ async fn map_upstream_error(upstream: reqwest::Response) -> AdapterError {
         .or(parsed_message)
         .or_else(|| (!text.is_empty()).then_some(text))
         .unwrap_or_else(|| format!("Cursor upstream returned HTTP {status}"));
+    // Reuse the Responses path's context-overflow rewrite so a Cursor
+    // "context length exceeded" surfaces as Anthropic's "prompt is too long"
+    // wording that triggers Claude Code's auto-compact-and-retry (see
+    // `map_error_value`).
+    let message = crate::model::responses::context_overflow_message(
+        body.as_ref().unwrap_or(&Value::Null),
+        &message,
+    )
+    .unwrap_or(message);
     // Shares the status -> `error.type` table with the other translated
     // backends (Responses/Codex, xAI) so Cursor surfaces the same vocabulary
     // the Anthropic-direct path streams verbatim; see
@@ -267,7 +277,16 @@ fn map_decode_error(error: CursorDecodeError) -> AdapterError {
         .unwrap_or(StatusCode::BAD_GATEWAY);
     let mapped_status = crate::model::responses::client_facing_status(status);
     let kind = crate::model::responses::anthropic_error_type(status);
-    own_error(mapped_status, kind, error.to_string())
+    // A model context-overflow can arrive as a Connect error frame; surface the
+    // Connect code so the shared rewrite fires even when the message text lacks
+    // the OpenAI-style phrasing, matching the Responses path's auto-compact hook.
+    let value = match &error {
+        CursorDecodeError::ConnectEnd(err) => serde_json::json!({ "error": { "code": err.code } }),
+        CursorDecodeError::Decode(_) => Value::Null,
+    };
+    let raw = error.to_string();
+    let message = crate::model::responses::context_overflow_message(&value, &raw).unwrap_or(raw);
+    own_error(mapped_status, kind, message)
 }
 
 fn bad_gateway(message: String) -> AdapterError {
@@ -416,6 +435,52 @@ mod tests {
         let error = map_upstream_error(upstream).await;
         assert_eq!(error.response.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(error.response.headers().get("retry-after").unwrap(), "3");
+    }
+
+    #[tokio::test]
+    async fn upstream_error_rewrites_context_overflow_to_anthropic_wording() {
+        // A Cursor HTTP context-overflow must surface as Anthropic's "prompt is
+        // too long" wording so Claude Code auto-compacts and retries instead of
+        // stranding the session on the raw upstream message.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/e"))
+            .respond_with(ResponseTemplate::new(400).set_body_string(
+                r#"{"error":{"message":"This model's maximum context length is 272000 tokens. However, your messages resulted in 372982 tokens."}}"#,
+            ))
+            .mount(&server)
+            .await;
+        let upstream = reqwest::Client::new()
+            .get(format!("{}/e", server.uri()))
+            .send()
+            .await
+            .expect("mock request should succeed");
+        let error = map_upstream_error(upstream).await;
+        let body = body_json(error).await;
+        assert_eq!(
+            body["error"]["message"],
+            "prompt is too long: 372982 tokens > 272000 maximum"
+        );
+    }
+
+    #[tokio::test]
+    async fn decode_error_rewrites_context_overflow_to_anthropic_wording() {
+        // The same rewrite must fire when the overflow arrives as a Connect
+        // error frame (the streaming path), not just an HTTP error.
+        let error = map_decode_error(CursorDecodeError::ConnectEnd(ConnectEndError {
+            code: "context_length_exceeded".to_string(),
+            message: "This model's maximum context length is 272000 tokens. \
+                      However, your messages resulted in 372982 tokens."
+                .to_string(),
+            detail: String::new(),
+            status: 400,
+        }));
+        assert_eq!(error.response.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(error).await;
+        assert_eq!(
+            body["error"]["message"],
+            "prompt is too long: 372982 tokens > 272000 maximum"
+        );
     }
 
     #[test]
