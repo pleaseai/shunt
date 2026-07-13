@@ -203,4 +203,45 @@ mod tests {
         headers.insert("x-shunt-token", HeaderValue::from_static("wrong"));
         assert_eq!(auth.authenticate(&headers), None);
     }
+
+    #[test]
+    fn authenticate_discovery_accepts_bearer_and_api_key_credentials() {
+        let auth = InboundAuth::new(
+            HeaderName::from_static("x-shunt-token"),
+            vec![
+                ("alice".to_string(), "tok-a".to_string()),
+                ("bob".to_string(), "tok-b".to_string()),
+            ],
+        );
+
+        // No credentials at all → rejected.
+        assert_eq!(auth.authenticate_discovery(&HeaderMap::new()), None);
+
+        // The configured inbound-auth header is accepted.
+        let mut headers = HeaderMap::new();
+        headers.insert("x-shunt-token", HeaderValue::from_static("tok-a"));
+        assert_eq!(auth.authenticate_discovery(&headers), Some("alice"));
+
+        // Claude Code's discovery credential via `x-api-key`.
+        let mut headers = HeaderMap::new();
+        headers.insert("x-api-key", HeaderValue::from_static("tok-b"));
+        assert_eq!(auth.authenticate_discovery(&headers), Some("bob"));
+
+        // Claude Code's discovery credential via `Authorization: Bearer`.
+        let bearer = format!("Bearer {}", "tok-a");
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", HeaderValue::from_str(&bearer).unwrap());
+        assert_eq!(auth.authenticate_discovery(&headers), Some("alice"));
+
+        // A non-Bearer scheme is not treated as a discovery credential.
+        let basic = format!("Basic {}", "tok-a");
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", HeaderValue::from_str(&basic).unwrap());
+        assert_eq!(auth.authenticate_discovery(&headers), None);
+
+        // A wrong value on an otherwise-accepted source is rejected.
+        let mut headers = HeaderMap::new();
+        headers.insert("x-api-key", HeaderValue::from_static("wrong"));
+        assert_eq!(auth.authenticate_discovery(&headers), None);
+    }
 }
