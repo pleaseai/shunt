@@ -1,0 +1,19 @@
+.claude/agent-memory/review-review-security-reviewer/MEMORY.md
+  s_e423000a5d6bc7::t_f3bb29bfa60023 5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "1292de37e78cf5afa4f27a8fb06812b0443faa54",
+  "prompts": {},
+  "sessions": {
+    "s_e423000a5d6bc7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c404be1f-e926-4fc8-a708-c0114843ce5d",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
