@@ -1,9 +1,9 @@
 //! Inbound client authentication for shared gateways (M4).
 //!
-//! Optional per-client tokens checked on routes where shunt injects a
-//! server-side credential (`api_key` / `chatgpt_oauth`). Passthrough routes
-//! are never checked — the caller pays with their own credential. See
-//! `docs/m4-inbound-auth.md`.
+//! Optional per-client tokens checked on discovery and routes where shunt
+//! injects a server-side credential (`api_key` / `chatgpt_oauth`). Passthrough
+//! inference routes are never checked — the caller pays with their own
+//! credential. See `docs/m4-inbound-auth.md`.
 
 use axum::http::{HeaderMap, HeaderName};
 
@@ -25,16 +25,48 @@ impl InboundAuth {
         &self.header
     }
 
-    /// Check the request's token. Returns the matching client's name, or
-    /// `None` when the header is missing or matches no configured token.
-    /// Every configured token is compared (no early exit) so timing does not
-    /// reveal which entry matched.
+    /// Check the request's configured inbound-auth header. Returns the matching
+    /// client's name, or `None` when the header is missing or matches no
+    /// configured token.
     pub fn authenticate(&self, headers: &HeaderMap) -> Option<&str> {
-        let presented = headers.get(&self.header)?.as_bytes();
+        self.authenticate_values(headers.get(&self.header).map(|value| value.as_bytes()))
+    }
+
+    /// Check credentials accepted by the Anthropic model-discovery protocol in
+    /// addition to the configured inbound-auth header. Claude Code sends its
+    /// discovery credential as either `Authorization: Bearer` or `x-api-key`.
+    pub fn authenticate_discovery(&self, headers: &HeaderMap) -> Option<&str> {
+        let bearer = headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.trim().split_once(' '))
+            .and_then(|(scheme, token)| {
+                scheme
+                    .eq_ignore_ascii_case("bearer")
+                    .then_some(token.trim().as_bytes())
+            });
+        self.authenticate_values(
+            headers
+                .get(&self.header)
+                .map(|value| value.as_bytes())
+                .into_iter()
+                .chain(headers.get("x-api-key").map(|value| value.as_bytes()))
+                .chain(bearer),
+        )
+    }
+
+    /// Compare every presented value against every configured token without an
+    /// early exit, so timing does not reveal which token or credential matched.
+    fn authenticate_values<'value>(
+        &self,
+        presented: impl IntoIterator<Item = &'value [u8]>,
+    ) -> Option<&str> {
         let mut matched = None;
-        for (name, token) in &self.tokens {
-            if constant_time_eq(presented, token.as_bytes()) {
-                matched = Some(name.as_str());
+        for presented in presented {
+            for (name, token) in &self.tokens {
+                if constant_time_eq(presented, token.as_bytes()) {
+                    matched = Some(name.as_str());
+                }
             }
         }
         matched

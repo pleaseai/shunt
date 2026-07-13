@@ -29,9 +29,12 @@ is the documented default. Discovery is only useful if shunt exposes a **Claude-
 - Request: `GET /v1/models?limit=1000`, **3-second timeout**, **any redirect is treated as
   failure** (even `http`→`https`). Serve it **directly** at the configured base URL — no proxy
   hop, no redirect, fast.
-- Auth: exactly **one** credential header — `ANTHROPIC_AUTH_TOKEN` as bearer if set, else the
-  resolved API key in `x-api-key`. (Differs from inference, which sends both.) Accept both;
-  M-scope: do not require auth to succeed for a local gateway, but read it if present.
+- Auth: exactly **one** gateway credential header is sent by Claude Code —
+  `ANTHROPIC_AUTH_TOKEN` as bearer if set, else the resolved API key in `x-api-key`.
+  (Differs from inference, which sends both.) shunt keeps discovery open when
+  `[server.auth]` is absent; when it is configured, discovery accepts a valid
+  inbound token from the configured header, `x-api-key`, or `Authorization:
+  Bearer`. Missing/invalid credentials return `401 authentication_error`.
 - Response body:
   ```json
   { "data": [ { "id": "claude-opus-via-codex", "display_name": "Opus (via Codex)" } ] }

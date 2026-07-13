@@ -78,6 +78,14 @@ fn with_inbound_auth(mut config: Config, tokens_env: &'static str) -> Config {
     config
 }
 
+fn with_discovery_model(mut config: Config) -> Config {
+    config.models.push(shunt::config::ModelConfig {
+        id: "claude-mapped-model".to_string(),
+        display_name: Some("Mapped model".to_string()),
+    });
+    config
+}
+
 async fn start_gateway_with(mut config: Config) -> TestGateway {
     config.server.bind = "127.0.0.1:0".to_string();
     let listener = tokio::net::TcpListener::bind(config.server.bind_addr().unwrap())
@@ -122,6 +130,14 @@ async fn post_messages(
         ));
     if let Some(token) = token {
         request = request.header("x-shunt-token", token);
+    }
+    request.send().await.unwrap()
+}
+
+async fn get_models(gateway: &TestGateway, header: Option<(&str, &str)>) -> reqwest::Response {
+    let mut request = reqwest::Client::new().get(format!("{}/v1/models", gateway.base_url));
+    if let Some((name, value)) = header {
+        request = request.header(name, value);
     }
     request.send().await.unwrap()
 }
@@ -234,6 +250,67 @@ async fn passthrough_route_needs_no_token_and_still_strips_the_header() {
     // A stale/wrong token on a passthrough request is stripped, not rejected.
     let response = post_messages(&gateway, "claude-sonnet-4-6", Some("whatever")).await;
     assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn models_discovery_requires_valid_token_when_inbound_auth_is_configured() {
+    if !can_bind_loopback() {
+        return;
+    }
+    std::env::set_var("SHUNT_TEST_M4_KEY_G", "upstream-key");
+    std::env::set_var("SHUNT_TEST_M4_TOKENS_G", "alice:tok-a");
+    let upstream = MockServer::start().await;
+    let config = with_inbound_auth(
+        with_discovery_model(test_config(&upstream.uri(), "SHUNT_TEST_M4_KEY_G")),
+        "SHUNT_TEST_M4_TOKENS_G",
+    );
+    let gateway = start_gateway_with(config).await;
+
+    for header in [
+        None,
+        Some(("x-api-key", "not-the-token")),
+        Some(("authorization", "Basic tok-a")),
+    ] {
+        let response = get_models(&gateway, header).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let body: serde_json::Value =
+            serde_json::from_str(&response.text().await.unwrap()).unwrap();
+        assert_eq!(body["type"], "error");
+        assert_eq!(body["error"]["type"], "authentication_error");
+        assert!(body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("x-shunt-token"));
+    }
+
+    for header in [
+        ("x-shunt-token", "tok-a"),
+        ("x-api-key", "tok-a"),
+        ("authorization", "Bearer tok-a"),
+    ] {
+        let response = get_models(&gateway, Some(header)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_str(&response.text().await.unwrap()).unwrap();
+        assert_eq!(body["data"][0]["id"], "claude-mapped-model");
+    }
+}
+
+#[tokio::test]
+async fn models_discovery_stays_open_without_inbound_auth() {
+    if !can_bind_loopback() {
+        return;
+    }
+    std::env::set_var("SHUNT_TEST_M4_KEY_H", "upstream-key");
+    let upstream = MockServer::start().await;
+    let config = with_discovery_model(test_config(&upstream.uri(), "SHUNT_TEST_M4_KEY_H"));
+    let gateway = start_gateway_with(config).await;
+
+    let response = get_models(&gateway, None).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    assert_eq!(body["data"][0]["id"], "claude-mapped-model");
 }
 
 #[tokio::test]

@@ -56,7 +56,8 @@ fn default_sse_keepalive_seconds() -> u64 {
     30
 }
 
-/// `[server.auth]` — inbound client-token check on injected-credential routes.
+/// `[server.auth]` — inbound client-token check on injected-credential routes
+/// and `GET /v1/models`.
 /// Tokens live in the environment (never in the TOML), as `name:token` pairs:
 /// `SHUNT_CLIENT_TOKENS="alice:3f9c…,bob:a41b…"`. See `docs/m4-inbound-auth.md`.
 #[derive(Debug, Clone, Deserialize, Serialize)]

@@ -1,7 +1,12 @@
-use axum::{extract::State, http::HeaderMap, Json};
+use axum::{
+    extract::State,
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
+    Json,
+};
 use serde::Serialize;
 
-use crate::server::AppState;
+use crate::{error::ShuntError, server::AppState};
 
 #[derive(Debug, Serialize)]
 pub struct ModelsResponse {
@@ -15,10 +20,23 @@ pub struct ModelEntry {
     pub display_name: Option<String>,
 }
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Json<ModelsResponse> {
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
     // Snapshot the live config so this response reflects the latest reload.
     let state = state.refreshed();
-    let _credential = discovery_credential(&headers);
+    if let Some(auth) = &state.inbound_auth {
+        let Some(client) = auth.authenticate_discovery(&headers) else {
+            tracing::warn!(
+                "inbound auth failed for GET /v1/models: missing or invalid client token"
+            );
+            let message = format!(
+                "missing or invalid {} header: this gateway requires a client token for model discovery; ask the operator for one",
+                auth.header()
+            );
+            return ShuntError::new(StatusCode::UNAUTHORIZED, "authentication_error", message)
+                .into_response();
+        };
+        tracing::info!(client = %client, "inbound client authenticated for GET /v1/models");
+    }
     let data: Vec<ModelEntry> = state
         .config
         .models
@@ -29,14 +47,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Json<Mode
         })
         .collect();
     tracing::info!(models = data.len(), "served GET /v1/models discovery");
-    Json(ModelsResponse { data })
-}
-
-fn discovery_credential(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get("authorization")
-        .or_else(|| headers.get("x-api-key"))
-        .and_then(|value| value.to_str().ok())
+    Json(ModelsResponse { data }).into_response()
 }
 
 #[cfg(test)]
@@ -71,7 +82,10 @@ mod tests {
         headers.insert("authorization", "Bearer test".parse().unwrap());
 
         let response = get(State(state), headers).await;
-        let body = serde_json::to_value(response.0).unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
         assert_eq!(
             body,
@@ -90,7 +104,10 @@ mod tests {
             AppState::new(crate::config::Config::default(), reqwest::Client::new()).unwrap();
 
         let response = get(State(state), HeaderMap::new()).await;
-        let body = serde_json::to_value(response.0).unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
         assert_eq!(body, json!({"data": []}));
     }
