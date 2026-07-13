@@ -1,0 +1,21 @@
+.claude/agent-memory/review-review-security-reviewer/project_sentry-transaction-hostname-leak.md
+  s_682cc0cbaaf81a::t_b74cc7d820867f 1-12
+.claude/agent-memory/review-review-security-reviewer/MEMORY.md
+  s_682cc0cbaaf81a::t_fef58d51b0ae16 5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "c25e690f51f38bc324248c089656b3e6713a822e",
+  "prompts": {},
+  "sessions": {
+    "s_682cc0cbaaf81a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d897fd56-d628-4179-970f-afc3d3144f1c",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
