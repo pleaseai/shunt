@@ -1721,4 +1721,167 @@ mod tests {
             "channel closed on reader exit rejects a late dispatch"
         );
     }
+
+    /// `capture_continuation` pulls the response id (from `/response/id` or a
+    /// top-level `id`), appends `output_item.done` items, and records the turn-state
+    /// token from either the top level or `/response/turn_state`.
+    #[test]
+    fn capture_continuation_collects_id_items_and_turn_state() {
+        let mut id = None;
+        let mut items = Vec::new();
+        let mut turn_state = None;
+
+        capture_continuation(
+            &parse_event(r#"{"type":"response.created","response":{"id":"resp_9"}}"#).unwrap(),
+            &mut id,
+            &mut items,
+            &mut turn_state,
+        );
+        assert_eq!(id.as_deref(), Some("resp_9"));
+
+        // A response-level event with only a top-level `id` uses the fallback.
+        let mut id_top = None;
+        capture_continuation(
+            &parse_event(r#"{"type":"response.done","id":"resp_top"}"#).unwrap(),
+            &mut id_top,
+            &mut items,
+            &mut turn_state,
+        );
+        assert_eq!(id_top.as_deref(), Some("resp_top"));
+
+        capture_continuation(
+            &parse_event(r#"{"type":"response.output_item.done","item":{"type":"message","id":"m1"}}"#)
+                .unwrap(),
+            &mut id,
+            &mut items,
+            &mut turn_state,
+        );
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["id"], "m1");
+
+        // turn_state at the top level.
+        capture_continuation(
+            &parse_event(r#"{"type":"response.output_text.delta","turn_state":"ts-1"}"#).unwrap(),
+            &mut id,
+            &mut items,
+            &mut turn_state,
+        );
+        assert_eq!(turn_state.as_deref(), Some("ts-1"));
+
+        // turn_state nested under /response.
+        let mut nested_state = None;
+        capture_continuation(
+            &parse_event(r#"{"type":"response.completed","response":{"turn_state":"ts-2"}}"#).unwrap(),
+            &mut id,
+            &mut items,
+            &mut nested_state,
+        );
+        assert_eq!(nested_state.as_deref(), Some("ts-2"));
+    }
+
+    /// A rejected `previous_response_id` is detected from either the error `code` or
+    /// a case-insensitive "previous response ... not found" `message`.
+    #[test]
+    fn detects_previous_response_missing_by_code_and_message() {
+        assert!(is_previous_response_missing(&serde_json::json!({
+            "error": {"code": "previous_response_not_found"}
+        })));
+        assert!(is_previous_response_missing(&serde_json::json!({
+            "error": {"message": "The Previous response was Not Found"}
+        })));
+        assert!(!is_previous_response_missing(&serde_json::json!({
+            "error": {"code": "rate_limited", "message": "slow down"}
+        })));
+        assert!(!is_previous_response_missing(&serde_json::json!({
+            "type": "response.completed"
+        })));
+    }
+
+    /// A non-HTTP handshake failure has no status and is wrapped as a transport error.
+    #[test]
+    fn map_handshake_error_wraps_non_http_error() {
+        let error = map_handshake_error(tungstenite::Error::ConnectionClosed);
+        assert!(error.status.is_none());
+        assert!(
+            error.message.contains("connect error"),
+            "unexpected message: {}",
+            error.message
+        );
+    }
+
+    /// An unexpected binary frame mid-turn is surfaced as a transport error, not
+    /// silently skipped.
+    #[tokio::test]
+    async fn binary_frame_during_turn_surfaces_error() {
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            let Some(Ok(Message::Text(_))) = ws.next().await else {
+                panic!("expected a client frame");
+            };
+            ws.send(Message::Binary(vec![0, 1, 2])).await.unwrap();
+            let _ = ws.next().await; // observe the reader's close on exit
+        });
+
+        let url = format!("ws://{addr}/codex/responses");
+        let frame = response_create_frame(serde_json::json!({"model": "m", "input": []}));
+        let mut events = open_simple(&url, HeaderMap::new(), &frame, None)
+            .await
+            .expect("websocket should connect");
+
+        let mut saw_binary_error = false;
+        while let Some(item) = events.recv().await {
+            if let Err(error) = item {
+                assert!(
+                    error.message.contains("binary"),
+                    "unexpected error: {}",
+                    error.message
+                );
+                saw_binary_error = true;
+            }
+        }
+        assert!(saw_binary_error, "a binary frame surfaces a transport error");
+        server.abort();
+    }
+
+    /// An abrupt stream end (socket dropped) before a terminal event surfaces a
+    /// transport error rather than a silently short, fake-success response.
+    #[tokio::test]
+    async fn stream_dropped_before_terminal_surfaces_error() {
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            let Some(Ok(Message::Text(_))) = ws.next().await else {
+                panic!("expected a client frame");
+            };
+            // Drop the socket without a terminal event or a Close frame.
+            drop(ws);
+        });
+
+        let url = format!("ws://{addr}/codex/responses");
+        let frame = response_create_frame(serde_json::json!({"model": "m", "input": []}));
+        let mut events = open_simple(&url, HeaderMap::new(), &frame, None)
+            .await
+            .expect("websocket should connect");
+
+        let mut saw_error = false;
+        while let Some(item) = events.recv().await {
+            if item.is_err() {
+                saw_error = true;
+            }
+        }
+        assert!(
+            saw_error,
+            "an abrupt stream end before a terminal event surfaces an error"
+        );
+        server.await.unwrap();
+    }
 }
