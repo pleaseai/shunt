@@ -261,7 +261,6 @@ the `ANTHROPIC_BASE_URL` surface, and belong to the separate `/login` device-flo
 
 | Gap | Severity | Evidence | Tracking |
 | :-- | :-- | :-- | :-- |
-| `count_tokens` `Estimate` mode returns `404 not_found_error` instead of `501 not_supported` (default `Tiktoken` mode is fine) | Low | `src/proxy.rs:264-271`, `src/config.rs:295-296` | #89 |
 | `GET /v1/models` always unauthenticated, even under `[server.auth]` (model-list exposure on shared-key gateways; spec allows optional auth) | Low (posture) | `src/discovery.rs:35-40`, `src/proxy.rs:224-231` | #90 |
 | (info) ChatGPT/xAI `401` message replaced with a fixed re-login hint — intentional (`401` → re-login is the recovery) | Info | `src/adapters/responses.rs:599-602` | folded into #88 |
 

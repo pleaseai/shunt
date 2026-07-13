@@ -304,11 +304,11 @@ fn expand_tilde(path: &str) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CountTokens {
-    /// Return 404 so the client falls back on its own (no server endpoint
-    /// exists on the Responses API; the gateway protocol allows this). Claude
-    /// Code's /context reacts by re-counting every category against Haiku over
-    /// the network — slow, and silently zero without an Anthropic credential —
-    /// so this is opt-in rather than the default.
+    /// Return 501 `not_supported` so the client falls back on its own (no server
+    /// endpoint exists on the Responses API). Claude Code's /context reacts by
+    /// re-counting every category against Haiku over the network — slow, and
+    /// silently zero without an Anthropic credential — so this is opt-in rather
+    /// than the default.
     Estimate,
     /// Compute the count locally with tiktoken (o200k_base) and return
     /// `{"input_tokens": N}`. o200k_base is the GPT-family encoder, so for

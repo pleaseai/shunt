@@ -34,7 +34,7 @@ description: 모든 shunt.toml 키 — server, providers, routes, models.
 | `api_key_env` | env 변수 이름 | `auth = "api_key"`일 때 키를 읽어오는 곳. |
 | `api_key_header` | `bearer`(기본) \| `x_api_key` | 주입된 키가 전송되는 헤더. |
 | `effort` | `low` … `max` | 선택적 기본 추론 노력(`responses` 프로바이더). |
-| `count_tokens` | `tiktoken`(기본) \| `estimate` | `responses` 프로바이더 전용: 로컬 tiktoken 카운트 대 404 폴백([상세](/ko/guides/effort-and-context/#token-counting-count_tokens)). |
+| `count_tokens` | `tiktoken`(기본) \| `estimate` | `responses` 프로바이더 전용: 로컬 tiktoken 카운트 대 `501 not_supported` 폴백([상세](/ko/guides/effort-and-context/#token-counting-count_tokens)). |
 
 ## `[[routes]]`
 

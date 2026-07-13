@@ -34,7 +34,7 @@ description: すべての shunt.toml キー — server、providers、routes、mo
 | `api_key_env` | 環境変数名 | `auth = "api_key"` のとき、キーを読み取る場所。 |
 | `api_key_header` | `bearer`（デフォルト） \| `x_api_key` | 注入されたキーを送るヘッダー。 |
 | `effort` | `low` … `max` | オプションのデフォルト reasoning エフォート（`responses` プロバイダー）。 |
-| `count_tokens` | `tiktoken`（デフォルト） \| `estimate` | `responses` プロバイダーのみ: ローカルの tiktoken カウント vs. 404 フォールバック（[詳細](/ja/guides/effort-and-context/#token-counting-count_tokens)）。 |
+| `count_tokens` | `tiktoken`（デフォルト） \| `estimate` | `responses` プロバイダーのみ: ローカルの tiktoken カウント vs. `501 not_supported` フォールバック（[詳細](/ja/guides/effort-and-context/#token-counting-count_tokens)）。 |
 
 ## `[[routes]]`
 
