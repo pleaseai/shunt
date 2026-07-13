@@ -1,0 +1,25 @@
+.claude/agent-memory/review-review-security-reviewer/project_codex-multi-account-security.md
+  s_7c8f3392527f8f::t_8784779d45edef 12-24,27-29
+src/auth/mod.rs
+  s_7c8f3392527f8f::t_2baf5903ed9fe5 164-171
+src/adapters/responses/mod.rs
+  s_7c8f3392527f8f::t_c19678ca4f10bf 491-498
+src/auth/codex/auth.rs
+  s_7c8f3392527f8f::t_e08e0b8adc5283 37-43,47-53
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "f7d2ddf57bf88431275f6d8dc181322509a05e54",
+  "prompts": {},
+  "sessions": {
+    "s_7c8f3392527f8f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ab01b4b8-bc36-407a-ae5d-852f02606bc2",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
