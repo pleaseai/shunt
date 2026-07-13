@@ -8,86 +8,33 @@
 //! reads, refreshes, and writes it exactly as it would `~/.codex/auth.json`.
 
 use std::{
-    env, fs, io,
+    fs, io,
     path::{Path, PathBuf},
 };
 
 use serde_json::Value;
 
-use crate::auth::shared::write_auth_file_atomic;
+use crate::auth::shared;
 use crate::config::AccountConfig;
 
+// The name validation, directory resolution, scan, and born-private write are
+// identical to the Claude store, so they live in `auth::shared` and both stores
+// call them — only the env var and subdir differ here.
+pub use crate::auth::shared::validate_account_name;
+
 pub fn default_accounts_dir() -> PathBuf {
-    env::var_os("SHUNT_CODEX_ACCOUNTS_DIR")
-        .map(PathBuf::from)
-        .or_else(|| {
-            // `HOME` is unset on Windows; fall back to `USERPROFILE` so the store
-            // lands in the user's home rather than a working-directory-relative
-            // path (mirrors `claude::store::default_accounts_dir`).
-            env::var_os("HOME")
-                .filter(|home| !home.is_empty())
-                .or_else(|| env::var_os("USERPROFILE").filter(|home| !home.is_empty()))
-                .map(PathBuf::from)
-                .map(|home| home.join(".shunt").join("accounts").join("codex"))
-        })
-        .unwrap_or_else(|| PathBuf::from(".shunt/accounts/codex"))
+    shared::default_accounts_dir("SHUNT_CODEX_ACCOUNTS_DIR", "codex")
 }
 
 pub fn account_path(name: &str) -> PathBuf {
     default_accounts_dir().join(format!("{name}.json"))
 }
 
-pub fn validate_account_name(name: &str) -> anyhow::Result<()> {
-    if name.is_empty()
-        || !name
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-    {
-        anyhow::bail!("account name {name:?} must match [a-z0-9-]+");
-    }
-    Ok(())
-}
-
 /// Return store-managed accounts in deterministic name order. Codex accounts
 /// carry no UUID concept — the account id lives inside the token, not the
-/// account entry — so every entry is name-only.
+/// account entry — so every entry is name-only (`uuid: None`).
 pub fn scan_accounts() -> io::Result<Vec<AccountConfig>> {
-    let dir = default_accounts_dir();
-    let entries = match fs::read_dir(&dir) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error),
-    };
-    let mut accounts = Vec::new();
-    for entry in entries {
-        let Ok(entry) = entry else {
-            continue;
-        };
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        if !file_type.is_file() {
-            continue;
-        }
-        let path = entry.path();
-        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
-            continue;
-        }
-        let Some(name) = path.file_stem().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        if validate_account_name(name).is_err() {
-            continue;
-        }
-        accounts.push(AccountConfig {
-            name: name.to_string(),
-            credentials: None,
-            token_env: None,
-            uuid: None,
-        });
-    }
-    accounts.sort_by(|left, right| left.name.cmp(&right.name));
-    Ok(accounts)
+    shared::scan_account_dir(&default_accounts_dir(), |_| None)
 }
 
 /// Remove a store account file. Returns whether a file was actually removed
@@ -142,20 +89,7 @@ pub fn import_auth(name: &str, source: &Path) -> anyhow::Result<PathBuf> {
 
 fn write_account(name: &str, value: &Value) -> anyhow::Result<PathBuf> {
     let path = account_path(name);
-    if let Some(parent) = path.parent() {
-        // Create the account directory born-private (0700 on Unix) rather than
-        // chmod-ing after creation, so there is no window where it sits at the
-        // umask default on a multi-user host.
-        let mut builder = fs::DirBuilder::new();
-        builder.recursive(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            builder.mode(0o700);
-        }
-        builder.create(parent)?;
-    }
-    write_auth_file_atomic(&path, value)?;
+    shared::write_account_file(&path, value)?;
     Ok(path)
 }
 

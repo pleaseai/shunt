@@ -27,31 +27,34 @@ pub struct CodexAuthStore {
     token_url: String,
 }
 
+/// Resolve the OAuth refresh endpoint from a raw `SHUNT_CODEX_TOKEN_URL` value.
+/// The refresh POST carries the long-lived `refresh_token`, so an empty,
+/// malformed, or non-loopback-plaintext override is rejected (it would egress the
+/// credential off-origin or in the clear) and the real `auth.openai.com` endpoint
+/// is used instead. HTTPS to any host is allowed; plain `http://` only to a
+/// loopback test mock (wiremock binds `127.0.0.1`).
+fn sanitize_token_url(raw: Option<String>) -> String {
+    raw.filter(|value| !value.is_empty())
+        .filter(|value| {
+            value.parse::<reqwest::Url>().is_ok_and(|url| {
+                url.scheme() == "https"
+                    || (url.scheme() == "http"
+                        && crate::config::host_is_loopback(url.host_str().unwrap_or_default()))
+            })
+        })
+        .unwrap_or_else(|| TOKEN_URL.to_string())
+}
+
 impl CodexAuthStore {
     pub fn new(path: PathBuf, client: reqwest::Client) -> Self {
         // `SHUNT_CODEX_TOKEN_URL` overrides the OAuth refresh endpoint, mirroring
         // `ClaudeAuthStore::new`'s `SHUNT_CLAUDE_TOKEN_URL`. It exists purely as a
         // test seam (see `force_refresh_refreshes_a_still_valid_chatgpt_token`
-        // below) — left unset, production always refreshes against the real
-        // `auth.openai.com` endpoint.
-        //
-        // The refresh POST carries the long-lived `refresh_token`, so reject a
-        // non-loopback plaintext override: allow HTTPS to any host, but plain
-        // `http://` only for a loopback test mock (wiremock binds 127.0.0.1). A
-        // malformed or off-origin-plaintext override is ignored and the real URL
-        // is used, so a misconfigured env var can never egress the credential in
-        // the clear.
-        let token_url = env::var("SHUNT_CODEX_TOKEN_URL")
-            .ok()
-            .filter(|value| !value.is_empty())
-            .filter(|value| {
-                value.parse::<reqwest::Url>().is_ok_and(|url| {
-                    url.scheme() == "https"
-                        || (url.scheme() == "http"
-                            && crate::config::host_is_loopback(url.host_str().unwrap_or_default()))
-                })
-            })
-            .unwrap_or_else(|| TOKEN_URL.to_string());
+        // below) — left unset, production refreshes against the real
+        // `auth.openai.com` endpoint. `sanitize_token_url` rejects a non-loopback
+        // plaintext override so a misconfigured env var can never egress the
+        // long-lived `refresh_token` off-origin or in the clear.
+        let token_url = sanitize_token_url(env::var("SHUNT_CODEX_TOKEN_URL").ok());
         Self {
             path,
             client,
@@ -335,6 +338,34 @@ mod tests {
             UNIX_EPOCH + Duration::from_secs(2_000_000_000)
         );
         assert_eq!(jwt_account_id(&access).as_deref(), Some("acct_123"));
+    }
+
+    #[test]
+    fn sanitize_token_url_rejects_off_origin_and_plaintext_overrides() {
+        // Unset or empty → the real production endpoint.
+        assert_eq!(sanitize_token_url(None), TOKEN_URL);
+        assert_eq!(sanitize_token_url(Some(String::new())), TOKEN_URL);
+        // HTTPS to any host is fine — the refresh_token is encrypted in transit.
+        assert_eq!(
+            sanitize_token_url(Some("https://mock.example/token".to_string())),
+            "https://mock.example/token"
+        );
+        // Plain HTTP is allowed only for a loopback test mock.
+        assert_eq!(
+            sanitize_token_url(Some("http://127.0.0.1:8080/token".to_string())),
+            "http://127.0.0.1:8080/token"
+        );
+        assert_eq!(
+            sanitize_token_url(Some("http://localhost:9000/token".to_string())),
+            "http://localhost:9000/token"
+        );
+        // Non-loopback plaintext would leak the refresh_token → rejected.
+        assert_eq!(
+            sanitize_token_url(Some("http://evil.example/token".to_string())),
+            TOKEN_URL
+        );
+        // A malformed value (no scheme/host) is rejected too.
+        assert_eq!(sanitize_token_url(Some("not a url".to_string())), TOKEN_URL);
     }
 
     #[test]

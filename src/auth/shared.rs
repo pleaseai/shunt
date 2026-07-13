@@ -7,14 +7,16 @@
 //! into a sibling provider's module.
 
 use std::{
-    fs, io,
-    path::Path,
+    env, fs, io,
+    path::{Path, PathBuf},
     sync::atomic::{AtomicUsize, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::Value;
+
+use crate::config::AccountConfig;
 
 const EXPIRY_BUFFER: Duration = Duration::from_secs(5 * 60);
 static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -90,6 +92,102 @@ fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
         .open(path)?;
     file.write_all(bytes)?;
     file.sync_all()
+}
+
+/// Validate a store account name: non-empty and `[a-z0-9-]+` only. Shared by the
+/// Claude and Codex account stores so the path-safety invariant — a name can
+/// never escape the accounts directory — cannot drift between them.
+pub fn validate_account_name(name: &str) -> anyhow::Result<()> {
+    if name.is_empty()
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        anyhow::bail!("account name {name:?} must match [a-z0-9-]+");
+    }
+    Ok(())
+}
+
+/// Resolve a provider store's accounts directory: `$<env_var>` when set, else
+/// `<home>/.shunt/accounts/<subdir>` (`HOME`, falling back to `USERPROFILE` on
+/// Windows where `HOME` is unset), else a working-directory-relative
+/// `.shunt/accounts/<subdir>`. `env_var`/`subdir` are the only things that differ
+/// between the Claude and Codex stores.
+pub fn default_accounts_dir(env_var: &str, subdir: &str) -> PathBuf {
+    env::var_os(env_var)
+        .map(PathBuf::from)
+        .or_else(|| {
+            env::var_os("HOME")
+                .filter(|home| !home.is_empty())
+                .or_else(|| env::var_os("USERPROFILE").filter(|home| !home.is_empty()))
+                .map(PathBuf::from)
+                .map(|home| home.join(".shunt").join("accounts").join(subdir))
+        })
+        .unwrap_or_else(|| PathBuf::from(".shunt/accounts").join(subdir))
+}
+
+/// Scan a store directory for `<name>.json` account files and return name-only
+/// [`AccountConfig`] entries in deterministic name order. Each entry's `uuid` is
+/// produced by `uuid_for` — the Claude store reads a UUID from the file; the
+/// Codex store has none and passes `|_| None`. A missing directory yields an
+/// empty list (the backward-compatible "no store configured" case).
+pub fn scan_account_dir(
+    dir: &Path,
+    uuid_for: impl Fn(&Path) -> Option<String>,
+) -> io::Result<Vec<AccountConfig>> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    let mut accounts = Vec::new();
+    for entry in entries {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(name) = path.file_stem().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if validate_account_name(name).is_err() {
+            continue;
+        }
+        accounts.push(AccountConfig {
+            name: name.to_string(),
+            credentials: None,
+            token_env: None,
+            uuid: uuid_for(&path),
+        });
+    }
+    accounts.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(accounts)
+}
+
+/// Write an account file born-private: create its parent directory `0700` on Unix
+/// (no chmod-after-create window on a multi-user host), then atomically write
+/// `value` via [`write_auth_file_atomic`]. Both stores import credentials this way.
+pub(crate) fn write_account_file(path: &Path, value: &Value) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        let mut builder = fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder.create(parent)?;
+    }
+    write_auth_file_atomic(path, value)?;
+    Ok(())
 }
 
 pub(crate) fn format_iso8601(time: SystemTime) -> String {

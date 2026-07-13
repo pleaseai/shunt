@@ -296,6 +296,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn chatgpt_token_env_without_account_id_names_the_env_var() {
+        use axum::body::to_bytes;
+        // A `token_env` token whose JWT payload has no decodable
+        // `chatgpt_account_id` claim: the error must point at the environment
+        // variable, not misdirect the operator to `codex login`. The specific
+        // text lives in the error response body (`AdapterError::message` is the
+        // generic "authentication failed"), so assert against the body.
+        let env_name = format!("SHUNT_TEST_CHATGPT_TOKEN_{}", std::process::id());
+        std::env::set_var(&env_name, "header.not-a-claim.sig");
+        let account = AccountConfig {
+            name: "ci".to_string(),
+            credentials: None,
+            token_env: Some(env_name.clone()),
+            uuid: None,
+        };
+
+        let error = resolve_chatgpt_account(&account, &reqwest::Client::new())
+            .await
+            .unwrap_err();
+        std::env::remove_var(&env_name);
+        let bytes = to_bytes(error.response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&bytes);
+        assert!(
+            body.contains(&env_name),
+            "token_env error body should name the env var, got: {body}"
+        );
+    }
+
+    #[tokio::test]
     async fn name_only_claude_account_resolves_store_token() {
         let _guard = crate::auth::claude::store::TEST_ENV_LOCK.lock().await;
         let dir = std::env::temp_dir().join(format!(
