@@ -1,5 +1,5 @@
 ---
-title: Configuration Reference
+title: 設定リファレンス
 description: すべての shunt.toml キー — server、providers、routes、models。
 ---
 
@@ -21,6 +21,23 @@ description: すべての shunt.toml キー — server、providers、routes、mo
 | :-- | :-- | :-- |
 | `header` | `x-shunt-token` | クライアントトークンを運ぶヘッダー |
 | `tokens_env` | `SHUNT_CLIENT_TOKENS` | カンマ区切りの `name:token` ペアを保持する環境変数 |
+
+指定された環境変数には 1 つ以上の認証情報が必要です。例: `SHUNT_CLIENT_TOKENS="alice:<token>,bob:<token>"`。テーブルが存在するのに変数が未設定・空・不正な場合、起動はフェイルクローズします。
+
+## `[server.admin]`（オプション）
+
+このテーブルの存在が、ブラウザーでのアカウントプロビジョニングとアカウントプールの健全性のための管理 Web サーフェスを有効化します（[詳細](/ja/guides/admin-remote-provisioning/)）。テーブルがない場合、`/admin*` ルートは一切登録されません。
+
+| キー | デフォルト | 意味 |
+| :-- | :-- | :-- |
+| `header` | `x-shunt-admin-token` | API/curl 呼び出し用の管理トークンを運ぶヘッダー |
+| `tokens_env` | `SHUNT_ADMIN_TOKENS` | カンマ区切りの `name:token` ペアを保持する環境変数 |
+| `session_ttl_secs` | `3600` | ログイン後のブラウザーセッションの寿命（秒） |
+| `pending_ttl_secs` | `600` | 開始したプロビジョニングフローを完了できる時間（秒） |
+
+指定された環境変数には 1 つ以上の認証情報が必要です。例: `SHUNT_ADMIN_TOKENS="ops:<token>"`。テーブルが存在するのに変数が未設定・空・不正な場合、起動はフェイルクローズします。
+
+管理トークンは `[server.auth]` の下で設定されるクライアントトークンとは別個の認証情報です。1 つの認証情報を両方のサーフェスで再利用しないでください。
 
 ## `[providers.<name>]`
 

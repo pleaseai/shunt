@@ -22,6 +22,23 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 | `header` | `x-shunt-token` | 携带客户端 token 的头部 |
 | `tokens_env` | `SHUNT_CLIENT_TOKENS` | 保存逗号分隔的 `name:token` 对的环境变量 |
 
+指定的环境变量必须包含至少一个凭据,例如 `SHUNT_CLIENT_TOKENS="alice:<token>,bob:<token>"`。若此表存在但该变量未设置、为空或格式错误,启动会安全失败(fail closed)。
+
+## `[server.admin]`(可选)
+
+存在此表即启用管理 Web 界面,用于浏览器账户预配与账户池健康状况([详情](/zh-cn/guides/admin-remote-provisioning/))。此表不存在时,任何 `/admin*` 路由都不会注册。
+
+| 键 | 默认 | 含义 |
+| :-- | :-- | :-- |
+| `header` | `x-shunt-admin-token` | API/curl 调用中携带管理员 token 的头部 |
+| `tokens_env` | `SHUNT_ADMIN_TOKENS` | 保存逗号分隔的 `name:token` 对的环境变量 |
+| `session_ttl_secs` | `3600` | 登录后浏览器会话的生命周期,单位秒 |
+| `pending_ttl_secs` | `600` | 允许完成一个已开始的预配流程的时间,单位秒 |
+
+指定的环境变量必须包含至少一个凭据,例如 `SHUNT_ADMIN_TOKENS="ops:<token>"`。若此表存在但该变量未设置、为空或格式错误,启动会安全失败(fail closed)。
+
+管理员 token 与 `[server.auth]` 下配置的客户端 token 是相互独立的凭据;不要在两个界面上复用同一个凭据。
+
 ## `[providers.<name>]`
 
 每个提供方都是一个以你自选名称命名的表。内置项(`anthropic`、`openai`、`codex`、`xai`、`grok`、`cursor`)可被部分覆盖 —— 配置映射深度合并。
