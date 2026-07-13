@@ -1,0 +1,26 @@
+.claude/agent-memory/review-review-pr-test-analyzer/MEMORY.md
+  s_470874e8046fa4::t_d8170c755bffc7 5
+.claude/agent-memory/review-review-documentation-analyzer/shunt_comparison_md_self_contradiction_pattern.md
+  s_470874e8046fa4::t_8f5752aeffc910 15-20
+.claude/agent-memory/review-review-code-reviewer/shunt-codex-websocket-v2.md
+  s_470874e8046fa4::t_ae41ea77e7e28a 29-34
+.claude/agent-memory/review-review-code-reviewer/shunt-codex-ws-peek-fallback-issue46.md
+  s_470874e8046fa4::t_84ad1d169d1bc6 9-13
+  s_470874e8046fa4::t_78966e619e535f 29-35
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "c2b040c004daa2c0b6827d630d851e56ca519688",
+  "prompts": {},
+  "sessions": {
+    "s_470874e8046fa4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c6c53327-752e-4f04-a4dc-10b802e6445f",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
