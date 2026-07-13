@@ -320,7 +320,20 @@ async fn forward_claude_oauth(
 
                 let failed_access_token = match &credential {
                     Credential::ClaudeOauth { access_token, .. } => access_token.as_str(),
-                    _ => unreachable!("claude_oauth account resolved a non-OAuth credential"),
+                    // resolve_claude_account only ever yields ClaudeOauth, so this
+                    // is unreachable today — but this is a request-handling path in
+                    // a failover proxy, so degrade gracefully (log loudly + fail
+                    // over to the next account) instead of panicking if a future
+                    // refactor ever breaks that invariant.
+                    _ => {
+                        tracing::error!(
+                            provider = %route.provider,
+                            account = %account.name,
+                            "claude_oauth account resolved a non-OAuth credential"
+                        );
+                        last_response = Some(upstream);
+                        continue;
+                    }
                 };
                 let credentials = account
                     .credentials
