@@ -1,0 +1,41 @@
+src/adapters/responses/mod.rs
+  s_470874e8046fa4::t_fc7cbce2b6ee1c 597-600
+  s_470874e8046fa4::t_d0ab4dff1df822 99-104,532-537
+  s_470874e8046fa4::t_47afedba59a005 339-341,347-358,362-370,372-399
+tests/codex_websocket_fallback.rs
+  s_470874e8046fa4::t_685a3a6217f44b 134
+  s_470874e8046fa4::t_48a14da321288e 198-425
+  s_470874e8046fa4::t_3068eda457d6f0 12-13,16,22-24,26,32-36
+  s_806d272ffe620a::t_0f63dcf8727ffd 37
+docs/comparison.md
+  s_470874e8046fa4::t_7fc9956caa6ba6 253-255
+  s_470874e8046fa4::t_c03640f7a05f2b 198-207
+site/src/content/docs/reference/configuration.md
+  s_470874e8046fa4::t_a86bed49ff17e9 56
+docs/m7-codex-websocket.md
+  s_470874e8046fa4::t_ce7bfbba1145e4 238-244,248-262
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "f9f63f15ad7687d89472c7a92701d9b74f06a967",
+  "prompts": {},
+  "sessions": {
+    "s_470874e8046fa4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c6c53327-752e-4f04-a4dc-10b802e6445f",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_806d272ffe620a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "787544a5-b14a-4ca2-b975-bea3397374a2",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
