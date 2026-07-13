@@ -397,11 +397,19 @@ impl AnthropicSseMachine {
             .or_else(|| self.web_search_indexes.get(url).cloned())
             .map(Value::String)
             .unwrap_or(Value::Null);
+        let title = annotation
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let cited_text = annotation
+            .get("cited_text")
+            .and_then(Value::as_str)
+            .unwrap_or("");
         let mut citation = json!({
             "type": "web_search_result_location",
             "url": url,
-            "title": annotation.get("title").cloned().unwrap_or(Value::Null),
-            "cited_text": annotation.get("cited_text").cloned().unwrap_or_else(|| json!("")),
+            "title": title,
+            "cited_text": cited_text,
             "encrypted_index": encrypted_index,
         });
         citation
@@ -452,6 +460,7 @@ impl AnthropicSseMachine {
         let results = item
             .get("results")
             .or_else(|| item.get("output"))
+            .filter(|results| results.is_array())
             .cloned()
             .unwrap_or_else(|| json!([]));
         if let Some(results) = results.as_array() {

@@ -836,7 +836,7 @@ fn citation_without_open_text_block_opens_one_and_omits_missing_encrypted_index(
         "event: response.created\n",
         "data: {\"response\":{\"id\":\"resp_search\"}}\n\n",
         "event: response.output_text.annotation.added\n",
-        "data: {\"annotation\":{\"type\":\"url_citation\",\"url\":\"https://example.com/\",\"title\":\"Example\",\"cited_text\":\"Example text\"}}\n\n",
+        "data: {\"annotation\":{\"type\":\"url_citation\",\"url\":\"https://example.com/\",\"title\":null,\"cited_text\":null}}\n\n",
         "event: response.completed\n",
         "data: {\"response\":{}}\n\n"
     );
@@ -868,9 +868,33 @@ fn citation_without_open_text_block_opens_one_and_omits_missing_encrypted_index(
         final_json["content"][0]["citations"][0]["url"],
         "https://example.com/"
     );
+    assert_eq!(final_json["content"][0]["citations"][0]["title"], "");
+    assert_eq!(final_json["content"][0]["citations"][0]["cited_text"], "");
     assert!(final_json["content"][0]["citations"][0]
         .get("encrypted_index")
         .is_none());
+}
+
+#[test]
+fn non_array_web_search_results_become_an_empty_result_array() {
+    let fixture = concat!(
+        "event: response.created\n",
+        "data: {\"response\":{\"id\":\"resp_search\"}}\n\n",
+        "event: response.output_item.done\n",
+        "data: {\"item\":{\"type\":\"web_search_call\",\"id\":\"ws_1\",\"results\":null}}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{}}\n\n"
+    );
+    let mut machine = AnthropicSseMachine::new("grok-4.5", false);
+    let emitted = parse_sse_events(fixture)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
+
+    assert!(emitted.contains("\"type\":\"web_search_tool_result\""));
+    assert!(emitted.contains("\"content\":[]"));
+    let final_json = machine.final_json();
+    assert_eq!(final_json["content"][1]["content"], json!([]));
 }
 
 #[test]
