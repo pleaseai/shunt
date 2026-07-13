@@ -1,0 +1,90 @@
+site/src/content/docs/zh-cn/reference/troubleshooting.md
+  s_d1cd8e7a9f7119::t_ac4d09d2998608 17
+site/src/content/docs/reference/troubleshooting.md
+  s_d1cd8e7a9f7119::t_95d2e2ed95f0ba 17
+site/src/content/docs/ko/guides/codex.md
+  s_d1cd8e7a9f7119::t_850e3688ee65d5 261-288
+  s_d1cd8e7a9f7119::t_52356382476a0c 301
+src/model/responses.rs
+  s_d1cd8e7a9f7119::t_2bbb8694eda3e3 195-202,204-245
+  s_d1cd8e7a9f7119::t_938e351c084f67 72,91
+  s_d1cd8e7a9f7119::t_36134a95c7fddc 47-50
+  s_d1cd8e7a9f7119::t_a0ee05118dd915 6
+site/src/content/docs/zh-cn/guides/codex.md
+  s_d1cd8e7a9f7119::t_eeec965115f225 318-342
+  s_d1cd8e7a9f7119::t_7cf28070ff4950 355
+README.md
+  s_d1cd8e7a9f7119::t_d2278be105c5a6 146
+site/src/content/docs/ja/reference/troubleshooting.md
+  s_d1cd8e7a9f7119::t_3d5fa307870d6e 17
+src/model/responses_request.rs
+  s_d1cd8e7a9f7119::t_2bef4ca1c10053 422-428,430-435,439,449,452-461,464-465,469-523
+  s_d1cd8e7a9f7119::t_f936be20c2fcc2 524,743-756,762-766,769-772,775-777
+  s_d1cd8e7a9f7119::t_104af661d0508a 852-857,859,862-865
+  s_d1cd8e7a9f7119::t_8dcce9d2c9f962 12-14
+  s_d1cd8e7a9f7119::t_79895df12077ce 268,287,289
+  s_d1cd8e7a9f7119::t_347f37ce2b812d 9-11,15-23,26,30-33,37,41-44,63,68-73,75-94,97
+  s_d1cd8e7a9f7119::t_c6fc9e29f3d54d 111,114,122
+  s_d1cd8e7a9f7119::t_89c444153effee 525-526,778,910,979,997
+tests/responses_translate.rs
+  s_d1cd8e7a9f7119::t_129e9542734cba 757-758
+  s_d1cd8e7a9f7119::t_af0b5bd2e3a51f 25
+  s_d1cd8e7a9f7119::t_6bf4c6affba0ef 770
+  s_d1cd8e7a9f7119::t_ba98f6c0403353 783
+  s_d1cd8e7a9f7119::t_7f429c8da279bf 26,28,30-31,73-74,76,78-79,502,702,796,858,940,1425,1436-1744,1746
+  s_d1cd8e7a9f7119::t_1155087a311ccf 27,29,75,77,728-729,771,797,822,903,1171,1246,1745,1747-1757
+src/adapters/responses.rs
+  s_d1cd8e7a9f7119::t_42ac3d19dab7ba 78-84
+  s_d1cd8e7a9f7119::t_c4b7d7b34a2b9f 308,315-322
+  s_d1cd8e7a9f7119::t_9c2aeb9fd8748d 503,506
+  s_d1cd8e7a9f7119::t_a943db8b3205c6 565,567
+  s_d1cd8e7a9f7119::t_55a73223a38f2a 114,136
+  s_d1cd8e7a9f7119::t_2ad4c3b953baa1 249,255
+  s_d1cd8e7a9f7119::t_df9aff7eb9b042 278
+  s_d1cd8e7a9f7119::t_dc0aa3d8619999 154,170-176,181-187,196,201
+src/config.rs
+  s_d1cd8e7a9f7119::t_e5649bf92dbedd 374-384
+  s_d1cd8e7a9f7119::t_472834f9a8f6cf 536
+  s_d1cd8e7a9f7119::t_7a64145e028818 554
+  s_d1cd8e7a9f7119::t_ff1d50c7c0bfbc 250-261
+  s_d1cd8e7a9f7119::t_5eb1a486c1403c 1351-1371
+  s_d1cd8e7a9f7119::t_508d6541d05d82 1034-1050
+  s_d1cd8e7a9f7119::t_823bc7dbdcabf4 594
+  s_d1cd8e7a9f7119::t_596248cedd98a3 1350
+site/src/content/docs/guides/codex.md
+  s_d1cd8e7a9f7119::t_abaff39fc27144 324-352
+  s_d1cd8e7a9f7119::t_658b52eba3acb7 365
+src/adapters/codex_ws.rs
+  s_d1cd8e7a9f7119::t_ad740638f6912e 786-787
+tests/inbound_auth.rs
+  s_d1cd8e7a9f7119::t_342cff6c941f93 60
+site/src/content/docs/reference/configuration.md
+  s_d1cd8e7a9f7119::t_3a96ba1cd747dd 39-40
+site/src/content/docs/ko/reference/troubleshooting.md
+  s_d1cd8e7a9f7119::t_ce556007e17a04 17
+site/src/content/docs/ja/guides/codex.md
+  s_d1cd8e7a9f7119::t_6224f1e67a30af 278-308
+  s_d1cd8e7a9f7119::t_9c21fcaac531cd 321
+docs/comparison.md
+  s_d1cd8e7a9f7119::t_1dc0218881fd7b 88-96
+  s_d1cd8e7a9f7119::t_342f24a022cd88 183,185-190
+  s_d1cd8e7a9f7119::t_10717682986539 246-247
+  s_d1cd8e7a9f7119::t_8b627d625333f4 50
+  s_d1cd8e7a9f7119::t_7e4b5cd314ca3b 252
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "d3d3cc8bdf0673f108f61a8aae04d49af3564a8c",
+  "prompts": {},
+  "sessions": {
+    "s_d1cd8e7a9f7119": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ff930504-6cbf-40e6-90cf-2c0b085efd8e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
