@@ -1,0 +1,33 @@
+src/adapters/cursor/stream.rs
+  s_69686c27ca701c::t_0daf206c02ac8d 45-48,50
+  s_69686c27ca701c::t_4d1d0c934290be 162-165
+  s_69686c27ca701c::t_af41afcd5dd1b4 150-161,166-168
+  s_69686c27ca701c::t_dd001ca4385dce 4
+  s_69686c27ca701c::t_ffae19db1c38ac 149
+docs/gateway-protocol.md
+  s_69686c27ca701c::t_889a4bc8c8d79b 277-281
+src/model/responses.rs
+  s_69686c27ca701c::t_336922a938a4cb 751
+  s_69686c27ca701c::t_50d5a1ec1334b6 733-737
+  s_69686c27ca701c::t_d6288b7433b91e 775
+src/adapters/cursor/connect.rs
+  s_69686c27ca701c::t_c60982e8afebd0 179-182
+  s_69686c27ca701c::t_82d5f50c94e41b 242-254
+  s_69686c27ca701c::t_a251720b32a441 241
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "8d12a46282d59d66986ed97b1e57745ebaf4d1f2",
+  "prompts": {},
+  "sessions": {
+    "s_69686c27ca701c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2f71c35a-6548-4c76-a384-46dd4f77ac01",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
