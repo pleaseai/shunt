@@ -1,0 +1,36 @@
+src/admin/mod.rs
+  s_18f0eea5e38b80::t_e8bbfcb72f0bb7 616-635
+  s_18f0eea5e38b80::t_d4e0ad70279327 361-367,374,378-379
+  s_18f0eea5e38b80::t_ce61c743bbd046 195-199
+  s_18f0eea5e38b80::t_14ded1c986ec38 571-573
+  s_18f0eea5e38b80::t_97ffe1e8627147 520-523
+  s_18f0eea5e38b80::t_98dae98d058016 579-582,584-585,588-606
+src/accounts.rs
+  s_18f0eea5e38b80::t_2c2df788352771 275-277
+  s_18f0eea5e38b80::t_48be979a57b606 34-39
+  s_18f0eea5e38b80::t_e77c4b50dc6a19 183,185-187,229,231-232,238,240-241
+  s_18f0eea5e38b80::t_cbaa76952f0d88 233
+  s_18f0eea5e38b80::t_abb11dbf99d570 242-244
+  s_18f0eea5e38b80::t_7c20358ad4a36e 245-251
+docs/m9-admin-surface.md
+  s_18f0eea5e38b80::t_ac5bd40e8b9625 112-116
+src/auth/inbound.rs
+  s_18f0eea5e38b80::t_400eae9a44f23a 62-63
+  s_18f0eea5e38b80::t_188a3ee56f2f84 64-66
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "a02b47d0fa605fe5c7200310a3cf06ec709731db",
+  "prompts": {},
+  "sessions": {
+    "s_18f0eea5e38b80": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9ced28d7-2fc4-4823-9034-b1700c49530e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
