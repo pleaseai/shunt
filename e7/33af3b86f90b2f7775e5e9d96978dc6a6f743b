@@ -1,0 +1,23 @@
+Cargo.toml
+  s_682cc0cbaaf81a::t_11a005e40abbc6 58
+src/main.rs
+  s_682cc0cbaaf81a::t_5b91887366a6e6 116-120,153-157,174-175
+Cargo.lock
+  s_682cc0cbaaf81a::t_6d46641caadfb7 2273,2283-2293
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "e733af3b86f90b2f7775e5e9d96978dc6a6f743b",
+  "prompts": {},
+  "sessions": {
+    "s_682cc0cbaaf81a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d897fd56-d628-4179-970f-afc3d3144f1c",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
