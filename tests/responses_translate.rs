@@ -3,8 +3,8 @@ use serde_json::{json, Value};
 use shunt::{
     config::ResponsesFlavor,
     model::responses::{
-        anthropic_error_type, map_error_value, parse_sse_events, translate_request,
-        AnthropicSseMachine,
+        anthropic_error_type, client_facing_status, map_error_value, parse_sse_events,
+        translate_request, AnthropicSseMachine,
     },
     routing::{AdapterKind, Route},
 };
@@ -961,20 +961,67 @@ fn streaming_state_machine_emits_incremental_anthropic_events() {
 #[test]
 fn maps_upstream_error_statuses() {
     assert_eq!(
+        anthropic_error_type(StatusCode::BAD_REQUEST),
+        "invalid_request_error"
+    );
+    assert_eq!(
         anthropic_error_type(StatusCode::UNAUTHORIZED),
         "authentication_error"
+    );
+    assert_eq!(
+        anthropic_error_type(StatusCode::FORBIDDEN),
+        "permission_error"
+    );
+    assert_eq!(
+        anthropic_error_type(StatusCode::PAYLOAD_TOO_LARGE),
+        "request_too_large"
     );
     assert_eq!(
         anthropic_error_type(StatusCode::TOO_MANY_REQUESTS),
         "rate_limit_error"
     );
     assert_eq!(
-        anthropic_error_type(StatusCode::BAD_REQUEST),
-        "invalid_request_error"
+        anthropic_error_type(StatusCode::NOT_IMPLEMENTED),
+        "not_supported"
+    );
+    assert_eq!(
+        anthropic_error_type(StatusCode::from_u16(529).unwrap()),
+        "overloaded_error"
     );
     assert_eq!(
         anthropic_error_type(StatusCode::INTERNAL_SERVER_ERROR),
         "api_error"
+    );
+    assert_eq!(
+        anthropic_error_type(StatusCode::SERVICE_UNAVAILABLE),
+        "api_error"
+    );
+}
+
+#[test]
+fn preserves_client_facing_status_for_standard_error_statuses_only() {
+    // The standard error statuses reach the client unchanged...
+    for status in [
+        StatusCode::BAD_REQUEST,
+        StatusCode::UNAUTHORIZED,
+        StatusCode::FORBIDDEN,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        StatusCode::TOO_MANY_REQUESTS,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        StatusCode::NOT_IMPLEMENTED,
+        StatusCode::BAD_GATEWAY,
+        StatusCode::SERVICE_UNAVAILABLE,
+        StatusCode::GATEWAY_TIMEOUT,
+        StatusCode::from_u16(529).unwrap(),
+    ] {
+        assert_eq!(client_facing_status(status), status);
+    }
+
+    // ...anything outside that set collapses to a generic 502 rather than
+    // leaking an unexpected upstream status verbatim.
+    assert_eq!(
+        client_facing_status(StatusCode::PAYMENT_REQUIRED),
+        StatusCode::BAD_GATEWAY
     );
 }
 

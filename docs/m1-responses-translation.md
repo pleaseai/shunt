@@ -136,16 +136,26 @@ model. Handle via route config:
 
 ## 8. Error mapping (upstream → Anthropic error shape)
 
-Upstream (OpenAI/Codex) HTTP error → Anthropic `{"type":"error","error":{"type":..,"message":..}}`:
+Upstream (OpenAI/Codex, xAI, Cursor) HTTP error → Anthropic
+`{"type":"error","error":{"type":..,"message":..}}`, per the table in
+`docs/gateway-protocol.md#error-envelopes`:
 
 | Upstream status | Anthropic `error.type` | shunt status |
 | :-- | :-- | :-- |
-| 401 | `authentication_error` | 401 |
-| 429 | `rate_limit_error` | 429 |
 | 400 | `invalid_request_error` | 400 |
-| other | `api_error` | 502 |
+| 401 | `authentication_error` | 401 |
+| 403 | `permission_error` | 403 |
+| 413 | `request_too_large` | 413 |
+| 429 | `rate_limit_error` | 429 |
+| 501 | `not_supported` | 501 |
+| 529 | `overloaded_error` | 529 |
+| 500/502/503/504 | `api_error` | same status |
+| anything else | `api_error` | 502 |
 
-Preserve the upstream message text where available. (Unlike the pure pass-through path, the
+The standard error statuses reach the client unchanged — `529`/`503`/`500` must not collapse to
+a generic `502`, or Claude Code's overload backoff-retry (which keys off `529`) never fires.
+Only a status outside that set falls back to `502`. Preserve the upstream message text where
+available. (Unlike the pure pass-through path, the
 `responses` path necessarily re-shapes errors because the wire format differs; that is expected
 and does not conflict with the "forward errors unmodified" rule, which governs the
 Anthropic→Anthropic path.)

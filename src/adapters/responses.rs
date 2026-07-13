@@ -624,17 +624,7 @@ fn build_upstream_error(
         } else {
             serde_json::from_str(&text).unwrap_or_else(|_| json!({"message": text}))
         };
-    let xai_tier_gate =
-        status == StatusCode::FORBIDDEN && auth == crate::config::AuthMode::XaiOauth;
-    let shunt_status = if status == StatusCode::UNAUTHORIZED
-        || status == StatusCode::TOO_MANY_REQUESTS
-        || status == StatusCode::BAD_REQUEST
-        || xai_tier_gate
-    {
-        status
-    } else {
-        StatusCode::BAD_GATEWAY
-    };
+    let shunt_status = crate::model::responses::client_facing_status(status);
     let mut response = (shunt_status, axum::Json(map_error_value(&value, status))).into_response();
     if let Some(retry_after) = retry_after.and_then(|value| value.parse().ok()) {
         response.headers_mut().insert("retry-after", retry_after);
@@ -1101,10 +1091,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn maps_403_to_bad_gateway_for_other_auth_modes() {
+    async fn maps_403_to_permission_error_for_other_auth_modes() {
+        // Outside the xAI tier-gate special case, a 403 is still a real
+        // "authenticated but not allowed" signal and must reach the client
+        // as its own status/type rather than a generic 502 `api_error`.
         let upstream = upstream_response(403, "forbidden", &[]).await;
         let error = mapped_upstream_error(StatusCode::FORBIDDEN, upstream, AuthMode::ApiKey).await;
-        assert_eq!(error.response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(error.response.status(), StatusCode::FORBIDDEN);
+        let body = body_json(error).await;
+        assert_eq!(body["error"]["type"], "permission_error");
     }
 
     #[tokio::test]
@@ -1121,17 +1116,66 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remaps_5xx_to_bad_gateway_but_passes_429_through() {
+    async fn preserves_upstream_503_status_and_type_instead_of_bad_gateway() {
+        // A real upstream 503 must reach the client as 503 `api_error`, not
+        // flattened to a generic 502 that hides the actual signal.
         let upstream = upstream_response(503, "service unavailable", &[]).await;
         let error =
             mapped_upstream_error(StatusCode::SERVICE_UNAVAILABLE, upstream, AuthMode::ApiKey)
                 .await;
-        assert_eq!(error.response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(error.response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = body_json(error).await;
+        assert_eq!(body["error"]["type"], "api_error");
+    }
+
+    #[tokio::test]
+    async fn maps_529_to_overloaded_error() {
+        // Claude Code backs off and retries on 529 `overloaded_error`; folding
+        // it into a generic 502 would suppress that retry path.
+        let upstream = upstream_response(529, "{}", &[]).await;
+        let error = mapped_upstream_error(
+            StatusCode::from_u16(529).unwrap(),
+            upstream,
+            AuthMode::ApiKey,
+        )
+        .await;
+        assert_eq!(error.response.status().as_u16(), 529);
+        let body = body_json(error).await;
+        assert_eq!(body["error"]["type"], "overloaded_error");
+    }
+
+    #[tokio::test]
+    async fn maps_413_to_request_too_large() {
+        let upstream = upstream_response(413, "{}", &[]).await;
+        let error =
+            mapped_upstream_error(StatusCode::PAYLOAD_TOO_LARGE, upstream, AuthMode::ApiKey).await;
+        assert_eq!(error.response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let body = body_json(error).await;
+        assert_eq!(body["error"]["type"], "request_too_large");
+    }
+
+    #[tokio::test]
+    async fn passes_401_429_and_400_through_unchanged() {
+        let upstream = upstream_response(400, "{}", &[]).await;
+        let error =
+            mapped_upstream_error(StatusCode::BAD_REQUEST, upstream, AuthMode::ApiKey).await;
+        assert_eq!(error.response.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(error).await;
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+
+        let upstream = upstream_response(401, "{}", &[]).await;
+        let error =
+            mapped_upstream_error(StatusCode::UNAUTHORIZED, upstream, AuthMode::ApiKey).await;
+        assert_eq!(error.response.status(), StatusCode::UNAUTHORIZED);
+        let body = body_json(error).await;
+        assert_eq!(body["error"]["type"], "authentication_error");
 
         let upstream = upstream_response(429, "{}", &[]).await;
         let error =
             mapped_upstream_error(StatusCode::TOO_MANY_REQUESTS, upstream, AuthMode::ApiKey).await;
         assert_eq!(error.response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let body = body_json(error).await;
+        assert_eq!(body["error"]["type"], "rate_limit_error");
     }
 
     #[tokio::test]
