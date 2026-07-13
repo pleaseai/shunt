@@ -40,6 +40,7 @@ async fn forward(
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let credential = resolve_credential(&state.config, &route, &state.http_client).await?;
     let request_headers = outbound_headers(headers, &credential);
+    let oauth_client = bearer_is_subscription_oauth(&request_headers);
     let body = normalize_upstream_model(body, &route.upstream_model);
     let upstream = state
         .http_client
@@ -54,7 +55,7 @@ async fn forward(
         tracing::warn!(
             provider = %route.provider,
             model = %route.model,
-            rate_limit_kind = rate_limit_kind(upstream.headers()),
+            rate_limit_kind = rate_limit_kind(upstream.headers(), oauth_client),
             "upstream returned 429"
         );
     }
@@ -90,25 +91,26 @@ async fn forward(
     Ok((status, response))
 }
 
-/// Classify an upstream Anthropic 429 for the request log. api.anthropic.com
-/// returns two very different failures under the same status: a genuine quota
-/// rate limit carries `retry-after` and/or `anthropic-ratelimit-*` response
-/// headers, while a subscription-OAuth request that does not look like Claude
-/// Code (client identity headers or system-prompt prefix missing) is rejected
-/// as a bare `rate_limit_error` with body `"Error"` and none of those headers.
-/// Labeling the two lets a 429 burst be triaged from the gateway log alone:
-/// `quota` means back off or rotate accounts; `client-shape-rejection` means a
-/// non-Claude-Code client is calling through with an OAuth credential and
-/// should use an API key instead.
-fn rate_limit_kind(headers: &HeaderMap) -> &'static str {
+/// Classify an upstream 429 for the request log. A genuine quota rate limit
+/// carries `retry-after` and/or `anthropic-ratelimit-*` response headers.
+/// api.anthropic.com additionally rejects a subscription-OAuth request that
+/// does not look like Claude Code as a bare `rate_limit_error` carrying none
+/// of those headers — but that gate only exists for OAuth bearers, so a
+/// headerless 429 on any other credential (an api-key Anthropic-compatible
+/// provider such as Kimi or DeepSeek, or key-based passthrough) is labeled
+/// `no-ratelimit-headers` instead of being blamed on client shape. Triage
+/// guidance lives in the site troubleshooting page.
+fn rate_limit_kind(headers: &HeaderMap, oauth_client: bool) -> &'static str {
     let has_quota_signal = headers.contains_key("retry-after")
         || headers
             .keys()
             .any(|name| name.as_str().starts_with("anthropic-ratelimit-"));
     if has_quota_signal {
         "quota"
-    } else {
+    } else if oauth_client {
         "client-shape-rejection"
+    } else {
+        "no-ratelimit-headers"
     }
 }
 
@@ -191,19 +193,24 @@ fn outbound_headers(headers: &HeaderMap, credential: &Credential) -> HeaderMap {
 /// (`sk-ant-oat…`), remove any `x-api-key` so a client that sends both — Claude
 /// Code's `apiKeyHelper` — still authenticates on passthrough.
 fn strip_duplicate_oauth_api_key(headers: &mut HeaderMap) {
-    // The `Bearer` scheme is case-insensitive (RFC 6750): match it without
-    // regard to case, and tolerate surrounding whitespace, so an OAuth token
-    // is recognized regardless of how the client spells the scheme.
-    let bearer_is_oauth = headers
+    if bearer_is_subscription_oauth(headers) {
+        headers.remove("x-api-key");
+    }
+}
+
+/// True when the outbound `Authorization` header carries a Claude subscription
+/// OAuth token (`sk-ant-oat…`). The `Bearer` scheme is case-insensitive
+/// (RFC 6750): match it without regard to case, and tolerate surrounding
+/// whitespace, so an OAuth token is recognized regardless of how the client
+/// spells the scheme.
+fn bearer_is_subscription_oauth(headers: &HeaderMap) -> bool {
+    headers
         .get("authorization")
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.trim().split_once(' '))
         .and_then(|(scheme, token)| scheme.eq_ignore_ascii_case("bearer").then_some(token))
         .map(|token| token.trim().starts_with("sk-ant-oat"))
-        .unwrap_or(false);
-    if bearer_is_oauth {
-        headers.remove("x-api-key");
-    }
+        .unwrap_or(false)
 }
 
 fn upstream_url(state: &AppState, route: &Route, uri: &Uri) -> String {
@@ -362,7 +369,8 @@ mod tests {
     fn rate_limit_with_retry_after_is_quota() {
         let mut headers = HeaderMap::new();
         headers.insert("retry-after", "7".parse().unwrap());
-        assert_eq!(rate_limit_kind(&headers), "quota");
+        assert_eq!(rate_limit_kind(&headers, true), "quota");
+        assert_eq!(rate_limit_kind(&headers, false), "quota");
     }
 
     #[test]
@@ -372,17 +380,26 @@ mod tests {
             "anthropic-ratelimit-unified-status",
             "allowed_warning".parse().unwrap(),
         );
-        assert_eq!(rate_limit_kind(&headers), "quota");
+        assert_eq!(rate_limit_kind(&headers, true), "quota");
     }
 
     #[test]
-    fn rate_limit_without_quota_headers_is_client_shape_rejection() {
+    fn headerless_rate_limit_on_oauth_is_client_shape_rejection() {
         // The OAuth "must look like Claude Code" gate returns a bare 429 with
         // neither retry-after nor any anthropic-ratelimit-* header.
         let mut headers = HeaderMap::new();
         headers.insert("content-type", "application/json".parse().unwrap());
         headers.insert("request-id", "req_123".parse().unwrap());
-        assert_eq!(rate_limit_kind(&headers), "client-shape-rejection");
+        assert_eq!(rate_limit_kind(&headers, true), "client-shape-rejection");
+    }
+
+    #[test]
+    fn headerless_rate_limit_on_non_oauth_is_not_blamed_on_client_shape() {
+        // The gate only exists for subscription OAuth bearers; an api-key
+        // Anthropic-compatible provider (Kimi, DeepSeek, …) answering 429
+        // without rate-limit headers is a real rate limit, not a shape issue.
+        let headers = HeaderMap::new();
+        assert_eq!(rate_limit_kind(&headers, false), "no-ratelimit-headers");
     }
 
     #[test]
