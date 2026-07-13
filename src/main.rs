@@ -113,7 +113,11 @@ fn run(config_path: Option<PathBuf>) -> anyhow::Result<()> {
     // Both guards must outlive the runtime so buffered events flush on shutdown.
     let _sentry = init_sentry(config.sentry.as_ref());
     let _telemetry = init_telemetry(config.otel.as_ref());
-    runtime()?.block_on(serve(config, path))
+    let result = runtime().and_then(|runtime| runtime.block_on(serve(config, path)));
+    if let Err(error) = &result {
+        sentry::integrations::anyhow::capture_anyhow(error);
+    }
+    result
 }
 
 async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
@@ -146,10 +150,11 @@ fn check(config_path: Option<PathBuf>) -> anyhow::Result<()> {
 
 /// Opt-in Sentry error reporting: a client exists only when the operator
 /// configured a non-empty `[sentry] dsn`, and it reports gateway-owned
-/// diagnostics only — panics and `error!` events, never request/response
-/// bodies, headers, or credentials. Performance tracing is a further opt-in
-/// via `[sentry] traces_sample_rate`; the span filter installed by
-/// [`init_tracing`] admits spans only after this pins an enabled policy.
+/// diagnostics only — fatal startup/serve errors, panics, and `error!` events,
+/// never request/response bodies, headers, or credentials. Performance tracing
+/// is a further opt-in via `[sentry] traces_sample_rate`; the span filter
+/// installed by [`init_tracing`] admits spans only after this pins an enabled
+/// policy.
 fn init_sentry(config: Option<&SentryConfig>) -> Option<sentry::ClientInitGuard> {
     let config = config.filter(|sentry| sentry.enabled())?;
     let traces = config.traces_sample_rate > 0.0;
@@ -166,6 +171,8 @@ fn init_sentry(config: Option<&SentryConfig>) -> Option<sentry::ClientInitGuard>
         ),
         release: sentry::release_name!(),
         environment: config.environment.clone().map(Into::into),
+        attach_stacktrace: true,
+        in_app_include: vec!["shunt"],
         // Usage/performance metrics are a separate opt-in from error
         // reporting; with this off, `crate::metrics` capture calls are dropped
         // by the client.
