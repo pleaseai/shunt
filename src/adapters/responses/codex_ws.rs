@@ -11,22 +11,33 @@
 //! can translate them exactly as it does the HTTP SSE stream.
 //!
 //! Connections are pooled per `x-claude-code-session-id`, so turns of one
-//! conversation reuse a live socket instead of re-handshaking. On a reused
-//! connection this module also records the completed turn's response id and
-//! output items as [`StoredContinuation`], so the next turn can replay
+//! conversation reuse a live socket instead of re-handshaking. Each pooled
+//! socket is owned by a dedicated reader task that lives for the whole
+//! connection (issue #93): it answers upstream `Ping` frames with `Pong` even
+//! while the connection sits idle between turns, so the backend never closes it
+//! with `keepalive ping timeout`. A turn is dispatched to that reader over a
+//! command channel; the reader streams the turn's events, records continuation
+//! state on a clean completion, and returns to idle keepalive duty. Because the
+//! reader forwards events over an *unbounded* channel it never blocks on
+//! downstream backpressure, so control frames are always serviced promptly.
+//!
+//! On a reused connection this module also records the completed turn's response
+//! id and output items as [`StoredContinuation`], so the next turn can replay
 //! `previous_response_id` and upload only the input delta (the decision itself
 //! lives in [`crate::adapters::responses::codex_continuation`]). `previous_response_id` is
 //! only ever valid on the exact connection that produced it, which is why the
-//! continuation state is stored on the [`PoolEntry`] rather than globally.
+//! continuation state is stored on the [`Connection`] rather than globally.
 
 use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::http::{HeaderMap, StatusCode};
+use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
-use tokio::sync::{mpsc, Mutex as AsyncMutex, OwnedMutexGuard};
+use tokio::sync::{mpsc, Mutex as AsyncMutex, Notify, OwnedMutexGuard};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::{self, Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
@@ -44,11 +55,16 @@ pub const WEBSOCKET_BETA_PROTOCOL: &str = "responses_websockets=2026-02-06";
 
 /// How long to wait for the WebSocket handshake to complete.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
-/// Idle ceiling between frames once connected. Reset on every frame (including
-/// keepalive pings), so a healthy but slow generation never trips it.
+/// Idle ceiling between frames *during an active turn*. Reset on every frame
+/// (including keepalive pings), so a healthy but slow generation never trips it.
+/// A pooled connection between turns is not bounded by this — its reader waits
+/// indefinitely for the next turn while answering pings, and pool TTL handles
+/// eviction.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
-/// Buffer for the event channel; backpressures the reader if the client is slow.
-const EVENT_CHANNEL_CAPACITY: usize = 64;
+/// How long a reuse liveness probe waits for the backend's `Pong` before the
+/// pooled connection is judged stale and replaced. A healthy socket answers in
+/// well under a round-trip; only a half-open one pays the full wait.
+const REUSE_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long a pooled connection may sit idle before it is evicted on the next
 /// insert. Matches the reference proxy's 30-minute window.
 const POOL_IDLE_TTL: Duration = Duration::from_secs(30 * 60);
@@ -73,36 +89,121 @@ const REUSABLE_TERMINAL: &str = "response.completed";
 
 /// The concrete websocket stream type (TLS or plaintext over TCP).
 type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+/// Write half of a split [`WsStream`]. Shared between the reader (for `Pong`
+/// replies and sending a turn's `response.create`) and the reuse liveness probe.
+type WsSink = SplitSink<WsStream, Message>;
+/// Read half of a split [`WsStream`], owned solely by the connection's reader task.
+type WsSource = SplitStream<WsStream>;
 
-/// A pooled, reusable websocket connection keyed by session id. The stream is
-/// behind an async mutex so a turn holds it exclusively while streaming, then
-/// releases it for the next turn on the same session. `continuation` carries the
-/// state captured from this connection's previous turn, so `previous_response_id`
-/// is only ever replayed on the connection that produced it.
-struct PoolEntry {
-    ws: std::sync::Arc<AsyncMutex<WsStream>>,
-    last_used_at: Mutex<Instant>,
+/// A turn dispatched to a connection's reader task: the frame to send, where to
+/// stream events, what to record for continuation, and the turn slot to release
+/// when the turn ends.
+struct StartTurn {
+    /// The `response.create` text frame to write before streaming.
+    frame: Message,
+    /// Where the reader forwards this turn's events. Unbounded so downstream
+    /// backpressure never blocks the reader (and thus never starves `Pong`s).
+    events: mpsc::UnboundedSender<Result<ResponseEvent, CodexWsError>>,
+    /// What to record as continuation state on a clean completion.
+    record: RecordPlan,
+    /// Held for the turn's duration; dropped by the reader when the turn ends,
+    /// freeing the connection for the next turn on this session.
+    slot: OwnedMutexGuard<()>,
+}
+
+/// A pooled websocket connection and everything shared between its reader task,
+/// the turns that stream over it, and the reuse liveness probe. The read half is
+/// owned exclusively by the reader task; the write half (`sink`) is shared.
+struct Connection {
+    /// Write half, guarded so the reader (`Pong`), a turn (`response.create`),
+    /// and a probe (`Ping`) can each write with a short critical section.
+    sink: AsyncMutex<WsSink>,
+    /// Serializes turns: at most one `response.create` is in flight at a time.
+    /// The owning guard is handed to the reader for the turn and released when
+    /// the turn ends. Behind an [`Arc`] so `begin` can `lock_owned`.
+    turn_lock: Arc<AsyncMutex<()>>,
+    /// Cleared once the reader observes a close/EOF/stream error, so a reuse
+    /// probe rejects a known-dead socket without a round-trip.
+    alive: AtomicBool,
+    /// Notified by the reader whenever a `Pong` arrives, so the reuse probe can
+    /// wait for definitive remote liveness instead of trusting a local write.
+    pong: Notify,
+    /// Notified when the pooled entry is evicted, so the reader shuts down
+    /// instead of holding the socket and its task open forever.
+    shutdown: Notify,
+    /// Turn dispatch channel to the reader (bounded at 1: `turn_lock` guarantees
+    /// at most one outstanding turn).
+    commands: mpsc::Sender<StartTurn>,
+    /// Continuation captured from this connection's last completed turn.
     continuation: Mutex<Option<StoredContinuation>>,
+    /// Last time a turn used this connection; drives idle TTL eviction.
+    last_used_at: Mutex<Instant>,
+    /// The session key this connection is pooled under, if any.
+    pool_key: Option<String>,
+    /// The `x-codex-turn-state` captured from the handshake, if present.
+    handshake_turn_state: Option<String>,
+}
+
+impl Connection {
+    /// Perform the handshake, split the socket, and spawn the connection-owned
+    /// reader task. The returned handle shares state with that task.
+    async fn open(
+        ws_url: &str,
+        headers: HeaderMap,
+        pool_key: Option<String>,
+    ) -> Result<Arc<Self>, CodexWsError> {
+        let (stream, handshake_turn_state) = connect(ws_url, headers).await?;
+        let (sink, source) = stream.split();
+        let (command_tx, command_rx) = mpsc::channel(1);
+        let conn = Arc::new(Self {
+            sink: AsyncMutex::new(sink),
+            turn_lock: Arc::new(AsyncMutex::new(())),
+            alive: AtomicBool::new(true),
+            pong: Notify::new(),
+            shutdown: Notify::new(),
+            commands: command_tx,
+            continuation: Mutex::new(None),
+            last_used_at: Mutex::new(Instant::now()),
+            pool_key,
+            handshake_turn_state,
+        });
+        tokio::spawn(run_connection(conn.clone(), source, command_rx));
+        Ok(conn)
+    }
+}
+
+/// A pooled connection keyed by session id in [`POOL`]. Thin wrapper whose
+/// `Drop` tells the reader to shut down: when the last reference goes (TTL sweep,
+/// capacity eviction, or `invalidate_pool_key`) the socket and its task are
+/// released. The reader itself holds an [`Arc<Connection>`], not a `PoolEntry`,
+/// so removing an entry from the map is what triggers the shutdown.
+struct PoolEntry {
+    conn: Arc<Connection>,
 }
 
 impl PoolEntry {
-    fn new(stream: WsStream) -> std::sync::Arc<Self> {
-        std::sync::Arc::new(Self {
-            ws: std::sync::Arc::new(AsyncMutex::new(stream)),
-            last_used_at: Mutex::new(Instant::now()),
-            continuation: Mutex::new(None),
-        })
+    fn new(conn: Arc<Connection>) -> Arc<Self> {
+        Arc::new(Self { conn })
+    }
+}
+
+impl Drop for PoolEntry {
+    fn drop(&mut self) {
+        // The last pooled reference is gone: wake the reader so it stops keeping
+        // the idle socket alive. `notify_one` stores a permit if the reader is
+        // momentarily not awaiting, so the signal is never lost.
+        self.conn.shutdown.notify_one();
     }
 }
 
 /// Process-global connection pool keyed by `x-claude-code-session-id`. A std
 /// mutex guards only map lookups/inserts (never held across an await); the
-/// per-connection async mutex serializes turns on one session.
-static POOL: LazyLock<Mutex<HashMap<String, std::sync::Arc<PoolEntry>>>> =
+/// per-connection reader task serializes turns on one session.
+static POOL: LazyLock<Mutex<HashMap<String, Arc<PoolEntry>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static LAST_POOL_SWEEP: LazyLock<Mutex<Instant>> = LazyLock::new(|| Mutex::new(Instant::now()));
 
-fn pool_get(key: &str) -> Option<std::sync::Arc<PoolEntry>> {
+fn pool_get(key: &str) -> Option<Arc<PoolEntry>> {
     POOL.lock().unwrap().get(key).cloned()
 }
 
@@ -111,14 +212,14 @@ pub fn invalidate_pool_key(key: &str) {
     POOL.lock().unwrap().remove(key);
 }
 
-fn pool_insert(key: String, entry: std::sync::Arc<PoolEntry>) {
+fn pool_insert(key: String, entry: Arc<PoolEntry>) {
     let mut guard = POOL.lock().unwrap();
     let mut last_sweep = LAST_POOL_SWEEP.lock().unwrap();
     let sweep_due = last_sweep.elapsed() >= POOL_SWEEP_INTERVAL;
     if sweep_due || guard.len() >= MAX_POOL_ENTRIES {
         // Sweep at most once per interval during ordinary churn, but always sweep
         // under capacity pressure before choosing an LRU victim.
-        guard.retain(|_, entry| entry.last_used_at.lock().unwrap().elapsed() < POOL_IDLE_TTL);
+        guard.retain(|_, entry| entry.conn.last_used_at.lock().unwrap().elapsed() < POOL_IDLE_TTL);
         *last_sweep = Instant::now();
     }
     drop(last_sweep);
@@ -128,7 +229,7 @@ fn pool_insert(key: String, entry: std::sync::Arc<PoolEntry>) {
         // entry instead of the stalest one.
         if let Some(oldest) = guard
             .iter()
-            .min_by_key(|(_, entry)| *entry.last_used_at.lock().unwrap())
+            .min_by_key(|(_, entry)| *entry.conn.last_used_at.lock().unwrap())
             .map(|(key, _)| key.clone())
         {
             guard.remove(&oldest);
@@ -187,8 +288,10 @@ impl CodexWsError {
 }
 
 /// Receiver of translated events, terminated by `None`. A single `Err` item ends
-/// the stream (the reader stops after sending it).
-pub type CodexWsEvents = mpsc::Receiver<Result<ResponseEvent, CodexWsError>>;
+/// the stream (the reader stops the turn after sending it). Unbounded so the
+/// reader never blocks forwarding events, keeping control-frame handling
+/// independent of downstream consumption speed.
+pub type CodexWsEvents = mpsc::UnboundedReceiver<Result<ResponseEvent, CodexWsError>>;
 
 /// Rewrite an `http(s)` Responses URL to its `ws(s)` equivalent. The backend
 /// serves the websocket at the same path the HTTP adapter POSTs to.
@@ -237,13 +340,14 @@ impl RecordPlan {
 /// A connection acquired and locked for one turn, before its frame is sent.
 /// Splitting acquire from send lets the caller inspect [`Turn::stored_continuation`]
 /// (only present on a reused connection) and decide the `previous_response_id`
-/// delta before committing the frame.
+/// delta before committing the frame. The held turn slot serializes turns on the
+/// connection until [`Turn::stream`] hands it to the reader (or the `Turn` is
+/// dropped without streaming).
 pub struct Turn {
-    entry: std::sync::Arc<PoolEntry>,
-    guard: OwnedMutexGuard<WsStream>,
+    conn: Arc<Connection>,
+    slot: OwnedMutexGuard<()>,
     reused: bool,
     pool_key: Option<String>,
-    handshake_turn_state: Option<String>,
 }
 
 impl Turn {
@@ -254,67 +358,59 @@ impl Turn {
         if !self.reused {
             return None;
         }
-        self.entry.continuation.lock().unwrap().clone()
+        self.conn.continuation.lock().unwrap().clone()
     }
 
     /// The `x-codex-turn-state` captured from the handshake, if any.
     pub fn handshake_turn_state(&self) -> Option<&str> {
-        self.handshake_turn_state.as_deref()
+        self.conn.handshake_turn_state.as_deref()
     }
 
-    /// Send the `response.create` frame and stream events back. The reader holds
-    /// the connection for the whole turn and, on a clean completion, records new
-    /// continuation state and returns the connection to the pool.
+    /// Dispatch the `response.create` frame to the connection's reader and stream
+    /// events back. The reader sends the frame, streams the turn, records new
+    /// continuation state on a clean completion, and returns the connection to
+    /// idle keepalive duty (or evicts it on any failure).
     pub async fn stream(
         self,
         frame: &Value,
         record: RecordPlan,
     ) -> Result<CodexWsEvents, CodexWsError> {
         let Turn {
-            entry,
-            mut guard,
+            conn,
+            slot,
             reused,
             pool_key,
-            handshake_turn_state,
         } = self;
         let payload = serde_json::to_string(frame).map_err(|error| {
             CodexWsError::transport(format!("failed to encode ws frame: {error}"))
         })?;
-        if let Err(error) = guard.send(Message::Text(payload)).await {
-            // The liveness `Ping` in `begin` can false-positive on a half-open
-            // socket (the send buffers locally). If the real frame send then fails
-            // on a reused connection, evict it here so the next turn on this session
-            // opens a fresh socket instead of re-probing the same dead entry until
-            // its TTL expires. Mirrors the eviction in `begin` and `run_reader`.
+        let (tx, rx) = mpsc::unbounded_channel();
+        let command = StartTurn {
+            frame: Message::Text(payload),
+            events: tx,
+            record,
+            slot,
+        };
+        if conn.commands.send(command).await.is_err() {
+            // The connection-owned reader is gone (socket dead). Evict a reused
+            // entry so the next turn on this session opens a fresh socket instead
+            // of re-probing the same dead one.
             if reused {
                 if let Some(key) = &pool_key {
                     invalidate_pool_key(key);
                 }
             }
-            return Err(CodexWsError::transport(format!(
-                "websocket send failed: {error}"
-            )));
+            return Err(CodexWsError::transport("codex websocket reader is gone"));
         }
-        let (tx, rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
-        tokio::spawn(run_reader(
-            ReaderCtx {
-                entry,
-                guard,
-                reused,
-                pool_key,
-                record,
-                handshake_turn_state,
-            },
-            tx,
-        ));
         Ok(rx)
     }
 }
 
 /// Acquire a connection for `pool_key`, reusing a live pooled one (verified with a
-/// liveness ping) or performing a fresh handshake. A stale pooled connection is
-/// evicted and replaced. A refused handshake (401/403/429) resolves to `Err` with
-/// the upstream status/body so the caller can re-shape it like the HTTP path.
+/// `Ping`/`Pong` liveness probe) or performing a fresh handshake. A stale pooled
+/// connection is evicted and replaced. A refused handshake (401/403/429) resolves
+/// to `Err` with the upstream status/body so the caller can re-shape it like the
+/// HTTP path.
 pub async fn begin(
     ws_url: &str,
     headers: HeaderMap,
@@ -322,35 +418,70 @@ pub async fn begin(
 ) -> Result<Turn, CodexWsError> {
     if let Some(key) = pool_key {
         if let Some(entry) = pool_get(key) {
-            let mut guard = entry.ws.clone().lock_owned().await;
-            // Cheap liveness probe: if the ping send fails the socket was dead
-            // (commonly idle-closed), so evict and open a fresh handshake — where
-            // the stored `previous_response_id` no longer applies.
-            if guard.send(Message::Ping(Vec::new())).await.is_ok() {
-                *entry.last_used_at.lock().unwrap() = Instant::now();
+            let conn = entry.conn.clone();
+            // Serialize turns on this connection; holding the slot also guarantees
+            // no turn is streaming while we probe. The connection-owned reader
+            // keeps reading (and answering pings) independently, so the probe's
+            // Ping/Pong round-trips underneath it.
+            let slot = conn.turn_lock.clone().lock_owned().await;
+            if conn.alive.load(Ordering::SeqCst) && probe_live(&conn).await {
+                *conn.last_used_at.lock().unwrap() = Instant::now();
                 return Ok(Turn {
-                    entry,
-                    guard,
+                    conn,
+                    slot,
                     reused: true,
                     pool_key: Some(key.to_string()),
-                    handshake_turn_state: None,
                 });
             }
-            drop(guard);
+            // Stale: the reader saw a close, or no Pong returned in time. Evict and
+            // reconnect — the stored `previous_response_id` no longer applies.
+            drop(slot);
+            drop(entry);
             invalidate_pool_key(key);
         }
     }
 
-    let (stream, handshake_turn_state) = connect(ws_url, headers).await?;
-    let entry = PoolEntry::new(stream);
-    let guard = entry.ws.clone().lock_owned().await;
+    let conn = Connection::open(ws_url, headers, pool_key.map(str::to_string)).await?;
+    let slot = conn.turn_lock.clone().lock_owned().await;
     Ok(Turn {
-        entry,
-        guard,
+        conn,
+        slot,
         reused: false,
         pool_key: pool_key.map(str::to_string),
-        handshake_turn_state,
     })
+}
+
+/// Confirm a pooled connection is still live by requiring a timely `Pong` from
+/// the backend, not merely a successful local `Ping` write — a half-open socket
+/// buffers the write and would otherwise pass. The connection-owned reader
+/// observes the `Pong` and wakes this waiter.
+async fn probe_live(conn: &Connection) -> bool {
+    let notified = conn.pong.notified();
+    tokio::pin!(notified);
+    // Register interest *before* sending, so a Pong that races back is not missed.
+    notified.as_mut().enable();
+    {
+        let mut sink = conn.sink.lock().await;
+        if sink.send(Message::Ping(Vec::new())).await.is_err() {
+            return false;
+        }
+    }
+    tokio::time::timeout(REUSE_PROBE_TIMEOUT, notified)
+        .await
+        .is_ok()
+}
+
+/// Write a single frame through the connection's shared sink.
+async fn send_message(conn: &Connection, message: Message) -> Result<(), tungstenite::Error> {
+    conn.sink.lock().await.send(message).await
+}
+
+/// Drop this connection's pooled entry (if any), so the next turn on the session
+/// opens a fresh socket. Called from the reader on any non-clean turn end.
+fn evict(conn: &Connection) {
+    if let Some(key) = &conn.pool_key {
+        invalidate_pool_key(key);
+    }
 }
 
 /// Install the rustls process-wide crypto provider on the first websocket
@@ -404,97 +535,115 @@ async fn connect(
     }
 }
 
-/// Everything the reader task needs to stream a turn and record its continuation.
-struct ReaderCtx {
-    entry: std::sync::Arc<PoolEntry>,
-    guard: OwnedMutexGuard<WsStream>,
-    reused: bool,
-    pool_key: Option<String>,
-    record: RecordPlan,
-    handshake_turn_state: Option<String>,
+/// How a streamed turn ended.
+enum TurnEnd {
+    /// The turn completed cleanly; the connection is healthy and stays pooled.
+    Completed,
+    /// Any non-clean end (error/incomplete terminal, `previous_response_not_found`,
+    /// close, EOF, transport error). The connection is evicted and closed.
+    Dead,
 }
 
-/// How a streamed turn ended, and the continuation material captured along the way.
-enum Outcome {
-    Completed {
-        response_id: Option<String>,
-        output_items: Vec<Value>,
-        turn_state: Option<String>,
-    },
-    /// The backend rejected the replayed `previous_response_id`.
-    PreviousResponseMissing,
-    /// Any non-clean end (error/incomplete terminal, close, transport error).
-    Failed,
-}
-
-/// Reader task: stream the turn's events, then either record continuation state
-/// and pool the connection (clean completion) or evict it (any failure). Holds the
-/// connection lock for the whole turn, releasing it when the stream ends.
-async fn run_reader(ctx: ReaderCtx, tx: mpsc::Sender<Result<ResponseEvent, CodexWsError>>) {
-    let ReaderCtx {
-        entry,
-        mut guard,
-        reused,
-        pool_key,
-        record,
-        handshake_turn_state,
-    } = ctx;
-    let outcome = stream_events(&mut guard, &tx).await;
-    match outcome {
-        Outcome::Completed {
-            response_id,
-            output_items,
-            turn_state,
-        } => {
-            if let Some(response_id) = response_id {
-                let stored = StoredContinuation {
-                    response_id,
-                    signature: record.signature,
-                    transcript: build_transcript(&record.request_input, &output_items),
-                    turn_state: turn_state.or(handshake_turn_state),
+/// Connection-owned reader task: owns the read half for the socket's lifetime.
+/// While idle it answers upstream `Ping` frames (so the backend never times the
+/// connection out) and watches for a dispatched turn or a shutdown signal. While
+/// a turn is active it streams that turn's events, records continuation, and
+/// returns to idle. Exits — closing the socket — on any close/EOF/error or when
+/// the pooled entry is evicted.
+async fn run_connection(
+    conn: Arc<Connection>,
+    mut source: WsSource,
+    mut commands: mpsc::Receiver<StartTurn>,
+) {
+    let mut pooled = false;
+    loop {
+        tokio::select! {
+            biased;
+            _ = conn.shutdown.notified() => break,
+            command = commands.recv() => {
+                let Some(StartTurn { frame, events, record, slot }) = command else {
+                    // All turn senders dropped — the connection handle is gone.
+                    break;
                 };
-                *entry.continuation.lock().unwrap() = Some(stored);
+                if let Err(error) = send_message(&conn, frame).await {
+                    let _ = events.send(Err(CodexWsError::transport(format!(
+                        "websocket send failed: {error}"
+                    ))));
+                    evict(&conn);
+                    drop(events);
+                    drop(slot);
+                    break;
+                }
+                let end = run_turn(&conn, &mut source, &events, record, &mut pooled).await;
+                drop(events); // end the client's stream (receiver observes None)
+                drop(slot); // release the turn slot for the next turn
+                if matches!(end, TurnEnd::Dead) {
+                    break;
+                }
             }
-            *entry.last_used_at.lock().unwrap() = Instant::now();
-            if let Some(key) = pool_key {
-                // A pooled connection is already registered; a fresh one is added
-                // now that it has proven healthy. Its continuation was updated above.
-                if !reused {
-                    pool_insert(key, entry.clone());
+            frame = source.next() => {
+                match frame {
+                    Some(Ok(Message::Ping(data))) => {
+                        let _ = send_message(&conn, Message::Pong(data)).await;
+                    }
+                    Some(Ok(Message::Pong(_))) => conn.pong.notify_waiters(),
+                    Some(Ok(Message::Text(text))) => {
+                        // No turn is active; the backend should not send data here.
+                        tracing::debug!(frame = %text, "discarding codex ws frame received while idle");
+                    }
+                    Some(Ok(Message::Binary(_))) | Some(Ok(Message::Frame(_))) => {}
+                    Some(Ok(Message::Close(frame))) => {
+                        tracing::debug!(close_frame = ?frame, "codex websocket closed while idle in pool");
+                        break;
+                    }
+                    None => {
+                        tracing::debug!("codex websocket ended while idle in pool");
+                        break;
+                    }
+                    Some(Err(error)) => {
+                        tracing::debug!(%error, "codex websocket error while idle in pool");
+                        break;
+                    }
                 }
             }
         }
-        Outcome::PreviousResponseMissing | Outcome::Failed => {
-            *entry.continuation.lock().unwrap() = None;
-            if let Some(key) = pool_key {
-                invalidate_pool_key(&key);
-            }
-        }
     }
-    drop(guard); // release the connection for the next turn on this session
+
+    conn.alive.store(false, Ordering::SeqCst);
+    evict(&conn);
+    // Dropping `source` closes the read half; best-effort close the write half so
+    // the backend sees a clean shutdown.
+    let mut sink = conn.sink.lock().await;
+    let _ = sink.close().await;
 }
 
-/// Pull frames until a terminal event, close, or error, forwarding each Text
-/// frame as a [`ResponseEvent`] while capturing the response id, output items, and
-/// turn-state token needed to record continuation.
-async fn stream_events(
-    stream: &mut WsStream,
-    tx: &mpsc::Sender<Result<ResponseEvent, CodexWsError>>,
-) -> Outcome {
+/// Stream one turn: pull frames until a terminal event, close, or error,
+/// forwarding each Text frame as a [`ResponseEvent`] while capturing the response
+/// id, output items, and turn-state token needed to record continuation. Answers
+/// `Ping` frames inline (independent of the unbounded event channel, so downstream
+/// backpressure never starves control-frame handling). On a clean completion the
+/// continuation is recorded and, for a not-yet-pooled connection, the connection
+/// is pooled.
+async fn run_turn(
+    conn: &Arc<Connection>,
+    source: &mut WsSource,
+    events: &mpsc::UnboundedSender<Result<ResponseEvent, CodexWsError>>,
+    record: RecordPlan,
+    pooled: &mut bool,
+) -> TurnEnd {
     let mut response_id = None;
     let mut output_items = Vec::new();
     let mut turn_state = None;
     loop {
-        let next = match tokio::time::timeout(IDLE_TIMEOUT, stream.next()).await {
+        let next = match tokio::time::timeout(IDLE_TIMEOUT, source.next()).await {
             Ok(next) => next,
             Err(_) => {
-                let _ = tx
-                    .send(Err(CodexWsError::transport(format!(
-                        "websocket idle timeout after {}s",
-                        IDLE_TIMEOUT.as_secs()
-                    ))))
-                    .await;
-                return Outcome::Failed;
+                let _ = events.send(Err(CodexWsError::transport(format!(
+                    "websocket idle timeout after {}s",
+                    IDLE_TIMEOUT.as_secs()
+                ))));
+                evict(conn);
+                return TurnEnd::Dead;
             }
         };
 
@@ -509,40 +658,58 @@ async fn stream_events(
                 // A rejected `previous_response_id` is not forwarded to the client;
                 // it is signalled so the caller can retry with the full input.
                 if is_previous_response_missing(&event.data) {
-                    let _ = tx
-                        .send(Err(CodexWsError::previous_response_missing()))
-                        .await;
-                    return Outcome::PreviousResponseMissing;
+                    let _ = events.send(Err(CodexWsError::previous_response_missing()));
+                    *conn.continuation.lock().unwrap() = None;
+                    evict(conn);
+                    return TurnEnd::Dead;
                 }
                 capture_continuation(&event, &mut response_id, &mut output_items, &mut turn_state);
                 let name = event.event.as_deref().unwrap_or("");
                 let is_terminal = TERMINAL_EVENTS.contains(&name);
                 let completed = name == REUSABLE_TERMINAL;
-                if tx.send(Ok(event)).await.is_err() {
-                    return Outcome::Failed; // receiver dropped
+                if events.send(Ok(event)).is_err() {
+                    // Receiver dropped (client cancelled): the turn is abandoned.
+                    evict(conn);
+                    return TurnEnd::Dead;
                 }
                 if is_terminal {
-                    return if completed {
-                        Outcome::Completed {
-                            response_id,
-                            output_items,
-                            turn_state,
+                    if completed {
+                        if let Some(response_id) = response_id {
+                            let stored = StoredContinuation {
+                                response_id,
+                                signature: record.signature,
+                                transcript: build_transcript(&record.request_input, &output_items),
+                                turn_state: turn_state
+                                    .or_else(|| conn.handshake_turn_state.clone()),
+                            };
+                            *conn.continuation.lock().unwrap() = Some(stored);
                         }
-                    } else {
-                        Outcome::Failed
-                    };
+                        *conn.last_used_at.lock().unwrap() = Instant::now();
+                        if !*pooled {
+                            if let Some(key) = &conn.pool_key {
+                                // First clean completion on a fresh connection: it
+                                // has proven healthy, so register it for reuse.
+                                pool_insert(key.clone(), PoolEntry::new(conn.clone()));
+                                *pooled = true;
+                            }
+                        }
+                        return TurnEnd::Completed;
+                    }
+                    *conn.continuation.lock().unwrap() = None;
+                    evict(conn);
+                    return TurnEnd::Dead;
                 }
             }
             Some(Ok(Message::Ping(data))) => {
-                let _ = stream.send(Message::Pong(data)).await;
+                let _ = send_message(conn, Message::Pong(data)).await;
             }
+            Some(Ok(Message::Pong(_))) => conn.pong.notify_waiters(),
             Some(Ok(Message::Binary(_))) => {
-                let _ = tx
-                    .send(Err(CodexWsError::transport(
-                        "unexpected binary websocket frame",
-                    )))
-                    .await;
-                return Outcome::Failed;
+                let _ = events.send(Err(CodexWsError::transport(
+                    "unexpected binary websocket frame",
+                )));
+                evict(conn);
+                return TurnEnd::Dead;
             }
             Some(Ok(Message::Close(frame))) => {
                 // Closed before a terminal event: the turn was truncated, not
@@ -550,32 +717,29 @@ async fn stream_events(
                 // Anthropic `error` event (or the JSON path logs a failure) rather
                 // than a silently short, fake-success response.
                 tracing::warn!(close_frame = ?frame, "codex websocket closed before a terminal event");
-                let _ = tx
-                    .send(Err(CodexWsError::transport(
-                        "codex websocket closed before the response completed",
-                    )))
-                    .await;
-                return Outcome::Failed;
+                let _ = events.send(Err(CodexWsError::transport(
+                    "codex websocket closed before the response completed",
+                )));
+                evict(conn);
+                return TurnEnd::Dead;
             }
             None => {
                 // Stream ended (EOF / dropped connection) before a terminal event —
                 // same truncation case as an explicit Close.
                 tracing::warn!("codex websocket stream ended before a terminal event");
-                let _ = tx
-                    .send(Err(CodexWsError::transport(
-                        "codex websocket ended before the response completed",
-                    )))
-                    .await;
-                return Outcome::Failed;
+                let _ = events.send(Err(CodexWsError::transport(
+                    "codex websocket ended before the response completed",
+                )));
+                evict(conn);
+                return TurnEnd::Dead;
             }
-            Some(Ok(Message::Pong(_))) | Some(Ok(Message::Frame(_))) => {}
+            Some(Ok(Message::Frame(_))) => {}
             Some(Err(error)) => {
-                let _ = tx
-                    .send(Err(CodexWsError::transport(format!(
-                        "websocket stream error: {error}"
-                    ))))
-                    .await;
-                return Outcome::Failed;
+                let _ = events.send(Err(CodexWsError::transport(format!(
+                    "websocket stream error: {error}"
+                ))));
+                evict(conn);
+                return TurnEnd::Dead;
             }
         }
     }
@@ -863,7 +1027,7 @@ mod tests {
             let (socket, _) = listener.accept().await.unwrap();
             let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
             // One connection, many turns: respond to each response.create frame
-            // with a complete event sequence; ignore the liveness ping.
+            // with a complete event sequence; answer the reuse liveness Ping.
             while let Some(message) = ws.next().await {
                 match message.unwrap() {
                     Message::Text(frame) => {
@@ -878,7 +1042,8 @@ mod tests {
                             ws.send(Message::Text(event.to_string())).await.unwrap();
                         }
                     }
-                    Message::Ping(_) | Message::Pong(_) => {}
+                    Message::Ping(data) => ws.send(Message::Pong(data)).await.unwrap(),
+                    Message::Pong(_) => {}
                     Message::Close(_) => break,
                     other => panic!("unexpected frame: {other:?}"),
                 }
@@ -1018,7 +1183,8 @@ mod tests {
                             ws.send(Message::Text(event.to_string())).await.unwrap();
                         }
                     }
-                    Message::Ping(_) | Message::Pong(_) => {}
+                    Message::Ping(data) => ws.send(Message::Pong(data)).await.unwrap(),
+                    Message::Pong(_) => {}
                     Message::Close(_) => break,
                     other => panic!("unexpected frame: {other:?}"),
                 }
@@ -1104,7 +1270,8 @@ mod tests {
                             ws.send(Message::Text(event.to_string())).await.unwrap();
                         }
                     }
-                    Message::Ping(_) | Message::Pong(_) => {}
+                    Message::Ping(data) => ws.send(Message::Pong(data)).await.unwrap(),
+                    Message::Pong(_) => {}
                     Message::Close(_) => break,
                     other => panic!("unexpected frame: {other:?}"),
                 }
@@ -1140,5 +1307,230 @@ mod tests {
 
         clear_pool_for_tests();
         server.abort();
+    }
+
+    /// Issue #93: a pooled connection sitting idle between turns must keep
+    /// answering upstream `Ping` frames, so the backend never closes it with
+    /// `keepalive ping timeout`. The connection-owned reader answers even though
+    /// no turn is streaming.
+    #[tokio::test]
+    async fn idle_pooled_socket_answers_ping() {
+        use tokio::net::TcpListener;
+
+        let _pool_guard = POOL_TEST_LOCK.lock().await;
+        clear_pool_for_tests();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            // Turn 1: complete so the connection is pooled and goes idle.
+            let Some(Ok(Message::Text(_))) = ws.next().await else {
+                panic!("expected a client frame");
+            };
+            for event in [
+                r#"{"type":"response.created","response":{"id":"resp_1"}}"#,
+                r#"{"type":"response.completed","response":{"id":"resp_1"}}"#,
+            ] {
+                ws.send(Message::Text(event.to_string())).await.unwrap();
+            }
+            // Now idle in the pool: send a keepalive Ping and require a Pong back.
+            ws.send(Message::Ping(b"ka".to_vec())).await.unwrap();
+            loop {
+                match ws.next().await {
+                    Some(Ok(Message::Pong(data))) => {
+                        assert_eq!(data, b"ka");
+                        break;
+                    }
+                    Some(Ok(_)) => continue,
+                    other => panic!("expected a Pong while idle, got {other:?}"),
+                }
+            }
+        });
+
+        let url = format!("ws://{addr}/codex/responses");
+        let frame = response_create_frame(serde_json::json!({"model": "m", "input": []}));
+        let mut turn1 = open_simple(&url, HeaderMap::new(), &frame, Some("idle-ka"))
+            .await
+            .expect("first turn connects");
+        drain(&mut turn1).await;
+        assert!(pool_contains_for_tests("idle-ka"), "turn pools its socket");
+
+        // The pooled reader must answer the server's idle Ping with a Pong.
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("server should observe a Pong while the connection is idle")
+            .unwrap();
+
+        clear_pool_for_tests();
+    }
+
+    /// Issue #93: a pooled connection the backend has closed (e.g. after a
+    /// `keepalive ping timeout`) must be evicted and replaced with a fresh
+    /// handshake before the next turn streams — never reused into a mid-stream
+    /// failure.
+    #[tokio::test]
+    async fn stale_pooled_connection_is_replaced_before_new_turn() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use tokio::net::TcpListener;
+
+        let _pool_guard = POOL_TEST_LOCK.lock().await;
+        clear_pool_for_tests();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepts = Arc::new(AtomicUsize::new(0));
+        let server_accepts = accepts.clone();
+        let server = tokio::spawn(async move {
+            // Connection 1: complete turn 1, then close while it sits idle in the
+            // pool (as the backend does on keepalive ping timeout).
+            let (socket, _) = listener.accept().await.unwrap();
+            server_accepts.fetch_add(1, Ordering::SeqCst);
+            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            let Some(Ok(Message::Text(_))) = ws.next().await else {
+                panic!("expected a client frame");
+            };
+            for event in [
+                r#"{"type":"response.created","response":{"id":"resp_1"}}"#,
+                r#"{"type":"response.completed","response":{"id":"resp_1"}}"#,
+            ] {
+                ws.send(Message::Text(event.to_string())).await.unwrap();
+            }
+            ws.send(Message::Close(None)).await.unwrap();
+            drop(ws);
+
+            // Connection 2: turn 2 must open a fresh handshake here; complete it.
+            let (socket, _) = listener.accept().await.unwrap();
+            server_accepts.fetch_add(1, Ordering::SeqCst);
+            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            while let Some(message) = ws.next().await {
+                match message.unwrap() {
+                    Message::Text(_) => {
+                        for event in [
+                            r#"{"type":"response.created","response":{"id":"resp_2"}}"#,
+                            r#"{"type":"response.completed","response":{"id":"resp_2"}}"#,
+                        ] {
+                            ws.send(Message::Text(event.to_string())).await.unwrap();
+                        }
+                        break;
+                    }
+                    Message::Ping(data) => ws.send(Message::Pong(data)).await.unwrap(),
+                    _ => {}
+                }
+            }
+        });
+
+        let url = format!("ws://{addr}/codex/responses");
+        let frame = response_create_frame(serde_json::json!({"model": "m", "input": []}));
+
+        // Turn 1 completes (pooling its connection), then the backend closes it.
+        let mut turn1 = open_simple(&url, HeaderMap::new(), &frame, Some("stale-1"))
+            .await
+            .expect("first turn connects");
+        drain(&mut turn1).await;
+
+        // The idle reader observes the server's Close and evicts the entry. (The
+        // Close may land before or after the pool insert, so we assert the end
+        // state — eviction — rather than the transient pooled state.)
+        let evicted = tokio::time::timeout(Duration::from_secs(5), async {
+            while pool_contains_for_tests("stale-1") {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(
+            evicted.is_ok(),
+            "idle reader evicts a remotely-closed pooled connection"
+        );
+
+        // Turn 2 must open a fresh connection and stream without a mid-stream error.
+        let mut turn2 = open_simple(&url, HeaderMap::new(), &frame, Some("stale-1"))
+            .await
+            .expect("second turn opens a fresh connection");
+        let mut saw_error = false;
+        while let Some(item) = turn2.recv().await {
+            if item.is_err() {
+                saw_error = true;
+            }
+        }
+        assert!(
+            !saw_error,
+            "the replaced connection streamed turn 2 cleanly"
+        );
+        assert_eq!(
+            accepts.load(Ordering::SeqCst),
+            2,
+            "turn 2 used a fresh connection, not the stale pooled one"
+        );
+
+        clear_pool_for_tests();
+        server.abort();
+    }
+
+    /// Issue #93: downstream backpressure (a client not consuming events) must not
+    /// starve WebSocket control-frame handling. The reader forwards events over an
+    /// unbounded channel, so a mid-stream `Ping` is answered even while the client
+    /// holds the receiver without reading.
+    #[tokio::test]
+    async fn backpressure_does_not_starve_control_frames() {
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            let Some(Ok(Message::Text(_))) = ws.next().await else {
+                panic!("expected a client frame");
+            };
+            // Emit a burst of data events the client will not consume yet.
+            for _ in 0..8 {
+                ws.send(Message::Text(
+                    r#"{"type":"response.output_text.delta","delta":"x"}"#.to_string(),
+                ))
+                .await
+                .unwrap();
+            }
+            // A control Ping in the middle of the unconsumed stream must still be
+            // answered by the reader.
+            ws.send(Message::Ping(b"mid".to_vec())).await.unwrap();
+            let mut saw_pong = false;
+            while let Some(message) = ws.next().await {
+                if let Ok(Message::Pong(data)) = message {
+                    assert_eq!(data, b"mid");
+                    saw_pong = true;
+                    break;
+                }
+            }
+            assert!(
+                saw_pong,
+                "reader answered the Ping despite downstream backpressure"
+            );
+            ws.send(Message::Text(
+                r#"{"type":"response.completed","response":{"id":"resp_1"}}"#.to_string(),
+            ))
+            .await
+            .unwrap();
+        });
+
+        let url = format!("ws://{addr}/codex/responses");
+        let frame = response_create_frame(serde_json::json!({"model": "m", "input": []}));
+        // Acquire the stream but deliberately delay consuming it so events queue.
+        let mut events = open_simple(&url, HeaderMap::new(), &frame, None)
+            .await
+            .expect("websocket should connect");
+
+        // The reader must answer the Ping while we are NOT consuming events.
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("server should observe a Pong before we consume events")
+            .unwrap();
+
+        // Now drain: every queued event (deltas + completed) is still delivered.
+        let count = drain(&mut events).await;
+        assert!(
+            count >= 9,
+            "queued events delivered after backpressure: {count}"
+        );
     }
 }
