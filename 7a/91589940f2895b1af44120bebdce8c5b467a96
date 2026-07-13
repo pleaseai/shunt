@@ -1,0 +1,21 @@
+src/auth/codex/auth.rs
+  s_45841bdcc1ae2a::t_87ee91d0667a09 360-361,363
+.please/state/review-threads-99.json
+  s_45841bdcc1ae2a::t_b34f3db8386be6 1-12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "7a91589940f2895b1af44120bebdce8c5b467a96",
+  "prompts": {},
+  "sessions": {
+    "s_45841bdcc1ae2a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7d2dc58b-5ee7-4b3d-bb2e-965a8d2dd3ea",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
