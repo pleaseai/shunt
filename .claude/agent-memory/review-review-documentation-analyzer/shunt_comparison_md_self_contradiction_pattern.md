@@ -12,9 +12,12 @@ numbered list of gap-analysis items in §6 (each tagged `already tracked: [#N]` 
 same issue numbers.
 
 **Found in PR #111 (branch amondnet/46, 2026-07-14):** the PR resolved only item C
-(#46, mid-stream WS failure fallback — verified accurate against
-`src/adapters/responses/mod.rs`'s `open_ws_turn`/`commit_or_fallback`, single commit,
-only that file touched). But the §7 rewrite went further than the diff justified: it
+(#46 — verified accurate against `src/adapters/responses/mod.rs`'s
+`open_ws_turn`/`commit_or_fallback`, single commit, only that file touched). Note
+"mid-stream WS failure fallback" is loose shorthand: #46 only extends the fallback
+to failures *before* the first event (send→first-event window); a transport drop
+*after* the first event is intentionally surfaced as an error rather than
+restarted — it is not a mid-turn resume. But the §7 rewrite went further than the diff justified: it
 changed "hardening the Codex WS continuation (live-probe + mid-stream fallback)"
 (future work, both open) to "has since been hardened on both fronts (continuation
 live-probe [#45] and pre-first-token HTTP fallback [#46])" — falsely implying #45 (the

@@ -26,7 +26,12 @@ confirmed by reading `run_turn` end-to-end and cross-checked by a sibling
 swallow"). Separately, business-logic failures reported *by the backend itself*
 (`event.event == "error"` or `"response.failed"`) are always forwarded as
 `Ok(ResponseEvent)`, never `Err(CodexWsError)` — only genuine transport/socket
-failures use the `Err` variant. This `Ok`-vs-`Err` split is the invariant the
+failures use the `Err` variant, with one deliberate exception: a backend
+`previous_response_not_found` rejection is intentionally emitted as
+`Err(CodexWsError::previous_response_missing())` (not `Ok`) so `open_ws_turn`
+can detect it and retry the continuation with the full input on a fresh
+connection — so not every `Err` here is a transport failure. This `Ok`-vs-`Err`
+split is otherwise the invariant the
 new `commit_or_fallback` helper (issue #46) depends on to correctly route
 transport errors to HTTP-fallback while letting backend-reported errors stream
 through as a clean Anthropic `error` SSE event. **Do not re-flag the old PR #39
