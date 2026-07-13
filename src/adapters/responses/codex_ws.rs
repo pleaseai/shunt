@@ -573,6 +573,23 @@ enum TurnEnd {
     Dead,
 }
 
+/// Surface an explicit error on any turn command still buffered when the reader
+/// exits, instead of letting it drop silently. A turn can be dispatched during the
+/// reader's teardown: `begin` returns before a `Close`/EOF breaks the loop, then
+/// `stream` sends into the (capacity-1, not-yet-dropped) channel and gets `Ok`, but
+/// the reader never receives it — the caller's event stream would just end with a
+/// bare `None`, read as an empty "ghost" response. Closing the channel first makes a
+/// concurrent `stream` fail fast (the "reader is gone" path) rather than buffer, and
+/// draining what is already buffered turns it into a proper transport error.
+fn fail_pending_commands(commands: &mut mpsc::Receiver<StartTurn>) {
+    commands.close();
+    while let Ok(StartTurn { events, .. }) = commands.try_recv() {
+        let _ = events.send(Err(CodexWsError::transport(
+            "codex websocket closed before the turn could start",
+        )));
+    }
+}
+
 /// Connection-owned reader task: owns the read half for the socket's lifetime.
 /// While idle it answers upstream `Ping` frames (so the backend never times the
 /// connection out) and watches for a dispatched turn or a shutdown signal. While
@@ -643,6 +660,10 @@ async fn run_connection(
         }
     }
 
+    // Before anything else: fail (and stop accepting) any turn command that raced
+    // the reader's exit, so a turn dispatched during teardown surfaces an error
+    // instead of a silent empty stream.
+    fail_pending_commands(&mut commands);
     conn.alive.store(false, Ordering::SeqCst);
     // Catch-all eviction for every exit reason (shutdown, close/EOF/error while
     // idle, commands channel exhausted, send failure). The `TurnEnd::Dead` branches
@@ -1651,5 +1672,53 @@ mod tests {
             .await
             .expect("dropping a fresh turn closes its socket")
             .unwrap();
+    }
+
+    /// A turn command buffered as the reader exits (a `stream` that raced the
+    /// reader's teardown) must surface a transport error on its event stream, not be
+    /// dropped silently — which the caller would see as an empty "ghost" response.
+    /// The channel is also closed, so a later racing dispatch fails fast.
+    #[tokio::test]
+    async fn buffered_command_on_reader_exit_surfaces_error() {
+        let (cmd_tx, mut cmd_rx) = mpsc::channel::<StartTurn>(1);
+        let (ev_tx, mut ev_rx) = mpsc::unbounded_channel();
+        let lock = Arc::new(AsyncMutex::new(()));
+        cmd_tx
+            .send(StartTurn {
+                frame: Message::Text("{}".to_string()),
+                events: ev_tx,
+                record: RecordPlan::none(),
+                slot: lock.clone().lock_owned().await,
+            })
+            .await
+            .expect("buffer a command into the capacity-1 channel");
+
+        fail_pending_commands(&mut cmd_rx);
+
+        // The buffered command's stream gets an explicit error, not a bare close.
+        match ev_rx.try_recv() {
+            Ok(Err(error)) => assert!(
+                error.message.contains("before the turn could start"),
+                "unexpected error: {}",
+                error.message
+            ),
+            other => panic!("expected a transport error, got {other:?}"),
+        }
+        // The drained command released its slot, so re-locking here cannot deadlock.
+        // The channel is now closed, so a racing dispatch fails fast instead of
+        // buffering into a reader that will never receive it.
+        let (ev_tx2, _ev_rx2) = mpsc::unbounded_channel();
+        assert!(
+            cmd_tx
+                .send(StartTurn {
+                    frame: Message::Text("{}".to_string()),
+                    events: ev_tx2,
+                    record: RecordPlan::none(),
+                    slot: lock.lock_owned().await,
+                })
+                .await
+                .is_err(),
+            "channel closed on reader exit rejects a late dispatch"
+        );
     }
 }
