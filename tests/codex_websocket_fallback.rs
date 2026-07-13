@@ -260,7 +260,10 @@ async fn request_is_websocket(socket: &TcpStream) -> bool {
         match socket.peek(&mut head).await {
             Ok(0) | Err(_) => return false,
             Ok(n) if n >= 4 => return &head == b"GET ",
-            Ok(_) => continue, // need more bytes before deciding
+            // A partial read (<4 bytes) leaves the peeked bytes buffered, so the
+            // next peek returns immediately with the same count — back off briefly
+            // instead of busy-looping until the rest of the request line arrives.
+            Ok(_) => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
         }
     }
 }
