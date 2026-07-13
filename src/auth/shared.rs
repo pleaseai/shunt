@@ -9,6 +9,7 @@
 use std::{
     fs, io,
     path::Path,
+    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -16,6 +17,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::Value;
 
 const EXPIRY_BUFFER: Duration = Duration::from_secs(5 * 60);
+static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub fn jwt_claims(token: &str) -> Option<Value> {
     let payload = token.split('.').nth(1)?;
@@ -28,7 +30,7 @@ pub fn jwt_exp(token: &str) -> Option<SystemTime> {
     if seconds < 0 {
         return None;
     }
-    Some(UNIX_EPOCH + Duration::from_secs(seconds as u64))
+    UNIX_EPOCH.checked_add(Duration::from_secs(seconds as u64))
 }
 
 pub fn is_token_valid_at(token: &str, now: SystemTime) -> bool {
@@ -39,12 +41,14 @@ pub fn is_token_valid_at(token: &str, now: SystemTime) -> bool {
 
 pub(crate) fn write_auth_file_atomic(path: &Path, value: &Value) -> io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let temp = parent.join(format!(
-        ".{}.tmp-{}",
+        ".{}.tmp-{}-{}",
         path.file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("auth"),
-        std::process::id()
+        std::process::id(),
+        counter
     ));
     // The temp file must be born private: chmod-after-write would leave a
     // window where the tokens sit at the umask default on multi-user hosts.

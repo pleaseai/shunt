@@ -15,8 +15,8 @@ use anyhow::{anyhow, bail, Context};
 use serde_json::Value;
 use tokio::time::{sleep, Instant};
 
-use crate::auth::shared::jwt_exp;
 use crate::auth::default_xai_auth_path;
+use crate::auth::shared::jwt_exp;
 use crate::auth::xai_auth::{
     parse_token_response, write_tokens, CLIENT_ID, DEVICE_CODE_GRANT_TYPE, DEVICE_CODE_URL, SCOPE,
     TOKEN_URL,
