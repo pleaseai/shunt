@@ -591,6 +591,8 @@ pub enum ConfigError {
     ChatgptOauthNonChatgptHost { provider: String, host: String },
     #[error("providers.{provider} uses auth = \"chatgpt_oauth\" but base_url is not https; refusing to send a subscription token over plaintext")]
     ChatgptOauthNotHttps { provider: String },
+    #[error("providers.{provider} uses auth = \"chatgpt_oauth\" but kind is not \"responses\"; the anthropic adapter would forward the client's own credential instead of the Codex token")]
+    ChatgptOauthWrongKind { provider: String },
     #[error("providers.{provider}.accounts contains duplicate account name \"{name}\"")]
     DuplicateAccountName { provider: String, name: String },
     #[error("providers.{provider}.accounts account name \"{name}\" must match [a-z0-9-]+")]
@@ -996,11 +998,18 @@ impl Config {
             // A chatgpt_oauth provider injects the operator's stored Codex
             // subscription bearer, so — like claude_oauth above — its base_url
             // must stay on the ChatGPT host over https, never a gateway or
-            // plaintext endpoint that would receive the token. Unlike
-            // claude_oauth, there is no dedicated `ProviderKind` for the Codex
-            // backend (it uses `kind = "responses"`, shared with plain OpenAI
-            // and xAI), so only the host/scheme guard applies here.
+            // plaintext endpoint that would receive the token. It must also be a
+            // `responses`-kind provider (the Codex backend's kind, shared with
+            // plain OpenAI and xAI): the Responses adapter is what injects the
+            // Codex bearer, whereas the anthropic adapter would fall through to
+            // forwarding the client's own credential off-origin (same leak guard
+            // as xai_oauth above).
             if provider.auth == AuthMode::ChatgptOauth {
+                if provider.kind != ProviderKind::Responses {
+                    return Err(ConfigError::ChatgptOauthWrongKind {
+                        provider: name.clone(),
+                    });
+                }
                 let host = url.host_str().unwrap_or_default();
                 if !host_is_loopback(host) {
                     if url.scheme() != "https" {
@@ -1471,6 +1480,20 @@ mod tests {
             config.validate().unwrap_err(),
             ConfigError::ChatgptOauthNotHttps { .. }
         ));
+    }
+
+    #[test]
+    fn chatgpt_oauth_requires_responses_kind() {
+        // An anthropic-kind provider never injects the ChatGptOAuth credential —
+        // the anthropic adapter would forward the client's own headers to
+        // chatgpt.com — so the combination is rejected at boot (mirrors the
+        // xai_oauth guard).
+        let mut config = Config::default();
+        let codex = config.providers.get_mut("codex").unwrap();
+        codex.kind = ProviderKind::Anthropic;
+        codex.accounts.push(account("work"));
+        let error = config.validate().unwrap_err();
+        assert!(matches!(error, ConfigError::ChatgptOauthWrongKind { .. }));
     }
 
     #[test]

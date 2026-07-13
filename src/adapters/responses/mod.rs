@@ -342,7 +342,9 @@ async fn forward_chatgpt_oauth(
                     return Ok((StatusCode::OK, with_account_header(response, &account.name)));
                 }
                 // A non-failover 4xx (e.g. 400) is a client error, not the
-                // account's fault: return it verbatim rather than rotating.
+                // account's fault: relay it (re-shaped into the Anthropic error
+                // envelope by mapped_upstream_error, as everywhere on this path)
+                // rather than rotating to another account.
                 return Err(mapped_upstream_error(status, upstream, auth).await);
             }
             FailoverAction::Rotate => {
@@ -452,6 +454,11 @@ async fn forward_chatgpt_oauth(
                         &route.provider,
                         &account.name,
                         Duration::from_secs(5 * 60),
+                    );
+                    tracing::warn!(
+                        provider = %route.provider,
+                        account = %account.name,
+                        "ChatGPT OAuth account refreshed successfully but upstream still rejected the new credential; cooling down and rotating"
                     );
                     last_response = Some(retry);
                     continue;

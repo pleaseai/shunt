@@ -83,12 +83,13 @@ If neither the store nor the JWT yields an account id, resolving that account fa
 Configuration validation rejects:
 
 - `accounts` on a provider whose auth mode is neither `claude_oauth` nor `chatgpt_oauth`;
+- a `chatgpt_oauth` provider whose `kind` is not `responses`;
 - a non-HTTPS `base_url` for a `chatgpt_oauth` provider (unless the host is loopback — see below);
 - a `chatgpt_oauth` `base_url` host other than `chatgpt.com` or one of its subdomains (unless loopback);
 - duplicate or invalid account names; and
 - an account that sets both `credentials` and `token_env`.
 
-Unlike `claude_oauth` (which additionally requires `kind = "anthropic"`), **`chatgpt_oauth` has no dedicated `ProviderKind` requirement** — it works with the existing `kind = "responses"` provider shape shared with the `openai` and `xai` providers; only the host/scheme guard above applies.
+`chatgpt_oauth` requires `kind = "responses"` (the Codex backend's kind, shared with the `openai` and `xai` providers), just as `claude_oauth` requires `kind = "anthropic"` and `xai_oauth` requires `kind = "responses"`. This is a bearer-leak guard, not a cosmetic check: only the Responses adapter injects the Codex bearer, so a mismatched `kind = "anthropic"` provider would instead be dispatched to the Anthropic adapter, which has no `ChatGptOAuth` injection and would forward the *client's own* credential off-origin to `chatgpt.com`. Validation rejects that combination at boot.
 
 The HTTPS and host checks are the same bearer-leak guard M8 uses for Anthropic: a ChatGPT subscription OAuth token is never injected toward an arbitrary gateway or over plaintext. Both checks are **skipped when the `base_url` host is a loopback address** (`localhost`, `127.0.0.1`, `[::1]`, etc.), so a local debugging proxy or mock can be pointed at over plaintext HTTP. Every non-loopback host is still held to HTTPS + `chatgpt.com` (or a subdomain).
 

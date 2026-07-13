@@ -22,9 +22,7 @@
 //! asserts the translated envelope rather than a byte-identical upstream body.
 
 use std::{
-    collections::hash_map::DefaultHasher,
     fs,
-    hash::{Hash, Hasher},
     io::ErrorKind,
     net::SocketAddr,
     path::PathBuf,
@@ -34,6 +32,7 @@ use std::{
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use reqwest::StatusCode;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use shunt::{
     config::{AccountConfig, Config, RouteConfig},
     server,
@@ -211,13 +210,19 @@ fn can_bind_loopback() -> bool {
     }
 }
 
+/// Brute-force a session id that maps to `index` under the SAME bucket
+/// assignment production uses (`accounts::stable_session_index`): the first 8
+/// bytes of `SHA-256(session_id)` as a big-endian u64, mod the account count.
+/// Hashing with `DefaultHasher` here would pick an id that lands on a different
+/// account under the real SHA-256 algorithm, so the per-test "hashes to
+/// account-a" comments would not actually hold.
 fn session_id_for_account(index: usize, account_count: usize) -> String {
     (0..1000)
         .map(|candidate| format!("session-{candidate}"))
         .find(|session_id| {
-            let mut hasher = DefaultHasher::new();
-            session_id.hash(&mut hasher);
-            hasher.finish() as usize % account_count == index
+            let digest = Sha256::digest(session_id.as_bytes());
+            let prefix = u64::from_be_bytes(digest[..8].try_into().unwrap());
+            (prefix % account_count as u64) as usize == index
         })
         .expect("a session id should map to the requested account")
 }
