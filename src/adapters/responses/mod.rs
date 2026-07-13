@@ -652,7 +652,7 @@ fn build_upstream_error(
                 .filter(|message| !message.is_empty());
             match upstream_message {
                 Some(message) => json!({"message": format!("{message} ({hint})")}),
-                None => json!({"message": crate::auth::xai_auth::refresh_error_message(status)}),
+                None => json!({"message": crate::auth::xai::auth::refresh_error_message(status)}),
             }
         } else {
             serde_json::from_str(&text).unwrap_or_else(|_| json!({"message": text}))

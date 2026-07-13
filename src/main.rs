@@ -91,7 +91,7 @@ fn login(
 ) -> anyhow::Result<()> {
     match provider {
         "xai" if name.is_none() && !long_lived => {
-            runtime()?.block_on(shunt::auth::xai_login::run(provider))
+            runtime()?.block_on(shunt::auth::xai::login::run(provider))
         }
         "xai" => anyhow::bail!("--name and --long-lived are only valid for `shunt login claude`"),
         "cursor" if name.is_none() && !long_lived => runtime()?.block_on(async {
@@ -106,7 +106,7 @@ fn login(
                         .map(|provider| provider.base_url.clone())
                 })
                 .unwrap_or_else(|| "https://api2.cursor.sh".to_string());
-            shunt::auth::cursor_login::run_with_base(&base_url).await
+            shunt::auth::cursor::login::run_with_base(&base_url).await
         }),
         "cursor" => {
             anyhow::bail!("--name and --long-lived are only valid for `shunt login claude`")
@@ -115,7 +115,7 @@ fn login(
             let name = name.ok_or_else(|| {
                 anyhow::anyhow!("`shunt login claude` requires --name <account-name>")
             })?;
-            runtime()?.block_on(shunt::auth::claude_login::run(name, long_lived))
+            runtime()?.block_on(shunt::auth::claude::login::run(name, long_lived))
         }
         _ => {
             anyhow::bail!("unknown login provider {provider:?}; supported: claude, cursor, xai")
@@ -133,10 +133,10 @@ fn runtime() -> anyhow::Result<tokio::runtime::Runtime> {
 }
 
 async fn token() -> anyhow::Result<()> {
-    let path = shunt::auth::claude_auth::default_credentials_path();
+    let path = shunt::auth::claude::auth::default_credentials_path();
     let client = reqwest::Client::new();
     // stdout carries only the token so it can be consumed by apiKeyHelper.
-    let token = shunt::auth::claude_auth::resolve_token(path, client).await?;
+    let token = shunt::auth::claude::auth::resolve_token(path, client).await?;
     println!("{token}");
     Ok(())
 }

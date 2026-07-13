@@ -1,7 +1,7 @@
 //! Provider-agnostic credential helpers shared across the auth stores.
 //!
 //! These were originally defined alongside the ChatGPT/Codex store in
-//! [`crate::auth::codex_auth`], but the xAI, Claude, and Cursor stores reuse
+//! [`crate::auth::codex::auth`], but the xAI, Claude, and Cursor stores reuse
 //! them (JWT expiry parsing, ISO-8601 formatting, and atomic private-file
 //! writeback). They live here so no provider auth module has to reach across
 //! into a sibling provider's module.

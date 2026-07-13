@@ -17,3 +17,6 @@ site/.wrangler/
 
 # Personal Claude Code overrides (internal marketplaces, telemetry label) — never shared upstream
 .claude/settings.local.json
+
+# Machine-local review/apply-loop state (regenerated per run; not shared)
+.please/state/

@@ -338,6 +338,111 @@ mod tests {
     }
 
     #[test]
+    fn token_set_is_valid_at_wraps_expiry_check() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_000);
+        let just_inside = TokenSet {
+            access_token: token(1_299, None),
+            refresh_token: None,
+            account_id: None,
+        };
+        let just_outside = TokenSet {
+            access_token: token(1_301, None),
+            refresh_token: None,
+            account_id: None,
+        };
+
+        assert!(!just_inside.is_valid_at(now));
+        assert!(just_outside.is_valid_at(now));
+    }
+
+    #[test]
+    fn token_set_to_credential_prefers_stored_account_id() {
+        // The JWT carries a *different* account-id claim, so this genuinely proves
+        // the stored account_id wins over the token claim (not just that one exists).
+        let tokens = TokenSet {
+            access_token: token(2_000_000_000, Some("acct_claim")),
+            refresh_token: None,
+            account_id: Some("acct_stored".to_string()),
+        };
+
+        let credential = tokens.to_credential().unwrap();
+
+        assert_eq!(credential.access_token, tokens.access_token);
+        assert_eq!(credential.account_id, "acct_stored");
+    }
+
+    #[test]
+    fn token_set_to_credential_errors_without_account_id() {
+        let tokens = TokenSet {
+            access_token: token(2_000_000_000, None),
+            refresh_token: None,
+            account_id: None,
+        };
+
+        assert!(tokens.to_credential().is_err());
+    }
+
+    #[test]
+    fn refresh_response_to_credential_reads_account_id_from_jwt() {
+        let response = RefreshResponse {
+            access_token: token(2_000_000_000, Some("acct_jwt")),
+            refresh_token: None,
+            id_token: None,
+        };
+
+        let credential = response.to_credential().unwrap();
+
+        assert_eq!(credential.account_id, "acct_jwt");
+    }
+
+    #[test]
+    fn refresh_response_to_credential_errors_without_claim() {
+        let response = RefreshResponse {
+            access_token: token(2_000_000_000, None),
+            refresh_token: None,
+            id_token: None,
+        };
+
+        assert!(response.to_credential().is_err());
+    }
+
+    #[test]
+    fn parse_refresh_response_rejects_missing_access_token() {
+        assert!(parse_refresh_response(&json!({"refresh_token": "r"})).is_none());
+    }
+
+    #[test]
+    fn writeback_omitting_fields_keeps_existing_tokens() {
+        let access = token(2_000_000_000, None);
+        let mut value = json!({
+            "tokens": {
+                "access_token": "old",
+                "refresh_token": "keep-refresh",
+                "id_token": "keep-id",
+                "account_id": "acct_kept"
+            }
+        });
+
+        // A refresh that omits refresh_token/id_token and whose access token carries
+        // no account-id claim must leave the previously stored values untouched.
+        apply_refresh(
+            &mut value,
+            RefreshResponse {
+                access_token: access.clone(),
+                refresh_token: None,
+                id_token: None,
+            },
+            UNIX_EPOCH + Duration::from_secs(0),
+        );
+
+        assert_eq!(value["tokens"]["access_token"], access);
+        assert_eq!(value["tokens"]["refresh_token"], "keep-refresh");
+        assert_eq!(value["tokens"]["id_token"], "keep-id");
+        assert_eq!(value["tokens"]["account_id"], "acct_kept");
+        assert_eq!(value["last_refresh"], "1970-01-01T00:00:00Z");
+    }
+
+    #[test]
     fn writeback_preserves_fields_and_updates_tokens() {
         let access = token(2_000_000_000, Some("acct_new"));
         let mut value = json!({

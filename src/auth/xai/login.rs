@@ -4,7 +4,7 @@
 //! No loopback callback server is needed: shunt requests a device code, prints
 //! a verification URL and short user code, and long-polls xAI's token endpoint
 //! until the user approves in a browser (on any device). The resulting tokens
-//! are written to the shunt-owned credential file (see [`super::xai_auth`]).
+//! are written to the shunt-owned credential file (see [`super::auth`]).
 //!
 //! Logs go to stderr (the crate convention); the URL and user code are printed
 //! to stdout with plain `println!` so they are always visible to the operator.
@@ -15,12 +15,12 @@ use anyhow::{anyhow, bail, Context};
 use serde_json::Value;
 use tokio::time::{sleep, Instant};
 
-use crate::auth::default_xai_auth_path;
-use crate::auth::shared::jwt_exp;
-use crate::auth::xai_auth::{
+use super::auth::{
     parse_token_response, write_tokens, CLIENT_ID, DEVICE_CODE_GRANT_TYPE, DEVICE_CODE_URL, SCOPE,
     TOKEN_URL,
 };
+use crate::auth::default_xai_auth_path;
+use crate::auth::shared::jwt_exp;
 
 const DEFAULT_INTERVAL_SECS: u64 = 5;
 const MIN_INTERVAL_SECS: u64 = 1;
@@ -146,7 +146,7 @@ async fn poll_for_tokens(
     client: &reqwest::Client,
     device: &DeviceCode,
     token_url: &str,
-) -> anyhow::Result<crate::auth::xai_auth::TokenResponse> {
+) -> anyhow::Result<super::auth::TokenResponse> {
     let deadline = Instant::now() + Duration::from_secs(device.expires_in);
     let mut interval = device.interval.max(MIN_INTERVAL_SECS);
     while Instant::now() < deadline {
@@ -247,6 +247,28 @@ mod tests {
         assert_eq!(device.interval, DEFAULT_INTERVAL_SECS);
         assert_eq!(device.expires_in, DEFAULT_EXPIRES_SECS);
         assert!(device.verification_uri_complete.is_none());
+
+        // A zero/garbage interval is treated as absent and falls back to the
+        // default (guarding the poll loop from a 0-second busy spin).
+        let device = parse_device_code(&json!({
+            "device_code": "d",
+            "user_code": "u",
+            "verification_uri": "https://x.ai/device",
+            "interval": 0
+        }))
+        .unwrap();
+        assert_eq!(device.interval, DEFAULT_INTERVAL_SECS);
+    }
+
+    #[test]
+    fn parse_device_code_requires_core_fields() {
+        // Missing any of device_code / user_code / verification_uri yields None
+        // rather than a half-built DeviceCode.
+        assert!(parse_device_code(&json!({
+            "user_code": "u",
+            "verification_uri": "https://x.ai/device"
+        }))
+        .is_none());
     }
 
     #[test]
@@ -267,8 +289,17 @@ mod tests {
             classify_poll_error(&json!({"error": "expired_token"})),
             PollOutcome::Failed(_)
         ));
+        assert!(matches!(
+            classify_poll_error(&json!({"error": "authorization_denied"})),
+            PollOutcome::Failed(_)
+        ));
         match classify_poll_error(&json!({"error": "boom", "error_description": "kaboom"})) {
             PollOutcome::Failed(reason) => assert!(reason.contains("kaboom")),
+            other => panic!("expected failure, got {other:?}"),
+        }
+        // An unknown error with no description still fails, using the raw code.
+        match classify_poll_error(&json!({"error": "boom"})) {
+            PollOutcome::Failed(reason) => assert!(reason.contains("boom")),
             other => panic!("expected failure, got {other:?}"),
         }
     }

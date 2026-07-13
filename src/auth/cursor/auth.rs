@@ -74,7 +74,7 @@ impl CursorAuthStore {
         // section mid-flight — which would release the lock early into a writeback
         // race and, if Cursor ever consumes the old refresh token server-side,
         // strand a spent token in the file. Mirrors the cancellation-safe pattern
-        // in `xai_auth`.
+        // in `xai::auth`.
         let client = self.client.clone();
         let base_url = self.base_url.clone();
         let path = self.path.clone();
@@ -242,6 +242,14 @@ mod tests {
         .unwrap();
         assert_eq!(auth.access_token, "access");
         assert_eq!(auth.refresh_token.as_deref(), Some("refresh"));
+    }
+
+    #[test]
+    fn rejects_missing_or_empty_access_token() {
+        // A response with no accessToken is not a usable credential.
+        assert!(parse_token_response(&json!({"refreshToken": "refresh"})).is_none());
+        // An empty accessToken is rejected rather than persisted as a broken token.
+        assert!(parse_token_response(&json!({"accessToken": ""})).is_none());
     }
 
     #[test]
