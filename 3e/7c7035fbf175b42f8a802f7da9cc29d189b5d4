@@ -1,0 +1,22 @@
+src/model/responses.rs
+  s_32977ad6c1f037::t_e54100bb4b6222 214-216,220-222
+tests/responses_translate.rs
+  s_32977ad6c1f037::t_db77d97572798c 1739-1758
+  s_32977ad6c1f037::t_a7e342889c87c9 1736-1738
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "3e7c7035fbf175b42f8a802f7da9cc29d189b5d4",
+  "prompts": {},
+  "sessions": {
+    "s_32977ad6c1f037": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b53cc6a0-9362-41c2-9698-cd7f625ac003",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
