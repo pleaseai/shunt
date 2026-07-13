@@ -99,10 +99,18 @@ pub fn withhold_session_id() -> bool {
 /// bound; `set` is idempotent (first call wins), matching the
 /// once-per-process Sentry client.
 pub fn pin_sentry_span_export(traces_enabled: bool, include_session_id: bool) {
-    let _ = SENTRY_SPANS.set(SentrySpanPolicy {
+    let _ = SENTRY_SPANS.set(sentry_span_policy(traces_enabled, include_session_id));
+}
+
+/// The Sentry span-export policy for a given `(traces_enabled,
+/// include_session_id)` pair (see [`pin_sentry_span_export`]). Pure so it is
+/// unit-testable across all four boolean combinations without touching the
+/// process-global `OnceLock`, mirroring [`should_withhold_session_id`].
+fn sentry_span_policy(traces_enabled: bool, include_session_id: bool) -> SentrySpanPolicy {
+    SentrySpanPolicy {
         enabled: traces_enabled,
         withhold_session_id: traces_enabled && !include_session_id,
-    });
+    }
 }
 
 /// Whether the Sentry tracing layer's span filter admits spans. `false` until
@@ -399,7 +407,7 @@ mod tests {
 
     use super::{
         build_resource, header_map, init, pin_sentry_span_export, sentry_span_export_enabled,
-        should_withhold_session_id, signal_endpoint, warn_on_plaintext_headers,
+        sentry_span_policy, should_withhold_session_id, signal_endpoint, warn_on_plaintext_headers,
         withhold_session_id,
     };
     use crate::config::OtelConfig;
@@ -528,6 +536,26 @@ mod tests {
         let mut http_pseudo_loopback = with_headers.clone();
         http_pseudo_loopback.endpoint = "http://127.example.com".to_string();
         warn_on_plaintext_headers(&http_pseudo_loopback);
+    }
+
+    #[test]
+    fn sentry_span_policy_covers_all_combinations() {
+        // Traces off: never withhold, regardless of the opt-in — matches
+        // `should_withhold_session_id`'s "no trace bridge" arm.
+        let off_not_opted_in = sentry_span_policy(false, false);
+        assert!(!off_not_opted_in.enabled);
+        assert!(!off_not_opted_in.withhold_session_id);
+        let off_opted_in = sentry_span_policy(false, true);
+        assert!(!off_opted_in.enabled);
+        assert!(!off_opted_in.withhold_session_id);
+        // Traces on, not opted in: withhold (the id would ride the span).
+        let on_not_opted_in = sentry_span_policy(true, false);
+        assert!(on_not_opted_in.enabled);
+        assert!(on_not_opted_in.withhold_session_id);
+        // Traces on, opted in: keep the id.
+        let on_opted_in = sentry_span_policy(true, true);
+        assert!(on_opted_in.enabled);
+        assert!(!on_opted_in.withhold_session_id);
     }
 
     #[test]
