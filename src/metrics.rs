@@ -112,14 +112,15 @@ pub fn record_proxied_request(provider: &str, model: &str, status: u16, latency_
 /// #45): correctness-safe, but a latent lost optimization. Emitted to Sentry and
 /// OpenTelemetry; each sink is inert unless configured.
 pub fn record_continuation_outcome(provider: &str, outcome: ContinuationOutcome) {
+    let provider = provider.to_owned();
     let outcome = outcome.as_str();
     sentry::metrics::counter("shunt.codex_continuation", 1)
-        .attribute("provider", provider.to_owned())
+        .attribute("provider", provider.clone())
         .attribute("outcome", outcome.to_owned())
         .capture();
 
     let attributes = [
-        KeyValue::new("provider", provider.to_owned()),
+        KeyValue::new("provider", provider),
         KeyValue::new("outcome", outcome),
     ];
     otel_instruments().continuation.add(1, &attributes);

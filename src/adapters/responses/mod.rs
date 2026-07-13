@@ -364,6 +364,34 @@ async fn open_ws_turn(
     }
 }
 
+/// Rewrite `frame_body` in place for a continuation turn: replace `input` with the
+/// decision's delta, set `previous_response_id`, and — when a turn-state token is
+/// present — echo it into `client_metadata` as `x-codex-turn-state`. Returns the
+/// delta item count (for logging). Pure and unit-tested; the async turn setup that
+/// produces the inputs stays in [`start_ws_turn`].
+fn apply_continuation(
+    frame_body: &mut Value,
+    decision: &codex_continuation::Decision,
+    turn_state: Option<&str>,
+) -> usize {
+    if let Some(object) = frame_body.as_object_mut() {
+        object.insert("input".to_string(), json!(decision.input_delta));
+        object.insert(
+            "previous_response_id".to_string(),
+            json!(decision.previous_response_id),
+        );
+        if let Some(turn_state) = turn_state {
+            let metadata = object
+                .entry("client_metadata".to_string())
+                .or_insert_with(|| json!({}));
+            if let Some(metadata) = metadata.as_object_mut() {
+                metadata.insert("x-codex-turn-state".to_string(), json!(turn_state));
+            }
+        }
+    }
+    decision.input_delta.len()
+}
+
 /// Begin a turn on the session's connection and send its frame. When
 /// `allow_continuation` and the reused connection's stored state make the input an
 /// append-only extension, send only the delta with `previous_response_id`;
@@ -387,29 +415,14 @@ async fn start_ws_turn(
         if let Some(stored) = turn.stored_continuation() {
             match codex_continuation::decide(&stored, &ctx.upstream_body) {
                 Some(decision) => {
-                    if let Some(object) = frame_body.as_object_mut() {
-                        object.insert("input".to_string(), json!(decision.input_delta));
-                        object.insert(
-                            "previous_response_id".to_string(),
-                            json!(decision.previous_response_id),
-                        );
-                        if let Some(turn_state) = stored
-                            .turn_state
-                            .clone()
-                            .or_else(|| turn.handshake_turn_state().map(str::to_string))
-                        {
-                            let metadata = object
-                                .entry("client_metadata".to_string())
-                                .or_insert_with(|| json!({}));
-                            if let Some(metadata) = metadata.as_object_mut() {
-                                metadata
-                                    .insert("x-codex-turn-state".to_string(), json!(turn_state));
-                            }
-                        }
-                    }
+                    let turn_state = stored
+                        .turn_state
+                        .as_deref()
+                        .or_else(|| turn.handshake_turn_state());
+                    let delta_items = apply_continuation(&mut frame_body, &decision, turn_state);
                     used_continuation = true;
                     tracing::debug!(
-                        delta_items = decision.input_delta.len(),
+                        delta_items,
                         "codex websocket continuing with previous_response_id"
                     );
                     crate::metrics::record_continuation_outcome(
@@ -843,7 +856,7 @@ impl SseParser {
 mod tests {
     use axum::body::to_bytes;
     use axum::http::StatusCode;
-    use serde_json::Value;
+    use serde_json::{json, Value};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -854,7 +867,8 @@ mod tests {
         server::AppState,
     };
 
-    use super::{build_test_request, mapped_upstream_error, responses_url};
+    use super::codex_continuation::Decision;
+    use super::{apply_continuation, build_test_request, mapped_upstream_error, responses_url};
 
     /// Serves `body` at `status` from a mock server and returns the resulting
     /// `reqwest::Response`, mirroring the shape `mapped_upstream_error` sees in
@@ -896,6 +910,54 @@ mod tests {
             upstream_model: "gpt-5.2-codex".to_string(),
             effort: None,
         }
+    }
+
+    #[test]
+    fn apply_continuation_sets_delta_previous_id_and_turn_state() {
+        // A continuation turn replaces `input` with the delta, sets
+        // `previous_response_id`, and echoes the turn-state token.
+        let mut frame = json!({"model": "m", "input": ["FULL_INPUT"]});
+        let decision = Decision {
+            previous_response_id: "resp_1".to_string(),
+            input_delta: vec![json!({"type": "message", "role": "user"})],
+        };
+        let delta_items = apply_continuation(&mut frame, &decision, Some("ts_1"));
+        assert_eq!(delta_items, 1);
+        assert_eq!(frame["input"], json!([{"type": "message", "role": "user"}]));
+        assert_eq!(frame["previous_response_id"], json!("resp_1"));
+        assert_eq!(
+            frame["client_metadata"]["x-codex-turn-state"],
+            json!("ts_1")
+        );
+    }
+
+    #[test]
+    fn apply_continuation_without_turn_state_omits_metadata() {
+        // No turn-state token ⇒ no `client_metadata` is synthesized.
+        let mut frame = json!({"input": ["FULL_INPUT"]});
+        let decision = Decision {
+            previous_response_id: "r".to_string(),
+            input_delta: vec![json!("a"), json!("b")],
+        };
+        let delta_items = apply_continuation(&mut frame, &decision, None);
+        assert_eq!(delta_items, 2);
+        assert_eq!(frame["input"], json!(["a", "b"]));
+        assert_eq!(frame["previous_response_id"], json!("r"));
+        assert!(frame.get("client_metadata").is_none());
+    }
+
+    #[test]
+    fn apply_continuation_merges_into_existing_client_metadata() {
+        // The turn-state token is inserted alongside pre-existing metadata keys,
+        // not clobbering them (the `or_insert_with` existing-object path).
+        let mut frame = json!({"input": [], "client_metadata": {"existing": "keep"}});
+        let decision = Decision {
+            previous_response_id: "r".to_string(),
+            input_delta: vec![json!("x")],
+        };
+        apply_continuation(&mut frame, &decision, Some("ts"));
+        assert_eq!(frame["client_metadata"]["existing"], json!("keep"));
+        assert_eq!(frame["client_metadata"]["x-codex-turn-state"], json!("ts"));
     }
 
     #[test]
