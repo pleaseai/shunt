@@ -1,5 +1,5 @@
 ---
-title: Model Discovery
+title: モデルディスカバリー
 description: Claude Code の /model ピッカーを Claude 命名のエイリアスで自動的に埋める。
 ---
 

@@ -1,5 +1,5 @@
 ---
-title: Admin & Remote Provisioning
+title: 管理とリモートプロビジョニング
 description: shunt の管理 Web サーフェスを有効化し、Claude アカウントをリモートでプロビジョニングして、アカウントプールの健全性を確認する。
 ---
 

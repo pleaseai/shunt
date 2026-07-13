@@ -1,5 +1,5 @@
 ---
-title: Configuration Reference
+title: 設定リファレンス
 description: すべての shunt.toml キー — server、providers、routes、models。
 ---
 

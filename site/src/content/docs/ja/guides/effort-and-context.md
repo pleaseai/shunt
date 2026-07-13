@@ -1,5 +1,5 @@
 ---
-title: Effort & Context
+title: Effort とコンテキスト
 description: マッピングされたモデルに対して、reasoning エフォート、トークンカウント、コンテキストインジケーターがどう振る舞うか。
 ---
 

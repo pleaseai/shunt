@@ -1,5 +1,5 @@
 ---
-title: Comparison
+title: 比較
 description: shunt と他の Claude Code ゲートウェイ・LLM プロキシとの比較 — ピアグループ、機能マトリクス、強み、意図的なスコープ境界。
 ---
 

@@ -1,5 +1,5 @@
 ---
-title: Sharing a Gateway
+title: ゲートウェイの共有
 description: 共有デプロイ向けのクライアント単位トークンと、プロキシやトンネル向けの SSE キープアライブ ping。
 ---
 

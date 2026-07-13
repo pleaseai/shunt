@@ -1,5 +1,5 @@
 ---
-title: HTTP Endpoints
+title: HTTP エンドポイント
 description: shunt が Claude Code LLM ゲートウェイとして提供するエンドポイント。
 ---
 

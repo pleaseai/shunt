@@ -1,5 +1,5 @@
 ---
-title: Anthropic Multi-Account
+title: Anthropic マルチアカウント
 description: 複数の Claude サブスクリプション OAuth アカウントをプールし、セッションスティッキーでモデルを認識したプロアクティブなローテーションとリアクティブなフェイルオーバーで運用する。
 ---
 
