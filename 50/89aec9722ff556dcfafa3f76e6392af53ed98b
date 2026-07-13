@@ -1,0 +1,43 @@
+src/auth/claude_auth.rs
+  s_34d99b10cb7c5a::t_64c2e50980d5c6 247
+  s_e423000a5d6bc7::t_03b87f13e6dfd7 27-28
+src/accounts.rs
+  s_34d99b10cb7c5a::t_799aca6dc4ba57 2-3,8,39
+  s_34d99b10cb7c5a::t_802b6eca5be865 356,364
+  s_34d99b10cb7c5a::t_f59241eb5387f1 61,65-67
+  s_34d99b10cb7c5a::t_e6db8e2b11b247 539,543,545-551
+  s_34d99b10cb7c5a::t_1fbc08cf14c75d 209-214
+  s_34d99b10cb7c5a::t_1923145f3f58b1 540
+src/auth/claude_store.rs
+  s_34d99b10cb7c5a::t_5e80fc91ba4e30 69-75
+src/adapters/anthropic.rs
+  s_34d99b10cb7c5a::t_fd6f02622d27f4 273-274,276-288
+docs/m8-anthropic-multi-account.md
+  s_34d99b10cb7c5a::t_8384f20eb94011 88
+  s_34d99b10cb7c5a::t_cf5f3add500032 111
+  s_34d99b10cb7c5a::t_6eae2c6944a47c 11-13,19-21,23
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "5089aec9722ff556dcfafa3f76e6392af53ed98b",
+  "prompts": {},
+  "sessions": {
+    "s_34d99b10cb7c5a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e4c49b28-f934-40c5-b060-861d6c0d1e8b",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_e423000a5d6bc7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c404be1f-e926-4fc8-a708-c0114843ce5d",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
