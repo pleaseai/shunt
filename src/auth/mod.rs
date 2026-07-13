@@ -161,8 +161,14 @@ pub async fn resolve_chatgpt_account(
             .ok()
             .filter(|value| !value.is_empty())
             .ok_or_else(|| auth_error(format!("{token_env} is not set")))?;
-        let account_id = codex::auth::jwt_account_id(&access_token)
-            .ok_or_else(|| auth_error("ChatGPT account id missing; run codex login"))?;
+        let account_id = codex::auth::jwt_account_id(&access_token).ok_or_else(|| {
+            // This account's token came from `token_env`, not a `codex login`, so
+            // point the operator at the environment variable rather than telling
+            // them to re-run a login they never performed.
+            auth_error(format!(
+                "ChatGPT account id missing from the access token in environment variable {token_env}"
+            ))
+        })?;
         return Ok(Credential::ChatGptOAuth {
             access_token,
             account_id,

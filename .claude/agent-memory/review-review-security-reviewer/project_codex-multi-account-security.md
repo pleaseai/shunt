@@ -9,22 +9,24 @@ Codex/ChatGPT multi-account pooling (PR #114, `amondnet/codex-multi`). Reviewed
 `src/config.rs`, `src/auth/codex/{store,auth,login}.rs`, `src/auth/mod.rs`,
 `src/adapters/responses/mod.rs`, `src/accounts.rs`, `src/auth/shared.rs`.
 
-**Gap found — missing `chatgpt_oauth` kind guard** (`src/config.rs` validate
-loop, ~L1003-1018). `claude_oauth`/`xai_oauth`/`cursor_oauth` each reject a
-wrong `ProviderKind` (ClaudeOauthWrongKind / XaiOauthWrongKind /
-CursorOauthWrongKind), but `chatgpt_oauth` only host/scheme-guards — no kind
-check. So `kind="anthropic", auth="chatgpt_oauth", base_url="https://chatgpt.com"`
-passes validation, dispatches to the anthropic adapter, whose
-`outbound_headers` has `_ => {}` for `Credential::ChatGptOAuth` → the client's
-own auth headers pass through to chatgpt.com unchanged (subscription bearer
-dropped). This is exactly the client-credential off-origin leak the
-XaiOauthWrongKind doc-comment says its guard prevents. Operator-misconfig-gated,
-not remote. Fix: add `ChatgptOauthWrongKind` requiring `kind == Responses`.
+**Gap found AND CLOSED in this PR — `chatgpt_oauth` kind guard** (`src/config.rs`
+validate loop, now L1006-1010). Originally `chatgpt_oauth` only host/scheme-guarded
+with no kind check, unlike `claude_oauth`/`xai_oauth`/`cursor_oauth` (each rejects a
+wrong `ProviderKind` via ClaudeOauthWrongKind / XaiOauthWrongKind /
+CursorOauthWrongKind). So `kind="anthropic", auth="chatgpt_oauth",
+base_url="https://chatgpt.com"` would pass validation, dispatch to the anthropic
+adapter, whose `outbound_headers` has `_ => {}` for `Credential::ChatGptOAuth` → the
+client's own auth headers pass through to chatgpt.com unchanged (subscription bearer
+dropped) — the client-credential off-origin leak the XaiOauthWrongKind doc-comment
+says its guard prevents. Operator-misconfig-gated, not remote. **Resolved during
+review**: added `ConfigError::ChatgptOauthWrongKind` requiring `kind == Responses`
+(test `chatgpt_oauth_requires_responses_kind`, config.rs ~L1496), so the combo above
+is now rejected at startup.
 
 **Why:** the sibling WrongKind guards are framed as token-leak prevention in
-their own comments; chatgpt_oauth is the only OAuth mode missing it.
-**How to apply:** flag if this combo is still allowed; re-check after any
-config.rs auth-validation refactor.
+their own comments; chatgpt_oauth was the only OAuth mode missing it.
+**How to apply:** the guard now exists — re-verify it survives any config.rs
+auth-validation refactor (regression would re-open the off-origin leak).
 
 **Verified SAFE (do not re-flag):**
 - Bearer-leak guard for chatgpt_oauth is otherwise sound: `host_is_chatgpt`

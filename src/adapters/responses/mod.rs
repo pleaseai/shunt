@@ -488,10 +488,14 @@ async fn forward_chatgpt_oauth(
                         return Err(mapped_upstream_error(retry_status, retry, auth).await);
                     }
                     // Exhaustive rather than `_` so a new FailoverAction variant
-                    // forces a decision here. classify_codex never returns
-                    // PauseSame — its 429 arm always maps to Rotate — but
-                    // matching it explicitly documents that invariant at the
-                    // call site instead of silently relying on it.
+                    // forces a decision here. Two of these arms are unreachable
+                    // for the retry status and are matched only to document the
+                    // invariants at the call site: classify_codex returns
+                    // RefreshRetry only for 401, but a 401 retry already `continue`d
+                    // at the `retry_status == UNAUTHORIZED` check above, so it never
+                    // reaches this match; and it never returns PauseSame at all (its
+                    // 429 arm always maps to Rotate). Only Relay and Rotate are live
+                    // here — RefreshRetry rides Rotate's arm as a defensive no-op.
                     FailoverAction::Rotate | FailoverAction::RefreshRetry => {
                         let cooldown = if retry_status == StatusCode::TOO_MANY_REQUESTS {
                             accounts::retry_after(retry.headers())

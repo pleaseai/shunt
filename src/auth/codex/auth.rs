@@ -34,9 +34,23 @@ impl CodexAuthStore {
         // test seam (see `force_refresh_refreshes_a_still_valid_chatgpt_token`
         // below) — left unset, production always refreshes against the real
         // `auth.openai.com` endpoint.
+        //
+        // The refresh POST carries the long-lived `refresh_token`, so reject a
+        // non-loopback plaintext override: allow HTTPS to any host, but plain
+        // `http://` only for a loopback test mock (wiremock binds 127.0.0.1). A
+        // malformed or off-origin-plaintext override is ignored and the real URL
+        // is used, so a misconfigured env var can never egress the credential in
+        // the clear.
         let token_url = env::var("SHUNT_CODEX_TOKEN_URL")
             .ok()
             .filter(|value| !value.is_empty())
+            .filter(|value| {
+                value.parse::<reqwest::Url>().is_ok_and(|url| {
+                    url.scheme() == "https"
+                        || (url.scheme() == "http"
+                            && crate::config::host_is_loopback(url.host_str().unwrap_or_default()))
+                })
+            })
             .unwrap_or_else(|| TOKEN_URL.to_string());
         Self {
             path,
