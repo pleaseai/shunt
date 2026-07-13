@@ -65,6 +65,18 @@ Entries returned by `GET /v1/models` for [model discovery](/guides/model-discove
 | `id` | ✅ | Model id exposed to Claude Code |
 | `display_name` | — | Label shown in the `/model` picker |
 
+## `[sentry]` (optional)
+
+Opt-in error reporting to your own Sentry project. Off unless `dsn` is set; independent of `[otel]`. Reports gateway-owned diagnostics only — fatal gateway startup/serve errors, panics, and `error`-level log events (`warn`/`info` as breadcrumbs, message only); request/response bodies, headers, and credentials are never sent. Metrics and tracing are each a further, separate opt-in.
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `dsn` | — | Sentry project DSN. Empty disables; an invalid DSN is a startup error. |
+| `environment` | — | Optional environment tag on reported events |
+| `metrics` | `false` | Also send usage metrics — the `shunt.requests` / `shunt.latency` series (aggregates only) |
+| `traces_sample_rate` | `0.0` | Also send performance traces: the per-request span becomes a Sentry transaction, head-sampled at this rate in `[0.0, 1.0]`. `0.0` sends no spans; out of range is a startup error. |
+| `include_session_id` | `false` | Attach the client session id to request spans sent to Sentry |
+
 ## `[otel]` (optional)
 
 Opt-in OpenTelemetry (OTLP/HTTP) export of traces, metrics, and logs to your own collector ([details](/guides/opentelemetry/)). Off unless `endpoint` is set; independent of Sentry.
