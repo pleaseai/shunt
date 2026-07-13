@@ -1,0 +1,19 @@
+src/auth/inbound.rs
+  s_b21283ec701bcf::t_310a5bce58d7ba 206-246
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "ba326c50283f12b02a5c065c7a7fca168c96b987",
+  "prompts": {},
+  "sessions": {
+    "s_b21283ec701bcf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8153578f-1a0b-421a-8da6-fb6e02627973",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
