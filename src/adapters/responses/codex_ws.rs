@@ -1750,8 +1750,10 @@ mod tests {
         assert_eq!(id_top.as_deref(), Some("resp_top"));
 
         capture_continuation(
-            &parse_event(r#"{"type":"response.output_item.done","item":{"type":"message","id":"m1"}}"#)
-                .unwrap(),
+            &parse_event(
+                r#"{"type":"response.output_item.done","item":{"type":"message","id":"m1"}}"#,
+            )
+            .unwrap(),
             &mut id,
             &mut items,
             &mut turn_state,
@@ -1771,7 +1773,8 @@ mod tests {
         // turn_state nested under /response.
         let mut nested_state = None;
         capture_continuation(
-            &parse_event(r#"{"type":"response.completed","response":{"turn_state":"ts-2"}}"#).unwrap(),
+            &parse_event(r#"{"type":"response.completed","response":{"turn_state":"ts-2"}}"#)
+                .unwrap(),
             &mut id,
             &mut items,
             &mut nested_state,
@@ -1844,7 +1847,10 @@ mod tests {
                 saw_binary_error = true;
             }
         }
-        assert!(saw_binary_error, "a binary frame surfaces a transport error");
+        assert!(
+            saw_binary_error,
+            "a binary frame surfaces a transport error"
+        );
         server.abort();
     }
 
