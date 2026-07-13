@@ -1,0 +1,19 @@
+src/adapters/anthropic.rs
+  s_1ea3e991926d99::t_8b3e510bbd1ae5 58
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "45d3f24ac3b5652e2dbd04e17104b03b0d3b9052",
+  "prompts": {},
+  "sessions": {
+    "s_1ea3e991926d99": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "933a206e-41de-47fc-a5e0-a89ea4dc5bcb",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
