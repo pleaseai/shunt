@@ -76,7 +76,8 @@ fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
         .create_new(true)
         .mode(0o600)
         .open(path)?;
-    file.write_all(bytes)
+    file.write_all(bytes)?;
+    file.sync_all()
 }
 
 #[cfg(not(unix))]
