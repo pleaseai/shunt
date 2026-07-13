@@ -324,6 +324,38 @@ mod tests {
         }
     }
 
+    #[test]
+    fn read_account_meta_classifies_kind_and_skips_bad_files() {
+        let dir = temp_dir("meta");
+        fs::create_dir_all(&dir).unwrap();
+
+        // A non-empty refreshToken marks an imported login.
+        let imported = dir.join("imp.json");
+        fs::write(
+            &imported,
+            r#"{"claudeAiOauth":{"refreshToken":"r","expiresAt":123},"shuntAccountUuid":"u1"}"#,
+        )
+        .unwrap();
+        let meta = read_account_meta("imp", &imported).expect("imported meta parses");
+        assert!(matches!(meta.kind, AccountKind::Imported));
+        assert_eq!(meta.expires_at, Some(123));
+        assert_eq!(meta.uuid.as_deref(), Some("u1"));
+
+        // No refreshToken ⇒ a static setup-token file.
+        let setup = dir.join("set.json");
+        fs::write(&setup, r#"{"claudeAiOauth":{"expiresAt":456}}"#).unwrap();
+        let meta = read_account_meta("set", &setup).expect("setup meta parses");
+        assert!(matches!(meta.kind, AccountKind::SetupToken));
+
+        // Corrupt JSON and a missing file are both omitted (None), not errors.
+        let bad = dir.join("bad.json");
+        fs::write(&bad, "not json").unwrap();
+        assert!(read_account_meta("bad", &bad).is_none());
+        assert!(read_account_meta("missing", &dir.join("nope.json")).is_none());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn setup_token_round_trips_and_replaces() {
         let _guard = TEST_ENV_LOCK.lock().await;

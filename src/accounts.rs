@@ -507,6 +507,47 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_reports_health_for_seen_accounts() {
+        let pool = AccountPool::new();
+        let accounts = vec![
+            account("seen-near"),
+            account("seen-cool"),
+            account("unseen"),
+        ];
+
+        // One account near its 5h quota, one on cooldown; the third is never
+        // touched, so it must report as an unseen, available slot.
+        pool.note_quota(
+            "anthropic",
+            "seen-near",
+            &quota_headers(&[(
+                "anthropic-ratelimit-unified-5h-utilization",
+                "0.99".to_string(),
+            )]),
+        );
+        pool.cooldown("anthropic", "seen-cool", Duration::from_secs(45));
+
+        let snaps = pool.snapshot("anthropic", &accounts, None);
+        assert_eq!(snaps.len(), 3);
+
+        let near = &snaps[0];
+        assert!(near.has_state);
+        assert!(near.near_quota);
+        assert!(!near.available, "a near-quota account is not available");
+        assert!(near.utilization_5h.unwrap() > 0.98);
+
+        let cool = &snaps[1];
+        assert!(cool.has_state);
+        assert!(!cool.available, "a cooling account is not available");
+        assert!(cool.cooldown_secs_remaining.unwrap() > 0);
+
+        let unseen = &snaps[2];
+        assert!(!unseen.has_state);
+        assert!(unseen.available);
+        assert!(unseen.cooldown_secs_remaining.is_none());
+    }
+
+    #[test]
     fn under_quota_accounts_sort_by_weekly_reset_with_unknown_first() {
         let pool = AccountPool::new();
         let accounts = vec![account("a"), account("b"), account("c"), account("d")];

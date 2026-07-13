@@ -1144,9 +1144,61 @@ mod tests {
     use figment::providers::Format;
 
     use super::{
-        config_file_candidates, AccountConfig, AuthMode, Config, ConfigError, ConfigFormat,
-        ModelConfig, ProviderKind, ResponsesFlavor,
+        config_file_candidates, AccountConfig, AdminConfig, AuthMode, Config, ConfigError,
+        ConfigFormat, ModelConfig, ProviderKind, ResponsesFlavor,
     };
+
+    #[test]
+    fn admin_config_uses_defaults_for_missing_fields() {
+        // An empty object exercises every `#[serde(default)]` helper.
+        let admin: AdminConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(admin.header, "x-shunt-admin-token");
+        assert_eq!(admin.tokens_env, "SHUNT_ADMIN_TOKENS");
+        assert_eq!(admin.session_ttl_secs, 3600);
+        assert_eq!(admin.pending_ttl_secs, 600);
+    }
+
+    #[test]
+    fn admin_config_resolve_succeeds_and_fails_closed() {
+        let base = AdminConfig {
+            header: "x-shunt-admin-token".to_string(),
+            tokens_env: "SHUNT_TEST_ADMIN_RESOLVE".to_string(),
+            session_ttl_secs: 1800,
+            pending_ttl_secs: 300,
+        };
+
+        // Success: a valid `name:token` env resolves with the configured TTLs.
+        std::env::set_var("SHUNT_TEST_ADMIN_RESOLVE", "ops:secret-xyz");
+        let auth = base.resolve().expect("valid tokens resolve");
+        assert_eq!(auth.session_ttl(), std::time::Duration::from_secs(1800));
+        assert_eq!(auth.pending_ttl(), std::time::Duration::from_secs(300));
+
+        // Malformed token pairs are a startup error.
+        std::env::set_var("SHUNT_TEST_ADMIN_RESOLVE", "no-colon-here");
+        assert!(matches!(
+            base.resolve(),
+            Err(ConfigError::InvalidAdminTokens { .. })
+        ));
+
+        // An unset env is a startup error, never a silently-open surface.
+        std::env::remove_var("SHUNT_TEST_ADMIN_RESOLVE");
+        assert!(matches!(
+            base.resolve(),
+            Err(ConfigError::MissingAdminTokens { .. })
+        ));
+
+        // An invalid header name is rejected.
+        std::env::set_var("SHUNT_TEST_ADMIN_RESOLVE", "ops:secret-xyz");
+        let bad_header = AdminConfig {
+            header: "invalid header".to_string(),
+            ..base.clone()
+        };
+        assert!(matches!(
+            bad_header.resolve(),
+            Err(ConfigError::InvalidAdminHeader { .. })
+        ));
+        std::env::remove_var("SHUNT_TEST_ADMIN_RESOLVE");
+    }
 
     struct BufferWriter {
         buffer: Arc<Mutex<Vec<u8>>>,
