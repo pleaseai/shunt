@@ -66,11 +66,18 @@ pub fn default_credentials_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".claude/.credentials.json"))
 }
 
+#[derive(Clone)]
 pub struct ClaudeAuthStore {
     path: PathBuf,
     client: reqwest::Client,
     token_url: String,
 }
+
+/// In-process single-flight for Claude OAuth refreshes. Stores are constructed
+/// per request, so the lock must be shared across independent instances. The
+/// refresh task owns the guard through atomic writeback, preventing a cancelled
+/// caller from exposing an already-consumed refresh token to another request.
+static REFRESH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 impl ClaudeAuthStore {
     pub fn new(path: PathBuf, client: reqwest::Client) -> Self {
@@ -98,36 +105,83 @@ impl ClaudeAuthStore {
     }
 
     pub async fn get_valid_access_token(&self) -> anyhow::Result<String> {
-        let tokens = self.read_tokens()?;
+        let tokens = self.read_tokens_off_thread().await?;
         if tokens.is_valid_at(SystemTime::now()) {
             return Ok(tokens.access_token);
         }
 
-        // Re-read: a concurrent Claude Code / helper run may have just refreshed.
-        let tokens = self.read_tokens()?;
+        // Single-flight the refresh. A waiter re-reads after acquiring the lock,
+        // so it uses the token persisted by the caller that refreshed first.
+        let refreshing = REFRESH_LOCK.lock().await;
+        let tokens = self.read_tokens_off_thread().await?;
         if tokens.is_valid_at(SystemTime::now()) {
             return Ok(tokens.access_token);
         }
 
-        self.refresh_and_write_back(tokens).await
+        self.refresh_and_write_back(tokens, refreshing).await
     }
 
     /// Refresh and persist the stored OAuth token regardless of its expiry.
     pub async fn force_refresh(&self) -> anyhow::Result<String> {
-        let tokens = self.read_tokens()?;
-        self.refresh_and_write_back(tokens).await
+        let refreshing = REFRESH_LOCK.lock().await;
+        let tokens = self.read_tokens_off_thread().await?;
+        self.refresh_and_write_back(tokens, refreshing).await
     }
 
-    async fn refresh_and_write_back(&self, tokens: Tokens) -> anyhow::Result<String> {
+    /// Refresh and persist the stored OAuth token if the file still contains the
+    /// access token rejected by the upstream. If another request has already
+    /// refreshed it, return that newer token without rotating again.
+    pub async fn force_refresh_if_access_token(
+        &self,
+        rejected_access_token: &str,
+    ) -> anyhow::Result<String> {
+        let refreshing = REFRESH_LOCK.lock().await;
+        let tokens = self.read_tokens_off_thread().await?;
+        if tokens.access_token != rejected_access_token {
+            return Ok(tokens.access_token);
+        }
+        self.refresh_and_write_back(tokens, refreshing).await
+    }
+
+    async fn refresh_and_write_back(
+        &self,
+        tokens: Tokens,
+        refreshing: tokio::sync::MutexGuard<'static, ()>,
+    ) -> anyhow::Result<String> {
         let refresh_token = tokens.refresh_token.ok_or_else(|| {
             anyhow::anyhow!(
                 "no refresh token in {}; run `claude` then /login",
                 self.path.display()
             )
         })?;
-        let refreshed = refresh(&self.client, &self.token_url, &refresh_token).await?;
-        write_back(&self.path, &refreshed)?;
-        Ok(refreshed.access_token)
+
+        // The detached task owns both the single-flight guard and the critical
+        // refresh + writeback sequence. Dropping the caller's future therefore
+        // cannot strand a rotated refresh token in memory after the provider has
+        // consumed the old one.
+        let client = self.client.clone();
+        let token_url = self.token_url.clone();
+        let path = self.path.clone();
+        tokio::spawn(async move {
+            let _refreshing = refreshing;
+            let refreshed = refresh(&client, &token_url, &refresh_token).await?;
+            let access_token = refreshed.access_token.clone();
+            write_back_off_thread(path, refreshed)
+                .await
+                .map_err(|error| anyhow::anyhow!("failed to update Claude auth file: {error}"))?;
+            Ok::<String, anyhow::Error>(access_token)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("Claude refresh task failed: {error}"))?
+    }
+
+    /// Read the credential file on Tokio's blocking pool so synchronous file I/O
+    /// never stalls an async runtime worker.
+    async fn read_tokens_off_thread(&self) -> anyhow::Result<Tokens> {
+        let this = self.clone();
+        tokio::task::spawn_blocking(move || this.read_tokens())
+            .await
+            .map_err(|error| anyhow::anyhow!("Claude auth read task failed: {error}"))?
     }
 
     fn read_tokens(&self) -> anyhow::Result<Tokens> {
@@ -247,142 +301,13 @@ fn write_back(path: &Path, refreshed: &Refreshed) -> io::Result<()> {
     write_auth_file_atomic(path, &value)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn force_refresh_refreshes_a_still_valid_token() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/token"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "access_token": "new-access",
-                "refresh_token": "new-refresh",
-                "expires_in": 3600
-            })))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let dir = std::env::temp_dir().join(format!(
-            "shunt-claude-force-refresh-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(".credentials.json");
-        std::fs::write(
-            &path,
-            r#"{"claudeAiOauth":{"accessToken":"still-valid","refreshToken":"old-refresh","expiresAt":4000000000000}}"#,
-        )
-        .unwrap();
-        let store = ClaudeAuthStore::with_token_url(
-            path.clone(),
-            reqwest::Client::new(),
-            format!("{}/token", server.uri()),
-        );
-
-        let token = store.force_refresh().await.unwrap();
-
-        assert_eq!(token, "new-access");
-        let stored = read_file(&path).unwrap();
-        assert_eq!(stored["claudeAiOauth"]["accessToken"], "new-access");
-        assert_eq!(stored["claudeAiOauth"]["refreshToken"], "new-refresh");
-        server.verify().await;
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn valid_when_beyond_expiry_buffer() {
-        let now = UNIX_EPOCH + Duration::from_secs(1_000);
-        let inside = Tokens {
-            access_token: "a".into(),
-            refresh_token: None,
-            expires_at_ms: (1_000 + 5 * 60 - 1) * 1000, // just inside the 5-min buffer
-        };
-        let outside = Tokens {
-            access_token: "a".into(),
-            refresh_token: None,
-            expires_at_ms: (1_000 + 5 * 60 + 1) * 1000, // just outside
-        };
-        assert!(!inside.is_valid_at(now));
-        assert!(outside.is_valid_at(now));
-    }
-
-    #[test]
-    fn parses_credentials_tokens() {
-        let value = json!({
-            "claudeAiOauth": {
-                "accessToken": "sk-ant-oat-access",
-                "refreshToken": "sk-ant-ort-refresh",
-                "expiresAt": 2_000_000_000_000i64,
-                "subscriptionType": "max"
-            }
-        });
-        let tokens = Tokens::from_value(&value).unwrap();
-        assert_eq!(tokens.access_token, "sk-ant-oat-access");
-        assert_eq!(tokens.refresh_token.as_deref(), Some("sk-ant-ort-refresh"));
-        assert_eq!(tokens.expires_at_ms, 2_000_000_000_000);
-    }
-
-    #[test]
-    fn refresh_reuses_prior_refresh_token_when_omitted() {
-        let now = UNIX_EPOCH + Duration::from_secs(1_000);
-        let value = json!({"access_token": "new-access", "expires_in": 3600});
-        let refreshed = parse_refresh(&value, "old-refresh", now).unwrap();
-        assert_eq!(refreshed.access_token, "new-access");
-        assert_eq!(refreshed.refresh_token, "old-refresh");
-        assert_eq!(refreshed.expires_at_ms, 1_000 * 1000 + 3600 * 1000);
-    }
-
-    #[test]
-    fn refresh_rejects_response_without_access_token() {
-        // A malformed refresh response (no access_token) yields None, which the
-        // caller surfaces as an "invalid refresh response" error rather than
-        // persisting a broken token.
-        let now = UNIX_EPOCH + Duration::from_secs(1_000);
-        assert!(parse_refresh(&json!({"expires_in": 3600}), "old-refresh", now).is_none());
-    }
-
-    #[test]
-    fn write_back_updates_tokens_and_preserves_other_fields() {
-        let dir = std::env::temp_dir().join(format!(
-            "shunt-claude-auth-{}",
-            std::time::SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(".credentials.json");
-        std::fs::write(
-            &path,
-            r#"{"claudeAiOauth":{"accessToken":"old","refreshToken":"old-r","expiresAt":1,"subscriptionType":"max"},"mcpOAuth":{"keep":true}}"#,
-        )
-        .unwrap();
-
-        write_back(
-            &path,
-            &Refreshed {
-                access_token: "new".into(),
-                refresh_token: "new-r".into(),
-                expires_at_ms: 999,
-            },
-        )
-        .unwrap();
-
-        let value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(value["claudeAiOauth"]["accessToken"], "new");
-        assert_eq!(value["claudeAiOauth"]["refreshToken"], "new-r");
-        assert_eq!(value["claudeAiOauth"]["expiresAt"], 999);
-        assert_eq!(value["claudeAiOauth"]["subscriptionType"], "max"); // preserved
-        assert_eq!(value["mcpOAuth"]["keep"], true); // preserved
-        let _ = std::fs::remove_dir_all(dir);
-    }
+/// Persist the refreshed credential on Tokio's blocking pool. The on-disk
+/// content and atomic write semantics remain those of [`write_back`].
+async fn write_back_off_thread(path: PathBuf, refreshed: Refreshed) -> io::Result<()> {
+    tokio::task::spawn_blocking(move || write_back(&path, &refreshed))
+        .await
+        .map_err(|error| io::Error::other(format!("Claude auth write task failed: {error}")))?
 }
+
+#[cfg(test)]
+mod tests;

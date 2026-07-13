@@ -318,6 +318,10 @@ async fn forward_claude_oauth(
                     continue;
                 }
 
+                let failed_access_token = match &credential {
+                    Credential::ClaudeOauth { access_token, .. } => access_token.as_str(),
+                    _ => unreachable!("claude_oauth account resolved a non-OAuth credential"),
+                };
                 let credentials = account
                     .credentials
                     .as_deref()
@@ -329,7 +333,10 @@ async fn forward_claude_oauth(
                 // lock again before the retry POST below.
                 let access_token = {
                     let _guard = refresh_lock.lock().await;
-                    match store.force_refresh().await {
+                    match store
+                        .force_refresh_if_access_token(failed_access_token)
+                        .await
+                    {
                         Ok(token) => token,
                         Err(error) => {
                             state.accounts.cooldown(
