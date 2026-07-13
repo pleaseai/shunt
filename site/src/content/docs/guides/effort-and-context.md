@@ -29,7 +29,7 @@ Precedence in shunt: a config `route.effort` / `[providers.*].effort` override w
 For an **Anthropic-routed** model shunt passes `POST /v1/messages/count_tokens` through to the upstream (exact counts). For a **`responses`-routed** model there is no equivalent upstream endpoint, so the provider's `count_tokens` setting decides:
 
 - **`count_tokens = "tiktoken"` (default)** — shunt computes the count locally with tiktoken's `o200k_base` encoder and returns `{"input_tokens": N}`. Near-exact for text on GPT-family models, and answered in-process (~ms) — which matters because Claude Code's `/context` issues one `count_tokens` call per displayed item (30–50 calls per invocation).
-- **`count_tokens = "estimate"` (opt-in)** — shunt returns **404**, which the gateway protocol explicitly allows. The main-loop context bar then estimates locally, but `/context` re-runs every category count against Haiku over the network — slow, and silently reported as 0 tokens when no Anthropic credential is available.
+- **`count_tokens = "estimate"` (opt-in)** — shunt returns **501 `not_supported`**, telling Claude Code that the endpoint is unavailable and triggering its fallback. The main-loop context bar then estimates locally, but `/context` re-runs every category count against Haiku over the network — slow, and silently reported as 0 tokens when no Anthropic credential is available.
 
 Either way the request never reaches the responses adapter, so a count request is never turned into (and billed as) a full inference call.
 

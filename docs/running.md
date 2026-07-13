@@ -189,7 +189,7 @@ a brand-new table adds a provider. Every provider takes these keys:
 | `api_key_env` | env var name | Where the key is read from, when `auth = "api_key"`. |
 | `api_key_header` | `bearer` (default) \| `x_api_key` | Header the injected key is sent in. |
 | `effort` | `low`…`max` | Optional default reasoning effort (`responses` providers). |
-| `count_tokens` | `tiktoken` (default) \| `estimate` | For `responses` providers: `tiktoken` computes a local count (o200k_base) and returns `{"input_tokens": N}`; `estimate` returns 404 so the client falls back on its own. See §4. |
+| `count_tokens` | `tiktoken` (default) \| `estimate` | For `responses` and `cursor` providers: `tiktoken` computes a local count (o200k_base) and returns `{"input_tokens": N}`; `estimate` returns `501 not_supported` so the client falls back on its own. See §4. |
 
 Most third-party "use Claude Code with X" gateways are **Anthropic-Messages-compatible**: they are
 `kind = "anthropic"` with `auth = "api_key"`, differing only in `base_url` and the key env var.
@@ -274,12 +274,11 @@ there is no equivalent upstream endpoint, so the provider's `count_tokens` setti
   image/tool-schema encoding or cache accounting. Each count is answered in-process (~ms), which
   matters because Claude Code's `/context` issues one `count_tokens` call **per displayed item**
   (system-prompt section, memory file, agent, deferred tool, …) — 30–50 calls per invocation.
-- `count_tokens = "estimate"` (opt-in) — shunt returns **404**, which the
-  [gateway protocol](https://code.claude.com/docs/en/llm-gateway-protocol) explicitly allows for an
-  absent endpoint. Note what Claude Code actually does then: the main-loop context bar estimates
-  locally, but `/context` re-runs **every** category count against Haiku over the network — slow,
-  and silently reported as 0 tokens when no Anthropic credential is available. Use it only if you
-  want shunt to carry no tokenizer.
+- `count_tokens = "estimate"` (opt-in) — shunt returns **501 `not_supported`**, telling Claude
+  Code that the endpoint is unavailable and triggering its fallback. Note what Claude Code actually
+  does then: the main-loop context bar estimates locally, but `/context` re-runs **every** category
+  count against Haiku over the network — slow, and silently reported as 0 tokens when no Anthropic
+  credential is available. Use it only if you want shunt to carry no tokenizer.
 
 Either way the request never reaches the responses adapter, so a count request is never turned into
 (and billed as) a full inference call. Opt out per provider:

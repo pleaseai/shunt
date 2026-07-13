@@ -83,11 +83,11 @@ Referenced by M1 §5/§7. Provide:
 `POST /v1/messages/count_tokens` passes through to the upstream for Anthropic-routed models.
 For a `responses`-routed model there is no exact Responses token-count endpoint, so
 `proxy::forward` short-circuits before the adapter based on the provider's `count_tokens` setting:
-`estimate` (default) returns **404** and Claude Code estimates locally (the protocol allows this
-for an absent endpoint), while `tiktoken` returns an approximate local o200k_base count as
-`{"input_tokens": N}` (see `src/count_tokens.rs`). Either way a count request is never turned into
-(and billed as) a full inference call. Covered by `count_tokens_returns_404_for_responses_model`
-and `count_tokens_uses_tiktoken_when_enabled` in `tests/passthrough.rs`.
+`tiktoken` (default) returns an approximate local o200k_base count as `{"input_tokens": N}`
+(see `src/count_tokens.rs`), while `estimate` returns **501 `not_supported`** so Claude Code
+falls back to estimating locally. Either way a count request is never turned into (and billed as)
+a full inference call. Covered by `count_tokens_returns_501_not_supported_for_responses_model`
+and `count_tokens_uses_tiktoken_by_default` in `tests/passthrough.rs`.
 
 ## 7. Interactions to document
 

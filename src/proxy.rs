@@ -16,6 +16,7 @@ use crate::{
     config::{AuthMode, CountTokens},
     count_tokens,
     error::{ShuntError, UpstreamError},
+    model::responses::anthropic_error_type,
     routing::{self, AdapterKind},
     server::AppState,
 };
@@ -141,11 +142,12 @@ async fn forward(
     let headers = check_inbound_auth(&state, &route, headers).map_err(|error| *error)?;
     let headers = &headers;
     // The Responses API has no token-counting endpoint. For a responses-routed
-    // model, either count locally with tiktoken (opt-in) or return 404 so Claude
-    // Code estimates tokens locally (gateway protocol). Either way we must NOT let
-    // the request reach the responses adapter, which would translate it into — and
-    // bill it as — a full inference call. Anthropic-routed models still pass
-    // through to the upstream count_tokens endpoint below.
+    // model, either count locally with tiktoken (the default) or return 501
+    // `not_supported` so Claude Code falls back to estimating tokens. Either way
+    // we must NOT let the request reach the responses adapter, which would
+    // translate it into — and bill it as — a full inference call.
+    // Anthropic-routed models still pass through to the upstream count_tokens
+    // endpoint below.
     if is_count_tokens(uri) && matches!(route.adapter, AdapterKind::Responses | AdapterKind::Cursor)
     {
         let mode = state
@@ -161,7 +163,7 @@ async fn forward(
                     axum::Json(serde_json::json!({ "input_tokens": input_tokens })).into_response(),
                 )
             }
-            CountTokens::Estimate => (StatusCode::NOT_FOUND, count_tokens_unsupported()),
+            CountTokens::Estimate => count_tokens_unsupported(),
         });
     }
     let body = body.to_vec();
@@ -261,13 +263,17 @@ fn is_count_tokens(uri: &Uri) -> bool {
     uri.path().ends_with("/count_tokens")
 }
 
-fn count_tokens_unsupported() -> axum::response::Response {
-    ShuntError::new(
-        StatusCode::NOT_FOUND,
-        "not_found_error",
-        "count_tokens is not available for this model; Claude Code estimates tokens locally",
+fn count_tokens_unsupported() -> (StatusCode, axum::response::Response) {
+    let status = StatusCode::NOT_IMPLEMENTED;
+    (
+        status,
+        ShuntError::new(
+            status,
+            anthropic_error_type(status),
+            "count_tokens is not available for this model; Claude Code estimates tokens locally",
+        )
+        .into_response(),
     )
-    .into_response()
 }
 
 #[cfg(test)]
