@@ -65,6 +65,18 @@ description: 모든 shunt.toml 키 — server, providers, routes, models.
 | `id` | ✅ | Claude Code에 노출되는 모델 id |
 | `display_name` | — | `/model` 선택기에 표시되는 레이블 |
 
+## `[sentry]` (선택)
+
+자체 Sentry 프로젝트로의 옵트인 오류 리포팅. `dsn`을 설정하지 않으면 꺼짐이며, `[otel]`과 독립적입니다. 게이트웨이 자체 진단만 보고합니다 — 치명적인 게이트웨이 시작/서빙 오류, 패닉, `error` 레벨 로그 이벤트(`warn`/`info`는 브레드크럼, 메시지만 포함); 요청/응답 본문, 헤더, 자격증명은 절대 전송되지 않습니다. 메트릭과 트레이싱은 각각 별도의 추가 옵트인입니다.
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `dsn` | — | Sentry 프로젝트 DSN. 비우면 비활성화, 잘못된 DSN은 시작 오류. |
+| `environment` | — | 보고되는 이벤트에 붙는 선택적 environment 태그 |
+| `metrics` | `false` | 사용량 메트릭도 전송 — `shunt.requests` / `shunt.latency` 계열(집계값만) |
+| `traces_sample_rate` | `0.0` | 성능 트레이스도 전송: 요청별 스팬이 Sentry 트랜잭션이 되며, `[0.0, 1.0]` 범위의 이 비율로 head 샘플링. `0.0`이면 스팬을 전혀 보내지 않음, 범위 밖은 시작 오류. |
+| `include_session_id` | `false` | Sentry로 보내는 요청 스팬에 클라이언트 세션 id를 첨부 |
+
 ## `[otel]` (선택)
 
 트레이스·메트릭·로그를 자체 컬렉터로 내보내는 옵트인 OpenTelemetry(OTLP/HTTP) 익스포트([상세](/ko/guides/opentelemetry/)). `endpoint`를 설정하지 않으면 꺼짐이며, Sentry와 독립적입니다.

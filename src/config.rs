@@ -104,9 +104,11 @@ impl InboundAuthConfig {
 }
 
 /// `[sentry]` — opt-in error reporting to the operator's own Sentry project.
-/// Only gateway-owned diagnostics are reported (panics plus `error!` log
-/// events, with `warn!`/`info!` as breadcrumbs); request/response bodies,
-/// headers, and credentials never are.
+/// Only gateway-owned diagnostics are reported (fatal startup/serve errors,
+/// panics, and `error!` log events, with `warn!`/`info!` as breadcrumbs);
+/// request/response bodies, headers, and credentials never are. Metrics and
+/// performance tracing are each a further, separate opt-in (`metrics` /
+/// `traces_sample_rate`).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SentryConfig {
     /// DSN of the operator's Sentry project. An empty string disables
@@ -121,6 +123,19 @@ pub struct SentryConfig {
     /// reporting, since metrics describe traffic rather than gateway faults.
     #[serde(default)]
     pub metrics: bool,
+    /// Also send performance traces: the per-request `proxy_request` span
+    /// becomes a Sentry transaction, head-sampled at this rate in `[0.0,
+    /// 1.0]`. `0.0` (default) keeps tracing off entirely — spans never reach
+    /// the Sentry layer. A separate opt-in from error reporting and metrics,
+    /// mirroring `[otel] sample_ratio`.
+    #[serde(default)]
+    pub traces_sample_rate: f64,
+    /// Attach the client session id to request spans sent to Sentry. Off by
+    /// default: session ids are request-derived and — exactly like `[otel]
+    /// include_session_id` — are withheld unless the operator opts in for
+    /// their own backend. Only meaningful while `traces_sample_rate > 0`.
+    #[serde(default)]
+    pub include_session_id: bool,
 }
 
 impl SentryConfig {
@@ -472,6 +487,8 @@ pub enum ConfigError {
     InvalidClientTokens { env: String, message: String },
     #[error("sentry.dsn is not a valid DSN: {message}")]
     InvalidSentryDsn { message: String },
+    #[error("sentry.traces_sample_rate must be between 0.0 and 1.0, got {rate}")]
+    InvalidSentryTracesSampleRate { rate: f64 },
     #[error("otel.endpoint is not a valid URL: {message}")]
     InvalidOtelEndpoint { message: String },
     #[error("otel.sample_ratio must be between 0.0 and 1.0, got {ratio}")]
@@ -714,7 +731,10 @@ impl Config {
             auth.resolve()?;
         }
         // A [sentry] section with a non-empty DSN must parse at boot; a typo'd
-        // DSN silently dropping every report would defeat the point of opting in.
+        // DSN silently dropping every report would defeat the point of opting
+        // in. The traces sample rate must be a valid probability (NaN fails the
+        // range test too): the Sentry client consumes it unchecked, so an
+        // out-of-range value would silently distort sampling at runtime.
         if let Some(sentry) = &self.sentry {
             if sentry.enabled() {
                 sentry.dsn.parse::<sentry::types::Dsn>().map_err(|error| {
@@ -722,6 +742,11 @@ impl Config {
                         message: error.to_string(),
                     }
                 })?;
+                if !(0.0..=1.0).contains(&sentry.traces_sample_rate) {
+                    return Err(ConfigError::InvalidSentryTracesSampleRate {
+                        rate: sentry.traces_sample_rate,
+                    });
+                }
             }
         }
         // An [otel] section with a non-empty endpoint must parse as a URL at
@@ -1390,13 +1415,22 @@ mod tests {
         assert!(config.sentry.is_none());
     }
 
+    fn sentry_config(dsn: &str) -> super::SentryConfig {
+        super::SentryConfig {
+            dsn: dsn.to_string(),
+            environment: None,
+            metrics: false,
+            traces_sample_rate: 0.0,
+            include_session_id: false,
+        }
+    }
+
     #[test]
     fn sentry_section_with_valid_dsn_validates() {
         let config = Config {
             sentry: Some(super::SentryConfig {
-                dsn: "https://public@o0.ingest.sentry.io/1234".to_string(),
                 environment: Some("home-lab".to_string()),
-                metrics: false,
+                ..sentry_config("https://public@o0.ingest.sentry.io/1234")
             }),
             ..Config::default()
         };
@@ -1422,11 +1456,7 @@ mod tests {
     #[test]
     fn sentry_invalid_dsn_is_rejected_at_boot() {
         let config = Config {
-            sentry: Some(super::SentryConfig {
-                dsn: "not-a-dsn".to_string(),
-                environment: None,
-                metrics: false,
-            }),
+            sentry: Some(sentry_config("not-a-dsn")),
             ..Config::default()
         };
         let error = config.validate().unwrap_err();
@@ -1437,15 +1467,60 @@ mod tests {
     fn sentry_empty_dsn_disables_reporting_and_validates() {
         // SHUNT_SENTRY__DSN="" must be able to switch a TOML section off.
         let config = Config {
-            sentry: Some(super::SentryConfig {
-                dsn: "".to_string(),
-                environment: None,
-                metrics: false,
-            }),
+            sentry: Some(sentry_config("")),
             ..Config::default()
         };
         let config = config.validate().unwrap();
         assert!(!config.sentry.as_ref().unwrap().enabled());
+    }
+
+    #[test]
+    fn sentry_tracing_defaults_off_and_parses_from_toml() {
+        // Tracing is a separate opt-in on top of error reporting, mirroring
+        // the `metrics` flag: absent keys mean no spans and no session id.
+        use figment::providers::{Format, Toml};
+        let dsn = "dsn = \"https://public@o0.ingest.sentry.io/1234\"";
+        let sentry: super::SentryConfig =
+            figment::Figment::from(Toml::string(dsn)).extract().unwrap();
+        assert_eq!(sentry.traces_sample_rate, 0.0);
+        assert!(!sentry.include_session_id);
+        let sentry: super::SentryConfig = figment::Figment::from(Toml::string(&format!(
+            "{dsn}\ntraces_sample_rate = 0.25\ninclude_session_id = true"
+        )))
+        .extract()
+        .unwrap();
+        assert_eq!(sentry.traces_sample_rate, 0.25);
+        assert!(sentry.include_session_id);
+    }
+
+    #[test]
+    fn sentry_traces_sample_rate_out_of_range_is_rejected() {
+        for rate in [-0.1, 1.5, f64::NAN] {
+            let mut sentry = sentry_config("https://public@o0.ingest.sentry.io/1234");
+            sentry.traces_sample_rate = rate;
+            let config = Config {
+                sentry: Some(sentry),
+                ..Config::default()
+            };
+            let error = config.validate().unwrap_err();
+            assert!(matches!(
+                error,
+                ConfigError::InvalidSentryTracesSampleRate { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn sentry_disabled_section_skips_traces_sample_rate_validation() {
+        // An empty DSN disables the section, so a leftover bad rate must not
+        // block boot — mirroring how a disabled [otel] skips ratio validation.
+        let mut sentry = sentry_config("");
+        sentry.traces_sample_rate = 99.0; // ignored while disabled
+        let config = Config {
+            sentry: Some(sentry),
+            ..Config::default()
+        };
+        assert!(config.validate().is_ok());
     }
 
     fn otel_config(endpoint: &str) -> super::OtelConfig {

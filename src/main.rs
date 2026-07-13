@@ -149,7 +149,11 @@ fn run(config_path: Option<PathBuf>) -> anyhow::Result<()> {
     // Both guards must outlive the runtime so buffered events flush on shutdown.
     let _sentry = init_sentry(config.sentry.as_ref());
     let _telemetry = init_telemetry(config.otel.as_ref());
-    runtime()?.block_on(serve(config, path))
+    let result = runtime().and_then(|runtime| runtime.block_on(serve(config, path)));
+    if let Err(error) = &result {
+        sentry::integrations::anyhow::capture_anyhow(error);
+    }
+    result
 }
 
 async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
@@ -182,10 +186,14 @@ fn check(config_path: Option<PathBuf>) -> anyhow::Result<()> {
 
 /// Opt-in Sentry error reporting: a client exists only when the operator
 /// configured a non-empty `[sentry] dsn`, and it reports gateway-owned
-/// diagnostics only — panics and `error!` events, never request/response
-/// bodies, headers, or credentials.
+/// diagnostics only — fatal startup/serve errors, panics, and `error!` events,
+/// never request/response bodies, headers, or credentials. Performance tracing
+/// is a further opt-in via `[sentry] traces_sample_rate`; the span filter
+/// installed by [`init_tracing`] admits spans only after this pins an enabled
+/// policy.
 fn init_sentry(config: Option<&SentryConfig>) -> Option<sentry::ClientInitGuard> {
     let config = config.filter(|sentry| sentry.enabled())?;
+    let traces = config.traces_sample_rate > 0.0;
     let guard = sentry::init(sentry::ClientOptions {
         // Validated at config load; a violation here means a code path
         // constructed a Config without `validate()` — fail loudly, because
@@ -199,10 +207,17 @@ fn init_sentry(config: Option<&SentryConfig>) -> Option<sentry::ClientInitGuard>
         ),
         release: sentry::release_name!(),
         environment: config.environment.clone().map(Into::into),
+        attach_stacktrace: true,
+        in_app_include: vec!["shunt"],
         // Usage/performance metrics are a separate opt-in from error
         // reporting; with this off, `crate::metrics` capture calls are dropped
         // by the client.
         enable_metrics: config.metrics,
+        // Tracing is another separate opt-in: the rate (validated to
+        // [0.0, 1.0] at config load) head-samples the transactions the span
+        // filter lets through; at the 0.0 default the filter never admits a
+        // span in the first place.
+        traces_sample_rate: config.traces_sample_rate as f32,
         before_send: Some(std::sync::Arc::new(scrub_event)),
         // Log fields can quote request-derived data (e.g. upstream error
         // bodies at warn level); keep only the breadcrumb message and level so
@@ -212,13 +227,32 @@ fn init_sentry(config: Option<&SentryConfig>) -> Option<sentry::ClientInitGuard>
             breadcrumb.data.clear();
             Some(breadcrumb)
         })),
+        // Performance transactions (unlike error events) go straight from the
+        // SDK to `send_envelope` and never pass through `before_send` — sentry
+        // 0.48.4 has no `before_send_transaction` — so `scrub_event` cannot
+        // strip the hostname from them. The `contexts` feature's
+        // `ContextIntegration::setup` only auto-fills `server_name` with the
+        // machine hostname `if options.server_name.is_none()`, so pin it to
+        // empty here to preempt that at the source for both event kinds.
+        server_name: Some("".into()),
         ..Default::default()
     });
-    tracing::info!(metrics = config.metrics, "sentry error reporting enabled");
+    // Pin whether the subscriber's Sentry layer forwards spans — and whether
+    // the request span may carry the client session id — for the process
+    // lifetime; the Sentry client is built once and never rebuilt on reload.
+    telemetry::pin_sentry_span_export(traces, config.include_session_id);
+    tracing::info!(
+        metrics = config.metrics,
+        traces,
+        "sentry error reporting enabled"
+    );
     Some(guard)
 }
 
-/// The host name identifies the operator's machine; withhold it.
+/// The host name identifies the operator's machine; withhold it. This covers
+/// error events (the only kind that reaches `before_send`); the transaction
+/// path is instead handled by pinning `ClientOptions.server_name` to empty in
+/// `init_sentry`, since transactions never pass through `before_send`.
 fn scrub_event(
     mut event: sentry::protocol::Event<'static>,
 ) -> Option<sentry::protocol::Event<'static>> {
@@ -243,11 +277,18 @@ fn init_tracing() {
         // apiKeyHelper output) stays free of log noise.
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
         // Forwards error! events to Sentry as events and warn!/info! as
-        // breadcrumbs — a no-op unless `init_sentry` bound a client. Spans are
-        // rejected entirely: shunt doesn't use Sentry tracing, and span fields
-        // carry request-derived data (path, client session id) that would
-        // otherwise ride into error events via the trace context.
-        .with(sentry::integrations::tracing::layer().span_filter(|_| false))
+        // breadcrumbs — a no-op unless `init_sentry` bound a client. Spans
+        // pass only when the operator opted into Sentry tracing via `[sentry]
+        // traces_sample_rate`: the filter reads the decision `init_sentry`
+        // pins after this subscriber is installed. Until then — and for
+        // configs and commands that never enable tracing — every span is
+        // rejected, because span fields carry request-derived data (path,
+        // client session id) that would otherwise ride into error events via
+        // the trace context.
+        .with(
+            sentry::integrations::tracing::layer()
+                .span_filter(|_| telemetry::sentry_span_export_enabled()),
+        )
         .init();
     // Only the first init wins (later calls in tests are ignored); a failure to
     // store the handle just leaves OTel disabled, never a crash.
@@ -332,6 +373,8 @@ mod tests {
             dsn: "   ".to_string(),
             environment: None,
             metrics: false,
+            traces_sample_rate: 0.0,
+            include_session_id: false,
         };
         assert!(init_sentry(Some(&config)).is_none());
     }
@@ -342,9 +385,19 @@ mod tests {
             dsn: "https://public@sentry.invalid/1".to_string(),
             environment: Some("test".to_string()),
             metrics: false,
+            traces_sample_rate: 0.0,
+            include_session_id: false,
         };
         let guard = init_sentry(Some(&config));
-        assert!(guard.is_some());
+        let guard = guard.expect("valid dsn binds a client");
+        // Tracing stayed at its 0.0 default, so the pinned policy keeps the
+        // subscriber's Sentry span filter closed — the pre-tracing behavior.
+        assert!(!telemetry::sentry_span_export_enabled());
+        // The empty server_name pin must survive client init: transactions
+        // bypass before_send/scrub_event, so this field is the only thing
+        // standing between a traced request and the machine hostname (the
+        // contexts integration auto-fills it only when left None).
+        assert_eq!(guard.options().server_name, Some("".into()));
     }
 
     #[test]

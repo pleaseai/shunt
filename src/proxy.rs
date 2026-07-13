@@ -39,14 +39,15 @@ pub async fn post(
         .get("x-claude-code-session-id")
         .and_then(|value| value.to_str().ok())
         .map(ToOwned::to_owned);
-    // The `session_id` span field rides into any OTel trace export (the trace
-    // bridge exports every span field), so withhold the request-derived id there
-    // unless the operator opted in via `[otel] include_session_id`. The decision
+    // The `session_id` span field rides into any span export — the OTel trace
+    // bridge and the Sentry tracing layer both forward span fields — so withhold
+    // the request-derived id unless the operator opted in for their backend
+    // (`[otel] include_session_id` / `[sentry] include_session_id`). The decision
     // is pinned at startup (see `telemetry::withhold_session_id`), not read from
-    // the hot-swappable request config: the OTLP exporter is built once and never
-    // rebuilt on reload, so a mid-run `[otel]` edit must not flip what the
-    // running exporter emits. With `[otel]` absent or disabled (no export) the id
-    // stays on the span for local stderr logs, exactly as before.
+    // the hot-swappable request config: both exporters are built once and never
+    // rebuilt on reload, so a mid-run config edit must not flip what the running
+    // exporters emit. With neither exporting spans the id stays on the span for
+    // local stderr logs, exactly as before.
     let span_session_id = if crate::telemetry::withhold_session_id() {
         ""
     } else {

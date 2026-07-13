@@ -47,7 +47,7 @@ authorization = "Bearer <token>"
 
 shunt 在**指标和 trace** 中从不导出请求/响应正文、header 或凭据。
 
-- **指标和 trace** 保持低基数且不含正文。在 OTLP trace 导出中,请求 span 的客户端 **session id** 仅在 `include_session_id = true`(默认关闭)时、且仅在 trace 导出处于启用状态时才发送给 collector。当 `[otel]` 缺失或被禁用时,该 id 仍会像以前一样保留在本地请求 span 上(因此也会到达 Sentry 等其他 tracing 订阅方)。
+- **指标和 trace** 保持低基数且不含正文。在 OTLP trace 导出中,请求 span 的客户端 **session id** 仅在 `include_session_id = true`(默认关闭)时、且仅在 trace 导出处于启用状态时才发送给 collector。同样的规则也适用于 Sentry 的 trace 导出(`[sentry] traces_sample_rate` / `include_session_id`)。当没有任何 span 导出处于启用状态时,该 id 仍会像以前一样只保留在本地请求 span 上。
 - **日志** 会如实反映 shunt 自身的诊断事件,因此与 stderr 日志一样,可能包含源自请求的字段(上游错误正文、已认证的客户端 id)。若需要严格不含正文的导出,请将 `logs = false`,仅保留指标/trace。
 
 导出的 resource 公布 `service.*`、`telemetry.sdk.*`,以及在设置了 `environment` 时的 `deployment.environment.name` —— 不运行 host 或 process detector,因此不会附带本机主机名 —— 再加上你通过标准 `OTEL_RESOURCE_ATTRIBUTES` 设置的内容。

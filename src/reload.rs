@@ -99,7 +99,11 @@ fn sentry_changed(previous: Option<&SentryConfig>, next: Option<&SentryConfig>) 
     match (previous, next) {
         (None, None) => false,
         (Some(a), Some(b)) => {
-            a.dsn != b.dsn || a.environment != b.environment || a.metrics != b.metrics
+            a.dsn != b.dsn
+                || a.environment != b.environment
+                || a.metrics != b.metrics
+                || a.traces_sample_rate != b.traces_sample_rate
+                || a.include_session_id != b.include_session_id
         }
         _ => true,
     }
@@ -458,6 +462,8 @@ mod tests {
             dsn: "https://public@o0.ingest.sentry.io/1".to_string(),
             environment: Some("prod".to_string()),
             metrics: false,
+            traces_sample_rate: 0.0,
+            include_session_id: false,
         };
         // Same values ⇒ unchanged; presence changes and field changes ⇒ changed.
         assert!(!sentry_changed(None, None));
@@ -480,6 +486,16 @@ mod tests {
             ..base.clone()
         };
         assert!(sentry_changed(Some(&base), Some(&other_metrics)));
+        let other_rate = SentryConfig {
+            traces_sample_rate: 0.5,
+            ..base.clone()
+        };
+        assert!(sentry_changed(Some(&base), Some(&other_rate)));
+        let other_session_id = SentryConfig {
+            include_session_id: true,
+            ..base.clone()
+        };
+        assert!(sentry_changed(Some(&base), Some(&other_session_id)));
     }
 
     #[test]

@@ -52,24 +52,76 @@ use crate::config::OtelConfig;
 /// Instrumentation scope name for shunt-emitted telemetry.
 pub const SCOPE: &str = "shunt";
 
-/// Whether the client `session_id` must be withheld from request trace spans,
-/// pinned once at startup by [`init`]. Read via [`withhold_session_id`].
+/// Whether the client `session_id` must be withheld from request trace spans
+/// because of OTLP trace export, pinned once at startup by [`init`]. Read via
+/// [`withhold_session_id`].
 static WITHHOLD_SESSION_ID: OnceLock<bool> = OnceLock::new();
+
+/// The Sentry span-export policy, pinned once at startup by `init_sentry` (in
+/// `main.rs`) after the client is bound. Never pinned — e.g. `[sentry]` absent
+/// or a command that doesn't initialize Sentry — means no span export.
+static SENTRY_SPANS: OnceLock<SentrySpanPolicy> = OnceLock::new();
+
+#[derive(Clone, Copy)]
+struct SentrySpanPolicy {
+    enabled: bool,
+    withhold_session_id: bool,
+}
 
 /// Whether the per-request client `session_id` must be kept off trace spans.
 ///
-/// The decision is fixed for the process lifetime because the OTLP exporter is
-/// built exactly once at startup and never rebuilt on hot-reload — so the
-/// privacy rule that governs what that exporter emits must be pinned to the
-/// startup `[otel]` config, not read from the hot-swappable per-request config
-/// (which a mid-run edit could flip while the original exporter keeps running).
+/// The decision is fixed for the process lifetime because both span exporters
+/// are built exactly once at startup and never rebuilt on hot-reload — the OTLP
+/// exporter via [`init`], the Sentry client via `init_sentry` — so the privacy
+/// rule that governs what they emit must be pinned to the startup config, not
+/// read from the hot-swappable per-request config (which a mid-run edit could
+/// flip while the original exporters keep running).
 ///
-/// `true` only when the *trace bridge* is active (the sole signal that carries
-/// span fields to the collector) and the operator did not opt in via
-/// `include_session_id`. Stays `false` when `[otel]` is absent/disabled (`init`
-/// never ran) or exports only metrics/logs, so local stderr spans keep the id.
+/// `true` only when a span exporter is active — the OTLP *trace bridge* (the
+/// sole OTLP signal that carries span fields) or the Sentry tracing layer — and
+/// the operator did not opt in via that exporter's `include_session_id`. Stays
+/// `false` when neither exports spans, so local stderr spans keep the id.
 pub fn withhold_session_id() -> bool {
     WITHHOLD_SESSION_ID.get().copied().unwrap_or(false)
+        || SENTRY_SPANS
+            .get()
+            .map(|policy| policy.withhold_session_id)
+            .unwrap_or(false)
+}
+
+/// Pin the Sentry span-export decision for the process lifetime: whether the
+/// `sentry` tracing layer forwards spans at all (a positive `[sentry]
+/// traces_sample_rate`), and whether the request-derived client `session_id`
+/// must then be
+/// withheld from spans (the operator did not opt in via `[sentry]
+/// include_session_id` — the same rule `should_withhold_session_id` applies
+/// to OTLP export). Called by `init_sentry` in `main.rs` once the client is
+/// bound; `set` is idempotent (first call wins), matching the
+/// once-per-process Sentry client.
+pub fn pin_sentry_span_export(traces_enabled: bool, include_session_id: bool) {
+    let _ = SENTRY_SPANS.set(sentry_span_policy(traces_enabled, include_session_id));
+}
+
+/// The Sentry span-export policy for a given `(traces_enabled,
+/// include_session_id)` pair (see [`pin_sentry_span_export`]). Pure so it is
+/// unit-testable across all four boolean combinations without touching the
+/// process-global `OnceLock`, mirroring [`should_withhold_session_id`].
+fn sentry_span_policy(traces_enabled: bool, include_session_id: bool) -> SentrySpanPolicy {
+    SentrySpanPolicy {
+        enabled: traces_enabled,
+        withhold_session_id: traces_enabled && !include_session_id,
+    }
+}
+
+/// Whether the Sentry tracing layer's span filter admits spans. `false` until
+/// [`pin_sentry_span_export`] pins an enabled policy, so spans stay blocked
+/// for error-reporting-only configs and for commands that never initialize
+/// Sentry — exactly the pre-tracing behavior.
+pub fn sentry_span_export_enabled() -> bool {
+    SENTRY_SPANS
+        .get()
+        .map(|policy| policy.enabled)
+        .unwrap_or(false)
 }
 
 /// The startup withhold decision (see [`withhold_session_id`]). Withhold only
@@ -354,8 +406,9 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{
-        build_resource, header_map, init, should_withhold_session_id, signal_endpoint,
-        warn_on_plaintext_headers, withhold_session_id,
+        build_resource, header_map, init, pin_sentry_span_export, sentry_span_export_enabled,
+        sentry_span_policy, should_withhold_session_id, signal_endpoint, warn_on_plaintext_headers,
+        withhold_session_id,
     };
     use crate::config::OtelConfig;
 
@@ -483,6 +536,43 @@ mod tests {
         let mut http_pseudo_loopback = with_headers.clone();
         http_pseudo_loopback.endpoint = "http://127.example.com".to_string();
         warn_on_plaintext_headers(&http_pseudo_loopback);
+    }
+
+    #[test]
+    fn sentry_span_policy_covers_all_combinations() {
+        // Traces off: never withhold, regardless of the opt-in — matches
+        // `should_withhold_session_id`'s "no trace bridge" arm.
+        let off_not_opted_in = sentry_span_policy(false, false);
+        assert!(!off_not_opted_in.enabled);
+        assert!(!off_not_opted_in.withhold_session_id);
+        let off_opted_in = sentry_span_policy(false, true);
+        assert!(!off_opted_in.enabled);
+        assert!(!off_opted_in.withhold_session_id);
+        // Traces on, not opted in: withhold (the id would ride the span).
+        let on_not_opted_in = sentry_span_policy(true, false);
+        assert!(on_not_opted_in.enabled);
+        assert!(on_not_opted_in.withhold_session_id);
+        // Traces on, opted in: keep the id.
+        let on_opted_in = sentry_span_policy(true, true);
+        assert!(on_opted_in.enabled);
+        assert!(!on_opted_in.withhold_session_id);
+    }
+
+    #[test]
+    fn pin_sentry_span_export_gates_filter_and_withholds_session_id() {
+        // Pinning an enabled policy without the session-id opt-in switches the
+        // Sentry span filter on and withholds the id from request spans. The
+        // pin is process-global and first-set-wins, so this is the only test
+        // that pins — and the second call below proves later pins can't flip
+        // the startup decision.
+        pin_sentry_span_export(true, false);
+        assert!(sentry_span_export_enabled());
+        assert!(withhold_session_id());
+        pin_sentry_span_export(false, true);
+        assert!(
+            sentry_span_export_enabled(),
+            "first pin wins for the process lifetime"
+        );
     }
 
     #[test]
