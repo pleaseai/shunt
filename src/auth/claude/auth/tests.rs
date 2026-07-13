@@ -12,6 +12,27 @@ fn temp_credentials_path(tag: &str) -> PathBuf {
         .join(".credentials.json")
 }
 
+/// Start a wiremock server that answers a single `POST /token` with a 200
+/// carrying `new-access` and the given `refresh_token`. Shared by the token
+/// tests whose mock setup is otherwise identical.
+async fn mock_token_server(refresh_token: &str) -> wiremock::MockServer {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "new-access",
+            "refresh_token": refresh_token,
+            "expires_in": 3600
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    server
+}
+
 fn write_credentials(path: &Path, access_token: &str, refresh_token: &str, expires_at: i64) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(
@@ -98,20 +119,7 @@ async fn cancelled_refresh_still_persists_rotated_token() {
 
 #[tokio::test]
 async fn concurrent_get_valid_single_flights_refresh() {
-    use wiremock::matchers::{method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/token"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "access_token": "new-access",
-            "refresh_token": "rotated-refresh",
-            "expires_in": 3600
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
+    let server = mock_token_server("rotated-refresh").await;
 
     let path = temp_credentials_path("single-flight");
     write_credentials(&path, "expired-access", "old-refresh", 0);
@@ -164,20 +172,7 @@ async fn force_refresh_skips_when_rejected_token_was_already_replaced() {
 
 #[tokio::test]
 async fn force_refresh_refreshes_a_still_valid_token() {
-    use wiremock::matchers::{method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/token"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "access_token": "new-access",
-            "refresh_token": "new-refresh",
-            "expires_in": 3600
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
+    let server = mock_token_server("new-refresh").await;
 
     let path = temp_credentials_path("force-refresh");
     write_credentials(&path, "still-valid", "old-refresh", 4_000_000_000_000);
