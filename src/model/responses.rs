@@ -636,9 +636,14 @@ impl AnthropicSseMachine {
         let Some(open) = self.open.take() else {
             return Vec::new();
         };
-        let empty_text = open.kind == BlockKind::Text && self.text_buffer.trim().is_empty();
         match open.kind {
             BlockKind::Text => {
+                // Drop a whitespace-only text block from the reconstructed
+                // `content` (Anthropic rejects empty text blocks), but still
+                // emit the matching `content_block_stop` below and advance the
+                // index: `open_text` already streamed a `content_block_start`
+                // for this block, so suppressing the stop would leave an
+                // unbalanced block and make the next block reuse this index.
                 if !self.text_buffer.trim().is_empty() {
                     let mut block = json!({"type": "text", "text": self.text_buffer});
                     if !self.text_citations.is_empty() {
@@ -670,12 +675,7 @@ impl AnthropicSseMachine {
                 }
             }
         }
-        if !empty_text {
-            self.index += 1;
-        }
-        if empty_text {
-            return Vec::new();
-        }
+        self.index += 1;
         vec![sse(
             "content_block_stop",
             &json!({"type": "content_block_stop", "index": open.index}),
@@ -1042,5 +1042,74 @@ mod tests {
             final_json["content"][0],
             json!({"type": "text", "text": "Hello"})
         );
+    }
+
+    #[test]
+    fn whitespace_only_text_keeps_the_sse_stream_balanced() {
+        // A whitespace-only delta still opens a text block (open_text streams a
+        // content_block_start), so closing it must emit the matching
+        // content_block_stop and advance the index. Otherwise the following
+        // tool block reuses the same index and the first block is never closed.
+        let mut machine = AnthropicSseMachine::new("test", false, false);
+        let mut output = machine.apply(event(
+            "response.output_item.added",
+            json!({"item": {"type": "message"}}),
+        ));
+        output.extend(machine.apply(event("response.output_text.delta", json!({"delta": "  "}))));
+        output.extend(machine.apply(event(
+            "response.output_item.added",
+            json!({"item": {"type": "function_call", "call_id": "call_1", "name": "do_work"}}),
+        )));
+        output.extend(machine.apply(event(
+            "response.function_call_arguments.delta",
+            json!({"delta": "{}"}),
+        )));
+        output.extend(machine.apply(event("response.function_call_arguments.done", json!({}))));
+        output.extend(machine.apply(event(
+            "response.output_item.done",
+            json!({"item": {"type": "function_call"}}),
+        )));
+        output.extend(machine.finish());
+        let final_json = machine.final_json();
+
+        let starts = output
+            .iter()
+            .filter(|frame| frame.contains("event: content_block_start"))
+            .count();
+        let stops = output
+            .iter()
+            .filter(|frame| frame.contains("event: content_block_stop"))
+            .count();
+        assert_eq!(starts, stops, "every content_block_start needs a stop");
+
+        // No two content_block_start frames may share an index.
+        let start_indexes: Vec<&str> = output
+            .iter()
+            .filter(|frame| frame.contains("event: content_block_start"))
+            .map(|frame| {
+                let marker = "\"index\":";
+                let start = frame.find(marker).unwrap() + marker.len();
+                let rest = &frame[start..];
+                let end = rest
+                    .find(|c: char| !c.is_ascii_digit())
+                    .unwrap_or(rest.len());
+                &rest[..end]
+            })
+            .collect();
+        let mut unique = start_indexes.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            start_indexes.len(),
+            unique.len(),
+            "content_block_start indexes must be distinct"
+        );
+
+        // The whitespace-only text block is still dropped from `content`.
+        assert!(final_json["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|block| block["type"] != "text"));
     }
 }
