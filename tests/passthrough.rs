@@ -1,6 +1,7 @@
 use std::{io::ErrorKind, net::SocketAddr, time::Duration};
 
 use reqwest::StatusCode;
+use serde_json::{json, Value};
 use shunt::{
     config::{Config, CountTokens, RoutePrefixConfig},
     server,
@@ -627,6 +628,60 @@ async fn message_start_input_tokens_is_zero_when_count_tokens_estimate() {
         message_start_input_tokens(&sse),
         0,
         "estimate mode must leave message_start at 0; got:\n{sse}"
+    );
+    upstream.verify().await;
+}
+
+#[tokio::test]
+async fn messages_strip_empty_text_blocks_before_forwarding_upstream() {
+    // Regression for #132: a Codex/LiteLLM turn can persist an empty
+    // `{"type":"text","text":""}` block in the transcript. When the client
+    // switches back to a native Claude model, that poisoned request is
+    // forwarded to api.anthropic.com, which rejects empty text blocks with a
+    // 400 ("text content blocks must be non-empty"). The gateway must strip
+    // empty/whitespace-only text blocks on the way through (keeping tool_use /
+    // thinking) so the switch stays valid. This exercises the real forward()
+    // HTTP path end-to-end, not just the normalize_empty_text_blocks helper.
+    if !can_bind_loopback() {
+        return;
+    }
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let gateway = start_gateway(upstream.uri()).await;
+
+    let request_body = json!({
+        "model": "claude-sonnet-4-5",
+        "messages": [{
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": ""},
+                {"type": "text", "text": "  \n"},
+                {"type": "tool_use", "id": "tool_1", "name": "work", "input": {}}
+            ]
+        }]
+    });
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .body(serde_json::to_vec(&request_body).unwrap())
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let requests = upstream.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    let forwarded: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(
+        forwarded["messages"][0]["content"],
+        json!([{"type": "tool_use", "id": "tool_1", "name": "work", "input": {}}]),
+        "empty text blocks must be stripped before reaching the upstream"
     );
     upstream.verify().await;
 }
