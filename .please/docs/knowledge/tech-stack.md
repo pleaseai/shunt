@@ -42,7 +42,7 @@ unchanged.
 
 - `serde` / `serde_json` — Anthropic Messages ⇄ OpenAI Responses translation (`src/model/`)
 - `prost` — protobuf (OTLP export)
-- `base64`, `bytes`, `sha2`, `hex` — encoding/hashing
+- `base64`, `bytes`, `sha2` — encoding/hashing
 - `tiktoken-rs` 0.12 — token counting / context accounting
 - `regex-lite` — lightweight regex (no full `regex` dependency)
 
