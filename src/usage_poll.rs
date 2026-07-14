@@ -35,15 +35,23 @@ use crate::{
 /// the task exists is decided once from the boot config (like the admin and
 /// codex surfaces); a reload does not start or stop it.
 pub fn spawn_usage_poller(state: AppState) {
-    let Some(interval) = state
-        .config
-        .server
-        .pool
-        .as_ref()
-        .and_then(|pool| pool.usage_refresh_interval())
-    else {
+    let Some(pool) = state.config.server.pool.as_ref() else {
         return;
     };
+    let Some(interval) = pool.usage_refresh_interval() else {
+        return;
+    };
+    // The interval floor is applied silently in config; surface the clamp so an
+    // operator who set e.g. 30 isn't left wondering why the log below shows 60.
+    if let Some(configured) = pool.usage_refresh_seconds {
+        if configured != interval {
+            tracing::warn!(
+                configured_seconds = configured,
+                effective_seconds = interval,
+                "usage_refresh_seconds is below the 60s floor; using 60"
+            );
+        }
+    }
     tracing::info!(
         interval_seconds = interval,
         "starting Claude OAuth usage-API poller"
