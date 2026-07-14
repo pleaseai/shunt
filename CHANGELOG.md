@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.16.0](https://github.com/pleaseai/shunt/compare/v0.15.0...v0.16.0) (2026-07-14)
+
+
+### Features
+
+* **auth:** add refreshable Claude OAuth login (--mode oauth + admin web) ([#142](https://github.com/pleaseai/shunt/issues/142)) ([a4f49b7](https://github.com/pleaseai/shunt/commit/a4f49b79d1dd96acbb9ca13110f23dd6316b9aad))
+
+
+### Bug Fixes
+
+* **responses:** drop empty text blocks on Codex to Claude switch ([#141](https://github.com/pleaseai/shunt/issues/141)) ([beaeb9e](https://github.com/pleaseai/shunt/commit/beaeb9e60242ced4ac1c8a543301390a2b7b816d))
+
 ## [0.15.0](https://github.com/pleaseai/shunt/compare/v0.14.0...v0.15.0) (2026-07-14)
 
 
