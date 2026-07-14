@@ -846,7 +846,7 @@ fn translates_grok_web_search_results_and_citations_to_anthropic_blocks() {
 }
 
 #[test]
-fn citation_without_open_text_block_opens_one_and_omits_missing_encrypted_index() {
+fn citation_without_text_does_not_create_an_empty_text_block() {
     let fixture = concat!(
         "event: response.created\n",
         "data: {\"response\":{\"id\":\"resp_search\"}}\n\n",
@@ -864,30 +864,12 @@ fn citation_without_open_text_block_opens_one_and_omits_missing_encrypted_index(
     let names = event_names(&emitted);
     assert_eq!(
         names,
-        vec![
-            "message_start",
-            "ping",
-            "content_block_start",
-            "content_block_delta",
-            "content_block_stop",
-            "message_delta",
-            "message_stop"
-        ]
+        vec!["message_start", "ping", "message_delta", "message_stop"]
     );
     assert!(!emitted.contains("encrypted_index"));
 
     let final_json = machine.final_json();
-    assert_eq!(final_json["content"][0]["type"], "text");
-    assert_eq!(final_json["content"][0]["text"], "");
-    assert_eq!(
-        final_json["content"][0]["citations"][0]["url"],
-        "https://example.com/"
-    );
-    assert_eq!(final_json["content"][0]["citations"][0]["title"], "");
-    assert_eq!(final_json["content"][0]["citations"][0]["cited_text"], "");
-    assert!(final_json["content"][0]["citations"][0]
-        .get("encrypted_index")
-        .is_none());
+    assert!(final_json["content"].as_array().unwrap().is_empty());
 }
 
 #[test]
