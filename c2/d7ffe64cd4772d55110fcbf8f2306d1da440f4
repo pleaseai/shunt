@@ -1,0 +1,39 @@
+site/src/content/docs/guides/connect-codex-cli.md
+  s_fd29d6516bb0d4::t_debe817a739b8b 142-148
+  s_fd29d6516bb0d4::t_8180a2927e2f65 56-58
+  s_fd29d6516bb0d4::t_9fdccc0cdb190d 72,75-77,80-90
+  s_fd29d6516bb0d4::t_901768ad10865b 101-104,106-121,136-140
+  s_fd29d6516bb0d4::t_15320beb6916c9 141
+docs/m11-inbound-codex-endpoint.md
+  s_fd29d6516bb0d4::t_15081d83217810 111-117
+site/src/content/docs/guides/inbound-codex-endpoint.md
+  s_fd29d6516bb0d4::t_c7e99a8639a966 48-54,57,64
+docs/codex-configuration.md
+  s_fd29d6516bb0d4::t_351e1e244f9916 647-654,657,661-662
+src/auth/inbound.rs
+  s_fd29d6516bb0d4::t_772985df09a5f7 35-52
+  s_fd29d6516bb0d4::t_33cb8a0768f1e3 57
+  s_fd29d6516bb0d4::t_e1415aedc96147 98-113
+  s_fd29d6516bb0d4::t_2a3da7608af32a 273-316
+src/codex_endpoint.rs
+  s_fd29d6516bb0d4::t_99d04aef9c08d2 117-122,128
+tests/inbound_codex_endpoint.rs
+  s_fd29d6516bb0d4::t_add69c86581cf8 463-524
+  s_fd29d6516bb0d4::t_9437f6133560dc 462
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "c2d7ffe64cd4772d55110fcbf8f2306d1da440f4",
+  "prompts": {},
+  "sessions": {
+    "s_fd29d6516bb0d4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b95d7a93-8c5b-41eb-967f-c1fa14688e07",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
