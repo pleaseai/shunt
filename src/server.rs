@@ -84,9 +84,11 @@ impl AppState {
     }
 }
 
-/// Build the router and return it alongside the [`SharedState`] it reads, so the
-/// caller can spawn reload watchers that hot-swap the same store.
-pub fn build_router(config: Config) -> Result<(Router, SharedState), ConfigError> {
+/// Build the router and return it alongside the [`SharedState`] it reads and a
+/// clone of the request [`AppState`], so the caller can spawn reload watchers
+/// that hot-swap the same store and background tasks (the usage poller) that
+/// share the same [`AccountPool`] the request handlers use.
+pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), ConfigError> {
     // Whether the admin surface exists is decided once here, from the initial
     // config: a reload cannot add or drop routes (it only re-resolves tokens).
     let admin_enabled = config.server.admin.is_some();
@@ -137,7 +139,10 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState), ConfigError
             .route("/v1/responses", post(codex_endpoint::post));
     }
 
-    Ok((router.with_state(state), shared))
+    // Clone the state into the router; the returned clone shares the same
+    // `AccountPool`/`SharedState` Arcs, so a background poller populating quota
+    // writes to the very pool the handlers read.
+    Ok((router.with_state(state.clone()), shared, state))
 }
 
 /// Human-facing landing page; axum also serves HEAD `/` from this handler,

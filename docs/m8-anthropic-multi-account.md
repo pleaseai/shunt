@@ -80,7 +80,14 @@ Refreshable full-OAuth and imported files are updated atomically when `ClaudeAut
 
 The built-in `anthropic` provider remains `auth = "passthrough"` by default. Multi-account behavior is opt-in.
 
-The optional `[server.pool]` table (issue #135) tunes pool-wide selection: `hard_threshold` (default `0.98`), `default_threshold`, `default_threshold_5h` / `default_threshold_7d` / `default_threshold_fable`, and `burn_rate_avoidance` (default `false`). Without the table, selection behaves exactly as before with the single built-in `0.98` threshold.
+The optional `[server.pool]` table (issue #135) tunes pool-wide selection with `hard_threshold` (default `0.98`), shared and per-window `default_threshold*` values, and `burn_rate_avoidance` (default `false`). It can also enable periodic usage-API reconciliation for imported accounts with `usage_refresh_seconds` (see [Usage-API reconciliation](#usage-api-reconciliation-opt-in)). Without the table, selection keeps the single built-in `0.98` threshold and no background poller runs.
+
+```toml
+[server.pool]
+default_threshold = 0.9
+burn_rate_avoidance = true
+usage_refresh_seconds = 300
+```
 
 ## Validation and security guards
 
@@ -116,6 +123,17 @@ Selection state is per provider and survives config hot reloads for the life of 
 - A successful response clears that account's cooldown.
 
 Credential-resolution failures cool an account for five minutes. Transport failures and upstream 5xx responses cool it for 30 seconds.
+
+## Usage-API reconciliation (opt-in)
+
+The pool's primary quota signal is the `anthropic-ratelimit-unified-*` headers on responses that flow through shunt. That signal only sees shunt's own traffic: if the same account is also used out-of-band (the operator's own Claude Code, another tool), that consumption is invisible to the headers and the pool undercounts usage.
+
+Setting `[server.pool] usage_refresh_seconds` to a positive value spawns one background task at boot that polls `GET https://api.anthropic.com/api/oauth/usage` every N seconds for every imported (refreshable) Claude account across all `claude_oauth` providers, applying the returned utilization to the pool. It fills the same three windows the headers do: the 5-hour session window, the shared weekly window (`7d`), and the Fable-scoped weekly window (`7d_oi`), including their reset times, and reuses the existing near-quota thresholds and rotation logic described above. This is a periodic authoritative correction layered on top of the reactive, header-driven state; it does not replace it, and it does not modify the cached unified `status` (`rejected`) signal, which stays header-driven.
+
+- **Default:** absent or `0` disables the poller entirely — no background task is spawned and the HTTP surface is unchanged. This mirrors the admin and Codex-endpoint surfaces: whether the task exists is decided once from the boot config.
+- **Eligibility:** only imported (refreshable) logins are polled — accounts created by `shunt login claude --name <name>` without `--long-lived`, or a `credentials` account backed by a file that contains a refresh token. A long-lived `claude setup-token` account and a `token_env` account are skipped, because the usage endpoint rejects a non-refreshable token (mirroring the adapter's own non-refreshable 401 handling).
+- **Floor:** a configured value below 60 is clamped up to a 60-second floor to avoid hammering the endpoint.
+- **Fixed at boot:** the interval is read once at startup; a config reload does not start, stop, or re-tune the poller.
 
 ## Failover behavior
 

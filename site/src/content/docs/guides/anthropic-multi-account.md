@@ -115,6 +115,7 @@ default_threshold = 0.9      # soft default for every window
 default_threshold_5h = 0.95  # per-window overrides
 default_threshold_fable = 0.85
 burn_rate_avoidance = true   # avoid accounts projected to hit a threshold before reset
+usage_refresh_seconds = 300  # reconcile out-of-band usage for refreshable accounts
 
 [[providers.anthropic.accounts]]
 name = "primary"
@@ -135,6 +136,12 @@ disabled = true              # kept configured, never selected
 - **All-near guard.** When every account is past a soft threshold (or predicted to exhaust), the pool does not empty: near accounts serve ordered by best headroom, while accounts at or above `hard_threshold` still sort last, followed only by cooling accounts.
 - **Scope.** The quota knobs act on Claude (Anthropic) pools only — the Codex backend sends no quota headers, so for [Codex pools](/guides/codex-multi-account/) they are inert, while `priority` and `disabled` still apply.
 - The admin pool endpoint (`GET /admin/pool`) reports each account's `priority`, `disabled` flag, and — when `[server.pool]` is configured — its current headroom projection in seconds; the dashboard's state column marks disabled accounts.
+
+## Usage-API reconciliation
+
+Quota headers only reflect traffic that flowed through shunt. `usage_refresh_seconds` closes that gap by polling `GET /api/oauth/usage` and applying authoritative utilization and reset times to the same 5-hour, shared weekly (`7d`), and Fable-scoped weekly (`7d_oi`) windows.
+
+Polling is off when the field is absent or `0`; positive values below 60 are clamped to 60 seconds. Only imported, refreshable accounts are eligible. Long-lived `claude setup-token` and `token_env` accounts are skipped because their tokens cannot call the endpoint. The interval is fixed at boot, so a config reload does not start, stop, or re-tune the poller. This periodic correction complements rather than replaces reactive header state.
 
 ## Failover rules
 

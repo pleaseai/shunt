@@ -43,6 +43,34 @@ pub struct QuotaState {
     pub status: Option<String>,
 }
 
+/// One rate-limit window's authoritative usage as reported by the Anthropic
+/// OAuth usage API (`GET /api/oauth/usage`). Unlike the per-response
+/// `anthropic-ratelimit-unified-*` headers — which only reflect traffic that
+/// flowed through shunt — the usage API reports ground-truth utilization that
+/// includes out-of-band consumption of the same account (the user's own Claude
+/// Code, other tools). See [`AccountPool::note_usage`].
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct UsageWindow {
+    /// Fraction in `0.0..=1.0` (the API's 0–100 percent divided by 100).
+    pub utilization: f64,
+    /// Reset time in Unix epoch seconds, when the API reports one.
+    pub resets_at: Option<u64>,
+}
+
+/// Authoritative account usage across the three tracked windows, parsed from the
+/// Anthropic OAuth usage API and applied to a pool account via
+/// [`AccountPool::note_usage`]. A `None` window means the API did not report that
+/// bucket (e.g. no Fable-scoped weekly limit), leaving any prior value in place.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct UsageSnapshot {
+    /// The rolling 5-hour session window (all models).
+    pub five_hour: Option<UsageWindow>,
+    /// The shared weekly window (non-Fable models).
+    pub seven_day: Option<UsageWindow>,
+    /// The Fable-scoped weekly window (`7d_oi`).
+    pub seven_day_oi: Option<UsageWindow>,
+}
+
 #[derive(Debug, Default)]
 struct AccountHealth {
     cooldown_until: Option<Instant>,
@@ -315,6 +343,35 @@ impl AccountPool {
             .and_then(|value| value.to_str().ok())
         {
             quota.status = Some(status.to_string());
+        }
+    }
+
+    /// Apply an authoritative usage snapshot from the Anthropic OAuth usage API
+    /// to an account's quota state. Each reported window overwrites the matching
+    /// utilization/reset pair — the usage API is authoritative and reconciles the
+    /// header-derived state with out-of-band consumption — while a window the API
+    /// omits leaves any prior header value untouched. The unified `status` is not
+    /// modified here: the usage API has no equivalent of the header's `rejected`
+    /// signal, so that stays header-driven. Marks the account observed, so the
+    /// admin dashboard reports its usage even before the first proxied request.
+    pub fn note_usage(&self, provider: &str, account: &str, usage: &UsageSnapshot) {
+        let mut entries = self.entries.lock().expect("account health lock poisoned");
+        let health = entries
+            .entry((provider.to_string(), account.to_string()))
+            .or_default();
+        health.observed = true;
+        let quota = &mut health.quota;
+        if let Some(window) = &usage.five_hour {
+            quota.utilization_5h = Some(window.utilization);
+            quota.reset_5h = window.resets_at;
+        }
+        if let Some(window) = &usage.seven_day {
+            quota.utilization_7d = Some(window.utilization);
+            quota.reset_7d = window.resets_at;
+        }
+        if let Some(window) = &usage.seven_day_oi {
+            quota.utilization_7d_oi = Some(window.utilization);
+            quota.reset_7d_oi = window.resets_at;
         }
     }
 
@@ -947,6 +1004,90 @@ mod tests {
         assert_eq!(quota.utilization_7d, Some(0.42));
         assert_eq!(quota.reset_7d, None);
         assert_eq!(quota.status, None);
+    }
+
+    #[test]
+    fn note_usage_applies_snapshot_and_drives_selection() {
+        let pool = AccountPool::new();
+        let accounts = vec![account("a"), account("b")];
+        let session = "usage";
+        let rotation = pool.select_order("anthropic", &accounts, Some(session), None, None);
+        let sticky = rotation[0];
+        let future = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3600;
+
+        // An authoritative usage snapshot puts the sticky account over the shared
+        // weekly threshold, so the next selection must rotate away from it.
+        pool.note_usage(
+            "anthropic",
+            &accounts[sticky].name,
+            &UsageSnapshot {
+                five_hour: Some(UsageWindow {
+                    utilization: 0.33,
+                    resets_at: Some(future),
+                }),
+                seven_day: Some(UsageWindow {
+                    utilization: 0.99,
+                    resets_at: Some(future),
+                }),
+                seven_day_oi: None,
+            },
+        );
+
+        let snaps = pool.snapshot("anthropic", &accounts, None, None);
+        let sticky_snap = snaps
+            .iter()
+            .find(|s| s.name == accounts[sticky].name)
+            .unwrap();
+        assert!(sticky_snap.has_state);
+        assert!(sticky_snap.near_quota);
+        assert_eq!(sticky_snap.utilization_7d, Some(0.99));
+        assert_eq!(sticky_snap.utilization_5h, Some(0.33));
+        assert_eq!(sticky_snap.reset_7d, Some(future));
+
+        let rotated = pool.select_order("anthropic", &accounts, Some(session), None, None);
+        assert_ne!(rotated[0], sticky);
+    }
+
+    #[test]
+    fn note_usage_omitted_window_leaves_prior_header_value() {
+        let pool = AccountPool::new();
+        // A prior header records a fable (7d_oi) utilization.
+        pool.note_quota(
+            "anthropic",
+            "a",
+            &quota_headers(&[(
+                "anthropic-ratelimit-unified-7d_oi-utilization",
+                "0.5".to_string(),
+            )]),
+        );
+        // The usage snapshot reports only 5h/7d — the omitted 7d_oi survives.
+        pool.note_usage(
+            "anthropic",
+            "a",
+            &UsageSnapshot {
+                five_hour: Some(UsageWindow {
+                    utilization: 0.1,
+                    resets_at: None,
+                }),
+                seven_day: Some(UsageWindow {
+                    utilization: 0.2,
+                    resets_at: None,
+                }),
+                seven_day_oi: None,
+            },
+        );
+        let entries = pool.entries.lock().unwrap();
+        let quota = &entries
+            .get(&("anthropic".to_string(), "a".to_string()))
+            .unwrap()
+            .quota;
+        assert_eq!(quota.utilization_5h, Some(0.1));
+        assert_eq!(quota.utilization_7d, Some(0.2));
+        assert_eq!(quota.utilization_7d_oi, Some(0.5));
     }
 
     #[test]

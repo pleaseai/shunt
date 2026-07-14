@@ -61,8 +61,11 @@ Quota-aware load-balancing tuning for Claude (Anthropic) account pools ([details
 | `default_threshold_7d` | unset | Soft default for the shared weekly (`7d`) window |
 | `default_threshold_fable` | unset | Soft default for the fable-only weekly (`7d_oi`) window |
 | `burn_rate_avoidance` | `false` | Also avoid accounts projected to exhaust a window's soft threshold before that window resets |
+| `usage_refresh_seconds` | disabled (`0`/absent) | Poll interval, in seconds, for `GET /api/oauth/usage`; a positive value below 60 is clamped up to a 60-second floor |
 
 For each window `X`, the effective soft threshold resolves as: account `threshold_X` → account `threshold` → `default_threshold_X` → `default_threshold` → `hard_threshold`, and is capped at `hard_threshold`. All thresholds are utilization fractions in `[0.0, 1.0]`; out-of-range values fail startup. Quota headers exist only on the Anthropic backend, so these knobs are inert for Codex/ChatGPT pools — the per-account `priority` and `disabled` keys below still apply there.
+
+A positive `usage_refresh_seconds` additionally starts a background poller that reconciles Claude account-pool quota state against the Anthropic OAuth usage API ([details](/guides/anthropic-multi-account/#usage-api-reconciliation)); absent or `0` disables it (the default). Only imported (refreshable) `claude_oauth` accounts are polled — a long-lived `claude setup-token` or `token_env` account is skipped because the usage endpoint rejects a non-refreshable token. The poller reconciles the pool's header-derived 5h/weekly/Fable (`7d_oi`) quota state with authoritative usage, including out-of-band consumption of the same account outside shunt. The interval is fixed at boot; a config reload does not start, stop, or re-tune the poller.
 
 ## `[providers.<name>]`
 

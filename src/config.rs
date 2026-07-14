@@ -58,11 +58,8 @@ pub struct ServerConfig {
     /// `docs/m11-inbound-codex-endpoint.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_endpoint: Option<CodexEndpointConfig>,
-    /// Optional opt-in account-pool load-balancing tuning (issue #135):
-    /// soft per-window quota thresholds and burn-rate–aware selection for
-    /// Claude (Anthropic) account pools. Absent ⇒ selection behaves exactly
-    /// as before this table existed (single 0.98 hard threshold, weekly-reset
-    /// ordering, no burn-rate logic).
+    /// Optional account-pool tuning (issue #135) and opt-in usage-API
+    /// reconciliation. Absent ⇒ legacy quota selection and no background polling.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool: Option<PoolConfig>,
     /// Idle seconds before shunt injects an SSE `ping` event into a streaming
@@ -76,21 +73,16 @@ fn default_sse_keepalive_seconds() -> u64 {
     30
 }
 
-/// `[server.pool]` — quota-aware load-balancing tuning for Claude (Anthropic)
-/// account pools (issue #135). Quota headers exist only on the Anthropic
-/// backend, so the threshold/burn-rate knobs are inert for Codex pools;
-/// per-account `priority`/`disabled` (on [`AccountConfig`]) apply to both.
+/// `[server.pool]` — quota-aware load-balancing tuning and optional usage-API
+/// reconciliation for Claude (Anthropic) account pools (issue #135). Quota
+/// headers exist only on the Anthropic backend, so threshold/burn-rate knobs
+/// are inert for Codex pools; per-account `priority`/`disabled` apply to both.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PoolConfig {
-    /// Safety backstop common to all quota windows: an account at or above
-    /// this utilization always sorts last among available accounts, even when
-    /// the all-near guard is serving accounts past their soft thresholds.
+    /// Safety backstop common to all quota windows.
     #[serde(default = "default_hard_threshold")]
     pub hard_threshold: f64,
-    /// Soft default threshold used for any window without a more specific
-    /// value. Resolution per window `X`: account `threshold_X` → account
-    /// `threshold` → `default_threshold_X` → `default_threshold` →
-    /// `hard_threshold`.
+    /// Soft default threshold used when no more specific value is configured.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_threshold: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -99,12 +91,14 @@ pub struct PoolConfig {
     pub default_threshold_7d: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_threshold_fable: Option<f64>,
-    /// When true, an account projected to exhaust a window's soft threshold
-    /// before that window resets (negative burn-rate headroom) is avoided like
-    /// a near-quota account. Ordering by headroom happens regardless; this
-    /// only controls predictive *avoidance*.
+    /// Avoid an account projected to exhaust a soft threshold before reset.
     #[serde(default)]
     pub burn_rate_avoidance: bool,
+    /// Poll `GET /api/oauth/usage` every N seconds for refreshable Claude
+    /// accounts. Unset or `0` disables polling; positive values below 60 are
+    /// clamped to 60 seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_refresh_seconds: Option<u64>,
 }
 
 pub(crate) fn default_hard_threshold() -> f64 {
@@ -112,8 +106,6 @@ pub(crate) fn default_hard_threshold() -> f64 {
 }
 
 impl Default for PoolConfig {
-    /// Mirrors the serde field defaults: an empty `[server.pool]` table and
-    /// `PoolConfig::default()` describe the same tuning.
     fn default() -> Self {
         Self {
             hard_threshold: default_hard_threshold(),
@@ -122,6 +114,17 @@ impl Default for PoolConfig {
             default_threshold_7d: None,
             default_threshold_fable: None,
             burn_rate_avoidance: false,
+            usage_refresh_seconds: None,
+        }
+    }
+}
+
+impl PoolConfig {
+    /// The effective poll interval, or `None` when polling is disabled.
+    pub fn usage_refresh_interval(&self) -> Option<u64> {
+        match self.usage_refresh_seconds {
+            None | Some(0) => None,
+            Some(seconds) => Some(seconds.max(60)),
         }
     }
 }
@@ -1572,6 +1575,49 @@ mod tests {
         CodexEndpointConfig, Config, ConfigError, ConfigFormat, ModelConfig, PoolConfig,
         ProviderKind, ResponsesFlavor, RetryConfig,
     };
+
+    #[test]
+    fn pool_config_usage_refresh_interval_disables_and_clamps() {
+        use super::PoolConfig;
+        // Unset and 0 both disable polling.
+        assert_eq!(PoolConfig::default().usage_refresh_interval(), None);
+        assert_eq!(
+            PoolConfig {
+                usage_refresh_seconds: Some(0),
+                ..Default::default()
+            }
+            .usage_refresh_interval(),
+            None
+        );
+        // A positive value below the 60s floor is clamped up; at/above passes through.
+        assert_eq!(
+            PoolConfig {
+                usage_refresh_seconds: Some(5),
+                ..Default::default()
+            }
+            .usage_refresh_interval(),
+            Some(60)
+        );
+        assert_eq!(
+            PoolConfig {
+                usage_refresh_seconds: Some(300),
+                ..Default::default()
+            }
+            .usage_refresh_interval(),
+            Some(300)
+        );
+    }
+
+    #[test]
+    fn pool_config_parses_and_defaults() {
+        use super::PoolConfig;
+        // An empty object exercises the `#[serde(default)]` field: no polling.
+        let empty: PoolConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty.usage_refresh_seconds, None);
+        // The documented key deserializes.
+        let set: PoolConfig = serde_json::from_str(r#"{"usage_refresh_seconds":300}"#).unwrap();
+        assert_eq!(set.usage_refresh_seconds, Some(300));
+    }
 
     #[test]
     fn admin_config_uses_defaults_for_missing_fields() {

@@ -32,21 +32,22 @@ default_provider = "anthropic" # provider for any model with no route -> pass-th
 # session_ttl_secs = 3600              # (default) browser session lifetime
 # pending_ttl_secs = 600               # (default) provisioning-flow lifetime
 
-# --- Optional: quota-aware load-balancing tuning for Claude account pools
-# (issue #135). Absent, selection uses the single built-in 0.98 threshold
-# exactly as before. Soft thresholds resolve per window as: account
-# threshold_<X> -> account threshold -> default_threshold_<X> ->
-# default_threshold -> hard_threshold. Quota headers exist only on the
-# Anthropic backend, so these knobs are inert for Codex pools (per-account
-# priority/disabled still apply there).
+# --- Optional: quota-aware Claude pool tuning and usage reconciliation
+# (docs/m8-anthropic-multi-account.md). Absent, selection uses the built-in
+# 0.98 threshold and no background poller runs. Soft thresholds resolve as:
+# account threshold_<X> -> account threshold -> default_threshold_<X> ->
+# default_threshold -> hard_threshold. Quota tuning is inert for Codex pools;
+# per-account priority/disabled still apply there.
 # [server.pool]
-# hard_threshold = 0.98          # (default) backstop; accounts at/above always sort last
-# default_threshold = 0.9        # soft default for every window (unset: hard_threshold)
-# default_threshold_5h = 0.95    # per-window overrides of default_threshold
+# hard_threshold = 0.98          # (default) backstop; accounts at/above sort last
+# default_threshold = 0.9        # soft default (unset: hard_threshold)
+# default_threshold_5h = 0.95    # per-window overrides
 # default_threshold_7d = 0.9
-# default_threshold_fable = 0.85 # fable-only 7d_oi bucket
-# burn_rate_avoidance = false    # (default) when true, avoid accounts projected to
-                                 # exhaust a window's soft threshold before it resets
+# default_threshold_fable = 0.85 # Fable-only 7d_oi bucket
+# burn_rate_avoidance = false    # avoid projected exhaustion before reset
+# usage_refresh_seconds = 300    # (disabled by default; 0 disables) poll usage
+#                                    API for refreshable Claude accounts only;
+#                                    values below 60 clamp to 60, fixed at boot
 
 # --- Optional: Sentry error reporting to YOUR OWN Sentry project (docs/running.md §3.1).
 # Off unless you set a DSN. Reports gateway-owned diagnostics only — fatal
