@@ -70,6 +70,8 @@ There is no `--long-lived` flag for `shunt login codex` — Codex has no setup-t
 | `credentials` | one usable source | Codex CLI `auth.json`-shaped file. shunt refreshes near expiry and atomically writes refreshed tokens back, same as `~/.codex/auth.json` itself. |
 | `token_env` | one usable source | Environment variable containing a raw ChatGPT access token. Used verbatim; cannot be refreshed after a 401. |
 | `uuid` | no | Present for structural parity with Anthropic accounts, but **unused** by the Codex path — the account id is resolved from the store or the access token's JWT claim instead. |
+| `priority` | no | Selection priority among available accounts; lower is preferred, default `100`. Honored on the Codex path. |
+| `disabled` | no | `true` removes the account from selection entirely while keeping it in config. Honored on the Codex path. |
 
 Do not set both `credentials` and `token_env` on one account.
 

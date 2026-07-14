@@ -72,6 +72,10 @@ name = "backup"
 | `credentials` | 可用来源之一 | Claude Code `.credentials.json` 形态的文件。`~/` 会被展开。shunt 在临近过期时刷新,并将刷新后的 token 原子性地写回。 |
 | `token_env` | 可用来源之一 | 包含 setup token 的环境变量。其值按原样使用,401 之后无法刷新。 |
 | `uuid` | 否 | 所选账户的 Anthropic UUID,用于改写已存在的 `metadata.user_id.account_uuid`。 |
+| `threshold` | 否 | `[0.0, 1.0]` 范围内的按账户软配额阈值,适用于所有没有按窗口取值的窗口。较低的取值把该账户标记为提前轮换出去的后备账户。 |
+| `threshold_5h` / `threshold_7d` / `threshold_fable` | 否 | 按窗口的软阈值;各自在其窗口上优先于 `threshold`。 |
+| `priority` | 否 | 粘性账户不健康时的选择优先级;数值越低越优先,默认 `100`。 |
+| `disabled` | 否 | `true` 把该账户完全移出选择,同时保留在配置和管理仪表板上。 |
 
 不要在同一个账户上同时设置 `credentials` 和 `token_env`。
 
@@ -83,13 +87,45 @@ name = "backup"
   - `anthropic-ratelimit-unified-5h-utilization`、`anthropic-ratelimit-unified-7d-utilization` 和 `anthropic-ratelimit-unified-7d_oi-utilization`;
   - `anthropic-ratelimit-unified-5h-reset`、`anthropic-ratelimit-unified-7d-reset` 和 `anthropic-ratelimit-unified-7d_oi-reset`(Unix 秒);以及
   - `anthropic-ratelimit-unified-status`。
-- 切换阈值是 `0.98`。当 unified status 为 `rejected`、共享 5 小时使用率不低于 `0.98`,或起决定作用的周使用率不低于 `0.98` 时,该账户即接近配额。
+- 默认切换阈值是 `0.98`。当 unified status 为 `rejected`、共享 5 小时使用率达到其阈值,或起决定作用的周使用率达到其阈值时,该账户即接近配额。阈值可以按账户(上文的 `threshold*` 字段)或池级(见[调优选择](#调优选择serverpool))调低。
 - 5 小时桶适用于所有模型。Fable 模型 id 在 `7d_oi` 周桶使用率存在时使用它,否则回退到共享 `7d`。其他所有模型家族使用共享 `7d`;由于目前没有 Sonnet 专属头部,Sonnet 也使用 `7d`。
-- 接近配额或处于冷却中的粘性账户会被主动轮换掉。shunt 优先选择低于阈值的可用账户,按起决定作用的周桶最早重置的顺序排列,先花掉"不用即失"的配额。周重置未知的账户排在最前。随后是可用但接近配额的账户,再后是按最快恢复排序的冷却中账户。
-- shunt 从不因本地配额状态而安全失败(fail closed):即使所有账户都接近配额或在冷却中,每个账户仍留在尝试顺序里。
+- 接近配额、处于冷却中或被禁用的粘性账户会被主动轮换掉。shunt 优先选择低于阈值的可用账户,先按 `priority`(数值低者优先)排序,再按起决定作用的周桶最早重置的顺序排列,先花掉"不用即失"的配额。周重置未知的账户排在最前。随后是可用但接近配额的账户,再后是按最快恢复排序的冷却中账户。配置了 `[server.pool]` 时,燃烧率余量会取代周重置这一次级排序依据(见下文)。
+- shunt 从不因本地配额状态而安全失败(fail closed):即使所有账户都接近配额或在冷却中,每个非 `disabled` 账户仍留在尝试顺序里。
 - 配额桶在其重置时间戳过后自动清除。成功的响应会清除所选账户的冷却。
 
 池的选择、冷却和配额状态在进程存活期间跨配置热重载保留。如果主动轮换无法避开上游限制,被动故障转移仍然生效。
+
+## 调优选择(`[server.pool]`)
+
+可选的 `[server.pool]` 表(issue #135)在上述行为之上增加按窗口的软阈值与感知燃烧率(burn-rate)的排序。没有该表时,选择逻辑使用单一的内置 `0.98` 阈值,与之前完全一致。
+
+```toml
+[server.pool]
+# hard_threshold = 0.98      # (默认)兜底;达到或超过时始终排在最后
+default_threshold = 0.9      # 所有窗口的软默认值
+default_threshold_5h = 0.95  # 按窗口覆盖
+default_threshold_fable = 0.85
+burn_rate_avoidance = true   # 避开按预测会在重置前触及阈值的账户
+
+[[providers.anthropic.accounts]]
+name = "primary"
+priority = 1                 # 粘性账户不健康时优先选择
+
+[[providers.anthropic.accounts]]
+name = "backup"
+threshold = 0.5              # 后备:配额用掉一半即轮换出去
+
+[[providers.anthropic.accounts]]
+name = "spare"
+disabled = true              # 保留配置,但永不被选中
+```
+
+- **阈值解析。**对每个窗口 `X`(`5h`、`7d`、`fable`),生效的软阈值为:账户 `threshold_X` → 账户 `threshold` → `default_threshold_X` → `default_threshold` → `hard_threshold`,并以 `hard_threshold` 为上限。所有取值都是 `[0.0, 1.0]` 范围内的使用率分数;超出范围会使 `shunt check` 失败。
+- **燃烧率余量。**根据每个窗口的使用率与重置时刻(窗口长度固定为 5 小时和 7 天),shunt 按观测到的平均速度预测触及软阈值所需的时间,再减去窗口重置所需的时间。余量为正意味着按当前速度该账户能撑到重置。`priority` 相同的可用账户按余量最大者优先排序;未观测到的窗口按无限余量计。
+- **预测性规避。**设置 `burn_rate_avoidance = true` 时,预测余量为负的账户被视为接近配额,在真正触及阈值*之前*就被轮换掉。默认关闭 —— 而按余量排序始终生效。
+- **全员接近配额的兜底。**当每个账户都超过了软阈值(或被预测将耗尽)时,池不会变空:接近配额的账户按最佳余量的顺序继续服务,而达到或超过 `hard_threshold` 的账户仍排在最后,其后才是冷却中的账户。
+- **适用范围。**这些配额旋钮只作用于 Claude(Anthropic)池 —— Codex 后端不发送配额头部,因此对 [Codex 池](/zh-cn/guides/codex-multi-account/) 它们不起作用,而 `priority` 和 `disabled` 仍然适用。
+- 管理池端点(`GET /admin/pool`)会报告每个账户的 `priority`、`disabled` 标志,以及在配置了 `[server.pool]` 时该账户当前以秒为单位的余量预测;仪表板的状态列会标记被禁用的账户。
 
 ## 故障转移规则
 

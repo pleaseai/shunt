@@ -113,6 +113,20 @@ async fn forward_codex_passthrough(
     passthrough_headers: HeaderMap,
     body: Bytes,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
+    // An all-`disabled` pool yields an empty order; surface it as a distinct
+    // config error rather than the generic "all accounts failed" below.
+    if !accounts_config.is_empty() && accounts_config.iter().all(|account| account.disabled) {
+        tracing::warn!(
+            provider = %route.provider,
+            accounts = accounts_config.len(),
+            "all accounts for provider are disabled; none are selectable"
+        );
+        return Err(own_error(format!(
+            "provider '{}' has {} account(s) but all are `disabled = true`; none are selectable",
+            route.provider,
+            accounts_config.len()
+        )));
+    }
     let order = state.accounts.select_order(
         &route.provider,
         &accounts_config,
@@ -120,6 +134,9 @@ async fn forward_codex_passthrough(
         // Codex exposes no per-model quota signal to order by (same as the
         // Anthropic-translating pool path).
         None,
+        // Quota knobs are inert without quota headers, but per-account
+        // priority/disabled still apply.
+        state.config.server.pool.as_ref(),
     );
     let mut last_response: Option<reqwest::Response> = None;
 

@@ -49,6 +49,21 @@ Presence of this table enables an inbound OpenAI Responses passthrough so the **
 
 Registers `POST /backend-api/codex/responses`, `POST /responses`, and `POST /v1/responses` — all served by the named provider's account pool. When `[server.auth]` is configured they require a valid client token (like the other injected-credential routes); with no `[server.auth]` they are **open** to anyone who can reach them while still injecting the operator's Codex credential, so gate them on anything beyond loopback. Unlike `/v1/messages`, the request is not translated to or from Anthropic Messages; it is relayed to and from the upstream verbatim.
 
+## `[server.pool]` (optional)
+
+Quota-aware load-balancing tuning for Claude (Anthropic) account pools ([details](/guides/anthropic-multi-account/#tuning-selection-serverpool)). When the table is absent, selection uses the single built-in `0.98` threshold exactly as before this table existed.
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `hard_threshold` | `0.98` | Safety backstop for every quota window; an account at or above it always sorts last among available accounts |
+| `default_threshold` | unset | Soft default threshold for any window without a more specific value |
+| `default_threshold_5h` | unset | Soft default for the 5-hour window |
+| `default_threshold_7d` | unset | Soft default for the shared weekly (`7d`) window |
+| `default_threshold_fable` | unset | Soft default for the fable-only weekly (`7d_oi`) window |
+| `burn_rate_avoidance` | `false` | Also avoid accounts projected to exhaust a window's soft threshold before that window resets |
+
+For each window `X`, the effective soft threshold resolves as: account `threshold_X` → account `threshold` → `default_threshold_X` → `default_threshold` → `hard_threshold`, and is capped at `hard_threshold`. All thresholds are utilization fractions in `[0.0, 1.0]`; out-of-range values fail startup. Quota headers exist only on the Anthropic backend, so these knobs are inert for Codex/ChatGPT pools — the per-account `priority` and `disabled` keys below still apply there.
+
 ## `[providers.<name>]`
 
 Each provider is a table under a name of your choosing. Built-ins (`anthropic`, `openai`, `codex`, `xai`, `grok`, `cursor`) can be partially overridden — config maps deep-merge.
@@ -114,10 +129,14 @@ token_env = "CLAUDE_BACKUP_OAUTH_TOKEN"
 | `credentials` | one usable source | Path to a Claude Code `.credentials.json`-shaped file. `~/` is expanded. shunt refreshes near expiry and atomically writes refreshed tokens back. |
 | `token_env` | one usable source | Environment variable holding a setup token. Used verbatim and not refreshable. Mutually exclusive with `credentials`. |
 | `uuid` | no | Replaces an existing `metadata.user_id.account_uuid` in requests selected for this account. |
+| `threshold` | no | Per-account soft quota threshold in `[0.0, 1.0]`, for every window without a per-window value. A low value marks a backup account that rotates out early. |
+| `threshold_5h` / `threshold_7d` / `threshold_fable` | no | Per-window soft thresholds; each beats `threshold` for its window. See [`[server.pool]`](#serverpool-optional) for the full resolution order. |
+| `priority` | no | Selection priority when the sticky account is unhealthy; lower is preferred, default `100`. Applies to Codex pools too. |
+| `disabled` | no | `true` removes the account from selection entirely (kept in config). Applies to Codex pools too, though only `claude_oauth` pools surface accounts — disabled or not — on the admin dashboard; Codex (`chatgpt_oauth`) pools never appear there. |
 
 A name-only entry reads `~/.shunt/accounts/claude/<name>.json`, created with `shunt login claude --name <name>`; `SHUNT_CLAUDE_ACCOUNTS_DIR` overrides that directory. An empty account list scans all valid store files. `claude_oauth` additionally requires an HTTPS `base_url` whose host is `anthropic.com` or a subdomain, preventing bearer leakage to another origin — except for loopback hosts (`localhost`, `127.0.0.1`, `[::1]`, …), which are exempt from both checks so a local debugging proxy or mock can be used over plain HTTP.
 
-Account selection is session-sticky and quota-aware. On every upstream response handled by the `claude_oauth` account pool, shunt records `anthropic-ratelimit-unified-5h-utilization`, `anthropic-ratelimit-unified-7d-utilization`, `anthropic-ratelimit-unified-7d_oi-utilization`, `anthropic-ratelimit-unified-5h-reset`, `anthropic-ratelimit-unified-7d-reset`, `anthropic-ratelimit-unified-7d_oi-reset`, and `anthropic-ratelimit-unified-status`. At the fixed `0.98` switch threshold, status `rejected`, shared 5-hour utilization at or above threshold, or the model's governing weekly utilization at or above threshold makes an account near quota. Fable models use `7d_oi` when available, falling back to `7d`; all other families, including Sonnet, use shared `7d`. shunt keeps a healthy under-threshold sticky account, but rotates off a near-quota or cooled one and prefers available under-threshold accounts by soonest governing-weekly reset, then near-quota accounts, then cooled accounts. Expired quota buckets clear automatically, and every account remains selectable. Reactive failover remains active. Storm-control for freshly switched account concurrency is not implemented.
+Account selection is session-sticky and quota-aware. On every upstream response handled by the `claude_oauth` account pool, shunt records `anthropic-ratelimit-unified-5h-utilization`, `anthropic-ratelimit-unified-7d-utilization`, `anthropic-ratelimit-unified-7d_oi-utilization`, `anthropic-ratelimit-unified-5h-reset`, `anthropic-ratelimit-unified-7d-reset`, `anthropic-ratelimit-unified-7d_oi-reset`, and `anthropic-ratelimit-unified-status`. Status `rejected`, shared 5-hour utilization at or above its threshold, or the model's governing weekly utilization at or above its threshold makes an account near quota — the threshold is the built-in `0.98` unless tuned per account (`threshold*` above) or pool-wide ([`[server.pool]`](#serverpool-optional)). Fable models use `7d_oi` when available, falling back to `7d`; all other families, including Sonnet, use shared `7d`. shunt keeps a healthy under-threshold sticky account, but rotates off a near-quota or cooled one and prefers available under-threshold accounts by `priority`, then by soonest governing-weekly reset (or, with `[server.pool]` configured, by largest burn-rate headroom — the projected time to threshold at the observed pace minus the time to reset; `burn_rate_avoidance = true` additionally treats a negative projection as near quota), then near-quota accounts (best headroom first when `[server.pool]` is set, so an all-near pool degrades to best-margin-first while accounts past `hard_threshold` still sort last), then cooled accounts. Expired quota buckets clear automatically, and every non-disabled account remains selectable. Reactive failover remains active. Storm-control for freshly switched account concurrency is not implemented.
 
 See [Anthropic Multi-Account](/guides/anthropic-multi-account/) for the complete selection and failover behavior. The behavior reference is [KarpelesLab/teamclaude](https://github.com/KarpelesLab/teamclaude); shunt has no runtime dependency on it.
 

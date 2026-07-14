@@ -39,6 +39,21 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 
 管理员 token 与 `[server.auth]` 下配置的客户端 token 是相互独立的凭据;不要在两个界面上复用同一个凭据。
 
+## `[server.pool]`(可选)
+
+面向 Claude(Anthropic)账户池的配额感知负载均衡调优([详情](/zh-cn/guides/anthropic-multi-account/#调优选择serverpool))。此表不存在时,选择逻辑使用单一的内置 `0.98` 阈值,与该表出现之前的行为完全一致。
+
+| 键 | 默认 | 含义 |
+| :-- | :-- | :-- |
+| `hard_threshold` | `0.98` | 每个配额窗口的安全兜底;达到或超过它的账户在可用账户中始终排在最后 |
+| `default_threshold` | 未设置 | 任何没有更具体取值的窗口的软默认阈值 |
+| `default_threshold_5h` | 未设置 | 5 小时窗口的软默认值 |
+| `default_threshold_7d` | 未设置 | 共享周(`7d`)窗口的软默认值 |
+| `default_threshold_fable` | 未设置 | 仅 fable 的周(`7d_oi`)窗口的软默认值 |
+| `burn_rate_avoidance` | `false` | 同时避开按预测会在窗口重置之前耗尽其软阈值的账户 |
+
+对每个窗口 `X`,生效的软阈值按以下顺序解析:账户 `threshold_X` → 账户 `threshold` → `default_threshold_X` → `default_threshold` → `hard_threshold`,并以 `hard_threshold` 为上限。所有阈值都是 `[0.0, 1.0]` 范围内的使用率分数;超出范围会导致启动失败。配额头部只存在于 Anthropic 后端,因此这些旋钮对 Codex/ChatGPT 池不起作用 —— 按账户的 `priority` 和 `disabled` 键(见[账户字段](/zh-cn/guides/anthropic-multi-account/#账户字段))在那里仍然适用。
+
 ## `[providers.<name>]`
 
 每个提供方都是一个以你自选名称命名的表。内置项(`anthropic`、`openai`、`codex`、`xai`、`grok`、`cursor`)可被部分覆盖 —— 配置映射深度合并。

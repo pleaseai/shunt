@@ -403,7 +403,7 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
             } else {
                 provider.accounts.clone()
             };
-            let snapshots = accounts.snapshot(name, &resolved, None);
+            let snapshots = accounts.snapshot(name, &resolved, None, config.server.pool.as_ref());
             providers.push(json!({ "provider": name, "accounts": snapshots }));
         }
         Ok::<_, String>(providers)
