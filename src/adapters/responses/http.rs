@@ -127,7 +127,7 @@ pub(super) fn stream_response(
         loop {
             match bytes.next().await {
                 Some(Ok(chunk)) => {
-                    let events = parser.push(&String::from_utf8_lossy(&chunk));
+                    let events = parser.push(&chunk);
                     let data = events
                         .into_iter()
                         .flat_map(|event| machine.apply(event))
@@ -179,20 +179,67 @@ pub(super) async fn json_response(
     Ok((StatusCode::OK, axum::Json(machine.final_json())).into_response())
 }
 
+/// Frame-buffers the upstream SSE byte stream. Buffering raw bytes — rather than
+/// decoding each transport chunk with `from_utf8_lossy` — keeps a multi-byte
+/// UTF-8 code point intact when it straddles a chunk boundary: the incomplete
+/// trailing bytes stay in the buffer until the next chunk completes them. Frame
+/// boundaries are the ASCII `\n\n`, which can never fall inside a multi-byte
+/// sequence, so every extracted frame is already complete UTF-8.
 #[derive(Default)]
 struct SseParser {
-    buffer: String,
+    buffer: Vec<u8>,
 }
 
 impl SseParser {
-    fn push(&mut self, chunk: &str) -> Vec<ResponseEvent> {
-        self.buffer.push_str(chunk);
+    fn push(&mut self, chunk: &[u8]) -> Vec<ResponseEvent> {
+        self.buffer.extend_from_slice(chunk);
         let mut out = Vec::new();
-        while let Some(index) = self.buffer.find("\n\n") {
-            let frame = self.buffer[..index].to_string();
-            self.buffer.drain(..index + 2);
-            out.extend(parse_sse_events(&(frame + "\n\n")));
+        while let Some(index) = self.buffer.windows(2).position(|w| w == b"\n\n") {
+            // Drain through the frame terminator so the decoded frame keeps its
+            // trailing `\n\n`, matching what `parse_sse_events` expects.
+            let frame: Vec<u8> = self.buffer.drain(..index + 2).collect();
+            out.extend(parse_sse_events(&String::from_utf8_lossy(&frame)));
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A multi-byte code point split across two transport chunks must survive
+    /// intact. Decoding each chunk with `from_utf8_lossy` in isolation would
+    /// replace the straddling bytes with U+FFFD; buffering raw bytes until a
+    /// frame boundary keeps the text whole.
+    #[test]
+    fn sse_parser_preserves_multibyte_char_split_across_chunks() {
+        let frame = "event: delta\ndata: {\"text\":\"안녕\"}\n\n";
+        // Split one byte into the 3-byte '녕' so the first chunk ends
+        // mid-code-point.
+        let split = frame.find('녕').unwrap() + 1;
+        let (head, tail) = frame.as_bytes().split_at(split);
+
+        let mut parser = SseParser::default();
+        // No frame boundary yet, and the incomplete byte must be held back
+        // rather than decoded and corrupted.
+        assert!(parser.push(head).is_empty());
+
+        let events = parser.push(tail);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event.as_deref(), Some("delta"));
+        assert_eq!(events[0].data["text"], "안녕");
+    }
+
+    /// A frame that arrives split at an arbitrary ASCII byte still parses once
+    /// the terminator lands, and only completed frames are emitted per push.
+    #[test]
+    fn sse_parser_emits_only_completed_frames() {
+        let mut parser = SseParser::default();
+        assert!(parser.push(b"event: a\ndata: {\"n\":1}\n").is_empty());
+        let events = parser.push(b"\nevent: b\ndata: {\"n\":2}\n\n");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].data["n"], 1);
+        assert_eq!(events[1].data["n"], 2);
     }
 }

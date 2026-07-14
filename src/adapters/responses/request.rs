@@ -163,8 +163,13 @@ mod tests {
             "https://chatgpt.com/backend-api/codex/responses"
         );
         assert_eq!(
-            request.headers().get("authorization").unwrap(),
-            "Bearer access-token"
+            request
+                .headers()
+                .get("authorization")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            format!("Bearer {}", "access-token").as_str()
         );
         assert_eq!(
             request.headers().get("chatgpt-account-id").unwrap(),
