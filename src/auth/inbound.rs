@@ -295,12 +295,18 @@ mod tests {
         // Dedicated header wins over a valid Bearer from another client.
         let mut headers = HeaderMap::new();
         headers.insert("x-shunt-token", HeaderValue::from_static("tok-a"));
-        headers.insert("authorization", HeaderValue::from_static("Bearer tok-b"));
+        headers.insert(
+            "authorization",
+            HeaderValue::from_str(&format!("Bearer {}", "tok-b")).unwrap(),
+        );
         assert_eq!(auth.authenticate_client(&headers), Some("alice"));
 
         // Bearer wins over a valid `x-api-key` from another client.
         let mut headers = HeaderMap::new();
-        headers.insert("authorization", HeaderValue::from_static("Bearer tok-a"));
+        headers.insert(
+            "authorization",
+            HeaderValue::from_str(&format!("Bearer {}", "tok-a")).unwrap(),
+        );
         headers.insert("x-api-key", HeaderValue::from_static("tok-b"));
         assert_eq!(auth.authenticate_client(&headers), Some("alice"));
 
