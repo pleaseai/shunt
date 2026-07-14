@@ -10,7 +10,13 @@
 //! gating) and the passthrough-specific exhaustion behavior (the last upstream
 //! response is relayed unchanged, not wrapped in an Anthropic error envelope).
 
-use std::{io::ErrorKind, net::SocketAddr};
+use std::{
+    fs,
+    io::ErrorKind,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use reqwest::StatusCode;
@@ -72,6 +78,47 @@ fn account(name: &str, token_env: &str) -> AccountConfig {
         uuid: None,
     }
 }
+
+/// A store-backed pool entry whose credential (and refresh) resolve against an
+/// explicit `credentials` store file, so the refresh-path tests below avoid the
+/// process-global `SHUNT_CODEX_ACCOUNTS_DIR` that codex_multi_account.rs uses.
+fn store_account_at(name: &str, credentials: &Path) -> AccountConfig {
+    AccountConfig {
+        name: name.to_string(),
+        credentials: Some(credentials.to_string_lossy().into_owned()),
+        token_env: None,
+        uuid: None,
+    }
+}
+
+/// Write a refreshable store account file (`{"auth_mode":"ChatGPT","tokens":
+/// {...}}`, read verbatim by `CodexAuthStore`). The far-future access token is
+/// used verbatim on the first upstream POST, so an upstream 401 — not a local
+/// expiry — drives the refresh path under test.
+fn write_store_file(path: &Path, access: &str, refresh: &str) {
+    let body = serde_json::json!({
+        "auth_mode": "ChatGPT",
+        "tokens": { "access_token": access, "refresh_token": refresh }
+    });
+    fs::write(path, body.to_string()).unwrap();
+}
+
+fn unique_temp_dir(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "shunt-inbound-codex-{tag}-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// Serializes the refresh-path tests, which set the process-global
+/// `SHUNT_CODEX_TOKEN_URL` (the refresh endpoint).
+static REFRESH_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 const FAR_FUTURE_EXP: u64 = 4_102_444_800;
 
@@ -792,4 +839,290 @@ async fn endpoint_is_absent_without_opt_in_config() {
             "path {endpoint_path} must not exist without opt-in"
         );
     }
+}
+
+#[tokio::test]
+async fn refresh_retry_refreshes_then_relays_verbatim() {
+    // A refreshable store account whose upstream returns 401 forces a token
+    // refresh; the retry with the refreshed token relays the upstream body
+    // verbatim — the passthrough counterpart to codex_multi_account.rs's
+    // refresh_retry_refreshes_then_succeeds_on_401.
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = REFRESH_ENV_LOCK.lock().await;
+    // `stale` and `fresh` must differ so the BearerToken matchers can tell the
+    // pre-refresh and post-refresh upstream requests apart.
+    let stale = chatgpt_token(FAR_FUTURE_EXP, "acct-refresh");
+    let fresh = chatgpt_token(FAR_FUTURE_EXP + 1, "acct-refresh");
+
+    let dir = unique_temp_dir("refresh-ok");
+    let store_path = dir.join("account-a.json");
+    write_store_file(&store_path, &stale, "refresh-token-a");
+
+    let auth = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+            r#"{{"access_token":"{fresh}","refresh_token":"refresh-token-a-2"}}"#
+        )))
+        .expect(1)
+        .mount(&auth)
+        .await;
+    std::env::set_var("SHUNT_CODEX_TOKEN_URL", format!("{}/token", auth.uri()));
+
+    let upstream_body = r#"{"id":"resp_1","object":"response","status":"completed","output":[]}"#;
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(stale.clone()))
+        .respond_with(ResponseTemplate::new(401).set_body_string(r#"{"error":"expired token"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(fresh.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(upstream_body, "application/json"))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        vec![store_account_at("account-a", &store_path)],
+    ))
+    .await;
+
+    let response = post_responses(&gateway, "/responses", None, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-a"
+    );
+    // Relayed verbatim after the refresh — the raw Responses body, not an
+    // Anthropic message.
+    assert_eq!(response.text().await.unwrap(), upstream_body);
+    upstream.verify().await;
+    auth.verify().await;
+
+    std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn refresh_failure_cools_down_and_rotates_to_next_account() {
+    // When the refresh itself fails (token endpoint 5xx), the account is cooled
+    // down and the pool rotates to the next account, whose response is relayed
+    // verbatim.
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = REFRESH_ENV_LOCK.lock().await;
+    let stale = chatgpt_token(FAR_FUTURE_EXP, "acct-refresh-fail-a");
+    let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-served-b");
+    std::env::set_var("SHUNT_TEST_INBOUND_REFRESH_FAIL_B", &token_b);
+
+    let dir = unique_temp_dir("refresh-fail");
+    let store_path = dir.join("account-a.json");
+    write_store_file(&store_path, &stale, "refresh-token-a");
+
+    let auth = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("refresh boom"))
+        .mount(&auth)
+        .await;
+    std::env::set_var("SHUNT_CODEX_TOKEN_URL", format!("{}/token", auth.uri()));
+
+    let served = r#"{"id":"resp_b","object":"response","status":"completed","output":[]}"#;
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(stale.clone()))
+        .respond_with(ResponseTemplate::new(401).set_body_string(r#"{"error":"expired token"}"#))
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(served, "application/json"))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    // Pin the store account first so its refresh-failure rotation is exercised.
+    let session = session_id_for_account(0, 2);
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        vec![
+            store_account_at("account-a", &store_path),
+            account("account-b", "SHUNT_TEST_INBOUND_REFRESH_FAIL_B"),
+        ],
+    ))
+    .await;
+
+    let response = post_responses(&gateway, "/responses", Some(&session), None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+    assert_eq!(response.text().await.unwrap(), served);
+    upstream.verify().await;
+
+    std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
+    std::env::remove_var("SHUNT_TEST_INBOUND_REFRESH_FAIL_B");
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn refresh_retry_still_unauthorized_rotates_to_next_account() {
+    // Refresh succeeds but the refreshed token is still rejected with 401: the
+    // account is cooled down and the pool rotates rather than relaying the second
+    // 401 — the passthrough counterpart to codex_multi_account.rs's
+    // refresh_retry_still_unauthorized_cools_down_and_rotates.
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = REFRESH_ENV_LOCK.lock().await;
+    let stale = chatgpt_token(FAR_FUTURE_EXP, "acct-still401-stale");
+    let fresh = chatgpt_token(FAR_FUTURE_EXP + 1, "acct-still401-fresh");
+    let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-still401-b");
+    std::env::set_var("SHUNT_TEST_INBOUND_STILL401_B", &token_b);
+
+    let dir = unique_temp_dir("still401");
+    let store_path = dir.join("account-a.json");
+    write_store_file(&store_path, &stale, "refresh-token-a");
+
+    let auth = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+            r#"{{"access_token":"{fresh}","refresh_token":"refresh-token-a-2"}}"#
+        )))
+        .mount(&auth)
+        .await;
+    std::env::set_var("SHUNT_CODEX_TOKEN_URL", format!("{}/token", auth.uri()));
+
+    let served = r#"{"id":"resp_b","object":"response","status":"completed","output":[]}"#;
+    let upstream = MockServer::start().await;
+    // account-a is rejected 401 both before and after the refresh.
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(stale.clone()))
+        .respond_with(ResponseTemplate::new(401).set_body_string(r#"{"error":"expired"}"#))
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(fresh.clone()))
+        .respond_with(ResponseTemplate::new(401).set_body_string(r#"{"error":"still revoked"}"#))
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(served, "application/json"))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let session = session_id_for_account(0, 2);
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        vec![
+            store_account_at("account-a", &store_path),
+            account("account-b", "SHUNT_TEST_INBOUND_STILL401_B"),
+        ],
+    ))
+    .await;
+
+    let response = post_responses(&gateway, "/responses", Some(&session), None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+    assert_eq!(response.text().await.unwrap(), served);
+    upstream.verify().await;
+
+    std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
+    std::env::remove_var("SHUNT_TEST_INBOUND_STILL401_B");
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn refresh_retry_non_success_rotates_to_next_account() {
+    // Refresh succeeds but the refreshed retry fails with a non-401 non-2xx (5xx):
+    // classify_codex maps it to Rotate, so the account cools down and the pool
+    // moves to the next account.
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = REFRESH_ENV_LOCK.lock().await;
+    let stale = chatgpt_token(FAR_FUTURE_EXP, "acct-retry5xx-stale");
+    let fresh = chatgpt_token(FAR_FUTURE_EXP + 1, "acct-retry5xx-fresh");
+    let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-retry5xx-b");
+    std::env::set_var("SHUNT_TEST_INBOUND_RETRY5XX_B", &token_b);
+
+    let dir = unique_temp_dir("retry5xx");
+    let store_path = dir.join("account-a.json");
+    write_store_file(&store_path, &stale, "refresh-token-a");
+
+    let auth = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+            r#"{{"access_token":"{fresh}","refresh_token":"refresh-token-a-2"}}"#
+        )))
+        .mount(&auth)
+        .await;
+    std::env::set_var("SHUNT_CODEX_TOKEN_URL", format!("{}/token", auth.uri()));
+
+    let served = r#"{"id":"resp_b","object":"response","status":"completed","output":[]}"#;
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(stale.clone()))
+        .respond_with(ResponseTemplate::new(401).set_body_string(r#"{"error":"expired"}"#))
+        .mount(&upstream)
+        .await;
+    // The refreshed retry gets a 5xx → Rotate (not a relayable status).
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(fresh.clone()))
+        .respond_with(ResponseTemplate::new(503).set_body_string(r#"{"error":"upstream down"}"#))
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(served, "application/json"))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let session = session_id_for_account(0, 2);
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        vec![
+            store_account_at("account-a", &store_path),
+            account("account-b", "SHUNT_TEST_INBOUND_RETRY5XX_B"),
+        ],
+    ))
+    .await;
+
+    let response = post_responses(&gateway, "/responses", Some(&session), None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+    assert_eq!(response.text().await.unwrap(), served);
+    upstream.verify().await;
+
+    std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
+    std::env::remove_var("SHUNT_TEST_INBOUND_RETRY5XX_B");
+    fs::remove_dir_all(&dir).ok();
 }

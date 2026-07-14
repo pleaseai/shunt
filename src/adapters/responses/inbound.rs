@@ -1,6 +1,6 @@
 //! Raw inbound Codex/OpenAI Responses passthrough served by `[server.codex_endpoint]`.
 
-use std::{path::PathBuf, time::Duration};
+use std::time::Duration;
 
 use axum::{
     body::{Body, Bytes},
@@ -11,15 +11,17 @@ use axum::{
 use crate::{
     accounts::{self, FailoverAction},
     adapters::AdapterError,
-    auth::{
-        self, codex::auth::CodexAuthStore, resolve_chatgpt_account, resolve_credential, Credential,
-    },
+    auth::{self, resolve_credential, Credential},
     config::AccountConfig,
     routing::Route,
     server::AppState,
 };
 
-use super::{error::own_error, pool::with_account_header, request::responses_url};
+use super::{
+    error::own_error,
+    pool::{force_refresh_or_cooldown, resolve_or_cooldown, rotate_cooldown, with_account_header},
+    request::responses_url,
+};
 
 /// Entry point for the inbound `[server.codex_endpoint]` passthrough. Gathers the
 /// target provider's pooled accounts (explicit `[[accounts]]` or a store scan)
@@ -124,30 +126,13 @@ async fn forward_codex_passthrough(
 
     for index in order {
         let account = &accounts_config[index];
-        // The per-account refresh_lock serializes only credential refreshes for
-        // one account — never held across an upstream send (same discipline as
-        // forward_chatgpt_oauth).
-        let refresh_lock = state.accounts.refresh_lock(&route.provider, &account.name);
 
-        let credential = {
-            let _guard = refresh_lock.lock().await;
-            match resolve_chatgpt_account(account, &state.http_client).await {
-                Ok(credential) => credential,
-                Err(error) => {
-                    state.accounts.cooldown(
-                        &route.provider,
-                        &account.name,
-                        Duration::from_secs(5 * 60),
-                    );
-                    tracing::warn!(
-                        provider = %route.provider,
-                        account = %account.name,
-                        error = %error.message,
-                        "failed to resolve ChatGPT OAuth account for inbound passthrough"
-                    );
-                    continue;
-                }
-            }
+        // Resolve the account's credential under its per-account refresh lock
+        // (shared with forward_chatgpt_oauth); a resolution failure cools it
+        // down and rotates to the next account.
+        let credential = match resolve_or_cooldown(&state, &route, account).await {
+            Some(credential) => credential,
+            None => continue,
         };
 
         let upstream = match passthrough_send(
@@ -187,13 +172,7 @@ async fn forward_codex_passthrough(
                 ));
             }
             FailoverAction::Rotate => {
-                let cooldown = if status == StatusCode::TOO_MANY_REQUESTS {
-                    accounts::retry_after(upstream.headers())
-                        .unwrap_or(Duration::from_secs(60))
-                        .clamp(Duration::from_secs(1), Duration::from_secs(3600))
-                } else {
-                    Duration::from_secs(30)
-                };
+                let cooldown = rotate_cooldown(status, upstream.headers());
                 state
                     .accounts
                     .cooldown(&route.provider, &account.name, cooldown);
@@ -206,53 +185,17 @@ async fn forward_codex_passthrough(
                 last_response = Some(upstream);
             }
             FailoverAction::RefreshRetry => {
-                // A `token_env` account cannot be refreshed (used verbatim).
-                if account.token_env.is_some() {
-                    state.accounts.cooldown(
-                        &route.provider,
-                        &account.name,
-                        Duration::from_secs(5 * 60),
-                    );
-                    tracing::warn!(
-                        provider = %route.provider,
-                        account = %account.name,
-                        "inbound passthrough account returned 401 but its credential is not refreshable (token_env); cooling down"
-                    );
-                    last_response = Some(upstream);
-                    continue;
-                }
-
-                let credentials_path = account
-                    .credentials
-                    .as_deref()
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| auth::codex::store::account_path(&account.name));
-                let store = CodexAuthStore::new(credentials_path, state.http_client.clone());
-                let refreshed = {
-                    let _guard = refresh_lock.lock().await;
-                    match store.force_refresh().await {
-                        Ok(credential) => credential,
-                        Err(error) => {
-                            state.accounts.cooldown(
-                                &route.provider,
-                                &account.name,
-                                Duration::from_secs(5 * 60),
-                            );
-                            tracing::warn!(
-                                provider = %route.provider,
-                                account = %account.name,
-                                error = %error.message,
-                                "failed to force-refresh ChatGPT OAuth account for inbound passthrough"
-                            );
+                // Force-refresh the account's stored credential (shared with
+                // forward_chatgpt_oauth); a `token_env` account or a refresh
+                // failure cools it down and rotates instead.
+                let retry_credential =
+                    match force_refresh_or_cooldown(&state, &route, account).await {
+                        Some(credential) => credential,
+                        None => {
                             last_response = Some(upstream);
                             continue;
                         }
-                    }
-                };
-                let retry_credential = Credential::ChatGptOAuth {
-                    access_token: refreshed.access_token,
-                    account_id: refreshed.account_id,
-                };
+                    };
                 let retry = match passthrough_send(
                     &state,
                     &route,
@@ -307,13 +250,7 @@ async fn forward_codex_passthrough(
                     // classify_codex returns RefreshRetry only for 401 (handled
                     // above) and never PauseSame; only Rotate is live here.
                     FailoverAction::Rotate | FailoverAction::RefreshRetry => {
-                        let cooldown = if retry_status == StatusCode::TOO_MANY_REQUESTS {
-                            accounts::retry_after(retry.headers())
-                                .unwrap_or(Duration::from_secs(60))
-                                .clamp(Duration::from_secs(1), Duration::from_secs(3600))
-                        } else {
-                            Duration::from_secs(30)
-                        };
+                        let cooldown = rotate_cooldown(retry_status, retry.headers());
                         state
                             .accounts
                             .cooldown(&route.provider, &account.name, cooldown);
