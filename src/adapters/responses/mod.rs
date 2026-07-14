@@ -1,6 +1,7 @@
 pub mod codex_continuation;
 pub mod codex_ws;
 
+mod context;
 mod error;
 mod http;
 mod inbound;
@@ -23,6 +24,7 @@ use crate::{
     server::AppState,
 };
 
+use self::context::{ForwardOptions, PoolForward, TurnOptions};
 use self::error::own_error;
 use self::http::forward_http;
 pub(crate) use self::inbound::forward_codex_inbound;
@@ -113,6 +115,11 @@ async fn forward(
     } else {
         None
     };
+    let turn = TurnOptions {
+        client_wants_stream,
+        thinking_enabled,
+        tool_search_native,
+    };
     let upstream_body = translate_request(&body, &route, flavor, tool_search_native)
         .map_err(|error| own_error(error.to_string()))?;
     tracing::debug!(
@@ -149,13 +156,13 @@ async fn forward(
             return forward_chatgpt_oauth(
                 state,
                 route,
-                pool_key,
-                session_id,
-                upstream_body,
-                accounts,
-                client_wants_stream,
-                thinking_enabled,
-                tool_search_native,
+                PoolForward {
+                    pool_key,
+                    session_id,
+                    upstream_body,
+                    accounts_config: accounts,
+                    turn,
+                },
             )
             .await;
         }
@@ -165,6 +172,13 @@ async fn forward(
     }
 
     let credential = resolve_credential(&state.config, &route, &state.http_client).await?;
+    let forward_options = ForwardOptions {
+        upstream_body,
+        credential,
+        auth,
+        turn,
+        estimate_input,
+    };
     // Codex WebSocket v2 transport (issue #32), opt-in per provider and only for
     // the ChatGPT/Codex backend. HTTP stays the path for every other upstream, and
     // is the documented safety net: any websocket failure before the first event
@@ -175,19 +189,7 @@ async fn forward(
     // event to a streaming client, or a gateway error to a non-streaming one —
     // since by then the response has already begun and cannot be safely restarted.
     if state.config.codex_websocket_enabled(&route.provider) {
-        match forward_websocket(
-            &state,
-            &route,
-            pool_key.as_deref(),
-            upstream_body.clone(),
-            credential.clone(),
-            auth,
-            client_wants_stream,
-            thinking_enabled,
-            tool_search_native,
-            estimate_input.clone(),
-        )
-        .await
+        match forward_websocket(&state, &route, pool_key.as_deref(), forward_options.clone()).await
         {
             Ok(response) => return Ok(response),
             Err(error) => {
@@ -199,17 +201,5 @@ async fn forward(
             }
         }
     }
-    forward_http(
-        &state,
-        &route,
-        upstream_body,
-        credential,
-        auth,
-        client_wants_stream,
-        thinking_enabled,
-        tool_search_native,
-        estimate_input,
-        session_id.as_deref(),
-    )
-    .await
+    forward_http(&state, &route, forward_options, session_id.as_deref()).await
 }

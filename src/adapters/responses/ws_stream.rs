@@ -11,12 +11,10 @@ use axum::{
 use futures_util::stream;
 use serde_json::json;
 
-use crate::{
-    error::ShuntError,
-    model::responses::{map_error_value, AnthropicSseMachine},
-};
+use crate::{error::ShuntError, model::responses::map_error_value};
 
 use super::codex_ws::{CodexWsError, CodexWsEvents};
+use super::context::RelayOptions;
 use super::error::backend_error_response;
 use super::websocket::BufferedEvent;
 
@@ -30,14 +28,11 @@ use super::websocket::BufferedEvent;
 pub(super) fn stream_events_response(
     buffered: BufferedEvent,
     events: CodexWsEvents,
-    model: String,
-    thinking_enabled: bool,
-    tool_search_native: bool,
+    relay: RelayOptions,
     input_tokens_estimate: u64,
     keepalive: std::time::Duration,
 ) -> axum::response::Response {
-    let machine = AnthropicSseMachine::new(model, thinking_enabled, tool_search_native)
-        .with_input_estimate(input_tokens_estimate);
+    let machine = relay.machine().with_input_estimate(input_tokens_estimate);
     let output = stream::unfold(
         (buffered, events, machine, false),
         |(mut buffered, mut events, mut machine, finished)| async move {
@@ -106,11 +101,9 @@ pub(super) fn stream_events_response(
 pub(super) async fn json_events_response(
     buffered: BufferedEvent,
     mut events: CodexWsEvents,
-    model: String,
-    thinking_enabled: bool,
-    tool_search_native: bool,
+    relay: RelayOptions,
 ) -> axum::response::Response {
-    let mut machine = AnthropicSseMachine::new(model, thinking_enabled, tool_search_native);
+    let mut machine = relay.machine();
     let mut buffered = buffered;
     loop {
         let item = match buffered.take() {
@@ -164,7 +157,17 @@ mod tests {
     use crate::adapters::responses::codex_ws::CodexWsError;
     use crate::model::responses::ResponseEvent;
 
-    use super::{json_events_response, stream_events_response, ws_error_sse};
+    use super::{json_events_response, stream_events_response, ws_error_sse, RelayOptions};
+
+    /// The default relay options for these tests: the `gpt-5.2-codex` model with
+    /// both protocol toggles off.
+    fn relay_opts() -> RelayOptions {
+        RelayOptions {
+            model: "gpt-5.2-codex".to_string(),
+            thinking_enabled: false,
+            tool_search_native: false,
+        }
+    }
 
     fn transport_error(body: &str, message: &str) -> CodexWsError {
         CodexWsError {
@@ -206,8 +209,7 @@ mod tests {
             .unwrap();
         drop(tx);
 
-        let response =
-            json_events_response(None, rx, "gpt-5.2-codex".to_string(), false, false).await;
+        let response = json_events_response(None, rx, relay_opts()).await;
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
@@ -226,8 +228,7 @@ mod tests {
         .unwrap();
         drop(tx);
 
-        let response =
-            json_events_response(None, rx, "gpt-5.2-codex".to_string(), false, false).await;
+        let response = json_events_response(None, rx, relay_opts()).await;
         assert_eq!(response.status(), StatusCode::OK);
     }
 
@@ -254,8 +255,7 @@ mod tests {
         .unwrap();
         drop(tx);
 
-        let response =
-            json_events_response(None, rx, "gpt-5.2-codex".to_string(), false, false).await;
+        let response = json_events_response(None, rx, relay_opts()).await;
 
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
@@ -285,7 +285,7 @@ mod tests {
 
         let response = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            json_events_response(None, rx, "gpt-5.2-codex".to_string(), false, false),
+            json_events_response(None, rx, relay_opts()),
         )
         .await
         .expect("collector returns without waiting for channel close");
@@ -311,9 +311,7 @@ mod tests {
         let response = stream_events_response(
             None,
             rx,
-            "gpt-5.2-codex".to_string(),
-            false,
-            false,
+            relay_opts(),
             0,
             std::time::Duration::from_secs(15),
         );
@@ -338,9 +336,7 @@ mod tests {
         let response = stream_events_response(
             Some(Ok(created_event())),
             rx,
-            "gpt-5.2-codex".to_string(),
-            false,
-            false,
+            relay_opts(),
             42,
             std::time::Duration::from_secs(15),
         );
