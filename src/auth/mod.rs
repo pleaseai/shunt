@@ -148,6 +148,48 @@ pub async fn resolve_claude_account(
         .map_err(|error| auth_error(error.to_string()))
 }
 
+/// Resolve one ChatGPT (Codex) OAuth account for the account pool. Unlike
+/// [`resolve_claude_account`], there is no account UUID to carry: the
+/// account id is embedded in the ChatGPT access token itself and is read back
+/// from there (or from the store file) by [`codex::auth::CodexAuthStore`].
+pub async fn resolve_chatgpt_account(
+    account: &crate::config::AccountConfig,
+    client: &reqwest::Client,
+) -> Result<Credential, AdapterError> {
+    if let Some(token_env) = account.token_env.as_deref() {
+        let access_token = env::var(token_env)
+            .ok()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| auth_error(format!("{token_env} is not set")))?;
+        let account_id = codex::auth::jwt_account_id(&access_token).ok_or_else(|| {
+            // This account's token came from `token_env`, not a `codex login`, so
+            // point the operator at the environment variable rather than telling
+            // them to re-run a login they never performed.
+            auth_error(format!(
+                "ChatGPT account id missing from the access token in environment variable {token_env}"
+            ))
+        })?;
+        return Ok(Credential::ChatGptOAuth {
+            access_token,
+            account_id,
+        });
+    }
+
+    let path = account
+        .credentials
+        .as_deref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| codex::store::account_path(&account.name));
+    let store = codex::auth::CodexAuthStore::new(path, client.clone());
+    store
+        .get_valid_chatgpt()
+        .await
+        .map(|credential| Credential::ChatGptOAuth {
+            access_token: credential.access_token,
+            account_id: credential.account_id,
+        })
+}
+
 /// Read an `auth = "api_key"` provider's key from its `api_key_env`. As a
 /// convenience the built-in OpenAI provider also falls back to the key inside
 /// ~/.codex/auth.json when `OPENAI_API_KEY` is unset.
@@ -181,7 +223,7 @@ pub fn auth_error(message: impl Into<String>) -> AdapterError {
     }
 }
 
-fn default_codex_auth_path() -> PathBuf {
+pub(crate) fn default_codex_auth_path() -> PathBuf {
     env::var_os("CODEX_AUTH_FILE")
         .map(PathBuf::from)
         .or_else(|| {
@@ -226,7 +268,7 @@ pub fn default_xai_auth_path() -> PathBuf {
 mod tests {
     use crate::config::{AccountConfig, Config};
 
-    use super::{resolve_api_key, resolve_claude_account, Credential};
+    use super::{resolve_api_key, resolve_chatgpt_account, resolve_claude_account, Credential};
 
     #[tokio::test]
     async fn resolves_claude_account_token_env_verbatim_with_uuid() {
@@ -251,6 +293,37 @@ mod tests {
             }
         );
         std::env::remove_var(env_name);
+    }
+
+    #[tokio::test]
+    async fn chatgpt_token_env_without_account_id_names_the_env_var() {
+        use axum::body::to_bytes;
+        // A `token_env` token whose JWT payload has no decodable
+        // `chatgpt_account_id` claim: the error must point at the environment
+        // variable, not misdirect the operator to `codex login`. The specific
+        // text lives in the error response body (`AdapterError::message` is the
+        // generic "authentication failed"), so assert against the body.
+        let env_name = format!("SHUNT_TEST_CHATGPT_TOKEN_{}", std::process::id());
+        std::env::set_var(&env_name, "header.not-a-claim.sig");
+        let account = AccountConfig {
+            name: "ci".to_string(),
+            credentials: None,
+            token_env: Some(env_name.clone()),
+            uuid: None,
+        };
+
+        let error = resolve_chatgpt_account(&account, &reqwest::Client::new())
+            .await
+            .unwrap_err();
+        std::env::remove_var(&env_name);
+        let bytes = to_bytes(error.response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&bytes);
+        assert!(
+            body.contains(&env_name),
+            "token_env error body should name the env var, got: {body}"
+        );
     }
 
     #[tokio::test]
@@ -289,6 +362,99 @@ mod tests {
             }
         );
         std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Build a fake ChatGPT access token carrying the `chatgpt_account_id`
+    /// claim `jwt_account_id` reads. Mirrors the `token()` helper in
+    /// `auth/codex/auth.rs`'s own test module.
+    fn chatgpt_access_token(account_id: &str) -> String {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+        let payload = serde_json::json!({
+            "exp": 2_000_000_000,
+            "https://api.openai.com/auth": {"chatgpt_account_id": account_id}
+        });
+        format!(
+            "x.{}.y",
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap())
+        )
+    }
+
+    #[tokio::test]
+    async fn resolves_chatgpt_account_token_env_verbatim_with_account_id() {
+        let env_name = format!("SHUNT_TEST_CHATGPT_TOKEN_{}", std::process::id());
+        let access_token = chatgpt_access_token("acct-from-jwt");
+        std::env::set_var(&env_name, &access_token);
+        let account = AccountConfig {
+            name: "ci".to_string(),
+            credentials: None,
+            token_env: Some(env_name.clone()),
+            uuid: None,
+        };
+
+        let credential = resolve_chatgpt_account(&account, &reqwest::Client::new())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            credential,
+            Credential::ChatGptOAuth {
+                access_token,
+                account_id: "acct-from-jwt".to_string(),
+            }
+        );
+        std::env::remove_var(env_name);
+    }
+
+    #[tokio::test]
+    async fn name_only_chatgpt_account_resolves_store_token() {
+        let _guard = crate::auth::codex::store::TEST_ENV_LOCK.lock().await;
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-name-only-chatgpt-auth-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let accounts_dir = dir.join("accounts");
+        std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &accounts_dir);
+
+        let access_token = chatgpt_access_token("acct-store");
+        let source = dir.join("source-auth.json");
+        std::fs::write(
+            &source,
+            serde_json::json!({
+                "auth_mode": "ChatGPT",
+                "tokens": {
+                    "access_token": access_token,
+                    "refresh_token": "refresh"
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        crate::auth::codex::store::import_auth("main", &source).unwrap();
+
+        let account = AccountConfig {
+            name: "main".to_string(),
+            credentials: None,
+            token_env: None,
+            uuid: None,
+        };
+
+        let credential = resolve_chatgpt_account(&account, &reqwest::Client::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            credential,
+            Credential::ChatGptOAuth {
+                access_token,
+                account_id: "acct-store".to_string(),
+            }
+        );
+        std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
         let _ = std::fs::remove_dir_all(dir);
     }
 

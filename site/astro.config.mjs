@@ -97,6 +97,10 @@ export default defineConfig({
               slug: 'guides/anthropic-multi-account',
             },
             {
+              label: 'Codex Multi-Account',
+              slug: 'guides/codex-multi-account',
+            },
+            {
               label: 'Admin & Remote Provisioning',
               translations: { ko: '관리자 & 원격 프로비저닝', ja: '管理とリモートプロビジョニング', 'zh-CN': '管理与远程预配' },
               slug: 'guides/admin-remote-provisioning',

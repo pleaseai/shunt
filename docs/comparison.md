@@ -82,12 +82,17 @@ discovery-loop result to a placeholder. By default Claude Code's own gate keeps 
 search off behind a non-first-party base URL, so this stays latent.
 ⁶ raine/ccp subscription backends: Codex (ChatGPT Plus/Pro), Kimi (kimi.com), Grok
 (grok.com), Cursor Agent — all via subscription OAuth.
-⁷ shunt pools explicit accounts only for Anthropic `claude_oauth`: session-sticky
+⁷ shunt pools explicit accounts for both Anthropic `claude_oauth` and ChatGPT/Codex
+`chatgpt_oauth`. The Anthropic pool is proactive **and** reactive: session-sticky
 selection, per-provider round-robin, model-aware proactive rotation from per-account
 5h/7d quota headers, cooldowns, forced refresh after 401, and reactive failover on
-quota-rejected 429s and 5xx responses. ChatGPT/Codex remains single-account;
-per-account usage reporting is not implemented.
-⁸ **[#82]** adds an opt-in, per-provider `tool_search` flag (`src/config.rs:324-335,1153-1161`)
+quota-rejected 429s and 5xx responses (`docs/m8-anthropic-multi-account.md`). The
+Codex/ChatGPT pool (`docs/m10-codex-multi-account.md`) mirrors the reactive half only —
+session-sticky/round-robin selection, cooldowns, forced refresh after 401, rotation on
+429/5xx/credential-resolution failure — because the backend sends no per-account quota
+headers, so there is no proactive near-quota switch and no fill-first ordering across
+accounts. Per-account usage reporting is not implemented for either pool.
+⁸ **[#82]** adds an opt-in, per-provider `tool_search` flag (`src/config.rs:326-337,1198-1211`)
 that maps Claude Code's tool search onto the OpenAI Responses API's own native,
 client-executed `tool_search` protocol — `ToolSearch` → `tool_search`, its `tool_use` →
 `tool_search_call`, and `tool_reference` → a `tool_search_output` item carrying the loaded
@@ -150,15 +155,20 @@ Most gaps are **deliberate scope boundaries**, not oversights. shunt's own READM
 positions general gateways (LiteLLM/Portkey/bifrost) as *adjacent infrastructure /
 possible backends*, not the same product.
 
-- **Anthropic OAuth multi-account is deliberately narrow.** shunt has a proactive
-  and reactive account pool for `auth = "claude_oauth"`: `x-claude-code-session-id`
-  stickiness, per-provider round-robin, model-aware rotation before the 5h or governing
-  weekly bucket reaches the wall, account cooldowns, credentials-file force-refresh
-  after 401, and failover after quota-rejected 429s or 5xx responses
-  (`docs/m8-anthropic-multi-account.md`). It does **not** pool ChatGPT/Codex accounts,
-  ramp concurrency on a freshly switched account, or expose per-account usage.
+- **Multi-account pooling is deliberately narrow.** shunt has a proactive and reactive
+  account pool for `auth = "claude_oauth"`: `x-claude-code-session-id` stickiness,
+  per-provider round-robin, model-aware rotation before the 5h or governing weekly
+  bucket reaches the wall, account cooldowns, credentials-file force-refresh after
+  401, and failover after quota-rejected 429s or 5xx responses
+  (`docs/m8-anthropic-multi-account.md`). ChatGPT/Codex (`auth = "chatgpt_oauth"`) now
+  has a mirrored pool too, but **reactive-only** — session-sticky/round-robin
+  selection, cooldowns, and failover on 401/429/5xx/credential-resolution failure,
+  with no quota-aware proactive rotation because the backend exposes no per-account
+  rate-limit headers (`docs/m10-codex-multi-account.md`). Neither pool ramps
+  concurrency on a freshly switched account or exposes per-account usage.
   CLIProxyAPI, LiteLLM, and Portkey provide broader fleet-oriented balancing and
-  visibility; see §6, items G–H for the remaining gap.
+  visibility, and CLIProxyAPI in particular supports quota-aware fill-first ordering
+  that shunt's Codex pool still lacks; see §6, item H for the remaining gap.
 - **Narrow backend breadth.** Only Anthropic-Messages passthrough or OpenAI-Responses
   translation; no native Gemini/Bedrock/Azure/Ollama unless they expose one of those
   two protocols.
@@ -239,11 +249,15 @@ toward being a fleet gateway and warrant a conscious decision first.
 
 ### Scope-boundary (decide before doing)
 
-- **G. Minimal multi-account for ChatGPT/Codex.** Full LB is out of scope, but heavy
-  users hit ChatGPT/Codex rolling-window caps, where a *fill-first* rotation across a
-  handful of `~/.codex/auth.json`-style logins (burn one account's window before
-  moving to the next) is disproportionately valuable. This is the single biggest
-  feature gap vs CLIProxyAPI and the one most worth a design discussion.
+- **G. Minimal multi-account for ChatGPT/Codex — implemented, reactive-only.**
+  M10 pools a handful of `~/.codex/auth.json`-style logins behind `chatgpt_oauth`
+  with session-sticky selection and cooldown-based failover on 401/429/5xx/
+  credential-resolution failure (`docs/m10-codex-multi-account.md`). What the
+  original ask still lacks is the *fill-first* piece specifically: burning one
+  account's rolling-window quota before moving to the next needs Codex to expose
+  per-account rate-limit headers first (see H) — today the pool only reacts after a
+  request has already failed on the current account, mirroring only the reactive
+  half of the Anthropic (`claude_oauth`) pool's proactive-plus-reactive design.
 
 - **H. Per-account quota/usage visibility.** Follows G. For Anthropic accounts the
   opt-in admin dashboard ([#77]) already surfaces each account's 5h/7d window and
@@ -265,15 +279,19 @@ main session on Claude), and xAI OAuth; raine's edge is a built-in monitor TUI, 
 first-party ChatGPT OAuth login, and Kimi breadth. Against **CLIProxyAPI**,
 shunt wins on translation-path upload trimming (CLIProxyAPI's WS is a passthrough)
 and trades away most fleet features (broad multi-account LB, management, plugins,
-backend breadth) by design. It now provides a narrow Anthropic OAuth account
-pool with model-aware proactive quota scheduling plus reactive failover, but
-ChatGPT/Codex pooling remains a deliberate gap.
+backend breadth) by design. It now provides a narrow Anthropic OAuth account pool
+with model-aware proactive quota scheduling plus reactive failover, and a mirrored
+ChatGPT/Codex pool that covers the reactive half only — quota-aware fill-first
+rotation across Codex accounts remains a deliberate gap pending per-account
+rate-limit visibility (§6, items G–H).
 The highest-value in-scope work is finishing the tool-search
 context savings ([#43]) — now partly addressed by an opt-in native `tool_search` path on
 Codex/OpenAI ([#82]). The Codex WS transport's pre-first-event HTTP fallback gap
 has since been closed ([#46]); its continuation-normalization live-probe ([#45])
-remains open. The biggest deliberate gap left to weigh is minimal fill-first
-multi-account for ChatGPT/Codex.
+remains open. The biggest deliberate gap left to weigh is quota-aware fill-first
+rotation across the ChatGPT/Codex account pool — the pool itself now exists
+(`docs/m10-codex-multi-account.md`, reactive-only), so only the proactive
+fill-first half remains.
 
 [#43]: https://github.com/pleaseai/shunt/issues/43
 [#82]: https://github.com/pleaseai/shunt/issues/82

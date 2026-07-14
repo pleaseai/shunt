@@ -47,14 +47,17 @@ enum Command {
     /// `~/.claude/.credentials.json`.
     Token,
     /// Log in to a subscription provider and save its credential for shunt to
-    /// inject. Supports `xai`, `cursor`, and `claude`.
+    /// inject. Supports `xai`, `cursor`, `claude`, and `codex`.
     Login {
-        /// Provider to log in to (`xai`, `cursor`, or `claude`).
+        /// Provider to log in to (`xai`, `cursor`, `claude`, or `codex`).
         provider: String,
-        /// Stable Claude account name used by a name-only pool entry.
+        /// Stable account name used by a name-only pool entry (`claude` and
+        /// `codex` only).
         #[arg(long)]
         name: Option<String>,
-        /// Generate and store a one-year `claude setup-token` value.
+        /// Generate and store a one-year `claude setup-token` value (`claude`
+        /// only; Codex OAuth tokens are always refreshable, so this does not
+        /// apply to `shunt login codex`).
         #[arg(long)]
         long_lived: bool,
     },
@@ -117,8 +120,21 @@ fn login(
             })?;
             runtime()?.block_on(shunt::auth::claude::login::run(name, long_lived))
         }
+        "codex" if long_lived => {
+            anyhow::bail!(
+                "--long-lived is not supported for `shunt login codex`; Codex OAuth tokens are always refreshable"
+            )
+        }
+        "codex" => {
+            let name = name.ok_or_else(|| {
+                anyhow::anyhow!("`shunt login codex` requires --name <account-name>")
+            })?;
+            runtime()?.block_on(shunt::auth::codex::login::run(name))
+        }
         _ => {
-            anyhow::bail!("unknown login provider {provider:?}; supported: claude, cursor, xai")
+            anyhow::bail!(
+                "unknown login provider {provider:?}; supported: claude, codex, cursor, xai"
+            )
         }
     }
 }
@@ -355,6 +371,39 @@ mod tests {
         assert_eq!(provider, "claude");
         assert!(name.is_none());
         assert!(!long_lived);
+    }
+
+    #[test]
+    fn codex_login_parses_name_and_rejects_missing_name_or_long_lived() {
+        assert!(Cli::try_parse_from(["shunt", "login", "codex", "--name", "ci"]).is_ok());
+        let parsed = Cli::try_parse_from(["shunt", "login", "codex", "--name", "ci"]).unwrap();
+        let Some(Command::Login {
+            provider,
+            name,
+            long_lived,
+        }) = parsed.command
+        else {
+            panic!("expected login command");
+        };
+        assert_eq!(provider, "codex");
+        assert_eq!(name.as_deref(), Some("ci"));
+        assert!(!long_lived);
+
+        // These error branches return before touching the network or runtime,
+        // so they are safe to exercise directly (mirrors the pattern used for
+        // the other providers' bail arms below).
+        let error = login("codex", None, false, None).expect_err("missing --name must fail");
+        assert!(error.to_string().contains("requires --name"));
+
+        let error = login("codex", Some("ci"), true, None)
+            .expect_err("--long-lived must be rejected for codex");
+        assert!(error.to_string().contains("--long-lived is not supported"));
+    }
+
+    #[test]
+    fn login_rejects_unknown_provider() {
+        let error = login("unknown", None, false, None).expect_err("unknown provider must fail");
+        assert!(error.to_string().contains("unknown login provider"));
     }
 
     #[test]

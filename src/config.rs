@@ -309,7 +309,8 @@ pub struct ProviderConfig {
     /// How `POST /v1/messages/count_tokens` is answered for this provider.
     #[serde(default)]
     pub count_tokens: CountTokens,
-    /// Explicit Claude OAuth accounts. An empty list means the account store
+    /// Explicit OAuth accounts for a `claude_oauth` (Anthropic) or
+    /// `chatgpt_oauth` (Codex) provider. An empty list means the account store
     /// directory will be scanned by the account-pool layer.
     #[serde(default)]
     pub accounts: Vec<AccountConfig>,
@@ -500,6 +501,14 @@ pub fn host_is_anthropic(host: &str) -> bool {
     host == "anthropic.com" || host.ends_with(".anthropic.com")
 }
 
+/// Whether `host` belongs to the ChatGPT/Codex backend (`chatgpt.com` or any
+/// subdomain). Used to reject a `chatgpt_oauth` provider pointed at a
+/// non-ChatGPT host, so shunt never leaks a Codex subscription bearer to
+/// another origin.
+pub fn host_is_chatgpt(host: &str) -> bool {
+    host == "chatgpt.com" || host.ends_with(".chatgpt.com")
+}
+
 /// Whether `host` identifies the local machine.
 pub fn host_is_loopback(host: &str) -> bool {
     let host = host
@@ -571,14 +580,20 @@ pub enum ConfigError {
     CursorOauthNonCursorHost { provider: String, host: String },
     #[error("providers.{provider} uses auth = \"cursor_oauth\" but base_url is not https; refusing to send a subscription token over plaintext")]
     CursorOauthNotHttps { provider: String },
-    #[error("providers.{provider}.accounts requires auth = \"claude_oauth\"")]
-    AccountsRequireClaudeOauth { provider: String },
+    #[error("providers.{provider}.accounts requires auth = \"claude_oauth\" or \"chatgpt_oauth\"")]
+    AccountsRequireOauthProvider { provider: String },
     #[error("providers.{provider} uses auth = \"claude_oauth\" but kind is not \"anthropic\"")]
     ClaudeOauthWrongKind { provider: String },
     #[error("providers.{provider} uses auth = \"claude_oauth\" but base_url host {host} is not anthropic.com; refusing to send a subscription token off-origin")]
     ClaudeOauthNonAnthropicHost { provider: String, host: String },
     #[error("providers.{provider} uses auth = \"claude_oauth\" but base_url is not https; refusing to send a subscription token over plaintext")]
     ClaudeOauthNotHttps { provider: String },
+    #[error("providers.{provider} uses auth = \"chatgpt_oauth\" but base_url host {host} is not chatgpt.com; refusing to send a subscription token off-origin")]
+    ChatgptOauthNonChatgptHost { provider: String, host: String },
+    #[error("providers.{provider} uses auth = \"chatgpt_oauth\" but base_url is not https; refusing to send a subscription token over plaintext")]
+    ChatgptOauthNotHttps { provider: String },
+    #[error("providers.{provider} uses auth = \"chatgpt_oauth\" but kind is not \"responses\"; the anthropic adapter would forward the client's own credential instead of the Codex token")]
+    ChatgptOauthWrongKind { provider: String },
     #[error("providers.{provider}.accounts contains duplicate account name \"{name}\"")]
     DuplicateAccountName { provider: String, name: String },
     #[error("providers.{provider}.accounts account name \"{name}\" must match [a-z0-9-]+")]
@@ -947,8 +962,13 @@ impl Config {
                     });
                 }
             }
-            if !provider.accounts.is_empty() && provider.auth != AuthMode::ClaudeOauth {
-                return Err(ConfigError::AccountsRequireClaudeOauth {
+            if !provider.accounts.is_empty()
+                && !matches!(
+                    provider.auth,
+                    AuthMode::ClaudeOauth | AuthMode::ChatgptOauth
+                )
+            {
+                return Err(ConfigError::AccountsRequireOauthProvider {
                     provider: name.clone(),
                 });
             }
@@ -970,6 +990,36 @@ impl Config {
                     }
                     if !host_is_anthropic(host) {
                         return Err(ConfigError::ClaudeOauthNonAnthropicHost {
+                            provider: name.clone(),
+                            host: host.to_string(),
+                        });
+                    }
+                }
+            }
+            // A chatgpt_oauth provider injects the operator's stored Codex
+            // subscription bearer, so — like claude_oauth above — its base_url
+            // must stay on the ChatGPT host over https, never a gateway or
+            // plaintext endpoint that would receive the token. It must also be a
+            // `responses`-kind provider (the Codex backend's kind, shared with
+            // plain OpenAI and xAI): the Responses adapter is what injects the
+            // Codex bearer, whereas the anthropic adapter would fall through to
+            // forwarding the client's own credential off-origin (same leak guard
+            // as xai_oauth above).
+            if provider.auth == AuthMode::ChatgptOauth {
+                if provider.kind != ProviderKind::Responses {
+                    return Err(ConfigError::ChatgptOauthWrongKind {
+                        provider: name.clone(),
+                    });
+                }
+                let host = url.host_str().unwrap_or_default();
+                if !host_is_loopback(host) {
+                    if url.scheme() != "https" {
+                        return Err(ConfigError::ChatgptOauthNotHttps {
+                            provider: name.clone(),
+                        });
+                    }
+                    if !host_is_chatgpt(host) {
+                        return Err(ConfigError::ChatgptOauthNonChatgptHost {
                             provider: name.clone(),
                             host: host.to_string(),
                         });
@@ -1199,8 +1249,8 @@ mod tests {
     use figment::providers::Format;
 
     use super::{
-        config_file_candidates, AccountConfig, AdminConfig, AuthMode, Config, ConfigError,
-        ConfigFormat, ModelConfig, ProviderKind, ResponsesFlavor,
+        config_file_candidates, host_is_chatgpt, AccountConfig, AdminConfig, AuthMode, Config,
+        ConfigError, ConfigFormat, ModelConfig, ProviderKind, ResponsesFlavor,
     };
 
     #[test]
@@ -1286,7 +1336,7 @@ mod tests {
     }
 
     #[test]
-    fn accounts_require_claude_oauth() {
+    fn accounts_require_oauth_provider() {
         let mut config = Config::default();
         config
             .providers
@@ -1296,7 +1346,7 @@ mod tests {
             .push(account("main"));
         assert!(matches!(
             config.validate().unwrap_err(),
-            ConfigError::AccountsRequireClaudeOauth { .. }
+            ConfigError::AccountsRequireOauthProvider { .. }
         ));
     }
 
@@ -1388,6 +1438,91 @@ mod tests {
         let anthropic = config.provider("anthropic").unwrap();
         assert!(anthropic.accounts.is_empty());
         assert_eq!(anthropic.base_url, "https://api.anthropic.com");
+    }
+
+    // The default `codex` provider already uses `auth = "chatgpt_oauth"` with
+    // base_url `https://chatgpt.com/backend-api`, so unlike claude_oauth these
+    // tests mutate `Config::default()` directly rather than needing a config
+    // builder that flips the auth mode first.
+
+    #[test]
+    fn chatgpt_oauth_accepts_accounts_on_default_chatgpt_host() {
+        let mut config = Config::default();
+        config
+            .providers
+            .get_mut("codex")
+            .unwrap()
+            .accounts
+            .push(account("work"));
+        let config = config.validate().unwrap();
+        let codex = config.provider("codex").unwrap();
+        assert_eq!(codex.accounts.len(), 1);
+    }
+
+    #[test]
+    fn chatgpt_oauth_rejects_remote_non_chatgpt_base_url() {
+        let mut config = Config::default();
+        let codex = config.providers.get_mut("codex").unwrap();
+        codex.base_url = "https://evil.example.com".to_string();
+        codex.accounts.push(account("work"));
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::ChatgptOauthNonChatgptHost { .. }
+        ));
+    }
+
+    #[test]
+    fn chatgpt_oauth_rejects_plaintext_remote_base_url() {
+        let mut config = Config::default();
+        let codex = config.providers.get_mut("codex").unwrap();
+        codex.base_url = "http://chatgpt.com/backend-api".to_string();
+        codex.accounts.push(account("work"));
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::ChatgptOauthNotHttps { .. }
+        ));
+    }
+
+    #[test]
+    fn chatgpt_oauth_requires_responses_kind() {
+        // An anthropic-kind provider never injects the ChatGptOAuth credential —
+        // the anthropic adapter would forward the client's own headers to
+        // chatgpt.com — so the combination is rejected at boot (mirrors the
+        // xai_oauth guard).
+        let mut config = Config::default();
+        let codex = config.providers.get_mut("codex").unwrap();
+        codex.kind = ProviderKind::Anthropic;
+        codex.accounts.push(account("work"));
+        let error = config.validate().unwrap_err();
+        assert!(matches!(error, ConfigError::ChatgptOauthWrongKind { .. }));
+    }
+
+    #[test]
+    fn chatgpt_oauth_accepts_plaintext_loopback_base_url() {
+        let mut config = Config::default();
+        let codex = config.providers.get_mut("codex").unwrap();
+        codex.base_url = "http://127.0.0.1:8080".to_string();
+        codex.accounts.push(account("work"));
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn chatgpt_oauth_rejects_duplicate_account_names() {
+        let mut config = Config::default();
+        config.providers.get_mut("codex").unwrap().accounts =
+            vec![account("work"), account("work")];
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::DuplicateAccountName { .. }
+        ));
+    }
+
+    #[test]
+    fn host_is_chatgpt_matches_chatgpt_and_subdomains_only() {
+        assert!(host_is_chatgpt("chatgpt.com"));
+        assert!(host_is_chatgpt("x.chatgpt.com"));
+        assert!(!host_is_chatgpt("chatgpt.com.evil.com"));
+        assert!(!host_is_chatgpt("openai.com"));
     }
 
     #[test]
