@@ -761,6 +761,14 @@ fn stream_response(
         .into_response()
 }
 
+/// Collect the full HTTP Responses SSE body into a single Anthropic message for
+/// a non-streaming client. A backend-sent `error` / `response.failed` event
+/// (delivered as a normal event on the `200 OK` stream — rate-limit,
+/// content-policy refusal) is surfaced as a gateway error rather than a `200 OK`
+/// with the partial content accumulated before it, so the client cannot mistake
+/// a backend failure for a truncated-but-successful result (issue #113). This
+/// mirrors the streaming path, which emits the same error inline as an SSE
+/// `error` event.
 async fn json_response(
     upstream: reqwest::Response,
     model: String,
@@ -774,6 +782,9 @@ async fn json_response(
     let mut machine = AnthropicSseMachine::new(model, thinking_enabled, tool_search_native);
     for event in parse_sse_events(&body) {
         let _ = machine.apply(event);
+    }
+    if let Some(error) = machine.backend_error() {
+        return Ok(backend_error_response(error));
     }
     Ok((StatusCode::OK, axum::Json(machine.final_json())).into_response())
 }
@@ -1183,11 +1194,12 @@ fn stream_events_response(
 /// is mid-stream: return a gateway error instead of presenting partial output as
 /// a successful response. `buffered` is the replayed first event, if any.
 ///
-/// Note the asymmetry: a mid-stream *transport* error surfaces as a gateway
-/// error, but a backend-sent error *event* (arriving as `Ok`, e.g. rate-limit or
-/// content-policy) is currently applied by `machine` like any other event and not
-/// surfaced as a gateway error — a pre-existing limitation shared with the HTTP
-/// `json_response` path, tracked separately.
+/// A backend-sent error *event* (arriving as `Ok`, e.g. rate-limit or
+/// content-policy refusal or `response.failed`) is likewise surfaced as a gateway
+/// error rather than a `200 OK` with the partial content collected before it
+/// (issue #113): the machine records the mapped error envelope, and it is checked
+/// after draining. This matches both the mid-stream *transport* error above and
+/// the streaming path, which emits the same error inline as an SSE `error` event.
 async fn json_events_response(
     buffered: BufferedEvent,
     mut events: CodexWsEvents,
@@ -1218,7 +1230,30 @@ async fn json_events_response(
             None => break,
         }
     }
+    if let Some(error) = machine.backend_error() {
+        return backend_error_response(error);
+    }
     (StatusCode::OK, axum::Json(machine.final_json())).into_response()
+}
+
+/// Build the gateway-error response for a backend-sent `error` /
+/// `response.failed` event captured by the machine on a non-streaming JSON path
+/// (issue #113). `error` is the already-mapped Anthropic error envelope
+/// ([`AnthropicSseMachine::backend_error`]); it becomes the response body with a
+/// `502` status — SSE error events carry no upstream HTTP status to preserve, and
+/// the machine mapped the envelope's `error.type` against `502` to match. Emits a
+/// warning for operational visibility. The streaming paths surface the same
+/// envelope inline as an SSE `error` event instead.
+fn backend_error_response(error: &Value) -> axum::response::Response {
+    let message = error
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or("upstream request failed");
+    tracing::warn!(
+        %message,
+        "responses backend sent an error event on the non-streaming JSON path"
+    );
+    (StatusCode::BAD_GATEWAY, axum::Json(error.clone())).into_response()
 }
 
 /// Render a websocket transport error as an Anthropic `error` SSE event.
@@ -1461,7 +1496,10 @@ mod tests {
     };
 
     use super::codex_continuation::Decision;
-    use super::{apply_continuation, build_test_request, mapped_upstream_error, responses_url};
+    use super::{
+        apply_continuation, build_test_request, json_events_response, json_response,
+        mapped_upstream_error, responses_url, ResponseEvent,
+    };
 
     /// Serves `body` at `status` from a mock server and returns the resulting
     /// `reqwest::Response`, mirroring the shape `mapped_upstream_error` sees in
@@ -1493,6 +1531,13 @@ mod tests {
             .await
             .expect("response body should be readable");
         serde_json::from_slice(&bytes).expect("error body should be JSON")
+    }
+
+    async fn response_body_json(response: axum::response::Response) -> Value {
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body should be readable");
+        serde_json::from_slice(&bytes).expect("response body should be JSON")
     }
 
     fn codex_route() -> Route {
@@ -1957,5 +2002,89 @@ mod tests {
             commit_or_fallback(None, rx).is_err(),
             "an empty stream falls back to HTTP"
         );
+    }
+
+    /// A backend-sent `error` / `response.failed` event on the `200 OK` HTTP
+    /// Responses stream must surface as a gateway error on the non-streaming JSON
+    /// path, not a `200 OK` with the partial content collected before it (issue
+    /// #113).
+    #[tokio::test]
+    async fn json_response_surfaces_backend_error_event_as_gateway_error() {
+        let sse = concat!(
+            "event: response.created\n",
+            "data: {\"response\":{\"id\":\"resp_1\"}}\n\n",
+            "event: response.output_text.delta\n",
+            "data: {\"delta\":\"partial\"}\n\n",
+            "event: response.failed\n",
+            "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"Rate limit reached\"}}}\n\n",
+        );
+        let upstream = upstream_response(200, sse, &[]).await;
+        let response = json_response(upstream, "gpt-5.2-codex".to_string(), false, false)
+            .await
+            .expect("json_response builds a response");
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = response_body_json(response).await;
+        assert_eq!(body["type"], "error");
+        assert_eq!(body["error"]["message"], "Rate limit reached");
+    }
+
+    /// A clean turn still returns the collected Anthropic message as `200 OK` —
+    /// the fix must not regress the success path.
+    #[tokio::test]
+    async fn json_response_returns_ok_for_a_clean_turn() {
+        let sse = concat!(
+            "event: response.created\n",
+            "data: {\"response\":{\"id\":\"resp_1\"}}\n\n",
+            "event: response.output_item.added\n",
+            "data: {\"item\":{\"type\":\"message\"}}\n\n",
+            "event: response.output_text.delta\n",
+            "data: {\"delta\":\"hello\"}\n\n",
+            "event: response.output_text.done\n",
+            "data: {}\n\n",
+            "event: response.completed\n",
+            "data: {\"response\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n",
+        );
+        let upstream = upstream_response(200, sse, &[]).await;
+        let response = json_response(upstream, "gpt-5.2-codex".to_string(), false, false)
+            .await
+            .expect("json_response builds a response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body_json(response).await;
+        assert_eq!(body["type"], "message");
+        assert_eq!(body["content"][0]["text"], "hello");
+    }
+
+    /// The websocket non-streaming collector surfaces a backend-sent error *event*
+    /// (an `Ok` on the channel, distinct from a transport `Err`) as a gateway
+    /// error, mirroring the HTTP `json_response` path (issue #113).
+    #[tokio::test]
+    async fn json_events_response_surfaces_backend_error_event_as_gateway_error() {
+        use tokio::sync::mpsc;
+
+        let (tx, rx) = mpsc::unbounded_channel();
+        tx.send(Ok(ResponseEvent {
+            event: Some("response.created".to_string()),
+            data: json!({"response": {"id": "resp_1"}}),
+        }))
+        .unwrap();
+        tx.send(Ok(ResponseEvent {
+            event: Some("response.failed".to_string()),
+            data: json!({
+                "type": "response.failed",
+                "response": {"error": {"code": "rate_limit_exceeded", "message": "Rate limit reached"}}
+            }),
+        }))
+        .unwrap();
+        drop(tx); // close the channel so the collector drains and returns
+
+        let response =
+            json_events_response(None, rx, "gpt-5.2-codex".to_string(), false, false).await;
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = response_body_json(response).await;
+        assert_eq!(body["type"], "error");
+        assert_eq!(body["error"]["message"], "Rate limit reached");
     }
 }

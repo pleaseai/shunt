@@ -62,6 +62,15 @@ pub struct AnthropicSseMachine {
     /// Only then is an upstream `tool_search_call` item surfaced as a `ToolSearch`
     /// `tool_use`; under the shim the upstream never emits one.
     tool_search_native: bool,
+    /// The mapped Anthropic error envelope from a backend-sent `error` /
+    /// `response.failed` event (issue #113). Backends deliver these as normal
+    /// `Ok` events on a `200 OK` stream (rate-limit, content-policy refusal,
+    /// `response.failed`) rather than a non-2xx HTTP status. The streaming paths
+    /// emit the envelope inline as an SSE `error` event and stop; the
+    /// non-streaming JSON collectors read it here (via [`Self::backend_error`])
+    /// after draining so they can return a gateway error instead of a `200 OK`
+    /// carrying the partial/empty content accumulated so far.
+    backend_error: Option<Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -105,6 +114,7 @@ impl AnthropicSseMachine {
             reasoning: None,
             web_search_indexes: HashMap::new(),
             tool_search_native,
+            backend_error: None,
         }
     }
 
@@ -137,13 +147,20 @@ impl AnthropicSseMachine {
             "response.completed" | "response.done" => self.complete(&event.data),
             "error" | "response.failed" => {
                 self.stopped = true;
-                vec![sse(
-                    "error",
-                    &map_error_value(&event.data, StatusCode::BAD_GATEWAY),
-                )]
+                let value = map_error_value(&event.data, StatusCode::BAD_GATEWAY);
+                self.backend_error = Some(value.clone());
+                vec![sse("error", &value)]
             }
             _ => Vec::new(),
         }
+    }
+
+    /// The mapped Anthropic error envelope if a backend `error` /
+    /// `response.failed` event was applied, else `None`. The non-streaming JSON
+    /// paths read this after draining to surface a backend failure as a gateway
+    /// error instead of a `200 OK` (issue #113). See [`Self::backend_error`].
+    pub fn backend_error(&self) -> Option<&Value> {
+        self.backend_error.as_ref()
     }
 
     pub fn finish(&mut self) -> Vec<String> {
