@@ -231,7 +231,7 @@ toward being a fleet gateway and warrant a conscious decision first.
   residual send→first-event window the checkout probe cannot cover (the socket dies
   *after* the frame is sent, before the first event): `open_ws_turn` peeks the first
   event and `commit_or_fallback` re-drives the turn over HTTP on a pre-first-event
-  transport error (`src/adapters/responses/mod.rs`), extending the pre-handshake
+  transport error (`src/adapters/responses/websocket.rs`), extending the pre-handshake
   safety net across that window. A failure *after* the first event has streamed is
   genuinely mid-stream — restarting would duplicate output — so it is surfaced as a
   clean Anthropic `error` SSE event rather than replayed; mid-turn resume via
