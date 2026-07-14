@@ -148,8 +148,11 @@ impl AnthropicSseMachine {
             "error" | "response.failed" => {
                 self.stopped = true;
                 let value = map_error_value(&event.data, StatusCode::BAD_GATEWAY);
-                self.backend_error = Some(value.clone());
-                vec![sse("error", &value)]
+                // Build the SSE event first (borrowing `value`), then move
+                // ownership into `backend_error` — avoids cloning the envelope.
+                let sse_event = sse("error", &value);
+                self.backend_error = Some(value);
+                vec![sse_event]
             }
             _ => Vec::new(),
         }
