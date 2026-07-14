@@ -118,6 +118,8 @@ async fn forward(
         .map(|provider| provider.retry.policy())
         .unwrap_or(crate::retry::RetryPolicy::DISABLED);
     let client = CursorHttpClient::new(state.http_client.clone(), base_url);
+    // TODO(#126, cursor): use a stable idempotency identity before tightening
+    // Cursor's response-status retry safety; currently preserve its behavior.
     // Cursor has no account-pool failover, so a transient 429/5xx or connection
     // blip on the single credential would otherwise surface straight to the
     // client. Bounded retry (issue #48) stays pre-stream: it only re-runs

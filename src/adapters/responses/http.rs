@@ -82,9 +82,12 @@ pub(super) async fn forward_http(
     // response body is handed to the streaming/JSON relay.
     let policy = provider_retry_policy(state, route);
     let body = bytes::Bytes::from(upstream_body.to_string());
-    let upstream = crate::retry::send_with_retry(policy, &route.provider, || {
-        http_send(state, route, credential.clone(), session_id, body.clone())
-    })
+    let upstream = crate::retry::send_with_retry_with_safety(
+        policy,
+        &route.provider,
+        crate::retry::RetrySafety::NonIdempotentPost,
+        || http_send(state, route, credential.clone(), session_id, body.clone()),
+    )
     .await
     .map_err(|error| {
         // Preserve the raw transport cause in logs before own_error maps it to

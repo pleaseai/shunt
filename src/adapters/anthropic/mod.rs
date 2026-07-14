@@ -63,17 +63,22 @@ async fn forward(
         provider.retry.policy()
     };
     let url = upstream_url(&state, &route, uri);
-    // `Bytes` clones the body as a cheap refcount bump, so an idempotent re-send
-    // on retry never re-copies it.
+    // `Bytes` clones the body as a cheap refcount bump for the safe,
+    // pre-acceptance transport retry.
     let body = bytes::Bytes::from(body);
     let client = state.http_client.clone();
-    let upstream = crate::retry::send_with_retry(policy, &route.provider, || {
-        client
-            .post(url.as_str())
-            .headers(request_headers.clone())
-            .body(body.clone())
-            .send()
-    })
+    let upstream = crate::retry::send_with_retry_with_safety(
+        policy,
+        &route.provider,
+        crate::retry::RetrySafety::NonIdempotentPost,
+        || {
+            client
+                .post(url.as_str())
+                .headers(request_headers.clone())
+                .body(body.clone())
+                .send()
+        },
+    )
     .await
     .map_err(upstream_error)?;
     let status = upstream.status();

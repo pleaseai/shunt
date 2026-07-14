@@ -93,6 +93,22 @@ pub trait RetryableError {
     fn is_transient(&self) -> bool;
 }
 
+/// Controls whether a response status may be retried.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RetrySafety {
+    /// The operation can safely be repeated after a response status.
+    Idempotent,
+    /// The operation is a creation POST. A response means the upstream may
+    /// already have accepted it, so only pre-response transport errors retry.
+    NonIdempotentPost,
+}
+
+impl RetrySafety {
+    fn may_retry_response_status(self) -> bool {
+        matches!(self, Self::Idempotent)
+    }
+}
+
 impl RetryableError for reqwest::Error {
     fn is_transient(&self) -> bool {
         // A `.send()` future resolves once response headers arrive, so any error
@@ -122,6 +138,24 @@ enum Backoff {
 pub async fn send_with_retry<E, F, Fut>(
     policy: RetryPolicy,
     provider: &str,
+    attempt: F,
+) -> Result<reqwest::Response, E>
+where
+    E: RetryableError + std::fmt::Display,
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<reqwest::Response, E>>,
+{
+    send_with_retry_with_safety(policy, provider, RetrySafety::Idempotent, attempt).await
+}
+
+/// Drive one upstream request through a bounded retry loop with an explicit
+/// acceptance-safety policy. Non-idempotent POSTs only retry transport errors
+/// returned before response headers, because any response status is ambiguous:
+/// the upstream may already have started a billable generation.
+pub async fn send_with_retry_with_safety<E, F, Fut>(
+    policy: RetryPolicy,
+    provider: &str,
+    safety: RetrySafety,
     mut attempt: F,
 ) -> Result<reqwest::Response, E>
 where
@@ -135,7 +169,11 @@ where
         let retries_left = retries < policy.max_retries;
 
         match outcome {
-            Ok(response) if retries_left && is_retryable_status(response.status()) => {
+            Ok(response)
+                if safety.may_retry_response_status()
+                    && retries_left
+                    && is_retryable_status(response.status()) =>
+            {
                 let status = response.status();
                 match next_backoff(&policy, retries, Some(response.headers())) {
                     Backoff::Sleep(delay) => {
@@ -458,6 +496,24 @@ mod tests {
             .await;
         assert_eq!(result.unwrap().status().as_u16(), 200);
         assert_eq!(calls, 3, "two retries after the first attempt");
+    }
+
+    #[tokio::test]
+    async fn non_idempotent_post_does_not_retry_after_response_headers() {
+        let mut calls = 0u32;
+        let result: Result<reqwest::Response, StubError> = send_with_retry_with_safety(
+            fast_policy(),
+            "test",
+            RetrySafety::NonIdempotentPost,
+            || {
+                calls += 1;
+                async move { Ok(response(503)) }
+            },
+        )
+        .await;
+
+        assert_eq!(result.unwrap().status().as_u16(), 503);
+        assert_eq!(calls, 1, "a response means the POST may have been accepted");
     }
 
     #[tokio::test]
