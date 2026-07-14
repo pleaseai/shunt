@@ -132,7 +132,7 @@ token_env = "CLAUDE_BACKUP_OAUTH_TOKEN"
 | `threshold` | no | Per-account soft quota threshold in `[0.0, 1.0]`, for every window without a per-window value. A low value marks a backup account that rotates out early. |
 | `threshold_5h` / `threshold_7d` / `threshold_fable` | no | Per-window soft thresholds; each beats `threshold` for its window. See [`[server.pool]`](#serverpool-optional) for the full resolution order. |
 | `priority` | no | Selection priority when the sticky account is unhealthy; lower is preferred, default `100`. Applies to Codex pools too. |
-| `disabled` | no | `true` removes the account from selection entirely (kept in config and on the admin dashboard). Applies to Codex pools too. |
+| `disabled` | no | `true` removes the account from selection entirely (kept in config; `claude_oauth` pools also keep it on the admin dashboard). Applies to Codex pools too. |
 
 A name-only entry reads `~/.shunt/accounts/claude/<name>.json`, created with `shunt login claude --name <name>`; `SHUNT_CLAUDE_ACCOUNTS_DIR` overrides that directory. An empty account list scans all valid store files. `claude_oauth` additionally requires an HTTPS `base_url` whose host is `anthropic.com` or a subdomain, preventing bearer leakage to another origin — except for loopback hosts (`localhost`, `127.0.0.1`, `[::1]`, …), which are exempt from both checks so a local debugging proxy or mock can be used over plain HTTP.
 
