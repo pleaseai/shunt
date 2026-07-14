@@ -95,11 +95,12 @@ pub(super) fn own_error(message: String) -> AdapterError {
 /// ([`super::ws_stream::json_events_response`]) non-streaming collectors.
 pub(super) fn backend_error_response(error: Value) -> axum::response::Response {
     // Borrow `error` for the log line only; the borrow ends with the macro so
-    // the envelope can move into the response body below without a clone.
-    // Fully-qualify `serde_json::Value` — inside `warn!` a bare `Value` resolves
-    // to tracing's own `Value` trait, not the JSON struct.
+    // the envelope can move into the response body below without a clone. Use the
+    // `error_message` field name (not the reserved `message`, which collides with
+    // the event's own format-string message), and fully-qualify `serde_json::Value`
+    // — inside `warn!` a bare `Value` resolves to tracing's own `Value` trait.
     tracing::warn!(
-        message = error
+        error_message = error
             .pointer("/error/message")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("upstream request failed"),
