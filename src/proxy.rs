@@ -259,7 +259,7 @@ fn check_inbound_auth(
     }
 }
 
-fn is_count_tokens(uri: &Uri) -> bool {
+pub(crate) fn is_count_tokens(uri: &Uri) -> bool {
     uri.path().ends_with("/count_tokens")
 }
 

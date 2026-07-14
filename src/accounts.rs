@@ -448,13 +448,21 @@ pub fn classify_codex(status: StatusCode, _headers: &HeaderMap) -> FailoverActio
 }
 
 pub fn retry_after(headers: &HeaderMap) -> Option<Duration> {
-    headers
-        .get(reqwest::header::RETRY_AFTER)?
-        .to_str()
-        .ok()?
-        .parse::<u64>()
-        .ok()
-        .map(Duration::from_secs)
+    let value = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
+    // RFC 7231 allows two forms: delta-seconds or an HTTP-date. Try the cheap
+    // numeric form first, then fall back to the date form — a server that sends
+    // `Retry-After: <HTTP-date>` would otherwise be silently ignored.
+    if let Ok(seconds) = value.trim().parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    let deadline = httpdate::parse_http_date(value.trim()).ok()?;
+    // Honor the wait until that instant; a deadline already in the past means
+    // "retry now" (zero wait) rather than falling through to computed backoff.
+    Some(
+        deadline
+            .duration_since(SystemTime::now())
+            .unwrap_or(Duration::ZERO),
+    )
 }
 
 #[cfg(test)]
@@ -805,5 +813,43 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(RETRY_AFTER, HeaderValue::from_static("42"));
         assert_eq!(retry_after(&headers), Some(Duration::from_secs(42)));
+    }
+
+    #[test]
+    fn parses_http_date_retry_after() {
+        // RFC 7231 date form: a deadline ~1h in the future is honored as a
+        // positive wait rather than silently ignored (which would fall through
+        // to computed backoff and retry before the server's requested deadline).
+        let deadline = SystemTime::now() + Duration::from_secs(3600);
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            RETRY_AFTER,
+            HeaderValue::from_str(&httpdate::fmt_http_date(deadline)).unwrap(),
+        );
+        let wait = retry_after(&headers).expect("http-date retry-after is honored");
+        // HTTP-date has 1s resolution; allow a small slack around the ~3600s wait.
+        assert!(
+            wait <= Duration::from_secs(3600) && wait >= Duration::from_secs(3595),
+            "expected ~3600s, got {wait:?}"
+        );
+    }
+
+    #[test]
+    fn past_http_date_retry_after_is_zero() {
+        // A deadline already in the past means "retry now", not a fall-through.
+        let deadline = SystemTime::now() - Duration::from_secs(3600);
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            RETRY_AFTER,
+            HeaderValue::from_str(&httpdate::fmt_http_date(deadline)).unwrap(),
+        );
+        assert_eq!(retry_after(&headers), Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn unparseable_retry_after_is_none() {
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("not-a-date"));
+        assert_eq!(retry_after(&headers), None);
     }
 }

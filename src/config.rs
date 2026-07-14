@@ -364,6 +364,99 @@ pub struct ProviderConfig {
     /// emits; unsupported flavors/models fall back to the shim regardless.
     #[serde(default)]
     pub tool_search: bool,
+    /// Bounded upstream retry/backoff for transient failures (issue #48).
+    /// Applies to this provider's single-credential upstream calls (the
+    /// `passthrough`/`api_key` Anthropic path, the single-credential Responses
+    /// path — `api_key`, `xai_oauth`, or an unpooled `chatgpt_oauth` provider —
+    /// and the Cursor path); the `claude_oauth`/`chatgpt_oauth` account pools
+    /// have their own account-rotation failover and are unaffected. On by
+    /// default with conservative settings — set `max_retries = 0` to disable.
+    #[serde(default)]
+    pub retry: RetryConfig,
+}
+
+/// Per-provider bounded retry/backoff for transient upstream failures (issue
+/// #48). An absent `[providers.<name>.retry]` table uses every default; a
+/// partial table overrides only the fields it sets (`#[serde(default)]` fills
+/// the rest). See [`crate::retry`] for the runtime behavior these values drive.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct RetryConfig {
+    /// Additional attempts after the first upstream try. `0` disables retry.
+    pub max_retries: u32,
+    /// Backoff ceiling before the first retry, milliseconds (jitter fills
+    /// `[0, this]`); grown by `multiplier` per attempt up to `max_backoff_ms`.
+    pub initial_backoff_ms: u64,
+    /// Upper bound on any single backoff and on an honored `Retry-After`,
+    /// milliseconds. A `Retry-After` longer than this surfaces the response
+    /// immediately rather than sleeping past budget.
+    pub max_backoff_ms: u64,
+    /// Exponential growth factor applied to the backoff per attempt (>= 1.0).
+    pub multiplier: f64,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        // Conservative for a single-user local proxy: at most two extra tries,
+        // sub-second first backoff, an 8s ceiling — enough to ride out a brief
+        // blip without turning a hard upstream outage into a long client hang.
+        Self {
+            max_retries: 2,
+            initial_backoff_ms: 500,
+            max_backoff_ms: 8_000,
+            multiplier: 2.0,
+        }
+    }
+}
+
+impl RetryConfig {
+    /// Largest `max_retries` accepted at config validation — a foot-gun guard,
+    /// not a runtime limit. Far above any sensible value for a local proxy.
+    const MAX_RETRIES_LIMIT: u32 = 10;
+
+    /// Build the runtime [`crate::retry::RetryPolicy`] this config describes.
+    pub fn policy(&self) -> crate::retry::RetryPolicy {
+        crate::retry::RetryPolicy {
+            max_retries: self.max_retries,
+            initial_backoff: std::time::Duration::from_millis(self.initial_backoff_ms),
+            max_backoff: std::time::Duration::from_millis(self.max_backoff_ms),
+            multiplier: self.multiplier,
+        }
+    }
+
+    /// Validate the retry bounds for `provider`. Caps `max_retries` so a typo
+    /// can't arm a retry storm, and requires a growth factor that actually grows
+    /// (or holds) the backoff — a sub-1.0 or non-finite `multiplier` is rejected.
+    /// The invariant lives with the type so any config path that builds a
+    /// [`RetryConfig`] can enforce it, not only `Config::validate`.
+    pub fn validate(&self, provider: &str) -> Result<(), ConfigError> {
+        if self.max_retries > Self::MAX_RETRIES_LIMIT {
+            return Err(ConfigError::InvalidRetryMaxRetries {
+                provider: provider.to_string(),
+                max_retries: self.max_retries,
+                limit: Self::MAX_RETRIES_LIMIT,
+            });
+        }
+        if !self.multiplier.is_finite() || self.multiplier < 1.0 {
+            return Err(ConfigError::InvalidRetryMultiplier {
+                provider: provider.to_string(),
+                multiplier: self.multiplier,
+            });
+        }
+        // A zero backoff makes every computed delay zero (`backoff_ceiling` grows
+        // from `initial_backoff` and is capped by `max_backoff`), turning retry
+        // into a tight no-delay loop that defeats the "backoff" the type promises.
+        // Guard it only when retry is actually enabled — `max_retries = 0` is the
+        // documented way to turn retry off and legitimately leaves the backoff unused.
+        if self.max_retries > 0 && (self.initial_backoff_ms == 0 || self.max_backoff_ms == 0) {
+            return Err(ConfigError::InvalidRetryBackoff {
+                provider: provider.to_string(),
+                initial_backoff_ms: self.initial_backoff_ms,
+                max_backoff_ms: self.max_backoff_ms,
+            });
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -659,6 +752,26 @@ pub enum ConfigError {
     InvalidOtelEndpoint { message: String },
     #[error("otel.sample_ratio must be between 0.0 and 1.0, got {ratio}")]
     InvalidOtelSampleRatio { ratio: f64 },
+    #[error("providers.{provider}.retry.max_retries must be at most {limit}, got {max_retries}")]
+    InvalidRetryMaxRetries {
+        provider: String,
+        max_retries: u32,
+        limit: u32,
+    },
+    #[error(
+        "providers.{provider}.retry.multiplier must be a finite value >= 1.0, got {multiplier}"
+    )]
+    InvalidRetryMultiplier { provider: String, multiplier: f64 },
+    #[error(
+        "providers.{provider}.retry: initial_backoff_ms and max_backoff_ms must both be > 0 when \
+         max_retries > 0 (set max_retries = 0 to disable retry instead of zeroing the backoff), \
+         got initial_backoff_ms = {initial_backoff_ms}, max_backoff_ms = {max_backoff_ms}"
+    )]
+    InvalidRetryBackoff {
+        provider: String,
+        initial_backoff_ms: u64,
+        max_backoff_ms: u64,
+    },
 }
 
 impl ProviderConfig {
@@ -674,6 +787,7 @@ impl ProviderConfig {
             accounts: Vec::new(),
             websocket: false,
             tool_search: false,
+            retry: RetryConfig::default(),
         }
     }
 
@@ -692,6 +806,7 @@ impl ProviderConfig {
             accounts: Vec::new(),
             websocket: false,
             tool_search: false,
+            retry: RetryConfig::default(),
         }
     }
 }
@@ -732,6 +847,7 @@ impl Default for Config {
                     accounts: Vec::new(),
                     websocket: false,
                     tool_search: false,
+                    retry: RetryConfig::default(),
                 },
             ),
             (
@@ -971,6 +1087,9 @@ impl Config {
                     provider: name.clone(),
                 });
             }
+            // Bounded-retry sanity (issue #48): the bounds check lives on
+            // RetryConfig so the invariant travels with the type.
+            provider.retry.validate(name)?;
             // A cursor_oauth provider injects the operator's stored Cursor
             // subscription bearer, so — like xai_oauth below — its base_url must
             // stay on a Cursor host over https, never a gateway or plaintext
@@ -1305,7 +1424,7 @@ mod tests {
     use super::{
         config_file_candidates, host_is_chatgpt, AccountConfig, AdminConfig, AuthMode,
         CodexEndpointConfig, Config, ConfigError, ConfigFormat, ModelConfig, ProviderKind,
-        ResponsesFlavor,
+        ResponsesFlavor, RetryConfig,
     };
 
     #[test]
@@ -1689,6 +1808,181 @@ mod tests {
         assert_eq!(cursor.kind, ProviderKind::Cursor);
         assert_eq!(cursor.base_url, "https://api2.cursor.sh");
         assert_eq!(cursor.auth, AuthMode::CursorOauth);
+    }
+
+    #[test]
+    fn retry_config_defaults_are_conservative_and_enabled() {
+        // Every built-in provider carries the on-by-default conservative policy.
+        let config = Config::default();
+        let retry = config.provider("anthropic").unwrap().retry;
+        assert_eq!(retry, RetryConfig::default());
+        assert_eq!(retry.max_retries, 2);
+        assert_eq!(retry.initial_backoff_ms, 500);
+        assert_eq!(retry.max_backoff_ms, 8_000);
+        assert_eq!(retry.multiplier, 2.0);
+        assert!(retry.policy().is_enabled());
+    }
+
+    #[test]
+    fn retry_config_empty_table_fills_every_default() {
+        // An empty `[providers.x.retry]` table exercises the container default.
+        let retry: RetryConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(retry, RetryConfig::default());
+    }
+
+    #[test]
+    fn retry_config_partial_table_overrides_only_set_fields() {
+        let retry: RetryConfig = serde_json::from_str(r#"{"max_retries": 0}"#).unwrap();
+        assert_eq!(retry.max_retries, 0);
+        // The rest keep their defaults.
+        assert_eq!(retry.initial_backoff_ms, 500);
+        assert_eq!(retry.max_backoff_ms, 8_000);
+        assert!(!retry.policy().is_enabled());
+    }
+
+    #[test]
+    fn retry_max_retries_over_limit_is_rejected() {
+        let mut config = Config::default();
+        config
+            .providers
+            .get_mut("anthropic")
+            .unwrap()
+            .retry
+            .max_retries = 99;
+        let error = config.validate().unwrap_err();
+        assert!(matches!(
+            error,
+            ConfigError::InvalidRetryMaxRetries {
+                max_retries: 99,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn retry_multiplier_below_one_is_rejected() {
+        let mut config = Config::default();
+        config
+            .providers
+            .get_mut("anthropic")
+            .unwrap()
+            .retry
+            .multiplier = 0.5;
+        let error = config.validate().unwrap_err();
+        assert!(matches!(error, ConfigError::InvalidRetryMultiplier { .. }));
+    }
+
+    #[test]
+    fn retry_validate_accepts_limit_and_rejects_one_over() {
+        // The cap is inclusive: exactly MAX_RETRIES_LIMIT is allowed, one more
+        // is not — pin both sides of the boundary so a `>` vs `>=` slip is caught.
+        let at_limit = RetryConfig {
+            max_retries: 10,
+            ..RetryConfig::default()
+        };
+        assert!(at_limit.validate("anthropic").is_ok());
+
+        let over_limit = RetryConfig {
+            max_retries: 11,
+            ..RetryConfig::default()
+        };
+        assert!(matches!(
+            over_limit.validate("anthropic").unwrap_err(),
+            ConfigError::InvalidRetryMaxRetries {
+                max_retries: 11,
+                limit: 10,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn retry_validate_rejects_non_finite_multiplier() {
+        // NaN slips past a naive `< 1.0` comparison (every comparison with NaN is
+        // false), so the finiteness guard must reject it — and infinity too.
+        for multiplier in [f64::NAN, f64::INFINITY] {
+            let retry = RetryConfig {
+                multiplier,
+                ..RetryConfig::default()
+            };
+            assert!(matches!(
+                retry.validate("anthropic").unwrap_err(),
+                ConfigError::InvalidRetryMultiplier { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn retry_validate_rejects_zero_backoff_when_enabled() {
+        // Retry enabled but a zeroed backoff would spin with no delay — rejected
+        // whether it's the initial, the max, or both that are zero.
+        for (initial, max) in [(0, 8_000), (500, 0), (0, 0)] {
+            let retry = RetryConfig {
+                max_retries: 2,
+                initial_backoff_ms: initial,
+                max_backoff_ms: max,
+                multiplier: 2.0,
+            };
+            assert!(matches!(
+                retry.validate("anthropic").unwrap_err(),
+                ConfigError::InvalidRetryBackoff { .. }
+            ));
+        }
+        // Disabled retry (max_retries = 0) leaves the backoff unused, so a zero
+        // backoff is allowed — that's the documented way to turn retry off.
+        let disabled = RetryConfig {
+            max_retries: 0,
+            initial_backoff_ms: 0,
+            max_backoff_ms: 0,
+            multiplier: 1.0,
+        };
+        assert!(disabled.validate("anthropic").is_ok());
+    }
+
+    #[test]
+    fn retry_validate_accepts_multiplier_at_inclusive_lower_bound() {
+        // Exactly 1.0 (a never-grows backoff, e.g. the disabled policy's own value)
+        // is accepted; just below is not — pins the `< 1.0` vs `<= 1.0` boundary.
+        let at_bound = RetryConfig {
+            multiplier: 1.0,
+            ..RetryConfig::default()
+        };
+        assert!(at_bound.validate("anthropic").is_ok());
+
+        let below = RetryConfig {
+            multiplier: 0.999,
+            ..RetryConfig::default()
+        };
+        assert!(matches!(
+            below.validate("anthropic").unwrap_err(),
+            ConfigError::InvalidRetryMultiplier { .. }
+        ));
+    }
+
+    #[test]
+    fn retry_config_round_trips_through_toml_provider_table() {
+        // A `[providers.anthropic.retry]` block deep-merges over the built-in
+        // defaults exactly as `Config::load` does, and every field survives the
+        // TOML round-trip into a policy that validates and stays enabled.
+        let config: Config =
+            figment::Figment::from(figment::providers::Serialized::defaults(Config::default()))
+                .merge(figment::providers::Toml::string(
+                    "[providers.anthropic.retry]\n\
+             max_retries = 5\n\
+             initial_backoff_ms = 250\n\
+             max_backoff_ms = 4000\n\
+             multiplier = 1.5\n",
+                ))
+                .extract()
+                .unwrap();
+
+        let retry = config.provider("anthropic").unwrap().retry;
+        assert_eq!(retry.max_retries, 5);
+        assert_eq!(retry.initial_backoff_ms, 250);
+        assert_eq!(retry.max_backoff_ms, 4_000);
+        assert_eq!(retry.multiplier, 1.5);
+        config.validate().unwrap();
+        assert!(retry.policy().is_enabled());
     }
 
     #[test]

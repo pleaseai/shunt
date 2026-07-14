@@ -37,7 +37,7 @@ ChatGPT-account Codex backend and translates the streamed response back. Three t
 
 | Aspect | Value | Source |
 | :-- | :-- | :-- |
-| Upstream endpoint | `<base_url>/codex/responses` | `src/adapters/responses.rs` |
+| Upstream endpoint | `<base_url>/codex/responses` | `src/adapters/responses/request.rs` |
 | Auth | ChatGPT OAuth from `~/.codex/auth.json` (auto-refreshed) | `src/auth/codex_auth.rs` |
 | Responses dialect | `ResponsesFlavor::Chatgpt` — drops params codex never sends | `src/config.rs`, `src/model/responses_request.rs` |
 
@@ -165,7 +165,7 @@ You don't configure any of this — it is automatic. The only knob is the file p
 ### 4.4 Headers shunt sends upstream
 
 For a Codex request shunt sends the Codex-CLI identity so client-version gating (§5) passes
-(`src/adapters/responses.rs`):
+(`src/adapters/responses/request.rs`):
 
 | Header | Value |
 | :-- | :-- |
@@ -179,7 +179,7 @@ For a Codex request shunt sends the Codex-CLI identity so client-version gating 
 
 The `user-agent` / `version` are **pinned to openai/codex rust-v0.144.1**. If a future slug
 demands a newer client, bump `CODEX_USER_AGENT` / `CODEX_CLIENT_VERSION` in
-`src/adapters/responses.rs`.
+`src/adapters/responses/request.rs`.
 
 ---
 

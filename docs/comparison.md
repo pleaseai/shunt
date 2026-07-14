@@ -231,7 +231,7 @@ toward being a fleet gateway and warrant a conscious decision first.
   residual send→first-event window the checkout probe cannot cover (the socket dies
   *after* the frame is sent, before the first event): `open_ws_turn` peeks the first
   event and `commit_or_fallback` re-drives the turn over HTTP on a pre-first-event
-  transport error (`src/adapters/responses/mod.rs`), extending the pre-handshake
+  transport error (`src/adapters/responses/websocket.rs`), extending the pre-handshake
   safety net across that window. A failure *after* the first event has streamed is
   genuinely mid-stream — restarting would duplicate output — so it is surfaced as a
   clean Anthropic `error` SSE event rather than replayed; mid-turn resume via
@@ -243,9 +243,14 @@ toward being a fleet gateway and warrant a conscious decision first.
   optimization — prewarming the socket/context before the first token. Worth
   revisiting once continuation is live-probed.
 
-- **E. Upstream retry/backoff (already tracked: [#48]).** The M4-planned bounded retry/backoff is not
-  implemented (`docs/implementation-plan.md:247`); transient upstream 429/5xx errors surface
-  directly. A small, idempotent retry would improve resilience without adding scope.
+- **E. Upstream retry/backoff (done: [#48]).** The M4-planned bounded retry/backoff now ships as a
+  reusable `src/retry.rs` layer shared by the Anthropic, Responses, and Cursor single-credential
+  paths: it retries only the transient statuses `429`/`502`/`503`/`504`/`529` (Anthropic's
+  "Overloaded") and connection errors, strictly pre-stream, with exponential backoff + randomized
+  jitter, honoring `Retry-After` in both its delta-seconds and HTTP-date forms (giving up cleanly
+  when it exceeds budget). It is configurable per provider under `[providers.<name>.retry]`
+  (on by default, conservative), held off `count_tokens`, and left off the `claude_oauth`/`chatgpt_oauth`
+  account pools, which drive their own account-rotation failover.
 
 ### Scope-boundary (decide before doing)
 

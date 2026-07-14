@@ -34,3 +34,33 @@ Critical issues, since the module is internal-only and single-call-site construc
 currently keeps invariants intact by convention.
 
 See [[shunt-project-status]] for the broader issue #32 WS v2 transport context.
+
+**PR #122 (issue #48, bounded upstream retry/backoff) extends the same pattern into
+`src/retry.rs`/`src/config.rs`:**
+
+- `RetryPolicy` (`src/retry.rs`) — all 4 fields `pub`, no smart constructor besides the
+  `DISABLED` const, no self-validation. The invariants the runtime retry loop actually
+  relies on to stay *bounded* (`max_retries <= 10`, `multiplier` finite `>= 1.0`) are
+  validated only on the sibling `RetryConfig` type (`src/config.rs`, `.validate()`), one
+  hop removed via `.policy()`. Today every call site builds `RetryPolicy` only from an
+  already-validated `RetryConfig` or the `DISABLED` const, so it's latent, not exploited —
+  flagged at Important-ish confidence (~75) specifically because an unvalidated
+  `max_retries`/`multiplier` would defeat the feature's core "bounded" premise (near
+  livelock via `attempt as i32` wraparound in `powi`), not just cosmetic drift. The pure
+  backoff math (`backoff_ceiling`) is otherwise defensively written (NaN/negative/overflow
+  all clamp via `f64::min`/`.max(0.0)` without panicking).
+- `RetryConfig::validate()` (`src/config.rs`) is a genuine improvement over the prior
+  `CodexWsError`/`Turn` pattern — it's a real callable method, not just prose — but it's
+  still opt-in (caller must remember to invoke it; `Config::validate()` does, at startup +
+  hot-reload). It also doesn't enforce a minimum backoff, so `initial_backoff_ms = 0` /
+  `max_backoff_ms = 0` passes validation and produces immediate zero-delay retries —
+  flagged low-confidence (~35) as a permissive-but-plausibly-intentional gap.
+- `CursorError.transient: bool` (`src/adapters/cursor/client.rs`) is a nice *counter*-example:
+  a private field set only by 3 controlled constructors (`new`/`internal`/`from_reqwest`)
+  correctly encodes "transient iff constructed from a connect/timeout `reqwest::Error`".
+  Adding it also incidentally closes off external struct-literal construction of
+  `CursorError` entirely (Rust requires all fields visible to use literal syntax), which
+  is a real encapsulation win. Undermined only by the pre-existing sibling fields
+  (`status`, `retry_after`, etc.) staying `pub`-mutable, so a hypothetical future
+  post-construction mutation of `.status` could drift out of sync with `.transient` —
+  flagged low-confidence (~40) since no such mutation exists yet in the diff.

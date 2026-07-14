@@ -515,7 +515,7 @@ an accurate window, one model at a time. (Subagents are a separate path — see 
 > shunt therefore sends the Codex CLI identity headers (`originator: codex_cli_rs`,
 > `version`, and a matching `user-agent`) on ChatGPT OAuth requests, **pinned to
 > openai/codex rust-v0.144.1**. If a future slug demands a newer client, bump the pinned
-> version in `src/adapters/responses.rs` (`CODEX_USER_AGENT` / `CODEX_CLIENT_VERSION`).
+> version in `src/adapters/responses/request.rs` (`CODEX_USER_AGENT` / `CODEX_CLIENT_VERSION`).
 
 Per-context selection also works via Claude Code's own knobs — divert one agent to a mapped model
 while the main session stays on Claude:

@@ -10,3 +10,4 @@
 - [M9 admin surface security](project_m9-admin-surface-security.md) — src/admin/ posture: CSRF triple-layered + traversal-safe + no secret leak; gaps = no /admin/login rate-limit, Host-derived Secure flag, no security headers.
 - [Codex multi-account security](project_codex-multi-account-security.md) — PR #114 posture: bearer/WS-isolation/perms all verified safe; one gap = chatgpt_oauth missing the kind!=responses guard its siblings have.
 - [M11 inbound codex endpoint security](project_m11-inbound-codex-endpoint-security.md) — PR #125 /responses passthrough: upstream credential strip + inbound auth + SSRF all verified safe; one gap = relay_passthrough denylist doesn't strip set-cookie.
+- [Retry/backoff security](project_retry-backoff-security.md) — issue #48 src/retry.rs posture: storm-bound/Retry-After-cap/no-token-logs/no-wrong-host all verified safe; re-open a vector only if the cap, ExceedsBudget, log fields, or per-attempt base_url change.

@@ -59,6 +59,7 @@ fn test_config(upstream_base_url: &str, api_key_env: &'static str) -> Config {
             websocket: false,
             tool_search: false,
             accounts: Vec::new(),
+            retry: shunt::config::RetryConfig::default(),
         },
     );
     config.routes.push(RouteConfig {

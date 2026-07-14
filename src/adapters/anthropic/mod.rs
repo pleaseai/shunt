@@ -53,14 +53,29 @@ async fn forward(
     let request_headers = outbound_headers(headers, &credential);
     let oauth_client = bearer_is_subscription_oauth(&request_headers);
     let body = normalize_upstream_model(body, &route.upstream_model);
-    let upstream = state
-        .http_client
-        .post(upstream_url(&state, &route, uri))
-        .headers(request_headers)
-        .body(body)
-        .send()
-        .await
-        .map_err(upstream_error)?;
+    // Bounded transient retry (issue #48) for this single-credential path. Kept
+    // off `count_tokens`, which passes through here for Anthropic-kind providers
+    // — a token count is cheap for the client to re-issue and never worth a
+    // gateway-side backoff.
+    let policy = if crate::proxy::is_count_tokens(uri) {
+        crate::retry::RetryPolicy::DISABLED
+    } else {
+        provider.retry.policy()
+    };
+    let url = upstream_url(&state, &route, uri);
+    // `Bytes` clones the body as a cheap refcount bump, so an idempotent re-send
+    // on retry never re-copies it.
+    let body = bytes::Bytes::from(body);
+    let client = state.http_client.clone();
+    let upstream = crate::retry::send_with_retry(policy, &route.provider, || {
+        client
+            .post(url.as_str())
+            .headers(request_headers.clone())
+            .body(body.clone())
+            .send()
+    })
+    .await
+    .map_err(upstream_error)?;
     let status = upstream.status();
     if status == StatusCode::TOO_MANY_REQUESTS {
         tracing::warn!(

@@ -2529,6 +2529,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "hex",
+ "httpdate",
  "notify",
  "opentelemetry",
  "opentelemetry-appender-tracing",
