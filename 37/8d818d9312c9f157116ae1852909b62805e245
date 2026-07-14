@@ -1,0 +1,21 @@
+.claude/agent-memory/review-review-security-reviewer/project_retry-backoff-security.md
+  s_838cbb95baa60b::t_01087732d8d43d 1-17
+.claude/agent-memory/review-review-security-reviewer/MEMORY.md
+  s_838cbb95baa60b::t_ba777eb84ff5f0 12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "378d818d9312c9f157116ae1852909b62805e245",
+  "prompts": {},
+  "sessions": {
+    "s_838cbb95baa60b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "97ba1d0a-9bc8-4b1c-ad51-a7fc74191d73",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
