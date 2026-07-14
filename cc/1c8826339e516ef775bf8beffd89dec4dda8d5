@@ -1,0 +1,29 @@
+.claude/agent-memory/review-review-pr-test-analyzer/MEMORY.md
+  s_426dae81dd12cb::t_beca5661850289 8
+.claude/agent-memory/review-review-documentation-analyzer/MEMORY.md
+  s_426dae81dd12cb::t_9e05c6f6fc0e93 9
+.claude/agent-memory/review-review-security-reviewer/project_m4-inbound-client-auth-security.md
+  s_426dae81dd12cb::t_be0023fc834531 1-40
+.claude/agent-memory/review-review-security-reviewer/MEMORY.md
+  s_426dae81dd12cb::t_97d442333161b6 14
+.claude/agent-memory/review-review-documentation-analyzer/shunt_pr133_inbound_auth_priority_review.md
+  s_426dae81dd12cb::t_025dd62362d98a 1-43
+.claude/agent-memory/review-review-pr-test-analyzer/shunt-inbound-auth-multislot-coverage.md
+  s_426dae81dd12cb::t_cc8f2aea412711 1-46
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "cc1c8826339e516ef775bf8beffd89dec4dda8d5",
+  "prompts": {},
+  "sessions": {
+    "s_426dae81dd12cb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "de3c4081-c64f-44fc-bf72-0d3ea3495b0a",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
