@@ -126,6 +126,25 @@ const RESPONSES_SSE: &str = concat!(
     "data: [DONE]\n\n"
 );
 
+/// Pull `message.usage.input_tokens` out of the translated `message_start` SSE
+/// event in a gateway streaming response.
+fn message_start_input_tokens(sse: &str) -> u64 {
+    for line in sse.lines() {
+        let Some(data) = line.strip_prefix("data: ") else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(data) else {
+            continue;
+        };
+        if value["type"] == "message_start" {
+            return value["message"]["usage"]["input_tokens"]
+                .as_u64()
+                .expect("message_start usage.input_tokens must be an integer");
+        }
+    }
+    panic!("no message_start event found in gateway SSE:\n{sse}");
+}
+
 #[tokio::test]
 async fn websocket_handshake_failure_falls_back_to_http() {
     if !can_bind_loopback() {
@@ -190,6 +209,69 @@ async fn websocket_handshake_failure_falls_back_to_http() {
             .iter()
             .any(|r| r.method.as_str() == "POST" && r.url.path() == "/codex/responses"),
         "the HTTP Responses endpoint was called by the fallback"
+    );
+
+    std::env::remove_var("CODEX_AUTH_FILE");
+    let _ = std::fs::remove_file(auth_path);
+}
+
+#[tokio::test]
+async fn streaming_ws_fallback_still_seeds_message_start_estimate() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = ENV_LOCK.lock().await;
+
+    // Streaming variant of the fallback: codex defaults to count_tokens = tiktoken,
+    // so forward() builds an input-token estimate. The ws attempt fails (HTTP-only
+    // upstream) and forward_http re-runs the encode and seeds message_start — so
+    // this exercises forward_websocket's estimate-handle spawn, the ws→http
+    // double-encode fallback path, and the estimate surviving into message_start.
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(RESPONSES_SSE.as_bytes().to_vec(), "text/event-stream"),
+        )
+        .mount(&upstream)
+        .await;
+
+    let auth_path = write_fake_codex_auth();
+
+    let mut config = Config::default();
+    {
+        let codex = config.providers.get_mut("codex").unwrap();
+        codex.base_url = upstream.uri();
+        codex.websocket = true; // opt in to the ws transport (should fail → HTTP)
+    }
+    config.routes.push(RouteConfig {
+        model: "codex-fallback-model".to_string(),
+        provider: "codex".to_string(),
+        upstream_model: None,
+        effort: None,
+    });
+
+    let gateway = start_gateway_with(config).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .header("content-type", "application/json")
+        .body(
+            r#"{"model":"codex-fallback-model","max_tokens":16,"stream":true,"messages":[{"role":"user","content":"Write a haiku about the sea."}]}"#,
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let sse = response.text().await.unwrap();
+    // The tiktoken estimate (nonzero) is seeded even though usage only arrives in
+    // the terminal message_delta — proving the estimate survives the ws→http
+    // fallback on the streaming path.
+    assert!(
+        message_start_input_tokens(&sse) > 0,
+        "message_start must carry the tiktoken estimate after ws→http fallback; got:\n{sse}"
     );
 
     std::env::remove_var("CODEX_AUTH_FILE");

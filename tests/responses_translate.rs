@@ -973,6 +973,172 @@ fn streaming_state_machine_emits_incremental_anthropic_events() {
     assert!(emitted.contains("\"output_tokens\":9"));
 }
 
+/// Extract the `usage` object of the first SSE event of `event_type` in an
+/// emitted Anthropic stream. Order-independent, unlike a substring match:
+/// `message_start` nests usage under `message`, `message_delta` at the top.
+fn event_usage(emitted: &str, event_type: &str) -> Value {
+    for line in emitted.lines() {
+        let Some(data) = line.strip_prefix("data: ") else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(data) else {
+            continue;
+        };
+        if value["type"] == event_type {
+            return value
+                .get("message")
+                .and_then(|message| message.get("usage"))
+                .or_else(|| value.get("usage"))
+                .cloned()
+                .unwrap_or(Value::Null);
+        }
+    }
+    Value::Null
+}
+
+#[test]
+fn message_start_seeds_input_token_estimate() {
+    // Responses reports usage only at response.completed, so without a seed the
+    // message_start usage is {input_tokens:0}. Claude Code's per-subagent
+    // progress tracker reads that first snapshot, so codex subagents show 0
+    // context. `with_input_estimate` mirrors native Anthropic by seeding a
+    // prompt-size estimate into message_start; the accurate upstream total must
+    // still flow to message_delta unchanged.
+    let fixture = concat!(
+        "event: response.created\n",
+        "data: {\"response\":{\"id\":\"resp_1\"}}\n\n",
+        "event: response.output_item.added\n",
+        "data: {\"item\":{\"type\":\"message\"}}\n\n",
+        "event: response.output_text.delta\n",
+        "data: {\"delta\":\"hi\"}\n\n",
+        "event: response.output_text.done\n",
+        "data: {}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{\"usage\":{\"input_tokens\":1200,\"output_tokens\":9}}}\n\n",
+        "data: [DONE]\n\n"
+    );
+
+    // Default (no seed): message_start carries the {input_tokens:0} placeholder.
+    let mut default_machine = AnthropicSseMachine::new("gpt-5.6-sol", false, false);
+    let default_emitted = parse_sse_events(fixture)
+        .into_iter()
+        .flat_map(|event| default_machine.apply(event))
+        .collect::<String>();
+    assert!(
+        default_emitted.contains("\"usage\":{\"input_tokens\":0,\"output_tokens\":0}"),
+        "unseeded message_start should keep the input_tokens:0 placeholder"
+    );
+
+    // Seeded: message_start carries the estimate, while message_delta still
+    // reports the real upstream total (1200) — proving the seed touches only the
+    // opening snapshot and never the authoritative completion usage.
+    let mut seeded_machine =
+        AnthropicSseMachine::new("gpt-5.6-sol", false, false).with_input_estimate(4321);
+    let seeded_emitted = parse_sse_events(fixture)
+        .into_iter()
+        .flat_map(|event| seeded_machine.apply(event))
+        .collect::<String>();
+    let start_usage = event_usage(&seeded_emitted, "message_start");
+    assert_eq!(
+        start_usage["input_tokens"],
+        json!(4321),
+        "seeded message_start should carry the estimate, got: {seeded_emitted}"
+    );
+    assert_eq!(start_usage["output_tokens"], json!(0));
+    // message_delta must carry the real upstream total (1200, uncached), never
+    // the estimate — parsed rather than substring-matched so key order can't
+    // hide a leak of the estimate into the completion usage.
+    let delta_usage = event_usage(&seeded_emitted, "message_delta");
+    assert_eq!(
+        delta_usage["input_tokens"],
+        json!(1200),
+        "message_delta must carry the real upstream input_tokens, got: {seeded_emitted}"
+    );
+    assert_eq!(delta_usage["cache_read_input_tokens"], json!(0));
+}
+
+#[test]
+fn truncated_stream_falls_back_to_input_token_estimate() {
+    // A stream cut off before response.completed never runs read_usage, so the
+    // real input total is still 0. Without a fallback the terminal message_delta
+    // would report input_tokens:0 and undo the estimate message_start already
+    // showed. Assert the seeded estimate carries through instead.
+    let fixture = concat!(
+        "event: response.created\n",
+        "data: {\"response\":{\"id\":\"resp_1\"}}\n\n",
+        "event: response.output_item.added\n",
+        "data: {\"item\":{\"type\":\"message\"}}\n\n",
+        "event: response.output_text.delta\n",
+        "data: {\"delta\":\"hi\"}\n\n",
+        // no response.completed / [DONE]: the upstream stream is truncated here.
+    );
+
+    let mut machine =
+        AnthropicSseMachine::new("gpt-5.6-sol", false, false).with_input_estimate(4321);
+    let mut emitted = parse_sse_events(fixture)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
+    // finish() flushes the terminal message_delta/message_stop the truncated
+    // upstream never sent.
+    emitted.push_str(&machine.finish().join(""));
+
+    let delta_usage = event_usage(&emitted, "message_delta");
+    assert_eq!(
+        delta_usage["input_tokens"],
+        json!(4321),
+        "truncated stream should fall back to the estimate, got: {emitted}"
+    );
+}
+
+#[test]
+fn observed_zero_input_tokens_is_reported_not_overwritten_by_estimate() {
+    // The counterpart to the truncation case: when real usage IS observed at
+    // response.completed and it is a genuine input_tokens:0, the terminal
+    // message_delta must report 0 — NOT the seeded estimate. This is the exact
+    // distinction the explicit `usage_observed` flag protects over a naive
+    // `self.input_tokens > 0` zero-check: message_start still shows the estimate,
+    // but once real usage arrives (even a real 0) message_delta reflects it.
+    // Guards against a future "collapse the flag into a zero-check" refactor
+    // silently regressing the real-zero case.
+    let fixture = concat!(
+        "event: response.created\n",
+        "data: {\"response\":{\"id\":\"resp_1\"}}\n\n",
+        "event: response.output_item.added\n",
+        "data: {\"item\":{\"type\":\"message\"}}\n\n",
+        "event: response.output_text.delta\n",
+        "data: {\"delta\":\"hi\"}\n\n",
+        "event: response.output_text.done\n",
+        "data: {}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{\"usage\":{\"input_tokens\":0,\"output_tokens\":9}}}\n\n",
+        "data: [DONE]\n\n"
+    );
+
+    let mut machine =
+        AnthropicSseMachine::new("gpt-5.6-sol", false, false).with_input_estimate(4321);
+    let emitted = parse_sse_events(fixture)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
+
+    // message_start still carries the seeded estimate (the opening snapshot).
+    let start_usage = event_usage(&emitted, "message_start");
+    assert_eq!(
+        start_usage["input_tokens"],
+        json!(4321),
+        "seeded message_start should carry the estimate, got: {emitted}"
+    );
+    // message_delta must report the REAL observed 0, not the estimate — proving
+    // the fallback keys off the explicit `usage_observed` flag, not a zero-check.
+    let delta_usage = event_usage(&emitted, "message_delta");
+    assert_eq!(
+        delta_usage["input_tokens"],
+        json!(0),
+        "an observed upstream input_tokens:0 must report 0, not the estimate, got: {emitted}"
+    );
+}
+
 #[test]
 fn maps_upstream_error_statuses() {
     assert_eq!(
