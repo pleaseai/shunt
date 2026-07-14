@@ -1,0 +1,44 @@
+src/adapters/responses/mod.rs
+  s_eb705f7d870c09::t_aace03aca78930 4-9,11-14,18-20,25-29
+src/adapters/responses/error.rs
+  s_eb705f7d870c09::t_aace03aca78930 1-274
+docs/codex-configuration.md
+  s_eb705f7d870c09::t_b2a55d511e1cf7 181
+  s_eb705f7d870c09::t_bba36eb78fc41b 39
+  s_eb705f7d870c09::t_c19bb0bd0d3131 167
+docs/running.md
+  s_eb705f7d870c09::t_f5c26b228a9696 518
+src/adapters/responses/http.rs
+  s_eb705f7d870c09::t_aace03aca78930 1-198
+src/adapters/responses/ws_stream.rs
+  s_eb705f7d870c09::t_aace03aca78930 1-142
+src/adapters/responses/websocket.rs
+  s_eb705f7d870c09::t_242645eb8ffce9 15-16
+  s_eb705f7d870c09::t_aace03aca78930 1-14,17-471
+src/adapters/responses/pool.rs
+  s_eb705f7d870c09::t_aace03aca78930 1-425
+docs/gateway-protocol.md
+  s_eb705f7d870c09::t_87b21574e643c9 265
+docs/m7-codex-websocket.md
+  s_eb705f7d870c09::t_efabc30ee6f9bb 233,235-237
+docs/comparison.md
+  s_eb705f7d870c09::t_828ac30fa988a9 234
+src/adapters/responses/request.rs
+  s_eb705f7d870c09::t_aace03aca78930 1-348
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "a275dd721ab46e446806aeae8c53b8c6dac64d30",
+  "prompts": {},
+  "sessions": {
+    "s_eb705f7d870c09": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c8fd266c-d0a9-4f15-abf4-29906118a2c5",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
