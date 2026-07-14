@@ -46,8 +46,9 @@ unaffected):
 rustc-wrapper = "sccache"
 ```
 
-sccache stores artifacts on disk by default (`~/Library/Caches/Mozilla.sccache` on macOS, 10 GB
-cap; tune with `SCCACHE_DIR` / `SCCACHE_CACHE_SIZE`). For the biggest win across `cargo clean` and
+sccache stores artifacts on disk by default (10 GB cap; tune with `SCCACHE_DIR` /
+`SCCACHE_CACHE_SIZE`). The default cache location is `~/Library/Caches/Mozilla.sccache` on macOS,
+`~/.cache/sccache` on Linux, and `%LOCALAPPDATA%\Mozilla\sccache` on Windows. For the biggest win across `cargo clean` and
 branch switches, also disable incremental compilation, which sccache can't cache — either
 `export CARGO_INCREMENTAL=0`, or add `incremental = false` under `[build]` in the repo-local
 `.cargo/config.toml` to keep it scoped to this project instead of your global environment. It's
