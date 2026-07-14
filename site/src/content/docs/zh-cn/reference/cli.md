@@ -1,6 +1,6 @@
 ---
 title: CLI
-description: shunt 命令行 —— run、check 和 token。
+description: shunt 命令行 —— run、check、token 和 provider login。
 ---
 
 ## `shunt run`
@@ -43,6 +43,58 @@ shunt check
 
 何时需要它,见 [连接 Claude Code](/zh-cn/guides/connect-claude-code/#2-choose-the-anthropic-credential)。
 
+## `shunt login claude`
+
+用以下三种模式之一创建一个由 shunt 管理的 Anthropic 池账户:
+
+```bash
+# Full OAuth: shunt 获取并存储一个新的可刷新登录(推荐)。
+shunt login claude --name primary --mode oauth
+
+# 导入当前可刷新的 Claude Code 登录。
+shunt login claude --name imported --mode import
+
+# 运行 Claude 的一年期、仅推理 setup-token 流程。
+shunt login claude --name ci --mode setup-token
+```
+
+在 TTY 中省略 `--mode` 时,shunt 会提示选择 `oauth`、`import` 或 `setup-token`,并默认推荐 OAuth。非交互输入继续沿用原有的 `import` 默认值。`--long-lived` 保留为 `--mode setup-token` 的 deprecated alias。
+
+`--mode oauth` 运行 shunt 的 full-scope PKCE 授权流程,并同时存储 access token 与 refresh token。默认情况下,shunt 在 `127.0.0.1` 上绑定一个临时 listener,打开授权 URL,并在浏览器返回 `http://localhost:<port>/callback` 时完成。如果无法打开浏览器、无法启动 listener,或 5 分钟内没有收到 callback,它会回退到隐藏输入的手动粘贴流程。通过 SSH 或在 headless 环境中可用 `--manual` 立即使用手动流程:
+
+```bash
+shunt login claude --name remote --mode oauth --manual
+```
+
+`--mode import` 将 `~/.claude/.credentials.json`(或 `CLAUDE_CREDENTIALS`)复制到 `~/.shunt/accounts/claude/<name>.json`。它保留 refresh token,关联 Claude Code 全局配置中的当前账户 UUID,而 shunt 刷新这份私有副本,不会修改 Claude Code 的源文件。
+
+`--mode setup-token` 运行与 `claude setup-token` 相同的一年期、仅推理 PKCE 流程。在浏览器批准后,把显示的授权码粘贴到 shunt 的隐藏输入提示中。shunt 直接交换该代码,存储 opaque token 和签发账户 UUID,并且绝不打印 token。
+
+在 Unix 上,文件以 `0600` 权限原子写入 `0700` 目录。`SHUNT_CLAUDE_ACCOUNTS_DIR` 可覆盖存储目录;复用名称会替换其文件。已有的外部 setup token 仍需要 `token_env` 加显式 `uuid`,因为签发后无法恢复其账户 UUID。
+
+:::caution[每个可刷新登录只能有一个 owner]
+OAuth provider 可能在 shunt 刷新 access token 时轮换 refresh token。不要让多个 shunt 进程使用同一个可刷新 credential 文件,也不要把正在使用的存储文件复制到另一台主机后独立运行。一端的首次刷新可能使另一份副本失效。请为每个进程分别预配;如果有意共享静态 credential,请使用不可刷新的 setup token。
+:::
+
+通过只带名称的池条目引用结果,或将 provider 的账户列表留空以扫描所有存储文件:
+
+```toml
+[[providers.anthropic.accounts]]
+name = "primary"
+```
+
+## `shunt login xai`
+
+运行 xAI 的 device-code OAuth 流程并保存可刷新的 credential:
+
+```bash
+shunt login xai
+```
+
+## Anthropic 账户池认证
+
+对于 `auth = "claude_oauth"` 的 Anthropic provider,账户可以使用只带名称的存储条目、`credentials = "~/.claude/.credentials.json"` 或 `token_env = "YOUR_ENV_NAME"`。存储条目可由上面的 Full OAuth、Claude Code 登录导入或 setup-token 流程创建。完整配置和 failover 规则见 [Anthropic 多账户](/zh-cn/guides/anthropic-multi-account/)。
+
 ## 环境变量
 
 | 变量 | 效果 |
@@ -51,5 +103,7 @@ shunt check
 | `RUST_LOG` | 日志过滤器,如 `shunt=debug` |
 | `SHUNT_CLIENT_TOKENS` | 面向 [`[server.auth]`](/zh-cn/guides/shared-gateway/) 的客户端 token(名称可通过 `tokens_env` 配置) |
 | `SHUNT_GATEWAY_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN` | 面向 `shunt token` 的静态 token |
-| `CLAUDE_CREDENTIALS` | 面向 `shunt token` 的备用凭据文件路径 |
+| `CLAUDE_CREDENTIALS` | 面向 `shunt token` 和可刷新 `shunt login claude` 导入的备用 credential 文件路径 |
+| `SHUNT_CLAUDE_ACCOUNTS_DIR` | shunt 管理的 Claude 账户存储的备用目录 |
+| 由 `token_env` 指定的按账户变量 | Anthropic `claude_oauth` 池条目的 setup token;原样使用 |
 | `OPENAI_API_KEY` | `openai` 提供方的默认密钥环境变量(每个提供方通过 `api_key_env`) |

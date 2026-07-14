@@ -17,7 +17,7 @@ description: shunt 作为 Claude Code LLM 网关所提供的端点。
 | `POST` | `/admin/logout` | 清除浏览器会话 |
 | `GET` | `/admin/accounts` | 账户存储元数据:名称、类型、过期时间和 UUID;绝不返回 token 材料 |
 | `GET` | `/admin/pool` | 按 `claude_oauth` 提供方的池健康状况:配额使用率、status、冷却与可用性 |
-| `POST` | `/admin/accounts/claude` | 用 `{name}` 开始浏览器 setup token 预配;返回 `{authorize_url}` |
+| `POST` | `/admin/accounts/claude` | 用 `{name, mode}` 开始浏览器预配;`mode` 为 `oauth` 或 `setup_token`,省略时默认为 `setup_token`;返回 `{authorize_url}` |
 | `POST` | `/admin/accounts/claude/{name}/complete` | 用包含 `<code>#<state>` 的 `{code}` 完成预配;存储账户并报告其是否生效 |
 | `DELETE` | `/admin/accounts/claude/{name}` | 删除指定名称账户的存储文件 |
 

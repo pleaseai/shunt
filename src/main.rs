@@ -31,6 +31,16 @@ struct Cli {
     command: Option<Command>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum LoginMode {
+    /// Copy the local `claude` login (~/.claude/.credentials.json). Refreshable.
+    Import,
+    /// Store a one-year, inference-only, non-refreshable setup token.
+    SetupToken,
+    /// Run shunt's own PKCE OAuth login and store a refreshable token.
+    Oauth,
+}
+
 #[derive(Debug, Subcommand)]
 enum Command {
     Run {
@@ -60,6 +70,14 @@ enum Command {
         /// apply to `shunt login codex`).
         #[arg(long)]
         long_lived: bool,
+        /// Login method for `claude` (import | setup-token | oauth). Without it,
+        /// prompts interactively on a TTY, else defaults to `import`. `--long-lived`
+        /// is a deprecated alias for `--mode setup-token`.
+        #[arg(long, value_enum, conflicts_with = "long_lived")]
+        mode: Option<LoginMode>,
+        /// For `--mode oauth`: skip the browser callback and paste the code manually.
+        #[arg(long)]
+        manual: bool,
     },
 }
 
@@ -75,10 +93,14 @@ fn main() -> anyhow::Result<()> {
             provider,
             name,
             long_lived,
+            mode,
+            manual,
         }) => login(
             &provider,
             name.as_deref(),
             long_lived,
+            mode,
+            manual,
             cli.config.as_deref(),
         ),
         None if cli.check => check(cli.config),
@@ -90,14 +112,20 @@ fn login(
     provider: &str,
     name: Option<&str>,
     long_lived: bool,
+    mode: Option<LoginMode>,
+    manual: bool,
     config_path: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
     match provider {
-        "xai" if name.is_none() && !long_lived => {
+        "xai" if name.is_none() && !long_lived && mode.is_none() => {
             runtime()?.block_on(shunt::auth::xai::login::run(provider))
         }
-        "xai" => anyhow::bail!("--name and --long-lived are only valid for `shunt login claude`"),
-        "cursor" if name.is_none() && !long_lived => runtime()?.block_on(async {
+        "xai" => {
+            anyhow::bail!(
+                "--name, --long-lived, and --mode are only valid for `shunt login claude`"
+            )
+        }
+        "cursor" if name.is_none() && !long_lived && mode.is_none() => runtime()?.block_on(async {
             // Logging in should not require a fully valid gateway config:
             // read the optional override best-effort and fall back to the
             // default Cursor host if the config fails to load or omits it.
@@ -112,17 +140,34 @@ fn login(
             shunt::auth::cursor::login::run_with_base(&base_url).await
         }),
         "cursor" => {
-            anyhow::bail!("--name and --long-lived are only valid for `shunt login claude`")
+            anyhow::bail!(
+                "--name, --long-lived, and --mode are only valid for `shunt login claude`"
+            )
         }
         "claude" => {
             let name = name.ok_or_else(|| {
                 anyhow::anyhow!("`shunt login claude` requires --name <account-name>")
             })?;
-            runtime()?.block_on(shunt::auth::claude::login::run(name, long_lived))
+            match resolve_claude_mode(mode, long_lived)? {
+                LoginMode::Oauth => {
+                    runtime()?.block_on(shunt::auth::claude::login::run_oauth(name, manual))
+                }
+                LoginMode::SetupToken => {
+                    runtime()?.block_on(shunt::auth::claude::login::run(name, true))
+                }
+                LoginMode::Import => {
+                    runtime()?.block_on(shunt::auth::claude::login::run(name, false))
+                }
+            }
         }
         "codex" if long_lived => {
             anyhow::bail!(
                 "--long-lived is not supported for `shunt login codex`; Codex OAuth tokens are always refreshable"
+            )
+        }
+        "codex" if mode.is_some() => {
+            anyhow::bail!(
+                "--mode is not supported for `shunt login codex`; Codex OAuth tokens are always refreshable"
             )
         }
         "codex" => {
@@ -136,6 +181,41 @@ fn login(
                 "unknown login provider {provider:?}; supported: claude, codex, cursor, xai"
             )
         }
+    }
+}
+
+/// Resolve the effective claude login mode: explicit `--mode` wins; `--long-lived`
+/// maps to setup-token; otherwise prompt on a TTY, else default to import.
+fn resolve_claude_mode(mode: Option<LoginMode>, long_lived: bool) -> anyhow::Result<LoginMode> {
+    if let Some(mode) = mode {
+        return Ok(mode);
+    }
+    if long_lived {
+        return Ok(LoginMode::SetupToken);
+    }
+    if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        return prompt_claude_mode();
+    }
+    Ok(LoginMode::Import)
+}
+
+fn prompt_claude_mode() -> anyhow::Result<LoginMode> {
+    use std::io::Write;
+    println!("Select a Claude login method:");
+    println!(
+        "  1) oauth       — shunt runs the OAuth login, stores a refreshable token (recommended)"
+    );
+    println!("  2) import      — copy the local `claude` login (~/.claude/.credentials.json)");
+    println!("  3) setup-token — one-year, inference-only, non-refreshable token");
+    print!("Enter 1, 2, or 3 [1]: ");
+    std::io::stdout().flush().ok();
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    match line.trim() {
+        "" | "1" | "oauth" => Ok(LoginMode::Oauth),
+        "2" | "import" => Ok(LoginMode::Import),
+        "3" | "setup-token" => Ok(LoginMode::SetupToken),
+        other => anyhow::bail!("invalid selection {other:?}; expected 1, 2, or 3"),
     }
 }
 
@@ -364,6 +444,8 @@ mod tests {
             provider,
             name,
             long_lived,
+            mode,
+            manual,
         }) = parsed.command
         else {
             panic!("expected login command");
@@ -371,6 +453,48 @@ mod tests {
         assert_eq!(provider, "claude");
         assert!(name.is_none());
         assert!(!long_lived);
+        assert!(mode.is_none());
+        assert!(!manual);
+    }
+
+    #[test]
+    fn claude_login_modes_parse_and_conflict_with_long_lived() {
+        for (value, expected) in [
+            ("oauth", LoginMode::Oauth),
+            ("import", LoginMode::Import),
+            ("setup-token", LoginMode::SetupToken),
+        ] {
+            let parsed =
+                Cli::try_parse_from(["shunt", "login", "claude", "--name", "ci", "--mode", value])
+                    .unwrap();
+            let Some(Command::Login { mode, .. }) = parsed.command else {
+                panic!("expected login command");
+            };
+            assert_eq!(mode, Some(expected));
+        }
+        assert!(Cli::try_parse_from([
+            "shunt",
+            "login",
+            "claude",
+            "--name",
+            "ci",
+            "--mode",
+            "oauth",
+            "--long-lived",
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn resolves_explicit_and_long_lived_claude_modes() {
+        assert_eq!(
+            resolve_claude_mode(Some(LoginMode::Oauth), false).unwrap(),
+            LoginMode::Oauth
+        );
+        assert_eq!(
+            resolve_claude_mode(None, true).unwrap(),
+            LoginMode::SetupToken
+        );
     }
 
     #[test]
@@ -381,6 +505,8 @@ mod tests {
             provider,
             name,
             long_lived,
+            mode,
+            manual,
         }) = parsed.command
         else {
             panic!("expected login command");
@@ -388,21 +514,25 @@ mod tests {
         assert_eq!(provider, "codex");
         assert_eq!(name.as_deref(), Some("ci"));
         assert!(!long_lived);
+        assert!(mode.is_none());
+        assert!(!manual);
 
         // These error branches return before touching the network or runtime,
         // so they are safe to exercise directly (mirrors the pattern used for
         // the other providers' bail arms below).
-        let error = login("codex", None, false, None).expect_err("missing --name must fail");
+        let error =
+            login("codex", None, false, None, false, None).expect_err("missing --name must fail");
         assert!(error.to_string().contains("requires --name"));
 
-        let error = login("codex", Some("ci"), true, None)
+        let error = login("codex", Some("ci"), true, None, false, None)
             .expect_err("--long-lived must be rejected for codex");
         assert!(error.to_string().contains("--long-lived is not supported"));
     }
 
     #[test]
     fn login_rejects_unknown_provider() {
-        let error = login("unknown", None, false, None).expect_err("unknown provider must fail");
+        let error = login("unknown", None, false, None, false, None)
+            .expect_err("unknown provider must fail");
         assert!(error.to_string().contains("unknown login provider"));
     }
 

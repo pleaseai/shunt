@@ -1,6 +1,6 @@
 ---
 title: CLI
-description: shunt 커맨드 라인 — run, check, token.
+description: shunt 커맨드 라인 — run, check, token, provider login.
 ---
 
 ## `shunt run`
@@ -43,6 +43,58 @@ Claude 구독 OAuth 토큰을 **stdout**으로 출력하며(로그는 stderr로)
 
 이것이 필요한 경우는 [Claude Code 연결](/ko/guides/connect-claude-code/#2-choose-the-anthropic-credential)을 참고하세요.
 
+## `shunt login claude`
+
+세 가지 모드 중 하나로 shunt가 관리하는 Anthropic 풀 계정을 만듭니다:
+
+```bash
+# Full OAuth: shunt가 새 갱신 가능 로그인을 발급받아 저장합니다(권장).
+shunt login claude --name primary --mode oauth
+
+# 현재의 갱신 가능한 Claude Code 로그인을 가져옵니다.
+shunt login claude --name imported --mode import
+
+# Claude의 1년짜리 추론 전용 setup-token 플로우를 실행합니다.
+shunt login claude --name ci --mode setup-token
+```
+
+TTY에서 `--mode`를 생략하면 shunt는 `oauth`, `import`, `setup-token` 중 하나를 선택하도록 묻고 OAuth를 기본 권장값으로 사용합니다. 비대화형 입력에서는 기존 `import` 기본값을 유지합니다. `--long-lived`는 `--mode setup-token`의 deprecated alias로 남아 있습니다.
+
+`--mode oauth`는 shunt의 full-scope PKCE 인가 플로우를 실행하고 access token과 refresh token을 모두 저장합니다. 기본적으로 shunt는 `127.0.0.1`에 임시 리스너를 바인딩하고 인가 URL을 연 뒤, 브라우저가 `http://localhost:<port>/callback`으로 돌아오면 완료합니다. 브라우저를 열 수 없거나 리스너를 시작할 수 없거나 5분 안에 callback이 오지 않으면 숨겨진 수동 붙여넣기 플로우로 fallback합니다. SSH나 headless 환경에서는 `--manual`로 바로 수동 플로우를 사용할 수 있습니다:
+
+```bash
+shunt login claude --name remote --mode oauth --manual
+```
+
+`--mode import`는 `~/.claude/.credentials.json`(또는 `CLAUDE_CREDENTIALS`)을 `~/.shunt/accounts/claude/<name>.json`으로 복사합니다. refresh token을 보존하고 Claude Code 전역 구성의 현재 계정 UUID를 연결하며, shunt는 Claude Code의 원본 파일을 변경하지 않고 이 비공개 복사본을 갱신합니다.
+
+`--mode setup-token`은 `claude setup-token`과 같은 1년짜리 추론 전용 PKCE 플로우를 실행합니다. 브라우저에서 승인한 뒤 표시된 인가 코드를 shunt의 숨겨진 프롬프트에 붙여 넣으세요. shunt는 코드를 직접 교환하고 opaque token과 발급 계정 UUID를 모두 저장하며 토큰을 출력하지 않습니다.
+
+파일은 Unix에서 `0700` 디렉터리 안에 `0600` 권한으로 원자적으로 기록됩니다. `SHUNT_CLAUDE_ACCOUNTS_DIR`로 스토어 디렉터리를 재정의할 수 있으며, 같은 이름을 다시 사용하면 파일이 교체됩니다. 기존 외부 setup token은 발급 후 계정 UUID를 복구할 수 없으므로 여전히 `token_env`와 명시적 `uuid`가 필요합니다.
+
+:::caution[갱신 가능 로그인당 하나의 owner]
+OAuth provider는 shunt가 access token을 갱신할 때 refresh token도 회전할 수 있습니다. 같은 갱신 가능 credential 파일을 여러 shunt 프로세스에서 실행하거나, 활성 스토어 파일을 다른 호스트로 복사해 독립적으로 실행하지 마세요. 한쪽의 첫 갱신이 다른 복사본을 무효화할 수 있습니다. 프로세스마다 별도로 프로비저닝하거나, 공유 정적 credential이 필요한 경우 갱신 불가능한 setup token을 사용하세요.
+:::
+
+결과는 이름만 있는 풀 항목으로 참조하거나, provider의 계정 목록을 비워 모든 스토어 파일을 스캔할 수 있습니다:
+
+```toml
+[[providers.anthropic.accounts]]
+name = "primary"
+```
+
+## `shunt login xai`
+
+xAI device-code OAuth 플로우를 실행하고 갱신 가능한 credential을 저장합니다:
+
+```bash
+shunt login xai
+```
+
+## Anthropic 계정 풀 인증
+
+`auth = "claude_oauth"`인 Anthropic provider에서 계정은 이름만 있는 스토어 항목, `credentials = "~/.claude/.credentials.json"`, 또는 `token_env = "YOUR_ENV_NAME"`을 사용할 수 있습니다. 스토어 항목은 위의 Full OAuth, Claude Code 로그인 가져오기, setup-token 플로우 중 하나로 만들 수 있습니다. 전체 구성과 failover 규칙은 [Anthropic 멀티 계정](/ko/guides/anthropic-multi-account/)을 참고하세요.
+
 ## 환경 변수
 
 | 변수 | 효과 |
@@ -51,5 +103,7 @@ Claude 구독 OAuth 토큰을 **stdout**으로 출력하며(로그는 stderr로)
 | `RUST_LOG` | 로그 필터, 예: `shunt=debug` |
 | `SHUNT_CLIENT_TOKENS` | [`[server.auth]`](/ko/guides/shared-gateway/)용 클라이언트 토큰(이름은 `tokens_env`로 구성 가능) |
 | `SHUNT_GATEWAY_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN` | `shunt token`용 정적 토큰 |
-| `CLAUDE_CREDENTIALS` | `shunt token`용 대체 자격 증명 파일 경로 |
+| `CLAUDE_CREDENTIALS` | `shunt token` 및 갱신 가능한 `shunt login claude` 가져오기용 대체 credential 파일 경로 |
+| `SHUNT_CLAUDE_ACCOUNTS_DIR` | shunt가 관리하는 Claude 계정 스토어의 대체 디렉터리 |
+| `token_env`로 지정한 계정별 변수 | Anthropic `claude_oauth` 풀 항목의 setup token; 변경 없이 그대로 사용 |
 | `OPENAI_API_KEY` | `openai` 프로바이더용 기본 키 env(프로바이더별로 `api_key_env`를 통해) |

@@ -5,7 +5,7 @@ description: Enable shunt's admin web surface to provision Claude accounts remot
 
 shunt can expose an admin-authenticated web surface for provisioning upstream Claude accounts and viewing the health of each `claude_oauth` account pool. It is opt-in: when `[server.admin]` is absent, none of the `/admin*` routes are registered and shunt's default HTTP surface is unchanged.
 
-This builds on the [Anthropic multi-account](/guides/anthropic-multi-account/) store and selection behavior. The browser flow creates one-year, inference-only setup-token accounts; importing a refreshable Claude Code login remains CLI-only.
+This builds on the [Anthropic multi-account](/guides/anthropic-multi-account/) store and selection behavior. The browser form can create a refreshable full-OAuth account or a one-year, inference-only setup-token account. Importing an existing Claude Code credential file remains CLI-only.
 
 ## Enable the admin surface
 
@@ -32,17 +32,18 @@ See the [configuration reference](/reference/configuration/#serveradmin-optional
 ## Provision an account in the browser
 
 1. Open `/admin` and sign in with an admin token.
-2. Enter an account name containing only lowercase letters, digits, and hyphens, then select **Start**.
-3. Open the displayed authorize URL in another tab. Sign in to the target Claude account and approve access.
-4. Copy the resulting `<code>#<state>` value back to the admin page and select **Complete**.
-5. shunt stores the account. A provider with an empty `accounts` list picks it up on its next request without a restart. Otherwise, add a name-only entry and reload:
+2. Enter an account name containing only lowercase letters, digits, and hyphens.
+3. Select **Full OAuth (refreshable)** (the dashboard default) or **Setup token (1-year, inference-only)**, then select **Start**.
+4. Open the displayed authorize URL in another tab. Sign in to the target Claude account and approve access.
+5. Copy the resulting `<code>#<state>` value back to the admin page and select **Complete**.
+6. shunt stores the account. A provider with an empty `accounts` list picks it up on its next request without a restart. Otherwise, add a name-only entry and reload:
 
    ```toml
    [[providers.anthropic.accounts]]
    name = "backup"
    ```
 
-A started flow remains valid for `pending_ttl_secs` (10 minutes by default), giving the operator time to open the authorization page and paste the result. The completion response reports whether the account was stored and whether the current provider configuration makes it live.
+A started flow remains valid for `pending_ttl_secs` (10 minutes by default), giving the operator time to open the authorization page and paste the result. The server records the selected mode with the pending attempt, so the completion request cannot switch token types. Full OAuth stores access and refresh tokens and appears as credential kind `imported`; setup-token mode stores a static credential with kind `setup_token`. The completion response reports whether the account was stored and whether the current provider configuration makes it live.
 
 Account-store changes are discovered per request, so scan-mode providers do not need a restart after an account is added or removed.
 
@@ -52,23 +53,33 @@ The dashboard shows account-store metadata and current health for each provider 
 
 The account list exposes only metadata: account name, credential kind (`setup_token` or `imported`), expiry, and UUID. It never returns token material. See [Anthropic Multi-Account](/guides/anthropic-multi-account/#selection-and-proactive-rotation) for how shunt uses quota state, cooldowns, and model-aware weekly buckets when choosing an account.
 
-For API/curl access to account metadata, pool health, or account removal, send the admin token in the configured header (default `x-shunt-admin-token`) and use the JSON routes documented in [HTTP Endpoints](/reference/endpoints/). Header-authenticated requests do not use the browser session and are exempt from CSRF checks; perform setup-token provisioning through the dashboard flow above.
+For API/curl access to account metadata, pool health, provisioning, or account removal, send the admin token in the configured header (default `x-shunt-admin-token`) and use the JSON routes documented in [HTTP Endpoints](/reference/endpoints/). Header-authenticated requests do not use the browser session and are exempt from CSRF checks. Start provisioning with `{ "name": "backup", "mode": "oauth" }` or `mode: "setup_token"`; omitting `mode` keeps the API's backward-compatible `setup_token` default.
 
-## SSH and refreshable-import fallback
+## CLI and SSH fallback
 
-Use the CLI when the shunt host is not reachable in a browser or when you need a refreshable imported login. Over SSH, the long-lived flow prints an authorize URL that you can open on a laptop and accepts the resulting code back in the remote terminal:
-
-```bash
-shunt login claude --name backup --long-lived
-```
-
-To import the host's current refreshable Claude Code login instead, omit `--long-lived`:
+Use the CLI when the shunt host is not reachable in a browser. Full OAuth normally opens a browser and completes through a temporary `127.0.0.1` callback; over SSH or in a headless environment, force the same manual-paste redirect used by the admin page:
 
 ```bash
-shunt login claude --name primary
+shunt login claude --name backup --mode oauth --manual
 ```
 
-The browser admin flow intentionally supports setup-token provisioning only. A refreshable import reads the host's Claude Code credential and therefore stays CLI-only.
+To import the host's current refreshable Claude Code login instead:
+
+```bash
+shunt login claude --name primary --mode import
+```
+
+To create a one-year inference-only credential:
+
+```bash
+shunt login claude --name ci --mode setup-token
+```
+
+`--long-lived` remains a deprecated alias for `--mode setup-token`. The admin surface supports full OAuth and setup-token provisioning; only import requires access to the host's existing Claude Code credential and therefore stays CLI-only.
+
+:::caution[Refresh-token rotation]
+A refreshable account must have one active owner. OAuth refresh may replace the refresh token and invalidate an older copy, so do not share one store file across processes or copy it to another independently running host. Provision each process separately, or choose setup-token mode where a static non-refreshable credential is appropriate.
+:::
 
 ## Security
 

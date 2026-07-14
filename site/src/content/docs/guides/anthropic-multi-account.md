@@ -38,15 +38,20 @@ shunt check
 shunt run
 ```
 
-Store accounts with either login mode:
+Store accounts with any of the three Claude login modes:
 
 ```bash
-# Import your current refreshable Claude Code login.
-shunt login claude --name primary
+# Create a new refreshable login (automatic localhost callback by default).
+shunt login claude --name primary --mode oauth
 
-# Or generate and store a one-year setup token.
-shunt login claude --name backup --long-lived
+# Import your current refreshable Claude Code login.
+shunt login claude --name imported --mode import
+
+# Generate and store a one-year, inference-only setup token.
+shunt login claude --name backup --mode setup-token
 ```
+
+On a TTY, omitting `--mode` opens a three-way prompt with OAuth selected by default; non-interactive input retains the historical import default. `--long-lived` is a deprecated alias for `--mode setup-token`. Full OAuth normally completes through a one-shot `127.0.0.1` callback. Use `--manual` to paste `<code>#<state>` instead; shunt also falls back to manual paste if browser launch, callback binding, or the 5-minute wait fails.
 
 Then use name-only entries:
 
@@ -60,9 +65,13 @@ name = "backup"
 
 Store files live at `~/.shunt/accounts/claude/<name>.json`; set `SHUNT_CLAUDE_ACCOUNTS_DIR` to override the directory. If the configured `accounts` list is empty, shunt scans the store and uses all valid JSON account files in filename order. Store files are private (`0600`, with a `0700` directory on Unix).
 
-For remote operators, the opt-in [admin web surface](/guides/admin-remote-provisioning/) can provision one-year setup-token accounts in a browser and show the pool's current health; the refreshable import flow remains CLI-only.
+For remote operators, the opt-in [admin web surface](/guides/admin-remote-provisioning/) can provision either refreshable full-OAuth accounts or one-year setup-token accounts in a browser and show the pool's current health. Importing an existing credential file remains CLI-only.
 
-The non-`--long-lived` command copies the current `~/.claude/.credentials.json` login into shunt's store, preserves its refresh capability, and records the current account UUID. `--long-lived` runs the same one-year, inference-only PKCE flow as `claude setup-token`; after approval, shunt exchanges the displayed authorization code and stores both the token and its issuing account UUID without printing the token. This keeps `metadata.user_id.account_uuid` aligned when the pool selects a different account. Reusing a name replaces that account's store file. Existing external setup tokens still need `token_env` plus an explicit `uuid`.
+Full OAuth creates a fresh refreshable credential; import copies the current `~/.claude/.credentials.json` credential into shunt's store. Both preserve refresh capability, and import also records the current account UUID. Setup-token mode runs the same one-year, inference-only PKCE flow as `claude setup-token`; after approval, shunt exchanges the displayed authorization code and stores both the token and its issuing account UUID without printing the token. This keeps `metadata.user_id.account_uuid` aligned when the pool selects a different account. Reusing a name replaces that account's store file. Existing external setup tokens still need `token_env` plus an explicit `uuid`.
+
+:::caution[Refresh-token rotation]
+A successful refresh can return a replacement refresh token and invalidate the previous one. Give every refreshable store file one active shunt owner: do not point multiple processes at the same file or run independently copied versions on separate hosts. Provision each process separately, or use a static setup token when sharing a non-refreshable credential is intentional.
+:::
 
 ## Account fields
 

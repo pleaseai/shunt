@@ -1,6 +1,6 @@
 ---
 title: CLI
-description: shunt コマンドライン — run、check、token。
+description: shunt コマンドライン — run、check、token、provider login。
 ---
 
 ## `shunt run`
@@ -43,6 +43,58 @@ Claude サブスクリプションの OAuth トークンを **stdout** に出力
 
 これが必要になる場面については [Connect Claude Code](/ja/guides/connect-claude-code/#2-choose-the-anthropic-credential) を参照してください。
 
+## `shunt login claude`
+
+次の 3 つのモードのいずれかで、shunt 管理の Anthropic プールアカウントを作成します。
+
+```bash
+# Full OAuth: shunt が新しいリフレッシュ可能なログインを取得して保存します（推奨）。
+shunt login claude --name primary --mode oauth
+
+# 現在のリフレッシュ可能な Claude Code ログインをインポートします。
+shunt login claude --name imported --mode import
+
+# Claude の 1 年間・推論専用 setup-token フローを実行します。
+shunt login claude --name ci --mode setup-token
+```
+
+TTY で `--mode` を省略すると、shunt は `oauth`、`import`、`setup-token` の選択を求め、OAuth をデフォルトの推奨値にします。非対話入力では従来の `import` デフォルトを維持します。`--long-lived` は `--mode setup-token` の deprecated alias として残ります。
+
+`--mode oauth` は shunt の full-scope PKCE 認可フローを実行し、access token と refresh token の両方を保存します。デフォルトでは、shunt は `127.0.0.1` に一時リスナーをバインドして認可 URL を開き、ブラウザーが `http://localhost:<port>/callback` に戻ると完了します。ブラウザーを開けない、リスナーを開始できない、または 5 分以内に callback が届かない場合は、非表示入力の手動貼り付けフローへフォールバックします。SSH や headless 環境では `--manual` ですぐに手動フローを使えます。
+
+```bash
+shunt login claude --name remote --mode oauth --manual
+```
+
+`--mode import` は `~/.claude/.credentials.json`（または `CLAUDE_CREDENTIALS`）を `~/.shunt/accounts/claude/<name>.json` へコピーします。refresh token を保持し、Claude Code のグローバル設定にある現在のアカウント UUID と関連付けます。shunt は Claude Code の元ファイルを変更せず、このプライベートコピーをリフレッシュします。
+
+`--mode setup-token` は `claude setup-token` と同じ 1 年間・推論専用の PKCE フローを実行します。ブラウザーで承認後、表示された認可コードを shunt の非表示入力プロンプトへ貼り付けます。shunt はコードを直接交換し、opaque token と発行元アカウント UUID の両方を、トークンを表示せずに保存します。
+
+ファイルは Unix で `0700` ディレクトリ内に `0600` でアトミックに書き込まれます。`SHUNT_CLAUDE_ACCOUNTS_DIR` でストアディレクトリを上書きでき、同じ名前を再利用するとファイルを置き換えます。既存の外部 setup token は、発行後にアカウント UUID を復元できないため、引き続き `token_env` と明示的な `uuid` が必要です。
+
+:::caution[リフレッシュ可能なログインごとに owner は 1 つ]
+OAuth provider は、shunt が access token をリフレッシュするときに refresh token もローテーションする場合があります。同じリフレッシュ可能な credential ファイルを複数の shunt プロセスで実行したり、稼働中のストアファイルを別ホストへコピーして独立運用したりしないでください。一方で最初にリフレッシュすると、もう一方のコピーが無効になる可能性があります。プロセスごとに個別にプロビジョニングするか、共有する静的 credential が必要な場合はリフレッシュしない setup token を使ってください。
+:::
+
+結果は名前だけのプールエントリーで参照するか、provider のアカウントリストを空にしてすべてのストアファイルをスキャンできます。
+
+```toml
+[[providers.anthropic.accounts]]
+name = "primary"
+```
+
+## `shunt login xai`
+
+xAI の device-code OAuth フローを実行し、リフレッシュ可能な credential を保存します。
+
+```bash
+shunt login xai
+```
+
+## Anthropic アカウントプール認証
+
+`auth = "claude_oauth"` の Anthropic provider では、アカウントに名前だけのストアエントリー、`credentials = "~/.claude/.credentials.json"`、または `token_env = "YOUR_ENV_NAME"` を使えます。ストアエントリーは、上記の Full OAuth、Claude Code ログインのインポート、setup-token フローのいずれかで作成できます。完全な設定と failover ルールは [Anthropic マルチアカウント](/ja/guides/anthropic-multi-account/) を参照してください。
+
 ## 環境変数
 
 | 変数 | 効果 |
@@ -51,5 +103,7 @@ Claude サブスクリプションの OAuth トークンを **stdout** に出力
 | `RUST_LOG` | ログフィルター、例 `shunt=debug` |
 | `SHUNT_CLIENT_TOKENS` | [`[server.auth]`](/ja/guides/shared-gateway/) 向けのクライアントトークン（名前は `tokens_env` で設定可能） |
 | `SHUNT_GATEWAY_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN` | `shunt token` 向けの静的トークン |
-| `CLAUDE_CREDENTIALS` | `shunt token` 向けの代替認証情報ファイルパス |
+| `CLAUDE_CREDENTIALS` | `shunt token` とリフレッシュ可能な `shunt login claude` インポート向けの代替 credential ファイルパス |
+| `SHUNT_CLAUDE_ACCOUNTS_DIR` | shunt 管理の Claude アカウントストア用の代替ディレクトリ |
+| `token_env` で指定するアカウント別変数 | Anthropic `claude_oauth` プールエントリーの setup token。値を変更せずに使用 |
 | `OPENAI_API_KEY` | `openai` プロバイダーのデフォルトキー環境変数（プロバイダーごとに `api_key_env` で） |

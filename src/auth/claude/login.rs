@@ -1,7 +1,10 @@
-//! `shunt login claude` — import a refreshable Claude Code login or run an
-//! inference-only OAuth flow that stores a long-lived token with its account UUID.
+//! `shunt login claude` — import a refreshable Claude Code login, run a full
+//! refreshable OAuth flow, or store an inference-only long-lived setup token.
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use anyhow::{bail, Context};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -9,11 +12,13 @@ use rand::RngCore;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use super::{auth, store};
+use super::{auth, callback::CallbackServer, store};
 
 pub(crate) const AUTHORIZE_URL: &str = "https://claude.com/cai/oauth/authorize";
 pub(crate) const MANUAL_REDIRECT_URL: &str = "https://platform.claude.com/oauth/code/callback";
+pub(crate) const SETUP_TOKEN_SCOPE: &str = "user:inference";
 pub(crate) const SETUP_TOKEN_EXPIRES_SECS: u64 = 365 * 24 * 60 * 60;
+const OAUTH_CALLBACK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 pub async fn run(name: &str, long_lived: bool) -> anyhow::Result<()> {
     store::validate_account_name(name)?;
@@ -27,6 +32,129 @@ pub async fn run(name: &str, long_lived: bool) -> anyhow::Result<()> {
         path.display()
     );
     Ok(())
+}
+
+/// Full refreshable OAuth login. By default, starts a loopback callback and
+/// completes without a paste; `manual` forces the fixed manual redirect. Browser
+/// launch and callback failures fall back to the manual-paste flow.
+pub async fn run_oauth(name: &str, manual: bool) -> anyhow::Result<()> {
+    store::validate_account_name(name)?;
+    let path = if manual {
+        run_oauth_manual(name).await?
+    } else {
+        match run_oauth_auto(name).await {
+            Ok(path) => path,
+            Err(error) => {
+                eprintln!(
+                    "Automatic Claude OAuth callback failed ({error}); falling back to manual paste."
+                );
+                run_oauth_manual(name).await?
+            }
+        }
+    };
+    println!(
+        "Claude account {name:?} saved to {} (refreshable OAuth login). Add a name-only account entry to use it.",
+        path.display()
+    );
+    Ok(())
+}
+
+async fn run_oauth_auto(name: &str) -> anyhow::Result<PathBuf> {
+    let PkceChallenge {
+        verifier,
+        challenge,
+        state,
+    } = generate_pkce();
+    let callback = CallbackServer::bind(state.clone()).await?;
+    let redirect_uri = callback.redirect_uri();
+    let authorize_url = build_authorize_url(&challenge, &state, auth::SCOPE, &redirect_uri)?;
+    println!("Open this URL to authorize shunt with the Claude account to store:\n");
+    println!("    {authorize_url}\n");
+    open_url(authorize_url.as_str()).context("failed to open Claude OAuth authorization URL")?;
+    let code = callback.wait_for_code(OAUTH_CALLBACK_TIMEOUT).await?;
+    let tokens = exchange_code(
+        &reqwest::Client::new(),
+        &code,
+        &state,
+        &verifier,
+        auth::TOKEN_URL,
+        &redirect_uri,
+        None,
+    )
+    .await?;
+    persist_oauth_tokens(name, tokens)
+}
+
+async fn run_oauth_manual(name: &str) -> anyhow::Result<PathBuf> {
+    let PkceChallenge {
+        verifier,
+        challenge,
+        state,
+    } = generate_pkce();
+    let authorize_url = build_authorize_url(&challenge, &state, auth::SCOPE, MANUAL_REDIRECT_URL)?;
+    println!("Open this URL to authorize shunt with the Claude account to store:\n");
+    println!("    {authorize_url}\n");
+    if let Err(error) = open_url(authorize_url.as_str()) {
+        eprintln!("Could not open browser automatically: {error}");
+    }
+    let pasted = rpassword::prompt_password(
+        "Paste the authorization code shown after approval (input hidden): ",
+    )
+    .context("failed to read Claude authorization code")?;
+    let (code, returned_state) = pasted
+        .trim()
+        .split_once('#')
+        .ok_or_else(|| anyhow::anyhow!("authorization code must have the form <code>#<state>"))?;
+    if code.is_empty() || returned_state != state {
+        bail!("invalid Claude authorization code or OAuth state mismatch");
+    }
+    let tokens = exchange_code(
+        &reqwest::Client::new(),
+        code,
+        &state,
+        &verifier,
+        auth::TOKEN_URL,
+        MANUAL_REDIRECT_URL,
+        None,
+    )
+    .await?;
+    persist_oauth_tokens(name, tokens)
+}
+
+fn persist_oauth_tokens(name: &str, tokens: TokenExchangeResponse) -> anyhow::Result<PathBuf> {
+    let refresh_token = tokens
+        .refresh_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("Claude token exchange did not return a refresh token"))?;
+    let account_uuid = tokens
+        .account
+        .as_ref()
+        .map(|account| account.uuid.as_str())
+        .filter(|uuid| !uuid.is_empty());
+    if account_uuid.is_none() {
+        eprintln!("Warning: Claude token exchange did not return an account UUID; the account_uuid rewrite will be skipped for this account.");
+    }
+    let expires_at_ms = oauth_expires_at_ms(tokens.expires_in);
+    store::store_oauth_tokens(
+        name,
+        &tokens.access_token,
+        refresh_token,
+        expires_at_ms,
+        account_uuid,
+    )
+}
+
+/// Convert the token response's `expires_in` (seconds) to an absolute epoch-ms
+/// `expiresAt`, mirroring `ClaudeAuthStore`'s refresh math (default 3600s).
+pub(crate) fn oauth_expires_at_ms(expires_in: Option<i64>) -> i64 {
+    let secs = expires_in.filter(|value| *value > 0).unwrap_or(3600);
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    now_ms + secs * 1000
 }
 
 async fn import_current_login(name: &str) -> anyhow::Result<PathBuf> {
@@ -58,7 +186,8 @@ async fn run_setup_token(name: &str) -> anyhow::Result<PathBuf> {
         challenge,
         state,
     } = generate_pkce();
-    let authorize_url = build_authorize_url(&challenge, &state)?;
+    let authorize_url =
+        build_authorize_url(&challenge, &state, SETUP_TOKEN_SCOPE, MANUAL_REDIRECT_URL)?;
 
     println!("Open this URL to authorize shunt with the Claude account to store:\n");
     println!("    {authorize_url}\n");
@@ -83,6 +212,8 @@ async fn run_setup_token(name: &str) -> anyhow::Result<PathBuf> {
         &state,
         &verifier,
         auth::TOKEN_URL,
+        MANUAL_REDIRECT_URL,
+        Some(SETUP_TOKEN_EXPIRES_SECS),
     )
     .await?;
     let account_uuid = tokens
@@ -116,14 +247,19 @@ pub(crate) fn generate_pkce() -> PkceChallenge {
     }
 }
 
-pub(crate) fn build_authorize_url(challenge: &str, state: &str) -> anyhow::Result<reqwest::Url> {
+pub(crate) fn build_authorize_url(
+    challenge: &str,
+    state: &str,
+    scope: &str,
+    redirect_uri: &str,
+) -> anyhow::Result<reqwest::Url> {
     let mut url = reqwest::Url::parse(AUTHORIZE_URL)?;
     url.query_pairs_mut()
         .append_pair("code", "true")
         .append_pair("client_id", auth::CLIENT_ID)
         .append_pair("response_type", "code")
-        .append_pair("redirect_uri", MANUAL_REDIRECT_URL)
-        .append_pair("scope", "user:inference")
+        .append_pair("redirect_uri", redirect_uri)
+        .append_pair("scope", scope)
         .append_pair("code_challenge", challenge)
         .append_pair("code_challenge_method", "S256")
         .append_pair("state", state);
@@ -139,6 +275,10 @@ fn random_urlsafe(bytes: usize) -> String {
 #[derive(Debug, Deserialize)]
 pub(crate) struct TokenExchangeResponse {
     pub access_token: String,
+    #[serde(default)]
+    pub refresh_token: Option<String>,
+    #[serde(default)]
+    pub expires_in: Option<i64>,
     pub account: Option<TokenAccount>,
 }
 
@@ -153,16 +293,24 @@ pub(crate) async fn exchange_code(
     state: &str,
     verifier: &str,
     token_url: &str,
+    redirect_uri: &str,
+    expires_in: Option<u64>,
 ) -> anyhow::Result<TokenExchangeResponse> {
-    let body = serde_json::json!({
-        "grant_type": "authorization_code",
-        "code": code,
-        "redirect_uri": MANUAL_REDIRECT_URL,
-        "client_id": auth::CLIENT_ID,
-        "code_verifier": verifier,
-        "state": state,
-        "expires_in": SETUP_TOKEN_EXPIRES_SECS,
-    });
+    let mut body = serde_json::Map::from_iter([
+        (
+            "grant_type".to_string(),
+            serde_json::json!("authorization_code"),
+        ),
+        ("code".to_string(), serde_json::json!(code)),
+        ("redirect_uri".to_string(), serde_json::json!(redirect_uri)),
+        ("client_id".to_string(), serde_json::json!(auth::CLIENT_ID)),
+        ("code_verifier".to_string(), serde_json::json!(verifier)),
+        ("state".to_string(), serde_json::json!(state)),
+    ]);
+    if let Some(expires_in) = expires_in {
+        body.insert("expires_in".to_string(), serde_json::json!(expires_in));
+    }
+    let body = serde_json::Value::Object(body);
     let response = client
         .post(token_url)
         .header("content-type", "application/json")
@@ -237,12 +385,13 @@ fn open_url(url: &str) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use serde_json::json;
-    use wiremock::matchers::{body_json, method, path};
+    use wiremock::matchers::{body_json, body_partial_json, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn authorization_url_requests_inference_only_with_pkce() {
-        let url = build_authorize_url("challenge", "state").unwrap();
+        let url = build_authorize_url("challenge", "state", SETUP_TOKEN_SCOPE, MANUAL_REDIRECT_URL)
+            .unwrap();
         let params = url
             .query_pairs()
             .collect::<std::collections::HashMap<_, _>>();
@@ -261,6 +410,19 @@ mod tests {
         assert_eq!(
             params.get("redirect_uri").map(|value| value.as_ref()),
             Some(MANUAL_REDIRECT_URL)
+        );
+    }
+
+    #[test]
+    fn authorization_url_requests_full_oauth_scope() {
+        let url =
+            build_authorize_url("challenge", "state", auth::SCOPE, MANUAL_REDIRECT_URL).unwrap();
+        let params = url
+            .query_pairs()
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(
+            params.get("scope").map(|value| value.as_ref()),
+            Some(auth::SCOPE)
         );
     }
 
@@ -323,10 +485,109 @@ mod tests {
             "state",
             "verifier",
             &format!("{}/token", server.uri()),
+            MANUAL_REDIRECT_URL,
+            Some(SETUP_TOKEN_EXPIRES_SECS),
         )
         .await
         .unwrap();
         assert_eq!(response.access_token, "long-lived");
         assert_eq!(response.account.unwrap().uuid, "account-two");
+    }
+
+    #[tokio::test]
+    async fn oauth_exchange_sends_loopback_redirect_uri() {
+        let server = MockServer::start().await;
+        let redirect_uri = "http://localhost:45678/callback";
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .and(body_partial_json(json!({
+                "redirect_uri": redirect_uri,
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": "oauth-access",
+                "refresh_token": "oauth-refresh",
+                "expires_in": 3600
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let response = exchange_code(
+            &reqwest::Client::new(),
+            "oauth-code",
+            "oauth-state",
+            "oauth-verifier",
+            &format!("{}/token", server.uri()),
+            redirect_uri,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.refresh_token.as_deref(), Some("oauth-refresh"));
+    }
+
+    #[tokio::test]
+    async fn oauth_exchange_persists_refreshable_tokens() {
+        let _guard = store::TEST_ENV_LOCK.lock().await;
+        let server = MockServer::start().await;
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-claude-oauth-login-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let token_url = format!("{}/token", server.uri());
+        let _accounts_env =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+        let _token_env =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_CLAUDE_TOKEN_URL", &token_url);
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .and(body_json(json!({
+                "grant_type": "authorization_code",
+                "code": "oauth-code",
+                "redirect_uri": MANUAL_REDIRECT_URL,
+                "client_id": auth::CLIENT_ID,
+                "code_verifier": "oauth-verifier",
+                "state": "oauth-state",
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": "oauth-access",
+                "refresh_token": "oauth-refresh",
+                "expires_in": 7200,
+                "account": {"uuid": "oauth-account"}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let response = exchange_code(
+            &reqwest::Client::new(),
+            "oauth-code",
+            "oauth-state",
+            "oauth-verifier",
+            &std::env::var("SHUNT_CLAUDE_TOKEN_URL").unwrap(),
+            MANUAL_REDIRECT_URL,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.refresh_token.as_deref(), Some("oauth-refresh"));
+        assert_eq!(response.expires_in, Some(7200));
+
+        let path = persist_oauth_tokens("oauth", response).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(value["claudeAiOauth"]["accessToken"], "oauth-access");
+        assert_eq!(value["claudeAiOauth"]["refreshToken"], "oauth-refresh");
+        assert!(value["claudeAiOauth"]["expiresAt"].as_i64().unwrap() > 0);
+        assert_eq!(value["shuntAccountUuid"], "oauth-account");
+        assert!(value["claudeAiOauth"].get("shuntCredentialKind").is_none());
+        let meta = store::account_meta("oauth").expect("OAuth account metadata parses");
+        assert!(matches!(meta.kind, store::AccountKind::Imported));
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

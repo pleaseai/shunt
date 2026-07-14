@@ -6,9 +6,9 @@
 //! `[server.admin]` admin tokens add upstream accounts. Browsers authenticate with
 //! a session cookie minted after a login form and are CSRF-protected; API/curl
 //! callers pass the admin token header and are CSRF-exempt (no ambient cookie).
-//! The provisioning flow reuses the CLI setup-token internals in
-//! `crate::auth::claude::login`; the token value is never returned to the browser
-//! and never logged. See `docs/m9-admin-surface.md`.
+//! The provisioning flow reuses the CLI Claude OAuth internals for both full
+//! refreshable logins and inference-only setup tokens; token values are never
+//! returned to the browser or logged. See `docs/m9-admin-surface.md`.
 
 pub mod session;
 
@@ -38,7 +38,7 @@ use crate::{
 
 pub use session::AdminStores;
 
-use session::PendingAttempt;
+use session::{PendingAttempt, PendingKind};
 
 const SESSION_COOKIE: &str = "shunt_admin_session";
 
@@ -419,9 +419,35 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum AddMode {
+    #[default]
+    SetupToken,
+    Oauth,
+}
+
+impl AddMode {
+    fn pending_kind(self) -> PendingKind {
+        match self {
+            Self::SetupToken => PendingKind::SetupToken,
+            Self::Oauth => PendingKind::FullOauth,
+        }
+    }
+
+    fn scope(self) -> &'static str {
+        match self {
+            Self::SetupToken => claude_login::SETUP_TOKEN_SCOPE,
+            Self::Oauth => claude_auth::SCOPE,
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct AddBody {
     name: String,
+    #[serde(default)]
+    mode: AddMode,
 }
 
 async fn add_account(
@@ -442,8 +468,14 @@ async fn add_account(
     if claude_store::validate_account_name(&body.name).is_err() {
         return bad_request("account name must match [a-z0-9-]+");
     }
+    let pending_kind = body.mode.pending_kind();
     let pkce = claude_login::generate_pkce();
-    let authorize_url = match claude_login::build_authorize_url(&pkce.challenge, &pkce.state) {
+    let authorize_url = match claude_login::build_authorize_url(
+        &pkce.challenge,
+        &pkce.state,
+        body.mode.scope(),
+        claude_login::MANUAL_REDIRECT_URL,
+    ) {
         Ok(url) => url,
         Err(error) => {
             tracing::error!(account = %body.name, %error, "admin: failed to build authorize URL");
@@ -452,11 +484,12 @@ async fn add_account(
     };
     state.admin_stores.pending.start(
         &body.name,
+        pending_kind,
         pkce.verifier,
         pkce.state,
         authok.auth.pending_ttl(),
     );
-    tracing::info!(account = %body.name, "admin: account provisioning started");
+    tracing::info!(account = %body.name, mode = ?body.mode, "admin: account provisioning started");
     json_secure(json!({ "name": body.name, "authorize_url": authorize_url.to_string() }))
 }
 
@@ -503,6 +536,10 @@ async fn complete_account(
         return bad_request("invalid authorization code or OAuth state mismatch");
     }
 
+    let expires_in = match pending.kind {
+        PendingKind::SetupToken => Some(claude_login::SETUP_TOKEN_EXPIRES_SECS),
+        PendingKind::FullOauth => None,
+    };
     let token_url = admin_token_url();
     let tokens = match claude_login::exchange_code(
         &state.http_client,
@@ -510,6 +547,8 @@ async fn complete_account(
         &pending.state,
         &pending.verifier,
         &token_url,
+        claude_login::MANUAL_REDIRECT_URL,
+        expires_in,
     )
     .await
     {
@@ -521,23 +560,52 @@ async fn complete_account(
             return bad_gateway("Claude token exchange failed");
         }
     };
-    let Some(uuid) = tokens
+    let account_uuid = tokens
         .account
         .as_ref()
         .map(|account| account.uuid.as_str())
         .filter(|uuid| !uuid.is_empty())
-    else {
+        .map(ToOwned::to_owned);
+    if matches!(pending.kind, PendingKind::SetupToken) && account_uuid.is_none() {
         tracing::warn!(account = %name, "admin: Claude token exchange did not return an account UUID");
         return bad_gateway("Claude token exchange did not return an account UUID");
-    };
+    }
 
     let account_name = name.clone();
-    let access_token = tokens.access_token;
-    let uuid = uuid.to_string();
-    let stored = tokio::task::spawn_blocking(move || {
-        claude_store::store_setup_token(&account_name, &access_token, Some(&uuid))
-    })
-    .await;
+    let stored = match pending.kind {
+        PendingKind::SetupToken => {
+            let access_token = tokens.access_token;
+            let account_uuid = account_uuid.expect("setup-token UUID validated above");
+            tokio::task::spawn_blocking(move || {
+                claude_store::store_setup_token(&account_name, &access_token, Some(&account_uuid))
+            })
+            .await
+        }
+        PendingKind::FullOauth => {
+            let Some(refresh_token) = tokens
+                .refresh_token
+                .as_deref()
+                .map(str::trim)
+                .filter(|token| !token.is_empty())
+                .map(ToOwned::to_owned)
+            else {
+                tracing::warn!(account = %name, "admin: full Claude OAuth token exchange did not return a refresh token");
+                return bad_gateway("Claude token exchange did not return a refresh token");
+            };
+            let access_token = tokens.access_token;
+            let expires_at_ms = claude_login::oauth_expires_at_ms(tokens.expires_in);
+            tokio::task::spawn_blocking(move || {
+                claude_store::store_oauth_tokens(
+                    &account_name,
+                    &access_token,
+                    &refresh_token,
+                    expires_at_ms,
+                    account_uuid.as_deref(),
+                )
+            })
+            .await
+        }
+    };
     // The OAuth code is already consumed (single-use) by the time we get here, so
     // a persist failure is unrecoverable for this attempt — log the real cause
     // (disk full, permission denied, serialization) instead of swallowing it.
@@ -548,7 +616,7 @@ async fn complete_account(
             return internal("failed to store account");
         }
         Err(join_error) => {
-            tracing::error!(account = %name, %join_error, "admin: store_setup_token task panicked");
+            tracing::error!(account = %name, %join_error, "admin: account persistence task panicked");
             return internal("failed to store account");
         }
     }
@@ -566,10 +634,19 @@ async fn complete_account(
         .providers
         .values()
         .any(|provider| provider.auth == AuthMode::ClaudeOauth && provider.accounts.is_empty());
-    let message = if live {
-        "Account stored and live now (an empty-accounts provider scans the store each request)."
-    } else {
-        "Account stored. Add a name-only [[providers.<name>.accounts]] entry and reload to activate it."
+    let message = match (pending.kind, live) {
+        (PendingKind::SetupToken, true) => {
+            "Account stored and live now (an empty-accounts provider scans the store each request)."
+        }
+        (PendingKind::SetupToken, false) => {
+            "Account stored. Add a name-only [[providers.<name>.accounts]] entry and reload to activate it."
+        }
+        (PendingKind::FullOauth, true) => {
+            "Refreshable OAuth login stored and live now (an empty-accounts provider scans the store each request)."
+        }
+        (PendingKind::FullOauth, false) => {
+            "Refreshable OAuth login stored. Add a name-only [[providers.<name>.accounts]] entry and reload to activate it."
+        }
     };
     json_secure(json!({ "name": name, "stored": true, "live": live, "message": message }))
 }

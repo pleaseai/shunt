@@ -17,22 +17,28 @@ rather than growing a second stack.
 
 ## Motivation
 
-After M8, the only way to add an account to a deployed shunt is SSH (or
-`docker exec`) plus the interactive `shunt login claude --name <n> --long-lived`
-paste flow — the router exposed only `/`, `/health`, `/protocol`, `/v1/models`,
-`/routes`, and the two `/v1/messages*` endpoints. Pool health (per-account quota
-utilization, cooldowns) was observable only through the `x-shunt-account`
-response header and logs. M9 relocates provisioning from a TTY to a browser form
-and surfaces the pool state that already lives in memory.
+After M8, adding an account to a deployed shunt required SSH (or
+`docker exec`) plus an interactive `shunt login claude --name <n>` flow.
+Depending on `--mode`, that flow creates a refreshable full-OAuth login,
+imports an existing Claude Code login, or creates a one-year setup token. The
+router exposed only `/`, `/health`, `/protocol`, `/v1/models`, `/routes`, and
+the two `/v1/messages*` endpoints. Pool health (per-account quota utilization,
+cooldowns) was observable only through the `x-shunt-account` response header
+and logs. M9 relocates directly provisionable OAuth/setup-token flows from a
+TTY to a browser form and surfaces the pool state that already lives in memory.
 
 ## Scope
 
-- **Setup-token flow only.** The browser flow is the web equivalent of
-  `shunt login claude --name <n> --long-lived`: an inference-only, one-year PKCE
-  setup token. The import flow (a refreshable Claude Code login) stays CLI-only.
-  This also sidesteps the cross-process refresh-token rotation hazard by
-  construction — web-provisioned accounts are static tokens that are never
-  refreshed (see #73).
+- **Full OAuth and setup-token provisioning.** The browser form offers a
+  refreshable full-scope OAuth flow and the inference-only, one-year PKCE setup
+  token. Both use the fixed manual redirect because the admin browser may be
+  remote from shunt. Importing an existing Claude Code credential file stays
+  CLI-only because the source file lives on the host.
+- **Refresh rotation ownership.** A full-OAuth account is refreshed and written
+  back by `ClaudeAuthStore`. Because the provider can rotate the refresh token,
+  its store file must have one active process owner; copying or sharing it
+  across running hosts can invalidate another process. Setup-token accounts
+  remain static and avoid this hazard.
 - **Full CRUD.** Add (provision), list (metadata only), remove (delete the store
   file), and replace (re-run the flow with the same name, which the store already
   supports).
@@ -109,11 +115,12 @@ process-lifetime state:
   256-bit OAuth `state` already makes guessing infeasible.
 - **Rate-limit** on the completion and login endpoints (a coarse global fixed
   window each) against code- and admin-token-guessing storms.
-- **Secrets never leak:** the verifier and setup token are never logged and never
-  returned to the browser. The OAuth `state` is intentionally carried in the
-  authorize URL and the opaque session id only in the `HttpOnly` session cookie —
-  both are protocol values the browser must receive, not bearer secrets. Account
-  add/remove is audit-logged by name only.
+- **Secrets never leak:** the verifier, authorization code, access token, and
+  refresh token are never logged and never returned to the browser. The OAuth
+  `state` is intentionally carried in the authorize URL and the opaque session
+  id only in the `HttpOnly` session cookie — both are protocol values the
+  browser must receive, not bearer secrets. Account add/remove is audit-logged
+  by name and provisioning mode only.
 - Docs recommend binding the admin surface behind HTTPS / a tunnel, same as the
   shared-gateway guide.
 - **Emergency token rotation:** browser sessions are validated only against the
@@ -136,7 +143,7 @@ process-lifetime state:
 | `POST` | `/admin/logout` | Clear the session |
 | `GET` | `/admin/accounts` | JSON: store metadata (name, kind, expiry, UUID — never the token) |
 | `GET` | `/admin/pool` | JSON: per-`claude_oauth`-provider pool health |
-| `POST` | `/admin/accounts/claude` | `{name}` → start provisioning; returns `{authorize_url}` |
+| `POST` | `/admin/accounts/claude` | `{name, mode}` → start provisioning (`oauth` or `setup_token`); omitted `mode` defaults to `setup_token`; returns `{authorize_url}` |
 | `POST` | `/admin/accounts/claude/{name}/complete` | `{code}` → finish; stores the account |
 | `DELETE` | `/admin/accounts/claude/{name}` | Remove the account's store file |
 
@@ -145,25 +152,33 @@ render minimal server-side HTML with inline CSS/JS and no external requests.
 
 ## Phase 1 — provisioning flow
 
-The browser flow reuses the CLI setup-token internals in `auth/claude_login.rs`
-(`generate_pkce`, `build_authorize_url`, `exchange_code`) and stores via the
-already-public `claude_store::store_setup_token`. The only relocation is the
-paste: the Anthropic setup-token redirect URI is fixed to
-`platform.claude.com/oauth/code/callback`, so a full server-as-redirect-target
-flow is impossible for the upstream leg — the operator pastes `<code>#<state>`
-into a form instead of a TTY.
+The browser flow reuses the CLI OAuth/setup-token internals in
+`auth/claude/login.rs` (`generate_pkce`, `build_authorize_url`,
+`exchange_code`) and stores through `claude_store`. The upstream redirect URI is
+fixed to `platform.claude.com/oauth/code/callback` for this remote/manual flow —
+the CLI's full-OAuth mode can use a localhost callback, but that loopback would
+return to the operator's browser host rather than a remote shunt server. The
+operator therefore pastes `<code>#<state>` into the form for both web modes.
 
-1. `POST /admin/accounts/claude {name}` validates the name, generates a PKCE
-   verifier/challenge + `state`, stores a single-use pending login (TTL
-   `pending_ttl_secs`), and returns the authorize URL
-   (`https://claude.com/cai/oauth/authorize`, scope `user:inference`).
+1. `POST /admin/accounts/claude {name, mode}` validates the name and mode,
+   generates a PKCE verifier/challenge + `state`, stores a single-use pending
+   login with its authoritative flow kind (TTL `pending_ttl_secs`), and returns
+   the authorize URL (`https://claude.com/cai/oauth/authorize`). `mode =
+   "oauth"` requests the full refreshable Claude scope; `mode = "setup_token"`
+   requests `user:inference`. Omitting `mode` defaults to `setup_token` for API
+   backward compatibility, while the dashboard explicitly sends `oauth` by
+   default.
 2. The operator opens the URL, signs in to the target Claude account, approves,
    and pastes the resulting `<code>#<state>`.
 3. `POST /admin/accounts/claude/{name}/complete {code}` verifies `state`
    (constant-time), exchanges the code at the token endpoint (honoring
-   `SHUNT_CLAUDE_TOKEN_URL` for tests), and writes the setup token via
-   `store_setup_token` (atomic `0600`, UUID captured from the exchange). The
-   pending entry is consumed.
+   `SHUNT_CLAUDE_TOKEN_URL` for tests), then dispatches by the server-stored
+   pending kind. Setup-token mode requests the one-year expiry, requires an
+   account UUID, and calls `store_setup_token`. Full OAuth omits that expiry
+   override, requires a non-empty refresh token, accepts an optional account
+   UUID, computes `expiresAt`, and calls `store_oauth_tokens`. Both writes are
+   atomic at `0600`; the pending entry is consumed. The completion request
+   cannot switch modes.
 4. The completion response reports whether the account is **live immediately** (a
    `claude_oauth` provider with an empty `accounts` list scans the store each
    request) or needs a name-only `[[providers.<name>.accounts]]` entry + reload.
@@ -206,7 +221,9 @@ separate, but should reuse rather than duplicate:
   accept/reject, constant-time admin auth, cookie `Secure` loopback carve-out,
   `AccountPool::snapshot`, `claude_store::list_account_meta`/`remove_account`.
 - Integration (`tests/admin_surface.rs`): the routes are absent without the block
-  (404); API requires auth (401); the full add → complete (wiremock token
-  endpoint) → list → pool → delete flow stores the account without ever returning
-  the token; cookie mutations without a CSRF token are rejected (403);
-  fail-closed startup without the tokens env.
+  (404); API requires auth (401); setup-token mode keeps the legacy omitted-mode
+  behavior and one-year exchange; full OAuth requests the full scope, omits the
+  expiry override, and persists a refreshable account; malformed or unknown modes
+  fail without storing a file; list/pool/response payloads never expose token
+  material; cookie mutations without a CSRF token are rejected (403); fail-closed
+  startup without the tokens env.

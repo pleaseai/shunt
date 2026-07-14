@@ -76,7 +76,7 @@ cp shunt.yaml.example shunt.yaml  # YAML
 bind = "127.0.0.1:3001"        # address shunt listens on
 default_provider = "anthropic" # provider for any model with no route (pass-through)
 
-# Each provider is a [providers.<name>] table (see §3.3 for every key).
+# Each provider is a [providers.<name>] table (see §3.2 for every key).
 [providers.anthropic]
 kind = "anthropic"             # forward Claude Code's own credential unchanged
 base_url = "https://api.anthropic.com"
@@ -183,9 +183,9 @@ a brand-new table adds a provider. Every provider takes these keys:
 
 | Key | Values | Meaning |
 | :-- | :-- | :-- |
-| `kind` | `anthropic` \| `responses` | Upstream protocol / adapter. `anthropic` = Messages API (passed through, optionally re-keyed); `responses` = Anthropic Messages translated to the OpenAI Responses API. |
-| `base_url` | URL | Upstream base; Claude Code appends `/v1/messages`. |
-| `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `xai_oauth` | `passthrough` forwards the client's own credential (api.anthropic.com); `api_key` injects a key from `api_key_env`; `chatgpt_oauth` reuses `~/.codex/auth.json`; `xai_oauth` reuses the xAI subscription login in `~/.shunt/xai-auth.json` (`shunt login xai`; `kind = "responses"` only, base_url must stay on an https `x.ai` host). |
+| `kind` | `anthropic` \| `responses` \| `cursor` | Upstream protocol / adapter. `anthropic` = Messages API (passed through, optionally re-keyed); `responses` = Anthropic Messages translated to the OpenAI Responses API; `cursor` = Cursor's native ConnectRPC/protobuf AgentService. |
+| `base_url` | URL | Upstream base; shunt appends the provider endpoint path. |
+| `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `claude_oauth` \| `xai_oauth` \| `cursor_oauth` | `passthrough` forwards the client's credential; `api_key` injects `api_key_env`; `chatgpt_oauth` uses Codex/ChatGPT OAuth; `claude_oauth` selects an Anthropic subscription account pool (see §3.3); `xai_oauth` and `cursor_oauth` reuse their shunt-managed subscription logins. |
 | `api_key_env` | env var name | Where the key is read from, when `auth = "api_key"`. |
 | `api_key_header` | `bearer` (default) \| `x_api_key` | Header the injected key is sent in. |
 | `effort` | `low`…`max` | Optional default reasoning effort (`responses` providers). |
@@ -224,7 +224,36 @@ Then `export KIMI_API_KEY=…`, point Claude Code at shunt (§5.1), and select `
 (via `ANTHROPIC_MODEL` or the `/model` picker). Run `shunt check` to validate — it reports an
 unknown provider in a route, a missing `api_key_env`, or a bad `base_url`.
 
-### 3.3 Validate the config
+### 3.3 Provisioning Anthropic pool accounts
+
+When an Anthropic provider uses `auth = "claude_oauth"`, create each private store account with one of three login modes:
+
+```bash
+# Recommended: create a new refreshable credential.
+shunt login claude --name primary --mode oauth
+
+# Copy the current Claude Code refreshable login.
+shunt login claude --name imported --mode import
+
+# Create a one-year, inference-only static token.
+shunt login claude --name ci --mode setup-token
+```
+
+If `--mode` is omitted on a TTY, shunt presents these three choices and defaults to OAuth; non-interactive input retains the historical import default. `--long-lived` remains a deprecated alias for `--mode setup-token`.
+
+Full OAuth first binds an ephemeral listener to `127.0.0.1`, opens the authorization URL, and receives the redirect at `http://localhost:<port>/callback`. Browser-open, bind, callback, and 5-minute timeout failures fall back to a hidden manual-paste prompt. Use `--manual` to choose the paste flow immediately, especially over SSH:
+
+```bash
+shunt login claude --name remote --mode oauth --manual
+```
+
+The optional `[server.admin]` dashboard can provision full-OAuth or setup-token accounts remotely with the manual redirect. Its UI defaults to full OAuth; the start API accepts `mode = "oauth"` or `mode = "setup_token"` and defaults an omitted mode to `setup_token` for backward compatibility. Import remains CLI-only because it reads the host's existing Claude Code credential.
+
+Refreshable files contain rotating credentials. A successful refresh can replace the refresh token and invalidate its previous value, so give each file exactly one active shunt owner. Do not share the same file across processes or independently run copied snapshots on multiple hosts; provision each process separately. Setup-token accounts are non-refreshable and do not have this rotation hazard.
+
+See [`m8-anthropic-multi-account.md`](m8-anthropic-multi-account.md), [`m9-admin-surface.md`](m9-admin-surface.md), and the user-facing [CLI reference](../site/src/content/docs/reference/cli.md) for the complete pool and provisioning behavior.
+
+### 3.4 Validate the config
 
 ```bash
 cargo run -- check            # or: shunt check   /   shunt --check

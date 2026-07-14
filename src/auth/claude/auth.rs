@@ -28,7 +28,7 @@ use crate::auth::shared::write_auth_file_atomic;
 
 pub(crate) const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 pub(crate) const TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
-const SCOPE: &str =
+pub(crate) const SCOPE: &str =
     "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
 const EXPIRY_BUFFER: Duration = Duration::from_secs(5 * 60);
 

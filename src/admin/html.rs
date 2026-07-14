@@ -37,9 +37,16 @@ label { display: block; font-size: .85rem; margin: .5rem 0 .2rem; }
 input, textarea, button { font: inherit; }
 input, textarea { width: 100%; padding: .5rem .6rem; border: 1px solid #8886; border-radius: 8px;
   background: canvas; color: inherit; }
+fieldset { border: 0; padding: 0; margin: .7rem 0; }
+legend { font-size: .85rem; margin-bottom: .25rem; }
+.choice { display: flex; gap: .45rem; align-items: flex-start; margin: .25rem 0; padding: .2rem 0; }
+.choice input { flex: 0 0 auto; width: auto; margin: .2rem 0 0; }
+.choice span { display: block; }
+.choice small { display: block; margin-top: .1rem; }
 textarea { min-height: 4.5rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 button { cursor: pointer; padding: .5rem .9rem; border: 1px solid #4661ff; border-radius: 8px;
   background: #4661ff; color: #fff; }
+button:focus-visible, input:focus-visible, textarea:focus-visible, .choice:has(input:focus-visible) { outline: 2px solid #4661ff; outline-offset: 2px; }
 button.secondary { background: transparent; color: inherit; border-color: #8886; }
 button.danger { background: transparent; color: #c0392b; border-color: #c0392b88; padding: .25rem .5rem; }
 table { width: 100%; border-collapse: collapse; margin-top: .5rem; font-size: .9rem; }
@@ -91,9 +98,17 @@ pub fn dashboard_page(csrf: &str) -> String {
 
 <h2>Add Claude account</h2>
 <div class="card">
-<p class="muted" style="margin-top:0">Runs the setup-token flow (a one-year, inference-only token). The import flow stays CLI-only.</p>
+<p id="modehelp" class="muted" style="margin-top:0">Full OAuth creates a refreshable login that shunt manages.</p>
 <label for="name">Account name <span class="muted">(lowercase letters, digits, hyphens)</span></label>
-<div class="row"><input id="name" placeholder="e.g. pool-b"><button id="start" type="button">Start</button></div>
+<input id="name" name="name" placeholder="e.g. pool-b" autocomplete="off" spellcheck="false">
+<fieldset>
+<legend>Login method</legend>
+<label class="choice"><input id="mode-oauth" type="radio" name="mode" value="oauth" checked>
+<span>Full OAuth (refreshable)</span></label>
+<label class="choice"><input id="mode-setup" type="radio" name="mode" value="setup_token">
+<span>Setup token (1-year, inference-only)</span></label>
+</fieldset>
+<button id="start" type="button">Start account login</button>
 <div id="step2" style="display:none;margin-top:1rem">
 <p>1. Open this URL, sign in to the target Claude account, and approve:</p>
 <p class="overflow"><a id="authlink" target="_blank" rel="noopener noreferrer"></a></p>
@@ -158,12 +173,24 @@ async function loadPool() {{
 
 function showMsg(id, text, ok) {{ const el = $(id); el.className = "msg " + (ok ? "ok" : "err"); el.textContent = text; }}
 
+function selectedMode() {{
+  const selected = document.querySelector('input[name="mode"]:checked');
+  return selected ? selected.value : "oauth";
+}}
+function updateModeHelp() {{
+  $("modehelp").textContent = selectedMode() === "setup_token"
+    ? "Setup token creates a one-year, inference-only login that cannot refresh."
+    : "Full OAuth creates a refreshable login that shunt manages.";
+}}
+for (const input of document.querySelectorAll('input[name="mode"]')) {{ input.onchange = updateModeHelp; }}
+
 let currentName = null;
 $("start").onclick = async () => {{
   const name = $("name").value.trim();
   $("addmsg").className = ""; $("addmsg").textContent = "";
   try {{
-    const res = await fetch("/admin/accounts/claude", {{ method: "POST", headers: H, body: JSON.stringify({{ name }}) }});
+    const mode = selectedMode();
+    const res = await fetch("/admin/accounts/claude", {{ method: "POST", headers: H, body: JSON.stringify({{ name, mode }}) }});
     const data = await res.json();
     if (!res.ok) {{ showMsg("addmsg", (data.error && data.error.message) || "Failed to start", false); return; }}
     currentName = data.name;

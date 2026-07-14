@@ -224,6 +224,43 @@ pub fn store_setup_token(
     write_account(name, &value)
 }
 
+/// Store a freshly issued refreshable OAuth login (access + refresh token) in the
+/// shape `ClaudeAuthStore` reads and auto-refreshes — identical to what
+/// [`import_credentials`] produces, so `read_account_meta` reports it as
+/// `Imported` and the pool treats it as refreshable. Unlike [`store_setup_token`]
+/// this writes a non-empty `refreshToken` and no `shuntCredentialKind` marker.
+pub fn store_oauth_tokens(
+    name: &str,
+    access_token: &str,
+    refresh_token: &str,
+    expires_at_ms: i64,
+    account_uuid: Option<&str>,
+) -> anyhow::Result<PathBuf> {
+    validate_account_name(name)?;
+    let access_token = access_token.trim();
+    let refresh_token = refresh_token.trim();
+    if access_token.is_empty() || access_token.chars().any(char::is_whitespace) {
+        anyhow::bail!("OAuth access token must be one non-empty value without whitespace");
+    }
+    if refresh_token.is_empty() || refresh_token.chars().any(char::is_whitespace) {
+        anyhow::bail!("OAuth refresh token must be one non-empty value without whitespace");
+    }
+    let mut value = json!({
+        "claudeAiOauth": {
+            "accessToken": access_token,
+            "refreshToken": refresh_token,
+            "expiresAt": expires_at_ms
+        }
+    });
+    if let Some(account_uuid) = account_uuid.filter(|uuid| !uuid.is_empty()) {
+        value
+            .as_object_mut()
+            .expect("oauth-login credential is a JSON object")
+            .insert("shuntAccountUuid".to_string(), json!(account_uuid));
+    }
+    write_account(name, &value)
+}
+
 fn write_account(name: &str, value: &Value) -> anyhow::Result<PathBuf> {
     let path = account_path(name);
     shared::write_account_file(&path, value)?;
@@ -317,6 +354,40 @@ mod tests {
             assert_eq!(
                 fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
                 0o700
+            );
+        }
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn oauth_tokens_round_trip_as_refreshable_account() {
+        let _guard = TEST_ENV_LOCK.lock().await;
+        let dir = temp_dir("oauth");
+        let _env = shared::EnvVarGuard::set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+
+        let path = store_oauth_tokens(
+            "refreshable",
+            "access-token",
+            "refresh-token",
+            4_000_000_000_000,
+            Some("uuid-oauth"),
+        )
+        .unwrap();
+        let value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(value["claudeAiOauth"]["refreshToken"], "refresh-token");
+        assert_eq!(value["claudeAiOauth"]["expiresAt"], 4_000_000_000_000_i64);
+        assert_eq!(value["shuntAccountUuid"], "uuid-oauth");
+        assert!(value["claudeAiOauth"].get("shuntCredentialKind").is_none());
+        let meta = read_account_meta("refreshable", &path).expect("OAuth meta parses");
+        assert!(matches!(meta.kind, AccountKind::Imported));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
             );
         }
 

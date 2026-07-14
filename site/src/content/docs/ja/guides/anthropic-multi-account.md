@@ -38,15 +38,20 @@ shunt check
 shunt run
 ```
 
-どちらのログインモードでもアカウントを保存できます。
+3 つの Claude ログインモードのいずれかでアカウントを保存できます。
 
 ```bash
-# Import your current refreshable Claude Code login.
-shunt login claude --name primary
+# 新しいリフレッシュ可能なログインを作成（デフォルトは自動 localhost callback）。
+shunt login claude --name primary --mode oauth
 
-# Or generate and store a one-year setup token.
-shunt login claude --name backup --long-lived
+# 現在のリフレッシュ可能な Claude Code ログインをインポート。
+shunt login claude --name imported --mode import
+
+# 1 年間・推論専用の setup token を生成して保存。
+shunt login claude --name backup --mode setup-token
 ```
+
+TTY で `--mode` を省略すると、OAuth がデフォルト選択された 3 方式のプロンプトが開きます。非対話入力では従来の `import` デフォルトを維持します。`--long-lived` は `--mode setup-token` の deprecated alias です。Full OAuth は通常、一度限りの `127.0.0.1` callback で完了します。`<code>#<state>` を貼り付ける場合は `--manual` を使ってください。ブラウザー起動、callback の bind、または 5 分間の待機に失敗した場合も、shunt は手動貼り付けへフォールバックします。
 
 その後は名前だけのエントリーを使います。
 
@@ -60,9 +65,13 @@ name = "backup"
 
 ストアファイルは `~/.shunt/accounts/claude/<name>.json` に置かれます。`SHUNT_CLAUDE_ACCOUNTS_DIR` でディレクトリを上書きできます。設定された `accounts` リストが空の場合、shunt はストアをスキャンし、有効な JSON アカウントファイルすべてをファイル名順に使います。ストアファイルはプライベートです（Unix では `0600`、ディレクトリは `0700`）。
 
-リモートのオペレーター向けには、オプトインの[管理 Web サーフェス](/ja/guides/admin-remote-provisioning/)がブラウザーで 1 年間の setup トークンアカウントをプロビジョニングし、プールの現在の健全性を表示できます。リフレッシュ可能なインポートフローは CLI 専用のままです。
+リモートのオペレーターは、オプトインの[管理 Web サーフェス](/ja/guides/admin-remote-provisioning/)から、ブラウザーでリフレッシュ可能な Full OAuth アカウントまたは 1 年間の setup token アカウントをプロビジョニングし、プールの現在の健全性を表示できます。既存の credential ファイルのインポートは CLI 専用です。
 
-`--long-lived` なしのコマンドは、現在の `~/.claude/.credentials.json` ログインを shunt のストアへコピーし、リフレッシュ能力を保持し、現在のアカウント UUID を記録します。`--long-lived` は `claude setup-token` と同じ、1 年間・推論専用の PKCE フローを実行します。承認後、shunt は表示された認可コードを交換し、トークンとその発行元アカウントの UUID の両方を、トークンを表示せずに保存します。これにより、プールが別のアカウントを選んだときも `metadata.user_id.account_uuid` の整合が保たれます。同じ名前を再利用すると、そのアカウントのストアファイルは置き換えられます。既存の外部 setup トークンには、引き続き `token_env` と明示的な `uuid` が必要です。
+Full OAuth は新しいリフレッシュ可能な credential を作成します。import は現在の `~/.claude/.credentials.json` credential を shunt のストアへコピーします。どちらもリフレッシュ能力を保持し、import は現在のアカウント UUID も記録します。setup-token モードは `claude setup-token` と同じ 1 年間・推論専用の PKCE フローを実行します。承認後、shunt は表示された認可コードを交換し、トークンとその発行元アカウントの UUID の両方を、トークンを表示せずに保存します。これにより、プールが別のアカウントを選んだときも `metadata.user_id.account_uuid` の整合が保たれます。同じ名前を再利用すると、そのアカウントのストアファイルは置き換えられます。既存の外部 setup token には、引き続き `token_env` と明示的な `uuid` が必要です。
+
+:::caution[Refresh token のローテーション]
+リフレッシュに成功すると、置き換え用の refresh token が返され、以前の値が無効になる場合があります。リフレッシュ可能なストアファイルごとに、稼働中の shunt owner は 1 つだけにしてください。複数プロセスで同じファイルを参照したり、別ホストでコピーを独立運用したりしないでください。プロセスごとに個別にプロビジョニングするか、リフレッシュしない credential を意図的に共有する場合は静的な setup token を使ってください。
+:::
 
 ## アカウントのフィールド
 

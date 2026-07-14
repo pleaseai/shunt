@@ -11,12 +11,18 @@ Set `auth = "claude_oauth"` on an Anthropic provider and configure one or more `
 Provision store-managed accounts before editing the provider configuration:
 
 ```bash
-# Store-managed refreshable account: imports the current Claude Code login.
-shunt login claude --name main
+# Store-managed full OAuth account: obtains a new refreshable credential.
+# The default uses an automatic localhost callback; add --manual for paste mode.
+shunt login claude --name main --mode oauth
+
+# Store-managed imported account: copies the current Claude Code login.
+shunt login claude --name imported --mode import
 
 # Store-managed one-year token: runs the interactive Claude setup-token flow.
-shunt login claude --name ci --long-lived
+shunt login claude --name ci --mode setup-token
 ```
+
+On a TTY, omitting `--mode` prompts for `oauth`, `import`, or `setup-token`, with OAuth as the recommended default. Non-interactive input retains the historical import default. `--long-lived` is a deprecated alias for `--mode setup-token`.
 
 Then configure the provider and its accounts:
 
@@ -66,7 +72,11 @@ Each account has these fields:
 
 `credentials` and `token_env` are mutually exclusive. A name-only account reads `~/.shunt/accounts/claude/<name>.json` (override the directory with `SHUNT_CLAUDE_ACCOUNTS_DIR`). With an entirely empty `accounts` list, shunt scans that directory and uses every valid `*.json` account in filename order. Store files are written atomically at `0600`, and the store directory is `0700` on Unix.
 
-`shunt login claude --name <name>` imports the current refreshable Claude Code credential from `~/.claude/.credentials.json` (or `CLAUDE_CREDENTIALS`) into that store without modifying the source and associates it with the current account UUID from Claude Code's global configuration. `--long-lived` runs shunt's equivalent of Claude Code's one-year, inference-only PKCE setup-token flow, obtains the access token and its issuing account UUID from the token exchange, and stores both without printing the token. Reusing a name replaces that store file. If you already have an external setup token rather than provisioning through shunt, use `token_env` and configure `uuid` explicitly because an inference-only token cannot be introspected afterward.
+`--mode oauth` runs shunt's full-scope PKCE authorization and stores a newly issued access token, refresh token, expiry, and optional issuing-account UUID. It first binds `127.0.0.1:0`, uses `http://localhost:<port>/callback` as the authorization and exchange redirect, opens the browser, and waits up to 5 minutes. Browser-open, bind, callback, or timeout failures fall back to the fixed manual redirect and a hidden `<code>#<state>` prompt; `--manual` selects that path immediately. The callback page never renders the code or state.
+
+`--mode import` copies the current refreshable Claude Code credential from `~/.claude/.credentials.json` (or `CLAUDE_CREDENTIALS`) into the store without modifying the source and associates it with the current account UUID from Claude Code's global configuration. `--mode setup-token` runs shunt's equivalent of Claude Code's one-year, inference-only PKCE setup-token flow, obtains the access token and its issuing account UUID from the token exchange, and stores both without printing the token. Reusing a name replaces that store file. If you already have an external setup token rather than provisioning through shunt, use `token_env` and configure `uuid` explicitly because an inference-only token cannot be introspected afterward.
+
+Refreshable full-OAuth and imported files are updated atomically when `ClaudeAuthStore` refreshes them. The provider can rotate the refresh token and invalidate the previous value, so one refreshable file must have exactly one active process owner. Do not share a file between shunt processes or independently run copied snapshots on multiple hosts; provision each process separately. Setup-token accounts avoid this rotation hazard because they are non-refreshable.
 
 The built-in `anthropic` provider remains `auth = "passthrough"` by default. Multi-account behavior is opt-in.
 
@@ -156,4 +166,4 @@ Storm-control—ramping concurrency after switching to a fresh account—remains
 
 ## Account store
 
-Phase 3 store-managed accounts and `shunt login claude` are implemented. Each login writes one Claude Code-compatible JSON file under `~/.shunt/accounts/claude/`. Name-only entries select those files explicitly; an empty configured account list scans the directory. Imported logins retain their refresh token and are refreshed through the existing `ClaudeAuthStore`; setup-token accounts are static until their one-year token expires or receives a 401.
+Phase 3 store-managed accounts and the three-way `shunt login claude` flow are implemented. Each login writes one Claude Code-compatible JSON file under `~/.shunt/accounts/claude/`. Name-only entries select those files explicitly; an empty configured account list scans the directory. Full-OAuth and imported logins retain a refresh token and are refreshed through the existing `ClaudeAuthStore`; setup-token accounts are static until their one-year token expires or receives a 401. The optional M9 admin surface can provision full-OAuth or setup-token accounts through a manual-paste browser flow; importing an existing host credential remains CLI-only.

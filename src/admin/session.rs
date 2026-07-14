@@ -83,14 +83,24 @@ impl SessionStore {
     }
 }
 
-/// The secrets needed to complete a pending setup-token login.
+/// The upstream credential flow associated with a pending login. Stored alongside
+/// the PKCE secrets so completion cannot be switched to a different token shape.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PendingKind {
+    SetupToken,
+    FullOauth,
+}
+
+/// The secrets and credential kind needed to complete a pending Claude login.
 #[derive(Clone)]
 pub struct PendingLogin {
+    pub kind: PendingKind,
     pub verifier: String,
     pub state: String,
 }
 
 struct PendingEntry {
+    kind: PendingKind,
     verifier: String,
     state: String,
     expires: Instant,
@@ -120,13 +130,21 @@ impl PendingStore {
     }
 
     /// Start (or replace) a pending login for `key` with the given lifetime.
-    pub fn start(&self, key: &str, verifier: String, state: String, ttl: Duration) {
+    pub fn start(
+        &self,
+        key: &str,
+        kind: PendingKind,
+        verifier: String,
+        state: String,
+        ttl: Duration,
+    ) {
         self.pending
             .lock()
             .expect("admin pending lock poisoned")
             .insert(
                 key.to_string(),
                 PendingEntry {
+                    kind,
                     verifier,
                     state,
                     expires: Instant::now() + ttl,
@@ -153,6 +171,7 @@ impl PendingStore {
             return PendingAttempt::TooManyAttempts;
         }
         PendingAttempt::Ready(PendingLogin {
+            kind: entry.kind,
             verifier: entry.verifier.clone(),
             state: entry.state.clone(),
         })
@@ -258,18 +277,29 @@ mod tests {
         let store = PendingStore::new();
         store.start(
             "main",
+            PendingKind::SetupToken,
             "verifier".into(),
             "state".into(),
             Duration::from_secs(60),
         );
 
-        // First attempt returns the secrets; a successful completion removes it.
-        assert!(matches!(store.attempt("main"), PendingAttempt::Ready(_)));
+        // First attempt returns the secrets and the flow kind; a successful
+        // completion removes it.
+        let PendingAttempt::Ready(pending) = store.attempt("main") else {
+            panic!("expected pending login");
+        };
+        assert_eq!(pending.kind, PendingKind::SetupToken);
         store.remove("main");
         assert!(matches!(store.attempt("main"), PendingAttempt::NotFound));
 
         // Attempt cap: after MAX_PENDING_ATTEMPTS the entry is discarded.
-        store.start("cap", "v".into(), "s".into(), Duration::from_secs(60));
+        store.start(
+            "cap",
+            PendingKind::FullOauth,
+            "v".into(),
+            "s".into(),
+            Duration::from_secs(60),
+        );
         for _ in 0..MAX_PENDING_ATTEMPTS {
             assert!(matches!(store.attempt("cap"), PendingAttempt::Ready(_)));
         }
@@ -283,7 +313,13 @@ mod tests {
     #[test]
     fn pending_expires() {
         let store = PendingStore::new();
-        store.start("x", "v".into(), "s".into(), Duration::from_millis(0));
+        store.start(
+            "x",
+            PendingKind::SetupToken,
+            "v".into(),
+            "s".into(),
+            Duration::from_millis(0),
+        );
         assert!(matches!(store.attempt("x"), PendingAttempt::NotFound));
     }
 

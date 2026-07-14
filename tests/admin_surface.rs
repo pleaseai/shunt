@@ -2,8 +2,8 @@
 //!
 //! The admin routes exist only when `[server.admin]` is configured, authenticate
 //! every request against a separate admin credential, and never return or log the
-//! provisioned setup token. The full add → complete → list → pool → delete flow is
-//! driven against a wiremock Claude token endpoint.
+//! provisioned OAuth credentials. Setup-token and full refreshable OAuth flows
+//! are driven against a wiremock Claude token endpoint.
 
 use std::{net::SocketAddr, path::PathBuf, time::SystemTime};
 
@@ -14,7 +14,7 @@ use shunt::{
 };
 use tokio::task::JoinHandle;
 use wiremock::{
-    matchers::{method, path},
+    matchers::{body_partial_json, method, path},
     Mock, MockServer, ResponseTemplate,
 };
 
@@ -146,7 +146,7 @@ async fn admin_api_requires_authentication() {
 }
 
 #[tokio::test]
-async fn provisioning_flow_stores_account_without_leaking_the_token() {
+async fn provisioning_flow_stores_setup_token_without_leaking_it() {
     if !can_bind_loopback() {
         return;
     }
@@ -155,10 +155,17 @@ async fn provisioning_flow_stores_account_without_leaking_the_token() {
     std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
     std::env::set_var("SHUNT_TEST_ADMIN_TOKENS_C", "ops:secret-c");
 
-    // Mock the Claude token exchange endpoint.
+    // Mock the setup-token exchange, including the one-year expires_in request.
     let token_server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/token"))
+        .and(body_partial_json(serde_json::json!({
+            "grant_type": "authorization_code",
+            "code": "the-auth-code",
+            "redirect_uri": "https://platform.claude.com/oauth/code/callback",
+            "client_id": "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+            "expires_in": 31_536_000_u64,
+        })))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "access_token": "SECRET-SETUP-TOKEN",
             "account": {"uuid": "acct-uuid-123"}
@@ -251,6 +258,192 @@ async fn provisioning_flow_stores_account_without_leaking_the_token() {
     std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
     std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
     std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_C");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn provisioning_flow_stores_refreshable_oauth_account() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let dir = unique_dir();
+    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    std::env::set_var("SHUNT_TEST_ADMIN_TOKENS_OAUTH", "ops:secret-oauth");
+
+    let token_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .and(body_partial_json(serde_json::json!({
+            "grant_type": "authorization_code",
+            "code": "oauth-code",
+            "redirect_uri": "https://platform.claude.com/oauth/code/callback",
+            "client_id": "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "SECRET-OAUTH-ACCESS",
+            "refresh_token": "SECRET-OAUTH-REFRESH",
+            "expires_in": 7200,
+            "account": {"uuid": "acct-oauth-123"}
+        })))
+        .expect(1)
+        .mount(&token_server)
+        .await;
+    std::env::set_var(
+        "SHUNT_CLAUDE_TOKEN_URL",
+        format!("{}/token", token_server.uri()),
+    );
+
+    let gateway = start(admin_config("SHUNT_TEST_ADMIN_TOKENS_OAUTH")).await;
+    let client = reqwest::Client::new();
+    let auth = |request: reqwest::RequestBuilder| {
+        request
+            .header("x-shunt-admin-token", "secret-oauth")
+            .header("content-type", "application/json")
+    };
+
+    let response = auth(client.post(format!("{}/admin/accounts/claude", gateway.base_url)))
+        .body(r#"{"name":"oauthy","mode":"oauth"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    let authorize_url = reqwest::Url::parse(body["authorize_url"].as_str().unwrap()).unwrap();
+    let scope = authorize_url
+        .query_pairs()
+        .find(|(key, _)| key == "scope")
+        .map(|(_, value)| value.into_owned());
+    assert_eq!(
+        scope.as_deref(),
+        Some("user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload")
+    );
+    let state = authorize_url
+        .query_pairs()
+        .find(|(key, _)| key == "state")
+        .map(|(_, value)| value.into_owned())
+        .expect("authorize URL carries the OAuth state");
+
+    let response = auth(client.post(format!(
+        "{}/admin/accounts/claude/oauthy/complete",
+        gateway.base_url
+    )))
+    .body(format!(r#"{{"code":"oauth-code#{state}"}}"#))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let requests = token_server
+        .received_requests()
+        .await
+        .expect("mock records token exchange requests");
+    let exchange_body: serde_json::Value = requests
+        .iter()
+        .find(|request| request.method.as_str() == "POST" && request.url.path() == "/token")
+        .expect("full OAuth completion exchanges its code")
+        .body_json()
+        .unwrap();
+    assert!(
+        exchange_body.get("expires_in").is_none(),
+        "full OAuth must let the provider choose the access-token lifetime"
+    );
+    let text = response.text().await.unwrap();
+    assert!(!text.contains("SECRET-OAUTH-ACCESS"));
+    assert!(!text.contains("SECRET-OAUTH-REFRESH"));
+
+    let stored: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("oauthy.json")).unwrap()).unwrap();
+    assert_eq!(
+        stored["claudeAiOauth"]["accessToken"],
+        "SECRET-OAUTH-ACCESS"
+    );
+    assert_eq!(
+        stored["claudeAiOauth"]["refreshToken"],
+        "SECRET-OAUTH-REFRESH"
+    );
+    assert!(stored["claudeAiOauth"]["expiresAt"].as_i64().unwrap() > 0);
+    assert!(stored["claudeAiOauth"].get("shuntCredentialKind").is_none());
+    assert_eq!(stored["shuntAccountUuid"], "acct-oauth-123");
+
+    let response = auth(client.get(format!("{}/admin/accounts", gateway.base_url)))
+        .send()
+        .await
+        .unwrap();
+    let text = response.text().await.unwrap();
+    assert!(!text.contains("SECRET-OAUTH-ACCESS"));
+    assert!(!text.contains("SECRET-OAUTH-REFRESH"));
+    let body: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(body["accounts"][0]["kind"], "imported");
+
+    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
+    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_OAUTH");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn full_oauth_completion_rejects_missing_refresh_token() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let dir = unique_dir();
+    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    std::env::set_var(
+        "SHUNT_TEST_ADMIN_TOKENS_NO_REFRESH",
+        "ops:secret-no-refresh",
+    );
+
+    let token_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "ACCESS-WITHOUT-REFRESH",
+            "expires_in": 3600,
+            "account": {"uuid": "acct-no-refresh"}
+        })))
+        .expect(1)
+        .mount(&token_server)
+        .await;
+    std::env::set_var(
+        "SHUNT_CLAUDE_TOKEN_URL",
+        format!("{}/token", token_server.uri()),
+    );
+
+    let gateway = start(admin_config("SHUNT_TEST_ADMIN_TOKENS_NO_REFRESH")).await;
+    let client = reqwest::Client::new();
+    let auth = |request: reqwest::RequestBuilder| {
+        request
+            .header("x-shunt-admin-token", "secret-no-refresh")
+            .header("content-type", "application/json")
+    };
+    let response = auth(client.post(format!("{}/admin/accounts/claude", gateway.base_url)))
+        .body(r#"{"name":"missing-refresh","mode":"oauth"}"#)
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    let authorize_url = reqwest::Url::parse(body["authorize_url"].as_str().unwrap()).unwrap();
+    let state = authorize_url
+        .query_pairs()
+        .find(|(key, _)| key == "state")
+        .map(|(_, value)| value.into_owned())
+        .unwrap();
+
+    let response = auth(client.post(format!(
+        "{}/admin/accounts/claude/missing-refresh/complete",
+        gateway.base_url
+    )))
+    .body(format!(r#"{{"code":"oauth-code#{state}"}}"#))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    assert!(!dir.join("missing-refresh.json").exists());
+
+    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
+    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_NO_REFRESH");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -523,6 +716,14 @@ async fn admin_negative_paths_are_rejected() {
     // add_account with an invalid account name → 400.
     let response = hdr(client.post(format!("{base}/admin/accounts/claude")))
         .body(r#"{"name":"BAD_NAME"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    // add_account with an invalid mode → 400.
+    let response = hdr(client.post(format!("{base}/admin/accounts/claude")))
+        .body(r#"{"name":"valid-name","mode":"bogus"}"#)
         .send()
         .await
         .unwrap();

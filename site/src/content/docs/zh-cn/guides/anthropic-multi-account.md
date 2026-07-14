@@ -38,15 +38,20 @@ shunt check
 shunt run
 ```
 
-两种登录模式都可以存储账户:
+可用三种 Claude 登录模式中的任意一种存储账户:
 
 ```bash
-# 导入你当前可刷新的 Claude Code 登录。
-shunt login claude --name primary
+# 创建一个新的可刷新登录(默认使用自动 localhost callback)。
+shunt login claude --name primary --mode oauth
 
-# 或生成并存储一个一年期 setup token。
-shunt login claude --name backup --long-lived
+# 导入当前可刷新的 Claude Code 登录。
+shunt login claude --name imported --mode import
+
+# 生成并存储一个一年期、仅推理的 setup token。
+shunt login claude --name backup --mode setup-token
 ```
+
+在 TTY 中省略 `--mode` 时,会打开默认选中 OAuth 的三选一提示。非交互输入继续沿用原有的 `import` 默认值。`--long-lived` 是 `--mode setup-token` 的 deprecated alias。Full OAuth 通常通过一次性的 `127.0.0.1` callback 完成。要粘贴 `<code>#<state>`,请使用 `--manual`。如果浏览器启动、callback bind 或 5 分钟等待失败,shunt 也会回退到手动粘贴。
 
 然后使用只带名字的条目:
 
@@ -60,9 +65,13 @@ name = "backup"
 
 存储文件位于 `~/.shunt/accounts/claude/<name>.json`;设置 `SHUNT_CLAUDE_ACCOUNTS_DIR` 可覆盖该目录。如果配置的 `accounts` 列表为空,shunt 会扫描存储目录,按文件名顺序使用所有有效的 JSON 账户文件。存储文件是私有的(Unix 上为 `0600`,目录为 `0700`)。
 
-对远程运营者,可选启用的[管理 Web 界面](/zh-cn/guides/admin-remote-provisioning/)可以在浏览器中预配一年期 setup token 账户并展示池的当前健康状况;可刷新登录的导入流程仍然仅限 CLI。
+远程运营者可以通过可选启用的[管理 Web 界面](/zh-cn/guides/admin-remote-provisioning/),在浏览器中预配可刷新的 Full OAuth 账户或一年期 setup token 账户,并查看池的当前健康状况。导入已有 credential 文件仍然仅限 CLI。
 
-不带 `--long-lived` 的命令会把当前的 `~/.claude/.credentials.json` 登录复制进 shunt 的存储,保留其刷新能力,并记录当前账户的 UUID。`--long-lived` 运行与 `claude setup-token` 相同的一年期、仅推理的 PKCE 流程;批准后,shunt 交换显示的授权码,把 token 与其签发账户的 UUID 一起存储,并且不打印 token。这使得当池选中另一个账户时,`metadata.user_id.account_uuid` 保持一致。重复使用同一个名字会替换该账户的存储文件。已有的外部 setup token 仍需要 `token_env` 加显式的 `uuid`。
+Full OAuth 创建一个新的可刷新 credential;import 把当前的 `~/.claude/.credentials.json` credential 复制进 shunt 的存储。两者都保留刷新能力,import 还会记录当前账户 UUID。setup-token 模式运行与 `claude setup-token` 相同的一年期、仅推理 PKCE 流程。批准后,shunt 交换显示的授权码,把 token 与签发账户 UUID 一起存储,并且不打印 token。这使得当池选中另一个账户时,`metadata.user_id.account_uuid` 保持一致。复用同一个名称会替换该账户的存储文件。已有的外部 setup token 仍需要 `token_env` 加显式 `uuid`。
+
+:::caution[Refresh token 轮换]
+成功刷新可能返回替换用的 refresh token,并使旧值失效。每个可刷新存储文件只能有一个正在运行的 shunt owner。不要让多个进程指向同一个文件,也不要在另一台主机上独立运行其副本。请为每个进程分别预配;如果有意共享不可刷新的 credential,请使用静态 setup token。
+:::
 
 ## 账户字段
 

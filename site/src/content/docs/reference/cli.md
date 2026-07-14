@@ -45,19 +45,36 @@ See [Connect Claude Code](/guides/connect-claude-code/#2-choose-the-anthropic-cr
 
 ## `shunt login claude`
 
-Create a shunt-managed Anthropic pool account:
+Create a shunt-managed Anthropic pool account with one of three modes:
 
 ```bash
-# Import the current refreshable Claude Code login.
-shunt login claude --name primary
+# Full OAuth: shunt obtains and stores a new refreshable login (recommended).
+shunt login claude --name primary --mode oauth
 
-# Run Claude's one-year setup-token flow and store the result.
-shunt login claude --name ci --long-lived
+# Import the current refreshable Claude Code login.
+shunt login claude --name imported --mode import
+
+# Run Claude's one-year, inference-only setup-token flow.
+shunt login claude --name ci --mode setup-token
 ```
 
-The default form copies `~/.claude/.credentials.json` (or `CLAUDE_CREDENTIALS`) into `~/.shunt/accounts/claude/<name>.json`. It preserves refresh tokens, associates the copy with the current account UUID from Claude Code's global configuration, and shunt refreshes that private copy rather than changing Claude Code's source file.
+When `--mode` is omitted on a TTY, shunt prompts for `oauth`, `import`, or `setup-token` and recommends OAuth by default. In non-interactive input it keeps the historical `import` default. `--long-lived` remains a deprecated alias for `--mode setup-token`.
 
-`--long-lived` runs the same one-year, inference-only PKCE flow as `claude setup-token`. After browser approval, paste the displayed authorization code into shunt's hidden prompt; shunt exchanges it directly and stores both the opaque token and the issuing account UUID, never printing the token. The file is written atomically at `0600` inside a `0700` directory on Unix. `SHUNT_CLAUDE_ACCOUNTS_DIR` overrides the store directory; reusing a name replaces its file. Existing external setup tokens still require `token_env` plus an explicit `uuid`, because their account UUID cannot be recovered after issuance.
+`--mode oauth` runs shunt's full-scope PKCE authorization flow and stores both access and refresh tokens. By default shunt binds an ephemeral listener to `127.0.0.1`, opens the authorization URL, and finishes when the browser returns to `http://localhost:<port>/callback`. If the browser cannot open, the listener cannot start, or no callback arrives within 5 minutes, it falls back to the hidden manual-paste flow. Pass `--manual` to use that flow immediately, which is useful over SSH or in a headless environment:
+
+```bash
+shunt login claude --name remote --mode oauth --manual
+```
+
+`--mode import` copies `~/.claude/.credentials.json` (or `CLAUDE_CREDENTIALS`) into `~/.shunt/accounts/claude/<name>.json`. It preserves refresh tokens, associates the copy with the current account UUID from Claude Code's global configuration, and shunt refreshes that private copy rather than changing Claude Code's source file.
+
+`--mode setup-token` runs the same one-year, inference-only PKCE flow as `claude setup-token`. After browser approval, paste the displayed authorization code into shunt's hidden prompt; shunt exchanges it directly and stores both the opaque token and the issuing account UUID, never printing the token.
+
+The file is written atomically at `0600` inside a `0700` directory on Unix. `SHUNT_CLAUDE_ACCOUNTS_DIR` overrides the store directory; reusing a name replaces its file. Existing external setup tokens still require `token_env` plus an explicit `uuid`, because their account UUID cannot be recovered after issuance.
+
+:::caution[One owner per refreshable login]
+OAuth providers may rotate the refresh token whenever shunt refreshes an access token. Do not run the same refreshable credential file in multiple shunt processes, and do not copy a live refreshable store file into another independently running host. The first refresh can invalidate the other copy. Provision each process separately, or use a non-refreshable setup token where shared static credentials are appropriate.
+:::
 
 Reference the result with a name-only pool entry, or leave the provider's account list empty to scan every store file:
 
@@ -76,7 +93,7 @@ shunt login xai
 
 ## Anthropic account-pool authentication
 
-For an Anthropic provider with `auth = "claude_oauth"`, an account can use a name-only store entry, `credentials = "~/.claude/.credentials.json"`, or `token_env = "YOUR_ENV_NAME"`. See [Anthropic Multi-Account](/guides/anthropic-multi-account/) for complete configuration and failover rules.
+For an Anthropic provider with `auth = "claude_oauth"`, an account can use a name-only store entry, `credentials = "~/.claude/.credentials.json"`, or `token_env = "YOUR_ENV_NAME"`. The store entry can come from full OAuth, an imported Claude Code login, or the setup-token flow described above. See [Anthropic Multi-Account](/guides/anthropic-multi-account/) for complete configuration and failover rules.
 
 ## Environment variables
 

@@ -38,15 +38,20 @@ shunt check
 shunt run
 ```
 
-두 로그인 모드 중 어느 쪽으로든 계정을 저장할 수 있습니다:
+세 가지 Claude 로그인 모드 중 하나로 계정을 저장할 수 있습니다:
 
 ```bash
-# 현재의 갱신 가능한 Claude Code 로그인을 가져옵니다.
-shunt login claude --name primary
+# 새 갱신 가능 로그인 생성(기본은 자동 localhost callback).
+shunt login claude --name primary --mode oauth
 
-# 또는 1년짜리 setup token을 생성해 저장합니다.
-shunt login claude --name backup --long-lived
+# 현재의 갱신 가능한 Claude Code 로그인 가져오기.
+shunt login claude --name imported --mode import
+
+# 1년짜리 추론 전용 setup token 생성 및 저장.
+shunt login claude --name backup --mode setup-token
 ```
+
+TTY에서 `--mode`를 생략하면 OAuth가 기본 선택된 3-way 프롬프트가 열립니다. 비대화형 입력에서는 기존 `import` 기본값을 유지합니다. `--long-lived`는 `--mode setup-token`의 deprecated alias입니다. Full OAuth는 보통 일회성 `127.0.0.1` callback으로 완료됩니다. `<code>#<state>`를 붙여 넣으려면 `--manual`을 사용하세요. 브라우저 실행, callback bind, 또는 5분 대기가 실패해도 shunt가 수동 붙여넣기로 fallback합니다.
 
 그다음 이름만 있는 항목을 사용합니다:
 
@@ -60,9 +65,13 @@ name = "backup"
 
 스토어 파일은 `~/.shunt/accounts/claude/<name>.json`에 저장되며, `SHUNT_CLAUDE_ACCOUNTS_DIR`로 디렉터리를 재정의할 수 있습니다. 구성된 `accounts` 목록이 비어 있으면 shunt는 스토어를 스캔해 유효한 JSON 계정 파일 전부를 파일명 순서로 사용합니다. 스토어 파일은 비공개입니다(Unix에서 `0600`, 디렉터리는 `0700`).
 
-원격 운영자를 위해, 옵트인 [관리자 웹 화면](/ko/guides/admin-remote-provisioning/)에서 브라우저로 1년짜리 setup token 계정을 프로비저닝하고 풀의 현재 상태를 볼 수 있습니다; 갱신 가능한 로그인 가져오기 플로우는 CLI 전용으로 남습니다.
+원격 운영자는 옵트인 [관리자 웹 화면](/ko/guides/admin-remote-provisioning/)에서 브라우저로 갱신 가능한 Full OAuth 계정 또는 1년짜리 setup token 계정을 프로비저닝하고 풀의 현재 상태를 볼 수 있습니다. 기존 credential 파일 가져오기는 CLI 전용입니다.
 
-`--long-lived`가 아닌 명령은 현재의 `~/.claude/.credentials.json` 로그인을 shunt 스토어로 복사하고, 갱신 기능을 보존하며, 현재 계정 UUID를 기록합니다. `--long-lived`는 `claude setup-token`과 동일한 1년짜리 추론 전용 PKCE 플로우를 실행합니다; 승인 후 shunt는 표시된 인가 코드를 교환하고 토큰과 발급 계정 UUID를 함께 저장하며 토큰을 출력하지 않습니다. 이렇게 하면 풀이 다른 계정을 선택할 때도 `metadata.user_id.account_uuid`가 일치된 상태로 유지됩니다. 이름을 재사용하면 해당 계정의 스토어 파일이 교체됩니다. 기존 외부 setup token에는 여전히 `token_env`와 명시적 `uuid`가 필요합니다.
+Full OAuth는 새로운 갱신 가능 credential을 만듭니다. import는 현재의 `~/.claude/.credentials.json` credential을 shunt 스토어로 복사합니다. 두 방식 모두 갱신 기능을 보존하며, import는 현재 계정 UUID도 기록합니다. setup-token 모드는 `claude setup-token`과 동일한 1년짜리 추론 전용 PKCE 플로우를 실행합니다. 승인 후 shunt는 표시된 인가 코드를 교환하고 토큰과 발급 계정 UUID를 함께 저장하며 토큰을 출력하지 않습니다. 이렇게 하면 풀이 다른 계정을 선택할 때도 `metadata.user_id.account_uuid`가 일치된 상태로 유지됩니다. 이름을 재사용하면 해당 계정의 스토어 파일이 교체됩니다. 기존 외부 setup token에는 여전히 `token_env`와 명시적 `uuid`가 필요합니다.
+
+:::caution[Refresh token 회전]
+성공적인 갱신은 대체 refresh token을 반환하고 이전 값을 무효화할 수 있습니다. 갱신 가능한 스토어 파일마다 활성 shunt owner를 하나만 두세요. 여러 프로세스가 같은 파일을 가리키거나, 별도 호스트에서 독립적으로 복사본을 실행하지 마세요. 프로세스마다 별도로 프로비저닝하거나, 갱신 불가능한 credential을 의도적으로 공유하는 경우 정적 setup token을 사용하세요.
+:::
 
 ## 계정 필드
 
