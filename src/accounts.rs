@@ -9,12 +9,28 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::config::AccountConfig;
+use crate::config::{AccountConfig, PoolConfig};
 
 type AccountKey = (String, String);
 type RefreshLock = Arc<AsyncMutex<()>>;
 
+/// Legacy hard threshold, used verbatim when `[server.pool]` is not
+/// configured so selection behaves exactly as it did before issue #135.
 const SWITCH_THRESHOLD: f64 = 0.98;
+
+/// Window lengths are hardcoded because the quota headers carry only the
+/// reset instant, never the window size (issue #135).
+const WINDOW_5H_SECS: u64 = 5 * 60 * 60;
+const WINDOW_7D_SECS: u64 = 7 * 24 * 60 * 60;
+
+/// One quota window for per-window threshold resolution. `Weekly` is the
+/// shared `7d` bucket; `Fable` is the fable-only `7d_oi` bucket.
+#[derive(Debug, Clone, Copy)]
+enum QuotaWindow {
+    FiveHour,
+    Weekly,
+    Fable,
+}
 
 #[derive(Debug, Default)]
 pub struct QuotaState {
@@ -48,11 +64,19 @@ pub struct AccountSnapshot {
     /// Whether the pool has recorded at least one upstream response for this
     /// account. When `false`, the quota/cooldown fields are all absent.
     pub has_state: bool,
-    /// Derived: not cooling down and not at or above the switch threshold.
+    /// Derived: not disabled, not cooling down, and not near quota.
     pub available: bool,
     pub near_quota: bool,
     /// Seconds until the current cooldown expires, when the account is cooling.
     pub cooldown_secs_remaining: Option<u64>,
+    /// Configured selection priority (lower is preferred; default 100).
+    pub priority: u32,
+    /// Configured exclusion from pool selection.
+    pub disabled: bool,
+    /// Burn-rate headroom in seconds across the governing quota windows, when
+    /// `[server.pool]` is configured and the projection is finite: positive
+    /// means the account survives to its tightest reset at the current pace.
+    pub headroom_secs: Option<i64>,
     pub utilization_5h: Option<f64>,
     pub reset_5h: Option<u64>,
     pub utilization_7d: Option<f64>,
@@ -64,13 +88,16 @@ pub struct AccountSnapshot {
 
 impl AccountSnapshot {
     /// A clean slot for an account the pool has never selected.
-    fn unseen(name: &str) -> Self {
+    fn unseen(account: &AccountConfig) -> Self {
         Self {
-            name: name.to_string(),
+            name: account.name.clone(),
             has_state: false,
-            available: true,
+            available: !account.disabled,
             near_quota: false,
             cooldown_secs_remaining: None,
+            priority: account.priority,
+            disabled: account.disabled,
+            headroom_secs: None,
             utilization_5h: None,
             reset_5h: None,
             utilization_7d: None,
@@ -96,12 +123,21 @@ impl AccountPool {
     }
 
     /// Return account indices in the order an adapter should try them.
+    ///
+    /// `pool` is the optional `[server.pool]` tuning (issue #135). When
+    /// absent, selection is the pre-#135 behavior: a single 0.98 hard
+    /// threshold and weekly-reset ordering. When present, available accounts
+    /// order by `priority` then burn-rate headroom, soft-threshold-near
+    /// accounts fall back to headroom order (the all-near guard), and
+    /// accounts past `hard_threshold` sort last among the available.
+    /// Per-account `priority`/`disabled` apply in both modes.
     pub fn select_order(
         &self,
         provider: &str,
         accounts: &[AccountConfig],
         session_id: Option<&str>,
         model: Option<&str>,
+        pool: Option<&PoolConfig>,
     ) -> Vec<usize> {
         if accounts.is_empty() {
             return Vec::new();
@@ -134,34 +170,84 @@ impl AccountPool {
                     expire_stale_quota(&mut health.quota, unix_now);
                     (
                         health.cooldown_until,
-                        near_quota(health, model, SWITCH_THRESHOLD),
+                        assess_quota(health, account, model, pool, unix_now),
                         governing_weekly_reset(health, model),
                     )
                 })
                 .collect::<Vec<_>>()
         };
 
+        // The sticky/round-robin start index is computed over the full account
+        // list (so session stickiness survives toggling `disabled`); disabled
+        // accounts are then dropped from the rotation entirely.
         let rotation = (0..accounts.len())
             .map(|offset| (start + offset) % accounts.len())
+            .filter(|&index| !accounts[index].disabled)
             .collect::<Vec<_>>();
-        let (sticky_cooldown, sticky_near_quota, _) = snapshots[start];
-        if sticky_cooldown.is_none_or(|until| until <= now) && !sticky_near_quota {
+        let (sticky_cooldown, ref sticky_quota, _) = snapshots[start];
+        if !accounts[start].disabled
+            && sticky_cooldown.is_none_or(|until| until <= now)
+            && !sticky_quota.near
+        {
             return rotation;
         }
+
+        let is_available =
+            |index: usize| snapshots[index].0.is_none_or(|until: Instant| until <= now);
 
         let mut available_under = rotation
             .iter()
             .copied()
-            .filter(|&index| {
-                snapshots[index].0.is_none_or(|until| until <= now) && !snapshots[index].1
-            })
+            .filter(|&index| is_available(index) && !snapshots[index].1.near)
             .collect::<Vec<_>>();
-        // `Option` orders `None` before `Some`, and the stable sort preserves
-        // rotation order as the tiebreak for equal reset timestamps.
-        available_under.sort_by_key(|&index| snapshots[index].2);
+        // The stable sorts below preserve rotation order as the final tiebreak.
+        match pool {
+            // Priority beats headroom; ties prefer the account projected to
+            // keep the most margin before its tightest window resets.
+            Some(_) => available_under.sort_by(|&left, &right| {
+                accounts[left]
+                    .priority
+                    .cmp(&accounts[right].priority)
+                    .then_with(|| {
+                        snapshots[right]
+                            .1
+                            .headroom
+                            .total_cmp(&snapshots[left].1.headroom)
+                    })
+            }),
+            // Legacy: `Option` orders `None` before `Some`, so accounts with
+            // an unknown weekly reset sort first.
+            None => available_under.sort_by(|&left, &right| {
+                accounts[left]
+                    .priority
+                    .cmp(&accounts[right].priority)
+                    .then_with(|| snapshots[left].2.cmp(&snapshots[right].2))
+            }),
+        }
 
-        let available_over = rotation.iter().copied().filter(|&index| {
-            snapshots[index].0.is_none_or(|until| until <= now) && snapshots[index].1
+        // Available accounts past a threshold. With `[server.pool]` set, the
+        // soft-near ones (under the hard backstop) order by headroom — the
+        // all-near guard: a traffic spike degrades to best-margin-first
+        // instead of emptying the pool — and hard-over accounts still sort
+        // last. Without it, soft == hard, so this is one rotation-order group
+        // exactly as before #135.
+        let mut near_soft = Vec::new();
+        let mut over_hard = Vec::new();
+        for &index in &rotation {
+            if !is_available(index) || !snapshots[index].1.near {
+                continue;
+            }
+            if pool.is_some() && !snapshots[index].1.over_hard {
+                near_soft.push(index);
+            } else {
+                over_hard.push(index);
+            }
+        }
+        near_soft.sort_by(|&left, &right| {
+            snapshots[right]
+                .1
+                .headroom
+                .total_cmp(&snapshots[left].1.headroom)
         });
 
         let mut cooled = rotation
@@ -173,7 +259,8 @@ impl AccountPool {
 
         available_under
             .into_iter()
-            .chain(available_over)
+            .chain(near_soft)
+            .chain(over_hard)
             .chain(cooled)
             .collect()
     }
@@ -261,6 +348,7 @@ impl AccountPool {
         provider: &str,
         accounts: &[AccountConfig],
         model: Option<&str>,
+        pool: Option<&PoolConfig>,
     ) -> Vec<AccountSnapshot> {
         let now = Instant::now();
         let unix_now = SystemTime::now()
@@ -275,10 +363,10 @@ impl AccountPool {
                 let Some(health) = entries.get_mut(&key).filter(|health| health.observed) else {
                     // Never selected, or selected but not yet answered (a default
                     // entry from `select_order`): report a clean, available slot.
-                    return AccountSnapshot::unseen(&account.name);
+                    return AccountSnapshot::unseen(account);
                 };
                 expire_stale_quota(&mut health.quota, unix_now);
-                let near = near_quota(health, model, SWITCH_THRESHOLD);
+                let quota = assess_quota(health, account, model, pool, unix_now);
                 let cooldown_secs_remaining = health
                     .cooldown_until
                     .and_then(|until| until.checked_duration_since(now))
@@ -287,9 +375,13 @@ impl AccountPool {
                 AccountSnapshot {
                     name: account.name.clone(),
                     has_state: true,
-                    available: !cooling && !near,
-                    near_quota: near,
+                    available: !account.disabled && !cooling && !quota.near,
+                    near_quota: quota.near,
                     cooldown_secs_remaining,
+                    priority: account.priority,
+                    disabled: account.disabled,
+                    headroom_secs: (pool.is_some() && quota.headroom.is_finite())
+                        .then_some(quota.headroom as i64),
                     utilization_5h: health.quota.utilization_5h,
                     reset_5h: health.quota.reset_5h,
                     utilization_7d: health.quota.utilization_7d,
@@ -339,17 +431,6 @@ fn is_fable_model(model: Option<&str>) -> bool {
     model.is_some_and(|model| model.to_ascii_lowercase().contains("fable"))
 }
 
-fn governing_weekly_utilization(health: &AccountHealth, model: Option<&str>) -> Option<f64> {
-    if is_fable_model(model) {
-        health
-            .quota
-            .utilization_7d_oi
-            .or(health.quota.utilization_7d)
-    } else {
-        health.quota.utilization_7d
-    }
-}
-
 fn governing_weekly_reset(health: &AccountHealth, model: Option<&str>) -> Option<u64> {
     if is_fable_model(model) && health.quota.utilization_7d_oi.is_some() {
         health.quota.reset_7d_oi
@@ -358,14 +439,149 @@ fn governing_weekly_reset(health: &AccountHealth, model: Option<&str>) -> Option
     }
 }
 
-fn near_quota(health: &AccountHealth, model: Option<&str>, threshold: f64) -> bool {
-    health.quota.status.as_deref() == Some("rejected")
-        || health
-            .quota
-            .utilization_5h
-            .is_some_and(|utilization| utilization >= threshold)
-        || governing_weekly_utilization(health, model)
-            .is_some_and(|utilization| utilization >= threshold)
+/// Resolve the soft threshold for one quota window:
+/// account `threshold_X` → account `threshold` → pool `default_threshold_X` →
+/// pool `default_threshold` → hard threshold. The hard backstop caps the
+/// result so a soft threshold can never exceed it.
+fn resolved_threshold(
+    window: QuotaWindow,
+    account: &AccountConfig,
+    pool: Option<&PoolConfig>,
+) -> f64 {
+    let hard = pool.map_or(SWITCH_THRESHOLD, |pool| pool.hard_threshold);
+    let account_window = match window {
+        QuotaWindow::FiveHour => account.threshold_5h,
+        QuotaWindow::Weekly => account.threshold_7d,
+        QuotaWindow::Fable => account.threshold_fable,
+    };
+    let pool_default = pool.and_then(|pool| {
+        let per_window = match window {
+            QuotaWindow::FiveHour => pool.default_threshold_5h,
+            QuotaWindow::Weekly => pool.default_threshold_7d,
+            QuotaWindow::Fable => pool.default_threshold_fable,
+        };
+        per_window.or(pool.default_threshold)
+    });
+    account_window
+        .or(account.threshold)
+        .or(pool_default)
+        .unwrap_or(hard)
+        .min(hard)
+}
+
+/// Per-account quota verdict across the windows that govern the request's
+/// model: the 5h window always, plus the fable `7d_oi` bucket when the model
+/// is fable and that bucket has been observed, otherwise the shared `7d`
+/// bucket (the same governing choice as [`governing_weekly_reset`]).
+#[derive(Debug, Clone)]
+struct QuotaAssessment {
+    /// Past a soft threshold, upstream-rejected, or (with burn-rate avoidance
+    /// on) projected to exhaust a window before it resets.
+    near: bool,
+    /// Past the hard backstop; always sorts last among available accounts.
+    over_hard: bool,
+    /// Minimum burn-rate headroom in seconds across the governing windows
+    /// (see [`window_headroom`]); +∞ when nothing suggests pressure.
+    headroom: f64,
+}
+
+fn assess_quota(
+    health: &AccountHealth,
+    account: &AccountConfig,
+    model: Option<&str>,
+    pool: Option<&PoolConfig>,
+    now: u64,
+) -> QuotaAssessment {
+    let hard = pool.map_or(SWITCH_THRESHOLD, |pool| pool.hard_threshold);
+    let burn_avoid = pool.is_some_and(|pool| pool.burn_rate_avoidance);
+    let rejected = health.quota.status.as_deref() == Some("rejected");
+    let mut assessment = QuotaAssessment {
+        near: rejected,
+        over_hard: false,
+        // An upstream rejection is zero headroom by definition, whatever the
+        // utilization numbers said.
+        headroom: if rejected {
+            f64::NEG_INFINITY
+        } else {
+            f64::INFINITY
+        },
+    };
+
+    let weekly = if is_fable_model(model) && health.quota.utilization_7d_oi.is_some() {
+        (
+            health.quota.utilization_7d_oi,
+            health.quota.reset_7d_oi,
+            QuotaWindow::Fable,
+        )
+    } else {
+        (
+            health.quota.utilization_7d,
+            health.quota.reset_7d,
+            QuotaWindow::Weekly,
+        )
+    };
+    let windows = [
+        (
+            health.quota.utilization_5h,
+            health.quota.reset_5h,
+            WINDOW_5H_SECS,
+            QuotaWindow::FiveHour,
+        ),
+        (weekly.0, weekly.1, WINDOW_7D_SECS, weekly.2),
+    ];
+    for (utilization, reset, window_len, window) in windows {
+        let Some(utilization) = utilization else {
+            continue;
+        };
+        let threshold = resolved_threshold(window, account, pool);
+        if utilization >= threshold {
+            assessment.near = true;
+        }
+        if utilization >= hard {
+            assessment.over_hard = true;
+        }
+        let headroom = window_headroom(utilization, reset, window_len, threshold, now);
+        if burn_avoid && headroom < 0.0 {
+            assessment.near = true;
+        }
+        assessment.headroom = assessment.headroom.min(headroom);
+    }
+    assessment
+}
+
+/// Projected margin, in seconds, for one quota window: the time until
+/// utilization reaches the soft threshold at the observed average burn speed,
+/// minus the time until the window resets. Positive means the account
+/// survives to its reset at the current pace; negative means it is burning
+/// too fast. Missing data means "no evidence of pressure" (+∞), so
+/// unobserved accounts keep sorting first, and a window already at or past
+/// its threshold is −∞.
+fn window_headroom(
+    utilization: f64,
+    reset: Option<u64>,
+    window_len: u64,
+    threshold: f64,
+    now: u64,
+) -> f64 {
+    let budget_left = threshold - utilization;
+    if budget_left <= 0.0 {
+        return f64::NEG_INFINITY;
+    }
+    if utilization <= 0.0 {
+        return f64::INFINITY;
+    }
+    let Some(reset) = reset else {
+        return f64::INFINITY;
+    };
+    // The headers carry only the reset instant, so the window start is derived
+    // from the hardcoded window length; elapsed is clamped away from zero so a
+    // window that just opened never divides by zero.
+    let window_start = reset.saturating_sub(window_len);
+    let elapsed = now.saturating_sub(window_start).clamp(1, window_len) as f64;
+    let burn_speed = utilization / elapsed;
+    let time_to_exhaust = budget_left / burn_speed;
+    let time_to_reset = reset.saturating_sub(now) as f64;
+    time_to_exhaust - time_to_reset
 }
 
 fn expire_stale_quota(quota: &mut QuotaState, now: u64) {
@@ -476,9 +692,7 @@ mod tests {
     fn account(name: &str) -> AccountConfig {
         AccountConfig {
             name: name.to_string(),
-            credentials: None,
-            token_env: None,
-            uuid: None,
+            ..Default::default()
         }
     }
 
@@ -498,16 +712,22 @@ mod tests {
     fn session_selection_is_stable_and_spreads_across_sessions() {
         let pool = AccountPool::new();
         let accounts = accounts();
-        let first = pool.select_order("anthropic", &accounts, Some("session-a"), None);
+        let first = pool.select_order("anthropic", &accounts, Some("session-a"), None, None);
         assert_eq!(
             first,
-            pool.select_order("anthropic", &accounts, Some("session-a"), None)
+            pool.select_order("anthropic", &accounts, Some("session-a"), None, None)
         );
         assert_eq!(first[0], stable_session_index("session-a", accounts.len()));
 
         let starts = (0..64)
             .map(|id| {
-                pool.select_order("anthropic", &accounts, Some(&format!("session-{id}")), None)[0]
+                pool.select_order(
+                    "anthropic",
+                    &accounts,
+                    Some(&format!("session-{id}")),
+                    None,
+                    None,
+                )[0]
             })
             .collect::<HashSet<_>>();
         assert!(starts.len() > 1);
@@ -518,7 +738,7 @@ mod tests {
         let pool = AccountPool::new();
         let accounts = accounts();
         let session = "healthy-sticky";
-        let first = pool.select_order("anthropic", &accounts, Some(session), None);
+        let first = pool.select_order("anthropic", &accounts, Some(session), None, None);
         let sticky = &accounts[first[0]].name;
         pool.note_quota(
             "anthropic",
@@ -529,7 +749,7 @@ mod tests {
             )]),
         );
         assert_eq!(
-            pool.select_order("anthropic", &accounts, Some(session), None),
+            pool.select_order("anthropic", &accounts, Some(session), None, None),
             first
         );
     }
@@ -539,7 +759,7 @@ mod tests {
         let pool = AccountPool::new();
         let accounts = accounts();
         let session = "quota-sticky";
-        let original = pool.select_order("anthropic", &accounts, Some(session), None);
+        let original = pool.select_order("anthropic", &accounts, Some(session), None, None);
         let sticky = original[0];
         pool.note_quota(
             "anthropic",
@@ -549,7 +769,7 @@ mod tests {
                 "0.98".to_string(),
             )]),
         );
-        let rotated = pool.select_order("anthropic", &accounts, Some(session), None);
+        let rotated = pool.select_order("anthropic", &accounts, Some(session), None, None);
         assert_ne!(rotated[0], sticky);
         assert_eq!(rotated.last(), Some(&sticky));
     }
@@ -575,7 +795,7 @@ mod tests {
         );
         pool.cooldown("anthropic", "seen-cool", Duration::from_secs(45));
 
-        let snaps = pool.snapshot("anthropic", &accounts, None);
+        let snaps = pool.snapshot("anthropic", &accounts, None, None);
         assert_eq!(snaps.len(), 3);
 
         let near = &snaps[0];
@@ -600,7 +820,7 @@ mod tests {
         let pool = AccountPool::new();
         let accounts = vec![account("a"), account("b"), account("c"), account("d")];
         let session = "reset-sort";
-        let rotation = pool.select_order("anthropic", &accounts, Some(session), None);
+        let rotation = pool.select_order("anthropic", &accounts, Some(session), None, None);
         let sticky = rotation[0];
         pool.note_quota(
             "anthropic",
@@ -622,7 +842,7 @@ mod tests {
                 );
             }
         }
-        let selected = pool.select_order("anthropic", &accounts, Some(session), None);
+        let selected = pool.select_order("anthropic", &accounts, Some(session), None, None);
         assert_eq!(selected[..3], [rotation[1], rotation[2], rotation[3]]);
         assert_eq!(selected[3], sticky);
     }
@@ -632,7 +852,7 @@ mod tests {
         let pool = AccountPool::new();
         let accounts = accounts();
         let session = "model-aware";
-        let rotation = pool.select_order("anthropic", &accounts, Some(session), None);
+        let rotation = pool.select_order("anthropic", &accounts, Some(session), None, None);
         let sticky = rotation[0];
         pool.note_quota(
             "anthropic",
@@ -654,6 +874,7 @@ mod tests {
                 &accounts,
                 Some(session),
                 Some("claude-opus-4-8"),
+                None,
             )[0],
             sticky
         );
@@ -663,6 +884,7 @@ mod tests {
                 &accounts,
                 Some(session),
                 Some("CLAUDE-FABLE-5"),
+                None,
             )[0],
             sticky
         );
@@ -673,7 +895,7 @@ mod tests {
         let pool = AccountPool::new();
         let accounts = vec![account("a"), account("b")];
         let session = "expiry";
-        let rotation = pool.select_order("anthropic", &accounts, Some(session), None);
+        let rotation = pool.select_order("anthropic", &accounts, Some(session), None, None);
         let sticky = rotation[0];
         let past = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -701,7 +923,7 @@ mod tests {
             ]),
         );
 
-        let selected = pool.select_order("anthropic", &accounts, Some(session), None);
+        let selected = pool.select_order("anthropic", &accounts, Some(session), None, None);
         assert_eq!(selected[0], sticky);
         let entries = pool.entries.lock().unwrap();
         let quota = &entries
@@ -719,9 +941,9 @@ mod tests {
     fn cooldown_skips_accounts_and_all_cooled_uses_soonest_expiry() {
         let pool = AccountPool::new();
         let accounts = vec![account("a"), account("b"), account("c")];
-        let sticky = pool.select_order("anthropic", &accounts, Some("sticky"), None)[0];
+        let sticky = pool.select_order("anthropic", &accounts, Some("sticky"), None, None)[0];
         pool.cooldown("anthropic", &accounts[sticky].name, Duration::from_secs(30));
-        let available = pool.select_order("anthropic", &accounts, Some("sticky"), None);
+        let available = pool.select_order("anthropic", &accounts, Some("sticky"), None, None);
         assert_eq!(available.len(), 3);
         assert_eq!(available[2], sticky);
 
@@ -733,7 +955,7 @@ mod tests {
             );
         }
         assert_eq!(
-            pool.select_order("anthropic", &accounts, Some("sticky"), None),
+            pool.select_order("anthropic", &accounts, Some("sticky"), None, None),
             vec![2, 1, 0]
         );
     }
@@ -742,11 +964,11 @@ mod tests {
     fn round_robin_counters_are_independent_per_provider() {
         let pool = AccountPool::new();
         let accounts = accounts();
-        assert_eq!(pool.select_order("one", &accounts, None, None)[0], 0);
-        assert_eq!(pool.select_order("one", &accounts, None, None)[0], 1);
-        assert_eq!(pool.select_order("two", &accounts, None, None)[0], 0);
-        assert_eq!(pool.select_order("one", &accounts, None, None)[0], 2);
-        assert_eq!(pool.select_order("two", &accounts, None, None)[0], 1);
+        assert_eq!(pool.select_order("one", &accounts, None, None, None)[0], 0);
+        assert_eq!(pool.select_order("one", &accounts, None, None, None)[0], 1);
+        assert_eq!(pool.select_order("two", &accounts, None, None, None)[0], 0);
+        assert_eq!(pool.select_order("one", &accounts, None, None, None)[0], 2);
+        assert_eq!(pool.select_order("two", &accounts, None, None, None)[0], 1);
     }
 
     #[test]
@@ -851,5 +1073,304 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(RETRY_AFTER, HeaderValue::from_static("not-a-date"));
         assert_eq!(retry_after(&headers), None);
+    }
+
+    fn unix_now() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
+    #[test]
+    fn threshold_resolution_prefers_most_specific_and_caps_at_hard() {
+        let pool = PoolConfig {
+            hard_threshold: 0.9,
+            default_threshold: Some(0.5),
+            default_threshold_5h: Some(0.6),
+            ..Default::default()
+        };
+        let mut acct = account("a");
+        // Pool defaults: the per-window value wins over the shared default.
+        assert_eq!(
+            resolved_threshold(QuotaWindow::FiveHour, &acct, Some(&pool)),
+            0.6
+        );
+        assert_eq!(
+            resolved_threshold(QuotaWindow::Weekly, &acct, Some(&pool)),
+            0.5
+        );
+        assert_eq!(
+            resolved_threshold(QuotaWindow::Fable, &acct, Some(&pool)),
+            0.5
+        );
+        // An account-level threshold beats every pool default…
+        acct.threshold = Some(0.7);
+        assert_eq!(
+            resolved_threshold(QuotaWindow::FiveHour, &acct, Some(&pool)),
+            0.7
+        );
+        // …and the account's per-window value beats the account default, but
+        // never escapes the hard backstop.
+        acct.threshold_5h = Some(0.95);
+        assert_eq!(
+            resolved_threshold(QuotaWindow::FiveHour, &acct, Some(&pool)),
+            0.9
+        );
+        // Without [server.pool] the account threshold still applies, capped at
+        // the legacy 0.98 backstop; nothing configured resolves to the backstop.
+        assert_eq!(resolved_threshold(QuotaWindow::Weekly, &acct, None), 0.7);
+        assert_eq!(
+            resolved_threshold(QuotaWindow::Weekly, &account("bare"), None),
+            SWITCH_THRESHOLD
+        );
+    }
+
+    #[test]
+    fn window_headroom_projects_exhaustion_minus_reset() {
+        let now = 1_000_000;
+        // Already at/past the threshold: no headroom at all.
+        assert_eq!(
+            window_headroom(0.6, Some(now + 100), WINDOW_5H_SECS, 0.5, now),
+            f64::NEG_INFINITY
+        );
+        // No usage yet, or no reset instant: no evidence of pressure.
+        assert_eq!(
+            window_headroom(0.0, Some(now + 100), WINDOW_5H_SECS, 0.5, now),
+            f64::INFINITY
+        );
+        assert_eq!(
+            window_headroom(0.4, None, WINDOW_5H_SECS, 0.5, now),
+            f64::INFINITY
+        );
+        // Halfway through the 5h window at 0.25 of a 1.0 threshold: exhaustion
+        // in 3× the elapsed 9000s, reset in 9000s → +18000s of margin.
+        let headroom = window_headroom(0.25, Some(now + 9_000), WINDOW_5H_SECS, 1.0, now);
+        assert!((headroom - 18_000.0).abs() < 1e-6, "got {headroom}");
+        // 0.9 burned in the first 1800s of the window: the 0.98 threshold is
+        // ~160s away but the reset is 16200s away → deeply negative.
+        let headroom = window_headroom(0.9, Some(now + 16_200), WINDOW_5H_SECS, 0.98, now);
+        assert!(headroom < -15_000.0, "got {headroom}");
+    }
+
+    #[test]
+    fn account_threshold_override_rotates_backup_account_early() {
+        let pool = AccountPool::new();
+        let mut accounts = accounts();
+        let session = "acct-threshold";
+        let cfg = PoolConfig::default();
+        let rotation = pool.select_order("anthropic", &accounts, Some(session), None, Some(&cfg));
+        let sticky = rotation[0];
+        // A backup account keeps a low personal threshold; 0.6 utilization is
+        // fine for everyone else but "near" for it.
+        accounts[sticky].threshold = Some(0.5);
+        pool.note_quota(
+            "anthropic",
+            &accounts[sticky].name,
+            &quota_headers(&[(
+                "anthropic-ratelimit-unified-5h-utilization",
+                "0.6".to_string(),
+            )]),
+        );
+        let order = pool.select_order("anthropic", &accounts, Some(session), None, Some(&cfg));
+        assert_ne!(order[0], sticky);
+        assert_eq!(order.last(), Some(&sticky));
+    }
+
+    #[test]
+    fn burn_rate_avoidance_rotates_fast_burning_sticky_account() {
+        let pool = AccountPool::new();
+        let accounts = accounts();
+        let session = "burn-rate";
+        let ordering_only = PoolConfig::default();
+        let avoid = PoolConfig {
+            burn_rate_avoidance: true,
+            ..Default::default()
+        };
+        let rotation = pool.select_order(
+            "anthropic",
+            &accounts,
+            Some(session),
+            None,
+            Some(&ordering_only),
+        );
+        let sticky = rotation[0];
+        // 0.9 burned just 30 minutes into the 5h window: projected to exhaust
+        // the backstop long before the reset 4.5h away.
+        pool.note_quota(
+            "anthropic",
+            &accounts[sticky].name,
+            &quota_headers(&[
+                (
+                    "anthropic-ratelimit-unified-5h-utilization",
+                    "0.9".to_string(),
+                ),
+                (
+                    "anthropic-ratelimit-unified-5h-reset",
+                    (unix_now() + 16_200).to_string(),
+                ),
+            ]),
+        );
+        // Headroom only orders; without avoidance the sticky account stays.
+        assert_eq!(
+            pool.select_order(
+                "anthropic",
+                &accounts,
+                Some(session),
+                None,
+                Some(&ordering_only)
+            )[0],
+            sticky
+        );
+        let avoided = pool.select_order("anthropic", &accounts, Some(session), None, Some(&avoid));
+        assert_ne!(avoided[0], sticky);
+        assert_eq!(avoided.last(), Some(&sticky));
+    }
+
+    #[test]
+    fn priority_orders_available_accounts_in_both_modes() {
+        for cfg in [None, Some(PoolConfig::default())] {
+            let pool = AccountPool::new();
+            let mut accounts = accounts();
+            let session = "priority";
+            let rotation =
+                pool.select_order("anthropic", &accounts, Some(session), None, cfg.as_ref());
+            let sticky = rotation[0];
+            pool.note_quota(
+                "anthropic",
+                &accounts[sticky].name,
+                &quota_headers(&[(
+                    "anthropic-ratelimit-unified-5h-utilization",
+                    "0.99".to_string(),
+                )]),
+            );
+            // Prefer what would otherwise be the last rotation slot.
+            let preferred = *rotation.last().unwrap();
+            accounts[preferred].priority = 1;
+            let order =
+                pool.select_order("anthropic", &accounts, Some(session), None, cfg.as_ref());
+            assert_eq!(order[0], preferred, "pool config: {cfg:?}");
+            assert_eq!(order.last(), Some(&sticky), "pool config: {cfg:?}");
+        }
+    }
+
+    #[test]
+    fn all_near_accounts_fall_back_to_headroom_order() {
+        // Every account trips burn-rate avoidance: instead of emptying the
+        // pool (or piling up in rotation order), selection degrades to
+        // best-projected-margin first.
+        let pool = AccountPool::new();
+        let accounts = vec![account("a"), account("b"), account("c")];
+        let cfg = PoolConfig {
+            burn_rate_avoidance: true,
+            ..Default::default()
+        };
+        let now = unix_now();
+        // Same 0.9 utilization, increasingly distant resets: the further the
+        // reset, the earlier in the window the burn happened and the worse the
+        // projected margin.
+        for (index, reset_in) in [(0usize, 16_200u64), (1, 9_000), (2, 3_600)] {
+            pool.note_quota(
+                "anthropic",
+                &accounts[index].name,
+                &quota_headers(&[
+                    (
+                        "anthropic-ratelimit-unified-5h-utilization",
+                        "0.9".to_string(),
+                    ),
+                    (
+                        "anthropic-ratelimit-unified-5h-reset",
+                        (now + reset_in).to_string(),
+                    ),
+                ]),
+            );
+        }
+        assert_eq!(
+            pool.select_order("anthropic", &accounts, Some("all-near"), None, Some(&cfg)),
+            vec![2, 1, 0]
+        );
+    }
+
+    #[test]
+    fn accounts_past_hard_threshold_sort_after_soft_near_accounts() {
+        let pool = AccountPool::new();
+        let accounts = accounts();
+        let session = "hard-backstop";
+        let cfg = PoolConfig {
+            default_threshold: Some(0.5),
+            ..Default::default()
+        };
+        let rotation = pool.select_order("anthropic", &accounts, Some(session), None, Some(&cfg));
+        // Sticky account past the hard backstop, the next one past only the
+        // soft threshold, the rest untouched.
+        for (offset, utilization) in [(0usize, "0.99"), (1, "0.6")] {
+            pool.note_quota(
+                "anthropic",
+                &accounts[rotation[offset]].name,
+                &quota_headers(&[(
+                    "anthropic-ratelimit-unified-5h-utilization",
+                    utilization.to_string(),
+                )]),
+            );
+        }
+        let order = pool.select_order("anthropic", &accounts, Some(session), None, Some(&cfg));
+        assert_eq!(order[..2], [rotation[2], rotation[3]]);
+        assert_eq!(order[2], rotation[1], "soft-near sorts before hard-over");
+        assert_eq!(order[3], rotation[0], "hard-over sorts last");
+    }
+
+    #[test]
+    fn disabled_accounts_are_excluded_from_selection() {
+        for cfg in [None, Some(PoolConfig::default())] {
+            let pool = AccountPool::new();
+            let mut accounts = accounts();
+            let session = "disabled";
+            let rotation =
+                pool.select_order("anthropic", &accounts, Some(session), None, cfg.as_ref());
+            let sticky = rotation[0];
+            accounts[sticky].disabled = true;
+            let order =
+                pool.select_order("anthropic", &accounts, Some(session), None, cfg.as_ref());
+            assert_eq!(order.len(), 3, "pool config: {cfg:?}");
+            assert!(!order.contains(&sticky), "pool config: {cfg:?}");
+        }
+    }
+
+    #[test]
+    fn snapshot_reports_pool_fields() {
+        let pool = AccountPool::new();
+        let mut accounts = vec![account("seen"), account("standby")];
+        accounts[1].disabled = true;
+        accounts[1].priority = 200;
+        pool.note_quota(
+            "anthropic",
+            "seen",
+            &quota_headers(&[
+                (
+                    "anthropic-ratelimit-unified-5h-utilization",
+                    "0.5".to_string(),
+                ),
+                (
+                    "anthropic-ratelimit-unified-5h-reset",
+                    (unix_now() + 9_000).to_string(),
+                ),
+            ]),
+        );
+        let cfg = PoolConfig::default();
+        let snaps = pool.snapshot("anthropic", &accounts, None, Some(&cfg));
+        let seen = &snaps[0];
+        assert_eq!(seen.priority, 100, "the default priority");
+        assert!(!seen.disabled);
+        assert!(
+            seen.headroom_secs.is_some(),
+            "finite projection is reported with [server.pool] set"
+        );
+        let standby = &snaps[1];
+        assert!(standby.disabled);
+        assert_eq!(standby.priority, 200);
+        assert!(!standby.available, "a disabled account is never available");
+        // Without [server.pool], the projection is not surfaced.
+        let legacy = pool.snapshot("anthropic", &accounts, None, None);
+        assert!(legacy[0].headroom_secs.is_none());
     }
 }

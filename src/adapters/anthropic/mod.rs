@@ -131,6 +131,7 @@ async fn forward_claude_oauth(
         &accounts,
         session_id,
         Some(route.upstream_model.as_str()),
+        state.config.server.pool.as_ref(),
     );
     let url = upstream_url(&state, &route, uri);
     let base_body = normalize_upstream_model(body, &route.upstream_model);
@@ -784,9 +785,7 @@ mod tests {
     fn claude_account() -> crate::config::AccountConfig {
         crate::config::AccountConfig {
             name: "acct".to_string(),
-            credentials: None,
-            token_env: None,
-            uuid: None,
+            ..Default::default()
         }
     }
 

@@ -120,6 +120,9 @@ async fn forward_codex_passthrough(
         // Codex exposes no per-model quota signal to order by (same as the
         // Anthropic-translating pool path).
         None,
+        // Quota knobs are inert without quota headers, but per-account
+        // priority/disabled still apply.
+        state.config.server.pool.as_ref(),
     );
     let mut last_response: Option<reqwest::Response> = None;
 

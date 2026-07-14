@@ -72,6 +72,10 @@ The non-`--long-lived` command copies the current `~/.claude/.credentials.json` 
 | `credentials` | one usable source | Claude Code `.credentials.json`-shaped file. `~/` is expanded. shunt refreshes near expiry and atomically writes refreshed tokens back. |
 | `token_env` | one usable source | Environment variable containing a setup token. The value is used verbatim and cannot be refreshed after a 401. |
 | `uuid` | no | Selected account's Anthropic UUID for rewriting an existing `metadata.user_id.account_uuid`. |
+| `threshold` | no | Per-account soft quota threshold in `[0.0, 1.0]` for every window without a per-window value. A low value marks a backup account that rotates out early. |
+| `threshold_5h` / `threshold_7d` / `threshold_fable` | no | Per-window soft thresholds; each beats `threshold` for its window. |
+| `priority` | no | Selection priority when the sticky account is unhealthy; lower is preferred, default `100`. |
+| `disabled` | no | `true` removes the account from selection entirely while keeping it in config and on the admin dashboard. |
 
 Do not set both `credentials` and `token_env` on one account.
 
@@ -83,13 +87,45 @@ Do not set both `credentials` and `token_env` on one account.
   - `anthropic-ratelimit-unified-5h-utilization`, `anthropic-ratelimit-unified-7d-utilization`, and `anthropic-ratelimit-unified-7d_oi-utilization`;
   - `anthropic-ratelimit-unified-5h-reset`, `anthropic-ratelimit-unified-7d-reset`, and `anthropic-ratelimit-unified-7d_oi-reset` (Unix seconds); and
   - `anthropic-ratelimit-unified-status`.
-- The switch threshold is `0.98`. An account is near quota when unified status is `rejected`, shared 5-hour utilization is at least `0.98`, or the governing weekly utilization is at least `0.98`.
+- The default switch threshold is `0.98`. An account is near quota when unified status is `rejected`, shared 5-hour utilization reaches its threshold, or the governing weekly utilization reaches its threshold. Thresholds can be lowered per account (`threshold*` fields above) or pool-wide (see [Tuning selection](#tuning-selection-serverpool)).
 - The 5-hour bucket applies to every model. Fable model ids use the `7d_oi` weekly bucket when its utilization is present, with shared `7d` as fallback. Every other model family uses shared `7d`; Sonnet also uses `7d` because there is no Sonnet-specific header today.
-- A near-quota or cooled sticky account rotates off proactively. shunt prefers available under-threshold accounts ordered by the soonest-resetting governing weekly bucket, spending use-or-lose quota first. Accounts with unknown weekly reset sort first. Available near-quota accounts follow, then cooled accounts ordered by soonest recovery.
-- shunt never fails closed because of local quota state: every account remains in the attempt order, even if all are near quota or cooled.
+- A near-quota, cooled, or disabled sticky account rotates off proactively. shunt prefers available under-threshold accounts ordered by `priority` (lower first), then by the soonest-resetting governing weekly bucket, spending use-or-lose quota first. Accounts with unknown weekly reset sort first. Available near-quota accounts follow, then cooled accounts ordered by soonest recovery. With `[server.pool]` configured, burn-rate headroom replaces the weekly-reset tiebreak (see below).
+- shunt never fails closed because of local quota state: every non-`disabled` account remains in the attempt order, even if all are near quota or cooled.
 - Quota buckets are cleared automatically after their reset timestamp passes. A successful response clears the selected account's cooldown.
 
 The pool's selection, cooldown, and quota state survives config hot reloads for the life of the process. Reactive failover remains active if proactive rotation cannot avoid the upstream limit.
+
+## Tuning selection (`[server.pool]`)
+
+The optional `[server.pool]` table (issue #135) adds soft per-window thresholds and burn-rate–aware ordering on top of the behavior above. Without the table, selection uses the single built-in `0.98` threshold exactly as before.
+
+```toml
+[server.pool]
+# hard_threshold = 0.98      # (default) backstop; at/above always sorts last
+default_threshold = 0.9      # soft default for every window
+default_threshold_5h = 0.95  # per-window overrides
+default_threshold_fable = 0.85
+burn_rate_avoidance = true   # avoid accounts projected to hit a threshold before reset
+
+[[providers.anthropic.accounts]]
+name = "primary"
+priority = 1                 # preferred whenever the sticky account is unhealthy
+
+[[providers.anthropic.accounts]]
+name = "backup"
+threshold = 0.5              # backup: rotate out once half its quota is spent
+
+[[providers.anthropic.accounts]]
+name = "spare"
+disabled = true              # kept configured, never selected
+```
+
+- **Threshold resolution.** For each window `X` (`5h`, `7d`, `fable`), the effective soft threshold is: account `threshold_X` → account `threshold` → `default_threshold_X` → `default_threshold` → `hard_threshold`, capped at `hard_threshold`. All values are utilization fractions in `[0.0, 1.0]`; out-of-range values fail `shunt check`.
+- **Burn-rate headroom.** From each window's utilization and reset instant (window lengths are fixed at 5 hours and 7 days), shunt projects the time until the soft threshold is hit at the observed average pace, minus the time until the window resets. Positive headroom means the account survives to its reset at the current pace. Available accounts of equal `priority` order by largest headroom; unobserved windows count as unlimited headroom.
+- **Predictive avoidance.** With `burn_rate_avoidance = true`, an account with negative projected headroom is treated as near quota and rotated off *before* it hits a threshold. Off by default — ordering by headroom happens regardless.
+- **All-near guard.** When every account is past a soft threshold (or predicted to exhaust), the pool does not empty: near accounts serve ordered by best headroom, while accounts at or above `hard_threshold` still sort last, followed only by cooling accounts.
+- **Scope.** The quota knobs act on Claude (Anthropic) pools only — the Codex backend sends no quota headers, so for [Codex pools](/guides/codex-multi-account/) they are inert, while `priority` and `disabled` still apply.
+- The admin pool endpoint (`GET /admin/pool`) reports each account's `priority`, `disabled` flag, and — when `[server.pool]` is configured — its current headroom projection in seconds; the dashboard's state column marks disabled accounts.
 
 ## Failover rules
 

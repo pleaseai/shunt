@@ -72,6 +72,10 @@ name = "backup"
 | `credentials` | 사용 가능한 소스 중 하나 | Claude Code `.credentials.json` 형태의 파일. `~/`가 확장됩니다. shunt는 만료가 가까워지면 갱신하고 갱신된 토큰을 원자적으로 다시 써 넣습니다. |
 | `token_env` | 사용 가능한 소스 중 하나 | setup token이 들어 있는 환경 변수. 값은 그대로 사용되며 401 이후 갱신할 수 없습니다. |
 | `uuid` | 아니요 | 기존 `metadata.user_id.account_uuid`를 다시 쓰기 위한, 선택된 계정의 Anthropic UUID. |
+| `threshold` | 아니요 | 창(window)별 값이 없는 모든 창에 적용되는 계정별 소프트 쿼터 임계값, `[0.0, 1.0]` 범위. 낮은 값은 일찍 로테이션되는 백업 계정을 나타냅니다. |
+| `threshold_5h` / `threshold_7d` / `threshold_fable` | 아니요 | 창별 소프트 임계값; 각각 해당 창에서 `threshold`보다 우선합니다. |
+| `priority` | 아니요 | 스티키 계정이 비정상일 때의 선택 우선순위; 낮을수록 우선되며 기본값은 `100`입니다. |
+| `disabled` | 아니요 | `true`이면 구성과 관리자 대시보드에는 남긴 채 계정을 선택 대상에서 완전히 제외합니다. |
 
 한 계정에 `credentials`와 `token_env`를 동시에 설정하지 마세요.
 
@@ -83,13 +87,45 @@ name = "backup"
   - `anthropic-ratelimit-unified-5h-utilization`, `anthropic-ratelimit-unified-7d-utilization`, `anthropic-ratelimit-unified-7d_oi-utilization`;
   - `anthropic-ratelimit-unified-5h-reset`, `anthropic-ratelimit-unified-7d-reset`, `anthropic-ratelimit-unified-7d_oi-reset`(Unix 초); 그리고
   - `anthropic-ratelimit-unified-status`.
-- 전환 임계값은 `0.98`입니다. 통합(unified) status가 `rejected`이거나, 공유 5시간 사용률이 `0.98` 이상이거나, 적용되는 주간 사용률이 `0.98` 이상이면 그 계정은 쿼터에 근접한 것입니다.
+- 기본 전환 임계값은 `0.98`입니다. 통합(unified) status가 `rejected`이거나, 공유 5시간 사용률이 해당 임계값에 도달했거나, 적용되는 주간 사용률이 해당 임계값에 도달하면 그 계정은 쿼터에 근접한 것입니다. 임계값은 계정별로(위의 `threshold*` 필드) 또는 풀 전체로(자세한 내용은 [선택 튜닝](#선택-튜닝-serverpool) 참고) 낮출 수 있습니다.
 - 5시간 버킷은 모든 모델에 적용됩니다. Fable 모델 id는 `7d_oi` 주간 버킷의 사용률이 있으면 그것을 쓰고, 없으면 공유 `7d`로 폴백합니다. 그 외 모든 모델 계열은 공유 `7d`를 사용합니다; 현재 Sonnet 전용 헤더가 없으므로 Sonnet도 `7d`를 사용합니다.
-- 쿼터에 근접했거나 쿨다운된 스티키 계정은 선제적으로 로테이션됩니다. shunt는 임계값 아래의 사용 가능한 계정을, 적용되는 주간 버킷이 가장 빨리 리셋되는 순서로 선호해 쓰지 않으면 사라지는(use-or-lose) 쿼터부터 소진합니다. 주간 리셋을 알 수 없는 계정이 먼저 정렬됩니다. 그다음 사용 가능한 쿼터 근접 계정, 그다음 가장 빨리 회복되는 순서의 쿨다운 계정이 이어집니다.
-- shunt는 로컬 쿼터 상태 때문에 닫힌 채로 실패(fail closed)하지 않습니다: 모든 계정이 쿼터에 근접했거나 쿨다운 중이어도 각 계정은 시도 순서에 남아 있습니다.
+- 쿼터에 근접했거나 쿨다운됐거나 비활성화(disabled)된 스티키 계정은 선제적으로 로테이션됩니다. shunt는 임계값 아래의 사용 가능한 계정을 `priority`(낮은 값 우선) 순으로 먼저 선호하고, 그다음 적용되는 주간 버킷이 가장 빨리 리셋되는 순서로 선호해 쓰지 않으면 사라지는(use-or-lose) 쿼터부터 소진합니다. 주간 리셋을 알 수 없는 계정이 먼저 정렬됩니다. 그다음 사용 가능한 쿼터 근접 계정, 그다음 가장 빨리 회복되는 순서의 쿨다운 계정이 이어집니다. `[server.pool]`이 구성되어 있으면 번-레이트(burn-rate) 여유가 주간 리셋 타이브레이크를 대신합니다(아래 참고).
+- shunt는 로컬 쿼터 상태 때문에 닫힌 채로 실패(fail closed)하지 않습니다: `disabled`가 아닌 모든 계정은 쿼터에 근접했거나 쿨다운 중이어도 시도 순서에 남아 있습니다.
 - 쿼터 버킷은 리셋 타임스탬프가 지나면 자동으로 비워집니다. 성공 응답은 선택된 계정의 쿨다운을 해제합니다.
 
 풀의 선택, 쿨다운, 쿼터 상태는 프로세스가 살아 있는 동안 설정 핫 리로드를 거쳐도 유지됩니다. 선제 로테이션으로 업스트림 제한을 피하지 못하는 경우에는 반응형 페일오버가 계속 동작합니다.
+
+## 선택 튜닝 (`[server.pool]`)
+
+선택적 `[server.pool]` 테이블(이슈 #135)은 위 동작 위에 창(window)별 소프트 임계값과 번-레이트(burn-rate) 인지 정렬을 추가합니다. 이 테이블이 없으면 선택은 이전과 동일하게 단일 내장 `0.98` 임계값을 사용합니다.
+
+```toml
+[server.pool]
+# hard_threshold = 0.98      # (기본값) 백스톱; 이 값 이상이면 항상 마지막으로 정렬됨
+default_threshold = 0.9      # 모든 창에 대한 소프트 기본값
+default_threshold_5h = 0.95  # 창별 오버라이드
+default_threshold_fable = 0.85
+burn_rate_avoidance = true   # 리셋 전에 임계값에 도달할 것으로 예측되는 계정을 회피
+
+[[providers.anthropic.accounts]]
+name = "primary"
+priority = 1                 # 스티키 계정이 비정상일 때 우선 선택됨
+
+[[providers.anthropic.accounts]]
+name = "backup"
+threshold = 0.5              # 백업: 쿼터의 절반이 소진되면 로테이션
+
+[[providers.anthropic.accounts]]
+name = "spare"
+disabled = true              # 구성은 유지되지만 절대 선택되지 않음
+```
+
+- **임계값 해석(Threshold resolution).** 각 창 `X`(`5h`, `7d`, `fable`)에 대해 유효 소프트 임계값은 계정 `threshold_X` → 계정 `threshold` → `default_threshold_X` → `default_threshold` → `hard_threshold` 순으로 결정되며, `hard_threshold`로 상한이 걸립니다. 모든 값은 `[0.0, 1.0]` 범위의 사용률 비율이며, 범위를 벗어나면 `shunt check`가 실패합니다.
+- **번-레이트 여유(Burn-rate headroom).** 각 창의 사용률과 리셋 시점(창 길이는 5시간과 7일로 고정)으로부터, shunt는 관측된 평균 속도로 소프트 임계값에 도달할 때까지의 시간에서 창이 리셋될 때까지의 시간을 뺀 값을 예측합니다. 여유(headroom)가 양수이면 현재 속도로도 리셋 시점까지 버틸 수 있다는 뜻입니다. `priority`가 같은 사용 가능한 계정은 여유가 큰 순서로 정렬되며, 관측되지 않은 창은 무제한 여유로 간주됩니다.
+- **예측적 회피(Predictive avoidance).** `burn_rate_avoidance = true`이면, 예측된 여유가 음수인 계정은 임계값에 도달하기 *전에* 쿼터 근접 상태로 간주되어 로테이션됩니다. 기본값은 꺼짐이며 — 여유 기준 정렬 자체는 이 설정과 무관하게 항상 이루어집니다.
+- **전체 근접 가드(All-near guard).** 모든 계정이 소프트 임계값을 넘겼거나(또는 소진이 예측되면), 풀이 비지 않습니다: 근접 계정은 여유가 가장 큰 순서로 서빙되고, `hard_threshold` 이상인 계정은 여전히 마지막으로 정렬되며, 그다음 쿨다운 중인 계정만 이어집니다.
+- **적용 범위(Scope).** 쿼터 관련 노브는 Claude(Anthropic) 풀에만 작동합니다 — Codex 백엔드는 쿼터 헤더를 보내지 않으므로 [Codex 풀](/ko/guides/codex-multi-account/)에서는 무력화되며, `priority`와 `disabled`는 그곳에서도 계속 적용됩니다.
+- 관리자 풀 엔드포인트(`GET /admin/pool`)는 각 계정의 `priority`, `disabled` 플래그를 보고하며, `[server.pool]`이 구성되어 있으면 현재 여유(headroom) 예측치를 초 단위로 함께 보고합니다; 대시보드의 상태 열은 비활성화된 계정을 표시합니다.
 
 ## 페일오버 규칙
 

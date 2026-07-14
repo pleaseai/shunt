@@ -52,6 +52,10 @@ pub(super) async fn forward_chatgpt_oauth(
         // Codex carries no per-model quota signal to order by, unlike the
         // Anthropic pool's rate-limit headers.
         None,
+        // The [server.pool] quota knobs are inert here for the same reason
+        // (note_quota is never called on this path), but per-account
+        // priority/disabled still apply.
+        state.config.server.pool.as_ref(),
     );
     let ws_enabled = state.config.codex_websocket_enabled(&route.provider);
     let auth = AuthMode::ChatgptOauth;

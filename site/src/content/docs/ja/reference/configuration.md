@@ -39,6 +39,21 @@ description: すべての shunt.toml キー — server、providers、routes、mo
 
 管理トークンは `[server.auth]` の下で設定されるクライアントトークンとは別個の認証情報です。1 つの認証情報を両方のサーフェスで再利用しないでください。
 
+## `[server.pool]`（オプション）
+
+Claude（Anthropic）アカウントプール向けの、クォータを考慮した負荷分散のチューニングです（[詳細](/ja/guides/anthropic-multi-account/#選択のチューニングserverpool)）。テーブルが存在しない場合、選択はこのテーブルが導入される前と同じ、組み込みの単一しきい値 `0.98` を使います。
+
+| キー | デフォルト | 意味 |
+| :-- | :-- | :-- |
+| `hard_threshold` | `0.98` | すべてのクォータウィンドウに対する安全策のバックストップ。これ以上のアカウントは、利用可能なアカウントの中で常に最後にソートされます |
+| `default_threshold` | 未設定 | より具体的な値を持たないウィンドウに対するソフトなデフォルトしきい値 |
+| `default_threshold_5h` | 未設定 | 5 時間ウィンドウのソフトなデフォルト |
+| `default_threshold_7d` | 未設定 | 共有の週次（`7d`）ウィンドウのソフトなデフォルト |
+| `default_threshold_fable` | 未設定 | fable 専用の週次（`7d_oi`）ウィンドウのソフトなデフォルト |
+| `burn_rate_avoidance` | `false` | ウィンドウのリセット前にソフトしきい値を使い切ると予測されるアカウントも回避する |
+
+各ウィンドウ `X` について、有効なソフトしきい値は次の順で解決されます: アカウントの `threshold_X` → アカウントの `threshold` → `default_threshold_X` → `default_threshold` → `hard_threshold`。これは `hard_threshold` を上限としてクランプされます。すべてのしきい値は `[0.0, 1.0]` の使用率の割合であり、範囲外の値は起動時にエラーになります。クォータヘッダーは Anthropic バックエンドにのみ存在するため、これらのノブは Codex/ChatGPT プールでは無効です — 下記のアカウント単位の `priority` と `disabled` はそちらでも引き続き適用されます。
+
 ## `[providers.<name>]`
 
 各プロバイダーは、あなたが選んだ名前の下のテーブルです。組み込み（`anthropic`、`openai`、`codex`、`xai`、`grok`、`cursor`）は部分的にオーバーライドできます — 設定マップはディープマージします。

@@ -148,7 +148,7 @@ async function loadPool() {{
   for (const p of providers) for (const a of (p.accounts || [])) {{
     rows++; const r = body.insertRow();
     cell(r, p.provider); cell(r, a.name);
-    cell(r, !a.has_state ? "unseen" : a.near_quota ? "near quota" : a.cooldown_secs_remaining ? "cooling" : "available");
+    cell(r, a.disabled ? "disabled" : !a.has_state ? "unseen" : a.near_quota ? "near quota" : a.cooldown_secs_remaining ? "cooling" : "available");
     cell(r, pct(a.utilization_5h)); cell(r, pct(a.utilization_7d)); cell(r, pct(a.utilization_7d_oi));
     cell(r, a.status || "—");
     cell(r, a.cooldown_secs_remaining ? a.cooldown_secs_remaining + "s" : "—");
