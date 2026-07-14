@@ -6,8 +6,6 @@ use std::{path::PathBuf, time::Duration};
 
 use axum::http::{HeaderValue, StatusCode};
 
-use serde_json::Value;
-
 use crate::{
     accounts::{self, FailoverAction},
     adapters::AdapterError,
@@ -17,6 +15,7 @@ use crate::{
     server::AppState,
 };
 
+use super::context::{ForwardOptions, PoolForward, RelayOptions};
 use super::error::{mapped_upstream_error, own_error};
 use super::http::{http_send, json_response, stream_response};
 use super::websocket::forward_websocket;
@@ -33,18 +32,18 @@ use super::websocket::forward_websocket;
 /// `note_quota` is never called here — unlike Anthropic, the ChatGPT backend
 /// carries no per-account quota-rejection headers, so failover in this
 /// adapter is cooldown-based only.
-#[allow(clippy::too_many_arguments)]
 pub(super) async fn forward_chatgpt_oauth(
     state: AppState,
     route: Route,
-    pool_key: Option<String>,
-    session_id: Option<String>,
-    upstream_body: Value,
-    accounts_config: Vec<AccountConfig>,
-    client_wants_stream: bool,
-    thinking_enabled: bool,
-    tool_search_native: bool,
+    forward: PoolForward,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
+    let PoolForward {
+        pool_key,
+        session_id,
+        upstream_body,
+        accounts_config,
+        turn,
+    } = forward;
     let order = state.accounts.select_order(
         &route.provider,
         &accounts_config,
@@ -81,15 +80,15 @@ pub(super) async fn forward_chatgpt_oauth(
                 &state,
                 &route,
                 account_pool_key.as_deref(),
-                upstream_body.clone(),
-                credential.clone(),
-                auth,
-                client_wants_stream,
-                thinking_enabled,
-                tool_search_native,
-                // Pool path does not pre-compute a message_start input estimate
-                // yet (see relay_success) — follow-up to thread it through here.
-                None,
+                ForwardOptions {
+                    upstream_body: upstream_body.clone(),
+                    credential: credential.clone(),
+                    auth,
+                    turn,
+                    // Pool path does not pre-compute a message_start input estimate
+                    // yet (see relay_success) — follow-up to thread it through here.
+                    estimate_input: None,
+                },
             )
             .await
             {
@@ -148,11 +147,9 @@ pub(super) async fn forward_chatgpt_oauth(
                 if status.is_success() {
                     let response = relay_success(
                         &state,
-                        &route,
                         upstream,
-                        client_wants_stream,
-                        thinking_enabled,
-                        tool_search_native,
+                        turn.client_wants_stream,
+                        turn.relay(&route),
                     )
                     .await?;
                     let response = with_account_header(response, &account.name);
@@ -215,11 +212,9 @@ pub(super) async fn forward_chatgpt_oauth(
                             state.accounts.mark_healthy(&route.provider, &account.name);
                             let response = relay_success(
                                 &state,
-                                &route,
                                 retry,
-                                client_wants_stream,
-                                thinking_enabled,
-                                tool_search_native,
+                                turn.client_wants_stream,
+                                turn.relay(&route),
                             )
                             .await?;
                             let response = with_account_header(response, &account.name);
@@ -256,11 +251,9 @@ pub(super) async fn forward_chatgpt_oauth(
 /// [`json_response`]).
 async fn relay_success(
     state: &AppState,
-    route: &Route,
     upstream: reqwest::Response,
     client_wants_stream: bool,
-    thinking_enabled: bool,
-    tool_search_native: bool,
+    relay: RelayOptions,
 ) -> Result<axum::response::Response, AdapterError> {
     if client_wants_stream {
         let keepalive = Duration::from_secs(state.config.server.sse_keepalive_seconds);
@@ -269,22 +262,9 @@ async fn relay_success(
         // forward_http / forward_websocket paths), so pass 0 = "no estimate"
         // here — identical to those paths when the provider opts out of local
         // counting. Extending the estimate to pooled codex turns is a follow-up.
-        Ok(stream_response(
-            upstream,
-            route.model.clone(),
-            thinking_enabled,
-            tool_search_native,
-            0,
-            keepalive,
-        ))
+        Ok(stream_response(upstream, relay, 0, keepalive))
     } else {
-        json_response(
-            upstream,
-            route.model.clone(),
-            thinking_enabled,
-            tool_search_native,
-        )
-        .await
+        json_response(upstream, relay).await
     }
 }
 

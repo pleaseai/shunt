@@ -3,25 +3,22 @@
 //! path for every provider and the fallback when the websocket transport fails
 //! to connect (see [`super::forward`]).
 
-use std::sync::Arc;
-
 use axum::{
     body::{Body, Bytes},
     http::{Response, StatusCode},
     response::IntoResponse,
 };
 use futures_util::{stream, StreamExt};
-use serde_json::Value;
 
 use crate::{
     adapters::AdapterError,
     auth::Credential,
-    config::AuthMode,
-    model::responses::{parse_sse_events, AnthropicSseMachine, ResponseEvent},
+    model::responses::{parse_sse_events, ResponseEvent},
     routing::Route,
     server::AppState,
 };
 
+use super::context::{ForwardOptions, RelayOptions};
 use super::error::{backend_error_response, mapped_upstream_error, own_error};
 use super::request::request_builder;
 
@@ -57,19 +54,19 @@ fn provider_retry_policy(state: &AppState, route: &Route) -> crate::retry::Retry
 /// Drive a turn over the HTTP Responses path. The default transport for every
 /// provider, and the fallback when the opt-in websocket transport fails to
 /// connect (see [`forward`]).
-#[allow(clippy::too_many_arguments)]
 pub(super) async fn forward_http(
     state: &AppState,
     route: &Route,
-    upstream_body: Value,
-    credential: Credential,
-    auth: AuthMode,
-    client_wants_stream: bool,
-    thinking_enabled: bool,
-    tool_search_native: bool,
-    estimate_input: Option<Arc<Value>>,
+    forward: ForwardOptions,
     session_id: Option<&str>,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
+    let ForwardOptions {
+        upstream_body,
+        credential,
+        auth,
+        turn,
+        estimate_input,
+    } = forward;
     // Kick off the CPU-bound tiktoken encode on the blocking pool *before* the
     // upstream request so it overlaps that round-trip; the result is not needed
     // until the response stream (and thus message_start) begins. `None` on
@@ -103,7 +100,7 @@ pub(super) async fn forward_http(
     if !status.is_success() {
         return Err(mapped_upstream_error(status, upstream, auth).await);
     }
-    if client_wants_stream {
+    if turn.client_wants_stream {
         let input_tokens_estimate = match estimate_handle {
             Some(handle) => handle.await.unwrap_or(0),
             None => 0,
@@ -113,9 +110,7 @@ pub(super) async fn forward_http(
             StatusCode::OK,
             stream_response(
                 upstream,
-                route.model.clone(),
-                thinking_enabled,
-                tool_search_native,
+                turn.relay(route),
                 input_tokens_estimate,
                 keepalive,
             ),
@@ -125,29 +120,20 @@ pub(super) async fn forward_http(
         // a backend error event surfaced via `backend_error` (issue #113), so
         // the proxy's access log (`upstream_status`) and `record_proxied_request`
         // metrics reflect the failure instead of a hardcoded `200`.
-        let response = json_response(
-            upstream,
-            route.model.clone(),
-            thinking_enabled,
-            tool_search_native,
-        )
-        .await?;
+        let response = json_response(upstream, turn.relay(route)).await?;
         Ok((response.status(), response))
     }
 }
 
 pub(super) fn stream_response(
     upstream: reqwest::Response,
-    model: String,
-    thinking_enabled: bool,
-    tool_search_native: bool,
+    relay: RelayOptions,
     input_tokens_estimate: u64,
     keepalive: std::time::Duration,
 ) -> axum::response::Response {
     let bytes = upstream.bytes_stream();
     let parser = SseParser::default();
-    let machine = AnthropicSseMachine::new(model, thinking_enabled, tool_search_native)
-        .with_input_estimate(input_tokens_estimate);
+    let machine = relay.machine().with_input_estimate(input_tokens_estimate);
     let output = stream::unfold((bytes, parser, machine, false), |state| async move {
         let (mut bytes, mut parser, mut machine, mut finished) = state;
         if finished {
@@ -201,15 +187,13 @@ pub(super) fn stream_response(
 /// `error` event.
 pub(super) async fn json_response(
     upstream: reqwest::Response,
-    model: String,
-    thinking_enabled: bool,
-    tool_search_native: bool,
+    relay: RelayOptions,
 ) -> Result<axum::response::Response, AdapterError> {
     let body = upstream
         .text()
         .await
         .map_err(|error| own_error(error.to_string()))?;
-    let mut machine = AnthropicSseMachine::new(model, thinking_enabled, tool_search_native);
+    let mut machine = relay.machine();
     for event in parse_sse_events(&body) {
         let _ = machine.apply(event);
     }
@@ -248,8 +232,19 @@ impl SseParser {
 mod tests {
     use super::*;
     use axum::body::to_bytes;
+    use serde_json::Value;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// The default relay options for these tests: the `gpt-5.2-codex` model with
+    /// both protocol toggles off.
+    fn relay_opts() -> RelayOptions {
+        RelayOptions {
+            model: "gpt-5.2-codex".to_string(),
+            thinking_enabled: false,
+            tool_search_native: false,
+        }
+    }
 
     /// Serves `body` at `status` from a mock server and returns the resulting
     /// `reqwest::Response`, mirroring the shape `json_response` reads in
@@ -289,7 +284,7 @@ mod tests {
             "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"Rate limit reached\"}}}\n\n",
         );
         let upstream = upstream_response(200, sse).await;
-        let response = json_response(upstream, "gpt-5.2-codex".to_string(), false, false)
+        let response = json_response(upstream, relay_opts())
             .await
             .expect("json_response builds a response");
 
@@ -316,7 +311,7 @@ mod tests {
             "data: {\"response\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n",
         );
         let upstream = upstream_response(200, sse).await;
-        let response = json_response(upstream, "gpt-5.2-codex".to_string(), false, false)
+        let response = json_response(upstream, relay_opts())
             .await
             .expect("json_response builds a response");
 

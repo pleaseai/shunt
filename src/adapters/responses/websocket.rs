@@ -3,8 +3,6 @@
 //! append-only extension, and peek the first event so a pre-first-token failure
 //! can transparently fall back to HTTP.
 
-use std::sync::Arc;
-
 use axum::{
     http::{HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
@@ -18,6 +16,7 @@ use crate::{
 
 use super::codex_continuation;
 use super::codex_ws::{self, CodexWsError, CodexWsEvents};
+use super::context::ForwardOptions;
 use super::error::{build_upstream_error, own_error};
 use super::request::{responses_url, CODEX_CLIENT_VERSION, CODEX_USER_AGENT};
 use super::ws_stream::{json_events_response, stream_events_response};
@@ -28,19 +27,19 @@ use super::ws_stream::{json_events_response, stream_events_response};
 /// `previous_response_id` (the payload-reduction lever). Events are re-encoded
 /// through the same [`AnthropicSseMachine`] the HTTP path uses; a rejected
 /// handshake is re-shaped exactly like an HTTP upstream error.
-#[allow(clippy::too_many_arguments)]
 pub(super) async fn forward_websocket(
     state: &AppState,
     route: &Route,
     pool_key: Option<&str>,
-    upstream_body: Value,
-    credential: Credential,
-    auth: AuthMode,
-    client_wants_stream: bool,
-    thinking_enabled: bool,
-    tool_search_native: bool,
-    estimate_input: Option<Arc<Value>>,
+    forward: ForwardOptions,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
+    let ForwardOptions {
+        upstream_body,
+        credential,
+        auth,
+        turn,
+        estimate_input,
+    } = forward;
     let pool_key = pool_key.filter(|key| !key.is_empty());
     let http_url = responses_url(&state.config, &route.provider);
     let ws_url = codex_ws::to_websocket_url(&http_url).map_err(ws_transport_error)?;
@@ -70,7 +69,7 @@ pub(super) async fn forward_websocket(
         tokio::task::spawn_blocking(move || crate::count_tokens::count_input_tokens_value(&request))
     });
     let (buffered, events) = open_ws_turn(&ctx).await?;
-    if client_wants_stream {
+    if turn.client_wants_stream {
         let input_tokens_estimate = match estimate_handle {
             Some(handle) => handle.await.unwrap_or(0),
             None => 0,
@@ -81,9 +80,7 @@ pub(super) async fn forward_websocket(
             stream_events_response(
                 buffered,
                 events,
-                route.model.clone(),
-                thinking_enabled,
-                tool_search_native,
+                turn.relay(route),
                 input_tokens_estimate,
                 keepalive,
             ),
@@ -92,14 +89,7 @@ pub(super) async fn forward_websocket(
         // See `forward_http`: surface the real status (a `502` when a backend
         // error event fired, issue #113) to the access log and metrics rather
         // than a hardcoded `200`.
-        let response = json_events_response(
-            buffered,
-            events,
-            route.model.clone(),
-            thinking_enabled,
-            tool_search_native,
-        )
-        .await;
+        let response = json_events_response(buffered, events, turn.relay(route)).await;
         Ok((response.status(), response))
     }
 }
