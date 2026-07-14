@@ -1,0 +1,225 @@
+src/auth/claude/callback.rs
+  s_8f2e083805bd1e::t_3eea9673dbed81 180-183
+  s_8f2e083805bd1e::t_027ea0e1017628 145-152
+  s_8f2e083805bd1e::t_139e9c18519528 143-144,153
+  s_8f2e083805bd1e::t_1a5847284313d3 1-7,9-142,154-179,184-215
+  s_8f2e083805bd1e::t_5bef669c112a1b 8
+site/src/content/docs/ko/reference/endpoints.md
+  s_8f2e083805bd1e::t_cebd02cd628b88 20
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_8f2e083805bd1e::t_4cb377dd1d0944 20
+docs/m9-admin-surface.md
+  s_8f2e083805bd1e::t_1efa9e55b07cc0 20-28
+  s_8f2e083805bd1e::t_249ee306fe21b3 118-123
+  s_8f2e083805bd1e::t_0c1ad854e0bc2d 146
+  s_8f2e083805bd1e::t_0e81a60bc3c909 155-170,175-181
+  s_8f2e083805bd1e::t_d4ec1d69887f51 224-229
+  s_8f2e083805bd1e::t_868f54f0fd13bd 32-41
+site/src/content/docs/ja/reference/endpoints.md
+  s_8f2e083805bd1e::t_503466632b31f8 20
+site/src/content/docs/ja/reference/configuration.md
+  s_8f2e083805bd1e::t_9568242a3174fc 65
+  s_8f2e083805bd1e::t_b001dfa33dff5c 69-71
+site/src/content/docs/reference/cli.md
+  s_8f2e083805bd1e::t_c852b2ec78a7da 96
+  s_8f2e083805bd1e::t_8c021c8d178905 48,51-53,55-61,63-66,69-73,75-77
+site/src/content/docs/ko/reference/configuration.md
+  s_8f2e083805bd1e::t_056675fc5ff9eb 69-71
+  s_8f2e083805bd1e::t_784a9ce131f07d 65
+src/main.rs
+  s_8f2e083805bd1e::t_36b90795ea5d02 172,458,460-466,470-497
+  s_8f2e083805bd1e::t_22462eaf6aeecd 447-448,508-509
+  s_8f2e083805bd1e::t_cc4c810c0ee290 73-80
+  s_8f2e083805bd1e::t_8b90a18825d64c 456-457
+  s_8f2e083805bd1e::t_76a6b74079ab0a 534-535
+  s_8f2e083805bd1e::t_b243fc7f3fc35f 187-221
+  s_8f2e083805bd1e::t_0a4ebc5cf02fee 34-43
+  s_8f2e083805bd1e::t_eab8aa2bb7440a 115-116,120,123,127-128
+  s_8f2e083805bd1e::t_3defae3947daaf 96-97,102-103
+  s_8f2e083805bd1e::t_77859fe93b0f14 124-126,143-145,152-154,171,467-469,523-524
+  s_8f2e083805bd1e::t_f2362da102f008 151,155-161
+  s_8f2e083805bd1e::t_97d3be32d6effa 168-170
+  s_8f2e083805bd1e::t_e21e8038e7d423 517-518,527
+  s_fbd4901516a31e::t_d01c239b85db90 459
+site/src/content/docs/guides/admin-remote-provisioning.md
+  s_8f2e083805bd1e::t_f3f01c7b56fa21 8
+  s_8f2e083805bd1e::t_51b49139d85ac0 56
+  s_8f2e083805bd1e::t_16c79a0c7ef896 58,60,63,66,69,72-82
+  s_8f2e083805bd1e::t_d47a1e29ebcf45 46
+  s_8f2e083805bd1e::t_6ce47818dc08fc 35-39
+site/src/content/docs/reference/endpoints.md
+  s_8f2e083805bd1e::t_2c22856c33de7b 20
+site/src/content/docs/ko/guides/admin-remote-provisioning.md
+  s_8f2e083805bd1e::t_3ff120a4c96f79 35-39
+  s_8f2e083805bd1e::t_6dc63e7ef12762 56,58,60,63,66,69,72-82
+  s_8f2e083805bd1e::t_5d5cb673e1c721 8
+  s_8f2e083805bd1e::t_9beef8bf8b9d03 46
+docs/m8-anthropic-multi-account.md
+  s_8f2e083805bd1e::t_017e1837cb6aa8 75-79
+  s_8f2e083805bd1e::t_f9dd6814b27828 14-19,22,25
+  s_8f2e083805bd1e::t_b896081d52efd3 169
+  s_bc2fc647eb3091::t_24a838bb91feb3 26
+src/auth/claude/mod.rs
+  s_8f2e083805bd1e::t_d28a5b45b74b2a 2
+src/admin/html.rs
+  s_8f2e083805bd1e::t_8fbdf6f6bafb43 40-45
+  s_8f2e083805bd1e::t_6878c372656498 49
+  s_8f2e083805bd1e::t_3197dd67479e9b 101
+  s_8f2e083805bd1e::t_5e9f83c4c96c9c 106-107,109
+  s_8f2e083805bd1e::t_495d3db1b73563 192
+  s_8f2e083805bd1e::t_d1075208229b2b 176-186
+  s_8f2e083805bd1e::t_fa02ed6cd21118 103-105,108,110-111
+  s_8f2e083805bd1e::t_6b5092c7a922bc 193
+docs/running.md
+  s_8f2e083805bd1e::t_04e10851a1779e 79
+  s_8f2e083805bd1e::t_62ed34b7f034f5 186-188
+  s_8f2e083805bd1e::t_309d1e15604cb3 227-256
+src/auth/claude/store.rs
+  s_8f2e083805bd1e::t_77859fe93b0f14 378
+  s_8f2e083805bd1e::t_57c5d264c85c5c 227-263
+  s_8f2e083805bd1e::t_76359b1addca8c 364-377,379-396
+  s_8f2e083805bd1e::t_16d625e1bdb94d 363
+site/src/content/docs/ja/guides/admin-remote-provisioning.md
+  s_8f2e083805bd1e::t_3f7c4177f2748f 46
+  s_8f2e083805bd1e::t_3e36645e4f7a2d 8
+  s_8f2e083805bd1e::t_28853bcf3bb8f1 56,58,60,63,66,69,72-82
+  s_8f2e083805bd1e::t_1c265e8e0d202f 35-39
+site/src/content/docs/ko/reference/cli.md
+  s_8f2e083805bd1e::t_ad8f0f7300961c 3
+  s_8f2e083805bd1e::t_61c5a5dffbd28b 106-108
+  s_8f2e083805bd1e::t_1c0736a4ad18a4 46-97
+site/src/content/docs/reference/configuration.md
+  s_8f2e083805bd1e::t_bdc5388fa4fa9c 137
+src/admin/session.rs
+  s_8f2e083805bd1e::t_33e7a7990f4766 296-302
+  s_8f2e083805bd1e::t_cf2bb0e51543df 316-322
+  s_8f2e083805bd1e::t_33fe024fac754d 174
+  s_8f2e083805bd1e::t_bdc4af84e0cbfa 86-94,97,103
+  s_8f2e083805bd1e::t_28627f12f9049a 133-140,147
+  s_8f2e083805bd1e::t_e375600eee4744 280,286-291
+site/src/content/docs/zh-cn/guides/admin-remote-provisioning.md
+  s_8f2e083805bd1e::t_634c8307efb4eb 46
+  s_8f2e083805bd1e::t_e16db1d119bbaa 35-39
+  s_8f2e083805bd1e::t_c85101dddef3a8 8
+  s_8f2e083805bd1e::t_ffc4b48bb22fd8 56,58,60,63,66,69,72-82
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_8f2e083805bd1e::t_ed9f671d437d0b 65
+  s_8f2e083805bd1e::t_be9e263a0c66cc 69-71
+README.md
+  s_8f2e083805bd1e::t_9c4358f1b61dfe 69
+  s_8f2e083805bd1e::t_3a2348c547d08c 77
+site/src/content/docs/ja/reference/cli.md
+  s_8f2e083805bd1e::t_24fe12d4346af7 3
+  s_8f2e083805bd1e::t_ccee76d425acbf 46-97
+  s_8f2e083805bd1e::t_3f2a44c7a5d796 106-108
+src/auth/claude/auth.rs
+  s_8f2e083805bd1e::t_4d807eef6200fc 31
+site/src/content/docs/ko/guides/anthropic-multi-account.md
+  s_8f2e083805bd1e::t_600e0c5fd448f6 68,70-74
+  s_8f2e083805bd1e::t_188ebab2a3360e 41,44-45,47-51,54
+  s_8f2e083805bd1e::t_9eadfce2f21bab 55
+site/src/content/docs/zh-cn/guides/anthropic-multi-account.md
+  s_8f2e083805bd1e::t_d45c4a3b0dfe63 68,70-74
+  s_8f2e083805bd1e::t_192fac2eee57c7 41,44-45,47-51,54
+  s_8f2e083805bd1e::t_7acd350d1ed758 55
+src/auth/claude/login.rs
+  s_8f2e083805bd1e::t_244e4e87a11b81 1-2
+  s_8f2e083805bd1e::t_099983baf90806 497-528,592
+  s_8f2e083805bd1e::t_ee803467bbacb2 41,55-59,86-93,95-150,152-159
+  s_8f2e083805bd1e::t_7732e0ed094494 529-541,544-591
+  s_8f2e083805bd1e::t_cab315ce1acee8 15
+  s_8f2e083805bd1e::t_fcb37edbb7b25d 151
+  s_8f2e083805bd1e::t_8eccdd7bc6635b 250-255,261-262
+  s_8f2e083805bd1e::t_4ca2025852ea71 21
+  s_8f2e083805bd1e::t_2c074145ff30d2 278-281
+  s_8f2e083805bd1e::t_1638f2a68f239e 215-216
+  s_8f2e083805bd1e::t_6e0433a49d814e 417,420-428
+  s_8f2e083805bd1e::t_e7861c2a67b4ac 388
+  s_8f2e083805bd1e::t_fed600e44125f7 37-40,42-54,60-85
+  s_8f2e083805bd1e::t_d8cfe7cbfe3581 4-7
+  s_8f2e083805bd1e::t_13ef49d0830489 488-489
+  s_8f2e083805bd1e::t_5c526216524ced 496
+  s_8f2e083805bd1e::t_916683c5db3449 296-297,299,304-313
+  s_8f2e083805bd1e::t_77859fe93b0f14 94,189-190,300-303,393-394,418-419,542-543
+  s_8f2e083805bd1e::t_0f7486df16b3d7 19
+  s_8f2e083805bd1e::t_99f16164dea3ff 416
+site/src/content/docs/zh-cn/reference/cli.md
+  s_8f2e083805bd1e::t_e4e203438e5f71 3
+  s_8f2e083805bd1e::t_09c6d1af467f07 46-97
+  s_8f2e083805bd1e::t_abd04ae2babb8f 106-108
+tests/admin_surface.rs
+  s_8f2e083805bd1e::t_160eb6faa28861 336-349
+  s_8f2e083805bd1e::t_d57c40470d9216 149
+  s_8f2e083805bd1e::t_dc94fbaebea953 421
+  s_8f2e083805bd1e::t_78fa34d0196564 328
+  s_8f2e083805bd1e::t_c156921799df29 392-395
+  s_8f2e083805bd1e::t_c1c20d5d95d518 724-731
+  s_8f2e083805bd1e::t_d87717dedd534c 162,167
+  s_8f2e083805bd1e::t_722988b670870b 306
+  s_8f2e083805bd1e::t_c4b3140b1f70b4 355
+  s_8f2e083805bd1e::t_e3ae3a32592138 17
+  s_8f2e083805bd1e::t_83e4c6cd374bc0 158,163-166,168
+  s_8f2e083805bd1e::t_c267fced669dee 264-305,307-327,329-335,350-354,356-391,396-420,422-449
+  s_8f2e083805bd1e::t_59c6693aa45a74 5-6
+src/admin/mod.rs
+  s_8f2e083805bd1e::t_18f9c2b96a1f65 41
+  s_8f2e083805bd1e::t_8b1f959dc69d6a 422,427
+  s_8f2e083805bd1e::t_bfd3fbf573f992 551
+  s_8f2e083805bd1e::t_015dca554e1c55 434
+  s_8f2e083805bd1e::t_aa966f756390a1 9-11
+  s_8f2e083805bd1e::t_3a4b4eb665dc1c 441
+  s_8f2e083805bd1e::t_4eb453f3b37f83 550
+  s_8f2e083805bd1e::t_33485c89458424 539-542
+  s_8f2e083805bd1e::t_863160b80be49f 492
+  s_8f2e083805bd1e::t_8564a9f53d7263 476
+  s_8f2e083805bd1e::t_50fdb6ef486848 619
+  s_8f2e083805bd1e::t_a9152e15466c2d 423-424,426,428-433,435-440,442-445,449-450
+  s_8f2e083805bd1e::t_7bd62e1fa55992 425
+  s_8f2e083805bd1e::t_bff61645446e60 639,642
+  s_8f2e083805bd1e::t_c156921799df29 580
+  s_8f2e083805bd1e::t_51eee03c5e8340 471
+  s_8f2e083805bd1e::t_6ff043043d557b 487
+  s_8f2e083805bd1e::t_95de7338f78270 563,568-569,572,575-579,581-608
+  s_8f2e083805bd1e::t_0b77ba20186a90 637-638,640-641,643-649
+  s_8f2e083805bd1e::t_5b13485ed51773 473-475,477-478
+site/src/content/docs/ja/guides/anthropic-multi-account.md
+  s_8f2e083805bd1e::t_fd48ec0aff0cdc 68,70-74
+  s_8f2e083805bd1e::t_0f0e43a96594a8 41,44-45,47-51,54
+  s_8f2e083805bd1e::t_529cd9acc3a5e3 55
+site/src/content/docs/guides/anthropic-multi-account.md
+  s_8f2e083805bd1e::t_c54ca08c897816 41,44-46,48,50-51,54
+  s_8f2e083805bd1e::t_d405e1c0fe04bf 68,70-74
+  s_bc2fc647eb3091::t_bbc065c04f28bf 55
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "a17bcf8741f1588d2f47054cb926de4dec743416",
+  "prompts": {},
+  "sessions": {
+    "s_8f2e083805bd1e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cb94833c-3d81-4a02-8658-40d69e985087",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_bc2fc647eb3091": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1b398429-e112-427e-b79d-8f4f614355bd",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_fbd4901516a31e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2f7fde9d-1982-4561-9deb-6ccddeb821f8",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
