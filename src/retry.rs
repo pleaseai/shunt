@@ -140,7 +140,18 @@ where
                     }
                     // Server asked for a wait past our budget: surface the
                     // response now and let the client decide, rather than hang.
-                    Backoff::ExceedsBudget => return Ok(response),
+                    // Log it — this "upstream needs longer than we'll wait" signal
+                    // is operationally interesting, and without it an operator has
+                    // no trace the give-up path was even reached.
+                    Backoff::ExceedsBudget => {
+                        tracing::warn!(
+                            provider = %provider,
+                            status = status.as_u16(),
+                            max_backoff_ms = policy.max_backoff.as_millis(),
+                            "surfacing transient upstream response without retry: Retry-After exceeds max backoff"
+                        );
+                        return Ok(response);
+                    }
                 }
             }
             Err(error) if retries_left && error.is_transient() => {
@@ -440,6 +451,22 @@ mod tests {
             .await;
         assert_eq!(result.unwrap().status().as_u16(), 503);
         assert_eq!(calls, 4, "one initial attempt plus max_retries (3)");
+    }
+
+    #[tokio::test]
+    async fn real_reqwest_connect_error_is_transient() {
+        // Drive a genuine `reqwest::Error` (connection refused on port 1) through
+        // the production `RetryableError` impl, not a stub — this is the exact
+        // classification the Anthropic/Responses adapters rely on for issue #48's
+        // "connection errors", and guards against an inverted boolean or a reqwest
+        // upgrade changing what `is_connect()` reports.
+        let error = reqwest::Client::new()
+            .get("http://127.0.0.1:1/")
+            .send()
+            .await
+            .expect_err("connecting to port 1 must fail");
+        assert!(error.is_connect());
+        assert!(error.is_transient());
     }
 
     #[tokio::test]

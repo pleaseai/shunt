@@ -158,6 +158,16 @@ pub struct CursorError {
     pub message: String,
     pub detail: Option<String>,
     pub retry_after: Option<String>,
+    /// Whether this is a transient transport failure safe to retry. Set only by
+    /// [`CursorError::from_reqwest`] for a connection-level error (connect
+    /// refused/reset, timeout); a deterministic local error ([`internal`]) or a
+    /// decoded upstream error ([`new`]) is never transient. Captured here
+    /// instead of being re-derived from the 502-defaulted `status`, so the retry
+    /// classification stays aligned with the `reqwest::Error` impl.
+    ///
+    /// [`internal`]: CursorError::internal
+    /// [`new`]: CursorError::new
+    transient: bool,
 }
 
 impl CursorError {
@@ -167,6 +177,7 @@ impl CursorError {
             message: message.into(),
             detail,
             retry_after: None,
+            transient: false,
         }
     }
 
@@ -176,16 +187,23 @@ impl CursorError {
             message: message.into(),
             detail: None,
             retry_after: None,
+            transient: false,
         }
     }
 
     pub fn from_reqwest(e: reqwest::Error) -> Self {
+        // Only a connection-level failure (connect refused/reset, timeout) is a
+        // transient blip worth retrying; a builder/redirect/decode error is
+        // deterministic and left alone — mirroring the `reqwest::Error`
+        // RetryableError impl so both adapters agree on what "transient" means.
+        let transient = e.is_connect() || e.is_timeout();
         let status = e.status().map(|s| s.as_u16()).unwrap_or(502);
         Self {
             status,
             message: e.to_string(),
             detail: None,
             retry_after: None,
+            transient,
         }
     }
 }
@@ -199,16 +217,16 @@ impl std::fmt::Display for CursorError {
 impl std::error::Error for CursorError {}
 
 impl crate::retry::RetryableError for CursorError {
-    /// A `CursorError` from `run_agent` is a failure to obtain a response —
-    /// `from_reqwest` maps a connection-level transport error to `502`, which is
-    /// retryable. Genuine upstream 429/5xx statuses arrive as an `Ok`
-    /// `reqwest::Response` (reqwest does not error on HTTP status), so those are
-    /// classified from the response itself; here we key off the mapped status so
-    /// a transient transport blip is retried and a deterministic error is not.
+    /// Retry only a genuine connection-level transport failure — the `transient`
+    /// flag captured at construction, set solely by [`CursorError::from_reqwest`]
+    /// for a connect/timeout error. A deterministic local error
+    /// ([`CursorError::internal`], e.g. a prost encode failure) or a decoded
+    /// upstream error ([`CursorError::new`]) is left alone, matching the
+    /// `reqwest::Error` impl the Anthropic/Responses adapters use. Genuine
+    /// upstream 429/5xx arrive as an `Ok` `reqwest::Response` (reqwest does not
+    /// error on HTTP status), so they are classified from the response, never here.
     fn is_transient(&self) -> bool {
-        reqwest::StatusCode::from_u16(self.status)
-            .map(crate::retry::is_retryable_status)
-            .unwrap_or(false)
+        self.transient
     }
 }
 
@@ -321,5 +339,41 @@ mod tests {
             .await
             .unwrap();
         assert!(response.status().is_success());
+    }
+
+    #[tokio::test]
+    async fn from_reqwest_connect_error_is_classified_transient() {
+        // A real connection-refused error (port 1) is a connect failure, so the
+        // retry layer must treat the resulting CursorError as transient — the
+        // behavior issue #48 requires for "connection errors".
+        let error = reqwest::Client::new()
+            .post("http://127.0.0.1:1/agent.v1.AgentService/Run")
+            .body(Vec::new())
+            .send()
+            .await
+            .expect_err("connecting to port 1 must fail");
+        assert!(error.is_connect());
+        let cursor_error = CursorError::from_reqwest(error);
+        assert!(
+            crate::retry::RetryableError::is_transient(&cursor_error),
+            "a connect-level failure must be retryable"
+        );
+    }
+
+    #[test]
+    fn internal_error_is_not_transient() {
+        // A deterministic local failure (e.g. a prost encode error) maps to a
+        // 502 status but must NOT be retried — an identical retry can't fix it.
+        let error = CursorError::internal("prost encode: boom");
+        assert_eq!(error.status, 502);
+        assert!(!crate::retry::RetryableError::is_transient(&error));
+    }
+
+    #[test]
+    fn decoded_upstream_error_is_not_transient() {
+        // A status decoded from an upstream connect-error frame arrives after the
+        // response and is surfaced, not retried.
+        let error = CursorError::new(503, "upstream unavailable", None);
+        assert!(!crate::retry::RetryableError::is_transient(&error));
     }
 }

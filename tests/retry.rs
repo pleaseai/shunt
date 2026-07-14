@@ -228,3 +228,56 @@ async fn success_is_never_retried() {
     let response = post_messages(&gateway, "/v1/messages").await;
     assert_eq!(response.status(), StatusCode::OK);
 }
+
+#[tokio::test]
+async fn responses_path_retries_transient_upstream() {
+    if !can_bind_loopback() {
+        return;
+    }
+    // A unique api-key env var (avoids colliding with a real OPENAI_API_KEY or a
+    // parallel test) so the single-credential Responses path resolves its
+    // credential and reaches forward_http, where the shared retry driver runs.
+    std::env::set_var("SHUNT_TEST_OPENAI_RETRY_KEY", "sk-test-retry");
+
+    let upstream = MockServer::start().await;
+    // Always 503: the default policy is 1 initial try + 2 retries = 3 hits on the
+    // Responses `/responses` endpoint — proof the responses adapter retries
+    // transient upstream failures through the same driver as the Anthropic path.
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(
+            ResponseTemplate::new(503)
+                .insert_header("retry-after", "0")
+                .set_body_string(r#"{"error":"still down"}"#),
+        )
+        .expect(3)
+        .mount(&upstream)
+        .await;
+
+    let mut config = Config::default();
+    let openai = config.providers.get_mut("openai").unwrap();
+    openai.base_url = upstream.uri();
+    openai.api_key_env = Some("SHUNT_TEST_OPENAI_RETRY_KEY".to_string());
+    openai.retry.initial_backoff_ms = 1;
+    openai.retry.max_backoff_ms = 2;
+    // Route a probe model at the single-credential Responses provider.
+    config.routes.push(shunt::config::RouteConfig {
+        model: "responses-retry-probe".to_string(),
+        provider: "openai".to_string(),
+        upstream_model: None,
+        effort: None,
+    });
+    let gateway = start_gateway_with(config).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .body(
+            r#"{"model":"responses-retry-probe","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}"#,
+        )
+        .send()
+        .await
+        .unwrap();
+    // Exhausted retries surface a non-success status; the mock's `.expect(3)`
+    // (verified on drop) is the proof the retry actually fired on this path.
+    assert!(!response.status().is_success());
+}
