@@ -651,7 +651,10 @@ client token **either** way — shunt accepts both (`InboundAuth::authenticate_b
 
 ```bash
 # A. OpenAI-style Bearer key (the LiteLLM/llmgateway idiom) — works with the built-in
-#    openai provider (openai_base_url = ".../v1"), no config block required:
+#    openai provider. Set the base URL in ~/.codex/config.toml (openai_base_url = ".../v1"),
+#    NOT via the OPENAI_BASE_URL env var — the env var does not redirect the CLI's Responses
+#    WebSocket transport, so the CLI keeps hitting wss://api.openai.com and bypasses shunt.
+#    Then present only the token via env:
 export OPENAI_API_KEY="<shunt-token>"      # Codex sends it as Authorization: Bearer
 ```
 

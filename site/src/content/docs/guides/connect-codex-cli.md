@@ -85,6 +85,20 @@ token, which shunt can't accept as a client token — use it **only on an ungate
 Both run the CLI in its own OpenAI/ChatGPT auth mode, so both need a local `codex login`; the custom
 provider above avoids even that.
 
+:::caution[Set the base URL in config.toml, not via the OPENAI_BASE_URL env var]
+Put `openai_base_url` in `~/.codex/config.toml` (user-level). The `OPENAI_BASE_URL`
+**environment variable** does not redirect the Codex CLI's Responses **WebSocket**
+transport — the CLI keeps opening `wss://api.openai.com/v1/responses` and bypasses shunt
+entirely, failing with `Incorrect API key` because it presents your shunt token to OpenAI
+directly. Only the config key redirects both the HTTP and WebSocket paths. (The same applies
+to `chatgpt_base_url`, `model_provider`, and `experimental_realtime_ws_base_url`: these are
+user-level `~/.codex/config.toml` keys — the CLI ignores them in a project-local
+`.codex/config.toml`, and there is no environment-variable equivalent.) With `openai_base_url`
+the CLI still *tries* a WebSocket first; shunt has no `wss` route, so the CLI falls back to
+HTTP on its own. The custom `model_provider` above avoids even that round-trip —
+`supports_websockets` defaults off, so it goes straight to HTTP.
+:::
+
 The CLI's own local `~/.codex/auth.json` login is **irrelevant to which account answers** — every
 request draws an account from shunt's pool. A loopback `base_url` may stay plain `http://`; use
 `https://` for anything remote. Do **not** set `supports_websockets = true` on the shunt provider —
@@ -104,9 +118,14 @@ loopback — present the shunt client token one of **two** ways; shunt accepts e
 **A. As an OpenAI-style Bearer key** — the LiteLLM/llmgateway idiom. Set the shunt token as the API
 key and the CLI sends it as `Authorization: Bearer <shunt-token>`:
 
+```toml
+# ~/.codex/config.toml — built-in openai provider (no provider block needed).
+# Set the base URL here, NOT via the OPENAI_BASE_URL env var (see the caution in step 2).
+openai_base_url = "http://127.0.0.1:3001/v1"
+```
+
 ```bash
-# built-in openai provider (no config block needed)
-export OPENAI_BASE_URL="http://127.0.0.1:3001/v1"
+# then present only the token via env — the CLI sends it as Authorization: Bearer
 export OPENAI_API_KEY="<shunt-token>"
 ```
 
