@@ -55,6 +55,28 @@ Each provider is a table under a name of your choosing. Built-ins (`anthropic`, 
 | `count_tokens` | `tiktoken` (default) \| `estimate` | `responses` and `cursor` providers: local tiktoken count vs. `501 not_supported` fallback ([details](/guides/effort-and-context/#token-counting-count_tokens)). |
 | `websocket` | `true` \| `false` (default) | Opt in to the Codex Responses WebSocket v2 transport (ChatGPT/Codex backend only; falls back to HTTP on any transport failure before the first event reaches the client, so it can never do worse than plain HTTP). |
 | `tool_search` | `true` \| `false` (default) | Opt in to the native client-executed `tool_search` protocol for Claude Code's tool search (stock OpenAI / ChatGPT-Codex flavors on GPT-5.4+ models; otherwise the text-based shim is kept). See [Codex → Tool search](/guides/codex/#native-protocol-opt-in). |
+| `retry` | sub-table | Bounded retry/backoff for transient upstream failures. On by default (conservative); see below. |
+
+### `[providers.<name>.retry]`
+
+Bounded, idempotent retry for **transient** upstream failures on this provider's single-credential upstream calls — the `passthrough`/`api_key` Anthropic path, the API-key Responses path, and the Cursor path. It re-issues the request (full body, before any bytes reach the client) on the transient statuses `429`, `502`, `503`, `504` and on connection-level transport errors (connect reset/refused, timeout). It **never** retries any other `4xx` (a request error an identical retry cannot fix), and never retries once a response body has started streaming to the client.
+
+Backoff is exponential with randomized (full) jitter, capped at `max_backoff_ms`. A server-supplied `Retry-After` takes precedence; if it asks for longer than `max_backoff_ms`, the response is surfaced immediately rather than slept past budget. Retry is **held off `count_tokens`** regardless of this setting. The `claude_oauth` / `chatgpt_oauth` account pools drive their own account-rotation failover and are unaffected by this table.
+
+```toml
+[providers.openai.retry]
+max_retries = 2          # default; 0 disables retry entirely
+initial_backoff_ms = 500 # default
+max_backoff_ms = 8000    # default; also caps an honored Retry-After
+multiplier = 2.0         # default; exponential growth factor (>= 1.0)
+```
+
+| Key | Values | Meaning |
+| :-- | :-- | :-- |
+| `max_retries` | integer (default `2`, max `10`) | Extra attempts after the first. `0` disables retry. |
+| `initial_backoff_ms` | milliseconds (default `500`) | Backoff ceiling before the first retry (jitter fills `[0, this]`), grown by `multiplier` per attempt. |
+| `max_backoff_ms` | milliseconds (default `8000`) | Upper bound on any single backoff and on an honored `Retry-After`. |
+| `multiplier` | number ≥ 1.0 (default `2.0`) | Exponential growth factor applied to the backoff per attempt. |
 
 ### `[[providers.<name>.accounts]]`
 

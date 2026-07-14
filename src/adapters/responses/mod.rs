@@ -348,7 +348,7 @@ async fn forward_chatgpt_oauth(
                 tracing::warn!(
                     provider = %route.provider,
                     account = %account.name,
-                    error = %error.message,
+                    error = %error,
                     "ChatGPT OAuth upstream request failed"
                 );
                 continue;
@@ -471,7 +471,7 @@ async fn forward_chatgpt_oauth(
                         tracing::warn!(
                             provider = %route.provider,
                             account = %account.name,
-                            error = %error.message,
+                            error = %error,
                             "ChatGPT OAuth refresh retry failed"
                         );
                         last_response = Some(upstream);
@@ -627,21 +627,31 @@ fn with_account_header(
 /// Send the upstream Responses HTTP request and return the raw response
 /// without judging its status. Split out of [`forward_http`] so the account
 /// pool path ([`forward_chatgpt_oauth`]) can classify a response for failover
-/// before deciding whether to relay, retry, or rotate — while single-account
-/// callers still get byte-identical behavior through the [`forward_http`]
-/// wrapper below.
+/// before deciding whether to relay, retry, or rotate. Returns the raw
+/// `reqwest::Error` (rather than a mapped [`AdapterError`]) so the bounded-retry
+/// layer in [`forward_http`] can tell a transient transport failure apart from a
+/// deterministic one; each caller maps the error itself.
 async fn http_send(
     state: &AppState,
     route: &Route,
     credential: Credential,
     session_id: Option<&str>,
     upstream_body: &Value,
-) -> Result<reqwest::Response, AdapterError> {
+) -> Result<reqwest::Response, reqwest::Error> {
     request_builder(state, route, credential, session_id)
         .body(upstream_body.to_string())
         .send()
         .await
-        .map_err(|error| own_error(error.to_string()))
+}
+
+/// The bounded-retry policy for `route`'s provider (issue #48), or a disabled
+/// policy when the provider somehow isn't found (it was validated at routing).
+fn provider_retry_policy(state: &AppState, route: &Route) -> crate::retry::RetryPolicy {
+    state
+        .config
+        .provider(&route.provider)
+        .map(|provider| provider.retry.policy())
+        .unwrap_or(crate::retry::RetryPolicy::DISABLED)
 }
 
 /// Drive a turn over the HTTP Responses path. The default transport for every
@@ -668,9 +678,19 @@ async fn forward_http(
         tokio::task::spawn_blocking(move || crate::count_tokens::count_input_tokens_value(&request))
     });
     // Send via the shared helper (extracted so the account-pool path can classify
-    // a response before relaying); it wraps the same request_builder + send used
-    // above the merge with #112's estimate overlap.
-    let upstream = http_send(state, route, credential, session_id, &upstream_body).await?;
+    // a response before relaying), wrapped in bounded transient retry (issue #48).
+    // This single-credential path — and the websocket→HTTP fallback that lands
+    // here — is exactly the case that otherwise surfaces a transient 429/5xx or
+    // connection blip straight to the client. Retries stay pre-stream: the loop
+    // only ever re-issues `http_send`, before the `is_success` check below hands
+    // off to `stream_response`/`json_response`. The account-pool path drives its
+    // own failover and deliberately does not layer retry on top.
+    let policy = provider_retry_policy(state, route);
+    let upstream = crate::retry::send_with_retry(policy, &route.provider, || {
+        http_send(state, route, credential.clone(), session_id, &upstream_body)
+    })
+    .await
+    .map_err(|error| own_error(error.to_string()))?;
     let status = upstream.status();
     if !status.is_success() {
         return Err(mapped_upstream_error(status, upstream, auth).await);

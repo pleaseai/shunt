@@ -83,6 +83,7 @@ default_provider = "anthropic" # provider for any model with no route -> pass-th
 #   api_key_env    = "ENV_NAME"                   (when auth = "api_key")
 #   api_key_header = "bearer" | "x_api_key"       (default bearer)
 #   effort         = "low|medium|high|xhigh|max"  (optional; responses providers)
+#   [providers.<name>.retry]                      (optional; bounded transient retry, see below)
 # The three below are built-in defaults; you only need the keys you change.
 
 # Anthropic itself: forward Claude Code's own credential unchanged.
@@ -98,6 +99,15 @@ base_url = "https://api.openai.com/v1"
 auth = "api_key"
 api_key_env = "OPENAI_API_KEY" # env var shunt reads the key from
 # effort = "high"              # optional default reasoning effort (low|medium|high|xhigh|max)
+# Bounded retry/backoff for transient upstream failures (issue #48). On by
+# default with these conservative values; retries only 429/502/503/504 and
+# connection errors (never other 4xx), stays pre-stream, honors Retry-After,
+# and is always off for count_tokens. Set max_retries = 0 to disable.
+# [providers.openai.retry]
+# max_retries = 2              # extra attempts after the first (0 disables; max 10)
+# initial_backoff_ms = 500     # backoff ceiling before the first retry (jitter fills [0, this])
+# max_backoff_ms = 8000        # cap on any backoff and on an honored Retry-After
+# multiplier = 2.0             # exponential growth factor per attempt (>= 1.0)
 
 # ChatGPT / Codex subscription (reuses ~/.codex/auth.json — run `codex login`).
 [providers.codex]

@@ -198,6 +198,20 @@ impl std::fmt::Display for CursorError {
 
 impl std::error::Error for CursorError {}
 
+impl crate::retry::RetryableError for CursorError {
+    /// A `CursorError` from `run_agent` is a failure to obtain a response —
+    /// `from_reqwest` maps a connection-level transport error to `502`, which is
+    /// retryable. Genuine upstream 429/5xx statuses arrive as an `Ok`
+    /// `reqwest::Response` (reqwest does not error on HTTP status), so those are
+    /// classified from the response itself; here we key off the mapped status so
+    /// a transient transport blip is retried and a deterministic error is not.
+    fn is_transient(&self) -> bool {
+        reqwest::StatusCode::from_u16(self.status)
+            .map(crate::retry::is_retryable_status)
+            .unwrap_or(false)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

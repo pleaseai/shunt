@@ -112,10 +112,22 @@ async fn forward(
         .provider(&route.provider)
         .map(|provider| provider.base_url.as_str())
         .unwrap_or("https://api2.cursor.sh");
-    let upstream = CursorHttpClient::new(state.http_client.clone(), base_url)
-        .run_agent(&access_token, &prompt, &resolved, &images)
-        .await
-        .map_err(map_client_error)?;
+    let policy = state
+        .config
+        .provider(&route.provider)
+        .map(|provider| provider.retry.policy())
+        .unwrap_or(crate::retry::RetryPolicy::DISABLED);
+    let client = CursorHttpClient::new(state.http_client.clone(), base_url);
+    // Cursor has no account-pool failover, so a transient 429/5xx or connection
+    // blip on the single credential would otherwise surface straight to the
+    // client. Bounded retry (issue #48) stays pre-stream: it only re-runs
+    // `run_agent` — which mints a fresh request id per attempt — before the
+    // `is_success` check below hands off to the streaming/bridge decoders.
+    let upstream = crate::retry::send_with_retry(policy, &route.provider, || {
+        client.run_agent(&access_token, &prompt, &resolved, &images)
+    })
+    .await
+    .map_err(map_client_error)?;
     if !upstream.status().is_success() {
         return Err(map_upstream_error(upstream).await);
     }

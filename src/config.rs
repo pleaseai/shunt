@@ -335,6 +335,64 @@ pub struct ProviderConfig {
     /// emits; unsupported flavors/models fall back to the shim regardless.
     #[serde(default)]
     pub tool_search: bool,
+    /// Bounded upstream retry/backoff for transient failures (issue #48).
+    /// Applies to this provider's single-credential upstream calls (the
+    /// `passthrough`/`api_key` Anthropic path, the API-key Responses path, and
+    /// the Cursor path); the `claude_oauth`/`chatgpt_oauth` account pools have
+    /// their own account-rotation failover and are unaffected. On by default
+    /// with conservative settings — set `max_retries = 0` to disable.
+    #[serde(default)]
+    pub retry: RetryConfig,
+}
+
+/// Per-provider bounded retry/backoff for transient upstream failures (issue
+/// #48). An absent `[providers.<name>.retry]` table uses every default; a
+/// partial table overrides only the fields it sets (`#[serde(default)]` fills
+/// the rest). See [`crate::retry`] for the runtime behavior these values drive.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct RetryConfig {
+    /// Additional attempts after the first upstream try. `0` disables retry.
+    pub max_retries: u32,
+    /// Backoff ceiling before the first retry, milliseconds (jitter fills
+    /// `[0, this]`); grown by `multiplier` per attempt up to `max_backoff_ms`.
+    pub initial_backoff_ms: u64,
+    /// Upper bound on any single backoff and on an honored `Retry-After`,
+    /// milliseconds. A `Retry-After` longer than this surfaces the response
+    /// immediately rather than sleeping past budget.
+    pub max_backoff_ms: u64,
+    /// Exponential growth factor applied to the backoff per attempt (>= 1.0).
+    pub multiplier: f64,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        // Conservative for a single-user local proxy: at most two extra tries,
+        // sub-second first backoff, an 8s ceiling — enough to ride out a brief
+        // blip without turning a hard upstream outage into a long client hang.
+        Self {
+            max_retries: 2,
+            initial_backoff_ms: 500,
+            max_backoff_ms: 8_000,
+            multiplier: 2.0,
+        }
+    }
+}
+
+impl RetryConfig {
+    /// Largest `max_retries` accepted at config validation — a foot-gun guard,
+    /// not a runtime limit. Far above any sensible value for a local proxy.
+    const MAX_RETRIES_LIMIT: u32 = 10;
+
+    /// Build the runtime [`crate::retry::RetryPolicy`] this config describes.
+    pub fn policy(&self) -> crate::retry::RetryPolicy {
+        crate::retry::RetryPolicy {
+            max_retries: self.max_retries,
+            initial_backoff: std::time::Duration::from_millis(self.initial_backoff_ms),
+            max_backoff: std::time::Duration::from_millis(self.max_backoff_ms),
+            multiplier: self.multiplier,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -626,6 +684,16 @@ pub enum ConfigError {
     InvalidOtelEndpoint { message: String },
     #[error("otel.sample_ratio must be between 0.0 and 1.0, got {ratio}")]
     InvalidOtelSampleRatio { ratio: f64 },
+    #[error("providers.{provider}.retry.max_retries must be at most {limit}, got {max_retries}")]
+    InvalidRetryMaxRetries {
+        provider: String,
+        max_retries: u32,
+        limit: u32,
+    },
+    #[error(
+        "providers.{provider}.retry.multiplier must be a finite value >= 1.0, got {multiplier}"
+    )]
+    InvalidRetryMultiplier { provider: String, multiplier: f64 },
 }
 
 impl ProviderConfig {
@@ -641,6 +709,7 @@ impl ProviderConfig {
             accounts: Vec::new(),
             websocket: false,
             tool_search: false,
+            retry: RetryConfig::default(),
         }
     }
 
@@ -659,6 +728,7 @@ impl ProviderConfig {
             accounts: Vec::new(),
             websocket: false,
             tool_search: false,
+            retry: RetryConfig::default(),
         }
     }
 }
@@ -699,6 +769,7 @@ impl Default for Config {
                     accounts: Vec::new(),
                     websocket: false,
                     tool_search: false,
+                    retry: RetryConfig::default(),
                 },
             ),
             (
@@ -935,6 +1006,22 @@ impl Config {
             {
                 return Err(ConfigError::MissingApiKeyEnv {
                     provider: name.clone(),
+                });
+            }
+            // Bounded-retry sanity (issue #48): cap max_retries so a typo can't
+            // arm a retry storm, and require a growth factor that actually grows
+            // (or holds) the backoff — a sub-1.0 multiplier would shrink it.
+            if provider.retry.max_retries > RetryConfig::MAX_RETRIES_LIMIT {
+                return Err(ConfigError::InvalidRetryMaxRetries {
+                    provider: name.clone(),
+                    max_retries: provider.retry.max_retries,
+                    limit: RetryConfig::MAX_RETRIES_LIMIT,
+                });
+            }
+            if !provider.retry.multiplier.is_finite() || provider.retry.multiplier < 1.0 {
+                return Err(ConfigError::InvalidRetryMultiplier {
+                    provider: name.clone(),
+                    multiplier: provider.retry.multiplier,
                 });
             }
             // A cursor_oauth provider injects the operator's stored Cursor
@@ -1250,7 +1337,7 @@ mod tests {
 
     use super::{
         config_file_candidates, host_is_chatgpt, AccountConfig, AdminConfig, AuthMode, Config,
-        ConfigError, ConfigFormat, ModelConfig, ProviderKind, ResponsesFlavor,
+        ConfigError, ConfigFormat, ModelConfig, ProviderKind, ResponsesFlavor, RetryConfig,
     };
 
     #[test]
@@ -1596,6 +1683,68 @@ mod tests {
         assert_eq!(cursor.kind, ProviderKind::Cursor);
         assert_eq!(cursor.base_url, "https://api2.cursor.sh");
         assert_eq!(cursor.auth, AuthMode::CursorOauth);
+    }
+
+    #[test]
+    fn retry_config_defaults_are_conservative_and_enabled() {
+        // Every built-in provider carries the on-by-default conservative policy.
+        let config = Config::default();
+        let retry = config.provider("anthropic").unwrap().retry;
+        assert_eq!(retry, RetryConfig::default());
+        assert_eq!(retry.max_retries, 2);
+        assert_eq!(retry.initial_backoff_ms, 500);
+        assert_eq!(retry.max_backoff_ms, 8_000);
+        assert_eq!(retry.multiplier, 2.0);
+        assert!(retry.policy().is_enabled());
+    }
+
+    #[test]
+    fn retry_config_empty_table_fills_every_default() {
+        // An empty `[providers.x.retry]` table exercises the container default.
+        let retry: RetryConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(retry, RetryConfig::default());
+    }
+
+    #[test]
+    fn retry_config_partial_table_overrides_only_set_fields() {
+        let retry: RetryConfig = serde_json::from_str(r#"{"max_retries": 0}"#).unwrap();
+        assert_eq!(retry.max_retries, 0);
+        // The rest keep their defaults.
+        assert_eq!(retry.initial_backoff_ms, 500);
+        assert_eq!(retry.max_backoff_ms, 8_000);
+        assert!(!retry.policy().is_enabled());
+    }
+
+    #[test]
+    fn retry_max_retries_over_limit_is_rejected() {
+        let mut config = Config::default();
+        config
+            .providers
+            .get_mut("anthropic")
+            .unwrap()
+            .retry
+            .max_retries = 99;
+        let error = config.validate().unwrap_err();
+        assert!(matches!(
+            error,
+            ConfigError::InvalidRetryMaxRetries {
+                max_retries: 99,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn retry_multiplier_below_one_is_rejected() {
+        let mut config = Config::default();
+        config
+            .providers
+            .get_mut("anthropic")
+            .unwrap()
+            .retry
+            .multiplier = 0.5;
+        let error = config.validate().unwrap_err();
+        assert!(matches!(error, ConfigError::InvalidRetryMultiplier { .. }));
     }
 
     #[test]

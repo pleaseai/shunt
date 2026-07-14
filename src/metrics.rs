@@ -28,6 +28,7 @@ struct OtelInstruments {
     requests: Counter<u64>,
     latency: Histogram<f64>,
     continuation: Counter<u64>,
+    upstream_retries: Counter<u64>,
 }
 
 fn otel_instruments() -> &'static OtelInstruments {
@@ -48,6 +49,12 @@ fn otel_instruments() -> &'static OtelInstruments {
                 .u64_counter("shunt.codex_continuation")
                 .with_description(
                     "Codex WebSocket continuation decisions (hit vs full-input fallback)",
+                )
+                .build(),
+            upstream_retries: meter
+                .u64_counter("shunt.upstream_retries")
+                .with_description(
+                    "Bounded upstream retries issued for transient failures (issue #48)",
                 )
                 .build(),
         }
@@ -126,6 +133,24 @@ pub fn record_continuation_outcome(provider: &str, outcome: ContinuationOutcome)
     otel_instruments().continuation.add(1, &attributes);
 }
 
+/// Record one bounded upstream retry (issue #48): a `shunt.upstream_retries`
+/// count tagged with the provider and a low-cardinality `reason` — the transient
+/// status (`429`/`502`/`503`/`504`) or `transport` for a connection-level error.
+/// A rising count signals a flaky upstream that retries are papering over.
+/// Emitted to Sentry and OpenTelemetry; each sink is inert unless configured.
+pub fn record_upstream_retry(provider: &str, reason: &'static str) {
+    sentry::metrics::counter("shunt.upstream_retries", 1)
+        .attribute("provider", provider.to_owned())
+        .attribute("reason", reason.to_owned())
+        .capture();
+
+    let attributes = [
+        KeyValue::new("provider", provider.to_owned()),
+        KeyValue::new("reason", reason),
+    ];
+    otel_instruments().upstream_retries.add(1, &attributes);
+}
+
 #[cfg(test)]
 mod tests {
     use super::{record_continuation_outcome, record_proxied_request, ContinuationOutcome};
@@ -146,5 +171,12 @@ mod tests {
     fn record_continuation_is_noop_without_sinks() {
         record_continuation_outcome("codex", ContinuationOutcome::Hit);
         record_continuation_outcome("codex", ContinuationOutcome::Fallback);
+    }
+
+    /// The upstream-retry counter honors the same opt-in no-op contract.
+    #[test]
+    fn record_upstream_retry_is_noop_without_sinks() {
+        super::record_upstream_retry("anthropic", "503");
+        super::record_upstream_retry("openai", "transport");
     }
 }
