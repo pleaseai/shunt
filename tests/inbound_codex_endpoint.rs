@@ -642,6 +642,50 @@ async fn forwards_client_identity_headers_verbatim_and_strips_shunt_token() {
 }
 
 #[tokio::test]
+async fn strips_default_shunt_token_even_without_inbound_auth() {
+    // The documented guarantee — the shunt client-token header never reaches the
+    // Codex backend — holds unconditionally, including on an ungated endpoint (no
+    // `[server.auth]`). A client that habitually sends `x-shunt-token` must not
+    // have it forwarded upstream just because auth is off.
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-open");
+    std::env::set_var("SHUNT_TEST_INBOUND_OPEN", &token_a);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(token_a.clone()))
+        // The default shunt token header is stripped even with no auth configured.
+        .and(HeaderAbsent("x-shunt-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(r#"{"ok":true}"#, "application/json"))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    // No `config.server.auth` — the endpoint is open.
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        vec![account("account-open", "SHUNT_TEST_INBOUND_OPEN")],
+    ))
+    .await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/responses", gateway.base_url))
+        .header("content-type", "application/json")
+        .header("x-shunt-token", "leftover-token")
+        .body(INBOUND_BODY)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    upstream.verify().await;
+
+    std::env::remove_var("SHUNT_TEST_INBOUND_OPEN");
+}
+
+#[tokio::test]
 async fn upstream_response_headers_are_relayed_verbatim() {
     // The relay preserves upstream response headers the Codex CLI relies on —
     // `x-codex-turn-state` (turn continuity) and observability ids — not just

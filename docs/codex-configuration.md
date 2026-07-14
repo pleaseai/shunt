@@ -638,7 +638,9 @@ chatgpt_base_url = "http://127.0.0.1:3001/backend-api/codex"
 ```
 
 ```toml
-# Option B: a custom model provider
+# Option B: a custom model provider (selected via the top-level model_provider)
+model_provider = "shunt"
+
 [model_providers.shunt]
 base_url = "http://127.0.0.1:3001/v1"
 wire_api = "responses"
@@ -675,9 +677,10 @@ codex login
 shunt login codex --name main
 ```
 
-With no `[[providers.codex.accounts]]` configured, the endpoint falls back to the single default
-`~/.codex/auth.json` credential (no pooling, no failover) — it works out of the box for a single
-account.
+With no `[[providers.codex.accounts]]` configured **and an empty account store**, the endpoint falls
+back to the single default `~/.codex/auth.json` credential (no pooling, no failover) — it works out
+of the box for a single account. (The handler first scans the account store and pools any
+auto-discovered accounts, so imported store logins still get pooling.)
 
 ### 16.4 What's different from the outbound path
 

@@ -23,12 +23,13 @@ default provider name is `codex`):
 ```toml
 # shunt config.toml
 [server.codex_endpoint]
-provider = "codex"        # must be a chatgpt_oauth provider; "codex" is the default
-
-[[providers]]
-name = "codex"
-auth = "chatgpt_oauth"
+provider = "codex"        # must be a chatgpt_oauth provider; "codex" is the built-in default
 ```
+
+`codex` is a built-in `chatgpt_oauth` provider, so no `[providers.codex]` block is required to enable
+the endpoint. To point it at a differently-named provider, declare one as a `[providers.<name>]`
+table (see the [configuration reference](/reference/configuration/#providersname)) and set
+`provider = "<name>"` above.
 
 ```bash
 shunt check                # validates the endpoint's provider exists + is chatgpt_oauth
@@ -156,6 +157,8 @@ unchanged — provision accounts on **shunt's** host, not the CLI's:
 ```bash
 codex login                       # sign in to a ChatGPT account (browser flow)
 shunt login codex --name main     # capture it into shunt's store
+# Each additional pool account needs its own login + capture (a separate ChatGPT
+# account): `codex login` then `shunt login codex --name backup`, and so on.
 ```
 
 ```toml
@@ -164,7 +167,8 @@ shunt login codex --name main     # capture it into shunt's store
 name = "main"
 
 [[providers.codex.accounts]]
-name = "backup"
+name = "backup"     # each declared name must be provisioned above; an unprovisioned
+                    # account is skipped on failover (its credential fails to resolve)
 ```
 
 Selection is **session-sticky**: the Codex CLI's own `session-id` request header keys the account,
@@ -172,7 +176,8 @@ so one conversation stays on one account for as long as it stays healthy, then f
 rotate, 401 → refresh + retry, 5xx → cool down + rotate). A successful pooled response carries an
 `x-shunt-account: <name>` header. On a shared gateway with [`[server.auth]`](/reference/configuration/)
 enabled, the sticky key is scoped per authenticated client, so different clients that happen to send
-the same `session-id` never land on the same sticky account by collision.
+the same `session-id` use distinct sticky keys — preventing cross-client sticky-key collisions. (The
+keys are distinct; two distinct keys can still hash to the same account.)
 
 With **no** `[[providers.codex.accounts]]` configured and an empty store, the endpoint falls back to
 the single default `~/.codex/auth.json` credential — no pool, no failover — so one Codex login works

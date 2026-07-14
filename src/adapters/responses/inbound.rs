@@ -243,17 +243,23 @@ async fn forward_codex_passthrough(
 
 /// Inbound request headers never forwarded upstream on the Codex passthrough:
 /// credential headers (re-injected per pool account in [`passthrough_send`]),
-/// the internal `x-shunt-inbound-client` label (a client must never spoof it —
-/// matches `proxy::check_inbound_auth`), framing headers the HTTP client
-/// recomputes, and `accept-encoding` (dropped so the upstream returns an
-/// uncompressed body that [`relay_passthrough`] streams through unchanged). Names
-/// compare lowercase — `http` normalizes them.
+/// the default shunt client-token header and the internal `x-shunt-inbound-client`
+/// label (a client must never leak or spoof them — matches `proxy::check_inbound_auth`),
+/// framing headers the HTTP client recomputes, and `accept-encoding` (dropped so the
+/// upstream returns an uncompressed body that [`relay_passthrough`] streams through
+/// unchanged). Names compare lowercase — `http` normalizes them.
 const PASSTHROUGH_STRIP_REQUEST_HEADERS: &[&str] = &[
     "host",
     "content-length",
     "authorization",
     "chatgpt-account-id",
     "accept-encoding",
+    // The default shunt client-token header (`config::default_auth_header`). Always
+    // stripped — even on an ungated endpoint (no `[server.auth]`), or one using a
+    // custom auth header — so the documented guarantee that the shunt token never
+    // reaches the Codex backend holds unconditionally. A non-default configured
+    // header is additionally stripped via the `token_header` argument below.
+    "x-shunt-token",
     // shunt-internal client-identity label — never trust a client-supplied value
     // (the main proxy path strips it in `check_inbound_auth` before re-inserting
     // the authenticated client name).

@@ -33,15 +33,17 @@ The Codex CLI always appends `/responses` to whatever base URL it uses, so eithe
 chatgpt_base_url = "http://127.0.0.1:3001/backend-api/codex"
 ```
 
-**Or a custom model provider:**
+**Or a custom model provider** (the top-level `model_provider` must select it, or the CLI keeps its built-in provider):
 
 ```toml
+model_provider = "shunt"
+
 [model_providers.shunt]
 base_url = "http://127.0.0.1:3001/v1"
 wire_api = "responses"
 ```
 
-Either way, the Codex CLI's own local `~/.codex/auth.json` login becomes irrelevant once pointed at shunt — the account comes from shunt's pool on every request, not from the CLI.
+With the custom provider (add `requires_openai_auth = false` so the CLI needs no local login), the Codex CLI's own `~/.codex/auth.json` becomes irrelevant once pointed at shunt — the account comes from shunt's pool on every request. The `chatgpt_base_url` shape instead keeps the CLI in ChatGPT-login mode, so it still needs its local login and works only against an **ungated** endpoint: its ChatGPT bearer is not the configured shunt token, so `[server.auth]` rejects it.
 
 ## Client authentication
 
@@ -77,7 +79,7 @@ shunt login codex --name main
 name = "main"
 ```
 
-With no `[[providers.codex.accounts]]` configured, the endpoint falls back to the single default `~/.codex/auth.json` credential — no pooling, no failover — so a single Codex login works the moment `[server.codex_endpoint]` is set.
+With no `[[providers.codex.accounts]]` configured **and an empty shunt account store**, the endpoint falls back to the single default `~/.codex/auth.json` credential — no pooling, no failover — so a single Codex login works the moment `[server.codex_endpoint]` is set. (The handler first scans the account store and pools any accounts it discovers, so imported store accounts still enable pooling.)
 
 ## What's different from `/v1/messages`
 

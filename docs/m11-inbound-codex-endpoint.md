@@ -96,14 +96,17 @@ to `chatgpt.com`. The only request headers shunt changes are:
 
 - **Swapped in** per selected pool account: `Authorization: Bearer <account>` and
   `chatgpt-account-id` (replacing whatever the client sent).
-- **Stripped**: the shunt client-token header (default `x-shunt-token`, so it never leaks upstream),
+- **Stripped**: the shunt client-token header (the default `x-shunt-token` is stripped unconditionally
+  — even on an ungated endpoint, or one using a custom auth header — so it never leaks upstream),
   the client's own `Authorization`/`chatgpt-account-id` (replaced above), `accept-encoding` (so the
   upstream body stays uncompressed for a clean byte relay), and framing/hop-by-hop headers the HTTP
   client recomputes (`host`, `content-length`, `connection`, …).
 
-On the response side, only framing/hop-by-hop headers (`content-length`, `content-encoding`,
-`transfer-encoding`, `connection`, …) are dropped so axum can frame the streamed body; every other
-upstream header is relayed verbatim.
+On the response side, framing/hop-by-hop headers (`content-length`, `content-encoding`,
+`transfer-encoding`, `connection`, …) are dropped so axum can frame the streamed body, and
+`set-cookie`/`set-cookie2` are dropped so an upstream/edge session cookie (e.g. Cloudflare
+`__cf_bm`/`cf_clearance`) bound to shunt's server-side egress is never leaked to the untrusted
+inbound client (CWE-200/CWE-201); every other upstream header is relayed verbatim.
 
 ## Inbound authentication
 
@@ -116,9 +119,11 @@ use, so no custom header is required. Both are checked by `InboundAuth::authenti
 Bearer form, since its client is a Codex CLI). Without a configured `[server.auth]`, the endpoint is
 open — acceptable for loopback or personal use, not for a shared gateway.
 
-Critically, the client's own `Authorization: Bearer` header (whatever the Codex CLI happens to
-send) is **never used as the inbound credential and never forwarded upstream**, and the shunt
-client-token header is **stripped** so it never leaks to the backend. The passthrough forwards the
+Critically, the client's `Authorization: Bearer` header is **never forwarded upstream**, whatever it
+carries: if it holds the shunt client token it authenticates the request (via `authenticate_bearer`
+above) and is then stripped; if it holds anything else (e.g. the Codex CLI's own ChatGPT credential)
+it fails the inbound check and is likewise stripped. The shunt client-token header is **stripped**
+too, so neither the shunt token nor the client's own credential ever leaks to the backend. The passthrough forwards the
 Codex CLI's own request headers verbatim (see [Header passthrough](#header-passthrough) below) but
 **swaps in only** the selected pool account's `Authorization` bearer + `chatgpt-account-id` — see
 [`codex-configuration.md` §4.4](codex-configuration.md#4-authentication-codexauthjson). Nothing
@@ -185,7 +190,10 @@ warning that a restart is required to register or drop the routes.
 
 Point the Codex CLI at shunt with one of two `~/.codex/config.toml` shapes:
 
-**1. Mirror the ChatGPT base URL** (keeps ChatGPT-subscription auth mode in the CLI):
+**1. Mirror the ChatGPT base URL** (keeps ChatGPT-subscription auth mode in the CLI — the CLI keeps
+sending its own ChatGPT credential, so this shape still needs the CLI's local `~/.codex/auth.json`
+login and only works against an **ungated** endpoint; with `[server.auth]` set, that ChatGPT bearer
+is not the configured shunt token and is rejected, so use shape 2 there):
 
 ```toml
 chatgpt_base_url = "http://<shunt-host>:3001/backend-api/codex"
