@@ -350,13 +350,16 @@ mod tests {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        // The Cursor adapter (`cursor/mod.rs::forward`) wraps `run_agent` in
-        // `send_with_retry` with the provider's policy — the same wiring the
-        // Anthropic/Responses paths each get an integration test for. Drive that
-        // exact combination here: a transient 503 must re-issue `run_agent` up to
-        // the retry budget (1 initial + 2 retries = 3 upstream hits) and then
-        // surface the last response, so a regression that dropped Cursor's retry
-        // (e.g. a policy lookup silently falling back to DISABLED) would fail here.
+        // Cursor's adapter (`cursor/mod.rs::forward`) is the one remaining path
+        // still on the plain `send_with_retry` (idempotent safety): the
+        // Anthropic/Responses paths moved to `RetrySafety::NonIdempotentPost`
+        // (issue #126) and no longer retry a response status, while Cursor keeps
+        // its status retry pending a stable idempotency identity
+        // (`TODO(#126, cursor)`). Drive that exact combination here: a transient
+        // 503 must re-issue `run_agent` up to the retry budget (1 initial + 2
+        // retries = 3 upstream hits) and then surface the last response, so a
+        // regression that dropped Cursor's retry (e.g. a policy lookup silently
+        // falling back to DISABLED) would fail here.
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/agent.v1.AgentService/Run"))

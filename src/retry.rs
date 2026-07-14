@@ -19,15 +19,21 @@
 //! - connection-level transport errors (connect refused/reset, timeout) that
 //!   resolve before any response body exists.
 //!
-//! These upstream POSTs (Messages / Responses / Cursor `Run`) are *not*
-//! idempotent and the upstreams expose no idempotency key, so retrying a
-//! `502`/`504` the origin already processed could in principle duplicate a
-//! billable generation. This layer accepts that bounded risk deliberately: the
-//! shared client configures no response/read timeout, so `is_timeout()` only
-//! fires connect-phase (before acceptance); retries are capped by
-//! `max_retries`; and the behavior matches the upstream SDKs' own default of
-//! retrying transient `5xx` without an idempotency key. Adding one (or gating
-//! retries harder) is tracked as a follow-up rather than blocking issue #48.
+//! Which of those two a call retries depends on [`RetrySafety`] (issue #126).
+//! A response *status* is only retried on an *idempotent* call. For a
+//! non-idempotent creation POST — Anthropic Messages and the single-credential
+//! Responses path, wired as [`RetrySafety::NonIdempotentPost`] — any response
+//! status is ambiguous: it means the upstream may already have accepted the
+//! request and started a billable generation, so re-issuing could duplicate it.
+//! Those paths therefore retry a pre-response *transport* error only and surface
+//! a transient status immediately. A transport error carries no such ambiguity
+//! (nothing was accepted before it resolved), so it is retried for both
+//! safeties. Cursor's `Run` is also a non-idempotent POST but still retries on
+//! transient status for now: it has no account-pool failover, so a surfaced
+//! blip would hit the client directly, and it has no stable idempotency identity
+//! yet — tightening it is tracked inline as `TODO(#126, cursor)`. The shared
+//! client configures no response/read timeout, so `is_timeout()` only fires
+//! connect-phase (before acceptance); retries are capped by `max_retries`.
 //!
 //! Backoff is exponential with true randomized (full) jitter, capped at
 //! [`RetryPolicy::max_backoff`]. A server-supplied `Retry-After` takes
@@ -127,10 +133,16 @@ enum Backoff {
     ExceedsBudget,
 }
 
-/// Drive one upstream request through a bounded retry loop. `attempt` must be
-/// idempotent — it is re-invoked from scratch (fresh request, full body) on
-/// each try. Returns the first non-retryable outcome, or the last outcome once
-/// retries are exhausted.
+/// Drive one upstream request through a bounded retry loop with
+/// [`RetrySafety::Idempotent`] — a response status *and* a pre-response
+/// transport error both retry. `attempt` is re-invoked from scratch (fresh
+/// request, full body) on each try. Returns the first non-retryable outcome, or
+/// the last outcome once retries are exhausted.
+///
+/// Prefer [`send_with_retry_with_safety`] with the call's real [`RetrySafety`]
+/// stated explicitly. This idempotent-default wrapper is retained for Cursor's
+/// `Run`, itself a non-idempotent POST that still retries on a response status
+/// pending a stable idempotency identity (`TODO(#126, cursor)`).
 ///
 /// The success type is always [`reqwest::Response`]: every adapter obtains a
 /// `reqwest::Response` on success and only its status/headers are inspected here
@@ -242,12 +254,31 @@ where
             // it "gave up after exhausting retries" would misread the logs.
             other if policy.max_retries > 0 => {
                 match &other {
-                    Ok(response) if is_retryable_status(response.status()) => {
+                    // A retryable status reaches this arm for one of two reasons,
+                    // and conflating them would misread the logs. On an idempotent
+                    // call the retry budget was genuinely exhausted; on a
+                    // non-idempotent POST the status was never eligible to retry at
+                    // all (`safety.may_retry_response_status()` is false), so it
+                    // was surfaced on the first attempt without any retry — logging
+                    // "exhausted retries" there would send an operator chasing a
+                    // backoff loop that never ran (same rationale as the DISABLED
+                    // guard above).
+                    Ok(response)
+                        if safety.may_retry_response_status()
+                            && is_retryable_status(response.status()) =>
+                    {
                         tracing::warn!(
                             provider = %provider,
                             status = response.status().as_u16(),
                             max_retries = policy.max_retries,
                             "giving up after exhausting retries: upstream still returning a transient status"
+                        );
+                    }
+                    Ok(response) if is_retryable_status(response.status()) => {
+                        tracing::warn!(
+                            provider = %provider,
+                            status = response.status().as_u16(),
+                            "surfacing transient upstream response without retry: non-idempotent request may already be accepted upstream"
                         );
                     }
                     Err(error) if error.is_transient() => {
@@ -514,6 +545,35 @@ mod tests {
 
         assert_eq!(result.unwrap().status().as_u16(), 503);
         assert_eq!(calls, 1, "a response means the POST may have been accepted");
+    }
+
+    #[tokio::test]
+    async fn non_idempotent_post_still_retries_transport_error() {
+        // The acceptance-safety gate suppresses only *response-status* retries.
+        // A pre-response transport error resolves before the upstream accepts
+        // anything, so it stays unambiguous and must still retry even for a
+        // non-idempotent POST — the positive half of the #126 invariant.
+        let mut calls = 0u32;
+        let result = send_with_retry_with_safety(
+            fast_policy(),
+            "test",
+            RetrySafety::NonIdempotentPost,
+            || {
+                calls += 1;
+                let n = calls;
+                async move {
+                    if n == 1 {
+                        Err(StubError { transient: true })
+                    } else {
+                        Ok(response(200))
+                    }
+                }
+            },
+        )
+        .await;
+
+        assert_eq!(result.unwrap().status().as_u16(), 200);
+        assert_eq!(calls, 2, "a pre-response transport error still retries");
     }
 
     #[tokio::test]

@@ -1,10 +1,15 @@
-//! Integration coverage for bounded upstream retry/backoff (issue #48).
+//! Integration coverage for bounded upstream retry/backoff (issues #48, #126).
 //!
-//! Drives the real proxy → Anthropic passthrough path against a mock upstream,
-//! asserting the observable retry contract: a transient status retries and can
-//! succeed, a non-transient status surfaces immediately, exhausted retries
-//! surface the last response, `count_tokens` never retries, and a success is
-//! never re-issued (so a retry can never happen mid-stream).
+//! Drives the real proxy → Anthropic passthrough (and single-credential
+//! Responses) path against a mock upstream, asserting the observable retry
+//! contract. Messages and Responses are non-idempotent creation POSTs
+//! (`RetrySafety::NonIdempotentPost`, issue #126), so a transient *status* is
+//! surfaced immediately rather than retried — a response means the upstream may
+//! already have accepted a billable generation. A non-transient status likewise
+//! surfaces immediately, `count_tokens` never retries, and a success is never
+//! re-issued (so a retry can never happen mid-stream). The still-idempotent
+//! status-retry path and the transport-error-retry path (which stays live even
+//! for a non-idempotent POST) are unit-tested directly in `src/retry.rs`.
 
 use std::{io::ErrorKind, net::SocketAddr};
 
@@ -79,13 +84,17 @@ async fn post_messages(gateway: &TestGateway, path: &str) -> reqwest::Response {
 }
 
 #[tokio::test]
-async fn transient_503_then_success_is_retried() {
+async fn transient_status_is_not_retried_on_messages_path() {
     if !can_bind_loopback() {
         return;
     }
     let upstream = MockServer::start().await;
-    // First attempt: a transient 503 (retry-after 0 keeps the backoff instant),
-    // capped to one response so the retry falls through to the 200 below.
+    // A transient 503 on the first (and only) attempt. A 200 is *also* mounted at
+    // lower priority as a trap: were the non-idempotent Messages POST retried,
+    // the second attempt would fall through to it and the client would see 200.
+    // It must not — a response status means the upstream may already have
+    // accepted a billable generation, so the 503 is surfaced immediately and the
+    // 200 trap is never reached.
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .respond_with(
@@ -98,21 +107,19 @@ async fn transient_503_then_success_is_retried() {
         .expect(1)
         .mount(&upstream)
         .await;
-    // The retry succeeds.
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
         .with_priority(2)
-        .expect(1)
+        .expect(0)
         .mount(&upstream)
         .await;
     let gateway = start_gateway_with(retry_test_config(upstream.uri())).await;
 
     let response = post_messages(&gateway, "/v1/messages").await;
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(response.text().await.unwrap(), r#"{"ok":true}"#);
-    // The mock expectations (503 once, 200 once = 2 upstream hits) are verified
-    // when `upstream` drops: proof the retry actually fired.
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    // The mock expectations (503 hit once, 200 trap never hit) are verified when
+    // `upstream` drops: proof no retry fired on the non-idempotent POST.
 }
 
 #[tokio::test]
@@ -136,13 +143,17 @@ async fn non_transient_400_surfaces_without_retry() {
 }
 
 #[tokio::test]
-async fn exhausted_retries_surface_last_transient_response() {
+async fn messages_path_does_not_retry_transient_status_despite_enabled_policy() {
     if !can_bind_loopback() {
         return;
     }
     let upstream = MockServer::start().await;
-    // Always 503: the default policy is 1 initial try + 2 retries = 3 hits, then
-    // the last 503 is surfaced to the client.
+    // A persistent 503 under the *default* (enabled) retry policy. An idempotent
+    // path would hit this 3 times (1 try + 2 retries) before surfacing; the
+    // non-idempotent Messages POST hits it exactly once. The acceptance-safety
+    // gate — not an exhausted budget — is what stops the retry here (contrast
+    // `disabled_policy_surfaces_transient_immediately`, which removes the budget
+    // outright).
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .respond_with(
@@ -150,7 +161,7 @@ async fn exhausted_retries_surface_last_transient_response() {
                 .insert_header("retry-after", "0")
                 .set_body_string(r#"{"error":"still down"}"#),
         )
-        .expect(3)
+        .expect(1)
         .mount(&upstream)
         .await;
     let gateway = start_gateway_with(retry_test_config(upstream.uri())).await;
@@ -230,7 +241,7 @@ async fn success_is_never_retried() {
 }
 
 #[tokio::test]
-async fn responses_path_retries_transient_upstream() {
+async fn responses_path_does_not_retry_transient_status() {
     if !can_bind_loopback() {
         return;
     }
@@ -240,9 +251,11 @@ async fn responses_path_retries_transient_upstream() {
     std::env::set_var("SHUNT_TEST_OPENAI_RETRY_KEY", "sk-test-retry");
 
     let upstream = MockServer::start().await;
-    // Always 503: the default policy is 1 initial try + 2 retries = 3 hits on the
-    // Responses `/responses` endpoint — proof the responses adapter retries
-    // transient upstream failures through the same driver as the Anthropic path.
+    // A persistent 503 on `/responses` under the default (enabled) retry policy.
+    // Like the Anthropic path, the single-credential Responses POST is
+    // non-idempotent (`RetrySafety::NonIdempotentPost`), so a transient status is
+    // surfaced after exactly one upstream hit rather than retried through the
+    // driver.
     Mock::given(method("POST"))
         .and(path("/responses"))
         .respond_with(
@@ -250,7 +263,7 @@ async fn responses_path_retries_transient_upstream() {
                 .insert_header("retry-after", "0")
                 .set_body_string(r#"{"error":"still down"}"#),
         )
-        .expect(3)
+        .expect(1)
         .mount(&upstream)
         .await;
 
@@ -277,7 +290,7 @@ async fn responses_path_retries_transient_upstream() {
         .send()
         .await
         .unwrap();
-    // Exhausted retries surface a non-success status; the mock's `.expect(3)`
-    // (verified on drop) is the proof the retry actually fired on this path.
+    // The transient status surfaces as a non-success; the mock's `.expect(1)`
+    // (verified on drop) is the proof no retry fired on this non-idempotent path.
     assert!(!response.status().is_success());
 }
