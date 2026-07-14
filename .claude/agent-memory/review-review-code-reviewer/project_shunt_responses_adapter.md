@@ -18,6 +18,20 @@ directory `src/adapters/responses/mod.rs` (plus `codex_ws.rs`, `codex_continuati
 SSE state machine) were both already over the repo's 500-line-file guideline before #112; small (~20-30 line)
 additive diffs to either do not meaningfully worsen that and should not be flagged as new violations.
 
+PR #17 (branch `amondnet/refactor-adapters-split-src-adapters-responses.r`, reviewed 2026-07-14) then split the
+now-1961-line `responses/mod.rs` further, into `mod.rs` (222 LOC glue/re-exports) + `error.rs` (mapped_upstream_error/
+build_upstream_error/own_error) + `http.rs` (http_send/forward_http/stream_response/json_response/SseParser) +
+`pool.rs` (forward_chatgpt_oauth/relay_success/with_account_header) + `request.rs` (request_builder/responses_url/
+CODEX_USER_AGENT/CODEX_CLIENT_VERSION) + `websocket.rs` (forward_websocket/open_ws_turn/start_ws_turn/
+apply_continuation/websocket_headers) + `ws_stream.rs` (stream_events_response/json_events_response/ws_error_sse).
+Verified this was a byte-for-byte pure move (diffed every relocated function body against `git show
+main:src/adapters/responses/mod.rs` line-by-line, plus targeted `diff` on the trickiest branchy functions —
+`forward_chatgpt_oauth`, `apply_continuation`, `build_upstream_error`, `start_ws_turn`, `open_ws_turn`): the only
+deltas anywhere were `pub(super)` visibility additions (needed since call sites now live in sibling files) and doc
+comment path updates in `docs/*.md`. All 21 unit tests from the old `mod.rs::tests` module were accounted for,
+redistributed to `error.rs`/`request.rs`/`websocket.rs` verbatim, none dropped. No findings reported. If asked to
+review this file split again, the per-file responsibility boundaries above are now the map to navigate by.
+
 `src/adapters/responses/mod.rs` implements the ChatGPT/Codex `/codex/responses` and OpenAI/xAI `/responses` adapter.
 It gates ChatGPT-only headers (originator/user-agent/version, and session/identity headers like `session_id`,
 `x-client-request-id`, `x-codex-window-id`, `accept: text/event-stream`) on the `Credential::ChatGptOAuth` match
