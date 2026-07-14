@@ -1,0 +1,30 @@
+docs/m1-responses-translation.md
+  s_1d2ac11977389b::t_2e773eff8b9f11 126-128
+src/adapters/responses/mod.rs
+  s_1d2ac11977389b::t_0e00b39f7c3a14 520-524
+  s_1d2ac11977389b::t_db77b6986bdd32 1206
+  s_1d2ac11977389b::t_f35b5237d4ae1c 2069-2072,2083-2087,2106-2147
+  s_1d2ac11977389b::t_3af66c7efa976f 701-712
+  s_1d2ac11977389b::t_49d53318afe966 866-877
+  s_1d2ac11977389b::t_dd8df75ee4c3fe 375-379
+  s_1d2ac11977389b::t_28112afe22bbf8 2148
+src/model/responses.rs
+  s_1d2ac11977389b::t_2270bda0cea29b 161
+  s_1d2ac11977389b::t_a2f65f2e893f0d 67-68
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "3512d489153c55557a120b27c9b5bae72f8d6edb",
+  "prompts": {},
+  "sessions": {
+    "s_1d2ac11977389b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3bf16559-f7e0-4f23-80bb-6f90b563fc5d",
+        "model": "unknown"
+      },
+      "human_author": null
+    }
+  }
+}
