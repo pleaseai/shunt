@@ -1,0 +1,27 @@
+.github/workflows/ci.yml
+  s_0057a85c045732::t_1f6b1d8a3ff49a 56-59
+  s_0057a85c045732::t_38dbb0fb41400b 93-96
+  s_0057a85c045732::t_81164914c34e61 77-79,82-83
+  s_0057a85c045732::t_f727a3f99ad9c6 18-24
+  s_0057a85c045732::t_48bf02c013fb67 39-41,44-45
+.github/workflows/release.yml
+  s_0057a85c045732::t_3f639d7945425b 62-64,69,74-76
+  s_0057a85c045732::t_df03f503a70541 28-33
+  s_0057a85c045732::t_8fdd49a6ee10fa 77
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "b35b6ceea7095e9f506b099a8ed6c773884eeca9",
+  "prompts": {},
+  "sessions": {
+    "s_0057a85c045732": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7ac1f1c2-ecc3-48d3-9f7f-2c8b79ecf979",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
