@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.15.0](https://github.com/pleaseai/shunt/compare/v0.14.0...v0.15.0) (2026-07-14)
+
+
+### Features
+
+* **pool:** per-account thresholds + burn-rate aware account-pool load balancing ([#135](https://github.com/pleaseai/shunt/issues/135)) ([#136](https://github.com/pleaseai/shunt/issues/136)) ([3533046](https://github.com/pleaseai/shunt/commit/3533046dfe01ca9006a74a460b6ff851acd68478))
+* **pool:** reconcile Claude account-pool quota via the Anthropic OAuth usage API ([#139](https://github.com/pleaseai/shunt/issues/139)) ([93f15c1](https://github.com/pleaseai/shunt/commit/93f15c1d41e49773f360320265debc6aaaf41e5c))
+
 ## [0.14.0](https://github.com/pleaseai/shunt/compare/v0.13.0...v0.14.0) (2026-07-14)
 
 
