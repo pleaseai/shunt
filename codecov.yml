@@ -1,0 +1,14 @@
+# Codecov configuration.
+#
+# The patch (changed-lines) coverage gate is aligned with the SonarCloud
+# new-code coverage quality gate (80%) rather than the higher project base
+# (~92%). Parts of this codebase are interactive I/O that cannot be meaningfully
+# unit-tested — spawning a browser for OAuth, reading a hidden terminal prompt,
+# and live OAuth token round-trips — so requiring patch coverage to match the
+# project base would block any change that touches those flows. 80% keeps a
+# meaningful gate consistent with the SonarCloud one already enforced in CI.
+coverage:
+  status:
+    patch:
+      default:
+        target: 80%
