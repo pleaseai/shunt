@@ -15,6 +15,13 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
+  # sccache wraps rustc to cache compilation artifacts in the GitHub Actions
+  # cache (SCCACHE_GHA_ENABLED). rust-cache still restores the cargo registry
+  # (cache-targets: false) so the two split roles without overlap. sccache
+  # does not support incremental compilation, so disable it.
+  RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: "true"
+  CARGO_INCREMENTAL: 0
 
 jobs:
   test:
@@ -29,8 +36,13 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          cache-targets: false
 
       - name: Format check
         run: cargo fmt --all --check
@@ -40,6 +52,10 @@ jobs:
 
       - name: Test
         run: cargo test --all-features --workspace
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
 
   coverage:
     name: coverage · codecov · sonarqube
@@ -58,8 +74,13 @@ jobs:
         with:
           components: llvm-tools-preview
 
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          cache-targets: false
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@c7eb1735f09259a5035e8e5d44b1406b1cddc0fb # v2.83.0
@@ -68,6 +89,10 @@ jobs:
 
       - name: Generate coverage (lcov)
         run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
