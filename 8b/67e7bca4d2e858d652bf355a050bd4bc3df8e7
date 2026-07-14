@@ -1,0 +1,25 @@
+docs/m10-codex-multi-account.md
+  s_15112be4779e3d::t_c76a263a50a182 64-65
+site/src/content/docs/ja/reference/configuration.md
+  s_15112be4779e3d::t_67020b8c309d68 55
+site/src/content/docs/reference/configuration.md
+  s_15112be4779e3d::t_033f37eaaa45b0 135
+site/src/content/docs/guides/codex-multi-account.md
+  s_15112be4779e3d::t_b469311849e7b1 73-74
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "8b67e7bca4d2e858d652bf355a050bd4bc3df8e7",
+  "prompts": {},
+  "sessions": {
+    "s_15112be4779e3d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e765cc62-6ffe-4f3e-8de9-3151b8615821",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
