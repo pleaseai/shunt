@@ -1,0 +1,28 @@
+src/adapters/anthropic/mod.rs
+  s_15112be4779e3d::t_f75a441d5d4c6e 125-140
+src/accounts.rs
+  s_15112be4779e3d::t_0c090fdfdd6e08 1402-1411,1419
+  s_15112be4779e3d::t_82501b2c8d8b98 1412-1418
+  s_15112be4779e3d::t_2b29c9e297db3c 1295-1355,1421
+  s_15112be4779e3d::t_9ae9ceee3d598d 1294,1401,1420,1422
+src/adapters/responses/inbound.rs
+  s_15112be4779e3d::t_98ce6ea6718d60 116-129
+src/adapters/responses/pool.rs
+  s_15112be4779e3d::t_a641f9e2596abc 48-61
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "6234e3a628ab8e84cb9b8e84afb2492b26ce6da6",
+  "prompts": {},
+  "sessions": {
+    "s_15112be4779e3d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e765cc62-6ffe-4f3e-8de9-3151b8615821",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
