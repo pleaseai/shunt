@@ -122,6 +122,22 @@ async fn forward_claude_oauth(
             route.provider, route.provider
         )));
     }
+    // Distinguish an all-`disabled` pool from a genuine upstream outage: with
+    // every account disabled, select_order returns an empty order and the loop
+    // below would otherwise fall through to the generic "all accounts failed"
+    // error, misdirecting an operator who disabled every account by mistake.
+    if accounts.iter().all(|account| account.disabled) {
+        tracing::warn!(
+            provider = %route.provider,
+            accounts = accounts.len(),
+            "all accounts for provider are disabled; none are selectable"
+        );
+        return Err(auth::auth_error(format!(
+            "provider '{}' has {} account(s) but all are `disabled = true`; none are selectable",
+            route.provider,
+            accounts.len()
+        )));
+    }
 
     let session_id = headers
         .get("x-claude-code-session-id")
@@ -131,6 +147,7 @@ async fn forward_claude_oauth(
         &accounts,
         session_id,
         Some(route.upstream_model.as_str()),
+        state.config.server.pool.as_ref(),
     );
     let url = upstream_url(&state, &route, uri);
     let base_body = normalize_upstream_model(body, &route.upstream_model);
@@ -784,9 +801,7 @@ mod tests {
     fn claude_account() -> crate::config::AccountConfig {
         crate::config::AccountConfig {
             name: "acct".to_string(),
-            credentials: None,
-            token_env: None,
-            uuid: None,
+            ..Default::default()
         }
     }
 

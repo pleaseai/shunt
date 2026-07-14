@@ -59,6 +59,10 @@ Each account has these fields:
 | `credentials` | no | Path to a Claude Code `.credentials.json`-shaped file. shunt reads `claudeAiOauth`, refreshes near expiry, and writes refreshed tokens back atomically. |
 | `token_env` | no | Environment variable containing a setup token. The value is used verbatim and is not refreshed. |
 | `uuid` | no | Anthropic account UUID used for the request-body rewrite described below. |
+| `threshold` | no | Per-account soft quota threshold in `[0.0, 1.0]`, applied to every window that has no per-window value (issue #135). |
+| `threshold_5h` / `threshold_7d` / `threshold_fable` | no | Per-window soft thresholds; each takes precedence over `threshold` for its window. |
+| `priority` | no | Selection priority among available accounts when the sticky account is unhealthy; lower is preferred, default `100`. |
+| `disabled` | no | `true` removes the account from selection entirely while keeping it configured and visible on the admin dashboard. |
 
 `credentials` and `token_env` are mutually exclusive. A name-only account reads `~/.shunt/accounts/claude/<name>.json` (override the directory with `SHUNT_CLAUDE_ACCOUNTS_DIR`). With an entirely empty `accounts` list, shunt scans that directory and uses every valid `*.json` account in filename order. Store files are written atomically at `0600`, and the store directory is `0700` on Unix.
 
@@ -66,10 +70,12 @@ Each account has these fields:
 
 The built-in `anthropic` provider remains `auth = "passthrough"` by default. Multi-account behavior is opt-in.
 
-Optionally, enable periodic usage-API reconciliation for imported accounts (see [Usage-API reconciliation](#usage-api-reconciliation-opt-in) below):
+The optional `[server.pool]` table (issue #135) tunes pool-wide selection with `hard_threshold` (default `0.98`), shared and per-window `default_threshold*` values, and `burn_rate_avoidance` (default `false`). It can also enable periodic usage-API reconciliation for imported accounts with `usage_refresh_seconds` (see [Usage-API reconciliation](#usage-api-reconciliation-opt-in)). Without the table, selection keeps the single built-in `0.98` threshold and no background poller runs.
 
 ```toml
 [server.pool]
+default_threshold = 0.9
+burn_rate_avoidance = true
 usage_refresh_seconds = 300
 ```
 
@@ -92,16 +98,17 @@ Because `claude_oauth` is an injected-credential mode, a configured `[server.aut
 
 Selection state is per provider and survives config hot reloads for the life of the shunt process. Quota state is tracked per configured account.
 
-- If the request includes `x-claude-code-session-id`, shunt hashes it with SHA-256 to choose the sticky account. The mapping is deterministic across process restarts while the ordered account list is unchanged. A healthy sticky account that is available and under the switch threshold stays first, preserving Phase 1 session stickiness.
+- If the request includes `x-claude-code-session-id`, shunt hashes it with SHA-256 to choose the sticky account. The mapping is deterministic across process restarts while the ordered account list is unchanged. A healthy, non-`disabled` sticky account that is available and under its effective soft threshold stays first, preserving Phase 1 session stickiness.
 - Without that header, shunt uses an independent round-robin counter for each provider.
 - On every upstream response handled by the `claude_oauth` account pool, shunt parses the following headers when present:
   - utilization: `anthropic-ratelimit-unified-5h-utilization`, `anthropic-ratelimit-unified-7d-utilization`, and `anthropic-ratelimit-unified-7d_oi-utilization` as floating-point values;
   - reset: `anthropic-ratelimit-unified-5h-reset`, `anthropic-ratelimit-unified-7d-reset`, and `anthropic-ratelimit-unified-7d_oi-reset` as Unix seconds; and
   - status: `anthropic-ratelimit-unified-status`.
-- `SWITCH_THRESHOLD` is `0.98`. An account is near quota when unified status is exactly `rejected`, its shared 5-hour utilization is at least `0.98`, or its governing weekly utilization is at least `0.98`.
+- The hard threshold defaults to `0.98`. An account is near quota when unified status is exactly `rejected`, its shared 5-hour utilization reaches that window's effective soft threshold, or its governing weekly utilization reaches its effective soft threshold. Since issue #135, the effective soft threshold per window `X` resolves as account `threshold_X` → account `threshold` → `[server.pool].default_threshold_X` → `default_threshold` → `hard_threshold`, capped at `hard_threshold`; without any configuration every window uses `0.98`, the legacy `SWITCH_THRESHOLD`.
 - The 5-hour bucket applies to every request. Weekly governance is model-aware: model ids containing `fable` (case-insensitive) use `7d_oi` when that utilization is available, falling back to shared `7d`; every other model family uses shared `7d`. There is no Sonnet-specific header today, so Sonnet uses `7d`.
-- shunt keeps the sticky account until it is near quota or in cooldown. It then proactively rotates before the quota wall when possible. Available under-threshold accounts come first, ordered by the soonest-resetting governing weekly bucket so use-or-lose quota is spent first; an unknown weekly reset sorts before a known reset. Available near-quota accounts follow in normal sticky/round-robin rotation order, then cooled accounts in soonest-cooldown-expiry order.
-- Selection never fails closed on local quota or cooldown state: every configured account remains in the attempt order.
+- shunt keeps the sticky account until it is near quota, in cooldown, or `disabled`. It then proactively rotates before the quota wall when possible. Available under-threshold accounts come first, ordered by `priority` (lower first); ties order by the soonest-resetting governing weekly bucket so use-or-lose quota is spent first (an unknown weekly reset sorts before a known reset). With `[server.pool]` configured, burn-rate headroom replaces the weekly-reset tiebreak: from each window's utilization and reset instant (window lengths fixed at 5 hours and 7 days), shunt projects time-to-threshold at the observed pace minus time-to-reset, and equal-priority accounts order by largest headroom. With `burn_rate_avoidance = true`, negative projected headroom also counts as near quota, rotating an account off before it hits a threshold.
+- Near-quota accounts follow: with `[server.pool]`, soft-near accounts order by best headroom while accounts at or above `hard_threshold` sort after them in rotation order (without the table, all near accounts keep rotation order). Cooled accounts come last in soonest-cooldown-expiry order.
+- Selection never fails closed on local quota or cooldown state: every non-`disabled` configured account remains in the attempt order. `disabled` accounts are never selected.
 - When a quota bucket's reset timestamp has passed, shunt clears that bucket's utilization and reset automatically. Expiring any bucket also clears the cached unified status.
 - A successful response clears that account's cooldown.
 
@@ -161,7 +168,7 @@ The rewrite is deliberately narrow: it only occurs when the outer request is JSO
 
 ## Proactive rotation and reactive failover
 
-Phase 2 quota-aware proactive rotation is implemented. It is model-aware and switches away from a near-quota sticky account before rejection when another account is available under threshold. Phase 1 reactive failover remains the floor: rejected quota responses, authentication failures, transport failures, and 5xx responses still trigger the retry/cooldown behavior above, and every account remains selectable when all choices are near quota or cooled.
+Phase 2 quota-aware proactive rotation is implemented. It is model-aware and switches away from a near-quota sticky account before rejection when another account is available under threshold. Issue #135 extends it with per-account/per-window soft thresholds, `priority`, `disabled`, and opt-in burn-rate–aware ordering and predictive avoidance via `[server.pool]`. Phase 1 reactive failover remains the floor: rejected quota responses, authentication failures, transport failures, and 5xx responses still trigger the retry/cooldown behavior above, and every non-`disabled` account remains selectable when all choices are near quota or cooled.
 
 Storm-control—ramping concurrency after switching to a fresh account—remains a later follow-up and is not implemented.
 

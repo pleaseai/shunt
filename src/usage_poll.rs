@@ -185,6 +185,7 @@ mod tests {
             credentials: Some(path.to_string_lossy().into_owned()),
             token_env: None,
             uuid: None,
+            ..Default::default()
         }
     }
 
@@ -210,6 +211,7 @@ mod tests {
             credentials: None,
             token_env: Some("SOME_ENV".to_string()),
             uuid: None,
+            ..Default::default()
         };
         assert!(!account_is_refreshable(&env_account).await);
 
@@ -219,6 +221,7 @@ mod tests {
             credentials: Some("/no/such/shunt/usage/file.json".to_string()),
             token_env: None,
             uuid: None,
+            ..Default::default()
         };
         assert!(!account_is_refreshable(&missing).await);
 
@@ -261,7 +264,7 @@ mod tests {
         )
         .await;
 
-        let snap = pool.snapshot("anthropic", std::slice::from_ref(&account), None);
+        let snap = pool.snapshot("anthropic", std::slice::from_ref(&account), None, None);
         assert_eq!(snap.len(), 1);
         assert!(snap[0].has_state, "the poll must have recorded state");
         assert_eq!(snap[0].utilization_5h, Some(0.20));
@@ -299,7 +302,7 @@ mod tests {
         )
         .await;
 
-        let snap = pool.snapshot("anthropic", std::slice::from_ref(&account), None);
+        let snap = pool.snapshot("anthropic", std::slice::from_ref(&account), None, None);
         assert!(!snap[0].has_state, "a skipped account records no state");
 
         let _ = std::fs::remove_file(creds);

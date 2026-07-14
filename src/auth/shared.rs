@@ -206,9 +206,8 @@ pub fn scan_account_dir(
         }
         accounts.push(AccountConfig {
             name: name.to_string(),
-            credentials: None,
-            token_env: None,
             uuid: uuid_for(&path),
+            ..Default::default()
         });
     }
     accounts.sort_by(|left, right| left.name.cmp(&right.name));
@@ -403,9 +402,7 @@ mod tests {
     fn one_account() -> io::Result<Vec<AccountConfig>> {
         Ok(vec![AccountConfig {
             name: "primary".to_string(),
-            credentials: None,
-            token_env: None,
-            uuid: None,
+            ..Default::default()
         }])
     }
 

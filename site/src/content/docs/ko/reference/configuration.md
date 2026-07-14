@@ -39,6 +39,21 @@ description: 모든 shunt.toml 키 — server, providers, routes, models.
 
 관리자 토큰은 `[server.auth]` 아래에 구성되는 클라이언트 토큰과 별개의 자격 증명입니다; 하나의 자격 증명을 두 표면에 재사용하지 마세요.
 
+## `[server.pool]` (선택)
+
+Claude(Anthropic) 계정 풀을 위한 쿼터 인지 로드 밸런싱 튜닝([상세](/ko/guides/anthropic-multi-account/#선택-튜닝-serverpool)). 테이블이 없으면 선택은 이 테이블이 존재하기 이전과 동일하게 단일 내장 `0.98` 임계값을 사용합니다.
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `hard_threshold` | `0.98` | 모든 쿼터 창에 대한 안전 백스톱; 이 값 이상인 계정은 사용 가능한 계정 중 항상 마지막으로 정렬됨 |
+| `default_threshold` | 미설정 | 더 구체적인 값이 없는 모든 창에 적용되는 소프트 기본 임계값 |
+| `default_threshold_5h` | 미설정 | 5시간 창의 소프트 기본값 |
+| `default_threshold_7d` | 미설정 | 공유 주간(`7d`) 창의 소프트 기본값 |
+| `default_threshold_fable` | 미설정 | fable 전용 주간(`7d_oi`) 창의 소프트 기본값 |
+| `burn_rate_avoidance` | `false` | 창이 리셋되기 전에 소프트 임계값을 소진할 것으로 예측되는 계정도 함께 회피 |
+
+각 창 `X`에 대해 유효 소프트 임계값은 다음 순서로 결정됩니다: 계정 `threshold_X` → 계정 `threshold` → `default_threshold_X` → `default_threshold` → `hard_threshold`, 그리고 `hard_threshold`로 상한이 걸립니다. 모든 임계값은 `[0.0, 1.0]` 범위의 사용률 비율이며, 범위를 벗어나면 시작이 실패합니다. 쿼터 헤더는 Anthropic 백엔드에만 존재하므로 이 노브들은 Codex/ChatGPT 풀에서는 비활성 상태입니다 — 계정별 `priority`와 `disabled` 키는 그런 풀에도 여전히 적용됩니다(키 상세는 [Anthropic 멀티 계정](/ko/guides/anthropic-multi-account/) 참고).
+
 ## `[providers.<name>]`
 
 각 프로바이더는 원하는 이름의 테이블입니다. 내장(`anthropic`, `openai`, `codex`, `xai`, `grok`, `cursor`)은 부분 오버라이드할 수 있습니다 — 구성 맵은 깊은 병합됩니다.

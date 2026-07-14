@@ -276,9 +276,9 @@ mod tests {
         std::env::set_var(&env_name, "  setup-token-verbatim  ");
         let account = AccountConfig {
             name: "ci".to_string(),
-            credentials: None,
             token_env: Some(env_name.clone()),
             uuid: Some("account-uuid".to_string()),
+            ..Default::default()
         };
 
         let credential = resolve_claude_account(&account, &reqwest::Client::new())
@@ -307,9 +307,8 @@ mod tests {
         std::env::set_var(&env_name, "header.not-a-claim.sig");
         let account = AccountConfig {
             name: "ci".to_string(),
-            credentials: None,
             token_env: Some(env_name.clone()),
-            uuid: None,
+            ..Default::default()
         };
 
         let error = resolve_chatgpt_account(&account, &reqwest::Client::new())
@@ -346,9 +345,7 @@ mod tests {
         .unwrap();
         let account = AccountConfig {
             name: "main".to_string(),
-            credentials: None,
-            token_env: None,
-            uuid: None,
+            ..Default::default()
         };
 
         let credential = resolve_claude_account(&account, &reqwest::Client::new())
@@ -387,9 +384,8 @@ mod tests {
         std::env::set_var(&env_name, &access_token);
         let account = AccountConfig {
             name: "ci".to_string(),
-            credentials: None,
             token_env: Some(env_name.clone()),
-            uuid: None,
+            ..Default::default()
         };
 
         let credential = resolve_chatgpt_account(&account, &reqwest::Client::new())
@@ -439,9 +435,7 @@ mod tests {
 
         let account = AccountConfig {
             name: "main".to_string(),
-            credentials: None,
-            token_env: None,
-            uuid: None,
+            ..Default::default()
         };
 
         let credential = resolve_chatgpt_account(&account, &reqwest::Client::new())

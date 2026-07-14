@@ -73,9 +73,8 @@ impl Drop for TestGateway {
 fn account(name: &str, token_env: &str) -> AccountConfig {
     AccountConfig {
         name: name.to_string(),
-        credentials: None,
         token_env: Some(token_env.to_string()),
-        uuid: None,
+        ..Default::default()
     }
 }
 
@@ -86,8 +85,7 @@ fn store_account_at(name: &str, credentials: &Path) -> AccountConfig {
     AccountConfig {
         name: name.to_string(),
         credentials: Some(credentials.to_string_lossy().into_owned()),
-        token_env: None,
-        uuid: None,
+        ..Default::default()
     }
 }
 

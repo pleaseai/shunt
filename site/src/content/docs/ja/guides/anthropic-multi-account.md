@@ -72,6 +72,10 @@ name = "backup"
 | `credentials` | 使用可能なソースのいずれか 1 つ | Claude Code の `.credentials.json` 形式のファイル。`~/` は展開されます。shunt は期限が近づくとリフレッシュし、リフレッシュ済みトークンをアトミックに書き戻します。 |
 | `token_env` | 使用可能なソースのいずれか 1 つ | setup トークンを含む環境変数。値はそのまま使われ、401 の後にリフレッシュできません。 |
 | `uuid` | いいえ | 既存の `metadata.user_id.account_uuid` を書き換えるための、選択されたアカウントの Anthropic UUID。 |
+| `threshold` | いいえ | ウィンドウ別の値を持たないすべてのウィンドウに適用される、アカウント単位のソフトなクォータしきい値（`[0.0, 1.0]`）。低い値を設定すると、早めにローテーションで外れるバックアップアカウントになります。 |
+| `threshold_5h` / `threshold_7d` / `threshold_fable` | いいえ | ウィンドウ別のソフトしきい値。それぞれ対応するウィンドウで `threshold` より優先されます。 |
+| `priority` | いいえ | スティッキーなアカウントが不健全なときの選択優先度。値が小さいほど優先され、デフォルトは `100` です。 |
+| `disabled` | いいえ | `true` にすると、設定と管理ダッシュボードには残したまま、アカウントを選択対象から完全に除外します。 |
 
 1 つのアカウントに `credentials` と `token_env` の両方を設定しないでください。
 
@@ -83,13 +87,45 @@ name = "backup"
   - `anthropic-ratelimit-unified-5h-utilization`、`anthropic-ratelimit-unified-7d-utilization`、`anthropic-ratelimit-unified-7d_oi-utilization`
   - `anthropic-ratelimit-unified-5h-reset`、`anthropic-ratelimit-unified-7d-reset`、`anthropic-ratelimit-unified-7d_oi-reset`（Unix 秒）
   - `anthropic-ratelimit-unified-status`
-- 切り替えしきい値は `0.98` です。unified status が `rejected`、共有 5 時間の使用率が `0.98` 以上、または適用される週次使用率が `0.98` 以上のとき、アカウントはクォータに近い状態です。
+- デフォルトの切り替えしきい値は `0.98` です。unified status が `rejected`、共有 5 時間の使用率がそのしきい値に達している、または適用される週次使用率がそのしきい値に達しているとき、アカウントはクォータに近い状態です。しきい値は、アカウント単位（上記の `threshold*` フィールド）またはプール全体（[選択のチューニング](#選択のチューニングserverpool)を参照）で下げられます。
 - 5 時間バケットはすべてのモデルに適用されます。Fable のモデル id は、`7d_oi` 週次バケットの使用率があればそれを使い、なければ共有 `7d` にフォールバックします。それ以外のモデルファミリーは共有 `7d` を使います。Sonnet 専用のヘッダーが今のところ存在しないため、Sonnet も `7d` を使います。
-- クォータに近い、またはクールダウン中のスティッキーアカウントは、プロアクティブにローテーションで外されます。shunt は、しきい値未満で利用可能なアカウントを、適用される週次バケットのリセットが最も早い順で優先し、使わなければ失効するクォータから先に消費します。週次リセットが不明なアカウントが先頭に並びます。その後に利用可能なクォータ接近アカウント、さらに回復が最も早い順のクールダウン中アカウントが続きます。
-- shunt がローカルのクォータ状態を理由にフェイルクローズすることはありません。すべてのアカウントがクォータに近い、またはクールダウン中でも、各アカウントは試行順序に残ります。
+- クォータに近い、クールダウン中、または `disabled` なスティッキーアカウントは、プロアクティブにローテーションで外されます。shunt は、しきい値未満で利用可能なアカウントを `priority`（値が小さい順）で優先し、次に適用される週次バケットのリセットが最も早い順で優先して、使わなければ失効するクォータから先に消費します。週次リセットが不明なアカウントが先頭に並びます。その後に利用可能なクォータ接近アカウント、さらに回復が最も早い順のクールダウン中アカウントが続きます。`[server.pool]` が設定されている場合、週次リセットによるタイブレークはバーンレートの余裕（headroom）に置き換わります（下記を参照）。
+- shunt がローカルのクォータ状態を理由にフェイルクローズすることはありません。すべてのアカウントがクォータに近い、またはクールダウン中でも、`disabled` でない各アカウントは試行順序に残ります。
 - クォータバケットは、リセットのタイムスタンプが過ぎると自動的にクリアされます。成功レスポンスは、選択されたアカウントのクールダウンを解除します。
 
 プールの選択・クールダウン・クォータ状態は、プロセスが生きている限り、設定のホットリロードをまたいで維持されます。プロアクティブなローテーションで上流の制限を回避できない場合も、リアクティブなフェイルオーバーは有効なままです。
+
+## 選択のチューニング（`[server.pool]`）
+
+オプションの `[server.pool]` テーブル（issue #135）は、上記の挙動の上に、ウィンドウ別のソフトしきい値とバーンレートを考慮した順序付けを追加します。テーブルがない場合、選択はこれまでどおり、組み込みの単一しきい値 `0.98` のみを使います。
+
+```toml
+[server.pool]
+# hard_threshold = 0.98      # (default) backstop; at/above always sorts last
+default_threshold = 0.9      # soft default for every window
+default_threshold_5h = 0.95  # per-window overrides
+default_threshold_fable = 0.85
+burn_rate_avoidance = true   # avoid accounts projected to hit a threshold before reset
+
+[[providers.anthropic.accounts]]
+name = "primary"
+priority = 1                 # preferred whenever the sticky account is unhealthy
+
+[[providers.anthropic.accounts]]
+name = "backup"
+threshold = 0.5              # backup: rotate out once half its quota is spent
+
+[[providers.anthropic.accounts]]
+name = "spare"
+disabled = true              # kept configured, never selected
+```
+
+- **しきい値の解決。** 各ウィンドウ `X`（`5h`、`7d`、`fable`）について、有効なソフトしきい値は次の順で決まります: アカウントの `threshold_X` → アカウントの `threshold` → `default_threshold_X` → `default_threshold` → `hard_threshold`（`hard_threshold` を上限としてクランプ）。すべての値は `[0.0, 1.0]` の使用率の割合で、範囲外の値は `shunt check` を失敗させます。
+- **バーンレートの余裕（headroom）。** 各ウィンドウの使用率とリセット時刻から（ウィンドウ長は 5 時間と 7 日に固定されています）、shunt は観測された平均ペースでソフトしきい値に達するまでの時間から、ウィンドウがリセットされるまでの時間を差し引いて予測します。余裕がプラスであれば、そのアカウントは現在のペースでもリセットまで持ちこたえます。同じ `priority` の利用可能なアカウントは、余裕が大きい順に並びます。観測されていないウィンドウは無制限の余裕として扱われます。
+- **予測的な回避。** `burn_rate_avoidance = true` にすると、予測された余裕がマイナスのアカウントはクォータに近いものとして扱われ、しきい値に達する*前に*ローテーションで外されます。デフォルトはオフです — 余裕による順序付け自体は、この設定に関係なく行われます。
+- **全アカウント接近時のガード。** すべてのアカウントがソフトしきい値を超えている（または使い切ると予測される）場合でも、プールが空になることはありません。接近しているアカウントは余裕が大きい順に提供され、`hard_threshold` 以上のアカウントは引き続き最後にソートされ、その後にクールダウン中のアカウントだけが続きます。
+- **適用範囲。** クォータ関連のノブは Claude（Anthropic）プールにのみ作用します — Codex バックエンドはクォータヘッダーを送らないため、[Codex プール](/ja/guides/codex-multi-account/)ではこれらは無効ですが、`priority` と `disabled` は引き続き適用されます。
+- 管理プールエンドポイント（`GET /admin/pool`）は、各アカウントの `priority`、`disabled` フラグ、そして `[server.pool]` が設定されている場合は現在の余裕予測（秒単位）を報告します。ダッシュボードの状態列は無効化されたアカウントを示します。
 
 ## フェイルオーバーのルール
 

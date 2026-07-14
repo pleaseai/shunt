@@ -61,6 +61,8 @@ Each account has these fields:
 | `credentials` | no | Path to a Codex CLI `auth.json`-shaped file. shunt reads the `tokens` block, refreshes near expiry, and writes refreshed tokens back atomically — same read/refresh/write-back cycle as `~/.codex/auth.json` itself (see [`codex-configuration.md`](codex-configuration.md#4-authentication-codexauthjson)). |
 | `token_env` | no | Environment variable containing a raw ChatGPT access token. The value is used verbatim and is **not** refreshed; a 401 cools the account down instead of retrying. |
 | `uuid` | no | Present on the shared `AccountConfig` struct for parity with the Anthropic pool, but **unused by the Codex path** — the account id comes from the JWT claim or store instead (see below). |
+| `priority` | no | Selection priority among available accounts; lower is preferred, default `100`. Unlike `uuid`, this **is** honored on the Codex path. |
+| `disabled` | no | `true` removes the account from selection entirely while keeping it in config. Honored on the Codex path. |
 
 `credentials` and `token_env` are mutually exclusive. A name-only account reads `~/.shunt/accounts/codex/<name>.json` (override the directory with `SHUNT_CODEX_ACCOUNTS_DIR`). With an entirely empty `accounts` list, shunt scans that directory and uses every valid `*.json` account in filename order. Store files are written atomically at `0600`, and the store directory is `0700` on Unix — the account is stored **verbatim** in the Codex CLI's own `auth.json` shape (no `claudeAiOauth`-style wrapper, unlike the Claude store).
 

@@ -44,6 +44,20 @@ pub(super) async fn forward_chatgpt_oauth(
         accounts_config,
         turn,
     } = forward;
+    // An all-`disabled` pool yields an empty order; surface it as a distinct
+    // config error rather than the generic "all accounts failed" below.
+    if !accounts_config.is_empty() && accounts_config.iter().all(|account| account.disabled) {
+        tracing::warn!(
+            provider = %route.provider,
+            accounts = accounts_config.len(),
+            "all accounts for provider are disabled; none are selectable"
+        );
+        return Err(own_error(format!(
+            "provider '{}' has {} account(s) but all are `disabled = true`; none are selectable",
+            route.provider,
+            accounts_config.len()
+        )));
+    }
     let order = state.accounts.select_order(
         &route.provider,
         &accounts_config,
@@ -51,6 +65,10 @@ pub(super) async fn forward_chatgpt_oauth(
         // Codex carries no per-model quota signal to order by, unlike the
         // Anthropic pool's rate-limit headers.
         None,
+        // The [server.pool] quota knobs are inert here for the same reason
+        // (note_quota is never called on this path), but per-account
+        // priority/disabled still apply.
+        state.config.server.pool.as_ref(),
     );
     let ws_enabled = state.config.codex_websocket_enabled(&route.provider);
     let auth = AuthMode::ChatgptOauth;

@@ -58,43 +58,69 @@ pub struct ServerConfig {
     /// `docs/m11-inbound-codex-endpoint.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_endpoint: Option<CodexEndpointConfig>,
+    /// Optional account-pool tuning (issue #135) and opt-in usage-API
+    /// reconciliation. Absent ⇒ legacy quota selection and no background polling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool: Option<PoolConfig>,
     /// Idle seconds before shunt injects an SSE `ping` event into a streaming
     /// response so middlebox timers (Cloudflare's 100s → 524) never expire.
     /// `0` disables injection (M5).
     #[serde(default = "default_sse_keepalive_seconds")]
     pub sse_keepalive_seconds: u64,
-    /// Optional Claude account-pool tuning. Absent ⇒ pool defaults (no usage-API
-    /// polling); the header-derived quota state is the only signal.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pool: Option<PoolConfig>,
 }
 
 fn default_sse_keepalive_seconds() -> u64 {
     30
 }
 
-/// `[server.pool]` — Claude account-pool behavior beyond the reactive,
-/// header-derived quota state. Today this configures optional polling of the
-/// Anthropic OAuth usage API to reconcile that state with authoritative usage.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+/// `[server.pool]` — quota-aware load-balancing tuning and optional usage-API
+/// reconciliation for Claude (Anthropic) account pools (issue #135). Quota
+/// headers exist only on the Anthropic backend, so threshold/burn-rate knobs
+/// are inert for Codex pools; per-account `priority`/`disabled` apply to both.
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PoolConfig {
-    /// Poll the Anthropic OAuth usage API (`GET /api/oauth/usage`) every N
-    /// seconds for imported (refreshable) Claude accounts, applying the returned
-    /// 5h / weekly / Fable utilization to the pool. This reconciles the
-    /// per-response header state — which only sees traffic that flowed through
-    /// shunt — with ground-truth usage that includes out-of-band consumption of
-    /// the same account. `0` or absent disables polling (default). Only imported
-    /// accounts are eligible: a long-lived `claude setup-token` cannot call the
-    /// endpoint and is skipped. Values below 60 are clamped up to 60 to avoid
-    /// hammering the endpoint.
+    /// Safety backstop common to all quota windows.
+    #[serde(default = "default_hard_threshold")]
+    pub hard_threshold: f64,
+    /// Soft default threshold used when no more specific value is configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_threshold: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_threshold_5h: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_threshold_7d: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_threshold_fable: Option<f64>,
+    /// Avoid an account projected to exhaust a soft threshold before reset.
+    #[serde(default)]
+    pub burn_rate_avoidance: bool,
+    /// Poll `GET /api/oauth/usage` every N seconds for refreshable Claude
+    /// accounts. Unset or `0` disables polling; positive values below 60 are
+    /// clamped to 60 seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage_refresh_seconds: Option<u64>,
 }
 
+pub(crate) fn default_hard_threshold() -> f64 {
+    0.98
+}
+
+impl Default for PoolConfig {
+    fn default() -> Self {
+        Self {
+            hard_threshold: default_hard_threshold(),
+            default_threshold: None,
+            default_threshold_5h: None,
+            default_threshold_7d: None,
+            default_threshold_fable: None,
+            burn_rate_avoidance: false,
+            usage_refresh_seconds: None,
+        }
+    }
+}
+
 impl PoolConfig {
-    /// The effective poll interval in seconds, or `None` when polling is
-    /// disabled (unset or `0`). A configured positive value below the 60-second
-    /// floor is clamped up.
+    /// The effective poll interval, or `None` when polling is disabled.
     pub fn usage_refresh_interval(&self) -> Option<u64> {
         match self.usage_refresh_seconds {
             None | Some(0) => None,
@@ -506,6 +532,48 @@ pub struct AccountConfig {
     pub token_env: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uuid: Option<String>,
+    /// Soft quota threshold for every window, overriding `[server.pool]`
+    /// defaults for this account. A low value reserves the account as a
+    /// backup: it is rotated away from earlier, so it is used less.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold: Option<f64>,
+    /// Per-window soft-threshold overrides; each beats `threshold` for its
+    /// window (see [`PoolConfig::default_threshold`] for the resolution order).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold_5h: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold_7d: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold_fable: Option<f64>,
+    /// Selection priority among available accounts: lower is preferred.
+    /// Applies to Claude and Codex pools alike.
+    #[serde(default = "default_account_priority")]
+    pub priority: u32,
+    /// Exclude this account from pool selection entirely without removing its
+    /// configuration. Applies to Claude and Codex pools alike.
+    #[serde(default)]
+    pub disabled: bool,
+}
+
+pub(crate) fn default_account_priority() -> u32 {
+    100
+}
+
+impl Default for AccountConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            credentials: None,
+            token_env: None,
+            uuid: None,
+            threshold: None,
+            threshold_5h: None,
+            threshold_7d: None,
+            threshold_fable: None,
+            priority: default_account_priority(),
+            disabled: false,
+        }
+    }
 }
 
 fn deserialize_optional_credentials_path<'de, D>(
@@ -756,6 +824,15 @@ pub enum ConfigError {
     InvalidAccountName { provider: String, name: String },
     #[error("providers.{provider}.accounts account \"{name}\" sets both credentials and token_env; set at most one credential source")]
     AccountMultipleCredentialSources { provider: String, name: String },
+    #[error("server.pool.{key} must be between 0.0 and 1.0, got {value}")]
+    InvalidPoolThreshold { key: &'static str, value: f64 },
+    #[error("providers.{provider}.accounts account \"{name}\" {key} must be between 0.0 and 1.0, got {value}")]
+    InvalidAccountThreshold {
+        provider: String,
+        name: String,
+        key: &'static str,
+        value: f64,
+    },
     #[error("server.default_provider references unknown provider: {0}")]
     UnknownDefaultProvider(String),
     #[error("[server.codex_endpoint] references unknown provider: {0}")]
@@ -920,8 +997,8 @@ impl Default for Config {
                 auth: None,
                 admin: None,
                 codex_endpoint: None,
-                sse_keepalive_seconds: default_sse_keepalive_seconds(),
                 pool: None,
+                sse_keepalive_seconds: default_sse_keepalive_seconds(),
             },
             providers,
             models: Vec::new(),
@@ -1056,6 +1133,24 @@ impl Config {
         // an unauthenticated admin surface. Reject it rather than run open.
         if let Some(admin) = &self.server.admin {
             admin.resolve()?;
+        }
+        // [server.pool] thresholds are consumed unchecked by pool selection, so
+        // an out-of-range (or NaN) value would silently distort load balancing
+        // at runtime. Reject them at boot instead.
+        if let Some(pool) = &self.server.pool {
+            for (key, value) in [
+                ("hard_threshold", Some(pool.hard_threshold)),
+                ("default_threshold", pool.default_threshold),
+                ("default_threshold_5h", pool.default_threshold_5h),
+                ("default_threshold_7d", pool.default_threshold_7d),
+                ("default_threshold_fable", pool.default_threshold_fable),
+            ] {
+                if let Some(value) = value {
+                    if !(0.0..=1.0).contains(&value) {
+                        return Err(ConfigError::InvalidPoolThreshold { key, value });
+                    }
+                }
+            }
         }
         // A [sentry] section with a non-empty DSN must parse at boot; a typo'd
         // DSN silently dropping every report would defeat the point of opting
@@ -1237,6 +1332,25 @@ impl Config {
                         provider: name.clone(),
                         name: account.name.clone(),
                     });
+                }
+                // Same boot-time range guard as [server.pool]: pool selection
+                // consumes these unchecked.
+                for (key, value) in [
+                    ("threshold", account.threshold),
+                    ("threshold_5h", account.threshold_5h),
+                    ("threshold_7d", account.threshold_7d),
+                    ("threshold_fable", account.threshold_fable),
+                ] {
+                    if let Some(value) = value {
+                        if !(0.0..=1.0).contains(&value) {
+                            return Err(ConfigError::InvalidAccountThreshold {
+                                provider: name.clone(),
+                                name: account.name.clone(),
+                                key,
+                                value,
+                            });
+                        }
+                    }
                 }
             }
             // An xai_oauth provider injects the operator's subscription bearer,
@@ -1458,8 +1572,8 @@ mod tests {
 
     use super::{
         config_file_candidates, host_is_chatgpt, AccountConfig, AdminConfig, AuthMode,
-        CodexEndpointConfig, Config, ConfigError, ConfigFormat, ModelConfig, ProviderKind,
-        ResponsesFlavor, RetryConfig,
+        CodexEndpointConfig, Config, ConfigError, ConfigFormat, ModelConfig, PoolConfig,
+        ProviderKind, ResponsesFlavor, RetryConfig,
     };
 
     #[test]
@@ -1469,7 +1583,8 @@ mod tests {
         assert_eq!(PoolConfig::default().usage_refresh_interval(), None);
         assert_eq!(
             PoolConfig {
-                usage_refresh_seconds: Some(0)
+                usage_refresh_seconds: Some(0),
+                ..Default::default()
             }
             .usage_refresh_interval(),
             None
@@ -1477,14 +1592,16 @@ mod tests {
         // A positive value below the 60s floor is clamped up; at/above passes through.
         assert_eq!(
             PoolConfig {
-                usage_refresh_seconds: Some(5)
+                usage_refresh_seconds: Some(5),
+                ..Default::default()
             }
             .usage_refresh_interval(),
             Some(60)
         );
         assert_eq!(
             PoolConfig {
-                usage_refresh_seconds: Some(300)
+                usage_refresh_seconds: Some(300),
+                ..Default::default()
             }
             .usage_refresh_interval(),
             Some(300)
@@ -1572,9 +1689,7 @@ mod tests {
     fn account(name: &str) -> AccountConfig {
         AccountConfig {
             name: name.to_string(),
-            credentials: None,
-            token_env: None,
-            uuid: None,
+            ..Default::default()
         }
     }
 
@@ -1679,6 +1794,88 @@ mod tests {
             config.validate().unwrap_err(),
             ConfigError::AccountMultipleCredentialSources { .. }
         ));
+    }
+
+    #[test]
+    fn pool_config_and_account_thresholds_parse_from_toml() {
+        let pool: PoolConfig = figment::Figment::from(figment::providers::Toml::string(
+            "default_threshold = 0.85\nburn_rate_avoidance = true",
+        ))
+        .extract()
+        .unwrap();
+        assert_eq!(pool.hard_threshold, 0.98, "serde default");
+        assert_eq!(pool.default_threshold, Some(0.85));
+        assert_eq!(pool.default_threshold_5h, None);
+        assert!(pool.burn_rate_avoidance);
+
+        let account: AccountConfig = figment::Figment::from(figment::providers::Toml::string(
+            "name = \"backup\"\nthreshold = 0.5\nthreshold_fable = 0.4\npriority = 10\ndisabled = true",
+        ))
+        .extract()
+        .unwrap();
+        assert_eq!(account.threshold, Some(0.5));
+        assert_eq!(account.threshold_fable, Some(0.4));
+        assert_eq!(account.priority, 10);
+        assert!(account.disabled);
+
+        let bare: AccountConfig =
+            figment::Figment::from(figment::providers::Toml::string("name = \"main\""))
+                .extract()
+                .unwrap();
+        assert_eq!(bare.threshold, None);
+        assert_eq!(bare.priority, 100, "serde default");
+        assert!(!bare.disabled);
+    }
+
+    #[test]
+    fn validate_rejects_out_of_range_pool_thresholds() {
+        for (key, pool) in [
+            (
+                "hard_threshold",
+                PoolConfig {
+                    hard_threshold: 1.5,
+                    ..Default::default()
+                },
+            ),
+            (
+                "default_threshold_7d",
+                PoolConfig {
+                    default_threshold_7d: Some(-0.1),
+                    ..Default::default()
+                },
+            ),
+        ] {
+            let mut config = Config::default();
+            config.server.pool = Some(pool);
+            assert!(matches!(
+                config.validate().unwrap_err(),
+                ConfigError::InvalidPoolThreshold { key: found, .. } if found == key
+            ));
+        }
+        let mut config = Config::default();
+        config.server.pool = Some(PoolConfig::default());
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_out_of_range_account_thresholds() {
+        let mut config = claude_oauth_config();
+        let mut backup = account("backup");
+        backup.threshold_5h = Some(1.01);
+        config.providers.get_mut("anthropic").unwrap().accounts = vec![backup];
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::InvalidAccountThreshold {
+                key: "threshold_5h",
+                ..
+            }
+        ));
+
+        let mut config = claude_oauth_config();
+        let mut backup = account("backup");
+        backup.threshold = Some(0.5);
+        config.providers.get_mut("anthropic").unwrap().accounts = vec![backup];
+        config.validate().unwrap();
     }
 
     #[test]

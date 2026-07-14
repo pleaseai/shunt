@@ -49,9 +49,9 @@ fn auth(scheme: &str, token: &str) -> String {
 fn account(name: &str, token_env: &str, uuid: &str) -> AccountConfig {
     AccountConfig {
         name: name.to_string(),
-        credentials: None,
         token_env: Some(token_env.to_string()),
         uuid: Some(uuid.to_string()),
+        ..Default::default()
     }
 }
 
@@ -60,9 +60,7 @@ fn account(name: &str, token_env: &str, uuid: &str) -> AccountConfig {
 fn store_account(name: &str) -> AccountConfig {
     AccountConfig {
         name: name.to_string(),
-        credentials: None,
-        token_env: None,
-        uuid: None,
+        ..Default::default()
     }
 }
 
