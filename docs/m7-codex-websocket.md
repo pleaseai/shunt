@@ -230,11 +230,11 @@ The issue frames this as "prewarm". Two separable things:
    ships. A stateless proxy has no "user typing" phase; forcing prewarm would mean
    **two** round-trips per turn (worse). **Not implemented, by design.**
 
-## 8. Adapter wiring (`responses/mod.rs`)
+## 8. Adapter wiring (`responses/`)
 
-- `forward()` branches to `forward_websocket` when
-  `Config::codex_websocket_enabled` (flag && ChatGPT/Codex backend); otherwise the
-  HTTP path is unchanged.
+- `forward()` (`responses/mod.rs`) branches to `forward_websocket`
+  (`responses/websocket.rs`) when `Config::codex_websocket_enabled` (flag &&
+  ChatGPT/Codex backend); otherwise the HTTP path is unchanged.
 - `open_ws_turn` starts a turn with continuation allowed and **always peeks the
   first event** before committing the response, retrying with full input on
   `previous_response_missing` (§6). `start_ws_turn` applies the [`decide`] result:

@@ -262,7 +262,7 @@ the `ANTHROPIC_BASE_URL` surface, and belong to the separate `/login` device-flo
 | Gap | Severity | Evidence | Tracking |
 | :-- | :-- | :-- | :-- |
 | `GET /v1/models` requires a valid inbound token under `[server.auth]`; accepts the configured header, `x-api-key`, or bearer authorization; stays open when auth is absent | Resolved | `src/discovery.rs`, `src/auth/inbound.rs` | #90 |
-| (info) ChatGPT/xAI `401` message replaced with a fixed re-login hint — intentional (`401` → re-login is the recovery) | Info | `src/adapters/responses.rs:599-602` | folded into #88 |
+| (info) ChatGPT/xAI `401` message replaced with a fixed re-login hint — intentional (`401` → re-login is the recovery) | Info | `src/adapters/responses/error.rs` (`build_upstream_error`) | folded into #88 |
 
 ### Confirmed conformant (no action)
 
