@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.14.0](https://github.com/pleaseai/shunt/compare/v0.13.0...v0.14.0) (2026-07-14)
+
+
+### Features
+
+* **auth:** accept Bearer / x-api-key for inbound [server.auth] on the mapped inference path ([#130](https://github.com/pleaseai/shunt/issues/130)) ([#133](https://github.com/pleaseai/shunt/issues/133)) ([68abd45](https://github.com/pleaseai/shunt/commit/68abd4543afb8518ff54d7bb74c6a58302094536))
+* **codex:** inbound Codex endpoint with account-pool passthrough ([#125](https://github.com/pleaseai/shunt/issues/125)) ([a6657d9](https://github.com/pleaseai/shunt/commit/a6657d9cebe8c93a2933039396d875d100323176))
+* **retry:** bounded upstream retry/backoff for transient failures ([#48](https://github.com/pleaseai/shunt/issues/48)) ([#122](https://github.com/pleaseai/shunt/issues/122)) ([1bafd42](https://github.com/pleaseai/shunt/commit/1bafd421ed340abfcc8421225c3d9e22db20cb5c))
+
+
+### Bug Fixes
+
+* **responses:** surface backend-sent error events as gateway errors on the non-streaming JSON path ([#120](https://github.com/pleaseai/shunt/issues/120)) ([bf1be43](https://github.com/pleaseai/shunt/commit/bf1be43a3ed425989c14f0b09e366bf33fee7bc7))
+* **retry:** stop retrying non-idempotent POSTs after response headers ([#128](https://github.com/pleaseai/shunt/issues/128)) ([15133eb](https://github.com/pleaseai/shunt/commit/15133eb14e35052140351ec05810fda17866bcdb))
+
 ## [0.13.0](https://github.com/pleaseai/shunt/compare/v0.12.0...v0.13.0) (2026-07-14)
 
 

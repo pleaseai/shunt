@@ -49,9 +49,15 @@ With the custom provider (add `requires_openai_auth = false` so the CLI needs no
 
 If shunt has [`[server.auth]`](/guides/shared-gateway/) configured — recommended for anything beyond loopback — present the client token **either** as an OpenAI-style Bearer key (`OPENAI_API_KEY` / a custom provider's `env_key`, the LiteLLM/llmgateway idiom) **or** as the `x-shunt-token` header:
 
+```toml
+# A. Bearer — built-in openai provider. Set the base URL in ~/.codex/config.toml,
+#    NOT via the OPENAI_BASE_URL env var: the env var leaves the CLI's Responses
+#    WebSocket pointed at wss://api.openai.com, so it bypasses shunt. See
+#    "Point the Codex CLI at shunt" in the connect guide.
+openai_base_url = "http://127.0.0.1:3001/v1"
+```
+
 ```bash
-# A. Bearer — works with the built-in openai provider, no config block:
-export OPENAI_BASE_URL="http://127.0.0.1:3001/v1"
 export OPENAI_API_KEY="<shunt-token>"      # sent as Authorization: Bearer
 ```
 
