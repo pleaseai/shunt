@@ -109,25 +109,21 @@ fn main() -> anyhow::Result<()> {
 }
 
 /// `--manual` only affects the Claude OAuth browser-callback flow (it skips the
-/// loopback callback in favour of a pasted code). Reject it for any other
-/// provider or an explicit non-OAuth Claude mode so a mistyped invocation fails
-/// loudly instead of silently running a different flow with the flag ignored.
+/// loopback callback in favour of a pasted code). It requires an explicit
+/// `--mode oauth`: the interactive default and the non-interactive fallback both
+/// resolve to `import`, which ignores the flag, so accepting `--manual` there
+/// would silently run a different login than requested. Reject it everywhere
+/// else so a mistyped invocation fails loudly.
 fn ensure_manual_flag_valid(
     provider: &str,
     mode: Option<LoginMode>,
-    long_lived: bool,
     manual: bool,
 ) -> anyhow::Result<()> {
     if !manual {
         return Ok(());
     }
-    let oauth_possible = provider == "claude"
-        && !long_lived
-        && !matches!(mode, Some(LoginMode::Import) | Some(LoginMode::SetupToken));
-    if !oauth_possible {
-        anyhow::bail!(
-            "--manual is only valid for `shunt login claude` in OAuth mode (pass --mode oauth or use the interactive default)"
-        );
+    if provider != "claude" || mode != Some(LoginMode::Oauth) {
+        anyhow::bail!("--manual is only valid with `shunt login claude --mode oauth`");
     }
     Ok(())
 }
@@ -140,7 +136,7 @@ fn login(
     manual: bool,
     config_path: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
-    ensure_manual_flag_valid(provider, mode, long_lived, manual)?;
+    ensure_manual_flag_valid(provider, mode, manual)?;
     match provider {
         "xai" if name.is_none() && !long_lived && mode.is_none() => {
             runtime()?.block_on(shunt::auth::xai::login::run(provider))
@@ -464,33 +460,30 @@ mod tests {
 
     #[test]
     fn manual_flag_without_flag_is_always_valid() {
-        assert!(ensure_manual_flag_valid("xai", None, false, false).is_ok());
-        assert!(ensure_manual_flag_valid("claude", Some(LoginMode::Import), false, false).is_ok());
+        assert!(ensure_manual_flag_valid("xai", None, false).is_ok());
+        assert!(ensure_manual_flag_valid("claude", Some(LoginMode::Import), false).is_ok());
     }
 
     #[test]
-    fn manual_flag_allows_claude_oauth_and_interactive_default() {
-        // Explicit OAuth mode, and the interactive default (mode: None) which can
-        // still resolve to OAuth, both accept --manual.
-        assert!(ensure_manual_flag_valid("claude", Some(LoginMode::Oauth), false, true).is_ok());
-        assert!(ensure_manual_flag_valid("claude", None, false, true).is_ok());
+    fn manual_flag_allows_only_explicit_claude_oauth() {
+        assert!(ensure_manual_flag_valid("claude", Some(LoginMode::Oauth), true).is_ok());
     }
 
     #[test]
-    fn manual_flag_rejected_for_non_oauth_claude_modes() {
-        assert!(ensure_manual_flag_valid("claude", Some(LoginMode::Import), false, true).is_err());
-        assert!(
-            ensure_manual_flag_valid("claude", Some(LoginMode::SetupToken), false, true).is_err()
-        );
-        // `--long-lived` maps to setup-token, so --manual is meaningless there too.
-        assert!(ensure_manual_flag_valid("claude", None, true, true).is_err());
+    fn manual_flag_rejected_when_mode_is_not_explicit_oauth() {
+        // The interactive default and the non-interactive fallback both resolve to
+        // `import`, which ignores --manual, so mode: None must be rejected too
+        // (only an explicit --mode oauth accepts the flag).
+        assert!(ensure_manual_flag_valid("claude", None, true).is_err());
+        assert!(ensure_manual_flag_valid("claude", Some(LoginMode::Import), true).is_err());
+        assert!(ensure_manual_flag_valid("claude", Some(LoginMode::SetupToken), true).is_err());
     }
 
     #[test]
     fn manual_flag_rejected_for_non_claude_providers() {
-        assert!(ensure_manual_flag_valid("xai", None, false, true).is_err());
-        assert!(ensure_manual_flag_valid("cursor", None, false, true).is_err());
-        assert!(ensure_manual_flag_valid("codex", None, false, true).is_err());
+        assert!(ensure_manual_flag_valid("xai", Some(LoginMode::Oauth), true).is_err());
+        assert!(ensure_manual_flag_valid("cursor", None, true).is_err());
+        assert!(ensure_manual_flag_valid("codex", None, true).is_err());
     }
 
     #[test]

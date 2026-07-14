@@ -160,7 +160,9 @@ pub(crate) fn oauth_expires_at_ms(expires_in: Option<i64>) -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64;
-    now_ms + secs * 1000
+    // Saturate rather than overflow: a pathologically large `expires_in` (e.g. a
+    // buggy or hostile token response) must not panic or wrap into the past.
+    now_ms.saturating_add(secs.saturating_mul(1000))
 }
 
 async fn import_current_login(name: &str) -> anyhow::Result<PathBuf> {
@@ -471,6 +473,8 @@ mod tests {
             .as_millis() as i64;
         assert!(oauth_expires_at_ms(Some(0)) <= after);
         assert!(oauth_expires_at_ms(Some(-10)) <= after);
+        // A pathologically large lifetime saturates instead of overflowing.
+        assert_eq!(oauth_expires_at_ms(Some(i64::MAX)), i64::MAX);
     }
 
     #[test]
