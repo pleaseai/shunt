@@ -1,0 +1,29 @@
+site/src/content/docs/guides/connect-codex-cli.md
+  s_929b503a8a6a4d::t_9e304b84badbe5 173-175
+src/codex_endpoint.rs
+  s_929b503a8a6a4d::t_625f7559f1b215 148-151,157-177,179-181
+  s_929b503a8a6a4d::t_3d531bee50026d 209-216,220
+  s_929b503a8a6a4d::t_5ced1dee4a48d5 233-282
+src/adapters/responses/inbound.rs
+  s_929b503a8a6a4d::t_75d52d9c297085 103-107,112,119
+  s_929b503a8a6a4d::t_38a4a535576ea8 74
+  s_929b503a8a6a4d::t_92a1f6c218ccc7 37
+docs/m11-inbound-codex-endpoint.md
+  s_929b503a8a6a4d::t_58009342d6bf5d 135-138
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "8d7d65a03fb24b0d6718fea4f842e19554a95c30",
+  "prompts": {},
+  "sessions": {
+    "s_929b503a8a6a4d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "980e29a3-4e7c-460f-a732-09264c43a264",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
