@@ -170,7 +170,9 @@ name = "backup"
 Selection is **session-sticky**: the Codex CLI's own `session-id` request header keys the account,
 so one conversation stays on one account for as long as it stays healthy, then fails over (429 →
 rotate, 401 → refresh + retry, 5xx → cool down + rotate). A successful pooled response carries an
-`x-shunt-account: <name>` header.
+`x-shunt-account: <name>` header. On a shared gateway with [`[server.auth]`](/reference/configuration/)
+enabled, the sticky key is scoped per authenticated client, so different clients that happen to send
+the same `session-id` never land on the same sticky account by collision.
 
 With **no** `[[providers.codex.accounts]]` configured and an empty store, the endpoint falls back to
 the single default `~/.codex/auth.json` credential — no pool, no failover — so one Codex login works

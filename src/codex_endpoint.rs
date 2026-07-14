@@ -145,32 +145,40 @@ async fn forward(
     // account's credential and strips the shunt client-token header (in
     // `forward_codex_inbound`), so neither the client's own credential nor the
     // shunt token ever reaches the Codex backend.
-    if let Some(auth) = &state.inbound_auth {
+    // The authenticated inbound client's name, used below to namespace the
+    // account-pool sticky key. `None` when no `[server.auth]` is configured
+    // (single-tenant: the bare session id keys the pool).
+    let inbound_client = if let Some(auth) = &state.inbound_auth {
         // Accept the shunt token via the configured header OR an OpenAI-style
         // `Authorization: Bearer <token>` (the `OPENAI_API_KEY` / `env_key` idiom
         // the Codex CLI and llmgateway/LiteLLM setups use), so no custom header is
         // required. The client's Bearer is only checked here — it is stripped and
         // never forwarded upstream (see `forward_codex_inbound`).
-        if auth.authenticate_bearer(&headers).is_none() {
-            tracing::warn!(
-                provider = %provider,
-                "inbound codex auth failed: missing or invalid client token"
-            );
-            let message = format!(
-                "missing or invalid client token for the inbound codex endpoint: provide it via the `{}` header or `Authorization: Bearer <token>` (e.g. OPENAI_API_KEY); ask the operator for one",
-                auth.header()
-            );
-            return Err(ForwardError {
-                message: "inbound authentication failed".to_string(),
-                response: ShuntError::new(
-                    StatusCode::UNAUTHORIZED,
-                    "authentication_error",
-                    message,
-                )
-                .into_response(),
-            });
+        match auth.authenticate_bearer(&headers) {
+            Some(client) => Some(client.to_string()),
+            None => {
+                tracing::warn!(
+                    provider = %provider,
+                    "inbound codex auth failed: missing or invalid client token"
+                );
+                let message = format!(
+                    "missing or invalid client token for the inbound codex endpoint: provide it via the `{}` header or `Authorization: Bearer <token>` (e.g. OPENAI_API_KEY); ask the operator for one",
+                    auth.header()
+                );
+                return Err(ForwardError {
+                    message: "inbound authentication failed".to_string(),
+                    response: ShuntError::new(
+                        StatusCode::UNAUTHORIZED,
+                        "authentication_error",
+                        message,
+                    )
+                    .into_response(),
+                });
+            }
         }
-    }
+    } else {
+        None
+    };
 
     let body = to_bytes(body, MAX_REQUEST_BODY_BYTES)
         .await
@@ -198,10 +206,18 @@ async fn forward(
         effort: None,
     };
 
+    // Namespace the account-pool sticky key with the authenticated client so that,
+    // in a multi-tenant deployment, one client cannot pin another client's Codex
+    // session onto a chosen pool account by replaying its `session-id` header. This
+    // mirrors the outbound Responses path's `{client}:{session_id}` pool key (see
+    // `adapters/responses/mod.rs`). The raw `session_id` is still what the tracing
+    // span records above; only the pool key is namespaced.
+    let pool_key = pool_sticky_key(inbound_client.as_deref(), session_id);
+
     // Pass the client's inbound headers through so the passthrough can forward the
     // Codex CLI's own request headers verbatim (swapping only the credential); the
     // shunt client-token header is stripped inside `forward_codex_inbound`.
-    let result = responses::forward_codex_inbound(state, route, session_id, headers, body).await;
+    let result = responses::forward_codex_inbound(state, route, pool_key, headers, body).await;
     let status = match &result {
         Ok((status, _)) => status.as_u16(),
         Err(error) => error.response.status().as_u16(),
@@ -213,4 +229,54 @@ async fn forward(
         started_at.elapsed().as_secs_f64() * 1000.0,
     );
     result.map_err(ForwardError::from)
+}
+
+/// Namespace the account-pool sticky key with the authenticated inbound client so
+/// that, in a multi-tenant deployment, one client cannot pin another client's Codex
+/// session onto a chosen pool account by replaying its `session-id` header. Mirrors
+/// the outbound Responses path's `{client}:{session_id}` key (`adapters/responses/mod.rs`).
+/// With no inbound auth (`client == None`) the bare session id is used — single-tenant,
+/// there is no client identity to bind. Returns `None` when the request carries no
+/// session id (nothing to key the pool on).
+fn pool_sticky_key(client: Option<&str>, session_id: Option<String>) -> Option<String> {
+    session_id.map(|session_id| match client {
+        Some(client) => format!("{client}:{session_id}"),
+        None => session_id,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pool_sticky_key;
+
+    #[test]
+    fn prefixes_the_authenticated_client() {
+        assert_eq!(
+            pool_sticky_key(Some("alice"), Some("sess-1".to_string())),
+            Some("alice:sess-1".to_string())
+        );
+    }
+
+    #[test]
+    fn distinguishes_clients_sharing_a_session_id() {
+        // Two tenants replaying the same `session-id` must not collide on the pool,
+        // so one cannot pin another's session onto a chosen account.
+        let alice = pool_sticky_key(Some("alice"), Some("shared".to_string()));
+        let bob = pool_sticky_key(Some("bob"), Some("shared".to_string()));
+        assert_ne!(alice, bob);
+    }
+
+    #[test]
+    fn falls_back_to_the_bare_session_without_auth() {
+        assert_eq!(
+            pool_sticky_key(None, Some("sess-1".to_string())),
+            Some("sess-1".to_string())
+        );
+    }
+
+    #[test]
+    fn is_none_without_a_session_id() {
+        assert_eq!(pool_sticky_key(Some("alice"), None), None);
+        assert_eq!(pool_sticky_key(None, None), None);
+    }
 }

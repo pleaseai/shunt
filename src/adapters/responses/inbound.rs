@@ -34,7 +34,7 @@ use super::{
 pub(crate) async fn forward_codex_inbound(
     state: AppState,
     route: Route,
-    session_id: Option<String>,
+    pool_key: Option<String>,
     client_headers: HeaderMap,
     body: Bytes,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
@@ -71,15 +71,7 @@ pub(crate) async fn forward_codex_inbound(
     if accounts.is_empty() {
         return forward_codex_passthrough_single(state, route, passthrough_headers, body).await;
     }
-    forward_codex_passthrough(
-        state,
-        route,
-        accounts,
-        session_id,
-        passthrough_headers,
-        body,
-    )
-    .await
+    forward_codex_passthrough(state, route, accounts, pool_key, passthrough_headers, body).await
 }
 
 /// Single-account inbound passthrough: no pool, no failover. Resolves the default
@@ -108,18 +100,23 @@ async fn forward_codex_passthrough_single(
 /// selection, per-account refresh, and `classify_codex` failover (429/5xx rotate,
 /// 401 force-refresh + retry, cooldowns). On exhaustion the last upstream
 /// response is relayed verbatim rather than re-shaped into an Anthropic error.
+///
+/// `pool_key` is the session-sticky selection key, already namespaced with the
+/// authenticated inbound client by the caller (`codex_endpoint::pool_sticky_key`),
+/// so replaying another client's `session-id` cannot steer its session onto a
+/// chosen pool account.
 async fn forward_codex_passthrough(
     state: AppState,
     route: Route,
     accounts_config: Vec<AccountConfig>,
-    session_id: Option<String>,
+    pool_key: Option<String>,
     passthrough_headers: HeaderMap,
     body: Bytes,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let order = state.accounts.select_order(
         &route.provider,
         &accounts_config,
-        session_id.as_deref(),
+        pool_key.as_deref(),
         // Codex exposes no per-model quota signal to order by (same as the
         // Anthropic-translating pool path).
         None,

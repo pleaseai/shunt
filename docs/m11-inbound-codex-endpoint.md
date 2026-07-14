@@ -132,7 +132,10 @@ new entry point into it.
 
 - **Sticky key.** The Codex CLI's own `session-id` request header selects the sticky account (same
   hashing scheme as M10), falling back to `x-claude-code-session-id` for parity with the outbound
-  path. Same session id → same account, for as long as that account stays healthy.
+  path. Same session id → same account, for as long as that account stays healthy. When
+  `[server.auth]` is configured, the sticky key is namespaced with the authenticated client name
+  (`{client}:{session-id}`, mirroring the outbound path) so that on a multi-tenant gateway one
+  client cannot pin another client's session onto a chosen account by replaying its `session-id`.
 - **Failover** follows M10's rules exactly: every `429` rotates (cooldown = `retry-after` clamped
   1–3600s, default 60s); a `5xx` or transport failure cools the account for 30s and rotates; a
   `401` on a refreshable (store/`credentials`) account triggers a force-refresh and one retry (5
