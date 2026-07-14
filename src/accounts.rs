@@ -575,12 +575,17 @@ fn window_headroom(
     };
     // The headers carry only the reset instant, so the window start is derived
     // from the hardcoded window length; elapsed is clamped away from zero so a
-    // window that just opened never divides by zero.
+    // window that just opened never divides by zero. `now` is clamped into
+    // [window_start, reset] first so a desynced local clock cannot push elapsed
+    // or time_to_reset outside the physically valid [0, window_len] range.
     let window_start = reset.saturating_sub(window_len);
-    let elapsed = now.saturating_sub(window_start).clamp(1, window_len) as f64;
+    let now_clamped = now.clamp(window_start, reset);
+    let elapsed = now_clamped
+        .saturating_sub(window_start)
+        .clamp(1, window_len) as f64;
     let burn_speed = utilization / elapsed;
     let time_to_exhaust = budget_left / burn_speed;
-    let time_to_reset = reset.saturating_sub(now) as f64;
+    let time_to_reset = reset.saturating_sub(now_clamped) as f64;
     time_to_exhaust - time_to_reset
 }
 
