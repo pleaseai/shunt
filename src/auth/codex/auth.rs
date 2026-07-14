@@ -210,11 +210,16 @@ pub fn apply_refresh(value: &mut Value, response: RefreshResponse, now: SystemTi
 }
 
 async fn refresh_tokens(
-    client: &reqwest::Client,
+    // The injected proxy client follows redirects freely; the refresh POST
+    // carries the long-lived refresh_token, so it goes through the
+    // redirect-hardened `token_refresh_client()` instead — a permitted token
+    // endpoint must not be able to 3xx the credential to a plaintext/off-loopback
+    // host and defeat the initial-URL-only `sanitize_token_url` guard.
+    _client: &reqwest::Client,
     token_url: &str,
     refresh_token: &str,
 ) -> Result<RefreshResponse, AdapterError> {
-    let response = client
+    let response = crate::auth::shared::token_refresh_client()
         .post(token_url)
         .form(&[
             ("grant_type", "refresh_token"),
@@ -579,6 +584,70 @@ mod tests {
         server.verify().await;
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // The redirect-hardening guard lives in `auth::shared::token_refresh_client`
+    // and is shared by the Codex and Claude refresh paths; it is exercised here
+    // through the Codex test module's existing wiremock scaffolding.
+    #[tokio::test]
+    async fn token_refresh_client_refuses_offhost_plaintext_redirect() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // A permitted (loopback) endpoint tries to bounce the refresh POST to a
+        // plaintext off-host target; the hardened client must refuse to follow
+        // rather than resend the refresh_token in the clear.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(307).insert_header("location", "http://evil.example/token"),
+            )
+            .mount(&server)
+            .await;
+
+        let error = crate::auth::shared::token_refresh_client()
+            .post(format!("{}/token", server.uri()))
+            .body("grant_type=refresh_token&refresh_token=secret")
+            .send()
+            .await
+            .expect_err("must not follow a redirect to a plaintext off-host target");
+        assert!(
+            error.is_redirect(),
+            "expected redirect refusal, got: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn token_refresh_client_follows_safe_loopback_redirect() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // A 3xx to another loopback endpoint is still a safe target, so it is
+        // followed — the guard blocks only unsafe (plaintext off-host) hops.
+        let target = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("followed"))
+            .mount(&target)
+            .await;
+        let entry = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(307)
+                    .insert_header("location", format!("{}/token", target.uri())),
+            )
+            .mount(&entry)
+            .await;
+
+        let body = crate::auth::shared::token_refresh_client()
+            .post(format!("{}/token", entry.uri()))
+            .body("grant_type=refresh_token&refresh_token=secret")
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert_eq!(body, "followed");
     }
 
     #[test]

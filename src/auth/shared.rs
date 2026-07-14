@@ -9,7 +9,10 @@
 use std::{
     env, fs, io,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        OnceLock,
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -41,23 +44,44 @@ pub fn is_token_valid_at(token: &str, now: SystemTime) -> bool {
         .is_some_and(|refresh_at| now < refresh_at)
 }
 
-/// Resolve an OAuth refresh endpoint from a raw `SHUNT_*_TOKEN_URL` override.
-/// The refresh POST carries the long-lived `refresh_token`, so an empty,
-/// malformed, or non-loopback-plaintext override is rejected (it would egress the
-/// credential off-origin or in the clear) and `default_url` is used instead.
-/// HTTPS to any host is allowed; plain `http://` only to a loopback test mock
-/// (wiremock binds `127.0.0.1`). Shared by the Codex and Claude auth stores so
-/// the egress guard cannot drift between them.
+/// Whether the long-lived `refresh_token` may be POSTed to `url`: HTTPS anywhere,
+/// or plain `http://` only to loopback. Vets the initial URL and each redirect hop.
+fn is_safe_refresh_url(url: &reqwest::Url) -> bool {
+    url.scheme() == "https"
+        || (url.scheme() == "http"
+            && crate::config::host_is_loopback(url.host_str().unwrap_or_default()))
+}
+
+/// Resolve an OAuth refresh endpoint from a `SHUNT_*_TOKEN_URL` override; an empty,
+/// malformed, or unsafe one (see [`is_safe_refresh_url`]) falls back to `default_url`.
 pub(crate) fn sanitize_token_url(raw: Option<String>, default_url: &str) -> String {
     raw.filter(|value| !value.is_empty())
         .filter(|value| {
-            value.parse::<reqwest::Url>().is_ok_and(|url| {
-                url.scheme() == "https"
-                    || (url.scheme() == "http"
-                        && crate::config::host_is_loopback(url.host_str().unwrap_or_default()))
-            })
+            value
+                .parse::<reqwest::Url>()
+                .is_ok_and(|url| is_safe_refresh_url(&url))
         })
         .unwrap_or_else(|| default_url.to_string())
+}
+
+/// Process-wide client for the OAuth refresh POST; follows a 3xx only to a safe
+/// endpoint ([`is_safe_refresh_url`]), closing [`sanitize_token_url`]'s initial-URL gap.
+pub(crate) fn token_refresh_client() -> reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                    if attempt.previous().len() >= 10 || !is_safe_refresh_url(attempt.url()) {
+                        attempt.error("unsafe or excessive token refresh redirect refused")
+                    } else {
+                        attempt.follow()
+                    }
+                }))
+                .build()
+                .expect("build redirect-hardened token refresh client")
+        })
+        .clone()
 }
 
 pub(crate) fn write_auth_file_atomic(path: &Path, value: &Value) -> io::Result<()> {

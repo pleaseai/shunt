@@ -275,7 +275,12 @@ fn parse_refresh(value: &Value, refresh_token: &str, now: SystemTime) -> Option<
 }
 
 async fn refresh(
-    client: &reqwest::Client,
+    // The injected proxy client follows redirects freely; the refresh POST
+    // carries the long-lived refresh_token, so it goes through the
+    // redirect-hardened `token_refresh_client()` instead — a permitted token
+    // endpoint must not be able to 3xx the credential to a plaintext/off-loopback
+    // host and defeat the initial-URL-only `sanitize_token_url` guard.
+    _client: &reqwest::Client,
     token_url: &str,
     refresh_token: &str,
 ) -> anyhow::Result<Refreshed> {
@@ -285,7 +290,7 @@ async fn refresh(
         "client_id": CLIENT_ID,
         "scope": SCOPE,
     });
-    let response = client
+    let response = crate::auth::shared::token_refresh_client()
         .post(token_url)
         .header("content-type", "application/json")
         .body(serde_json::to_string(&body)?)
