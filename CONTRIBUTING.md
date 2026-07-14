@@ -48,8 +48,11 @@ rustc-wrapper = "sccache"
 
 sccache stores artifacts on disk by default (`~/Library/Caches/Mozilla.sccache` on macOS, 10 GB
 cap; tune with `SCCACHE_DIR` / `SCCACHE_CACHE_SIZE`). For the biggest win across `cargo clean` and
-branch switches, also set `CARGO_INCREMENTAL=0` — sccache can't cache incremental builds, though
-that trades away incremental rebuild speed. Check hits with `sccache --show-stats`.
+branch switches, also disable incremental compilation, which sccache can't cache — either
+`export CARGO_INCREMENTAL=0`, or add `incremental = false` under `[build]` in the repo-local
+`.cargo/config.toml` to keep it scoped to this project instead of your global environment. It's
+optional: disabling incremental trades away fast small-edit rebuilds. Check hits with
+`sccache --show-stats`.
 
 ## Pull requests
 
