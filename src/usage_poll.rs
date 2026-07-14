@@ -274,6 +274,105 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn poll_account_records_no_state_on_fetch_error() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // A refreshable credential whose usage fetch fails (500): the poller must
+        // degrade quietly, leaving the account with no recorded state.
+        let creds = write_temp(
+            "fetch-error",
+            r#"{"claudeAiOauth":{"accessToken":"live-token","refreshToken":"r","expiresAt":4000000000000}}"#,
+        );
+        let account = account_with_credentials(&creds);
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/oauth/usage"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let pool = AccountPool::new();
+        poll_account(
+            &reqwest::Client::new(),
+            &pool,
+            "anthropic",
+            &server.uri(),
+            &account,
+        )
+        .await;
+
+        let snap = pool.snapshot("anthropic", std::slice::from_ref(&account), None, None);
+        assert!(
+            !snap[0].has_state,
+            "a failed usage fetch must not record state"
+        );
+
+        let _ = std::fs::remove_file(creds);
+    }
+
+    #[tokio::test]
+    async fn poll_all_polls_only_claude_oauth_providers() {
+        use crate::config::{ApiKeyHeader, Config, CountTokens, ProviderConfig, ProviderKind};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let creds = write_temp(
+            "poll-all",
+            r#"{"claudeAiOauth":{"accessToken":"live-token","refreshToken":"r","expiresAt":4000000000000}}"#,
+        );
+        let account = account_with_credentials(&creds);
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/oauth/usage"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "five_hour": { "utilization": 12.0 },
+                "seven_day": { "utilization": 34.0 }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        // Start from the default config (its `anthropic` provider is passthrough,
+        // so `poll_all` must skip it) and add one `claude_oauth` provider pointed
+        // at the mock usage server with an explicit imported account.
+        let mut config = Config::default();
+        config.providers.insert(
+            "claude-pool".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::Anthropic,
+                base_url: server.uri(),
+                auth: AuthMode::ClaudeOauth,
+                api_key_env: None,
+                api_key_header: ApiKeyHeader::Bearer,
+                effort: None,
+                count_tokens: CountTokens::default(),
+                accounts: vec![account.clone()],
+                websocket: false,
+                tool_search: false,
+                retry: Default::default(),
+            },
+        );
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+
+        poll_all(&state).await;
+
+        let snap =
+            state
+                .accounts
+                .snapshot("claude-pool", std::slice::from_ref(&account), None, None);
+        assert_eq!(snap.len(), 1);
+        assert!(snap[0].has_state, "poll_all must apply the usage snapshot");
+        assert_eq!(snap[0].utilization_5h, Some(0.12));
+        assert_eq!(snap[0].utilization_7d, Some(0.34));
+
+        let _ = std::fs::remove_file(creds);
+    }
+
+    #[tokio::test]
     async fn poll_account_skips_non_refreshable_without_fetching() {
         use wiremock::matchers::method;
         use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -306,5 +405,15 @@ mod tests {
         assert!(!snap[0].has_state, "a skipped account records no state");
 
         let _ = std::fs::remove_file(creds);
+    }
+
+    #[tokio::test]
+    async fn spawn_usage_poller_is_noop_without_pool_config() {
+        // The default config has no `[server.pool] usage_refresh_seconds`, so the
+        // spawn helper must take its guard path and start no background task.
+        let state =
+            AppState::new(crate::config::Config::default(), reqwest::Client::new()).unwrap();
+        assert!(state.config.server.pool.is_none());
+        spawn_usage_poller(state);
     }
 }

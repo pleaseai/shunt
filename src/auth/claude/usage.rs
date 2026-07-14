@@ -210,10 +210,12 @@ mod tests {
     fn rejects_malformed_timestamps() {
         for bad in [
             "not-a-date",
-            "2021-01-01",           // no time
-            "2021-13-01T00:00:00Z", // month out of range
-            "2021-01-01T25:00:00Z", // hour out of range
-            "1969-01-01T00:00:00Z", // before the epoch -> negative -> None on u64
+            "2021-01-01",                // no time
+            "2021-13-01T00:00:00Z",      // month out of range
+            "2021-01-01T25:00:00Z",      // hour out of range
+            "2021-01-01T00:00:00+99:00", // offset hour out of range
+            "2021-01-01T00:00:00+00:99", // offset minute out of range
+            "1969-01-01T00:00:00Z",      // before the epoch -> negative -> None on u64
         ] {
             assert_eq!(parse_rfc3339_to_epoch_secs(bad), None, "accepted {bad:?}");
         }
