@@ -1,0 +1,19 @@
+CLAUDE.md
+  s_fd29d6516bb0d4::t_a4297c840a5a18 5,14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "62169104e944d8a2d3cfbaed77fb4d8c62b87ae6",
+  "prompts": {},
+  "sessions": {
+    "s_fd29d6516bb0d4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b95d7a93-8c5b-41eb-967f-c1fa14688e07",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
