@@ -9,3 +9,4 @@
 - [Claude token URL egress](project_claude-token-url-egress.md) — SHUNT_CLAUDE_TOKEN_URL override sends refresh_token to any host with no anthropic/https guard (base_url IS guarded); env-gated, minor.
 - [M9 admin surface security](project_m9-admin-surface-security.md) — src/admin/ posture: CSRF triple-layered + traversal-safe + no secret leak; gaps = no /admin/login rate-limit, Host-derived Secure flag, no security headers.
 - [Codex multi-account security](project_codex-multi-account-security.md) — PR #114 posture: bearer/WS-isolation/perms all verified safe; one gap = chatgpt_oauth missing the kind!=responses guard its siblings have.
+- [Retry/backoff security](project_retry-backoff-security.md) — issue #48 src/retry.rs posture: storm-bound/Retry-After-cap/no-token-logs/no-wrong-host all verified safe; re-open a vector only if the cap, ExceedsBudget, log fields, or per-attempt base_url change.
