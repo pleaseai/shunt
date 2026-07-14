@@ -368,8 +368,13 @@ mod tests {
         // A Claude OAuth credential on a Responses provider sends only the bearer
         // — none of the ChatGPT/Codex account-id or identity headers.
         assert_eq!(
-            request.headers().get("authorization").unwrap(),
-            "Bearer claude-token"
+            request
+                .headers()
+                .get("authorization")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            format!("Bearer {}", "claude-token").as_str()
         );
         assert!(request.headers().get("chatgpt-account-id").is_none());
         assert!(request.headers().get("originator").is_none());
