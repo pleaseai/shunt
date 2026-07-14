@@ -20,7 +20,7 @@ use serde::Deserialize;
 use tracing::Instrument;
 
 use crate::{
-    adapters::responses,
+    adapters::{responses, AdapterError},
     error::{ShuntError, UpstreamError},
     routing::{AdapterKind, Route},
     server::AppState,
@@ -83,11 +83,41 @@ pub async fn post(
                 );
                 response
             }
-            Err(response) => response,
+            Err(error) => {
+                // Log *why* the request failed before returning the client-facing
+                // response — without this a shunt-owned failure (bad credential,
+                // unreachable backend, exhausted pool) leaves no server-side signal
+                // an operator could grep. Mirrors `proxy::post`.
+                tracing::warn!(
+                    latency_ms = started_at.elapsed().as_millis(),
+                    error = %error.message,
+                    "inbound codex request failed"
+                );
+                error.response
+            }
         }
     }
     .instrument(span)
     .await
+}
+
+/// A gateway-owned error from [`forward`] carrying a log message alongside the
+/// client-facing response, so [`post`] can record *why* the request failed
+/// (mirrors `proxy::ForwardError`). An upstream error response relayed verbatim is
+/// an `Ok`, not this — only shunt-owned failures (config, auth, body read, account
+/// resolution/transport) surface here.
+struct ForwardError {
+    message: String,
+    response: axum::response::Response,
+}
+
+impl From<AdapterError> for ForwardError {
+    fn from(error: AdapterError) -> Self {
+        Self {
+            message: error.message,
+            response: *error.response,
+        }
+    }
 }
 
 async fn forward(
@@ -96,14 +126,16 @@ async fn forward(
     headers: HeaderMap,
     body: Body,
     started_at: Instant,
-) -> Result<(StatusCode, axum::response::Response), axum::response::Response> {
+) -> Result<(StatusCode, axum::response::Response), ForwardError> {
     // The routes are only registered when `[server.codex_endpoint]` is set, but
     // read the snapshot defensively; config validation guarantees the named
     // provider exists and uses `chatgpt_oauth`.
     let Some(codex_endpoint) = &state.config.server.codex_endpoint else {
-        return Err(
-            ShuntError::bad_gateway("codex endpoint is not configured".to_string()).into_response(),
-        );
+        return Err(ForwardError {
+            message: "codex endpoint is not configured".to_string(),
+            response: ShuntError::bad_gateway("codex endpoint is not configured".to_string())
+                .into_response(),
+        });
     };
     let provider = codex_endpoint.provider.clone();
 
@@ -128,16 +160,27 @@ async fn forward(
                 "missing or invalid client token for the inbound codex endpoint: provide it via the `{}` header or `Authorization: Bearer <token>` (e.g. OPENAI_API_KEY); ask the operator for one",
                 auth.header()
             );
-            return Err(
-                ShuntError::new(StatusCode::UNAUTHORIZED, "authentication_error", message)
-                    .into_response(),
-            );
+            return Err(ForwardError {
+                message: "inbound authentication failed".to_string(),
+                response: ShuntError::new(
+                    StatusCode::UNAUTHORIZED,
+                    "authentication_error",
+                    message,
+                )
+                .into_response(),
+            });
         }
     }
 
     let body = to_bytes(body, MAX_REQUEST_BODY_BYTES)
         .await
-        .map_err(|error| UpstreamError::from_message(error.to_string()).into_response())?;
+        .map_err(|error| {
+            let message = error.to_string();
+            ForwardError {
+                message: message.clone(),
+                response: UpstreamError::from_message(message).into_response(),
+            }
+        })?;
 
     // Read the model for metrics/logging only; the body forwards verbatim.
     let model = serde_json::from_slice::<ModelView>(&body)
@@ -169,5 +212,5 @@ async fn forward(
         status,
         started_at.elapsed().as_secs_f64() * 1000.0,
     );
-    result.map_err(|error| *error.response)
+    result.map_err(ForwardError::from)
 }

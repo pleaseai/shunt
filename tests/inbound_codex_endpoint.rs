@@ -545,11 +545,15 @@ async fn forwards_client_identity_headers_verbatim_and_strips_shunt_token() {
         // Client identity headers forwarded verbatim — NOT shunt's hardcoded ones.
         .and(header("version", "0.999.0"))
         .and(header("originator", "codex_cli_rs"))
+        .and(header("user-agent", "codex_cli_rs/0.999.0"))
         .and(header("openai-beta", "responses=custom-99"))
         .and(header("x-codex-window-id", "win-xyz:7"))
         .and(header("session-id", "sess-verbatim"))
         // The shunt client token must never reach the backend.
         .and(HeaderAbsent("x-shunt-token"))
+        // A client-supplied internal client-identity label must be stripped, not
+        // forwarded (spoofing guard, matches the main proxy path).
+        .and(HeaderAbsent("x-shunt-inbound-client"))
         .respond_with(ResponseTemplate::new(200).set_body_raw(r#"{"ok":true}"#, "application/json"))
         .expect(1)
         .mount(&upstream)
@@ -572,10 +576,13 @@ async fn forwards_client_identity_headers_verbatim_and_strips_shunt_token() {
         .header("authorization", "Bearer client-would-be-forwarded")
         .header("version", "0.999.0")
         .header("originator", "codex_cli_rs")
+        .header("user-agent", "codex_cli_rs/0.999.0")
         .header("openai-beta", "responses=custom-99")
         .header("x-codex-window-id", "win-xyz:7")
         .header("session-id", "sess-verbatim")
         .header("x-shunt-token", "hdr-secret")
+        // A spoofed internal client label the passthrough must strip.
+        .header("x-shunt-inbound-client", "spoofed-client")
         .body(INBOUND_BODY)
         .send()
         .await
@@ -606,6 +613,9 @@ async fn upstream_response_headers_are_relayed_verbatim() {
             ResponseTemplate::new(200)
                 .insert_header("x-codex-turn-state", "turn-state-abc")
                 .insert_header("x-request-id", "req-xyz")
+                // An upstream/edge session cookie must NOT be relayed to the client
+                // — it is bound to shunt's server-side egress.
+                .insert_header("set-cookie", "cf_clearance=egress-secret; Path=/")
                 .set_body_raw(r#"{"ok":true}"#, "application/json"),
         )
         .expect(1)
@@ -634,9 +644,128 @@ async fn upstream_response_headers_are_relayed_verbatim() {
             .and_then(|v| v.to_str().ok()),
         Some("req-xyz")
     );
+    // The upstream session cookie is stripped, never leaked to the inbound client.
+    assert!(
+        response.headers().get("set-cookie").is_none(),
+        "upstream set-cookie must not be relayed to the client"
+    );
     upstream.verify().await;
 
     std::env::remove_var("SHUNT_TEST_INBOUND_RESP_HDR");
+}
+
+#[tokio::test]
+async fn token_env_401_cools_down_and_rotates_to_next_account() {
+    // A 401 classifies as RefreshRetry. A `token_env` account's bearer is used
+    // verbatim and cannot be refreshed, so the account is cooled down and the turn
+    // rotates to the next pooled account, whose success is relayed verbatim. This
+    // exercises the RefreshRetry failover arm the 429-only tests never reach.
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-401-a");
+    let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-401-b");
+    std::env::set_var("SHUNT_TEST_INBOUND_401_A", &token_a);
+    std::env::set_var("SHUNT_TEST_INBOUND_401_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(ResponseTemplate::new(401).set_body_string(r#"{"error":"expired token"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(r#"{"ok":"b"}"#, "application/json"))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        vec![
+            account("account-a", "SHUNT_TEST_INBOUND_401_A"),
+            account("account-b", "SHUNT_TEST_INBOUND_401_B"),
+        ],
+    ))
+    .await;
+
+    // A session id that maps to account-a (index 0) so the 401 account is tried
+    // first, then the turn rotates to account-b.
+    let session_id = session_id_for_account(0, 2);
+    let response = post_responses(&gateway, "/responses", Some(&session_id), None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+    assert_eq!(response.text().await.unwrap(), r#"{"ok":"b"}"#);
+    upstream.verify().await;
+
+    std::env::remove_var("SHUNT_TEST_INBOUND_401_A");
+    std::env::remove_var("SHUNT_TEST_INBOUND_401_B");
+}
+
+#[tokio::test]
+async fn single_credential_fallback_when_no_accounts_configured() {
+    // With no [[accounts]] configured and an empty store, forward_codex_inbound
+    // falls back to the single default `~/.codex/auth.json` ($CODEX_AUTH_FILE)
+    // credential — no pool, no failover, and no `x-shunt-account` header — and
+    // still forwards the body and relays the upstream response verbatim.
+    if !can_bind_loopback() {
+        return;
+    }
+    // Point the store scan at an empty dir so the accounts list resolves empty
+    // (taking the single-credential branch), and the default credential at a temp
+    // auth file carrying a valid ChatGPT token.
+    let unique = format!("{}-{}", std::process::id(), FAR_FUTURE_EXP);
+    let accounts_dir = std::env::temp_dir().join(format!("shunt-inbound-single-accts-{unique}"));
+    std::fs::create_dir_all(&accounts_dir).unwrap();
+    let auth_file = std::env::temp_dir().join(format!("shunt-inbound-single-auth-{unique}.json"));
+    let token = chatgpt_token(FAR_FUTURE_EXP, "acct-single");
+    std::fs::write(
+        &auth_file,
+        serde_json::to_vec(&serde_json::json!({
+            "tokens": {
+                "access_token": token,
+                "refresh_token": "refresh-single",
+                "account_id": "acct-single"
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &accounts_dir);
+    std::env::set_var("CODEX_AUTH_FILE", &auth_file);
+
+    let upstream_body =
+        r#"{"id":"resp_single","object":"response","status":"completed","output":[]}"#;
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(token.clone()))
+        .and(body_string(INBOUND_BODY))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(upstream_body, "application/json"))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(&upstream.uri(), vec![])).await;
+
+    let response = post_responses(&gateway, "/v1/responses", None, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    // The single-credential path does not attach x-shunt-account (no pool).
+    assert!(response.headers().get("x-shunt-account").is_none());
+    assert_eq!(response.text().await.unwrap(), upstream_body);
+    upstream.verify().await;
+
+    std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
+    std::env::remove_var("CODEX_AUTH_FILE");
+    let _ = std::fs::remove_dir_all(&accounts_dir);
+    let _ = std::fs::remove_file(&auth_file);
 }
 
 #[tokio::test]

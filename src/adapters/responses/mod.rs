@@ -953,15 +953,21 @@ async fn forward_codex_passthrough(
 
 /// Inbound request headers never forwarded upstream on the Codex passthrough:
 /// credential headers (re-injected per pool account in [`passthrough_send`]),
-/// framing headers the HTTP client recomputes, and `accept-encoding` (dropped so
-/// the upstream returns an uncompressed body that [`relay_passthrough`] streams
-/// through unchanged). Names compare lowercase — `http` normalizes them.
+/// the internal `x-shunt-inbound-client` label (a client must never spoof it —
+/// matches `proxy::check_inbound_auth`), framing headers the HTTP client
+/// recomputes, and `accept-encoding` (dropped so the upstream returns an
+/// uncompressed body that [`relay_passthrough`] streams through unchanged). Names
+/// compare lowercase — `http` normalizes them.
 const PASSTHROUGH_STRIP_REQUEST_HEADERS: &[&str] = &[
     "host",
     "content-length",
     "authorization",
     "chatgpt-account-id",
     "accept-encoding",
+    // shunt-internal client-identity label — never trust a client-supplied value
+    // (the main proxy path strips it in `check_inbound_auth` before re-inserting
+    // the authenticated client name).
+    "x-shunt-inbound-client",
     // hop-by-hop (RFC 7230 §6.1)
     "connection",
     "keep-alive",
@@ -974,14 +980,21 @@ const PASSTHROUGH_STRIP_REQUEST_HEADERS: &[&str] = &[
 ];
 
 /// Upstream response headers dropped when relaying a Codex passthrough response:
-/// framing/hop-by-hop headers axum recomputes for the streamed body, plus
-/// `content-encoding` (the request strips `accept-encoding`, so the body arrives
-/// uncompressed and is streamed as-is). Every other header — `x-codex-turn-state`,
-/// request ids, `openai-*`, `retry-after`, `content-type` — is forwarded verbatim.
+/// framing/hop-by-hop headers axum recomputes for the streamed body, `content-encoding`
+/// (the request strips `accept-encoding`, so the body arrives uncompressed and is
+/// streamed as-is), and `set-cookie`/`set-cookie2` — upstream/edge session cookies
+/// (e.g. Cloudflare `__cf_bm` / `cf_clearance`) are bound to shunt's server-side
+/// egress, so relaying them would leak that state to an untrusted inbound client.
+/// Every other header — `x-codex-turn-state`, request ids, `openai-*`,
+/// `retry-after`, `content-type` — is forwarded verbatim.
 const PASSTHROUGH_STRIP_RESPONSE_HEADERS: &[&str] = &[
     "content-length",
     "content-encoding",
     "transfer-encoding",
+    // Never relay upstream/edge session cookies to the inbound client — they are
+    // tied to shunt's egress, not the client (CWE-200 / CWE-201).
+    "set-cookie",
+    "set-cookie2",
     "connection",
     "keep-alive",
     "proxy-authenticate",
