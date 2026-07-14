@@ -114,13 +114,18 @@ async fn forward(
     // `forward_codex_inbound`), so neither the client's own credential nor the
     // shunt token ever reaches the Codex backend.
     if let Some(auth) = &state.inbound_auth {
-        if auth.authenticate(&headers).is_none() {
+        // Accept the shunt token via the configured header OR an OpenAI-style
+        // `Authorization: Bearer <token>` (the `OPENAI_API_KEY` / `env_key` idiom
+        // the Codex CLI and llmgateway/LiteLLM setups use), so no custom header is
+        // required. The client's Bearer is only checked here — it is stripped and
+        // never forwarded upstream (see `forward_codex_inbound`).
+        if auth.authenticate_bearer(&headers).is_none() {
             tracing::warn!(
                 provider = %provider,
                 "inbound codex auth failed: missing or invalid client token"
             );
             let message = format!(
-                "missing or invalid {} header: this gateway requires a client token for the inbound codex endpoint; ask the operator for one",
+                "missing or invalid client token for the inbound codex endpoint: provide it via the `{}` header or `Authorization: Bearer <token>` (e.g. OPENAI_API_KEY); ask the operator for one",
                 auth.header()
             );
             return Err(

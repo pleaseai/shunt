@@ -108,10 +108,13 @@ upstream header is relayed verbatim.
 ## Inbound authentication
 
 Gated by `[server.auth]`, because the provider injects a server-side Codex bearer that must not be
-handed to an unauthenticated caller. The client presents the shunt client token through the
-configured header (default `x-shunt-token`), exactly as for `/v1/messages`. Without a configured
-`[server.auth]`, the endpoint is open — acceptable for loopback or personal use, not for a shared
-gateway.
+handed to an unauthenticated caller. The client presents the shunt client token **either** through
+the configured header (default `x-shunt-token`) **or** as an OpenAI-style `Authorization: Bearer
+<token>` — the `OPENAI_API_KEY` / `env_key` idiom the Codex CLI (and LiteLLM/llmgateway proxy setups)
+use, so no custom header is required. Both are checked by `InboundAuth::authenticate_bearer` (the
+`/v1/messages` path uses the header-only `authenticate`; only this endpoint additionally accepts the
+Bearer form, since its client is a Codex CLI). Without a configured `[server.auth]`, the endpoint is
+open — acceptable for loopback or personal use, not for a shared gateway.
 
 Critically, the client's own `Authorization: Bearer` header (whatever the Codex CLI happens to
 send) is **never used as the inbound credential and never forwarded upstream**, and the shunt

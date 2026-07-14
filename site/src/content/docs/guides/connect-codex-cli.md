@@ -53,9 +53,9 @@ routes and any client shape below lands on one:
 | `openai_base_url = ".../v1"` | `POST /v1/responses` |
 | `chatgpt_base_url = ".../backend-api/codex"` | `POST /backend-api/codex/responses` |
 
-**Recommended — a custom model provider.** It is the **only** shape that can attach a shunt client
-token (step 3), and with `requires_openai_auth = false` it is unauthenticated from the CLI's view,
-so it needs **no local `codex login`** at all — shunt supplies the account:
+**Recommended — a custom model provider.** With `requires_openai_auth = false` it is unauthenticated
+from the CLI's view, so it needs **no local `codex login`** at all — shunt supplies the account — and
+it supports either way of presenting the shunt token (step 3):
 
 ```toml
 # ~/.codex/config.toml
@@ -69,21 +69,25 @@ wire_api = "responses"            # the only supported value; also the default
 requires_openai_auth = false      # shunt handles auth; the CLI needs no ChatGPT/API login here
 ```
 
-**Loopback shortcuts (no `[server.auth]` only).** If shunt has no client-token gate, you can skip
-the provider block and just override a base URL. Neither shape can attach a custom header, and both
-keep the CLI in its own auth mode (so they still need a local `codex login` whose credential shunt
-ignores):
+**Simpler — override a base URL** (no provider block):
 
 ```toml
-# ~/.codex/config.toml — either one, not both
-openai_base_url  = "http://127.0.0.1:3001/v1"                 # built-in openai provider
-chatgpt_base_url = "http://127.0.0.1:3001/backend-api/codex"  # ChatGPT auth mode
+# ~/.codex/config.toml — pick one
+openai_base_url  = "http://127.0.0.1:3001/v1"                 # + OPENAI_API_KEY = your shunt token
+chatgpt_base_url = "http://127.0.0.1:3001/backend-api/codex"  # loopback only (ChatGPT login mode)
 ```
 
-Either way, the CLI's own local `~/.codex/auth.json` login is **irrelevant to which account
-answers** — every request draws an account from shunt's pool. A loopback `base_url` may stay plain
-`http://`; use `https://` for anything remote. Do **not** set `supports_websockets = true` on the
-shunt provider — this endpoint is HTTP/SSE-only (see below).
+`openai_base_url` + `OPENAI_API_KEY=<shunt-token>` is the LiteLLM/llmgateway idiom — the CLI sends
+the token as `Authorization: Bearer`, which shunt accepts (step 3), so this shape works **even with
+`[server.auth]`**. `chatgpt_base_url` keeps the CLI in ChatGPT-login mode and sends its *own* ChatGPT
+token, which shunt can't accept as a client token — use it **only on an ungated (loopback) shunt**.
+Both run the CLI in its own OpenAI/ChatGPT auth mode, so both need a local `codex login`; the custom
+provider above avoids even that.
+
+The CLI's own local `~/.codex/auth.json` login is **irrelevant to which account answers** — every
+request draws an account from shunt's pool. A loopback `base_url` may stay plain `http://`; use
+`https://` for anything remote. Do **not** set `supports_websockets = true` on the shunt provider —
+this endpoint is HTTP/SSE-only (see below).
 
 :::tip[Isolate it in a profile]
 Keep your normal Codex setup untouched by putting the shunt block in a profile file
@@ -94,17 +98,29 @@ top-level keys and only need the values that differ from your base config.
 ## 3. Present the shunt client token (when `[server.auth]` is set)
 
 If shunt has [`[server.auth]`](/guides/shared-gateway/) configured — recommended for anything beyond
-loopback — the CLI must present the shunt client token through the configured header (default
-`x-shunt-token`). shunt authenticates on that **header**, *not* on an `Authorization: Bearer`, so
-use the provider's `http_headers` / `env_http_headers` — **not** `env_key` (which Codex turns into a
-Bearer that shunt neither reads nor forwards). This is the other reason the custom provider is the
-only workable shape here.
+loopback — present the shunt client token one of **two** ways; shunt accepts either.
 
-Keep the secret out of `config.toml` with `env_http_headers`, which reads the value from an
-environment variable:
+**A. As an OpenAI-style Bearer key** — the LiteLLM/llmgateway idiom. Set the shunt token as the API
+key and the CLI sends it as `Authorization: Bearer <shunt-token>`:
+
+```bash
+# built-in openai provider (no config block needed)
+export OPENAI_BASE_URL="http://127.0.0.1:3001/v1"
+export OPENAI_API_KEY="<shunt-token>"
+```
 
 ```toml
-# ~/.codex/config.toml
+# or a custom provider — env_key becomes the Bearer
+[model_providers.shunt]
+base_url = "http://127.0.0.1:3001/v1"
+wire_api = "responses"
+env_key = "SHUNT_TOKEN"      # reads $SHUNT_TOKEN, sent as Authorization: Bearer
+```
+
+**B. As the `x-shunt-token` header** (or whatever `[server.auth].header` names). Only a custom
+provider can attach a header; keep the secret out of `config.toml` with `env_http_headers`:
+
+```toml
 [model_providers.shunt]
 name = "shunt"
 base_url = "http://127.0.0.1:3001/v1"
@@ -117,18 +133,19 @@ env_http_headers = { "x-shunt-token" = "SHUNT_TOKEN" }   # reads $SHUNT_TOKEN
 export SHUNT_TOKEN="<token>"
 ```
 
-Or hardcode it with `http_headers = { "x-shunt-token" = "<token>" }` if you accept the secret living
-in the file. Without a valid token the endpoint returns `401 authentication_error`; without
-`[server.auth]` at all it is open to anyone who can reach it — fine for loopback, not for a shared
-gateway.
+(Or hardcode `http_headers = { "x-shunt-token" = "<token>" }`.) Either way the token is checked
+against `[server.auth]`'s list; a missing or wrong token returns `401 authentication_error`. Without
+`[server.auth]` at all the endpoint is open to anyone who can reach it — fine for loopback, not for a
+shared gateway. The client's bearer/header is used **only** to authenticate to shunt — it is stripped
+and never forwarded to the Codex backend.
 
-:::note[The client's own credential never leaves — but its identity headers do]
-Whatever `Authorization: Bearer` the Codex CLI happens to send is **never** used as the inbound
-credential and **never** forwarded upstream, and the `x-shunt-token` header is stripped so it never
-leaks either. Everything else the CLI sends is forwarded **verbatim** — shunt swaps in only the pool
-account's `Authorization` bearer + `chatgpt-account-id`. In particular your CLI's **own** `version`
-reaches the backend (not a shunt-fixed one), so `minimal_client_version` model gating (step 5)
-behaves exactly as it would against `chatgpt.com`.
+:::note[Your credential never reaches the backend — but your identity headers do]
+The `Authorization: Bearer` / `x-shunt-token` you present is used **only** to authenticate to shunt
+(step 3) and is then **stripped** — neither it nor any client credential is forwarded upstream. shunt
+swaps in only the pool account's `Authorization` bearer + `chatgpt-account-id`. Everything else the
+CLI sends is forwarded **verbatim**, so your CLI's **own** `version` reaches the backend (not a
+shunt-fixed one) and `minimal_client_version` model gating (step 5) behaves exactly as it would
+against `chatgpt.com`.
 :::
 
 ## 4. Provision the account pool on shunt

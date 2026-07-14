@@ -45,16 +45,23 @@ Either way, the Codex CLI's own local `~/.codex/auth.json` login becomes irrelev
 
 ## Client authentication
 
-If shunt has [`[server.auth]`](/guides/shared-gateway/) configured — recommended for anything beyond loopback — add the client token as a header the CLI sends. On the custom-provider form:
+If shunt has [`[server.auth]`](/guides/shared-gateway/) configured — recommended for anything beyond loopback — present the client token **either** as an OpenAI-style Bearer key (`OPENAI_API_KEY` / a custom provider's `env_key`, the LiteLLM/llmgateway idiom) **or** as the `x-shunt-token` header:
+
+```bash
+# A. Bearer — works with the built-in openai provider, no config block:
+export OPENAI_BASE_URL="http://127.0.0.1:3001/v1"
+export OPENAI_API_KEY="<shunt-token>"      # sent as Authorization: Bearer
+```
 
 ```toml
+# B. Header — a custom provider carries it (use env_http_headers to keep it out of the file):
 [model_providers.shunt]
 base_url = "http://127.0.0.1:3001/v1"
 wire_api = "responses"
 http_headers = { "x-shunt-token" = "<token>" }
 ```
 
-Without `[server.auth]`, the endpoint is open to anyone who can reach it — acceptable for loopback or personal use, not for a shared gateway. The client's own `Authorization` header (whatever the Codex CLI happens to send) is never forwarded upstream, and the shunt client-token header is stripped so it never leaks either. Because the inbound client is a real Codex CLI, the passthrough forwards its request headers verbatim (`version`, `originator`, `OpenAI-Beta`, `x-codex-*`, …) and swaps in **only** the selected pool account's `Authorization` bearer + `chatgpt-account-id`.
+Without `[server.auth]`, the endpoint is open to anyone who can reach it — acceptable for loopback or personal use, not for a shared gateway. The client's presented credential is used **only** to authenticate to shunt: it (and any `Authorization` the CLI happens to send) is stripped and never forwarded upstream. Because the inbound client is a real Codex CLI, the passthrough forwards its request headers verbatim (`version`, `originator`, `OpenAI-Beta`, `x-codex-*`, …) and swaps in **only** the selected pool account's `Authorization` bearer + `chatgpt-account-id`. See [Connect the Codex CLI](/guides/connect-codex-cli/#3-present-the-shunt-client-token-when-serverauth-is-set) for the full auth walkthrough.
 
 ## Account provisioning
 

@@ -460,6 +460,69 @@ async fn inbound_auth_gates_the_endpoint() {
 }
 
 #[tokio::test]
+async fn authorization_bearer_authenticates_the_endpoint() {
+    // The OpenAI / LiteLLM / llmgateway idiom: a Codex CLI pointed at shunt with
+    // `OPENAI_API_KEY` (or a custom provider's `env_key`) sends the shunt token as
+    // `Authorization: Bearer <token>` — no custom header. It authenticates the
+    // endpoint, and that client bearer is NOT forwarded upstream (the pool
+    // account's bearer is injected instead).
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-bearer");
+    std::env::set_var("SHUNT_TEST_INBOUND_BEARER", &token_a);
+    let tokens_env = format!("SHUNT_TEST_INBOUND_BEARER_TOKENS_{}", std::process::id());
+    std::env::set_var(&tokens_env, "cli:bearer-secret");
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        // Upstream sees the POOL account's bearer, never the client's "bearer-secret".
+        .and(BearerToken(token_a.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(r#"{"ok":true}"#, "application/json"))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let mut config = test_config(
+        &upstream.uri(),
+        vec![account("account-bearer", "SHUNT_TEST_INBOUND_BEARER")],
+    );
+    config.server.auth = Some(InboundAuthConfig {
+        header: "x-shunt-token".to_string(),
+        tokens_env: tokens_env.clone(),
+    });
+    let gateway = start_gateway_with(config).await;
+
+    // The shunt token presented as an OpenAI-style Bearer key → authenticated.
+    let authed = reqwest::Client::new()
+        .post(format!("{}/v1/responses", gateway.base_url))
+        .header("content-type", "application/json")
+        .header("authorization", "Bearer bearer-secret")
+        .body(INBOUND_BODY)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(authed.status(), StatusCode::OK);
+
+    // A wrong Bearer value → 401 before any upstream call.
+    let unauth = reqwest::Client::new()
+        .post(format!("{}/v1/responses", gateway.base_url))
+        .header("content-type", "application/json")
+        .header("authorization", "Bearer wrong-key")
+        .body(INBOUND_BODY)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unauth.status(), StatusCode::UNAUTHORIZED);
+
+    upstream.verify().await;
+
+    std::env::remove_var("SHUNT_TEST_INBOUND_BEARER");
+    std::env::remove_var(&tokens_env);
+}
+
+#[tokio::test]
 async fn forwards_client_identity_headers_verbatim_and_strips_shunt_token() {
     // codex -> shunt -> codex swaps ONLY the credential headers. The Codex CLI's
     // own identity headers reach the backend verbatim — shunt does NOT resynthesize

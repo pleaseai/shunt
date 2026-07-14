@@ -644,14 +644,22 @@ base_url = "http://127.0.0.1:3001/v1"
 wire_api = "responses"
 ```
 
-If shunt has `[server.auth]` configured (recommended for anything beyond loopback), add the client
-token as a header the CLI sends, e.g. on the custom provider:
+If shunt has `[server.auth]` configured (recommended for anything beyond loopback), present the
+client token **either** way — shunt accepts both (`InboundAuth::authenticate_bearer`):
+
+```bash
+# A. OpenAI-style Bearer key (the LiteLLM/llmgateway idiom) — works with the built-in
+#    openai provider (openai_base_url = ".../v1"), no config block required:
+export OPENAI_API_KEY="<shunt-token>"      # Codex sends it as Authorization: Bearer
+```
 
 ```toml
+# B. The x-shunt-token header — only a custom provider can attach one:
 [model_providers.shunt]
 base_url = "http://127.0.0.1:3001/v1"
 wire_api = "responses"
-http_headers = { "x-shunt-token" = "<token>" }
+env_key = "SHUNT_TOKEN"                            # A, on a custom provider: Bearer from $SHUNT_TOKEN
+# http_headers = { "x-shunt-token" = "<token>" }   # B: the header form
 ```
 
 The Codex CLI's own local `~/.codex/auth.json` login is irrelevant once pointed at shunt this
