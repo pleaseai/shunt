@@ -185,8 +185,11 @@ where
             // for, log the give-up — the per-attempt warnings above never mark that
             // the loop finally stopped, so an operator watching WARN logs otherwise
             // sees the retries but no distinct "gave up, still failing" signal
-            // (mirrors the ExceedsBudget branch's rationale).
-            other => {
+            // (mirrors the ExceedsBudget branch's rationale). Gated on an actually
+            // enabled policy: a DISABLED policy (max_retries == 0, e.g. count_tokens)
+            // lands here on its single attempt having exhausted nothing, so claiming
+            // it "gave up after exhausting retries" would misread the logs.
+            other if policy.max_retries > 0 => {
                 match &other {
                     Ok(response) if is_retryable_status(response.status()) => {
                         tracing::warn!(
@@ -208,6 +211,8 @@ where
                 }
                 return other;
             }
+            // Non-retryable outcome, or a disabled policy: hand it back untouched.
+            other => return other,
         }
     }
 }
