@@ -1207,6 +1207,26 @@ fn preserves_client_facing_status_for_standard_error_statuses_only() {
 }
 
 #[test]
+fn error_type_and_client_status_never_contradict() {
+    // Both projections come from one table, so a status can never carry a
+    // specific (non-`api_error`) `error.type` while its client-facing status
+    // silently collapses to 502 — that pairing would ship a self-contradictory
+    // envelope (e.g. `permission_error` with HTTP 502). Sweep every 4xx/5xx and
+    // lock the invariant against a future re-split of the two mappings.
+    for code in 400u16..=599 {
+        let status = StatusCode::from_u16(code).unwrap();
+        let kind = anthropic_error_type(status);
+        if kind != "api_error" {
+            assert_eq!(
+                client_facing_status(status),
+                status,
+                "status {code} has specific type {kind:?} but its client status is not preserved"
+            );
+        }
+    }
+}
+
+#[test]
 fn surfaces_upstream_error_detail_and_message() {
     // ChatGPT Codex backend shape: {"detail": "..."}
     let codex = map_error_value(
