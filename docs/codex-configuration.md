@@ -24,6 +24,7 @@ This page consolidates every Codex-specific knob. For the broader gateway workfl
 - [13. Security](#13-security)
 - [14. Troubleshooting](#14-troubleshooting)
 - [15. End-to-end example](#15-end-to-end-example)
+- [16. Inbound Codex endpoint (point the Codex CLI at shunt)](#16-inbound-codex-endpoint-point-the-codex-cli-at-shunt)
 
 ---
 
@@ -605,9 +606,96 @@ unchanged; only the mapped model's inference is answered by your ChatGPT/Codex s
 
 ---
 
+## 16. Inbound Codex endpoint (point the Codex CLI at shunt)
+
+Everything above routes **Claude Code** to a Codex/ChatGPT backend. shunt can also run the
+opposite direction: an opt-in **inbound** OpenAI Responses endpoint that lets the **Codex CLI**
+itself point its `base_url` at shunt and be load-balanced across a ChatGPT/Codex OAuth account
+pool. Unlike every path above, the request is **not** translated to or from Anthropic Messages —
+it is a raw Responses-to-Responses passthrough. Full behavior spec:
+[`m11-inbound-codex-endpoint.md`](m11-inbound-codex-endpoint.md).
+
+### 16.1 Enable it
+
+```toml
+[server.codex_endpoint]
+provider = "codex"   # default; must be a chatgpt_oauth provider (e.g. the built-in codex)
+```
+
+Absent ⇒ none of the routes exist. Present ⇒ shunt registers three routes at boot — `POST
+/backend-api/codex/responses`, `POST /responses`, `POST /v1/responses` — all served by the named
+provider's account pool. Config validation rejects an unknown provider or one not using `auth =
+"chatgpt_oauth"` at startup.
+
+### 16.2 Point the Codex CLI at shunt
+
+Two `~/.codex/config.toml` shapes work, depending on which base URL the CLI appends `/responses`
+to:
+
+```toml
+# Option A: mirror the ChatGPT backend's base URL
+chatgpt_base_url = "http://127.0.0.1:3001/backend-api/codex"
+```
+
+```toml
+# Option B: a custom model provider
+[model_providers.shunt]
+base_url = "http://127.0.0.1:3001/v1"
+wire_api = "responses"
+```
+
+If shunt has `[server.auth]` configured (recommended for anything beyond loopback), add the client
+token as a header the CLI sends, e.g. on the custom provider:
+
+```toml
+[model_providers.shunt]
+base_url = "http://127.0.0.1:3001/v1"
+wire_api = "responses"
+http_headers = { "x-shunt-token" = "<token>" }
+```
+
+The Codex CLI's own local `~/.codex/auth.json` login is irrelevant once pointed at shunt this
+way — the account comes from shunt's pool, not the CLI.
+
+### 16.3 Account provisioning
+
+Reuses the same pool as §12 — the target provider's `[[accounts]]` (or the auto-discovered account
+store). Import a Codex CLI login the same way:
+
+```bash
+codex login
+shunt login codex --name main
+```
+
+With no `[[providers.codex.accounts]]` configured, the endpoint falls back to the single default
+`~/.codex/auth.json` credential (no pooling, no failover) — it works out of the box for a single
+account.
+
+### 16.4 What's different from the outbound path
+
+- No model-based routing — every inbound request goes to the one configured provider, regardless
+  of the `model` field in the body.
+- **Verbatim header passthrough.** The outbound path *synthesizes* the Codex identity headers of
+  §4.4 (pinned `originator`/`user-agent`/`version=codex_cli_rs/0.144.1`, `OpenAI-Beta`, session
+  headers). The inbound endpoint does **not** — the client already *is* a Codex CLI, so its own
+  request headers (`version`, `originator`, `OpenAI-Beta`, `x-codex-*`, …) are forwarded unchanged
+  and shunt swaps in **only** the pool account's `Authorization` + `chatgpt-account-id` (and strips
+  the `x-shunt-token` header). So the client's real `version` — not shunt's pinned one — drives the
+  backend's `minimal_client_version` gating (§5).
+- On pool exhaustion, the last upstream response is relayed **verbatim** rather than re-shaped
+  into an Anthropic-style error — the opposite of §12's outbound Codex pool, which re-shapes the
+  last response into an Anthropic error envelope (`build_upstream_error`).
+- HTTP/SSE only, even if the target provider has `websocket = true`.
+
+See [`m11-inbound-codex-endpoint.md`](m11-inbound-codex-endpoint.md) for the full spec, including
+the exact failover/cooldown table and reload semantics.
+
+---
+
 **See also:** [`running.md`](running.md) (full gateway workflow) ·
 [`m2-chatgpt-oauth.md`](m2-chatgpt-oauth.md) (credential spec) ·
 [`m1-responses-translation.md`](m1-responses-translation.md) (Anthropic ↔ Responses translation) ·
 [`m3-discovery.md`](m3-discovery.md) (model discovery) ·
 [`m10-codex-multi-account.md`](m10-codex-multi-account.md) (multi-account pooling) ·
+[`m11-inbound-codex-endpoint.md`](m11-inbound-codex-endpoint.md) (inbound Codex endpoint) ·
 [`plugins/shunt-codex/`](../plugins/shunt-codex/) (ready-made GPT-5.6 subagents).
