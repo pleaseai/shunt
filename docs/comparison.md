@@ -245,9 +245,10 @@ toward being a fleet gateway and warrant a conscious decision first.
 
 - **E. Upstream retry/backoff (done: [#48]).** The M4-planned bounded retry/backoff now ships as a
   reusable `src/retry.rs` layer shared by the Anthropic, Responses, and Cursor single-credential
-  paths: it retries only the transient statuses `429`/`502`/`503`/`504` and connection errors,
-  strictly pre-stream, with exponential backoff + randomized jitter, honoring `Retry-After` (giving
-  up cleanly when it exceeds budget). It is configurable per provider under `[providers.<name>.retry]`
+  paths: it retries only the transient statuses `429`/`502`/`503`/`504`/`529` (Anthropic's
+  "Overloaded") and connection errors, strictly pre-stream, with exponential backoff + randomized
+  jitter, honoring `Retry-After` in both its delta-seconds and HTTP-date forms (giving up cleanly
+  when it exceeds budget). It is configurable per provider under `[providers.<name>.retry]`
   (on by default, conservative), held off `count_tokens`, and left off the `claude_oauth`/`chatgpt_oauth`
   account pools, which drive their own account-rotation failover.
 

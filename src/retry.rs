@@ -9,13 +9,25 @@
 //! a byte reaches the client the request is committed and unrecoverable, which
 //! is why this operates on the pre-stream boundary alone (issue #48).
 //!
-//! Retries are scoped to *idempotent, transient* outcomes only:
+//! Retries are scoped to *transient* outcomes only:
 //!
-//! - transient statuses `429`, `502`, `503`, `504` (never any other `4xx` — a
-//!   `400`/`401`/`403`/`404`/`413` is a request problem an identical retry
-//!   cannot fix);
+//! - transient statuses `429`, `502`, `503`, `504`, and `529` — Anthropic's
+//!   non-standard "Overloaded", a transient signal like the others (never any
+//!   other `4xx` — a `400`/`401`/`403`/`404`/`413` is a request problem an
+//!   identical retry cannot fix — nor `500`, frequently a deterministic
+//!   upstream bug);
 //! - connection-level transport errors (connect refused/reset, timeout) that
 //!   resolve before any response body exists.
+//!
+//! These upstream POSTs (Messages / Responses / Cursor `Run`) are *not*
+//! idempotent and the upstreams expose no idempotency key, so retrying a
+//! `502`/`504` the origin already processed could in principle duplicate a
+//! billable generation. This layer accepts that bounded risk deliberately: the
+//! shared client configures no response/read timeout, so `is_timeout()` only
+//! fires connect-phase (before acceptance); retries are capped by
+//! `max_retries`; and the behavior matches the upstream SDKs' own default of
+//! retrying transient `5xx` without an idempotency key. Adding one (or gating
+//! retries harder) is tracked as a follow-up rather than blocking issue #48.
 //!
 //! Backoff is exponential with true randomized (full) jitter, capped at
 //! [`RetryPolicy::max_backoff`]. A server-supplied `Retry-After` takes
@@ -62,11 +74,12 @@ impl RetryPolicy {
     }
 }
 
-/// Transient upstream statuses that an identical, idempotent retry can plausibly
-/// clear. Deliberately excludes every other `4xx` (a request-level error) and
-/// `500` (which is frequently a deterministic upstream bug, not a blip).
+/// Transient upstream statuses that an identical retry can plausibly clear.
+/// Includes `529` (Anthropic's non-standard "Overloaded"). Deliberately
+/// excludes every other `4xx` (a request-level error) and `500` (which is
+/// frequently a deterministic upstream bug, not a blip).
 pub fn is_retryable_status(status: StatusCode) -> bool {
-    matches!(status.as_u16(), 429 | 502 | 503 | 504)
+    matches!(status.as_u16(), 429 | 502 | 503 | 504 | 529)
 }
 
 /// A failure to obtain an upstream response. Implemented per adapter error type
@@ -224,6 +237,7 @@ fn retry_reason(status: StatusCode) -> &'static str {
         502 => "502",
         503 => "503",
         504 => "504",
+        529 => "529",
         _ => "other",
     }
 }
@@ -275,7 +289,8 @@ mod tests {
 
     #[test]
     fn only_transient_statuses_are_retryable() {
-        for code in [429, 502, 503, 504] {
+        // 529 is Anthropic's non-standard "Overloaded" — retryable like the rest.
+        for code in [429, 502, 503, 504, 529] {
             assert!(is_retryable_status(StatusCode::from_u16(code).unwrap()));
         }
         for code in [200, 400, 401, 403, 404, 413, 500, 501] {
@@ -291,6 +306,7 @@ mod tests {
         assert_eq!(retry_reason(StatusCode::from_u16(502).unwrap()), "502");
         assert_eq!(retry_reason(StatusCode::from_u16(503).unwrap()), "503");
         assert_eq!(retry_reason(StatusCode::from_u16(504).unwrap()), "504");
+        assert_eq!(retry_reason(StatusCode::from_u16(529).unwrap()), "529");
         // Anything else collapses to the catch-all label.
         assert_eq!(retry_reason(StatusCode::from_u16(500).unwrap()), "other");
     }

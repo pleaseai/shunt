@@ -31,6 +31,9 @@ clap = { version = "4", features = ["derive"] }
 figment = { version = "0.10", features = ["toml", "yaml", "env"] }
 flate2 = "1"
 futures-util = "0.3"
+# Parse the HTTP-date form of `Retry-After` (RFC 7231); already in the tree via
+# reqwest/hyper, promoted to a direct dep for `accounts::retry_after`.
+httpdate = "1"
 notify = "8.2.0"
 # OpenTelemetry export (opt-in `[otel]`). The OTLP exporter speaks HTTP/protobuf
 # over reqwest's *blocking* client so the SDK's dedicated-thread batch span/log
