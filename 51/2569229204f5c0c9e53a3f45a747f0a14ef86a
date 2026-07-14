@@ -1,0 +1,25 @@
+.claude/agent-memory/review-review-comment-analyzer/MEMORY.md
+  s_1d2ac11977389b::t_053cbfd9a70200 5
+.claude/agent-memory/review-review-comment-analyzer/shunt-responses-adapter-stream-json-doc-generalization.md
+  s_1d2ac11977389b::t_2dc1e89f4e89d2 3,8-10,12,14-16,18-22
+.claude/agent-memory/review-review-silent-failure-hunter/issue113-responses-status-threading.md
+  s_1d2ac11977389b::t_3041ca67e8e7c7 1-38
+.claude/agent-memory/review-review-silent-failure-hunter/MEMORY.md
+  s_1d2ac11977389b::t_949ecb5cbd3a69 6
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "512569229204f5c0c9e53a3f45a747f0a14ef86a",
+  "prompts": {},
+  "sessions": {
+    "s_1d2ac11977389b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3bf16559-f7e0-4f23-80bb-6f90b563fc5d",
+        "model": "unknown"
+      },
+      "human_author": null
+    }
+  }
+}
