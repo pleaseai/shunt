@@ -1,0 +1,25 @@
+docs/codex-configuration.md
+  s_237319e14fc3ad::t_f3edafa0fe2e09 654-657
+site/src/content/docs/guides/connect-codex-cli.md
+  s_237319e14fc3ad::t_922e13dcae4930 89-101
+  s_237319e14fc3ad::t_64d1db225c08eb 88
+  s_237319e14fc3ad::t_3188a3fed8baed 121-126,128
+site/src/content/docs/guides/inbound-codex-endpoint.md
+  s_237319e14fc3ad::t_cbfdb4b953f553 52-59
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "a899d55749838bbc7de7915517718f2df398c986",
+  "prompts": {},
+  "sessions": {
+    "s_237319e14fc3ad": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5fbef34c-ea12-4c28-bc18-71a85c2c79c7",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
