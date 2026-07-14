@@ -1268,7 +1268,7 @@ fn records_backend_error_event_for_non_streaming_paths() {
 
     // Non-streaming path: the mapped envelope is recorded for the JSON collectors.
     let backend_error = machine
-        .backend_error()
+        .take_backend_error()
         .expect("a backend error event is recorded");
     assert_eq!(backend_error["type"], "error");
     assert_eq!(backend_error["error"]["message"], "Rate limit reached");
@@ -1290,7 +1290,7 @@ fn normal_completion_records_no_backend_error() {
     for event in parse_sse_events(fixture) {
         let _ = machine.apply(event);
     }
-    assert!(machine.backend_error().is_none());
+    assert!(machine.take_backend_error().is_none());
 }
 
 #[test]

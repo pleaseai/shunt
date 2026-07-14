@@ -124,7 +124,7 @@ pub(super) async fn json_events_response(
                 // mapped envelope and ignores everything after. Return the moment
                 // it lands instead of looping on `recv()` for a channel close the
                 // backend may never send — that would hang the request.
-                if let Some(error) = machine.backend_error() {
+                if let Some(error) = machine.take_backend_error() {
                     return backend_error_response(error);
                 }
             }

@@ -67,9 +67,9 @@ pub struct AnthropicSseMachine {
     /// `Ok` events on a `200 OK` stream (rate-limit, content-policy refusal)
     /// rather than a non-2xx HTTP status. The streaming paths
     /// emit the envelope inline as an SSE `error` event and stop; the
-    /// non-streaming JSON collectors read it here (via [`Self::backend_error`])
-    /// after draining so they can return a gateway error instead of a `200 OK`
-    /// carrying the partial/empty content accumulated so far.
+    /// non-streaming JSON collectors take it here (via
+    /// [`Self::take_backend_error`]) so they can return a gateway error instead
+    /// of a `200 OK` carrying the partial/empty content accumulated so far.
     backend_error: Option<Value>,
 }
 
@@ -158,12 +158,13 @@ impl AnthropicSseMachine {
         }
     }
 
-    /// The mapped Anthropic error envelope if a backend `error` /
-    /// `response.failed` event was applied, else `None`. The non-streaming JSON
-    /// paths read this after draining to surface a backend failure as a gateway
-    /// error instead of a `200 OK` (issue #113).
-    pub fn backend_error(&self) -> Option<&Value> {
-        self.backend_error.as_ref()
+    /// Take the mapped Anthropic error envelope if a backend `error` /
+    /// `response.failed` event was applied, else `None`. Moves ownership out of
+    /// the machine so the non-streaming JSON collectors can hand it straight to
+    /// the response body without cloning; the event is terminal, so the machine
+    /// is dropped right after (issue #113).
+    pub fn take_backend_error(&mut self) -> Option<Value> {
+        self.backend_error.take()
     }
 
     pub fn finish(&mut self) -> Vec<String> {

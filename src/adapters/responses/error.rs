@@ -86,23 +86,26 @@ pub(super) fn own_error(message: String) -> AdapterError {
 /// Build the gateway-error response for a backend-sent `error` /
 /// `response.failed` event captured by the machine on a non-streaming JSON path
 /// (issue #113). `error` is the already-mapped Anthropic error envelope
-/// ([`crate::model::responses::AnthropicSseMachine::backend_error`]); it becomes
-/// the response body with a `502` status — SSE error events carry no upstream
+/// ([`crate::model::responses::AnthropicSseMachine::take_backend_error`]); it
+/// becomes the response body with a `502` status — SSE error events carry no upstream
 /// HTTP status to preserve, and the machine mapped the envelope's `error.type`
 /// against `502` to match. Emits a warning for operational visibility. The
 /// streaming paths surface the same envelope inline as an SSE `error` event
 /// instead. Shared by the HTTP ([`super::http::json_response`]) and websocket
 /// ([`super::ws_stream::json_events_response`]) non-streaming collectors.
-pub(super) fn backend_error_response(error: &Value) -> axum::response::Response {
-    let message = error
-        .pointer("/error/message")
-        .and_then(Value::as_str)
-        .unwrap_or("upstream request failed");
+pub(super) fn backend_error_response(error: Value) -> axum::response::Response {
+    // Borrow `error` for the log line only; the borrow ends with the macro so
+    // the envelope can move into the response body below without a clone.
+    // Fully-qualify `serde_json::Value` — inside `warn!` a bare `Value` resolves
+    // to tracing's own `Value` trait, not the JSON struct.
     tracing::warn!(
-        %message,
+        message = error
+            .pointer("/error/message")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("upstream request failed"),
         "responses backend sent an error event on the non-streaming JSON path"
     );
-    (StatusCode::BAD_GATEWAY, axum::Json(error.clone())).into_response()
+    (StatusCode::BAD_GATEWAY, axum::Json(error)).into_response()
 }
 
 #[cfg(test)]

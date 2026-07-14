@@ -186,7 +186,7 @@ pub(super) async fn json_response(
     for event in parse_sse_events(&body) {
         let _ = machine.apply(event);
     }
-    if let Some(error) = machine.backend_error() {
+    if let Some(error) = machine.take_backend_error() {
         return Ok(backend_error_response(error));
     }
     Ok((StatusCode::OK, axum::Json(machine.final_json())).into_response())
