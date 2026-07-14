@@ -1,0 +1,19 @@
+src/usage_poll.rs
+  s_bb0ad1b0bb2541::t_4d2e5cb07dbfc5 38,41-54
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "5c054feac87d00ae955d498d3958eb122a9bcd9f",
+  "prompts": {},
+  "sessions": {
+    "s_bb0ad1b0bb2541": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2b1c114e-fdad-41e8-851c-61b4134b0b59",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
