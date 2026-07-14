@@ -1,0 +1,20 @@
+docs/codex-configuration.md
+  s_237319e14fc3ad::t_3f81f19b8fdf5e 664-665,670-671
+  s_237319e14fc3ad::t_2a67169d24285a 652
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "0fded21f04e94df966f74d56134f51ffcb1888b9",
+  "prompts": {},
+  "sessions": {
+    "s_237319e14fc3ad": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5fbef34c-ea12-4c28-bc18-71a85c2c79c7",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
