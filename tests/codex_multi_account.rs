@@ -788,3 +788,79 @@ async fn exhausted_pool_relays_translated_error_envelope() {
     std::env::remove_var("SHUNT_TEST_CODEX_EXHAUST_A");
     std::env::remove_var("SHUNT_TEST_CODEX_EXHAUST_B");
 }
+
+#[tokio::test]
+async fn websocket_enabled_pool_falls_back_to_http_and_streams() {
+    // Opting a pooled account into the websocket transport must still build the
+    // per-account `ForwardOptions` (see `forward_chatgpt_oauth`'s `if ws_enabled`
+    // arm) before attempting it. The mock upstream here speaks HTTP only, so
+    // account-a's websocket handshake fails and the pool falls back to HTTP for
+    // that SAME account — exactly the single-account pattern already proven by
+    // `codex_websocket_fallback.rs::websocket_handshake_failure_falls_back_to_http`
+    // — and because the client asks for `stream:true`, the resulting success is
+    // relayed over `relay_success`'s streaming branch (`stream_response`) rather
+    // than its collected-JSON one.
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-wspool-a");
+    let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-wspool-b");
+    std::env::set_var("SHUNT_TEST_CODEX_WSPOOL_A", &token_a);
+    std::env::set_var("SHUNT_TEST_CODEX_WSPOOL_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(sse_body("ws pool streamed")))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let mut config = test_config(
+        &upstream.uri(),
+        account("account-a", "SHUNT_TEST_CODEX_WSPOOL_A"),
+        account("account-b", "SHUNT_TEST_CODEX_WSPOOL_B"),
+    );
+    // Opt in to the ws transport (mirrors tests/codex_websocket_fallback.rs) —
+    // the mock upstream has no websocket endpoint, so account-a's ws attempt
+    // fails its handshake and falls back to HTTP for the same account without
+    // ever reaching account-b.
+    config.providers.get_mut("codex").unwrap().websocket = true;
+    let gateway = start_gateway_with(config).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .header("content-type", "application/json")
+        .body(
+            r#"{"model":"pooled-codex-model","max_tokens":16,"stream":true,"messages":[{"role":"user","content":"hi"}]}"#,
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        content_type.starts_with("text/event-stream"),
+        "a streaming client request must relay over the SSE streaming branch; got content-type: {content_type}"
+    );
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-a"
+    );
+    let body = response.text().await.unwrap();
+    assert!(
+        body.contains("ws pool streamed"),
+        "the streamed body should carry the upstream's translated text; got: {body}"
+    );
+    upstream.verify().await;
+
+    std::env::remove_var("SHUNT_TEST_CODEX_WSPOOL_A");
+    std::env::remove_var("SHUNT_TEST_CODEX_WSPOOL_B");
+}
