@@ -1,0 +1,25 @@
+.claude/agent-memory/review-review-silent-failure-hunter/MEMORY.md
+  s_838cbb95baa60b::t_211b30bc91be8a 6
+.claude/agent-memory/review-review-code-reviewer/shunt-issue48-retry-backoff-pr122.md
+  s_838cbb95baa60b::t_78ab5ebd0af55f 1-49
+.claude/agent-memory/review-review-silent-failure-hunter/pr122-retry-observability-gap.md
+  s_838cbb95baa60b::t_7292dee9952397 1-20
+.claude/agent-memory/review-review-code-reviewer/MEMORY.md
+  s_838cbb95baa60b::t_0c4039b45475cb 9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "0111dc4d97aed94a7fd69e5c9b415c815682f4a7",
+  "prompts": {},
+  "sessions": {
+    "s_838cbb95baa60b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "97ba1d0a-9bc8-4b1c-ad51-a7fc74191d73",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
