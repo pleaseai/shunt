@@ -30,13 +30,12 @@ pub(super) struct RelayOptions {
 }
 
 impl RelayOptions {
-    /// Build the SSE translation machine these options describe.
-    pub(super) fn machine(&self) -> AnthropicSseMachine {
-        AnthropicSseMachine::new(
-            self.model.clone(),
-            self.thinking_enabled,
-            self.tool_search_native,
-        )
+    /// Build the SSE translation machine these options describe. Consumes `self`
+    /// so the model name moves into the machine without a second clone (the name
+    /// was already cloned once from the [`Route`] in [`TurnOptions::relay`], and
+    /// no relay call site touches the options after building the machine).
+    pub(super) fn machine(self) -> AnthropicSseMachine {
+        AnthropicSseMachine::new(self.model, self.thinking_enabled, self.tool_search_native)
     }
 }
 
@@ -66,10 +65,12 @@ impl TurnOptions {
     }
 }
 
-/// Everything the single-account transports (`forward_http` and
-/// `forward_websocket`) need beyond `state`/`route`. Cloned once in `forward` so
-/// a pre-first-event websocket failure can fall back to HTTP with the same
-/// body/credential — the same fields the previous per-argument clones copied.
+/// The request-derived fields the single-account transports (`forward_http` and
+/// `forward_websocket`) need beyond `state`/`route` and their own connection key
+/// (`forward_http` also takes `session_id`, `forward_websocket` also takes
+/// `pool_key`). Cloned once in `forward` so a pre-first-event websocket failure
+/// can fall back to HTTP with the same body/credential — the same fields the
+/// previous per-argument clones copied.
 #[derive(Clone)]
 pub(super) struct ForwardOptions {
     pub upstream_body: Value,
