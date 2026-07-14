@@ -313,9 +313,15 @@ async fn mapped_route_attributes_to_the_dedicated_header_over_bearer_and_api_key
     std::env::set_var("SHUNT_TEST_M4_TOKENS_K", "alice:tok-a,bob:tok-b");
     let upstream = MockServer::start().await;
     // Both requests below carry a second valid credential belonging to "bob";
-    // the higher-priority slot must decide the attributed client.
+    // the higher-priority slot must decide the attributed client. Neither live
+    // gate-token slot may leak upstream — only the injected provider credential
+    // reaches the mock (guards `check_inbound_auth`'s own strip independent of
+    // adapter behavior, mirroring the single-slot leak test).
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
+        .and(NoHeader("x-shunt-token"))
+        .and(NoHeader("x-api-key"))
+        .and(header("authorization", "Bearer upstream-key"))
         .and(header("x-shunt-inbound-client", "alice"))
         .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
         .expect(2)

@@ -1,8 +1,9 @@
 //! Inbound client authentication for shared gateways (M4).
 //!
 //! Optional per-client tokens checked on discovery and routes where shunt
-//! injects a server-side credential (`api_key` / `chatgpt_oauth` /
-//! `claude_oauth`). Those checks accept the standard Anthropic client
+//! injects a server-side credential (every provider `auth` mode except
+//! `passthrough`: `api_key`, `chatgpt_oauth`, `claude_oauth`, …). Those
+//! checks accept the standard Anthropic client
 //! credentials (`Authorization: Bearer`, `x-api-key`) in addition to the
 //! dedicated token header. Passthrough inference routes are never checked —
 //! the caller pays with their own credential. See `docs/m4-inbound-auth.md`.
