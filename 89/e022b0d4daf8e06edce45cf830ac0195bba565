@@ -1,0 +1,37 @@
+src/adapters/responses/mod.rs
+  s_b5828c93f73d69::t_a1f6e680e91121 1239-1258
+  s_b5828c93f73d69::t_317b380949792f 764-771
+  s_b5828c93f73d69::t_cb38c34fe5dfb9 1197-1202,1233-1234
+  s_b5828c93f73d69::t_973bc5a11ffa90 1235,2058-2089
+  s_b5828c93f73d69::t_f25900e21f6310 1499,1502
+  s_b5828c93f73d69::t_92bc057b1bf0d7 2006-2038,2041-2057
+  s_b5828c93f73d69::t_19ac441166fbbd 2039-2040
+  s_b5828c93f73d69::t_1811d5a87e0317 1536-1542
+  s_b5828c93f73d69::t_cfe0483cc7490f 1500-1501
+  s_b5828c93f73d69::t_d5ac1260e569bc 786-788
+tests/responses_translate.rs
+  s_b5828c93f73d69::t_b1328f61a8e44e 1248-1295
+src/model/responses.rs
+  s_b5828c93f73d69::t_16fca3b3bab0be 65-73
+  s_b5828c93f73d69::t_95bc295f2b7a08 150-152,158-163
+  s_b5828c93f73d69::t_4ada6e4b5a7127 117
+  s_b5828c93f73d69::t_f60b8272dc6074 164-165
+docs/m7-codex-websocket.md
+  s_b5828c93f73d69::t_9f79160c58cf14 255-264
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "89e022b0d4daf8e06edce45cf830ac0195bba565",
+  "prompts": {},
+  "sessions": {
+    "s_b5828c93f73d69": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4f2e48bf-85fd-476f-9e0c-f8bdb7156ed2",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
