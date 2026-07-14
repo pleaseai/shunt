@@ -1,0 +1,81 @@
+.claude/agent-memory/review-review-code-reviewer/project_shunt_responses_adapter.md
+  s_df7b74c99c37f9::t_be92f34761826a 21-34
+src/adapters/responses/error.rs
+  s_df7b74c99c37f9::t_c0f2975ba5b1f2 1-85,108-296
+  s_df7b74c99c37f9::t_fc03912938316e 86-107
+ARCHITECTURE.md
+  s_df7b74c99c37f9::t_c0f2975ba5b1f2 1-149
+.worktreeinclude
+  s_df7b74c99c37f9::t_be92f34761826a 13-15
+.please/INDEX.md
+  s_df7b74c99c37f9::t_c0f2975ba5b1f2 1-38
+src/adapters/responses/pool.rs
+  s_df7b74c99c37f9::t_80fe02203db0c2 175-179
+  s_df7b74c99c37f9::t_72bc262561e1f9 320-323
+  s_df7b74c99c37f9::t_c0f2975ba5b1f2 1-174,180-319,324-429
+src/adapters/responses/mod.rs
+  s_df7b74c99c37f9::t_c0f2975ba5b1f2 12
+  s_df7b74c99c37f9::t_be92f34761826a 4-9,11,13-14,18-20,25-28
+  s_df7b74c99c37f9::t_956443926ab63a 29
+.please/docs/knowledge/workflow.md
+  s_df7b74c99c37f9::t_c0f2975ba5b1f2 1-130
+docs/codex-configuration.md
+  s_df7b74c99c37f9::t_be92f34761826a 39,167,181
+src/adapters/responses/ws_stream.rs
+  s_df7b74c99c37f9::t_b6e5fb826cf740 96-105
+  s_df7b74c99c37f9::t_c1da2cb34cfb00 123-129
+  s_df7b74c99c37f9::t_049b65efac4008 234-301
+  s_df7b74c99c37f9::t_460afb761360dd 20
+  s_df7b74c99c37f9::t_c0f2975ba5b1f2 1-19,21-95,106-122,130-233,302-352
+CLAUDE.md
+  s_df7b74c99c37f9::t_be92f34761826a 5-28
+.please/docs/knowledge/product-guidelines.md
+  s_df7b74c99c37f9::t_c0f2975ba5b1f2 1-55
+src/adapters/responses/request.rs
+  s_df7b74c99c37f9::t_c0f2975ba5b1f2 1-383
+.please/docs/knowledge/tech-stack.md
+  s_df7b74c99c37f9::t_c0f2975ba5b1f2 1-92
+src/adapters/responses/http.rs
+  s_df7b74c99c37f9::t_10dc3b0309ee26 25
+  s_df7b74c99c37f9::t_db02aab29b7598 167-174,188-190
+  s_df7b74c99c37f9::t_f5e73f2d3a6a9e 223-300
+  s_df7b74c99c37f9::t_6b8d6be647e64e 97-108
+  s_df7b74c99c37f9::t_c0f2975ba5b1f2 1-24,26-96,109-166,175-187,191-222,301-336
+src/adapters/responses/websocket.rs
+  s_df7b74c99c37f9::t_c0f2975ba5b1f2 1-91,104-556
+  s_df7b74c99c37f9::t_88842c580ea474 92-103
+docs/gateway-protocol.md
+  s_df7b74c99c37f9::t_be92f34761826a 265
+.please/docs/knowledge/product.md
+  s_df7b74c99c37f9::t_c0f2975ba5b1f2 1-69
+.please/config.yml
+  s_df7b74c99c37f9::t_be92f34761826a 1-41
+.please/docs/product-specs/index.md
+  s_df7b74c99c37f9::t_c0f2975ba5b1f2 1-6
+.please/docs/tracks/tech-debt-tracker.md
+  s_df7b74c99c37f9::t_c0f2975ba5b1f2 1-13
+docs/m7-codex-websocket.md
+  s_df7b74c99c37f9::t_be92f34761826a 233,235-237
+.please/docs/decisions/index.md
+  s_df7b74c99c37f9::t_c0f2975ba5b1f2 1-6
+docs/comparison.md
+  s_df7b74c99c37f9::t_be92f34761826a 234
+docs/running.md
+  s_df7b74c99c37f9::t_be92f34761826a 518
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "2b8ffb2123ddc8f9bfd157d3a55bdb9c92367fb2",
+  "prompts": {},
+  "sessions": {
+    "s_df7b74c99c37f9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "033754c9-7349-4af4-a126-547ff6854ebb",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
