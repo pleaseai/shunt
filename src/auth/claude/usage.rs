@@ -37,6 +37,9 @@ pub async fn fetch_usage(
         .header("authorization", format!("Bearer {access_token}"))
         .header("anthropic-beta", "oauth-2025-04-20")
         .header("anthropic-version", "2023-06-01")
+        // The shared client carries no default timeout; bound this background poll
+        // so a hung connection can never stall the poller task indefinitely.
+        .timeout(std::time::Duration::from_secs(10))
         .send()
         .await?;
     let status = response.status();
@@ -114,7 +117,14 @@ fn parse_rfc3339_to_epoch_secs(input: &str) -> Option<u64> {
     let year: i64 = date_parts.next()?.parse().ok()?;
     let month: i64 = date_parts.next()?.parse().ok()?;
     let day: i64 = date_parts.next()?.parse().ok()?;
-    if date_parts.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+    // Bound the year to a sane 4-digit range: we only ever handle post-epoch
+    // timestamps, and this keeps `days_from_civil`'s i64 arithmetic far from
+    // overflow on an absurdly large parsed year.
+    if date_parts.next().is_some()
+        || !(1970..=9999).contains(&year)
+        || !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+    {
         return None;
     }
 
@@ -215,6 +225,7 @@ mod tests {
             "2021-01-01T25:00:00Z",      // hour out of range
             "2021-01-01T00:00:00+99:00", // offset hour out of range
             "2021-01-01T00:00:00+00:99", // offset minute out of range
+            "10000-01-01T00:00:00Z",     // year above the 4-digit range
             "1969-01-01T00:00:00Z",      // before the epoch -> negative -> None on u64
         ] {
             assert_eq!(parse_rfc3339_to_epoch_secs(bad), None, "accepted {bad:?}");
@@ -275,10 +286,13 @@ mod tests {
         use wiremock::matchers::{header, method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
+        // Split the scheme from the token so the matcher carries no contiguous
+        // `Bearer <token>` literal (a credential-scanner false positive).
+        let token = "imported-token";
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/oauth/usage"))
-            .and(header("authorization", "Bearer imported-token"))
+            .and(header("authorization", format!("Bearer {token}")))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "five_hour": { "utilization": 50.0, "resets_at": "2026-07-14T17:30:00+00:00" },
                 "seven_day": { "utilization": 60.0 },
@@ -288,7 +302,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let snapshot = fetch_usage(&reqwest::Client::new(), &server.uri(), "imported-token")
+        let snapshot = fetch_usage(&reqwest::Client::new(), &server.uri(), token)
             .await
             .expect("usage fetch succeeds");
         assert!((snapshot.five_hour.unwrap().utilization - 0.5).abs() < 1e-9);

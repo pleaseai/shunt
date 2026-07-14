@@ -50,6 +50,10 @@ pub fn spawn_usage_poller(state: AppState) {
     );
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(interval));
+        // A poll that runs long (or a suspend/resume) must not make the ticker
+        // fire a burst of catch-up ticks — that would hammer the usage API. Skip
+        // missed ticks and resume on the regular cadence.
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         // `interval` fires its first tick immediately, so pool state is seeded at
         // startup and then refreshed every `interval` seconds.
         loop {
