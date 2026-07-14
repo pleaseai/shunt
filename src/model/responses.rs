@@ -816,20 +816,24 @@ pub fn map_error_value(value: &Value, status: StatusCode) -> Value {
 /// generic gateway failure) sees the real upstream signal. Anything outside that
 /// set collapses to `(api_error, 502)` rather than leaking an unexpected
 /// upstream status verbatim. See `docs/gateway-protocol.md#error-envelopes`.
-fn mapped_error(status: StatusCode) -> (&'static str, StatusCode) {
+/// The second tuple element is whether the upstream `status` reaches the client
+/// unchanged (`true`) or collapses to `502` (`false`); `client_facing_status`
+/// projects it. Encoding it as a flag rather than repeating the `StatusCode` in
+/// both the pattern and the return keeps each row's status listed once.
+fn mapped_error(status: StatusCode) -> (&'static str, bool) {
     match status {
-        StatusCode::BAD_REQUEST => ("invalid_request_error", StatusCode::BAD_REQUEST),
-        StatusCode::UNAUTHORIZED => ("authentication_error", StatusCode::UNAUTHORIZED),
-        StatusCode::FORBIDDEN => ("permission_error", StatusCode::FORBIDDEN),
-        StatusCode::PAYLOAD_TOO_LARGE => ("request_too_large", StatusCode::PAYLOAD_TOO_LARGE),
-        StatusCode::TOO_MANY_REQUESTS => ("rate_limit_error", StatusCode::TOO_MANY_REQUESTS),
-        StatusCode::INTERNAL_SERVER_ERROR => ("api_error", StatusCode::INTERNAL_SERVER_ERROR),
-        StatusCode::NOT_IMPLEMENTED => ("not_supported", StatusCode::NOT_IMPLEMENTED),
-        StatusCode::BAD_GATEWAY => ("api_error", StatusCode::BAD_GATEWAY),
-        StatusCode::SERVICE_UNAVAILABLE => ("api_error", StatusCode::SERVICE_UNAVAILABLE),
-        StatusCode::GATEWAY_TIMEOUT => ("api_error", StatusCode::GATEWAY_TIMEOUT),
-        _ if status.as_u16() == 529 => ("overloaded_error", status),
-        _ => ("api_error", StatusCode::BAD_GATEWAY),
+        StatusCode::BAD_REQUEST => ("invalid_request_error", true),
+        StatusCode::UNAUTHORIZED => ("authentication_error", true),
+        StatusCode::FORBIDDEN => ("permission_error", true),
+        StatusCode::PAYLOAD_TOO_LARGE => ("request_too_large", true),
+        StatusCode::TOO_MANY_REQUESTS => ("rate_limit_error", true),
+        StatusCode::INTERNAL_SERVER_ERROR => ("api_error", true),
+        StatusCode::NOT_IMPLEMENTED => ("not_supported", true),
+        StatusCode::BAD_GATEWAY => ("api_error", true),
+        StatusCode::SERVICE_UNAVAILABLE => ("api_error", true),
+        StatusCode::GATEWAY_TIMEOUT => ("api_error", true),
+        _ if status.as_u16() == 529 => ("overloaded_error", true),
+        _ => ("api_error", false),
     }
 }
 
@@ -848,7 +852,11 @@ pub fn anthropic_error_type(status: StatusCode) -> &'static str {
 /// rather than leaking an unexpected upstream status verbatim. Projection of
 /// `mapped_error`, the shared source of truth this and `error.type` derive from.
 pub fn client_facing_status(status: StatusCode) -> StatusCode {
-    mapped_error(status).1
+    if mapped_error(status).1 {
+        status
+    } else {
+        StatusCode::BAD_GATEWAY
+    }
 }
 
 fn error_message(value: &Value) -> String {
