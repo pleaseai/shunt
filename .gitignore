@@ -23,3 +23,6 @@ site/.wrangler/
 
 # Per-developer config override (overlays .please/config.yml)
 .please/config.local.yml
+
+# Local sccache opt-in (per-developer rustc-wrapper); never shared upstream
+/.cargo/config.toml

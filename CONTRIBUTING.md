@@ -22,6 +22,22 @@ All four must pass before a PR is ready; CI enforces them.
 Use an Orca worktree rather than editing the main checkout in place. `orca.yaml` seeds local
 files (`.worktreeinclude`) and warms the Cargo cache on worktree creation.
 
+### Faster local builds (optional)
+
+CI compiles through [sccache](https://github.com/mozilla/sccache) (GitHub Actions cache
+backend). You can opt in locally — it's per-developer and nothing in the repo forces it, so a
+missing `sccache` binary never breaks the build:
+
+```bash
+brew install sccache          # or: cargo install sccache
+export RUSTC_WRAPPER=sccache  # add to your shell profile to persist it
+```
+
+sccache stores artifacts on disk by default (`~/Library/Caches/Mozilla.sccache` on macOS, 10 GB
+cap; tune with `SCCACHE_DIR` / `SCCACHE_CACHE_SIZE`). For the biggest win across `cargo clean` and
+branch switches, also set `CARGO_INCREMENTAL=0` — sccache can't cache incremental builds, though
+that trades away incremental rebuild speed. Check hits with `sccache --show-stats`.
+
 ## Pull requests
 
 - Keep changes scoped to a single milestone/concern; split unrelated work.
