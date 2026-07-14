@@ -1,0 +1,19 @@
+tests/codex_multi_account.rs
+  s_152b566a8a2b4e::t_f4797aa631ed42 791-866
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "6a50063f1a11dc3e01fd8c8883f627026c3d40b2",
+  "prompts": {},
+  "sessions": {
+    "s_152b566a8a2b4e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4096e1b4-deea-4d85-a607-27482d159e11",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
