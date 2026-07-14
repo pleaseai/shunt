@@ -194,14 +194,18 @@ pub fn scan_account_dir(
 /// Resolve a pooled provider's effective account list: its configured
 /// `[[accounts]]` when non-empty, otherwise a per-request scan of the store
 /// directory (which enables no-restart account discovery, mirroring the
-/// Anthropic pool). While `accounts_dir` does not exist — the backward-compat
-/// deployment that sets `auth = "..._oauth"` but never runs `shunt login` — the
-/// scan is skipped entirely (no `spawn_blocking`, no `read_dir`), restoring the
-/// near-zero-I/O single-account path. The existence check runs on every request,
-/// so once an account is added (which creates the directory) scanning resumes
-/// with no restart. `provider_label` shapes the error text only ("codex" /
-/// "Claude"); the error is returned preformatted so each pool wraps it in its own
-/// gateway error type.
+/// Anthropic pool). When `accounts_dir` is genuinely absent (a `NotFound` stat)
+/// — the backward-compat deployment that sets `auth = "..._oauth"` but never runs
+/// `shunt login` — the scan is skipped entirely (no `spawn_blocking`, no
+/// `read_dir`), restoring the near-zero-I/O single-account path. Any *other* stat
+/// error (e.g. a permission fault on an existing but unreadable store) is
+/// surfaced rather than masked as "no accounts": `Path::exists()` would conflate
+/// the two, so `NotFound` is matched explicitly, mirroring `scan_account_dir`'s
+/// own error handling and preserving the pre-#118 guarantee that a broken store
+/// is diagnosable. The check runs on every request, so once an account is added
+/// (which creates the directory) scanning resumes with no restart.
+/// `provider_label` shapes the error text only ("codex" / "Claude"); the error is
+/// returned preformatted so each pool wraps it in its own gateway error type.
 pub(crate) async fn resolve_pool_accounts(
     provider_label: &str,
     configured: &[AccountConfig],
@@ -211,8 +215,16 @@ pub(crate) async fn resolve_pool_accounts(
     if !configured.is_empty() {
         return Ok(configured.to_vec());
     }
-    if !accounts_dir.exists() {
-        return Ok(Vec::new());
+    // Short-circuit on genuine absence only; surface every other stat error.
+    match fs::metadata(&accounts_dir) {
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(format!(
+                "failed to stat {provider_label} account store {}: {error}",
+                accounts_dir.display()
+            ));
+        }
     }
     // scan_accounts() does synchronous directory + file I/O; run it on the
     // blocking pool so it never stalls a runtime worker thread.
