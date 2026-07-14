@@ -1,0 +1,68 @@
+src/adapters/responses/mod.rs
+  s_3ab683da3a7a89::t_767251573d5777 6,28
+src/reload.rs
+  s_3ab683da3a7a89::t_767251573d5777 96-105
+README.md
+  s_3ab683da3a7a89::t_767251573d5777 73-74
+src/adapters/responses/inbound.rs
+  s_3ab683da3a7a89::t_767251573d5777 1-394
+src/adapters/responses/pool.rs
+  s_3ab683da3a7a89::t_767251573d5777 63-68,141-142,144-146,170,173-180,184,211-213,232,296,305-507
+src/server.rs
+  s_3ab683da3a7a89::t_767251573d5777 13,93-96,127-137
+  s_3ab683da3a7a89::t_c2ecec919a86cd 138-139
+site/src/content/docs/reference/configuration.md
+  s_3ab683da3a7a89::t_767251573d5777 42-51
+docs/m11-inbound-codex-endpoint.md
+  s_3ab683da3a7a89::t_767251573d5777 1-241
+site/src/content/docs/guides/inbound-codex-endpoint.md
+  s_3ab683da3a7a89::t_767251573d5777 1-95
+.claude/agent-memory/review-review-silent-failure-hunter/pr125-codex-passthrough-endpoint.md
+  s_3ab683da3a7a89::t_767251573d5777 1-16
+site/astro.config.mjs
+  s_3ab683da3a7a89::t_767251573d5777 103-106,117-121
+.claude/agent-memory/review-review-silent-failure-hunter/MEMORY.md
+  s_3ab683da3a7a89::t_767251573d5777 6
+src/lib.rs
+  s_3ab683da3a7a89::t_767251573d5777 5
+src/codex_endpoint.rs
+  s_3ab683da3a7a89::t_767251573d5777 1-282
+tests/inbound_codex_endpoint.rs
+  s_3ab683da3a7a89::t_767251573d5777 1-1172
+.claude/agent-memory/review-review-security-reviewer/project_m11-inbound-codex-endpoint-security.md
+  s_3ab683da3a7a89::t_767251573d5777 1-18
+.claude/agent-memory/review-review-security-reviewer/MEMORY.md
+  s_3ab683da3a7a89::t_767251573d5777 12
+.claude/agent-memory/review-review-pr-test-analyzer/MEMORY.md
+  s_3ab683da3a7a89::t_767251573d5777 7
+src/auth/inbound.rs
+  s_3ab683da3a7a89::t_767251573d5777 35-52,57,98-113,273-316
+site/src/content/docs/reference/endpoints.md
+  s_3ab683da3a7a89::t_767251573d5777 23-25,29
+  s_3ab683da3a7a89::t_b4dddb43795ee2 30
+src/config.rs
+  s_3ab683da3a7a89::t_767251573d5777 53-60,189-209,727-730,888,1238-1257,1425-1427,1694-1730
+  s_3ab683da3a7a89::t_c405014a61bfd6 1731
+docs/codex-configuration.md
+  s_3ab683da3a7a89::t_767251573d5777 27,609-705,711
+site/src/content/docs/guides/connect-codex-cli.md
+  s_3ab683da3a7a89::t_767251573d5777 1-240
+.claude/agent-memory/review-review-pr-test-analyzer/shunt-inbound-codex-endpoint-coverage.md
+  s_3ab683da3a7a89::t_767251573d5777 1-17
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "3375c88f5b1b4901c5e4a6001529fb9a3fff7bd8",
+  "prompts": {},
+  "sessions": {
+    "s_3ab683da3a7a89": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07346878-d2b2-43bb-9f17-22ce2af985d4",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
