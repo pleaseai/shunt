@@ -649,13 +649,19 @@ wire_api = "responses"
 If shunt has `[server.auth]` configured (recommended for anything beyond loopback), present the
 client token **either** way — shunt accepts both (`InboundAuth::authenticate_bearer`):
 
+# A. OpenAI-style Bearer key (the LiteLLM/llmgateway idiom), on the built-in openai provider.
+#    Set the base URL in ~/.codex/config.toml — NOT via the OPENAI_BASE_URL env var, which does
+#    not redirect the CLI's Responses WebSocket transport (the CLI keeps hitting
+#    wss://api.openai.com and bypasses shunt):
+
+```toml
+# ~/.codex/config.toml
+openai_base_url = "http://127.0.0.1:3001/v1"
+```
+
 ```bash
-# A. OpenAI-style Bearer key (the LiteLLM/llmgateway idiom) — works with the built-in
-#    openai provider. Set the base URL in ~/.codex/config.toml (openai_base_url = ".../v1"),
-#    NOT via the OPENAI_BASE_URL env var — the env var does not redirect the CLI's Responses
-#    WebSocket transport, so the CLI keeps hitting wss://api.openai.com and bypasses shunt.
-#    Then present only the token via env:
-export OPENAI_API_KEY="<shunt-token>"      # Codex sends it as Authorization: Bearer
+# then present only the token via env — Codex sends it as Authorization: Bearer
+export OPENAI_API_KEY="<shunt-token>"
 ```
 
 ```toml
