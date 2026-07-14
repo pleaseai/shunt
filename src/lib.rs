@@ -19,3 +19,4 @@ pub mod routes;
 pub mod routing;
 pub mod server;
 pub mod telemetry;
+pub mod usage_poll;

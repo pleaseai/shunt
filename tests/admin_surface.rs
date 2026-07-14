@@ -70,7 +70,7 @@ async fn start(mut config: Config) -> Gateway {
         .await
         .unwrap();
     let addr: SocketAddr = listener.local_addr().unwrap();
-    let (app, _shared) = server::build_router(config).unwrap();
+    let (app, _shared, _state) = server::build_router(config).unwrap();
     let task = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });

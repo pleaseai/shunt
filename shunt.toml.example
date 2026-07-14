@@ -32,6 +32,19 @@ default_provider = "anthropic" # provider for any model with no route -> pass-th
 # session_ttl_secs = 3600              # (default) browser session lifetime
 # pending_ttl_secs = 600               # (default) provisioning-flow lifetime
 
+# --- Optional: background Claude account-pool reconciliation (docs/m8-anthropic-multi-account.md).
+# Off by default -- absent or 0 starts no background task. A positive value
+# polls the Anthropic OAuth usage API (GET /api/oauth/usage) every N seconds
+# for imported (refreshable) claude_oauth accounts, reconciling the pool's
+# header-derived 5h/weekly/Fable (7d_oi) quota state with authoritative usage
+# that includes out-of-band consumption of the same account (e.g. the
+# operator's own Claude Code). A long-lived `claude setup-token` account (or a
+# token_env account) is skipped -- its token cannot call the usage endpoint.
+# Values below 60 are clamped up to a 60-second floor. The interval is fixed
+# at boot; a config reload does not start, stop, or re-tune the poller.
+# [server.pool]
+# usage_refresh_seconds = 300          # (disabled by default) 0 also disables
+
 # --- Optional: Sentry error reporting to YOUR OWN Sentry project (docs/running.md §3.1).
 # Off unless you set a DSN. Reports gateway-owned diagnostics only — fatal
 # gateway startup/serve errors, panics, and error-level log events (warn/info as

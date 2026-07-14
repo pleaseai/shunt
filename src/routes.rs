@@ -100,6 +100,7 @@ mod tests {
 
     #[test]
     fn router_includes_get_routes_route() {
-        let (_router, _shared) = server::build_router(crate::config::Config::default()).unwrap();
+        let (_router, _shared, _state) =
+            server::build_router(crate::config::Config::default()).unwrap();
     }
 }

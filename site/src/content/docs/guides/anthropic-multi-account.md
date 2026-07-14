@@ -91,6 +91,19 @@ Do not set both `credentials` and `token_env` on one account.
 
 The pool's selection, cooldown, and quota state survives config hot reloads for the life of the process. Reactive failover remains active if proactive rotation cannot avoid the upstream limit.
 
+## Usage-API reconciliation
+
+The quota headers above only reflect traffic that flowed through shunt. If you also use the same Claude account elsewhere — your own Claude Code session, another tool — that consumption stays invisible to the pool and it can undercount usage.
+
+Enable periodic reconciliation against the Anthropic OAuth usage API to close that gap:
+
+```toml
+[server.pool]
+usage_refresh_seconds = 300
+```
+
+This starts a background task that polls `GET /api/oauth/usage` every N seconds (values below 60 are clamped up to a 60-second floor) and applies the returned utilization to the same 5-hour, shared weekly (`7d`), and Fable-scoped weekly (`7d_oi`) windows the headers fill, including their reset times. It's a periodic authoritative correction layered on top of the reactive header state, not a replacement for it. It applies only to imported (refreshable) accounts — `shunt login claude --name <name>` without `--long-lived`, or a `credentials` account backed by a refresh token — because a long-lived `claude setup-token` or `token_env` account cannot call the endpoint. The table is absent by default, so this stays off unless you opt in, and the interval is fixed at boot: a config reload does not start, stop, or re-tune the poller.
+
 ## Failover rules
 
 | Response | Behavior |

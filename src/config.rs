@@ -63,10 +63,44 @@ pub struct ServerConfig {
     /// `0` disables injection (M5).
     #[serde(default = "default_sse_keepalive_seconds")]
     pub sse_keepalive_seconds: u64,
+    /// Optional Claude account-pool tuning. Absent ⇒ pool defaults (no usage-API
+    /// polling); the header-derived quota state is the only signal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool: Option<PoolConfig>,
 }
 
 fn default_sse_keepalive_seconds() -> u64 {
     30
+}
+
+/// `[server.pool]` — Claude account-pool behavior beyond the reactive,
+/// header-derived quota state. Today this configures optional polling of the
+/// Anthropic OAuth usage API to reconcile that state with authoritative usage.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct PoolConfig {
+    /// Poll the Anthropic OAuth usage API (`GET /api/oauth/usage`) every N
+    /// seconds for imported (refreshable) Claude accounts, applying the returned
+    /// 5h / weekly / Fable utilization to the pool. This reconciles the
+    /// per-response header state — which only sees traffic that flowed through
+    /// shunt — with ground-truth usage that includes out-of-band consumption of
+    /// the same account. `0` or absent disables polling (default). Only imported
+    /// accounts are eligible: a long-lived `claude setup-token` cannot call the
+    /// endpoint and is skipped. Values below 60 are clamped up to 60 to avoid
+    /// hammering the endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_refresh_seconds: Option<u64>,
+}
+
+impl PoolConfig {
+    /// The effective poll interval in seconds, or `None` when polling is
+    /// disabled (unset or `0`). A configured positive value below the 60-second
+    /// floor is clamped up.
+    pub fn usage_refresh_interval(&self) -> Option<u64> {
+        match self.usage_refresh_seconds {
+            None | Some(0) => None,
+            Some(seconds) => Some(seconds.max(60)),
+        }
+    }
 }
 
 /// `[server.auth]` — inbound client-token check on injected-credential routes
@@ -887,6 +921,7 @@ impl Default for Config {
                 admin: None,
                 codex_endpoint: None,
                 sse_keepalive_seconds: default_sse_keepalive_seconds(),
+                pool: None,
             },
             providers,
             models: Vec::new(),
@@ -1426,6 +1461,46 @@ mod tests {
         CodexEndpointConfig, Config, ConfigError, ConfigFormat, ModelConfig, ProviderKind,
         ResponsesFlavor, RetryConfig,
     };
+
+    #[test]
+    fn pool_config_usage_refresh_interval_disables_and_clamps() {
+        use super::PoolConfig;
+        // Unset and 0 both disable polling.
+        assert_eq!(PoolConfig::default().usage_refresh_interval(), None);
+        assert_eq!(
+            PoolConfig {
+                usage_refresh_seconds: Some(0)
+            }
+            .usage_refresh_interval(),
+            None
+        );
+        // A positive value below the 60s floor is clamped up; at/above passes through.
+        assert_eq!(
+            PoolConfig {
+                usage_refresh_seconds: Some(5)
+            }
+            .usage_refresh_interval(),
+            Some(60)
+        );
+        assert_eq!(
+            PoolConfig {
+                usage_refresh_seconds: Some(300)
+            }
+            .usage_refresh_interval(),
+            Some(300)
+        );
+    }
+
+    #[test]
+    fn pool_config_parses_and_defaults() {
+        use super::PoolConfig;
+        // An empty object exercises the `#[serde(default)]` field: no polling.
+        let empty: PoolConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty.usage_refresh_seconds, None);
+        // The documented key deserializes.
+        let set: PoolConfig = serde_json::from_str(r#"{"usage_refresh_seconds":300}"#).unwrap();
+        assert_eq!(set.usage_refresh_seconds, Some(300));
+    }
 
     #[test]
     fn admin_config_uses_defaults_for_missing_fields() {

@@ -184,10 +184,15 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
         .local_addr()
         .context("failed to read bind address")?;
     tracing::info!(%local_addr, "shunt listening");
-    let (router, shared) = server::build_router(config).context("failed to initialize gateway")?;
+    let (router, shared, state) =
+        server::build_router(config).context("failed to initialize gateway")?;
     // Reload triggers (SIGHUP and config-file watch) run as background tasks and
     // hot-swap the shared runtime state that the router reads per request.
     shunt::reload::spawn_reload_watchers(shared, path).await;
+    // Opt-in `[server.pool] usage_refresh_seconds`: poll the Anthropic OAuth
+    // usage API in the background, sharing the router's account pool. A no-op
+    // when the key is unset.
+    shunt::usage_poll::spawn_usage_poller(state);
     axum::serve(listener, router).await?;
     Ok(())
 }
