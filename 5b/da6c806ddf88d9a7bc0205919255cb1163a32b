@@ -1,0 +1,82 @@
+src/main.rs
+  s_694e6c5618c1cc::t_43fda4666fd70f 187-188
+  s_694e6c5618c1cc::t_d1436f80678c55 192-195
+tests/admin_surface.rs
+  s_694e6c5618c1cc::t_f2ca26256768e2 73
+src/discovery.rs
+  s_694e6c5618c1cc::t_f2068cc3fbf188 117-118
+docs/m8-anthropic-multi-account.md
+  s_694e6c5618c1cc::t_03ed81745cb96c 110-120
+  s_694e6c5618c1cc::t_4cf6e67003c1b0 69-75
+src/usage_poll.rs
+  s_694e6c5618c1cc::t_11bb6da58f6289 1-307
+site/src/content/docs/reference/configuration.md
+  s_694e6c5618c1cc::t_9be4b6916b950f 42-51
+src/accounts.rs
+  s_694e6c5618c1cc::t_f2068cc3fbf188 807-810
+  s_694e6c5618c1cc::t_546db29a8d41b3 255-283
+  s_694e6c5618c1cc::t_a102e7094bfc33 30-57
+  s_694e6c5618c1cc::t_0b545c1e7b3741 775-806,811-858
+site/src/content/docs/guides/anthropic-multi-account.md
+  s_694e6c5618c1cc::t_157ab0f4521ca9 94-106
+src/config.rs
+  s_694e6c5618c1cc::t_9d96fc20544026 924
+  s_694e6c5618c1cc::t_6eb947cb1c3fb1 1465-1494,1503-1504
+  s_694e6c5618c1cc::t_b80579a1efe515 1495-1502
+  s_694e6c5618c1cc::t_61ff46bbc44dfa 66-69,76-104
+  s_61e4010ccb474d::t_7496015faef232 105
+tests/inbound_codex_endpoint.rs
+  s_694e6c5618c1cc::t_f2ca26256768e2 156
+src/lib.rs
+  s_694e6c5618c1cc::t_befef769991d64 22
+tests/codex_websocket_fallback.rs
+  s_694e6c5618c1cc::t_f2ca26256768e2 55
+src/auth/claude/usage.rs
+  s_694e6c5618c1cc::t_f2068cc3fbf188 67-69,187,213
+  s_694e6c5618c1cc::t_954995863b8b6a 1-66,70-186,188-212,214-313
+src/routes.rs
+  s_694e6c5618c1cc::t_f2068cc3fbf188 103-104
+tests/retry.rs
+  s_694e6c5618c1cc::t_f2ca26256768e2 53
+tests/passthrough.rs
+  s_694e6c5618c1cc::t_f2ca26256768e2 65
+shunt.toml.example
+  s_694e6c5618c1cc::t_c6848f3effccee 35-47
+tests/multi_account.rs
+  s_694e6c5618c1cc::t_f2ca26256768e2 117
+README.md
+  s_694e6c5618c1cc::t_5b8540c3d04335 69
+src/auth/claude/mod.rs
+  s_694e6c5618c1cc::t_5f56a9c8b2cc4d 4
+tests/codex_multi_account.rs
+  s_694e6c5618c1cc::t_f2ca26256768e2 188
+tests/inbound_auth.rs
+  s_694e6c5618c1cc::t_f2ca26256768e2 96
+src/server.rs
+  s_694e6c5618c1cc::t_238ed31e79ce77 87-91
+  s_694e6c5618c1cc::t_7d1f43e75292f5 142-145
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "5bda6c806ddf88d9a7bc0205919255cb1163a32b",
+  "prompts": {},
+  "sessions": {
+    "s_61e4010ccb474d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "98e2da00-eef7-4aba-abaf-437fd21740ae",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_694e6c5618c1cc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6c3d12fb-89b6-497c-a33c-a4e359af21a1",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
