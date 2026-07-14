@@ -23,6 +23,7 @@ use crate::{
 /// exactly `AnthropicSseMachine::new`'s arguments. Passed as one unit through
 /// every relay path (streaming SSE and collected JSON) so the model name and the
 /// two protocol toggles can never be handed over out of order.
+#[derive(Debug)]
 pub(super) struct RelayOptions {
     pub model: String,
     pub thinking_enabled: bool,
@@ -43,7 +44,7 @@ impl RelayOptions {
 /// `forward` and threaded through each transport. `model` is intentionally
 /// absent — it is taken from the [`Route`] at relay time via
 /// [`TurnOptions::relay`], keeping these flags transport-agnostic.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub(super) struct TurnOptions {
     /// The client asked for a streaming (SSE) response.
     pub client_wants_stream: bool,
@@ -71,7 +72,7 @@ impl TurnOptions {
 /// `pool_key`). Cloned once in `forward` so a pre-first-event websocket failure
 /// can fall back to HTTP with the same body/credential — the same fields the
 /// previous per-argument clones copied.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(super) struct ForwardOptions {
     pub upstream_body: Value,
     pub credential: Credential,
@@ -86,6 +87,7 @@ pub(super) struct ForwardOptions {
 /// Everything `forward_chatgpt_oauth` needs beyond `state`/`route`. The account
 /// pool resolves a credential per account (rather than carrying one) and does not
 /// pre-compute an input estimate, so its shape differs from [`ForwardOptions`].
+#[derive(Debug)]
 pub(super) struct PoolForward {
     pub pool_key: Option<String>,
     pub session_id: Option<String>,
