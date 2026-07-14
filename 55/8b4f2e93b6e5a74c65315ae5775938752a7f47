@@ -1,0 +1,93 @@
+site/astro.config.mjs
+  s_fd29d6516bb0d4::t_0432cd91b73963 104-106
+  s_fd29d6516bb0d4::t_f2c47d2758a51f 118-121
+  s_fd29d6516bb0d4::t_e2a8f042d5bf48 103
+  s_fd29d6516bb0d4::t_d4e0b36ff1fffa 117
+src/reload.rs
+  s_fd29d6516bb0d4::t_bd10968530cb55 96-105
+docs/codex-configuration.md
+  s_fd29d6516bb0d4::t_15c8956a2e5818 678-684
+  s_fd29d6516bb0d4::t_70f9bb23329e81 27
+  s_fd29d6516bb0d4::t_3a4465b8b875be 686-687
+  s_fd29d6516bb0d4::t_ffc45064c17099 609-677,685,688-694,700
+tests/inbound_codex_endpoint.rs
+  s_fd29d6516bb0d4::t_36fd781a973916 319-320
+  s_fd29d6516bb0d4::t_b286e8a721a09f 1-23,25-44,55-185,187-277,279-318,321-356,365-462,580-603
+  s_fd29d6516bb0d4::t_1fd4e295a082a3 357-364
+  s_fd29d6516bb0d4::t_4e0fca43ca79a5 463-579
+  s_fd29d6516bb0d4::t_6996befb502dd9 24
+  s_fd29d6516bb0d4::t_a0fad5c2fabc0a 45-54
+  s_fd29d6516bb0d4::t_0f232a3b402b21 186
+  s_fd29d6516bb0d4::t_95059afdc422f5 278
+site/src/content/docs/guides/inbound-codex-endpoint.md
+  s_fd29d6516bb0d4::t_7e34143f558ba7 85
+  s_fd29d6516bb0d4::t_a7ca19bfadf77d 10-11
+  s_fd29d6516bb0d4::t_f3515db9440d9e 1-9,12-56,58-84,86
+  s_fd29d6516bb0d4::t_c2e24ceb2ababf 57
+src/adapters/responses/mod.rs
+  s_fd29d6516bb0d4::t_b9831037a67950 627-636,638-639,651-670,672,682-690,692-695,697-700,710
+  s_fd29d6516bb0d4::t_7b7e61ecd0faeb 637,640-650
+  s_fd29d6516bb0d4::t_94fb1ab44d78f8 787-790
+  s_fd29d6516bb0d4::t_548bb24c7e7de7 671,673-681
+  s_fd29d6516bb0d4::t_fcbb008d907c9d 1050
+  s_fd29d6516bb0d4::t_c1fdf8408c2e8d 1063-1071,1075-1077,1079,1083
+  s_fd29d6516bb0d4::t_38c6987f747354 701-709,711-714,716-759,761-786,791-862,864-953,1024-1027,1029-1030,1056-1062,1072-1074,1080-1082,1084-1086
+  s_fd29d6516bb0d4::t_b01b796730d9e2 715
+  s_fd29d6516bb0d4::t_e38286338db413 691,696
+  s_fd29d6516bb0d4::t_ee5ac47c835833 760
+  s_fd29d6516bb0d4::t_c935593c246992 863
+  s_fd29d6516bb0d4::t_e8a0aa2097eb28 954-1023,1028,1031-1049,1051-1055
+  s_fd29d6516bb0d4::t_19268bbf631dbe 1078
+site/src/content/docs/reference/endpoints.md
+  s_fd29d6516bb0d4::t_5816869faf253e 23-25,29
+  s_fd29d6516bb0d4::t_87d41a82f1041a 30
+src/config.rs
+  s_fd29d6516bb0d4::t_d258b0c8e211fc 189-209
+  s_fd29d6516bb0d4::t_572eee0dc2c795 1306-1308
+  s_fd29d6516bb0d4::t_0744aea1c17860 772
+  s_fd29d6516bb0d4::t_aa2ee9fbb05a4a 53-60
+  s_fd29d6516bb0d4::t_b4a3e889c1ea88 634-637
+  s_fd29d6516bb0d4::t_102ca237c33b0d 1119-1138
+  s_fd29d6516bb0d4::t_65b38da810cdb3 1575-1612
+src/server.rs
+  s_fd29d6516bb0d4::t_173a8b3e82c384 13
+  s_fd29d6516bb0d4::t_26f351b9c014b1 93-96
+  s_fd29d6516bb0d4::t_01c48d07f9a372 127-139
+src/codex_endpoint.rs
+  s_fd29d6516bb0d4::t_94fb1ab44d78f8 126-129
+  s_fd29d6516bb0d4::t_6df2ab66b00a20 1-110,116-125,130-152,157-168
+  s_fd29d6516bb0d4::t_7c05255013b112 111-115
+  s_fd29d6516bb0d4::t_caf6549be74f3e 153-156
+README.md
+  s_fd29d6516bb0d4::t_bb33bdbcf4242e 73-74
+site/src/content/docs/guides/connect-codex-cli.md
+  s_fd29d6516bb0d4::t_d01adafc836a2f 12-16,39-41,46-48,50,52-54,56-58,68,72-75,78-80,84-92,94,96-101,103-105,109,112-117,120-123,140,161-168,174,195,210-216
+  s_fd29d6516bb0d4::t_d62df827f3c669 125,127-131
+  s_fd29d6516bb0d4::t_f74bd85e0cfa00 184-186
+  s_fd29d6516bb0d4::t_29f6d4806f9e33 1-11,17-38,42-45,49,51,55,59-61,70-71,76-77,81-82,93,95,102,106-108,110-111,118-119,124,126,132-139,141-160,169-173,175-183,187-194,196-209
+  s_fd29d6516bb0d4::t_9b9198458dd257 62-67,69,83
+docs/m11-inbound-codex-endpoint.md
+  s_fd29d6516bb0d4::t_974d977c00bfaa 1-75,79-81,107-116,121-227
+  s_fd29d6516bb0d4::t_32be096007a19c 76-78,82-106
+  s_fd29d6516bb0d4::t_b338e3486c514f 117-120
+site/src/content/docs/reference/configuration.md
+  s_fd29d6516bb0d4::t_4b1d699fb9ff25 42-51
+src/lib.rs
+  s_fd29d6516bb0d4::t_4255657fc39adc 5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "558b4f2e93b6e5a74c65315ae5775938752a7f47",
+  "prompts": {},
+  "sessions": {
+    "s_fd29d6516bb0d4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b95d7a93-8c5b-41eb-967f-c1fa14688e07",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
