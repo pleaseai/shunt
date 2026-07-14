@@ -1,0 +1,21 @@
+.claude/agent-memory/review-review-security-reviewer/MEMORY.md
+  s_7621ba5ee2ffa5::t_a4cda3f6a23a07 9
+.claude/agent-memory/review-review-security-reviewer/project_claude-token-url-egress.md
+  s_7621ba5ee2ffa5::t_78f4739c420daa 3,8-11,13-23,25-34,36-40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "5f992240784470cd746a35f7e8401f1da4c8ce2b",
+  "prompts": {},
+  "sessions": {
+    "s_7621ba5ee2ffa5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "34ebd624-7701-4b6f-81bb-94d5e9e8f864",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
