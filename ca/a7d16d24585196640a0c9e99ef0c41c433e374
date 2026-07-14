@@ -1,0 +1,19 @@
+.claude/agent-memory/review-review-type-design-analyzer/shunt-adapter-type-patterns.md
+  s_838cbb95baa60b::t_9c9cf28fe0646f 37-66
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "caa7d16d24585196640a0c9e99ef0c41c433e374",
+  "prompts": {},
+  "sessions": {
+    "s_838cbb95baa60b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "97ba1d0a-9bc8-4b1c-ad51-a7fc74191d73",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
