@@ -93,6 +93,16 @@ fn warn_on_restart_only_changes(previous: &Config, next: &Config) {
              on a still-registered surface, disabling it makes every admin route reject requests"
         );
     }
+    // Like `[server.admin]`, whether the inbound Responses routes are registered
+    // is decided once at boot from the initial config. A hot edit that only
+    // changes the target `provider` does take effect (it is read per request from
+    // the swapped config), but toggling the block on or off cannot add or drop
+    // the routes without a restart.
+    if previous.server.codex_endpoint.is_some() != next.server.codex_endpoint.is_some() {
+        tracing::warn!(
+            "[server.codex_endpoint] was enabled or disabled but requires a restart to register or drop its routes"
+        );
+    }
     if sentry_changed(previous.sentry.as_ref(), next.sentry.as_ref()) {
         tracing::warn!(
             "[sentry] configuration changed but requires a restart to apply; the Sentry client is initialized once at startup"

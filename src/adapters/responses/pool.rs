@@ -59,30 +59,13 @@ pub(super) async fn forward_chatgpt_oauth(
 
     for index in order {
         let account = &accounts_config[index];
-        // The per-account refresh_lock serializes only credential refreshes for
-        // one account (see the matching note in
-        // anthropic::forward_claude_oauth) — never held across an upstream send.
-        let refresh_lock = state.accounts.refresh_lock(&route.provider, &account.name);
 
-        let credential = {
-            let _guard = refresh_lock.lock().await;
-            match resolve_chatgpt_account(account, &state.http_client).await {
-                Ok(credential) => credential,
-                Err(error) => {
-                    state.accounts.cooldown(
-                        &route.provider,
-                        &account.name,
-                        Duration::from_secs(5 * 60),
-                    );
-                    tracing::warn!(
-                        provider = %route.provider,
-                        account = %account.name,
-                        error = %error.message,
-                        "failed to resolve ChatGPT OAuth account"
-                    );
-                    continue;
-                }
-            }
+        // Resolve the account's credential under its per-account refresh lock
+        // (see resolve_or_cooldown); a resolution failure cools it down and
+        // rotates to the next account.
+        let credential = match resolve_or_cooldown(&state, &route, account).await {
+            Some(credential) => credential,
+            None => continue,
         };
 
         // Prefixing the pool key with the account name is the key point of
@@ -155,12 +138,12 @@ pub(super) async fn forward_chatgpt_oauth(
             }
         };
 
-        let status = upstream.status();
-        match accounts::classify_codex(status, upstream.headers()) {
-            FailoverAction::Relay => {
+        match classify_first(&state, &route, account, upstream) {
+            FirstOutcome::Relay(upstream) => {
                 // A non-401/429/5xx response means the account itself is fine,
-                // whether or not this particular request succeeded (mirrors
-                // the Anthropic adapter's top-level Relay arm).
+                // whether or not this particular request succeeded (mirrors the
+                // Anthropic adapter's top-level Relay arm).
+                let status = upstream.status();
                 state.accounts.mark_healthy(&route.provider, &account.name);
                 if status.is_success() {
                     let response = relay_success(
@@ -184,78 +167,21 @@ pub(super) async fn forward_chatgpt_oauth(
                 // rather than rotating to another account.
                 return Err(mapped_upstream_error(status, upstream, auth).await);
             }
-            FailoverAction::Rotate => {
-                let cooldown = if status == StatusCode::TOO_MANY_REQUESTS {
-                    accounts::retry_after(upstream.headers())
-                        .unwrap_or(Duration::from_secs(60))
-                        .clamp(Duration::from_secs(1), Duration::from_secs(3600))
-                } else {
-                    Duration::from_secs(30)
-                };
-                state
-                    .accounts
-                    .cooldown(&route.provider, &account.name, cooldown);
-                tracing::warn!(
-                    provider = %route.provider,
-                    account = %account.name,
-                    status = %status,
-                    "ChatGPT OAuth account failed over; cooling down and rotating to the next account"
-                );
+            FirstOutcome::Rotate(upstream) => {
                 last_response = Some(upstream);
             }
-            FailoverAction::RefreshRetry => {
-                // Unlike Claude, Codex's store never encodes a non-refreshable
-                // "long-lived setup token" shape (see auth/codex/store.rs) — the
-                // only static credential source is an explicit `token_env`.
-                if account.token_env.is_some() {
-                    state.accounts.cooldown(
-                        &route.provider,
-                        &account.name,
-                        Duration::from_secs(5 * 60),
-                    );
-                    tracing::warn!(
-                        provider = %route.provider,
-                        account = %account.name,
-                        "ChatGPT OAuth account returned 401 but its credential is not refreshable (token_env); cooling down"
-                    );
-                    last_response = Some(upstream);
-                    continue;
-                }
-
-                let credentials_path = account
-                    .credentials
-                    .as_deref()
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| auth::codex::store::account_path(&account.name));
-                let store = CodexAuthStore::new(credentials_path, state.http_client.clone());
-                // Serialize the refresh + credential writeback for this account
-                // (see the refresh_lock note at the top of the loop); release
-                // the lock again before the retry send below.
-                let refreshed = {
-                    let _guard = refresh_lock.lock().await;
-                    match store.force_refresh().await {
-                        Ok(credential) => credential,
-                        Err(error) => {
-                            state.accounts.cooldown(
-                                &route.provider,
-                                &account.name,
-                                Duration::from_secs(5 * 60),
-                            );
-                            tracing::warn!(
-                                provider = %route.provider,
-                                account = %account.name,
-                                error = %error.message,
-                                "failed to force-refresh ChatGPT OAuth account"
-                            );
+            FirstOutcome::NeedRefresh(upstream) => {
+                // Force-refresh the account's stored credential under its refresh
+                // lock (see force_refresh_or_cooldown); a `token_env` account or a
+                // refresh failure cools it down and rotates instead.
+                let retry_credential =
+                    match force_refresh_or_cooldown(&state, &route, account).await {
+                        Some(credential) => credential,
+                        None => {
                             last_response = Some(upstream);
                             continue;
                         }
-                    }
-                };
-                let retry_credential = Credential::ChatGptOAuth {
-                    access_token: refreshed.access_token,
-                    account_id: refreshed.account_id,
-                };
+                    };
                 let retry = match http_send(
                     &state,
                     &route,
@@ -282,30 +208,9 @@ pub(super) async fn forward_chatgpt_oauth(
                         continue;
                     }
                 };
-                let retry_status = retry.status();
-                if retry_status == StatusCode::UNAUTHORIZED {
-                    // Refresh succeeded but the credential is still rejected —
-                    // the account is genuinely broken. Cool it down longer and
-                    // rotate rather than relaying the 401 to the client.
-                    state.accounts.cooldown(
-                        &route.provider,
-                        &account.name,
-                        Duration::from_secs(5 * 60),
-                    );
-                    tracing::warn!(
-                        provider = %route.provider,
-                        account = %account.name,
-                        "ChatGPT OAuth account refreshed successfully but upstream still rejected the new credential; cooling down and rotating"
-                    );
-                    last_response = Some(retry);
-                    continue;
-                }
-                // Classify the refreshed retry the same way the initial
-                // response is classified, so a non-success outcome fails over
-                // to the remaining accounts instead of short-circuiting the
-                // pool.
-                match accounts::classify_codex(retry_status, retry.headers()) {
-                    FailoverAction::Relay => {
+                match classify_retry(&state, &route, account, retry) {
+                    RetryOutcome::Relay(retry) => {
+                        let retry_status = retry.status();
                         if retry_status.is_success() {
                             state.accounts.mark_healthy(&route.provider, &account.name);
                             let response = relay_success(
@@ -324,41 +229,11 @@ pub(super) async fn forward_chatgpt_oauth(
                         }
                         return Err(mapped_upstream_error(retry_status, retry, auth).await);
                     }
-                    // Exhaustive rather than `_` so a new FailoverAction variant
-                    // forces a decision here. Two of these arms are unreachable
-                    // for the retry status and are matched only to document the
-                    // invariants at the call site: classify_codex returns
-                    // RefreshRetry only for 401, but a 401 retry already `continue`d
-                    // at the `retry_status == UNAUTHORIZED` check above, so it never
-                    // reaches this match; and it never returns PauseSame at all (its
-                    // 429 arm always maps to Rotate). Only Relay and Rotate are live
-                    // here — RefreshRetry rides Rotate's arm as a defensive no-op.
-                    FailoverAction::Rotate | FailoverAction::RefreshRetry => {
-                        let cooldown = if retry_status == StatusCode::TOO_MANY_REQUESTS {
-                            accounts::retry_after(retry.headers())
-                                .unwrap_or(Duration::from_secs(60))
-                                .clamp(Duration::from_secs(1), Duration::from_secs(3600))
-                        } else {
-                            Duration::from_secs(30)
-                        };
-                        state
-                            .accounts
-                            .cooldown(&route.provider, &account.name, cooldown);
-                        tracing::warn!(
-                            provider = %route.provider,
-                            account = %account.name,
-                            status = %retry_status,
-                            "ChatGPT OAuth refresh retry did not succeed; rotating to the next account"
-                        );
+                    RetryOutcome::Rotate(retry) => {
                         last_response = Some(retry);
-                        continue;
-                    }
-                    FailoverAction::PauseSame => {
-                        unreachable!("classify_codex never returns PauseSame")
                     }
                 }
             }
-            FailoverAction::PauseSame => unreachable!("classify_codex never returns PauseSame"),
         }
     }
 
@@ -418,7 +293,7 @@ async fn relay_success(
 /// account name is not a valid header value — should never happen, since
 /// account names are validated against `[a-z0-9-]+` at import time (see
 /// `auth::codex::store::validate_account_name`).
-fn with_account_header(
+pub(super) fn with_account_header(
     mut response: axum::response::Response,
     account_name: &str,
 ) -> axum::response::Response {
@@ -426,4 +301,207 @@ fn with_account_header(
         response.headers_mut().insert("x-shunt-account", value);
     }
     response
+}
+
+// --- Shared Codex/ChatGPT pool failover primitives ---------------------------
+//
+// These are the parts of the per-account failover machine that are identical
+// between the translating outbound path ([`forward_chatgpt_oauth`], above) and
+// the verbatim inbound passthrough (`responses::inbound::forward_codex_inbound`):
+// cooldown timing, credential resolution, and force-refresh. Sharing them keeps
+// the two paths from drifting and avoids duplicating the cooldown/refresh rules.
+
+/// Cooldown for a rotate-worthy upstream status on the Codex pool: honor a 429's
+/// `retry-after` (clamped to 1s..=1h), otherwise a flat 30s. Shared so the
+/// translating and passthrough paths back off identically.
+pub(super) fn rotate_cooldown(
+    status: StatusCode,
+    headers: &reqwest::header::HeaderMap,
+) -> Duration {
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        accounts::retry_after(headers)
+            .unwrap_or(Duration::from_secs(60))
+            .clamp(Duration::from_secs(1), Duration::from_secs(3600))
+    } else {
+        Duration::from_secs(30)
+    }
+}
+
+/// Resolve one Codex/ChatGPT OAuth account's credential under its per-account
+/// refresh lock. On failure the account is cooled down for 5 minutes and logged,
+/// and `None` signals the caller to rotate to the next account. The lock is
+/// released before the caller sends upstream (never held across a send).
+pub(super) async fn resolve_or_cooldown(
+    state: &AppState,
+    route: &Route,
+    account: &AccountConfig,
+) -> Option<Credential> {
+    let refresh_lock = state.accounts.refresh_lock(&route.provider, &account.name);
+    let _guard = refresh_lock.lock().await;
+    match resolve_chatgpt_account(account, &state.http_client).await {
+        Ok(credential) => Some(credential),
+        Err(error) => {
+            state
+                .accounts
+                .cooldown(&route.provider, &account.name, Duration::from_secs(5 * 60));
+            tracing::warn!(
+                provider = %route.provider,
+                account = %account.name,
+                error = %error.message,
+                "failed to resolve ChatGPT OAuth account"
+            );
+            None
+        }
+    }
+}
+
+/// Force-refresh one Codex/ChatGPT OAuth account's stored credential under its
+/// refresh lock, returning the refreshed credential to retry with. A `token_env`
+/// (static) account has nothing to refresh — unlike Claude, Codex's store never
+/// encodes a non-refreshable "long-lived setup token" shape (see
+/// auth/codex/store.rs), so the only static source is an explicit `token_env` —
+/// and a refresh failure likewise cools the account down. Either case returns
+/// `None` to signal the caller to rotate. The lock is released before the caller
+/// retries upstream (never held across a send).
+pub(super) async fn force_refresh_or_cooldown(
+    state: &AppState,
+    route: &Route,
+    account: &AccountConfig,
+) -> Option<Credential> {
+    if account.token_env.is_some() {
+        state
+            .accounts
+            .cooldown(&route.provider, &account.name, Duration::from_secs(5 * 60));
+        tracing::warn!(
+            provider = %route.provider,
+            account = %account.name,
+            "ChatGPT OAuth account returned 401 but its credential is not refreshable (token_env); cooling down"
+        );
+        return None;
+    }
+
+    let credentials_path = account
+        .credentials
+        .as_deref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| auth::codex::store::account_path(&account.name));
+    let store = CodexAuthStore::new(credentials_path, state.http_client.clone());
+    let refresh_lock = state.accounts.refresh_lock(&route.provider, &account.name);
+    let _guard = refresh_lock.lock().await;
+    match store.force_refresh().await {
+        Ok(refreshed) => Some(Credential::ChatGptOAuth {
+            access_token: refreshed.access_token,
+            account_id: refreshed.account_id,
+        }),
+        Err(error) => {
+            state
+                .accounts
+                .cooldown(&route.provider, &account.name, Duration::from_secs(5 * 60));
+            tracing::warn!(
+                provider = %route.provider,
+                account = %account.name,
+                error = %error.message,
+                "failed to force-refresh ChatGPT OAuth account"
+            );
+            None
+        }
+    }
+}
+
+/// The classification of a **first-attempt** upstream response on the Codex pool.
+/// The account-specific relay rendering (translate vs verbatim, and the
+/// `mark_healthy`) stays with the caller; the shared cooldown/rotate bookkeeping
+/// is applied here so the translating and passthrough paths classify identically.
+pub(super) enum FirstOutcome {
+    /// The account is fine — the caller marks it healthy and relays this response
+    /// its own way.
+    Relay(reqwest::Response),
+    /// The account failed over (already cooled down); the caller stashes this
+    /// response as the pool's last-seen and rotates.
+    Rotate(reqwest::Response),
+    /// A 401 — the caller should force-refresh and retry this account.
+    NeedRefresh(reqwest::Response),
+}
+
+/// Classify a first-attempt upstream response, applying the shared rotate cooldown.
+/// A `Relay` account is left for the caller to mark healthy so it can render the
+/// response its own way (a translating path splits success vs a non-failover 4xx;
+/// the passthrough relays verbatim).
+pub(super) fn classify_first(
+    state: &AppState,
+    route: &Route,
+    account: &AccountConfig,
+    upstream: reqwest::Response,
+) -> FirstOutcome {
+    let status = upstream.status();
+    match accounts::classify_codex(status, upstream.headers()) {
+        FailoverAction::Relay => FirstOutcome::Relay(upstream),
+        FailoverAction::Rotate => {
+            let cooldown = rotate_cooldown(status, upstream.headers());
+            state
+                .accounts
+                .cooldown(&route.provider, &account.name, cooldown);
+            tracing::warn!(
+                provider = %route.provider,
+                account = %account.name,
+                status = %status,
+                "codex pool account failed over; cooling down and rotating to the next account"
+            );
+            FirstOutcome::Rotate(upstream)
+        }
+        FailoverAction::RefreshRetry => FirstOutcome::NeedRefresh(upstream),
+        FailoverAction::PauseSame => unreachable!("classify_codex never returns PauseSame"),
+    }
+}
+
+/// The classification of a **refreshed-retry** upstream response on the Codex pool.
+pub(super) enum RetryOutcome {
+    /// The caller marks the account healthy and relays this refreshed response.
+    Relay(reqwest::Response),
+    /// Rotate (already cooled down); the caller stashes this as the pool's
+    /// last-seen.
+    Rotate(reqwest::Response),
+}
+
+/// Classify a refreshed-retry upstream response. A retry still rejected with 401
+/// (the refresh succeeded but the credential is still bad) or otherwise
+/// non-relayable cools the account down and rotates; only a relayable status is
+/// handed back for the caller to render. `classify_codex` returns `RefreshRetry`
+/// only for 401 (handled above) and never `PauseSame`, so only `Relay` and
+/// `Rotate` are live — the others ride `Rotate`'s arm as a defensive no-op.
+pub(super) fn classify_retry(
+    state: &AppState,
+    route: &Route,
+    account: &AccountConfig,
+    retry: reqwest::Response,
+) -> RetryOutcome {
+    let retry_status = retry.status();
+    if retry_status == StatusCode::UNAUTHORIZED {
+        state
+            .accounts
+            .cooldown(&route.provider, &account.name, Duration::from_secs(5 * 60));
+        tracing::warn!(
+            provider = %route.provider,
+            account = %account.name,
+            "codex pool account refreshed but upstream still rejected the new credential; cooling down and rotating"
+        );
+        return RetryOutcome::Rotate(retry);
+    }
+    match accounts::classify_codex(retry_status, retry.headers()) {
+        FailoverAction::Relay => RetryOutcome::Relay(retry),
+        FailoverAction::Rotate | FailoverAction::RefreshRetry => {
+            let cooldown = rotate_cooldown(retry_status, retry.headers());
+            state
+                .accounts
+                .cooldown(&route.provider, &account.name, cooldown);
+            tracing::warn!(
+                provider = %route.provider,
+                account = %account.name,
+                status = %retry_status,
+                "codex pool refresh retry did not succeed; rotating to the next account"
+            );
+            RetryOutcome::Rotate(retry)
+        }
+        FailoverAction::PauseSame => unreachable!("classify_codex never returns PauseSame"),
+    }
 }

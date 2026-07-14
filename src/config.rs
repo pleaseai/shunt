@@ -50,6 +50,14 @@ pub struct ServerConfig {
     /// `docs/m9-admin-surface.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admin: Option<AdminConfig>,
+    /// Optional opt-in inbound OpenAI Responses (Codex) endpoint. Absent ⇒ no
+    /// `/responses` routes are registered at all (today's HTTP surface
+    /// unchanged). When set, the Codex CLI can point its `chatgpt_base_url` (or
+    /// a custom `model_provider`) at shunt and be load-balanced across the named
+    /// provider's ChatGPT/Codex account pool. See
+    /// `docs/m11-inbound-codex-endpoint.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_endpoint: Option<CodexEndpointConfig>,
     /// Idle seconds before shunt injects an SSE `ping` event into a streaming
     /// response so middlebox timers (Cloudflare's 100s → 524) never expire.
     /// `0` disables injection (M5).
@@ -176,6 +184,27 @@ impl AdminConfig {
             std::time::Duration::from_secs(self.pending_ttl_secs),
         ))
     }
+}
+
+/// `[server.codex_endpoint]` — opt-in inbound OpenAI Responses (Codex) endpoint.
+/// When present, shunt registers `POST /backend-api/codex/responses`,
+/// `POST /responses`, and `POST /v1/responses`, and proxies each request through
+/// the named provider's ChatGPT/Codex account pool without translating it to or
+/// from Anthropic Messages (a raw passthrough). Absent ⇒ none of those routes
+/// exist. See `docs/m11-inbound-codex-endpoint.md`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CodexEndpointConfig {
+    /// Which `chatgpt_oauth` provider's account pool serves inbound Responses
+    /// requests. Every inbound request is routed to this one provider (the body
+    /// `model` is forwarded upstream verbatim, not used to pick a provider), so
+    /// it must exist and use `auth = "chatgpt_oauth"`. Defaults to the built-in
+    /// `codex` provider.
+    #[serde(default = "default_codex_endpoint_provider")]
+    pub provider: String,
+}
+
+fn default_codex_endpoint_provider() -> String {
+    "codex".to_string()
 }
 
 /// `[sentry]` — opt-in error reporting to the operator's own Sentry project.
@@ -695,6 +724,10 @@ pub enum ConfigError {
     AccountMultipleCredentialSources { provider: String, name: String },
     #[error("server.default_provider references unknown provider: {0}")]
     UnknownDefaultProvider(String),
+    #[error("[server.codex_endpoint] references unknown provider: {0}")]
+    UnknownCodexEndpointProvider(String),
+    #[error("[server.codex_endpoint] provider {0} must use auth = \"chatgpt_oauth\"; the inbound Responses endpoint injects the operator's Codex bearer")]
+    CodexEndpointWrongAuth(String),
     #[error("route for model {model} references unknown provider: {provider}")]
     UnknownRouteProvider { model: String, provider: String },
     #[error("route prefix {prefix} references unknown provider: {provider}")]
@@ -852,6 +885,7 @@ impl Default for Config {
                 default_provider: "anthropic".to_string(),
                 auth: None,
                 admin: None,
+                codex_endpoint: None,
                 sse_keepalive_seconds: default_sse_keepalive_seconds(),
             },
             providers,
@@ -1201,6 +1235,26 @@ impl Config {
                 self.server.default_provider.clone(),
             ));
         }
+        // The inbound Responses endpoint injects the operator's Codex bearer, so
+        // its target provider must exist and be a `chatgpt_oauth` provider (whose
+        // base_url is already held to the ChatGPT host over https by the
+        // per-provider guards above). Routing a raw inbound Responses request to
+        // any other auth mode would inject the wrong (or no) credential.
+        if let Some(codex_endpoint) = &self.server.codex_endpoint {
+            match self.provider(&codex_endpoint.provider) {
+                None => {
+                    return Err(ConfigError::UnknownCodexEndpointProvider(
+                        codex_endpoint.provider.clone(),
+                    ));
+                }
+                Some(provider) if provider.auth != AuthMode::ChatgptOauth => {
+                    return Err(ConfigError::CodexEndpointWrongAuth(
+                        codex_endpoint.provider.clone(),
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
         for route in &self.routes {
             if !self.has_provider(&route.provider) {
                 return Err(ConfigError::UnknownRouteProvider {
@@ -1368,8 +1422,9 @@ mod tests {
     use figment::providers::Format;
 
     use super::{
-        config_file_candidates, host_is_chatgpt, AccountConfig, AdminConfig, AuthMode, Config,
-        ConfigError, ConfigFormat, ModelConfig, ProviderKind, ResponsesFlavor, RetryConfig,
+        config_file_candidates, host_is_chatgpt, AccountConfig, AdminConfig, AuthMode,
+        CodexEndpointConfig, Config, ConfigError, ConfigFormat, ModelConfig, ProviderKind,
+        ResponsesFlavor, RetryConfig,
     };
 
     #[test]
@@ -1633,6 +1688,44 @@ mod tests {
         assert!(matches!(
             config.validate().unwrap_err(),
             ConfigError::DuplicateAccountName { .. }
+        ));
+    }
+
+    #[test]
+    fn codex_endpoint_accepts_a_chatgpt_oauth_provider() {
+        // The built-in `codex` provider is chatgpt_oauth, so opting into the
+        // inbound endpoint against it validates.
+        let mut config = Config::default();
+        config.server.codex_endpoint = Some(CodexEndpointConfig {
+            provider: "codex".to_string(),
+        });
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn codex_endpoint_rejects_unknown_provider() {
+        let mut config = Config::default();
+        config.server.codex_endpoint = Some(CodexEndpointConfig {
+            provider: "nope".to_string(),
+        });
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::UnknownCodexEndpointProvider(provider) if provider == "nope"
+        ));
+    }
+
+    #[test]
+    fn codex_endpoint_rejects_non_chatgpt_oauth_provider() {
+        // Pointing the inbound endpoint at a non-chatgpt_oauth provider (here the
+        // built-in `anthropic` passthrough provider) would inject the wrong (or
+        // no) credential, so it is rejected at boot.
+        let mut config = Config::default();
+        config.server.codex_endpoint = Some(CodexEndpointConfig {
+            provider: "anthropic".to_string(),
+        });
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::CodexEndpointWrongAuth(provider) if provider == "anthropic"
         ));
     }
 
