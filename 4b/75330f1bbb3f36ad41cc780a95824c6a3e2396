@@ -1,0 +1,24 @@
+src/adapters/responses/context.rs
+  s_152b566a8a2b4e::t_2b72c52e4800d7 90
+  s_152b566a8a2b4e::t_d015f58e1c4b4d 47
+  s_152b566a8a2b4e::t_4b95ae66379dde 75
+  s_152b566a8a2b4e::t_678438585a26a4 26
+.please/docs/review/rejected-findings.jsonl
+  s_152b566a8a2b4e::t_ff2e1f77e7ce5a 10-11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "4b75330f1bbb3f36ad41cc780a95824c6a3e2396",
+  "prompts": {},
+  "sessions": {
+    "s_152b566a8a2b4e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4096e1b4-deea-4d85-a607-27482d159e11",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
