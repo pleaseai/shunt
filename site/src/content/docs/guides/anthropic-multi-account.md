@@ -138,7 +138,7 @@ Claude Code may encode account metadata as JSON inside the string-valued `metada
 - `base_url` uses HTTPS; and
 - its host is `anthropic.com` or a subdomain such as `api.anthropic.com`.
 
-These startup checks prevent an OAuth bearer from being sent off-origin or over plaintext. The HTTPS and host checks are **relaxed for loopback hosts** (`localhost`, `127.0.0.1`, `[::1]`, etc.): a loopback `base_url` may use plain HTTP and any host, so a local debugging proxy or mock can receive the traffic — the bearer cannot leave the operator's machine. Non-loopback hosts are always held to HTTPS + `anthropic.com`. On a shared deployment, also configure [`[server.auth]`](/guides/shared-gateway/) because `claude_oauth` spends gateway-owned credentials.
+These startup checks prevent an OAuth bearer from being sent off-origin or over plaintext. The HTTPS and host checks are **relaxed for loopback hosts** (`localhost`, `127.0.0.1`, `[::1]`, etc.): a loopback `base_url` may use plain HTTP and any host, so a local debugging proxy or mock can receive the traffic — the bearer cannot leave the operator's machine. Non-loopback hosts are always held to HTTPS + `anthropic.com`. On a shared deployment, also configure [`[server.auth]`](/guides/shared-gateway/#inbound-client-tokens) because `claude_oauth` spends gateway-owned credentials. Clients then authenticate with the `ANTHROPIC_AUTH_TOKEN` they already send (accepted as the client token via `Authorization: Bearer`, alongside `x-shunt-token` and `x-api-key`) — on a pool-only gateway no `ANTHROPIC_CUSTOM_HEADERS` line is needed.
 
 ## Remaining follow-up
 

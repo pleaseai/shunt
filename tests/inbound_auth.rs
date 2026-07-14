@@ -16,7 +16,7 @@ use shunt::{
 };
 use tokio::task::JoinHandle;
 use wiremock::{
-    matchers::{method, path},
+    matchers::{header, method, path},
     Match, Mock, MockServer, Request, ResponseTemplate,
 };
 
@@ -123,14 +123,23 @@ async fn post_messages(
     model: &str,
     token: Option<&str>,
 ) -> reqwest::Response {
+    let headers = token.map(|token| ("x-shunt-token", token));
+    post_messages_with_headers(gateway, model, headers.as_slice()).await
+}
+
+async fn post_messages_with_headers(
+    gateway: &TestGateway,
+    model: &str,
+    headers: &[(&str, &str)],
+) -> reqwest::Response {
     let mut request = reqwest::Client::new()
         .post(format!("{}/v1/messages", gateway.base_url))
         .header("content-type", "application/json")
         .body(format!(
             r#"{{"model":"{model}","max_tokens":16,"messages":[{{"role":"user","content":"hi"}}]}}"#
         ));
-    if let Some(token) = token {
-        request = request.header("x-shunt-token", token);
+    for (name, value) in headers {
+        request = request.header(*name, *value);
     }
     request.send().await.unwrap()
 }
@@ -221,6 +230,164 @@ async fn mapped_route_with_valid_token_forwards_and_strips_the_token_header() {
 
     let response = post_messages(&gateway, "mapped-model", Some("tok-b")).await;
 
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn mapped_route_accepts_the_gate_token_via_bearer_and_x_api_key() {
+    if !can_bind_loopback() {
+        return;
+    }
+    std::env::set_var("SHUNT_TEST_M4_KEY_I", "upstream-key");
+    std::env::set_var("SHUNT_TEST_M4_TOKENS_I", "alice:tok-a");
+    let upstream = MockServer::start().await;
+    // Whichever slot carried the gate token, the upstream request must show
+    // only the injected provider credential — never the gate token.
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(NoHeader("x-shunt-token"))
+        .and(NoHeader("x-api-key"))
+        .and(header("authorization", "Bearer upstream-key"))
+        .and(header("x-shunt-inbound-client", "alice"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
+        .expect(2)
+        .mount(&upstream)
+        .await;
+    let config = with_inbound_auth(
+        test_config(&upstream.uri(), "SHUNT_TEST_M4_KEY_I"),
+        "SHUNT_TEST_M4_TOKENS_I",
+    );
+    let gateway = start_gateway_with(config).await;
+
+    // Claude Code's `ANTHROPIC_AUTH_TOKEN` idiom: `Authorization: Bearer`.
+    let response = post_messages_with_headers(
+        &gateway,
+        "mapped-model",
+        &[("authorization", "Bearer tok-a")],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Claude Code's API-key idiom: `x-api-key`.
+    let response =
+        post_messages_with_headers(&gateway, "mapped-model", &[("x-api-key", "tok-a")]).await;
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn mapped_route_with_wrong_bearer_or_x_api_key_is_401() {
+    if !can_bind_loopback() {
+        return;
+    }
+    std::env::set_var("SHUNT_TEST_M4_KEY_J", "upstream-key");
+    std::env::set_var("SHUNT_TEST_M4_TOKENS_J", "alice:tok-a");
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
+        .expect(0)
+        .mount(&upstream)
+        .await;
+    let config = with_inbound_auth(
+        test_config(&upstream.uri(), "SHUNT_TEST_M4_KEY_J"),
+        "SHUNT_TEST_M4_TOKENS_J",
+    );
+    let gateway = start_gateway_with(config).await;
+
+    for headers in [
+        [("authorization", "Bearer not-the-token")],
+        [("x-api-key", "not-the-token")],
+        // A non-Bearer scheme is not a gate credential even with a valid token.
+        [("authorization", "Basic tok-a")],
+    ] {
+        let response = post_messages_with_headers(&gateway, "mapped-model", &headers).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+}
+
+#[tokio::test]
+async fn mapped_route_attributes_to_the_dedicated_header_over_bearer_and_api_key() {
+    if !can_bind_loopback() {
+        return;
+    }
+    std::env::set_var("SHUNT_TEST_M4_KEY_K", "upstream-key");
+    std::env::set_var("SHUNT_TEST_M4_TOKENS_K", "alice:tok-a,bob:tok-b");
+    let upstream = MockServer::start().await;
+    // Both requests below carry a second valid credential belonging to "bob";
+    // the higher-priority slot must decide the attributed client. Neither live
+    // gate-token slot may leak upstream — only the injected provider credential
+    // reaches the mock (guards `check_inbound_auth`'s own strip independent of
+    // adapter behavior, mirroring the single-slot leak test).
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(NoHeader("x-shunt-token"))
+        .and(NoHeader("x-api-key"))
+        .and(header("authorization", "Bearer upstream-key"))
+        .and(header("x-shunt-inbound-client", "alice"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
+        .expect(2)
+        .mount(&upstream)
+        .await;
+    let config = with_inbound_auth(
+        test_config(&upstream.uri(), "SHUNT_TEST_M4_KEY_K"),
+        "SHUNT_TEST_M4_TOKENS_K",
+    );
+    let gateway = start_gateway_with(config).await;
+
+    // Dedicated header beats a valid Bearer from another client.
+    let response = post_messages_with_headers(
+        &gateway,
+        "mapped-model",
+        &[
+            ("x-shunt-token", "tok-a"),
+            ("authorization", "Bearer tok-b"),
+        ],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Bearer beats a valid `x-api-key` from another client.
+    let response = post_messages_with_headers(
+        &gateway,
+        "mapped-model",
+        &[("authorization", "Bearer tok-a"), ("x-api-key", "tok-b")],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn passthrough_route_forwards_the_client_credential_unchanged() {
+    if !can_bind_loopback() {
+        return;
+    }
+    std::env::set_var("SHUNT_TEST_M4_KEY_L", "upstream-key");
+    std::env::set_var("SHUNT_TEST_M4_TOKENS_L", "alice:tok-a");
+    let upstream = MockServer::start().await;
+    // On passthrough the Bearer is the caller's real Anthropic credential: it
+    // must reach the upstream even though the gated path would strip it.
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(NoHeader("x-shunt-token"))
+        .and(header("authorization", "Bearer sk-ant-client-cred"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let config = with_inbound_auth(
+        test_config(&upstream.uri(), "SHUNT_TEST_M4_KEY_L"),
+        "SHUNT_TEST_M4_TOKENS_L",
+    );
+    let gateway = start_gateway_with(config).await;
+
+    let response = post_messages_with_headers(
+        &gateway,
+        "claude-sonnet-4-6",
+        &[
+            ("authorization", "Bearer sk-ant-client-cred"),
+            ("x-shunt-token", "whatever"),
+        ],
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::OK);
 }
 

@@ -138,7 +138,7 @@ Claude Code는 문자열 값인 `metadata.user_id` 안에 계정 메타데이터
 - `base_url`이 HTTPS를 사용하며;
 - 호스트가 `anthropic.com`이거나 `api.anthropic.com` 같은 그 서브도메인일 때.
 
-이 시작 검사는 OAuth bearer가 다른 오리진으로, 또는 평문으로 전송되는 것을 막습니다. HTTPS와 호스트 검사는 **루프백 호스트에서는 완화**됩니다(`localhost`, `127.0.0.1`, `[::1]` 등): 루프백 `base_url`은 평문 HTTP와 임의의 호스트를 쓸 수 있어 로컬 디버깅 프록시나 목(mock)이 트래픽을 받을 수 있습니다 — bearer가 운영자의 머신을 벗어날 수는 없습니다. 루프백이 아닌 호스트에는 항상 HTTPS + `anthropic.com`이 요구됩니다. 공유 배포에서는 `claude_oauth`가 게이트웨이 소유 자격 증명을 소비하므로 [`[server.auth]`](/ko/guides/shared-gateway/)도 함께 구성하세요.
+이 시작 검사는 OAuth bearer가 다른 오리진으로, 또는 평문으로 전송되는 것을 막습니다. HTTPS와 호스트 검사는 **루프백 호스트에서는 완화**됩니다(`localhost`, `127.0.0.1`, `[::1]` 등): 루프백 `base_url`은 평문 HTTP와 임의의 호스트를 쓸 수 있어 로컬 디버깅 프록시나 목(mock)이 트래픽을 받을 수 있습니다 — bearer가 운영자의 머신을 벗어날 수는 없습니다. 루프백이 아닌 호스트에는 항상 HTTPS + `anthropic.com`이 요구됩니다. 공유 배포에서는 `claude_oauth`가 게이트웨이 소유 자격 증명을 소비하므로 [`[server.auth]`](/ko/guides/shared-gateway/#인바운드-클라이언트-토큰)도 함께 구성하세요. 클라이언트는 이미 보내고 있는 `ANTHROPIC_AUTH_TOKEN`으로 인증됩니다(`x-shunt-token`, `x-api-key`와 나란히 `Authorization: Bearer`로도 클라이언트 토큰을 받습니다) — 풀 전용 게이트웨이라면 `ANTHROPIC_CUSTOM_HEADERS` 줄이 필요 없습니다.
 
 ## 남은 후속 작업
 

@@ -37,6 +37,10 @@ The credential Claude Code sends to shunt plays two roles: it authenticates **Cl
 
 A dummy value like `sk-dummy` satisfies the discovery gate but breaks passthrough — it is forwarded to Anthropic and returns 401.
 
+:::note[On a shared gateway]
+When the operator configured [`[server.auth]`](/guides/shared-gateway/#inbound-client-tokens), the credential plays a third role: mapped/pooled models accept it as your **client token** — `ANTHROPIC_AUTH_TOKEN` (sent as `Authorization: Bearer`) or an `x-api-key` value works alongside the dedicated `x-shunt-token` header. On a pool-only gateway (e.g. an [Anthropic account pool](/guides/anthropic-multi-account/) as default provider), setting `ANTHROPIC_AUTH_TOKEN` to your assigned token is all the setup you need.
+:::
+
 **Prefer `claude setup-token`.** It mints a **one-year** OAuth token ([authentication docs](https://code.claude.com/docs/en/authentication#generate-a-long-lived-token)), so nothing needs refreshing, and one value covers both roles:
 
 ```bash

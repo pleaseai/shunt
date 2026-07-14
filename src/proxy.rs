@@ -137,7 +137,8 @@ async fn forward(
     })?;
     // Inbound client auth (M4): only routes where shunt injects a server-side
     // credential are gated — passthrough callers pay with their own credential.
-    // The client-token header is stripped below either way, so it never leaks
+    // The client-token header is stripped below either way (and on gated routes
+    // the standard credential headers too), so a gate token never leaks
     // upstream.
     let headers = check_inbound_auth(&state, &route, headers).map_err(|error| *error)?;
     let headers = &headers;
@@ -209,7 +210,10 @@ async fn forward(
 }
 
 /// Enforce `[server.auth]` on injected-credential routes and strip the client
-/// token header from what gets forwarded upstream. Returns the headers to
+/// token header from what gets forwarded upstream. The gate accepts the same
+/// credential slots as discovery (`x-shunt-token`, then `Authorization:
+/// Bearer`, then `x-api-key`), so on a gated route every accepted slot is
+/// stripped — a gate token must never travel upstream. Returns the headers to
 /// forward. Token values are never logged.
 fn check_inbound_auth(
     state: &AppState,
@@ -232,9 +236,15 @@ fn check_inbound_auth(
         return Ok(forwarded);
     }
 
-    match auth.authenticate(headers) {
+    match auth.authenticate_client(headers) {
         Some(client) => {
             tracing::info!(client = %client, provider = %route.provider, "inbound client authenticated");
+            // The injected-credential adapters all replace these headers with
+            // the provider credential, but strip them here too so the "gate
+            // tokens never leak upstream" boundary does not depend on adapter
+            // behavior.
+            forwarded.remove("authorization");
+            forwarded.remove("x-api-key");
             if let Ok(client) = HeaderValue::from_str(client) {
                 forwarded.insert("x-shunt-inbound-client", client);
             }
@@ -243,7 +253,7 @@ fn check_inbound_auth(
         None => {
             tracing::warn!(provider = %route.provider, "inbound auth failed: missing or invalid client token");
             let message = format!(
-                "missing or invalid {} header: this gateway requires a client token for mapped models; ask the operator for one",
+                "missing or invalid credential: this gateway requires a client token (via {}, Authorization: Bearer, or x-api-key) for mapped models; ask the operator for one",
                 auth.header()
             );
             Err(Box::new(ForwardError {

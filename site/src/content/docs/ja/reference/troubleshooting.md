@@ -17,6 +17,6 @@ description: よくある shunt のエラーとその修正方法。
 | ツール検索は動くがコンテキストを削減しない(シムは完全なスキーマの送信を遅らせるだけ) | ネイティブな Responses `tool_search` プロトコルにオプトインする — 標準 OpenAI または ChatGPT/Codex 系のプロバイダーで gpt-5.4 以降のモデルへルーティングしている場合、`[providers.<name>]` に `tool_search = true` を設定します。非対応のフレーバー/モデルは静かにテキストシムのままです — [ChatGPT / Codex → ツール検索 → オプトインのネイティブプロトコル](/ja/guides/codex/#オプトインのネイティブプロトコル) を参照。 |
 | マッピングされたモデルでコンテキスト長エラーの後にセッションが立ち往生 | shunt は上流のオーバーフローエラーを `prompt is too long …` へ書き換えるため Claude Code は自動コンパクトして再試行します — [コンテキストオーバーフローの回復](/ja/guides/effort-and-context/#context-overflow-recovery) を参照。数ターンごとに再発する場合は `CLAUDE_CODE_MAX_CONTEXT_TOKENS` をモデルの実ウィンドウへ下げてください。 |
 | Cloudflare の背後でストリームが切れる（524） | [`sse_keepalive_seconds`](/ja/guides/shared-gateway/#sse-keepalive-pings) を `0` ではなくデフォルト（30）のままにする。 |
-| 共有ゲートウェイでマッピングされたモデルに 401 | クライアントトークンが欠落／無効 — `ANTHROPIC_CUSTOM_HEADERS="x-shunt-token: <token>"` を設定。[Sharing a Gateway](/ja/guides/shared-gateway/) を参照。 |
+| 共有ゲートウェイでマッピングされたモデルに 401 | クライアントトークンが欠落／無効 — `ANTHROPIC_AUTH_TOKEN=<token>`（`Authorization: Bearer` として受理、プール専用ゲートウェイ）または `ANTHROPIC_CUSTOM_HEADERS="x-shunt-token: <token>"`（パススルーモデルが混在する場合は必須）を設定。[ゲートウェイの共有](/ja/guides/shared-gateway/#インバウンドのクライアントトークン) を参照。 |
 
 完全なゲートウェイのトラブルシューティング表については、[Connect Claude Code to an LLM gateway](https://code.claude.com/docs/en/llm-gateway-connect#troubleshoot-gateway-errors) を参照してください。

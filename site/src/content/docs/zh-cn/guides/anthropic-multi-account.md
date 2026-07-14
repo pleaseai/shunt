@@ -138,7 +138,7 @@ Claude Code 可能把账户元数据以 JSON 形式编码在字符串值的 `met
 - `base_url` 使用 HTTPS;且
 - 其主机是 `anthropic.com` 或诸如 `api.anthropic.com` 的子域。
 
-这些启动检查防止 OAuth bearer 被发送到源之外或以明文传输。HTTPS 与主机检查在**回环主机上放宽**(`localhost`、`127.0.0.1`、`[::1]` 等):回环的 `base_url` 可以使用纯 HTTP 和任意主机,这样本地调试代理或 mock 能接收流量 —— bearer 无法离开运营者的机器。非回环主机始终要求 HTTPS + `anthropic.com`。在共享部署上,还应配置 [`[server.auth]`](/zh-cn/guides/shared-gateway/),因为 `claude_oauth` 花费的是网关自有的凭据。
+这些启动检查防止 OAuth bearer 被发送到源之外或以明文传输。HTTPS 与主机检查在**回环主机上放宽**(`localhost`、`127.0.0.1`、`[::1]` 等):回环的 `base_url` 可以使用纯 HTTP 和任意主机,这样本地调试代理或 mock 能接收流量 —— bearer 无法离开运营者的机器。非回环主机始终要求 HTTPS + `anthropic.com`。在共享部署上,还应配置 [`[server.auth]`](/zh-cn/guides/shared-gateway/#入站客户端-token),因为 `claude_oauth` 花费的是网关自有的凭据。客户端随后可以用它已经在发送的 `ANTHROPIC_AUTH_TOKEN` 完成认证(客户端 token 除 `x-shunt-token`、`x-api-key` 外,也接受 `Authorization: Bearer`)—— 在仅池化的网关上不需要 `ANTHROPIC_CUSTOM_HEADERS` 行。
 
 ## 遗留的后续事项
 

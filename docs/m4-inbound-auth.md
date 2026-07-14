@@ -45,23 +45,38 @@ Rules:
 
 Checked in the `/v1/messages` and `/v1/messages/count_tokens` handlers **after routing
 resolves the provider**, and only when that provider's `auth` mode injects a server-side
-credential (`ApiKey` or `ChatgptOauth`). `GET /v1/models` is checked whenever
-`[server.auth]` is configured, because it exposes the configured model list:
+credential (`ApiKey`, `ChatgptOauth`, `ClaudeOauth`, …). `GET /v1/models` is checked
+whenever `[server.auth]` is configured, because it exposes the configured model list:
 
 - `Passthrough` provider ⇒ no check (caller uses their own credential), regardless of config.
-- `GET /v1/models` with a valid inbound token in the configured header, `x-api-key`, or
-  `Authorization: Bearer` ⇒ serve discovery; missing or invalid token ⇒ 401.
+- Both the injected-credential inference gate and `GET /v1/models` accept the client token
+  in any of the standard Anthropic credential slots, with an explicit priority when several
+  carry valid tokens: the configured header (default `x-shunt-token`), then
+  `Authorization: Bearer <token>`, then `x-api-key`. A Claude Code client on a pool-only
+  gateway therefore authenticates with the `ANTHROPIC_AUTH_TOKEN` it already sends — no
+  `ANTHROPIC_CUSTOM_HEADERS` line needed. (Before #130 the inference gate accepted only the
+  configured header; discovery gained the wider set in #90.)
 - `HEAD /` and `GET /routes` ⇒ never checked (`/` is liveness; `/routes` remains shunt-native metadata).
 - Injected-credential route with valid token ⇒ proceed; log the client **name** (never the
   token) as a tracing field on the request span / relevant log lines.
 - Missing or unknown token ⇒ `401` with an Anthropic-shaped error body:
 
 ```json
-{"type":"error","error":{"type":"authentication_error","message":"missing or invalid x-shunt-token: this gateway requires a client token for mapped models; ask the operator for one"}}
+{"type":"error","error":{"type":"authentication_error","message":"missing or invalid credential: this gateway requires a client token (via x-shunt-token, Authorization: Bearer, or x-api-key) for mapped models; ask the operator for one"}}
 ```
 
   (message uses the configured header name; a `warn` log records the failure and the
   provider, never the presented token value.)
+
+Safety boundary: a credential accepted as a gate token must never be forwarded upstream.
+On a gated (injected-credential) route the gateway strips `authorization` and `x-api-key`
+from the forwarded headers after a successful check — the injected-credential adapters
+replace those headers with the provider credential anyway, but the boundary must not
+depend on adapter behavior. Passthrough routes are never gated, so the client's `Bearer` /
+`x-api-key` remain the real upstream Anthropic credential and are forwarded unchanged.
+Operators mixing passthrough and mapped models on one shared gateway should keep handing
+out dedicated `x-shunt-token` values: the `Bearer` slot then stays free to carry the real
+Anthropic credential for passthrough models.
 
 ## 3. Comparison & hygiene
 
