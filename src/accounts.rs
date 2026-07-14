@@ -226,10 +226,12 @@ impl AccountPool {
         }
 
         // Available accounts past a threshold. With `[server.pool]` set, the
-        // soft-near ones (under the hard backstop) order by headroom — the
-        // all-near guard: a traffic spike degrades to best-margin-first
-        // instead of emptying the pool — and hard-over accounts still sort
-        // last. Without it, soft == hard, so this is one rotation-order group
+        // soft-near ones (under the hard backstop) order by priority then
+        // headroom — the all-near guard: a traffic spike degrades to
+        // best-margin-first (within a priority tier) instead of emptying the
+        // pool, mirroring the `available_under` tiebreak so a configured
+        // primary stays preferred — and hard-over accounts still sort last.
+        // Without it, soft == hard, so this is one rotation-order group
         // exactly as before #135.
         let mut near_soft = Vec::new();
         let mut over_hard = Vec::new();
@@ -244,10 +246,15 @@ impl AccountPool {
             }
         }
         near_soft.sort_by(|&left, &right| {
-            snapshots[right]
-                .1
-                .headroom
-                .total_cmp(&snapshots[left].1.headroom)
+            accounts[left]
+                .priority
+                .cmp(&accounts[right].priority)
+                .then_with(|| {
+                    snapshots[right]
+                        .1
+                        .headroom
+                        .total_cmp(&snapshots[left].1.headroom)
+                })
         });
 
         let mut cooled = rotation
@@ -1293,6 +1300,45 @@ mod tests {
         assert_eq!(
             pool.select_order("anthropic", &accounts, Some("all-near"), None, Some(&cfg)),
             vec![2, 1, 0]
+        );
+    }
+
+    #[test]
+    fn all_near_bucket_honors_priority_before_headroom() {
+        // The near_soft fallback tiebreaks on priority first (mirroring
+        // available_under): a configured primary stays preferred even when its
+        // burn-rate headroom is the worst of the pool, so a backup never
+        // overtakes it on a tiny margin slip.
+        let pool = AccountPool::new();
+        let mut accounts = vec![account("a"), account("b"), account("c")];
+        let cfg = PoolConfig {
+            burn_rate_avoidance: true,
+            ..Default::default()
+        };
+        let now = unix_now();
+        // Same utilization, resets chosen so headroom order alone would sort
+        // [2, 1, 0] (account 0 last — see the test above).
+        for (index, reset_in) in [(0usize, 16_200u64), (1, 9_000), (2, 3_600)] {
+            pool.note_quota(
+                "anthropic",
+                &accounts[index].name,
+                &quota_headers(&[
+                    (
+                        "anthropic-ratelimit-unified-5h-utilization",
+                        "0.9".to_string(),
+                    ),
+                    (
+                        "anthropic-ratelimit-unified-5h-reset",
+                        (now + reset_in).to_string(),
+                    ),
+                ]),
+            );
+        }
+        // Designate the worst-headroom account as the primary: priority wins.
+        accounts[0].priority = 1;
+        assert_eq!(
+            pool.select_order("anthropic", &accounts, Some("all-near"), None, Some(&cfg)),
+            vec![0, 2, 1]
         );
     }
 
