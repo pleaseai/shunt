@@ -1,0 +1,21 @@
+.claude/agent-memory/review-review-comment-analyzer/shunt-responses-adapter-stream-json-doc-generalization.md
+  s_1d2ac11977389b::t_2dc1e89f4e89d2 3,8-10,12,14-16,18-22
+.claude/agent-memory/review-review-comment-analyzer/MEMORY.md
+  s_1d2ac11977389b::t_053cbfd9a70200 5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "6000ea7cc2871ab98705383919f029264e1bd6d3",
+  "prompts": {},
+  "sessions": {
+    "s_1d2ac11977389b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3bf16559-f7e0-4f23-80bb-6f90b563fc5d",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
