@@ -1,0 +1,19 @@
+src/retry.rs
+  s_838cbb95baa60b::t_7fc7582c59c4e5 188-192,214-215
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "4cd4245a5c31b07c658c65be5f57c58c16e6f466",
+  "prompts": {},
+  "sessions": {
+    "s_838cbb95baa60b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "97ba1d0a-9bc8-4b1c-ad51-a7fc74191d73",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
