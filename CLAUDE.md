@@ -25,4 +25,3 @@ For full file listing with workspace artifacts, use `Skill("please:project-knowl
 ### Decision Records
 - `.please/docs/decisions/` — Architecture Decision Records (ADR)
 <!-- /please:knowledge -->
-

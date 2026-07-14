@@ -2,6 +2,7 @@ pub mod accounts;
 pub mod adapters;
 pub mod admin;
 pub mod auth;
+pub mod codex_endpoint;
 pub mod config;
 pub mod count_tokens;
 pub mod discovery;

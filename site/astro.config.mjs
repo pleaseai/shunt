@@ -101,6 +101,10 @@ export default defineConfig({
               slug: 'guides/codex-multi-account',
             },
             {
+              label: 'Inbound Codex Endpoint',
+              slug: 'guides/inbound-codex-endpoint',
+            },
+            {
               label: 'Admin & Remote Provisioning',
               translations: { ko: '관리자 & 원격 프로비저닝', ja: '管理とリモートプロビジョニング', 'zh-CN': '管理与远程预配' },
               slug: 'guides/admin-remote-provisioning',
@@ -109,6 +113,11 @@ export default defineConfig({
               label: 'Connect Claude Code',
               translations: { ko: 'Claude Code 연결', ja: 'Claude Code の接続', 'zh-CN': '连接 Claude Code' },
               slug: 'guides/connect-claude-code',
+            },
+            {
+              label: 'Connect the Codex CLI',
+              translations: { ko: 'Codex CLI 연결', ja: 'Codex CLI の接続', 'zh-CN': '连接 Codex CLI' },
+              slug: 'guides/connect-codex-cli',
             },
             {
               label: 'Model Discovery',

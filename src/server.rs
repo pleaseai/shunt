@@ -10,6 +10,7 @@ use crate::{
     accounts::AccountPool,
     admin::{self, AdminAuth, AdminStores},
     auth::inbound::InboundAuth,
+    codex_endpoint,
     config::{Config, ConfigError},
     discovery, protocol, proxy,
     reload::{RuntimeState, SharedState},
@@ -89,6 +90,10 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState), ConfigError
     // Whether the admin surface exists is decided once here, from the initial
     // config: a reload cannot add or drop routes (it only re-resolves tokens).
     let admin_enabled = config.server.admin.is_some();
+    // The inbound Responses (Codex) routes are likewise registered once from the
+    // initial config; a reload can only change the target provider, not add or
+    // drop the routes.
+    let codex_endpoint_enabled = config.server.codex_endpoint.is_some();
     let runtime = RuntimeState::from_config(config)?;
     let shared: SharedState = Arc::new(arc_swap::ArcSwap::from_pointee(runtime));
     let state = AppState::from_shared(
@@ -117,6 +122,19 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState), ConfigError
     // request against the separate `[server.admin]` credential.
     if admin_enabled {
         router = router.merge(admin::admin_router());
+    }
+
+    // Opt-in inbound Responses (Codex) endpoint: registered only when
+    // `[server.codex_endpoint]` is set, so the default HTTP surface is unchanged.
+    // The Codex CLI appends `/responses` to whatever base_url it is pointed at, so
+    // all three paths (the ChatGPT-backend mirror plus the custom-provider forms)
+    // map to one passthrough handler. Gated by `[server.auth]` like the other
+    // injected-credential routes.
+    if codex_endpoint_enabled {
+        router = router
+            .route("/backend-api/codex/responses", post(codex_endpoint::post))
+            .route("/responses", post(codex_endpoint::post))
+            .route("/v1/responses", post(codex_endpoint::post));
     }
 
     Ok((router.with_state(state), shared))

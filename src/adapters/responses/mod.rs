@@ -3,6 +3,7 @@ pub mod codex_ws;
 
 mod error;
 mod http;
+mod inbound;
 mod pool;
 mod request;
 mod websocket;
@@ -24,6 +25,7 @@ use crate::{
 
 use self::error::own_error;
 use self::http::forward_http;
+pub(crate) use self::inbound::forward_codex_inbound;
 use self::pool::forward_chatgpt_oauth;
 use self::websocket::forward_websocket;
 
