@@ -1,0 +1,45 @@
+docs/codex-configuration.md
+  s_929b503a8a6a4d::t_bbea2f0233e3b7 680-683
+  s_929b503a8a6a4d::t_3f997e36732143 641-643
+site/src/content/docs/guides/inbound-codex-endpoint.md
+  s_929b503a8a6a4d::t_48aef68f4592f0 36,39-40,46
+  s_929b503a8a6a4d::t_2d5f05d8181fa1 82
+docs/m11-inbound-codex-endpoint.md
+  s_929b503a8a6a4d::t_4a83ca71c2deac 99-100
+  s_929b503a8a6a4d::t_eae69e119c2b4e 193-196
+  s_929b503a8a6a4d::t_98c286d3ef9c9e 105-109
+  s_929b503a8a6a4d::t_4fe1d8852a3589 122-126
+.claude/agent-memory/review-review-pr-test-analyzer/shunt-inbound-codex-endpoint-coverage.md
+  s_929b503a8a6a4d::t_a8b25ce6b10ff8 16-17
+  s_929b503a8a6a4d::t_fbffc5fbe31bae 8
+site/src/content/docs/reference/configuration.md
+  s_929b503a8a6a4d::t_c7a2fbbb42a2d4 50
+tests/inbound_codex_endpoint.rs
+  s_929b503a8a6a4d::t_0254c3aa5afb1e 645-687
+  s_929b503a8a6a4d::t_d9025343615e9a 644
+src/adapters/responses/inbound.rs
+  s_929b503a8a6a4d::t_ade43dc25f672a 246-250,257-262
+.claude/agent-memory/review-review-security-reviewer/project_m11-inbound-codex-endpoint-security.md
+  s_929b503a8a6a4d::t_263e95a5193a14 16,18
+site/src/content/docs/guides/connect-codex-cli.md
+  s_929b503a8a6a4d::t_027fde9df89a78 160-161,170-171
+  s_929b503a8a6a4d::t_cd2111138b150c 26,29-32
+  s_929b503a8a6a4d::t_8ee30e49247608 179-180
+  s_929b503a8a6a4d::t_fb2f4f11c7ae43 33
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "b16804855ca0e31c84b5344b0529d1534e6c90ec",
+  "prompts": {},
+  "sessions": {
+    "s_929b503a8a6a4d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "980e29a3-4e7c-460f-a732-09264c43a264",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
