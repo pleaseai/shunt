@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.13.0](https://github.com/pleaseai/shunt/compare/v0.12.0...v0.13.0) (2026-07-14)
+
+
+### Features
+
+* **admin:** add opt-in account provisioning web surface ([#85](https://github.com/pleaseai/shunt/issues/85)) ([583d0c5](https://github.com/pleaseai/shunt/commit/583d0c509fbc34017fc165b429e16edec40f893b))
+* **codex-ws:** live-probe continuation normalization and add hit/fallback metric ([#108](https://github.com/pleaseai/shunt/issues/108)) ([76b20aa](https://github.com/pleaseai/shunt/commit/76b20aa392aa54ffc056b091a5225a928353ffd3)), closes [#45](https://github.com/pleaseai/shunt/issues/45)
+* **codex:** add multi-account pooling and load balancing ([#114](https://github.com/pleaseai/shunt/issues/114)) ([3eb3f59](https://github.com/pleaseai/shunt/commit/3eb3f5998eb910f267649918ca30370647b724f5))
+* **discovery:** enforce inbound auth on GET /v1/models when [server.auth] is set ([#90](https://github.com/pleaseai/shunt/issues/90)) ([#110](https://github.com/pleaseai/shunt/issues/110)) ([d9b707b](https://github.com/pleaseai/shunt/commit/d9b707be066a1d22f76d8fcc85515072883c16d4))
+
+
+### Bug Fixes
+
+* **auth:** cancellation-safe Claude OAuth refresh + off-thread store I/O ([#73](https://github.com/pleaseai/shunt/issues/73), [#101](https://github.com/pleaseai/shunt/issues/101)) ([#109](https://github.com/pleaseai/shunt/issues/109)) ([129dcfc](https://github.com/pleaseai/shunt/commit/129dcfca107aab457da47d1e2baf6c4ee4e83b8e))
+* **codex-ws:** fall back to HTTP on pre-first-token websocket drop ([#46](https://github.com/pleaseai/shunt/issues/46)) ([#111](https://github.com/pleaseai/shunt/issues/111)) ([14fc926](https://github.com/pleaseai/shunt/commit/14fc926373d799d52036bce73c83864da13626dd))
+* **codex:** seed message_start usage.input_tokens so codex subagents report context ([#112](https://github.com/pleaseai/shunt/issues/112)) ([bde04f9](https://github.com/pleaseai/shunt/commit/bde04f9a7e316ce87650a7bbc269392d1d952e93))
+* **count_tokens:** return 501 not_supported instead of 404 when backend lacks count-tokens API ([#89](https://github.com/pleaseai/shunt/issues/89)) ([#106](https://github.com/pleaseai/shunt/issues/106)) ([892511d](https://github.com/pleaseai/shunt/commit/892511dd4c1f37a2e452e9921b0c4bbf3c722465))
+
 ## [0.12.0](https://github.com/pleaseai/shunt/compare/v0.11.0...v0.12.0) (2026-07-13)
 
 
