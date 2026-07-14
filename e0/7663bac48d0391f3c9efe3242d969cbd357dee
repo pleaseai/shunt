@@ -1,0 +1,38 @@
+src/model/responses.rs
+  s_72645aa175a026::t_7cd11c5a60d9b3 979,981-1006,1010,1036,1041-1044
+  s_72645aa175a026::t_d76e51991d1f42 234,484-487,489,496-497,642-647,674-675,677-678
+  s_72645aa175a026::t_be776a1a2b10b2 534-536,639,673,676
+  s_72645aa175a026::t_e2b1d10f039c48 955-978,980,1007-1009,1011-1035,1037-1040,1045-1046
+tests/responses_translate.rs
+  s_72645aa175a026::t_6fdaa8abd66138 849
+  s_72645aa175a026::t_182c00e5c5a7da 867,872
+src/proxy.rs
+  s_72645aa175a026::t_d76e51991d1f42 9,277-309
+  s_72645aa175a026::t_7cd11c5a60d9b3 135,360-366
+  s_72645aa175a026::t_e2b1d10f039c48 327,329,343-359,367-378
+  s_bc2fc647eb3091::t_f6612da255bb41 310
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "e07663bac48d0391f3c9efe3242d969cbd357dee",
+  "prompts": {},
+  "sessions": {
+    "s_72645aa175a026": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6239-0ade-77b3-b1a6-bfae103f5408",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_bc2fc647eb3091": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1b398429-e112-427e-b79d-8f4f614355bd",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
