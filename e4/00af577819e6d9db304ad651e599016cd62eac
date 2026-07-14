@@ -1,0 +1,19 @@
+ARCHITECTURE.md
+  s_416f0eb8e0b2d6::t_0c456fd9f439e6 1-149
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "e400af577819e6d9db304ad651e599016cd62eac",
+  "prompts": {},
+  "sessions": {
+    "s_416f0eb8e0b2d6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a5136eb8-9f73-4d6a-ae45-a1baa517b04e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
