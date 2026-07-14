@@ -1292,6 +1292,68 @@ mod tests {
     }
 
     #[test]
+    fn available_accounts_order_by_burn_rate_headroom() {
+        // With [server.pool] set, equal-priority accounts still under their soft
+        // threshold order by largest projected headroom first — the headline
+        // burn-rate-aware ordering. (Distinct from the near_soft bucket, which
+        // all_near_accounts_fall_back_to_headroom_order covers.)
+        let pool = AccountPool::new();
+        let accounts = vec![account("a"), account("b"), account("c")];
+        let cfg = PoolConfig::default();
+        let session = "avail-headroom";
+        let now = unix_now();
+        let rotation = pool.select_order("anthropic", &accounts, Some(session), None, Some(&cfg));
+        let sticky = rotation[0];
+        // Push the sticky account near quota so the available_under sort runs
+        // (a healthy sticky account short-circuits to rotation order).
+        pool.note_quota(
+            "anthropic",
+            &accounts[sticky].name,
+            &quota_headers(&[(
+                "anthropic-ratelimit-unified-5h-utilization",
+                "0.99".to_string(),
+            )]),
+        );
+        // Both remaining accounts stay well under threshold (0.3) but burn at
+        // different rates: the nearer reset means more of the window has already
+        // elapsed, a slower observed pace, and thus larger headroom.
+        let others: Vec<usize> = (0..accounts.len()).filter(|&i| i != sticky).collect();
+        let (slow, fast) = (others[0], others[1]);
+        pool.note_quota(
+            "anthropic",
+            &accounts[slow].name,
+            &quota_headers(&[
+                (
+                    "anthropic-ratelimit-unified-5h-utilization",
+                    "0.3".to_string(),
+                ),
+                (
+                    "anthropic-ratelimit-unified-5h-reset",
+                    (now + 3_600).to_string(),
+                ),
+            ]),
+        );
+        pool.note_quota(
+            "anthropic",
+            &accounts[fast].name,
+            &quota_headers(&[
+                (
+                    "anthropic-ratelimit-unified-5h-utilization",
+                    "0.3".to_string(),
+                ),
+                (
+                    "anthropic-ratelimit-unified-5h-reset",
+                    (now + 16_200).to_string(),
+                ),
+            ]),
+        );
+        let order = pool.select_order("anthropic", &accounts, Some(session), None, Some(&cfg));
+        assert_eq!(order[0], slow, "larger-headroom account sorts first");
+        assert_eq!(order[1], fast, "faster-burning account sorts after");
+        assert_eq!(order.last(), Some(&sticky), "near sticky sorts last");
+    }
+
+    #[test]
     fn accounts_past_hard_threshold_sort_after_soft_near_accounts() {
         let pool = AccountPool::new();
         let accounts = accounts();
@@ -1333,6 +1395,28 @@ mod tests {
                 pool.select_order("anthropic", &accounts, Some(session), None, cfg.as_ref());
             assert_eq!(order.len(), 3, "pool config: {cfg:?}");
             assert!(!order.contains(&sticky), "pool config: {cfg:?}");
+        }
+    }
+
+    #[test]
+    fn all_disabled_accounts_yield_empty_order() {
+        // A non-empty account list with every account disabled selects nothing
+        // (callers turn this into a distinct config error rather than a generic
+        // "all accounts failed").
+        for cfg in [None, Some(PoolConfig::default())] {
+            let pool = AccountPool::new();
+            let mut accounts = accounts();
+            for account in &mut accounts {
+                account.disabled = true;
+            }
+            let order = pool.select_order(
+                "anthropic",
+                &accounts,
+                Some("all-disabled"),
+                None,
+                cfg.as_ref(),
+            );
+            assert!(order.is_empty(), "pool config: {cfg:?}");
         }
     }
 
