@@ -243,59 +243,65 @@ where
                 tokio::time::sleep(delay).await;
                 retries += 1;
             }
-            // Non-retryable, or retries exhausted: hand the outcome back. When the
-            // outcome is *still* a transient failure we simply ran out of budget
-            // for, log the give-up — the per-attempt warnings above never mark that
-            // the loop finally stopped, so an operator watching WARN logs otherwise
-            // sees the retries but no distinct "gave up, still failing" signal
-            // (mirrors the ExceedsBudget branch's rationale). Gated on an actually
-            // enabled policy: a DISABLED policy (max_retries == 0, e.g. count_tokens)
-            // lands here on its single attempt having exhausted nothing, so claiming
-            // it "gave up after exhausting retries" would misread the logs.
+            // Retries exhausted (or a non-retryable outcome): log why we stopped —
+            // the per-attempt warnings never mark the loop finally stopping — then
+            // hand the outcome back. Gated on an enabled policy so a DISABLED one
+            // (max_retries == 0, e.g. count_tokens), which lands here having
+            // exhausted nothing, is not mislogged as "gave up after exhausting
+            // retries".
             other if policy.max_retries > 0 => {
-                match &other {
-                    // A retryable status reaches this arm for one of two reasons,
-                    // and conflating them would misread the logs. On an idempotent
-                    // call the retry budget was genuinely exhausted; on a
-                    // non-idempotent POST the status was never eligible to retry at
-                    // all (`safety.may_retry_response_status()` is false), so it
-                    // was surfaced on the first attempt without any retry — logging
-                    // "exhausted retries" there would send an operator chasing a
-                    // backoff loop that never ran (same rationale as the DISABLED
-                    // guard above).
-                    Ok(response)
-                        if safety.may_retry_response_status()
-                            && is_retryable_status(response.status()) =>
-                    {
-                        tracing::warn!(
-                            provider = %provider,
-                            status = response.status().as_u16(),
-                            max_retries = policy.max_retries,
-                            "giving up after exhausting retries: upstream still returning a transient status"
-                        );
-                    }
-                    Ok(response) if is_retryable_status(response.status()) => {
-                        tracing::warn!(
-                            provider = %provider,
-                            status = response.status().as_u16(),
-                            "surfacing transient upstream response without retry: non-idempotent request may already be accepted upstream"
-                        );
-                    }
-                    Err(error) if error.is_transient() => {
-                        tracing::warn!(
-                            provider = %provider,
-                            error = %error,
-                            max_retries = policy.max_retries,
-                            "giving up after exhausting retries: upstream transport error persists"
-                        );
-                    }
-                    _ => {}
-                }
+                log_terminal_outcome(provider, &policy, safety, &other);
                 return other;
             }
             // Non-retryable outcome, or a disabled policy: hand it back untouched.
             other => return other,
         }
+    }
+}
+
+/// Emit the single "why we stopped" WARN for a terminal outcome the driver hands
+/// back after its retry budget (split out of the loop to keep its control flow
+/// flat). A no-op unless the outcome is still a transient failure.
+fn log_terminal_outcome<E: RetryableError + std::fmt::Display>(
+    provider: &str,
+    policy: &RetryPolicy,
+    safety: RetrySafety,
+    outcome: &Result<reqwest::Response, E>,
+) {
+    match outcome {
+        // A retryable status reaches here for one of two reasons, and conflating
+        // them would misread the logs. On an idempotent call the retry budget was
+        // genuinely exhausted; on a non-idempotent POST the status was never
+        // eligible to retry (`safety.may_retry_response_status()` is false), so it
+        // surfaced on the first attempt without any retry — logging "exhausted
+        // retries" there would send an operator chasing a backoff loop that never
+        // ran.
+        Ok(response)
+            if safety.may_retry_response_status() && is_retryable_status(response.status()) =>
+        {
+            tracing::warn!(
+                provider = %provider,
+                status = response.status().as_u16(),
+                max_retries = policy.max_retries,
+                "giving up after exhausting retries: upstream still returning a transient status"
+            );
+        }
+        Ok(response) if is_retryable_status(response.status()) => {
+            tracing::warn!(
+                provider = %provider,
+                status = response.status().as_u16(),
+                "surfacing transient upstream response without retry: non-idempotent request may already be accepted upstream"
+            );
+        }
+        Err(error) if error.is_transient() => {
+            tracing::warn!(
+                provider = %provider,
+                error = %error,
+                max_retries = policy.max_retries,
+                "giving up after exhausting retries: upstream transport error persists"
+            );
+        }
+        _ => {}
     }
 }
 
