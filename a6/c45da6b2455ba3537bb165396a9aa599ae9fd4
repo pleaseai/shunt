@@ -1,0 +1,39 @@
+site/src/content/docs/reference/configuration.md
+  s_3ab683da3a7a89::t_38936f1ffbbf9d 62
+docs/comparison.md
+  s_3ab683da3a7a89::t_95c70121bbb12e 246-255
+README.md
+  s_3ab683da3a7a89::t_7900e00441b25a 73
+src/retry.rs
+  s_3ab683da3a7a89::t_4fbe0800a41817 22-36
+  s_3ab683da3a7a89::t_44d34a1106b5b4 257-269,277-281
+  s_3ab683da3a7a89::t_5a1c2c3d98cbc6 283,551-576
+  s_3ab683da3a7a89::t_74f87263779e85 136-145
+  s_3ab683da3a7a89::t_17b79632375b09 282
+  s_3ab683da3a7a89::t_bb7d940b0d65df 550
+  s_3ab683da3a7a89::t_b68dee1e76af10 577-578
+tests/retry.rs
+  s_3ab683da3a7a89::t_a7b06aaae75f28 146,151-156,164
+  s_3ab683da3a7a89::t_b127062656a508 244,254-258,266
+  s_3ab683da3a7a89::t_3e6cf99660fd9f 1,3-12
+  s_3ab683da3a7a89::t_14e90a728e5f4a 293-294
+  s_3ab683da3a7a89::t_1bdd6e35730922 87,92-97,114,120-122
+src/adapters/cursor/client.rs
+  s_3ab683da3a7a89::t_2cf382664a9b49 353-362
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "a6c45da6b2455ba3537bb165396a9aa599ae9fd4",
+  "prompts": {},
+  "sessions": {
+    "s_3ab683da3a7a89": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07346878-d2b2-43bb-9f17-22ce2af985d4",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
