@@ -1,0 +1,90 @@
+src/proxy.rs
+  s_c88765dc6f2686::t_98efe9e3deefdc 140-141
+  s_c88765dc6f2686::t_b311236e1894aa 213-216,239,242-247,256
+site/src/content/docs/guides/connect-claude-code.md
+  s_c88765dc6f2686::t_975ebd4038df68 40-43
+site/src/content/docs/ko/guides/anthropic-multi-account.md
+  s_c88765dc6f2686::t_7b281ab43994d6 141
+docs/running.md
+  s_c88765dc6f2686::t_bb7656960014df 701-704,708-709,711-720
+site/src/content/docs/ko/guides/shared-gateway.md
+  s_c88765dc6f2686::t_f93fef1521bb96 10
+  s_c88765dc6f2686::t_df58f19f4b9dd1 23,25,27,29-39
+site/src/content/docs/ja/reference/configuration.md
+  s_c88765dc6f2686::t_a696997cd4de67 25
+site/src/content/docs/ja/guides/anthropic-multi-account.md
+  s_c88765dc6f2686::t_d768fc27286342 141
+src/discovery.rs
+  s_c88765dc6f2686::t_10aacaa9638d68 27
+site/src/content/docs/reference/troubleshooting.md
+  s_c88765dc6f2686::t_1ccede218153d3 20
+site/src/content/docs/ja/guides/shared-gateway.md
+  s_c88765dc6f2686::t_20c28e9548fae4 10
+  s_c88765dc6f2686::t_85ed8cb8c8a1e0 23,25,27,29-39
+site/src/content/docs/zh-cn/guides/anthropic-multi-account.md
+  s_c88765dc6f2686::t_87b8bbc2437220 141
+site/src/content/docs/guides/shared-gateway.md
+  s_c88765dc6f2686::t_7217eacd44d2ca 23,25,27,29-39
+site/src/content/docs/ja/guides/connect-claude-code.md
+  s_c88765dc6f2686::t_50292430ea8485 40-43
+site/src/content/docs/ko/reference/troubleshooting.md
+  s_c88765dc6f2686::t_d9b2f2c0e7f390 20
+site/src/content/docs/zh-cn/guides/connect-claude-code.md
+  s_c88765dc6f2686::t_44bbe2a1bd0c33 40-43
+tests/inbound_auth.rs
+  s_c88765dc6f2686::t_d0a3de9ab213a3 19
+  s_c88765dc6f2686::t_d9b9fcca0d0c11 236-382,384-386
+  s_c88765dc6f2686::t_602e0d0fced4c9 126-133,141-142
+  s_9630ebcec66c06::t_16c6f4737914e7 125,383,387
+src/auth/inbound.rs
+  s_c88765dc6f2686::t_ba4018ba5ece4d 42-43,55-66,70,73-74
+  s_c88765dc6f2686::t_c0a5b7c3065e6c 4-8
+  s_c88765dc6f2686::t_57567825889b46 111
+  s_c88765dc6f2686::t_4e639fa4e011d7 244,254,259,261,264,266,270,272,276,281-310
+site/src/content/docs/ko/guides/connect-claude-code.md
+  s_c88765dc6f2686::t_af2489e550a044 40-43
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_c88765dc6f2686::t_ef8ab753bc54b9 25
+site/src/content/docs/ja/reference/troubleshooting.md
+  s_c88765dc6f2686::t_6631bed84d7708 20
+site/src/content/docs/zh-cn/reference/troubleshooting.md
+  s_c88765dc6f2686::t_c2bd418243ab76 20
+shunt.toml.example
+  s_c88765dc6f2686::t_dd8f98b112def2 15-18
+site/src/content/docs/zh-cn/guides/shared-gateway.md
+  s_c88765dc6f2686::t_e33358dc35424d 10
+  s_c88765dc6f2686::t_be43dadd918a49 23,25,27,29-39
+docs/m4-inbound-auth.md
+  s_c88765dc6f2686::t_acdbe687c69b84 48-49,52-58,65,71-79
+  s_c88765dc6f2686::t_3150badf0ede6d 80
+site/src/content/docs/reference/configuration.md
+  s_c88765dc6f2686::t_cd5269d0aa58b2 25
+site/src/content/docs/ko/reference/configuration.md
+  s_c88765dc6f2686::t_06d1b239304df5 25
+site/src/content/docs/guides/anthropic-multi-account.md
+  s_c88765dc6f2686::t_a27a810d89b298 141
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "a53080d71cc69dc01e8aa4706c1edbf0eff0f8bc",
+  "prompts": {},
+  "sessions": {
+    "s_9630ebcec66c06": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "33be8474-b68b-4316-a9c4-23a04a5a90ac",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_c88765dc6f2686": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0658e706-7755-4e2b-bd9f-6f3d5822baae",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
