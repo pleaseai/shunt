@@ -527,6 +527,17 @@ mod tests {
         let error = login("codex", Some("ci"), true, None, false, None)
             .expect_err("--long-lived must be rejected for codex");
         assert!(error.to_string().contains("--long-lived is not supported"));
+
+        let error = login(
+            "codex",
+            Some("ci"),
+            false,
+            Some(LoginMode::Oauth),
+            false,
+            None,
+        )
+        .expect_err("--mode must be rejected for codex");
+        assert!(error.to_string().contains("--mode is not supported"));
     }
 
     #[test]

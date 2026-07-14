@@ -592,6 +592,12 @@ async fn complete_account(
                 tracing::warn!(account = %name, "admin: full Claude OAuth token exchange did not return a refresh token");
                 return bad_gateway("Claude token exchange did not return a refresh token");
             };
+            if account_uuid.is_none() {
+                // Not fatal for OAuth accounts (unlike setup tokens), but mirror the
+                // CLI's `persist_oauth_tokens` warning so an operator can see why the
+                // account_uuid rewrite is skipped for a web-provisioned account.
+                tracing::warn!(account = %name, "admin: full Claude OAuth token exchange did not return an account UUID; the account_uuid rewrite will be skipped for this account");
+            }
             let access_token = tokens.access_token;
             let expires_at_ms = claude_login::oauth_expires_at_ms(tokens.expires_in);
             tokio::task::spawn_blocking(move || {

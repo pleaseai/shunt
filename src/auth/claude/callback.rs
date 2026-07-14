@@ -115,7 +115,11 @@ impl CallbackServer {
     }
 
     pub(crate) fn redirect_uri(&self) -> String {
-        format!("http://localhost:{}/callback", self.addr.port())
+        // Use the IPv4 loopback literal, not the `localhost` hostname: the listener
+        // binds 127.0.0.1 only, and RFC 8252 §7.3 recommends the IP literal so the
+        // browser's redirect can't resolve `localhost` to ::1 (where nothing listens)
+        // and silently hang until the callback timeout.
+        format!("http://127.0.0.1:{}/callback", self.addr.port())
     }
 
     #[cfg(test)]
@@ -181,6 +185,10 @@ mod tests {
             server.addr().ip(),
             std::net::IpAddr::V4(Ipv4Addr::LOCALHOST)
         );
+        assert!(
+            server.redirect_uri().starts_with("http://127.0.0.1:"),
+            "redirect_uri must advertise the IPv4 loopback literal, not localhost"
+        );
         let url = format!(
             "http://127.0.0.1:{}/callback?code=callback-code&state=expected-state",
             server.addr().port()
@@ -193,6 +201,20 @@ mod tests {
         assert!(!body.contains("callback-code"));
         assert!(!body.contains("expected-state"));
         assert_eq!(waiting.await.unwrap().unwrap(), "callback-code");
+    }
+
+    #[tokio::test]
+    async fn wait_for_code_times_out_without_a_callback() {
+        let server = CallbackServer::bind("expected-state".to_string())
+            .await
+            .unwrap();
+        // No request ever reaches /callback, so the receiver never resolves and
+        // the wait must hit the timeout branch rather than hang.
+        let error = server
+            .wait_for_code(Duration::from_millis(20))
+            .await
+            .expect_err("no callback arrives, so the wait must time out");
+        assert!(error.to_string().contains("timed out"));
     }
 
     #[tokio::test]
