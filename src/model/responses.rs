@@ -62,6 +62,15 @@ pub struct AnthropicSseMachine {
     /// Only then is an upstream `tool_search_call` item surfaced as a `ToolSearch`
     /// `tool_use`; under the shim the upstream never emits one.
     tool_search_native: bool,
+    /// The mapped Anthropic error envelope from a backend-sent `error` /
+    /// `response.failed` event (issue #113). Backends deliver these as normal
+    /// `Ok` events on a `200 OK` stream (rate-limit, content-policy refusal)
+    /// rather than a non-2xx HTTP status. The streaming paths
+    /// emit the envelope inline as an SSE `error` event and stop; the
+    /// non-streaming JSON collectors take it here (via
+    /// [`Self::take_backend_error`]) so they can return a gateway error instead
+    /// of a `200 OK` carrying the partial/empty content accumulated so far.
+    backend_error: Option<Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -105,6 +114,7 @@ impl AnthropicSseMachine {
             reasoning: None,
             web_search_indexes: HashMap::new(),
             tool_search_native,
+            backend_error: None,
         }
     }
 
@@ -137,13 +147,24 @@ impl AnthropicSseMachine {
             "response.completed" | "response.done" => self.complete(&event.data),
             "error" | "response.failed" => {
                 self.stopped = true;
-                vec![sse(
-                    "error",
-                    &map_error_value(&event.data, StatusCode::BAD_GATEWAY),
-                )]
+                let value = map_error_value(&event.data, StatusCode::BAD_GATEWAY);
+                // Build the SSE event first (borrowing `value`), then move
+                // ownership into `backend_error` — avoids cloning the envelope.
+                let sse_event = sse("error", &value);
+                self.backend_error = Some(value);
+                vec![sse_event]
             }
             _ => Vec::new(),
         }
+    }
+
+    /// Take the mapped Anthropic error envelope if a backend `error` /
+    /// `response.failed` event was applied, else `None`. Moves ownership out of
+    /// the machine so the non-streaming JSON collectors can hand it straight to
+    /// the response body without cloning; the event is terminal, so the machine
+    /// is dropped right after (issue #113).
+    pub fn take_backend_error(&mut self) -> Option<Value> {
+        self.backend_error.take()
     }
 
     pub fn finish(&mut self) -> Vec<String> {

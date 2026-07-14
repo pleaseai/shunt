@@ -1246,6 +1246,54 @@ fn surfaces_upstream_error_detail_and_message() {
 }
 
 #[test]
+fn records_backend_error_event_for_non_streaming_paths() {
+    // A backend `response.failed` event arrives as a normal `Ok` event on the
+    // stream (not a non-2xx HTTP status). The machine both emits the inline SSE
+    // `error` event (streaming path) *and* records the mapped envelope so the
+    // non-streaming JSON collectors can surface a gateway error (issue #113).
+    let fixture = concat!(
+        "event: response.created\n",
+        "data: {\"response\":{\"id\":\"resp_1\"}}\n\n",
+        "event: response.failed\n",
+        "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"Rate limit reached\"}}}\n\n",
+    );
+    let mut machine = AnthropicSseMachine::new("gpt-5.2-codex", false, false);
+    let emitted = parse_sse_events(fixture)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
+
+    // Streaming path: the error is emitted inline as an SSE `error` event.
+    assert!(emitted.contains("event: error"));
+
+    // Non-streaming path: the mapped envelope is recorded for the JSON collectors.
+    let backend_error = machine
+        .take_backend_error()
+        .expect("a backend error event is recorded");
+    assert_eq!(backend_error["type"], "error");
+    assert_eq!(backend_error["error"]["message"], "Rate limit reached");
+}
+
+#[test]
+fn normal_completion_records_no_backend_error() {
+    // A clean turn (no error/response.failed event) leaves `backend_error` unset,
+    // so the non-streaming JSON path returns the collected message as `200 OK`.
+    let fixture = concat!(
+        "event: response.created\n",
+        "data: {\"response\":{\"id\":\"resp_1\"}}\n\n",
+        "event: response.output_text.delta\n",
+        "data: {\"delta\":\"hi\"}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n",
+    );
+    let mut machine = AnthropicSseMachine::new("gpt-5.2-codex", false, false);
+    for event in parse_sse_events(fixture) {
+        let _ = machine.apply(event);
+    }
+    assert!(machine.take_backend_error().is_none());
+}
+
+#[test]
 fn rewrites_context_overflow_errors_to_anthropic_wording() {
     // Claude Code's compact-and-retry matches "prompt is too long" and parses
     // "N tokens > M maximum" to size the retry; each upstream phrasing must

@@ -230,11 +230,11 @@ The issue frames this as "prewarm". Two separable things:
    ships. A stateless proxy has no "user typing" phase; forcing prewarm would mean
    **two** round-trips per turn (worse). **Not implemented, by design.**
 
-## 8. Adapter wiring (`responses/mod.rs`)
+## 8. Adapter wiring (`responses/`)
 
-- `forward()` branches to `forward_websocket` when
-  `Config::codex_websocket_enabled` (flag && ChatGPT/Codex backend); otherwise the
-  HTTP path is unchanged.
+- `forward()` (`responses/mod.rs`) branches to `forward_websocket`
+  (`responses/websocket.rs`) when `Config::codex_websocket_enabled` (flag &&
+  ChatGPT/Codex backend); otherwise the HTTP path is unchanged.
 - `open_ws_turn` starts a turn with continuation allowed and **always peeks the
   first event** before committing the response, retrying with full input on
   `previous_response_missing` (§6). `start_ws_turn` applies the [`decide`] result:
@@ -252,6 +252,16 @@ The issue frames this as "prewarm". Two separable things:
   streaming path (`stream_events_response`); the non-streaming path
   (`json_events_response`) instead returns a gateway error for the same
   post-first-event transport failure.
+- **Backend error events (issue #113).** A backend-sent `error` / `response.failed`
+  event arrives as a normal `Ok` event on a `200 OK` stream (rate-limit,
+  content-policy refusal), *not* a non-2xx HTTP status. The machine records the
+  mapped Anthropic error envelope ([`AnthropicSseMachine::backend_error`]); the
+  streaming drivers emit it inline as an SSE `error` event, and the non-streaming
+  collectors (`json_events_response` + the HTTP `json_response`) return it as a
+  `502` gateway error instead of a `200 OK` carrying the partial content collected
+  before it — so a non-streaming client cannot mistake a backend failure for a
+  truncated-but-successful result. Symmetric with the transport-error handling
+  above and shared by both the WebSocket and HTTP JSON paths.
 - **HTTP fallback.** Any websocket failure *before the first event reaches the
   client* — connect timeout, refused/failed handshake, a failed frame send, or a
   socket that drops between the send and the first event (an idle-eviction race, a
