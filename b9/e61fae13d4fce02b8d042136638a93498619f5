@@ -1,0 +1,21 @@
+.claude/agent-memory/review-review-spec-compliance-checker/project_issue48-retry-verification.md
+  s_838cbb95baa60b::t_3a590467ae7b61 1-19
+.claude/agent-memory/review-review-spec-compliance-checker/MEMORY.md
+  s_838cbb95baa60b::t_eaf41a0c60a83a 1-3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "b9e61fae13d4fce02b8d042136638a93498619f5",
+  "prompts": {},
+  "sessions": {
+    "s_838cbb95baa60b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "97ba1d0a-9bc8-4b1c-ad51-a7fc74191d73",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
