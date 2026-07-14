@@ -1,3 +1,44 @@
+schema_version: 5          # Config schema version (do not edit manually)
+
+language: en               # Output language (ko | en)
+
+# GitHub integration
+github:
+  project: 2               # GitHub Project number (Work Please)
+  owner: pleaseai          # GitHub org or user owning the project
+  issue_required: false    # Create GitHub Issue for every track
+  project_id: PVT_kwDODf_st84BRosi
+  status_field_id: PVTSSF_lADODf_st84BRosizg_aA44
+  status_options:
+    todo: 7b57aadf
+    in_progress: 538085b7
+    human_review: 3c1bd18c   # Project uses "In Review"
+    done: e190f53f
+    # merging / rework: no matching option in this project's Status field
+
+# Workflow policies (optional)
+# Stacked PR workflow was skipped at setup (standard single-PR flow).
+# To enable later, uncomment and set `enabled: true` (requires `gt`):
+# workflow:
+#   stacked_pr:
+#     enabled: true
+#     tool: graphite                 # graphite | git-spice | none
+#     split_phases: true             # If plan.md has `### Phase N:` headings, create a stacked branch per phase
+#     branch_prefix: tracks/         # Branch prefix (single-phase: tracks/{track_id}; multi-phase: tracks/{track_id}/phase-N-{slug})
+
+# Document path overrides (optional — defaults shown)
+docs:
+  tracks: .please/docs/tracks
+  product-specs: .please/docs/product-specs
+  decisions: .please/docs/decisions
+  investigations: .please/docs/investigations
+  research: .please/docs/research
+  references: .please/docs/references
+  knowledge: .please/docs/knowledge
+  brainstorms: .please/docs/brainstorms
+  ideation: .please/docs/ideation
+
+# --- review plugin config (preserved from existing setup) ---
 review:
   cubic:
     enabled: true
