@@ -1,0 +1,56 @@
+docs/m1-responses-translation.md
+  s_7c8f3392527f8f::t_de82c5fb14ab28 109
+tests/passthrough.rs
+  s_7c8f3392527f8f::t_de82c5fb14ab28 501-632
+tests/codex_websocket_fallback.rs
+  s_7c8f3392527f8f::t_de82c5fb14ab28 129-147,218-274,279
+  s_7c8f3392527f8f::t_a3be51f4e2a9a1 275-278,280
+src/model/responses.rs
+  s_7c8f3392527f8f::t_de82c5fb14ab28 41-54,99-100,111-119,197-202,688-700,702,729
+.claude/agent-memory/review-review-code-reviewer/shunt-codex-subagent-msgstart-input-review.md
+  s_7c8f3392527f8f::t_de82c5fb14ab28 1-67
+.claude/agent-memory/review-review-silent-failure-hunter/MEMORY.md
+  s_7c8f3392527f8f::t_de82c5fb14ab28 5
+.claude/agent-memory/review-review-silent-failure-hunter/pr112-message-start-estimate.md
+  s_7c8f3392527f8f::t_de82c5fb14ab28 1-59
+.claude/agent-memory/review-review-code-reviewer/MEMORY.md
+  s_7c8f3392527f8f::t_de82c5fb14ab28 8
+site/src/content/docs/guides/effort-and-context.md
+  s_7c8f3392527f8f::t_de82c5fb14ab28 40,43
+  s_7c8f3392527f8f::t_2202be8cca3968 44
+.please/docs/review/rejected-findings.jsonl
+  s_7c8f3392527f8f::t_de82c5fb14ab28 8-9
+src/count_tokens.rs
+  s_7c8f3392527f8f::t_de82c5fb14ab28 30-33,35-38
+.claude/agent-memory/review-review-documentation-analyzer/shunt_pr112_doc_drift_pattern.md
+  s_7c8f3392527f8f::t_de82c5fb14ab28 1-48
+.claude/agent-memory/review-review-documentation-analyzer/MEMORY.md
+  s_7c8f3392527f8f::t_de82c5fb14ab28 5
+tests/responses_translate.rs
+  s_7c8f3392527f8f::t_de82c5fb14ab28 976-1141
+src/adapters/responses/mod.rs
+  s_7c8f3392527f8f::t_d3b4e2ee0e6374 588-592,598
+  s_7c8f3392527f8f::t_2495ef7bf380e8 307-309
+  s_7c8f3392527f8f::t_27a943d31e9018 670-672
+  s_7c8f3392527f8f::t_247a04417e4cc3 4
+  s_7c8f3392527f8f::t_48ce1b7fb7cf20 21
+  s_7c8f3392527f8f::t_de82c5fb14ab28 88-113,195,218,660,663-669,679-682,691,714,719-720,798,819-827,830-833,843,1126,1129-1130
+.claude/agent-memory/review-review-code-reviewer/project_shunt_responses_adapter.md
+  s_7c8f3392527f8f::t_de82c5fb14ab28 3,15-21,43-75
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "58c617ca6a37bc59c0676e88b54892a7927c5893",
+  "prompts": {},
+  "sessions": {
+    "s_7c8f3392527f8f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ab01b4b8-bc36-407a-ae5d-852f02606bc2",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
