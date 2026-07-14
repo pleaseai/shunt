@@ -430,8 +430,11 @@ impl AnthropicSseMachine {
             index: self.index,
             kind: BlockKind::Text,
         });
+        // Do NOT clear `text_citations` here: `annotation_added` can buffer a
+        // citation before the first `text_delta` opens the block, and
+        // `close_any` already clears the buffer when a text block closes. A
+        // clear at open time would drop those pre-delta citations.
         self.text_buffer.clear();
-        self.text_citations.clear();
         out.push(sse(
             "content_block_start",
             &json!({
@@ -440,6 +443,20 @@ impl AnthropicSseMachine {
                 "content_block": {"type": "text", "text": ""}
             }),
         ));
+        // Flush any citations buffered before this block opened. `annotation_added`
+        // stores a citation but can't stream its `citations_delta` while no text
+        // block is open, so emit them now that the block exists — otherwise
+        // streaming clients only ever see them in the final reconstructed block.
+        for citation in &self.text_citations {
+            out.push(sse(
+                "content_block_delta",
+                &json!({
+                    "type": "content_block_delta",
+                    "index": self.index,
+                    "delta": {"type": "citations_delta", "citation": citation}
+                }),
+            ));
+        }
         out
     }
 
@@ -1111,5 +1128,58 @@ mod tests {
             .unwrap()
             .iter()
             .all(|block| block["type"] != "text"));
+    }
+
+    #[test]
+    fn citation_before_first_text_delta_is_preserved() {
+        // `annotation.added` can arrive before the first `output_text.delta`.
+        // It buffers the citation in `text_citations`; the subsequent
+        // `open_text` must not clear that buffer, or the pre-delta citation is
+        // lost from the reconstructed text block.
+        let mut machine = AnthropicSseMachine::new("test", false, false);
+        let mut output = machine.apply(event(
+            "response.output_item.added",
+            json!({"item": {"type": "message"}}),
+        ));
+        output.extend(machine.apply(event(
+            "response.output_text.annotation.added",
+            json!({"annotation": {
+                "type": "url_citation",
+                "url": "https://example.com",
+                "title": "Example",
+                "cited_text": "quoted"
+            }}),
+        )));
+        output.extend(machine.apply(event(
+            "response.output_text.delta",
+            json!({"delta": "Hello"}),
+        )));
+        output.extend(machine.apply(event("response.output_text.done", json!({}))));
+        output.extend(machine.finish());
+        let final_json = machine.final_json();
+
+        // The buffered citation survives into the final reconstructed block...
+        assert_eq!(
+            final_json["content"][0],
+            json!({
+                "type": "text",
+                "text": "Hello",
+                "citations": [{
+                    "type": "web_search_result_location",
+                    "url": "https://example.com",
+                    "title": "Example",
+                    "cited_text": "quoted"
+                }]
+            })
+        );
+        // ...and streaming clients also receive it as a `citations_delta`, flushed
+        // when the lazily-opened text block starts.
+        assert!(
+            output
+                .iter()
+                .any(|frame| frame.contains("citations_delta")
+                    && frame.contains("https://example.com")),
+            "pre-delta citation must be streamed as a citations_delta frame"
+        );
     }
 }
