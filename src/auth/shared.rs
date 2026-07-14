@@ -194,15 +194,17 @@ pub fn scan_account_dir(
 /// Resolve a pooled provider's effective account list: its configured
 /// `[[accounts]]` when non-empty, otherwise a per-request scan of the store
 /// directory (which enables no-restart account discovery, mirroring the
-/// Anthropic pool). When `accounts_dir` is genuinely absent (a `NotFound` stat)
-/// — the backward-compat deployment that sets `auth = "..._oauth"` but never runs
-/// `shunt login` — the scan is skipped entirely (no `spawn_blocking`, no
-/// `read_dir`), restoring the near-zero-I/O single-account path. Any *other* stat
-/// error (e.g. a permission fault on an existing but unreadable store) is
-/// surfaced rather than masked as "no accounts": `Path::exists()` would conflate
-/// the two, so `NotFound` is matched explicitly, mirroring `scan_account_dir`'s
-/// own error handling and preserving the pre-#118 guarantee that a broken store
-/// is diagnosable. The check runs on every request, so once an account is added
+/// Anthropic pool). The existence probe and the scan both do synchronous
+/// filesystem I/O, so they run together on the blocking pool — never a stat or
+/// `read_dir` on a runtime worker thread. When `accounts_dir` is genuinely absent
+/// (a `NotFound` stat) — the backward-compat deployment that sets
+/// `auth = "..._oauth"` but never runs `shunt login` — the scan is short-circuited
+/// right after that cheap stat (no `read_dir`, no per-file reads), preserving the
+/// near-zero-I/O single-account path (#118). Any *other* stat error (e.g. a
+/// permission fault on an existing but unreadable store) is surfaced rather than
+/// masked as "no accounts", mirroring `scan_account_dir`'s own `NotFound`-only
+/// handling and preserving the pre-#118 guarantee that a broken store is
+/// diagnosable. The check runs on every request, so once an account is added
 /// (which creates the directory) scanning resumes with no restart.
 /// `provider_label` shapes the error text only ("codex" / "Claude"); the error is
 /// returned preformatted so each pool wraps it in its own gateway error type.
@@ -215,28 +217,27 @@ pub(crate) async fn resolve_pool_accounts(
     if !configured.is_empty() {
         return Ok(configured.to_vec());
     }
-    // Short-circuit on genuine absence only; surface every other stat error.
-    match fs::metadata(&accounts_dir) {
-        Ok(_) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => {
-            return Err(format!(
-                "failed to stat {provider_label} account store {}: {error}",
-                accounts_dir.display()
-            ));
+    // The stat + scan are both synchronous file I/O, so run the whole thing on
+    // the blocking pool — never on a runtime worker thread. The closure still
+    // short-circuits on genuine absence (a cheap stat, no `read_dir`); any other
+    // stat error is surfaced, not masked as "no accounts".
+    let scan_dir = accounts_dir.clone();
+    let scanned = tokio::task::spawn_blocking(move || {
+        match fs::metadata(&scan_dir) {
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error),
         }
-    }
-    // scan_accounts() does synchronous directory + file I/O; run it on the
-    // blocking pool so it never stalls a runtime worker thread.
-    tokio::task::spawn_blocking(scan)
-        .await
-        .map_err(|error| format!("{provider_label} account store scan task failed: {error}"))?
-        .map_err(|error| {
-            format!(
-                "failed to scan {provider_label} account store {}: {error}",
-                accounts_dir.display()
-            )
-        })
+        scan()
+    })
+    .await
+    .map_err(|error| format!("{provider_label} account store scan task failed: {error}"))?;
+    scanned.map_err(|error| {
+        format!(
+            "failed to scan {provider_label} account store {}: {error}",
+            accounts_dir.display()
+        )
+    })
 }
 
 /// Write an account file born-private: create its parent directory `0700` on Unix
