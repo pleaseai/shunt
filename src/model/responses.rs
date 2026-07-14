@@ -842,8 +842,11 @@ pub fn anthropic_error_type(status: StatusCode) -> &'static str {
     mapped_error(status).0
 }
 
-/// Client-facing HTTP status for a mapped upstream error. Projection of
-/// `mapped_error`; see its docs for the preserved-vs-collapsed rule.
+/// Client-facing HTTP status for a mapped upstream error. The standard error
+/// statuses (400/401/403/413/429/500/501/502/503/504 and the non-registry 529
+/// overload) reach the client unchanged; anything else collapses to `502`
+/// rather than leaking an unexpected upstream status verbatim. Projection of
+/// `mapped_error`, the shared source of truth this and `error.type` derive from.
 pub fn client_facing_status(status: StatusCode) -> StatusCode {
     mapped_error(status).1
 }
