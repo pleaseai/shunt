@@ -27,22 +27,14 @@ pub struct CodexAuthStore {
     token_url: String,
 }
 
-/// Resolve the OAuth refresh endpoint from a raw `SHUNT_CODEX_TOKEN_URL` value.
-/// The refresh POST carries the long-lived `refresh_token`, so an empty,
-/// malformed, or non-loopback-plaintext override is rejected (it would egress the
-/// credential off-origin or in the clear) and the real `auth.openai.com` endpoint
-/// is used instead. HTTPS to any host is allowed; plain `http://` only to a
-/// loopback test mock (wiremock binds `127.0.0.1`).
+/// Resolve the Codex OAuth refresh endpoint from a raw `SHUNT_CODEX_TOKEN_URL`
+/// value, rejecting an empty, malformed, or non-loopback-plaintext override that
+/// would egress the long-lived `refresh_token` off-origin or in the clear. Binds
+/// the shared [`crate::auth::shared::sanitize_token_url`] guard to the production
+/// `auth.openai.com` default; the Claude store shares the same guard (#118) so
+/// the two cannot drift.
 fn sanitize_token_url(raw: Option<String>) -> String {
-    raw.filter(|value| !value.is_empty())
-        .filter(|value| {
-            value.parse::<reqwest::Url>().is_ok_and(|url| {
-                url.scheme() == "https"
-                    || (url.scheme() == "http"
-                        && crate::config::host_is_loopback(url.host_str().unwrap_or_default()))
-            })
-        })
-        .unwrap_or_else(|| TOKEN_URL.to_string())
+    crate::auth::shared::sanitize_token_url(raw, TOKEN_URL)
 }
 
 impl CodexAuthStore {

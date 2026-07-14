@@ -66,6 +66,16 @@ pub fn default_credentials_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".claude/.credentials.json"))
 }
 
+/// Resolve the Claude OAuth refresh endpoint from a raw `SHUNT_CLAUDE_TOKEN_URL`
+/// value. Parity with the Codex store (#118): a non-loopback plaintext override
+/// would egress the long-lived `refresh_token` in the clear, so it is rejected in
+/// favor of the production endpoint. Shares
+/// [`crate::auth::shared::sanitize_token_url`] with the Codex store so the egress
+/// guard cannot drift between them.
+fn sanitize_token_url(raw: Option<String>) -> String {
+    crate::auth::shared::sanitize_token_url(raw, TOKEN_URL)
+}
+
 #[derive(Clone)]
 pub struct ClaudeAuthStore {
     path: PathBuf,
@@ -84,10 +94,10 @@ impl ClaudeAuthStore {
         // `SHUNT_CLAUDE_TOKEN_URL` overrides the OAuth refresh endpoint. It exists
         // so the refresh path can be pointed at a local mock in tests; production
         // deployments leave it unset and use the real platform.claude.com URL.
-        let token_url = env::var("SHUNT_CLAUDE_TOKEN_URL")
-            .ok()
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| TOKEN_URL.to_string());
+        // `sanitize_token_url` rejects a non-loopback plaintext override so a
+        // misconfigured env var can never egress the long-lived `refresh_token`
+        // off-origin or in the clear (parity with the Codex store, #118).
+        let token_url = sanitize_token_url(env::var("SHUNT_CLAUDE_TOKEN_URL").ok());
         Self {
             path,
             client,

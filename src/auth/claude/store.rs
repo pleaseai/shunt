@@ -295,7 +295,9 @@ mod tests {
     async fn setup_token_round_trips_and_replaces() {
         let _guard = TEST_ENV_LOCK.lock().await;
         let dir = temp_dir("setup");
-        std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+        // Declared after TEST_ENV_LOCK so it drops first: the var is removed on
+        // drop (panic-safe) while the lock is still held.
+        let _env = shared::EnvVarGuard::set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
 
         let path = store_setup_token("ci", "token-one", Some("uuid-one")).unwrap();
         store_setup_token("ci", "token-two", Some("uuid-two")).unwrap();
@@ -318,7 +320,6 @@ mod tests {
             );
         }
 
-        std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -334,7 +335,7 @@ mod tests {
         )
         .unwrap();
         let accounts_dir = dir.join("accounts");
-        std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
+        let _env = shared::EnvVarGuard::set("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
 
         import_credentials("zeta", &source, Some("uuid-zeta")).unwrap();
         import_credentials("alpha", &source, Some("uuid-alpha")).unwrap();
@@ -345,7 +346,6 @@ mod tests {
         assert_eq!(accounts[1].name, "zeta");
         assert_eq!(accounts[1].uuid.as_deref(), Some("uuid-zeta"));
 
-        std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
         let _ = fs::remove_dir_all(dir);
     }
 }

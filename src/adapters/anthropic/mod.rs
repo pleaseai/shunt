@@ -103,21 +103,14 @@ async fn forward_claude_oauth(
         .config
         .provider(&route.provider)
         .expect("route provider was validated");
-    let accounts = if provider.accounts.is_empty() {
-        // scan_accounts() does synchronous directory + file I/O; run it on the
-        // blocking pool so it never stalls a runtime worker thread.
-        tokio::task::spawn_blocking(auth::claude::store::scan_accounts)
-            .await
-            .map_err(|error| auth::auth_error(format!("account store scan task failed: {error}")))?
-            .map_err(|error| {
-                auth::auth_error(format!(
-                    "failed to scan Claude account store {}: {error}",
-                    auth::claude::store::default_accounts_dir().display()
-                ))
-            })?
-    } else {
-        provider.accounts.clone()
-    };
+    let accounts = auth::shared::resolve_pool_accounts(
+        "Claude",
+        &provider.accounts,
+        auth::claude::store::default_accounts_dir(),
+        auth::claude::store::scan_accounts,
+    )
+    .await
+    .map_err(auth::auth_error)?;
     if accounts.is_empty() {
         return Err(auth::auth_error(format!(
             "provider '{}' uses claude_oauth but has no accounts; run `shunt login claude --name <name>` or configure [[providers.{}.accounts]]",

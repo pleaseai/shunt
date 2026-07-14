@@ -194,7 +194,9 @@ mod tests {
         let source = dir.join("source.json");
         fs::write(&source, chatgpt_source_json("access", "refresh")).unwrap();
         let accounts_dir = dir.join("accounts");
-        std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &accounts_dir);
+        // Declared after TEST_ENV_LOCK so it drops first: the var is removed on
+        // drop (panic-safe) while the lock is still held.
+        let _env = shared::EnvVarGuard::set("SHUNT_CODEX_ACCOUNTS_DIR", &accounts_dir);
 
         let path = import_auth("zeta", &source).unwrap();
         import_auth("alpha", &source).unwrap();
@@ -224,7 +226,6 @@ mod tests {
             );
         }
 
-        std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -236,13 +237,12 @@ mod tests {
         let source = dir.join("source.json");
         fs::write(&source, chatgpt_source_json("access", "refresh")).unwrap();
         let accounts_dir = dir.join("accounts");
-        std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &accounts_dir);
+        let _env = shared::EnvVarGuard::set("SHUNT_CODEX_ACCOUNTS_DIR", &accounts_dir);
 
         import_auth("ci", &source).unwrap();
         assert!(remove_account("ci").unwrap());
         assert!(!remove_account("ci").unwrap());
 
-        std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
         let _ = fs::remove_dir_all(dir);
     }
 }

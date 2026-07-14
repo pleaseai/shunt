@@ -135,23 +135,14 @@ async fn forward(
             .config
             .provider(&route.provider)
             .expect("route provider was validated");
-        let accounts = if provider.accounts.is_empty() {
-            // scan_accounts() does synchronous directory + file I/O; run it on
-            // the blocking pool so it never stalls a runtime worker thread.
-            tokio::task::spawn_blocking(auth::codex::store::scan_accounts)
-                .await
-                .map_err(|error| {
-                    own_error(format!("codex account store scan task failed: {error}"))
-                })?
-                .map_err(|error| {
-                    own_error(format!(
-                        "failed to scan codex account store {}: {error}",
-                        auth::codex::store::default_accounts_dir().display()
-                    ))
-                })?
-        } else {
-            provider.accounts.clone()
-        };
+        let accounts = auth::shared::resolve_pool_accounts(
+            "codex",
+            &provider.accounts,
+            auth::codex::store::default_accounts_dir(),
+            auth::codex::store::scan_accounts,
+        )
+        .await
+        .map_err(own_error)?;
         if !accounts.is_empty() {
             return forward_chatgpt_oauth(
                 state,
