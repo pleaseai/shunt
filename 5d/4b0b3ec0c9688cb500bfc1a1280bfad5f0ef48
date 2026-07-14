@@ -1,0 +1,29 @@
+.claude/agent-memory/review-review-pr-test-analyzer/MEMORY.md
+  s_15112be4779e3d::t_a457122d68a890 9
+.claude/agent-memory/review-review-code-reviewer/MEMORY.md
+  s_15112be4779e3d::t_0a185e5145190f 10
+.claude/agent-memory/review-review-documentation-analyzer/MEMORY.md
+  s_15112be4779e3d::t_0eefbf88b50c34 10
+.claude/agent-memory/review-review-code-reviewer/shunt-issue135-burn-rate-pool-pr136.md
+  s_15112be4779e3d::t_136128cb128bea 1-46
+.claude/agent-memory/review-review-documentation-analyzer/shunt_pr136_pool_lb_docs_review.md
+  s_15112be4779e3d::t_ad9a1f1ad5f5a3 1-50
+.claude/agent-memory/review-review-pr-test-analyzer/shunt-pool-burn-rate-coverage.md
+  s_15112be4779e3d::t_37f62816e6f172 1-51
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "5d4b0b3ec0c9688cb500bfc1a1280bfad5f0ef48",
+  "prompts": {},
+  "sessions": {
+    "s_15112be4779e3d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e765cc62-6ffe-4f3e-8de9-3151b8615821",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
