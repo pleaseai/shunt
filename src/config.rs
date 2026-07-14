@@ -414,6 +414,18 @@ impl RetryConfig {
                 multiplier: self.multiplier,
             });
         }
+        // A zero backoff makes every computed delay zero (`backoff_ceiling` grows
+        // from `initial_backoff` and is capped by `max_backoff`), turning retry
+        // into a tight no-delay loop that defeats the "backoff" the type promises.
+        // Guard it only when retry is actually enabled — `max_retries = 0` is the
+        // documented way to turn retry off and legitimately leaves the backoff unused.
+        if self.max_retries > 0 && (self.initial_backoff_ms == 0 || self.max_backoff_ms == 0) {
+            return Err(ConfigError::InvalidRetryBackoff {
+                provider: provider.to_string(),
+                initial_backoff_ms: self.initial_backoff_ms,
+                max_backoff_ms: self.max_backoff_ms,
+            });
+        }
         Ok(())
     }
 }
@@ -717,6 +729,16 @@ pub enum ConfigError {
         "providers.{provider}.retry.multiplier must be a finite value >= 1.0, got {multiplier}"
     )]
     InvalidRetryMultiplier { provider: String, multiplier: f64 },
+    #[error(
+        "providers.{provider}.retry: initial_backoff_ms and max_backoff_ms must both be > 0 when \
+         max_retries > 0 (set max_retries = 0 to disable retry instead of zeroing the backoff), \
+         got initial_backoff_ms = {initial_backoff_ms}, max_backoff_ms = {max_backoff_ms}"
+    )]
+    InvalidRetryBackoff {
+        provider: String,
+        initial_backoff_ms: u64,
+        max_backoff_ms: u64,
+    },
 }
 
 impl ProviderConfig {
@@ -1795,6 +1817,53 @@ mod tests {
                 ConfigError::InvalidRetryMultiplier { .. }
             ));
         }
+    }
+
+    #[test]
+    fn retry_validate_rejects_zero_backoff_when_enabled() {
+        // Retry enabled but a zeroed backoff would spin with no delay — rejected
+        // whether it's the initial, the max, or both that are zero.
+        for (initial, max) in [(0, 8_000), (500, 0), (0, 0)] {
+            let retry = RetryConfig {
+                max_retries: 2,
+                initial_backoff_ms: initial,
+                max_backoff_ms: max,
+                multiplier: 2.0,
+            };
+            assert!(matches!(
+                retry.validate("anthropic").unwrap_err(),
+                ConfigError::InvalidRetryBackoff { .. }
+            ));
+        }
+        // Disabled retry (max_retries = 0) leaves the backoff unused, so a zero
+        // backoff is allowed — that's the documented way to turn retry off.
+        let disabled = RetryConfig {
+            max_retries: 0,
+            initial_backoff_ms: 0,
+            max_backoff_ms: 0,
+            multiplier: 1.0,
+        };
+        assert!(disabled.validate("anthropic").is_ok());
+    }
+
+    #[test]
+    fn retry_validate_accepts_multiplier_at_inclusive_lower_bound() {
+        // Exactly 1.0 (a never-grows backoff, e.g. the disabled policy's own value)
+        // is accepted; just below is not — pins the `< 1.0` vs `<= 1.0` boundary.
+        let at_bound = RetryConfig {
+            multiplier: 1.0,
+            ..RetryConfig::default()
+        };
+        assert!(at_bound.validate("anthropic").is_ok());
+
+        let below = RetryConfig {
+            multiplier: 0.999,
+            ..RetryConfig::default()
+        };
+        assert!(matches!(
+            below.validate("anthropic").unwrap_err(),
+            ConfigError::InvalidRetryMultiplier { .. }
+        ));
     }
 
     #[test]

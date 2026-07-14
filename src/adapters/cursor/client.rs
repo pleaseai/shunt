@@ -161,9 +161,9 @@ pub struct CursorError {
     /// Whether this is a transient transport failure safe to retry. Set only by
     /// [`CursorError::from_reqwest`] for a connection-level error (connect
     /// refused/reset, timeout); a deterministic local error ([`internal`]) or a
-    /// decoded upstream error ([`new`]) is never transient. Captured here
-    /// instead of being re-derived from the 502-defaulted `status`, so the retry
-    /// classification stays aligned with the `reqwest::Error` impl.
+    /// structured error carrying an explicit status ([`new`]) is never transient.
+    /// Captured here instead of being re-derived from the 502-defaulted `status`,
+    /// so the retry classification stays aligned with the `reqwest::Error` impl.
     ///
     /// [`internal`]: CursorError::internal
     /// [`new`]: CursorError::new
@@ -220,11 +220,14 @@ impl crate::retry::RetryableError for CursorError {
     /// Retry only a genuine connection-level transport failure — the `transient`
     /// flag captured at construction, set solely by [`CursorError::from_reqwest`]
     /// for a connect/timeout error. A deterministic local error
-    /// ([`CursorError::internal`], e.g. a prost encode failure) or a decoded
-    /// upstream error ([`CursorError::new`]) is left alone, matching the
-    /// `reqwest::Error` impl the Anthropic/Responses adapters use. Genuine
-    /// upstream 429/5xx arrive as an `Ok` `reqwest::Response` (reqwest does not
-    /// error on HTTP status), so they are classified from the response, never here.
+    /// ([`CursorError::internal`], e.g. a prost encode failure) or a structured
+    /// error carrying an explicit status ([`CursorError::new`]) is left alone,
+    /// matching the `reqwest::Error` impl the Anthropic/Responses adapters use.
+    /// Genuine upstream 429/5xx arrive as an `Ok` `reqwest::Response` (reqwest does
+    /// not error on HTTP status), so they are classified from the response, never
+    /// here; Cursor's decoded stream errors take a separate path
+    /// ([`CursorDecodeError`](super::response::CursorDecodeError)) that never
+    /// reaches this trait at all.
     fn is_transient(&self) -> bool {
         self.transient
     }
@@ -339,6 +342,45 @@ mod tests {
             .await
             .unwrap();
         assert!(response.status().is_success());
+    }
+
+    #[tokio::test]
+    async fn run_agent_transient_status_is_retried_by_the_shared_driver() {
+        use std::time::Duration;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // The Cursor adapter (`cursor/mod.rs::forward`) wraps `run_agent` in
+        // `send_with_retry` with the provider's policy — the same wiring the
+        // Anthropic/Responses paths each get an integration test for. Drive that
+        // exact combination here: a transient 503 must re-issue `run_agent` up to
+        // the retry budget (1 initial + 2 retries = 3 upstream hits) and then
+        // surface the last response, so a regression that dropped Cursor's retry
+        // (e.g. a policy lookup silently falling back to DISABLED) would fail here.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/agent.v1.AgentService/Run"))
+            .respond_with(ResponseTemplate::new(503).set_body_bytes(Vec::new()))
+            .expect(3)
+            .mount(&server)
+            .await;
+
+        let client = CursorHttpClient::new(reqwest::Client::new(), server.uri());
+        let resolved = resolve_cursor_model("cursor").unwrap();
+        let policy = crate::retry::RetryPolicy {
+            max_retries: 2,
+            initial_backoff: Duration::from_millis(1),
+            max_backoff: Duration::from_millis(2),
+            multiplier: 2.0,
+        };
+        let response = crate::retry::send_with_retry(policy, "cursor", || {
+            client.run_agent("token", "prompt", &resolved, &[])
+        })
+        .await
+        .expect("a transient HTTP status returns Ok(response), never Err");
+        // The mock's `.expect(3)` (verified on drop) proves the retry fired; the
+        // surfaced status is the last transient response.
+        assert_eq!(response.status().as_u16(), 503);
     }
 
     #[tokio::test]

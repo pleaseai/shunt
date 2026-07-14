@@ -336,7 +336,7 @@ async fn forward_chatgpt_oauth(
             &route,
             credential.clone(),
             session_id.as_deref(),
-            &upstream_body,
+            bytes::Bytes::from(upstream_body.to_string()),
         )
         .await
         {
@@ -457,7 +457,7 @@ async fn forward_chatgpt_oauth(
                     &route,
                     retry_credential,
                     session_id.as_deref(),
-                    &upstream_body,
+                    bytes::Bytes::from(upstream_body.to_string()),
                 )
                 .await
                 {
@@ -636,10 +636,13 @@ async fn http_send(
     route: &Route,
     credential: Credential,
     session_id: Option<&str>,
-    upstream_body: &Value,
+    body: bytes::Bytes,
 ) -> Result<reqwest::Response, reqwest::Error> {
+    // `body` is the already-serialized request. `bytes::Bytes` clones as a cheap
+    // refcount bump, so re-issuing on retry (forward_http) never re-serializes the
+    // JSON — mirroring the Anthropic adapter's body handling.
     request_builder(state, route, credential, session_id)
-        .body(upstream_body.to_string())
+        .body(body)
         .send()
         .await
 }
@@ -686,11 +689,25 @@ async fn forward_http(
     // off to `stream_response`/`json_response`. The account-pool path drives its
     // own failover and deliberately does not layer retry on top.
     let policy = provider_retry_policy(state, route);
+    // Serialize the body once, before the retry loop: every attempt re-sends the
+    // same unchanged JSON, and a `bytes::Bytes` clone is a refcount bump, so a
+    // retry never re-serializes a (potentially large) request body.
+    let body = bytes::Bytes::from(upstream_body.to_string());
     let upstream = crate::retry::send_with_retry(policy, &route.provider, || {
-        http_send(state, route, credential.clone(), session_id, &upstream_body)
+        http_send(state, route, credential.clone(), session_id, body.clone())
     })
     .await
-    .map_err(|error| own_error(error.to_string()))?;
+    .map_err(|error| {
+        // Log the raw transport error before it collapses into own_error's generic
+        // message — otherwise proxy.rs's top-level log shows only "responses adapter
+        // failed", hiding the real cause (DNS, connection refused, TLS, ...).
+        tracing::warn!(
+            provider = %route.provider,
+            error = %error,
+            "responses upstream request failed after retries"
+        );
+        own_error(error.to_string())
+    })?;
     let status = upstream.status();
     if !status.is_success() {
         return Err(mapped_upstream_error(status, upstream, auth).await);

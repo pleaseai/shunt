@@ -74,9 +74,9 @@ multiplier = 2.0         # default; exponential growth factor (>= 1.0)
 | Key | Values | Meaning |
 | :-- | :-- | :-- |
 | `max_retries` | integer (default `2`, max `10`) | Extra attempts after the first. `0` disables retry. |
-| `initial_backoff_ms` | milliseconds (default `500`) | Backoff ceiling before the first retry (jitter fills `[0, this]`), grown by `multiplier` per attempt. |
-| `max_backoff_ms` | milliseconds (default `8000`) | Upper bound on any single backoff and on an honored `Retry-After`. |
-| `multiplier` | number ≥ 1.0 (default `2.0`) | Exponential growth factor applied to the backoff per attempt. |
+| `initial_backoff_ms` | milliseconds (default `500`, must be `> 0` when `max_retries > 0`) | Backoff ceiling before the first retry (jitter fills `[0, this]`), grown by `multiplier` per attempt. |
+| `max_backoff_ms` | milliseconds (default `8000`, must be `> 0` when `max_retries > 0`) | Upper bound on any single backoff and on an honored `Retry-After`. |
+| `multiplier` | finite number ≥ 1.0 (default `2.0`) | Exponential growth factor applied to the backoff per attempt. |
 
 ### `[[providers.<name>.accounts]]`
 

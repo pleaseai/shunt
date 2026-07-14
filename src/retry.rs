@@ -126,6 +126,14 @@ where
                 let status = response.status();
                 match next_backoff(&policy, retries, Some(response.headers())) {
                     Backoff::Sleep(delay) => {
+                        // Release the upstream connection before backing off:
+                        // `response` owns the body stream tied to the socket, so
+                        // holding it across the sleep would pin that connection
+                        // idle for the whole delay (up to `max_backoff`), adding
+                        // connection churn under a retry storm — the exact scenario
+                        // this feature exists for. The `ExceedsBudget` arm keeps it,
+                        // since it surfaces the response instead of sleeping.
+                        drop(response);
                         tracing::warn!(
                             provider = %provider,
                             status = status.as_u16(),
@@ -172,8 +180,34 @@ where
                 tokio::time::sleep(delay).await;
                 retries += 1;
             }
-            // Non-retryable, or retries exhausted: hand the outcome back.
-            other => return other,
+            // Non-retryable, or retries exhausted: hand the outcome back. When the
+            // outcome is *still* a transient failure we simply ran out of budget
+            // for, log the give-up — the per-attempt warnings above never mark that
+            // the loop finally stopped, so an operator watching WARN logs otherwise
+            // sees the retries but no distinct "gave up, still failing" signal
+            // (mirrors the ExceedsBudget branch's rationale).
+            other => {
+                match &other {
+                    Ok(response) if is_retryable_status(response.status()) => {
+                        tracing::warn!(
+                            provider = %provider,
+                            status = response.status().as_u16(),
+                            max_retries = policy.max_retries,
+                            "giving up after exhausting retries: upstream still returning a transient status"
+                        );
+                    }
+                    Err(error) if error.is_transient() => {
+                        tracing::warn!(
+                            provider = %provider,
+                            error = %error,
+                            max_retries = policy.max_retries,
+                            "giving up after exhausting retries: upstream transport error persists"
+                        );
+                    }
+                    _ => {}
+                }
+                return other;
+            }
         }
     }
 }
@@ -242,6 +276,18 @@ mod tests {
         for code in [200, 400, 401, 403, 404, 413, 500, 501] {
             assert!(!is_retryable_status(StatusCode::from_u16(code).unwrap()));
         }
+    }
+
+    #[test]
+    fn retry_reason_labels_each_transient_status_distinctly() {
+        // Each retryable status maps to its own low-cardinality metric label; a
+        // transposed match arm (e.g. 502/504 swapped) would be caught here.
+        assert_eq!(retry_reason(StatusCode::from_u16(429).unwrap()), "429");
+        assert_eq!(retry_reason(StatusCode::from_u16(502).unwrap()), "502");
+        assert_eq!(retry_reason(StatusCode::from_u16(503).unwrap()), "503");
+        assert_eq!(retry_reason(StatusCode::from_u16(504).unwrap()), "504");
+        // Anything else collapses to the catch-all label.
+        assert_eq!(retry_reason(StatusCode::from_u16(500).unwrap()), "other");
     }
 
     #[test]
