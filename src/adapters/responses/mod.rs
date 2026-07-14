@@ -1203,11 +1203,15 @@ fn stream_events_response(
 /// a successful response. `buffered` is the replayed first event, if any.
 ///
 /// A backend-sent error *event* (arriving as `Ok`, e.g. rate-limit or
-/// content-policy refusal) is likewise surfaced as a gateway
-/// error rather than a `200 OK` with the partial content collected before it
-/// (issue #113): the machine records the mapped error envelope, and it is checked
-/// after draining. This matches both the mid-stream *transport* error above and
-/// the streaming path, which emits the same error inline as an SSE `error` event.
+/// content-policy refusal) is likewise surfaced as a gateway error rather than a
+/// `200 OK` with the partial content collected before it (issue #113): the
+/// machine records the mapped error envelope. Because such an event is terminal
+/// (the machine ignores everything after it), the collector returns the moment
+/// the envelope is recorded rather than draining to channel close — a backend
+/// that sends the error but holds the socket open would otherwise hang the
+/// request on `recv()`. This matches both the mid-stream *transport* error above
+/// and the streaming path, which emits the same error inline as an SSE `error`
+/// event.
 async fn json_events_response(
     buffered: BufferedEvent,
     mut events: CodexWsEvents,
@@ -1225,6 +1229,13 @@ async fn json_events_response(
         match item {
             Some(Ok(event)) => {
                 let _ = machine.apply(event);
+                // A backend error event is terminal: the machine records the
+                // mapped envelope and ignores everything after. Return the moment
+                // it lands instead of looping on `recv()` for a channel close the
+                // backend may never send — that would hang the request.
+                if let Some(error) = machine.backend_error() {
+                    return backend_error_response(error);
+                }
             }
             Some(Err(error)) => {
                 tracing::warn!(error = %error.message, "codex websocket stream error");
@@ -1237,9 +1248,6 @@ async fn json_events_response(
             }
             None => break,
         }
-    }
-    if let Some(error) = machine.backend_error() {
-        return backend_error_response(error);
     }
     (StatusCode::OK, axum::Json(machine.final_json())).into_response()
 }
@@ -2145,5 +2153,45 @@ mod tests {
         let body = response_body_json(response).await;
         assert_eq!(body["type"], "message");
         assert_eq!(body["content"][0]["text"], "hello");
+    }
+
+    /// The websocket collector must not block waiting for the channel to close
+    /// after a backend error event — a backend can send `response.failed` and
+    /// hold the socket open. Keep the sender alive (no `drop(tx)`) and assert the
+    /// collector still returns a `502` promptly instead of hanging on `recv()`.
+    #[tokio::test]
+    async fn json_events_response_returns_on_backend_error_without_channel_close() {
+        use tokio::sync::mpsc;
+
+        let (tx, rx) = mpsc::unbounded_channel();
+        tx.send(Ok(ResponseEvent {
+            event: Some("response.created".to_string()),
+            data: json!({"response": {"id": "resp_1"}}),
+        }))
+        .unwrap();
+        tx.send(Ok(ResponseEvent {
+            event: Some("response.failed".to_string()),
+            data: json!({
+                "type": "response.failed",
+                "response": {"error": {"code": "rate_limit_exceeded", "message": "Rate limit reached"}}
+            }),
+        }))
+        .unwrap();
+        // Deliberately keep `tx` alive: the channel never closes, so the collector
+        // must return on the error event rather than looping forever on `recv()`.
+
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            json_events_response(None, rx, "gpt-5.2-codex".to_string(), false, false),
+        )
+        .await
+        .expect("collector returns without waiting for channel close");
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = response_body_json(response).await;
+        assert_eq!(body["type"], "error");
+        assert_eq!(body["error"]["message"], "Rate limit reached");
+
+        drop(tx);
     }
 }
