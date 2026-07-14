@@ -1,9 +1,11 @@
 //! Inbound client authentication for shared gateways (M4).
 //!
 //! Optional per-client tokens checked on discovery and routes where shunt
-//! injects a server-side credential (`api_key` / `chatgpt_oauth`). Passthrough
-//! inference routes are never checked — the caller pays with their own
-//! credential. See `docs/m4-inbound-auth.md`.
+//! injects a server-side credential (`api_key` / `chatgpt_oauth` /
+//! `claude_oauth`). Those checks accept the standard Anthropic client
+//! credentials (`Authorization: Bearer`, `x-api-key`) in addition to the
+//! dedicated token header. Passthrough inference routes are never checked —
+//! the caller pays with their own credential. See `docs/m4-inbound-auth.md`.
 
 use axum::http::{HeaderMap, HeaderName};
 
@@ -37,8 +39,8 @@ impl InboundAuth {
     /// with the standard `OPENAI_API_KEY` / `env_key` idiom (which Codex sends as a
     /// Bearer) authenticates the same as the configured token header. The `Bearer `
     /// scheme prefix is stripped before the constant-time compare; a non-`Bearer`
-    /// scheme is ignored. Used by the inbound Codex endpoint, not by `/v1/messages`
-    /// (whose passthrough client pays with its own credential and is never checked).
+    /// scheme is ignored. Used by the inbound Codex endpoint; `x-api-key` is
+    /// deliberately excluded because Codex never sends it.
     pub fn authenticate_bearer(&self, headers: &HeaderMap) -> Option<&str> {
         let bearer = bearer_token(headers);
         self.authenticate_values(
@@ -50,18 +52,26 @@ impl InboundAuth {
         )
     }
 
-    /// Check credentials accepted by the Anthropic model-discovery protocol in
-    /// addition to the configured inbound-auth header. Claude Code sends its
-    /// discovery credential as either `Authorization: Bearer` or `x-api-key`.
-    pub fn authenticate_discovery(&self, headers: &HeaderMap) -> Option<&str> {
+    /// Check every credential slot the Anthropic client protocol can carry a
+    /// gate token in: the configured inbound-auth header, `Authorization:
+    /// Bearer`, and `x-api-key`. Claude Code sends `ANTHROPIC_AUTH_TOKEN` as a
+    /// Bearer and API keys as `x-api-key`, so a client pointed at a shared
+    /// gateway authenticates with the credential it already sends — no extra
+    /// custom header. Used by model discovery and by gated (injected-credential)
+    /// `/v1/messages` inference routes.
+    ///
+    /// When several slots present valid tokens the dedicated header wins, then
+    /// `Bearer`, then `x-api-key`: values are chained lowest-priority first
+    /// because [`Self::authenticate_values`] keeps the last match.
+    pub fn authenticate_client(&self, headers: &HeaderMap) -> Option<&str> {
         let bearer = bearer_token(headers);
         self.authenticate_values(
             headers
-                .get(&self.header)
+                .get("x-api-key")
                 .map(|value| value.as_bytes())
                 .into_iter()
-                .chain(headers.get("x-api-key").map(|value| value.as_bytes()))
-                .chain(bearer),
+                .chain(bearer)
+                .chain(headers.get(&self.header).map(|value| value.as_bytes())),
         )
     }
 
@@ -98,7 +108,7 @@ impl InboundAuth {
 /// Extract the token from an `Authorization: Bearer <token>` header, trimming the
 /// scheme and surrounding whitespace. Returns `None` when the header is absent,
 /// unparseable, or uses a non-`Bearer` scheme. Shared by
-/// [`InboundAuth::authenticate_bearer`] and [`InboundAuth::authenticate_discovery`].
+/// [`InboundAuth::authenticate_bearer`] and [`InboundAuth::authenticate_client`].
 fn bearer_token(headers: &HeaderMap) -> Option<&[u8]> {
     headers
         .get("authorization")
@@ -231,7 +241,7 @@ mod tests {
     }
 
     #[test]
-    fn authenticate_discovery_accepts_bearer_and_api_key_credentials() {
+    fn authenticate_client_accepts_bearer_and_api_key_credentials() {
         let auth = InboundAuth::new(
             HeaderName::from_static("x-shunt-token"),
             vec![
@@ -241,34 +251,63 @@ mod tests {
         );
 
         // No credentials at all → rejected.
-        assert_eq!(auth.authenticate_discovery(&HeaderMap::new()), None);
+        assert_eq!(auth.authenticate_client(&HeaderMap::new()), None);
 
         // The configured inbound-auth header is accepted.
         let mut headers = HeaderMap::new();
         headers.insert("x-shunt-token", HeaderValue::from_static("tok-a"));
-        assert_eq!(auth.authenticate_discovery(&headers), Some("alice"));
+        assert_eq!(auth.authenticate_client(&headers), Some("alice"));
 
-        // Claude Code's discovery credential via `x-api-key`.
+        // Claude Code's API-key idiom via `x-api-key`.
         let mut headers = HeaderMap::new();
         headers.insert("x-api-key", HeaderValue::from_static("tok-b"));
-        assert_eq!(auth.authenticate_discovery(&headers), Some("bob"));
+        assert_eq!(auth.authenticate_client(&headers), Some("bob"));
 
-        // Claude Code's discovery credential via `Authorization: Bearer`.
+        // Claude Code's `ANTHROPIC_AUTH_TOKEN` idiom via `Authorization: Bearer`.
         let bearer = format!("Bearer {}", "tok-a");
         let mut headers = HeaderMap::new();
         headers.insert("authorization", HeaderValue::from_str(&bearer).unwrap());
-        assert_eq!(auth.authenticate_discovery(&headers), Some("alice"));
+        assert_eq!(auth.authenticate_client(&headers), Some("alice"));
 
-        // A non-Bearer scheme is not treated as a discovery credential.
+        // A non-Bearer scheme is not treated as a credential.
         let basic = format!("Basic {}", "tok-a");
         let mut headers = HeaderMap::new();
         headers.insert("authorization", HeaderValue::from_str(&basic).unwrap());
-        assert_eq!(auth.authenticate_discovery(&headers), None);
+        assert_eq!(auth.authenticate_client(&headers), None);
 
         // A wrong value on an otherwise-accepted source is rejected.
         let mut headers = HeaderMap::new();
         headers.insert("x-api-key", HeaderValue::from_static("wrong"));
-        assert_eq!(auth.authenticate_discovery(&headers), None);
+        assert_eq!(auth.authenticate_client(&headers), None);
+    }
+
+    #[test]
+    fn authenticate_client_prefers_header_then_bearer_then_api_key() {
+        let auth = InboundAuth::new(
+            HeaderName::from_static("x-shunt-token"),
+            vec![
+                ("alice".to_string(), "tok-a".to_string()),
+                ("bob".to_string(), "tok-b".to_string()),
+            ],
+        );
+
+        // Dedicated header wins over a valid Bearer from another client.
+        let mut headers = HeaderMap::new();
+        headers.insert("x-shunt-token", HeaderValue::from_static("tok-a"));
+        headers.insert("authorization", HeaderValue::from_static("Bearer tok-b"));
+        assert_eq!(auth.authenticate_client(&headers), Some("alice"));
+
+        // Bearer wins over a valid `x-api-key` from another client.
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", HeaderValue::from_static("Bearer tok-a"));
+        headers.insert("x-api-key", HeaderValue::from_static("tok-b"));
+        assert_eq!(auth.authenticate_client(&headers), Some("alice"));
+
+        // An invalid higher-priority slot does not mask a valid lower one.
+        let mut headers = HeaderMap::new();
+        headers.insert("x-shunt-token", HeaderValue::from_static("wrong"));
+        headers.insert("x-api-key", HeaderValue::from_static("tok-b"));
+        assert_eq!(auth.authenticate_client(&headers), Some("bob"));
     }
 
     #[test]

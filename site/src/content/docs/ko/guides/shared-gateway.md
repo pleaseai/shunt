@@ -7,7 +7,7 @@ description: 공유 배포를 위한 클라이언트별 토큰, 그리고 프록
 
 기본적으로 shunt에는 인바운드 인증이 없습니다 — 루프백 전용 개인 게이트웨이에는 괜찮지만, VPN/터널을 통해 공유하는 순간, 그것에 도달할 수 있는 누구든 매핑된 모델에서 **운영자의** 계정을 쓸 수 있습니다(shunt가 그런 모델에 대해 자체 `api_key`/`chatgpt_oauth` 자격 증명을 주입하기 때문). 패스스루 모델은 문제가 되지 않습니다: 각 호출자 본인의 Anthropic 자격 증명을 전달합니다.
 
-`[server.auth]`는 주입된 자격 증명 라우트만을 클라이언트별 토큰으로 게이팅합니다:
+`[server.auth]`는 주입된 자격 증명 라우트와 모델 디스커버리를 클라이언트별 토큰으로 게이팅합니다:
 
 ```toml
 [server.auth]                        # 두 키 모두 선택; 기본값 표시됨
@@ -20,15 +20,23 @@ tokens_env = "SHUNT_CLIENT_TOKENS"
 export SHUNT_CLIENT_TOKENS="minsu:$(openssl rand -hex 32),alice:$(openssl rand -hex 32)"
 ```
 
-`[server.auth]`가 있는데 env 변수가 설정되지 않았거나 형식이 잘못되면 시작은 **닫힌 채로 실패(fail closed)**합니다. 유효한 토큰 없이 매핑된 모델에 대한 요청은 401 `authentication_error`를 받습니다; `GET /v1/models`, `GET /routes`, `GET|HEAD /`, `GET /health`, 그리고 패스스루 모델은 열린 채로 유지됩니다. `GET /routes`는 `GET /v1/models`와 동일한 디스커버리 엔드포인트 설계에 따라 인증되지 않습니다 — 라우팅 메타데이터(구성된 프로바이더/업스트림 모델 매핑)를 노출하며, 자격 증명은 절대 노출하지 않습니다. 자격 증명은 오직 프로바이더 구성에만 존재하며 그 핸들러가 읽는 일이 없습니다.
+`[server.auth]`가 있는데 env 변수가 설정되지 않았거나 형식이 잘못되면 시작은 **닫힌 채로 실패(fail closed)**합니다. 유효한 토큰 없이 매핑된 모델과 `GET /v1/models`에 대한 요청은 401 `authentication_error`를 받습니다. 두 게이트 모두 표준 Anthropic 자격 증명 슬롯 어디로든 클라이언트 토큰을 받습니다 — 구성된 헤더(기본 `x-shunt-token`), `Authorization: Bearer`, `x-api-key` 순의 우선순위로(여러 슬롯에 유효한 토큰이 있을 때). `GET /routes`, `GET|HEAD /`, `GET /health`, 그리고 패스스루 모델은 열린 채로 유지됩니다. `GET /routes`는 라우팅 메타데이터(구성된 프로바이더/업스트림 모델 매핑)를 노출하는 shunt 네이티브 엔드포인트이기 때문에 인증되지 않습니다 — 자격 증명은 절대 노출하지 않으며, 자격 증명은 오직 프로바이더 구성에만 존재하고 그 핸들러가 읽는 일이 없습니다.
 
-토큰 헤더는 전달 전에 항상 제거되고, 매칭은 상수 시간(constant-time)이며, 토큰 값은 절대 로깅되지 않습니다(클라이언트 *이름*은 요청별로 로깅됩니다).
+게이팅된 라우트에서는 수락되는 자격 증명 헤더가 전달 전에 항상 제거되고(shunt가 거기에 자체 프로바이더 자격 증명을 주입합니다), 매칭은 상수 시간(constant-time)이며, 토큰 값은 절대 로깅되지 않습니다(클라이언트 *이름*은 요청별로 로깅됩니다).
 
-클라이언트 측은 한 줄입니다(`ANTHROPIC_CUSTOM_HEADERS`는 한 줄당 하나의 `Name: Value`를 받습니다):
+클라이언트 측은 게이트웨이가 무엇을 제공하는지에 따라 고르세요:
 
-```bash
-export ANTHROPIC_CUSTOM_HEADERS="x-shunt-token: <your token>"
-```
+- **풀/매핑 전용 게이트웨이**(예: [Anthropic 계정 풀](/ko/guides/anthropic-multi-account/)이 기본 프로바이더): 클라이언트 토큰이 Claude Code가 이미 보내는 자격 증명 그 자체가 될 수 있습니다 — 추가 헤더 줄이 필요 없습니다:
+
+  ```bash
+  export ANTHROPIC_AUTH_TOKEN="<your client token>"   # Authorization: Bearer로 전송됨
+  ```
+
+- **패스스루 모델이 섞여 있는 경우**: `Bearer` 슬롯은 각 호출자의 실제 Anthropic 자격 증명을 계속 실어야 하므로, 대신 구성된 헤더로 전용 토큰을 배포하세요(`ANTHROPIC_CUSTOM_HEADERS`는 한 줄당 하나의 `Name: Value`를 받습니다):
+
+  ```bash
+  export ANTHROPIC_CUSTOM_HEADERS="x-shunt-token: <your token>"
+  ```
 
 :::note
 이는 애플리케이션 계층 식별일 뿐입니다 — 전송 암호화는 여전히 배포(WireGuard/Tailscale 터널, 또는 앞단의 TLS 종료)에서 옵니다; shunt 자체는 평문 HTTP를 제공합니다.

@@ -24,7 +24,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     // Snapshot the live config so this response reflects the latest reload.
     let state = state.refreshed();
     if let Some(auth) = &state.inbound_auth {
-        let Some(client) = auth.authenticate_discovery(&headers) else {
+        let Some(client) = auth.authenticate_client(&headers) else {
             tracing::warn!(
                 "inbound auth failed for GET /v1/models: missing or invalid client token"
             );

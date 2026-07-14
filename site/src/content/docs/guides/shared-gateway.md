@@ -20,15 +20,23 @@ tokens_env = "SHUNT_CLIENT_TOKENS"
 export SHUNT_CLIENT_TOKENS="minsu:$(openssl rand -hex 32),alice:$(openssl rand -hex 32)"
 ```
 
-Startup **fails closed** if `[server.auth]` is present but the env var is unset or malformed. Requests to mapped models and `GET /v1/models` without a valid token get a 401 `authentication_error`; discovery accepts the configured header plus `x-api-key` and `Authorization: Bearer`. `GET /routes`, `GET|HEAD /`, `GET /health`, and passthrough models stay open. `GET /routes` remains unauthenticated because it is a shunt-native endpoint exposing routing metadata (the configured provider/upstream-model mapping), never credentials, which live only in provider config and are never read by that handler.
+Startup **fails closed** if `[server.auth]` is present but the env var is unset or malformed. Requests to mapped models and `GET /v1/models` without a valid token get a 401 `authentication_error`. Both gates accept the client token in any standard Anthropic credential slot — the configured header (default `x-shunt-token`), `Authorization: Bearer`, or `x-api-key`, in that priority when several carry valid tokens. `GET /routes`, `GET|HEAD /`, `GET /health`, and passthrough models stay open. `GET /routes` remains unauthenticated because it is a shunt-native endpoint exposing routing metadata (the configured provider/upstream-model mapping), never credentials, which live only in provider config and are never read by that handler.
 
-The token header is always stripped before forwarding, matching is constant-time, and token values are never logged (client *names* are, per request).
+On gated routes the accepted credential headers are always stripped before forwarding (shunt injects its own provider credential there), matching is constant-time, and token values are never logged (client *names* are, per request).
 
-Client side, one line (`ANTHROPIC_CUSTOM_HEADERS` takes one `Name: Value` per line):
+Client side, pick by what the gateway serves:
 
-```bash
-export ANTHROPIC_CUSTOM_HEADERS="x-shunt-token: <your token>"
-```
+- **Pool/mapped-only gateway** (e.g. an [Anthropic account pool](/guides/anthropic-multi-account/) as the default provider): the client token can simply *be* the credential Claude Code already sends — no extra header line:
+
+  ```bash
+  export ANTHROPIC_AUTH_TOKEN="<your client token>"   # sent as Authorization: Bearer
+  ```
+
+- **Passthrough models mixed in**: the `Bearer` slot must keep carrying each caller's real Anthropic credential, so hand out dedicated tokens in the configured header instead (`ANTHROPIC_CUSTOM_HEADERS` takes one `Name: Value` per line):
+
+  ```bash
+  export ANTHROPIC_CUSTOM_HEADERS="x-shunt-token: <your token>"
+  ```
 
 :::note
 This is application-layer identification only — transport encryption still comes from the deployment (WireGuard/Tailscale tunnel, or TLS termination in front); shunt itself serves plain HTTP.

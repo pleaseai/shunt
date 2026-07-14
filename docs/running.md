@@ -698,15 +698,26 @@ export SHUNT_CLIENT_TOKENS="minsu:$(openssl rand -hex 32),alice:$(openssl rand -
 
 Startup **fails closed** if `[server.auth]` is present but the env var is unset or
 malformed. Requests to mapped models and `GET /v1/models` without a valid token get a 401
-`authentication_error`; discovery accepts the configured header plus `x-api-key` and
-`Authorization: Bearer`. `GET /routes`, `GET|HEAD /`, `GET /health`, and passthrough models
+`authentication_error`. Both gates accept the client token in any standard Anthropic
+credential slot — the configured header (default `x-shunt-token`), `Authorization: Bearer`,
+or `x-api-key`, in that priority when several carry valid tokens. `GET /routes`,
+`GET|HEAD /`, `GET /health`, and passthrough models
 stay open. `GET /routes` remains unauthenticated because it is a shunt-native endpoint exposing
 routing metadata (the configured provider/upstream-model mapping), never credentials, which live
 only in provider config and are never read by that handler.
-The token header is always stripped before forwarding, matching is constant-time, and
-token values are never logged (client *names* are, per request).
+On gated routes the accepted credential headers are always stripped before forwarding,
+matching is constant-time, and token values are never logged (client *names* are, per request).
 
-Client side, one line (`ANTHROPIC_CUSTOM_HEADERS` takes one `Name: Value` per line):
+Client side, on a **pool/mapped-only** gateway (e.g. `claude_oauth` as the default provider)
+the client token can simply *be* the Anthropic credential Claude Code already sends:
+
+```bash
+export ANTHROPIC_AUTH_TOKEN="<your client token>"   # sent as Authorization: Bearer
+```
+
+When the gateway also serves **passthrough** models, the `Bearer` slot must keep carrying
+the caller's real Anthropic credential, so hand out dedicated tokens in the configured
+header instead (`ANTHROPIC_CUSTOM_HEADERS` takes one `Name: Value` per line):
 
 ```bash
 export ANTHROPIC_CUSTOM_HEADERS="x-shunt-token: <your token>"

@@ -12,9 +12,10 @@ default_provider = "anthropic" # provider for any model with no route -> pass-th
 
 # --- Optional: inbound client tokens for a shared gateway (docs/running.md §5.9).
 # When set, models routed to a credential-injecting provider (api_key /
-# chatgpt_oauth) and GET /v1/models require a client token; passthrough models
-# stay open. Discovery accepts the configured header plus x-api-key and bearer
-# authorization. Tokens live in the env, never here:
+# chatgpt_oauth / claude_oauth) and GET /v1/models require a client token;
+# passthrough models stay open. Both gates accept the configured header plus
+# bearer authorization and x-api-key (so Claude Code's ANTHROPIC_AUTH_TOKEN
+# works as-is on a pool-only gateway). Tokens live in the env, never here:
 # SHUNT_CLIENT_TOKENS="alice:<token>,bob:<token>".
 # Startup fails if the env var is unset (never silently open).
 # [server.auth]

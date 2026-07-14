@@ -7,7 +7,7 @@ description: 面向共享部署的按客户端 token,以及面向代理和隧道
 
 默认情况下 shunt 没有入站认证 —— 对于一个只在回环的个人网关这没问题,但一旦你通过 VPN/隧道共享它,任何能触达它的人都能在映射模型上花费**运营者的**账户(shunt 为这些模型注入它自己的 `api_key`/`chatgpt_oauth` 凭据)。透传模型不在此列:它们转发每个调用方自己的 Anthropic 凭据。
 
-`[server.auth]` 恰好用按客户端 token 门控那些注入凭据的路由:
+`[server.auth]` 用按客户端 token 门控注入凭据的路由和模型发现:
 
 ```toml
 [server.auth]                        # 两个键都可选;显示的是默认值
@@ -20,15 +20,23 @@ tokens_env = "SHUNT_CLIENT_TOKENS"
 export SHUNT_CLIENT_TOKENS="minsu:$(openssl rand -hex 32),alice:$(openssl rand -hex 32)"
 ```
 
-如果存在 `[server.auth]` 但环境变量未设置或格式错误,启动会**安全失败(fail closed)**。对映射模型的、不带有效 token 的请求会得到 401 `authentication_error`;`GET /v1/models`、`GET /routes`、`GET|HEAD /`、`GET /health` 以及透传模型保持开放。`GET /routes` 与 `GET /v1/models` 出于同样的发现端点设计而无需认证 —— 它暴露路由元数据(配置的提供方/上游模型映射),从不暴露凭据,凭据只存在于提供方配置中,且从不被该处理器读取。
+如果存在 `[server.auth]` 但环境变量未设置或格式错误,启动会**安全失败(fail closed)**。对映射模型和 `GET /v1/models` 的、不带有效 token 的请求会得到 401 `authentication_error`。两个门控都接受客户端 token 出现在任意标准 Anthropic 凭据槽位中 —— 当多个槽位都携带有效 token 时,优先级依次为:配置的头部(默认 `x-shunt-token`)、`Authorization: Bearer`、`x-api-key`。`GET /routes`、`GET|HEAD /`、`GET /health` 以及透传模型保持开放。`GET /routes` 无需认证,因为它是暴露路由元数据(配置的提供方/上游模型映射)的 shunt 原生端点,从不暴露凭据 —— 凭据只存在于提供方配置中,且从不被该处理器读取。
 
-token 头部在转发前总会被剥除,匹配是常量时间的,token 值从不被记录(客户端*名称*会,按请求)。
+在被门控的路由上,被接受的凭据头部在转发前总会被剥除(shunt 会在那里注入它自己的提供方凭据),匹配是常量时间的,token 值从不被记录(客户端*名称*会,按请求)。
 
-客户端侧,一行(`ANTHROPIC_CUSTOM_HEADERS` 每行接受一个 `Name: Value`):
+客户端侧,按网关提供的内容来选择:
 
-```bash
-export ANTHROPIC_CUSTOM_HEADERS="x-shunt-token: <your token>"
-```
+- **仅池化/映射的网关**(例如以 [Anthropic 账户池](/zh-cn/guides/anthropic-multi-account/)作为默认提供方):客户端 token 可以直接就是 Claude Code 已经在发送的凭据 —— 无需额外的头部行:
+
+  ```bash
+  export ANTHROPIC_AUTH_TOKEN="<your client token>"   # 以 Authorization: Bearer 发送
+  ```
+
+- **混有透传模型时**:`Bearer` 槽位必须继续携带每个调用方真实的 Anthropic 凭据,因此请改为通过配置的头部分发专用 token(`ANTHROPIC_CUSTOM_HEADERS` 每行接受一个 `Name: Value`):
+
+  ```bash
+  export ANTHROPIC_CUSTOM_HEADERS="x-shunt-token: <your token>"
+  ```
 
 :::note
 这仅是应用层识别 —— 传输加密仍来自部署(WireGuard/Tailscale 隧道,或前置的 TLS 终止);shunt 本身提供纯 HTTP。
