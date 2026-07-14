@@ -9,7 +9,6 @@ use axum::{
 };
 
 use crate::{
-    accounts::{self, FailoverAction},
     adapters::AdapterError,
     auth::{self, resolve_credential, Credential},
     config::AccountConfig,
@@ -19,7 +18,10 @@ use crate::{
 
 use super::{
     error::own_error,
-    pool::{force_refresh_or_cooldown, resolve_or_cooldown, rotate_cooldown, with_account_header},
+    pool::{
+        classify_first, classify_retry, force_refresh_or_cooldown, resolve_or_cooldown,
+        with_account_header, FirstOutcome, RetryOutcome,
+    },
     request::responses_url,
 };
 
@@ -159,32 +161,22 @@ async fn forward_codex_passthrough(
             }
         };
 
-        let status = upstream.status();
-        match accounts::classify_codex(status, upstream.headers()) {
+        match classify_first(&state, &route, account, upstream) {
             // Success or a non-failover 4xx (e.g. 400): the account is fine, so
             // relay the upstream response verbatim — a passthrough client expects
             // the raw Responses body, error or not — and never rotate.
-            FailoverAction::Relay => {
+            FirstOutcome::Relay(upstream) => {
+                let status = upstream.status();
                 state.accounts.mark_healthy(&route.provider, &account.name);
                 return Ok((
                     status,
                     with_account_header(relay_passthrough(upstream), &account.name),
                 ));
             }
-            FailoverAction::Rotate => {
-                let cooldown = rotate_cooldown(status, upstream.headers());
-                state
-                    .accounts
-                    .cooldown(&route.provider, &account.name, cooldown);
-                tracing::warn!(
-                    provider = %route.provider,
-                    account = %account.name,
-                    status = %status,
-                    "inbound passthrough account failed over; cooling down and rotating"
-                );
+            FirstOutcome::Rotate(upstream) => {
                 last_response = Some(upstream);
             }
-            FailoverAction::RefreshRetry => {
+            FirstOutcome::NeedRefresh(upstream) => {
                 // Force-refresh the account's stored credential (shared with
                 // forward_chatgpt_oauth); a `token_env` account or a refresh
                 // failure cools it down and rotates instead.
@@ -222,53 +214,20 @@ async fn forward_codex_passthrough(
                         continue;
                     }
                 };
-                let retry_status = retry.status();
-                if retry_status == StatusCode::UNAUTHORIZED {
-                    // Refresh succeeded but the credential is still rejected — the
-                    // account is genuinely broken. Cool it down longer and rotate.
-                    state.accounts.cooldown(
-                        &route.provider,
-                        &account.name,
-                        Duration::from_secs(5 * 60),
-                    );
-                    tracing::warn!(
-                        provider = %route.provider,
-                        account = %account.name,
-                        "inbound passthrough account refreshed but upstream still rejected the new credential; rotating"
-                    );
-                    last_response = Some(retry);
-                    continue;
-                }
-                match accounts::classify_codex(retry_status, retry.headers()) {
-                    FailoverAction::Relay => {
+                match classify_retry(&state, &route, account, retry) {
+                    RetryOutcome::Relay(retry) => {
+                        let retry_status = retry.status();
                         state.accounts.mark_healthy(&route.provider, &account.name);
                         return Ok((
                             retry_status,
                             with_account_header(relay_passthrough(retry), &account.name),
                         ));
                     }
-                    // classify_codex returns RefreshRetry only for 401 (handled
-                    // above) and never PauseSame; only Rotate is live here.
-                    FailoverAction::Rotate | FailoverAction::RefreshRetry => {
-                        let cooldown = rotate_cooldown(retry_status, retry.headers());
-                        state
-                            .accounts
-                            .cooldown(&route.provider, &account.name, cooldown);
-                        tracing::warn!(
-                            provider = %route.provider,
-                            account = %account.name,
-                            status = %retry_status,
-                            "inbound passthrough refresh retry did not succeed; rotating"
-                        );
+                    RetryOutcome::Rotate(retry) => {
                         last_response = Some(retry);
-                        continue;
-                    }
-                    FailoverAction::PauseSame => {
-                        unreachable!("classify_codex never returns PauseSame")
                     }
                 }
             }
-            FailoverAction::PauseSame => unreachable!("classify_codex never returns PauseSame"),
         }
     }
 

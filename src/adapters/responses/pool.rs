@@ -138,12 +138,12 @@ pub(super) async fn forward_chatgpt_oauth(
             }
         };
 
-        let status = upstream.status();
-        match accounts::classify_codex(status, upstream.headers()) {
-            FailoverAction::Relay => {
+        match classify_first(&state, &route, account, upstream) {
+            FirstOutcome::Relay(upstream) => {
                 // A non-401/429/5xx response means the account itself is fine,
-                // whether or not this particular request succeeded (mirrors
-                // the Anthropic adapter's top-level Relay arm).
+                // whether or not this particular request succeeded (mirrors the
+                // Anthropic adapter's top-level Relay arm).
+                let status = upstream.status();
                 state.accounts.mark_healthy(&route.provider, &account.name);
                 if status.is_success() {
                     let response = relay_success(
@@ -167,20 +167,10 @@ pub(super) async fn forward_chatgpt_oauth(
                 // rather than rotating to another account.
                 return Err(mapped_upstream_error(status, upstream, auth).await);
             }
-            FailoverAction::Rotate => {
-                let cooldown = rotate_cooldown(status, upstream.headers());
-                state
-                    .accounts
-                    .cooldown(&route.provider, &account.name, cooldown);
-                tracing::warn!(
-                    provider = %route.provider,
-                    account = %account.name,
-                    status = %status,
-                    "ChatGPT OAuth account failed over; cooling down and rotating to the next account"
-                );
+            FirstOutcome::Rotate(upstream) => {
                 last_response = Some(upstream);
             }
-            FailoverAction::RefreshRetry => {
+            FirstOutcome::NeedRefresh(upstream) => {
                 // Force-refresh the account's stored credential under its refresh
                 // lock (see force_refresh_or_cooldown); a `token_env` account or a
                 // refresh failure cools it down and rotates instead.
@@ -218,30 +208,9 @@ pub(super) async fn forward_chatgpt_oauth(
                         continue;
                     }
                 };
-                let retry_status = retry.status();
-                if retry_status == StatusCode::UNAUTHORIZED {
-                    // Refresh succeeded but the credential is still rejected —
-                    // the account is genuinely broken. Cool it down longer and
-                    // rotate rather than relaying the 401 to the client.
-                    state.accounts.cooldown(
-                        &route.provider,
-                        &account.name,
-                        Duration::from_secs(5 * 60),
-                    );
-                    tracing::warn!(
-                        provider = %route.provider,
-                        account = %account.name,
-                        "ChatGPT OAuth account refreshed successfully but upstream still rejected the new credential; cooling down and rotating"
-                    );
-                    last_response = Some(retry);
-                    continue;
-                }
-                // Classify the refreshed retry the same way the initial
-                // response is classified, so a non-success outcome fails over
-                // to the remaining accounts instead of short-circuiting the
-                // pool.
-                match accounts::classify_codex(retry_status, retry.headers()) {
-                    FailoverAction::Relay => {
+                match classify_retry(&state, &route, account, retry) {
+                    RetryOutcome::Relay(retry) => {
+                        let retry_status = retry.status();
                         if retry_status.is_success() {
                             state.accounts.mark_healthy(&route.provider, &account.name);
                             let response = relay_success(
@@ -260,35 +229,11 @@ pub(super) async fn forward_chatgpt_oauth(
                         }
                         return Err(mapped_upstream_error(retry_status, retry, auth).await);
                     }
-                    // Exhaustive rather than `_` so a new FailoverAction variant
-                    // forces a decision here. Two of these arms are unreachable
-                    // for the retry status and are matched only to document the
-                    // invariants at the call site: classify_codex returns
-                    // RefreshRetry only for 401, but a 401 retry already `continue`d
-                    // at the `retry_status == UNAUTHORIZED` check above, so it never
-                    // reaches this match; and it never returns PauseSame at all (its
-                    // 429 arm always maps to Rotate). Only Relay and Rotate are live
-                    // here — RefreshRetry rides Rotate's arm as a defensive no-op.
-                    FailoverAction::Rotate | FailoverAction::RefreshRetry => {
-                        let cooldown = rotate_cooldown(retry_status, retry.headers());
-                        state
-                            .accounts
-                            .cooldown(&route.provider, &account.name, cooldown);
-                        tracing::warn!(
-                            provider = %route.provider,
-                            account = %account.name,
-                            status = %retry_status,
-                            "ChatGPT OAuth refresh retry did not succeed; rotating to the next account"
-                        );
+                    RetryOutcome::Rotate(retry) => {
                         last_response = Some(retry);
-                        continue;
-                    }
-                    FailoverAction::PauseSame => {
-                        unreachable!("classify_codex never returns PauseSame")
                     }
                 }
             }
-            FailoverAction::PauseSame => unreachable!("classify_codex never returns PauseSame"),
         }
     }
 
@@ -460,5 +405,103 @@ pub(super) async fn force_refresh_or_cooldown(
             );
             None
         }
+    }
+}
+
+/// The classification of a **first-attempt** upstream response on the Codex pool.
+/// The account-specific relay rendering (translate vs verbatim, and the
+/// `mark_healthy`) stays with the caller; the shared cooldown/rotate bookkeeping
+/// is applied here so the translating and passthrough paths classify identically.
+pub(super) enum FirstOutcome {
+    /// The account is fine — the caller marks it healthy and relays this response
+    /// its own way.
+    Relay(reqwest::Response),
+    /// The account failed over (already cooled down); the caller stashes this
+    /// response as the pool's last-seen and rotates.
+    Rotate(reqwest::Response),
+    /// A 401 — the caller should force-refresh and retry this account.
+    NeedRefresh(reqwest::Response),
+}
+
+/// Classify a first-attempt upstream response, applying the shared rotate cooldown.
+/// A `Relay` account is left for the caller to mark healthy so it can render the
+/// response its own way (a translating path splits success vs a non-failover 4xx;
+/// the passthrough relays verbatim).
+pub(super) fn classify_first(
+    state: &AppState,
+    route: &Route,
+    account: &AccountConfig,
+    upstream: reqwest::Response,
+) -> FirstOutcome {
+    let status = upstream.status();
+    match accounts::classify_codex(status, upstream.headers()) {
+        FailoverAction::Relay => FirstOutcome::Relay(upstream),
+        FailoverAction::Rotate => {
+            let cooldown = rotate_cooldown(status, upstream.headers());
+            state
+                .accounts
+                .cooldown(&route.provider, &account.name, cooldown);
+            tracing::warn!(
+                provider = %route.provider,
+                account = %account.name,
+                status = %status,
+                "codex pool account failed over; cooling down and rotating to the next account"
+            );
+            FirstOutcome::Rotate(upstream)
+        }
+        FailoverAction::RefreshRetry => FirstOutcome::NeedRefresh(upstream),
+        FailoverAction::PauseSame => unreachable!("classify_codex never returns PauseSame"),
+    }
+}
+
+/// The classification of a **refreshed-retry** upstream response on the Codex pool.
+pub(super) enum RetryOutcome {
+    /// The caller marks the account healthy and relays this refreshed response.
+    Relay(reqwest::Response),
+    /// Rotate (already cooled down); the caller stashes this as the pool's
+    /// last-seen.
+    Rotate(reqwest::Response),
+}
+
+/// Classify a refreshed-retry upstream response. A retry still rejected with 401
+/// (the refresh succeeded but the credential is still bad) or otherwise
+/// non-relayable cools the account down and rotates; only a relayable status is
+/// handed back for the caller to render. `classify_codex` returns `RefreshRetry`
+/// only for 401 (handled above) and never `PauseSame`, so only `Relay` and
+/// `Rotate` are live — the others ride `Rotate`'s arm as a defensive no-op.
+pub(super) fn classify_retry(
+    state: &AppState,
+    route: &Route,
+    account: &AccountConfig,
+    retry: reqwest::Response,
+) -> RetryOutcome {
+    let retry_status = retry.status();
+    if retry_status == StatusCode::UNAUTHORIZED {
+        state
+            .accounts
+            .cooldown(&route.provider, &account.name, Duration::from_secs(5 * 60));
+        tracing::warn!(
+            provider = %route.provider,
+            account = %account.name,
+            "codex pool account refreshed but upstream still rejected the new credential; cooling down and rotating"
+        );
+        return RetryOutcome::Rotate(retry);
+    }
+    match accounts::classify_codex(retry_status, retry.headers()) {
+        FailoverAction::Relay => RetryOutcome::Relay(retry),
+        FailoverAction::Rotate | FailoverAction::RefreshRetry => {
+            let cooldown = rotate_cooldown(retry_status, retry.headers());
+            state
+                .accounts
+                .cooldown(&route.provider, &account.name, cooldown);
+            tracing::warn!(
+                provider = %route.provider,
+                account = %account.name,
+                status = %retry_status,
+                "codex pool refresh retry did not succeed; rotating to the next account"
+            );
+            RetryOutcome::Rotate(retry)
+        }
+        FailoverAction::PauseSame => unreachable!("classify_codex never returns PauseSame"),
     }
 }
