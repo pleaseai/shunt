@@ -1,0 +1,48 @@
+src/adapters/responses/mod.rs
+  s_621b908df41d9f::t_837b9a7f84775e 4,27,118-122,159-165,175-181,192,204
+src/adapters/responses/pool.rs
+  s_621b908df41d9f::t_837b9a7f84775e 18,38,101-109,169-170,234-235,274,283,285
+  s_621b908df41d9f::t_3d0fc86a7be017 40-46
+CHANGELOG.md
+  s_621b908df41d9f::t_837b9a7f84775e 3-17
+docs/codex-configuration.md
+  s_621b908df41d9f::t_837b9a7f84775e 652-658,660-661,664-665,670-671
+site/src/content/docs/guides/inbound-codex-endpoint.md
+  s_621b908df41d9f::t_837b9a7f84775e 52-59
+Cargo.toml
+  s_621b908df41d9f::t_837b9a7f84775e 5
+src/adapters/responses/websocket.rs
+  s_621b908df41d9f::t_837b9a7f84775e 19,34,36-42,72,83,92
+src/adapters/responses/ws_stream.rs
+  s_621b908df41d9f::t_837b9a7f84775e 14,17,31,35,104,106,160-170,212,231,258,288,314,339
+src/adapters/responses/http.rs
+  s_621b908df41d9f::t_837b9a7f84775e 16,21,60,63-69,103,113,123,130,136,190,196,235,239-248,287,314
+.release-please-manifest.json
+  s_621b908df41d9f::t_837b9a7f84775e 2
+src/adapters/responses/context.rs
+  s_621b908df41d9f::t_837b9a7f84775e 1-97
+site/src/content/docs/guides/connect-codex-cli.md
+  s_621b908df41d9f::t_837b9a7f84775e 88-101,121-126,128
+.please/docs/review/rejected-findings.jsonl
+  s_621b908df41d9f::t_837b9a7f84775e 10-11
+tests/codex_multi_account.rs
+  s_621b908df41d9f::t_837b9a7f84775e 788-863
+Cargo.lock
+  s_621b908df41d9f::t_d3bc19933d20ae 2520
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "b27dfebbfe20bebfb7e2baf6d8dc6c5fde9dc458",
+  "prompts": {},
+  "sessions": {
+    "s_621b908df41d9f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4b5e63be-321c-47f5-a02d-bf253d054088",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
