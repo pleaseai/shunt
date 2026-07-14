@@ -53,7 +53,7 @@ shunt run
 
 계정 목록은 메타데이터만 노출합니다: 계정 이름, 자격 증명 종류(`setup_token` 또는 `imported`), 만료, UUID. 토큰 자체는 절대 반환하지 않습니다. shunt가 계정을 고를 때 쿼터 상태, 쿨다운, 모델 인지 주간 버킷을 어떻게 쓰는지는 [Anthropic 멀티 계정](/ko/guides/anthropic-multi-account/#선택과-선제-로테이션)을 참고하세요.
 
-계정 metadata, 풀 상태, 프로비저닝, 또는 계정 제거에 API/curl로 접근하려면 구성된 헤더(기본 `x-shunt-admin-token`)로 관리자 토큰을 보내고 [HTTP 엔드포인트](/ko/reference/endpoints/)에 문서화된 JSON route를 사용하세요. 헤더로 인증된 요청은 브라우저 세션을 쓰지 않으며 CSRF 검사에서 제외됩니다. 프로비저닝을 시작할 때 `{ "name": "backup", "mode": "oauth" }` 또는 `mode: "setup_token"`을 보내세요. `mode`를 생략하면 API 하위 호환을 위해 `setup_token`이 기본값입니다.
+계정 metadata, 풀 상태, 프로비저닝, 또는 계정 제거에 API/curl로 접근하려면 구성된 헤더(기본 `x-shunt-admin-token`)로 관리자 토큰을 보내고 [HTTP 엔드포인트](/ko/reference/endpoints/)에 문서화된 JSON route를 사용하세요. 헤더로 인증된 요청은 브라우저 세션을 쓰지 않으며 CSRF 검사에서 제외됩니다. 프로비저닝을 시작할 때 `{ "name": "backup", "mode": "oauth" }` 또는 `{ "name": "backup", "mode": "setup_token" }`을 보내세요. `mode`를 생략하면 API 하위 호환을 위해 `setup_token`이 기본값입니다.
 
 ## CLI와 SSH fallback
 

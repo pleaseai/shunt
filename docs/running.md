@@ -241,7 +241,7 @@ shunt login claude --name ci --mode setup-token
 
 If `--mode` is omitted on a TTY, shunt presents these three choices and defaults to OAuth; non-interactive input retains the historical import default. `--long-lived` remains a deprecated alias for `--mode setup-token`.
 
-Full OAuth first binds an ephemeral listener to `127.0.0.1`, opens the authorization URL, and receives the redirect at `http://localhost:<port>/callback`. Browser-open, bind, callback, and 5-minute timeout failures fall back to a hidden manual-paste prompt. Use `--manual` to choose the paste flow immediately, especially over SSH:
+Full OAuth first binds an ephemeral listener to `127.0.0.1`, opens the authorization URL, and receives the redirect at `http://127.0.0.1:<port>/callback`. Browser-open, bind, callback, and 5-minute timeout failures fall back to a hidden manual-paste prompt. Use `--manual` to choose the paste flow immediately, especially over SSH:
 
 ```bash
 shunt login claude --name remote --mode oauth --manual

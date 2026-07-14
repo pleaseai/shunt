@@ -53,19 +53,18 @@ async fn callback(
     State(callback): State<CallbackState>,
     query: Result<Query<CallbackQuery>, QueryRejection>,
 ) -> Response {
+    // A malformed request or a state mismatch must NOT cancel the pending login.
+    // The loopback port can receive stray hits (browser probes, extensions, port
+    // scanners); completing the channel with an error on the first such hit would
+    // abort a legitimate login. Reject them with BAD_REQUEST and keep waiting for a
+    // request that carries the expected state, bounded by the caller's timeout.
     let Query(query) = match query {
         Ok(query) => query,
         Err(_) => {
-            callback.complete(Err(anyhow::anyhow!(
-                "Claude OAuth callback is missing a code or state"
-            )));
             return (StatusCode::BAD_REQUEST, Html(ERROR_PAGE)).into_response();
         }
     };
     if query.code.is_empty() || query.state != callback.expected_state {
-        callback.complete(Err(anyhow::anyhow!(
-            "Claude OAuth callback state did not match"
-        )));
         return (StatusCode::BAD_REQUEST, Html(ERROR_PAGE)).into_response();
     }
     if !callback.complete(Ok(query.code)) {
@@ -218,20 +217,52 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mismatched_state_is_rejected_and_not_exposed() {
+    async fn mismatched_state_is_rejected_but_keeps_waiting() {
         let server = CallbackServer::bind("expected-state".to_string())
             .await
             .unwrap();
-        let url = format!(
+        let url_wrong = format!(
             "http://127.0.0.1:{}/callback?code=callback-code&state=wrong-state",
             server.addr().port()
         );
+        let url_right = format!(
+            "http://127.0.0.1:{}/callback?code=callback-code&state=expected-state",
+            server.addr().port()
+        );
         let waiting = tokio::spawn(server.wait_for_code(Duration::from_secs(2)));
-        let response = reqwest::get(url).await.unwrap();
+        // A stray request with the wrong state is rejected without exposing secrets
+        // and, crucially, must not cancel the pending login.
+        let response = reqwest::get(url_wrong).await.unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = response.text().await.unwrap();
         assert!(!body.contains("callback-code"));
         assert!(!body.contains("wrong-state"));
-        assert!(waiting.await.unwrap().is_err());
+        // The subsequent legitimate callback still completes the flow.
+        let response = reqwest::get(url_right).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(waiting.await.unwrap().unwrap(), "callback-code");
+    }
+
+    #[tokio::test]
+    async fn malformed_query_is_rejected_but_keeps_waiting() {
+        let server = CallbackServer::bind("expected-state".to_string())
+            .await
+            .unwrap();
+        // Missing `code`/`state` params (a QueryRejection) must also be rejected
+        // without cancelling the pending login.
+        let url_bad = format!(
+            "http://127.0.0.1:{}/callback?code=callback-code",
+            server.addr().port()
+        );
+        let url_right = format!(
+            "http://127.0.0.1:{}/callback?code=callback-code&state=expected-state",
+            server.addr().port()
+        );
+        let waiting = tokio::spawn(server.wait_for_code(Duration::from_secs(2)));
+        let response = reqwest::get(url_bad).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let response = reqwest::get(url_right).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(waiting.await.unwrap().unwrap(), "callback-code");
     }
 }

@@ -148,7 +148,14 @@ fn persist_oauth_tokens(name: &str, tokens: TokenExchangeResponse) -> anyhow::Re
 /// Convert the token response's `expires_in` (seconds) to an absolute epoch-ms
 /// `expiresAt`, mirroring `ClaudeAuthStore`'s refresh math (default 3600s).
 pub(crate) fn oauth_expires_at_ms(expires_in: Option<i64>) -> i64 {
-    let secs = expires_in.filter(|value| *value > 0).unwrap_or(3600);
+    // Only an absent lifetime falls back to the 1-hour default. An explicit
+    // non-positive `expires_in` yields an already-expired timestamp (secs = 0) so
+    // the refresh path runs before the token is first sent upstream, rather than
+    // silently granting a spurious one-hour lifetime.
+    let secs = match expires_in {
+        None => 3600,
+        Some(value) => value.max(0),
+    };
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -444,6 +451,58 @@ mod tests {
             params.get("scope").map(|value| value.as_ref()),
             Some(auth::SCOPE)
         );
+    }
+
+    #[test]
+    fn oauth_expires_at_defaults_absent_and_clamps_non_positive() {
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        // An absent lifetime falls back to ~1 hour ahead.
+        assert!(oauth_expires_at_ms(None) >= before + 3600 * 1000 - 2000);
+        // A positive lifetime lands that many seconds ahead.
+        assert!(oauth_expires_at_ms(Some(7200)) >= before + 7200 * 1000 - 2000);
+        // An explicit zero or negative lifetime is immediately expired (not the
+        // 1-hour default), so it never lands meaningfully in the future.
+        let after = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        assert!(oauth_expires_at_ms(Some(0)) <= after);
+        assert!(oauth_expires_at_ms(Some(-10)) <= after);
+    }
+
+    #[test]
+    fn read_current_account_uuid_extracts_and_validates() {
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-account-uuid-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let good = dir.join("good.json");
+        std::fs::write(&good, r#"{"oauthAccount":{"accountUuid":"acc-123"}}"#).unwrap();
+        assert_eq!(read_current_account_uuid(&good).unwrap(), "acc-123");
+
+        // Missing accountUuid, empty accountUuid, and invalid JSON all error.
+        let missing = dir.join("missing.json");
+        std::fs::write(&missing, r#"{"oauthAccount":{}}"#).unwrap();
+        assert!(read_current_account_uuid(&missing).is_err());
+
+        let empty = dir.join("empty.json");
+        std::fs::write(&empty, r#"{"oauthAccount":{"accountUuid":""}}"#).unwrap();
+        assert!(read_current_account_uuid(&empty).is_err());
+
+        let invalid = dir.join("invalid.json");
+        std::fs::write(&invalid, "not json at all").unwrap();
+        assert!(read_current_account_uuid(&invalid).is_err());
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

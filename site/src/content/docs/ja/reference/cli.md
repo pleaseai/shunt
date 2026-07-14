@@ -60,7 +60,7 @@ shunt login claude --name ci --mode setup-token
 
 TTY で `--mode` を省略すると、shunt は `oauth`、`import`、`setup-token` の選択を求め、OAuth をデフォルトの推奨値にします。非対話入力では従来の `import` デフォルトを維持します。`--long-lived` は `--mode setup-token` の deprecated alias として残ります。
 
-`--mode oauth` は shunt の full-scope PKCE 認可フローを実行し、access token と refresh token の両方を保存します。デフォルトでは、shunt は `127.0.0.1` に一時リスナーをバインドして認可 URL を開き、ブラウザーが `http://localhost:<port>/callback` に戻ると完了します。ブラウザーを開けない、リスナーを開始できない、または 5 分以内に callback が届かない場合は、非表示入力の手動貼り付けフローへフォールバックします。SSH や headless 環境では `--manual` ですぐに手動フローを使えます。
+`--mode oauth` は shunt の full-scope PKCE 認可フローを実行し、access token と refresh token の両方を保存します。デフォルトでは、shunt は `127.0.0.1` に一時リスナーをバインドして認可 URL を開き、ブラウザーが `http://127.0.0.1:<port>/callback` に戻ると完了します。ブラウザーを開けない、リスナーを開始できない、または 5 分以内に callback が届かない場合は、非表示入力の手動貼り付けフローへフォールバックします。SSH や headless 環境では `--manual` ですぐに手動フローを使えます。
 
 ```bash
 shunt login claude --name remote --mode oauth --manual
@@ -70,7 +70,7 @@ shunt login claude --name remote --mode oauth --manual
 
 `--mode setup-token` は `claude setup-token` と同じ 1 年間・推論専用の PKCE フローを実行します。ブラウザーで承認後、表示された認可コードを shunt の非表示入力プロンプトへ貼り付けます。shunt はコードを直接交換し、opaque token と発行元アカウント UUID の両方を、トークンを表示せずに保存します。
 
-ファイルは Unix で `0700` ディレクトリ内に `0600` でアトミックに書き込まれます。`SHUNT_CLAUDE_ACCOUNTS_DIR` でストアディレクトリを上書きでき、同じ名前を再利用するとファイルを置き換えます。既存の外部 setup token は、発行後にアカウント UUID を復元できないため、引き続き `token_env` と明示的な `uuid` が必要です。
+ファイルは Unix で `0700` ディレクトリ内に `0600` でアトミックに書き込まれます。`SHUNT_CLAUDE_ACCOUNTS_DIR` でストアディレクトリを上書きでき、同じ名前を再利用するとファイルを置き換えます。既存の外部 setup token を参照するには `token_env` を使います。`uuid` は必須ではなく、リクエストに埋め込まれたアカウント UUID を書き換えたい場合にのみ指定します — 発行後にアカウント UUID を復元する手段がないため、書き換えが必要なときは明示的に渡してください。
 
 :::caution[リフレッシュ可能なログインごとに owner は 1 つ]
 OAuth provider は、shunt が access token をリフレッシュするときに refresh token もローテーションする場合があります。同じリフレッシュ可能な credential ファイルを複数の shunt プロセスで実行したり、稼働中のストアファイルを別ホストへコピーして独立運用したりしないでください。一方で最初にリフレッシュすると、もう一方のコピーが無効になる可能性があります。プロセスごとに個別にプロビジョニングするか、共有する静的 credential が必要な場合はリフレッシュしない setup token を使ってください。

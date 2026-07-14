@@ -60,7 +60,7 @@ shunt login claude --name ci --mode setup-token
 
 When `--mode` is omitted on a TTY, shunt prompts for `oauth`, `import`, or `setup-token` and recommends OAuth by default. In non-interactive input it keeps the historical `import` default. `--long-lived` remains a deprecated alias for `--mode setup-token`.
 
-`--mode oauth` runs shunt's full-scope PKCE authorization flow and stores both access and refresh tokens. By default shunt binds an ephemeral listener to `127.0.0.1`, opens the authorization URL, and finishes when the browser returns to `http://localhost:<port>/callback`. If the browser cannot open, the listener cannot start, or no callback arrives within 5 minutes, it falls back to the hidden manual-paste flow. Pass `--manual` to use that flow immediately, which is useful over SSH or in a headless environment:
+`--mode oauth` runs shunt's full-scope PKCE authorization flow and stores both access and refresh tokens. By default shunt binds an ephemeral listener to `127.0.0.1`, opens the authorization URL, and finishes when the browser returns to `http://127.0.0.1:<port>/callback`. If the browser cannot open, the listener cannot start, or no callback arrives within 5 minutes, it falls back to the hidden manual-paste flow. Pass `--manual` to use that flow immediately, which is useful over SSH or in a headless environment:
 
 ```bash
 shunt login claude --name remote --mode oauth --manual
@@ -70,7 +70,7 @@ shunt login claude --name remote --mode oauth --manual
 
 `--mode setup-token` runs the same one-year, inference-only PKCE flow as `claude setup-token`. After browser approval, paste the displayed authorization code into shunt's hidden prompt; shunt exchanges it directly and stores both the opaque token and the issuing account UUID, never printing the token.
 
-The file is written atomically at `0600` inside a `0700` directory on Unix. `SHUNT_CLAUDE_ACCOUNTS_DIR` overrides the store directory; reusing a name replaces its file. Existing external setup tokens still require `token_env` plus an explicit `uuid`, because their account UUID cannot be recovered after issuance.
+The file is written atomically at `0600` on Unix; a store directory that shunt creates is made with `0700`, but a pre-existing `SHUNT_CLAUDE_ACCOUNTS_DIR` override directory keeps its own permissions. `SHUNT_CLAUDE_ACCOUNTS_DIR` overrides the store directory; reusing a name replaces its file. External setup tokens supplied via `token_env` may add an optional `uuid`; it is only needed to rewrite the request's embedded account UUID, which cannot be recovered after issuance.
 
 :::caution[One owner per refreshable login]
 OAuth providers may rotate the refresh token whenever shunt refreshes an access token. Do not run the same refreshable credential file in multiple shunt processes, and do not copy a live refreshable store file into another independently running host. The first refresh can invalidate the other copy. Provision each process separately, or use a non-refreshable setup token where shared static credentials are appropriate.

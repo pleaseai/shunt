@@ -60,7 +60,7 @@ shunt login claude --name ci --mode setup-token
 
 在 TTY 中省略 `--mode` 时,shunt 会提示选择 `oauth`、`import` 或 `setup-token`,并默认推荐 OAuth。非交互输入继续沿用原有的 `import` 默认值。`--long-lived` 保留为 `--mode setup-token` 的 deprecated alias。
 
-`--mode oauth` 运行 shunt 的 full-scope PKCE 授权流程,并同时存储 access token 与 refresh token。默认情况下,shunt 在 `127.0.0.1` 上绑定一个临时 listener,打开授权 URL,并在浏览器返回 `http://localhost:<port>/callback` 时完成。如果无法打开浏览器、无法启动 listener,或 5 分钟内没有收到 callback,它会回退到隐藏输入的手动粘贴流程。通过 SSH 或在 headless 环境中可用 `--manual` 立即使用手动流程:
+`--mode oauth` 运行 shunt 的 full-scope PKCE 授权流程,并同时存储 access token 与 refresh token。默认情况下,shunt 在 `127.0.0.1` 上绑定一个临时 listener,打开授权 URL,并在浏览器返回 `http://127.0.0.1:<port>/callback` 时完成。如果无法打开浏览器、无法启动 listener,或 5 分钟内没有收到 callback,它会回退到隐藏输入的手动粘贴流程。通过 SSH 或在 headless 环境中可用 `--manual` 立即使用手动流程:
 
 ```bash
 shunt login claude --name remote --mode oauth --manual

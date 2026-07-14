@@ -60,7 +60,7 @@ shunt login claude --name ci --mode setup-token
 
 TTY에서 `--mode`를 생략하면 shunt는 `oauth`, `import`, `setup-token` 중 하나를 선택하도록 묻고 OAuth를 기본 권장값으로 사용합니다. 비대화형 입력에서는 기존 `import` 기본값을 유지합니다. `--long-lived`는 `--mode setup-token`의 deprecated alias로 남아 있습니다.
 
-`--mode oauth`는 shunt의 full-scope PKCE 인가 플로우를 실행하고 access token과 refresh token을 모두 저장합니다. 기본적으로 shunt는 `127.0.0.1`에 임시 리스너를 바인딩하고 인가 URL을 연 뒤, 브라우저가 `http://localhost:<port>/callback`으로 돌아오면 완료합니다. 브라우저를 열 수 없거나 리스너를 시작할 수 없거나 5분 안에 callback이 오지 않으면 숨겨진 수동 붙여넣기 플로우로 fallback합니다. SSH나 headless 환경에서는 `--manual`로 바로 수동 플로우를 사용할 수 있습니다:
+`--mode oauth`는 shunt의 full-scope PKCE 인가 플로우를 실행하고 access token과 refresh token을 모두 저장합니다. 기본적으로 shunt는 `127.0.0.1`에 임시 리스너를 바인딩하고 인가 URL을 연 뒤, 브라우저가 `http://127.0.0.1:<port>/callback`으로 돌아오면 완료합니다. 브라우저를 열 수 없거나 리스너를 시작할 수 없거나 5분 안에 callback이 오지 않으면 숨겨진 수동 붙여넣기 플로우로 fallback합니다. SSH나 headless 환경에서는 `--manual`로 바로 수동 플로우를 사용할 수 있습니다:
 
 ```bash
 shunt login claude --name remote --mode oauth --manual
@@ -70,7 +70,7 @@ shunt login claude --name remote --mode oauth --manual
 
 `--mode setup-token`은 `claude setup-token`과 같은 1년짜리 추론 전용 PKCE 플로우를 실행합니다. 브라우저에서 승인한 뒤 표시된 인가 코드를 shunt의 숨겨진 프롬프트에 붙여 넣으세요. shunt는 코드를 직접 교환하고 opaque token과 발급 계정 UUID를 모두 저장하며 토큰을 출력하지 않습니다.
 
-파일은 Unix에서 `0700` 디렉터리 안에 `0600` 권한으로 원자적으로 기록됩니다. `SHUNT_CLAUDE_ACCOUNTS_DIR`로 스토어 디렉터리를 재정의할 수 있으며, 같은 이름을 다시 사용하면 파일이 교체됩니다. 기존 외부 setup token은 발급 후 계정 UUID를 복구할 수 없으므로 여전히 `token_env`와 명시적 `uuid`가 필요합니다.
+파일은 Unix에서 `0600` 권한으로 원자적으로 기록되며, 부모 디렉터리가 없으면 `0700` 권한으로 새로 만듭니다. `SHUNT_CLAUDE_ACCOUNTS_DIR`로 스토어 디렉터리를 재정의할 수 있으며, 이미 존재하는 디렉터리를 가리키는 경우에는 그 디렉터리의 기존 권한이 그대로 유지되고 shunt가 강제로 `0700`으로 바꾸지는 않습니다. 같은 이름을 다시 사용하면 파일이 교체됩니다. 기존 외부 setup token은 발급 후 계정 UUID를 복구할 수 없으므로 여전히 `token_env`와 명시적 `uuid`가 필요합니다.
 
 :::caution[갱신 가능 로그인당 하나의 owner]
 OAuth provider는 shunt가 access token을 갱신할 때 refresh token도 회전할 수 있습니다. 같은 갱신 가능 credential 파일을 여러 shunt 프로세스에서 실행하거나, 활성 스토어 파일을 다른 호스트로 복사해 독립적으로 실행하지 마세요. 한쪽의 첫 갱신이 다른 복사본을 무효화할 수 있습니다. 프로세스마다 별도로 프로비저닝하거나, 공유 정적 credential이 필요한 경우 갱신 불가능한 setup token을 사용하세요.
