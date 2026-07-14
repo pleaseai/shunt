@@ -16,11 +16,11 @@ For full file listing with workspace artifacts, use `Skill("please:project-knowl
 - `SECURITY.md` — Security policies
 - `CONTRIBUTING.md` — Contribution guide, code review process
 
-### Domain Knowledge (.please/docs/knowledge/)
-- `product.md` — Product vision, goals, target users
-- `product-guidelines.md` — Code style, engineering conventions, boundaries
-- `tech-stack.md` — Technology choices with rationale
-- `workflow.md` — Task lifecycle, TDD, quality gates, dev commands
+### Domain Knowledge
+- `.please/docs/knowledge/product.md` — Product vision, goals, target users
+- `.please/docs/knowledge/product-guidelines.md` — Code style, engineering conventions, boundaries
+- `.please/docs/knowledge/tech-stack.md` — Technology choices with rationale
+- `.please/docs/knowledge/workflow.md` — Task lifecycle, TDD, quality gates, dev commands
 
 ### Decision Records
 - `.please/docs/decisions/` — Architecture Decision Records (ADR)
