@@ -345,4 +345,29 @@ mod tests {
         assert!(request.headers().get("x-grok-client-version").is_none());
         assert!(request.headers().get("OpenAI-Beta").is_none());
     }
+
+    #[test]
+    fn builds_claude_oauth_request_with_bearer_only() {
+        let state = AppState::new(Config::default(), reqwest::Client::new()).unwrap();
+
+        let request = build_test_request(
+            &state,
+            &codex_route(),
+            Credential::ClaudeOauth {
+                access_token: "claude-token".to_string(),
+                account_uuid: None,
+            },
+            None,
+        );
+
+        // A Claude OAuth credential on a Responses provider sends only the bearer
+        // — none of the ChatGPT/Codex account-id or identity headers.
+        assert_eq!(
+            request.headers().get("authorization").unwrap(),
+            "Bearer claude-token"
+        );
+        assert!(request.headers().get("chatgpt-account-id").is_none());
+        assert!(request.headers().get("originator").is_none());
+        assert!(request.headers().get("version").is_none());
+    }
 }

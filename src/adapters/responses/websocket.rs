@@ -356,6 +356,7 @@ fn ws_connect_error(error: CodexWsError, auth: AuthMode) -> AdapterError {
 
 #[cfg(test)]
 mod tests {
+    use axum::http::StatusCode;
     use serde_json::{json, Value};
 
     use crate::adapters::responses::codex_continuation::Decision;
@@ -467,5 +468,88 @@ mod tests {
             commit_or_fallback(None, rx).is_err(),
             "an empty stream falls back to HTTP"
         );
+    }
+
+    #[test]
+    fn websocket_headers_send_bearer_only_for_non_codex_credentials() {
+        use super::codex_ws::WEBSOCKET_BETA_PROTOCOL;
+        use super::{websocket_headers, Credential};
+
+        // Every non-ChatGPT credential still sends its bearer (a misconfiguration
+        // fails upstream, not silently unauthenticated) plus the beta protocol,
+        // but never the ChatGPT/Codex account-id or identity headers.
+        let cases = [
+            Credential::ApiKey {
+                value: "api-key".to_string(),
+                header: crate::config::ApiKeyHeader::Bearer,
+            },
+            Credential::XaiOauth {
+                access_token: "xai-tok".to_string(),
+            },
+            Credential::CursorOauth {
+                access_token: "cursor-tok".to_string(),
+            },
+            Credential::ClaudeOauth {
+                access_token: "claude-tok".to_string(),
+                account_uuid: None,
+            },
+        ];
+        for credential in cases {
+            let headers = websocket_headers(credential).expect("valid credential builds headers");
+            assert_eq!(headers.get("openai-beta").unwrap(), WEBSOCKET_BETA_PROTOCOL);
+            assert!(headers
+                .get("authorization")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("Bearer "));
+            assert!(headers.get("chatgpt-account-id").is_none());
+            assert!(headers.get("originator").is_none());
+        }
+    }
+
+    #[test]
+    fn websocket_headers_passthrough_sends_only_the_beta_protocol() {
+        use super::codex_ws::WEBSOCKET_BETA_PROTOCOL;
+        use super::{websocket_headers, Credential};
+
+        // Passthrough is a misconfiguration on this transport: no credential is
+        // attached, leaving the upstream to reject it.
+        let headers = websocket_headers(Credential::Passthrough).unwrap();
+        assert_eq!(headers.get("openai-beta").unwrap(), WEBSOCKET_BETA_PROTOCOL);
+        assert!(headers.get("authorization").is_none());
+    }
+
+    #[test]
+    fn websocket_headers_reject_malformed_credential_as_bad_gateway() {
+        use super::{websocket_headers, Credential};
+
+        // An account-id with a control character cannot be a header value; the
+        // builder returns a 502 gateway error rather than panicking.
+        let error = websocket_headers(Credential::ChatGptOAuth {
+            access_token: "ok".to_string(),
+            account_id: "bad\nid".to_string(),
+        })
+        .expect_err("a malformed header value is rejected");
+        assert_eq!(error.response.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    #[test]
+    fn ws_connect_error_maps_transport_failure_without_status_to_bad_gateway() {
+        use super::{ws_connect_error, AuthMode, CodexWsError};
+
+        // A pure transport failure (no HTTP status: DNS, TLS, timeout) maps to
+        // 502, like a failed HTTP send.
+        let error = ws_connect_error(
+            CodexWsError {
+                status: None,
+                retry_after: None,
+                body: String::new(),
+                message: "dns failure".to_string(),
+                previous_response_missing: false,
+            },
+            AuthMode::ChatgptOauth,
+        );
+        assert_eq!(error.response.status(), StatusCode::BAD_GATEWAY);
     }
 }
