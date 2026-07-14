@@ -27,10 +27,15 @@ fn encoder() -> &'static CoreBPE {
 /// body. Returns `0` for an unparseable body (the caller still answers 200; a
 /// zero count just tells Claude Code the prompt is empty).
 pub fn count_input_tokens(body: &[u8]) -> u64 {
-    let Ok(request) = serde_json::from_slice::<Value>(body) else {
-        return 0;
-    };
+    serde_json::from_slice::<Value>(body)
+        .map(|request| count_input_tokens_value(&request))
+        .unwrap_or(0)
+}
 
+/// Same as [`count_input_tokens`] but over an already-parsed request, so a
+/// caller that has parsed the body once (e.g. the responses adapter's `forward`)
+/// need not deserialize the same buffer again.
+pub fn count_input_tokens_value(request: &Value) -> u64 {
     let mut text = String::new();
     let mut overhead: u64 = 0;
 

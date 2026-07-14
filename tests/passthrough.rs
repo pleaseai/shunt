@@ -498,3 +498,135 @@ async fn responses_upstream_429_keeps_retry_after_header() {
         Some("17")
     );
 }
+
+/// Minimal Responses SSE stream: a `response.created` (which triggers
+/// `message_start`) followed by a `response.completed` carrying the real
+/// upstream usage. Enough to drive the responses→Anthropic translation E2E.
+fn responses_sse_stream() -> Vec<u8> {
+    concat!(
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_test\"}}\n\n",
+        "event: response.completed\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":11,\"output_tokens\":2}}}\n\n",
+    )
+    .as_bytes()
+    .to_vec()
+}
+
+/// Pull `message.usage.input_tokens` out of the translated `message_start` SSE
+/// event in a gateway streaming response.
+fn message_start_input_tokens(sse: &str) -> u64 {
+    for line in sse.lines() {
+        let Some(data) = line.strip_prefix("data: ") else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(data) else {
+            continue;
+        };
+        if value["type"] == "message_start" {
+            return value["message"]["usage"]["input_tokens"]
+                .as_u64()
+                .expect("message_start usage.input_tokens must be an integer");
+        }
+    }
+    panic!("no message_start event found in gateway SSE:\n{sse}");
+}
+
+/// Build a gateway that routes `gpt-` to a passthrough `openai` responses
+/// provider pointed at `upstream`, with the given local token-counting mode.
+fn responses_gateway_config(upstream_uri: String, count_tokens: CountTokens) -> Config {
+    let mut config = Config::default();
+    let openai = config.providers.get_mut("openai").unwrap();
+    openai.base_url = upstream_uri;
+    // Passthrough auth sends no credential — keeps the test free of key material.
+    openai.auth = shunt::config::AuthMode::Passthrough;
+    openai.api_key_env = None;
+    openai.count_tokens = count_tokens;
+    config.route_prefixes = vec![RoutePrefixConfig {
+        prefix: "gpt-".to_string(),
+        provider: "openai".to_string(),
+    }];
+    config
+}
+
+const RESPONSES_STREAM_REQUEST: &str = r#"{"model":"gpt-5.6-sol","stream":true,"max_tokens":16,"messages":[{"role":"user","content":"Write a haiku about the sea."}]}"#;
+
+#[tokio::test]
+async fn message_start_seeds_tiktoken_estimate_for_streaming_responses_model() {
+    if !can_bind_loopback() {
+        return;
+    }
+    // The forward-level wiring: with count_tokens = "tiktoken" (the default for
+    // mapped providers), a *streaming* responses turn seeds message_start's
+    // usage.input_tokens with the local tiktoken estimate — so Claude Code's
+    // per-subagent progress indicator shows live context instead of a stuck 0.
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(responses_sse_stream(), "text/event-stream"),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let gateway = start_gateway_with(responses_gateway_config(
+        upstream.uri(),
+        CountTokens::Tiktoken,
+    ))
+    .await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .body(RESPONSES_STREAM_REQUEST)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let sse = response.text().await.unwrap();
+    assert!(
+        message_start_input_tokens(&sse) > 0,
+        "expected a nonzero tiktoken estimate in message_start; got:\n{sse}"
+    );
+    upstream.verify().await;
+}
+
+#[tokio::test]
+async fn message_start_input_tokens_is_zero_when_count_tokens_estimate() {
+    if !can_bind_loopback() {
+        return;
+    }
+    // count_tokens = "estimate" opts out of the local encode entirely: no
+    // tiktoken work runs and message_start stays at 0 (the client estimates on
+    // its own), mirroring the count_tokens 404 opt-out.
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(responses_sse_stream(), "text/event-stream"),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let gateway = start_gateway_with(responses_gateway_config(
+        upstream.uri(),
+        CountTokens::Estimate,
+    ))
+    .await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .body(RESPONSES_STREAM_REQUEST)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let sse = response.text().await.unwrap();
+    assert_eq!(
+        message_start_input_tokens(&sse),
+        0,
+        "estimate mode must leave message_start at 0; got:\n{sse}"
+    );
+    upstream.verify().await;
+}
