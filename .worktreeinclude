@@ -10,3 +10,6 @@
 # Claude Code local settings (shared plugin set, telemetry env, permissions).
 # Gitignored via .git/info/exclude (written by scripts/apply-settings.sh in pleaseai/oss).
 .claude/settings.local.json
+
+# please plugin per-developer config override (overlays .please/config.yml)
+.please/config.local.yml
