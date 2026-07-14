@@ -170,6 +170,22 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
     }
 
+    #[test]
+    fn import_rejects_unparseable_json() {
+        let dir = temp_dir("bad-json");
+        fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("source.json");
+        fs::write(&source, "not valid json {").unwrap();
+
+        let error = import_auth("ci", &source).unwrap_err();
+        assert!(
+            error.to_string().contains("invalid Codex credentials JSON"),
+            "got: {error}"
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
     #[tokio::test]
     async fn imports_and_scans_refreshable_accounts_in_name_order() {
         let _guard = TEST_ENV_LOCK.lock().await;

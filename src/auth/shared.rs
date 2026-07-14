@@ -217,3 +217,92 @@ fn civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
     let y = y + if m <= 2 { 1 } else { 0 };
     (y, m, d)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "shunt-shared-{tag}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    fn validate_account_name_accepts_kebab_and_rejects_the_rest() {
+        for ok in ["primary", "a", "a-1", "backup-2"] {
+            assert!(validate_account_name(ok).is_ok(), "rejected {ok:?}");
+        }
+        for bad in ["", "Bad", "a b", "under_score", "a.b", "café"] {
+            assert!(validate_account_name(bad).is_err(), "accepted {bad:?}");
+        }
+    }
+
+    #[test]
+    fn default_accounts_dir_prefers_the_env_override() {
+        // A per-pid var name no other test reads, so no cross-test env race.
+        let env_name = format!("SHUNT_TEST_SHARED_DIR_{}", std::process::id());
+        std::env::set_var(&env_name, "/tmp/shunt-shared-override");
+        assert_eq!(
+            default_accounts_dir(&env_name, "codex"),
+            PathBuf::from("/tmp/shunt-shared-override")
+        );
+        std::env::remove_var(&env_name);
+    }
+
+    #[test]
+    fn scan_account_dir_returns_sorted_names_skipping_non_accounts() {
+        let dir = temp_dir("scan");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("zeta.json"), "{}").unwrap();
+        fs::write(dir.join("alpha.json"), "{}").unwrap();
+        fs::write(dir.join("ignore.txt"), "x").unwrap(); // non-json extension → skipped
+        fs::write(dir.join("Bad.json"), "{}").unwrap(); // invalid name → skipped
+        fs::create_dir_all(dir.join("subdir.json")).unwrap(); // not a file → skipped
+
+        let accounts = scan_account_dir(&dir, |_| None).unwrap();
+        let names: Vec<_> = accounts
+            .iter()
+            .map(|account| account.name.as_str())
+            .collect();
+        assert_eq!(names, ["alpha", "zeta"]);
+        assert!(accounts.iter().all(|account| account.uuid.is_none()));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn scan_account_dir_missing_dir_is_empty() {
+        let dir = temp_dir("missing").join("does-not-exist");
+        assert!(scan_account_dir(&dir, |_| None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn write_account_file_creates_born_private_and_round_trips() {
+        let dir = temp_dir("write");
+        let path = dir.join("acct.json");
+        let value = serde_json::json!({"k": "v"});
+        write_account_file(&path, &value).unwrap();
+
+        let read: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(read, value);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+        let _ = fs::remove_dir_all(dir);
+    }
+}
