@@ -123,6 +123,9 @@ Robustness: unknown event types are ignored. If the stream ends without a termin
 
 Non-streaming client: run the same machine but collect blocks instead of emitting; return
 `transformCodexToAnthropic`-equivalent JSON: `{id,type:"message",role:"assistant",model:<original>,content,stop_reason,stop_sequence:null,usage}`.
+Exception: if the machine recorded a backend error (the `error` / `response.failed` row above),
+return the mapped Anthropic error envelope as a `502` gateway error instead of the collected
+message JSON (issue #113; see `m7-codex-websocket.md` §8).
 
 ## 7. Residual model-map concern
 

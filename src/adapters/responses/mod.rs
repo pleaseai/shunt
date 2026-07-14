@@ -372,7 +372,11 @@ async fn forward_chatgpt_oauth(
                         tool_search_native,
                     )
                     .await?;
-                    return Ok((StatusCode::OK, with_account_header(response, &account.name)));
+                    let response = with_account_header(response, &account.name);
+                    // Surface the real status (a `502` when a backend error
+                    // event fired on the non-streaming path, issue #113) to the
+                    // access log and metrics rather than a hardcoded `200`.
+                    return Ok((response.status(), response));
                 }
                 // A non-failover 4xx (e.g. 400) is a client error, not the
                 // account's fault: relay it (re-shaped into the Anthropic error
@@ -513,10 +517,11 @@ async fn forward_chatgpt_oauth(
                                 tool_search_native,
                             )
                             .await?;
-                            return Ok((
-                                StatusCode::OK,
-                                with_account_header(response, &account.name),
-                            ));
+                            let response = with_account_header(response, &account.name);
+                            // Surface the real status (a `502` when a backend
+                            // error event fired on the non-streaming path, issue
+                            // #113) to the access log and metrics, not `200`.
+                            return Ok((response.status(), response));
                         }
                         return Err(mapped_upstream_error(retry_status, retry, auth).await);
                     }
@@ -693,16 +698,18 @@ async fn forward_http(
             ),
         ))
     } else {
-        Ok((
-            StatusCode::OK,
-            json_response(
-                upstream,
-                route.model.clone(),
-                thinking_enabled,
-                tool_search_native,
-            )
-            .await?,
-        ))
+        // Thread the real response status: `json_response` returns a `502` when
+        // a backend error event surfaced via `backend_error` (issue #113), so
+        // the proxy's access log (`upstream_status`) and `record_proxied_request`
+        // metrics reflect the failure instead of a hardcoded `200`.
+        let response = json_response(
+            upstream,
+            route.model.clone(),
+            thinking_enabled,
+            tool_search_native,
+        )
+        .await?;
+        Ok((response.status(), response))
     }
 }
 
@@ -856,17 +863,18 @@ async fn forward_websocket(
             ),
         ))
     } else {
-        Ok((
-            StatusCode::OK,
-            json_events_response(
-                buffered,
-                events,
-                route.model.clone(),
-                thinking_enabled,
-                tool_search_native,
-            )
-            .await,
-        ))
+        // See `forward_http`: surface the real status (a `502` when a backend
+        // error event fired, issue #113) to the access log and metrics rather
+        // than a hardcoded `200`.
+        let response = json_events_response(
+            buffered,
+            events,
+            route.model.clone(),
+            thinking_enabled,
+            tool_search_native,
+        )
+        .await;
+        Ok((response.status(), response))
     }
 }
 
@@ -1195,7 +1203,7 @@ fn stream_events_response(
 /// a successful response. `buffered` is the replayed first event, if any.
 ///
 /// A backend-sent error *event* (arriving as `Ok`, e.g. rate-limit or
-/// content-policy refusal or `response.failed`) is likewise surfaced as a gateway
+/// content-policy refusal) is likewise surfaced as a gateway
 /// error rather than a `200 OK` with the partial content collected before it
 /// (issue #113): the machine records the mapped error envelope, and it is checked
 /// after draining. This matches both the mid-stream *transport* error above and
@@ -2058,7 +2066,10 @@ mod tests {
 
     /// The websocket non-streaming collector surfaces a backend-sent error *event*
     /// (an `Ok` on the channel, distinct from a transport `Err`) as a gateway
-    /// error, mirroring the HTTP `json_response` path (issue #113).
+    /// error, mirroring the HTTP `json_response` path (issue #113). A partial
+    /// content delta is delivered before the failure — matching the HTTP sibling
+    /// test — so the "error arrives after real content was collected" case is
+    /// exercised on the websocket drain loop too.
     #[tokio::test]
     async fn json_events_response_surfaces_backend_error_event_as_gateway_error() {
         use tokio::sync::mpsc;
@@ -2067,6 +2078,11 @@ mod tests {
         tx.send(Ok(ResponseEvent {
             event: Some("response.created".to_string()),
             data: json!({"response": {"id": "resp_1"}}),
+        }))
+        .unwrap();
+        tx.send(Ok(ResponseEvent {
+            event: Some("response.output_text.delta".to_string()),
+            data: json!({"delta": "partial"}),
         }))
         .unwrap();
         tx.send(Ok(ResponseEvent {
@@ -2086,5 +2102,48 @@ mod tests {
         let body = response_body_json(response).await;
         assert_eq!(body["type"], "error");
         assert_eq!(body["error"]["message"], "Rate limit reached");
+    }
+
+    /// A clean websocket turn still returns the collected Anthropic message as
+    /// `200 OK` — the `backend_error` gate must not regress the WS success path
+    /// (the HTTP sibling is `json_response_returns_ok_for_a_clean_turn`).
+    #[tokio::test]
+    async fn json_events_response_returns_ok_for_a_clean_turn() {
+        use tokio::sync::mpsc;
+
+        let (tx, rx) = mpsc::unbounded_channel();
+        for event in [
+            ResponseEvent {
+                event: Some("response.created".to_string()),
+                data: json!({"response": {"id": "resp_1"}}),
+            },
+            ResponseEvent {
+                event: Some("response.output_item.added".to_string()),
+                data: json!({"item": {"type": "message"}}),
+            },
+            ResponseEvent {
+                event: Some("response.output_text.delta".to_string()),
+                data: json!({"delta": "hello"}),
+            },
+            ResponseEvent {
+                event: Some("response.output_text.done".to_string()),
+                data: json!({}),
+            },
+            ResponseEvent {
+                event: Some("response.completed".to_string()),
+                data: json!({"response": {"usage": {"input_tokens": 3, "output_tokens": 1}}}),
+            },
+        ] {
+            tx.send(Ok(event)).unwrap();
+        }
+        drop(tx); // close the channel so the collector drains and returns
+
+        let response =
+            json_events_response(None, rx, "gpt-5.2-codex".to_string(), false, false).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body_json(response).await;
+        assert_eq!(body["type"], "message");
+        assert_eq!(body["content"][0]["text"], "hello");
     }
 }

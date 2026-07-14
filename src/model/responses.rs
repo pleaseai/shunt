@@ -64,8 +64,8 @@ pub struct AnthropicSseMachine {
     tool_search_native: bool,
     /// The mapped Anthropic error envelope from a backend-sent `error` /
     /// `response.failed` event (issue #113). Backends deliver these as normal
-    /// `Ok` events on a `200 OK` stream (rate-limit, content-policy refusal,
-    /// `response.failed`) rather than a non-2xx HTTP status. The streaming paths
+    /// `Ok` events on a `200 OK` stream (rate-limit, content-policy refusal)
+    /// rather than a non-2xx HTTP status. The streaming paths
     /// emit the envelope inline as an SSE `error` event and stop; the
     /// non-streaming JSON collectors read it here (via [`Self::backend_error`])
     /// after draining so they can return a gateway error instead of a `200 OK`
@@ -158,7 +158,7 @@ impl AnthropicSseMachine {
     /// The mapped Anthropic error envelope if a backend `error` /
     /// `response.failed` event was applied, else `None`. The non-streaming JSON
     /// paths read this after draining to surface a backend failure as a gateway
-    /// error instead of a `200 OK` (issue #113). See [`Self::backend_error`].
+    /// error instead of a `200 OK` (issue #113).
     pub fn backend_error(&self) -> Option<&Value> {
         self.backend_error.as_ref()
     }
