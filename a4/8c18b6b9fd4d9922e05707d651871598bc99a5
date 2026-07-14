@@ -1,0 +1,76 @@
+src/routes.rs
+  s_7b05d84b78be07::t_fb63c0007469a5 103-104
+src/auth/claude/usage.rs
+  s_7b05d84b78be07::t_fb63c0007469a5 1-329
+src/config.rs
+  s_7b05d84b78be07::t_fb63c0007469a5 61-62,76-79,82,85,94,97-101,117-127,1579-1620
+  s_7b05d84b78be07::t_9d6ec24a612292 1621
+src/usage_poll.rs
+  s_7b05d84b78be07::t_fb63c0007469a5 1-431
+tests/codex_multi_account.rs
+  s_7b05d84b78be07::t_fb63c0007469a5 185
+tests/codex_websocket_fallback.rs
+  s_7b05d84b78be07::t_fb63c0007469a5 55
+src/main.rs
+  s_7b05d84b78be07::t_fb63c0007469a5 267-268,272-275
+tests/inbound_auth.rs
+  s_7b05d84b78be07::t_fb63c0007469a5 96
+tests/inbound_codex_endpoint.rs
+  s_7b05d84b78be07::t_fb63c0007469a5 154
+src/accounts.rs
+  s_7b05d84b78be07::t_fb63c0007469a5 46-73,349-377,1009-1091
+  s_7b05d84b78be07::t_ec94f21805b494 1092
+tests/passthrough.rs
+  s_7b05d84b78be07::t_fb63c0007469a5 65
+README.md
+  s_7b05d84b78be07::t_85002d41bfab18 69
+src/lib.rs
+  s_7b05d84b78be07::t_fb63c0007469a5 22
+CHANGELOG.md
+  s_7b05d84b78be07::t_fb63c0007469a5 3-10
+src/discovery.rs
+  s_7b05d84b78be07::t_fb63c0007469a5 117-118
+src/auth/claude/mod.rs
+  s_7b05d84b78be07::t_fb63c0007469a5 5
+site/src/content/docs/guides/anthropic-multi-account.md
+  s_7b05d84b78be07::t_fb63c0007469a5 118,140-144
+  s_7b05d84b78be07::t_07fcf6bb4e5d48 145
+src/server.rs
+  s_7b05d84b78be07::t_fb63c0007469a5 87-91,142-145
+tests/multi_account.rs
+  s_7b05d84b78be07::t_fb63c0007469a5 115
+shunt.toml.example
+  s_7b05d84b78be07::t_fb63c0007469a5 35-40,42-44,46-50
+.release-please-manifest.json
+  s_7b05d84b78be07::t_fb63c0007469a5 2
+tests/admin_surface.rs
+  s_7b05d84b78be07::t_fb63c0007469a5 73
+docs/m8-anthropic-multi-account.md
+  s_7b05d84b78be07::t_fb63c0007469a5 83-90,127-136
+  s_7b05d84b78be07::t_2dc7dc31f277dc 137
+tests/retry.rs
+  s_7b05d84b78be07::t_fb63c0007469a5 53
+site/src/content/docs/reference/configuration.md
+  s_7b05d84b78be07::t_fb63c0007469a5 64,68
+  s_7b05d84b78be07::t_e67287640c5b53 69
+Cargo.toml
+  s_7b05d84b78be07::t_fb63c0007469a5 5
+Cargo.lock
+  s_7b05d84b78be07::t_35d751cb8c1fe4 2520
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "a48c18b6b9fd4d9922e05707d651871598bc99a5",
+  "prompts": {},
+  "sessions": {
+    "s_7b05d84b78be07": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "519df1cc-c969-4bea-ba96-e238538937ea",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
