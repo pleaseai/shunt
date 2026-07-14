@@ -15,18 +15,19 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
-  # sccache wraps rustc to cache compilation artifacts in the GitHub Actions
-  # cache (SCCACHE_GHA_ENABLED). rust-cache still restores the cargo registry
-  # (cache-targets: false) so the two split roles without overlap. sccache
-  # does not support incremental compilation, so disable it.
-  RUSTC_WRAPPER: sccache
-  SCCACHE_GHA_ENABLED: "true"
-  CARGO_INCREMENTAL: 0
 
 jobs:
   test:
     name: fmt · clippy · test
     runs-on: ubuntu-latest
+    # sccache vars are scoped per-job (not top-level env): a future job that runs
+    # Cargo without installing sccache first would otherwise fail on a missing
+    # binary. rust-cache keeps cache-targets:false so the two split roles;
+    # sccache can't cache incremental builds, so disable it.
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+      CARGO_INCREMENTAL: 0
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -62,6 +63,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+      CARGO_INCREMENTAL: 0
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1

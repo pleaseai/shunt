@@ -25,4 +25,6 @@ site/.wrangler/
 .please/config.local.yml
 
 # Local sccache opt-in (per-developer rustc-wrapper); never shared upstream
+# Cargo reads both config.toml and the legacy extensionless config, so ignore both.
 /.cargo/config.toml
+/.cargo/config

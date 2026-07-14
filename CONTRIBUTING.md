@@ -29,8 +29,21 @@ backend). You can opt in locally — it's per-developer and nothing in the repo 
 missing `sccache` binary never breaks the build:
 
 ```bash
-brew install sccache          # or: cargo install sccache
-export RUSTC_WRAPPER=sccache  # add to your shell profile to persist it
+brew install sccache  # or: cargo install sccache
+```
+
+Then turn it on either globally via your shell profile:
+
+```bash
+export RUSTC_WRAPPER=sccache
+```
+
+…or scoped to just this repo with a gitignored `.cargo/config.toml` (keeps other Rust projects
+unaffected):
+
+```toml
+[build]
+rustc-wrapper = "sccache"
 ```
 
 sccache stores artifacts on disk by default (`~/Library/Caches/Mozilla.sccache` on macOS, 10 GB
