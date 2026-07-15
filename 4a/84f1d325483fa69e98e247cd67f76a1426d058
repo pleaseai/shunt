@@ -1,0 +1,40 @@
+src/adapters/responses/ws_stream.rs
+  s_17ac309562c666::t_356d3b32fdc62a 35-38
+src/adapters/responses/http.rs
+  s_17ac309562c666::t_0aa449232b5d62 136-139
+src/model/responses.rs
+  s_17ac309562c666::t_0fa64bea4638a0 696,708,710-716,721,723-726
+  s_17ac309562c666::t_5e85b82d8b5a5d 384-386
+  s_17ac309562c666::t_a178e4f8bd6b36 647-651
+  s_17ac309562c666::t_1b412f5750a1ae 524-526
+  s_17ac309562c666::t_1958f1407e9dde 611-615
+  s_17ac309562c666::t_0d1cfe9804bedc 575-576
+  s_17ac309562c666::t_f15e4b433db78d 495
+  s_17ac309562c666::t_0d78517ba814c8 314-318
+  s_17ac309562c666::t_e3985038f02d84 136-144
+  s_17ac309562c666::t_ffb74429bbbb85 571-574,577
+  s_17ac309562c666::t_48dea668ff86f0 115
+  s_17ac309562c666::t_a0efd06ae03cef 55-59
+  s_17ac309562c666::t_be345cee0abdcd 662-665
+  s_17ac309562c666::t_03d0c1bf40fb1d 709,722,1102-1103,1117
+  s_17ac309562c666::t_964a4f9f74aab5 1101,1104-1116,1118-1151
+  s_17ac309562c666::t_d6e5a699900132 1100
+benches/gateway.rs
+  s_17ac309562c666::t_12579716fccd78 196-197
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "4a84f1d325483fa69e98e247cd67f76a1426d058",
+  "prompts": {},
+  "sessions": {
+    "s_17ac309562c666": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dafb7503-05d5-472d-ae6e-efd352f8330d",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
