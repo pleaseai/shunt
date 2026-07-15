@@ -386,6 +386,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn truncates_an_all_empty_text_message_to_one_block() {
+        let mut body = json!({
+            "messages": [{
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": ""},
+                    {"type": "text", "text": "  \n"}
+                ]
+            }]
+        });
+
+        assert!(normalize_empty_text_blocks(&mut body));
+
+        let content = body["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 1, "must retain exactly one content block");
+        assert!(is_empty_text_block(&content[0]));
+    }
+
     // A message whose content is *only* empty text is a degenerate shape the
     // #132 adapter path never produces (tool-only / reasoning-only turns always
     // keep a tool_use or thinking block). Anthropic rejects both an empty
