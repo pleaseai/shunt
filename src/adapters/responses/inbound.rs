@@ -195,7 +195,7 @@ async fn forward_codex_passthrough(
                 // forward_chatgpt_oauth); a `token_env` account or a refresh
                 // failure cools it down and rotates instead.
                 let retry_credential =
-                    match force_refresh_or_cooldown(&state, &route, account).await {
+                    match force_refresh_or_cooldown(&state, &route, account, &credential).await {
                         Some(credential) => credential,
                         None => {
                             last_response = Some(upstream);

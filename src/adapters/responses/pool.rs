@@ -190,7 +190,7 @@ pub(super) async fn forward_chatgpt_oauth(
                 // lock (see force_refresh_or_cooldown); a `token_env` account or a
                 // refresh failure cools it down and rotates instead.
                 let retry_credential =
-                    match force_refresh_or_cooldown(&state, &route, account).await {
+                    match force_refresh_or_cooldown(&state, &route, account, &credential).await {
                         Some(credential) => credential,
                         None => {
                             last_response = Some(upstream);
@@ -353,6 +353,13 @@ pub(super) async fn resolve_or_cooldown(
     }
 }
 
+pub(super) fn chatgpt_access_token(credential: &Credential) -> Option<&str> {
+    match credential {
+        Credential::ChatGptOAuth { access_token, .. } => Some(access_token),
+        _ => None,
+    }
+}
+
 /// Force-refresh one Codex/ChatGPT OAuth account's stored credential under its
 /// refresh lock, returning the refreshed credential to retry with. A `token_env`
 /// (static) account has nothing to refresh — unlike Claude, Codex's store never
@@ -365,6 +372,7 @@ pub(super) async fn force_refresh_or_cooldown(
     state: &AppState,
     route: &Route,
     account: &AccountConfig,
+    credential: &Credential,
 ) -> Option<Credential> {
     if account.token_env.is_some() {
         state
@@ -378,6 +386,21 @@ pub(super) async fn force_refresh_or_cooldown(
         return None;
     }
 
+    let rejected_access_token = match chatgpt_access_token(credential) {
+        Some(access_token) => access_token,
+        None => {
+            state
+                .accounts
+                .cooldown(&route.provider, &account.name, Duration::from_secs(5 * 60));
+            tracing::warn!(
+                provider = %route.provider,
+                account = %account.name,
+                "Codex pool account returned 401 with a non-ChatGPT credential; cooling down"
+            );
+            return None;
+        }
+    };
+
     let credentials_path = account
         .credentials
         .as_deref()
@@ -386,7 +409,10 @@ pub(super) async fn force_refresh_or_cooldown(
     let store = CodexAuthStore::new(credentials_path, state.http_client.clone());
     let refresh_lock = state.accounts.refresh_lock(&route.provider, &account.name);
     let _guard = refresh_lock.lock().await;
-    match store.force_refresh().await {
+    match store
+        .force_refresh_if_access_token(rejected_access_token)
+        .await
+    {
         Ok(refreshed) => Some(Credential::ChatGptOAuth {
             access_token: refreshed.access_token,
             account_id: refreshed.account_id,
