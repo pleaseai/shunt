@@ -110,6 +110,13 @@ struct TextDelta<'a> {
     text: &'a str,
 }
 
+#[derive(Serialize)]
+struct ContentBlockStopEvent {
+    #[serde(rename = "type")]
+    event_type: &'static str,
+    index: i32,
+}
+
 /// Format a single SSE event into bytes.
 pub(crate) fn format_sse_event_bytes(event: &str, data: &serde_json::Value) -> Vec<u8> {
     let mut output = Vec::new();
@@ -232,18 +239,18 @@ impl CursorSseFramer {
 
     pub fn close_open_blocks(&mut self) {
         if self.thinking_open {
-            let data = serde_json::json!({
-                "type": "content_block_stop",
-                "index": self.thinking_index
-            });
+            let data = ContentBlockStopEvent {
+                event_type: "content_block_stop",
+                index: self.thinking_index,
+            };
             append_sse_event(&mut self.output, EVENT_CONTENT_BLOCK_STOP, &data);
             self.thinking_open = false;
         }
         if self.text_open {
-            let data = serde_json::json!({
-                "type": "content_block_stop",
-                "index": self.text_index
-            });
+            let data = ContentBlockStopEvent {
+                event_type: "content_block_stop",
+                index: self.text_index,
+            };
             append_sse_event(&mut self.output, EVENT_CONTENT_BLOCK_STOP, &data);
             self.text_open = false;
         }
@@ -265,10 +272,10 @@ impl CursorSseFramer {
     pub fn emit_text_delta(&mut self, text: &str) {
         // Close thinking block if open before starting text
         if self.thinking_open {
-            let data = serde_json::json!({
-                "type": "content_block_stop",
-                "index": self.thinking_index
-            });
+            let data = ContentBlockStopEvent {
+                event_type: "content_block_stop",
+                index: self.thinking_index,
+            };
             append_sse_event(&mut self.output, EVENT_CONTENT_BLOCK_STOP, &data);
             self.thinking_open = false;
         }
@@ -358,10 +365,10 @@ impl CursorSseFramer {
         });
         append_sse_event(&mut self.output, EVENT_CONTENT_BLOCK_DELTA, &data);
 
-        let data = serde_json::json!({
-            "type": "content_block_stop",
-            "index": index
-        });
+        let data = ContentBlockStopEvent {
+            event_type: "content_block_stop",
+            index,
+        };
         append_sse_event(&mut self.output, EVENT_CONTENT_BLOCK_STOP, &data);
 
         self.emit_final_message("tool_use");

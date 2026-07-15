@@ -207,18 +207,20 @@ fn apply_responses_sse(bencher: divan::Bencher) {
 }
 
 /// Cursor streaming framer: each upstream token delta is serialized directly
-/// into the reusable SSE output buffer. Benchmarks a run of text deltas — the
-/// per-token hot path. The framer is stateful, so each iteration takes a fresh
-/// one.
+/// into the reusable SSE output buffer. Benchmarks repeated flushes of text
+/// deltas — the per-token hot path and buffer-capacity reuse. The framer is
+/// stateful, so each iteration takes a fresh one.
 #[divan::bench]
 fn frame_cursor_sse(bencher: divan::Bencher) {
     bencher
         .with_inputs(|| CursorSseFramer::new("msg_bench", "claude-sonnet-4-5"))
         .bench_refs(|framer| {
             framer.ensure_start();
-            for _ in 0..64 {
-                framer.emit_text_delta(divan::black_box("a chunk of streamed text "));
+            for _ in 0..8 {
+                for _ in 0..8 {
+                    framer.emit_text_delta(divan::black_box("a chunk of streamed text "));
+                }
+                divan::black_box(framer.take_output());
             }
-            framer.take_output()
         });
 }
