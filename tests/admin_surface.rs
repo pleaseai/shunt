@@ -850,8 +850,12 @@ async fn codex_provisioning_supports_code_state_and_full_redirect() {
     for (key, expected) in [
         ("client_id", "app_EMoamEEZ73f0CkXaXp7hrann"),
         ("redirect_uri", "http://localhost:1455/auth/callback"),
-        ("scope", "openid profile email offline_access"),
+        (
+            "scope",
+            "openid profile email offline_access api.connectors.read api.connectors.invoke",
+        ),
         ("codex_cli_simplified_flow", "true"),
+        ("id_token_add_organizations", "true"),
         ("state", state.as_str()),
     ] {
         assert_eq!(params.get(key).map(|value| value.as_ref()), Some(expected));

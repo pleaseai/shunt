@@ -85,9 +85,13 @@ Notes:
 | authorize URL | `https://auth.openai.com/oauth/authorize` |
 | token URL | `https://auth.openai.com/oauth/token` |
 | redirect URI | `http://localhost:1455/auth/callback` |
-| scope | `openid profile email offline_access` |
+| scope | `openid profile email offline_access api.connectors.read api.connectors.invoke` |
 | PKCE | S256 (`code_challenge` = base64url(sha256(verifier))) |
-| extra authorize params | `response_type=code`, `code_challenge_method=S256`, `state=<csrf>`, `codex_cli_simplified_flow=true`, `originator=codex_cli_rs` |
+| extra authorize params | `response_type=code`, `code_challenge_method=S256`, `id_token_add_organizations=true`, `state=<csrf>`, `codex_cli_simplified_flow=true`, `originator=codex_cli_rs` |
+
+> Verified against openai/codex `codex-rs/login/src/server.rs::build_authorize_url`
+> (2026-07-15). The admin web flow (`src/auth/codex/login.rs`) mirrors these exactly
+> so a web-provisioned account is authorization-equivalent to a `codex login` one.
 
 ## 5. `TokenStore` behavior (`auth/codex_auth.rs`)
 

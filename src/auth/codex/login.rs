@@ -15,7 +15,12 @@ use super::{auth, store};
 
 pub(crate) const AUTHORIZE_URL: &str = "https://auth.openai.com/oauth/authorize";
 pub(crate) const REDIRECT_URI: &str = "http://localhost:1455/auth/callback";
-pub(crate) const SCOPE: &str = "openid profile email offline_access";
+// Mirror the current `codex login` authorize scope exactly (openai/codex
+// `codex-rs/login/src/server.rs::build_authorize_url`) so a web-provisioned
+// account is authorization-equivalent to a `codex login` one — including the
+// connector scopes.
+pub(crate) const SCOPE: &str =
+    "openid profile email offline_access api.connectors.read api.connectors.invoke";
 
 pub(crate) fn build_authorize_url(
     challenge: &str,
@@ -30,6 +35,7 @@ pub(crate) fn build_authorize_url(
         .append_pair("scope", SCOPE)
         .append_pair("code_challenge", challenge)
         .append_pair("code_challenge_method", "S256")
+        .append_pair("id_token_add_organizations", "true")
         .append_pair("state", state)
         .append_pair("codex_cli_simplified_flow", "true")
         .append_pair("originator", "codex_cli_rs");
@@ -114,6 +120,7 @@ mod tests {
             ("scope", SCOPE),
             ("code_challenge", "challenge"),
             ("code_challenge_method", "S256"),
+            ("id_token_add_organizations", "true"),
             ("state", "state"),
             ("codex_cli_simplified_flow", "true"),
             ("originator", "codex_cli_rs"),
