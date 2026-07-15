@@ -393,13 +393,12 @@ impl AccountPool {
         health.cooldown_until = None;
     }
 
-    /// Drop all pool health for `account` across every provider. The admin
-    /// surface calls this when it re-provisions or removes an account so
-    /// cooldown/quota accumulated under a prior token does not carry onto the
-    /// replacement (pool state is process-lifetime and keyed only by name).
-    pub fn forget(&self, account: &str) {
+    /// Forget pool health for a single `(provider, account)` entry, leaving other
+    /// providers' entries for the same account name untouched.
+    pub fn forget_account(&self, provider: &str, account: &str) {
         let mut entries = self.entries.lock().expect("account health lock poisoned");
-        entries.retain(|(_, name), _| name != account);
+        entries
+            .retain(|(entry_provider, name), _| !(entry_provider == provider && name == account));
     }
 
     /// Read-only per-account health snapshot for the admin dashboard, in the
@@ -882,6 +881,25 @@ mod tests {
         assert!(!unseen.has_state);
         assert!(unseen.available);
         assert!(unseen.cooldown_secs_remaining.is_none());
+    }
+
+    #[test]
+    fn forget_account_is_provider_scoped() {
+        let pool = AccountPool::new();
+        let accounts = vec![account("main")];
+        pool.cooldown("anthropic", "main", Duration::from_secs(60));
+        pool.cooldown("codex", "main", Duration::from_secs(60));
+
+        pool.forget_account("codex", "main");
+
+        let codex = pool.snapshot("codex", &accounts, None, None);
+        assert!(!codex[0].has_state);
+        assert!(codex[0].available);
+
+        let anthropic = pool.snapshot("anthropic", &accounts, None, None);
+        assert!(anthropic[0].has_state);
+        assert!(!anthropic[0].available);
+        assert!(anthropic[0].cooldown_secs_remaining.is_some());
     }
 
     #[test]

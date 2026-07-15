@@ -107,6 +107,14 @@ fn chatgpt_token(exp: u64, account_id: &str) -> String {
     )
 }
 
+fn chatgpt_token_without_account_id(exp: u64) -> String {
+    let payload = serde_json::json!({"exp": exp});
+    format!(
+        "x.{}.y",
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap())
+    )
+}
+
 fn authorize_state(body: &serde_json::Value) -> (reqwest::Url, String) {
     let url = reqwest::Url::parse(body["authorize_url"].as_str().unwrap()).unwrap();
     let state = url
@@ -1028,6 +1036,311 @@ async fn codex_provisioning_rejects_missing_refresh_and_bad_inputs() {
     std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
     std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
     std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CODEX_NEGATIVE");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn codex_completion_rejects_oauth_state_mismatch_before_exchange() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _lock = CODEX_ENV_LOCK.lock().await;
+    let dir = unique_dir();
+    std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+    std::env::set_var(
+        "SHUNT_TEST_ADMIN_TOKENS_CODEX_STATE",
+        "ops:secret-codex-state",
+    );
+
+    let token_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": chatgpt_token(4_102_444_800, "acct-unexpected"),
+            "refresh_token": "refresh-unexpected"
+        })))
+        .expect(0)
+        .mount(&token_server)
+        .await;
+    std::env::set_var(
+        "SHUNT_CODEX_TOKEN_URL",
+        format!("{}/token", token_server.uri()),
+    );
+
+    let gateway = start(admin_config("SHUNT_TEST_ADMIN_TOKENS_CODEX_STATE")).await;
+    let client = reqwest::Client::new();
+    let auth = |request: reqwest::RequestBuilder| {
+        request
+            .header("x-shunt-admin-token", "secret-codex-state")
+            .header("content-type", "application/json")
+    };
+
+    let response = auth(client.post(format!("{}/admin/accounts/codex", gateway.base_url)))
+        .body(r#"{"name":"state-mismatch"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    let (_, state) = authorize_state(&body);
+    assert_ne!(state, "WRONG-state");
+
+    let response = auth(client.post(format!(
+        "{}/admin/accounts/codex/state-mismatch/complete",
+        gateway.base_url
+    )))
+    .body(r#"{"code":"the-code#WRONG-state"}"#)
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(token_server.received_requests().await.unwrap().is_empty());
+    assert!(!dir.join("state-mismatch.json").exists());
+
+    std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
+    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CODEX_STATE");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn codex_completion_rejects_access_token_without_account_id() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _lock = CODEX_ENV_LOCK.lock().await;
+    let dir = unique_dir();
+    std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+    std::env::set_var(
+        "SHUNT_TEST_ADMIN_TOKENS_CODEX_NO_ACCOUNT_ID",
+        "ops:secret-codex-no-account-id",
+    );
+
+    let token_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": chatgpt_token_without_account_id(4_102_444_800),
+            "refresh_token": "refresh-without-account-id"
+        })))
+        .expect(1)
+        .mount(&token_server)
+        .await;
+    std::env::set_var(
+        "SHUNT_CODEX_TOKEN_URL",
+        format!("{}/token", token_server.uri()),
+    );
+
+    let gateway = start(admin_config("SHUNT_TEST_ADMIN_TOKENS_CODEX_NO_ACCOUNT_ID")).await;
+    let client = reqwest::Client::new();
+    let auth = |request: reqwest::RequestBuilder| {
+        request
+            .header("x-shunt-admin-token", "secret-codex-no-account-id")
+            .header("content-type", "application/json")
+    };
+
+    let response = auth(client.post(format!("{}/admin/accounts/codex", gateway.base_url)))
+        .body(r#"{"name":"no-account-id"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    let (_, state) = authorize_state(&body);
+
+    let response = auth(client.post(format!(
+        "{}/admin/accounts/codex/no-account-id/complete",
+        gateway.base_url
+    )))
+    .body(serde_json::json!({"code": format!("the-code#{state}")}).to_string())
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    assert!(!dir.join("no-account-id.json").exists());
+    token_server.verify().await;
+
+    std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
+    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CODEX_NO_ACCOUNT_ID");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn codex_completion_reports_generic_bad_gateway_when_token_exchange_fails() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _lock = CODEX_ENV_LOCK.lock().await;
+    let dir = unique_dir();
+    std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+    std::env::set_var(
+        "SHUNT_TEST_ADMIN_TOKENS_CODEX_EXCHANGE_FAILURE",
+        "ops:secret-codex-exchange-failure",
+    );
+
+    let token_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(400).set_body_string("invalid_grant: bad code"))
+        .expect(1)
+        .mount(&token_server)
+        .await;
+    std::env::set_var(
+        "SHUNT_CODEX_TOKEN_URL",
+        format!("{}/token", token_server.uri()),
+    );
+
+    let gateway = start(admin_config(
+        "SHUNT_TEST_ADMIN_TOKENS_CODEX_EXCHANGE_FAILURE",
+    ))
+    .await;
+    let client = reqwest::Client::new();
+    let auth = |request: reqwest::RequestBuilder| {
+        request
+            .header("x-shunt-admin-token", "secret-codex-exchange-failure")
+            .header("content-type", "application/json")
+    };
+
+    let response = auth(client.post(format!("{}/admin/accounts/codex", gateway.base_url)))
+        .body(r#"{"name":"exchange-failure"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    let (_, state) = authorize_state(&body);
+
+    let response = auth(client.post(format!(
+        "{}/admin/accounts/codex/exchange-failure/complete",
+        gateway.base_url
+    )))
+    .body(serde_json::json!({"code": format!("the-code#{state}")}).to_string())
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let text = response.text().await.unwrap();
+    assert!(
+        !text.contains("invalid_grant"),
+        "the generic 502 must not echo upstream detail"
+    );
+    assert!(!dir.join("exchange-failure.json").exists());
+    token_server.verify().await;
+
+    std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
+    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CODEX_EXCHANGE_FAILURE");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn codex_cookie_session_mutations_require_a_csrf_token() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _lock = CODEX_ENV_LOCK.lock().await;
+    let dir = unique_dir();
+    std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+    std::env::set_var(
+        "SHUNT_TEST_ADMIN_TOKENS_CODEX_CSRF",
+        "ops:secret-codex-csrf",
+    );
+
+    let token_server = MockServer::start().await;
+    std::env::set_var(
+        "SHUNT_CODEX_TOKEN_URL",
+        format!("{}/token", token_server.uri()),
+    );
+
+    let gateway = start(admin_config("SHUNT_TEST_ADMIN_TOKENS_CODEX_CSRF")).await;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let base = &gateway.base_url;
+
+    let response = client
+        .post(format!("{base}/admin/login"))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body("token=secret-codex-csrf")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let cookie = response
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .find(|value| value.starts_with("shunt_admin_session="))
+        .map(|value| value.split(';').next().unwrap().to_string())
+        .expect("login sets a session cookie");
+
+    let response = client
+        .get(format!("{base}/admin"))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = response.text().await.unwrap();
+    let csrf = html
+        .split_once("const CSRF = \"")
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(token, _)| token.to_string())
+        .expect("dashboard embeds the CSRF token");
+
+    let response = client
+        .post(format!("{base}/admin/accounts/codex"))
+        .header("cookie", &cookie)
+        .header("content-type", "application/json")
+        .header("sec-fetch-site", "same-origin")
+        .body(r#"{"name":"codex-csrf"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let response = client
+        .post(format!("{base}/admin/accounts/codex/codex-csrf/complete"))
+        .header("cookie", &cookie)
+        .header("content-type", "application/json")
+        .header("sec-fetch-site", "same-origin")
+        .body(r#"{"code":"the-code#the-state"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let response = client
+        .delete(format!("{base}/admin/accounts/codex/codex-csrf"))
+        .header("cookie", &cookie)
+        .header("sec-fetch-site", "same-origin")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let response = client
+        .post(format!("{base}/admin/accounts/codex"))
+        .header("cookie", &cookie)
+        .header("content-type", "application/json")
+        .header("sec-fetch-site", "same-origin")
+        .header("x-csrf-token", &csrf)
+        .body(r#"{"name":"codex-csrf"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "a valid session cookie + CSRF token is accepted on the Codex route"
+    );
+
+    std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
+    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CODEX_CSRF");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

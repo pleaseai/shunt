@@ -66,7 +66,10 @@ pub fn account_meta(name: &str) -> Option<CodexAccountMeta> {
             return None;
         }
     };
-    let tokens = value.get("tokens")?;
+    let Some(tokens) = value.get("tokens") else {
+        tracing::warn!(account = %name, "admin: Codex account file has no tokens object; omitting from dashboard");
+        return None;
+    };
     let access_token = tokens.get("access_token").and_then(Value::as_str);
     let expires_at = access_token
         .and_then(shared::jwt_exp)

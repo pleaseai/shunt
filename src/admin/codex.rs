@@ -20,7 +20,7 @@ use crate::{
 };
 
 use super::{
-    authenticate, bad_gateway, bad_request, check_csrf, internal, json_secure,
+    authenticate, bad_gateway, bad_request, check_csrf, forget_pool_health, internal, json_secure,
     session::{PendingAttempt, PendingKind},
     too_many_requests, unauthorized,
 };
@@ -196,7 +196,9 @@ pub(super) async fn complete_codex_account(
         }
     }
     state.admin_stores.pending.remove(&key);
-    state.accounts.forget(&name);
+    // Re-provisioning reuses the account name; clear any process-lifetime Codex
+    // pool health from a prior token without touching same-named Claude health.
+    forget_pool_health(&state, AuthMode::ChatgptOauth, &name);
     tracing::info!(account = %name, account_id_present = true, "admin: Codex account stored");
 
     let live =
@@ -241,7 +243,9 @@ pub(super) async fn remove_codex_account_handler(
         }
     };
     tracing::info!(account = %name, removed, "admin: Codex account removed");
-    state.accounts.forget(&name);
+    // Drop process-lifetime Codex pool health for the removed name so a later
+    // re-add does not inherit stale state, without touching same-named Claude health.
+    forget_pool_health(&state, AuthMode::ChatgptOauth, &name);
     json_secure(json!({ "name": name, "removed": removed }))
 }
 

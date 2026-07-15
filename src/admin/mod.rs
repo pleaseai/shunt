@@ -168,6 +168,18 @@ pub(super) fn check_csrf(kind: &Authenticated, headers: &HeaderMap) -> Option<Re
     }
 }
 
+/// Drop process-lifetime pool health for `account` across every provider using
+/// `auth`, so re-provisioning does not inherit stale cooldown/quota state — while
+/// leaving other auth modes' identically-named accounts untouched (the Claude and
+/// Codex stores independently allow the same account name).
+pub(super) fn forget_pool_health(state: &AppState, auth: AuthMode, account: &str) {
+    for (provider_name, provider) in &state.config.providers {
+        if provider.auth == auth {
+            state.accounts.forget_account(provider_name, account);
+        }
+    }
+}
+
 /// Same-origin check: prefer Fetch Metadata (`Sec-Fetch-Site`), fall back to
 /// comparing the `Origin` authority to `Host`. A missing `Origin` (non-browser)
 /// is allowed — the CSRF token and `SameSite=Strict` cookie still gate the call.
@@ -651,9 +663,9 @@ async fn complete_account(
     }
     state.admin_stores.pending.remove(&name);
     // Re-provisioning reuses the account name; clear any process-lifetime pool
-    // health carried over from a prior token so the fresh credential is not
-    // treated as cooling/near-quota.
-    state.accounts.forget(&name);
+    // health carried over from a prior Claude token so the fresh credential is
+    // not treated as cooling/near-quota, without touching same-named Codex health.
+    forget_pool_health(&state, AuthMode::ClaudeOauth, &name);
     tracing::info!(account = %name, "admin: account stored");
 
     // Empty-accounts providers scan the store per request → live immediately;
@@ -713,9 +725,9 @@ async fn remove_account_handler(
         }
     };
     tracing::info!(account = %name, removed, "admin: account removed");
-    // Drop any process-lifetime pool health for the removed name so a later
-    // re-add does not inherit stale cooldown/quota state.
-    state.accounts.forget(&name);
+    // Drop process-lifetime Claude pool health for the removed name so a later
+    // re-add does not inherit stale cooldown/quota state, without touching Codex.
+    forget_pool_health(&state, AuthMode::ClaudeOauth, &name);
     json_secure(json!({ "name": name, "removed": removed }))
 }
 

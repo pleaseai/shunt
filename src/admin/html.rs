@@ -161,9 +161,10 @@ function cell(row, text, mono) {{ const td = document.createElement("td"); td.te
 
 async function loadAccounts() {{
   const body = $("accounts"); body.textContent = "";
-  let data;
-  try {{ data = await (await fetch("/admin/accounts")).json(); }}
+  let data, res;
+  try {{ res = await fetch("/admin/accounts"); data = await res.json(); }}
   catch (e) {{ const r = body.insertRow(); const c = cell(r, "Failed to load accounts"); c.colSpan = 5; return; }}
+  if (!res.ok) {{ const r = body.insertRow(); const c = cell(r, (data.error && data.error.message) || "Failed to load accounts"); c.colSpan = 5; return; }}
   const list = (data && data.accounts) || [];
   if (!list.length) {{ const r = body.insertRow(); const c = cell(r, "No store accounts yet"); c.colSpan = 5; c.className = "muted"; return; }}
   for (const a of list) {{
@@ -177,9 +178,10 @@ async function loadAccounts() {{
 
 async function loadCodexAccounts() {{
   const body = $("codex-accounts"); body.textContent = "";
-  let data;
-  try {{ data = await (await fetch("/admin/accounts/codex")).json(); }}
+  let data, res;
+  try {{ res = await fetch("/admin/accounts/codex"); data = await res.json(); }}
   catch (e) {{ const r = body.insertRow(); const c = cell(r, "Failed to load Codex accounts"); c.colSpan = 4; return; }}
+  if (!res.ok) {{ const r = body.insertRow(); const c = cell(r, (data.error && data.error.message) || "Failed to load Codex accounts"); c.colSpan = 4; return; }}
   const list = (data && data.accounts) || [];
   if (!list.length) {{ const r = body.insertRow(); const c = cell(r, "No Codex store accounts yet"); c.colSpan = 4; c.className = "muted"; return; }}
   for (const a of list) {{
@@ -193,9 +195,10 @@ async function loadCodexAccounts() {{
 
 async function loadPool() {{
   const body = $("pool"); body.textContent = "";
-  let data;
-  try {{ data = await (await fetch("/admin/pool")).json(); }}
+  let data, res;
+  try {{ res = await fetch("/admin/pool"); data = await res.json(); }}
   catch (e) {{ const r = body.insertRow(); const c = cell(r, "Failed to load pool"); c.colSpan = 8; return; }}
+  if (!res.ok) {{ const r = body.insertRow(); const c = cell(r, (data.error && data.error.message) || "Failed to load pool"); c.colSpan = 8; return; }}
   const providers = (data && data.providers) || [];
   let rows = 0;
   for (const p of providers) for (const a of (p.accounts || [])) {{
