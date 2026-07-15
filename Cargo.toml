@@ -76,6 +76,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
+divan = { version = "5.0.1", package = "codspeed-divan-compat" }
 hex = "0.4"
 tokio = { version = "1", features = ["full", "test-util"] }
 wiremock = "0.6"
+
+[[bench]]
+name = "gateway"
+harness = false
