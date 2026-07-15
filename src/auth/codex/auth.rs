@@ -46,20 +46,19 @@ static REFRESH_LOCKS: LazyLock<StdMutex<HashMap<PathBuf, Weak<tokio::sync::Mutex
 /// none exists (or the previous one has been dropped). Opportunistically
 /// prunes dead entries so paths that are no longer being refreshed don't
 /// linger in the registry forever.
+fn normalized_auth_path(path: PathBuf) -> PathBuf {
+    path.canonicalize().unwrap_or(path)
+}
+
 fn refresh_lock_for(path: &Path) -> Arc<tokio::sync::Mutex<()>> {
-    // Existing credential files can be referenced through relative paths or
-    // symlink aliases. Canonicalize them so every spelling of the same file
-    // shares one single-flight lock. If the file does not exist yet, retain the
-    // caller's path; refresh itself will then surface the normal read error.
-    let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let mut locks = REFRESH_LOCKS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) {
+    if let Some(lock) = locks.get(path).and_then(Weak::upgrade) {
         return lock;
     }
     let lock = Arc::new(tokio::sync::Mutex::new(()));
-    locks.insert(key, Arc::downgrade(&lock));
+    locks.insert(path.to_path_buf(), Arc::downgrade(&lock));
     locks.retain(|_, weak| weak.strong_count() > 0);
     lock
 }
@@ -76,6 +75,7 @@ pub(crate) fn resolve_oauth_token_url() -> String {
 
 impl CodexAuthStore {
     pub fn new(path: PathBuf, client: reqwest::Client) -> Self {
+        let path = normalized_auth_path(path);
         // `SHUNT_CODEX_TOKEN_URL` overrides the OAuth refresh endpoint, mirroring
         // `ClaudeAuthStore::new`'s `SHUNT_CLAUDE_TOKEN_URL`. It exists purely as a
         // test seam (see `force_refresh_refreshes_a_still_valid_chatgpt_token`
@@ -93,6 +93,7 @@ impl CodexAuthStore {
 
     #[cfg(test)]
     fn with_token_url(path: PathBuf, client: reqwest::Client, token_url: String) -> Self {
+        let path = normalized_auth_path(path);
         Self {
             path,
             client,
@@ -663,16 +664,33 @@ mod tests {
         assert_eq!(value["last_refresh"], "1970-01-01T00:00:00Z");
     }
 
+    #[cfg(unix)]
     #[test]
-    fn path_aliases_share_refresh_lock() {
+    fn symlink_alias_normalizes_store_path_and_refresh_lock() {
+        use std::os::unix::fs::symlink;
+
         let dir = temp_auth_dir("lock-alias");
         let path = dir.join("auth.json");
+        let alias = dir.join("auth-alias.json");
         write_auth(&path, &token(0, Some("acct_old")), "old-refresh");
-        let alias = dir.join(".").join("auth.json");
+        symlink(&path, &alias).unwrap();
 
-        let direct_lock = refresh_lock_for(&path);
-        let alias_lock = refresh_lock_for(&alias);
+        let direct_store = CodexAuthStore::with_token_url(
+            path.clone(),
+            reqwest::Client::new(),
+            "http://127.0.0.1/token".to_string(),
+        );
+        let alias_store = CodexAuthStore::with_token_url(
+            alias,
+            reqwest::Client::new(),
+            "http://127.0.0.1/token".to_string(),
+        );
 
+        let canonical_path = path.canonicalize().unwrap();
+        assert_eq!(direct_store.path, canonical_path);
+        assert_eq!(alias_store.path, canonical_path);
+        let direct_lock = refresh_lock_for(&direct_store.path);
+        let alias_lock = refresh_lock_for(&alias_store.path);
         assert!(Arc::ptr_eq(&direct_lock, &alias_lock));
         let _ = std::fs::remove_dir_all(dir);
     }
