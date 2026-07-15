@@ -295,11 +295,13 @@ pub fn scan_account_dir(
 /// (see [`scan_cached`]): an unchanged store re-serves the last scan, so
 /// steady-state account-list discovery costs one stat and zero credential-file
 /// reads, while adding or removing an account changes the directory mtime and so
-/// re-scans on the next request — preserving no-restart discovery. (The mtime is
-/// the invalidation signal, so a filesystem with coarse mtime resolution could
-/// briefly serve a stale scan within one clock tick.)
-/// `provider_label` shapes the error text only ("codex" / "Claude"); the error is
-/// returned preformatted so each pool wraps it in its own gateway error type.
+/// re-scans on the next request — preserving no-restart discovery. (Directory
+/// mtime is the invalidation signal, so on a filesystem with coarse mtime
+/// resolution a change that shares the cached scan's timestamp goes unnoticed
+/// until a later change advances the mtime.)
+/// `provider_label` shapes the error text ("codex" / "Claude") and partitions the
+/// scan cache (see [`scan_cache`]); the error is returned preformatted so each
+/// pool wraps it in its own gateway error type.
 pub(crate) async fn resolve_pool_accounts(
     provider_label: &str,
     configured: &[AccountConfig],
@@ -383,10 +385,11 @@ fn scan_cached(
     }
     // Cache miss (first sight, or the store changed): scan without holding the
     // lock so concurrent hits are never blocked behind this file I/O, then
-    // record the result. Two concurrent misses at the same mtime store an
-    // identical result; if the store changed mid-flight the last write wins, but
-    // an entry is only ever served when its stored mtime still matches the
-    // directory's, so a stale write is re-scanned away on the next request.
+    // record the result. Concurrent misses each scan and race to insert; the
+    // last write wins, and their snapshots may differ if the store changed while
+    // they overlapped. That is safe: an entry is served only while its stored
+    // mtime equals the mtime this request sampled, so a stale write is re-scanned
+    // away as soon as a request observes a different directory mtime.
     let accounts = scan()?;
     scan_cache()
         .lock()
@@ -698,14 +701,14 @@ mod tests {
 
         // First sight: cache miss, scans once, returns the one-account set.
         assert_eq!(
-            account_names(&scan_cached("codex", &dir, Some(t1), &scan).unwrap()),
+            account_names(&scan_cached("codex", &dir, Some(t1), scan).unwrap()),
             ["primary"]
         );
         assert_eq!(calls.load(Ordering::Relaxed), 1);
 
         // Unchanged mtime: cache hit — no scan, same set (0 credential-file reads).
         assert_eq!(
-            account_names(&scan_cached("codex", &dir, Some(t1), &scan).unwrap()),
+            account_names(&scan_cached("codex", &dir, Some(t1), scan).unwrap()),
             ["primary"]
         );
         assert_eq!(calls.load(Ordering::Relaxed), 1);
@@ -715,29 +718,38 @@ mod tests {
         // value, not merely that it re-scans.
         let t2 = t1 + Duration::from_secs(1);
         assert_eq!(
-            account_names(&scan_cached("codex", &dir, Some(t2), &scan).unwrap()),
+            account_names(&scan_cached("codex", &dir, Some(t2), scan).unwrap()),
             ["primary", "secondary"]
         );
         assert_eq!(calls.load(Ordering::Relaxed), 2);
 
         // The refreshed set is now what a hit serves (still no further scan).
         assert_eq!(
-            account_names(&scan_cached("codex", &dir, Some(t2), &scan).unwrap()),
+            account_names(&scan_cached("codex", &dir, Some(t2), scan).unwrap()),
             ["primary", "secondary"]
         );
         assert_eq!(calls.load(Ordering::Relaxed), 2);
 
-        // A different provider at the same path keeps its own entry: the shared
-        // map never serves one provider's scan to another.
+        // A different provider at the same path scans its own entry rather than
+        // borrowing Codex's — the shared map never serves one provider's scan to
+        // another.
         assert_eq!(
-            account_names(&scan_cached("Claude", &dir, Some(t2), &scan).unwrap()),
+            account_names(&scan_cached("Claude", &dir, Some(t2), scan).unwrap()),
+            ["primary", "secondary"]
+        );
+        assert_eq!(calls.load(Ordering::Relaxed), 3);
+
+        // A second Claude call at the same mtime hits Claude's own entry: no
+        // re-scan, so the count holds — proving the entry is retained, not shared.
+        assert_eq!(
+            account_names(&scan_cached("Claude", &dir, Some(t2), scan).unwrap()),
             ["primary", "secondary"]
         );
         assert_eq!(calls.load(Ordering::Relaxed), 3);
 
         // No mtime signal: the cache is bypassed and every call scans.
-        scan_cached("codex", &dir, None, &scan).unwrap();
-        scan_cached("codex", &dir, None, &scan).unwrap();
+        scan_cached("codex", &dir, None, scan).unwrap();
+        scan_cached("codex", &dir, None, scan).unwrap();
         assert_eq!(calls.load(Ordering::Relaxed), 5);
     }
 
