@@ -1,0 +1,36 @@
+tests/inbound_codex_endpoint.rs
+  s_79bc3abd2c7d85::t_e93f3a6a00a797 574
+docs/codex-configuration.md
+  s_79bc3abd2c7d85::t_e93f3a6a00a797 175-176,180,697
+site/src/content/docs/ko/guides/codex.md
+  s_79bc3abd2c7d85::t_e93f3a6a00a797 79
+site/src/content/docs/zh-cn/guides/codex.md
+  s_79bc3abd2c7d85::t_e93f3a6a00a797 106
+site/src/content/docs/ja/guides/codex.md
+  s_79bc3abd2c7d85::t_e93f3a6a00a797 83
+docs/running.md
+  s_79bc3abd2c7d85::t_e93f3a6a00a797 546
+docs/m11-inbound-codex-endpoint.md
+  s_79bc3abd2c7d85::t_e93f3a6a00a797 88
+site/src/content/docs/guides/codex.md
+  s_79bc3abd2c7d85::t_e93f3a6a00a797 109
+src/adapters/responses/request.rs
+  s_79bc3abd2c7d85::t_b32698994f1531 6
+  s_79bc3abd2c7d85::t_0f488d5197ad6d 18-19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "dd14e10338e27bdeb2881ccb0bc1f6c7141fb307",
+  "prompts": {},
+  "sessions": {
+    "s_79bc3abd2c7d85": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fdd026a0-ec57-4a29-8cb2-b67a87ad6c75",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
