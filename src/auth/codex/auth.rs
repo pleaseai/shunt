@@ -25,6 +25,7 @@ pub struct ChatGptCred {
 #[derive(Debug, Clone)]
 pub struct CodexAuthStore {
     path: PathBuf,
+    normalized_path: Arc<tokio::sync::OnceCell<PathBuf>>,
     client: reqwest::Client,
     token_url: String,
 }
@@ -75,7 +76,6 @@ pub(crate) fn resolve_oauth_token_url() -> String {
 
 impl CodexAuthStore {
     pub fn new(path: PathBuf, client: reqwest::Client) -> Self {
-        let path = normalized_auth_path(path);
         // `SHUNT_CODEX_TOKEN_URL` overrides the OAuth refresh endpoint, mirroring
         // `ClaudeAuthStore::new`'s `SHUNT_CLAUDE_TOKEN_URL`. It exists purely as a
         // test seam (see `force_refresh_refreshes_a_still_valid_chatgpt_token`
@@ -86,6 +86,7 @@ impl CodexAuthStore {
         let token_url = resolve_oauth_token_url();
         Self {
             path,
+            normalized_path: Arc::new(tokio::sync::OnceCell::new()),
             client,
             token_url,
         }
@@ -93,9 +94,9 @@ impl CodexAuthStore {
 
     #[cfg(test)]
     fn with_token_url(path: PathBuf, client: reqwest::Client, token_url: String) -> Self {
-        let path = normalized_auth_path(path);
         Self {
             path,
+            normalized_path: Arc::new(tokio::sync::OnceCell::new()),
             client,
             token_url,
         }
@@ -113,7 +114,8 @@ impl CodexAuthStore {
         // Single-flight the refresh, scoped to this credential path. A waiter
         // re-reads after acquiring the lock, so it uses the credential
         // persisted by the caller that refreshed first.
-        let refreshing = refresh_lock_for(&self.path).lock_owned().await;
+        let path = self.normalized_auth_path().await?;
+        let refreshing = refresh_lock_for(path).lock_owned().await;
         let auth = self.read_auth_off_thread().await?;
         let tokens = auth
             .tokens()
@@ -131,7 +133,8 @@ impl CodexAuthStore {
     /// the cached token may still look unexpired locally, but the backend has
     /// already rejected it, so the cache can't be trusted here.
     pub async fn force_refresh(&self) -> Result<ChatGptCred, AdapterError> {
-        let refreshing = refresh_lock_for(&self.path).lock_owned().await;
+        let path = self.normalized_auth_path().await?;
+        let refreshing = refresh_lock_for(path).lock_owned().await;
         let auth = self.read_auth_off_thread().await?;
         let tokens = auth
             .tokens()
@@ -147,7 +150,8 @@ impl CodexAuthStore {
         &self,
         rejected_access_token: &str,
     ) -> Result<ChatGptCred, AdapterError> {
-        let refreshing = refresh_lock_for(&self.path).lock_owned().await;
+        let path = self.normalized_auth_path().await?;
+        let refreshing = refresh_lock_for(path).lock_owned().await;
         let auth = self.read_auth_off_thread().await?;
         let tokens = auth
             .tokens()
@@ -174,7 +178,7 @@ impl CodexAuthStore {
         // consumed the old one.
         let client = self.client.clone();
         let token_url = self.token_url.clone();
-        let path = self.path.clone();
+        let path = self.normalized_auth_path().await?.clone();
         tokio::spawn(async move {
             let _refreshing = refreshing;
             let result = async {
@@ -218,10 +222,21 @@ impl CodexAuthStore {
         .map_err(|error| auth_error(format!("ChatGPT refresh task failed: {error}")))?
     }
 
+    async fn normalized_auth_path(&self) -> Result<&PathBuf, AdapterError> {
+        self.normalized_path
+            .get_or_try_init(|| async {
+                let path = self.path.clone();
+                tokio::task::spawn_blocking(move || normalized_auth_path(path))
+                    .await
+                    .map_err(|error| auth_error(format!("ChatGPT auth path task failed: {error}")))
+            })
+            .await
+    }
+
     /// Read the credential file on the blocking thread pool so the synchronous
     /// file I/O never stalls the async runtime.
     async fn read_auth_off_thread(&self) -> Result<AuthFile, AdapterError> {
-        let path = self.path.clone();
+        let path = self.normalized_auth_path().await?.clone();
         tokio::task::spawn_blocking(move || read_auth_file(&path))
             .await
             .map_err(|error| auth_error(format!("ChatGPT auth read task failed: {error}")))?
@@ -665,8 +680,8 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[test]
-    fn symlink_alias_normalizes_store_path_and_refresh_lock() {
+    #[tokio::test]
+    async fn symlink_alias_normalizes_store_path_and_refresh_lock() {
         use std::os::unix::fs::symlink;
 
         let dir = temp_auth_dir("lock-alias");
@@ -687,10 +702,16 @@ mod tests {
         );
 
         let canonical_path = path.canonicalize().unwrap();
-        assert_eq!(direct_store.path, canonical_path);
-        assert_eq!(alias_store.path, canonical_path);
-        let direct_lock = refresh_lock_for(&direct_store.path);
-        let alias_lock = refresh_lock_for(&alias_store.path);
+        assert_eq!(
+            direct_store.normalized_auth_path().await.unwrap(),
+            &canonical_path
+        );
+        assert_eq!(
+            alias_store.normalized_auth_path().await.unwrap(),
+            &canonical_path
+        );
+        let direct_lock = refresh_lock_for(direct_store.normalized_auth_path().await.unwrap());
+        let alias_lock = refresh_lock_for(alias_store.normalized_auth_path().await.unwrap());
         assert!(Arc::ptr_eq(&direct_lock, &alias_lock));
         let _ = std::fs::remove_dir_all(dir);
     }
