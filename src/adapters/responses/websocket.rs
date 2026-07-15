@@ -427,7 +427,7 @@ mod tests {
 
         // A delivered first event commits: it is buffered for replay and the
         // channel is handed back intact.
-        let (_tx, rx) = mpsc::unbounded_channel();
+        let (_tx, rx) = mpsc::channel(16);
         let event = ResponseEvent {
             event: Some("response.created".to_string()),
             data: Value::Null,
@@ -440,7 +440,7 @@ mod tests {
         );
 
         // A transport error before the first event falls back to HTTP.
-        let (_tx, rx) = mpsc::unbounded_channel();
+        let (_tx, rx) = mpsc::channel(16);
         let error = CodexWsError {
             status: None,
             retry_after: None,
@@ -454,7 +454,7 @@ mod tests {
         );
 
         // An empty stream (channel closed before any event) also falls back.
-        let (_tx, rx) = mpsc::unbounded_channel();
+        let (_tx, rx) = mpsc::channel(16);
         assert!(
             commit_or_fallback(None, rx).is_err(),
             "an empty stream falls back to HTTP"

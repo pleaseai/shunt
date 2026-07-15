@@ -204,8 +204,8 @@ mod tests {
     async fn json_events_response_surfaces_mid_stream_transport_error_as_bad_gateway() {
         // A transport error mid-stream must not be presented as a successful
         // partial answer — it is surfaced as a gateway error carrying the body.
-        let (tx, rx) = mpsc::unbounded_channel();
-        tx.send(Err(transport_error("upstream blew up", "socket dropped")))
+        let (tx, rx) = mpsc::channel(16);
+        tx.try_send(Err(transport_error("upstream blew up", "socket dropped")))
             .unwrap();
         drop(tx);
 
@@ -219,9 +219,9 @@ mod tests {
     #[tokio::test]
     async fn json_events_response_collects_ok_events_then_finishes() {
         // The `Ok` and channel-closed (`None`) arms produce a 200 message.
-        let (tx, rx) = mpsc::unbounded_channel();
-        tx.send(Ok(created_event())).unwrap();
-        tx.send(Ok(ResponseEvent {
+        let (tx, rx) = mpsc::channel(16);
+        tx.try_send(Ok(created_event())).unwrap();
+        tx.try_send(Ok(ResponseEvent {
             event: Some("response.completed".to_string()),
             data: json!({ "response": { "id": "resp_1" } }),
         }))
@@ -238,14 +238,14 @@ mod tests {
     /// failure so the "error after real content" case is exercised too.
     #[tokio::test]
     async fn json_events_response_surfaces_backend_error_event_as_gateway_error() {
-        let (tx, rx) = mpsc::unbounded_channel();
-        tx.send(Ok(created_event())).unwrap();
-        tx.send(Ok(ResponseEvent {
+        let (tx, rx) = mpsc::channel(16);
+        tx.try_send(Ok(created_event())).unwrap();
+        tx.try_send(Ok(ResponseEvent {
             event: Some("response.output_text.delta".to_string()),
             data: json!({ "delta": "partial" }),
         }))
         .unwrap();
-        tx.send(Ok(ResponseEvent {
+        tx.try_send(Ok(ResponseEvent {
             event: Some("response.failed".to_string()),
             data: json!({
                 "type": "response.failed",
@@ -270,9 +270,9 @@ mod tests {
     /// still returns a `502` promptly instead of hanging on `recv()`.
     #[tokio::test]
     async fn json_events_response_returns_on_backend_error_without_channel_close() {
-        let (tx, rx) = mpsc::unbounded_channel();
-        tx.send(Ok(created_event())).unwrap();
-        tx.send(Ok(ResponseEvent {
+        let (tx, rx) = mpsc::channel(16);
+        tx.try_send(Ok(created_event())).unwrap();
+        tx.try_send(Ok(ResponseEvent {
             event: Some("response.failed".to_string()),
             data: json!({
                 "type": "response.failed",
@@ -303,8 +303,8 @@ mod tests {
     async fn stream_events_response_emits_error_event_on_mid_stream_failure() {
         // Mid-stream transport errors become an Anthropic `error` SSE event so the
         // client sees a reason instead of a silent truncation.
-        let (tx, rx) = mpsc::unbounded_channel();
-        tx.send(Err(transport_error("mid stream boom", "socket dropped")))
+        let (tx, rx) = mpsc::channel(16);
+        tx.try_send(Err(transport_error("mid stream boom", "socket dropped")))
             .unwrap();
         drop(tx);
 
@@ -330,7 +330,7 @@ mod tests {
     async fn stream_events_response_replays_buffered_event_and_flushes_on_close() {
         // The peeked first event (buffered) is replayed and, once the channel
         // closes, `machine.finish()` flushes the terminal Anthropic events.
-        let (tx, rx) = mpsc::unbounded_channel::<Result<ResponseEvent, CodexWsError>>();
+        let (tx, rx) = mpsc::channel::<Result<ResponseEvent, CodexWsError>>(1);
         drop(tx); // channel closed: only the buffered event drives output
 
         let response = stream_events_response(
