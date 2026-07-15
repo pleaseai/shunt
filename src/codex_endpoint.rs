@@ -93,7 +93,13 @@ pub async fn post(
                     error = %error.message,
                     "inbound codex request failed"
                 );
-                error.response
+                // Gateway-owned errors on this endpoint are built with the gateway's
+                // Anthropic-shaped responders (`ShuntError` / `UpstreamError` /
+                // adapter+auth `AdapterError`s). A Codex CLI (or any OpenAI Responses
+                // client) pointed here expects the OpenAI `{"error":{...}}` envelope,
+                // so re-shape at this single boundary (status preserved). Relayed
+                // upstream errors never reach here — they return verbatim as `Ok`.
+                crate::error::into_openai_error_shape(error.response).await
             }
         }
     }

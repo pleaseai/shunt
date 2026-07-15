@@ -161,9 +161,17 @@ Responses-shaped body it would have gotten from `chatgpt.com` directly, error or
 If every account fails **before** any upstream response is received at all (for example, every
 account's credentials are unresolvable), there is no real upstream body to relay, so shunt returns
 a gateway-owned `502 bad gateway` with the fixed message `all Codex OAuth accounts failed before
-receiving an upstream response`. This is Anthropic-shaped — the one gateway-owned error on this
-otherwise-passthrough path, since a Responses client has no better format to hand it than the same
-shape `/v1/messages` uses for its own gateway-owned errors.
+receiving an upstream response`.
+
+Every **gateway-owned** error on this endpoint — this 502, the inbound-auth `401`, an oversized or
+unreadable request body, an unconfigured endpoint, or an account-store scan failure — is returned
+in the **OpenAI Responses error shape** (`{"error":{"message":..,"type":..,"code":null}}`),
+preserving its status code, so a Codex CLI (or any OpenAI Responses client) parses it through its
+own error path rather than the Anthropic `{"type":"error",...}` envelope shunt uses elsewhere. This
+is the one deliberate exception to the byte-for-byte passthrough: relayed **upstream** errors
+(429/4xx/5xx from the backend) still pass through verbatim and unchanged. The re-shaping happens
+once, at the endpoint boundary (`codex_endpoint::post` → `error::into_openai_error_shape`), so the
+Anthropic Messages path keeps its own error shape untouched (issue #127).
 
 ## Single-account fallback
 

@@ -1094,6 +1094,102 @@ async fn refresh_retry_still_unauthorized_rotates_to_next_account() {
     fs::remove_dir_all(&dir).ok();
 }
 
+/// Assert a gateway-owned error body is OpenAI Responses-shaped
+/// (`{"error":{"message","type","code":null}}`) and NOT the Anthropic envelope
+/// (`{"type":"error","error":{...}}`) — the distinction issue #127 turns on.
+fn assert_openai_error_shape(body: &serde_json::Value, expected_type: &str) {
+    // Anthropic errors carry a top-level `"type":"error"`; the OpenAI shape does not.
+    assert!(
+        body.get("type").is_none(),
+        "expected OpenAI shape without a top-level `type`, got {body}"
+    );
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .is_some_and(|message| !message.is_empty()),
+        "expected a non-empty error.message, got {body}"
+    );
+    assert_eq!(body["error"]["type"], expected_type);
+    assert!(
+        body["error"]["code"].is_null(),
+        "expected error.code to be null, got {body}"
+    );
+}
+
+#[tokio::test]
+async fn gateway_owned_401_body_is_openai_shaped() {
+    // A gateway-owned auth failure (bad/missing client token) must reach an OpenAI
+    // Responses client in its own error envelope, not the Anthropic one, so the
+    // Codex CLI surfaces a meaningful message. Status stays 401.
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-401-shape");
+    std::env::set_var("SHUNT_TEST_INBOUND_401_SHAPE", &token_a);
+    let tokens_env = format!("SHUNT_TEST_INBOUND_401_SHAPE_TOKENS_{}", std::process::id());
+    std::env::set_var(&tokens_env, "cli:secret-token");
+
+    // The upstream is never contacted — auth fails first — so no mock is needed.
+    let upstream = MockServer::start().await;
+    let mut config = test_config(
+        &upstream.uri(),
+        vec![account("account-401-shape", "SHUNT_TEST_INBOUND_401_SHAPE")],
+    );
+    config.server.auth = Some(InboundAuthConfig {
+        header: "x-shunt-token".to_string(),
+        tokens_env: tokens_env.clone(),
+    });
+    let gateway = start_gateway_with(config).await;
+
+    // No client token → 401 before any upstream call.
+    let response = post_responses(&gateway, "/responses", None, None).await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    assert_openai_error_shape(&body, "authentication_error");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("client token"),
+        "expected the auth failure message, got {body}"
+    );
+
+    std::env::remove_var("SHUNT_TEST_INBOUND_401_SHAPE");
+    std::env::remove_var(&tokens_env);
+}
+
+#[tokio::test]
+async fn gateway_owned_502_body_is_openai_shaped() {
+    // When every pooled account fails to resolve *before* any upstream response,
+    // there is no upstream body to relay, so shunt returns its own 502 — which must
+    // be OpenAI-shaped on this endpoint, not the Anthropic envelope.
+    if !can_bind_loopback() {
+        return;
+    }
+    // A single account whose `token_env` is deliberately unset: resolution fails,
+    // the account cools down, and with no other account the pool is exhausted with
+    // no upstream ever contacted → the gateway-owned 502.
+    let missing_env = format!("SHUNT_TEST_INBOUND_502_MISSING_{}", std::process::id());
+    std::env::remove_var(&missing_env);
+
+    // base_url is never used (no upstream call happens); point it at an unreachable
+    // loopback address to prove no request escapes.
+    let gateway = start_gateway_with(test_config(
+        "http://127.0.0.1:1",
+        vec![account("account-502-shape", &missing_env)],
+    ))
+    .await;
+
+    let response = post_responses(&gateway, "/v1/responses", None, None).await;
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    assert_openai_error_shape(&body, "api_error");
+    assert_eq!(
+        body["error"]["message"],
+        "all Codex OAuth accounts failed before receiving an upstream response"
+    );
+}
+
 #[tokio::test]
 async fn refresh_retry_non_success_rotates_to_next_account() {
     // Refresh succeeds but the refreshed retry fails with a non-401 non-2xx (5xx):

@@ -92,6 +92,7 @@ With no `[[providers.codex.accounts]]` configured **and an empty shunt account s
 - **No translation.** The inbound Responses body is forwarded upstream byte-for-byte, and the upstream response — SSE or JSON, success or error — is relayed back verbatim (status and `content-type` preserved). There is no Anthropic Messages ⇄ Responses translation step at all.
 - **No model-based routing.** Every request goes to the one provider named in `[server.codex_endpoint]`; the body's `model` field forwards through as-is and never selects a provider.
 - **Exhaustion relays verbatim.** If every pooled account is tried and at least one upstream response came back, shunt relays that last response unchanged rather than re-shaping it into an Anthropic-style error, since a Responses client expects the raw shape it would have gotten from the real ChatGPT backend.
+- **Gateway-owned errors are OpenAI-shaped.** When the failure is shunt's own — a bad or missing client token (`401`), an unresolvable pool with no upstream response (`502`), an oversized request body, or an unconfigured endpoint — shunt returns it in the OpenAI Responses error shape (`{"error":{"message":…,"type":…,"code":null}}`) with the same status code, so the Codex CLI parses it through its own error path instead of the Anthropic `{"type":"error",…}` envelope. Relayed *upstream* errors (429/4xx/5xx from the backend) still pass through verbatim.
 - **HTTP/SSE only.** Even when the target provider has `websocket = true`, this endpoint always uses the HTTP transport.
 
 ## Security
