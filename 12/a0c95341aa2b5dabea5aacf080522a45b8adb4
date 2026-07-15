@@ -1,0 +1,20 @@
+benches/gateway.rs
+  s_e03ccc0595c56d::t_39219b4cc30e80 3-12,17-20
+  s_e03ccc0595c56d::t_a20f0e05ee3d37 137-224
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "12a0c95341aa2b5dabea5aacf080522a45b8adb4",
+  "prompts": {},
+  "sessions": {
+    "s_e03ccc0595c56d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1fe1156a-3d42-444c-9ed2-2ff913e13a9b",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
