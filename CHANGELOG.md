@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.0](https://github.com/pleaseai/shunt/compare/v0.16.0...v0.17.0) (2026-07-15)
+
+
+### Features
+
+* **admin:** add Codex account provisioning + pool view to admin web ([#144](https://github.com/pleaseai/shunt/issues/144)) ([be8a55a](https://github.com/pleaseai/shunt/commit/be8a55a22f95b0778752ee77906a3d997a15693c))
+
 ## [0.16.0](https://github.com/pleaseai/shunt/compare/v0.15.0...v0.16.0) (2026-07-14)
 
 
