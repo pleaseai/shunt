@@ -1,0 +1,25 @@
+.claude/agent-memory/review-review-pr-test-analyzer/MEMORY.md
+  s_23560aa83696a4::t_93b61b6c4459fa 10
+.claude/agent-memory/review-review-silent-failure-hunter/MEMORY.md
+  s_23560aa83696a4::t_7000c807138b0d 9
+.claude/agent-memory/review-review-pr-test-analyzer/shunt-codex-admin-coverage.md
+  s_23560aa83696a4::t_0bc2bd2293f8c4 1-33
+.claude/agent-memory/review-review-silent-failure-hunter/pr144-codex-admin-error-handling.md
+  s_23560aa83696a4::t_322daa166358bc 1-12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "a7ad1d67139034f7a18cfc67fc2218bd0a1d5b84",
+  "prompts": {},
+  "sessions": {
+    "s_23560aa83696a4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fa6783c4-73ed-4f60-956e-97c4e9ea9e23",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
