@@ -137,3 +137,39 @@ curl -s -X POST "$ANTHROPIC_BASE_URL/v1/messages" \
 ```
 
 Then start `claude`, run `/status`, and check the **Anthropic base URL** line shows your gateway. See also [Effort & Context](/guides/effort-and-context/) for reasoning-effort and context-window tuning.
+
+### Verify a named subagent end to end
+
+The raw requests above verify shunt's routes, but not Claude Code's client-side subagent
+selection. For cross-model review, verify the model Claude Code actually resolved instead of
+trusting the agent name or asking the model to identify itself:
+
+```bash
+claude --output-format stream-json --verbose -p \
+  "Use the researcher agent once without a model override, then stop." \
+  | jq -Rr '
+      fromjson?
+      | select(.tool_use_result?.resolvedModel)
+      | [.tool_use_result.agentType, .tool_use_result.resolvedModel]
+      | @tsv
+    '
+```
+
+For the example agent above, the result should be `researcher` and `gpt-5.6-sol`. Then confirm
+that shunt maps the resolved ID to the intended provider and upstream model:
+
+```bash
+curl -s "${ANTHROPIC_BASE_URL%/}/routes" \
+  | jq '.data[] | select(.model == "gpt-5.6-sol")'
+```
+
+Interpret the evidence in order:
+
+| Observation | Diagnosis |
+| :-- | :-- |
+| `resolvedModel` differs from the agent's frontmatter | Claude Code selected a different model ID before the request reached shunt. Check `CLAUDE_CODE_SUBAGENT_MODEL`, a tool-level `model` override, missing/stale agent frontmatter, and agent-definition precedence; then inspect `/routes`, because shunt may intentionally remap that ID. |
+| `resolvedModel` is correct, but `/routes` selects the wrong provider or upstream model | Fix the shunt route or prefix configuration. |
+| `resolvedModel` and `/routes` are correct, but inference fails | Check provider authentication, entitlement, quota, and upstream compatibility. |
+
+Model self-identification is not routing evidence: a prompt can produce an incorrect model name,
+while `resolvedModel` records Claude Code's selection and `/routes` records shunt's mapping.

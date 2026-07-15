@@ -561,6 +561,31 @@ The context window follows the model automatically: `CLAUDE_CODE_MAX_CONTEXT_TOK
 on the id, so one global value sizes the mapped subagent (e.g. 372k) while the Claude main keeps its
 own — no per-subagent env is needed, and the same overflow/compact behavior (§5.8) applies.
 
+Verify named-subagent routing at both ownership boundaries. Claude Code's stream-JSON Agent result
+records the client-side selection as `agentType` + `resolvedModel`; shunt's `GET /routes` records
+the gateway-side `model` → `provider` / `upstream_model` mapping:
+
+```bash
+claude --output-format stream-json --verbose -p \
+  "Use the researcher agent once without a model override, then stop." \
+  | jq -Rr '
+      fromjson?
+      | select(.tool_use_result?.resolvedModel)
+      | [.tool_use_result.agentType, .tool_use_result.resolvedModel]
+      | @tsv
+    '
+
+curl -s "${ANTHROPIC_BASE_URL%/}/routes" \
+  | jq '.data[] | select(.model == "gpt-5.6-sol")'
+```
+
+Diagnose in that order: a `resolvedModel` that differs from the agent's frontmatter means Claude
+Code chose a different model ID before shunt saw the request (check the global env override,
+tool-level override, and agent frontmatter, then inspect `/routes` because shunt may intentionally
+remap that ID); a correct `resolvedModel` with a wrong `/routes` entry is shunt configuration; and
+correct values at both boundaries point to provider auth, entitlement, quota, or compatibility.
+Do not use model self-identification as routing evidence.
+
 ### 5.5 (Optional) Model discovery
 
 Discovery (`GET /v1/models`) can populate `/model` automatically — **but Claude Code ignores
