@@ -1,0 +1,20 @@
+src/adapters/cursor/sse.rs
+  s_8b687f756e29e1::t_deabe5c9a440f4 67
+  s_8b687f756e29e1::t_cf331be2f4b222 418-421
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "7a5a41e7416289472655a5c3e947de46920457d5",
+  "prompts": {},
+  "sessions": {
+    "s_8b687f756e29e1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cada10f5-4afa-4f1b-9540-cf940680cf4a",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
