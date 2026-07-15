@@ -10,9 +10,10 @@
 use std::{
     fs, io,
     path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::auth::shared;
 use crate::config::AccountConfig;
@@ -35,6 +36,61 @@ pub fn account_path(name: &str) -> PathBuf {
 /// account entry — so every entry is name-only (`uuid: None`).
 pub fn scan_accounts() -> io::Result<Vec<AccountConfig>> {
     shared::scan_account_dir(&default_accounts_dir(), |_| None)
+}
+
+/// Token-free Codex account metadata exposed by the admin dashboard.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CodexAccountMeta {
+    pub name: String,
+    /// Access-token JWT expiry in Unix epoch milliseconds, when parseable.
+    pub expires_at: Option<i64>,
+    pub account_id: Option<String>,
+}
+
+/// Read one store account's token-free metadata. `None` when the file is missing
+/// or cannot be parsed; failures are logged without exposing token material.
+pub fn account_meta(name: &str) -> Option<CodexAccountMeta> {
+    let path = account_path(name);
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            tracing::warn!(account = %name, %error, "admin: failed to read Codex account file; omitting from dashboard");
+            return None;
+        }
+    };
+    let value: Value = match serde_json::from_slice(&bytes) {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::warn!(account = %name, %error, "admin: Codex account file is not valid JSON; omitting from dashboard");
+            return None;
+        }
+    };
+    let tokens = value.get("tokens")?;
+    let access_token = tokens.get("access_token").and_then(Value::as_str);
+    let expires_at = access_token
+        .and_then(shared::jwt_exp)
+        .and_then(|expiry| expiry.duration_since(UNIX_EPOCH).ok())
+        .and_then(|duration| i64::try_from(duration.as_millis()).ok());
+    let account_id = tokens
+        .get("account_id")
+        .and_then(Value::as_str)
+        .filter(|account_id| !account_id.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| access_token.and_then(super::auth::jwt_account_id));
+    Some(CodexAccountMeta {
+        name: name.to_string(),
+        expires_at,
+        account_id,
+    })
+}
+
+/// List store-managed Codex accounts with token-free metadata in name order.
+pub fn list_account_meta() -> io::Result<Vec<CodexAccountMeta>> {
+    Ok(scan_accounts()?
+        .into_iter()
+        .filter_map(|account| account_meta(&account.name))
+        .collect())
 }
 
 /// Remove a store account file. Returns whether a file was actually removed
@@ -87,6 +143,44 @@ pub fn import_auth(name: &str, source: &Path) -> anyhow::Result<PathBuf> {
     write_account(name, &value)
 }
 
+/// Store a freshly issued ChatGPT OAuth credential in the verbatim `codex login`
+/// auth.json shape consumed and refreshed by [`super::auth::CodexAuthStore`].
+pub fn store_chatgpt_tokens(
+    name: &str,
+    access_token: &str,
+    refresh_token: &str,
+    id_token: Option<&str>,
+    account_id: &str,
+) -> anyhow::Result<PathBuf> {
+    validate_account_name(name)?;
+    let account_id = account_id.trim();
+    let refresh_token = refresh_token.trim();
+    if account_id.is_empty() {
+        anyhow::bail!("ChatGPT account id must not be empty");
+    }
+    if refresh_token.is_empty() {
+        anyhow::bail!("ChatGPT refresh token must not be empty");
+    }
+    let mut tokens = json!({
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "account_id": account_id,
+    });
+    if let Some(id_token) = id_token {
+        tokens
+            .as_object_mut()
+            .expect("ChatGPT tokens are a JSON object")
+            .insert("id_token".to_string(), json!(id_token));
+    }
+    let value = json!({
+        "auth_mode": "ChatGPT",
+        "OPENAI_API_KEY": null,
+        "tokens": tokens,
+        "last_refresh": shared::format_iso8601(SystemTime::now()),
+    });
+    write_account(name, &value)
+}
+
 fn write_account(name: &str, value: &Value) -> anyhow::Result<PathBuf> {
     let path = account_path(name);
     shared::write_account_file(&path, value)?;
@@ -124,6 +218,19 @@ mod tests {
             "last_refresh": "2024-01-01T00:00:00Z"
         })
         .to_string()
+    }
+
+    fn access_token(exp: u64, account_id: &str) -> String {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+
+        let payload = json!({
+            "exp": exp,
+            "https://api.openai.com/auth": {"chatgpt_account_id": account_id}
+        });
+        format!(
+            "x.{}.y",
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap())
+        )
     }
 
     #[test]
@@ -225,6 +332,72 @@ mod tests {
                 0o700
             );
         }
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn stores_tokens_and_lists_token_free_metadata() {
+        let _guard = TEST_ENV_LOCK.lock().await;
+        let dir = temp_dir("oauth");
+        let _env = shared::EnvVarGuard::set("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+        let access = access_token(2_000_000_000, "acct-from-claim");
+
+        let path = store_chatgpt_tokens(
+            "oauth",
+            &access,
+            "refresh-secret",
+            Some("id-secret"),
+            "acct-stored",
+        )
+        .unwrap();
+        let value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(value["auth_mode"], "ChatGPT");
+        assert!(value["OPENAI_API_KEY"].is_null());
+        assert_eq!(value["tokens"]["access_token"], access);
+        assert_eq!(value["tokens"]["refresh_token"], "refresh-secret");
+        assert_eq!(value["tokens"]["id_token"], "id-secret");
+        assert_eq!(value["tokens"]["account_id"], "acct-stored");
+        assert!(value["last_refresh"].as_str().is_some());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+
+        let meta = list_account_meta().unwrap();
+        assert_eq!(meta.len(), 1);
+        assert_eq!(meta[0].name, "oauth");
+        assert_eq!(meta[0].expires_at, Some(2_000_000_000_000));
+        assert_eq!(meta[0].account_id.as_deref(), Some("acct-stored"));
+        let serialized = serde_json::to_string(&meta).unwrap();
+        assert!(!serialized.contains(&access));
+        assert!(!serialized.contains("refresh-secret"));
+        assert!(!serialized.contains("id-secret"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn metadata_falls_back_to_access_token_account_claim() {
+        let _guard = TEST_ENV_LOCK.lock().await;
+        let dir = temp_dir("meta-claim");
+        fs::create_dir_all(&dir).unwrap();
+        let _env = shared::EnvVarGuard::set("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+        let access = access_token(2_000_000_000, "acct-from-claim");
+        fs::write(
+            dir.join("claim.json"),
+            json!({"auth_mode":"ChatGPT","tokens":{"access_token":access}}).to_string(),
+        )
+        .unwrap();
+
+        let meta = account_meta("claim").unwrap();
+        assert_eq!(meta.account_id.as_deref(), Some("acct-from-claim"));
+        assert_eq!(meta.expires_at, Some(2_000_000_000_000));
 
         let _ = fs::remove_dir_all(dir);
     }

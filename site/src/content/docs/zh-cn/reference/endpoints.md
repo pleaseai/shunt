@@ -15,11 +15,15 @@ description: shunt 作为 Claude Code LLM 网关所提供的端点。
 | `GET` | `/admin` | 管理仪表盘(HTML);未登录时重定向到 `/admin/login` |
 | `GET`, `POST` | `/admin/login` | 管理员 token 登录表单与浏览器会话创建 |
 | `POST` | `/admin/logout` | 清除浏览器会话 |
-| `GET` | `/admin/accounts` | 账户存储元数据:名称、类型、过期时间和 UUID;绝不返回 token 材料 |
-| `GET` | `/admin/pool` | 按 `claude_oauth` 提供方的池健康状况:配额使用率、status、冷却与可用性 |
-| `POST` | `/admin/accounts/claude` | 用 `{name, mode}` 开始浏览器预配;`mode` 为 `oauth` 或 `setup_token`,省略时默认为 `setup_token`;返回 `{authorize_url}` |
-| `POST` | `/admin/accounts/claude/{name}/complete` | 用包含 `<code>#<state>` 的 `{code}` 完成预配;存储账户并报告其是否生效 |
-| `DELETE` | `/admin/accounts/claude/{name}` | 删除指定名称账户的存储文件 |
+| `GET` | `/admin/accounts` | Claude 账户存储元数据:名称、类型、过期时间和 UUID;绝不返回 token 材料 |
+| `GET` | `/admin/accounts/codex` | Codex 账户存储元数据:名称、过期时间和 ChatGPT 账户 ID;绝不返回 token 材料 |
+| `GET` | `/admin/pool` | `claude_oauth` / `chatgpt_oauth` provider 的池状态;Codex 不发送配额 header,因此使用率字段为空 |
+| `POST` | `/admin/accounts/claude` | 用 `{name, mode}` 开始 Claude 浏览器预配;`mode` 为 `oauth` 或 `setup_token`,省略时默认为 `setup_token`;返回 `{authorize_url}` |
+| `POST` | `/admin/accounts/claude/{name}/complete` | 用包含 `<code>#<state>` 的 `{code}` 完成 Claude 预配;存储账户并报告其是否生效 |
+| `DELETE` | `/admin/accounts/claude/{name}` | 删除指定 Claude 账户的存储文件 |
+| `POST` | `/admin/accounts/codex` | 用 `{name}` 开始 ChatGPT OAuth;返回 `{authorize_url}` |
+| `POST` | `/admin/accounts/codex/{name}/complete` | 用包含完整 localhost redirect URL 或 `<code>#<state>` 的 `{code}` 完成 Codex 预配 |
+| `DELETE` | `/admin/accounts/codex/{name}` | 删除指定 Codex 账户的存储文件 |
 
 `/admin*` 路由仅在配置了 [`[server.admin]`](/zh-cn/reference/configuration/#serveradmin可选) 时存在;没有该表时,它们一个都不会注册。
 

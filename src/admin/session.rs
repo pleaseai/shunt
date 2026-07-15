@@ -89,9 +89,10 @@ impl SessionStore {
 pub enum PendingKind {
     SetupToken,
     FullOauth,
+    CodexOauth,
 }
 
-/// The secrets and credential kind needed to complete a pending Claude login.
+/// The secrets and credential kind needed to complete a pending provider login.
 #[derive(Clone)]
 pub struct PendingLogin {
     pub kind: PendingKind,

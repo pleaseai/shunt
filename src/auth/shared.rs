@@ -17,12 +17,40 @@ use std::{
 };
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use rand::RngCore;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::config::AccountConfig;
 
 const EXPIRY_BUFFER: Duration = Duration::from_secs(5 * 60);
 static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+/// A freshly generated PKCE verifier/challenge plus an independent OAuth state.
+pub(crate) struct PkceChallenge {
+    pub verifier: String,
+    pub challenge: String,
+    pub state: String,
+}
+
+/// Generate a fresh PKCE verifier + S256 challenge and an independent `state`,
+/// each 32 random bytes URL-safe base64 (no padding).
+pub(crate) fn generate_pkce() -> PkceChallenge {
+    let verifier = random_urlsafe(32);
+    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+    let state = random_urlsafe(32);
+    PkceChallenge {
+        verifier,
+        challenge,
+        state,
+    }
+}
+
+fn random_urlsafe(bytes: usize) -> String {
+    let mut random = vec![0_u8; bytes];
+    rand::rng().fill_bytes(&mut random);
+    URL_SAFE_NO_PAD.encode(random)
+}
 
 pub fn jwt_claims(token: &str) -> Option<Value> {
     let payload = token.split('.').nth(1)?;
@@ -348,6 +376,26 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    #[test]
+    fn generated_pkce_values_are_urlsafe_and_s256_linked() {
+        use sha2::{Digest, Sha256};
+
+        let pkce = generate_pkce();
+        assert_eq!(pkce.verifier.len(), 43);
+        assert_eq!(pkce.challenge.len(), 43);
+        assert_eq!(pkce.state.len(), 43);
+        assert_eq!(
+            pkce.challenge,
+            URL_SAFE_NO_PAD.encode(Sha256::digest(pkce.verifier.as_bytes()))
+        );
+        for value in [&pkce.verifier, &pkce.challenge, &pkce.state] {
+            assert!(value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_'));
+        }
+        assert_ne!(pkce.verifier, pkce.state);
     }
 
     #[test]

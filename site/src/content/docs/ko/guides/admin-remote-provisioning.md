@@ -1,9 +1,9 @@
 ---
 title: 관리자 & 원격 프로비저닝
-description: shunt의 관리자 웹 화면을 활성화해 Claude 계정을 원격으로 프로비저닝하고 계정 풀 상태를 점검합니다.
+description: shunt의 관리자 웹 화면을 활성화해 Claude와 Codex 계정을 원격으로 프로비저닝하고 계정 풀 상태를 점검합니다.
 ---
 
-shunt는 업스트림 Claude 계정을 프로비저닝하고 각 `claude_oauth` 계정 풀의 상태를 볼 수 있는, 관리자 인증이 걸린 웹 화면을 노출할 수 있습니다. 이는 옵트인입니다: `[server.admin]`이 없으면 `/admin*` 라우트는 하나도 등록되지 않으며 shunt의 기본 HTTP 표면(surface)은 그대로입니다.
+shunt는 업스트림 Claude와 Codex/ChatGPT 계정을 프로비저닝하고 `claude_oauth` 및 `chatgpt_oauth` 계정 풀의 상태를 볼 수 있는, 관리자 인증이 걸린 웹 화면을 노출할 수 있습니다. 이는 옵트인입니다: `[server.admin]`이 없으면 `/admin*` 라우트는 하나도 등록되지 않으며 shunt의 기본 HTTP 표면(surface)은 그대로입니다.
 
 이 기능은 [Anthropic 멀티 계정](/ko/guides/anthropic-multi-account/)의 스토어와 선택 동작 위에 구축됩니다. 브라우저 폼에서는 갱신 가능한 Full OAuth 계정 또는 1년짜리 추론 전용 setup token 계정을 만들 수 있습니다. 기존 Claude Code credential 파일 가져오기는 CLI 전용입니다.
 
@@ -29,7 +29,7 @@ shunt run
 
 모든 키와 기본값은 [설정 레퍼런스](/ko/reference/configuration/#serveradmin-선택)를 참고하세요. 브라우저 라우트와 JSON 라우트는 [엔드포인트 레퍼런스](/ko/reference/endpoints/)에 나열되어 있습니다.
 
-## 브라우저에서 계정 프로비저닝
+## 브라우저에서 Claude 계정 프로비저닝
 
 1. `/admin`을 열고 관리자 토큰으로 로그인합니다.
 2. 소문자, 숫자, 하이픈만 포함하는 계정 이름을 입력합니다.
@@ -47,9 +47,19 @@ shunt run
 
 계정 스토어 변경은 요청마다 감지되므로, 스캔 모드 프로바이더는 계정이 추가되거나 제거된 뒤 재시작할 필요가 없습니다.
 
+## 브라우저에서 Codex 계정 프로비저닝
+
+1. **Add Codex account**에서 소문자 계정 이름을 입력하고 **Start Codex login**을 선택합니다.
+2. 인가 URL을 열고 대상 ChatGPT 계정으로 로그인한 뒤 접근을 승인합니다.
+3. 브라우저는 `http://localhost:1455/auth/callback`으로 이동합니다. 로컬 페이지가 열리지 않는 것은 정상입니다.
+4. 브라우저 주소창의 **전체 URL**을 복사해 관리자 페이지에 붙여 넣고 **Complete Codex login**을 선택합니다. JSON API에서는 `<code>#<state>`도 사용할 수 있습니다.
+5. shunt가 code를 교환하고 갱신 가능한 Codex 자격 증명을 비공개 계정 파일에 저장합니다.
+
+`accounts`가 비어 있는 `chatgpt_oauth` 프로바이더(기본 `codex` 포함)는 다음 요청에서 새 계정을 발견합니다. 명시적 계정 목록을 쓰는 경우 이름만 있는 항목을 추가해야 합니다. `SHUNT_CODEX_TOKEN_URL`은 로컬 통합 테스트용 token endpoint override이며, 운영에서는 설정하지 마세요.
+
 ## 풀 상태 점검
 
-대시보드는 `auth = "claude_oauth"`로 구성된 각 프로바이더의 계정 스토어 메타데이터와 현재 상태를 보여 줍니다. 업스트림 응답에서 관측된 5시간, 공유 7일, `7d_oi` 사용률과 함께 통합(unified) status, 남은 쿨다운, 쿼터 근접 상태, 그리고 계정이 현재 사용 가능한지가 포함됩니다.
+대시보드는 `auth = "claude_oauth"` 또는 `auth = "chatgpt_oauth"`로 구성된 프로바이더의 계정 스토어 메타데이터와 현재 상태를 보여 줍니다. Claude 행에는 업스트림에서 관측한 쿼터 사용률이 표시됩니다. Codex는 쿼터 헤더를 보내지 않으므로 사용률 열은 `—`로 남으며, shunt는 Codex 사용량을 추론하거나 파싱하지 않습니다.
 
 계정 목록은 메타데이터만 노출합니다: 계정 이름, 자격 증명 종류(`setup_token` 또는 `imported`), 만료, UUID. 토큰 자체는 절대 반환하지 않습니다. shunt가 계정을 고를 때 쿼터 상태, 쿨다운, 모델 인지 주간 버킷을 어떻게 쓰는지는 [Anthropic 멀티 계정](/ko/guides/anthropic-multi-account/#선택과-선제-로테이션)을 참고하세요.
 
@@ -75,7 +85,7 @@ shunt login claude --name primary --mode import
 shunt login claude --name ci --mode setup-token
 ```
 
-`--long-lived`는 `--mode setup-token`의 deprecated alias입니다. 관리자 화면은 Full OAuth와 setup-token 프로비저닝을 지원합니다. 호스트의 기존 Claude Code credential에 접근해야 하는 import만 CLI 전용입니다.
+`--long-lived`는 `--mode setup-token`의 deprecated alias입니다. 관리자 화면은 Claude Full OAuth/setup-token과 Codex ChatGPT OAuth 프로비저닝을 지원합니다. 기존 credential 파일 import만 호스트 접근이 필요해 CLI 전용입니다.
 
 :::caution[Refresh token 회전]
 갱신 가능한 계정에는 활성 owner가 하나만 있어야 합니다. OAuth 갱신은 refresh token을 교체하고 오래된 복사본을 무효화할 수 있으므로, 한 스토어 파일을 프로세스끼리 공유하거나 다른 호스트로 복사해 독립적으로 실행하지 마세요. 프로세스마다 별도로 프로비저닝하거나, 갱신 불가능한 정적 credential이 적합한 경우 setup-token mode를 선택하세요.

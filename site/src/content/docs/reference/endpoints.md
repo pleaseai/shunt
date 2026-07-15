@@ -15,11 +15,15 @@ description: The endpoints shunt serves as a Claude Code LLM gateway.
 | `GET` | `/admin` | Admin dashboard (HTML); redirects to `/admin/login` when not signed in |
 | `GET`, `POST` | `/admin/login` | Admin-token login form and browser-session creation |
 | `POST` | `/admin/logout` | Clear the browser session |
-| `GET` | `/admin/accounts` | Account-store metadata: name, kind, expiry, and UUID; never token material |
-| `GET` | `/admin/pool` | Per-`claude_oauth`-provider pool health: quota utilization, status, cooldown, and availability |
-| `POST` | `/admin/accounts/claude` | Start browser provisioning with `{name, mode}` where `mode` is `oauth` or `setup_token` (omitted defaults to `setup_token`); returns `{authorize_url}` |
-| `POST` | `/admin/accounts/claude/{name}/complete` | Complete provisioning with `{code}` containing `<code>#<state>`; stores the account and reports whether it is live |
-| `DELETE` | `/admin/accounts/claude/{name}` | Remove the named account's store file |
+| `GET` | `/admin/accounts` | Claude account-store metadata: name, kind, expiry, and UUID; never token material |
+| `GET` | `/admin/accounts/codex` | Codex account-store metadata: name, expiry, and ChatGPT account ID; never token material |
+| `GET` | `/admin/pool` | Per-`claude_oauth`/`chatgpt_oauth`-provider pool state; Codex utilization fields are empty because its backend sends no quota headers |
+| `POST` | `/admin/accounts/claude` | Start Claude browser provisioning with `{name, mode}` where `mode` is `oauth` or `setup_token` (omitted defaults to `setup_token`); returns `{authorize_url}` |
+| `POST` | `/admin/accounts/claude/{name}/complete` | Complete Claude provisioning with `{code}` containing `<code>#<state>`; stores the account and reports whether it is live |
+| `DELETE` | `/admin/accounts/claude/{name}` | Remove the named Claude account's store file |
+| `POST` | `/admin/accounts/codex` | Start ChatGPT OAuth with `{name}`; returns `{authorize_url}` |
+| `POST` | `/admin/accounts/codex/{name}/complete` | Complete Codex provisioning with `{code}` containing the full localhost redirect URL or `<code>#<state>`; stores the account and reports whether it is live |
+| `DELETE` | `/admin/accounts/codex/{name}` | Remove the named Codex account's store file |
 | `POST` | `/backend-api/codex/responses` | Inbound Codex CLI passthrough — mirrors the real ChatGPT backend path |
 | `POST` | `/responses` | Inbound Codex CLI passthrough — bare `base_url` form |
 | `POST` | `/v1/responses` | Inbound Codex CLI passthrough — `/v1`-suffixed `base_url` form |

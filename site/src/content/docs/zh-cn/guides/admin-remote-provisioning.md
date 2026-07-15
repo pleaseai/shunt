@@ -1,9 +1,9 @@
 ---
 title: 管理与远程预配
-description: 启用 shunt 的管理 Web 界面,以远程预配 Claude 账户并查看账户池健康状况。
+description: 启用 shunt 的管理 Web 界面,以远程预配 Claude 与 Codex 账户并查看账户池状态。
 ---
 
-shunt 可以暴露一个需管理员认证的 Web 界面,用于预配上游 Claude 账户并查看每个 `claude_oauth` 账户池的健康状况。它是可选启用的:当 `[server.admin]` 不存在时,任何 `/admin*` 路由都不会注册,shunt 默认的 HTTP 暴露面保持不变。
+shunt 可以暴露一个需管理员认证的 Web 界面,用于预配上游 Claude 与 Codex/ChatGPT 账户,并查看 `claude_oauth` 与 `chatgpt_oauth` 账户池的状态。它是可选启用的:当 `[server.admin]` 不存在时,任何 `/admin*` 路由都不会注册,shunt 默认的 HTTP 暴露面保持不变。
 
 它建立在 [Anthropic 多账户](/zh-cn/guides/anthropic-multi-account/)的存储与选择行为之上。浏览器表单可以创建可刷新的 Full OAuth 账户或一年期、仅推理的 setup token 账户。导入已有的 Claude Code credential 文件仍然仅限 CLI。
 
@@ -29,7 +29,7 @@ shunt run
 
 每个键与默认值见[配置参考](/zh-cn/reference/configuration/#serveradmin可选)。[端点参考](/zh-cn/reference/endpoints/)列出了浏览器路由和 JSON 路由。
 
-## 在浏览器中预配账户
+## 在浏览器中预配 Claude 账户
 
 1. 打开 `/admin`,用管理员 token 登录。
 2. 输入一个只含小写字母、数字和连字符的账户名。
@@ -47,9 +47,19 @@ shunt run
 
 账户存储的变化按请求发现,因此扫描模式的提供方在账户增删后不需要重启。
 
+## 在浏览器中预配 Codex 账户
+
+1. 在 **Add Codex account** 中输入小写账户名,选择 **Start Codex login**。
+2. 打开授权 URL,登录目标 ChatGPT 账户并批准访问。
+3. 浏览器会跳转到 `http://localhost:1455/auth/callback`。本地页面无法加载是正常现象。
+4. 从浏览器地址栏复制**完整 URL**,粘贴回管理页面并选择 **Complete Codex login**。JSON API 也接受 `<code>#<state>`。
+5. shunt 交换 code,并把可刷新的 Codex credential 写入私有账户文件。
+
+`accounts` 为空的 `chatgpt_oauth` provider(包括默认 `codex`)会在下一个请求中发现新账户。若使用显式账户列表,请添加一个只含名称的 entry。`SHUNT_CODEX_TOKEN_URL` 仅用于本地集成测试覆盖 token endpoint;生产环境请保持未设置。
+
 ## 查看池健康状况
 
-仪表盘展示每个配置了 `auth = "claude_oauth"` 的提供方的账户存储元数据与当前健康状况。其中包括从上游响应观测到的 5 小时、共享 7 天和 `7d_oi` 使用率,以及 unified status、剩余冷却时间、接近配额状态,和该账户当前是否可用。
+仪表盘展示配置了 `auth = "claude_oauth"` 或 `auth = "chatgpt_oauth"` 的 provider 的账户存储元数据与当前状态。Claude 行显示从上游观测到的配额使用率。Codex 不发送配额 header,因此使用率列保持为 `—`;shunt 不会推断或解析 Codex 使用量。
 
 账户列表只暴露元数据:账户名、凭据类型(`setup_token` 或 `imported`)、过期时间和 UUID。它绝不返回 token 材料。shunt 在选择账户时如何使用配额状态、冷却和感知模型的周桶,见 [Anthropic 多账户](/zh-cn/guides/anthropic-multi-account/#选择与主动轮换)。
 
@@ -75,7 +85,7 @@ shunt login claude --name primary --mode import
 shunt login claude --name ci --mode setup-token
 ```
 
-`--long-lived` 保留为 `--mode setup-token` 的 deprecated alias。管理界面支持 Full OAuth 与 setup-token 预配;只有需要读取主机已有 Claude Code credential 的 import 仍然仅限 CLI。
+`--long-lived` 保留为 `--mode setup-token` 的 deprecated alias。管理界面支持 Claude Full OAuth/setup-token 与 Codex ChatGPT OAuth 预配;只有导入已有 credential 文件需要主机访问,因此仍限 CLI。
 
 :::caution[Refresh token 轮换]
 一个可刷新账户只能有一个正在运行的 owner。OAuth 刷新可能替换 refresh token 并使旧副本失效,因此不要在进程间共享一个存储文件,也不要复制到另一台主机后独立运行。请为每个进程分别预配;如果适合使用不可刷新的静态 credential,请选择 setup-token mode。

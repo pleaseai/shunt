@@ -7,6 +7,7 @@
 
 use std::{net::SocketAddr, path::PathBuf, time::SystemTime};
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use reqwest::StatusCode;
 use shunt::{
     config::{AdminConfig, AuthMode, Config},
@@ -21,6 +22,8 @@ use wiremock::{
 /// Serializes tests that mutate the shared `SHUNT_CLAUDE_*` process env. A tokio
 /// mutex (held across `.await`) so it is safe over the async request calls.
 static CLAUDE_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// Serializes tests that mutate the shared `SHUNT_CODEX_*` process env.
+static CODEX_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 struct Gateway {
     base_url: String,
@@ -91,6 +94,27 @@ fn unique_dir() -> PathBuf {
     ));
     std::fs::create_dir_all(&dir).unwrap();
     dir
+}
+
+fn chatgpt_token(exp: u64, account_id: &str) -> String {
+    let payload = serde_json::json!({
+        "exp": exp,
+        "https://api.openai.com/auth": {"chatgpt_account_id": account_id}
+    });
+    format!(
+        "x.{}.y",
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap())
+    )
+}
+
+fn authorize_state(body: &serde_json::Value) -> (reqwest::Url, String) {
+    let url = reqwest::Url::parse(body["authorize_url"].as_str().unwrap()).unwrap();
+    let state = url
+        .query_pairs()
+        .find(|(key, _)| key == "state")
+        .map(|(_, value)| value.into_owned())
+        .expect("authorize URL carries OAuth state");
+    (url, state)
 }
 
 #[tokio::test]
@@ -767,6 +791,244 @@ async fn admin_negative_paths_are_rejected() {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
     std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_G");
+}
+
+#[tokio::test]
+async fn codex_provisioning_supports_code_state_and_full_redirect() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _lock = CODEX_ENV_LOCK.lock().await;
+    let dir = unique_dir();
+    std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+    std::env::set_var("SHUNT_TEST_ADMIN_TOKENS_CODEX", "ops:secret-codex");
+
+    let token_server = MockServer::start().await;
+    let access = chatgpt_token(4_102_444_800, "acct-codex");
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": access,
+            "refresh_token": "SECRET-CODEX-REFRESH",
+            "id_token": "SECRET-CODEX-ID"
+        })))
+        .expect(2)
+        .mount(&token_server)
+        .await;
+    std::env::set_var(
+        "SHUNT_CODEX_TOKEN_URL",
+        format!("{}/token", token_server.uri()),
+    );
+
+    let gateway = start(admin_config("SHUNT_TEST_ADMIN_TOKENS_CODEX")).await;
+    let client = reqwest::Client::new();
+    let auth = |request: reqwest::RequestBuilder| {
+        request
+            .header("x-shunt-admin-token", "secret-codex")
+            .header("content-type", "application/json")
+    };
+
+    let response = auth(client.post(format!("{}/admin/accounts/codex", gateway.base_url)))
+        .body(r#"{"name":"codex-a"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    let (authorize_url, state) = authorize_state(&body);
+    let params = authorize_url
+        .query_pairs()
+        .collect::<std::collections::HashMap<_, _>>();
+    for (key, expected) in [
+        ("client_id", "app_EMoamEEZ73f0CkXaXp7hrann"),
+        ("redirect_uri", "http://localhost:1455/auth/callback"),
+        ("scope", "openid profile email offline_access"),
+        ("codex_cli_simplified_flow", "true"),
+        ("state", state.as_str()),
+    ] {
+        assert_eq!(params.get(key).map(|value| value.as_ref()), Some(expected));
+    }
+
+    let response = auth(client.post(format!(
+        "{}/admin/accounts/codex/codex-a/complete",
+        gateway.base_url
+    )))
+    .body(serde_json::json!({"code": format!("oauth-code#{state}")}).to_string())
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let text = response.text().await.unwrap();
+    assert!(!text.contains(&access));
+    assert!(!text.contains("SECRET-CODEX-REFRESH"));
+    assert!(!text.contains("SECRET-CODEX-ID"));
+
+    let stored: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("codex-a.json")).unwrap()).unwrap();
+    assert_eq!(stored["auth_mode"], "ChatGPT");
+    assert_eq!(stored["tokens"]["access_token"], access);
+    assert_eq!(stored["tokens"]["refresh_token"], "SECRET-CODEX-REFRESH");
+    assert_eq!(stored["tokens"]["account_id"], "acct-codex");
+
+    let response = auth(client.post(format!("{}/admin/accounts/codex", gateway.base_url)))
+        .body(r#"{"name":"codex-url"}"#)
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    let (_, url_state) = authorize_state(&body);
+    let callback = reqwest::Url::parse_with_params(
+        "http://localhost:1455/auth/callback",
+        &[("code", "url-code"), ("state", url_state.as_str())],
+    )
+    .unwrap();
+    let response = auth(client.post(format!(
+        "{}/admin/accounts/codex/codex-url/complete",
+        gateway.base_url
+    )))
+    .body(serde_json::json!({"code": callback.to_string()}).to_string())
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(dir.join("codex-url.json").exists());
+
+    let requests = token_server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2);
+    for request in requests {
+        let content_type = request
+            .headers
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap();
+        assert_eq!(content_type, "application/x-www-form-urlencoded");
+        let body = String::from_utf8(request.body).unwrap();
+        assert!(body.contains("grant_type=authorization_code"));
+        assert!(body.contains("redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback"));
+        assert!(body.contains("client_id=app_EMoamEEZ73f0CkXaXp7hrann"));
+        assert!(body.contains("code_verifier="));
+    }
+
+    let response = auth(client.get(format!("{}/admin/accounts/codex", gateway.base_url)))
+        .send()
+        .await
+        .unwrap();
+    let text = response.text().await.unwrap();
+    assert!(!text.contains(&access));
+    assert!(!text.contains("SECRET-CODEX-REFRESH"));
+    let body: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(body["accounts"].as_array().unwrap().len(), 2);
+    assert!(body["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|account| account["account_id"] == "acct-codex"));
+
+    let response = auth(client.get(format!("{}/admin/pool", gateway.base_url)))
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    let codex = body["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|provider| provider["provider"] == "codex")
+        .expect("pool includes built-in codex provider");
+    assert!(codex["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|account| account["name"] == "codex-a"));
+
+    let response =
+        auth(client.delete(format!("{}/admin/accounts/codex/codex-a", gateway.base_url)))
+            .send()
+            .await
+            .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!dir.join("codex-a.json").exists());
+
+    std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
+    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CODEX");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn codex_provisioning_rejects_missing_refresh_and_bad_inputs() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _lock = CODEX_ENV_LOCK.lock().await;
+    let dir = unique_dir();
+    std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+    std::env::set_var(
+        "SHUNT_TEST_ADMIN_TOKENS_CODEX_NEGATIVE",
+        "ops:secret-codex-negative",
+    );
+
+    let token_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": chatgpt_token(4_102_444_800, "acct-no-refresh")
+        })))
+        .expect(1)
+        .mount(&token_server)
+        .await;
+    std::env::set_var(
+        "SHUNT_CODEX_TOKEN_URL",
+        format!("{}/token", token_server.uri()),
+    );
+
+    let gateway = start(admin_config("SHUNT_TEST_ADMIN_TOKENS_CODEX_NEGATIVE")).await;
+    let client = reqwest::Client::new();
+    let auth = |request: reqwest::RequestBuilder| {
+        request
+            .header("x-shunt-admin-token", "secret-codex-negative")
+            .header("content-type", "application/json")
+    };
+
+    let response = auth(client.post(format!("{}/admin/accounts/codex", gateway.base_url)))
+        .body(r#"{"name":"BAD_NAME"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let response = auth(client.post(format!(
+        "{}/admin/accounts/codex/ghost/complete",
+        gateway.base_url
+    )))
+    .body(r#"{"code":"code#state"}"#)
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let response = auth(client.post(format!("{}/admin/accounts/codex", gateway.base_url)))
+        .body(r#"{"name":"no-refresh"}"#)
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    let (_, state) = authorize_state(&body);
+    let response = auth(client.post(format!(
+        "{}/admin/accounts/codex/no-refresh/complete",
+        gateway.base_url
+    )))
+    .body(serde_json::json!({"code": format!("code#{state}")}).to_string())
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    assert!(!dir.join("no-refresh.json").exists());
+
+    std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
+    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CODEX_NEGATIVE");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

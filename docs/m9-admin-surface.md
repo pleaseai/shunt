@@ -1,8 +1,8 @@
 # M9 — Opt-in admin web surface
 
 M9 adds an opt-in, admin-authenticated web surface to shunt so an operator can
-provision upstream Claude accounts from a browser and observe account-pool health
-without shell access. It builds directly on M8
+provision upstream Claude and Codex/ChatGPT accounts from a browser and observe
+account-pool health without shell access. It builds directly on M8
 ([`m8-anthropic-multi-account.md`](m8-anthropic-multi-account.md)): the store, the
 per-request account resolution, and the `AccountPool` quota/cooldown state all
 already exist — M9 only adds an HTTP surface over them.
@@ -29,11 +29,14 @@ TTY to a browser form and surfaces the pool state that already lives in memory.
 
 ## Scope
 
-- **Full OAuth and setup-token provisioning.** The browser form offers a
-  refreshable full-scope OAuth flow and the inference-only, one-year PKCE setup
-  token. Both use the fixed manual redirect because the admin browser may be
-  remote from shunt. Importing an existing Claude Code credential file stays
-  CLI-only because the source file lives on the host.
+- **Claude and Codex provisioning.** The Claude browser form offers a refreshable
+  full-scope OAuth flow and the inference-only, one-year PKCE setup token. The
+  Codex form always uses ChatGPT OAuth and stores a refreshable credential.
+  Claude uses its fixed hosted manual redirect. ChatGPT redirects to
+  `http://localhost:1455/auth/callback`; that localhost page is expected to fail
+  in the operator's browser, which copies the full address-bar URL (or its
+  `<code>#<state>` values) back to shunt. Importing an existing Claude Code or
+  Codex credential file stays CLI-only because the source file lives on the host.
 - **Refresh rotation ownership.** A full-OAuth account is refreshed and written
   back by `ClaudeAuthStore`. Because the provider can rotate the refresh token,
   its store file must have one active process owner; copying or sharing it
@@ -141,11 +144,15 @@ process-lifetime state:
 | `GET` | `/admin` | Dashboard (HTML); redirects to `/admin/login` when not signed in |
 | `GET`,`POST` | `/admin/login` | Token login form → session cookie |
 | `POST` | `/admin/logout` | Clear the session |
-| `GET` | `/admin/accounts` | JSON: store metadata (name, kind, expiry, UUID — never the token) |
-| `GET` | `/admin/pool` | JSON: per-`claude_oauth`-provider pool health |
-| `POST` | `/admin/accounts/claude` | `{name, mode}` → start provisioning (`oauth` or `setup_token`); omitted `mode` defaults to `setup_token`; returns `{authorize_url}` |
-| `POST` | `/admin/accounts/claude/{name}/complete` | `{code}` → finish; stores the account |
-| `DELETE` | `/admin/accounts/claude/{name}` | Remove the account's store file |
+| `GET` | `/admin/accounts` | JSON: Claude store metadata (name, kind, expiry, UUID — never the token) |
+| `GET` | `/admin/accounts/codex` | JSON: Codex store metadata (name, expiry, account ID — never the token) |
+| `GET` | `/admin/pool` | JSON: per-`claude_oauth`/`chatgpt_oauth`-provider pool state |
+| `POST` | `/admin/accounts/claude` | `{name, mode}` → start Claude provisioning (`oauth` or `setup_token`); omitted `mode` defaults to `setup_token`; returns `{authorize_url}` |
+| `POST` | `/admin/accounts/claude/{name}/complete` | `{code}` → finish; stores the Claude account |
+| `DELETE` | `/admin/accounts/claude/{name}` | Remove the Claude account's store file |
+| `POST` | `/admin/accounts/codex` | `{name}` → start ChatGPT OAuth; returns `{authorize_url}` |
+| `POST` | `/admin/accounts/codex/{name}/complete` | `{code}` with a full callback URL or `<code>#<state>` → finish and store the Codex account |
+| `DELETE` | `/admin/accounts/codex/{name}` | Remove the Codex account's store file |
 
 Gateway-owned errors keep the Anthropic error shape (`ShuntError`); page routes
 render minimal server-side HTML with inline CSS/JS and no external requests.
@@ -187,6 +194,24 @@ Removal deletes the store file directly, path-guarded so a caller-supplied name
 can never escape the accounts directory. This is new writeback behavior over an
 operator-owned store file (issue-sanctioned) and touches no upstream state.
 
+### Codex/ChatGPT OAuth
+
+The Codex form reuses the shared PKCE generator but follows the Codex CLI OAuth
+contract from [`m2-chatgpt-oauth.md`](m2-chatgpt-oauth.md): authorize at
+`https://auth.openai.com/oauth/authorize` with the fixed
+`http://localhost:1455/auth/callback` redirect, then exchange the code using an
+`application/x-www-form-urlencoded` POST. The operator may paste either the full
+redirect URL from the browser address bar or `<code>#<state>`. Completion checks
+the pending state in constant time, requires a refresh token, derives the account
+ID from the access-token JWT, and writes the verbatim `auth.json` shape at `0600`.
+`SHUNT_CODEX_TOKEN_URL` overrides the exchange endpoint for local tests; the same
+HTTPS-or-loopback sanitizer used by refresh prevents unsafe plaintext egress.
+No access, refresh, or ID token is returned or logged.
+
+Like Claude, an empty-account `chatgpt_oauth` provider scans the Codex store and
+makes the new account live on its next request. Explicit-account providers need a
+name-only account entry and reload.
+
 ## Phase 2 — pool dashboard
 
 `AccountPool::snapshot(provider, &[AccountConfig], model)` returns a token-free,
@@ -197,9 +222,11 @@ buckets (as the next selection would), never mutates the round-robin cursor, and
 never inserts entries for accounts the pool has not yet seen (reported as
 `has_state: false`). `AccountPool` tracks no sticky flag or last-selected
 timestamp, so the dashboard reports what is actually stored rather than inventing
-it. `GET /admin/pool` enumerates each `claude_oauth` provider's accounts (its
-configured list, or `claude_store::scan_accounts()` for an empty list — the same
-resolution the adapter uses).
+it. `GET /admin/pool` enumerates each `claude_oauth` and `chatgpt_oauth`
+provider's accounts (its configured list, or the corresponding Claude/Codex store
+scan for an empty list — the same resolution the adapters use). Codex publishes no
+quota headers, so its utilization and reset fields remain `None` and render as
+`—`; the dashboard adds no Codex usage or rate-limit parser.
 
 ## Shared foundations with gateway login
 
@@ -222,8 +249,11 @@ separate, but should reuse rather than duplicate:
   `AccountPool::snapshot`, `claude_store::list_account_meta`/`remove_account`.
 - Integration (`tests/admin_surface.rs`): the routes are absent without the block
   (404); API requires auth (401); setup-token mode keeps the legacy omitted-mode
-  behavior and one-year exchange; full OAuth requests the full scope, omits the
-  expiry override, and persists a refreshable account; malformed or unknown modes
-  fail without storing a file; list/pool/response payloads never expose token
-  material; cookie mutations without a CSRF token are rejected (403); fail-closed
-  startup without the tokens env.
+  behavior and one-year exchange; full Claude OAuth requests the full scope,
+  omits the expiry override, and persists a refreshable account; ChatGPT OAuth
+  carries the Codex CLI authorize parameters, accepts both callback paste forms,
+  uses a form-encoded exchange, persists verbatim auth.json, and appears in the
+  pool; malformed or unknown modes and invalid account names fail without storing
+  a file; missing refresh tokens fail closed; list/pool/response payloads never
+  expose token material; cookie mutations without a CSRF token are rejected
+  (403); fail-closed startup without the tokens env.

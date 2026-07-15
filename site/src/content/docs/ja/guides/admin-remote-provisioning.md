@@ -1,9 +1,9 @@
 ---
 title: 管理とリモートプロビジョニング
-description: shunt の管理 Web サーフェスを有効化し、Claude アカウントをリモートでプロビジョニングして、アカウントプールの健全性を確認する。
+description: shunt の管理 Web サーフェスを有効化し、Claude と Codex のアカウントをリモートでプロビジョニングして、アカウントプールの状態を確認する。
 ---
 
-shunt は、上流の Claude アカウントをプロビジョニングし、各 `claude_oauth` アカウントプールの健全性を表示する、管理者認証付きの Web サーフェスを公開できます。これはオプトインです。`[server.admin]` がなければ `/admin*` ルートは一切登録されず、shunt のデフォルトの HTTP サーフェスは変わりません。
+shunt は、上流の Claude と Codex/ChatGPT のアカウントをプロビジョニングし、`claude_oauth` と `chatgpt_oauth` のアカウントプール状態を表示する、管理者認証付きの Web サーフェスを公開できます。これはオプトインです。`[server.admin]` がなければ `/admin*` ルートは一切登録されず、shunt のデフォルトの HTTP サーフェスは変わりません。
 
 これは [Anthropic マルチアカウント](/ja/guides/anthropic-multi-account/)のストアと選択の挙動の上に成り立っています。ブラウザーフォームでは、リフレッシュ可能な Full OAuth アカウントまたは 1 年間・推論専用の setup token アカウントを作成できます。既存の Claude Code credential ファイルのインポートは CLI 専用です。
 
@@ -29,7 +29,7 @@ shunt run
 
 すべてのキーとデフォルトは[設定リファレンス](/ja/reference/configuration/#serveradminオプション)を参照してください。ブラウザーおよび JSON のルートは[エンドポイントリファレンス](/ja/reference/endpoints/)に一覧があります。
 
-## ブラウザーでアカウントをプロビジョニングする
+## ブラウザーで Claude アカウントをプロビジョニングする
 
 1. `/admin` を開き、管理トークンでサインインします。
 2. 小文字・数字・ハイフンのみからなるアカウント名を入力します。
@@ -47,9 +47,19 @@ shunt run
 
 アカウントストアの変更はリクエストごとに検出されるため、スキャンモードのプロバイダーはアカウントの追加・削除後に再起動する必要がありません。
 
+## ブラウザーで Codex アカウントをプロビジョニングする
+
+1. **Add Codex account** で小文字のアカウント名を入力し、**Start Codex login** を選択します。
+2. 認可 URL を開き、対象の ChatGPT アカウントにサインインしてアクセスを承認します。
+3. ブラウザーは `http://localhost:1455/auth/callback` へ移動します。ローカルページが読み込めなくても正常です。
+4. ブラウザーのアドレスバーから **URL 全体**をコピーして管理ページへ貼り付け、**Complete Codex login** を選択します。JSON API では `<code>#<state>` も使用できます。
+5. shunt が code を交換し、リフレッシュ可能な Codex credential を非公開のアカウントファイルへ保存します。
+
+`accounts` が空の `chatgpt_oauth` provider（デフォルトの `codex` を含む）は、次のリクエストで新しいアカウントを検出します。明示的なアカウント一覧を使う場合は、名前だけの entry を追加してください。`SHUNT_CODEX_TOKEN_URL` はローカル統合テスト用の token endpoint override です。production では設定しないでください。
+
 ## プールの健全性を確認する
 
-ダッシュボードは、`auth = "claude_oauth"` で設定された各プロバイダーについて、アカウントストアのメタデータと現在の健全性を表示します。上流レスポンスから観測した 5 時間・共有 7 日・`7d_oi` の使用率に加え、unified status、残りのクールダウン、クォータ接近状態、そのアカウントが現在利用可能かどうかを含みます。
+ダッシュボードは、`auth = "claude_oauth"` または `auth = "chatgpt_oauth"` の provider について、アカウントストアのメタデータと現在の状態を表示します。Claude の行には上流から観測したクォータ使用率が表示されます。Codex はクォータヘッダーを送らないため、使用率の列は `—` のままです。shunt は Codex の使用量を推測・解析しません。
 
 アカウント一覧が公開するのはメタデータのみです。アカウント名、認証情報の種類（`setup_token` または `imported`）、有効期限、UUID。トークン本体を返すことはありません。shunt がアカウント選択時にクォータ状態・クールダウン・モデルを認識した週次バケットをどう使うかは [Anthropic マルチアカウント](/ja/guides/anthropic-multi-account/#選択とプロアクティブなローテーション)を参照してください。
 
@@ -75,7 +85,7 @@ shunt login claude --name primary --mode import
 shunt login claude --name ci --mode setup-token
 ```
 
-`--long-lived` は `--mode setup-token` の deprecated alias です。管理サーフェスは Full OAuth と setup-token のプロビジョニングをサポートします。ホスト上の既存 Claude Code credential へアクセスする必要がある import だけが CLI 専用です。
+`--long-lived` は `--mode setup-token` の deprecated alias です。管理サーフェスは Claude の Full OAuth/setup-token と Codex の ChatGPT OAuth プロビジョニングをサポートします。既存 credential ファイルの import だけはホストへのアクセスが必要なため CLI 専用です。
 
 :::caution[Refresh token のローテーション]
 リフレッシュ可能なアカウントには、稼働中の owner を 1 つだけ割り当ててください。OAuth のリフレッシュは refresh token を置き換えて古いコピーを無効にする場合があるため、1 つのストアファイルをプロセス間で共有したり、別ホストへコピーして独立運用したりしないでください。プロセスごとに個別にプロビジョニングするか、リフレッシュしない静的 credential が適切な場合は setup-token mode を選んでください。

@@ -7,10 +7,9 @@ use std::{
 };
 
 use anyhow::{bail, Context};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use rand::RngCore;
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
+
+pub(crate) use crate::auth::shared::{generate_pkce, PkceChallenge};
 
 use super::{auth, callback::CallbackServer, store};
 
@@ -230,28 +229,6 @@ async fn run_setup_token(name: &str) -> anyhow::Result<PathBuf> {
     store::store_setup_token(name, &tokens.access_token, Some(account_uuid))
 }
 
-/// A freshly generated PKCE verifier/challenge plus the OAuth `state`. Shared by
-/// the CLI `--long-lived` flow and the admin web provisioning endpoint so the two
-/// derive the setup-token authorization identically.
-pub(crate) struct PkceChallenge {
-    pub verifier: String,
-    pub challenge: String,
-    pub state: String,
-}
-
-/// Generate a fresh PKCE verifier + S256 challenge and an independent `state`,
-/// each 32 random bytes URL-safe base64 (no padding).
-pub(crate) fn generate_pkce() -> PkceChallenge {
-    let verifier = random_urlsafe(32);
-    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
-    let state = random_urlsafe(32);
-    PkceChallenge {
-        verifier,
-        challenge,
-        state,
-    }
-}
-
 pub(crate) fn build_authorize_url(
     challenge: &str,
     state: &str,
@@ -269,12 +246,6 @@ pub(crate) fn build_authorize_url(
         .append_pair("code_challenge_method", "S256")
         .append_pair("state", state);
     Ok(url)
-}
-
-fn random_urlsafe(bytes: usize) -> String {
-    let mut random = vec![0_u8; bytes];
-    rand::rng().fill_bytes(&mut random);
-    URL_SAFE_NO_PAD.encode(random)
 }
 
 #[derive(Debug, Deserialize)]

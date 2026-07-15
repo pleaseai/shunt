@@ -154,7 +154,7 @@ A `chatgpt_oauth` provider with no `accounts` configured (the default `codex` pr
 ## Remaining follow-up
 
 - **Quota-aware proactive rotation:** the Anthropic pool's near-quota early switch has no Codex equivalent yet — it needs a live probe of what (if anything) the Codex backend exposes as per-account rate-limit state.
-- **Admin web provisioning:** the opt-in [admin surface](/guides/admin-remote-provisioning/) currently provisions Claude accounts only.
+- **Admin web provisioning:** the opt-in [admin surface](/guides/admin-remote-provisioning/) can run ChatGPT OAuth in the browser, store a refreshable Codex account, and show it in the shared pool table. Codex provides no quota headers, so utilization columns remain empty (`—`).
 - **Storm-control:** ramping a freshly switched account's concurrency remains unimplemented for both pools.
 
 See the [M10 behavior specification](https://github.com/pleaseai/shunt/blob/main/docs/m10-codex-multi-account.md) for the full account-pool internals, and the [ChatGPT / Codex guide](/guides/codex/) for single-account setup, model routing, and effort/context configuration.

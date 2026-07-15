@@ -11,8 +11,8 @@ use crate::adapters::AdapterError;
 use crate::auth::auth_error;
 use crate::auth::shared::{format_iso8601, is_token_valid_at, jwt_claims, write_auth_file_atomic};
 
-const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
-const TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
+pub(crate) const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+pub(crate) const TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatGptCred {
@@ -33,8 +33,8 @@ pub struct CodexAuthStore {
 /// the shared [`crate::auth::shared::sanitize_token_url`] guard to the production
 /// `auth.openai.com` default; the Claude store shares the same guard (#118) so
 /// the two cannot drift.
-fn sanitize_token_url(raw: Option<String>) -> String {
-    crate::auth::shared::sanitize_token_url(raw, TOKEN_URL)
+pub(crate) fn resolve_oauth_token_url() -> String {
+    crate::auth::shared::sanitize_token_url(env::var("SHUNT_CODEX_TOKEN_URL").ok(), TOKEN_URL)
 }
 
 impl CodexAuthStore {
@@ -43,10 +43,10 @@ impl CodexAuthStore {
         // `ClaudeAuthStore::new`'s `SHUNT_CLAUDE_TOKEN_URL`. It exists purely as a
         // test seam (see `force_refresh_refreshes_a_still_valid_chatgpt_token`
         // below) — left unset, production refreshes against the real
-        // `auth.openai.com` endpoint. `sanitize_token_url` rejects a non-loopback
+        // `auth.openai.com` endpoint. `resolve_oauth_token_url` rejects a non-loopback
         // plaintext override so a misconfigured env var can never egress the
         // long-lived `refresh_token` off-origin or in the clear.
-        let token_url = sanitize_token_url(env::var("SHUNT_CODEX_TOKEN_URL").ok());
+        let token_url = resolve_oauth_token_url();
         Self {
             path,
             client,
@@ -338,31 +338,35 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_token_url_rejects_off_origin_and_plaintext_overrides() {
+    fn resolve_oauth_token_url_rejects_off_origin_and_plaintext_overrides() {
+        fn resolved(raw: Option<String>) -> String {
+            crate::auth::shared::sanitize_token_url(raw, TOKEN_URL)
+        }
+
         // Unset or empty → the real production endpoint.
-        assert_eq!(sanitize_token_url(None), TOKEN_URL);
-        assert_eq!(sanitize_token_url(Some(String::new())), TOKEN_URL);
+        assert_eq!(resolved(None), TOKEN_URL);
+        assert_eq!(resolved(Some(String::new())), TOKEN_URL);
         // HTTPS to any host is fine — the refresh_token is encrypted in transit.
         assert_eq!(
-            sanitize_token_url(Some("https://mock.example/token".to_string())),
+            resolved(Some("https://mock.example/token".to_string())),
             "https://mock.example/token"
         );
         // Plain HTTP is allowed only for a loopback test mock.
         assert_eq!(
-            sanitize_token_url(Some("http://127.0.0.1:8080/token".to_string())),
+            resolved(Some("http://127.0.0.1:8080/token".to_string())),
             "http://127.0.0.1:8080/token"
         );
         assert_eq!(
-            sanitize_token_url(Some("http://localhost:9000/token".to_string())),
+            resolved(Some("http://localhost:9000/token".to_string())),
             "http://localhost:9000/token"
         );
         // Non-loopback plaintext would leak the refresh_token → rejected.
         assert_eq!(
-            sanitize_token_url(Some("http://evil.example/token".to_string())),
+            resolved(Some("http://evil.example/token".to_string())),
             TOKEN_URL
         );
         // A malformed value (no scheme/host) is rejected too.
-        assert_eq!(sanitize_token_url(Some("not a url".to_string())), TOKEN_URL);
+        assert_eq!(resolved(Some("not a url".to_string())), TOKEN_URL);
     }
 
     #[test]

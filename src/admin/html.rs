@@ -1,8 +1,8 @@
 //! Server-rendered admin pages (M9). No framework, no external requests: inline
-//! CSS and a small inline script that drives the two-step add-account flow and
-//! sends the CSRF token as `x-csrf-token`. All account/pool data is rendered with
-//! `textContent` in the script (never `innerHTML`), so upstream-derived strings
-//! cannot inject markup.
+//! CSS and a small inline script that drives the Claude and Codex add-account
+//! flows and sends the CSRF token as `x-csrf-token`. All account/pool data is
+//! rendered with `textContent` in the script (never `innerHTML`), so
+//! upstream-derived strings cannot inject markup.
 
 /// Escape the few characters that matter when interpolating a value into HTML
 /// text or a double-quoted attribute. Used only for the login error and the CSRF
@@ -37,6 +37,7 @@ label { display: block; font-size: .85rem; margin: .5rem 0 .2rem; }
 input, textarea, button { font: inherit; }
 input, textarea { width: 100%; padding: .5rem .6rem; border: 1px solid #8886; border-radius: 8px;
   background: canvas; color: inherit; }
+@media (max-width: 40rem) { input, textarea { font-size: 1rem; } }
 fieldset { border: 0; padding: 0; margin: .7rem 0; }
 legend { font-size: .85rem; margin-bottom: .25rem; }
 .choice { display: flex; gap: .45rem; align-items: flex-start; margin: .25rem 0; padding: .2rem 0; }
@@ -44,8 +45,8 @@ legend { font-size: .85rem; margin-bottom: .25rem; }
 .choice span { display: block; }
 .choice small { display: block; margin-top: .1rem; }
 textarea { min-height: 4.5rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-button { cursor: pointer; padding: .5rem .9rem; border: 1px solid #4661ff; border-radius: 8px;
-  background: #4661ff; color: #fff; }
+button { min-height: 2.75rem; touch-action: manipulation; cursor: pointer; padding: .5rem .9rem;
+  border: 1px solid #4661ff; border-radius: 8px; background: #4661ff; color: #fff; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, .choice:has(input:focus-visible) { outline: 2px solid #4661ff; outline-offset: 2px; }
 button.secondary { background: transparent; color: inherit; border-color: #8886; }
 button.danger { background: transparent; color: #c0392b; border-color: #c0392b88; padding: .25rem .5rem; }
@@ -79,7 +80,7 @@ pub fn login_page(error: Option<&str>) -> String {
 <div style="margin-top:.8rem"><button type="submit">Sign in</button></div>
 </form>
 </div>
-<p class="muted" style="margin-top:1rem;font-size:.85rem">Provisions upstream Claude accounts and shows pool health. Bind behind HTTPS/a tunnel.</p>
+<p class="muted" style="margin-top:1rem;font-size:.85rem">Provisions upstream Claude and Codex accounts and shows pool health. Bind behind HTTPS/a tunnel.</p>
 </main></body></html>"#
     )
 }
@@ -116,12 +117,33 @@ pub fn dashboard_page(csrf: &str) -> String {
 <textarea id="code"></textarea>
 <div style="margin-top:.6rem"><button id="complete" type="button">Complete</button></div>
 </div>
-<div id="addmsg"></div>
+<div id="addmsg" aria-live="polite"></div>
 </div>
 
-<h2>Accounts</h2>
+<h2>Add Codex account</h2>
+<div class="card">
+<p class="muted" style="margin-top:0">ChatGPT OAuth creates a refreshable login that shunt manages.</p>
+<label for="codex-name">Account name <span class="muted">(lowercase letters, digits, hyphens)</span></label>
+<input id="codex-name" name="codex-name" placeholder="e.g. codex-backup" autocomplete="off" spellcheck="false">
+<button id="start-codex" type="button" style="margin-top:.7rem">Start Codex login</button>
+<div id="codex-step2" style="display:none;margin-top:1rem">
+<p>1. Open this URL, sign in to the target ChatGPT account, and approve:</p>
+<p class="overflow"><a id="codex-authlink" target="_blank" rel="noopener noreferrer"></a></p>
+<p class="muted">The localhost callback page will fail to load. This is expected; copy the full URL from the browser address bar.</p>
+<label for="codex-code">2. Paste the full redirected URL from the browser address bar</label>
+<textarea id="codex-code" name="codex-code" spellcheck="false" placeholder="http://localhost:1455/auth/callback?code=…&state=…"></textarea>
+<div style="margin-top:.6rem"><button id="complete-codex" type="button">Complete Codex login</button></div>
+</div>
+<div id="codex-addmsg" aria-live="polite"></div>
+</div>
+
+<h2>Claude accounts</h2>
 <div class="card overflow"><table><thead><tr><th>Name</th><th>Kind</th><th>Expires</th><th>UUID</th><th></th></tr></thead>
 <tbody id="accounts"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody></table></div>
+
+<h2>Codex accounts</h2>
+<div class="card overflow"><table><thead><tr><th>Name</th><th>Expires</th><th>Account ID</th><th></th></tr></thead>
+<tbody id="codex-accounts"><tr><td colspan="4" class="muted">Loading…</td></tr></tbody></table></div>
 
 <h2>Pool health</h2>
 <div class="card overflow"><table><thead><tr><th>Provider</th><th>Account</th><th>State</th><th>5h</th><th>7d</th><th>7d_oi</th><th>Status</th><th>Cooldown</th></tr></thead>
@@ -153,6 +175,22 @@ async function loadAccounts() {{
   }}
 }}
 
+async function loadCodexAccounts() {{
+  const body = $("codex-accounts"); body.textContent = "";
+  let data;
+  try {{ data = await (await fetch("/admin/accounts/codex")).json(); }}
+  catch (e) {{ const r = body.insertRow(); const c = cell(r, "Failed to load Codex accounts"); c.colSpan = 4; return; }}
+  const list = (data && data.accounts) || [];
+  if (!list.length) {{ const r = body.insertRow(); const c = cell(r, "No Codex store accounts yet"); c.colSpan = 4; c.className = "muted"; return; }}
+  for (const a of list) {{
+    const r = body.insertRow();
+    cell(r, a.name); cell(r, when(a.expires_at)); cell(r, a.account_id || "—", true);
+    const td = document.createElement("td");
+    const btn = document.createElement("button"); btn.className = "danger"; btn.textContent = "Remove";
+    btn.onclick = () => removeCodexAccount(a.name); td.appendChild(btn); r.appendChild(td);
+  }}
+}}
+
 async function loadPool() {{
   const body = $("pool"); body.textContent = "";
   let data;
@@ -168,7 +206,7 @@ async function loadPool() {{
     cell(r, a.status || "—");
     cell(r, a.cooldown_secs_remaining ? a.cooldown_secs_remaining + "s" : "—");
   }}
-  if (!rows) {{ const r = body.insertRow(); const c = cell(r, "No claude_oauth accounts configured"); c.colSpan = 8; c.className = "muted"; }}
+  if (!rows) {{ const r = body.insertRow(); const c = cell(r, "No pooled accounts configured"); c.colSpan = 8; c.className = "muted"; }}
 }}
 
 function showMsg(id, text, ok) {{ const el = $(id); el.className = "msg " + (ok ? "ok" : "err"); el.textContent = text; }}
@@ -221,7 +259,43 @@ async function removeAccount(name) {{
   }} catch (e) {{ showMsg("addmsg", "Request failed", false); }}
 }}
 
-loadAccounts(); loadPool();
+let currentCodexName = null;
+$("start-codex").onclick = async () => {{
+  const name = $("codex-name").value.trim();
+  $("codex-addmsg").className = ""; $("codex-addmsg").textContent = "";
+  try {{
+    const res = await fetch("/admin/accounts/codex", {{ method: "POST", headers: H, body: JSON.stringify({{ name }}) }});
+    const data = await res.json();
+    if (!res.ok) {{ showMsg("codex-addmsg", (data.error && data.error.message) || "Failed to start Codex login", false); return; }}
+    currentCodexName = data.name;
+    $("codex-authlink").textContent = data.authorize_url; $("codex-authlink").href = data.authorize_url;
+    $("codex-step2").style.display = "block";
+  }} catch (e) {{ showMsg("codex-addmsg", "Request failed", false); }}
+}};
+
+$("complete-codex").onclick = async () => {{
+  const code = $("codex-code").value.trim();
+  try {{
+    const res = await fetch("/admin/accounts/codex/" + encodeURIComponent(currentCodexName) + "/complete",
+      {{ method: "POST", headers: H, body: JSON.stringify({{ code }}) }});
+    const data = await res.json();
+    if (!res.ok) {{ showMsg("codex-addmsg", (data.error && data.error.message) || "Failed to complete Codex login", false); return; }}
+    showMsg("codex-addmsg", data.message || "Codex account stored", true);
+    $("codex-step2").style.display = "none"; $("codex-name").value = ""; $("codex-code").value = "";
+    loadCodexAccounts(); loadPool();
+  }} catch (e) {{ showMsg("codex-addmsg", "Request failed", false); }}
+}};
+
+async function removeCodexAccount(name) {{
+  if (!confirm("Remove Codex account '" + name + "'? This deletes its stored token file.")) return;
+  try {{
+    const res = await fetch("/admin/accounts/codex/" + encodeURIComponent(name), {{ method: "DELETE", headers: H }});
+    if (!res.ok) {{ const data = await res.json().catch(() => ({{}})); showMsg("codex-addmsg", (data.error && data.error.message) || "Failed to remove Codex account", false); return; }}
+    loadCodexAccounts(); loadPool();
+  }} catch (e) {{ showMsg("codex-addmsg", "Request failed", false); }}
+}}
+
+loadAccounts(); loadCodexAccounts(); loadPool();
 </script>
 </main></body></html>"#
     )
