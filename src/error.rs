@@ -199,7 +199,7 @@ mod tests {
         assert!(body.get("type").is_none());
         assert_eq!(body["error"]["message"], "missing client token");
         assert_eq!(body["error"]["type"], "authentication_error");
-        assert!(body["error"]["code"].is_null());
+        assert!(body["error"].get("code").is_some_and(Value::is_null));
     }
 
     #[tokio::test]
@@ -209,9 +209,11 @@ mod tests {
         let reshaped = into_openai_error_shape(response).await;
         assert_eq!(reshaped.status(), StatusCode::BAD_GATEWAY);
         let body = body_json(reshaped).await;
+        // No top-level Anthropic `type:"error"` — else an unchanged envelope would pass.
+        assert!(body.get("type").is_none());
         assert_eq!(body["error"]["message"], "all Codex OAuth accounts failed");
         assert_eq!(body["error"]["type"], "api_error");
-        assert!(body["error"]["code"].is_null());
+        assert!(body["error"].get("code").is_some_and(Value::is_null));
     }
 
     #[tokio::test]
@@ -224,6 +226,6 @@ mod tests {
         let body = body_json(reshaped).await;
         assert_eq!(body["error"]["message"], "plain text boom");
         assert_eq!(body["error"]["type"], "api_error");
-        assert!(body["error"]["code"].is_null());
+        assert!(body["error"].get("code").is_some_and(Value::is_null));
     }
 }

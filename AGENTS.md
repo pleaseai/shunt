@@ -36,7 +36,7 @@
 - Write documentation and code in English.
 - Keep Rust files focused and preferably under 500 lines.
 - Preserve streaming semantics; do not buffer upstream SSE responses unless the client requested non-streaming output.
-- Keep gateway-owned errors in Anthropic error shape.
+- Keep gateway-owned errors in the Anthropic error shape, except on the inbound Codex endpoint (`[server.codex_endpoint]`), where gateway-owned errors use the OpenAI Responses error shape so its OpenAI-protocol clients parse them through their own error path (issue #127).
 - Prefer table-driven config additions over hardcoded provider logic.
 
 ## Documentation

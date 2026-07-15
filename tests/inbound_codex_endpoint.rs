@@ -1110,9 +1110,14 @@ fn assert_openai_error_shape(body: &serde_json::Value, expected_type: &str) {
         "expected a non-empty error.message, got {body}"
     );
     assert_eq!(body["error"]["type"], expected_type);
+    // `Value` indexing returns `Null` for a missing key, so require `code` to be
+    // present AND null — otherwise a regression that dropped the field entirely
+    // (e.g. `skip_serializing_if`) would still pass.
     assert!(
-        body["error"]["code"].is_null(),
-        "expected error.code to be null, got {body}"
+        body["error"]
+            .get("code")
+            .is_some_and(serde_json::Value::is_null),
+        "expected error.code to be present and null, got {body}"
     );
 }
 
@@ -1172,8 +1177,9 @@ async fn gateway_owned_502_body_is_openai_shaped() {
     let missing_env = format!("SHUNT_TEST_INBOUND_502_MISSING_{}", std::process::id());
     std::env::remove_var(&missing_env);
 
-    // base_url is never used (no upstream call happens); point it at an unreachable
-    // loopback address to prove no request escapes.
+    // Resolution fails before any upstream call, so base_url is never used; point
+    // it at an unreachable loopback address as a backstop, so no real request could
+    // escape even if that assumption regressed.
     let gateway = start_gateway_with(test_config(
         "http://127.0.0.1:1",
         vec![account("account-502-shape", &missing_env)],
