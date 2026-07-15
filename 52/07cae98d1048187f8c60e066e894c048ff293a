@@ -1,0 +1,33 @@
+src/adapters/cursor/sse.rs
+  s_8b687f756e29e1::t_e3e4c895046618 497
+  s_8b687f756e29e1::t_086e7f138dcce0 485-496,498-499,511
+  s_8b687f756e29e1::t_31633a0c43fe1d 514-523
+  s_8b687f756e29e1::t_3721b44a8e8c3d 403-405
+  s_b12340aa2ccd1b::t_fbd9f45981c174 484,512-513
+.please/docs/review/rejected-findings.jsonl
+  s_8b687f756e29e1::t_cc95f397fd72d6 12-13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "5207cae98d1048187f8c60e066e894c048ff293a",
+  "prompts": {},
+  "sessions": {
+    "s_8b687f756e29e1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cada10f5-4afa-4f1b-9540-cf940680cf4a",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_b12340aa2ccd1b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "86ca7e55-8b80-42e7-a33e-8c4138350a8d",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
