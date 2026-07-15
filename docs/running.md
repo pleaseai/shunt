@@ -570,8 +570,10 @@ claude --output-format stream-json --verbose -p \
   "Use the researcher agent once without a model override, then stop." \
   | jq -Rr '
       fromjson?
-      | select(.tool_use_result?.resolvedModel)
-      | [.tool_use_result.agentType, .tool_use_result.resolvedModel]
+      | .tool_use_result?
+      | objects
+      | select(.resolvedModel?)
+      | [.agentType?, .resolvedModel]
       | @tsv
     '
 
