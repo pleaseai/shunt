@@ -212,18 +212,38 @@ pub(super) async fn json_response(
 #[derive(Default)]
 struct SseParser {
     buffer: Vec<u8>,
+    scan_from: usize,
 }
 
 impl SseParser {
     fn push(&mut self, chunk: &[u8]) -> Vec<ResponseEvent> {
         self.buffer.extend_from_slice(chunk);
-        let mut out = Vec::new();
-        while let Some(index) = self.buffer.windows(2).position(|w| w == b"\n\n") {
-            // Drain through the frame terminator so the decoded frame keeps its
-            // trailing `\n\n`, matching what `parse_sse_events` expects.
-            let frame: Vec<u8> = self.buffer.drain(..index + 2).collect();
-            out.extend(parse_sse_events(&String::from_utf8_lossy(&frame)));
+
+        let mut complete_end = None;
+        let mut scan = self.scan_from;
+        while scan + 1 < self.buffer.len() {
+            if self.buffer[scan] == b'\n' && self.buffer[scan + 1] == b'\n' {
+                complete_end = Some(scan + 2);
+                scan += 2;
+            } else {
+                scan += 1;
+            }
         }
+
+        let Some(complete_end) = complete_end else {
+            // The final byte may be the first half of a frame terminator, so scan
+            // it again after the next chunk arrives. Everything before it has
+            // already been ruled out.
+            self.scan_from = self.buffer.len().saturating_sub(1);
+            return Vec::new();
+        };
+
+        // Parse all complete frames in one UTF-8 decode, then compact the buffer
+        // once. Front-draining each frame shifts the same trailing bytes over and
+        // over when one transport chunk contains many SSE events.
+        let out = parse_sse_events(&String::from_utf8_lossy(&self.buffer[..complete_end]));
+        self.buffer.drain(..complete_end);
+        self.scan_from = self.buffer.len().saturating_sub(1);
         out
     }
 }
@@ -342,6 +362,34 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event.as_deref(), Some("delta"));
         assert_eq!(events[0].data["text"], "안녕");
+    }
+
+    /// A completed frame followed by an incomplete frame is emitted immediately,
+    /// while the trailing bytes remain buffered and are not rescanned from the
+    /// beginning when the next chunk arrives.
+    #[test]
+    fn sse_parser_retains_an_incomplete_trailing_frame() {
+        let mut parser = SseParser::default();
+        let events = parser.push(b"event: a\ndata: {\"n\":1}\n\nevent: b\ndata: {\"n\":");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data["n"], 1);
+
+        let events = parser.push(b"2}\n\n");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event.as_deref(), Some("b"));
+        assert_eq!(events[0].data["n"], 2);
+    }
+
+    /// A frame terminator split across chunks is detected by rescanning the
+    /// previous chunk's final byte.
+    #[test]
+    fn sse_parser_detects_terminator_split_across_chunks() {
+        let mut parser = SseParser::default();
+        assert!(parser.push(b"event: a\ndata: {\"n\":1}\n").is_empty());
+
+        let events = parser.push(b"\n");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data["n"], 1);
     }
 
     /// A frame that arrives split at an arbitrary ASCII byte still parses once
