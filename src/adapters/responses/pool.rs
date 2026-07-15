@@ -189,11 +189,8 @@ pub(super) async fn forward_chatgpt_oauth(
                 // Force-refresh the account's stored credential under its refresh
                 // lock (see force_refresh_or_cooldown); a `token_env` account or a
                 // refresh failure cools it down and rotates instead.
-                let rejected_access_token = chatgpt_access_token(&credential).unwrap_or("");
                 let retry_credential =
-                    match force_refresh_or_cooldown(&state, &route, account, rejected_access_token)
-                        .await
-                    {
+                    match force_refresh_or_cooldown(&state, &route, account, &credential).await {
                         Some(credential) => credential,
                         None => {
                             last_response = Some(upstream);
@@ -375,7 +372,7 @@ pub(super) async fn force_refresh_or_cooldown(
     state: &AppState,
     route: &Route,
     account: &AccountConfig,
-    rejected_access_token: &str,
+    credential: &Credential,
 ) -> Option<Credential> {
     if account.token_env.is_some() {
         state
@@ -388,6 +385,21 @@ pub(super) async fn force_refresh_or_cooldown(
         );
         return None;
     }
+
+    let rejected_access_token = match chatgpt_access_token(credential) {
+        Some(access_token) => access_token,
+        None => {
+            state
+                .accounts
+                .cooldown(&route.provider, &account.name, Duration::from_secs(5 * 60));
+            tracing::warn!(
+                provider = %route.provider,
+                account = %account.name,
+                "Codex pool account returned 401 with a non-ChatGPT credential; cooling down"
+            );
+            return None;
+        }
+    };
 
     let credentials_path = account
         .credentials

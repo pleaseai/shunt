@@ -43,14 +43,14 @@ pub struct CodexAuthStore {
 static REFRESH_LOCKS: LazyLock<StdMutex<HashMap<PathBuf, Weak<tokio::sync::Mutex<()>>>>> =
     LazyLock::new(|| StdMutex::new(HashMap::new()));
 
-/// Return the single-flight lock for `path`, creating and registering one if
-/// none exists (or the previous one has been dropped). Opportunistically
-/// prunes dead entries so paths that are no longer being refreshed don't
-/// linger in the registry forever.
 fn normalized_auth_path(path: PathBuf) -> PathBuf {
     path.canonicalize().unwrap_or(path)
 }
 
+/// Return the single-flight lock for `path`, creating and registering one if
+/// none exists (or the previous one has been dropped). Opportunistically
+/// prunes dead entries so paths that are no longer being refreshed don't
+/// linger in the registry forever.
 fn refresh_lock_for(path: &Path) -> Arc<tokio::sync::Mutex<()>> {
     let mut locks = REFRESH_LOCKS
         .lock()
