@@ -64,7 +64,7 @@ pub fn frame_cursor_stream(body: &[u8], message_id: &str, model: &str) -> Vec<u8
     }
 
     framer.finalize();
-    framer.take_output()
+    framer.into_output()
 }
 
 /// Format an SSE error event.
@@ -413,6 +413,10 @@ impl CursorSseFramer {
         let mut output = Vec::with_capacity(self.output.capacity());
         std::mem::swap(&mut output, &mut self.output);
         output
+    }
+
+    pub fn into_output(self) -> Vec<u8> {
+        self.output
     }
 
     pub fn finalize(&mut self) {
