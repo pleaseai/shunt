@@ -811,6 +811,16 @@ async fn run_turn(
                     }
                 }
                 if is_terminal {
+                    // `forward_event` may have read one non-control frame while the
+                    // bounded send was waiting. A frame after a terminal event belongs
+                    // to the idle connection, not this completed turn; preserve it by
+                    // refusing to pool this socket rather than silently discarding an
+                    // already-observed Close/error or consuming the next protocol item.
+                    if deferred.is_some() {
+                        *conn.continuation.lock().unwrap() = None;
+                        evict(conn);
+                        return TurnEnd::Dead;
+                    }
                     if completed {
                         if let Some(response_id) = response_id {
                             let stored = StoredContinuation {
@@ -1615,9 +1625,10 @@ mod tests {
     }
 
     /// Issue #155: the bounded event channel must apply backpressure without
-    /// starving control frames during ordinary bursts. The backend fills the
-    /// channel exactly to capacity, sends a Ping, then waits for its Pong while the
-    /// client deliberately holds the receiver without reading.
+    /// starving control frames even after capacity is exhausted. The backend
+    /// overfills the channel, sends a Ping, then waits for its Pong while the client
+    /// deliberately holds the receiver without reading. Distinct deltas verify the
+    /// read-ahead frame is replayed in exact order.
     #[tokio::test]
     async fn bounded_backpressure_does_not_starve_control_frames() {
         use tokio::net::TcpListener;
@@ -1632,10 +1643,10 @@ mod tests {
             };
             // Overflow the bounded channel by one event. The reader must keep
             // polling control frames while that event waits for channel capacity.
-            for _ in 0..=EVENT_CHANNEL_CAPACITY {
-                ws.send(Message::Text(
-                    r#"{"type":"response.output_text.delta","delta":"x"}"#.to_string(),
-                ))
+            for index in 0..=EVENT_CHANNEL_CAPACITY {
+                ws.send(Message::Text(format!(
+                    r#"{{"type":"response.output_text.delta","delta":"{index}"}}"#
+                )))
                 .await
                 .unwrap();
             }
@@ -1674,13 +1685,28 @@ mod tests {
             .expect("server should observe a Pong before we consume events")
             .unwrap();
 
-        // Now drain: every queued event (deltas + completed) is still delivered.
-        let count = drain(&mut events).await;
+        // Now drain: every queued event is delivered in backend order, followed by
+        // the terminal event.
+        let mut deltas = Vec::new();
+        let mut terminal = false;
+        while let Some(item) = events.recv().await {
+            let event = item.expect("stream remains healthy");
+            match event.event.as_deref() {
+                Some("response.output_text.delta") => {
+                    deltas.push(event.data["delta"].as_str().unwrap().to_string());
+                }
+                Some("response.completed") => terminal = true,
+                other => panic!("unexpected event: {other:?}"),
+            }
+        }
         assert_eq!(
-            count,
-            EVENT_CHANNEL_CAPACITY + 2,
-            "queued events and terminal event delivered after backpressure"
+            deltas,
+            (0..=EVENT_CHANNEL_CAPACITY)
+                .map(|index| index.to_string())
+                .collect::<Vec<_>>(),
+            "deferred events retain backend order"
         );
+        assert!(terminal, "terminal event follows every queued delta");
     }
 
     /// A non-pooled turn (no session key) is used for exactly one turn, so once it
