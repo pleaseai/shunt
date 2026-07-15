@@ -85,7 +85,7 @@ the Codex CLI speaks the same wire protocol to shunt that it would speak directl
 Because the inbound client **is** a real Codex CLI (unlike the `/v1/messages` path, where shunt
 *impersonates* one), the passthrough forwards the client's **own request headers verbatim** rather
 than synthesizing them. shunt's translating path builds a fresh request with a hardcoded Codex
-identity (`originator=codex_cli_rs`, `user-agent`/`version=codex_cli_rs/0.144.1`,
+identity (`originator=codex_cli_rs`, `user-agent=codex_cli_rs/0.144.4`, `version=0.144.4`,
 `OpenAI-Beta: responses=experimental`, and session/window headers derived from the session id); the
 inbound passthrough does **not** — it forwards whatever `version`, `originator`, `user-agent`,
 `OpenAI-Beta`, `session-id`, `thread-id`, `x-codex-window-id`, `x-codex-*`, `content-type`, and

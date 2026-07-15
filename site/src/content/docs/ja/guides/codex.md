@@ -80,7 +80,7 @@ ChatGPT アカウントのバックエンドは `gpt-*-codex` スラッグ（例
 :::
 
 :::note[`Model not found <slug>` は entitlement ではなくクライアントバージョンのゲーティング]
-一部のスラッグは `minimal_client_version` を持ちます（例 `gpt-5.6-luna` は ≥ 0.144.0 が必要）。リクエストのクライアント identity が欠落しているか古すぎる場合、バックエンドは `Model not found <slug>` と応答します。shunt は固定された Codex CLI の identity ヘッダー（`originator: codex_cli_rs`、`user-agent`、`version`）を **openai/codex rust-v0.144.1** に固定して送ることで、これを回避します。[openai/codex#31967](https://github.com/openai/codex/issues/31967) を参照してください。
+一部のスラッグは `minimal_client_version` を持ちます（例 `gpt-5.6-luna` は ≥ 0.144.0 が必要）。リクエストのクライアント identity が欠落しているか古すぎる場合、バックエンドは `Model not found <slug>` と応答します。shunt は固定された Codex CLI の identity ヘッダー（`originator: codex_cli_rs`、`user-agent`、`version`）を **openai/codex rust-v0.144.4** に固定して送ることで、これを回避します。[openai/codex#31967](https://github.com/openai/codex/issues/31967) を参照してください。
 :::
 
 ## 4. Claude Code でモデルを選択する
