@@ -1,4 +1,5 @@
 use crate::adapters::cursor::response::{decode_upstream_response, CursorStreamEvent};
+use serde::Serialize;
 
 /// SSE event name constants.
 pub const EVENT_MESSAGE_START: &str = "message_start";
@@ -78,10 +79,42 @@ pub(crate) fn format_sse_error(error: &str) -> Vec<u8> {
     format_sse_event_bytes("error", &data)
 }
 
+/// Append a single SSE event to an existing byte buffer.
+fn append_sse_event<T: Serialize>(output: &mut Vec<u8>, event: &str, data: &T) {
+    output.extend_from_slice(b"event: ");
+    output.extend_from_slice(event.as_bytes());
+    output.extend_from_slice(b"\ndata: ");
+    serde_json::to_writer(&mut *output, data).expect("serializing SSE data cannot fail");
+    output.extend_from_slice(b"\n\n");
+}
+
+#[derive(Serialize)]
+struct ContentBlockDeltaEvent<T> {
+    #[serde(rename = "type")]
+    event_type: &'static str,
+    index: i32,
+    delta: T,
+}
+
+#[derive(Serialize)]
+struct ThinkingDelta<'a> {
+    #[serde(rename = "type")]
+    delta_type: &'static str,
+    thinking: &'a str,
+}
+
+#[derive(Serialize)]
+struct TextDelta<'a> {
+    #[serde(rename = "type")]
+    delta_type: &'static str,
+    text: &'a str,
+}
+
 /// Format a single SSE event into bytes.
 pub(crate) fn format_sse_event_bytes(event: &str, data: &serde_json::Value) -> Vec<u8> {
-    let json_str = serde_json::to_string(data).unwrap_or_else(|_| "{}".to_string());
-    format!("event: {event}\ndata: {json_str}\n\n").into_bytes()
+    let mut output = Vec::new();
+    append_sse_event(&mut output, event, data);
+    output
 }
 
 // ---------------------------------------------------------------------------
@@ -153,8 +186,7 @@ impl CursorSseFramer {
                 }
             }
         });
-        self.output
-            .extend_from_slice(&format_sse_event_bytes(EVENT_MESSAGE_START, &data));
+        append_sse_event(&mut self.output, EVENT_MESSAGE_START, &data);
     }
 
     fn open_thinking(&mut self) {
@@ -175,8 +207,7 @@ impl CursorSseFramer {
                 "signature": ""
             }
         });
-        self.output
-            .extend_from_slice(&format_sse_event_bytes(EVENT_CONTENT_BLOCK_START, &data));
+        append_sse_event(&mut self.output, EVENT_CONTENT_BLOCK_START, &data);
     }
 
     fn open_text(&mut self) {
@@ -196,8 +227,7 @@ impl CursorSseFramer {
                 "text": ""
             }
         });
-        self.output
-            .extend_from_slice(&format_sse_event_bytes(EVENT_CONTENT_BLOCK_START, &data));
+        append_sse_event(&mut self.output, EVENT_CONTENT_BLOCK_START, &data);
     }
 
     pub fn close_open_blocks(&mut self) {
@@ -206,8 +236,7 @@ impl CursorSseFramer {
                 "type": "content_block_stop",
                 "index": self.thinking_index
             });
-            self.output
-                .extend_from_slice(&format_sse_event_bytes(EVENT_CONTENT_BLOCK_STOP, &data));
+            append_sse_event(&mut self.output, EVENT_CONTENT_BLOCK_STOP, &data);
             self.thinking_open = false;
         }
         if self.text_open {
@@ -215,24 +244,22 @@ impl CursorSseFramer {
                 "type": "content_block_stop",
                 "index": self.text_index
             });
-            self.output
-                .extend_from_slice(&format_sse_event_bytes(EVENT_CONTENT_BLOCK_STOP, &data));
+            append_sse_event(&mut self.output, EVENT_CONTENT_BLOCK_STOP, &data);
             self.text_open = false;
         }
     }
 
     pub fn emit_thinking_delta(&mut self, text: &str) {
         self.open_thinking();
-        let data = serde_json::json!({
-            "type": "content_block_delta",
-            "index": self.thinking_index,
-            "delta": {
-                "type": "thinking_delta",
-                "thinking": text
-            }
-        });
-        self.output
-            .extend_from_slice(&format_sse_event_bytes(EVENT_CONTENT_BLOCK_DELTA, &data));
+        let data = ContentBlockDeltaEvent {
+            event_type: "content_block_delta",
+            index: self.thinking_index,
+            delta: ThinkingDelta {
+                delta_type: "thinking_delta",
+                thinking: text,
+            },
+        };
+        append_sse_event(&mut self.output, EVENT_CONTENT_BLOCK_DELTA, &data);
     }
 
     pub fn emit_text_delta(&mut self, text: &str) {
@@ -242,21 +269,19 @@ impl CursorSseFramer {
                 "type": "content_block_stop",
                 "index": self.thinking_index
             });
-            self.output
-                .extend_from_slice(&format_sse_event_bytes(EVENT_CONTENT_BLOCK_STOP, &data));
+            append_sse_event(&mut self.output, EVENT_CONTENT_BLOCK_STOP, &data);
             self.thinking_open = false;
         }
         self.open_text();
-        let data = serde_json::json!({
-            "type": "content_block_delta",
-            "index": self.text_index,
-            "delta": {
-                "type": "text_delta",
-                "text": text
-            }
-        });
-        self.output
-            .extend_from_slice(&format_sse_event_bytes(EVENT_CONTENT_BLOCK_DELTA, &data));
+        let data = ContentBlockDeltaEvent {
+            event_type: "content_block_delta",
+            index: self.text_index,
+            delta: TextDelta {
+                delta_type: "text_delta",
+                text,
+            },
+        };
+        append_sse_event(&mut self.output, EVENT_CONTENT_BLOCK_DELTA, &data);
     }
 
     pub fn record_usage(
@@ -321,8 +346,7 @@ impl CursorSseFramer {
                 "input": {}
             }
         });
-        self.output
-            .extend_from_slice(&format_sse_event_bytes(EVENT_CONTENT_BLOCK_START, &data));
+        append_sse_event(&mut self.output, EVENT_CONTENT_BLOCK_START, &data);
 
         let data = serde_json::json!({
             "type": "content_block_delta",
@@ -332,15 +356,13 @@ impl CursorSseFramer {
                 "partial_json": partial_json
             }
         });
-        self.output
-            .extend_from_slice(&format_sse_event_bytes(EVENT_CONTENT_BLOCK_DELTA, &data));
+        append_sse_event(&mut self.output, EVENT_CONTENT_BLOCK_DELTA, &data);
 
         let data = serde_json::json!({
             "type": "content_block_stop",
             "index": index
         });
-        self.output
-            .extend_from_slice(&format_sse_event_bytes(EVENT_CONTENT_BLOCK_STOP, &data));
+        append_sse_event(&mut self.output, EVENT_CONTENT_BLOCK_STOP, &data);
 
         self.emit_final_message("tool_use");
     }
@@ -366,21 +388,21 @@ impl CursorSseFramer {
                 "cache_read_input_tokens": self.usage_cache_read_tokens
             }
         });
-        self.output
-            .extend_from_slice(&format_sse_event_bytes(EVENT_MESSAGE_DELTA, &data));
+        append_sse_event(&mut self.output, EVENT_MESSAGE_DELTA, &data);
 
         // message_stop
         let data = serde_json::json!({
             "type": "message_stop"
         });
-        self.output
-            .extend_from_slice(&format_sse_event_bytes(EVENT_MESSAGE_STOP, &data));
+        append_sse_event(&mut self.output, EVENT_MESSAGE_STOP, &data);
 
         self.finalized = true;
     }
 
     pub fn take_output(&mut self) -> Vec<u8> {
-        std::mem::take(&mut self.output)
+        let mut output = Vec::with_capacity(self.output.capacity());
+        std::mem::swap(&mut output, &mut self.output);
+        output
     }
 
     pub fn finalize(&mut self) {
@@ -439,6 +461,34 @@ mod tests {
             .find(|(name, _)| *name == "content_block_delta")
             .map(|(_, data)| data["delta"]["text"].as_str().unwrap_or(""));
         assert_eq!(text_delta, Some("Hello world"));
+    }
+
+    #[test]
+    fn sse_delta_serialization_escapes_text() {
+        let mut framer = CursorSseFramer::new("msg_1", "cursor-test");
+        framer.emit_text_delta("a quote: \" and a newline:\n");
+        let output = String::from_utf8(framer.take_output()).unwrap();
+        let events = parse_sse_events(&output);
+        let delta = events
+            .iter()
+            .find(|(name, _)| *name == EVENT_CONTENT_BLOCK_DELTA)
+            .map(|(_, data)| data)
+            .expect("content block delta present");
+
+        assert_eq!(delta["delta"]["text"], "a quote: \" and a newline:\n");
+    }
+
+    #[test]
+    fn take_output_preserves_framer_buffer_capacity() {
+        let mut framer = CursorSseFramer::new("msg_1", "cursor-test");
+        framer.emit_text_delta("first");
+        let capacity = framer.output.capacity();
+
+        let output = framer.take_output();
+
+        assert!(!output.is_empty());
+        assert!(framer.output.is_empty());
+        assert_eq!(framer.output.capacity(), capacity);
     }
 
     #[test]

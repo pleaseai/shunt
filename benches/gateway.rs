@@ -206,10 +206,10 @@ fn apply_responses_sse(bencher: divan::Bencher) {
         });
 }
 
-/// Cursor streaming framer: each upstream token delta builds a JSON tree,
-/// serializes it, and formats an Anthropic SSE frame. Benchmarks a run of text
-/// deltas — the per-token hot path. The framer is stateful, so each iteration
-/// takes a fresh one.
+/// Cursor streaming framer: each upstream token delta is serialized directly
+/// into the reusable SSE output buffer. Benchmarks a run of text deltas — the
+/// per-token hot path. The framer is stateful, so each iteration takes a fresh
+/// one.
 #[divan::bench]
 fn frame_cursor_sse(bencher: divan::Bencher) {
     bencher
