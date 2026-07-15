@@ -569,13 +569,14 @@ impl AnthropicSseMachine {
             .expect("citation is an object")
             .retain(|_, value| !value.is_null());
         let text_is_open = self.open.as_ref().map(|block| block.kind) == Some(BlockKind::Text);
-        // Streaming still needs to buffer citations that arrive before the first
-        // text delta so `open_text` can flush them once the block exists.
-        if self.accumulate_content || !text_is_open {
-            self.text_citations.push(citation.clone());
-        }
         if !text_is_open {
+            // Streaming still needs to buffer citations that arrive before the first
+            // text delta so `open_text` can flush them once the block exists.
+            self.text_citations.push(citation);
             return out;
+        }
+        if self.accumulate_content {
+            self.text_citations.push(citation.clone());
         }
         out.push(sse(
             "content_block_delta",
