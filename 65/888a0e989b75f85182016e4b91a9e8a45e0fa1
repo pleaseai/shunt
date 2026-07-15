@@ -1,0 +1,19 @@
+.claude/agent-memory/review-review-comment-analyzer/shunt-account-scan-cache-comment-rot.md
+  s_00f2c8bb58e814::t_7d7a6f5d12f64d 10,12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "65888a0e989b75f85182016e4b91a9e8a45e0fa1",
+  "prompts": {},
+  "sessions": {
+    "s_00f2c8bb58e814": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f72f88f6-2348-432f-a875-0861a2dcaf95",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
