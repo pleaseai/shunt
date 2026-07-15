@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -119,7 +120,7 @@ pub fn translate_request(
     }
     out.insert(
         "input".to_string(),
-        json!(input_items(&request, &tool_search)),
+        Value::Array(input_items(&request, &tool_search)),
     );
     // Only emit tools/tool_choice when at least one tool survives translation.
     // The hosted web-search tool is dropped on flavors that reject it (xAI), and
@@ -279,18 +280,18 @@ fn input_items(request: &Value, context: &ToolSearchContext) -> Vec<Value> {
         );
         let blocks = content_blocks(message.get("content"));
         let mut pending = Vec::new();
-        for block in blocks {
+        for block in blocks.iter() {
             match block.get("type").and_then(Value::as_str) {
-                Some("text") => text_part(role, &block, &mut pending),
-                Some("image") => image_part(&block, &mut pending),
-                Some("document") => document_part(&block, &mut pending),
-                Some("tool_use") => tool_use_item(&mut out, role, &mut pending, &block, context),
+                Some("text") => text_part(role, block, &mut pending),
+                Some("image") => image_part(block, &mut pending),
+                Some("document") => document_part(block, &mut pending),
+                Some("tool_use") => tool_use_item(&mut out, role, &mut pending, block, context),
                 Some("tool_result") => {
-                    tool_result_item(&mut out, role, &mut pending, &block, context)
+                    tool_result_item(&mut out, role, &mut pending, block, context)
                 }
-                Some("thinking") => reasoning_item(&mut out, role, &mut pending, &block),
+                Some("thinking") => reasoning_item(&mut out, role, &mut pending, block),
                 Some("redacted_thinking") => {
-                    redacted_reasoning_item(&mut out, role, &mut pending, &block)
+                    redacted_reasoning_item(&mut out, role, &mut pending, block)
                 }
                 _ => {}
             }
@@ -580,11 +581,11 @@ fn reasoning_input_item(id: &str, encrypted_content: &str, summary: &str) -> Val
     item
 }
 
-fn content_blocks(content: Option<&Value>) -> Vec<Value> {
+fn content_blocks(content: Option<&Value>) -> Cow<'_, [Value]> {
     match content {
-        Some(Value::String(text)) => vec![json!({"type": "text", "text": text})],
-        Some(Value::Array(blocks)) => blocks.clone(),
-        _ => Vec::new(),
+        Some(Value::String(text)) => Cow::Owned(vec![json!({"type": "text", "text": text})]),
+        Some(Value::Array(blocks)) => Cow::Borrowed(blocks),
+        _ => Cow::Borrowed(&[]),
     }
 }
 
@@ -592,8 +593,13 @@ fn flush_message(out: &mut Vec<Value>, role: &str, pending: &mut Vec<Value>) {
     if pending.is_empty() {
         return;
     }
-    out.push(json!({"type": "message", "role": role, "content": pending}));
-    pending.clear();
+    // Move the accumulated blocks into the message instead of serializing them
+    // into a fresh JSON tree (`json!` would deep-copy the whole content array).
+    let mut message = Map::with_capacity(3);
+    message.insert("type".to_string(), Value::from("message"));
+    message.insert("role".to_string(), Value::from(role));
+    message.insert("content".to_string(), Value::Array(std::mem::take(pending)));
+    out.push(Value::Object(message));
 }
 
 /// Claude Code's tool-search feature puts `{type:"tool_reference", tool_name}`
