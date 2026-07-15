@@ -279,9 +279,9 @@ pub fn scan_account_dir(
 /// `[[accounts]]` when non-empty, otherwise a scan of the store directory
 /// (cached by its mtime — see [`scan_cached`]) that enables no-restart account
 /// discovery, mirroring the Anthropic pool. The existence probe and the scan
-/// both do synchronous
-/// filesystem I/O, so they run together on the blocking pool — never a stat or
-/// `read_dir` on a runtime worker thread. When `accounts_dir` is genuinely absent
+/// both do synchronous filesystem I/O, so they run together on the blocking
+/// pool — never a stat or `read_dir` on a runtime worker thread. When
+/// `accounts_dir` is genuinely absent
 /// (a `NotFound` stat) — the backward-compat deployment that sets
 /// `auth = "..._oauth"` but never runs `shunt login` — the scan is short-circuited
 /// right after that cheap stat (no `read_dir`, no per-file reads), preserving the
