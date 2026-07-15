@@ -1620,6 +1620,56 @@ mod tests {
         server.abort();
     }
 
+    /// Dropping a downstream receiver while the bounded channel is full cancels
+    /// the blocked send, abandons the turn, and closes the non-pooled socket.
+    #[tokio::test]
+    async fn receiver_drop_releases_backpressured_turn() {
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            let Some(Ok(Message::Text(_))) = ws.next().await else {
+                panic!("expected a client frame");
+            };
+            for _ in 0..EVENT_CHANNEL_CAPACITY + 1 {
+                ws.send(Message::Text(
+                    r#"{"type":"response.output_text.delta","delta":"x"}"#.to_string(),
+                ))
+                .await
+                .unwrap();
+            }
+            loop {
+                match ws.next().await {
+                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                    Some(Ok(_)) => continue,
+                }
+            }
+        });
+
+        let url = format!("ws://{addr}/codex/responses");
+        let frame = response_create_frame(serde_json::json!({"model": "m", "input": []}));
+        let events = open_simple(&url, HeaderMap::new(), &frame, None)
+            .await
+            .expect("websocket should connect");
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while events.capacity() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("backend fills the bounded event channel");
+        drop(events);
+
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("receiver cancellation closes the backpressured turn")
+            .unwrap();
+    }
+
     /// Issue #155: the bounded event channel must apply backpressure without
     /// starving control frames even after capacity is exhausted. The backend
     /// overfills the channel, sends a Ping, then waits for its Pong while the client
