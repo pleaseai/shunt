@@ -1,0 +1,26 @@
+src/adapters/responses/pool.rs
+  s_7dd9e76d093ca7::t_e76b003caf5967 375
+  s_7dd9e76d093ca7::t_c80dcdff602f84 193
+  s_7dd9e76d093ca7::t_93cc74068b70d5 389-403
+src/auth/codex/auth.rs
+  s_7dd9e76d093ca7::t_e54b35af937943 50-53
+src/adapters/responses/inbound.rs
+  s_7dd9e76d093ca7::t_e6c9174b554108 22-23
+  s_7dd9e76d093ca7::t_bd0eb2f18f3e0d 198
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "a99c3c1c7740fe0113862e280a7e60556ee7ce0c",
+  "prompts": {},
+  "sessions": {
+    "s_7dd9e76d093ca7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4b5967cc-4e7d-4a7c-989a-7ef843707226",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
