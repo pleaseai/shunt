@@ -1,0 +1,21 @@
+docs/codex-configuration.md
+  s_79bc3abd2c7d85::t_a095c87528e6a1 697
+docs/m11-inbound-codex-endpoint.md
+  s_79bc3abd2c7d85::t_03f1523421f62d 88
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "d79c9f64e7b929234c618370c4e0f7909a4df939",
+  "prompts": {},
+  "sessions": {
+    "s_79bc3abd2c7d85": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fdd026a0-ec57-4a29-8cb2-b67a87ad6c75",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
