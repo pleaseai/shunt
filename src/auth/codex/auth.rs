@@ -47,14 +47,19 @@ static REFRESH_LOCKS: LazyLock<StdMutex<HashMap<PathBuf, Weak<tokio::sync::Mutex
 /// prunes dead entries so paths that are no longer being refreshed don't
 /// linger in the registry forever.
 fn refresh_lock_for(path: &Path) -> Arc<tokio::sync::Mutex<()>> {
+    // Existing credential files can be referenced through relative paths or
+    // symlink aliases. Canonicalize them so every spelling of the same file
+    // shares one single-flight lock. If the file does not exist yet, retain the
+    // caller's path; refresh itself will then surface the normal read error.
+    let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let mut locks = REFRESH_LOCKS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(lock) = locks.get(path).and_then(Weak::upgrade) {
+    if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) {
         return lock;
     }
     let lock = Arc::new(tokio::sync::Mutex::new(()));
-    locks.insert(path.to_path_buf(), Arc::downgrade(&lock));
+    locks.insert(key, Arc::downgrade(&lock));
     locks.retain(|_, weak| weak.strong_count() > 0);
     lock
 }
@@ -656,6 +661,20 @@ mod tests {
         assert_eq!(value["tokens"]["id_token"], "keep-id");
         assert_eq!(value["tokens"]["account_id"], "acct_kept");
         assert_eq!(value["last_refresh"], "1970-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn path_aliases_share_refresh_lock() {
+        let dir = temp_auth_dir("lock-alias");
+        let path = dir.join("auth.json");
+        write_auth(&path, &token(0, Some("acct_old")), "old-refresh");
+        let alias = dir.join(".").join("auth.json");
+
+        let direct_lock = refresh_lock_for(&path);
+        let alias_lock = refresh_lock_for(&alias);
+
+        assert!(Arc::ptr_eq(&direct_lock, &alias_lock));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
