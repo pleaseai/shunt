@@ -1,0 +1,21 @@
+docs/m11-inbound-codex-endpoint.md
+  s_76c7b10a354d1d::t_f0cecfaa53f26f 167
+src/error.rs
+  s_76c7b10a354d1d::t_3844dbefc1507a 128-131
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "1e054a98beb6511e8976a97954b2d3b748a691df",
+  "prompts": {},
+  "sessions": {
+    "s_76c7b10a354d1d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0f88f22-6f78-4c27-a3b9-846b6b4b5362",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
