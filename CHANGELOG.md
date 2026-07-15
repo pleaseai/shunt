@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.18.0](https://github.com/pleaseai/shunt/compare/v0.17.0...v0.18.0) (2026-07-15)
+
+
+### Features
+
+* **codex:** OpenAI-shaped error envelopes for gateway-owned errors on the inbound Codex endpoint ([#146](https://github.com/pleaseai/shunt/issues/146)) ([3de1bc4](https://github.com/pleaseai/shunt/commit/3de1bc4a3372486f894e97d7660460f6a6bf4819))
+
+
+### Performance Improvements
+
+* **auth:** cache account pool store scans ([#163](https://github.com/pleaseai/shunt/issues/163)) ([b42b1d4](https://github.com/pleaseai/shunt/commit/b42b1d454fae9226dfef5a44ad4639d4d7a18cb8))
+* **cursor:** reduce SSE delta allocations ([#166](https://github.com/pleaseai/shunt/issues/166)) ([e84e378](https://github.com/pleaseai/shunt/commit/e84e37860c1d159037bcc087014676fb206d3aa9))
+* **request-body:** avoid redundant parse/serialize/clone on the hot path ([#161](https://github.com/pleaseai/shunt/issues/161)) ([32bbeb0](https://github.com/pleaseai/shunt/commit/32bbeb0e22ce72194d0e41c2f89df62e4e1b181b))
+* **responses:** avoid front-draining SSE frames ([#164](https://github.com/pleaseai/shunt/issues/164)) ([14e905d](https://github.com/pleaseai/shunt/commit/14e905d78ba4a50a9b8e2c0c0bfd2d52fc1177d4)), closes [#152](https://github.com/pleaseai/shunt/issues/152)
+* **responses:** skip content accumulation while streaming ([#165](https://github.com/pleaseai/shunt/issues/165)) ([6ec8a22](https://github.com/pleaseai/shunt/commit/6ec8a220fc8fe09d41683895b83d66824ed6fe88))
+
 ## [0.17.0](https://github.com/pleaseai/shunt/compare/v0.16.0...v0.17.0) (2026-07-15)
 
 
