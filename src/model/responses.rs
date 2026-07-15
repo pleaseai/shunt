@@ -52,6 +52,11 @@ pub struct AnthropicSseMachine {
     /// stream ended before usage arrived", so [`Self::usage_value`] substitutes
     /// the estimate only in the latter case.
     usage_observed: bool,
+    /// Whether to reconstruct the final Anthropic `content` array. Non-streaming
+    /// callers consume [`Self::final_json`] and need full accumulation; streaming
+    /// callers already emit every block incrementally and can skip retaining a
+    /// second copy of the response.
+    accumulate_content: bool,
     content: Vec<Value>,
     text_buffer: String,
     text_citations: Vec<Value>,
@@ -107,6 +112,7 @@ impl AnthropicSseMachine {
             output_tokens: 0,
             input_tokens_estimate: 0,
             usage_observed: false,
+            accumulate_content: true,
             content: Vec::new(),
             text_buffer: String::new(),
             text_citations: Vec::new(),
@@ -124,6 +130,15 @@ impl AnthropicSseMachine {
     #[must_use]
     pub fn with_input_estimate(mut self, input_tokens: u64) -> Self {
         self.input_tokens_estimate = input_tokens;
+        self
+    }
+
+    /// Disable final-message reconstruction for a streaming relay. Incremental SSE
+    /// output and usage tracking are unchanged, while text, tool, and reasoning
+    /// payloads are no longer retained after being emitted.
+    #[must_use]
+    pub fn without_content_accumulation(mut self) -> Self {
+        self.accumulate_content = false;
         self
     }
 
@@ -296,9 +311,11 @@ impl AnthropicSseMachine {
                 "delta": {"type": "input_json_delta", "partial_json": arguments.to_string()}
             }),
         ));
-        self.content.push(json!({
-            "type": "tool_use", "id": id, "name": TOOL_SEARCH_NAME, "input": arguments
-        }));
+        if self.accumulate_content {
+            self.content.push(json!({
+                "type": "tool_use", "id": id, "name": TOOL_SEARCH_NAME, "input": arguments
+            }));
+        }
         out.push(sse(
             "content_block_stop",
             &json!({"type": "content_block_stop", "index": self.index}),
@@ -364,7 +381,9 @@ impl AnthropicSseMachine {
             out.extend(self.open_reasoning());
         }
         if let Some(reasoning) = &mut self.reasoning {
-            reasoning.summary.push_str(delta);
+            if self.accumulate_content {
+                reasoning.summary.push_str(delta);
+            }
         }
         out.push(sse(
             "content_block_delta",
@@ -473,7 +492,7 @@ impl AnthropicSseMachine {
             .unwrap_or("")
             .to_string();
         self.saw_tool = true;
-        self.tool_buffer = Some(ToolBuffer {
+        self.tool_buffer = self.accumulate_content.then(|| ToolBuffer {
             id: id.clone(),
             name: name.clone(),
             json: String::new(),
@@ -502,7 +521,9 @@ impl AnthropicSseMachine {
         if self.open.as_ref().map(|block| block.kind) != Some(BlockKind::Text) {
             out.extend(self.open_text());
         }
-        self.text_buffer.push_str(delta);
+        if self.accumulate_content {
+            self.text_buffer.push_str(delta);
+        }
         out.push(sse(
             "content_block_delta",
             &json!({
@@ -547,8 +568,13 @@ impl AnthropicSseMachine {
             .as_object_mut()
             .expect("citation is an object")
             .retain(|_, value| !value.is_null());
-        self.text_citations.push(citation.clone());
-        if self.open.as_ref().map(|block| block.kind) != Some(BlockKind::Text) {
+        let text_is_open = self.open.as_ref().map(|block| block.kind) == Some(BlockKind::Text);
+        // Streaming still needs to buffer citations that arrive before the first
+        // text delta so `open_text` can flush them once the block exists.
+        if self.accumulate_content || !text_is_open {
+            self.text_citations.push(citation.clone());
+        }
+        if !text_is_open {
             return out;
         }
         out.push(sse(
@@ -582,9 +608,11 @@ impl AnthropicSseMachine {
                 "content_block": {"type": "server_tool_use", "id": id, "name": "web_search", "input": input}
             }),
         ));
-        self.content.push(json!({
-            "type": "server_tool_use", "id": id, "name": "web_search", "input": input
-        }));
+        if self.accumulate_content {
+            self.content.push(json!({
+                "type": "server_tool_use", "id": id, "name": "web_search", "input": input
+            }));
+        }
         out.push(sse(
             "content_block_stop",
             &json!({"type": "content_block_stop", "index": self.index}),
@@ -616,9 +644,11 @@ impl AnthropicSseMachine {
                 "content_block": {"type": "web_search_tool_result", "tool_use_id": id, "content": results}
             }),
         ));
-        self.content.push(json!({
-            "type": "web_search_tool_result", "tool_use_id": id, "content": results
-        }));
+        if self.accumulate_content {
+            self.content.push(json!({
+                "type": "web_search_tool_result", "tool_use_id": id, "content": results
+            }));
+        }
         out.push(sse(
             "content_block_stop",
             &json!({"type": "content_block_stop", "index": self.index}),
@@ -629,8 +659,10 @@ impl AnthropicSseMachine {
 
     fn arguments_delta(&mut self, data: &Value) -> Vec<String> {
         let delta = data.get("delta").and_then(Value::as_str).unwrap_or("");
-        if let Some(tool) = &mut self.tool_buffer {
-            tool.json.push_str(delta);
+        if self.accumulate_content {
+            if let Some(tool) = &mut self.tool_buffer {
+                tool.json.push_str(delta);
+            }
         }
         vec![sse(
             "content_block_delta",
@@ -661,7 +693,7 @@ impl AnthropicSseMachine {
                 // index: `open_text` already streamed a `content_block_start`
                 // for this block, so suppressing the stop would leave an
                 // unbalanced block and make the next block reuse this index.
-                if !self.text_buffer.trim().is_empty() {
+                if self.accumulate_content && !self.text_buffer.trim().is_empty() {
                     let mut block = json!({"type": "text", "text": self.text_buffer});
                     if !self.text_citations.is_empty() {
                         block["citations"] = json!(self.text_citations);
@@ -673,22 +705,26 @@ impl AnthropicSseMachine {
             }
             BlockKind::Tool => {
                 if let Some(tool) = self.tool_buffer.take() {
-                    let input = serde_json::from_str(&tool.json).unwrap_or_else(|_| json!({}));
-                    self.content.push(json!({
-                        "type": "tool_use",
-                        "id": tool.id,
-                        "name": tool.name,
-                        "input": input
-                    }));
+                    if self.accumulate_content {
+                        let input = serde_json::from_str(&tool.json).unwrap_or_else(|_| json!({}));
+                        self.content.push(json!({
+                            "type": "tool_use",
+                            "id": tool.id,
+                            "name": tool.name,
+                            "input": input
+                        }));
+                    }
                 }
             }
             BlockKind::Reasoning => {
                 if let Some(reasoning) = self.reasoning.take() {
-                    let mut block = json!({"type": "thinking", "thinking": reasoning.summary});
-                    if let Some(signature) = reasoning.signature {
-                        block["signature"] = json!(signature);
+                    if self.accumulate_content {
+                        let mut block = json!({"type": "thinking", "thinking": reasoning.summary});
+                        if let Some(signature) = reasoning.signature {
+                            block["signature"] = json!(signature);
+                        }
+                        self.content.push(block);
                     }
-                    self.content.push(block);
                 }
             }
         }
@@ -1059,6 +1095,58 @@ mod tests {
             final_json["content"][0],
             json!({"type": "text", "text": "Hello"})
         );
+    }
+
+    #[test]
+    fn streaming_machine_does_not_accumulate_final_content() {
+        let mut machine =
+            AnthropicSseMachine::new("test", true, true).without_content_accumulation();
+        let mut output = machine.apply(event(
+            "response.output_text.delta",
+            json!({"delta": "Hello"}),
+        ));
+        output.extend(machine.apply(event("response.output_text.done", json!({}))));
+        output.extend(machine.apply(event(
+            "response.output_item.added",
+            json!({"item": {"type": "function_call", "call_id": "call_1", "name": "run"}}),
+        )));
+        output.extend(machine.apply(event(
+            "response.function_call_arguments.delta",
+            json!({"delta": "{\"value\":1}"}),
+        )));
+        output.extend(machine.apply(event("response.function_call_arguments.done", json!({}))));
+        output.extend(machine.apply(event(
+            "response.output_item.added",
+            json!({"item": {"type": "reasoning", "id": "reason_1"}}),
+        )));
+        output.extend(machine.apply(event(
+            "response.reasoning_summary_text.delta",
+            json!({"delta": "Thinking"}),
+        )));
+        output.extend(machine.apply(event(
+            "response.output_item.done",
+            json!({"item": {"type": "reasoning", "id": "reason_1", "encrypted_content": "secret"}}),
+        )));
+        output.extend(machine.apply(event(
+            "response.output_item.done",
+            json!({"item": {"type": "tool_search_call", "call_id": "search_1", "arguments": {"query": "docs"}}}),
+        )));
+        output.extend(machine.apply(event(
+            "response.output_item.done",
+            json!({"item": {"type": "web_search_call", "id": "web_1", "action": {"query": "docs"}, "results": []}}),
+        )));
+        output.extend(machine.finish());
+
+        let emitted = output.concat();
+        assert!(emitted.contains("\"text\":\"Hello\""));
+        assert!(emitted.contains("\"partial_json\":\"{\\\"value\\\":1}\""));
+        assert!(emitted.contains("\"thinking\":\"Thinking\""));
+        assert!(emitted.contains("\"name\":\"ToolSearch\""));
+        assert!(emitted.contains("\"type\":\"server_tool_use\""));
+        assert!(machine.content.is_empty());
+        assert!(machine.text_buffer.is_empty());
+        assert!(machine.tool_buffer.is_none());
+        assert!(machine.reasoning.is_none());
     }
 
     #[test]

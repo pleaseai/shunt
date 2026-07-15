@@ -193,7 +193,8 @@ fn apply_responses_sse(bencher: divan::Bencher) {
     bencher
         .with_inputs(|| {
             (
-                responses::AnthropicSseMachine::new("claude-sonnet-4-5", false, false),
+                responses::AnthropicSseMachine::new("claude-sonnet-4-5", false, false)
+                    .without_content_accumulation(),
                 events.clone(),
             )
         })

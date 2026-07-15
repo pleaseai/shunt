@@ -133,7 +133,10 @@ pub(super) fn stream_response(
 ) -> axum::response::Response {
     let bytes = upstream.bytes_stream();
     let parser = SseParser::default();
-    let machine = relay.machine().with_input_estimate(input_tokens_estimate);
+    let machine = relay
+        .machine()
+        .with_input_estimate(input_tokens_estimate)
+        .without_content_accumulation();
     let output = stream::unfold((bytes, parser, machine, false), |state| async move {
         let (mut bytes, mut parser, mut machine, mut finished) = state;
         if finished {
