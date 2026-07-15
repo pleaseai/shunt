@@ -1,0 +1,40 @@
+src/admin/mod.rs
+  s_23560aa83696a4::t_3f3bc93411e6ff 728-730
+  s_23560aa83696a4::t_6805baade836a3 171-182
+  s_23560aa83696a4::t_e0889483de441e 666-668
+src/accounts.rs
+  s_23560aa83696a4::t_2d93ea37ba903c 887-904
+  s_23560aa83696a4::t_aaf0ad27662366 396-398
+  s_23560aa83696a4::t_4f63998069e732 400-401
+  s_23560aa83696a4::t_f75ad4020fa8bf 886
+src/admin/html.rs
+  s_23560aa83696a4::t_75e02f0a905723 198-199,201
+  s_23560aa83696a4::t_016ee4f947267d 164-165,167
+  s_23560aa83696a4::t_823954c9ce0f1e 181-182,184
+src/admin/codex.rs
+  s_23560aa83696a4::t_3712fa9a7d66b8 23
+  s_23560aa83696a4::t_854ddb4fef1195 199-201
+  s_23560aa83696a4::t_5569fd70e571ac 246-248
+src/auth/codex/store.rs
+  s_23560aa83696a4::t_eaac26af63d07c 69-72
+tests/admin_surface.rs
+  s_23560aa83696a4::t_cb51ec28975960 1042-1133,1135-1305,1307-1346
+  s_23560aa83696a4::t_9e8a457eb2d7a4 110-117
+  s_23560aa83696a4::t_4f63998069e732 1134,1306
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "8620be750dadcbd671e2850c911b1e5525739dab",
+  "prompts": {},
+  "sessions": {
+    "s_23560aa83696a4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fa6783c4-73ed-4f60-956e-97c4e9ea9e23",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
