@@ -1,6 +1,8 @@
 use std::{
+    collections::HashMap,
     env, fs, io,
     path::{Path, PathBuf},
+    sync::{Arc, LazyLock, Mutex as StdMutex, Weak},
     time::SystemTime,
 };
 
@@ -27,11 +29,35 @@ pub struct CodexAuthStore {
     token_url: String,
 }
 
-/// In-process single-flight for ChatGPT OAuth refreshes. Stores are constructed
-/// per request, so the lock must be shared across independent instances. The
-/// refresh task owns the guard through atomic writeback, preventing a cancelled
-/// caller from exposing an already-consumed refresh token to another request.
-static REFRESH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// In-process single-flight registry for ChatGPT OAuth refreshes, keyed by
+/// credential path. Stores are constructed per request, so the registry must
+/// be shared across independent instances. Keying by path lets refreshes for
+/// different accounts (different credential files) proceed in parallel while
+/// still serializing concurrent refreshes of the *same* file. Entries are
+/// held `Weak`, so a path's lock is dropped once nothing is refreshing it,
+/// keeping the registry from growing unbounded over the process lifetime.
+/// The refresh task owns the guard through atomic writeback, preventing a
+/// cancelled caller from exposing an already-consumed refresh token to
+/// another request.
+static REFRESH_LOCKS: LazyLock<StdMutex<HashMap<PathBuf, Weak<tokio::sync::Mutex<()>>>>> =
+    LazyLock::new(|| StdMutex::new(HashMap::new()));
+
+/// Return the single-flight lock for `path`, creating and registering one if
+/// none exists (or the previous one has been dropped). Opportunistically
+/// prunes dead entries so paths that are no longer being refreshed don't
+/// linger in the registry forever.
+fn refresh_lock_for(path: &Path) -> Arc<tokio::sync::Mutex<()>> {
+    let mut locks = REFRESH_LOCKS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(lock) = locks.get(path).and_then(Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(tokio::sync::Mutex::new(()));
+    locks.insert(path.to_path_buf(), Arc::downgrade(&lock));
+    locks.retain(|_, weak| weak.strong_count() > 0);
+    lock
+}
 
 /// Resolve the Codex OAuth refresh endpoint from a raw `SHUNT_CODEX_TOKEN_URL`
 /// value, rejecting an empty, malformed, or non-loopback-plaintext override that
@@ -78,9 +104,10 @@ impl CodexAuthStore {
             return tokens.to_credential();
         }
 
-        // Single-flight the refresh. A waiter re-reads after acquiring the lock,
-        // so it uses the credential persisted by the caller that refreshed first.
-        let refreshing = REFRESH_LOCK.lock().await;
+        // Single-flight the refresh, scoped to this credential path. A waiter
+        // re-reads after acquiring the lock, so it uses the credential
+        // persisted by the caller that refreshed first.
+        let refreshing = refresh_lock_for(&self.path).lock_owned().await;
         let auth = self.read_auth_off_thread().await?;
         let tokens = auth
             .tokens()
@@ -98,7 +125,7 @@ impl CodexAuthStore {
     /// the cached token may still look unexpired locally, but the backend has
     /// already rejected it, so the cache can't be trusted here.
     pub async fn force_refresh(&self) -> Result<ChatGptCred, AdapterError> {
-        let refreshing = REFRESH_LOCK.lock().await;
+        let refreshing = refresh_lock_for(&self.path).lock_owned().await;
         let auth = self.read_auth_off_thread().await?;
         let tokens = auth
             .tokens()
@@ -109,7 +136,7 @@ impl CodexAuthStore {
     async fn refresh_and_write_back(
         &self,
         tokens: TokenSet,
-        refreshing: tokio::sync::MutexGuard<'static, ()>,
+        refreshing: tokio::sync::OwnedMutexGuard<()>,
     ) -> Result<ChatGptCred, AdapterError> {
         let refresh_token = tokens
             .refresh_token
@@ -126,14 +153,37 @@ impl CodexAuthStore {
         tokio::spawn(async move {
             let _refreshing = refreshing;
             let refreshed = refresh_tokens(&client, &token_url, &refresh_token).await?;
-            let credential = refreshed.to_credential()?;
-            tokio::task::spawn_blocking(move || write_refreshed_auth(&path, refreshed))
-                .await
-                .map_err(|error| auth_error(format!("ChatGPT auth write task failed: {error}")))?
-                .map_err(|error| {
-                    auth_error(format!("failed to update ChatGPT auth file: {error}"))
-                })?;
-            Ok::<ChatGptCred, AdapterError>(credential)
+            let result = match refreshed.to_credential() {
+                Ok(credential) => {
+                    tokio::task::spawn_blocking(move || write_refreshed_auth(&path, refreshed))
+                        .await
+                        .map_err(|error| {
+                            auth_error(format!("ChatGPT auth write task failed: {error}"))
+                        })
+                        .and_then(|result| {
+                            result.map_err(|error| {
+                                auth_error(format!(
+                                    "failed to update ChatGPT auth file: {error}"
+                                ))
+                            })
+                        })
+                        .map(|()| credential)
+                }
+                Err(error) => Err(error),
+            };
+            if let Err(error) = &result {
+                // The upstream refresh may already have consumed the old refresh
+                // token, so a credential-validation or writeback failure can leave
+                // the file holding a now-invalid token. Log here (not only via the
+                // returned Err) so the failure stays visible even when the caller's
+                // future was dropped and the JoinHandle carrying this Err is
+                // discarded. Never log the token values themselves, only the error.
+                tracing::warn!(
+                    ?error,
+                    "ChatGPT OAuth token refreshed upstream but validation or writeback failed; stored refresh token may now be stale until re-login"
+                );
+            }
+            result
         })
         .await
         .map_err(|error| auth_error(format!("ChatGPT refresh task failed: {error}")))?
@@ -335,6 +385,7 @@ impl RefreshResponse {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Condvar;
     use std::time::{Duration, UNIX_EPOCH};
 
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -352,6 +403,33 @@ mod tests {
             "x.{}.y",
             URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap())
         )
+    }
+
+    fn temp_auth_dir(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "shunt-codex-{tag}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    fn write_auth(path: &Path, access_token: &str, refresh_token: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            path,
+            json!({
+                "auth_mode": "ChatGPT",
+                "tokens": {
+                    "access_token": access_token,
+                    "refresh_token": refresh_token,
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -578,28 +656,9 @@ mod tests {
             .mount(&server)
             .await;
 
-        let dir = std::env::temp_dir().join(format!(
-            "shunt-codex-single-flight-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = temp_auth_dir("single-flight");
         let path = dir.join("auth.json");
-        std::fs::write(
-            &path,
-            json!({
-                "auth_mode": "ChatGPT",
-                "tokens": {
-                    "access_token": token(0, Some("acct_old")),
-                    "refresh_token": "old-refresh",
-                }
-            })
-            .to_string(),
-        )
-        .unwrap();
+        write_auth(&path, &token(0, Some("acct_old")), "old-refresh");
 
         let first_store = CodexAuthStore::with_token_url(
             path.clone(),
@@ -622,6 +681,219 @@ mod tests {
         assert_eq!(stored["tokens"]["refresh_token"], "rotated-refresh");
         server.verify().await;
 
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A [`wiremock::Respond`] that makes each incoming request block until a
+    /// second one arrives at the same gate (or a bounded timeout elapses),
+    /// then records whether the rendezvous happened. Used to deterministically
+    /// prove two refreshes ran concurrently rather than being serialized
+    /// behind a shared lock: if they were serialized, the second request would
+    /// never reach the mock server until the first's entire refresh +
+    /// writeback completed, so the first call's wait would time out instead
+    /// of rendezvousing.
+    struct ConcurrencyGate {
+        count: StdMutex<usize>,
+        condvar: Condvar,
+    }
+
+    impl ConcurrencyGate {
+        fn new() -> Self {
+            Self {
+                count: StdMutex::new(0),
+                condvar: Condvar::new(),
+            }
+        }
+
+        /// Returns `true` only if `expected` arrivals were recorded before
+        /// `timeout` elapsed.
+        fn arrive_and_wait(&self, expected: usize, timeout: Duration) -> bool {
+            let mut count = self.count.lock().unwrap_or_else(|error| error.into_inner());
+            *count += 1;
+            self.condvar.notify_all();
+            let (_guard, result) = self
+                .condvar
+                .wait_timeout_while(count, timeout, |count| *count < expected)
+                .unwrap();
+            !result.timed_out()
+        }
+    }
+
+    struct GatedResponder {
+        gate: Arc<ConcurrencyGate>,
+        arrivals: Arc<StdMutex<Vec<bool>>>,
+        access_token: String,
+    }
+
+    impl wiremock::Respond for GatedResponder {
+        fn respond(&self, _request: &wiremock::Request) -> wiremock::ResponseTemplate {
+            let concurrent = self.gate.arrive_and_wait(2, Duration::from_secs(3));
+            self.arrivals
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(concurrent);
+            wiremock::ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": self.access_token,
+                "refresh_token": "rotated-refresh",
+            }))
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn different_paths_refresh_concurrently() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer};
+
+        // Each store's mock lives on its *own* `MockServer`: wiremock serializes
+        // all request handling for a single server behind one internal lock
+        // (see the "holding on to the write-side of the RwLock" note in its
+        // hyper transport), so sharing one server between the two refreshes
+        // would itself force them to serialize and produce a false failure
+        // regardless of our path-keyed lock fix.
+        let first_server = MockServer::start().await;
+        let second_server = MockServer::start().await;
+        let new_access = token(2_000_000_000, Some("acct_new"));
+        let gate = Arc::new(ConcurrencyGate::new());
+        let arrivals = Arc::new(StdMutex::new(Vec::new()));
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(GatedResponder {
+                gate: gate.clone(),
+                arrivals: arrivals.clone(),
+                access_token: new_access.clone(),
+            })
+            .expect(1)
+            .mount(&first_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(GatedResponder {
+                gate: gate.clone(),
+                arrivals: arrivals.clone(),
+                access_token: new_access.clone(),
+            })
+            .expect(1)
+            .mount(&second_server)
+            .await;
+
+        let first_dir = temp_auth_dir("parallel-paths-a");
+        let first_path = first_dir.join("auth.json");
+        write_auth(&first_path, &token(0, Some("acct_old_a")), "old-refresh-a");
+        let second_dir = temp_auth_dir("parallel-paths-b");
+        let second_path = second_dir.join("auth.json");
+        write_auth(&second_path, &token(0, Some("acct_old_b")), "old-refresh-b");
+
+        let first_store = CodexAuthStore::with_token_url(
+            first_path.clone(),
+            reqwest::Client::new(),
+            format!("{}/token", first_server.uri()),
+        );
+        let second_store = CodexAuthStore::with_token_url(
+            second_path.clone(),
+            reqwest::Client::new(),
+            format!("{}/token", second_server.uri()),
+        );
+
+        let (first, second) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(
+                first_store.get_valid_chatgpt(),
+                second_store.get_valid_chatgpt()
+            )
+        })
+        .await
+        .expect("refreshes for different credential paths must not deadlock");
+
+        assert_eq!(first.unwrap().access_token, new_access);
+        assert_eq!(second.unwrap().access_token, new_access);
+
+        let recorded = {
+            let recorded = arrivals.lock().unwrap_or_else(|error| error.into_inner());
+            recorded.clone()
+        };
+        assert_eq!(
+            recorded.len(),
+            2,
+            "both refreshes must reach the OAuth provider"
+        );
+        assert!(
+            recorded.iter().all(|&concurrent| concurrent),
+            "refreshes for different paths must run concurrently, not serialize: {recorded:?}"
+        );
+
+        first_server.verify().await;
+        second_server.verify().await;
+        let _ = std::fs::remove_dir_all(&first_dir);
+        let _ = std::fs::remove_dir_all(&second_dir);
+    }
+
+    #[tokio::test]
+    async fn cancelled_refresh_still_persists_rotated_token() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(200))
+                    .set_body_json(json!({
+                        "access_token": token(2_000_000_000, Some("acct_new")),
+                        "refresh_token": "rotated-refresh",
+                    })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let dir = temp_auth_dir("cancelled-refresh");
+        let path = dir.join("auth.json");
+        write_auth(&path, &token(0, Some("acct_old")), "old-refresh");
+
+        let store = CodexAuthStore::with_token_url(
+            path.clone(),
+            reqwest::Client::new(),
+            format!("{}/token", server.uri()),
+        );
+
+        let caller = tokio::spawn(async move { store.get_valid_chatgpt().await });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let requests = server
+                    .received_requests()
+                    .await
+                    .expect("mock records requests");
+                if requests.iter().any(|request| {
+                    request.method.as_str() == "POST" && request.url.path() == "/token"
+                }) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("refresh request did not reach the OAuth provider");
+        caller.abort();
+        let error = caller.await.unwrap_err();
+        assert!(error.is_cancelled());
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let stored: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                if stored["tokens"]["refresh_token"] == "rotated-refresh" {
+                    assert_eq!(
+                        stored["tokens"]["access_token"],
+                        token(2_000_000_000, Some("acct_new"))
+                    );
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("detached refresh did not persist the rotated token");
+
+        server.verify().await;
         let _ = std::fs::remove_dir_all(dir);
     }
 
