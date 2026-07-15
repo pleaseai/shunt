@@ -1,0 +1,21 @@
+.claude/agent-memory/review-review-security-reviewer/project_pr144-codex-admin-provisioning-security.md
+  s_23560aa83696a4::t_37a99f638a4ee5 1-33
+.claude/agent-memory/review-review-security-reviewer/MEMORY.md
+  s_23560aa83696a4::t_13a1f4a0cc22a8 15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "fef4b6ba9e8b7359c9bbcfe8d2baabf934165c74",
+  "prompts": {},
+  "sessions": {
+    "s_23560aa83696a4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fa6783c4-73ed-4f60-956e-97c4e9ea9e23",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
