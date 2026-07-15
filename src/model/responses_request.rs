@@ -585,7 +585,7 @@ fn content_blocks(content: Option<&Value>) -> Cow<'_, [Value]> {
     match content {
         Some(Value::String(text)) => Cow::Owned(vec![json!({"type": "text", "text": text})]),
         Some(Value::Array(blocks)) => Cow::Borrowed(blocks),
-        _ => Cow::Owned(Vec::new()),
+        _ => Cow::Borrowed(&[]),
     }
 }
 
