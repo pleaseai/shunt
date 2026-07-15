@@ -1,0 +1,19 @@
+src/model/responses_request.rs
+  s_9526b29f2e0242::t_0986f6b97d3599 588
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "313073512eb1f8dd88a0c004bf95da9ff33aef2a",
+  "prompts": {},
+  "sessions": {
+    "s_9526b29f2e0242": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d2a63ab7-63bf-4a3b-bdb9-414d504a944f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
