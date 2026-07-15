@@ -694,7 +694,7 @@ auto-discovered accounts, so imported store logins still get pooling.)
 - No model-based routing — every inbound request goes to the one configured provider, regardless
   of the `model` field in the body.
 - **Verbatim header passthrough.** The outbound path *synthesizes* the Codex identity headers of
-  §4.4 (pinned `originator`/`user-agent`/`version=codex_cli_rs/0.144.4`, `OpenAI-Beta`, session
+  §4.4 (pinned `originator`/`user-agent=codex_cli_rs/0.144.4`/`version=0.144.4`, `OpenAI-Beta`, session
   headers). The inbound endpoint does **not** — the client already *is* a Codex CLI, so its own
   request headers (`version`, `originator`, `OpenAI-Beta`, `x-codex-*`, …) are forwarded unchanged
   and shunt swaps in **only** the pool account's `Authorization` + `chatgpt-account-id` (and strips
