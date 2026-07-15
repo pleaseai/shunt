@@ -1,0 +1,149 @@
+src/auth/shared.rs
+  s_23560aa83696a4::t_95355dd186694e 20,22
+  s_23560aa83696a4::t_3e9a12ba04d1a7 382-400
+  s_23560aa83696a4::t_1c1e070fd5c715 29-54
+  s_23560aa83696a4::t_1153d761442d68 381
+src/admin/html.rs
+  s_23560aa83696a4::t_66fde9a985dd9b 262-298
+  s_23560aa83696a4::t_9986e34bf2ab4f 48-49
+  s_23560aa83696a4::t_2a60199a87f894 144-147
+  s_23560aa83696a4::t_a6ea7a494ff66a 178-193
+  s_23560aa83696a4::t_e424d9d71d518c 209
+  s_23560aa83696a4::t_80d0510f8763f9 4
+  s_23560aa83696a4::t_84c1bd8b51e706 3
+  s_23560aa83696a4::t_d5133c01e0f86d 5
+  s_23560aa83696a4::t_0349f4b6e659ff 83
+  s_23560aa83696a4::t_126abe95f55305 120,123-140
+  s_23560aa83696a4::t_8975b5765e2b1a 2
+  s_23560aa83696a4::t_3e688bf2f34bb9 40
+src/admin/session.rs
+  s_23560aa83696a4::t_77cdc6996c213a 95
+  s_23560aa83696a4::t_539cbe14e5c2ce 92
+site/src/content/docs/getting-started/comparison.md
+  s_23560aa83696a4::t_25efeeec6cceb0 77
+site/src/content/docs/ko/reference/endpoints.md
+  s_23560aa83696a4::t_c2ca8e4e1689b9 18-26
+src/admin/codex.rs
+  s_23560aa83696a4::t_8336d25c769e5a 33
+  s_23560aa83696a4::t_c5ec33648f3df4 79
+  s_23560aa83696a4::t_0dbe726c991185 139,202-205
+  s_23560aa83696a4::t_f5fb3856679473 1-32,34-78,80-138,140-201,206-285
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_23560aa83696a4::t_fa01cb277c8a51 18-26
+site/src/content/docs/ja/getting-started/comparison.md
+  s_23560aa83696a4::t_f4b7a79ae1975e 77
+tests/admin_surface.rs
+  s_23560aa83696a4::t_6a48364b263b96 99-119
+  s_23560aa83696a4::t_64f7d693f703e6 796-836,838-877,879-930,932-943,949-1014,1016-1033
+  s_23560aa83696a4::t_0dbe726c991185 944-948
+  s_23560aa83696a4::t_12c65ed2a21dba 10
+  s_23560aa83696a4::t_dfdb018bcc43fd 837,878,931,1015
+  s_23560aa83696a4::t_5de36968c6a3e5 25-26
+site/src/content/docs/zh-cn/getting-started/comparison.md
+  s_23560aa83696a4::t_00886426825cba 77
+src/auth/codex/store.rs
+  s_23560aa83696a4::t_46086c4b7caa76 41-95
+  s_23560aa83696a4::t_de288db1794e96 223-235
+  s_23560aa83696a4::t_b002c25d38ed47 146-183
+  s_23560aa83696a4::t_4ca3afc41ed136 339-404
+  s_23560aa83696a4::t_b2a2bf336e40b7 13,16
+docs/m9-admin-surface.md
+  s_23560aa83696a4::t_00e4f329a80bbb 4-5
+  s_23560aa83696a4::t_6cafe8864397b1 252-259
+  s_23560aa83696a4::t_df52c617ded8cb 197-214
+  s_23560aa83696a4::t_3b5691ea80a9ad 225-229
+  s_23560aa83696a4::t_24c866aa60fe98 147-155
+  s_23560aa83696a4::t_c396ef6466704c 32-39
+src/auth/codex/login.rs
+  s_23560aa83696a4::t_1b76a53b1eb071 11-12,14
+  s_23560aa83696a4::t_862fe82111e6db 62-63,66-67
+  s_23560aa83696a4::t_4c9040d64f3acf 93-166
+  s_23560aa83696a4::t_05b054b4f91fef 16-61,64-65,68-70
+  s_23560aa83696a4::t_e74ce10b6eeab2 1-4,6-7
+  s_23560aa83696a4::t_0a668649560821 15
+site/src/content/docs/ja/guides/admin-remote-provisioning.md
+  s_23560aa83696a4::t_ec360171766669 50-59
+  s_23560aa83696a4::t_a116c406258442 62
+  s_23560aa83696a4::t_e14f3a5a3ba069 32
+  s_23560aa83696a4::t_78fd9875e81f20 3
+  s_23560aa83696a4::t_a7c4af45c3b956 6
+  s_23560aa83696a4::t_9218ca7edf89a9 88
+site/src/content/docs/ja/reference/endpoints.md
+  s_23560aa83696a4::t_1e2d3254b9c414 18-26
+src/auth/claude/login.rs
+  s_23560aa83696a4::t_cf4651febd3583 11-12
+site/src/content/docs/reference/endpoints.md
+  s_23560aa83696a4::t_6747bbf83353c6 18-26
+site/src/content/docs/reference/configuration.md
+  s_23560aa83696a4::t_4a0a2193666293 138
+src/auth/codex/auth.rs
+  s_23560aa83696a4::t_1608c03924513a 14-15
+  s_23560aa83696a4::t_3e268c4a31ccd6 36
+  s_23560aa83696a4::t_7cffc6009dee47 37,343
+  s_23560aa83696a4::t_b4b4772bf08500 49
+  s_23560aa83696a4::t_79f80a0a08332f 341-342,344-345,347-348
+  s_23560aa83696a4::t_4a086ec2f803dc 351,356,360,365,369
+  s_23560aa83696a4::t_ddcd61e7bfce14 46
+site/src/content/docs/guides/admin-remote-provisioning.md
+  s_23560aa83696a4::t_8113eb58e3a1be 32
+  s_23560aa83696a4::t_c84ca8060467fc 3
+  s_23560aa83696a4::t_d49754711c67cf 50-66
+  s_23560aa83696a4::t_2079c306b87562 69,71
+  s_23560aa83696a4::t_131e99ec1ebab3 95-101
+  s_23560aa83696a4::t_281f1f3ecf2eb6 73
+  s_23560aa83696a4::t_9143fe9acce15c 6,8
+site/src/content/docs/guides/codex-multi-account.md
+  s_23560aa83696a4::t_be71bccdc00fa2 157
+README.md
+  s_23560aa83696a4::t_1615bc35255d85 77
+  s_23560aa83696a4::t_0afe18689ec610 71
+src/admin/mod.rs
+  s_23560aa83696a4::t_e552171bcac366 826
+  s_23560aa83696a4::t_9946583c5e9d74 9-11
+  s_23560aa83696a4::t_9d1a43f8cfb4dd 105-115
+  s_23560aa83696a4::t_de0520c93c4cc1 119
+  s_23560aa83696a4::t_ae2bdd26e0ddef 405-408,415-420
+  s_23560aa83696a4::t_c2978b667cb56b 153
+  s_23560aa83696a4::t_07e867a2f69a8b 790
+  s_23560aa83696a4::t_8a8ea1f5bb5c39 126-128
+  s_23560aa83696a4::t_836803c4415532 15
+  s_23560aa83696a4::t_1059e209de6717 133
+  s_23560aa83696a4::t_c8bd0e94cddef2 679-681
+  s_23560aa83696a4::t_bcb7ecff98bb52 822
+  s_23560aa83696a4::t_fa48e661497eca 830
+  s_23560aa83696a4::t_4fedab41fcf0c3 805
+  s_23560aa83696a4::t_5531c4d7347513 818
+  s_23560aa83696a4::t_0dbe726c991185 104,563,636
+site/src/content/docs/ko/guides/admin-remote-provisioning.md
+  s_23560aa83696a4::t_858d3b515f9aa7 3
+  s_23560aa83696a4::t_fe66bb1e9c32e9 50-59
+  s_23560aa83696a4::t_7a7d5a9b4bc47b 6
+  s_23560aa83696a4::t_9a861bf53884e8 62
+  s_23560aa83696a4::t_4739ac83d3fa6d 88
+  s_23560aa83696a4::t_92661315f8645b 32
+site/src/content/docs/zh-cn/guides/admin-remote-provisioning.md
+  s_23560aa83696a4::t_22bcddc27a64c7 6
+  s_23560aa83696a4::t_d867c89e2f4e24 50-59
+  s_23560aa83696a4::t_8b5c69e371be4d 3
+  s_23560aa83696a4::t_17044085a93518 62
+  s_23560aa83696a4::t_b911d23b3262d5 88
+  s_23560aa83696a4::t_ca172ef66f3ff1 32
+site/src/content/docs/ko/getting-started/comparison.md
+  s_23560aa83696a4::t_f7fe196c497377 77
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "6586c9a1825d529ce6d7fd8e4da972f15201e7a8",
+  "prompts": {},
+  "sessions": {
+    "s_23560aa83696a4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fa6783c4-73ed-4f60-956e-97c4e9ea9e23",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
