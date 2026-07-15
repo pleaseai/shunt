@@ -1,0 +1,26 @@
+tests/admin_surface.rs
+  s_23560aa83696a4::t_330117142de21f 858
+  s_23560aa83696a4::t_22b4d3eab4f820 853-856
+src/auth/codex/login.rs
+  s_23560aa83696a4::t_789127735bab51 123
+  s_23560aa83696a4::t_5b4e54fd200cfd 38
+  s_23560aa83696a4::t_c46cec0f7cc417 18-23
+docs/m2-chatgpt-oauth.md
+  s_23560aa83696a4::t_31d02165120268 88,90-94
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "9b82e1e897974a639a6d596ec49e6e139f392a8f",
+  "prompts": {},
+  "sessions": {
+    "s_23560aa83696a4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fa6783c4-73ed-4f60-956e-97c4e9ea9e23",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
