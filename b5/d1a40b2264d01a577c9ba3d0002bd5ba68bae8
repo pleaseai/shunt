@@ -1,0 +1,19 @@
+src/auth/codex/auth.rs
+  s_7dd9e76d093ca7::t_699139054bb687 174-180,193-194,196-197,199,201-203,206
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "b5d1a40b2264d01a577c9ba3d0002bd5ba68bae8",
+  "prompts": {},
+  "sessions": {
+    "s_7dd9e76d093ca7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4b5967cc-4e7d-4a7c-989a-7ef843707226",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
