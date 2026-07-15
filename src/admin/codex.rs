@@ -140,7 +140,15 @@ pub(super) async fn complete_codex_account(
         return bad_request("invalid authorization code or OAuth state mismatch");
     }
 
-    let token_url = codex_auth::resolve_oauth_token_url();
+    // Mirror the Claude completion flow's `admin_token_url()`: warn on an invalid or
+    // unsafe `SHUNT_CODEX_TOKEN_URL` override rather than the silent fallback the
+    // background refresh path's `resolve_oauth_token_url` gives — this handler
+    // consumes the single-use authorization code, so a typo'd override must not
+    // quietly burn the real code against production with no trace in the logs.
+    let token_url = crate::auth::shared::admin_token_url_override(
+        "SHUNT_CODEX_TOKEN_URL",
+        codex_auth::TOKEN_URL,
+    );
     let tokens = match codex_login::exchange_code(
         &state.http_client,
         &code,

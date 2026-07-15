@@ -92,6 +92,38 @@ pub(crate) fn sanitize_token_url(raw: Option<String>, default_url: &str) -> Stri
         .unwrap_or_else(|| default_url.to_string())
 }
 
+/// The admin-web counterpart to [`sanitize_token_url`]: resolve a `SHUNT_*_TOKEN_URL`
+/// override for the browser completion flow, but **warn** on an invalid or unsafe
+/// override instead of falling back silently. The completion handler consumes the
+/// single-use OAuth authorization code, so an operator who typos a local-testing
+/// override would otherwise burn their real code against the production endpoint with
+/// no trace in the logs. `env_var` names the override so one message serves every
+/// provider; the raw value is never logged (it may embed credentials in userinfo —
+/// `https://user:pass@host`), only its scheme/host, which is all the guard turns on.
+pub(crate) fn admin_token_url_override(env_var: &str, default_url: &str) -> String {
+    let Some(raw) = env::var(env_var).ok().filter(|value| !value.is_empty()) else {
+        return default_url.to_string();
+    };
+    let Ok(url) = raw.parse::<reqwest::Url>() else {
+        tracing::warn!(
+            env = env_var,
+            "admin: ignoring token URL override (not a valid URL)"
+        );
+        return default_url.to_string();
+    };
+    if is_safe_refresh_url(&url) {
+        raw
+    } else {
+        tracing::warn!(
+            env = env_var,
+            scheme = url.scheme(),
+            host = url.host_str().unwrap_or_default(),
+            "admin: ignoring token URL override (only https, or http to loopback, is allowed)"
+        );
+        default_url.to_string()
+    }
+}
+
 /// Process-wide client for the OAuth refresh POST; follows a 3xx only to a safe
 /// endpoint ([`is_safe_refresh_url`]), closing [`sanitize_token_url`]'s initial-URL gap.
 pub(crate) fn token_refresh_client() -> reqwest::Client {
@@ -418,6 +450,40 @@ mod tests {
             PathBuf::from("/tmp/shunt-shared-override")
         );
         std::env::remove_var(&env_name);
+    }
+
+    #[test]
+    fn admin_token_url_override_returns_safe_overrides_and_falls_back_otherwise() {
+        // A per-pid var name no other test reads, so no cross-test env race.
+        let env_name = format!("SHUNT_TEST_ADMIN_TOKEN_URL_{}", std::process::id());
+        let default = "https://auth.example.com/oauth/token";
+
+        // Unset and empty both fall back to the built-in default.
+        env::remove_var(&env_name);
+        assert_eq!(admin_token_url_override(&env_name, default), default);
+        env::set_var(&env_name, "");
+        assert_eq!(admin_token_url_override(&env_name, default), default);
+
+        // Safe overrides are honored: https anywhere, or http to loopback.
+        env::set_var(&env_name, "https://localhost:9999/token");
+        assert_eq!(
+            admin_token_url_override(&env_name, default),
+            "https://localhost:9999/token"
+        );
+        env::set_var(&env_name, "http://127.0.0.1:9999/token");
+        assert_eq!(
+            admin_token_url_override(&env_name, default),
+            "http://127.0.0.1:9999/token"
+        );
+
+        // A malformed URL, or http to a non-loopback host, is ignored (with a warn)
+        // and the default is used — no silent egress of the one-time code.
+        env::set_var(&env_name, "not a url");
+        assert_eq!(admin_token_url_override(&env_name, default), default);
+        env::set_var(&env_name, "http://evil.example.com/token");
+        assert_eq!(admin_token_url_override(&env_name, default), default);
+
+        env::remove_var(&env_name);
     }
 
     #[test]

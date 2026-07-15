@@ -204,9 +204,11 @@ contract from [`m2-chatgpt-oauth.md`](m2-chatgpt-oauth.md): authorize at
 redirect URL from the browser address bar or `<code>#<state>`. Completion checks
 the pending state in constant time, requires a refresh token, derives the account
 ID from the access-token JWT, and writes the verbatim `auth.json` shape at `0600`.
-`SHUNT_CODEX_TOKEN_URL` overrides the exchange endpoint for local tests; the same
-HTTPS-or-loopback sanitizer used by refresh prevents unsafe plaintext egress.
-No access, refresh, or ID token is returned or logged.
+`SHUNT_CODEX_TOKEN_URL` overrides the exchange endpoint for local tests; an
+invalid or non-HTTPS/non-loopback override is ignored with a warning (mirroring the
+Claude completion flow) instead of silently, and the exchange POST uses the
+redirect-hardened client so a permitted endpoint cannot 3xx the single-use code to
+an unsafe plaintext host. No access, refresh, or ID token is returned or logged.
 
 Like Claude, an empty-account `chatgpt_oauth` provider scans the Codex store and
 makes the new account live on its next request. Explicit-account providers need a

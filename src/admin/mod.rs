@@ -738,33 +738,7 @@ async fn remove_account_handler(
 /// loopback host (the integration tests point it at a local wiremock). Anything
 /// else is ignored with a warning and the built-in endpoint is used instead.
 fn admin_token_url() -> String {
-    let default = || claude_auth::TOKEN_URL.to_string();
-    let Some(raw) = std::env::var("SHUNT_CLAUDE_TOKEN_URL")
-        .ok()
-        .filter(|value| !value.is_empty())
-    else {
-        return default();
-    };
-    // Never log the raw URL — it may embed credentials in userinfo
-    // (`https://user:pass@host`); the rejection turns only on scheme/host, so
-    // log just those.
-    let Ok(url) = raw.parse::<reqwest::Url>() else {
-        tracing::warn!("admin: ignoring SHUNT_CLAUDE_TOKEN_URL (not a valid URL)");
-        return default();
-    };
-    let allowed = url.scheme() == "https"
-        || (url.scheme() == "http"
-            && crate::config::host_is_loopback(url.host_str().unwrap_or_default()));
-    if allowed {
-        raw
-    } else {
-        tracing::warn!(
-            scheme = url.scheme(),
-            host = url.host_str().unwrap_or_default(),
-            "admin: ignoring SHUNT_CLAUDE_TOKEN_URL (only https, or http to loopback, is allowed)"
-        );
-        default()
-    }
+    crate::auth::shared::admin_token_url_override("SHUNT_CLAUDE_TOKEN_URL", claude_auth::TOKEN_URL)
 }
 
 // --- response helpers ----------------------------------------------------------

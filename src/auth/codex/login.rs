@@ -43,13 +43,18 @@ pub(crate) fn build_authorize_url(
 }
 
 pub(crate) async fn exchange_code(
-    client: &reqwest::Client,
+    // The injected proxy client follows redirects freely; the code-exchange POST
+    // carries the one-time authorization code and PKCE verifier, so it goes through
+    // the redirect-hardened `token_refresh_client()` instead — a permitted token
+    // endpoint must not be able to 3xx the code to a plaintext/off-loopback host and
+    // defeat the initial-URL-only `sanitize_token_url` guard.
+    _client: &reqwest::Client,
     code: &str,
     verifier: &str,
     redirect_uri: &str,
     token_url: &str,
 ) -> anyhow::Result<auth::RefreshResponse> {
-    let response = client
+    let response = crate::auth::shared::token_refresh_client()
         .post(token_url)
         .form(&[
             ("grant_type", "authorization_code"),
