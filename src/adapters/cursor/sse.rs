@@ -400,6 +400,9 @@ impl CursorSseFramer {
     }
 
     pub fn take_output(&mut self) -> Vec<u8> {
+        if self.output.is_empty() {
+            return Vec::new();
+        }
         let mut output = Vec::with_capacity(self.output.capacity());
         std::mem::swap(&mut output, &mut self.output);
         output
@@ -479,6 +482,22 @@ mod tests {
     }
 
     #[test]
+    fn sse_delta_serialization_escapes_thinking() {
+        let mut framer = CursorSseFramer::new("msg_1", "cursor-test");
+        framer.emit_thinking_delta("a quote: \" and a newline:\n");
+        let output = String::from_utf8(framer.take_output()).unwrap();
+        let events = parse_sse_events(&output);
+        let delta = events
+            .iter()
+            .find(|(name, _)| *name == EVENT_CONTENT_BLOCK_DELTA)
+            .map(|(_, data)| data)
+            .expect("content block delta present");
+
+        assert_eq!(delta["delta"]["type"], "thinking_delta");
+        assert_eq!(delta["delta"]["thinking"], "a quote: \" and a newline:\n");
+    }
+
+    #[test]
     fn take_output_preserves_framer_buffer_capacity() {
         let mut framer = CursorSseFramer::new("msg_1", "cursor-test");
         framer.emit_text_delta("first");
@@ -488,6 +507,19 @@ mod tests {
 
         assert!(!output.is_empty());
         assert!(framer.output.is_empty());
+        assert_eq!(framer.output.capacity(), capacity);
+    }
+
+    #[test]
+    fn take_output_keeps_empty_buffer_for_reuse() {
+        let mut framer = CursorSseFramer::new("msg_1", "cursor-test");
+        framer.emit_text_delta("first");
+        let _ = framer.take_output();
+        let capacity = framer.output.capacity();
+
+        let output = framer.take_output();
+
+        assert!(output.is_empty());
         assert_eq!(framer.output.capacity(), capacity);
     }
 
