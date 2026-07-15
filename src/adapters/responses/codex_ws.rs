@@ -17,9 +17,10 @@
 //! while the connection sits idle between turns, so the backend never closes it
 //! with `keepalive ping timeout`. A turn is dispatched to that reader over a
 //! command channel; the reader streams the turn's events, records continuation
-//! state on a clean completion, and returns to idle keepalive duty. Because the
-//! reader forwards events over an *unbounded* channel it never blocks on
-//! downstream backpressure, so control frames are always serviced promptly.
+//! state on a clean completion, and returns to idle keepalive duty. Turn events
+//! cross a bounded channel, applying backpressure when a client falls behind while
+//! retaining enough burst capacity for the reader to service interleaved control
+//! frames promptly.
 //!
 //! On a reused connection this module also records the completed turn's response
 //! id and output items as [`StoredContinuation`], so the next turn can replay
@@ -28,7 +29,7 @@
 //! only ever valid on the exact connection that produced it, which is why the
 //! continuation state is stored on the [`Connection`] rather than globally.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
@@ -74,6 +75,16 @@ const POOL_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 /// Hard cap on pooled connections, a backstop against unbounded session churn.
 const MAX_POOL_ENTRIES: usize = 10_000;
 
+/// Maximum number of turn events buffered between the WebSocket reader and the
+/// downstream response. This bounds memory for slow clients while leaving room
+/// for normal backend bursts and interleaved control frames.
+const EVENT_CHANNEL_CAPACITY: usize = 64;
+
+/// Non-control frames read while an event send is backpressured. The queue is
+/// capped independently of the event channel so control frames remain responsive
+/// without allowing a slow client to accumulate the whole stream.
+const DEFERRED_FRAME_CAPACITY: usize = 8;
+
 /// WebSocket event types that end a response.
 const TERMINAL_EVENTS: &[&str] = &[
     "response.completed",
@@ -101,9 +112,9 @@ type WsSource = SplitStream<WsStream>;
 struct StartTurn {
     /// The `response.create` text frame to write before streaming.
     frame: Message,
-    /// Where the reader forwards this turn's events. Unbounded so downstream
-    /// backpressure never blocks the reader (and thus never starves `Pong`s).
-    events: mpsc::UnboundedSender<Result<ResponseEvent, CodexWsError>>,
+    /// Where the reader forwards this turn's events. Bounded so a slow client
+    /// applies backpressure instead of accumulating the entire stream in memory.
+    events: mpsc::Sender<Result<ResponseEvent, CodexWsError>>,
     /// What to record as continuation state on a clean completion.
     record: RecordPlan,
     /// Held for the turn's duration; dropped by the reader when the turn ends,
@@ -288,10 +299,9 @@ impl CodexWsError {
 }
 
 /// Receiver of translated events, terminated by `None`. A single `Err` item ends
-/// the stream (the reader stops the turn after sending it). Unbounded so the
-/// reader never blocks forwarding events, keeping control-frame handling
-/// independent of downstream consumption speed.
-pub type CodexWsEvents = mpsc::UnboundedReceiver<Result<ResponseEvent, CodexWsError>>;
+/// the stream (the reader stops the turn after sending it). Bounded to apply
+/// backpressure when downstream consumption falls behind.
+pub type CodexWsEvents = mpsc::Receiver<Result<ResponseEvent, CodexWsError>>;
 
 /// Rewrite an `http(s)` Responses URL to its `ws(s)` equivalent. The backend
 /// serves the websocket at the same path the HTTP adapter POSTs to.
@@ -397,7 +407,7 @@ impl Turn {
         let conn = self.conn.clone();
         let reused = self.reused;
         let pool_key = self.pool_key.take();
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
         let command = StartTurn {
             frame: Message::Text(payload),
             events: tx,
@@ -573,6 +583,19 @@ enum TurnEnd {
     Dead,
 }
 
+/// A non-control frame read while an event send was backpressured. It is replayed
+/// through the main turn loop once the pending event reaches the client.
+enum DeferredFrame {
+    Frame(Result<Message, tungstenite::Error>),
+    Eof,
+}
+
+/// Result of forwarding one event through the bounded channel.
+enum ForwardEvent {
+    Sent,
+    ReceiverClosed,
+}
+
 /// Surface an explicit error on any turn command still buffered when the reader
 /// exits, instead of letting it drop silently. A turn can be dispatched during the
 /// reader's teardown: `begin` returns before a `Close`/EOF breaks the loop, then
@@ -584,7 +607,7 @@ enum TurnEnd {
 fn fail_pending_commands(commands: &mut mpsc::Receiver<StartTurn>) {
     commands.close();
     while let Ok(StartTurn { events, .. }) = commands.try_recv() {
-        let _ = events.send(Err(CodexWsError::transport(
+        let _ = events.try_send(Err(CodexWsError::transport(
             "codex websocket closed before the turn could start",
         )));
     }
@@ -612,9 +635,11 @@ async fn run_connection(
                     break;
                 };
                 if let Err(error) = send_message(&conn, frame).await {
-                    let _ = events.send(Err(CodexWsError::transport(format!(
-                        "websocket send failed: {error}"
-                    ))));
+                    let _ = events
+                        .send(Err(CodexWsError::transport(format!(
+                            "websocket send failed: {error}"
+                        ))))
+                        .await;
                     evict(&conn);
                     drop(events);
                     drop(slot);
@@ -678,33 +703,76 @@ async fn run_connection(
     let _ = sink.close().await;
 }
 
+async fn forward_event(
+    conn: &Connection,
+    source: &mut WsSource,
+    events: &mpsc::Sender<Result<ResponseEvent, CodexWsError>>,
+    event: Result<ResponseEvent, CodexWsError>,
+    deferred: &mut VecDeque<DeferredFrame>,
+) -> ForwardEvent {
+    let send = events.send(event);
+    tokio::pin!(send);
+    loop {
+        tokio::select! {
+            result = &mut send => {
+                return if result.is_ok() {
+                    ForwardEvent::Sent
+                } else {
+                    ForwardEvent::ReceiverClosed
+                };
+            }
+            frame = source.next(), if deferred.len() < DEFERRED_FRAME_CAPACITY => {
+                match frame {
+                    Some(Ok(Message::Ping(data))) => {
+                        let _ = send_message(conn, Message::Pong(data)).await;
+                    }
+                    Some(Ok(Message::Pong(_))) => conn.pong.notify_waiters(),
+                    Some(frame) => deferred.push_back(DeferredFrame::Frame(frame)),
+                    None => deferred.push_back(DeferredFrame::Eof),
+                }
+            }
+        }
+    }
+}
+
 /// Stream one turn: pull frames until a terminal event, close, or error,
 /// forwarding each Text frame as a [`ResponseEvent`] while capturing the response
 /// id, output items, and turn-state token needed to record continuation. Answers
-/// `Ping` frames inline (independent of the unbounded event channel, so downstream
-/// backpressure never starves control-frame handling). On a clean completion the
-/// continuation is recorded and, for a not-yet-pooled connection, the connection
-/// is pooled.
+/// `Ping` frames inline. The bounded event channel has burst capacity so normal
+/// event batches do not delay control-frame handling; sustained downstream
+/// backpressure eventually propagates to the socket and bounds memory. On a clean
+/// completion, continuation is recorded and, for a not-yet-pooled connection, the
+/// connection is pooled.
 async fn run_turn(
     conn: &Arc<Connection>,
     source: &mut WsSource,
-    events: &mpsc::UnboundedSender<Result<ResponseEvent, CodexWsError>>,
+    events: &mpsc::Sender<Result<ResponseEvent, CodexWsError>>,
     record: RecordPlan,
     pooled: &mut bool,
 ) -> TurnEnd {
     let mut response_id = None;
     let mut output_items = Vec::new();
     let mut turn_state = None;
+    let mut deferred = VecDeque::new();
     loop {
-        let next = match tokio::time::timeout(IDLE_TIMEOUT, source.next()).await {
-            Ok(next) => next,
-            Err(_) => {
-                let _ = events.send(Err(CodexWsError::transport(format!(
-                    "websocket idle timeout after {}s",
-                    IDLE_TIMEOUT.as_secs()
-                ))));
-                evict(conn);
-                return TurnEnd::Dead;
+        let next = if let Some(deferred) = deferred.pop_front() {
+            match deferred {
+                DeferredFrame::Frame(frame) => Some(frame),
+                DeferredFrame::Eof => None,
+            }
+        } else {
+            match tokio::time::timeout(IDLE_TIMEOUT, source.next()).await {
+                Ok(next) => next,
+                Err(_) => {
+                    let _ = events
+                        .send(Err(CodexWsError::transport(format!(
+                            "websocket idle timeout after {}s",
+                            IDLE_TIMEOUT.as_secs()
+                        ))))
+                        .await;
+                    evict(conn);
+                    return TurnEnd::Dead;
+                }
             }
         };
 
@@ -719,7 +787,9 @@ async fn run_turn(
                 // A rejected `previous_response_id` is not forwarded to the client;
                 // it is signalled so the caller can retry with the full input.
                 if is_previous_response_missing(&event.data) {
-                    let _ = events.send(Err(CodexWsError::previous_response_missing()));
+                    let _ = events
+                        .send(Err(CodexWsError::previous_response_missing()))
+                        .await;
                     *conn.continuation.lock().unwrap() = None;
                     evict(conn);
                     return TurnEnd::Dead;
@@ -728,12 +798,25 @@ async fn run_turn(
                 let name = event.event.as_deref().unwrap_or("");
                 let is_terminal = TERMINAL_EVENTS.contains(&name);
                 let completed = name == REUSABLE_TERMINAL;
-                if events.send(Ok(event)).is_err() {
-                    // Receiver dropped (client cancelled): the turn is abandoned.
-                    evict(conn);
-                    return TurnEnd::Dead;
+                match forward_event(conn, source, events, Ok(event), &mut deferred).await {
+                    ForwardEvent::Sent => {}
+                    ForwardEvent::ReceiverClosed => {
+                        // Receiver dropped (client cancelled): the turn is abandoned.
+                        evict(conn);
+                        return TurnEnd::Dead;
+                    }
                 }
                 if is_terminal {
+                    // `forward_event` may have read one non-control frame while the
+                    // bounded send was waiting. A frame after a terminal event belongs
+                    // to the idle connection, not this completed turn; preserve it by
+                    // refusing to pool this socket rather than silently discarding an
+                    // already-observed Close/error or consuming the next protocol item.
+                    if !deferred.is_empty() {
+                        *conn.continuation.lock().unwrap() = None;
+                        evict(conn);
+                        return TurnEnd::Dead;
+                    }
                     if completed {
                         if let Some(response_id) = response_id {
                             let stored = StoredContinuation {
@@ -766,9 +849,11 @@ async fn run_turn(
             }
             Some(Ok(Message::Pong(_))) => conn.pong.notify_waiters(),
             Some(Ok(Message::Binary(_))) => {
-                let _ = events.send(Err(CodexWsError::transport(
-                    "unexpected binary websocket frame",
-                )));
+                let _ = events
+                    .send(Err(CodexWsError::transport(
+                        "unexpected binary websocket frame",
+                    )))
+                    .await;
                 evict(conn);
                 return TurnEnd::Dead;
             }
@@ -778,9 +863,11 @@ async fn run_turn(
                 // Anthropic `error` event (or the JSON path logs a failure) rather
                 // than a silently short, fake-success response.
                 tracing::warn!(close_frame = ?frame, "codex websocket closed before a terminal event");
-                let _ = events.send(Err(CodexWsError::transport(
-                    "codex websocket closed before the response completed",
-                )));
+                let _ = events
+                    .send(Err(CodexWsError::transport(
+                        "codex websocket closed before the response completed",
+                    )))
+                    .await;
                 evict(conn);
                 return TurnEnd::Dead;
             }
@@ -788,17 +875,21 @@ async fn run_turn(
                 // Stream ended (EOF / dropped connection) before a terminal event —
                 // same truncation case as an explicit Close.
                 tracing::warn!("codex websocket stream ended before a terminal event");
-                let _ = events.send(Err(CodexWsError::transport(
-                    "codex websocket ended before the response completed",
-                )));
+                let _ = events
+                    .send(Err(CodexWsError::transport(
+                        "codex websocket ended before the response completed",
+                    )))
+                    .await;
                 evict(conn);
                 return TurnEnd::Dead;
             }
             Some(Ok(Message::Frame(_))) => {}
             Some(Err(error)) => {
-                let _ = events.send(Err(CodexWsError::transport(format!(
-                    "websocket stream error: {error}"
-                ))));
+                let _ = events
+                    .send(Err(CodexWsError::transport(format!(
+                        "websocket stream error: {error}"
+                    ))))
+                    .await;
                 evict(conn);
                 return TurnEnd::Dead;
             }
@@ -1529,12 +1620,10 @@ mod tests {
         server.abort();
     }
 
-    /// Issue #93: downstream backpressure (a client not consuming events) must not
-    /// starve WebSocket control-frame handling. The reader forwards events over an
-    /// unbounded channel, so a mid-stream `Ping` is answered even while the client
-    /// holds the receiver without reading.
+    /// Dropping a downstream receiver while the bounded channel is full cancels
+    /// the blocked send, abandons the turn, and closes the non-pooled socket.
     #[tokio::test]
-    async fn backpressure_does_not_starve_control_frames() {
+    async fn receiver_drop_releases_backpressured_turn() {
         use tokio::net::TcpListener;
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1545,11 +1634,65 @@ mod tests {
             let Some(Ok(Message::Text(_))) = ws.next().await else {
                 panic!("expected a client frame");
             };
-            // Emit a burst of data events the client will not consume yet.
-            for _ in 0..8 {
+            for _ in 0..EVENT_CHANNEL_CAPACITY + 1 {
                 ws.send(Message::Text(
                     r#"{"type":"response.output_text.delta","delta":"x"}"#.to_string(),
                 ))
+                .await
+                .unwrap();
+            }
+            loop {
+                match ws.next().await {
+                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                    Some(Ok(_)) => continue,
+                }
+            }
+        });
+
+        let url = format!("ws://{addr}/codex/responses");
+        let frame = response_create_frame(serde_json::json!({"model": "m", "input": []}));
+        let events = open_simple(&url, HeaderMap::new(), &frame, None)
+            .await
+            .expect("websocket should connect");
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while events.capacity() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("backend fills the bounded event channel");
+        drop(events);
+
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("receiver cancellation closes the backpressured turn")
+            .unwrap();
+    }
+
+    /// Issue #155: the bounded event channel must apply backpressure without
+    /// starving control frames even after capacity is exhausted. The backend
+    /// overfills the channel, sends a Ping, then waits for its Pong while the client
+    /// deliberately holds the receiver without reading. Distinct deltas verify the
+    /// read-ahead frame is replayed in exact order.
+    #[tokio::test]
+    async fn bounded_backpressure_does_not_starve_control_frames() {
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            let Some(Ok(Message::Text(_))) = ws.next().await else {
+                panic!("expected a client frame");
+            };
+            // Overflow both bounded buffers before Ping. The reader must keep
+            // polling control frames while downstream capacity remains unavailable.
+            for index in 0..EVENT_CHANNEL_CAPACITY + DEFERRED_FRAME_CAPACITY {
+                ws.send(Message::Text(format!(
+                    r#"{{"type":"response.output_text.delta","delta":"{index}"}}"#
+                )))
                 .await
                 .unwrap();
             }
@@ -1588,12 +1731,28 @@ mod tests {
             .expect("server should observe a Pong before we consume events")
             .unwrap();
 
-        // Now drain: every queued event (deltas + completed) is still delivered.
-        let count = drain(&mut events).await;
-        assert!(
-            count >= 9,
-            "queued events delivered after backpressure: {count}"
+        // Now drain: every queued event is delivered in backend order, followed by
+        // the terminal event.
+        let mut deltas = Vec::new();
+        let mut terminal = false;
+        while let Some(item) = events.recv().await {
+            let event = item.expect("stream remains healthy");
+            match event.event.as_deref() {
+                Some("response.output_text.delta") => {
+                    deltas.push(event.data["delta"].as_str().unwrap().to_string());
+                }
+                Some("response.completed") => terminal = true,
+                other => panic!("unexpected event: {other:?}"),
+            }
+        }
+        assert_eq!(
+            deltas,
+            (0..EVENT_CHANNEL_CAPACITY + DEFERRED_FRAME_CAPACITY)
+                .map(|index| index.to_string())
+                .collect::<Vec<_>>(),
+            "deferred events retain backend order"
         );
+        assert!(terminal, "terminal event follows every queued delta");
     }
 
     /// A non-pooled turn (no session key) is used for exactly one turn, so once it
@@ -1682,7 +1841,7 @@ mod tests {
     #[tokio::test]
     async fn buffered_command_on_reader_exit_surfaces_error() {
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<StartTurn>(1);
-        let (ev_tx, mut ev_rx) = mpsc::unbounded_channel();
+        let (ev_tx, mut ev_rx) = mpsc::channel(1);
         let lock = Arc::new(AsyncMutex::new(()));
         cmd_tx
             .send(StartTurn {
@@ -1708,7 +1867,7 @@ mod tests {
         // The drained command released its slot, so re-locking here cannot deadlock.
         // The channel is now closed, so a racing dispatch fails fast instead of
         // buffering into a reader that will never receive it.
-        let (ev_tx2, _ev_rx2) = mpsc::unbounded_channel();
+        let (ev_tx2, _ev_rx2) = mpsc::channel(1);
         assert!(
             cmd_tx
                 .send(StartTurn {
