@@ -1,0 +1,30 @@
+docs/m9-admin-surface.md
+  s_c850886c88da3c::t_b8c2a4db36a49f 207-211
+src/admin/codex.rs
+  s_c850886c88da3c::t_8f49ae9ba69695 143-151
+src/auth/codex/login.rs
+  s_c850886c88da3c::t_8b4ff5e6f5d37c 46-51,57
+src/auth/shared.rs
+  s_c850886c88da3c::t_0912a704081a01 95-107,112-126
+  s_c850886c88da3c::t_04e180c05ff431 108-111
+  s_c850886c88da3c::t_a15e4e2e32fb9f 456-488
+  s_c850886c88da3c::t_aed89549ed35ce 455
+src/admin/mod.rs
+  s_c850886c88da3c::t_1817b4c628a408 741
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "34e3af1b8cde13797e35957928246c3f5c6211b1",
+  "prompts": {},
+  "sessions": {
+    "s_c850886c88da3c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3251fe5c-346a-4631-8f50-97d4e136e536",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
