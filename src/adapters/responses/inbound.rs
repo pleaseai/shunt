@@ -194,7 +194,7 @@ async fn forward_codex_passthrough(
                 // Force-refresh the account's stored credential (shared with
                 // forward_chatgpt_oauth); a `token_env` account or a refresh
                 // failure cools it down and rotates instead.
-                let rejected_access_token = chatgpt_access_token(&credential);
+                let rejected_access_token = chatgpt_access_token(&credential).unwrap_or("");
                 let retry_credential =
                     match force_refresh_or_cooldown(&state, &route, account, rejected_access_token)
                         .await
