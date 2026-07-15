@@ -133,6 +133,25 @@ impl CodexAuthStore {
         self.refresh_and_write_back(tokens, refreshing).await
     }
 
+    /// Refresh and persist the stored ChatGPT credential if the file still
+    /// contains the access token rejected by the upstream. If another request
+    /// has already refreshed it, return that newer credential without rotating
+    /// the refresh token again.
+    pub async fn force_refresh_if_access_token(
+        &self,
+        rejected_access_token: &str,
+    ) -> Result<ChatGptCred, AdapterError> {
+        let refreshing = refresh_lock_for(&self.path).lock_owned().await;
+        let auth = self.read_auth_off_thread().await?;
+        let tokens = auth
+            .tokens()
+            .ok_or_else(|| auth_error("ChatGPT auth tokens missing; run codex login"))?;
+        if tokens.access_token != rejected_access_token {
+            return tokens.to_credential();
+        }
+        self.refresh_and_write_back(tokens, refreshing).await
+    }
+
     async fn refresh_and_write_back(
         &self,
         tokens: TokenSet,
@@ -893,6 +912,53 @@ mod tests {
         .await
         .expect("detached refresh did not persist the rotated token");
 
+        server.verify().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn concurrent_force_refresh_skips_after_rejected_token_is_replaced() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let rejected_access = token(2_000_000_000, Some("acct_old"));
+        let new_access = token(2_000_000_000, Some("acct_new"));
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(100))
+                    .set_body_json(json!({
+                        "access_token": new_access,
+                        "refresh_token": "rotated-refresh",
+                    })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let dir = temp_auth_dir("force-single-flight");
+        let path = dir.join("auth.json");
+        write_auth(&path, &rejected_access, "old-refresh");
+        let first_store = CodexAuthStore::with_token_url(
+            path.clone(),
+            reqwest::Client::new(),
+            format!("{}/token", server.uri()),
+        );
+        let second_store = CodexAuthStore::with_token_url(
+            path.clone(),
+            reqwest::Client::new(),
+            format!("{}/token", server.uri()),
+        );
+
+        let (first, second) = tokio::join!(
+            first_store.force_refresh_if_access_token(&rejected_access),
+            second_store.force_refresh_if_access_token(&rejected_access),
+        );
+
+        assert_eq!(first.unwrap().access_token, new_access);
+        assert_eq!(second.unwrap().access_token, new_access);
         server.verify().await;
         let _ = std::fs::remove_dir_all(dir);
     }
