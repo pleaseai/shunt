@@ -1,0 +1,35 @@
+src/adapters/cursor/sse.rs
+  s_c2be63a2790aa1::t_82123c3532b744 82-90,115-117
+  s_c2be63a2790aa1::t_5d1655fd5565d4 276-283
+  s_c2be63a2790aa1::t_feb56f5ac2a500 365
+  s_c2be63a2790aa1::t_01d2b7e3c7bb1d 210,230,349
+  s_c2be63a2790aa1::t_cf6af8031b6d33 91,93-112
+  s_c2be63a2790aa1::t_9ad2ecd5f5ab74 2
+  s_c2be63a2790aa1::t_f0552f1801f4b0 391
+  s_c2be63a2790aa1::t_a0c57cfd130b56 92
+  s_c2be63a2790aa1::t_3aa722b48cc8af 262,284,359
+  s_c2be63a2790aa1::t_d59165f68cbdb9 403-405
+  s_c2be63a2790aa1::t_b3b26c7c93be4c 239,247,272
+  s_c2be63a2790aa1::t_3b2f6b795478d9 254-261
+  s_c2be63a2790aa1::t_0b6dc432e6cb38 189
+  s_c2be63a2790aa1::t_2a3fa10db799b0 397
+  s_c2be63a2790aa1::t_e382836806606d 466-493
+benches/gateway.rs
+  s_c2be63a2790aa1::t_7814c7474df9f3 209-212
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "2d374826475eb10933a4bbc5d4dac71c12941376",
+  "prompts": {},
+  "sessions": {
+    "s_c2be63a2790aa1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3efddf7a-1c74-4dcd-8ee2-1d65eb10ffb1",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
