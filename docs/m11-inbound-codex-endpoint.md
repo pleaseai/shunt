@@ -164,7 +164,7 @@ a gateway-owned `502 bad gateway` with the fixed message `all Codex OAuth accoun
 receiving an upstream response`.
 
 Every **gateway-owned** error on this endpoint — this 502, the inbound-auth `401`, an oversized or
-unreadable request body, or an account-store scan failure — is returned
+unreadable request body, a Codex endpoint disabled by hot reload, or an account-store scan failure — is returned
 in the **OpenAI Responses error shape** (`{"error":{"message":..,"type":..,"code":null}}`),
 preserving its status code, so a Codex CLI (or any OpenAI Responses client) parses it through its
 own error path rather than the Anthropic `{"type":"error",...}` envelope shunt uses elsewhere. This
