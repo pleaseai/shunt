@@ -106,7 +106,7 @@ earlier ones (a free account has resolved to `gpt-5.5`). shunt surfaces the back
 Some slugs carry a `minimal_client_version` (e.g. `gpt-5.6-luna` needs ≥ 0.144.0). When the
 request's client identity is missing or too old the backend answers `Model not found <slug>`.
 shunt avoids this by sending the pinned Codex CLI identity headers (`originator: codex_cli_rs`,
-`user-agent`, `version`), pinned to **openai/codex rust-v0.144.1**. See
+`user-agent`, `version`), pinned to **openai/codex rust-v0.144.4**. See
 [openai/codex#31967](https://github.com/openai/codex/issues/31967).
 :::
 

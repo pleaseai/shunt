@@ -172,12 +172,12 @@ For a Codex request shunt sends the Codex-CLI identity so client-version gating 
 | `authorization` | `Bearer <access_token>` |
 | `chatgpt-account-id` | `<account_id>` |
 | `originator` | `codex_cli_rs` |
-| `user-agent` | `codex_cli_rs/0.144.1` (`CODEX_USER_AGENT`) |
-| `version` | `0.144.1` (`CODEX_CLIENT_VERSION`) |
+| `user-agent` | `codex_cli_rs/0.144.4` (`CODEX_USER_AGENT`) |
+| `version` | `0.144.4` (`CODEX_CLIENT_VERSION`) |
 | `OpenAI-Beta` | `responses=experimental` |
 | `content-type` | `application/json` |
 
-The `user-agent` / `version` are **pinned to openai/codex rust-v0.144.1**. If a future slug
+The `user-agent` / `version` are **pinned to openai/codex rust-v0.144.4**. If a future slug
 demands a newer client, bump `CODEX_USER_AGENT` / `CODEX_CLIENT_VERSION` in
 `src/adapters/responses/request.rs`.
 
@@ -694,7 +694,7 @@ auto-discovered accounts, so imported store logins still get pooling.)
 - No model-based routing — every inbound request goes to the one configured provider, regardless
   of the `model` field in the body.
 - **Verbatim header passthrough.** The outbound path *synthesizes* the Codex identity headers of
-  §4.4 (pinned `originator`/`user-agent`/`version=codex_cli_rs/0.144.1`, `OpenAI-Beta`, session
+  §4.4 (pinned `originator`/`user-agent`/`version=codex_cli_rs/0.144.4`, `OpenAI-Beta`, session
   headers). The inbound endpoint does **not** — the client already *is* a Codex CLI, so its own
   request headers (`version`, `originator`, `OpenAI-Beta`, `x-codex-*`, …) are forwarded unchanged
   and shunt swaps in **only** the pool account's `Authorization` + `chatgpt-account-id` (and strips

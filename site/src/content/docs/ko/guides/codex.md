@@ -76,7 +76,7 @@ ChatGPT 계정 백엔드는 `gpt-*-codex` 슬러그(예: `gpt-5.2-codex`)를 `40
 :::
 
 :::note[`Model not found <slug>`는 자격이 아니라 클라이언트 버전 게이팅입니다]
-일부 슬러그는 `minimal_client_version`을 요구합니다(예: `gpt-5.6-luna`는 ≥ 0.144.0 필요). 요청의 클라이언트 신원이 없거나 너무 오래되면 백엔드는 `Model not found <slug>`를 반환합니다. shunt는 고정된 Codex CLI 신원 헤더(`originator: codex_cli_rs`, `user-agent`, `version`)를 **openai/codex rust-v0.144.1**에 고정하여 보내므로 이를 피합니다. [openai/codex#31967](https://github.com/openai/codex/issues/31967)을 참고하세요.
+일부 슬러그는 `minimal_client_version`을 요구합니다(예: `gpt-5.6-luna`는 ≥ 0.144.0 필요). 요청의 클라이언트 신원이 없거나 너무 오래되면 백엔드는 `Model not found <slug>`를 반환합니다. shunt는 고정된 Codex CLI 신원 헤더(`originator: codex_cli_rs`, `user-agent`, `version`)를 **openai/codex rust-v0.144.4**에 고정하여 보내므로 이를 피합니다. [openai/codex#31967](https://github.com/openai/codex/issues/31967)을 참고하세요.
 :::
 
 ## 4. Claude Code에서 모델 선택

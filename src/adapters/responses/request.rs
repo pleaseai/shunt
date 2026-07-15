@@ -3,7 +3,7 @@
 
 use crate::{auth::Credential, routing::Route, server::AppState};
 
-/// Codex CLI client identity, mirrored from openai/codex rust-v0.144.1.
+/// Codex CLI client identity, mirrored from openai/codex rust-v0.144.4.
 ///
 /// The ChatGPT backend routes newer model slugs (e.g. gpt-5.6-luna, which has
 /// `minimal_client_version: 0.144.0`) by client identity and answers
@@ -15,8 +15,8 @@ use crate::{auth::Credential, routing::Route, server::AppState};
 /// (codex-rs/login/src/auth/default_client.rs) and sends the bare CLI
 /// version in a `version` header (codex-rs/model-provider-info/src/lib.rs).
 /// Bump both together when a new slug requires a newer client version.
-pub(super) const CODEX_USER_AGENT: &str = "codex_cli_rs/0.144.1";
-pub(super) const CODEX_CLIENT_VERSION: &str = "0.144.1";
+pub(super) const CODEX_USER_AGENT: &str = "codex_cli_rs/0.144.4";
+pub(super) const CODEX_CLIENT_VERSION: &str = "0.144.4";
 
 /// Grok CLI identity, mirrored from the official Grok CLI (via
 /// raine/claude-code-proxy `src/providers/grok/client.rs`). The subscription

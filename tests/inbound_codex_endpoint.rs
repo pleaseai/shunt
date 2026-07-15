@@ -571,7 +571,7 @@ async fn authorization_bearer_authenticates_the_endpoint() {
 async fn forwards_client_identity_headers_verbatim_and_strips_shunt_token() {
     // codex -> shunt -> codex swaps ONLY the credential headers. The Codex CLI's
     // own identity headers reach the backend verbatim — shunt does NOT resynthesize
-    // them from a hardcoded `codex_cli_rs/0.144.1` / `responses=experimental`, so a
+    // them from a hardcoded `codex_cli_rs/0.144.4` / `responses=experimental`, so a
     // newer client's real version drives model version gating — while the shunt
     // client-token header is stripped and never leaks upstream.
     if !can_bind_loopback() {
