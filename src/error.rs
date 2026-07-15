@@ -125,8 +125,10 @@ struct OpenAiErrorDetail {
 /// behavior) is unchanged.
 pub async fn into_openai_error_shape(response: Response) -> Response {
     let status = response.status();
-    // Gateway-owned error bodies are tiny JSON envelopes; read the whole thing.
-    let body = to_bytes(response.into_body(), usize::MAX).await.ok();
+    // Gateway-owned error bodies are tiny JSON envelopes; cap the read at 64 KiB
+    // as defense-in-depth. The bound is never hit in practice, and an oversized
+    // body degrades to the empty-message fallback below rather than an OOM.
+    let body = to_bytes(response.into_body(), 64 * 1024).await.ok();
     let (kind, message) = body
         .as_deref()
         .and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok())
