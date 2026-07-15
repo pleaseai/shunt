@@ -189,12 +189,7 @@ pub(super) async fn forward_chatgpt_oauth(
                 // Force-refresh the account's stored credential under its refresh
                 // lock (see force_refresh_or_cooldown); a `token_env` account or a
                 // refresh failure cools it down and rotates instead.
-                let rejected_access_token = match &credential {
-                    Credential::ChatGptOAuth { access_token, .. } => access_token.as_str(),
-                    _ => unreachable!(
-                        "Codex pool accounts always resolve to ChatGPT OAuth credentials"
-                    ),
-                };
+                let rejected_access_token = chatgpt_access_token(&credential);
                 let retry_credential =
                     match force_refresh_or_cooldown(&state, &route, account, rejected_access_token)
                         .await
@@ -358,6 +353,13 @@ pub(super) async fn resolve_or_cooldown(
             );
             None
         }
+    }
+}
+
+pub(super) fn chatgpt_access_token(credential: &Credential) -> &str {
+    match credential {
+        Credential::ChatGptOAuth { access_token, .. } => access_token,
+        _ => unreachable!("Codex pool accounts always resolve to ChatGPT OAuth credentials"),
     }
 }
 
