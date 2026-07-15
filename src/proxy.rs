@@ -278,36 +278,46 @@ fn normalize_request_body(body: Vec<u8>) -> Vec<u8> {
     let Ok(mut request) = serde_json::from_slice::<Value>(&body) else {
         return body;
     };
-    normalize_empty_text_blocks(&mut request);
-    serde_json::to_vec(&request).unwrap_or(body)
+    // Re-serialize only when a block was actually dropped. The common case (no
+    // empty text block) keeps the original bytes and skips the encode entirely.
+    if normalize_empty_text_blocks(&mut request) {
+        serde_json::to_vec(&request).unwrap_or(body)
+    } else {
+        body
+    }
 }
 
-pub(crate) fn normalize_empty_text_blocks(request: &mut Value) {
+pub(crate) fn normalize_empty_text_blocks(request: &mut Value) -> bool {
     let Some(messages) = request.get_mut("messages").and_then(Value::as_array_mut) else {
-        return;
+        return false;
     };
+    let mut changed = false;
     for message in messages {
         let Some(content) = message.get_mut("content").and_then(Value::as_array_mut) else {
             continue;
         };
-        let original = content.clone();
-        content.retain(|block| !is_empty_text_block(block));
-        if content.is_empty() {
-            // Reaching here means *every* block was empty text: a message with
-            // no text, tool_use, or thinking at all. The #132 poisoned turns
-            // (tool-only / reasoning-only) always carry a surviving tool_use or
-            // thinking block, so the adapter never produces this shape — it is a
+        if content.iter().all(is_empty_text_block) {
+            // Every block is empty text: a message with no text, tool_use, or
+            // thinking at all. The #132 poisoned turns (tool-only /
+            // reasoning-only) always carry a surviving tool_use or thinking
+            // block, so the adapter never produces this shape — it is a
             // degenerate case only. Anthropic rejects both an empty `content`
             // array and an empty text block, and dropping the message would
             // break user/assistant alternation, so there is no local transform
-            // that makes such a message valid. We keep the first block as a
-            // last resort rather than risk an alternation error; the block may
-            // still be empty (see the `keeps_one_block...` test).
-            if let Some(block) = original.into_iter().next() {
-                content.push(block);
+            // that makes such a message valid. Keep the first block as a last
+            // resort (truncating in place, no clone); the block may still be
+            // empty (see the `keeps_one_block...` test).
+            if content.len() > 1 {
+                content.truncate(1);
+                changed = true;
             }
+        } else {
+            let before = content.len();
+            content.retain(|block| !is_empty_text_block(block));
+            changed |= content.len() != before;
         }
     }
+    changed
 }
 
 fn is_empty_text_block(block: &Value) -> bool {
