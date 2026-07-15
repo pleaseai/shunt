@@ -32,7 +32,10 @@ pub(super) fn stream_events_response(
     input_tokens_estimate: u64,
     keepalive: std::time::Duration,
 ) -> axum::response::Response {
-    let machine = relay.machine().with_input_estimate(input_tokens_estimate);
+    let machine = relay
+        .machine()
+        .with_input_estimate(input_tokens_estimate)
+        .without_content_accumulation();
     let output = stream::unfold(
         (buffered, events, machine, false),
         |(mut buffered, mut events, mut machine, finished)| async move {
