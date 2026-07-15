@@ -1,0 +1,24 @@
+AGENTS.md
+  s_14e1d06fb3cd67::t_941376cf673bee 39
+tests/inbound_codex_endpoint.rs
+  s_14e1d06fb3cd67::t_9e279c8087fd8a 1113-1115,1117-1120
+  s_14e1d06fb3cd67::t_d05232d95fd0f3 1180-1182
+src/error.rs
+  s_14e1d06fb3cd67::t_df938578d598bf 202,212-213,216,229
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "055d6f1f035048c3ad234851eba6208d406dd7e8",
+  "prompts": {},
+  "sessions": {
+    "s_14e1d06fb3cd67": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e94d9528-d29b-4b8c-869e-0b97274d08e3",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
