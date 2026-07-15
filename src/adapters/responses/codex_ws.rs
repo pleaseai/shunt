@@ -29,7 +29,7 @@
 //! only ever valid on the exact connection that produced it, which is why the
 //! continuation state is stored on the [`Connection`] rather than globally.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
@@ -79,6 +79,11 @@ const MAX_POOL_ENTRIES: usize = 10_000;
 /// downstream response. This bounds memory for slow clients while leaving room
 /// for normal backend bursts and interleaved control frames.
 const EVENT_CHANNEL_CAPACITY: usize = 64;
+
+/// Non-control frames read while an event send is backpressured. The queue is
+/// capped independently of the event channel so control frames remain responsive
+/// without allowing a slow client to accumulate the whole stream.
+const DEFERRED_FRAME_CAPACITY: usize = 8;
 
 /// WebSocket event types that end a response.
 const TERMINAL_EVENTS: &[&str] = &[
@@ -587,7 +592,7 @@ enum DeferredFrame {
 
 /// Result of forwarding one event through the bounded channel.
 enum ForwardEvent {
-    Sent(Option<DeferredFrame>),
+    Sent,
     ReceiverClosed,
 }
 
@@ -703,6 +708,7 @@ async fn forward_event(
     source: &mut WsSource,
     events: &mpsc::Sender<Result<ResponseEvent, CodexWsError>>,
     event: Result<ResponseEvent, CodexWsError>,
+    deferred: &mut VecDeque<DeferredFrame>,
 ) -> ForwardEvent {
     let send = events.send(event);
     tokio::pin!(send);
@@ -710,29 +716,19 @@ async fn forward_event(
         tokio::select! {
             result = &mut send => {
                 return if result.is_ok() {
-                    ForwardEvent::Sent(None)
+                    ForwardEvent::Sent
                 } else {
                     ForwardEvent::ReceiverClosed
                 };
             }
-            frame = source.next() => {
+            frame = source.next(), if deferred.len() < DEFERRED_FRAME_CAPACITY => {
                 match frame {
                     Some(Ok(Message::Ping(data))) => {
                         let _ = send_message(conn, Message::Pong(data)).await;
                     }
                     Some(Ok(Message::Pong(_))) => conn.pong.notify_waiters(),
-                    Some(frame) => {
-                        if send.await.is_err() {
-                            return ForwardEvent::ReceiverClosed;
-                        }
-                        return ForwardEvent::Sent(Some(DeferredFrame::Frame(frame)));
-                    }
-                    None => {
-                        if send.await.is_err() {
-                            return ForwardEvent::ReceiverClosed;
-                        }
-                        return ForwardEvent::Sent(Some(DeferredFrame::Eof));
-                    }
+                    Some(frame) => deferred.push_back(DeferredFrame::Frame(frame)),
+                    None => deferred.push_back(DeferredFrame::Eof),
                 }
             }
         }
@@ -757,9 +753,9 @@ async fn run_turn(
     let mut response_id = None;
     let mut output_items = Vec::new();
     let mut turn_state = None;
-    let mut deferred = None;
+    let mut deferred = VecDeque::new();
     loop {
-        let next = if let Some(deferred) = deferred.take() {
+        let next = if let Some(deferred) = deferred.pop_front() {
             match deferred {
                 DeferredFrame::Frame(frame) => Some(frame),
                 DeferredFrame::Eof => None,
@@ -802,8 +798,8 @@ async fn run_turn(
                 let name = event.event.as_deref().unwrap_or("");
                 let is_terminal = TERMINAL_EVENTS.contains(&name);
                 let completed = name == REUSABLE_TERMINAL;
-                match forward_event(conn, source, events, Ok(event)).await {
-                    ForwardEvent::Sent(next) => deferred = next,
+                match forward_event(conn, source, events, Ok(event), &mut deferred).await {
+                    ForwardEvent::Sent => {}
                     ForwardEvent::ReceiverClosed => {
                         // Receiver dropped (client cancelled): the turn is abandoned.
                         evict(conn);
@@ -816,7 +812,7 @@ async fn run_turn(
                     // to the idle connection, not this completed turn; preserve it by
                     // refusing to pool this socket rather than silently discarding an
                     // already-observed Close/error or consuming the next protocol item.
-                    if deferred.is_some() {
+                    if !deferred.is_empty() {
                         *conn.continuation.lock().unwrap() = None;
                         evict(conn);
                         return TurnEnd::Dead;
@@ -1641,9 +1637,9 @@ mod tests {
             let Some(Ok(Message::Text(_))) = ws.next().await else {
                 panic!("expected a client frame");
             };
-            // Overflow the bounded channel by one event. The reader must keep
-            // polling control frames while that event waits for channel capacity.
-            for index in 0..=EVENT_CHANNEL_CAPACITY {
+            // Overflow both bounded buffers before Ping. The reader must keep
+            // polling control frames while downstream capacity remains unavailable.
+            for index in 0..EVENT_CHANNEL_CAPACITY + DEFERRED_FRAME_CAPACITY {
                 ws.send(Message::Text(format!(
                     r#"{{"type":"response.output_text.delta","delta":"{index}"}}"#
                 )))
@@ -1701,7 +1697,7 @@ mod tests {
         }
         assert_eq!(
             deltas,
-            (0..=EVENT_CHANNEL_CAPACITY)
+            (0..EVENT_CHANNEL_CAPACITY + DEFERRED_FRAME_CAPACITY)
                 .map(|index| index.to_string())
                 .collect::<Vec<_>>(),
             "deferred events retain backend order"
