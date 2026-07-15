@@ -171,10 +171,13 @@ impl CodexAuthStore {
         let path = self.path.clone();
         tokio::spawn(async move {
             let _refreshing = refreshing;
-            let refreshed = refresh_tokens(&client, &token_url, &refresh_token).await?;
-            let result = match refreshed.to_credential() {
-                Ok(credential) => {
-                    tokio::task::spawn_blocking(move || write_refreshed_auth(&path, refreshed))
+            let result = async {
+                let refreshed = refresh_tokens(&client, &token_url, &refresh_token).await?;
+                match refreshed.to_credential() {
+                    Ok(credential) => {
+                        tokio::task::spawn_blocking(move || {
+                            write_refreshed_auth(&path, refreshed)
+                        })
                         .await
                         .map_err(|error| {
                             auth_error(format!("ChatGPT auth write task failed: {error}"))
@@ -187,19 +190,20 @@ impl CodexAuthStore {
                             })
                         })
                         .map(|()| credential)
+                    }
+                    Err(error) => Err(error),
                 }
-                Err(error) => Err(error),
-            };
+            }
+            .await;
             if let Err(error) = &result {
-                // The upstream refresh may already have consumed the old refresh
-                // token, so a credential-validation or writeback failure can leave
-                // the file holding a now-invalid token. Log here (not only via the
-                // returned Err) so the failure stays visible even when the caller's
+                // Keep every detached refresh failure visible even when the caller's
                 // future was dropped and the JoinHandle carrying this Err is
-                // discarded. Never log the token values themselves, only the error.
+                // discarded. A successful upstream rotation followed by validation
+                // or writeback failure may also leave the stored token stale. Never
+                // log the token values themselves, only the error.
                 tracing::warn!(
                     ?error,
-                    "ChatGPT OAuth token refreshed upstream but validation or writeback failed; stored refresh token may now be stale until re-login"
+                    "ChatGPT OAuth token refresh, validation, or writeback failed; stored refresh token may now be stale until re-login"
                 );
             }
             result
