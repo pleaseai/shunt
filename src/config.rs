@@ -58,6 +58,14 @@ pub struct ServerConfig {
     /// `docs/m11-inbound-codex-endpoint.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_endpoint: Option<CodexEndpointConfig>,
+    /// Optional opt-in client-facing usage endpoint (`GET /usage`). Absent ⇒ the
+    /// route is not registered (today's HTTP surface unchanged). When set, a
+    /// `[server.auth]` client-token holder can read a sanitized, aggregated view
+    /// of the shared account pool's quota state. Requires `[server.auth]` (a
+    /// non-admin caller must be identifiable) — enforced by [`Config::validate`].
+    /// See `docs/m12-client-usage-endpoint.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<UsageEndpointConfig>,
     /// Optional account-pool tuning (issue #135) and opt-in usage-API
     /// reconciliation. Absent ⇒ legacy quota selection and no background polling.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -266,6 +274,17 @@ pub struct CodexEndpointConfig {
 fn default_codex_endpoint_provider() -> String {
     "codex".to_string()
 }
+
+/// `[server.usage]` — opt-in client-facing usage endpoint. When present, shunt
+/// registers `GET /usage`, which returns a **sanitized, aggregated** view of the
+/// shared account pool's quota state (per-window remaining headroom and reset)
+/// for `[server.auth]` client-token holders. Unlike the admin dashboard
+/// (`GET /admin/pool`), it never exposes account identities, counts, priorities,
+/// disabled flags, or thresholds. Presence alone opts in; the table has no
+/// fields today. Requires `[server.auth]`. Absent ⇒ the route does not exist.
+/// See `docs/m12-client-usage-endpoint.md`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct UsageEndpointConfig {}
 
 /// `[sentry]` — opt-in error reporting to the operator's own Sentry project.
 /// Only gateway-owned diagnostics are reported (fatal startup/serve errors,
@@ -530,6 +549,9 @@ pub struct AccountConfig {
     pub credentials: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_env: Option<String>,
+    /// Provider-independent stable upstream identity used to coalesce aliases in
+    /// an account pool: Claude stores `shuntAccountUuid`, while Codex stores
+    /// `chatgpt_account_id`. When absent, pool selection falls back to `name`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uuid: Option<String>,
     /// Soft quota threshold for every window, overriding `[server.pool]`
@@ -574,6 +596,26 @@ impl Default for AccountConfig {
             disabled: false,
         }
     }
+}
+
+/// Collisions in the same stable-identity key `AccountPool` uses at runtime
+/// (`crate::accounts::account_identity`: explicit `uuid`, falling back to
+/// `name`), so an account with an explicit `uuid` that happens to equal
+/// another account's name-fallback identity is caught here too, not just
+/// explicit-`uuid`-vs-explicit-`uuid` collisions.
+pub(crate) fn identity_collisions(accounts: &[AccountConfig]) -> Vec<(String, Vec<String>)> {
+    let mut groups = BTreeMap::<&str, Vec<String>>::new();
+    for account in accounts {
+        groups
+            .entry(crate::accounts::account_identity(account))
+            .or_default()
+            .push(account.name.clone());
+    }
+    groups
+        .into_iter()
+        .filter(|(_, names)| names.len() > 1)
+        .map(|(identity, names)| (identity.to_string(), names))
+        .collect()
 }
 
 fn deserialize_optional_credentials_path<'de, D>(
@@ -839,6 +881,8 @@ pub enum ConfigError {
     UnknownCodexEndpointProvider(String),
     #[error("[server.codex_endpoint] provider {0} must use auth = \"chatgpt_oauth\"; the inbound Responses endpoint injects the operator's Codex bearer")]
     CodexEndpointWrongAuth(String),
+    #[error("[server.usage] requires [server.auth]: the usage endpoint must identify a non-admin caller by client token")]
+    UsageEndpointRequiresAuth,
     #[error("route for model {model} references unknown provider: {provider}")]
     UnknownRouteProvider { model: String, provider: String },
     #[error("route prefix {prefix} references unknown provider: {provider}")]
@@ -997,6 +1041,7 @@ impl Default for Config {
                 auth: None,
                 admin: None,
                 codex_endpoint: None,
+                usage: None,
                 pool: None,
                 sse_keepalive_seconds: default_sse_keepalive_seconds(),
             },
@@ -1097,6 +1142,10 @@ impl Config {
             .extract()
             .map_err(Box::new)?;
         let config = config.validate()?;
+        // Collision reporting belongs to the load boundary rather than
+        // validation: RuntimeState defensively re-validates an already-loaded
+        // config, and logging there would emit the same warning twice.
+        config.warn_identity_collisions();
         // Logged only after validation so a rejected config never boots with a
         // misleading "loaded config" line.
         match &path {
@@ -1120,6 +1169,19 @@ impl Config {
         config_file_candidates(xdg_config_home, homebrew_prefix)
             .into_iter()
             .find(|path| path.is_file())
+    }
+
+    fn warn_identity_collisions(&self) {
+        for (name, provider) in &self.providers {
+            for (identity, accounts) in identity_collisions(&provider.accounts) {
+                tracing::warn!(
+                    provider = %name,
+                    identity = %identity,
+                    accounts = ?accounts,
+                    "multiple account names share one upstream identity; the pool will treat them as one account"
+                );
+            }
+        }
     }
 
     pub fn validate(self) -> Result<Self, ConfigError> {
@@ -1404,6 +1466,13 @@ impl Config {
                 Some(_) => {}
             }
         }
+        // The client-facing usage endpoint identifies its caller by client token,
+        // so it is only meaningful — and only safe to register — when inbound auth
+        // is configured. Without it, `GET /usage` would be world-readable pool
+        // telemetry; fail closed at boot rather than expose it.
+        if self.server.usage.is_some() && self.server.auth.is_none() {
+            return Err(ConfigError::UsageEndpointRequiresAuth);
+        }
         for route in &self.routes {
             if !self.has_provider(&route.provider) {
                 return Err(ConfigError::UnknownRouteProvider {
@@ -1571,9 +1640,10 @@ mod tests {
     use figment::providers::Format;
 
     use super::{
-        config_file_candidates, host_is_chatgpt, AccountConfig, AdminConfig, AuthMode,
-        CodexEndpointConfig, Config, ConfigError, ConfigFormat, ModelConfig, PoolConfig,
-        ProviderKind, ResponsesFlavor, RetryConfig,
+        config_file_candidates, default_auth_header, host_is_chatgpt, identity_collisions,
+        AccountConfig, AdminConfig, AuthMode, CodexEndpointConfig, Config, ConfigError,
+        ConfigFormat, InboundAuthConfig, ModelConfig, PoolConfig, ProviderKind, ResponsesFlavor,
+        RetryConfig, UsageEndpointConfig,
     };
 
     #[test]
@@ -1892,6 +1962,60 @@ mod tests {
     // builder that flips the auth mode first.
 
     #[test]
+    fn identity_collisions_group_only_explicit_shared_identities() {
+        let mut first = account("first");
+        first.uuid = Some("shared".to_string());
+        let mut second = account("second");
+        second.uuid = Some("shared".to_string());
+        let unique = account("unique");
+        let mut solo = account("solo");
+        solo.uuid = Some("solo-id".to_string());
+
+        assert_eq!(
+            identity_collisions(&[first.clone(), second.clone(), unique, solo]),
+            vec![(
+                "shared".to_string(),
+                vec!["first".to_string(), "second".to_string()]
+            )]
+        );
+
+        let mut config = Config::default();
+        config.providers.get_mut("codex").unwrap().accounts = vec![first, second];
+        assert!(
+            config.validate().is_ok(),
+            "collisions are warnings, not errors"
+        );
+    }
+
+    #[test]
+    fn identity_collisions_catches_explicit_uuid_matching_a_name_fallback_identity() {
+        // "first" has no uuid, so its runtime identity falls back to its name
+        // ("first"). A second account whose *explicit* uuid is literally
+        // "first" collides with it at runtime (`account_identity` uses the
+        // same key for both), even though the old implementation only ever
+        // compared explicit uuids against each other.
+        let first = account("first");
+        let mut second = account("second");
+        second.uuid = Some("first".to_string());
+        let unrelated = account("unrelated");
+
+        assert_eq!(
+            identity_collisions(&[first.clone(), second.clone(), unrelated]),
+            vec![(
+                "first".to_string(),
+                vec!["first".to_string(), "second".to_string()]
+            )]
+        );
+
+        let mut config = Config::default();
+        config.providers.get_mut("codex").unwrap().accounts = vec![first, second];
+        assert!(
+            config.validate().is_ok(),
+            "collisions are warnings, not errors"
+        );
+    }
+
+    #[test]
     fn chatgpt_oauth_accepts_accounts_on_default_chatgpt_host() {
         let mut config = Config::default();
         config
@@ -1999,6 +2123,36 @@ mod tests {
             config.validate().unwrap_err(),
             ConfigError::CodexEndpointWrongAuth(provider) if provider == "anthropic"
         ));
+    }
+
+    #[test]
+    fn usage_endpoint_requires_inbound_auth() {
+        // Opting into `[server.usage]` without `[server.auth]` is rejected at
+        // boot: the endpoint must identify a non-admin caller by client token.
+        let mut config = Config::default();
+        config.server.usage = Some(UsageEndpointConfig::default());
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::UsageEndpointRequiresAuth
+        ));
+    }
+
+    #[test]
+    fn usage_endpoint_accepts_when_inbound_auth_is_configured() {
+        // With `[server.auth]` present and its tokens resolvable, the pairing
+        // validates. `validate()` fails closed by resolving `[server.auth]`, so
+        // point it at an env var holding a valid token.
+        let env = format!("SHUNT_USAGE_VALIDATE_TOKENS_{}", std::process::id());
+        std::env::set_var(&env, "tester:tok");
+        let mut config = Config::default();
+        config.server.usage = Some(UsageEndpointConfig::default());
+        config.server.auth = Some(InboundAuthConfig {
+            header: default_auth_header(),
+            tokens_env: env.clone(),
+        });
+        let result = config.validate();
+        std::env::remove_var(&env);
+        result.unwrap();
     }
 
     #[test]

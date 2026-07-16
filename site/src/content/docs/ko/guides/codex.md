@@ -7,6 +7,10 @@ description: ~/.codex/auth.json을 재사용하여 Claude Code 추론을 ChatGPT
 
 이 페이지는 처음부터 끝까지의 설정입니다. 더 깊은 주제 페이지([노력 & 컨텍스트](/ko/guides/effort-and-context/), [모델 디스커버리](/ko/guides/model-discovery/), [프로바이더](/ko/guides/providers/))를 반복하는 대신 그쪽으로 링크합니다.
 
+:::note[Duplicate names for one real account]
+Codex 풀에 동일한 `account_id`를 가진 두 이름이 있으면, shunt는 이들을 **하나의 계정**으로 취급합니다 — 단, 그 `account_id`가 실제로 resolve된 경우에 한합니다. 스토어에서 발견된 별칭(`accounts` 목록이 비어 있는 경우)은 스토어 스캔 자체가 resolve하므로 자동으로 coalesce됩니다. `credentials` 또는 `token_env`로 명시적으로 설정된 항목은 selection 이후 요청마다 id를 resolve합니다 — 그 identity는 설정되어 있으면 공백이 아닌 `uuid`, 없으면 `name`입니다. 이 identity가 다른 별칭의 명시적 `uuid` 또는 name-fallback identity와 일치할 때 coalesce되므로, 의도적으로 coalesce시키려면 양쪽에 일치하는 공백 아닌 `uuid`를 설정하세요 — shunt는 명시적 `uuid`가 다른 계정의 name-fallback identity와 우연히 일치하는 경우에도 경고를 남깁니다. coalesce된 별칭들은 쿨다운, 헬스, 리프레시 락을 공유하며, 페일오버는 재시도 대신 중복된 아이덴티티를 건너뜁니다. `priority`가 가장 낮은 활성화된 별칭(그다음은 첫 번째 항목)이 유일하게 시도되는 토큰을 제공하며, shunt는 중복 아이덴티티 경고를 로그에 남깁니다. 스토어 디스커버리는 `tokens.account_id` 또는 JWT claim을 읽고, 디렉터리 mtime으로 스캔을 캐시합니다. 자세한 내용은 [Codex 멀티 계정 가이드](/ko/guides/codex-multi-account/)를 참고하세요.
+:::
+
 ## 동작 방식
 
 `codex`는 내장 **`kind = "responses"`** 프로바이더입니다: shunt는 Claude Code의 Anthropic Messages 요청을 OpenAI **Responses API**로 변환하여 ChatGPT 계정 Codex 백엔드로 보내고, 스트리밍된 응답을 다시 변환합니다. 이를 일반 OpenAI가 아닌 "Codex"로 만드는 세 가지 요소:
@@ -18,6 +22,8 @@ description: ~/.codex/auth.json을 재사용하여 Claude Code 추론을 ChatGPT
 | Responses 방언 | `Chatgpt` 플레이버 — codex가 절대 보내지 않는 파라미터(예: `max_output_tokens`)를 제거하고, `store: false`를 보내며, 암호화된 추론을 왕복시킴 |
 
 방언은 프로바이더 이름이 아니라 `auth = "chatgpt_oauth"`를 기준으로 결정됩니다.
+
+Codex 계정을 풀로 사용하면 성공한 백엔드 응답의 `x-codex-*` 속도 제한 윈도우도 관리자 **Pool health**에 표시됩니다. 약 5시간 윈도우는 **5h**, 약 7일 윈도우는 **7d**에 표시되고, 지원하지 않는 일간·월간 윈도우는 무시됩니다. Codex에는 `7d_oi`에 대응하는 윈도우가 없습니다. 이 사용량은 표시 전용이며 Codex 계정 선택은 계속 쿨다운 기반으로 동작합니다.
 
 ## 1. 로그인
 

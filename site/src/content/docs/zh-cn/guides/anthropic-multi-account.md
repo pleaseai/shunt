@@ -80,13 +80,19 @@ Full OAuth 创建一个新的可刷新 credential;import 把当前的 `~/.claude
 | `name` | 是 | 只含小写字母、数字和连字符的唯一标签。若没有其他来源字段,则解析同名的 shunt 存储文件。 |
 | `credentials` | 可用来源之一 | Claude Code `.credentials.json` 形态的文件。`~/` 会被展开。shunt 在临近过期时刷新,并将刷新后的 token 原子性地写回。 |
 | `token_env` | 可用来源之一 | 包含 setup token 的环境变量。其值按原样使用,401 之后无法刷新。 |
-| `uuid` | 否 | 所选账户的 Anthropic UUID,用于改写已存在的 `metadata.user_id.account_uuid`。 |
+| `uuid` | 否 | 所选账户的 Anthropic UUID,用于改写已存在的 `metadata.user_id.account_uuid`,同时也是池中用于合并别名的稳定身份。仅有名称的条目(通过存储扫描解析)会在选择发生前自动从存储的 `shuntAccountUuid` 填充。通过 `credentials` 或 `token_env` 配置的条目,其身份在设置了 `uuid` 时为该值,否则为 `name`;只要该身份与另一别名显式的 `uuid` 或名称回退身份相等,就会与之合并——为清晰、有意的合并,请在两个条目上设置匹配且非空的 `uuid`(当某个显式 `uuid` 意外匹配另一账户的名称回退身份时,shunt 也会发出警告)。 |
 | `threshold` | 否 | `[0.0, 1.0]` 范围内的按账户软配额阈值,适用于所有没有按窗口取值的窗口。较低的取值把该账户标记为提前轮换出去的后备账户。 |
 | `threshold_5h` / `threshold_7d` / `threshold_fable` | 否 | 按窗口的软阈值;各自在其窗口上优先于 `threshold`。 |
 | `priority` | 否 | 粘性账户不健康时的选择优先级;数值越低越优先,默认 `100`。 |
 | `disabled` | 否 | `true` 把该账户完全移出选择,同时保留在配置和管理仪表板上。 |
 
 不要在同一个账户上同时设置 `credentials` 和 `token_env`。
+
+:::note[Duplicate names for one real account]
+`uuid` 也是池的稳定上游身份。如果两个名称携带相同的 UUID,shunt 会将它们视为**同一个账户**:它们共享配额、冷却、使用量、健康状态和刷新锁,故障转移会跳过重复的别名。粘性哈希和轮询基于不同的身份运作,因此添加一个别名不会移动会话。代表账户是 `priority` 最低的已启用别名,其次是第一个条目;只有该代表的 token 会被尝试。shunt 会记录一条重复身份警告(配置文件中 `[[providers.anthropic.accounts]]` 之间的重复,每次成功加载配置时记录一次,包括重新加载;存储扫描发现的重复,每当重复集合发生变化时记录一次——两者都不是每次请求都记录)。因此,即使该代表 token 失效而另一个别名的 token 有效,shunt 仍不会尝试该别名。
+
+通过 admin web 界面删除存储管理的账户时,只有在确认没有其他存储别名仍解析为同一身份后,才会清除该身份共享的进程内健康状态;扫描失败时会保留健康状态。这是 admin 存储删除的语义——从 TOML 配置中移除别名,或直接删除其 credential 文件,都不会经过此清理流程。
+:::
 
 ## 选择与主动轮换
 

@@ -4,9 +4,9 @@
 //! Two behaviors set this suite apart from the Anthropic one, both driven by
 //! `accounts::classify_codex` (see `src/accounts.rs`):
 //!
-//! - Codex carries no per-account quota-rejection header, so every 429
-//!   rotates to the next account — there is no `PauseSame` sub-case, and no
-//!   analog of the Anthropic suite's `plain_429_retries_the_same_account_...`
+//! - Codex quota/rejection headers are display-only, so every 429 rotates to
+//!   the next account — there is no `PauseSame` sub-case, and no analog of the
+//!   Anthropic suite's `plain_429_retries_the_same_account_...`
 //!   or `pause_same_retry_succeeds_and_relays_...` tests.
 //! - A `token_env` (static) account has no store-file "setup token" marker
 //!   concept: the `RefreshRetry` check is `account.token_env.is_some()` only,

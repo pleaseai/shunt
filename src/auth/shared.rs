@@ -230,21 +230,13 @@ pub fn default_accounts_dir(env_var: &str, subdir: &str) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".shunt/accounts").join(subdir))
 }
 
-/// Scan a store directory for `<name>.json` account files and return name-only
-/// [`AccountConfig`] entries in deterministic name order. Each entry's `uuid` is
-/// produced by `uuid_for` — the Claude store reads a UUID from the file; the
-/// Codex store has none and passes `|_| None`. A missing directory yields an
-/// empty list (the backward-compatible "no store configured" case).
-pub fn scan_account_dir(
-    dir: &Path,
-    uuid_for: impl Fn(&Path) -> Option<String>,
-) -> io::Result<Vec<AccountConfig>> {
+fn account_files(dir: &Path) -> io::Result<Vec<(String, PathBuf)>> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error),
     };
-    let mut accounts = Vec::new();
+    let mut files = Vec::new();
     for entry in entries {
         let Ok(entry) = entry else {
             continue;
@@ -265,14 +257,63 @@ pub fn scan_account_dir(
         if validate_account_name(name).is_err() {
             continue;
         }
-        accounts.push(AccountConfig {
-            name: name.to_string(),
-            uuid: uuid_for(&path),
-            ..Default::default()
-        });
+        files.push((name.to_string(), path));
     }
-    accounts.sort_by(|left, right| left.name.cmp(&right.name));
-    Ok(accounts)
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(files)
+}
+
+/// Scan a store directory for `<name>.json` account files and return name-only
+/// [`AccountConfig`] entries in deterministic name order. Each entry's `uuid` is
+/// produced by `uuid_for` — the Claude store reads a UUID from the file; the
+/// Codex store has none and passes `|_| None`. A missing directory yields an
+/// empty list (the backward-compatible "no store configured" case).
+pub fn scan_account_dir(
+    dir: &Path,
+    uuid_for: impl Fn(&Path) -> Option<String>,
+) -> io::Result<Vec<AccountConfig>> {
+    account_files(dir).map(|files| {
+        files
+            .into_iter()
+            .map(|(name, path)| AccountConfig {
+                name,
+                uuid: uuid_for(&path),
+                ..Default::default()
+            })
+            .collect()
+    })
+}
+
+/// Like [`scan_account_dir`], but propagates a per-file identity-read failure
+/// as a whole-scan `Err` instead of silently treating that account as having
+/// no identity (which `scan_account_dir` does, via `uuid_for` returning
+/// `None` on a read/parse error the same as on a legitimately absent field).
+/// Admin cleanup calls this — not `scan_account_dir` — for the fail-closed
+/// check of whether a sibling store alias still shares the identity being
+/// removed: a corrupted or unreadable sibling file must not be silently
+/// treated as "definitely a different identity", since that could let a
+/// shared identity's process-lifetime health be cleared while a still-valid
+/// (but unreadable-right-now) alias depends on it.
+pub fn scan_account_dir_strict(
+    dir: &Path,
+    uuid_for: impl Fn(&Path) -> Result<Option<String>, ()>,
+) -> io::Result<Vec<AccountConfig>> {
+    account_files(dir)?
+        .into_iter()
+        .map(|(name, path)| {
+            let uuid = uuid_for(&path).map_err(|()| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("failed to read upstream identity from account file {path:?}"),
+                )
+            })?;
+            Ok(AccountConfig {
+                name,
+                uuid,
+                ..Default::default()
+            })
+        })
+        .collect()
 }
 
 /// Resolve a pooled provider's effective account list: its configured
@@ -372,7 +413,9 @@ fn scan_cached(
     scan: impl Fn() -> io::Result<Vec<AccountConfig>>,
 ) -> io::Result<Vec<AccountConfig>> {
     let Some(modified) = modified else {
-        return scan();
+        let accounts = scan()?;
+        warn_scan_identity_collisions(provider, dir, &accounts);
+        return Ok(accounts);
     };
     let key = (provider.to_string(), dir.to_path_buf());
     {
@@ -391,6 +434,7 @@ fn scan_cached(
     // mtime equals the mtime this request sampled, so a stale write is re-scanned
     // away as soon as a request observes a different directory mtime.
     let accounts = scan()?;
+    warn_scan_identity_collisions(provider, dir, &accounts);
     scan_cache()
         .lock()
         .expect("scan cache mutex poisoned")
@@ -402,6 +446,60 @@ fn scan_cached(
             },
         );
     Ok(accounts)
+}
+
+/// One identity collision: the shared identity plus the account names sharing
+/// it, as produced by [`crate::config::identity_collisions`].
+type IdentityCollision = (String, Vec<String>);
+
+/// `(provider, store directory)` -> the collision set last warned about there.
+type LastWarnedCollisions = HashMap<(String, PathBuf), Vec<IdentityCollision>>;
+
+/// Process-wide fingerprint of the last collision set warned about per
+/// `(provider, store directory)`, so a store on a filesystem that cannot
+/// report mtime (see [`scan_cached`]'s `modified: None` fallback, which scans
+/// and thus would otherwise call this on every request) does not re-log the
+/// same warning on every single call. Deliberately scoped to this warning
+/// only — the request hot path (`collapse_representatives`) still never
+/// touches a lock.
+fn last_warned_collisions() -> &'static Mutex<LastWarnedCollisions> {
+    static LAST_WARNED: OnceLock<Mutex<LastWarnedCollisions>> = OnceLock::new();
+    LAST_WARNED.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Warn when two store-discovered accounts resolve to the same runtime
+/// identity (`crate::accounts::account_identity`). This mirrors the
+/// config-load collision warning (`crate::config::identity_collisions`,
+/// applied to `[[providers.*.accounts]]`) but for accounts discovered from
+/// the on-disk store, which config-load validation never sees.
+///
+/// `scan_cached` only calls this on a cache miss (the store directory's mtime
+/// changed), so on a filesystem that reports mtime this already fires once
+/// per change. On a filesystem that cannot report mtime, `scan_cached` scans
+/// (and so calls this) on every request; the fingerprint keyed by
+/// `(provider, dir)` collapses that back down to once per distinct collision
+/// set, without reintroducing a lock on the request hot path (this is the
+/// scan/store-discovery boundary, not `collapse_representatives`).
+fn warn_scan_identity_collisions(provider: &str, dir: &Path, accounts: &[AccountConfig]) {
+    let collisions = crate::config::identity_collisions(accounts);
+    let key = (provider.to_string(), dir.to_path_buf());
+    {
+        let mut last_warned = last_warned_collisions()
+            .lock()
+            .expect("last-warned collisions mutex poisoned");
+        if last_warned.get(&key) == Some(&collisions) {
+            return;
+        }
+        last_warned.insert(key, collisions.clone());
+    }
+    for (identity, names) in collisions {
+        tracing::warn!(
+            provider,
+            identity,
+            accounts = ?names,
+            "multiple account names share one upstream identity; the pool will treat them as one account"
+        );
+    }
 }
 
 /// Write an account file born-private: create its parent directory `0700` on Unix
@@ -479,6 +577,7 @@ impl Drop for EnvVarGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     fn temp_dir(tag: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -592,6 +691,59 @@ mod tests {
     fn scan_account_dir_missing_dir_is_empty() {
         let dir = temp_dir("missing").join("does-not-exist");
         assert!(scan_account_dir(&dir, |_| None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn scan_account_dir_strict_returns_identities_when_all_files_read_cleanly() {
+        let dir = temp_dir("scan-strict-ok");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("alpha.json"), "{}").unwrap();
+        fs::write(dir.join("zeta.json"), "{}").unwrap();
+
+        let accounts =
+            scan_account_dir_strict(&dir, |_| Ok(Some("shared-id".to_string()))).unwrap();
+        let names: Vec<_> = accounts
+            .iter()
+            .map(|account| account.name.as_str())
+            .collect();
+        assert_eq!(names, ["alpha", "zeta"]);
+        assert!(accounts
+            .iter()
+            .all(|account| account.uuid.as_deref() == Some("shared-id")));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn scan_account_dir_strict_fails_closed_on_a_single_unreadable_file() {
+        // A per-file identity read failure (corrupted/unreadable credential
+        // file) must abort the whole scan with an `Err`, not silently drop
+        // that account to a name-fallback identity — otherwise admin cleanup
+        // could conclude a sibling alias does not share the identity being
+        // removed when it actually can't tell.
+        let dir = temp_dir("scan-strict-fail");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("alpha.json"), "{}").unwrap();
+        fs::write(dir.join("broken.json"), "{}").unwrap();
+
+        let result = scan_account_dir_strict(&dir, |path| {
+            if path.file_stem().and_then(|name| name.to_str()) == Some("broken") {
+                Err(())
+            } else {
+                Ok(None)
+            }
+        });
+        assert!(result.is_err());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn scan_account_dir_strict_missing_dir_is_empty() {
+        let dir = temp_dir("scan-strict-missing").join("does-not-exist");
+        assert!(scan_account_dir_strict(&dir, |_| Ok(None))
+            .unwrap()
+            .is_empty());
     }
 
     fn one_account() -> io::Result<Vec<AccountConfig>> {
@@ -751,6 +903,107 @@ mod tests {
         scan_cached("codex", &dir, None, scan).unwrap();
         scan_cached("codex", &dir, None, scan).unwrap();
         assert_eq!(calls.load(Ordering::Relaxed), 5);
+    }
+
+    struct BufferWriter {
+        buffer: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl std::io::Write for BufferWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.buffer.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn scan_cached_dedupes_repeated_collision_warnings_without_mtime() {
+        // On a filesystem that cannot report mtime, `scan_cached` bypasses the
+        // scan cache and scans on every call (see the test above) — but the
+        // *warning* about a store-discovered identity collision must still
+        // fire once per distinct collision set, not once per call, or a
+        // steady-state degraded-mtime deployment would spam its logs on every
+        // request.
+        let dir = temp_dir("scan-cached-warn-dedup");
+        let colliding = || {
+            Ok(vec![
+                AccountConfig {
+                    name: "alias-a".to_string(),
+                    uuid: Some("shared-id".to_string()),
+                    ..Default::default()
+                },
+                AccountConfig {
+                    name: "alias-b".to_string(),
+                    uuid: Some("shared-id".to_string()),
+                    ..Default::default()
+                },
+            ])
+        };
+
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let writer_output = Arc::clone(&output);
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || BufferWriter {
+                buffer: Arc::clone(&writer_output),
+            })
+            .with_ansi(false)
+            .without_time()
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || {
+            // Same collision set, called twice: only the first call should warn.
+            scan_cached("codex-warn-dedup", &dir, None, colliding).unwrap();
+            scan_cached("codex-warn-dedup", &dir, None, colliding).unwrap();
+        });
+        let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        assert_eq!(
+            logs.matches("multiple account names share one upstream identity")
+                .count(),
+            1,
+            "got: {logs}"
+        );
+
+        // A different collision set must still warn again (not permanently
+        // suppressed once one warning has fired for this provider/dir).
+        let different_collision = || {
+            Ok(vec![
+                AccountConfig {
+                    name: "alias-c".to_string(),
+                    uuid: Some("other-shared-id".to_string()),
+                    ..Default::default()
+                },
+                AccountConfig {
+                    name: "alias-d".to_string(),
+                    uuid: Some("other-shared-id".to_string()),
+                    ..Default::default()
+                },
+            ])
+        };
+        output.lock().unwrap().clear();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer({
+                let writer_output = Arc::clone(&output);
+                move || BufferWriter {
+                    buffer: Arc::clone(&writer_output),
+                }
+            })
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            scan_cached("codex-warn-dedup", &dir, None, different_collision).unwrap();
+        });
+        let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        assert_eq!(
+            logs.matches("multiple account names share one upstream identity")
+                .count(),
+            1,
+            "a changed collision set must warn again: got {logs}"
+        );
     }
 
     static POOL_CACHE_SCAN_CALLS: AtomicUsize = AtomicUsize::new(0);

@@ -78,6 +78,9 @@ pub(super) struct ForwardOptions {
     pub credential: Credential,
     pub auth: AuthMode,
     pub turn: TurnOptions,
+    /// Selected Codex pool account whose WebSocket handshake quota headers should
+    /// populate the admin dashboard. `None` on the single-account path.
+    pub codex_quota_account: Option<String>,
     /// The parsed request to seed `message_start`'s `usage.input_tokens` with a
     /// local tiktoken estimate, or `None` on non-streaming / non-tiktoken turns.
     /// Single-account only; the account-pool path does not thread it yet.

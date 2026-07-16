@@ -162,8 +162,8 @@ impl Connection {
         ws_url: &str,
         headers: HeaderMap,
         pool_key: Option<String>,
-    ) -> Result<Arc<Self>, CodexWsError> {
-        let (stream, handshake_turn_state) = connect(ws_url, headers).await?;
+    ) -> Result<(Arc<Self>, HeaderMap), CodexWsError> {
+        let (stream, handshake_turn_state, handshake_headers) = connect(ws_url, headers).await?;
         let (sink, source) = stream.split();
         let (command_tx, command_rx) = mpsc::channel(1);
         let conn = Arc::new(Self {
@@ -179,7 +179,7 @@ impl Connection {
             handshake_turn_state,
         });
         tokio::spawn(run_connection(conn.clone(), source, command_rx));
-        Ok(conn)
+        Ok((conn, handshake_headers))
     }
 }
 
@@ -355,6 +355,9 @@ impl RecordPlan {
 /// dropped without streaming).
 pub struct Turn {
     conn: Arc<Connection>,
+    /// Successful upgrade response headers when this turn opened a fresh socket.
+    /// `None` for a reused pooled connection, which performed no new handshake.
+    handshake_headers: Option<HeaderMap>,
     /// The held turn slot, taken by [`Turn::stream`] when it dispatches the turn to
     /// the reader. Wrapped in `Option` so `stream` can move it out even though
     /// `Turn` has a `Drop` impl (a field cannot be moved out of a `Drop` type).
@@ -382,6 +385,12 @@ impl Turn {
     /// The `x-codex-turn-state` captured from the handshake, if any.
     pub fn handshake_turn_state(&self) -> Option<&str> {
         self.conn.handshake_turn_state.as_deref()
+    }
+
+    /// Headers from a newly established connection's upgrade response. A reused
+    /// connection returns `None` because it did not perform a fresh handshake.
+    pub fn handshake_headers(&self) -> Option<&HeaderMap> {
+        self.handshake_headers.as_ref()
     }
 
     /// Dispatch the `response.create` frame to the connection's reader and stream
@@ -465,6 +474,7 @@ pub async fn begin(
                 *conn.last_used_at.lock().unwrap() = Instant::now();
                 return Ok(Turn {
                     conn,
+                    handshake_headers: None,
                     slot: Some(slot),
                     reused: true,
                     pool_key: Some(key.to_string()),
@@ -479,10 +489,12 @@ pub async fn begin(
         }
     }
 
-    let conn = Connection::open(ws_url, headers, pool_key.map(str::to_string)).await?;
+    let (conn, handshake_headers) =
+        Connection::open(ws_url, headers, pool_key.map(str::to_string)).await?;
     let slot = conn.turn_lock.clone().lock_owned().await;
     Ok(Turn {
         conn,
+        handshake_headers: Some(handshake_headers),
         slot: Some(slot),
         reused: false,
         pool_key: pool_key.map(str::to_string),
@@ -542,11 +554,13 @@ fn ensure_crypto_provider() {
 }
 
 /// Perform the websocket handshake, mapping a refused upgrade to a status-bearing
-/// [`CodexWsError`] and capturing the handshake `x-codex-turn-state` if present.
+/// [`CodexWsError`] and capturing the successful response's headers. Reused or
+/// prewarmed connections do not perform another handshake, so consumers only get
+/// a fresh quota observation when a new connection is established.
 async fn connect(
     ws_url: &str,
     headers: HeaderMap,
-) -> Result<(WsStream, Option<String>), CodexWsError> {
+) -> Result<(WsStream, Option<String>, HeaderMap), CodexWsError> {
     ensure_crypto_provider();
     let mut request = ws_url
         .into_client_request()
@@ -559,12 +573,12 @@ async fn connect(
     let connect = tokio_tungstenite::connect_async(request);
     match tokio::time::timeout(CONNECT_TIMEOUT, connect).await {
         Ok(Ok((stream, response))) => {
-            let turn_state = response
-                .headers()
+            let response_headers = response.into_parts().0.headers;
+            let turn_state = response_headers
                 .get(TURN_STATE_HEADER)
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_string);
-            Ok((stream, turn_state))
+            Ok((stream, turn_state, response_headers))
         }
         Ok(Err(error)) => Err(map_handshake_error(error)),
         Err(_) => Err(CodexWsError::transport(format!(
@@ -1169,6 +1183,21 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
         use tokio::net::TcpListener;
+        use tungstenite::handshake::server::{Request, Response};
+
+        #[allow(clippy::result_large_err)]
+        fn quota_handshake(
+            _request: &Request,
+            mut response: Response,
+        ) -> Result<Response, tungstenite::handshake::server::ErrorResponse> {
+            response
+                .headers_mut()
+                .insert("x-codex-primary-used-percent", "26".parse().unwrap());
+            response
+                .headers_mut()
+                .insert("x-codex-primary-window-minutes", "10080".parse().unwrap());
+            Ok(response)
+        }
 
         let _pool_guard = POOL_TEST_LOCK.lock().await;
         clear_pool_for_tests();
@@ -1178,7 +1207,9 @@ mod tests {
         let server_frames = frames_seen.clone();
         let server = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.unwrap();
-            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            let mut ws = tokio_tungstenite::accept_hdr_async(socket, quota_handshake)
+                .await
+                .unwrap();
             // One connection, many turns: respond to each response.create frame
             // with a complete event sequence; answer the reuse liveness Ping.
             while let Some(message) = ws.next().await {
@@ -1206,20 +1237,42 @@ mod tests {
         let url = format!("ws://{addr}/codex/responses");
         let frame = response_create_frame(serde_json::json!({"model": "m", "input": []}));
 
-        // Turn 1: fresh connection, drained to completion, then pooled.
-        let mut turn1 = open_simple(&url, HeaderMap::new(), &frame, Some("session-1"))
+        // Turn 1: fresh connection exposes the successful handshake headers,
+        // then drains to completion and enters the pool.
+        let turn1 = begin(&url, HeaderMap::new(), Some("session-1"))
             .await
             .expect("first turn connects");
+        let handshake = turn1
+            .handshake_headers()
+            .expect("fresh turn exposes handshake headers");
+        assert_eq!(handshake.get("x-codex-primary-used-percent").unwrap(), "26");
+        assert_eq!(
+            handshake.get("x-codex-primary-window-minutes").unwrap(),
+            "10080"
+        );
+        let mut turn1 = turn1
+            .stream(&frame, RecordPlan::none())
+            .await
+            .expect("first turn streams");
         drain(&mut turn1).await;
         assert!(
             pool_contains_for_tests("session-1"),
             "completed turn pools its connection"
         );
 
-        // Turn 2: reuses the pooled socket (the mock only accepts once).
-        let mut turn2 = open_simple(&url, HeaderMap::new(), &frame, Some("session-1"))
+        // Turn 2: reuses the pooled socket (the mock only accepts once) and
+        // reports no fresh handshake headers.
+        let turn2 = begin(&url, HeaderMap::new(), Some("session-1"))
             .await
             .expect("second turn reuses connection");
+        assert!(
+            turn2.handshake_headers().is_none(),
+            "a reused connection performs no new handshake"
+        );
+        let mut turn2 = turn2
+            .stream(&frame, RecordPlan::none())
+            .await
+            .expect("second turn streams");
         let count = drain(&mut turn2).await;
         assert!(
             count > 0,

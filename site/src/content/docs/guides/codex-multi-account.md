@@ -3,7 +3,7 @@ title: Codex Multi-Account
 description: Pool ChatGPT/Codex subscription OAuth accounts with session-sticky selection and cooldown-based reactive failover.
 ---
 
-shunt can pool multiple ChatGPT subscription OAuth credentials behind a `chatgpt_oauth` provider — the built-in `codex` provider, or any `responses` provider using that auth mode. Requests are session-sticky when Claude Code supplies `x-claude-code-session-id`; requests without it use per-provider round-robin. Unlike the [Anthropic account pool](/guides/anthropic-multi-account/), this pool is **reactive-only**: the ChatGPT/Codex backend sends no per-account quota headers, so there is no proactive near-quota rotation — an account is only avoided after it has actually failed.
+shunt can pool multiple ChatGPT subscription OAuth credentials behind a `chatgpt_oauth` provider — the built-in `codex` provider, or any `responses` provider using that auth mode. Requests are session-sticky when Claude Code supplies `x-claude-code-session-id`; requests without it use per-provider round-robin. Unlike the [Anthropic account pool](/guides/anthropic-multi-account/), this pool is **reactive-only**: shunt records the backend's `x-codex-*` 5-hour/7-day usage windows for dashboard display, but deliberately keeps them out of selection. An account is only avoided after it has actually failed.
 
 :::caution[Subscription terms]
 Use subscription credentials only where your account terms permit it. shunt is an unofficial client and does not change OpenAI's account or subscription policies.
@@ -69,7 +69,7 @@ There is no `--long-lived` flag for `shunt login codex` — Codex has no setup-t
 | `name` | yes | Unique label containing only lowercase letters, digits, and hyphens. Without another source field, resolves the matching shunt store file. |
 | `credentials` | one usable source | Codex CLI `auth.json`-shaped file. shunt refreshes near expiry and atomically writes refreshed tokens back, same as `~/.codex/auth.json` itself. |
 | `token_env` | one usable source | Environment variable containing a raw ChatGPT access token. Used verbatim; cannot be refreshed after a 401. |
-| `uuid` | no | Present for structural parity with Anthropic accounts, but **unused** by the Codex path — the account id is resolved from the store or the access token's JWT claim instead. |
+| `uuid` | no | Stable upstream identity used to coalesce aliases. A name-only entry (resolved by a store scan) is filled in automatically before selection runs, so store-scanned aliases coalesce without any config change. A `credentials`- or `token_env`-configured entry's account id is resolved only after selection and never populates `uuid`, so such an entry's identity is its `uuid` when set, else its `name`; it coalesces with another alias whenever that identity equals the other alias's explicit `uuid` or name-fallback identity — set a matching nonblank `uuid` on both entries for a clear, intentional coalesce (shunt also warns on an accidental cross `uuid`/`name` collision). It is not written into the Codex request body. |
 | `priority` | no | Selection priority among available accounts; lower is preferred, default `100`. Honored on the Codex path. |
 | `disabled` | no | `true` removes the account from selection entirely while keeping it in config. Honored on the Codex path. |
 
@@ -83,13 +83,20 @@ Codex has no explicit `uuid` field to configure. Instead, for each account shunt
 2. otherwise decodes the `access_token` JWT and reads the `chatgpt_account_id` claim; and
 3. after any refresh, recomputes the id **only** from the new access token's JWT claim (a refresh response has no separate account-id field).
 
-If neither source yields an id, that account fails to resolve and is treated as a credential-resolution failure below.
+If neither source yields an id, that account fails to resolve and is treated as a credential-resolution failure below. Only a store scan (an empty `accounts` list) writes this resolved id into the in-memory account's `uuid` field ahead of selection — a `credentials`/`token_env`-configured account's id is resolved per request and never feeds back into `uuid`. The store *scan* itself is cached by the store directory mtime, so steady-state discovery performs one directory `stat` and no credential-file reads; resolving the selected account's actual credential still reads its credential file per request as needed to check/refresh expiry.
+
+:::note[Duplicate names for one real account]
+If two store files or configured entries have the same `account_id`, shunt counts them as **one account**. They share cooldown, health, and refresh locks, and failover skips the duplicate alias rather than retrying the same ChatGPT account. Sticky hashing and round-robin operate over distinct identities. The representative is the enabled alias with the lowest `priority`, then the first entry; only its token is attempted, and shunt logs a duplicate-identity warning (configured entries are logged once per successful config load, including reload; store-discovered collisions are logged once per distinct collision set, not once per request). Consequently, an invalid representative is not rescued by a valid non-representative alias.
+
+Deleting a store-managed account through the admin web surface clears that identity's shared in-process health only once no other stored alias still resolves to the same identity; a scan failure preserves the health instead of guessing. This is admin-store delete semantics — removing an alias from the TOML config, or its credentials file directly, does not go through this cleanup.
+:::
 
 ## Selection and cooldowns
 
 - With `x-claude-code-session-id`: a stable hash picks the sticky account, same mechanism as the Anthropic pool.
 - Without the header: each provider has its own round-robin counter.
-- No quota headers are parsed on this path — Codex sends none — so there is no proactive switch away from a healthy sticky account. An account keeps its turn until it actually fails.
+- Successful responses populate the admin dashboard from `x-codex-primary-*` and `x-codex-secondary-*` headers. shunt maps each group by `window-minutes`: about 300 minutes appears in 5h, about 10080 minutes appears in 7d, and other windows are ignored. Codex has no `7d_oi` analog.
+- Recorded usage is display-only and never changes selection, so there is no proactive switch away from a healthy sticky account. An account keeps its turn until it actually fails.
 - A successful response clears that account's cooldown.
 
 | Trigger | Cooldown |
@@ -106,7 +113,7 @@ If neither source yields an id, that account fails to resolve and is treated as 
 | Response | Behavior |
 | :-- | :-- |
 | 2xx | Relay and mark healthy. |
-| 429 | **Always** cooldown and rotate — Codex has no per-account quota header to distinguish quota exhaustion from transient throttling, so (unlike the Anthropic pool's plain-429 same-account retry) every 429 is treated as exhaustion of that account. |
+| 429 | **Always** cooldown and rotate. The optional Codex rejection signal is recorded for display but does not change failover classification, so every 429 is treated as exhaustion of that account. |
 | 401 with `credentials`/store | Force-refresh, retry the same account once; if the refresh fails, or the retry is still 401, cooldown 5 minutes and rotate. |
 | 401 with `token_env` | Cannot refresh: cooldown 5 minutes and rotate. |
 | 5xx or transport failure | Cooldown 30 seconds and rotate. |
@@ -136,7 +143,7 @@ Use neutral account names on a shared gateway — this header exposes the config
 
 ### WebSocket transport
 
-If the provider also sets `websocket = true` (see [ChatGPT / Codex](/guides/codex/)), the pooled connection cache key is prefixed per account so two accounts never share a socket or its `previous_response_id` continuation state. A WebSocket failure **before** any token streams falls back to HTTP on the **same** account (not a pool rotation); only an HTTP-path failure triggers the failover above.
+If the provider also sets `websocket = true` (see [ChatGPT / Codex](/guides/codex/)), the pooled connection cache key is prefixed per account so two accounts never share a socket or its `previous_response_id` continuation state. A WebSocket failure **before** any token streams falls back to HTTP on the **same** account (not a pool rotation); only an HTTP-path failure triggers the failover above. A fresh WebSocket upgrade records any rate-limit headers from its handshake; reused/prewarmed connections do not handshake again, so their dashboard usage refreshes when a new connection is established.
 
 ## Security constraints
 
@@ -153,8 +160,8 @@ A `chatgpt_oauth` provider with no `accounts` configured (the default `codex` pr
 
 ## Remaining follow-up
 
-- **Quota-aware proactive rotation:** the Anthropic pool's near-quota early switch has no Codex equivalent yet — it needs a live probe of what (if anything) the Codex backend exposes as per-account rate-limit state.
-- **Admin web provisioning:** the opt-in [admin surface](/guides/admin-remote-provisioning/) can run ChatGPT OAuth in the browser, store a refreshable Codex account, and show it in the shared pool table. Codex provides no quota headers, so utilization columns remain empty (`—`).
+- **Quota-aware proactive rotation:** Codex's recorded usage windows are display-only. Feeding them into selection would be a separate behavior change; failover intentionally remains cooldown-based.
+- **Admin web provisioning:** the opt-in [admin surface](/guides/admin-remote-provisioning/) can run ChatGPT OAuth in the browser, store a refreshable Codex account, show it in the shared pool table, and display reported 5h/7d usage (`7d_oi` remains empty because Codex has no analog).
 - **Storm-control:** ramping a freshly switched account's concurrency remains unimplemented for both pools.
 
 See the [M10 behavior specification](https://github.com/pleaseai/shunt/blob/main/docs/m10-codex-multi-account.md) for the full account-pool internals, and the [ChatGPT / Codex guide](/guides/codex/) for single-account setup, model routing, and effort/context configuration.

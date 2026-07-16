@@ -132,7 +132,7 @@ async fn poll_account(
     };
     match claude::usage::fetch_usage(client, base_url, &access_token).await {
         Ok(snapshot) => {
-            pool.note_usage(provider, &account.name, &snapshot);
+            pool.note_usage(provider, account, &snapshot);
             tracing::debug!(provider, account = %account.name, "usage poller: applied usage snapshot");
         }
         Err(error) => {

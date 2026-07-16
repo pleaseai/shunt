@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.19.0](https://github.com/pleaseai/shunt/compare/v0.18.1...v0.19.0) (2026-07-16)
+
+
+### Features
+
+* **codex:** surface per-account usage in the admin pool dashboard ([#179](https://github.com/pleaseai/shunt/issues/179)) ([b3cd018](https://github.com/pleaseai/shunt/commit/b3cd018c23bb6b17399977ac44ef2c657950666c))
+* **pool:** coalesce accounts by upstream identity ([#178](https://github.com/pleaseai/shunt/issues/178)) ([c9d500f](https://github.com/pleaseai/shunt/commit/c9d500fda07c2e66e19150f3a7828be7485a0a12))
+* **usage:** add authenticated client usage endpoint ([#175](https://github.com/pleaseai/shunt/issues/175)) ([e903bda](https://github.com/pleaseai/shunt/commit/e903bda106cbaf1f21f27da93e0e35c2e6bdf782))
+
+
+### Bug Fixes
+
+* **anthropic:** preserve route alias in relayed responses ([#174](https://github.com/pleaseai/shunt/issues/174)) ([2313985](https://github.com/pleaseai/shunt/commit/2313985201e07a6a561a3bef5b84873ed1a350f4))
+
+## [0.18.1](https://github.com/pleaseai/shunt/compare/v0.18.0...v0.18.1) (2026-07-15)
+
+
+### Performance Improvements
+
+* **codex:** bound WebSocket event channel ([#167](https://github.com/pleaseai/shunt/issues/167)) ([1c65f7b](https://github.com/pleaseai/shunt/commit/1c65f7b8edfea3804a6fb77bd158378541691e02))
+* **codex:** single-flight CodexAuthStore refresh ([#168](https://github.com/pleaseai/shunt/issues/168)) ([6079053](https://github.com/pleaseai/shunt/commit/60790530d3771cefb1ca4133f4f2ba487d85d021))
+
 ## [0.18.0](https://github.com/pleaseai/shunt/compare/v0.17.0...v0.18.0) (2026-07-15)
 
 
