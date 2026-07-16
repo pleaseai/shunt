@@ -1,0 +1,27 @@
+.claude/skills/run-claude-gateway-ref/SKILL.md
+  s_53f119918a707c::t_2f72e68b3a6324 1-98
+.claude/skills/run-claude-gateway-ref/driver.sh
+  s_53f119918a707c::t_015c207acddf69 1-28,30-187
+  s_53f119918a707c::t_a71f23b32f8e9d 29
+.claude/skills/run-claude-gateway-ref/dex.yaml
+  s_53f119918a707c::t_631ce8a090dcea 1-4,9-32
+  s_53f119918a707c::t_1e5524881555cd 5-8
+.claude/skills/run-claude-gateway-ref/gateway.yaml
+  s_53f119918a707c::t_a28d5b953d6dfb 1-45
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "298a74aeb5877bd9adbf66cb8071c3701a3f19d5",
+  "prompts": {},
+  "sessions": {
+    "s_53f119918a707c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fc678f72-9bfe-4f11-b2cc-6342fb0b5c6a",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
