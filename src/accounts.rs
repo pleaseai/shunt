@@ -409,7 +409,7 @@ impl AccountPool {
     }
 
     pub fn note_quota(&self, provider: &str, account: &AccountConfig, headers: &HeaderMap) {
-        let utilization = {
+        {
             let mut entries = self.entries.lock().expect("account health lock poisoned");
             let health = entries
                 .entry((provider.to_string(), account_identity(account).to_string()))
@@ -453,10 +453,10 @@ impl AccountPool {
             {
                 quota.status = Some(status.to_string());
             }
-            pool_utilization(&mut entries, provider, unix_now())
-        };
+            let utilization = pool_utilization(&mut entries, provider, unix_now());
+            record_pool_utilization(provider, utilization);
+        }
         self.mark_dirty();
-        record_pool_utilization(provider, utilization);
     }
 
     /// Record the Codex backend's positional rate-limit header groups for the
@@ -464,7 +464,7 @@ impl AccountPool {
     /// primary/secondary position does not. This state is deliberately excluded
     /// from Codex account selection by [`Self::select_order_cooldown`].
     pub fn note_codex_quota(&self, provider: &str, account: &AccountConfig, headers: &HeaderMap) {
-        let utilization = {
+        {
             let mut entries = self.entries.lock().expect("account health lock poisoned");
             let health = entries
                 .entry((provider.to_string(), account_identity(account).to_string()))
@@ -515,10 +515,10 @@ impl AccountPool {
             {
                 quota.status = Some(status.to_string());
             }
-            pool_utilization(&mut entries, provider, unix_now())
-        };
+            let utilization = pool_utilization(&mut entries, provider, unix_now());
+            record_pool_utilization(provider, utilization);
+        }
         self.mark_dirty();
-        record_pool_utilization(provider, utilization);
     }
 
     /// Apply an authoritative usage snapshot from the Anthropic OAuth usage API
@@ -530,7 +530,7 @@ impl AccountPool {
     /// signal, so that stays header-driven. Marks the account observed, so the
     /// admin dashboard reports its usage even before the first proxied request.
     pub fn note_usage(&self, provider: &str, account: &AccountConfig, usage: &UsageSnapshot) {
-        let utilization = {
+        {
             let mut entries = self.entries.lock().expect("account health lock poisoned");
             let health = entries
                 .entry((provider.to_string(), account_identity(account).to_string()))
@@ -549,10 +549,10 @@ impl AccountPool {
                 quota.utilization_7d_oi = Some(window.utilization);
                 quota.reset_7d_oi = window.resets_at;
             }
-            pool_utilization(&mut entries, provider, unix_now())
-        };
+            let utilization = pool_utilization(&mut entries, provider, unix_now());
+            record_pool_utilization(provider, utilization);
+        }
         self.mark_dirty();
-        record_pool_utilization(provider, utilization);
     }
 
     pub fn cooldown(
