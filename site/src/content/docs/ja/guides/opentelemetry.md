@@ -38,10 +38,24 @@ authorization = "Bearer <token>"
 | シグナル | エクスポートされるもの | 備考 |
 | :-- | :-- | :-- |
 | **トレース** | リクエストごとの `proxy_request` スパン | `sample_ratio` によるヘッドベースサンプリング。低カーディナリティで、リクエスト/レスポンス本文は含まない。 |
-| **メトリクス** | `shunt.requests`(カウント)と `shunt.latency`(ms) | `provider`、`model`、`http.response.status_code` を付与 — shunt が Sentry へ送るものと同じ系列。 |
+| **メトリクス** | 以下に示す低カーディナリティの系列 | `[sentry] metrics = true` のときに shunt が Sentry へ送るものと同じ系列。 |
 | **ログ** | shunt の `tracing` ログイベントを OTLP にブリッジ | stderr ログには影響しない。 |
 
 各シグナルは `traces` / `metrics` / `logs` で個別にオン/オフできます。
+
+### メトリクス系列
+
+| 系列 | 種類 | 属性 | 意味 |
+| :-- | :-- | :-- | :-- |
+| `shunt.requests` | カウンター | `provider`, `model`, `http.response.status_code` | プロキシされた推論リクエスト。 |
+| `shunt.latency` | ヒストグラム(ms) | `provider`, `model`, `http.response.status_code` | ストリームではヘッダーまで、それ以外では応答全体のレイテンシ。 |
+| `shunt.ttft` | ヒストグラム(ms) | `provider`, `model` | リクエスト開始から最初の SSE body chunk までの時間。 |
+| `shunt.stream_outcome` | カウンター | `provider`, `model`, `outcome` | SSE の最終結果を 1 件記録: `completed`, `error_event`, `upstream_cut`, `client_disconnect`。 |
+| `shunt.tokens` | カウンター | `provider`, `model`, `kind` | 最後に報告されたストリーミング token usage (`input`, `output`, `cache_read`, `cache_creation`)。非ストリーミングは記録しない。 |
+| `shunt.codex_continuation` | カウンター | `provider`, `outcome` | Codex WebSocket continuation の hit または fallback。 |
+| `shunt.upstream_retries` | カウンター | `provider`, `reason` | 回数制限付きの一時的な upstream retry。 |
+| `shunt.pool.quota_utilization` | ゲージ | `provider`, `window` | `5h`, `7d`, `7d_oi` ごとに、有効で観測済みかつ期限切れでない quota 値の最小 utilization。 |
+| `shunt.pool.rotations` | カウンター | `provider`, `reason` | アカウントからの切り替えと pool exhaustion の回数。 |
 
 ## プライバシー
 

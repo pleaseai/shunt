@@ -1089,7 +1089,7 @@ mod tests {
             state_with_explicit_provider("anthropic", AuthMode::ClaudeOauth, vec![account.clone()]);
         state
             .accounts
-            .cooldown("anthropic", &account, Duration::from_secs(60));
+            .cooldown("anthropic", &account, Duration::from_secs(60), "transport");
 
         forget_pool_health_if_absent(&state, AuthMode::ClaudeOauth, "alice", None);
 
@@ -1109,10 +1109,10 @@ mod tests {
         let orphan = explicit_account("orphan", Some("orphan-uuid"));
         state
             .accounts
-            .cooldown("anthropic", &orphan, Duration::from_secs(60));
+            .cooldown("anthropic", &orphan, Duration::from_secs(60), "transport");
         state
             .accounts
-            .cooldown("anthropic", &live, Duration::from_secs(60));
+            .cooldown("anthropic", &live, Duration::from_secs(60), "transport");
 
         forget_pool_health_if_absent(&state, AuthMode::ClaudeOauth, "orphan-uuid", None);
 

@@ -108,6 +108,8 @@ pub struct UsageSnapshot {
 struct AccountHealth {
     cooldown_until: Option<Instant>,
     quota: QuotaState,
+    /// Latest configured selection state. Quota gauges exclude disabled accounts.
+    enabled: bool,
     /// Whether the pool has processed at least one upstream response for this
     /// account (a quota update, a cooldown, or a healthy-mark). `select_order`
     /// inserts a default entry on selection, so entry existence alone does not
@@ -187,6 +189,25 @@ impl AccountPool {
         Self::default()
     }
 
+    /// Synchronize the provider's current configured identities before an
+    /// out-of-band usage poll updates individual accounts. An identity stays
+    /// enabled when any alias is enabled, and entries removed by a config reload
+    /// stop contributing to pool-wide quota metrics.
+    pub(crate) fn sync_enabled_accounts(&self, provider: &str, accounts: &[AccountConfig]) {
+        let mut entries = self.entries.lock().expect("account health lock poisoned");
+        for ((entry_provider, _), health) in entries.iter_mut() {
+            if entry_provider == provider {
+                health.enabled = false;
+            }
+        }
+        for account in accounts {
+            entries
+                .entry((provider.to_string(), account_identity(account).to_string()))
+                .or_default()
+                .enabled |= !account.disabled;
+        }
+    }
+
     /// Return account indices in the order an adapter should try them.
     ///
     /// `pool` is the optional `[server.pool]` tuning (issue #135). When
@@ -254,11 +275,20 @@ impl AccountPool {
         let is_fable = is_fable_model(model);
         let health_snapshots = {
             let mut entries = self.entries.lock().expect("account health lock poisoned");
+            // Treat this selection snapshot as the authoritative enabled set for
+            // the provider. Entries left behind by a config reload must not keep
+            // contributing to pool-wide quota gauges.
+            for ((entry_provider, _), health) in entries.iter_mut() {
+                if entry_provider == &provider {
+                    health.enabled = false;
+                }
+            }
             let mut snapshots = Vec::with_capacity(accounts.len());
             for account in accounts {
                 let health = entries
                     .entry((provider.clone(), account_identity(account).to_string()))
                     .or_default();
+                health.enabled |= !account.disabled;
                 expire_stale_quota(&mut health.quota, unix_now);
                 let quota = consider_quota.then(|| health.quota.clone());
                 snapshots.push((health.cooldown_until, quota));
@@ -379,48 +409,52 @@ impl AccountPool {
     }
 
     pub fn note_quota(&self, provider: &str, account: &AccountConfig, headers: &HeaderMap) {
-        let mut entries = self.entries.lock().expect("account health lock poisoned");
-        let health = entries
-            .entry((provider.to_string(), account_identity(account).to_string()))
-            .or_default();
-        health.observed = true;
-        let quota = &mut health.quota;
-
-        update_header(
-            headers,
-            "anthropic-ratelimit-unified-5h-utilization",
-            &mut quota.utilization_5h,
-        );
-        update_header(
-            headers,
-            "anthropic-ratelimit-unified-5h-reset",
-            &mut quota.reset_5h,
-        );
-        update_header(
-            headers,
-            "anthropic-ratelimit-unified-7d-utilization",
-            &mut quota.utilization_7d,
-        );
-        update_header(
-            headers,
-            "anthropic-ratelimit-unified-7d-reset",
-            &mut quota.reset_7d,
-        );
-        update_header(
-            headers,
-            "anthropic-ratelimit-unified-7d_oi-utilization",
-            &mut quota.utilization_7d_oi,
-        );
-        update_header(
-            headers,
-            "anthropic-ratelimit-unified-7d_oi-reset",
-            &mut quota.reset_7d_oi,
-        );
-        if let Some(status) = headers
-            .get("anthropic-ratelimit-unified-status")
-            .and_then(|value| value.to_str().ok())
         {
-            quota.status = Some(status.to_string());
+            let mut entries = self.entries.lock().expect("account health lock poisoned");
+            let health = entries
+                .entry((provider.to_string(), account_identity(account).to_string()))
+                .or_default();
+            health.observed = true;
+            let quota = &mut health.quota;
+
+            update_header(
+                headers,
+                "anthropic-ratelimit-unified-5h-utilization",
+                &mut quota.utilization_5h,
+            );
+            update_header(
+                headers,
+                "anthropic-ratelimit-unified-5h-reset",
+                &mut quota.reset_5h,
+            );
+            update_header(
+                headers,
+                "anthropic-ratelimit-unified-7d-utilization",
+                &mut quota.utilization_7d,
+            );
+            update_header(
+                headers,
+                "anthropic-ratelimit-unified-7d-reset",
+                &mut quota.reset_7d,
+            );
+            update_header(
+                headers,
+                "anthropic-ratelimit-unified-7d_oi-utilization",
+                &mut quota.utilization_7d_oi,
+            );
+            update_header(
+                headers,
+                "anthropic-ratelimit-unified-7d_oi-reset",
+                &mut quota.reset_7d_oi,
+            );
+            if let Some(status) = headers
+                .get("anthropic-ratelimit-unified-status")
+                .and_then(|value| value.to_str().ok())
+            {
+                quota.status = Some(status.to_string());
+            }
+            let utilization = pool_utilization(&mut entries, provider, unix_now());
+            record_pool_utilization(provider, utilization);
         }
         self.mark_dirty();
     }
@@ -429,56 +463,60 @@ impl AccountPool {
     /// admin dashboard. A group's `window-minutes` identifies its bucket; the
     /// primary/secondary position does not. This state is deliberately excluded
     /// from Codex account selection by [`Self::select_order_cooldown`].
-    pub fn note_codex_quota(&self, provider: &str, account: &str, headers: &HeaderMap) {
-        let mut entries = self.entries.lock().expect("account health lock poisoned");
-        let health = entries
-            .entry((provider.to_string(), account.to_string()))
-            .or_default();
-        health.observed = true;
-        let quota = &mut health.quota;
+    pub fn note_codex_quota(&self, provider: &str, account: &AccountConfig, headers: &HeaderMap) {
+        {
+            let mut entries = self.entries.lock().expect("account health lock poisoned");
+            let health = entries
+                .entry((provider.to_string(), account_identity(account).to_string()))
+                .or_default();
+            health.observed = true;
+            let quota = &mut health.quota;
 
-        for (minutes_header, utilization_header, reset_header) in [
-            (
-                "x-codex-primary-window-minutes",
-                "x-codex-primary-used-percent",
-                "x-codex-primary-reset-at",
-            ),
-            (
-                "x-codex-secondary-window-minutes",
-                "x-codex-secondary-used-percent",
-                "x-codex-secondary-reset-at",
-            ),
-        ] {
-            let minutes = header_value::<i64>(headers, minutes_header);
-            let utilization = header_value::<f64>(headers, utilization_header)
-                .filter(|value| value.is_finite() && (0.0..=100.0).contains(value));
-            let (Some(window), Some(utilization)) =
-                (minutes.and_then(codex_window_bucket), utilization)
-            else {
-                continue;
-            };
-            let reset = header_value::<u64>(headers, reset_header);
-            match window {
-                CodexWindow::FiveHour => {
-                    quota.utilization_5h = Some(utilization / 100.0);
-                    if let Some(reset) = reset {
-                        quota.reset_5h = Some(reset);
+            for (minutes_header, utilization_header, reset_header) in [
+                (
+                    "x-codex-primary-window-minutes",
+                    "x-codex-primary-used-percent",
+                    "x-codex-primary-reset-at",
+                ),
+                (
+                    "x-codex-secondary-window-minutes",
+                    "x-codex-secondary-used-percent",
+                    "x-codex-secondary-reset-at",
+                ),
+            ] {
+                let minutes = header_value::<i64>(headers, minutes_header);
+                let utilization = header_value::<f64>(headers, utilization_header)
+                    .filter(|value| value.is_finite() && (0.0..=100.0).contains(value));
+                let (Some(window), Some(utilization)) =
+                    (minutes.and_then(codex_window_bucket), utilization)
+                else {
+                    continue;
+                };
+                let reset = header_value::<u64>(headers, reset_header);
+                match window {
+                    CodexWindow::FiveHour => {
+                        quota.utilization_5h = Some(utilization / 100.0);
+                        if let Some(reset) = reset {
+                            quota.reset_5h = Some(reset);
+                        }
                     }
-                }
-                CodexWindow::Weekly => {
-                    quota.utilization_7d = Some(utilization / 100.0);
-                    if let Some(reset) = reset {
-                        quota.reset_7d = Some(reset);
+                    CodexWindow::Weekly => {
+                        quota.utilization_7d = Some(utilization / 100.0);
+                        if let Some(reset) = reset {
+                            quota.reset_7d = Some(reset);
+                        }
                     }
                 }
             }
-        }
 
-        if let Some(status) = headers
-            .get("x-codex-rate-limit-reached-type")
-            .and_then(|value| value.to_str().ok())
-        {
-            quota.status = Some(status.to_string());
+            if let Some(status) = headers
+                .get("x-codex-rate-limit-reached-type")
+                .and_then(|value| value.to_str().ok())
+            {
+                quota.status = Some(status.to_string());
+            }
+            let utilization = pool_utilization(&mut entries, provider, unix_now());
+            record_pool_utilization(provider, utilization);
         }
         self.mark_dirty();
     }
@@ -492,34 +530,47 @@ impl AccountPool {
     /// signal, so that stays header-driven. Marks the account observed, so the
     /// admin dashboard reports its usage even before the first proxied request.
     pub fn note_usage(&self, provider: &str, account: &AccountConfig, usage: &UsageSnapshot) {
-        let mut entries = self.entries.lock().expect("account health lock poisoned");
-        let health = entries
-            .entry((provider.to_string(), account_identity(account).to_string()))
-            .or_default();
-        health.observed = true;
-        let quota = &mut health.quota;
-        if let Some(window) = &usage.five_hour {
-            quota.utilization_5h = Some(window.utilization);
-            quota.reset_5h = window.resets_at;
-        }
-        if let Some(window) = &usage.seven_day {
-            quota.utilization_7d = Some(window.utilization);
-            quota.reset_7d = window.resets_at;
-        }
-        if let Some(window) = &usage.seven_day_oi {
-            quota.utilization_7d_oi = Some(window.utilization);
-            quota.reset_7d_oi = window.resets_at;
+        {
+            let mut entries = self.entries.lock().expect("account health lock poisoned");
+            let health = entries
+                .entry((provider.to_string(), account_identity(account).to_string()))
+                .or_default();
+            health.observed = true;
+            let quota = &mut health.quota;
+            if let Some(window) = &usage.five_hour {
+                quota.utilization_5h = Some(window.utilization);
+                quota.reset_5h = window.resets_at;
+            }
+            if let Some(window) = &usage.seven_day {
+                quota.utilization_7d = Some(window.utilization);
+                quota.reset_7d = window.resets_at;
+            }
+            if let Some(window) = &usage.seven_day_oi {
+                quota.utilization_7d_oi = Some(window.utilization);
+                quota.reset_7d_oi = window.resets_at;
+            }
+            let utilization = pool_utilization(&mut entries, provider, unix_now());
+            record_pool_utilization(provider, utilization);
         }
         self.mark_dirty();
     }
 
-    pub fn cooldown(&self, provider: &str, account: &AccountConfig, duration: Duration) {
+    pub fn cooldown(
+        &self,
+        provider: &str,
+        account: &AccountConfig,
+        duration: Duration,
+        reason: &'static str,
+    ) {
         let mut entries = self.entries.lock().expect("account health lock poisoned");
         let health = entries
             .entry((provider.to_string(), account_identity(account).to_string()))
             .or_default();
         health.observed = true;
+        health.enabled = !account.disabled;
         health.cooldown_until = Some(Instant::now() + duration);
+        drop(entries);
+        crate::metrics::record_pool_rotation(provider, reason);
     }
 
     pub fn mark_healthy(&self, provider: &str, account: &AccountConfig) {
@@ -528,6 +579,7 @@ impl AccountPool {
             .entry((provider.to_string(), account_identity(account).to_string()))
             .or_default();
         health.observed = true;
+        health.enabled = !account.disabled;
         health.cooldown_until = None;
     }
 
@@ -914,6 +966,47 @@ fn window_headroom(
     time_to_exhaust - time_to_reset
 }
 
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+/// Best-account utilization for each non-stale quota window. Disabled entries,
+/// unobserved values, non-finite values, and expired windows are excluded.
+fn pool_utilization(
+    entries: &mut HashMap<AccountKey, AccountHealth>,
+    provider: &str,
+    now: u64,
+) -> [Option<f64>; 3] {
+    let mut minimums = [None::<f64>; 3];
+    for ((entry_provider, _), health) in entries.iter_mut() {
+        if entry_provider != provider || !health.enabled {
+            continue;
+        }
+        expire_stale_quota(&mut health.quota, now);
+        for (minimum, value) in minimums.iter_mut().zip([
+            health.quota.utilization_5h,
+            health.quota.utilization_7d,
+            health.quota.utilization_7d_oi,
+        ]) {
+            let Some(value) = value.filter(|value| value.is_finite()) else {
+                continue;
+            };
+            let value = value.clamp(0.0, 1.0);
+            *minimum = Some(minimum.map_or(value, |current| current.min(value)));
+        }
+    }
+    minimums
+}
+
+fn record_pool_utilization(provider: &str, utilization: [Option<f64>; 3]) {
+    for (window, value) in ["5h", "7d", "7d_oi"].into_iter().zip(utilization) {
+        crate::metrics::record_pool_utilization(provider, window, value);
+    }
+}
+
 fn expire_stale_quota(quota: &mut QuotaState, now: u64) {
     let mut expired = false;
     if quota.reset_5h.is_some_and(|reset| reset <= now) {
@@ -949,6 +1042,28 @@ const QUOTA_STATUS_HEADERS: [&str; 3] = [
     "anthropic-ratelimit-unified-7d-status",
     "anthropic-ratelimit-unified-7d_oi-status",
 ];
+
+/// Low-cardinality pool-rotation reason for an upstream response that moves off
+/// an account. A quota-rejected Anthropic 429 is distinguished from ordinary
+/// throttling; 5xx and 401 retain their operational categories.
+pub fn rotation_reason(status: StatusCode, headers: &HeaderMap) -> &'static str {
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        if QUOTA_STATUS_HEADERS
+            .iter()
+            .any(|name| headers.get(*name).is_some_and(|value| value == "rejected"))
+        {
+            "quota"
+        } else {
+            "rate_limit"
+        }
+    } else if status == StatusCode::UNAUTHORIZED {
+        "auth"
+    } else if status.is_server_error() {
+        "server_error"
+    } else {
+        "other"
+    }
+}
 
 pub fn classify(status: StatusCode, headers: &HeaderMap) -> FailoverAction {
     if status.is_success() {
@@ -1046,6 +1161,173 @@ mod tests {
     }
 
     #[test]
+    fn shared_identity_is_enabled_when_any_alias_is_enabled() {
+        let pool = AccountPool::new();
+        let accounts = vec![
+            AccountConfig {
+                name: "enabled".to_string(),
+                uuid: Some("shared".to_string()),
+                ..Default::default()
+            },
+            AccountConfig {
+                name: "disabled".to_string(),
+                uuid: Some("shared".to_string()),
+                disabled: true,
+                ..Default::default()
+            },
+        ];
+        pool.select_order("anthropic", &accounts, Some("session"), None, None);
+
+        let entries = pool.entries.lock().expect("account health lock poisoned");
+        assert!(entries
+            .get(&("anthropic".to_string(), "shared".to_string()))
+            .is_some_and(|health| health.enabled));
+    }
+
+    #[test]
+    fn syncing_enabled_accounts_preserves_aliases_and_disables_removed_identities() {
+        let pool = AccountPool::new();
+        let initial = vec![
+            account_with_uuid("enabled", "shared"),
+            account_with_uuid("removed", "removed-id"),
+        ];
+        pool.sync_enabled_accounts("anthropic", &initial);
+
+        let current = vec![
+            AccountConfig {
+                name: "disabled-alias".to_string(),
+                uuid: Some("shared".to_string()),
+                disabled: true,
+                ..Default::default()
+            },
+            account_with_uuid("enabled-alias", "shared"),
+        ];
+        pool.sync_enabled_accounts("anthropic", &current);
+
+        let entries = pool.entries.lock().expect("account health lock poisoned");
+        assert!(entries
+            .get(&("anthropic".to_string(), "shared".to_string()))
+            .is_some_and(|health| health.enabled));
+        assert!(entries
+            .get(&("anthropic".to_string(), "removed-id".to_string()))
+            .is_some_and(|health| !health.enabled));
+    }
+
+    #[test]
+    fn quota_update_does_not_override_synchronized_alias_state() {
+        let pool = AccountPool::new();
+        let accounts = vec![
+            account_with_uuid("enabled", "shared"),
+            AccountConfig {
+                name: "disabled".to_string(),
+                uuid: Some("shared".to_string()),
+                disabled: true,
+                ..Default::default()
+            },
+        ];
+        pool.sync_enabled_accounts("anthropic", &accounts);
+        pool.note_quota("anthropic", &accounts[1], &HeaderMap::new());
+
+        let entries = pool.entries.lock().expect("account health lock poisoned");
+        assert!(entries
+            .get(&("anthropic".to_string(), "shared".to_string()))
+            .is_some_and(|health| health.enabled));
+    }
+
+    #[test]
+    fn pool_utilization_uses_best_enabled_non_stale_account() {
+        let now = unix_now();
+        let mut entries = HashMap::from([
+            (
+                ("anthropic".to_string(), "best".to_string()),
+                AccountHealth {
+                    quota: QuotaState {
+                        utilization_5h: Some(0.2),
+                        reset_5h: Some(now + 3600),
+                        utilization_7d: Some(0.6),
+                        reset_7d: Some(now + 3600),
+                        ..Default::default()
+                    },
+                    enabled: true,
+                    observed: true,
+                    ..Default::default()
+                },
+            ),
+            (
+                ("anthropic".to_string(), "other".to_string()),
+                AccountHealth {
+                    quota: QuotaState {
+                        utilization_5h: Some(0.7),
+                        reset_5h: Some(now + 3600),
+                        utilization_7d_oi: Some(0.4),
+                        reset_7d_oi: Some(now + 3600),
+                        ..Default::default()
+                    },
+                    enabled: true,
+                    observed: true,
+                    ..Default::default()
+                },
+            ),
+            (
+                ("anthropic".to_string(), "disabled".to_string()),
+                AccountHealth {
+                    quota: QuotaState {
+                        utilization_5h: Some(0.01),
+                        reset_5h: Some(now + 3600),
+                        ..Default::default()
+                    },
+                    enabled: false,
+                    observed: true,
+                    ..Default::default()
+                },
+            ),
+            (
+                ("anthropic".to_string(), "stale".to_string()),
+                AccountHealth {
+                    quota: QuotaState {
+                        utilization_5h: Some(0.05),
+                        reset_5h: Some(now.saturating_sub(1)),
+                        ..Default::default()
+                    },
+                    enabled: true,
+                    observed: true,
+                    ..Default::default()
+                },
+            ),
+        ]);
+
+        assert_eq!(
+            pool_utilization(&mut entries, "anthropic", now),
+            [Some(0.2), Some(0.6), Some(0.4)]
+        );
+    }
+
+    #[test]
+    fn rotation_reason_is_low_cardinality_and_distinguishes_quota() {
+        let mut quota = HeaderMap::new();
+        quota.insert(
+            "anthropic-ratelimit-unified-5h-status",
+            HeaderValue::from_static("rejected"),
+        );
+        assert_eq!(
+            rotation_reason(StatusCode::TOO_MANY_REQUESTS, &quota),
+            "quota"
+        );
+        assert_eq!(
+            rotation_reason(StatusCode::TOO_MANY_REQUESTS, &HeaderMap::new()),
+            "rate_limit"
+        );
+        assert_eq!(
+            rotation_reason(StatusCode::UNAUTHORIZED, &HeaderMap::new()),
+            "auth"
+        );
+        assert_eq!(
+            rotation_reason(StatusCode::BAD_GATEWAY, &HeaderMap::new()),
+            "server_error"
+        );
+    }
+
+    #[test]
     fn session_selection_is_stable_and_spreads_across_sessions() {
         let pool = AccountPool::new();
         let accounts = accounts();
@@ -1115,7 +1397,12 @@ mod tests {
             account_with_uuid("alias-b", "shared"),
             account_with_uuid("other", "other"),
         ];
-        pool.cooldown("anthropic", &accounts[0], Duration::from_secs(60));
+        pool.cooldown(
+            "anthropic",
+            &accounts[0],
+            Duration::from_secs(60),
+            "transport",
+        );
 
         let snapshots = pool.snapshot("anthropic", &accounts, None, None);
         for snapshot in &snapshots[..2] {
@@ -1299,7 +1586,12 @@ mod tests {
                 "0.99".to_string(),
             )]),
         );
-        pool.cooldown("anthropic", &accounts[1], Duration::from_secs(45));
+        pool.cooldown(
+            "anthropic",
+            &accounts[1],
+            Duration::from_secs(45),
+            "transport",
+        );
 
         let snaps = pool.snapshot("anthropic", &accounts, None, None);
         assert_eq!(snaps.len(), 3);
@@ -1338,7 +1630,7 @@ mod tests {
             ("x-codex-active-limit", "premium".to_string()),
         ]);
 
-        pool.note_codex_quota("codex", "pro", &headers);
+        pool.note_codex_quota("codex", &accounts[0], &headers);
 
         let snaps = pool.snapshot("codex", &accounts, None, None);
         assert!(snaps[0].has_state);
@@ -1346,6 +1638,22 @@ mod tests {
         assert_eq!(snaps[0].reset_7d, Some(reset));
         assert_eq!(snaps[0].utilization_5h, None);
         assert_eq!(snaps[0].utilization_7d_oi, None);
+    }
+
+    #[test]
+    fn codex_quota_uses_stable_uuid_identity() {
+        let pool = AccountPool::new();
+        let accounts = vec![account_with_uuid("pro", "account-uuid")];
+        let headers = quota_headers(&[
+            ("x-codex-primary-used-percent", "40".to_string()),
+            ("x-codex-primary-window-minutes", "300".to_string()),
+        ]);
+
+        pool.note_codex_quota("codex", &accounts[0], &headers);
+
+        let snaps = pool.snapshot("codex", &accounts, None, None);
+        assert!(snaps[0].has_state);
+        assert_eq!(snaps[0].utilization_5h, Some(0.4));
     }
 
     #[test]
@@ -1357,7 +1665,7 @@ mod tests {
             ("x-codex-primary-window-minutes", "300".to_string()),
         ]);
 
-        pool.note_codex_quota("codex", "pro", &headers);
+        pool.note_codex_quota("codex", &accounts[0], &headers);
 
         let snaps = pool.snapshot("codex", &accounts, None, None);
         assert!(snaps[0].has_state);
@@ -1374,7 +1682,7 @@ mod tests {
             ("x-codex-primary-window-minutes", "1440".to_string()),
         ]);
 
-        pool.note_codex_quota("codex", "pro", &headers);
+        pool.note_codex_quota("codex", &accounts[0], &headers);
 
         let snaps = pool.snapshot("codex", &accounts, None, None);
         assert!(snaps[0].has_state);
@@ -1389,7 +1697,7 @@ mod tests {
         let reset = unix_now() + 3_600;
         pool.note_codex_quota(
             "codex",
-            "pro",
+            &accounts[0],
             &quota_headers(&[
                 ("x-codex-primary-used-percent", "40".to_string()),
                 ("x-codex-primary-window-minutes", "300".to_string()),
@@ -1399,7 +1707,7 @@ mod tests {
 
         pool.note_codex_quota(
             "codex",
-            "pro",
+            &accounts[0],
             &quota_headers(&[
                 ("x-codex-primary-used-percent", "41".to_string()),
                 ("x-codex-primary-window-minutes", "300".to_string()),
@@ -1421,7 +1729,7 @@ mod tests {
                 ("x-codex-primary-window-minutes", "300".to_string()),
             ]);
 
-            pool.note_codex_quota("codex", "pro", &headers);
+            pool.note_codex_quota("codex", &accounts[0], &headers);
 
             let snaps = pool.snapshot("codex", &accounts, None, None);
             assert!(snaps[0].has_state);
@@ -1435,7 +1743,7 @@ mod tests {
         let accounts = vec![account("pro")];
         pool.note_codex_quota(
             "codex",
-            "pro",
+            &accounts[0],
             &quota_headers(&[("x-codex-rate-limit-reached-type", "weekly".to_string())]),
         );
 
@@ -1452,7 +1760,7 @@ mod tests {
         let sticky = initial[0];
         pool.note_codex_quota(
             "codex",
-            &accounts[sticky].name,
+            &accounts[sticky],
             &quota_headers(&[
                 ("x-codex-primary-used-percent", "100".to_string()),
                 ("x-codex-primary-window-minutes", "300".to_string()),
@@ -1469,8 +1777,13 @@ mod tests {
     fn forget_identity_is_provider_scoped() {
         let pool = AccountPool::new();
         let accounts = vec![account("main")];
-        pool.cooldown("anthropic", &accounts[0], Duration::from_secs(60));
-        pool.cooldown("codex", &accounts[0], Duration::from_secs(60));
+        pool.cooldown(
+            "anthropic",
+            &accounts[0],
+            Duration::from_secs(60),
+            "transport",
+        );
+        pool.cooldown("codex", &accounts[0], Duration::from_secs(60), "transport");
         let old_codex_lock = pool.refresh_lock("codex", &accounts[0]);
         let anthropic_lock = pool.refresh_lock("anthropic", &accounts[0]);
 
@@ -1705,13 +2018,23 @@ mod tests {
         let pool = AccountPool::new();
         let accounts = vec![account("a"), account("b"), account("c")];
         let sticky = pool.select_order("anthropic", &accounts, Some("sticky"), None, None)[0];
-        pool.cooldown("anthropic", &accounts[sticky], Duration::from_secs(30));
+        pool.cooldown(
+            "anthropic",
+            &accounts[sticky],
+            Duration::from_secs(30),
+            "transport",
+        );
         let available = pool.select_order("anthropic", &accounts, Some("sticky"), None, None);
         assert_eq!(available.len(), 3);
         assert_eq!(available[2], sticky);
 
         for (index, seconds) in [(0, 30), (1, 20), (2, 10)] {
-            pool.cooldown("anthropic", &accounts[index], Duration::from_secs(seconds));
+            pool.cooldown(
+                "anthropic",
+                &accounts[index],
+                Duration::from_secs(seconds),
+                "transport",
+            );
         }
         assert_eq!(
             pool.select_order("anthropic", &accounts, Some("sticky"), None, None),
@@ -2340,7 +2663,7 @@ mod tests {
         // A cooldown marks the account observed but records no quota, so there
         // is nothing worth persisting.
         let pool = AccountPool::new();
-        pool.cooldown("anthropic", &account("a"), Duration::from_secs(60));
+        pool.cooldown("anthropic", &account("a"), Duration::from_secs(60), "test");
         assert!(pool.export_quotas().is_empty());
     }
 
@@ -2367,7 +2690,7 @@ mod tests {
     #[test]
     fn forgetting_cooldown_only_state_does_not_mark_dirty() {
         let pool = AccountPool::new();
-        pool.cooldown("anthropic", &account("a"), Duration::from_secs(60));
+        pool.cooldown("anthropic", &account("a"), Duration::from_secs(60), "test");
 
         pool.forget_identity("anthropic", "a");
 

@@ -38,10 +38,24 @@ authorization = "Bearer <token>"
 | 信号 | 导出内容 | 说明 |
 | :-- | :-- | :-- |
 | **Trace** | 每次请求的 `proxy_request` span | 通过 `sample_ratio` 进行 head 采样。低基数;不含请求/响应正文。 |
-| **指标** | `shunt.requests`(计数)和 `shunt.latency`(ms) | 带 `provider`、`model`、`http.response.status_code` 标签 —— 与 shunt 发往 Sentry 的是同一组序列。 |
+| **指标** | 下方列出的低基数序列 | 与 `[sentry] metrics = true` 时 shunt 发往 Sentry 的序列相同。 |
 | **日志** | shunt 的 `tracing` 日志事件,桥接到 OTLP | stderr 日志不受影响。 |
 
 每种信号都可通过 `traces` / `metrics` / `logs` 单独开关。
+
+### 指标序列
+
+| 序列 | 类型 | 属性 | 含义 |
+| :-- | :-- | :-- | :-- |
+| `shunt.requests` | 计数器 | `provider`, `model`, `http.response.status_code` | 代理的推理请求。 |
+| `shunt.latency` | 直方图(ms) | `provider`, `model`, `http.response.status_code` | 流式响应为到 header 的延迟；其他响应为完整延迟。 |
+| `shunt.ttft` | 直方图(ms) | `provider`, `model` | 从请求开始到第一个 SSE body chunk 的时间。 |
+| `shunt.stream_outcome` | 计数器 | `provider`, `model`, `outcome` | 每个 SSE 记录一个最终结果：`completed`、`error_event`、`upstream_cut` 或 `client_disconnect`。 |
+| `shunt.tokens` | 计数器 | `provider`, `model`, `kind` | 最后报告的流式 token 用量（`input`、`output`、`cache_read`、`cache_creation`）；不记录非流式用量。 |
+| `shunt.codex_continuation` | 计数器 | `provider`, `outcome` | Codex WebSocket continuation 的 hit 或 fallback。 |
+| `shunt.upstream_retries` | 计数器 | `provider`, `reason` | 有次数限制的临时上游重试。 |
+| `shunt.pool.quota_utilization` | 仪表 | `provider`, `window` | `5h`、`7d` 或 `7d_oi` 窗口中已启用、已观测且未过期的 quota 值的最小使用率。 |
+| `shunt.pool.rotations` | 计数器 | `provider`, `reason` | 离开账户的切换次数以及 pool 耗尽的请求数。 |
 
 ## 隐私
 

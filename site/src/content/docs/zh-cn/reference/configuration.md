@@ -113,7 +113,7 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 | :-- | :-- | :-- |
 | `dsn` | — | Sentry 项目 DSN。留空则关闭;无效 DSN 为启动错误。 |
 | `environment` | — | 上报事件上的可选 environment 标签 |
-| `metrics` | `false` | 同时发送用量指标 — `shunt.requests` / `shunt.latency` 序列(仅聚合值) |
+| `metrics` | `false` | 同时发送用量指标 — OpenTelemetry 指南中列出的 gateway 指标序列(仅聚合值) |
 | `traces_sample_rate` | `0.0` | 同时发送性能 trace:每个请求的 span 成为一个 Sentry 事务,按 `[0.0, 1.0]` 范围内的该比率做头部采样。`0.0` 完全不发送 span;超出范围为启动错误。 |
 | `include_session_id` | `false` | 在发送给 Sentry 的请求 span 上附加客户端会话 id |
 
@@ -128,7 +128,7 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 | `environment` | — | 可选:`deployment.environment.name` |
 | `sample_ratio` | `1.0` | `[0.0, 1.0]` 范围内基于 head 的 trace 采样;超出范围为启动错误 |
 | `traces` | `true` | 导出每次请求的 `proxy_request` span |
-| `metrics` | `true` | 导出 `shunt.requests` / `shunt.latency` 序列 |
+| `metrics` | `true` | 导出 OpenTelemetry 指南中列出的 gateway 指标序列 |
 | `logs` | `true` | 导出 `tracing` 日志事件(stderr 日志不受影响) |
 | `include_session_id` | `false` | 将客户端 session id 附加到请求 span |
 

@@ -170,9 +170,12 @@ async fn forward_claude_oauth(
             match resolve_claude_account(account, &state.http_client).await {
                 Ok(credential) => credential,
                 Err(error) => {
-                    state
-                        .accounts
-                        .cooldown(&route.provider, account, Duration::from_secs(5 * 60));
+                    state.accounts.cooldown(
+                        &route.provider,
+                        account,
+                        Duration::from_secs(5 * 60),
+                        "auth",
+                    );
                     tracing::warn!(
                         provider = %route.provider,
                         account = %account.name,
@@ -200,9 +203,12 @@ async fn forward_claude_oauth(
         {
             Ok(response) => response,
             Err(error) => {
-                state
-                    .accounts
-                    .cooldown(&route.provider, account, Duration::from_secs(30));
+                state.accounts.cooldown(
+                    &route.provider,
+                    account,
+                    Duration::from_secs(30),
+                    "transport",
+                );
                 tracing::warn!(
                     provider = %route.provider,
                     account = %account.name,
@@ -230,7 +236,12 @@ async fn forward_claude_oauth(
                 } else {
                     Duration::from_secs(30)
                 };
-                state.accounts.cooldown(&route.provider, account, cooldown);
+                state.accounts.cooldown(
+                    &route.provider,
+                    account,
+                    cooldown,
+                    accounts::rotation_reason(status, upstream.headers()),
+                );
                 // Log on the way out like every other failover arm in this loop
                 // (resolve/post/refresh errors all warn) — this is the most common
                 // failover trigger (quota-rejected 429 or any 5xx), so an operator
@@ -269,7 +280,12 @@ async fn forward_claude_oauth(
                     let cooldown = accounts::retry_after(retry.headers())
                         .unwrap_or(delay)
                         .clamp(Duration::from_secs(1), Duration::from_secs(300));
-                    state.accounts.cooldown(&route.provider, account, cooldown);
+                    state.accounts.cooldown(
+                        &route.provider,
+                        account,
+                        cooldown,
+                        accounts::rotation_reason(retry_status, retry.headers()),
+                    );
                     tracing::warn!(
                         provider = %route.provider,
                         account = %account.name,
@@ -290,9 +306,12 @@ async fn forward_claude_oauth(
                         .unwrap_or(false)
                 };
                 if account.token_env.is_some() || is_static {
-                    state
-                        .accounts
-                        .cooldown(&route.provider, account, Duration::from_secs(5 * 60));
+                    state.accounts.cooldown(
+                        &route.provider,
+                        account,
+                        Duration::from_secs(5 * 60),
+                        "auth",
+                    );
                     // A static credential (token_env or a long-lived setup token)
                     // cannot be refreshed, so a 401 here means it is expired or
                     // revoked. Log it — otherwise the account cycles in and out of
@@ -344,6 +363,7 @@ async fn forward_claude_oauth(
                                 &route.provider,
                                 account,
                                 Duration::from_secs(5 * 60),
+                                "auth",
                             );
                             tracing::warn!(
                                 provider = %route.provider,
@@ -380,9 +400,12 @@ async fn forward_claude_oauth(
                     // Refresh succeeded but the credential is still rejected — the
                     // account is genuinely broken. Cool it down longer and rotate
                     // rather than relaying the 401 to the client.
-                    state
-                        .accounts
-                        .cooldown(&route.provider, account, Duration::from_secs(5 * 60));
+                    state.accounts.cooldown(
+                        &route.provider,
+                        account,
+                        Duration::from_secs(5 * 60),
+                        "auth",
+                    );
                     last_response = Some(retry);
                     continue;
                 }
@@ -412,7 +435,12 @@ async fn forward_claude_oauth(
                         } else {
                             Duration::from_secs(30)
                         };
-                        state.accounts.cooldown(&route.provider, account, cooldown);
+                        state.accounts.cooldown(
+                            &route.provider,
+                            account,
+                            cooldown,
+                            accounts::rotation_reason(retry_status, retry.headers()),
+                        );
                         tracing::warn!(
                             provider = %route.provider,
                             account = %account.name,
@@ -427,6 +455,7 @@ async fn forward_claude_oauth(
         }
     }
 
+    crate::metrics::record_pool_rotation(&route.provider, "exhausted");
     if let Some(response) = last_response {
         return relay_response(&state, &route, response, None).await;
     }
@@ -492,9 +521,12 @@ async fn retry_upstream(
             Some(response)
         }
         Err(error) => {
-            state
-                .accounts
-                .cooldown(&route.provider, account, Duration::from_secs(30));
+            state.accounts.cooldown(
+                &route.provider,
+                account,
+                Duration::from_secs(30),
+                "transport",
+            );
             tracing::warn!(
                 provider = %route.provider,
                 account = %account.name,
