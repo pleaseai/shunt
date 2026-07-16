@@ -1,0 +1,20 @@
+src/gateway/device.rs
+  s_836642e1ba1f3b::t_65c6ca8d4c89e4 196
+  s_836642e1ba1f3b::t_78b7625b4b3c61 304
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "cb5a966c127a9229f174df52e919b9186e16560d",
+  "prompts": {},
+  "sessions": {
+    "s_836642e1ba1f3b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "30f85fb8-9576-45b6-946f-68a7a37f1061",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
