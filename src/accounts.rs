@@ -617,7 +617,7 @@ impl AccountPool {
 
     /// Atomically read-and-clear the dirty flag. Returns `true` when quota has
     /// changed since the previous call, meaning the persister should write.
-    pub fn take_dirty(&self) -> bool {
+    pub(crate) fn take_dirty(&self) -> bool {
         self.dirty.swap(false, Ordering::Relaxed)
     }
 
