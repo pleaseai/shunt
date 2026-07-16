@@ -302,16 +302,16 @@ impl GatewayConfig {
                 message: error.to_string(),
             }
         })?;
-        if !(matches!(public_url.scheme(), "https")
+        let secure_origin = public_url.scheme() == "https"
             || public_url.scheme() == "http"
-                && host_is_loopback(public_url.host_str().unwrap_or_default()))
-            || public_url.host_str().is_none()
-            || !public_url.username().is_empty()
-            || public_url.password().is_some()
-            || public_url.path() != "/"
-            || public_url.query().is_some()
-            || public_url.fragment().is_some()
-        {
+                && host_is_loopback(public_url.host_str().unwrap_or_default());
+        let bare_origin = public_url.host_str().is_some()
+            && public_url.username().is_empty()
+            && public_url.password().is_none()
+            && public_url.path() == "/"
+            && public_url.query().is_none()
+            && public_url.fragment().is_none();
+        if !secure_origin || !bare_origin {
             return Err(ConfigError::InvalidGatewayPublicUrl {
                 message: "must be an https origin (http is allowed only on loopback) with no userinfo, path, query, or fragment"
                     .to_string(),
