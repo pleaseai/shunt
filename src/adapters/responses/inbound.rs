@@ -132,9 +132,10 @@ async fn forward_codex_passthrough(
     for index in order {
         let account = &accounts_config[index];
 
-        // Resolve the account's credential under its per-account refresh lock
-        // (shared with forward_chatgpt_oauth); a resolution failure cools it
-        // down and rotates to the next account.
+        // Resolve the account's credential without the account-pool refresh lock;
+        // the shared auth store returns valid tokens concurrently and
+        // single-flights expired-token refreshes internally. A resolution
+        // failure cools the account down and rotates to the next account.
         let credential = match resolve_or_cooldown(&state, &route, account).await {
             Some(credential) => credential,
             None => continue,
