@@ -171,6 +171,20 @@ fn oversized_event_is_skipped_and_parsing_resumes() {
     assert_eq!(observer.tokens, Default::default());
 }
 
+#[test]
+fn oversized_crlf_event_is_skipped_and_parsing_resumes() {
+    let mut observer = state(Protocol::Anthropic);
+    let mut oversized = b"event: message_start\r\ndata: ".to_vec();
+    oversized.resize(MAX_EVENT_BYTES + 100, b'x');
+    observer.push_bytes(&oversized);
+    assert!(observer.skipping_oversized);
+
+    observer.push_bytes(b"\r\n\r\nevent: message_stop\r\ndata: {}\r\n\r\n");
+    assert!(!observer.skipping_oversized);
+    assert!(observer.terminal_seen);
+    assert_eq!(observer.tokens, Default::default());
+}
+
 #[tokio::test]
 async fn wrapper_forwards_all_chunks_verbatim_and_preserves_headers() {
     let chunks = vec![

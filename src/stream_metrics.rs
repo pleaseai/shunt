@@ -63,7 +63,7 @@ struct ObserverState {
     first_chunk_seen: bool,
     buffer: Vec<u8>,
     skipping_oversized: bool,
-    skip_tail: [u8; 3],
+    skip_tail: [u8; 4],
     skip_tail_len: usize,
     terminal_seen: bool,
     error_seen: bool,
@@ -81,7 +81,7 @@ impl ObserverState {
             first_chunk_seen: false,
             buffer: Vec::with_capacity(4096),
             skipping_oversized: false,
-            skip_tail: [0; 3],
+            skip_tail: [0; 4],
             skip_tail_len: 0,
             terminal_seen: false,
             error_seen: false,
@@ -134,7 +134,7 @@ impl ObserverState {
     }
 
     fn begin_oversized_skip(&mut self) {
-        let retained = self.buffer.len().min(3);
+        let retained = self.buffer.len().min(4);
         self.skip_tail_len = retained;
         self.skip_tail[..retained].copy_from_slice(&self.buffer[self.buffer.len() - retained..]);
         self.buffer.clear();
@@ -145,12 +145,12 @@ impl ObserverState {
     /// after a single event has exceeded the safety cap, never on the hot path.
     fn skip_to_boundary(&mut self, bytes: &[u8]) -> usize {
         for (index, &byte) in bytes.iter().enumerate() {
-            if self.skip_tail_len < 3 {
+            if self.skip_tail_len < 4 {
                 self.skip_tail[self.skip_tail_len] = byte;
                 self.skip_tail_len += 1;
             } else {
                 self.skip_tail.copy_within(1.., 0);
-                self.skip_tail[2] = byte;
+                self.skip_tail[3] = byte;
             }
             let tail = &self.skip_tail[..self.skip_tail_len];
             if tail.ends_with(b"\n\n") || tail.ends_with(b"\r\n\r\n") {
