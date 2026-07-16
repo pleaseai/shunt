@@ -79,6 +79,7 @@ uuid = { version = "1", features = ["v4"] }
 divan = { version = "5.0.1", package = "codspeed-divan-compat" }
 hex = "0.4"
 tokio = { version = "1", features = ["full", "test-util"] }
+tower = { version = "0.5", default-features = false, features = ["util"] }
 wiremock = "0.6"
 
 [[bench]]

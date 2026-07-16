@@ -52,10 +52,13 @@ pub struct Windows {
 
 #[derive(Debug, Serialize, PartialEq)]
 pub struct WindowStatus {
-    /// Best available headroom across the pool: `1 - min(utilization)` over
-    /// non-disabled accounts reporting this window, clamped to `0.0..=1.0` and
-    /// rounded to four decimals. `None` when no account reports the window (e.g.
-    /// the Codex backend, which publishes no quota headers).
+    /// `1 - min(utilization)` over non-disabled accounts reporting this window
+    /// — the least reported utilization among non-disabled accounts, clamped to
+    /// `0.0..=1.0` and rounded to four decimals. This is a pool-wide aggregate,
+    /// not a prediction of which account the next request will actually route
+    /// to (routing also weighs availability, model, session affinity, and
+    /// priority). `None` when no account reports the window (e.g. the Codex
+    /// backend, which publishes no quota headers).
     pub remaining: Option<f64>,
     /// Reset time (unix epoch seconds) of the least-utilized account's window,
     /// when the backend reported one.
@@ -79,9 +82,10 @@ pub fn aggregate(snapshots: &[AccountSnapshot]) -> UsageResponse {
     }
 }
 
-/// Best-available headroom for one window: the least-utilized non-disabled
-/// account is the one the next request routes to, so its `1 - utilization` is
-/// the pool's headroom and its reset is the relevant one.
+/// Aggregate headroom for one window: `1 - utilization` of the non-disabled
+/// account reporting the least utilization for this window (and that
+/// account's reset time), not a guarantee about which account the next
+/// request will actually route to.
 fn window_status(
     snapshots: &[AccountSnapshot],
     utilization: impl Fn(&AccountSnapshot) -> Option<f64>,
@@ -261,7 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_reports_best_available_headroom_per_window() {
+    fn aggregate_reports_least_utilized_headroom_per_window() {
         // Two accounts; the least-utilized (0.25) drives 5h headroom and reset.
         let snapshots = vec![
             snapshot("acct-a", Some(0.60), Some(111), Some(0.40)),
@@ -434,5 +438,58 @@ mod tests {
             AppState::new(crate::config::Config::default(), reqwest::Client::new()).unwrap();
         let response = get(State(state), HeaderMap::new()).await;
         assert_eq!(response.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn returns_api_error_500_when_account_store_scan_fails() {
+        use crate::auth::{codex::store as codex_store, shared::EnvVarGuard};
+
+        // Serialize with the codex store's own env-var tests (they share the
+        // `SHUNT_CODEX_ACCOUNTS_DIR` process env).
+        let _guard = codex_store::TEST_ENV_LOCK.lock().await;
+        // A file where the store expects a directory is a platform-stable way to
+        // fail `fs::read_dir` (NotADirectory / ENOTDIR-equivalent) without racing
+        // real filesystem permissions.
+        let not_a_dir = std::env::temp_dir().join(format!(
+            "shunt-usage-test-not-a-dir-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&not_a_dir, b"not a directory").unwrap();
+        // Declared after TEST_ENV_LOCK so it drops first: the var is removed on
+        // drop (panic-safe) while the lock is still held.
+        let _env_dir = EnvVarGuard::set("SHUNT_CODEX_ACCOUNTS_DIR", &not_a_dir);
+
+        // Default config: the built-in `codex` provider has no explicit accounts,
+        // so the handler falls through to `scan_accounts`, which now fails.
+        let env = format!(
+            "SHUNT_USAGE_TEST_TOKENS_{}_store_scan_failure",
+            std::process::id()
+        );
+        std::env::set_var(&env, "tester:tok-secret");
+        let mut config = crate::config::Config::default();
+        config.server.auth = Some(InboundAuthConfig {
+            header: "x-shunt-token".to_string(),
+            tokens_env: env.clone(),
+        });
+        config.server.usage = Some(UsageEndpointConfig::default());
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-api-key", "tok-secret".parse().unwrap());
+        let response = get(State(state), headers).await;
+        std::env::remove_var(&env);
+        let _ = std::fs::remove_file(&not_a_dir);
+
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
+        let body = body_json(response).await;
+        assert_eq!(body["type"], "error");
+        assert_eq!(body["error"]["type"], "api_error");
     }
 }

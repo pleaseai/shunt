@@ -182,3 +182,71 @@ async fn health() -> Json<HealthResponse> {
         version: env!("CARGO_PKG_VERSION"),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    use crate::config::{AccountConfig, Config, InboundAuthConfig, UsageEndpointConfig};
+
+    use super::build_router;
+
+    /// `Config::default()` with `[server.auth]` bound to a unique env var and
+    /// `[server.usage]` enabled, plus the built-in `codex` provider given one
+    /// explicit account so the request does not touch the account store
+    /// (mirrors `usage::tests::state_with_auth_and_seeded_pool`).
+    fn config_with_usage_enabled(label: &str) -> (Config, String) {
+        // Per-test-unique name: tests share the process env, and one test's
+        // `remove_var` must not race another's construction-time resolve.
+        let env = format!("SHUNT_SERVER_TEST_TOKENS_{}_{label}", std::process::id());
+        std::env::set_var(&env, "tester:tok-secret");
+        let mut config = Config::default();
+        config.server.auth = Some(InboundAuthConfig {
+            header: "x-shunt-token".to_string(),
+            tokens_env: env.clone(),
+        });
+        config.server.usage = Some(UsageEndpointConfig::default());
+        config
+            .providers
+            .get_mut("codex")
+            .expect("built-in codex provider")
+            .accounts = vec![AccountConfig {
+            name: "acct-a".to_string(),
+            ..AccountConfig::default()
+        }];
+        (config, env)
+    }
+
+    #[tokio::test]
+    async fn usage_route_is_registered_and_answers_when_enabled_with_valid_auth() {
+        let (config, env) = config_with_usage_enabled("registered");
+        let (router, _shared, _state) = build_router(config).unwrap();
+
+        let request = Request::builder()
+            .uri("/usage")
+            .header("x-api-key", "tok-secret")
+            .body(Body::empty())
+            .unwrap();
+        let response = router.oneshot(request).await.unwrap();
+        std::env::remove_var(&env);
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn usage_route_is_404_when_server_usage_is_not_configured() {
+        let (router, _shared, _state) = build_router(Config::default()).unwrap();
+
+        let request = Request::builder()
+            .uri("/usage")
+            .body(Body::empty())
+            .unwrap();
+        let response = router.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+}

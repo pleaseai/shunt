@@ -2696,6 +2696,7 @@ dependencies = [
  "tiktoken-rs",
  "tokio",
  "tokio-tungstenite",
+ "tower",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",

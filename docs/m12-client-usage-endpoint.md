@@ -51,10 +51,12 @@ table is present; a config reload only re-resolves the client tokens it authenti
 Per tracked window — the rolling 5-hour session window (`5h`), the shared weekly window (`7d`), and
 the Fable-scoped weekly window (`fable` / `7d_oi`):
 
-- `remaining` — best available headroom, `1 - min(utilization)` over **non-disabled** accounts that
-  report the window, clamped to `0.0..=1.0` and rounded to four decimals. The least-utilized account
-  is the one the next request routes to, so its headroom is the pool's. `null` when no account
-  reports the window (e.g. the Codex backend, which publishes no quota headers).
+- `remaining` — `1 - min(utilization)` over **non-disabled** accounts that report the window: the
+  least reported utilization among non-disabled accounts, clamped to `0.0..=1.0` and rounded to four
+  decimals. This is a pool-wide aggregate, not a prediction of which account the next request will
+  actually route to (routing also weighs availability, model, session affinity, and priority).
+  `null` when no account reports the window (e.g. the Codex backend, which publishes no quota
+  headers).
 - `resets_at` — the least-utilized account's window reset (unix epoch seconds), when reported.
 
 Plus a pool-level `status` derived purely from availability booleans (no numbers): `exhausted` when
