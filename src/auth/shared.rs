@@ -230,21 +230,13 @@ pub fn default_accounts_dir(env_var: &str, subdir: &str) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".shunt/accounts").join(subdir))
 }
 
-/// Scan a store directory for `<name>.json` account files and return name-only
-/// [`AccountConfig`] entries in deterministic name order. Each entry's `uuid` is
-/// produced by `uuid_for` — the Claude store reads a UUID from the file; the
-/// Codex store has none and passes `|_| None`. A missing directory yields an
-/// empty list (the backward-compatible "no store configured" case).
-pub fn scan_account_dir(
-    dir: &Path,
-    uuid_for: impl Fn(&Path) -> Option<String>,
-) -> io::Result<Vec<AccountConfig>> {
+fn account_files(dir: &Path) -> io::Result<Vec<(String, PathBuf)>> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error),
     };
-    let mut accounts = Vec::new();
+    let mut files = Vec::new();
     for entry in entries {
         let Ok(entry) = entry else {
             continue;
@@ -265,14 +257,31 @@ pub fn scan_account_dir(
         if validate_account_name(name).is_err() {
             continue;
         }
-        accounts.push(AccountConfig {
-            name: name.to_string(),
-            uuid: uuid_for(&path),
-            ..Default::default()
-        });
+        files.push((name.to_string(), path));
     }
-    accounts.sort_by(|left, right| left.name.cmp(&right.name));
-    Ok(accounts)
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(files)
+}
+
+/// Scan a store directory for `<name>.json` account files and return name-only
+/// [`AccountConfig`] entries in deterministic name order. Each entry's `uuid` is
+/// produced by `uuid_for` — the Claude store reads a UUID from the file; the
+/// Codex store has none and passes `|_| None`. A missing directory yields an
+/// empty list (the backward-compatible "no store configured" case).
+pub fn scan_account_dir(
+    dir: &Path,
+    uuid_for: impl Fn(&Path) -> Option<String>,
+) -> io::Result<Vec<AccountConfig>> {
+    account_files(dir).map(|files| {
+        files
+            .into_iter()
+            .map(|(name, path)| AccountConfig {
+                name,
+                uuid: uuid_for(&path),
+                ..Default::default()
+            })
+            .collect()
+    })
 }
 
 /// Like [`scan_account_dir`], but propagates a per-file identity-read failure
@@ -289,46 +298,22 @@ pub fn scan_account_dir_strict(
     dir: &Path,
     uuid_for: impl Fn(&Path) -> Result<Option<String>, ()>,
 ) -> io::Result<Vec<AccountConfig>> {
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error),
-    };
-    let mut accounts = Vec::new();
-    for entry in entries {
-        let Ok(entry) = entry else {
-            continue;
-        };
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        if !file_type.is_file() {
-            continue;
-        }
-        let path = entry.path();
-        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
-            continue;
-        }
-        let Some(name) = path.file_stem().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        if validate_account_name(name).is_err() {
-            continue;
-        }
-        let uuid = uuid_for(&path).map_err(|()| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("failed to read upstream identity from account file {path:?}"),
-            )
-        })?;
-        accounts.push(AccountConfig {
-            name: name.to_string(),
-            uuid,
-            ..Default::default()
-        });
-    }
-    accounts.sort_by(|left, right| left.name.cmp(&right.name));
-    Ok(accounts)
+    account_files(dir)?
+        .into_iter()
+        .map(|(name, path)| {
+            let uuid = uuid_for(&path).map_err(|()| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("failed to read upstream identity from account file {path:?}"),
+                )
+            })?;
+            Ok(AccountConfig {
+                name,
+                uuid,
+                ..Default::default()
+            })
+        })
+        .collect()
 }
 
 /// Resolve a pooled provider's effective account list: its configured
