@@ -818,8 +818,21 @@ fn decode_mcp_args(buf: &[u8]) -> Option<(String, String)> {
     Some((name, input_json))
 }
 
+/// Maximum `google.protobuf.Value` nesting shunt will decode. Bounds recursion
+/// so a hostile/malformed deeply-nested payload cannot overflow the stack
+/// (mirrors the gzip-size cap in `connect.rs`). Nesting past the cap decodes to
+/// `Null`.
+const MAX_PROTOBUF_VALUE_DEPTH: usize = 64;
+
 /// Decode a `google.protobuf.Value` (exactly one oneof field set) into JSON.
 fn decode_protobuf_value(buf: &[u8]) -> serde_json::Value {
+    decode_protobuf_value_at(buf, 0)
+}
+
+fn decode_protobuf_value_at(buf: &[u8], depth: usize) -> serde_json::Value {
+    if depth >= MAX_PROTOBUF_VALUE_DEPTH {
+        return serde_json::Value::Null;
+    }
     let Some((tag, rest)) = read_varint(buf) else {
         return serde_json::Value::Null;
     };
@@ -849,19 +862,19 @@ fn decode_protobuf_value(buf: &[u8]) -> serde_json::Value {
         // struct_value.
         (5, 2) => read_varint(rest)
             .and_then(|(len, body)| body.get(..len as usize))
-            .map(decode_protobuf_struct)
+            .map(|body| decode_protobuf_struct_at(body, depth + 1))
             .unwrap_or(serde_json::Value::Null),
         // list_value.
         (6, 2) => read_varint(rest)
             .and_then(|(len, body)| body.get(..len as usize))
-            .map(decode_protobuf_list)
+            .map(|body| decode_protobuf_list_at(body, depth + 1))
             .unwrap_or(serde_json::Value::Null),
         _ => serde_json::Value::Null,
     }
 }
 
 /// Decode `google.protobuf.Struct { fields = 1 (map<string,Value>) }`.
-fn decode_protobuf_struct(buf: &[u8]) -> serde_json::Value {
+fn decode_protobuf_struct_at(buf: &[u8], depth: usize) -> serde_json::Value {
     let mut map = serde_json::Map::new();
     for field in iter_fields(buf) {
         if field.field != 1 || field.wire != 2 {
@@ -877,18 +890,18 @@ fn decode_protobuf_struct(buf: &[u8]) -> serde_json::Value {
             }
         }
         if let (Some(key), Some(value)) = (key, value) {
-            map.insert(key, decode_protobuf_value(value));
+            map.insert(key, decode_protobuf_value_at(value, depth));
         }
     }
     serde_json::Value::Object(map)
 }
 
 /// Decode `google.protobuf.ListValue { values = 1 (repeated Value) }`.
-fn decode_protobuf_list(buf: &[u8]) -> serde_json::Value {
+fn decode_protobuf_list_at(buf: &[u8], depth: usize) -> serde_json::Value {
     let mut items = Vec::new();
     for field in iter_fields(buf) {
         if field.field == 1 && field.wire == 2 {
-            items.push(decode_protobuf_value(field.data));
+            items.push(decode_protobuf_value_at(field.data, depth));
         }
     }
     serde_json::Value::Array(items)
@@ -1076,6 +1089,22 @@ mod tests {
         // the text-only placeholder `field_str(4, "")` exactly.
         assert!(encode_mcp_tools(&[]).is_empty());
         assert_eq!(field_ld(4, &encode_mcp_tools(&[])), field_str(4, ""));
+    }
+
+    #[test]
+    fn deeply_nested_value_is_bounded() {
+        // Nest a value well past the depth cap; decoding must terminate (bounded
+        // recursion) rather than overflow the stack.
+        let mut value = serde_json::json!("leaf");
+        for _ in 0..(super::MAX_PROTOBUF_VALUE_DEPTH + 40) {
+            value = serde_json::Value::Array(vec![value]);
+        }
+        let decoded = decode_protobuf_value(&encode_protobuf_value(&value));
+        let mut cursor = &decoded;
+        while let Some(inner) = cursor.as_array().and_then(|items| items.first()) {
+            cursor = inner;
+        }
+        assert!(cursor.is_null() || cursor.is_array());
     }
 
     #[test]
