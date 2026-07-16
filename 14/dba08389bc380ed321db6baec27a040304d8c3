@@ -1,0 +1,69 @@
+site/src/content/docs/ko/reference/configuration.md
+  s_880ad8511f5a22::t_8c05216635dd84 61
+src/main.rs
+  s_7f9c26db30fa21::t_3084657fb2d235 297
+site/src/content/docs/reference/configuration.md
+  s_880ad8511f5a22::t_801bc92a3326ff 79
+src/accounts.rs
+  s_880ad8511f5a22::t_439905ea24f269 65-67,70,72,74-75
+  s_880ad8511f5a22::t_d056825a5459bc 535-536,539-540,543-544,549-551
+  s_880ad8511f5a22::t_70c7d7e2347681 626-628
+  s_880ad8511f5a22::t_4c1d73671a8084 2293-2337
+  s_880ad8511f5a22::t_8ca24a22016f06 2292,2347-2376
+  s_880ad8511f5a22::t_4b68e7a23d2a57 613-614
+site/src/content/docs/ja/guides/anthropic-multi-account.md
+  s_880ad8511f5a22::t_6bedd789b1bfa5 157
+site/src/content/docs/guides/anthropic-multi-account.md
+  s_880ad8511f5a22::t_253a7895d79b44 157
+site/src/content/docs/ko/guides/anthropic-multi-account.md
+  s_880ad8511f5a22::t_a71a1129aeb10f 157
+site/src/content/docs/ja/reference/configuration.md
+  s_880ad8511f5a22::t_1c68509638b58a 61
+docs/m8-anthropic-multi-account.md
+  s_880ad8511f5a22::t_74fc4cb538cfeb 154
+  s_880ad8511f5a22::t_1aced6f6560399 155
+site/src/content/docs/zh-cn/guides/anthropic-multi-account.md
+  s_880ad8511f5a22::t_0a831df9765bbd 157
+src/state_persist.rs
+  s_880ad8511f5a22::t_37f27e23dd1e2c 21-22,24
+  s_7f9c26db30fa21::t_a813e0219a0ae2 66-67,70-73,88-89,94
+  s_880ad8511f5a22::t_64f3f1e470bbe9 198-199,204,209-212,216-217,219-253
+  s_880ad8511f5a22::t_0ac6c51f569bc9 35
+  s_880ad8511f5a22::t_4fb672aad1572c 123-126,155-162
+  s_7f9c26db30fa21::t_9447776ac83637 411,439,467
+  s_880ad8511f5a22::t_39bf669a869fbc 170,259-262,281-282,288-310,316,328-353,360-366,369,371-378,381-402,405,407-410,412-421,423,425-438,440-447,449,451-466,468-479
+  s_880ad8511f5a22::t_e2cb9f782c5d5a 406
+  s_880ad8511f5a22::t_cea5d1c8d0b132 422
+  s_880ad8511f5a22::t_b19718809ad03e 424
+  s_880ad8511f5a22::t_3ef2f40cf38c6c 448
+  s_880ad8511f5a22::t_13dcef65d5b914 450
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_880ad8511f5a22::t_dd313f4d1b0976 61
+.please/docs/review/rejected-findings.jsonl
+  s_880ad8511f5a22::t_bdcf4de01978d6 20
+  s_880ad8511f5a22::t_86d2f70b8593ad 18-19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "14dba08389bc380ed321db6baec27a040304d8c3",
+  "prompts": {},
+  "sessions": {
+    "s_7f9c26db30fa21": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "42b3a95c-99ba-46e0-91d7-a21f9f8140ec",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_880ad8511f5a22": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2b16840c-e46b-4f10-81ca-5137af717c63",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
