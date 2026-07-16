@@ -72,14 +72,25 @@ where
             };
             loop {
                 if let Some(end) = first_event_boundary(&buf) {
-                    let rest = buf.split_off(end);
-                    let out = emit_frame(buf, rest, alias.as_deref());
+                    let out = alias
+                        .as_deref()
+                        .and_then(|alias| std::str::from_utf8(&buf[..end]).ok().zip(Some(alias)))
+                        .and_then(|(frame, alias)| rewrite_message_start_frame(frame, alias))
+                        .map(|rewritten| {
+                            let mut out = rewritten.into_bytes();
+                            out.extend_from_slice(&buf[end..]);
+                            Bytes::from(out)
+                        })
+                        .unwrap_or_else(|| Bytes::from(buf));
                     return Some((Ok(out), (upstream, None, alias)));
                 }
                 match upstream.next().await {
                     Some(Ok(chunk)) => {
                         buf.extend_from_slice(&chunk);
-                        if buf.len() > MAX_FIRST_FRAME_BYTES {
+                        if buf.len() > MAX_FIRST_FRAME_BYTES
+                            && first_event_boundary(&buf)
+                                .is_none_or(|end| end > MAX_FIRST_FRAME_BYTES)
+                        {
                             return Some((Ok(Bytes::from(buf)), (upstream, None, alias)));
                         }
                         continue;
@@ -113,17 +124,6 @@ fn first_event_boundary(buf: &[u8]) -> Option<usize> {
         (Some(a), Some(b)) => Some(a.min(b)),
         (a, b) => a.or(b),
     }
-}
-
-/// Reassemble the first frame (rewritten when it is a differing `message_start`)
-/// with the trailing `rest` bytes into a single chunk.
-fn emit_frame(frame: Vec<u8>, rest: Vec<u8>, alias: Option<&str>) -> Bytes {
-    let rewritten = alias
-        .and_then(|alias| std::str::from_utf8(&frame).ok().zip(Some(alias)))
-        .and_then(|(frame, alias)| rewrite_message_start_frame(frame, alias));
-    let mut out = rewritten.map(String::into_bytes).unwrap_or(frame);
-    out.extend_from_slice(&rest);
-    Bytes::from(out)
 }
 
 /// Rewrite `message.model` to `alias` in a single `message_start` SSE frame.
@@ -280,6 +280,19 @@ mod tests {
         assert!(out.contains("\"model\":\"claude-alias\""));
         assert!(out.contains("event: ping"));
         assert!(!out.contains("kimi-k2.7-code"));
+    }
+
+    #[tokio::test]
+    async fn stream_rewrites_small_first_frame_in_oversized_chunk() {
+        let start = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"upstream\"}}\n\n";
+        let trailing = "x".repeat(MAX_FIRST_FRAME_BYTES);
+        let out = collect(
+            vec![chunk(&format!("{start}{trailing}"))],
+            Some("claude-alias"),
+        )
+        .await;
+        assert!(out.contains("\"model\":\"claude-alias\""));
+        assert!(out.ends_with(&trailing));
     }
 
     #[tokio::test]

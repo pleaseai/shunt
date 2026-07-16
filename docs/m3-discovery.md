@@ -67,8 +67,9 @@ is the documented default. Discovery is only useful if shunt exposes a **Claude-
   never on `upstream_model`. Without it Claude Code records the raw upstream id in the session
   transcript and cannot restore the model on `--resume` ("Session model … could not be restored").
   Gated on `route.model != upstream_model`, so plain passthrough (api.anthropic.com, where the
-  dated snapshot id is the client's model-of-record) stays byte-for-byte. The Responses adapter
-  already preserves the alias by seeding its SSE machine with `route.model`; see
+  dated snapshot id is the client's model-of-record) is not model-rewritten; existing relay
+  behavior, including SSE keepalives, remains. The Responses adapter already preserves the alias
+  by seeding its SSE machine with `route.model`; see
   `src/adapters/anthropic/model_rewrite.rs` for the native-relay parity (issue #172).
 
 ## 5. Model map + effort (`codex/models.rs`)
