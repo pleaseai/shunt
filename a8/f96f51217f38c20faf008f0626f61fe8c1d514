@@ -1,0 +1,37 @@
+src/adapters/responses/inbound.rs
+  s_f2996866717b61::t_237320a754f30e 173,230
+src/adapters/responses/context.rs
+  s_f2996866717b61::t_27180c9f228c23 83
+.please/docs/review/rejected-findings.jsonl
+  s_f2996866717b61::t_a108f1268efa9f 18-19
+src/adapters/responses/websocket.rs
+  s_f2996866717b61::t_c2aadd17d64a82 52
+  s_f2996866717b61::t_4aae7183c84147 106
+src/accounts.rs
+  s_f2996866717b61::t_5a744e2e6fa8c6 1618
+  s_f2996866717b61::t_370e9894066373 1555,1565,1601
+  s_f2996866717b61::t_de821fd81c21e0 418,422
+  s_f2996866717b61::t_d0ec461f9264d9 425
+  s_f2996866717b61::t_acbf1da9a748fa 1488,1523,1540,1587
+  s_f2996866717b61::t_d2b2b5fc8dce33 1499-1513
+  s_f2996866717b61::t_99d6596cbecc61 1498
+src/adapters/responses/pool.rs
+  s_f2996866717b61::t_416c5072d8f2d4 160,232
+  s_f2996866717b61::t_d73c353160636b 102
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "a8f96f51217f38c20faf008f0626f61fe8c1d514",
+  "prompts": {},
+  "sessions": {
+    "s_f2996866717b61": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "48ae688e-0b2d-4b60-9aa8-675db6947f83",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
