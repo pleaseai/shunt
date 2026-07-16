@@ -51,8 +51,14 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 | `default_threshold_7d` | 未设置 | 共享周(`7d`)窗口的软默认值 |
 | `default_threshold_fable` | 未设置 | 仅 fable 的周(`7d_oi`)窗口的软默认值 |
 | `burn_rate_avoidance` | `false` | 同时避开按预测会在窗口重置之前耗尽其软阈值的账户 |
+| `usage_refresh_seconds` | 禁用(`0`/未设置) | `GET /api/oauth/usage` 的轮询间隔(秒);低于 60 的正值会向上取到 60 秒下限 |
+| `state_path` | 未设置 | 用于持久化池中按账户配额状态的文件;重启时从最后观测到的使用率热启动,而非从空池开始。未设置则禁用持久化(默认) |
 
 对每个窗口 `X`,生效的软阈值按以下顺序解析:账户 `threshold_X` → 账户 `threshold` → `default_threshold_X` → `default_threshold` → `hard_threshold`,并以 `hard_threshold` 为上限。所有阈值都是 `[0.0, 1.0]` 范围内的使用率分数;超出范围会导致启动失败。配额头部只存在于 Anthropic 后端,因此这些旋钮对 Codex/ChatGPT 池不起作用 —— 按账户的 `priority` 和 `disabled` 键(见[账户字段](/zh-cn/guides/anthropic-multi-account/#账户字段))在那里仍然适用。
+
+正的 `usage_refresh_seconds` 还会启动一个后台轮询器,把 Claude 账户池的配额状态与 Anthropic OAuth usage API 对账校正;未设置或为 `0` 时禁用(默认)。只有 imported(可刷新)的 `claude_oauth` 账户会被轮询 —— 长期 `claude setup-token` 或 `token_env` 账户会被跳过,因为 usage 端点会拒绝不可刷新的令牌。轮询器会把基于头部的 5h/周/Fable(`7d_oi`)配额状态,与包含 shunt 之外同一账户消耗在内的权威用量对账。间隔在启动时固定;配置重载不会启动、停止或重新调整轮询器。
+
+`state_path` 会把池的配额状态(所有 provider 账户的按窗口使用率与重置)写入磁盘。不设置时,重启会从空池开始:每个账户在重启后首个响应之前都显示为未观测,这会禁用 burn-rate 规避,并使 `GET /usage` 在流量重新填充池之前返回空值。该文件是尽力而为的缓存,而非权威来源 —— 配额无论如何都会从上游响应重新导出,因此文件缺失、陈旧或损坏只会导致冷启动,绝不会导致启动失败。写入是原子的(temp 文件加重命名),且仅在配额发生变化时按后台定时器进行。冷却不会被持久化(重启即失效),恢复的窗口中重置已过期的会在加载时丢弃。路径在启动时固定;配置重载不会启动、停止或改变持久化路径。
 
 ## `[providers.<name>]`
 

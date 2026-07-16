@@ -1,11 +1,14 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use reqwest::{header::HeaderMap, StatusCode};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex as AsyncMutex;
 
@@ -40,15 +43,33 @@ enum CodexWindow {
     Weekly,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct QuotaState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub utilization_5h: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reset_5h: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub utilization_7d: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reset_7d: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub utilization_7d_oi: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reset_7d_oi: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+}
+
+impl QuotaState {
+    /// Whether any window carries a recorded utilization. An all-`None` quota
+    /// holds no signal worth persisting (or restoring), so the persistence
+    /// layer skips it — see [`AccountPool::export_quotas`].
+    pub(crate) fn has_signal(&self) -> bool {
+        self.utilization_5h.is_some()
+            || self.utilization_7d.is_some()
+            || self.utilization_7d_oi.is_some()
+    }
 }
 
 /// One rate-limit window's authoritative usage as reported by the Anthropic
@@ -151,6 +172,10 @@ pub struct AccountPool {
     entries: Mutex<HashMap<AccountKey, AccountHealth>>,
     rr: Mutex<HashMap<String, usize>>,
     refresh_locks: Mutex<HashMap<AccountKey, RefreshLock>>,
+    /// Set whenever a quota mutation lands, cleared by [`Self::take_dirty`].
+    /// Lets the opt-in on-disk persister (see [`crate::state_persist`]) flush
+    /// only when quota actually changed, rather than on every timer tick.
+    dirty: AtomicBool,
 }
 
 impl AccountPool {
@@ -393,6 +418,7 @@ impl AccountPool {
         {
             quota.status = Some(status.to_string());
         }
+        self.mark_dirty();
     }
 
     /// Record the Codex backend's positional rate-limit header groups for the
@@ -450,6 +476,7 @@ impl AccountPool {
         {
             quota.status = Some(status.to_string());
         }
+        self.mark_dirty();
     }
 
     /// Apply an authoritative usage snapshot from the Anthropic OAuth usage API
@@ -479,6 +506,7 @@ impl AccountPool {
             quota.utilization_7d_oi = Some(window.utilization);
             quota.reset_7d_oi = window.resets_at;
         }
+        self.mark_dirty();
     }
 
     pub fn cooldown(&self, provider: &str, account: &AccountConfig, duration: Duration) {
@@ -568,6 +596,49 @@ impl AccountPool {
                 }
             })
             .collect()
+    }
+
+    /// Mark the pool's quota state as changed since the last flush. Called by
+    /// every quota mutation so the opt-in persister ([`crate::state_persist`])
+    /// can skip idle flushes.
+    fn mark_dirty(&self) {
+        self.dirty.store(true, Ordering::Relaxed);
+    }
+
+    /// Atomically read-and-clear the dirty flag. Returns `true` when quota has
+    /// changed since the previous call, meaning the persister should write.
+    pub fn take_dirty(&self) -> bool {
+        self.dirty.swap(false, Ordering::Relaxed)
+    }
+
+    /// Snapshot every observed account's quota for on-disk persistence, as
+    /// `(provider, identity, quota)` triples. Skips accounts whose quota holds
+    /// no signal (all windows `None`) — nothing worth restoring. Read-only: it
+    /// does not expire stale windows (a restored quota is expired lazily by the
+    /// next [`Self::select_order`]/[`Self::snapshot`], exactly as a live one is).
+    pub fn export_quotas(&self) -> Vec<(String, String, QuotaState)> {
+        let entries = self.entries.lock().expect("account health lock poisoned");
+        entries
+            .iter()
+            .filter(|(_, health)| health.observed && health.quota.has_signal())
+            .map(|((provider, identity), health)| {
+                (provider.clone(), identity.clone(), health.quota.clone())
+            })
+            .collect()
+    }
+
+    /// Seed the pool with quotas restored from disk at boot. Each triple keys an
+    /// account entry by `(provider, identity)`, marking it observed so the admin
+    /// dashboard and `GET /usage` reflect the restored state before the first
+    /// proxied request. Does not mark the pool dirty: freshly restored state
+    /// need not be written straight back.
+    pub fn import_quotas(&self, quotas: impl IntoIterator<Item = (String, String, QuotaState)>) {
+        let mut entries = self.entries.lock().expect("account health lock poisoned");
+        for (provider, identity, quota) in quotas {
+            let health = entries.entry((provider, identity)).or_default();
+            health.observed = true;
+            health.quota = quota;
+        }
     }
 
     /// Get the async mutex that serializes token refreshes for one account.
@@ -2173,5 +2244,63 @@ mod tests {
         // Without [server.pool], the projection is not surfaced.
         let legacy = pool.snapshot("anthropic", &accounts, None, None);
         assert!(legacy[0].headroom_secs.is_none());
+    }
+
+    #[test]
+    fn export_import_round_trips_quota() {
+        let pool = AccountPool::new();
+        let acct = account("a");
+        pool.note_quota(
+            "anthropic",
+            &acct,
+            &quota_headers(&[
+                (
+                    "anthropic-ratelimit-unified-5h-utilization",
+                    "0.5".to_string(),
+                ),
+                (
+                    "anthropic-ratelimit-unified-5h-reset",
+                    (unix_now() + 9_000).to_string(),
+                ),
+            ]),
+        );
+        let exported = pool.export_quotas();
+        assert_eq!(exported.len(), 1);
+        assert_eq!(exported[0].0, "anthropic");
+        assert_eq!(exported[0].1, "a");
+
+        // A fresh pool seeded from the export reports the same utilization and
+        // re-exports an identical snapshot.
+        let restored = AccountPool::new();
+        restored.import_quotas(exported.clone());
+        let snaps = restored.snapshot("anthropic", &[acct], None, None);
+        assert!(snaps[0].has_state);
+        assert_eq!(snaps[0].utilization_5h, Some(0.5));
+        assert_eq!(restored.export_quotas(), exported);
+    }
+
+    #[test]
+    fn export_skips_accounts_without_quota_signal() {
+        // A cooldown marks the account observed but records no quota, so there
+        // is nothing worth persisting.
+        let pool = AccountPool::new();
+        pool.cooldown("anthropic", &account("a"), Duration::from_secs(60));
+        assert!(pool.export_quotas().is_empty());
+    }
+
+    #[test]
+    fn quota_mutation_marks_dirty_and_take_clears_it() {
+        let pool = AccountPool::new();
+        assert!(!pool.take_dirty(), "a fresh pool is clean");
+        pool.note_quota(
+            "anthropic",
+            &account("a"),
+            &quota_headers(&[(
+                "anthropic-ratelimit-unified-5h-utilization",
+                "0.5".to_string(),
+            )]),
+        );
+        assert!(pool.take_dirty(), "a quota mutation marks the pool dirty");
+        assert!(!pool.take_dirty(), "take_dirty clears the flag");
     }
 }

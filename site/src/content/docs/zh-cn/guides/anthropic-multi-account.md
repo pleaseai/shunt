@@ -121,6 +121,8 @@ default_threshold = 0.9      # 所有窗口的软默认值
 default_threshold_5h = 0.95  # 按窗口覆盖
 default_threshold_fable = 0.85
 burn_rate_avoidance = true   # 避开按预测会在重置前触及阈值的账户
+usage_refresh_seconds = 300  # 为可刷新账户校正带外用量
+state_path = "shunt-state.json"  # 跨重启保留配额(热启动)
 
 [[providers.anthropic.accounts]]
 name = "primary"
@@ -141,6 +143,18 @@ disabled = true              # 保留配置,但永不被选中
 - **全员接近配额的兜底。**当每个账户都超过了软阈值(或被预测将耗尽)时,池不会变空:接近配额的账户按最佳余量的顺序继续服务,而达到或超过 `hard_threshold` 的账户仍排在最后,其后才是冷却中的账户。
 - **适用范围。**这些配额旋钮只作用于 Claude(Anthropic)池 —— Codex 后端不发送配额头部,因此对 [Codex 池](/zh-cn/guides/codex-multi-account/) 它们不起作用,而 `priority` 和 `disabled` 仍然适用。
 - 管理池端点(`GET /admin/pool`)会报告每个账户的 `priority`、`disabled` 标志,以及在配置了 `[server.pool]` 时该账户当前以秒为单位的余量预测;仪表板的状态列会标记被禁用的账户。
+
+## Usage-API 对账
+
+配额头部只反映流经 shunt 的流量。`usage_refresh_seconds` 通过轮询 `GET /api/oauth/usage`,把权威的使用率与重置时刻应用到同样的 5 小时、共享周(`7d`)和 Fable 专用周(`7d_oi`)窗口,从而弥补这一差距。
+
+字段未设置或为 `0` 时轮询关闭;低于 60 的正值会被取整到 60 秒。只有 imported 的可刷新账户符合条件,长期 `claude setup-token` 与 `token_env` 账户会被跳过,因为其令牌无法调用该端点。间隔在启动时固定,因此配置重载不会启动、停止或重新调整轮询器。这一周期性校正是对反应式头部状态的补充,而非替代。
+
+## 配额状态持久化
+
+池的配额存在内存中,因此重启会从冷状态开始:每个账户在重启后首个响应之前都显示为未观测,这会禁用 burn-rate 规避,并使 `GET /usage` 在流量重新填充池之前返回空值。设置 `state_path` 会把每个账户的按窗口使用率与重置保存到该文件,使池从最后观测到的状态热启动。
+
+该文件是尽力而为的缓存,而非权威来源 —— 配额无论如何都会从上游响应重新导出,因此文件缺失、陈旧或损坏只会导致冷启动,绝不会导致启动失败。写入是原子的(把 temp 文件重命名覆盖目标),且仅在配额变化时按 15 秒后台定时器进行。冷却不会被持久化(重启即失效),恢复的窗口中重置已过期的会在加载时丢弃。路径在启动时固定;字段未设置时持久化关闭。
 
 ## 故障转移规则
 

@@ -121,6 +121,8 @@ default_threshold = 0.9      # soft default for every window
 default_threshold_5h = 0.95  # per-window overrides
 default_threshold_fable = 0.85
 burn_rate_avoidance = true   # avoid accounts projected to hit a threshold before reset
+usage_refresh_seconds = 300  # reconcile out-of-band usage for refreshable accounts
+state_path = "shunt-state.json"  # persist quota across restarts (warm start)
 
 [[providers.anthropic.accounts]]
 name = "primary"
@@ -141,6 +143,18 @@ disabled = true              # kept configured, never selected
 - **全アカウント接近時のガード。** すべてのアカウントがソフトしきい値を超えている（または使い切ると予測される）場合でも、プールが空になることはありません。接近しているアカウントは余裕が大きい順に提供され、`hard_threshold` 以上のアカウントは引き続き最後にソートされ、その後にクールダウン中のアカウントだけが続きます。
 - **適用範囲。** クォータ関連のノブは Claude（Anthropic）プールにのみ作用します — Codex バックエンドはクォータヘッダーを送らないため、[Codex プール](/ja/guides/codex-multi-account/)ではこれらは無効ですが、`priority` と `disabled` は引き続き適用されます。
 - 管理プールエンドポイント（`GET /admin/pool`）は、各アカウントの `priority`、`disabled` フラグ、そして `[server.pool]` が設定されている場合は現在の余裕予測（秒単位）を報告します。ダッシュボードの状態列は無効化されたアカウントを示します。
+
+## Usage-API との突き合わせ
+
+クォータヘッダーは shunt を通過したトラフィックしか反映しません。`usage_refresh_seconds` は `GET /api/oauth/usage` をポーリングし、権威ある使用率とリセット時刻を同じ 5 時間・共有週次（`7d`）・Fable 専用週次（`7d_oi`）ウィンドウに適用することで、その差を埋めます。
+
+フィールドが未設定または `0` の場合、ポーリングはオフです。60 未満の正の値は 60 秒に切り上げられます。対象は imported な更新可能アカウントのみで、長期の `claude setup-token` と `token_env` アカウントは、トークンがエンドポイントを呼び出せないためスキップされます。間隔は起動時に固定されるため、設定のリロードではポーラーの起動・停止・再調整は行われません。この定期的な補正は、リアクティブなヘッダー状態を置き換えるのではなく補完します。
+
+## クォータ状態の永続化
+
+プールのクォータはメモリ上にあるため、再起動はコールドで始まります: 各アカウントは再起動後の最初のレスポンスまで未観測に見え、これにより burn-rate 回避が無効になり、トラフィックでプールが再充填されるまで `GET /usage` は空を返します。`state_path` を設定すると、各アカウントのウィンドウごとの使用率とリセットをそのファイルに保存し、プールは最後に観測された状態からウォームスタートします。
+
+このファイルは権威あるソースではなくベストエフォートのキャッシュです — クォータはいずれにせよアップストリームのレスポンスから再導出されるため、ファイルが欠落・陳腐化・破損していてもコールドスタートになるだけで、起動失敗にはなりません。書き込みはアトミック（temp ファイルを対象にリネーム）で、クォータが変化したときだけ 15 秒のバックグラウンドタイマーで行われます。クールダウンは保存されず（再起動で失効）、復元されたウィンドウのうちすでにリセットを過ぎたものはロード時に破棄されます。パスは起動時に固定され、フィールドが未設定なら永続化はオフです。
 
 ## フェイルオーバーのルール
 
