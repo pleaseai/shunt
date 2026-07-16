@@ -851,7 +851,7 @@ fn decode_protobuf_value_at(buf: &[u8], depth: usize) -> serde_json::Value {
             .unwrap_or(serde_json::Value::Null),
         // string_value.
         (3, 2) => read_varint(rest)
-            .and_then(|(len, body)| body.get(..len as usize))
+            .and_then(|(len, body)| body.get(..usize::try_from(len).ok()?))
             .map(|s| serde_json::Value::String(String::from_utf8_lossy(s).into_owned()))
             .unwrap_or(serde_json::Value::Null),
         // bool_value (varint).
@@ -861,12 +861,12 @@ fn decode_protobuf_value_at(buf: &[u8], depth: usize) -> serde_json::Value {
         },
         // struct_value.
         (5, 2) => read_varint(rest)
-            .and_then(|(len, body)| body.get(..len as usize))
+            .and_then(|(len, body)| body.get(..usize::try_from(len).ok()?))
             .map(|body| decode_protobuf_struct_at(body, depth + 1))
             .unwrap_or(serde_json::Value::Null),
         // list_value.
         (6, 2) => read_varint(rest)
-            .and_then(|(len, body)| body.get(..len as usize))
+            .and_then(|(len, body)| body.get(..usize::try_from(len).ok()?))
             .map(|body| decode_protobuf_list_at(body, depth + 1))
             .unwrap_or(serde_json::Value::Null),
         _ => serde_json::Value::Null,
