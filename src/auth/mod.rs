@@ -65,10 +65,7 @@ pub async fn resolve_credential(
                 })
         }
         AuthMode::CursorOauth => {
-            let base_url = env::var("SHUNT_CURSOR_BASE_URL")
-                .ok()
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| provider.base_url.clone());
+            let base_url = cursor::resolve_base_url(provider.base_url.clone());
             let store = cursor::auth::CursorAuthStore::new(
                 default_cursor_auth_path(),
                 client.clone(),

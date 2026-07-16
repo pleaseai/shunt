@@ -150,7 +150,7 @@ fn login(
             // Logging in should not require a fully valid gateway config:
             // read the optional override best-effort and fall back to the
             // default Cursor host if the config fails to load or omits it.
-            let base_url = Config::load(config_path)
+            let default_base = Config::load(config_path)
                 .ok()
                 .and_then(|config| {
                     config
@@ -158,6 +158,7 @@ fn login(
                         .map(|provider| provider.base_url.clone())
                 })
                 .unwrap_or_else(|| "https://api2.cursor.sh".to_string());
+            let base_url = shunt::auth::cursor::resolve_base_url(default_base);
             shunt::auth::cursor::login::run_with_base(&base_url).await
         }),
         "cursor" => {

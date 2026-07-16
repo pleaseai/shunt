@@ -110,6 +110,8 @@ impl CursorStreamMachine {
             ),
             CursorStreamEvent::End => self.framer.emit_final_message("end_turn"),
             CursorStreamEvent::Session { .. } => {}
+            // Native tool calls are handled only on the live agent transport.
+            CursorStreamEvent::ToolCall { .. } => {}
         }
     }
 }

@@ -13,8 +13,12 @@ pub struct CursorSelectedImage {
 ///
 /// Includes:
 /// - System message (with billing-header filtering)
-/// - Conversation messages with content blocks
-/// - Tools block
+/// - Conversation messages with content blocks (including prior `tool_use` /
+///   `tool_result` history, which the stateless tool bridge re-runs upstream)
+///
+/// Tool *definitions* are not inlined here — they are declared natively as MCP
+/// tools on the agent transport (see `agent::AgentTool`), so inlining a `<tools>`
+/// block too would double-advertise and push the model toward text tool calls.
 pub fn render_cursor_prompt(req: &Value) -> String {
     let mut sections: Vec<String> = Vec::new();
 
@@ -42,34 +46,6 @@ pub fn render_cursor_prompt(req: &Value) -> String {
                     .and_then(Value::as_str)
                     .unwrap_or("user")
             ));
-        }
-    }
-
-    // Tools block
-    if let Some(tools) = req.get("tools").and_then(|v| v.as_array()) {
-        if !tools.is_empty() {
-            let tool_lines: Vec<String> = tools
-                .iter()
-                .map(|t| {
-                    let name = t.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                    let description = t.get("description").and_then(|d| d.as_str()).unwrap_or("");
-                    let input_schema = t
-                        .get("input_schema")
-                        .cloned()
-                        .unwrap_or(serde_json::Value::Object(Default::default()));
-                    format!(
-                        "{}",
-                        serde_json::json!({
-                            "name": name,
-                            "description": description,
-                            "input_schema": input_schema,
-                        })
-                    )
-                })
-                .collect();
-            if !tool_lines.is_empty() {
-                sections.push(format!("<tools>\n{}\n</tools>", tool_lines.join("\n")));
-            }
         }
     }
 
@@ -396,15 +372,17 @@ mod tests {
     }
 
     #[test]
-    fn renders_tools_section() {
+    fn does_not_inline_tool_definitions() {
+        // Tool definitions are declared natively as MCP tools, not inlined into
+        // the prompt, so no `<tools>` block should appear.
         let req: Value = serde_json::json!({
             "model": "cursor:gpt-5.5",
             "messages": [{"role": "user", "content": "hi"}],
             "tools": [{"name": "Read", "description": "read files", "input_schema": {"type": "object"}}]
         });
         let rendered = render_cursor_prompt(&req);
-        assert!(rendered.contains("<tools>"));
-        assert!(rendered.contains("Read"));
+        assert!(!rendered.contains("<tools>"));
+        assert!(rendered.contains("hi"));
     }
 
     #[test]
