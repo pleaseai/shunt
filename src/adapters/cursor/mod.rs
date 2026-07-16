@@ -1,14 +1,26 @@
-pub mod client;
+pub mod agent;
 pub mod connect;
 pub mod model;
-pub mod proto;
 pub mod request;
-pub mod response;
 pub mod sse;
+// Retained pending #170 follow-up: the old `api2.cursor.sh` proto/transport and
+// tool-bridge machinery are bound to the decommissioned wire format and are off
+// the live path. Kept (not deleted) so the tool-bridge/image work can be ported
+// once the new agent wire is reverse-engineered. `allow(dead_code)` keeps the
+// warnings-as-errors build green until then.
+#[allow(dead_code)]
+pub mod client;
+#[allow(dead_code)]
+pub mod proto;
+#[allow(dead_code)]
+pub mod response;
+#[allow(dead_code)]
 pub mod stream;
 #[cfg(test)]
 pub(crate) mod test_frames;
+#[allow(dead_code)]
 pub mod tool_bridge;
+#[allow(dead_code)]
 pub mod tool_use_xml;
 
 use axum::{
@@ -28,12 +40,9 @@ use crate::{
 };
 
 use self::{
-    client::CursorHttpClient,
-    response::{decode_cursor_upstream, decode_upstream_response, CursorDecodeError},
-    tool_bridge::{
-        advertised_tool_names, can_bridge_cursor_native_tools, find_tool_result,
-        start_cursor_tool_bridge, BridgeRegistry,
-    },
+    agent::{CursorAgentClient, CursorAgentTurn},
+    response::CursorStreamEvent,
+    sse::{format_sse_error, CursorSseFramer},
 };
 
 pub struct CursorAdapter;
@@ -47,14 +56,14 @@ impl Adapter for CursorAdapter {
         headers: &'a HeaderMap,
         body: Vec<u8>,
     ) -> AdapterFuture<'a> {
-        Box::pin(async move { forward(state, route, headers, body).await })
+        let _ = headers;
+        Box::pin(async move { forward(state, route, body).await })
     }
 }
 
 async fn forward(
     state: AppState,
     route: Route,
-    headers: &HeaderMap,
     body: Vec<u8>,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let request: Value = serde_json::from_slice(&body).map_err(|error| {
@@ -73,26 +82,6 @@ async fn forward(
         )
     })?;
     let message_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
-    let session_id = headers
-        .get("x-claude-code-session-id")
-        .and_then(|value| value.to_str().ok())
-        .filter(|value| !value.is_empty());
-
-    if let Some(session_id) = session_id {
-        if let Some(pending) = BridgeRegistry::pending_tool(session_id) {
-            if find_tool_result(&request, pending.tool_use_id()).is_some() {
-                // Resume: the client executed the pending tool and re-sent the
-                // full conversation, which now includes the `tool_result`. Drop
-                // the stale bridge state; the tool result reaches the upstream
-                // Cursor agent through the rendered prompt history below, and its
-                // fresh response is bridged like any other request (pausing again
-                // if it emits another tool_use). We deliberately do NOT replay
-                // the previous response's leftover events — those were generated
-                // before the agent saw the tool result and would be stale.
-                BridgeRegistry::remove(session_id);
-            }
-        }
-    }
 
     let credential = resolve_credential(&state.config, &route, &state.http_client).await?;
     let access_token = match credential {
@@ -106,106 +95,134 @@ async fn forward(
         }
     };
     let prompt = request::render_cursor_prompt(&request);
-    let images = request::cursor_selected_images(&request);
-    let base_url = state
-        .config
-        .provider(&route.provider)
-        .map(|provider| provider.base_url.as_str())
-        .unwrap_or("https://api2.cursor.sh");
-    let policy = state
-        .config
-        .provider(&route.provider)
-        .map(|provider| provider.retry.policy())
-        .unwrap_or(crate::retry::RetryPolicy::DISABLED);
-    let client = CursorHttpClient::new(state.http_client.clone(), base_url);
-    // TODO(#126, cursor): use a stable idempotency identity before tightening
-    // Cursor's response-status retry safety; currently preserve its behavior.
-    // Cursor has no account-pool failover, so a transient 429/5xx or connection
-    // blip on the single credential would otherwise surface straight to the
-    // client. Bounded retry (issue #48) stays pre-stream: it only re-runs
-    // `run_agent` — which mints a fresh request id per attempt — before the
-    // `is_success` check below hands off to the streaming/bridge decoders.
-    let upstream = crate::retry::send_with_retry(policy, &route.provider, || {
-        client.run_agent(&access_token, &prompt, &resolved, &images)
-    })
-    .await
-    .map_err(map_client_error)?;
-    if !upstream.status().is_success() {
-        return Err(map_upstream_error(upstream).await);
-    }
-
     let want_stream = request
         .get("stream")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    if !want_stream {
-        let bytes = upstream
-            .bytes()
-            .await
-            .map_err(|error| bad_gateway(error.to_string()))?;
-        let json = decode_cursor_upstream(&bytes, &message_id, model).map_err(map_decode_error)?;
-        return Ok((StatusCode::OK, axum::Json(json).into_response()));
+    // The env context frame carries the working directory; the gateway has no
+    // per-request workspace, so use the process cwd (falling back to "/").
+    let cwd = std::env::current_dir()
+        .ok()
+        .and_then(|path| path.to_str().map(ToOwned::to_owned))
+        .unwrap_or_else(|| "/".to_string());
+
+    let client = CursorAgentClient::new(state.http_client.clone());
+    // `open_turn` returns once the response headers arrive, keeping the paced
+    // request stream open behind the returned turn. It is not wrapped in the
+    // shared `send_with_retry` (which is typed to `reqwest::Response`); a
+    // connection blip surfaces to the client. TODO(#170): bounded pre-response
+    // retry for the streaming turn.
+    let turn = client
+        .open_turn(&access_token, &prompt, &resolved.model_id, &cwd)
+        .await
+        .map_err(map_client_error)?;
+    if !turn.status().is_success() {
+        return Err(map_upstream_error(turn.into_response()).await);
     }
 
-    if can_bridge_cursor_native_tools(&request, session_id) {
-        let bytes = upstream
-            .bytes()
-            .await
-            .map_err(|error| bad_gateway(error.to_string()))?;
-        let events = decode_upstream_response(&bytes).map_err(map_decode_error)?;
-        let (sse, _) = start_cursor_tool_bridge(
-            &message_id,
-            model,
-            session_id.expect("bridge eligibility requires session id"),
-            &events,
-            advertised_tool_names(&request),
-            Box::new(|| uuid::Uuid::new_v4().simple().to_string()),
-        );
-        return Ok((StatusCode::OK, sse_bytes_response(sse)));
+    if !want_stream {
+        return aggregate_turn(turn, &message_id, model).await;
     }
 
     let keepalive = std::time::Duration::from_secs(state.config.server.sse_keepalive_seconds);
     Ok((
         StatusCode::OK,
-        streaming_response(upstream, message_id, model.to_string(), keepalive),
+        streaming_response(turn, message_id, model.to_string(), keepalive),
     ))
 }
 
+/// Collect a full turn into a non-streaming Anthropic message JSON.
+async fn aggregate_turn(
+    turn: CursorAgentTurn,
+    message_id: &str,
+    model: &str,
+) -> Result<(StatusCode, axum::response::Response), AdapterError> {
+    let mut events = std::pin::pin!(turn.into_event_stream());
+    let mut text = String::new();
+    while let Some(event) = events.next().await {
+        match event.map_err(map_cursor_stream_error)? {
+            CursorStreamEvent::TextDelta { text: delta } => text.push_str(&delta),
+            CursorStreamEvent::End => break,
+            // Reasoning and session markers do not surface in the text-only
+            // non-streaming body.
+            _ => {}
+        }
+    }
+    let json = serde_json::json!({
+        "id": message_id,
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": text}],
+        "model": model,
+        "stop_reason": "end_turn",
+        "stop_sequence": null,
+        "usage": {
+            "input_tokens": 1,
+            "output_tokens": 1,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0
+        }
+    });
+    Ok((StatusCode::OK, axum::Json(json).into_response()))
+}
+
 fn streaming_response(
-    upstream: reqwest::Response,
+    turn: CursorAgentTurn,
     message_id: String,
     model: String,
     keepalive: std::time::Duration,
 ) -> axum::response::Response {
-    let bytes = upstream.bytes_stream();
-    let machine = stream::CursorStreamMachine::new(message_id, model);
-    let output = futures_stream::unfold((bytes, machine, false), |state| async move {
-        let (mut bytes, mut machine, done) = state;
-        if done {
-            return None;
-        }
-        loop {
-            match bytes.next().await {
-                Some(Ok(chunk)) => {
-                    let output = machine.push(&chunk);
-                    if !output.is_empty() {
+    let framer = CursorSseFramer::new(message_id, model);
+    let events = turn.into_event_stream();
+    let output = futures_stream::unfold(
+        (Box::pin(events), framer, false),
+        |(mut events, mut framer, done)| async move {
+            if done {
+                return None;
+            }
+            loop {
+                match events.next().await {
+                    Some(Ok(CursorStreamEvent::TextDelta { text })) => {
+                        framer.emit_text_delta(&text);
+                        let output = framer.take_output();
+                        if !output.is_empty() {
+                            return Some((
+                                Ok::<_, std::convert::Infallible>(Bytes::from(output)),
+                                (events, framer, false),
+                            ));
+                        }
+                    }
+                    Some(Ok(CursorStreamEvent::ThinkingDelta { text })) => {
+                        framer.emit_thinking_delta(&text);
+                        let output = framer.take_output();
+                        if !output.is_empty() {
+                            return Some((Ok(Bytes::from(output)), (events, framer, false)));
+                        }
+                    }
+                    Some(Ok(CursorStreamEvent::End)) | None => {
+                        framer.emit_final_message("end_turn");
+                        framer.finalize();
                         return Some((
-                            Ok::<_, reqwest::Error>(Bytes::from(output)),
-                            (bytes, machine, false),
+                            Ok(Bytes::from(framer.take_output())),
+                            (events, framer, true),
                         ));
                     }
-                }
-                Some(Err(error)) => return Some((Err(error), (bytes, machine, true))),
-                None => {
-                    let output = machine.finish();
-                    if output.is_empty() {
-                        return None;
+                    Some(Ok(CursorStreamEvent::Session { .. }))
+                    | Some(Ok(CursorStreamEvent::Usage { .. })) => {}
+                    Some(Err(error)) => {
+                        let message = crate::model::responses::context_overflow_message(
+                            &Value::Null,
+                            &error.message,
+                        )
+                        .unwrap_or(error.message);
+                        let mut output = framer.take_output();
+                        output.extend_from_slice(&format_sse_error(&message));
+                        return Some((Ok(Bytes::from(output)), (events, framer, true)));
                     }
-                    return Some((Ok(Bytes::from(output)), (bytes, machine, true)));
                 }
             }
-        }
-    });
+        },
+    );
     Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "text/event-stream")
@@ -214,16 +231,6 @@ fn streaming_response(
             output, keepalive,
         )))
         .expect("valid Cursor streaming response")
-        .into_response()
-}
-
-fn sse_bytes_response(bytes: Vec<u8>) -> axum::response::Response {
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "text/event-stream")
-        .header("cache-control", "no-cache")
-        .body(Body::from(bytes))
-        .expect("valid Cursor SSE response")
         .into_response()
 }
 
@@ -280,26 +287,17 @@ fn map_client_error(error: client::CursorError) -> AdapterError {
     bad_gateway(error.to_string())
 }
 
-fn map_decode_error(error: CursorDecodeError) -> AdapterError {
-    // `error.status()` is the Connect-code-derived status from
-    // `parse_connect_error` (401/403/429/502 in practice); reuse the same
-    // status -> `error.type` table as `map_upstream_error` rather than a
-    // second hardcoded mapping.
-    let status = error
-        .status()
-        .and_then(|code| StatusCode::from_u16(code).ok())
-        .unwrap_or(StatusCode::BAD_GATEWAY);
+/// Map an error surfaced while reading a turn (a Connect end-frame error that
+/// carries an upstream status) to the client, reusing the shared status ->
+/// `error.type` table so a Cursor 401/403/429/5xx keeps its meaning instead of
+/// flattening to a generic 502. A context-overflow message is rewritten to the
+/// Anthropic "prompt is too long" wording so Claude Code auto-compacts.
+fn map_cursor_stream_error(error: client::CursorError) -> AdapterError {
+    let status = StatusCode::from_u16(error.status).unwrap_or(StatusCode::BAD_GATEWAY);
     let mapped_status = crate::model::responses::client_facing_status(status);
     let kind = crate::model::responses::anthropic_error_type(status);
-    // A model context-overflow can arrive as a Connect error frame; surface the
-    // Connect code so the shared rewrite fires even when the message text lacks
-    // the OpenAI-style phrasing, matching the Responses path's auto-compact hook.
-    let value = match &error {
-        CursorDecodeError::ConnectEnd(err) => serde_json::json!({ "error": { "code": err.code } }),
-        CursorDecodeError::Decode(_) => Value::Null,
-    };
-    let raw = error.to_string();
-    let message = crate::model::responses::context_overflow_message(&value, &raw).unwrap_or(raw);
+    let message = crate::model::responses::context_overflow_message(&Value::Null, &error.message)
+        .unwrap_or(error.message);
     own_error(mapped_status, kind, message)
 }
 
@@ -324,16 +322,6 @@ mod tests {
     };
 
     use super::*;
-    use crate::adapters::cursor::connect::ConnectEndError;
-
-    fn connect_end(status: u16) -> CursorDecodeError {
-        CursorDecodeError::ConnectEnd(ConnectEndError {
-            code: "x".to_string(),
-            message: "boom".to_string(),
-            detail: "boom".to_string(),
-            status,
-        })
-    }
 
     /// Serves an empty `status` response from a mock server and returns the
     /// resulting `reqwest::Response`, mirroring what `map_upstream_error`
@@ -362,49 +350,6 @@ mod tests {
             .await
             .expect("response body should be readable");
         serde_json::from_slice(&bytes).expect("error body should be JSON")
-    }
-
-    #[test]
-    fn decode_error_maps_auth_rate_limit_and_permission_statuses() {
-        assert_eq!(
-            map_decode_error(connect_end(401)).response.status(),
-            StatusCode::UNAUTHORIZED
-        );
-        // Connect's `permission_denied` (403) is "authenticated but not
-        // allowed" — a distinct error from 401 that must not be folded into
-        // `authentication_error`.
-        assert_eq!(
-            map_decode_error(connect_end(403)).response.status(),
-            StatusCode::FORBIDDEN
-        );
-        assert_eq!(
-            map_decode_error(connect_end(429)).response.status(),
-            StatusCode::TOO_MANY_REQUESTS
-        );
-    }
-
-    #[test]
-    fn decode_error_preserves_upstream_5xx_status() {
-        // A real upstream 500 must reach the client as 500, not flattened to
-        // a generic 502 that hides the actual signal.
-        assert_eq!(
-            map_decode_error(connect_end(500)).response.status(),
-            StatusCode::INTERNAL_SERVER_ERROR
-        );
-    }
-
-    #[test]
-    fn decode_error_defaults_to_bad_gateway_for_unmapped_status() {
-        assert_eq!(
-            map_decode_error(connect_end(418)).response.status(),
-            StatusCode::BAD_GATEWAY
-        );
-        assert_eq!(
-            map_decode_error(CursorDecodeError::Decode("nope".to_string()))
-                .response
-                .status(),
-            StatusCode::BAD_GATEWAY
-        );
     }
 
     #[tokio::test]
@@ -470,26 +415,6 @@ mod tests {
             .await
             .expect("mock request should succeed");
         let error = map_upstream_error(upstream).await;
-        let body = body_json(error).await;
-        assert_eq!(
-            body["error"]["message"],
-            "prompt is too long: 372982 tokens > 272000 maximum"
-        );
-    }
-
-    #[tokio::test]
-    async fn decode_error_rewrites_context_overflow_to_anthropic_wording() {
-        // The same rewrite must fire when the overflow arrives as a Connect
-        // error frame (the streaming path), not just an HTTP error.
-        let error = map_decode_error(CursorDecodeError::ConnectEnd(ConnectEndError {
-            code: "context_length_exceeded".to_string(),
-            message: "This model's maximum context length is 272000 tokens. \
-                      However, your messages resulted in 372982 tokens."
-                .to_string(),
-            detail: String::new(),
-            status: 400,
-        }));
-        assert_eq!(error.response.status(), StatusCode::BAD_REQUEST);
         let body = body_json(error).await;
         assert_eq!(
             body["error"]["message"],

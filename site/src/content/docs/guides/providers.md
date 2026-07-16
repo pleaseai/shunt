@@ -7,7 +7,7 @@ Providers are a **name → config map**: a new upstream is just another `[provid
 
 - **`kind = "anthropic"`** — the upstream speaks the Anthropic Messages API. shunt passes the request through, optionally injecting a different API key.
 - **`kind = "responses"`** — the upstream speaks the OpenAI Responses API. shunt translates Anthropic Messages ⇄ Responses, including streaming.
-- **`kind = "cursor"`** — the native Cursor adapter. shunt bridges Cursor's ConnectRPC/protobuf AgentService (and its tool protocol) to the Anthropic Messages API, streaming included. Used by the built-in `cursor` provider.
+- **`kind = "cursor"`** — the native Cursor adapter. shunt bridges Cursor's ConnectRPC/protobuf AgentService to the Anthropic Messages API, streaming included (text only for now — see the Cursor provider section). Used by the built-in `cursor` provider.
 
 ## Built-in providers
 
@@ -48,7 +48,7 @@ The ChatGPT-account Codex backend **rejects** `gpt-*-codex` slugs — it only ac
 
 ### The cursor provider (Cursor subscription)
 
-The built-in `cursor` provider reaches your **Cursor** subscription through Cursor's own ConnectRPC/protobuf AgentService (`api2.cursor.sh`) — the `kind = "cursor"` native adapter translates it to and from Anthropic Messages, streaming and Cursor's native tool calls included. Log in once:
+The built-in `cursor` provider reaches your **Cursor** subscription through Cursor's own ConnectRPC/protobuf AgentService — the `kind = "cursor"` native adapter translates it to and from Anthropic Messages, streaming included. Login and token refresh use `api2.cursor.sh`; agent turns run over HTTP/2 against Cursor's current agent host (`agentn.global.api5.cursor.sh`). Log in once:
 
 ```bash
 shunt login cursor
@@ -60,22 +60,26 @@ Route a `cursor:*` model id to it — the provider is seeded by default, so no `
 
 ```toml
 [[routes]]
-model = "cursor:gpt-5.5"
+model = "cursor:default"
 provider = "cursor"
 ```
 
-**Model ids and agent modes.** The prefix selects Cursor's agent mode and the suffix is the Cursor model id:
+:::caution[Text only for now]
+The adapter currently streams **assistant text (and reasoning) only**. Native tool bridging and Plan/Ask mode selection are temporarily unavailable while the current `cursor-agent` wire protocol is mapped (issue #170) — a tool-using client (e.g. Claude Code with tools) will get plain text, not tool calls. Basic chat and streaming work.
+:::
+
+**Model ids and agent modes.** The prefix selects Cursor's agent mode and the suffix is the Cursor model id. Use the **wire** id, not the display name from `cursor-agent models`: Auto is `default` (routing `cursor:auto` fails with `Unknown model ID: auto`). Named models (e.g. `cursor:gpt-5.2`) require a paid plan that entitles them; free plans are limited to `cursor:default`.
 
 | Form | Agent mode | Example |
 | :-- | :-- | :-- |
-| `cursor:<id>` / `cursor-agent:<id>` | Agent | `cursor:gpt-5.5` |
-| `cursor-plan:<id>` | Plan | `cursor-plan:gpt-5.5` |
-| `cursor-ask:<id>` | Ask | `cursor-ask:gpt-5.5` |
+| `cursor:<id>` / `cursor-agent:<id>` | Agent | `cursor:default` |
+| `cursor-plan:<id>` | Plan | `cursor-plan:default` |
+| `cursor-ask:<id>` | Ask | `cursor-ask:default` |
 
-Legacy bare names are also accepted: `cursor`, `cursor-agent`, `cursor-composer`, `cursor-composer-fast` (Agent); `cursor-plan`, `composer-2.5` (Plan); `cursor-ask`, `composer-2.5-fast` (Ask). Any other model id is rejected with an `invalid_request_error`.
+Legacy bare names are also accepted: `cursor`, `cursor-agent`, `cursor-composer`, `cursor-composer-fast` (Agent); `cursor-plan`, `composer-2.5` (Plan); `cursor-ask`, `composer-2.5-fast` (Ask). Any other model id is rejected with an `invalid_request_error`. (Plan/Ask mode selection is parsed but not yet forwarded on the current wire — see the note above.)
 
 :::note[Overrides]
-`SHUNT_CURSOR_BASE_URL` overrides the endpoint, `SHUNT_CURSOR_AUTH_FILE` the credential path, and `SHUNT_CURSOR_CLIENT_VERSION` the `x-cursor-client-version` header (bump it without a rebuild if Cursor starts rejecting a stale client version). A `cursor_oauth` provider is pinned to a Cursor host over HTTPS — pointing `base_url` off-origin is refused so the bearer token cannot leak.
+`SHUNT_CURSOR_BASE_URL` overrides the login/refresh endpoint, `SHUNT_CURSOR_AGENT_BASE_URL` the agent host (must stay an HTTPS `cursor.sh` host), `SHUNT_CURSOR_AUTH_FILE` the credential path, and `SHUNT_CURSOR_CLIENT_VERSION` the `x-cursor-client-version` header (bump it without a rebuild if Cursor starts rejecting a stale client version). A `cursor_oauth` provider is pinned to a Cursor host over HTTPS — pointing `base_url` off-origin is refused so the bearer token cannot leak.
 :::
 
 :::caution[Your own call]

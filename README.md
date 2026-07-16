@@ -94,11 +94,11 @@ shunt login cursor                                  # OAuth -> ~/.shunt/cursor-a
 ```toml
 # shunt.toml — route a cursor:<id> to your Cursor subscription
 [[routes]]
-model = "cursor:gpt-5.5"                             # cursor-plan:<id> / cursor-ask:<id> select the agent mode
+model = "cursor:default"                             # "default" is the wire id for Auto; paid plans can use named ids
 provider = "cursor"
 ```
 
-The `cursor:` / `cursor-agent:` / `cursor-plan:` / `cursor-ask:` prefixes pick Cursor's agent mode; the suffix is the Cursor model id. See [Providers → Cursor](https://shunt-docs.pages.dev/guides/providers/#the-cursor-provider-cursor-subscription) for details.
+The `cursor:` / `cursor-agent:` / `cursor-plan:` / `cursor-ask:` prefixes pick Cursor's agent mode; the suffix is the Cursor **wire** model id (Auto is `default`, not `auto`). The adapter currently streams **text only** — native tool bridging and Plan/Ask mode selection are temporarily unavailable while the current `cursor-agent` wire is mapped (issue #170). See [Providers → Cursor](https://shunt-docs.pages.dev/guides/providers/#the-cursor-provider-cursor-subscription) for details.
 
 **Any Anthropic-compatible backend** is one table away — no code changes:
 
