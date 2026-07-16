@@ -1442,12 +1442,15 @@ mod tests {
         use tokio::sync::mpsc::error::TryRecvError;
         use tokio::sync::oneshot;
 
+        const MARGIN: Duration = Duration::from_secs(30);
+
         // Use real time while loopback I/O is in flight: a fully paused runtime can
         // auto-advance to the only pending timer before the OS delivers a frame.
         tokio::time::resume();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let (release_second, send_second) = oneshot::channel::<()>();
+        let (release_third, send_third) = oneshot::channel::<()>();
         let (release_server, hold_server) = oneshot::channel::<()>();
         let server = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.unwrap();
@@ -1463,7 +1466,14 @@ mod tests {
 
             send_second.await.expect("client releases second frame");
             ws.send(Message::Text(
-                r#"{"type":"response.output_text.delta","delta":"still active"}"#.to_string(),
+                r#"{"type":"response.output_text.delta","delta":"second"}"#.to_string(),
+            ))
+            .await
+            .unwrap();
+
+            send_third.await.expect("client releases third frame");
+            ws.send(Message::Text(
+                r#"{"type":"response.output_text.delta","delta":"third"}"#.to_string(),
             ))
             .await
             .unwrap();
@@ -1491,10 +1501,10 @@ mod tests {
 
         tokio::time::pause();
         tokio::task::yield_now().await;
-        tokio::time::advance(IDLE_TIMEOUT - Duration::from_secs(1)).await;
+        tokio::time::advance(IDLE_TIMEOUT - MARGIN).await;
         release_second
             .send(())
-            .expect("server is waiting for release");
+            .expect("server is waiting for second-frame release");
 
         let second = events
             .recv()
@@ -1503,16 +1513,28 @@ mod tests {
             .expect("the second event should reset, not trip, the idle timer");
         assert_eq!(second.event.as_deref(), Some("response.output_text.delta"));
 
-        // Cross the original turn-start deadline. The second frame arrived one
-        // second before it and must have reset the timer to a fresh full window.
+        // Receiving a third frame without advancing time proves run_turn looped
+        // back to source.next() after the second frame and reset the idle deadline.
+        release_third
+            .send(())
+            .expect("server is waiting for third-frame release");
+        let third = events
+            .recv()
+            .await
+            .expect("the third event should arrive")
+            .expect("the third event should not be a transport error");
+        assert_eq!(third.event.as_deref(), Some("response.output_text.delta"));
+
+        // Cross the original deadline while remaining well inside the fresh idle
+        // window armed after the second frame.
+        tokio::time::advance(MARGIN * 2).await;
         tokio::task::yield_now().await;
-        tokio::time::advance(Duration::from_secs(2)).await;
         assert!(
             matches!(events.try_recv(), Err(TryRecvError::Empty)),
-            "the original idle deadline must not terminate an active turn"
+            "the original idle deadline must not terminate an active turn after a reset"
         );
 
-        tokio::time::advance(IDLE_TIMEOUT + Duration::from_secs(1)).await;
+        tokio::time::advance(IDLE_TIMEOUT).await;
         let error = match events
             .recv()
             .await
