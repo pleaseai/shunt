@@ -63,6 +63,23 @@ fn read_account_id(path: &Path) -> Option<String> {
     token_account_id(tokens)
 }
 
+/// Like [`read_account_id`], but distinguishes "read/parse failed" (`Err`)
+/// from "read fine, no resolvable `account_id`" (`Ok(None)`), so a caller can
+/// tell a corrupted file from a legitimately identity-less one.
+fn read_account_id_strict(path: &Path) -> Result<Option<String>, ()> {
+    let bytes = fs::read(path).map_err(|_| ())?;
+    let value: Value = serde_json::from_slice(&bytes).map_err(|_| ())?;
+    Ok(value.get("tokens").and_then(token_account_id))
+}
+
+/// Like [`scan_accounts`], but a per-file read/parse failure aborts the whole
+/// scan (`Err`) instead of silently treating that account as identity-less.
+/// Used by admin cleanup's fail-closed identity check — see
+/// [`shared::scan_account_dir_strict`].
+pub fn scan_accounts_strict() -> io::Result<Vec<AccountConfig>> {
+    shared::scan_account_dir_strict(&default_accounts_dir(), read_account_id_strict)
+}
+
 fn token_account_id(tokens: &Value) -> Option<String> {
     tokens
         .get("account_id")
@@ -456,6 +473,32 @@ mod tests {
         assert_eq!(accounts[0].uuid.as_deref(), Some("acct-from-claim"));
         assert_eq!(accounts[1].uuid, accounts[0].uuid);
         assert_eq!(account_id("first").as_deref(), Some("acct-from-claim"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn scan_accounts_strict_fails_closed_on_a_corrupted_account_file() {
+        // A sibling file that fails to parse must not be silently coerced to
+        // a name-fallback identity: admin cleanup relies on `Err` here to
+        // preserve pool health instead of wrongly concluding no other alias
+        // shares the identity being removed.
+        let _guard = TEST_ENV_LOCK.lock().await;
+        let dir = temp_dir("scan-strict-codex");
+        fs::create_dir_all(&dir).unwrap();
+        let _env = shared::EnvVarGuard::set("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+        let access = access_token(2_000_000_000, "acct-from-claim");
+        let value = json!({"auth_mode":"ChatGPT","tokens":{"access_token":access}});
+        fs::write(dir.join("first.json"), value.to_string()).unwrap();
+        assert!(scan_accounts_strict().is_ok());
+
+        fs::write(dir.join("broken.json"), "not valid json").unwrap();
+        assert!(scan_accounts_strict().is_err());
+        // The lenient scan still tolerates it, falling back to the name.
+        let lenient = scan_accounts().unwrap();
+        assert!(lenient
+            .iter()
+            .any(|account| account.name == "broken" && account.uuid.is_none()));
 
         let _ = fs::remove_dir_all(dir);
     }

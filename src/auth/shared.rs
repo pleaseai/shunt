@@ -275,6 +275,62 @@ pub fn scan_account_dir(
     Ok(accounts)
 }
 
+/// Like [`scan_account_dir`], but propagates a per-file identity-read failure
+/// as a whole-scan `Err` instead of silently treating that account as having
+/// no identity (which `scan_account_dir` does, via `uuid_for` returning
+/// `None` on a read/parse error the same as on a legitimately absent field).
+/// Admin cleanup calls this — not `scan_account_dir` — for the fail-closed
+/// check of whether a sibling store alias still shares the identity being
+/// removed: a corrupted or unreadable sibling file must not be silently
+/// treated as "definitely a different identity", since that could let a
+/// shared identity's process-lifetime health be cleared while a still-valid
+/// (but unreadable-right-now) alias depends on it.
+pub fn scan_account_dir_strict(
+    dir: &Path,
+    uuid_for: impl Fn(&Path) -> Result<Option<String>, ()>,
+) -> io::Result<Vec<AccountConfig>> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    let mut accounts = Vec::new();
+    for entry in entries {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(name) = path.file_stem().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if validate_account_name(name).is_err() {
+            continue;
+        }
+        let uuid = uuid_for(&path).map_err(|()| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("failed to read upstream identity from account file {path:?}"),
+            )
+        })?;
+        accounts.push(AccountConfig {
+            name: name.to_string(),
+            uuid,
+            ..Default::default()
+        });
+    }
+    accounts.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(accounts)
+}
+
 /// Resolve a pooled provider's effective account list: its configured
 /// `[[accounts]]` when non-empty, otherwise a scan of the store directory
 /// (cached by its mtime — see [`scan_cached`]) that enables no-restart account
@@ -650,6 +706,59 @@ mod tests {
     fn scan_account_dir_missing_dir_is_empty() {
         let dir = temp_dir("missing").join("does-not-exist");
         assert!(scan_account_dir(&dir, |_| None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn scan_account_dir_strict_returns_identities_when_all_files_read_cleanly() {
+        let dir = temp_dir("scan-strict-ok");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("alpha.json"), "{}").unwrap();
+        fs::write(dir.join("zeta.json"), "{}").unwrap();
+
+        let accounts =
+            scan_account_dir_strict(&dir, |_| Ok(Some("shared-id".to_string()))).unwrap();
+        let names: Vec<_> = accounts
+            .iter()
+            .map(|account| account.name.as_str())
+            .collect();
+        assert_eq!(names, ["alpha", "zeta"]);
+        assert!(accounts
+            .iter()
+            .all(|account| account.uuid.as_deref() == Some("shared-id")));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn scan_account_dir_strict_fails_closed_on_a_single_unreadable_file() {
+        // A per-file identity read failure (corrupted/unreadable credential
+        // file) must abort the whole scan with an `Err`, not silently drop
+        // that account to a name-fallback identity — otherwise admin cleanup
+        // could conclude a sibling alias does not share the identity being
+        // removed when it actually can't tell.
+        let dir = temp_dir("scan-strict-fail");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("alpha.json"), "{}").unwrap();
+        fs::write(dir.join("broken.json"), "{}").unwrap();
+
+        let result = scan_account_dir_strict(&dir, |path| {
+            if path.file_stem().and_then(|name| name.to_str()) == Some("broken") {
+                Err(())
+            } else {
+                Ok(None)
+            }
+        });
+        assert!(result.is_err());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn scan_account_dir_strict_missing_dir_is_empty() {
+        let dir = temp_dir("scan-strict-missing").join("does-not-exist");
+        assert!(scan_account_dir_strict(&dir, |_| Ok(None))
+            .unwrap()
+            .is_empty());
     }
 
     fn one_account() -> io::Result<Vec<AccountConfig>> {

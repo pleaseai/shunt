@@ -722,11 +722,11 @@ async fn complete_account(
         // `None` (rather than an empty set) means the scan itself failed —
         // distinguished from "scanned fine, no other accounts share this
         // identity" so the fail-closed check below can tell the two apart.
-        let others = claude_store::scan_accounts().ok().map(|accounts| {
+        let others = claude_store::scan_accounts_strict().ok().map(|accounts| {
             accounts
                 .into_iter()
                 .filter(|account| account.name != other_accounts_name)
-                .map(|account| account.uuid.unwrap_or(account.name))
+                .map(|account| crate::accounts::account_identity(&account).to_string())
                 .collect::<std::collections::HashSet<String>>()
         });
         (new_identity, others)
@@ -847,11 +847,13 @@ async fn remove_account_handler(
     // configured providers are checked against their own account list
     // regardless, since a store scan cannot see `credentials`/`token_env`
     // aliases at all (see `forget_pool_health_if_absent`).
-    let store_scan_others = match tokio::task::spawn_blocking(claude_store::scan_accounts).await {
+    let store_scan_others = match tokio::task::spawn_blocking(claude_store::scan_accounts_strict)
+        .await
+    {
         Ok(Ok(remaining)) => Some(
             remaining
                 .into_iter()
-                .map(|account| account.uuid.unwrap_or(account.name))
+                .map(|account| crate::accounts::account_identity(&account).to_string())
                 .collect::<std::collections::HashSet<String>>(),
         ),
         Ok(Err(error)) => {
