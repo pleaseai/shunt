@@ -69,7 +69,7 @@ There is no `--long-lived` flag for `shunt login codex` — Codex has no setup-t
 | `name` | yes | Unique label containing only lowercase letters, digits, and hyphens. Without another source field, resolves the matching shunt store file. |
 | `credentials` | one usable source | Codex CLI `auth.json`-shaped file. shunt refreshes near expiry and atomically writes refreshed tokens back, same as `~/.codex/auth.json` itself. |
 | `token_env` | one usable source | Environment variable containing a raw ChatGPT access token. Used verbatim; cannot be refreshed after a 401. |
-| `uuid` | no | Present for structural parity with Anthropic accounts, but **unused** by the Codex path — the account id is resolved from the store or the access token's JWT claim instead. |
+| `uuid` | no | Stable upstream identity used to coalesce aliases. Store scans fill it from `tokens.account_id` or the access-token JWT; it is not written into the Codex request body. |
 | `priority` | no | Selection priority among available accounts; lower is preferred, default `100`. Honored on the Codex path. |
 | `disabled` | no | `true` removes the account from selection entirely while keeping it in config. Honored on the Codex path. |
 
@@ -83,7 +83,11 @@ Codex has no explicit `uuid` field to configure. Instead, for each account shunt
 2. otherwise decodes the `access_token` JWT and reads the `chatgpt_account_id` claim; and
 3. after any refresh, recomputes the id **only** from the new access token's JWT claim (a refresh response has no separate account-id field).
 
-If neither source yields an id, that account fails to resolve and is treated as a credential-resolution failure below.
+If neither source yields an id, that account fails to resolve and is treated as a credential-resolution failure below. Store scans also use this id as the in-memory stable identity. They are cached by the store directory mtime, so steady-state discovery performs one directory `stat` and no credential-file reads.
+
+:::note[Duplicate names for one real account]
+If two store files or configured entries have the same `account_id`, shunt counts them as **one account**. They share cooldown, health, and refresh locks, and failover skips the duplicate alias rather than retrying the same ChatGPT account. Sticky hashing and round-robin operate over distinct identities. The representative is the enabled alias with the lowest `priority`, then the first entry; only its token is attempted, and shunt logs a duplicate-identity warning. Consequently, an invalid representative is not rescued by a valid non-representative alias. Removing one alias clears the shared in-process health for the identity.
+:::
 
 ## Selection and cooldowns
 

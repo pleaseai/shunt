@@ -5,7 +5,7 @@ M10 adds an account pool to a Codex/ChatGPT provider authenticated with ChatGPT 
 M10 is **reactive-only**, unlike M8. Three differences from the Anthropic pool are worth calling out up front:
 
 1. **Cooldown-based reactive failover, no proactive rotation.** The ChatGPT/Codex backend sends no per-account quota headers, so `select_order()` runs with `model = None`: pure session-sticky-or-round-robin selection filtered by cooldown, with no quota-aware early switch. An account is only avoided after it has actually failed. Quota-aware proactive rotation (comparable to M8's near-quota switch) would need a live probe of Codex rate-limit headers first and is tracked as a follow-up, not implemented here.
-2. **No `account_uuid` rewrite.** M8's Anthropic pool rewrites an existing `metadata.user_id.account_uuid` to the selected account's Anthropic UUID. Codex has no equivalent request-body identity field to rewrite — the account id is embedded in the OAuth token itself (see below) and sent via the `chatgpt-account-id` header, not a JSON body field. The shared `AccountConfig.uuid` field exists structurally (it's the same struct as Anthropic's) but is never read on the Codex path; setting it on a `chatgpt_oauth` account is harmless but has no effect.
+2. **No `account_uuid` body rewrite.** M8's Anthropic pool rewrites an existing `metadata.user_id.account_uuid` to the selected account's Anthropic UUID. Codex has no equivalent request-body field — its account id is sent via the `chatgpt-account-id` header. The pool still stores the resolved `account_id` in `AccountConfig.uuid` as its provider-independent stable identity so aliases can be coalesced; it is never written into the Codex request body.
 3. **Errors are translated, not relayed verbatim.** When the pool is exhausted after seeing at least one upstream response, shunt re-shapes that last response into an Anthropic-style error envelope (`build_upstream_error`) rather than relaying the raw Codex/OpenAI body — the opposite of M8, which relays the last upstream response unchanged. If every account fails before any upstream response exists (for example, every credential fails to resolve), shunt returns a gateway-owned `502 bad gateway` with the fixed message `all Codex OAuth accounts failed before receiving an upstream response`.
 
 ## Configuration
@@ -60,7 +60,7 @@ Each account has these fields:
 | `name` | yes | Stable account label. Must contain only lowercase ASCII letters, digits, and hyphens. Names must be unique within the provider. A name-only entry resolves from the shunt account store. |
 | `credentials` | no | Path to a Codex CLI `auth.json`-shaped file. shunt reads the `tokens` block, refreshes near expiry, and writes refreshed tokens back atomically — same read/refresh/write-back cycle as `~/.codex/auth.json` itself (see [`codex-configuration.md`](codex-configuration.md#4-authentication-codexauthjson)). |
 | `token_env` | no | Environment variable containing a raw ChatGPT access token. The value is used verbatim and is **not** refreshed; a 401 cools the account down instead of retrying. |
-| `uuid` | no | Present on the shared `AccountConfig` struct for parity with the Anthropic pool, but **unused by the Codex path** — the account id comes from the JWT claim or store instead (see below). |
+| `uuid` | no | Stable upstream identity used to coalesce aliases. Store scans fill it automatically from `tokens.account_id` or the access-token JWT; set it explicitly for a non-store account only when needed. It is not written into the Codex request body. |
 | `priority` | no | Selection priority among available accounts; lower is preferred, default `100`. Unlike `uuid`, this **is** honored on the Codex path. |
 | `disabled` | no | `true` removes the account from selection entirely while keeping it in config. Honored on the Codex path. |
 
@@ -78,7 +78,11 @@ Unlike Anthropic accounts (which carry an explicit `uuid` field), a Codex accoun
 - After a refresh, the new credential's account id comes **only** from the new access token's JWT claim (the refresh response has no separate `account_id` field to fall back to).
 - A `token_env` account's id also comes from decoding its JWT.
 
-If neither the store nor the JWT yields an account id, resolving that account fails and it is treated as a credential-resolution failure (cooled down, pool rotates — see below).
+If neither the store nor the JWT yields an account id, resolving that account fails and it is treated as a credential-resolution failure (cooled down, pool rotates — see below). Store discovery also writes the resolved id into the in-memory account's `uuid` field. Discovery is cached by the account-store directory mtime, so steady-state requests perform one directory `stat` and no credential-file reads; files are reread only after the directory changes.
+
+### Identity coalescing
+
+Accounts with the same resolved `account_id` are one logical pool candidate even when imported under different names. They share cooldown, health, and refresh locks, and failover skips duplicate aliases instead of retrying the same ChatGPT account twice. Sticky hashing and round-robin operate over distinct identities. The deterministic representative is the enabled alias with the lowest `priority`, then the first entry; only that representative token is attempted. Duplicate identities emit a warning. If the representative token is invalid while a non-representative alias remains valid, the latter is intentionally not tried because both aliases count as one account; deleting one alias also clears their shared process-lifetime health.
 
 ## Validation and security guards
 

@@ -88,6 +88,10 @@ Full OAuth 创建一个新的可刷新 credential;import 把当前的 `~/.claude
 
 不要在同一个账户上同时设置 `credentials` 和 `token_env`。
 
+:::note[Duplicate names for one real account]
+`uuid` is also the pool's stable upstream identity. If two names carry the same UUID, shunt counts them as **one account**: they share quota, cooldown, usage, health, and refresh locks, and failover skips the duplicate alias. Sticky hashing and round-robin operate over distinct identities, so adding an alias does not move a session. The representative is the enabled alias with the lowest `priority`, then the first entry; only its token is attempted. shunt logs a duplicate-identity warning. Therefore, if that representative token is invalid while another alias token is valid, shunt still does not try the alias. Removing one alias clears the shared in-process health for the identity.
+:::
+
 ## 选择与主动轮换
 
 - 带 `x-claude-code-session-id` 时:一个稳定的哈希选出粘性账户。如果该账户可用且低于切换阈值,shunt 会让它保持在首位。

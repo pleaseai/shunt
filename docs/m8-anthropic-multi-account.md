@@ -106,7 +106,13 @@ Because `claude_oauth` is an injected-credential mode, a configured `[server.aut
 
 ## Selection, quota state, and cooldowns
 
-Selection state is per provider and survives config hot reloads for the life of the shunt process. Quota state is tracked per configured account.
+Selection state is per provider and survives config hot reloads for the life of the shunt process. Quota, cooldown, usage, and refresh-lock state are tracked by the real upstream account identity (`uuid`, or the stored `shuntAccountUuid`), falling back to `name` only when no identity is available.
+
+### Identity coalescing
+
+If two configured names or store files carry the same upstream UUID, shunt treats them as **one logical account**. The aliases share quota, cooldown, usage, health, and refresh serialization, and `select_order` returns only one representative, so failover never retries the same real account under another label. Session stickiness and round-robin are computed over distinct identities; adding an alias does not move an existing sticky session.
+
+The representative is deterministic: an enabled alias beats a disabled one, then lower `priority`, then the first entry. This choice is independent of health. Consequently, only the representative token is attempted; if it is invalid while a non-representative alias still has a valid token, shunt does not try the second token because the aliases deliberately count as one account. A duplicate identity emits a warning (once per provider/identity at runtime). Removing one alias clears the shared process-lifetime health even if another alias remains.
 
 - If the request includes `x-claude-code-session-id`, shunt hashes it with SHA-256 to choose the sticky account. The mapping is deterministic across process restarts while the ordered account list is unchanged. A healthy, non-`disabled` sticky account that is available and under its effective soft threshold stays first, preserving Phase 1 session stickiness.
 - Without that header, shunt uses an independent round-robin counter for each provider.

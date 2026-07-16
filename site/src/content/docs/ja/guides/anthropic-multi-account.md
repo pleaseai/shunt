@@ -88,6 +88,10 @@ Full OAuth は新しいリフレッシュ可能な credential を作成します
 
 1 つのアカウントに `credentials` と `token_env` の両方を設定しないでください。
 
+:::note[Duplicate names for one real account]
+`uuid` is also the pool's stable upstream identity. If two names carry the same UUID, shunt counts them as **one account**: they share quota, cooldown, usage, health, and refresh locks, and failover skips the duplicate alias. Sticky hashing and round-robin operate over distinct identities, so adding an alias does not move a session. The representative is the enabled alias with the lowest `priority`, then the first entry; only its token is attempted. shunt logs a duplicate-identity warning. Therefore, if that representative token is invalid while another alias token is valid, shunt still does not try the alias. Removing one alias clears the shared in-process health for the identity.
+:::
+
 ## 選択とプロアクティブなローテーション
 
 - `x-claude-code-session-id` がある場合：安定したハッシュがスティッキーなアカウントを選びます。そのアカウントが利用可能で切り替えしきい値未満なら、shunt はそれを先頭に保ちます。

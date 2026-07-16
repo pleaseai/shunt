@@ -13,6 +13,10 @@ This page is the end-to-end setup. It links out to the deeper topic pages
 [Providers](/guides/providers/)) rather than repeating them. To pool several ChatGPT accounts
 behind this provider instead of a single login, see [Codex Multi-Account](/guides/codex-multi-account/).
 
+:::note[Duplicate names for one real account]
+When a Codex pool contains two names with the same `account_id`, shunt counts them as **one account**. The aliases share cooldown, health, and refresh locks, and failover skips the duplicate identity instead of retrying it. The enabled alias with the lowest `priority` (then the first entry) supplies the only token attempted, and shunt logs a duplicate-identity warning. Store discovery reads `tokens.account_id` or the JWT claim and caches the scan by directory mtime. See the [Codex Multi-Account guide](/guides/codex-multi-account/) for details.
+:::
+
 ## How it works
 
 `codex` is a built-in **`kind = "responses"`** provider: shunt translates Claude Code's Anthropic
