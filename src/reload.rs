@@ -455,6 +455,46 @@ mod tests {
     }
 
     #[test]
+    fn reload_reresolves_gateway_auth() {
+        let dir = temp_dir("gateway-auth");
+        let _guard = TempDirGuard(dir.clone());
+        let path = dir.join("shunt.toml");
+        let suffix = std::process::id();
+        let secret_env = format!("SHUNT_RELOAD_GATEWAY_SECRET_{suffix}");
+        let users_env = format!("SHUNT_RELOAD_GATEWAY_USERS_{suffix}");
+        std::env::set_var(&secret_env, "0123456789abcdef0123456789abcdef");
+        std::env::set_var(&users_env, "alice@example.com:first-secret");
+        std::fs::write(
+            &path,
+            format!(
+                "[server.gateway]\npublic_url = \"https://gateway.example\"\njwt_secret_env = \"{secret_env}\"\nusers_env = \"{users_env}\"\n"
+            ),
+        )
+        .unwrap();
+        let shared = shared_from(Config::load(Some(&path)).unwrap());
+        let first = shared.load().gateway_auth.clone().unwrap();
+        assert!(first
+            .approval_provider()
+            .verify("alice@example.com", "first-secret")
+            .is_some());
+
+        std::env::set_var(&users_env, "alice@example.com:second-secret");
+        reload(&shared, Some(&path)).expect("gateway users reload");
+        let second = shared.load().gateway_auth.clone().unwrap();
+        assert!(second
+            .approval_provider()
+            .verify("alice@example.com", "first-secret")
+            .is_none());
+        assert!(second
+            .approval_provider()
+            .verify("alice@example.com", "second-secret")
+            .is_some());
+
+        std::env::remove_var(secret_env);
+        std::env::remove_var(users_env);
+    }
+
+    #[test]
     fn bind_change_warns_and_reload_still_succeeds() {
         let dir = temp_dir("bind");
         let _guard = TempDirGuard(dir.clone());
