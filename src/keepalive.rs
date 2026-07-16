@@ -128,6 +128,37 @@ mod tests {
         assert!(tracker.at_boundary());
     }
 
+    #[test]
+    fn boundary_tracking_empty_push_preserves_state() {
+        let mut tracker = BoundaryTracker::new();
+        tracker.push(b"data: {}\n\n");
+        assert!(tracker.at_boundary());
+
+        tracker.push(b"");
+        assert!(tracker.at_boundary(), "empty push preserves a boundary");
+
+        tracker.push(b"data: {}");
+        assert!(!tracker.at_boundary());
+        tracker.push(b"");
+        assert!(
+            !tracker.at_boundary(),
+            "empty push preserves a non-boundary"
+        );
+    }
+
+    #[test]
+    fn boundary_tracking_handles_three_byte_chunk_split() {
+        let mut tracker = BoundaryTracker::new();
+        tracker.push(b"data: {}\r");
+        assert!(!tracker.at_boundary());
+
+        tracker.push(b"\n\r\n");
+        assert!(
+            tracker.at_boundary(),
+            "three new bytes preserve the old carriage return"
+        );
+    }
+
     #[tokio::test(start_paused = true)]
     async fn active_stream_passes_through_without_pings() {
         let upstream = stream::iter(vec![

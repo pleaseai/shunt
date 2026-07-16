@@ -1361,6 +1361,75 @@ mod tests {
         server.await.unwrap();
     }
 
+    /// Silence during an active turn must surface the turn-level idle timeout as a
+    /// transport error rather than ending the event channel quietly or hanging.
+    #[tokio::test(start_paused = true)]
+    async fn turn_idle_timeout_surfaces_transport_error() {
+        use tokio::net::TcpListener;
+        use tokio::sync::oneshot;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (release_server, hold_server) = oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            let Some(Ok(Message::Text(_))) = ws.next().await else {
+                panic!("expected a client frame");
+            };
+            ws.send(Message::Text(
+                r#"{"type":"response.created","response":{"id":"resp_1"}}"#.to_string(),
+            ))
+            .await
+            .unwrap();
+            // Keep the socket open but silent until the client observes its timeout.
+            let _ = hold_server.await;
+        });
+
+        let frame = response_create_frame(serde_json::json!({"model": "m", "input": []}));
+        let mut events = open_simple(
+            &format!("ws://{addr}/codex/responses"),
+            HeaderMap::new(),
+            &frame,
+            None,
+        )
+        .await
+        .expect("websocket should connect");
+
+        let first = events
+            .recv()
+            .await
+            .expect("the non-terminal event should arrive")
+            .expect("the first event should not be a transport error");
+        assert_eq!(first.event.as_deref(), Some("response.created"));
+
+        // Let run_turn return to its read loop and arm the reset idle timer before
+        // moving the paused clock beyond the turn-level deadline.
+        tokio::task::yield_now().await;
+        tokio::time::advance(IDLE_TIMEOUT + Duration::from_secs(1)).await;
+
+        let error = match events
+            .recv()
+            .await
+            .expect("the idle timeout should produce an event")
+        {
+            Err(error) => error,
+            Ok(event) => panic!("expected an idle-timeout error, got {:?}", event.event),
+        };
+        assert!(
+            error.message.contains("idle timeout"),
+            "unexpected error: {}",
+            error.message
+        );
+        assert!(
+            events.recv().await.is_none(),
+            "the event channel ends after the transport error"
+        );
+
+        drop(release_server);
+        server.await.unwrap();
+    }
+
     /// Drain a receiver to exhaustion, returning how many `Ok` events arrived.
     async fn drain(events: &mut CodexWsEvents) -> usize {
         let mut count = 0;
