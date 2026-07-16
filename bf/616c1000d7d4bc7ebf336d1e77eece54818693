@@ -1,0 +1,55 @@
+.please/docs/review/rejected-findings.jsonl
+  s_061f0c21f5acac::t_41785d666f2918 14-15
+.release-please-manifest.json
+  s_061f0c21f5acac::t_47ed5c0128303f 2
+CHANGELOG.md
+  s_061f0c21f5acac::t_5347da94dfe764 3-10
+Cargo.lock
+  s_061f0c21f5acac::t_c3848425f65e86 2665,2699
+Cargo.toml
+  s_061f0c21f5acac::t_d30e64ff2872ad 5,82
+README.md
+  s_061f0c21f5acac::t_33f9f0eb12daa7 80-81
+docs/m12-client-usage-endpoint.md
+  s_061f0c21f5acac::t_5cdcb40143f993 1-88
+docs/m3-discovery.md
+  s_061f0c21f5acac::t_e94eb11fd652b6 62-73,118-121
+site/src/content/docs/reference/configuration.md
+  s_061f0c21f5acac::t_71bd2856b1d111 52-59
+site/src/content/docs/reference/endpoints.md
+  s_061f0c21f5acac::t_1387eda2092cb4 30,36-50
+src/adapters/anthropic/mod.rs
+  s_061f0c21f5acac::t_a3bcb07706d2fa 22-23,99,223,280,399,431,510,512,524-532,547-549,554-561,563
+src/adapters/anthropic/model_rewrite.rs
+  s_061f0c21f5acac::t_87e24851d9b574 1-313
+src/config.rs
+  s_061f0c21f5acac::t_73fdfb065350f0 61-68,278-288,884-885,1044,1460-1466,1634-1637,2119-2148
+src/lib.rs
+  s_061f0c21f5acac::t_9c1dbbef600626 22
+src/reload.rs
+  s_061f0c21f5acac::t_153e6f35dc5924 106-112
+src/server.rs
+  s_061f0c21f5acac::t_247e14a14d9981 17,99-102,146-154,185-252
+src/usage.rs
+  s_061f0c21f5acac::t_9c7b89a8c6f2ad 1-235
+src/usage/tests.rs
+  s_061f0c21f5acac::t_99cfbf375348f9 1-282
+tests/passthrough.rs
+  s_061f0c21f5acac::t_b229d553e1ed91 6,688-845
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "bf616c1000d7d4bc7ebf336d1e77eece54818693",
+  "prompts": {},
+  "sessions": {
+    "s_061f0c21f5acac": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b44a9ffe-6ae9-46b1-87ea-fb27932f5779",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
