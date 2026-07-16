@@ -80,7 +80,7 @@ A successful refresh can return a replacement refresh token and invalidate the p
 | `name` | yes | Unique label containing only lowercase letters, digits, and hyphens. Without another source field, resolves the matching shunt store file. |
 | `credentials` | one usable source | Claude Code `.credentials.json`-shaped file. `~/` is expanded. shunt refreshes near expiry and atomically writes refreshed tokens back. |
 | `token_env` | one usable source | Environment variable containing a setup token. The value is used verbatim and cannot be refreshed after a 401. |
-| `uuid` | no | Selected account's Anthropic UUID for rewriting an existing `metadata.user_id.account_uuid`, and the stable identity used to coalesce aliases in the pool. |
+| `uuid` | no | Selected account's Anthropic UUID for rewriting an existing `metadata.user_id.account_uuid`, and the stable identity used to coalesce aliases in the pool. A name-only entry (resolved by a store scan) is filled in automatically from the store's `shuntAccountUuid` before selection runs; a `credentials`- or `token_env`-configured entry only coalesces with another alias when you set `uuid` explicitly to a matching value. |
 | `threshold` | no | Per-account soft quota threshold in `[0.0, 1.0]` for every window without a per-window value. A low value marks a backup account that rotates out early. |
 | `threshold_5h` / `threshold_7d` / `threshold_fable` | no | Per-window soft thresholds; each beats `threshold` for its window. |
 | `priority` | no | Selection priority when the sticky account is unhealthy; lower is preferred, default `100`. |
@@ -89,7 +89,9 @@ A successful refresh can return a replacement refresh token and invalidate the p
 Do not set both `credentials` and `token_env` on one account.
 
 :::note[Duplicate names for one real account]
-`uuid` is also the pool's stable upstream identity. If two names carry the same UUID, shunt counts them as **one account**: they share quota, cooldown, usage, health, and refresh locks, and failover skips the duplicate alias. Sticky hashing and round-robin operate over distinct identities, so adding an alias does not move a session. The representative is the enabled alias with the lowest `priority`, then the first entry; only its token is attempted. shunt logs a duplicate-identity warning. Therefore, if that representative token is invalid while another alias token is valid, shunt still does not try the alias. Removing one alias clears the shared in-process health for the identity.
+`uuid` is also the pool's stable upstream identity. If two names carry the same UUID, shunt counts them as **one account**: they share quota, cooldown, usage, health, and refresh locks, and failover skips the duplicate alias. Sticky hashing and round-robin operate over distinct identities, so adding an alias does not move a session. The representative is the enabled alias with the lowest `priority`, then the first entry; only its token is attempted. shunt logs a duplicate-identity warning (once per distinct collision set, not once per request). Therefore, if that representative token is invalid while another alias token is valid, shunt still does not try the alias.
+
+Deleting a store-managed account through the admin web surface clears that identity's shared in-process health only once no other stored alias still resolves to the same identity; a scan failure preserves the health instead of guessing. This is admin-store delete semantics — removing an alias from the TOML config, or its credentials file directly, does not go through this cleanup.
 :::
 
 ## Selection and proactive rotation

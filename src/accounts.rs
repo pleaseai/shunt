@@ -482,8 +482,14 @@ impl AccountPool {
 /// Stable upstream identity used for pool health and candidate coalescing.
 /// Claude stores `shuntAccountUuid` and Codex stores `chatgpt_account_id` in
 /// [`AccountConfig::uuid`]; accounts without either remain distinct by name.
+/// A blank (empty or all-whitespace) `uuid` is treated the same as a missing
+/// one — otherwise every account configured with `uuid = ""` would coalesce
+/// into a single shared identity instead of falling back to its own name.
 pub(crate) fn account_identity(account: &AccountConfig) -> &str {
-    account.uuid.as_deref().unwrap_or(&account.name)
+    match account.uuid.as_deref() {
+        Some(uuid) if !uuid.trim().is_empty() => uuid,
+        _ => &account.name,
+    }
 }
 
 /// Collapse accounts sharing a stable upstream identity ([`account_identity`])
@@ -848,6 +854,21 @@ mod tests {
             })
             .collect::<HashSet<_>>();
         assert!(starts.len() > 1);
+    }
+
+    #[test]
+    fn blank_uuid_falls_back_to_name_instead_of_coalescing() {
+        // uuid = "" (or all-whitespace) must not coalesce distinct accounts the
+        // way a real shared uuid does — it is treated as absent, like `None`.
+        let empty_a = account_with_uuid("empty-a", "");
+        let empty_b = account_with_uuid("empty-b", "   ");
+        assert_eq!(account_identity(&empty_a), "empty-a");
+        assert_eq!(account_identity(&empty_b), "empty-b");
+
+        let pool = AccountPool::new();
+        let accounts = vec![empty_a, empty_b];
+        let order = pool.select_order("anthropic", &accounts, Some("session"), None, None);
+        assert_eq!(order.len(), 2);
     }
 
     #[test]

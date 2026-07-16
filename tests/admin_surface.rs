@@ -613,6 +613,111 @@ async fn claude_reprovision_clears_orphaned_identity_without_wiping_shared_alias
 }
 
 #[tokio::test]
+async fn claude_remove_preserves_shared_identity_health_until_last_alias_is_removed() {
+    // Regression test for the admin Claude remove-account identity-health
+    // cleanup: removing one alias of a shared upstream identity must preserve
+    // pool health while a sibling alias still resolves to that identity, and
+    // only clear it once the last alias sharing the identity is gone.
+    if !can_bind_loopback() {
+        return;
+    }
+    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let dir = unique_dir();
+    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    std::env::set_var(
+        "SHUNT_TEST_ADMIN_TOKENS_CLAUDE_REMOVE",
+        "ops:secret-claude-remove",
+    );
+
+    // "alias-a" and "alias-b" both resolve to the shared "shared-id" identity.
+    for name in ["alias-a", "alias-b"] {
+        std::fs::write(
+            dir.join(format!("{name}.json")),
+            serde_json::json!({
+                "claudeAiOauth": {
+                    "accessToken": format!("{name}-access"),
+                    "refreshToken": format!("{name}-refresh"),
+                    "expiresAt": 4_102_444_800_000i64,
+                },
+                "shuntAccountUuid": "shared-id",
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    let mut config = admin_config("SHUNT_TEST_ADMIN_TOKENS_CLAUDE_REMOVE");
+    config.server.bind = "127.0.0.1:0".to_string();
+    let listener = tokio::net::TcpListener::bind(config.server.bind_addr().unwrap())
+        .await
+        .unwrap();
+    let addr: SocketAddr = listener.local_addr().unwrap();
+    let (app, _shared, state) = server::build_router(config).unwrap();
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base_url = format!("http://{addr}");
+
+    let shared_identity = AccountConfig {
+        name: "shared-id".to_string(),
+        uuid: Some("shared-id".to_string()),
+        ..Default::default()
+    };
+    state.accounts.cooldown(
+        "anthropic",
+        &shared_identity,
+        std::time::Duration::from_secs(300),
+    );
+
+    let client = reqwest::Client::new();
+    let auth = |request: reqwest::RequestBuilder| {
+        request.header("x-shunt-admin-token", "secret-claude-remove")
+    };
+
+    // Removing "alias-a" must not clear "shared-id" health: "alias-b" still
+    // resolves to it.
+    let response = auth(client.delete(format!("{base_url}/admin/accounts/claude/alias-a")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!dir.join("alias-a.json").exists());
+    let snapshot = state.accounts.snapshot(
+        "anthropic",
+        std::slice::from_ref(&shared_identity),
+        None,
+        None,
+    );
+    assert!(
+        snapshot[0].has_state,
+        "shared identity health must survive removing one of two aliases"
+    );
+
+    // Removing "alias-b" (the last remaining alias) must now clear it.
+    let response = auth(client.delete(format!("{base_url}/admin/accounts/claude/alias-b")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!dir.join("alias-b.json").exists());
+    let snapshot = state.accounts.snapshot(
+        "anthropic",
+        std::slice::from_ref(&shared_identity),
+        None,
+        None,
+    );
+    assert!(
+        !snapshot[0].has_state,
+        "shared identity health should be cleared once no alias resolves to it any more"
+    );
+
+    task.abort();
+    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CLAUDE_REMOVE");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn full_oauth_completion_rejects_missing_refresh_token() {
     if !can_bind_loopback() {
         return;
@@ -1345,6 +1450,110 @@ async fn codex_reprovision_clears_orphaned_identity_without_wiping_shared_alias_
     std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
     std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
     std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CODEX_REPROV");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn codex_remove_preserves_shared_identity_health_until_last_alias_is_removed() {
+    // Regression test for the admin Codex remove-account identity-health
+    // cleanup: removing one alias of a shared upstream identity must preserve
+    // pool health while a sibling alias still resolves to that identity, and
+    // only clear it once the last alias sharing the identity is gone.
+    if !can_bind_loopback() {
+        return;
+    }
+    let _lock = CODEX_ENV_LOCK.lock().await;
+    let dir = unique_dir();
+    std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+    std::env::set_var(
+        "SHUNT_TEST_ADMIN_TOKENS_CODEX_REMOVE",
+        "ops:secret-codex-remove",
+    );
+
+    // "alias-a" and "alias-b" both resolve to the shared "shared-id" identity.
+    for name in ["alias-a", "alias-b"] {
+        std::fs::write(
+            dir.join(format!("{name}.json")),
+            serde_json::json!({
+                "auth_mode": "ChatGPT",
+                "tokens": {
+                    "access_token": format!("{name}-access"),
+                    "refresh_token": format!("{name}-refresh"),
+                    "account_id": "shared-id",
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    let mut config = admin_config("SHUNT_TEST_ADMIN_TOKENS_CODEX_REMOVE");
+    let codex = config.providers.get_mut("codex").unwrap();
+    codex.auth = AuthMode::ChatgptOauth;
+    codex.accounts = Vec::new();
+    config.server.bind = "127.0.0.1:0".to_string();
+    let listener = tokio::net::TcpListener::bind(config.server.bind_addr().unwrap())
+        .await
+        .unwrap();
+    let addr: SocketAddr = listener.local_addr().unwrap();
+    let (app, _shared, state) = server::build_router(config).unwrap();
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base_url = format!("http://{addr}");
+
+    let shared_identity = AccountConfig {
+        name: "shared-id".to_string(),
+        uuid: Some("shared-id".to_string()),
+        ..Default::default()
+    };
+    state.accounts.cooldown(
+        "codex",
+        &shared_identity,
+        std::time::Duration::from_secs(300),
+    );
+
+    let client = reqwest::Client::new();
+    let auth = |request: reqwest::RequestBuilder| {
+        request.header("x-shunt-admin-token", "secret-codex-remove")
+    };
+
+    // Removing "alias-a" must not clear "shared-id" health: "alias-b" still
+    // resolves to it.
+    let response = auth(client.delete(format!("{base_url}/admin/accounts/codex/alias-a")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!dir.join("alias-a.json").exists());
+    let snapshot =
+        state
+            .accounts
+            .snapshot("codex", std::slice::from_ref(&shared_identity), None, None);
+    assert!(
+        snapshot[0].has_state,
+        "shared identity health must survive removing one of two aliases"
+    );
+
+    // Removing "alias-b" (the last remaining alias) must now clear it.
+    let response = auth(client.delete(format!("{base_url}/admin/accounts/codex/alias-b")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!dir.join("alias-b.json").exists());
+    let snapshot =
+        state
+            .accounts
+            .snapshot("codex", std::slice::from_ref(&shared_identity), None, None);
+    assert!(
+        !snapshot[0].has_state,
+        "shared identity health should be cleared once no alias resolves to it any more"
+    );
+
+    task.abort();
+    std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CODEX_REMOVE");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
