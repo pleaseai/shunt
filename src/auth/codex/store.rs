@@ -42,6 +42,21 @@ pub fn account_id(name: &str) -> Option<String> {
     read_account_id(&account_path(name))
 }
 
+/// The store account's runtime identity — its `account_id`/JWT `chatgpt_account_id`,
+/// falling back to its own name (matching `accounts::account_identity`'s
+/// blank/missing-uuid fallback) — or `None` when no account file exists for
+/// `name` at all. Distinguishes "this account existed but carried no readable
+/// identity, so its identity is its name" from "there was no prior account to
+/// identify", which a plain `account_id(name).unwrap_or(name)` cannot: that
+/// would treat a genuinely absent account the same as a present, identity-less
+/// one.
+pub fn account_identity(name: &str) -> Option<String> {
+    if !account_path(name).exists() {
+        return None;
+    }
+    Some(account_id(name).unwrap_or_else(|| name.to_string()))
+}
+
 fn read_account_id(path: &Path) -> Option<String> {
     let value: Value = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
     let tokens = value.get("tokens")?;

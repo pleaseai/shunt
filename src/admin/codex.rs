@@ -20,7 +20,8 @@ use crate::{
 };
 
 use super::{
-    authenticate, bad_gateway, bad_request, check_csrf, forget_pool_health, internal, json_secure,
+    authenticate, bad_gateway, bad_request, check_csrf, forget_pool_health_if_absent, internal,
+    json_secure,
     session::{PendingAttempt, PendingKind},
     too_many_requests, unauthorized,
 };
@@ -185,7 +186,7 @@ pub(super) async fn complete_codex_account(
     // newly stored B was ever cleared previously).
     let old_identity_name = name.clone();
     let old_identity =
-        tokio::task::spawn_blocking(move || codex_store::account_id(&old_identity_name))
+        tokio::task::spawn_blocking(move || codex_store::account_identity(&old_identity_name))
             .await
             .unwrap_or(None);
 
@@ -238,23 +239,52 @@ pub(super) async fn complete_codex_account(
     .await
     .unwrap_or_else(|_| (name.clone(), None));
 
-    // Fail-closed: only clear pool health when the store scan that enumerates
-    // remaining aliases actually succeeded. Treating a scan failure as "no
-    // other account shares this identity" would risk wiping health that is
-    // still legitimately shared with another stored alias.
-    match other_identities {
+    // Fail-closed for dynamic-discovery providers: only clear their health when
+    // the store scan that enumerates remaining aliases actually succeeded.
+    // Explicitly configured providers are checked against their own account
+    // list regardless (see `forget_pool_health_if_absent`), so they are
+    // cleaned up precisely even when the scan below fails.
+    match &other_identities {
         Some(other_identities) => {
-            if let Some(old_identity) = old_identity {
-                if old_identity != new_identity && !other_identities.contains(&old_identity) {
-                    forget_pool_health(&state, AuthMode::ChatgptOauth, &old_identity);
+            if let Some(old_identity) = &old_identity {
+                if old_identity != &new_identity {
+                    forget_pool_health_if_absent(
+                        &state,
+                        AuthMode::ChatgptOauth,
+                        &name,
+                        old_identity,
+                        Some(other_identities),
+                    );
                 }
             }
-            if !other_identities.contains(&new_identity) {
-                forget_pool_health(&state, AuthMode::ChatgptOauth, &new_identity);
-            }
+            forget_pool_health_if_absent(
+                &state,
+                AuthMode::ChatgptOauth,
+                &name,
+                &new_identity,
+                Some(other_identities),
+            );
         }
         None => {
-            tracing::warn!(account = %name, "admin: failed to scan Codex account store during reprovision cleanup; preserving pool health for the old and new identities");
+            tracing::warn!(account = %name, "admin: failed to scan Codex account store during reprovision cleanup; preserving dynamic-discovery-provider pool health for the old and new identities");
+            if let Some(old_identity) = &old_identity {
+                if old_identity != &new_identity {
+                    forget_pool_health_if_absent(
+                        &state,
+                        AuthMode::ChatgptOauth,
+                        &name,
+                        old_identity,
+                        None,
+                    );
+                }
+            }
+            forget_pool_health_if_absent(
+                &state,
+                AuthMode::ChatgptOauth,
+                &name,
+                &new_identity,
+                None,
+            );
         }
     }
     tracing::info!(account = %name, account_id_present = true, "admin: Codex account stored");
@@ -307,29 +337,35 @@ pub(super) async fn remove_codex_account_handler(
     tracing::info!(account = %name, removed, "admin: Codex account removed");
     // Drop process-lifetime Codex pool health for the removed identity so a later
     // re-add does not inherit stale state, without touching same-named Claude
-    // health — but only once a scan confirms no remaining stored alias still
-    // resolves to this identity (health is keyed by identity and may be
-    // shared). A scan failure is fail-closed to preserving health rather than
-    // risking wiping out state a sibling account still relies on.
-    let scan_identity = identity.clone();
-    match tokio::task::spawn_blocking(codex_store::scan_accounts).await {
-        Ok(Ok(remaining)) => {
-            let identity_remains = remaining
+    // health. Dynamic-discovery providers are only cleared once a scan
+    // confirms no remaining stored alias still resolves to this identity (a
+    // scan failure fails closed to preserving their health); explicitly
+    // configured providers are checked against their own account list
+    // regardless, since a store scan cannot see `credentials`/`token_env`
+    // aliases at all (see `forget_pool_health_if_absent`).
+    let store_scan_others = match tokio::task::spawn_blocking(codex_store::scan_accounts).await {
+        Ok(Ok(remaining)) => Some(
+            remaining
                 .into_iter()
-                .any(|account| account.uuid.unwrap_or(account.name) == scan_identity);
-            if identity_remains {
-                tracing::debug!(account = %name, identity = %scan_identity, "admin: preserving Codex pool health; another stored account still shares this identity");
-            } else {
-                forget_pool_health(&state, AuthMode::ChatgptOauth, &scan_identity);
-            }
-        }
+                .map(|account| account.uuid.unwrap_or(account.name))
+                .collect::<std::collections::HashSet<String>>(),
+        ),
         Ok(Err(error)) => {
-            tracing::warn!(account = %name, %error, "admin: failed to scan Codex account store after removal; preserving pool health for the removed identity");
+            tracing::warn!(account = %name, %error, "admin: failed to scan Codex account store after removal; preserving dynamic-discovery-provider pool health for the removed identity");
+            None
         }
         Err(join_error) => {
-            tracing::warn!(account = %name, %join_error, "admin: Codex account store scan task panicked after removal; preserving pool health for the removed identity");
+            tracing::warn!(account = %name, %join_error, "admin: Codex account store scan task panicked after removal; preserving dynamic-discovery-provider pool health for the removed identity");
+            None
         }
-    }
+    };
+    forget_pool_health_if_absent(
+        &state,
+        AuthMode::ChatgptOauth,
+        &name,
+        &identity,
+        store_scan_others.as_ref(),
+    );
     json_secure(json!({ "name": name, "removed": removed }))
 }
 

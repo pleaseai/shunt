@@ -48,6 +48,20 @@ pub fn account_uuid(name: &str) -> Option<String> {
     read_account_uuid(&account_path(name))
 }
 
+/// The store account's runtime identity — its `shuntAccountUuid`, falling back
+/// to its own name (matching `accounts::account_identity`'s blank/missing-uuid
+/// fallback) — or `None` when no account file exists for `name` at all.
+/// Distinguishes "this account existed but carried no UUID, so its identity is
+/// its name" from "there was no prior account to identify", which a plain
+/// `account_uuid(name).unwrap_or(name)` cannot: that would treat a genuinely
+/// absent account the same as a present, blank-UUID one.
+pub fn account_identity(name: &str) -> Option<String> {
+    if !account_path(name).exists() {
+        return None;
+    }
+    Some(account_uuid(name).unwrap_or_else(|| name.to_string()))
+}
+
 /// Whether a store account holds a long-lived setup token or an imported,
 /// refreshable Claude Code login. Reported by the admin surface; never carries
 /// token material.

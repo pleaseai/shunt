@@ -9,7 +9,7 @@ description: ~/.codex/auth.json を再利用して Claude Code の推論を Chat
 このページはエンドツーエンドのセットアップです。各トピックを繰り返すのではなく、より深いトピックページ（[Effort & Context](/ja/guides/effort-and-context/)、[Model Discovery](/ja/guides/model-discovery/)、[Providers](/ja/guides/providers/)）へリンクします。
 
 :::note[Duplicate names for one real account]
-Codex プールに同じ `account_id` を持つ 2 つの名前が含まれる場合、shunt はそれらを **1 つのアカウント**として扱います。エイリアスはクールダウン、ヘルス、リフレッシュロックを共有し、フェイルオーバーは重複したアイデンティティを再試行せずスキップします。`priority` が最も低い有効なエイリアス（次に最初のエントリ）が唯一試行されるトークンを提供し、shunt は重複アイデンティティの警告をログに出力します。ストアディスカバリーは `tokens.account_id` または JWT クレームを読み取り、ディレクトリの mtime でスキャンをキャッシュします。詳細は [Codex Multi-Account guide](/ja/guides/codex-multi-account/) を参照してください。
+Codex プールに同じ `account_id` を持つ 2 つの名前が含まれる場合、shunt はそれらを **1 つのアカウント**として扱います — ただし、その `account_id` が実際に解決されている場合に限ります。ストアで検出されたエイリアス（`accounts` リストが空の場合）はストアスキャン自体が解決するため、自動的に coalesce されます。`credentials` または `token_env` で明示的に設定されたエントリは selection の後、リクエストごとに id を解決するため、`uuid` を一致する値として明示的に設定した場合のみ他のエイリアスと coalesce されます。coalesce されたエイリアスはクールダウン、ヘルス、リフレッシュロックを共有し、フェイルオーバーは重複したアイデンティティを再試行せずスキップします。`priority` が最も低い有効なエイリアス（次に最初のエントリ）が唯一試行されるトークンを提供し、shunt は重複アイデンティティの警告をログに出力します。ストアディスカバリーは `tokens.account_id` または JWT クレームを読み取り、ディレクトリの mtime でスキャンをキャッシュします。詳細は [Codex Multi-Account guide](/ja/guides/codex-multi-account/) を参照してください。
 :::
 
 ## 仕組み
