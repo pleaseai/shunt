@@ -1,0 +1,110 @@
+src/config.rs
+  s_53f119918a707c::t_4a8950bf7c1156 1752-1753
+  s_53f119918a707c::t_c9b5e98e5adb63 2235-2247,2250-2252,2255-2257,2260-2262,2265-2283,2286-2288
+  s_53f119918a707c::t_5c1ebd760ee266 2284-2285
+  s_53f119918a707c::t_d908199e37795f 263-333
+  s_53f119918a707c::t_667275592497b3 1289-1293
+  s_53f119918a707c::t_79e6485e2eed1f 1628-1639
+  s_53f119918a707c::t_2bc654ba009afa 2248-2249,2253-2254,2258-2259,2263-2264
+  s_53f119918a707c::t_3f98b35018a836 1132
+  s_53f119918a707c::t_b6d35b1280bd09 975-986
+  s_955224845e5cdc::t_411c51b73b306a 53-58
+src/gateway/device.rs
+  s_53f119918a707c::t_f4f0b7d747acb9 7
+  s_53f119918a707c::t_82fbd56a9e567f 54-55
+  s_53f119918a707c::t_72027915ddeff2 130-132
+  s_53f119918a707c::t_276b86dbff2cb5 38
+  s_53f119918a707c::t_5a00abaa584fec 144-146
+  s_53f119918a707c::t_a2c548185c8a88 218
+  s_53f119918a707c::t_a6ab4de5f01a8a 1-2,4
+  s_53f119918a707c::t_c4ce2c9102684b 125
+  s_53f119918a707c::t_ae837e9c255e73 3,5-6,8-37,39-53,56-124,126-129,133-143,147-217,219-251
+src/reload.rs
+  s_53f119918a707c::t_a56b44828433f9 53,58
+  s_53f119918a707c::t_9af4718823d06a 22
+  s_53f119918a707c::t_7255fabfbd07d8 102-106
+  s_53f119918a707c::t_2847892e873f45 36-38
+src/gateway/oauth.rs
+  s_53f119918a707c::t_b5260e675e3e8b 1-216
+src/lib.rs
+  s_53f119918a707c::t_0ee59837d9620d 10
+src/gateway/store.rs
+  s_53f119918a707c::t_c4bd4e98bc0cf6 1-362
+src/discovery.rs
+  s_53f119918a707c::t_6b90aea9ea27e8 34-36,38-46
+  s_53f119918a707c::t_972d607d070f30 26-33,37,47-48,50-51
+src/main.rs
+  s_53f119918a707c::t_4a2d99338dac24 298-302
+src/gateway/approval.rs
+  s_53f119918a707c::t_9f4d823252758c 29-30
+  s_53f119918a707c::t_f2efbc83a74436 1-28,31-68
+Cargo.toml
+  s_53f119918a707c::t_52eeab6018c45d 37
+src/gateway/mod.rs
+  s_53f119918a707c::t_8e6078f756b0c6 1-92
+  s_53f119918a707c::t_4fe1a9308e5c41 93-95
+src/gateway/jwt.rs
+  s_53f119918a707c::t_a17e9f23f4f9ba 1-143
+src/gateway/tests.rs
+  s_53f119918a707c::t_11f3b1f95a9526 329-347,353-389,391-394
+  s_53f119918a707c::t_152cd0fdf9850e 348-352
+  s_53f119918a707c::t_4d979afeb0b102 390
+  s_53f119918a707c::t_f80a6262fb9950 1-9,11-115,117-170,174-256,258-328,395-400
+  s_53f119918a707c::t_9382bfe19a5f39 10
+  s_53f119918a707c::t_371bab26b31fb1 116,171-173,257
+src/server.rs
+  s_53f119918a707c::t_9f50f96f5f48e2 58
+  s_53f119918a707c::t_0867176843e577 124
+  s_53f119918a707c::t_09c9cebd25b37d 37-40
+  s_53f119918a707c::t_c7373dfe9c4c44 68
+  s_53f119918a707c::t_4010960d20bf80 148-154
+  s_53f119918a707c::t_0fc7377c1788b8 75,79
+  s_53f119918a707c::t_b4ecb3c6ad9ad0 106-108
+  s_53f119918a707c::t_fba17bff1ec3a6 15-17
+  s_004af6b9a142f6::t_64e0b4a19c6c70 93
+src/proxy.rs
+  s_53f119918a707c::t_cb05565832cd20 224-226,233,237-254,256,258-273
+  s_53f119918a707c::t_8bacdec3f10c4b 213-216
+Cargo.lock
+  s_07f31bcf949cf3::t_3bf9918fa2d1b7 607,934-942,2689
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "8a76518f49f9924ced3233938e100c109e960221",
+  "prompts": {},
+  "sessions": {
+    "s_004af6b9a142f6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-afinder2-code-157abf657b9bbe43",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_07f31bcf949cf3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7c82906f-dad3-4b12-a732-c192652e427c",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_53f119918a707c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fc678f72-9bfe-4f11-b2cc-6342fb0b5c6a",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_955224845e5cdc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-ama-implementer-cf86ad4ecd1712c3",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
