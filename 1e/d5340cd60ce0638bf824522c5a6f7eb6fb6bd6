@@ -1,0 +1,83 @@
+src/gateway/store.rs
+  s_53f119918a707c::t_fd6b8176b70048 40-44,47
+  s_53f119918a707c::t_b867323ac3703b 120-121,124,129-130,142-148
+  s_53f119918a707c::t_32aa00000420e8 66-67,69,73,75-85
+  s_53f119918a707c::t_bafe94e35e3f93 55-56,59-65,70-72,86
+  s_53f119918a707c::t_50623e79b3a06f 282,304,308,316
+  s_53f119918a707c::t_0f9c46f3156871 98-99,101-102,105
+  s_53f119918a707c::t_130cbecaa9631e 283-288
+  s_53f119918a707c::t_70583e9c08e091 39
+src/config.rs
+  s_53f119918a707c::t_e10affbe63180f 988-989
+  s_53f119918a707c::t_a85d9b3962635a 2289-2290,2300-2304,2310-2314
+  s_53f119918a707c::t_b1698b03d3bfaf 337
+  s_53f119918a707c::t_91140efdaf7693 2305-2309,2315
+  s_53f119918a707c::t_e4374a02d681c0 301-302,305-308,314-315
+  s_53f119918a707c::t_1b74ce4aecd11e 318
+  s_53f119918a707c::t_13b260f48d5952 303-304,310-311
+  s_c2caf662a331a1::t_94b0a4cc4b0661 316
+src/gateway/oauth.rs
+  s_53f119918a707c::t_ecac6b82a581ae 80
+  s_53f119918a707c::t_12ff4a22607de0 178,180-183
+  s_53f119918a707c::t_78a96a6a4ae103 112-119
+  s_53f119918a707c::t_0c9ece34a6b031 71,73-75
+  s_53f119918a707c::t_75fef394e1e57e 2
+src/discovery.rs
+  s_53f119918a707c::t_d3332794559c07 41-57
+src/reload.rs
+  s_53f119918a707c::t_6c656af5cde2f1 76,79-83
+  s_53f119918a707c::t_1303233d51fad5 77-78
+  s_53f119918a707c::t_8854b49c84bf68 111
+  s_53f119918a707c::t_e27740b32448e4 505-536
+  s_8a0926fc62b9a8::t_25534a376f6a8d 504
+src/gateway/device.rs
+  s_53f119918a707c::t_62ad4687ac235d 40,47-51,53,59-69
+  s_53f119918a707c::t_11647a90ef314c 270-273,280-286,288-292
+  s_53f119918a707c::t_952a7eb9e27881 4
+  s_53f119918a707c::t_4774b9ca74a14b 114,116-118,120-121,123-126,132-135,137-138,143-153
+  s_53f119918a707c::t_50623e79b3a06f 139-142,287
+docs/gateway-login.md
+  s_53f119918a707c::t_c2fd05b4d8c5ed 60-62
+  s_53f119918a707c::t_19f227c2f64db5 58-59
+site/src/content/docs/reference/configuration.md
+  s_53f119918a707c::t_176d4d6ba9aa5d 53
+src/gateway/tests.rs
+  s_53f119918a707c::t_b06d961c89ec75 280-309
+  s_53f119918a707c::t_ef1560b40537f5 223-238,247
+  s_53f119918a707c::t_970e638d85a03c 239-246
+  s_53f119918a707c::t_6ed3afb042351c 279
+site/src/content/docs/guides/gateway-login.md
+  s_53f119918a707c::t_206da1fb0ff08d 31
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "1ed5340cd60ce0638bf824522c5a6f7eb6fb6bd6",
+  "prompts": {},
+  "sessions": {
+    "s_53f119918a707c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fc678f72-9bfe-4f11-b2cc-6342fb0b5c6a",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_8a0926fc62b9a8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b8e19c51-849c-41eb-8c2d-582e203a6599",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_c2caf662a331a1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6fcadcc2-5fd9-417c-b291-937300238add",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
