@@ -1368,6 +1368,9 @@ mod tests {
         use tokio::net::TcpListener;
         use tokio::sync::oneshot;
 
+        // Use real time while loopback I/O is in flight: a fully paused runtime can
+        // auto-advance to the only pending timer before the OS delivers a frame.
+        tokio::time::resume();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let (release_server, hold_server) = oneshot::channel::<()>();
@@ -1403,6 +1406,7 @@ mod tests {
             .expect("the first event should not be a transport error");
         assert_eq!(first.event.as_deref(), Some("response.created"));
 
+        tokio::time::pause();
         // Let run_turn return to its read loop and arm the reset idle timer before
         // moving the paused clock beyond the turn-level deadline.
         tokio::task::yield_now().await;
@@ -1412,6 +1416,107 @@ mod tests {
             .recv()
             .await
             .expect("the idle timeout should produce an event")
+        {
+            Err(error) => error,
+            Ok(event) => panic!("expected an idle-timeout error, got {:?}", event.event),
+        };
+        assert!(
+            error.message.contains("idle timeout"),
+            "unexpected error: {}",
+            error.message
+        );
+        assert!(
+            events.recv().await.is_none(),
+            "the event channel ends after the transport error"
+        );
+
+        drop(release_server);
+        server.await.unwrap();
+    }
+
+    /// Each received frame must restart the active-turn idle window; traffic just
+    /// before the original deadline must not be timed out at that old deadline.
+    #[tokio::test(start_paused = true)]
+    async fn turn_idle_timer_resets_after_each_frame() {
+        use tokio::net::TcpListener;
+        use tokio::sync::mpsc::error::TryRecvError;
+        use tokio::sync::oneshot;
+
+        // Use real time while loopback I/O is in flight: a fully paused runtime can
+        // auto-advance to the only pending timer before the OS delivers a frame.
+        tokio::time::resume();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (release_second, send_second) = oneshot::channel::<()>();
+        let (release_server, hold_server) = oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            let Some(Ok(Message::Text(_))) = ws.next().await else {
+                panic!("expected a client frame");
+            };
+            ws.send(Message::Text(
+                r#"{"type":"response.created","response":{"id":"resp_1"}}"#.to_string(),
+            ))
+            .await
+            .unwrap();
+
+            send_second.await.expect("client releases second frame");
+            ws.send(Message::Text(
+                r#"{"type":"response.output_text.delta","delta":"still active"}"#.to_string(),
+            ))
+            .await
+            .unwrap();
+
+            // Keep the socket open but silent until the client observes its timeout.
+            let _ = hold_server.await;
+        });
+
+        let frame = response_create_frame(serde_json::json!({"model": "m", "input": []}));
+        let mut events = open_simple(
+            &format!("ws://{addr}/codex/responses"),
+            HeaderMap::new(),
+            &frame,
+            None,
+        )
+        .await
+        .expect("websocket should connect");
+
+        let first = events
+            .recv()
+            .await
+            .expect("the initial event should arrive")
+            .expect("the initial event should not be a transport error");
+        assert_eq!(first.event.as_deref(), Some("response.created"));
+
+        tokio::time::pause();
+        tokio::task::yield_now().await;
+        tokio::time::advance(IDLE_TIMEOUT - Duration::from_secs(1)).await;
+        release_second
+            .send(())
+            .expect("server is waiting for release");
+
+        let second = events
+            .recv()
+            .await
+            .expect("the second event should arrive")
+            .expect("the second event should reset, not trip, the idle timer");
+        assert_eq!(second.event.as_deref(), Some("response.output_text.delta"));
+
+        // Cross the original turn-start deadline. The second frame arrived one
+        // second before it and must have reset the timer to a fresh full window.
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(2)).await;
+        assert!(
+            matches!(events.try_recv(), Err(TryRecvError::Empty)),
+            "the original idle deadline must not terminate an active turn"
+        );
+
+        tokio::time::advance(IDLE_TIMEOUT + Duration::from_secs(1)).await;
+        let error = match events
+            .recv()
+            .await
+            .expect("silence after the reset window should produce an event")
         {
             Err(error) => error,
             Ok(event) => panic!("expected an idle-timeout error, got {:?}", event.event),
