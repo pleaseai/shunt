@@ -1,0 +1,71 @@
+.please/docs/review/rejected-findings.jsonl
+  s_7cf4723f1c6ebe::t_0853b15a681f6e 16-17
+README.md
+  s_7cf4723f1c6ebe::t_3e28a4d65f9904 72,78
+docs/comparison.md
+  s_7cf4723f1c6ebe::t_4537212b011985 92-95,110-113
+docs/m10-codex-multi-account.md
+  s_7cf4723f1c6ebe::t_0a045c0500ad4d 5,7-8,112,134,164,172
+docs/m9-admin-surface.md
+  s_7cf4723f1c6ebe::t_360c7b785fc5e5 229-232
+site/src/content/docs/getting-started/comparison.md
+  s_7cf4723f1c6ebe::t_8f73861b17a464 77
+site/src/content/docs/guides/admin-remote-provisioning.md
+  s_7cf4723f1c6ebe::t_13f0f7e49405ce 69
+site/src/content/docs/guides/anthropic-multi-account.md
+  s_7cf4723f1c6ebe::t_11de7b67a27ba4 143
+site/src/content/docs/guides/codex-multi-account.md
+  s_7cf4723f1c6ebe::t_061ba1f885308d 6,98-99,116,146,163-164
+site/src/content/docs/guides/codex.md
+  s_7cf4723f1c6ebe::t_7e7f3033fdf94b 34-35
+site/src/content/docs/ja/guides/codex.md
+  s_7cf4723f1c6ebe::t_877414d17d3bf6 28-29
+site/src/content/docs/ko/guides/codex.md
+  s_7cf4723f1c6ebe::t_436b0e49abab57 26-27
+site/src/content/docs/reference/endpoints.md
+  s_7cf4723f1c6ebe::t_1f6e8dc4f66418 20
+site/src/content/docs/zh-cn/guides/codex.md
+  s_7cf4723f1c6ebe::t_1774612dec39b1 32-33
+src/accounts.rs
+  s_95b76ba7daeffc::t_17f4e601d7e1d4 35-42,177-200,233-237,240-243,392-448,631-632,636-639,644-660,719-728,893-894,1240-1383,1684-1685
+src/adapters/responses/codex_ws.rs
+  s_7cf4723f1c6ebe::t_c734d1798ec7e1 165-166,182,358-360,390-395,477,492-493,497,557-559,563,576-577,581,1186-1200,1210-1212,1240-1242,1245-1256,1263-1265,1268-1275
+src/adapters/responses/context.rs
+  s_7cf4723f1c6ebe::t_9425339d5e8302 81-83
+src/adapters/responses/http.rs
+  s_7cf4723f1c6ebe::t_7d02d213708fad 68
+src/adapters/responses/inbound.rs
+  s_7cf4723f1c6ebe::t_0f6b18bd1137db 123-125,167-169,221-223
+src/adapters/responses/mod.rs
+  s_7cf4723f1c6ebe::t_5c54b2605219a4 180
+src/adapters/responses/pool.rs
+  s_7cf4723f1c6ebe::t_67c939178887b7 32-33,60-63,101,154-156,223-225
+src/adapters/responses/websocket.rs
+  s_7cf4723f1c6ebe::t_a78b051a5a30c2 41,51-52,105-106,230-236
+tests/codex_multi_account.rs
+  s_7cf4723f1c6ebe::t_8e1fdb4d884c53 7-9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "498fb8a3cefaaa132358fa9d5e9e6f99203435b7",
+  "prompts": {},
+  "sessions": {
+    "s_7cf4723f1c6ebe": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "188d5b2a-d21e-449e-ad23-8d3f5a029f9d",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_95b76ba7daeffc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b3c31ea5-5eec-4425-a298-2a8c25397fb3",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
