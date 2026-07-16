@@ -1,0 +1,32 @@
+# Dex config for the local Claude apps gateway reference probe.
+# Throwaway dev fixture — the client secret and static password are
+# deliberately public dummy values, never used outside 127.0.0.1.
+#
+# Image MUST be pinned (driver uses ghcr.io/dexidp/dex:v2.44.0): the
+# `latest` (master) image hangs forever on grant_type=refresh_token —
+# with BOTH memory and sqlite3 storage — so the gateway's session
+# refresh times out after its 3500ms budget (verified 2026-07-16).
+issuer: http://127.0.0.1:5556/dex
+storage:
+  type: sqlite3
+  config:
+    file: /tmp/dex.db
+web:
+  http: 0.0.0.0:5556
+oauth2:
+  skipApprovalScreen: true
+staticClients:
+  - id: claude-gateway
+    secret: gateway-secret
+    name: Claude Gateway (local probe)
+    redirectURIs:
+      # The gateway builds its IdP callback as {public_url}/oauth/callback
+      # (verified 2026-07-16 against claude gateway 2.1.211).
+      - http://127.0.0.1:8790/oauth/callback
+enablePasswordDB: true
+staticPasswords:
+  - email: dev@example.com
+    # bcrypt of "password" (dex docs example hash)
+    hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W"
+    username: dev
+    userID: 08a8684b-db88-4b73-90a9-3cd1661f5466
