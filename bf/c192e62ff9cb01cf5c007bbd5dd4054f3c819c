@@ -1,0 +1,51 @@
+src/adapters/cursor/agent.rs
+  s_9a06fdaa8b2793::t_f3f805ddbdefe7 318-320
+  s_9a06fdaa8b2793::t_a612c42024890d 365,368-371,380,386,393-397,401
+  s_9a06fdaa8b2793::t_29b2456e84751d 646
+  s_9a06fdaa8b2793::t_6419e942706736 62
+  s_9a06fdaa8b2793::t_57fd3f13c5ee07 105-106
+  s_9a06fdaa8b2793::t_e99b5adb096f10 311-313,316-317,321
+  s_9a06fdaa8b2793::t_dfcc597c291d38 28-30
+src/adapters/cursor/mod.rs
+  s_9a06fdaa8b2793::t_029423a81b587c 45
+  s_9a06fdaa8b2793::t_02637a78f043de 106-112
+  s_9a06fdaa8b2793::t_b20d177b145d23 394-404
+  s_9a06fdaa8b2793::t_1239aff3ec42de 414-415
+  s_9a06fdaa8b2793::t_b694779f16baab 118
+  s_9a06fdaa8b2793::t_f3f805ddbdefe7 313-314
+  s_9a06fdaa8b2793::t_e9eccee27cd42a 315-316
+  s_dd1d792ab91b78::t_9b8a66d280c33b 318,323
+site/src/content/docs/zh-cn/guides/providers.md
+  s_9a06fdaa8b2793::t_9854360fafe423 10
+site/src/content/docs/guides/providers.md
+  s_9a06fdaa8b2793::t_18750d9a2b9f00 10
+src/adapters/cursor/sse.rs
+  s_9a06fdaa8b2793::t_eb2a51db258201 74-75,79,86-88
+  s_9a06fdaa8b2793::t_11a631ffa0f6a9 89-90
+site/src/content/docs/ja/guides/providers.md
+  s_9a06fdaa8b2793::t_2bd089788ee72f 10
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "bfc192e62ff9cb01cf5c007bbd5dd4054f3c819c",
+  "prompts": {},
+  "sessions": {
+    "s_9a06fdaa8b2793": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1d7b4796-6c89-4720-b5a3-bb9d6924f0a0",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_dd1d792ab91b78": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a507122b3c841094b",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
