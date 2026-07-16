@@ -114,6 +114,35 @@ pub struct CursorAgentClient {
     client_version: &'static str,
 }
 
+/// An inline image attached to the current user message. `data` is the raw
+/// (already base64-decoded) image bytes.
+pub struct AgentImage {
+    pub data: Vec<u8>,
+    pub uuid: String,
+    pub path: String,
+    pub mime_type: String,
+}
+
+/// A client tool advertised to Cursor as a native MCP tool. The model invokes it
+/// on the exec channel (`McpArgs`), which the reader surfaces as
+/// [`CursorStreamEvent::ToolCall`].
+pub struct AgentTool {
+    pub name: String,
+    pub description: String,
+    pub input_schema: serde_json::Value,
+}
+
+/// Inputs for a single agent turn.
+pub struct AgentRunParams<'a> {
+    pub prompt: &'a str,
+    pub model_id: &'a str,
+    pub cwd: &'a str,
+    /// `AgentMode` enum (`UserMessage.mode`): AGENT=1, ASK=2, PLAN=3.
+    pub mode: u64,
+    pub images: &'a [AgentImage],
+    pub tools: &'a [AgentTool],
+}
+
 impl CursorAgentClient {
     pub fn new(client: reqwest::Client) -> Self {
         Self {
@@ -129,12 +158,10 @@ impl CursorAgentClient {
     pub async fn open_turn(
         &self,
         token: &str,
-        prompt: &str,
-        model_id: &str,
-        cwd: &str,
+        params: &AgentRunParams<'_>,
     ) -> Result<CursorAgentTurn, CursorError> {
         let request_id = uuid::Uuid::new_v4().to_string();
-        let frames = build_run_frames(prompt, model_id, cwd);
+        let frames = build_run_frames(params);
 
         // The request body is fed by a paced sender task so the server sees the
         // marker frames arrive over time (single-shot half-close yields
@@ -324,6 +351,17 @@ impl ReadState {
             } else {
                 frame.payload.to_vec()
             };
+            // A native MCP tool call ends the assistant turn: the model now waits
+            // for an exec-result on the stream. The stateless bridge surfaces the
+            // call as a tool_use pause and re-runs with the result in history, so
+            // finish the turn here rather than sending an exec-result back.
+            if let Some((name, input_json)) = extract_tool_call(&payload) {
+                self.got_text = true;
+                self.finished = true;
+                self.pending
+                    .push_back(Ok(CursorStreamEvent::ToolCall { name, input_json }));
+                return;
+            }
             if let Some(text) = extract_reasoning_text(&payload) {
                 self.pending
                     .push_back(Ok(CursorStreamEvent::ThinkingDelta { text }));
@@ -370,6 +408,68 @@ fn field_str(field: u64, s: &str) -> Vec<u8> {
     field_ld(field, s.as_bytes())
 }
 
+/// Encode a fixed64 (wire type 1) protobuf field carrying an f64 (little-endian).
+fn field_double(field: u64, value: f64) -> Vec<u8> {
+    let mut out = Vec::with_capacity(9);
+    encode_varint((field << 3) | 1, &mut out);
+    out.extend_from_slice(&value.to_le_bytes());
+    out
+}
+
+/// Encode a JSON value as a `google.protobuf.Value` — the shape Cursor expects
+/// for `McpToolDefinition.input_schema` (bytes, not JSON text). Value oneof
+/// tags: null=1 (varint), number=2 (double), string=3, bool=4 (varint),
+/// struct=5, list=6.
+fn encode_protobuf_value(value: &serde_json::Value) -> Vec<u8> {
+    match value {
+        serde_json::Value::Null => field_varint(1, 0),
+        serde_json::Value::Bool(b) => field_varint(4, u64::from(*b)),
+        serde_json::Value::Number(n) => field_double(2, n.as_f64().unwrap_or(0.0)),
+        serde_json::Value::String(s) => field_str(3, s),
+        serde_json::Value::Array(items) => {
+            // Value.list_value (6) → ListValue { values = 1 (repeated Value) }.
+            let mut list = Vec::new();
+            for item in items {
+                list.extend(field_ld(1, &encode_protobuf_value(item)));
+            }
+            field_ld(6, &list)
+        }
+        serde_json::Value::Object(map) => {
+            // Value.struct_value (5) → Struct { fields = 1 (map<string,Value>) }.
+            let mut fields = Vec::new();
+            for (key, val) in map {
+                let mut entry = field_str(1, key);
+                entry.extend(field_ld(2, &encode_protobuf_value(val)));
+                fields.extend(field_ld(1, &entry));
+            }
+            field_ld(5, &fields)
+        }
+    }
+}
+
+/// Encode one `McpToolDefinition { name=1, description=2, input_schema=3 (Value
+/// bytes), provider_identifier=4, tool_name=5 }`.
+fn encode_mcp_tool_def(tool: &AgentTool) -> Vec<u8> {
+    let mut out = field_str(1, &tool.name);
+    out.extend(field_str(2, &tool.description));
+    out.extend(field_ld(3, &encode_protobuf_value(&tool.input_schema)));
+    out.extend(field_str(4, "shunt"));
+    out.extend(field_str(5, &tool.name));
+    out
+}
+
+/// Encode the `McpTools { tools = 1 (repeated McpToolDefinition) }` wrapper body.
+/// Empty tools serialize to zero bytes, so `field_ld(4, &body)` matches the
+/// text-only placeholder (`field_str(4, "")`) exactly — the field is observably
+/// required even when empty.
+fn encode_mcp_tools(tools: &[AgentTool]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for tool in tools {
+        out.extend(field_ld(1, &encode_mcp_tool_def(tool)));
+    }
+    out
+}
+
 /// Wrap a protobuf payload in an uncompressed Connect data frame.
 fn connect_frame(payload: &[u8]) -> Bytes {
     crate::adapters::cursor::connect::encode_connect_frame(payload, 0)
@@ -384,24 +484,61 @@ fn encode_model_meta(name: &str, fast: bool) -> Vec<u8> {
     out
 }
 
-/// Build the ordered Connect frames for a single text prompt turn.
-fn build_run_frames(prompt: &str, model: &str, cwd: &str) -> Vec<Bytes> {
+/// Encode one `SelectedImage`: `{uuid=2, path=3, mime_type=7, data=8}` (inline
+/// raw bytes at field 8, per the `agent.v1` descriptor).
+fn encode_selected_image(image: &AgentImage) -> Vec<u8> {
+    let mut out = field_str(2, &image.uuid);
+    out.extend(field_str(3, &image.path));
+    out.extend(field_str(7, &image.mime_type));
+    out.extend(field_ld(8, &image.data));
+    out
+}
+
+/// Encode `SelectedContext { selected_images = 1 (repeated) }`.
+fn encode_selected_context(images: &[AgentImage]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for image in images {
+        out.extend(field_ld(1, &encode_selected_image(image)));
+    }
+    out
+}
+
+/// Build the ordered Connect frames for a single agent turn.
+fn build_run_frames(params: &AgentRunParams<'_>) -> Vec<Bytes> {
+    let AgentRunParams {
+        prompt,
+        model_id: model,
+        cwd,
+        mode,
+        images,
+        tools,
+    } = params;
     let conv = uuid::Uuid::new_v4().to_string();
     let msg = uuid::Uuid::new_v4().to_string();
 
     // frame 0: field 1 = RunRequest.
-    // messages: f2 { f1 { f1 { f1:prompt, f2:msg_id, f3:'', f4:1 } } }
+    // messages: f2 { f1 { f1 { f1:prompt, f2:msg_id, f3:selected_context, f4:mode } } }
     let mut inner = field_str(1, prompt);
     inner.extend(field_str(2, &msg));
-    inner.extend(field_str(3, ""));
-    inner.extend(field_varint(4, 1));
+    if images.is_empty() {
+        // Empty placeholder (no selected context), matching the text-only turn.
+        inner.extend(field_str(3, ""));
+    } else {
+        inner.extend(field_ld(3, &encode_selected_context(images)));
+    }
+    inner.extend(field_varint(4, *mode));
     let messages = field_ld(2, &field_ld(1, &field_ld(1, &inner)));
 
     let mut req = field_str(1, "");
     req.extend(messages);
-    req.extend(field_str(4, ""));
+    // f4 = mcp_tools (McpTools wrapper). Empty tools encode to the same bytes as
+    // the text-only placeholder.
+    req.extend(field_ld(4, &encode_mcp_tools(tools)));
     req.extend(field_str(5, &conv));
     req.extend(field_ld(9, &encode_model_meta(model, false)));
+    // f12 is a workspace-context flag on the current wire (setting it to 1 makes
+    // the server reject with "workspace context exclusion is not allowed"), so
+    // keep it 0. Inline images ride in `selected_context` (f3) alone.
     req.extend(field_varint(12, 0));
     // minimal catalog: a "default" entry plus the target model.
     req.extend(field_ld(14, &field_str(1, "default")));
@@ -559,13 +696,158 @@ fn extract_reasoning_text(payload: &[u8]) -> Option<String> {
     extract_nested_text(payload, 4)
 }
 
+/// Decode a native MCP tool call from a response message:
+/// `exec_server_message(2) → ExecServerMessage.mcp_args(11) → McpArgs`.
+/// Returns `(tool name, input JSON)`; `tool_name`(5) wins over `name`(1).
+fn extract_tool_call(payload: &[u8]) -> Option<(String, String)> {
+    for esm in iter_fields(payload) {
+        // AgentServerMessage.exec_server_message = field 2.
+        if esm.field != 2 || esm.wire != 2 {
+            continue;
+        }
+        for args in iter_fields(esm.data) {
+            // ExecServerMessage.mcp_args = field 11.
+            if args.field == 11 && args.wire == 2 {
+                if let Some(call) = decode_mcp_args(args.data) {
+                    return Some(call);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Decode `McpArgs { name=1, args=2 (map<string,Value>), tool_call_id=3,
+/// tool_name=5 }` into `(name, input JSON)`. `tool_call_id` is intentionally
+/// ignored — the Anthropic tool_use id is minted by the caller.
+fn decode_mcp_args(buf: &[u8]) -> Option<(String, String)> {
+    let mut name: Option<String> = None;
+    let mut tool_name: Option<String> = None;
+    let mut args = serde_json::Map::new();
+    for field in iter_fields(buf) {
+        if field.wire != 2 {
+            continue;
+        }
+        match field.field {
+            1 => name = std::str::from_utf8(field.data).ok().map(str::to_string),
+            5 => tool_name = std::str::from_utf8(field.data).ok().map(str::to_string),
+            2 => {
+                // One map<string,Value> entry: { key=1, value=2 (Value) }.
+                let mut key: Option<String> = None;
+                let mut value: Option<&[u8]> = None;
+                for entry in iter_fields(field.data) {
+                    match (entry.field, entry.wire) {
+                        (1, 2) => key = std::str::from_utf8(entry.data).ok().map(str::to_string),
+                        (2, 2) => value = Some(entry.data),
+                        _ => {}
+                    }
+                }
+                if let (Some(key), Some(value)) = (key, value) {
+                    args.insert(key, decode_protobuf_value(value));
+                }
+            }
+            _ => {}
+        }
+    }
+    let name = tool_name.or(name)?;
+    let input_json = serde_json::to_string(&serde_json::Value::Object(args)).ok()?;
+    Some((name, input_json))
+}
+
+/// Decode a `google.protobuf.Value` (exactly one oneof field set) into JSON.
+fn decode_protobuf_value(buf: &[u8]) -> serde_json::Value {
+    let Some((tag, rest)) = read_varint(buf) else {
+        return serde_json::Value::Null;
+    };
+    let field = tag >> 3;
+    let wire = (tag & 7) as u8;
+    match (field, wire) {
+        // null_value (varint).
+        (1, 0) => serde_json::Value::Null,
+        // number_value (fixed64 double, little-endian).
+        (2, 1) => rest
+            .get(..8)
+            .and_then(|b| b.try_into().ok())
+            .map(f64::from_le_bytes)
+            .and_then(serde_json::Number::from_f64)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
+        // string_value.
+        (3, 2) => read_varint(rest)
+            .and_then(|(len, body)| body.get(..len as usize))
+            .map(|s| serde_json::Value::String(String::from_utf8_lossy(s).into_owned()))
+            .unwrap_or(serde_json::Value::Null),
+        // bool_value (varint).
+        (4, 0) => match read_varint(rest) {
+            Some((v, _)) => serde_json::Value::Bool(v != 0),
+            None => serde_json::Value::Null,
+        },
+        // struct_value.
+        (5, 2) => read_varint(rest)
+            .and_then(|(len, body)| body.get(..len as usize))
+            .map(decode_protobuf_struct)
+            .unwrap_or(serde_json::Value::Null),
+        // list_value.
+        (6, 2) => read_varint(rest)
+            .and_then(|(len, body)| body.get(..len as usize))
+            .map(decode_protobuf_list)
+            .unwrap_or(serde_json::Value::Null),
+        _ => serde_json::Value::Null,
+    }
+}
+
+/// Decode `google.protobuf.Struct { fields = 1 (map<string,Value>) }`.
+fn decode_protobuf_struct(buf: &[u8]) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    for field in iter_fields(buf) {
+        if field.field != 1 || field.wire != 2 {
+            continue;
+        }
+        let mut key: Option<String> = None;
+        let mut value: Option<&[u8]> = None;
+        for entry in iter_fields(field.data) {
+            match (entry.field, entry.wire) {
+                (1, 2) => key = std::str::from_utf8(entry.data).ok().map(str::to_string),
+                (2, 2) => value = Some(entry.data),
+                _ => {}
+            }
+        }
+        if let (Some(key), Some(value)) = (key, value) {
+            map.insert(key, decode_protobuf_value(value));
+        }
+    }
+    serde_json::Value::Object(map)
+}
+
+/// Decode `google.protobuf.ListValue { values = 1 (repeated Value) }`.
+fn decode_protobuf_list(buf: &[u8]) -> serde_json::Value {
+    let mut items = Vec::new();
+    for field in iter_fields(buf) {
+        if field.field == 1 && field.wire == 2 {
+            items.push(decode_protobuf_value(field.data));
+        }
+    }
+    serde_json::Value::Array(items)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn text_params<'a>(prompt: &'a str, model: &'a str, cwd: &'a str) -> AgentRunParams<'a> {
+        AgentRunParams {
+            prompt,
+            model_id: model,
+            cwd,
+            mode: 1,
+            images: &[],
+            tools: &[],
+        }
+    }
+
     #[test]
     fn frames_are_well_formed_connect_frames() {
-        let frames = build_run_frames("hi", "gpt-5.6-sol-high", "/tmp");
+        let frames = build_run_frames(&text_params("hi", "gpt-5.6-sol-high", "/tmp"));
         assert!(frames.len() >= 4);
         for frame in &frames {
             assert!(frame.len() >= 5);
@@ -581,10 +863,59 @@ mod tests {
 
     #[test]
     fn frame0_contains_prompt_and_model() {
-        let frames = build_run_frames("PROMPT_MARKER", "MODEL_MARKER", "/tmp");
+        let frames = build_run_frames(&text_params("PROMPT_MARKER", "MODEL_MARKER", "/tmp"));
         let hay = String::from_utf8_lossy(&frames[0]);
         assert!(hay.contains("PROMPT_MARKER"));
         assert!(hay.contains("MODEL_MARKER"));
+    }
+
+    #[test]
+    fn mode_enum_is_encoded_in_user_message() {
+        // f4 (mode) inside the user message carries the AgentMode enum. A Plan
+        // turn (3) must differ from an Agent turn (1) in the frame-0 bytes.
+        let agent = build_run_frames(&AgentRunParams {
+            prompt: "x",
+            model_id: "m",
+            cwd: "/tmp",
+            mode: 1,
+            images: &[],
+            tools: &[],
+        });
+        let plan = build_run_frames(&AgentRunParams {
+            prompt: "x",
+            model_id: "m",
+            cwd: "/tmp",
+            mode: 3,
+            images: &[],
+            tools: &[],
+        });
+        assert_ne!(agent[0], plan[0], "mode must change the request bytes");
+    }
+
+    #[test]
+    fn images_populate_selected_context() {
+        let image = AgentImage {
+            data: vec![1, 2, 3, 4],
+            uuid: "IMG_UUID".into(),
+            path: "claude-image-1.png".into(),
+            mime_type: "image/png".into(),
+        };
+        let frames = build_run_frames(&AgentRunParams {
+            prompt: "look",
+            model_id: "m",
+            cwd: "/tmp",
+            mode: 1,
+            images: std::slice::from_ref(&image),
+            tools: &[],
+        });
+        let hay = String::from_utf8_lossy(&frames[0]);
+        // uuid, path and mime are string fields of the SelectedImage.
+        assert!(hay.contains("IMG_UUID"));
+        assert!(hay.contains("claude-image-1.png"));
+        assert!(hay.contains("image/png"));
+        // The empty-context turn and the image turn must differ.
+        let empty = build_run_frames(&text_params("look", "m", "/tmp"));
+        assert_ne!(empty[0], frames[0]);
     }
 
     #[test]
@@ -619,5 +950,84 @@ mod tests {
 
     fn reasoning_payload(text: &str) -> Vec<u8> {
         field_ld(1, &field_ld(4, &field_str(1, text)))
+    }
+
+    #[test]
+    fn tools_are_encoded_in_request() {
+        let tool = AgentTool {
+            name: "Read".into(),
+            description: "Read a file".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {"file_path": {"type": "string"}}
+            }),
+        };
+        let frames = build_run_frames(&AgentRunParams {
+            prompt: "x",
+            model_id: "m",
+            cwd: "/tmp",
+            mode: 1,
+            images: &[],
+            tools: std::slice::from_ref(&tool),
+        });
+        let hay = String::from_utf8_lossy(&frames[0]);
+        assert!(hay.contains("Read"));
+        assert!(hay.contains("Read a file"));
+        // A declared tool must change the request bytes vs the no-tool turn.
+        let empty = build_run_frames(&text_params("x", "m", "/tmp"));
+        assert_ne!(empty[0], frames[0]);
+    }
+
+    #[test]
+    fn empty_tools_match_text_placeholder_bytes() {
+        // encode_mcp_tools(&[]) must serialize to zero bytes so field 4 matches
+        // the text-only placeholder `field_str(4, "")` exactly.
+        assert!(encode_mcp_tools(&[]).is_empty());
+        assert_eq!(field_ld(4, &encode_mcp_tools(&[])), field_str(4, ""));
+    }
+
+    #[test]
+    fn protobuf_value_round_trips_json() {
+        let value = serde_json::json!({
+            "a": 1, "b": "two", "c": [true, null, 3.5], "d": {"e": false}
+        });
+        let decoded = decode_protobuf_value(&encode_protobuf_value(&value));
+        assert_eq!(decoded["a"].as_f64(), Some(1.0));
+        assert_eq!(decoded["b"], serde_json::json!("two"));
+        assert_eq!(decoded["c"][0], serde_json::json!(true));
+        assert!(decoded["c"][1].is_null());
+        assert_eq!(decoded["c"][2].as_f64(), Some(3.5));
+        assert_eq!(decoded["d"]["e"], serde_json::json!(false));
+    }
+
+    #[test]
+    fn extract_tool_call_decodes_mcp_args() {
+        // AgentServerMessage(2) → ExecServerMessage.mcp_args(11) → McpArgs
+        //   { tool_name=5: "Read", args=2: {file_path:"/tmp/x", limit:5} }
+        let mut mcp_args = field_str(5, "Read");
+        for (key, value) in [
+            ("file_path", serde_json::json!("/tmp/x")),
+            ("limit", serde_json::json!(5)),
+        ] {
+            let mut entry = field_str(1, key);
+            entry.extend(field_ld(2, &encode_protobuf_value(&value)));
+            mcp_args.extend(field_ld(2, &entry));
+        }
+        let payload = field_ld(2, &field_ld(11, &mcp_args));
+        let (name, input_json) = extract_tool_call(&payload).expect("tool call decoded");
+        assert_eq!(name, "Read");
+        let input: serde_json::Value = serde_json::from_str(&input_json).unwrap();
+        assert_eq!(input["file_path"], serde_json::json!("/tmp/x"));
+        assert_eq!(input["limit"].as_f64(), Some(5.0));
+    }
+
+    #[test]
+    fn tool_name_field_5_wins_over_name_field_1() {
+        // McpArgs with both name(1) and tool_name(5): tool_name must win.
+        let mut mcp_args = field_str(1, "fallback");
+        mcp_args.extend(field_str(5, "Preferred"));
+        let payload = field_ld(2, &field_ld(11, &mcp_args));
+        let (name, _) = extract_tool_call(&payload).expect("tool call decoded");
+        assert_eq!(name, "Preferred");
     }
 }

@@ -60,6 +60,10 @@ pub fn frame_cursor_stream(body: &[u8], message_id: &str, model: &str) -> Vec<u8
             CursorStreamEvent::Session { .. } => {
                 // Session events are informational, not mapped to SSE
             }
+            CursorStreamEvent::ToolCall { .. } => {
+                // Native tool calls only arrive on the live agent transport,
+                // which frames them directly (see cursor::streaming_response).
+            }
         }
     }
 

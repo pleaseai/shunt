@@ -7,7 +7,7 @@ Providers are a **name → config map**: a new upstream is just another `[provid
 
 - **`kind = "anthropic"`** — the upstream speaks the Anthropic Messages API. shunt passes the request through, optionally injecting a different API key.
 - **`kind = "responses"`** — the upstream speaks the OpenAI Responses API. shunt translates Anthropic Messages ⇄ Responses, including streaming.
-- **`kind = "cursor"`** — the native Cursor adapter. shunt bridges Cursor's ConnectRPC/protobuf AgentService to the Anthropic Messages API, streaming included (text only for now — see the Cursor provider section). Used by the built-in `cursor` provider.
+- **`kind = "cursor"`** — the native Cursor adapter. shunt bridges Cursor's ConnectRPC/protobuf AgentService to the Anthropic Messages API — streaming, reasoning, native tool calls, and inline images included. Used by the built-in `cursor` provider.
 
 ## Built-in providers
 
@@ -64,11 +64,11 @@ model = "cursor:default"
 provider = "cursor"
 ```
 
-:::caution[Text only for now]
-The adapter currently streams **assistant text (and reasoning) only**. Native tool bridging and Plan/Ask mode selection are temporarily unavailable while the current `cursor-agent` wire protocol is mapped (issue #170) — a tool-using client (e.g. Claude Code with tools) will get plain text, not tool calls. Basic chat and streaming work.
+:::note[What the adapter carries]
+The adapter streams assistant **text and reasoning**, bridges your client's **tools** as native Cursor MCP tool calls (a tool the model invokes surfaces as an Anthropic `tool_use` block with `stop_reason: "tool_use"`; you run it and send the `tool_result` back, and shunt re-runs the turn with that result in history), and forwards **inline images** (base64 sources; URL images are skipped). Cursor's own agentic file/shell tools are not exposed — only the tools your request advertises.
 :::
 
-**Model ids and agent modes.** The prefix selects Cursor's agent mode and the suffix is the Cursor model id. Use the **wire** id, not the display name from `cursor-agent models`: Auto is `default` (routing `cursor:auto` fails with `Unknown model ID: auto`). Named models (e.g. `cursor:gpt-5.2`) require a paid plan that entitles them; free plans are limited to `cursor:default`.
+**Model ids and agent modes.** The prefix selects Cursor's agent mode (Agent / Plan / Ask) and the suffix is the Cursor model id. Use the **wire** id, not the display name from `cursor-agent models`: Auto is `default` (routing `cursor:auto` fails with `Unknown model ID: auto`). Named models (e.g. `cursor:gpt-5.2`) require a paid plan that entitles them; free plans are limited to `cursor:default`.
 
 | Form | Agent mode | Example |
 | :-- | :-- | :-- |
@@ -76,7 +76,7 @@ The adapter currently streams **assistant text (and reasoning) only**. Native to
 | `cursor-plan:<id>` | Plan | `cursor-plan:default` |
 | `cursor-ask:<id>` | Ask | `cursor-ask:default` |
 
-Legacy bare names are also accepted: `cursor`, `cursor-agent`, `cursor-composer`, `cursor-composer-fast` (Agent); `cursor-plan`, `composer-2.5` (Plan); `cursor-ask`, `composer-2.5-fast` (Ask). Any other model id is rejected with an `invalid_request_error`. (Plan/Ask mode selection is parsed but not yet forwarded on the current wire — see the note above.)
+Legacy bare names are also accepted: `cursor`, `cursor-agent`, `cursor-composer`, `cursor-composer-fast` (Agent); `cursor-plan`, `composer-2.5` (Plan); `cursor-ask`, `composer-2.5-fast` (Ask). Any other model id is rejected with an `invalid_request_error`.
 
 :::note[Overrides]
 `SHUNT_CURSOR_BASE_URL` overrides the login/refresh endpoint, `SHUNT_CURSOR_AGENT_BASE_URL` the agent host (must stay an HTTPS `cursor.sh` host), `SHUNT_CURSOR_AUTH_FILE` the credential path, and `SHUNT_CURSOR_CLIENT_VERSION` the `x-cursor-client-version` header (bump it without a rebuild if Cursor starts rejecting a stale client version). A `cursor_oauth` provider is pinned to a Cursor host over HTTPS — pointing `base_url` off-origin is refused so the bearer token cannot leak.

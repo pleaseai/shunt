@@ -341,6 +341,10 @@ pub fn start_cursor_tool_bridge(
             CursorStreamEvent::Session { .. } => {
                 // Session info is not mapped to SSE events
             }
+            CursorStreamEvent::ToolCall { .. } => {
+                // Native tool calls are handled on the live agent transport, not
+                // in this legacy XML bridge.
+            }
             // The final XML flush and finalize happen once after the loop, so
             // End needs no per-event handling (this also avoids a double flush
             // when the upstream sends End before the stream truly ends).

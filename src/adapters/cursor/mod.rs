@@ -95,6 +95,8 @@ async fn forward(
         }
     };
     let prompt = request::render_cursor_prompt(&request);
+    let images = decode_cursor_images(&request);
+    let tools = extract_cursor_tools(&request);
     let want_stream = request
         .get("stream")
         .and_then(Value::as_bool)
@@ -107,13 +109,21 @@ async fn forward(
         .unwrap_or_else(|| "/".to_string());
 
     let client = CursorAgentClient::new(state.http_client.clone());
+    let params = agent::AgentRunParams {
+        prompt: &prompt,
+        model_id: &resolved.model_id,
+        cwd: &cwd,
+        mode: resolved.mode.wire_enum(),
+        images: &images,
+        tools: &tools,
+    };
     // `open_turn` returns once the response headers arrive, keeping the paced
     // request stream open behind the returned turn. It is not wrapped in the
     // shared `send_with_retry` (which is typed to `reqwest::Response`); a
     // connection blip surfaces to the client. TODO(#170): bounded pre-response
     // retry for the streaming turn.
     let turn = client
-        .open_turn(&access_token, &prompt, &resolved.model_id, &cwd)
+        .open_turn(&access_token, &params)
         .await
         .map_err(map_client_error)?;
     if !turn.status().is_success() {
@@ -131,6 +141,55 @@ async fn forward(
     ))
 }
 
+/// Base64-decode the request's inline images into agent image inputs. URL
+/// images (skipped upstream) and any that fail to decode are dropped; the
+/// rendered prompt still carries a text placeholder for them.
+fn decode_cursor_images(request: &Value) -> Vec<agent::AgentImage> {
+    use base64::Engine;
+    request::cursor_selected_images(request)
+        .into_iter()
+        .filter_map(|image| {
+            let data = base64::engine::general_purpose::STANDARD
+                .decode(image.data.as_bytes())
+                .ok()?;
+            Some(agent::AgentImage {
+                data,
+                uuid: image.uuid,
+                path: image.path,
+                mime_type: image.mime_type,
+            })
+        })
+        .collect()
+}
+
+/// Extract advertised client tools into native MCP tool declarations. Tools
+/// without a name are skipped; a missing schema defaults to an empty object.
+fn extract_cursor_tools(request: &Value) -> Vec<agent::AgentTool> {
+    let Some(tools) = request.get("tools").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    tools
+        .iter()
+        .filter_map(|tool| {
+            let name = tool.get("name").and_then(Value::as_str)?.to_string();
+            let description = tool
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let input_schema = tool
+                .get("input_schema")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({"type": "object"}));
+            Some(agent::AgentTool {
+                name,
+                description,
+                input_schema,
+            })
+        })
+        .collect()
+}
+
 /// Collect a full turn into a non-streaming Anthropic message JSON.
 async fn aggregate_turn(
     turn: CursorAgentTurn,
@@ -139,22 +198,48 @@ async fn aggregate_turn(
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let mut events = std::pin::pin!(turn.into_event_stream());
     let mut text = String::new();
+    let mut tool_call: Option<(String, String)> = None;
     while let Some(event) = events.next().await {
         match event.map_err(map_cursor_stream_error)? {
             CursorStreamEvent::TextDelta { text: delta } => text.push_str(&delta),
+            CursorStreamEvent::ToolCall { name, input_json } => {
+                tool_call = Some((name, input_json));
+                break;
+            }
             CursorStreamEvent::End => break,
             // Reasoning and session markers do not surface in the text-only
             // non-streaming body.
             _ => {}
         }
     }
+    let mut content: Vec<Value> = Vec::new();
+    if !text.is_empty() {
+        content.push(serde_json::json!({"type": "text", "text": text}));
+    }
+    let stop_reason = if let Some((name, input_json)) = tool_call {
+        let input: Value =
+            serde_json::from_str(&input_json).unwrap_or_else(|_| serde_json::json!({}));
+        content.push(serde_json::json!({
+            "type": "tool_use",
+            "id": format!("toolu_{}", uuid::Uuid::new_v4().simple()),
+            "name": name,
+            "input": input,
+        }));
+        "tool_use"
+    } else {
+        "end_turn"
+    };
+    // Anthropic messages must carry at least one content block.
+    if content.is_empty() {
+        content.push(serde_json::json!({"type": "text", "text": ""}));
+    }
     let json = serde_json::json!({
         "id": message_id,
         "type": "message",
         "role": "assistant",
-        "content": [{"type": "text", "text": text}],
+        "content": content,
         "model": model,
-        "stop_reason": "end_turn",
+        "stop_reason": stop_reason,
         "stop_sequence": null,
         "usage": {
             "input_tokens": 1,
@@ -198,6 +283,18 @@ fn streaming_response(
                         if !output.is_empty() {
                             return Some((Ok(Bytes::from(output)), (events, framer, false)));
                         }
+                    }
+                    Some(Ok(CursorStreamEvent::ToolCall { name, input_json })) => {
+                        // Emit the tool_use pause (content block + message_delta
+                        // stop_reason="tool_use" + message_stop) and end the SSE.
+                        // The client executes the tool and re-sends the result in
+                        // history, which the stateless bridge re-runs upstream.
+                        let id = format!("toolu_{}", uuid::Uuid::new_v4().simple());
+                        framer.emit_tool_pause(&id, &name, &input_json);
+                        return Some((
+                            Ok(Bytes::from(framer.take_output())),
+                            (events, framer, true),
+                        ));
                     }
                     Some(Ok(CursorStreamEvent::End)) | None => {
                         framer.emit_final_message("end_turn");
