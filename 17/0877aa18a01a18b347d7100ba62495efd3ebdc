@@ -1,0 +1,21 @@
+src/admin/mod.rs
+  s_061f0c21f5acac::t_c8f2bf88f6a041 606-615,673-677,679-688,691-700
+tests/admin_surface.rs
+  s_061f0c21f5acac::t_58c69e4b96c4b8 86-91,93,95,100-101,424-614
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "170877aa18a01a18b347d7100ba62495efd3ebdc",
+  "prompts": {},
+  "sessions": {
+    "s_061f0c21f5acac": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b44a9ffe-6ae9-46b1-87ea-fb27932f5779",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
