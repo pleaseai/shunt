@@ -1,0 +1,39 @@
+docs/m3-discovery.md
+  s_d203be4947c713::t_b8768fd344a833 62-72
+  s_d203be4947c713::t_280ce3ccad78fd 117-120
+src/adapters/anthropic/model_rewrite.rs
+  s_d203be4947c713::t_fcc349cb2e84b4 66-69
+  s_d203be4947c713::t_374e2d02bfab8e 136
+  s_d203be4947c713::t_7c67738a96fdba 1-65,70-135,137-284
+src/adapters/anthropic/mod.rs
+  s_d203be4947c713::t_e7915976dfded0 522,524,536-544,559-561,566-570,575-576,578
+  s_d203be4947c713::t_374e2d02bfab8e 571-574
+  s_d203be4947c713::t_d6555156fd4a42 22-23
+  s_d203be4947c713::t_b761d2af68ce8a 99
+  s_d203be4947c713::t_aa0ba4dcbb6a17 443
+  s_d203be4947c713::t_e1a3ae5e19bdff 286
+  s_d203be4947c713::t_710cbdc054b97b 225
+  s_d203be4947c713::t_6acefad9af4fff 409
+tests/passthrough.rs
+  s_d203be4947c713::t_29fb1043bc90d6 798
+  s_d203be4947c713::t_9f726dd2fbdd05 764-767
+  s_d203be4947c713::t_9052c85423a67f 6
+  s_d203be4947c713::t_ae797bbb3a4b36 688-763,768-797,799-839,844-845
+  s_d203be4947c713::t_12ae8c473cd2e4 840-843
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "8d072adc6d5d96f29949fb08baef4d9514a2babf",
+  "prompts": {},
+  "sessions": {
+    "s_d203be4947c713": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "776d9043-b552-41d9-901c-5f9c93c91db2",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
