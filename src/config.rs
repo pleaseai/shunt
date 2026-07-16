@@ -58,6 +58,14 @@ pub struct ServerConfig {
     /// `docs/m11-inbound-codex-endpoint.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_endpoint: Option<CodexEndpointConfig>,
+    /// Optional opt-in client-facing usage endpoint (`GET /usage`). Absent ⇒ the
+    /// route is not registered (today's HTTP surface unchanged). When set, a
+    /// `[server.auth]` client-token holder can read a sanitized, aggregated view
+    /// of the shared account pool's quota state. Requires `[server.auth]` (a
+    /// non-admin caller must be identifiable) — enforced by [`Config::validate`].
+    /// See `docs/m12-client-usage-endpoint.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<UsageEndpointConfig>,
     /// Optional account-pool tuning (issue #135) and opt-in usage-API
     /// reconciliation. Absent ⇒ legacy quota selection and no background polling.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -266,6 +274,17 @@ pub struct CodexEndpointConfig {
 fn default_codex_endpoint_provider() -> String {
     "codex".to_string()
 }
+
+/// `[server.usage]` — opt-in client-facing usage endpoint. When present, shunt
+/// registers `GET /usage`, which returns a **sanitized, aggregated** view of the
+/// shared account pool's quota state (per-window remaining headroom and reset)
+/// for `[server.auth]` client-token holders. Unlike the admin dashboard
+/// (`GET /admin/pool`), it never exposes account identities, counts, priorities,
+/// disabled flags, or thresholds. Presence alone opts in; the table has no
+/// fields today. Requires `[server.auth]`. Absent ⇒ the route does not exist.
+/// See `docs/m12-client-usage-endpoint.md`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct UsageEndpointConfig {}
 
 /// `[sentry]` — opt-in error reporting to the operator's own Sentry project.
 /// Only gateway-owned diagnostics are reported (fatal startup/serve errors,
@@ -839,6 +858,8 @@ pub enum ConfigError {
     UnknownCodexEndpointProvider(String),
     #[error("[server.codex_endpoint] provider {0} must use auth = \"chatgpt_oauth\"; the inbound Responses endpoint injects the operator's Codex bearer")]
     CodexEndpointWrongAuth(String),
+    #[error("[server.usage] requires [server.auth]: the usage endpoint must identify a non-admin caller by client token")]
+    UsageEndpointRequiresAuth,
     #[error("route for model {model} references unknown provider: {provider}")]
     UnknownRouteProvider { model: String, provider: String },
     #[error("route prefix {prefix} references unknown provider: {provider}")]
@@ -997,6 +1018,7 @@ impl Default for Config {
                 auth: None,
                 admin: None,
                 codex_endpoint: None,
+                usage: None,
                 pool: None,
                 sse_keepalive_seconds: default_sse_keepalive_seconds(),
             },
@@ -1404,6 +1426,13 @@ impl Config {
                 Some(_) => {}
             }
         }
+        // The client-facing usage endpoint identifies its caller by client token,
+        // so it is only meaningful — and only safe to register — when inbound auth
+        // is configured. Without it, `GET /usage` would be world-readable pool
+        // telemetry; fail closed at boot rather than expose it.
+        if self.server.usage.is_some() && self.server.auth.is_none() {
+            return Err(ConfigError::UsageEndpointRequiresAuth);
+        }
         for route in &self.routes {
             if !self.has_provider(&route.provider) {
                 return Err(ConfigError::UnknownRouteProvider {
@@ -1571,9 +1600,9 @@ mod tests {
     use figment::providers::Format;
 
     use super::{
-        config_file_candidates, host_is_chatgpt, AccountConfig, AdminConfig, AuthMode,
-        CodexEndpointConfig, Config, ConfigError, ConfigFormat, ModelConfig, PoolConfig,
-        ProviderKind, ResponsesFlavor, RetryConfig,
+        config_file_candidates, default_auth_header, host_is_chatgpt, AccountConfig, AdminConfig,
+        AuthMode, CodexEndpointConfig, Config, ConfigError, ConfigFormat, InboundAuthConfig,
+        ModelConfig, PoolConfig, ProviderKind, ResponsesFlavor, RetryConfig, UsageEndpointConfig,
     };
 
     #[test]
@@ -1999,6 +2028,36 @@ mod tests {
             config.validate().unwrap_err(),
             ConfigError::CodexEndpointWrongAuth(provider) if provider == "anthropic"
         ));
+    }
+
+    #[test]
+    fn usage_endpoint_requires_inbound_auth() {
+        // Opting into `[server.usage]` without `[server.auth]` is rejected at
+        // boot: the endpoint must identify a non-admin caller by client token.
+        let mut config = Config::default();
+        config.server.usage = Some(UsageEndpointConfig::default());
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::UsageEndpointRequiresAuth
+        ));
+    }
+
+    #[test]
+    fn usage_endpoint_accepts_when_inbound_auth_is_configured() {
+        // With `[server.auth]` present and its tokens resolvable, the pairing
+        // validates. `validate()` fails closed by resolving `[server.auth]`, so
+        // point it at an env var holding a valid token.
+        let env = format!("SHUNT_USAGE_VALIDATE_TOKENS_{}", std::process::id());
+        std::env::set_var(&env, "tester:tok");
+        let mut config = Config::default();
+        config.server.usage = Some(UsageEndpointConfig::default());
+        config.server.auth = Some(InboundAuthConfig {
+            header: default_auth_header(),
+            tokens_env: env.clone(),
+        });
+        let result = config.validate();
+        std::env::remove_var(&env);
+        result.unwrap();
     }
 
     #[test]

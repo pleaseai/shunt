@@ -14,7 +14,7 @@ use crate::{
     config::{Config, ConfigError},
     discovery, protocol, proxy,
     reload::{RuntimeState, SharedState},
-    routes,
+    routes, usage,
 };
 
 #[derive(Clone)]
@@ -96,6 +96,10 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     // initial config; a reload can only change the target provider, not add or
     // drop the routes.
     let codex_endpoint_enabled = config.server.codex_endpoint.is_some();
+    // The client-facing usage endpoint (`GET /usage`) is likewise registered once
+    // from the initial config; a reload only re-resolves the client tokens it
+    // authenticates against, it cannot add or drop the route.
+    let usage_enabled = config.server.usage.is_some();
     let runtime = RuntimeState::from_config(config)?;
     let shared: SharedState = Arc::new(arc_swap::ArcSwap::from_pointee(runtime));
     let state = AppState::from_shared(
@@ -137,6 +141,15 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
             .route("/backend-api/codex/responses", post(codex_endpoint::post))
             .route("/responses", post(codex_endpoint::post))
             .route("/v1/responses", post(codex_endpoint::post));
+    }
+
+    // Opt-in client-facing usage endpoint (`GET /usage`): registered only when
+    // `[server.usage]` is set, so the default HTTP surface is unchanged. The
+    // handler authenticates every request against `[server.auth]` client tokens
+    // (validation guarantees that table is present) and returns a sanitized,
+    // aggregated pool-quota view — never per-account identity or capacity.
+    if usage_enabled {
+        router = router.route("/usage", get(usage::get));
     }
 
     // Clone the state into the router; the returned clone shares the same

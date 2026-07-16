@@ -27,10 +27,26 @@ description: The endpoints shunt serves as a Claude Code LLM gateway.
 | `POST` | `/backend-api/codex/responses` | Inbound Codex CLI passthrough — mirrors the real ChatGPT backend path |
 | `POST` | `/responses` | Inbound Codex CLI passthrough — bare `base_url` form |
 | `POST` | `/v1/responses` | Inbound Codex CLI passthrough — `/v1`-suffixed `base_url` form |
+| `GET` | `/usage` | Client-facing sanitized pool usage — per-window remaining headroom and reset for the shared account pool; never account identity or capacity |
 
 The `/admin*` routes exist only when [`[server.admin]`](/reference/configuration/#serveradmin-optional) is configured; without that table, none of them are registered.
 
 The `/backend-api/codex/responses`, `/responses`, and `/v1/responses` routes exist only when [`[server.codex_endpoint]`](/reference/configuration/#servercodex_endpoint-optional) is configured; without that table, none of them are registered. All three map to the same handler and relay a raw OpenAI Responses request/response, unlike the Anthropic-Messages-translating `/v1/messages` above — see the [inbound Codex endpoint guide](/guides/inbound-codex-endpoint/).
+
+The `/usage` route exists only when [`[server.usage]`](/reference/configuration/#serverusage-optional) is configured, which itself requires [`[server.auth]`](/guides/shared-gateway/). It authenticates the same client token as `GET /v1/messages` (configured header, `x-api-key`, or `Authorization: Bearer`) and returns a **sanitized, aggregated** view of the shared account pool — per-window remaining headroom and reset time plus a coarse `ok`/`degraded`/`exhausted` status — so a non-admin caller can anticipate throttling. It never exposes account names, counts, priorities, `disabled` flags, thresholds, or per-account numbers; the full per-account detail stays behind admin-only `GET /admin/pool`. The Codex backend publishes no quota headers, so its windows report `null`. Response shape:
+
+```json
+{
+  "pool": {
+    "status": "ok",
+    "windows": {
+      "5h":    { "remaining": 0.42, "resets_at": 1752000000 },
+      "7d":    { "remaining": 0.61, "resets_at": 1752500000 },
+      "fable": { "remaining": null, "resets_at": null }
+    }
+  }
+}
+```
 
 `GET /` and `GET /health` stay open even when [`[server.auth]`](/guides/shared-gateway/) is enabled (healthcheck tools usually cannot attach tokens) and expose nothing sensitive — only status, version, and the already-public endpoint list. With `[server.auth]` enabled, `GET /v1/models` requires a valid client token in the configured header, `x-api-key`, or `Authorization: Bearer`; it stays open when inbound auth is not configured. `GET /routes` remains open as shunt-native routing metadata.
 
