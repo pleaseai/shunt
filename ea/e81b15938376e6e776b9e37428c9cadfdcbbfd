@@ -1,0 +1,25 @@
+docs/m3-discovery.md
+  s_ca523ae9c5d205::t_83fc4b31aab4b5 70-72
+src/adapters/anthropic/model_rewrite.rs
+  s_ca523ae9c5d205::t_a42e3e42d5364c 90,93
+  s_ca523ae9c5d205::t_8ce350128007d9 91-92
+  s_ca523ae9c5d205::t_46c195017a7dea 286-297
+  s_ca523ae9c5d205::t_5001c62feb660b 75-84
+  s_ca523ae9c5d205::t_f69777a336acc3 285
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "eae81b15938376e6e776b9e37428c9cadfdcbbfd",
+  "prompts": {},
+  "sessions": {
+    "s_ca523ae9c5d205": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b4d9550f-ba5c-417d-a106-5607d5a4e43e",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
