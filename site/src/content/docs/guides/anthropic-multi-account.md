@@ -154,7 +154,7 @@ Polling is off when the field is absent or `0`; positive values below 60 are cla
 
 Pool quota lives in memory, so a restart begins cold: every account looks unseen until its first post-restart response, which disables burn-rate avoidance and leaves `GET /usage` blank until traffic re-populates the pool. Setting `state_path` persists each account's per-window utilization and reset to that file, so the pool warm-starts from the last observed state.
 
-The file is a best-effort cache, not a source of truth — quota is re-derived from upstream responses regardless, so a missing, stale, or corrupt file only costs a cold start, never a boot failure. Writes are atomic (a temp file renamed over the target) and happen on a 15-second background timer only when quota changed. Cooldowns are not persisted (they lapse on restart), and any restored window whose reset has already passed is dropped on load. The path is fixed at boot; persistence is off when the field is absent.
+The file is a best-effort cache, not a source of truth — quota is re-derived from upstream responses regardless, so a missing, stale, or corrupt file only costs a cold start, never a boot failure. Writes use a private (`0600` on Unix) temp file, atomically rename it over the target, and happen on a 15-second background timer only when quota changed. Failed writes remain dirty and retry on the next tick. Cooldowns are not persisted (they lapse on restart), and any restored window whose reset has already passed is dropped lazily by the first selection or snapshot after restore. The path is fixed at boot; persistence is off when the field is absent.
 
 ## Failover rules
 

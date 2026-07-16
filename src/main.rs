@@ -294,7 +294,7 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     // Opt-in `[server.pool] state_path`: warm-start the pool from the last
     // persisted quota before serving, then flush changes in the background. Both
     // are no-ops when the key is unset.
-    shunt::state_persist::restore(&state);
+    shunt::state_persist::restore(&state).await;
     shunt::state_persist::spawn_state_persister(state.clone());
     // Opt-in `[server.pool] usage_refresh_seconds`: poll the Anthropic OAuth
     // usage API in the background, sharing the router's account pool. A no-op

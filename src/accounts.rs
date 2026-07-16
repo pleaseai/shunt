@@ -62,13 +62,17 @@ pub struct QuotaState {
 }
 
 impl QuotaState {
-    /// Whether any window carries a recorded utilization. An all-`None` quota
-    /// holds no signal worth persisting (or restoring), so the persistence
-    /// layer skips it — see [`AccountPool::export_quotas`].
+    /// Whether any persisted quota field carries a recorded signal. Utilization,
+    /// reset metadata, and unified status all affect selection or diagnostics, so
+    /// only an entirely default quota is omitted from persistence.
     pub(crate) fn has_signal(&self) -> bool {
         self.utilization_5h.is_some()
+            || self.reset_5h.is_some()
             || self.utilization_7d.is_some()
+            || self.reset_7d.is_some()
             || self.utilization_7d_oi.is_some()
+            || self.reset_7d_oi.is_some()
+            || self.status.is_some()
     }
 }
 
@@ -528,17 +532,23 @@ impl AccountPool {
     }
 
     /// Forget pool health and refresh state for a single `(provider, identity)`,
-    /// leaving other providers' entries for the same identity untouched.
+    /// leaving other providers' entries for the same identity untouched. Removing
+    /// persisted quota marks the pool dirty so the next flush removes it on disk.
     pub fn forget_identity(&self, provider: &str, identity: &str) {
         let key = (provider.to_string(), identity.to_string());
-        self.entries
+        let removed_quota = self
+            .entries
             .lock()
             .expect("account health lock poisoned")
-            .remove(&key);
+            .remove(&key)
+            .is_some_and(|health| health.quota.has_signal());
         self.refresh_locks
             .lock()
             .expect("account refresh-lock map poisoned")
             .remove(&key);
+        if removed_quota {
+            self.mark_dirty();
+        }
     }
 
     /// Read-only per-account health snapshot for the admin dashboard, in the
@@ -600,8 +610,8 @@ impl AccountPool {
 
     /// Mark the pool's quota state as changed since the last flush. Called by
     /// every quota mutation so the opt-in persister ([`crate::state_persist`])
-    /// can skip idle flushes.
-    fn mark_dirty(&self) {
+    /// can skip idle flushes. Also used to retry a failed persistence write.
+    pub(crate) fn mark_dirty(&self) {
         self.dirty.store(true, Ordering::Relaxed);
     }
 
@@ -613,9 +623,9 @@ impl AccountPool {
 
     /// Snapshot every observed account's quota for on-disk persistence, as
     /// `(provider, identity, quota)` triples. Skips accounts whose quota holds
-    /// no signal (all windows `None`) — nothing worth restoring. Read-only: it
-    /// does not expire stale windows (a restored quota is expired lazily by the
-    /// next [`Self::select_order`]/[`Self::snapshot`], exactly as a live one is).
+    /// no utilization, reset, or status signal. Read-only: it does not expire
+    /// stale windows (a restored quota is expired lazily by the next
+    /// [`Self::select_order`]/[`Self::snapshot`], exactly as a live one is).
     pub fn export_quotas(&self) -> Vec<(String, String, QuotaState)> {
         let entries = self.entries.lock().expect("account health lock poisoned");
         entries
@@ -2280,12 +2290,88 @@ mod tests {
     }
 
     #[test]
+    fn export_import_round_trips_status_only_quota() {
+        let pool = AccountPool::new();
+        pool.import_quotas([(
+            "anthropic".to_string(),
+            "a".to_string(),
+            QuotaState {
+                status: Some("rejected".to_string()),
+                ..Default::default()
+            },
+        )]);
+
+        let exported = pool.export_quotas();
+        assert_eq!(exported.len(), 1);
+        assert_eq!(exported[0].2.status.as_deref(), Some("rejected"));
+
+        let restored = AccountPool::new();
+        restored.import_quotas(exported);
+        let snapshots = restored.snapshot("anthropic", &[account("a")], None, None);
+        assert!(snapshots[0].near_quota);
+        assert_eq!(snapshots[0].status.as_deref(), Some("rejected"));
+    }
+
+    #[test]
+    fn export_import_round_trips_reset_only_quota() {
+        let reset = unix_now() + 9_000;
+        let pool = AccountPool::new();
+        pool.import_quotas([(
+            "anthropic".to_string(),
+            "a".to_string(),
+            QuotaState {
+                reset_7d: Some(reset),
+                ..Default::default()
+            },
+        )]);
+
+        let exported = pool.export_quotas();
+        assert_eq!(exported.len(), 1);
+        assert_eq!(exported[0].2.reset_7d, Some(reset));
+
+        let restored = AccountPool::new();
+        restored.import_quotas(exported);
+        let snapshots = restored.snapshot("anthropic", &[account("a")], None, None);
+        assert_eq!(snapshots[0].reset_7d, Some(reset));
+    }
+
+    #[test]
     fn export_skips_accounts_without_quota_signal() {
         // A cooldown marks the account observed but records no quota, so there
         // is nothing worth persisting.
         let pool = AccountPool::new();
         pool.cooldown("anthropic", &account("a"), Duration::from_secs(60));
         assert!(pool.export_quotas().is_empty());
+    }
+
+    #[test]
+    fn forgetting_persisted_quota_marks_dirty_and_removes_export() {
+        let pool = AccountPool::new();
+        pool.import_quotas([(
+            "anthropic".to_string(),
+            "a".to_string(),
+            QuotaState {
+                utilization_5h: Some(0.5),
+                ..Default::default()
+            },
+        )]);
+        assert!(!pool.take_dirty(), "restored quota starts clean");
+        assert_eq!(pool.export_quotas().len(), 1);
+
+        pool.forget_identity("anthropic", "a");
+
+        assert!(pool.take_dirty(), "removing persisted quota marks dirty");
+        assert!(pool.export_quotas().is_empty());
+    }
+
+    #[test]
+    fn forgetting_cooldown_only_state_does_not_mark_dirty() {
+        let pool = AccountPool::new();
+        pool.cooldown("anthropic", &account("a"), Duration::from_secs(60));
+
+        pool.forget_identity("anthropic", "a");
+
+        assert!(!pool.take_dirty(), "cooldowns are not persisted");
     }
 
     #[test]
