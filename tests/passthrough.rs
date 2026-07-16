@@ -3,7 +3,7 @@ use std::{io::ErrorKind, net::SocketAddr, time::Duration};
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 use shunt::{
-    config::{Config, CountTokens, RoutePrefixConfig},
+    config::{Config, CountTokens, RouteConfig, RoutePrefixConfig},
     server,
 };
 use tokio::task::JoinHandle;
@@ -682,6 +682,164 @@ async fn messages_strip_empty_text_blocks_before_forwarding_upstream() {
         forwarded["messages"][0]["content"],
         json!([{"type": "tool_use", "id": "tool_1", "name": "work", "input": {}}]),
         "empty text blocks must be stripped before reaching the upstream"
+    );
+    upstream.verify().await;
+}
+
+/// Gateway config with a discovery-alias route whose client-facing `model`
+/// differs from the `upstream_model` sent to the (mock) anthropic upstream.
+fn discovery_alias_config(upstream_base_url: String) -> Config {
+    let mut config = Config::default();
+    config.providers.get_mut("anthropic").unwrap().base_url = upstream_base_url;
+    config.routes.push(RouteConfig {
+        model: "claude-go-kimi-k2.7-code-via-litellm".to_string(),
+        provider: "anthropic".to_string(),
+        upstream_model: Some("go-kimi-k2.7-code".to_string()),
+        effort: None,
+    });
+    config
+}
+
+/// Extract `message.model` from the `message_start` event of a relayed SSE
+/// stream. The route alias contains the leaked id as a substring, so a plain
+/// `contains` check is ambiguous — parse the field instead.
+fn message_start_model(sse: &str) -> String {
+    for block in sse.split("\n\n") {
+        for line in block.lines() {
+            if let Some(data) = line.strip_prefix("data: ") {
+                let value: Value = serde_json::from_str(data).unwrap();
+                if value["type"] == "message_start" {
+                    return value["message"]["model"]
+                        .as_str()
+                        .expect("message_start must carry a string model")
+                        .to_string();
+                }
+            }
+        }
+    }
+    panic!("no message_start event found in SSE:\n{sse}");
+}
+
+#[tokio::test]
+async fn discovery_alias_sse_rewrites_leaked_upstream_model() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let upstream = MockServer::start().await;
+    // Multi-hop leak (issue #172): the reported model equals neither the alias
+    // nor the `upstream_model` shunt sent — it is the final hop's own slug.
+    let sse = "event: message_start\n\
+               data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"kimi-k2.7-code\",\"content\":[]}}\n\n\
+               event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(sse.as_bytes().to_vec(), "text/event-stream"),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let gateway = start_gateway_with(discovery_alias_config(upstream.uri())).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .body(r#"{"model":"claude-go-kimi-k2.7-code-via-litellm","stream":true}"#)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("content-type").unwrap(),
+        "text/event-stream"
+    );
+    let body = response.text().await.unwrap();
+    assert_eq!(
+        message_start_model(&body),
+        "claude-go-kimi-k2.7-code-via-litellm",
+        "message_start model must be restored to the route alias"
+    );
+    // The rest of the stream is forwarded untouched.
+    assert!(body.contains("event: message_stop"));
+    // The outbound request carried the upstream_model, not the alias.
+    let requests = upstream.received_requests().await.unwrap();
+    let forwarded: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(forwarded["model"], "go-kimi-k2.7-code");
+    upstream.verify().await;
+}
+
+#[tokio::test]
+async fn discovery_alias_non_streaming_rewrites_leaked_upstream_model() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let upstream = MockServer::start().await;
+    let upstream_body = r#"{"id":"msg_1","type":"message","role":"assistant","model":"kimi-k2.7-code","content":[{"type":"text","text":"hi"}]}"#;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_string(upstream_body),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let gateway = start_gateway_with(discovery_alias_config(upstream.uri())).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .body(r#"{"model":"claude-go-kimi-k2.7-code-via-litellm"}"#)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let value: Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    assert_eq!(value["model"], "claude-go-kimi-k2.7-code-via-litellm");
+    // Sibling fields survive the rewrite.
+    assert_eq!(value["content"][0]["text"], "hi");
+    upstream.verify().await;
+}
+
+#[tokio::test]
+async fn passthrough_route_preserves_real_upstream_model() {
+    if !can_bind_loopback() {
+        return;
+    }
+    // A plain passthrough route (model == upstream_model, e.g. api.anthropic.com)
+    // must NOT rewrite: the client relies on the dated snapshot id the upstream
+    // reports. The alias gate keeps this byte-for-byte.
+    let upstream = MockServer::start().await;
+    let sse = "event: message_start\n\
+               data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-4-5-20250929\",\"content\":[]}}\n\n";
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(sse.as_bytes().to_vec(), "text/event-stream"),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let gateway = start_gateway(upstream.uri()).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .body(r#"{"model":"claude-sonnet-4-5","stream":true}"#)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.unwrap();
+    assert_eq!(
+        message_start_model(&body),
+        "claude-sonnet-4-5-20250929",
+        "passthrough must preserve the upstream-reported model id"
+    );
+    assert_eq!(
+        body, sse,
+        "passthrough body must be byte-for-byte identical"
     );
     upstream.verify().await;
 }

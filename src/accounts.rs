@@ -421,11 +421,15 @@ impl AccountPool {
             match window {
                 CodexWindow::FiveHour => {
                     quota.utilization_5h = Some(utilization / 100.0);
-                    quota.reset_5h = reset;
+                    if let Some(reset) = reset {
+                        quota.reset_5h = Some(reset);
+                    }
                 }
                 CodexWindow::Weekly => {
                     quota.utilization_7d = Some(utilization / 100.0);
-                    quota.reset_7d = reset;
+                    if let Some(reset) = reset {
+                        quota.reset_7d = Some(reset);
+                    }
                 }
             }
         }
@@ -1060,6 +1064,35 @@ mod tests {
         assert!(snaps[0].has_state);
         assert_eq!(snaps[0].utilization_5h, None);
         assert_eq!(snaps[0].utilization_7d, None);
+    }
+
+    #[test]
+    fn codex_missing_reset_preserves_prior_reset() {
+        let pool = AccountPool::new();
+        let accounts = vec![account("pro")];
+        let reset = unix_now() + 3_600;
+        pool.note_codex_quota(
+            "codex",
+            "pro",
+            &quota_headers(&[
+                ("x-codex-primary-used-percent", "40".to_string()),
+                ("x-codex-primary-window-minutes", "300".to_string()),
+                ("x-codex-primary-reset-at", reset.to_string()),
+            ]),
+        );
+
+        pool.note_codex_quota(
+            "codex",
+            "pro",
+            &quota_headers(&[
+                ("x-codex-primary-used-percent", "41".to_string()),
+                ("x-codex-primary-window-minutes", "300".to_string()),
+            ]),
+        );
+
+        let snaps = pool.snapshot("codex", &accounts, None, None);
+        assert_eq!(snaps[0].utilization_5h, Some(0.41));
+        assert_eq!(snaps[0].reset_5h, Some(reset));
     }
 
     #[test]
