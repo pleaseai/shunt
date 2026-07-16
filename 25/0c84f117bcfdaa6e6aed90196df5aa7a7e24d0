@@ -1,0 +1,41 @@
+docs/m10-codex-multi-account.md
+  s_061f0c21f5acac::t_6a60ef8c48ac8f 63,81,85-87
+docs/m8-anthropic-multi-account.md
+  s_061f0c21f5acac::t_879986fb3900c4 115-117
+site/src/content/docs/guides/anthropic-multi-account.md
+  s_061f0c21f5acac::t_e3b46f0d3eb284 83,92-94
+site/src/content/docs/guides/codex-multi-account.md
+  s_061f0c21f5acac::t_6553c2b0da125f 72,86,89-91
+site/src/content/docs/ja/guides/anthropic-multi-account.md
+  s_061f0c21f5acac::t_e04e370cefc59d 83,92-94
+site/src/content/docs/ko/guides/anthropic-multi-account.md
+  s_061f0c21f5acac::t_c47c0a879bf245 83,92-94
+site/src/content/docs/zh-cn/guides/anthropic-multi-account.md
+  s_061f0c21f5acac::t_db899b9a32a880 83,92-94
+src/accounts.rs
+  s_061f0c21f5acac::t_e22aff5e221daf 485-487,489-492,859-873
+src/admin/codex.rs
+  s_061f0c21f5acac::t_eb920e0d89e49c 226-235,239,241-257,309-332
+src/admin/mod.rs
+  s_061f0c21f5acac::t_d2076ab9636a1f 682-691,695-713,779-803
+src/auth/shared.rs
+  s_061f0c21f5acac::t_e9e3160ff24c4a 376,396,410-454,539,814-914
+tests/admin_surface.rs
+  s_061f0c21f5acac::t_1e50f1f6dec380 615-719,1456-1559
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "250c84f117bcfdaa6e6aed90196df5aa7a7e24d0",
+  "prompts": {},
+  "sessions": {
+    "s_061f0c21f5acac": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b44a9ffe-6ae9-46b1-87ea-fb27932f5779",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
