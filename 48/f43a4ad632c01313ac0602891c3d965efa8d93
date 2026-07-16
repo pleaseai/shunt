@@ -1,0 +1,69 @@
+src/adapters/cursor/tool_bridge.rs
+  s_95b76ba7daeffc::t_aaa6693fed15cc 344-347
+src/adapters/cursor/model.rs
+  s_95b76ba7daeffc::t_0c7118ab985e11 38-48
+  s_95b76ba7daeffc::t_c278dd6e6b7c90 215-222
+site/src/content/docs/guides/providers.md
+  s_95b76ba7daeffc::t_16edf58bd4d7ed 67-68,71,79
+  s_95b76ba7daeffc::t_b7b533aee93b8b 10
+src/adapters/cursor/mod.rs
+  s_95b76ba7daeffc::t_8ce38005b01499 165-192
+  s_95b76ba7daeffc::t_153b66602ac9fb 201,205-208,215-235,240,242
+  s_95b76ba7daeffc::t_f72083215e4c74 294-297
+  s_95b76ba7daeffc::t_bc0c759872a3da 287-293,298
+  s_95b76ba7daeffc::t_aab712614d47a8 99,118
+  s_95b76ba7daeffc::t_b7f057118db3f1 98,112-117,119,126
+  s_95b76ba7daeffc::t_4ba77a4c4354b2 144-164
+src/adapters/cursor/stream.rs
+  s_95b76ba7daeffc::t_9ebf8cb1fb6580 113-114
+README.md
+  s_95b76ba7daeffc::t_5f78dedadf6185 101
+src/adapters/cursor/response.rs
+  s_95b76ba7daeffc::t_035f774a082b46 24-29
+src/adapters/cursor/sse.rs
+  s_95b76ba7daeffc::t_b0af3a62d26ee8 63-66
+src/adapters/cursor/agent.rs
+  s_95b76ba7daeffc::t_9adb16355d17f0 699-832
+  s_95b76ba7daeffc::t_e8561db3a3777b 882,890
+  s_95b76ba7daeffc::t_8b23e1e7602356 534-536
+  s_95b76ba7daeffc::t_cb9bf7d1fd94fb 837-843,845-847,850,866,872-881,883-889,891-895,897-908,910-918
+  s_95b76ba7daeffc::t_c1a8e0a589e796 514
+  s_95b76ba7daeffc::t_489df021d19e05 909
+  s_95b76ba7daeffc::t_2e04e523b17ea3 487-513,515,520,523-529
+  s_95b76ba7daeffc::t_0f8febbd97af5b 919,954-1032
+  s_95b76ba7daeffc::t_9732b701129d5a 126-134,143
+  s_95b76ba7daeffc::t_2f59f0ee947950 354-364
+  s_95b76ba7daeffc::t_b41d024d3cd57e 117-125,135-142,144-145,161,164
+  s_95b76ba7daeffc::t_c104dcf09aebd0 896
+  s_95b76ba7daeffc::t_81d2a88edfbb03 844
+  s_95b76ba7daeffc::t_4833fd4e463352 411-472
+  s_95b76ba7daeffc::t_2fdb8b214a7206 539-541
+  s_35049c20e37074::t_f84cf3b2f66986 920
+src/adapters/cursor/request.rs
+  s_95b76ba7daeffc::t_4de049285c10fc 16-21
+  s_95b76ba7daeffc::t_f4f01ec4e5fbb3 375-377,384-385
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "48f43a4ad632c01313ac0602891c3d965efa8d93",
+  "prompts": {},
+  "sessions": {
+    "s_35049c20e37074": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "09320114-9a62-43b0-a95e-11fb4203f25e",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_95b76ba7daeffc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b3c31ea5-5eec-4425-a298-2a8c25397fb3",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
