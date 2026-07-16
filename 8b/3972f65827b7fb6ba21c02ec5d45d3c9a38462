@@ -1,0 +1,61 @@
+src/accounts.rs
+  s_35049c20e37074::t_5f7e2dc91c9a03 424-426,430-432
+  s_35049c20e37074::t_ce00cd9cb71d72 1070-1097
+  s_35049c20e37074::t_79ef49f9dde80d 1069
+docs/comparison.md
+  s_35049c20e37074::t_0d3abc0524adef 110-113
+.please/docs/review/rejected-findings.jsonl
+  s_35049c20e37074::t_26a8ce2545151e 14-15
+.release-please-manifest.json
+  s_35049c20e37074::t_a92a8f60d7305a 2
+CHANGELOG.md
+  s_35049c20e37074::t_1f0c7d7aeb9550 3-10
+Cargo.lock
+  s_35049c20e37074::t_3544fe8e7076fd 2665,2699
+Cargo.toml
+  s_35049c20e37074::t_4b6648b4863441 5,82
+README.md
+  s_35049c20e37074::t_7323316742e940 80-81
+docs/m12-client-usage-endpoint.md
+  s_35049c20e37074::t_20fc71a9ce7481 1-88
+docs/m3-discovery.md
+  s_35049c20e37074::t_7b1ecbf1e5467f 62-73,118-121
+site/src/content/docs/reference/configuration.md
+  s_35049c20e37074::t_5c7f227fe4ac28 52-59
+site/src/content/docs/reference/endpoints.md
+  s_35049c20e37074::t_697b3bad8be0f2 30,36-50
+src/adapters/anthropic/mod.rs
+  s_35049c20e37074::t_75169b20f9b54c 22-23,99,225,286,409,443,522,524,536-544,559-561,566-573,575
+src/adapters/anthropic/model_rewrite.rs
+  s_35049c20e37074::t_57a48202666bdd 1-313
+src/config.rs
+  s_35049c20e37074::t_de81f3c0d5b8f9 61-68,278-288,861-862,1021,1429-1435,1603-1605,2033-2062
+src/lib.rs
+  s_35049c20e37074::t_638f75deb2c6af 22
+src/reload.rs
+  s_35049c20e37074::t_e244f9414c448d 106-112
+src/server.rs
+  s_35049c20e37074::t_78f49275a7e5ab 17,99-102,146-154,185-252
+src/usage.rs
+  s_35049c20e37074::t_eab591a260e7ba 1-235
+src/usage/tests.rs
+  s_35049c20e37074::t_37e113a397781a 1-281
+tests/passthrough.rs
+  s_35049c20e37074::t_31c0e819674675 6,688-845
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "8b3972f65827b7fb6ba21c02ec5d45d3c9a38462",
+  "prompts": {},
+  "sessions": {
+    "s_35049c20e37074": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "09320114-9a62-43b0-a95e-11fb4203f25e",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
