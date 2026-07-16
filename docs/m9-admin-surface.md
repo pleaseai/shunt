@@ -226,9 +226,10 @@ never inserts entries for accounts the pool has not yet seen (reported as
 timestamp, so the dashboard reports what is actually stored rather than inventing
 it. `GET /admin/pool` enumerates each `claude_oauth` and `chatgpt_oauth`
 provider's accounts (its configured list, or the corresponding Claude/Codex store
-scan for an empty list — the same resolution the adapters use). Codex publishes no
-quota headers, so its utilization and reset fields remain `None` and render as
-`—`; the dashboard adds no Codex usage or rate-limit parser.
+scan for an empty list — the same resolution the adapters use). Codex successful
+responses now populate the 5h/7d fields from `x-codex-*` rate-limit headers;
+unsupported windows are ignored and `7d_oi` remains `None` because Codex has no
+analog. This state is display-only and does not affect Codex account selection.
 
 ## Shared foundations with gateway login
 

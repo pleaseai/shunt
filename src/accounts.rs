@@ -32,6 +32,14 @@ enum QuotaWindow {
     Fable,
 }
 
+/// Dashboard bucket for one Codex rate-limit window. Codex identifies these by
+/// duration, not by the primary/secondary header position.
+#[derive(Debug, Clone, Copy)]
+enum CodexWindow {
+    FiveHour,
+    Weekly,
+}
+
 #[derive(Debug, Default)]
 pub struct QuotaState {
     pub utilization_5h: Option<f64>,
@@ -167,6 +175,30 @@ impl AccountPool {
         model: Option<&str>,
         pool: Option<&PoolConfig>,
     ) -> Vec<usize> {
+        self.select_order_inner(provider, accounts, session_id, model, pool, true)
+    }
+
+    /// Return account indices using only stickiness/round-robin, priority,
+    /// disabled state, and cooldowns. Recorded quota remains available to
+    /// [`Self::snapshot`] but cannot influence this order.
+    pub fn select_order_cooldown(
+        &self,
+        provider: &str,
+        accounts: &[AccountConfig],
+        session_id: Option<&str>,
+    ) -> Vec<usize> {
+        self.select_order_inner(provider, accounts, session_id, None, None, false)
+    }
+
+    fn select_order_inner(
+        &self,
+        provider: &str,
+        accounts: &[AccountConfig],
+        session_id: Option<&str>,
+        model: Option<&str>,
+        pool: Option<&PoolConfig>,
+        consider_quota: bool,
+    ) -> Vec<usize> {
         if accounts.is_empty() {
             return Vec::new();
         }
@@ -198,10 +230,17 @@ impl AccountPool {
                         .entry((provider.to_string(), account_identity(account).to_string()))
                         .or_default();
                     expire_stale_quota(&mut health.quota, unix_now);
+                    let quota = if consider_quota {
+                        assess_quota(health, account, model, pool, unix_now)
+                    } else {
+                        QuotaAssessment::ignored()
+                    };
                     (
                         health.cooldown_until,
-                        assess_quota(health, account, model, pool, unix_now),
-                        governing_weekly_reset(health, model),
+                        quota,
+                        consider_quota
+                            .then(|| governing_weekly_reset(health, model))
+                            .flatten(),
                     )
                 })
                 .collect::<Vec<_>>()
@@ -344,6 +383,63 @@ impl AccountPool {
         );
         if let Some(status) = headers
             .get("anthropic-ratelimit-unified-status")
+            .and_then(|value| value.to_str().ok())
+        {
+            quota.status = Some(status.to_string());
+        }
+    }
+
+    /// Record the Codex backend's positional rate-limit header groups for the
+    /// admin dashboard. A group's `window-minutes` identifies its bucket; the
+    /// primary/secondary position does not. This state is deliberately excluded
+    /// from Codex account selection by [`Self::select_order_cooldown`].
+    pub fn note_codex_quota(&self, provider: &str, account: &str, headers: &HeaderMap) {
+        let mut entries = self.entries.lock().expect("account health lock poisoned");
+        let health = entries
+            .entry((provider.to_string(), account.to_string()))
+            .or_default();
+        health.observed = true;
+        let quota = &mut health.quota;
+
+        for (minutes_header, utilization_header, reset_header) in [
+            (
+                "x-codex-primary-window-minutes",
+                "x-codex-primary-used-percent",
+                "x-codex-primary-reset-at",
+            ),
+            (
+                "x-codex-secondary-window-minutes",
+                "x-codex-secondary-used-percent",
+                "x-codex-secondary-reset-at",
+            ),
+        ] {
+            let minutes = header_value::<i64>(headers, minutes_header);
+            let utilization = header_value::<f64>(headers, utilization_header)
+                .filter(|value| value.is_finite() && (0.0..=100.0).contains(value));
+            let (Some(window), Some(utilization)) =
+                (minutes.and_then(codex_window_bucket), utilization)
+            else {
+                continue;
+            };
+            let reset = header_value::<u64>(headers, reset_header);
+            match window {
+                CodexWindow::FiveHour => {
+                    quota.utilization_5h = Some(utilization / 100.0);
+                    if let Some(reset) = reset {
+                        quota.reset_5h = Some(reset);
+                    }
+                }
+                CodexWindow::Weekly => {
+                    quota.utilization_7d = Some(utilization / 100.0);
+                    if let Some(reset) = reset {
+                        quota.reset_7d = Some(reset);
+                    }
+                }
+            }
+        }
+
+        if let Some(status) = headers
+            .get("x-codex-rate-limit-reached-type")
             .and_then(|value| value.to_str().ok())
         {
             quota.status = Some(status.to_string());
@@ -532,14 +628,34 @@ fn stable_session_index(session_id: &str, account_count: usize) -> usize {
     (prefix % account_count as u64) as usize
 }
 
-fn update_header<T: std::str::FromStr>(headers: &HeaderMap, name: &str, field: &mut Option<T>) {
-    if let Some(parsed) = headers
+fn header_value<T: std::str::FromStr>(headers: &HeaderMap, name: &str) -> Option<T> {
+    headers
         .get(name)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<T>().ok())
-    {
+}
+
+fn update_header<T: std::str::FromStr>(headers: &HeaderMap, name: &str, field: &mut Option<T>) {
+    if let Some(parsed) = header_value(headers, name) {
         *field = Some(parsed);
     }
+}
+
+fn codex_window_bucket(minutes: i64) -> Option<CodexWindow> {
+    if within_five_percent(minutes, 300) {
+        Some(CodexWindow::FiveHour)
+    } else if within_five_percent(minutes, 10_080) {
+        Some(CodexWindow::Weekly)
+    } else {
+        None
+    }
+}
+
+fn within_five_percent(value: i64, expected: i64) -> bool {
+    let Some(scaled) = value.checked_mul(100) else {
+        return false;
+    };
+    scaled >= expected * 95 && scaled <= expected * 105
 }
 
 fn is_fable_model(model: Option<&str>) -> bool {
@@ -598,6 +714,16 @@ struct QuotaAssessment {
     /// Minimum burn-rate headroom in seconds across the governing windows
     /// (see [`window_headroom`]); +∞ when nothing suggests pressure.
     headroom: f64,
+}
+
+impl QuotaAssessment {
+    fn ignored() -> Self {
+        Self {
+            near: false,
+            over_hard: false,
+            headroom: f64::INFINITY,
+        }
+    }
 }
 
 fn assess_quota(
@@ -764,9 +890,8 @@ pub fn classify(status: StatusCode, headers: &HeaderMap) -> FailoverAction {
 
 /// Classify a Codex/ChatGPT upstream response for account-pool failover.
 /// Takes the same `(status, headers)` shape as [`classify`] so both adapters
-/// share one call site, but Codex responses carry no per-account
-/// quota-rejection header — unlike Anthropic, every 429 rotates rather than
-/// pausing the same account, so `headers` goes unused for now.
+/// share one call site. Codex quota/rejection headers are display-only: every
+/// 429 still rotates rather than pausing the same account.
 pub fn classify_codex(status: StatusCode, _headers: &HeaderMap) -> FailoverAction {
     if status.is_success() {
         return FailoverAction::Relay;
@@ -1113,6 +1238,150 @@ mod tests {
     }
 
     #[test]
+    fn codex_weekly_header_group_maps_by_window_minutes() {
+        let pool = AccountPool::new();
+        let accounts = vec![account("pro")];
+        let reset = unix_now() + 508_740;
+        let headers = quota_headers(&[
+            ("x-codex-primary-used-percent", "26".to_string()),
+            ("x-codex-primary-window-minutes", "10080".to_string()),
+            ("x-codex-primary-reset-at", reset.to_string()),
+            ("x-codex-primary-reset-after-seconds", "508740".to_string()),
+            ("x-codex-secondary-used-percent", "0".to_string()),
+            ("x-codex-secondary-window-minutes", "0".to_string()),
+            ("x-codex-secondary-reset-at", String::new()),
+            ("x-codex-plan-type", "pro".to_string()),
+            ("x-codex-active-limit", "premium".to_string()),
+        ]);
+
+        pool.note_codex_quota("codex", "pro", &headers);
+
+        let snaps = pool.snapshot("codex", &accounts, None, None);
+        assert!(snaps[0].has_state);
+        assert_eq!(snaps[0].utilization_7d, Some(0.26));
+        assert_eq!(snaps[0].reset_7d, Some(reset));
+        assert_eq!(snaps[0].utilization_5h, None);
+        assert_eq!(snaps[0].utilization_7d_oi, None);
+    }
+
+    #[test]
+    fn codex_five_hour_header_group_maps_by_window_minutes() {
+        let pool = AccountPool::new();
+        let accounts = vec![account("pro")];
+        let headers = quota_headers(&[
+            ("x-codex-primary-used-percent", "40".to_string()),
+            ("x-codex-primary-window-minutes", "300".to_string()),
+        ]);
+
+        pool.note_codex_quota("codex", "pro", &headers);
+
+        let snaps = pool.snapshot("codex", &accounts, None, None);
+        assert!(snaps[0].has_state);
+        assert_eq!(snaps[0].utilization_5h, Some(0.4));
+        assert_eq!(snaps[0].utilization_7d, None);
+    }
+
+    #[test]
+    fn codex_unmatched_window_is_ignored() {
+        let pool = AccountPool::new();
+        let accounts = vec![account("pro")];
+        let headers = quota_headers(&[
+            ("x-codex-primary-used-percent", "75.0".to_string()),
+            ("x-codex-primary-window-minutes", "1440".to_string()),
+        ]);
+
+        pool.note_codex_quota("codex", "pro", &headers);
+
+        let snaps = pool.snapshot("codex", &accounts, None, None);
+        assert!(snaps[0].has_state);
+        assert_eq!(snaps[0].utilization_5h, None);
+        assert_eq!(snaps[0].utilization_7d, None);
+    }
+
+    #[test]
+    fn codex_missing_reset_preserves_prior_reset() {
+        let pool = AccountPool::new();
+        let accounts = vec![account("pro")];
+        let reset = unix_now() + 3_600;
+        pool.note_codex_quota(
+            "codex",
+            "pro",
+            &quota_headers(&[
+                ("x-codex-primary-used-percent", "40".to_string()),
+                ("x-codex-primary-window-minutes", "300".to_string()),
+                ("x-codex-primary-reset-at", reset.to_string()),
+            ]),
+        );
+
+        pool.note_codex_quota(
+            "codex",
+            "pro",
+            &quota_headers(&[
+                ("x-codex-primary-used-percent", "41".to_string()),
+                ("x-codex-primary-window-minutes", "300".to_string()),
+            ]),
+        );
+
+        let snaps = pool.snapshot("codex", &accounts, None, None);
+        assert_eq!(snaps[0].utilization_5h, Some(0.41));
+        assert_eq!(snaps[0].reset_5h, Some(reset));
+    }
+
+    #[test]
+    fn codex_invalid_utilization_is_ignored() {
+        for utilization in ["NaN", "-1", "101"] {
+            let pool = AccountPool::new();
+            let accounts = vec![account("pro")];
+            let headers = quota_headers(&[
+                ("x-codex-primary-used-percent", utilization.to_string()),
+                ("x-codex-primary-window-minutes", "300".to_string()),
+            ]);
+
+            pool.note_codex_quota("codex", "pro", &headers);
+
+            let snaps = pool.snapshot("codex", &accounts, None, None);
+            assert!(snaps[0].has_state);
+            assert_eq!(snaps[0].utilization_5h, None);
+        }
+    }
+
+    #[test]
+    fn codex_rejection_status_is_recorded_for_display_only() {
+        let pool = AccountPool::new();
+        let accounts = vec![account("pro")];
+        pool.note_codex_quota(
+            "codex",
+            "pro",
+            &quota_headers(&[("x-codex-rate-limit-reached-type", "weekly".to_string())]),
+        );
+
+        let snaps = pool.snapshot("codex", &accounts, None, None);
+        assert_eq!(snaps[0].status.as_deref(), Some("weekly"));
+    }
+
+    #[test]
+    fn codex_display_quota_does_not_change_cooldown_only_selection() {
+        let pool = AccountPool::new();
+        let accounts = vec![account("a"), account("b")];
+        let session = "codex-display-only";
+        let initial = pool.select_order_cooldown("codex", &accounts, Some(session));
+        let sticky = initial[0];
+        pool.note_codex_quota(
+            "codex",
+            &accounts[sticky].name,
+            &quota_headers(&[
+                ("x-codex-primary-used-percent", "100".to_string()),
+                ("x-codex-primary-window-minutes", "300".to_string()),
+            ]),
+        );
+
+        assert_eq!(
+            pool.select_order_cooldown("codex", &accounts, Some(session)),
+            initial
+        );
+    }
+
+    #[test]
     fn forget_identity_is_provider_scoped() {
         let pool = AccountPool::new();
         let accounts = vec![account("main")];
@@ -1412,8 +1681,8 @@ mod tests {
 
     #[test]
     fn classifies_upstream_responses_codex() {
-        // Codex has no per-account quota-rejection header, so every 429
-        // rotates — unlike Anthropic's PauseSame-without-a-rejected-header.
+        // Codex quota/rejection headers are display-only, so every 429 rotates
+        // rather than taking Anthropic's PauseSame path.
         assert_eq!(
             classify_codex(StatusCode::TOO_MANY_REQUESTS, &HeaderMap::new()),
             FailoverAction::Rotate

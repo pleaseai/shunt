@@ -120,16 +120,12 @@ async fn forward_codex_passthrough(
             accounts_config.len()
         )));
     }
-    let order = state.accounts.select_order(
+    // Codex quota is display-only: this endpoint preserves cooldown-based
+    // selection even when response headers populate the admin dashboard.
+    let order = state.accounts.select_order_cooldown(
         &route.provider,
         &accounts_config,
         pool_key.as_deref(),
-        // Codex exposes no per-model quota signal to order by (same as the
-        // Anthropic-translating pool path).
-        None,
-        // Quota knobs are inert without quota headers, but per-account
-        // priority/disabled still apply.
-        state.config.server.pool.as_ref(),
     );
     let mut last_response: Option<reqwest::Response> = None;
 
@@ -168,6 +164,9 @@ async fn forward_codex_passthrough(
             }
         };
 
+        state
+            .accounts
+            .note_codex_quota(&route.provider, &account.name, upstream.headers());
         match classify_first(&state, &route, account, upstream) {
             // Success or a non-failover 4xx (e.g. 400): the account is fine, so
             // relay the upstream response verbatim — a passthrough client expects
@@ -219,6 +218,9 @@ async fn forward_codex_passthrough(
                         continue;
                     }
                 };
+                state
+                    .accounts
+                    .note_codex_quota(&route.provider, &account.name, retry.headers());
                 match classify_retry(&state, &route, account, retry) {
                     RetryOutcome::Relay(retry) => {
                         let retry_status = retry.status();

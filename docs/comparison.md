@@ -89,9 +89,10 @@ selection, per-provider round-robin, model-aware proactive rotation from per-acc
 quota-rejected 429s and 5xx responses (`docs/m8-anthropic-multi-account.md`). The
 Codex/ChatGPT pool (`docs/m10-codex-multi-account.md`) mirrors the reactive half only —
 session-sticky/round-robin selection, cooldowns, forced refresh after 401, rotation on
-429/5xx/credential-resolution failure — because the backend sends no per-account quota
-headers, so there is no proactive near-quota switch and no fill-first ordering across
-accounts. Per-account usage reporting is not implemented for either pool.
+429/5xx/credential-resolution failure. The backend's `x-codex-*` 5h/7d windows are
+recorded for admin-dashboard display only, so there is still no proactive near-quota
+switch or fill-first ordering across accounts. This is quota visibility, not
+per-request token usage or cost accounting.
 ⁸ **[#82]** adds an opt-in, per-provider `tool_search` flag (`src/config.rs:326-337,1198-1211`)
 that maps Claude Code's tool search onto the OpenAI Responses API's own native,
 client-executed `tool_search` protocol — `ToolSearch` → `tool_search`, its `tool_use` →
@@ -106,9 +107,10 @@ the #43 shim regardless of the flag.
 `[server.admin]` table is present (`src/server.rs:117-118`, `src/admin/mod.rs:87-103`). It
 provisions Anthropic `claude_oauth` accounts (add/list/replace/remove) through the existing
 `claude_login` flow and renders a **read-only account-pool dashboard** — per-account 5h/7d
-quota utilization, cooldown, and near-quota flags (`src/accounts.rs:46-63`).
-Deliberately narrow: Anthropic accounts only (no ChatGPT/Codex), and no request/token usage
-or cost accounting — well short of CLIProxyAPI's full management API + quota/usage manager.
+quota utilization and cooldown for Anthropic and ChatGPT/Codex accounts, plus near-quota
+flags for the quota-aware Anthropic pool (`src/accounts.rs`). Account provisioning remains
+Anthropic-only; the dashboard does not provide request/token usage or cost accounting — well
+short of CLIProxyAPI's full management API + quota/usage manager.
 
 > "raine/ccp" = [raine/claude-code-proxy](https://github.com/raine/claude-code-proxy).
 

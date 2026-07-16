@@ -29,9 +29,8 @@ use super::websocket::forward_websocket;
 /// account on a pre-stream websocket failure, then classifying the raw HTTP
 /// status with [`accounts::classify_codex`] to decide whether to relay,
 /// rotate to the next account, or force-refresh and retry the same one.
-/// `note_quota` is never called here — unlike Anthropic, the ChatGPT backend
-/// carries no per-account quota-rejection headers, so failover in this
-/// adapter is cooldown-based only.
+/// Codex quota headers are recorded for the admin dashboard, but selection
+/// remains deliberately cooldown-based rather than quota-aware.
 pub(super) async fn forward_chatgpt_oauth(
     state: AppState,
     route: Route,
@@ -58,17 +57,13 @@ pub(super) async fn forward_chatgpt_oauth(
             accounts_config.len()
         )));
     }
-    let order = state.accounts.select_order(
+    // Codex usage is recorded for the admin dashboard via note_codex_quota,
+    // but it is deliberately not fed into selection: failover stays
+    // cooldown-based. Per-account priority/disabled still apply.
+    let order = state.accounts.select_order_cooldown(
         &route.provider,
         &accounts_config,
         session_id.as_deref(),
-        // Codex carries no per-model quota signal to order by, unlike the
-        // Anthropic pool's rate-limit headers.
-        None,
-        // The [server.pool] quota knobs are inert here for the same reason
-        // (note_quota is never called on this path), but per-account
-        // priority/disabled still apply.
-        state.config.server.pool.as_ref(),
     );
     let ws_enabled = state.config.codex_websocket_enabled(&route.provider);
     let auth = AuthMode::ChatgptOauth;
@@ -103,6 +98,7 @@ pub(super) async fn forward_chatgpt_oauth(
                     credential: credential.clone(),
                     auth,
                     turn,
+                    codex_quota_account: Some(account.name.clone()),
                     // Pool path does not pre-compute a message_start input estimate
                     // yet (see relay_success) — follow-up to thread it through here.
                     estimate_input: None,
@@ -155,6 +151,9 @@ pub(super) async fn forward_chatgpt_oauth(
             }
         };
 
+        state
+            .accounts
+            .note_codex_quota(&route.provider, &account.name, upstream.headers());
         match classify_first(&state, &route, account, upstream) {
             FirstOutcome::Relay(upstream) => {
                 // A non-401/429/5xx response means the account itself is fine,
@@ -221,6 +220,9 @@ pub(super) async fn forward_chatgpt_oauth(
                         continue;
                     }
                 };
+                state
+                    .accounts
+                    .note_codex_quota(&route.provider, &account.name, retry.headers());
                 match classify_retry(&state, &route, account, retry) {
                     RetryOutcome::Relay(retry) => {
                         let retry_status = retry.status();

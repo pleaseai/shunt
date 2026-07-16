@@ -66,7 +66,7 @@ name = "codex-backup"
 
 ## Inspect pool health
 
-The dashboard shows account-store metadata and current state for each provider configured with `auth = "claude_oauth"` or `auth = "chatgpt_oauth"`. Claude rows include the 5-hour, shared 7-day, and `7d_oi` utilization observed from upstream responses, along with status and cooldown state. Codex sends no quota headers, so its utilization columns show `—`; shunt does not infer or parse Codex usage.
+The dashboard shows account-store metadata and current state for each provider configured with `auth = "claude_oauth"` or `auth = "chatgpt_oauth"`. Claude rows include the 5-hour, shared 7-day, and `7d_oi` utilization observed from upstream responses, along with status and cooldown state. Codex rows show the 5-hour and 7-day windows reported in `x-codex-*` response headers; unsupported windows are ignored and `7d_oi` stays `—` because Codex has no analog. Codex usage is display-only and does not alter its cooldown-based account selection.
 
 The Claude account list exposes account name, credential kind (`setup_token` or `imported`), expiry, and UUID. The Codex list exposes account name, access-token expiry, and ChatGPT account ID. Neither endpoint returns token material. See [Anthropic Multi-Account](/guides/anthropic-multi-account/#selection-and-proactive-rotation) and [Codex Multi-Account](/guides/codex-multi-account/) for the respective selection behavior.
 
