@@ -30,7 +30,7 @@ pub async fn get(State(state): State<AppState>, Query(query): Query<DeviceQuery>
     if state.refreshed().gateway_auth.is_none() {
         return StatusCode::NOT_FOUND.into_response();
     }
-    Html(page(&query.user_code, None, false)).into_response()
+    device_page(page(&query.user_code, None, false))
 }
 
 pub async fn post(
@@ -49,22 +49,20 @@ pub async fn post(
             .ok()
             .map(|Form(form)| form.user_code.as_str())
             .unwrap_or_default();
-        return Html(page(
+        return device_page(page(
             user_code,
             Some("This request came from another site and was blocked."),
             false,
-        ))
-        .into_response();
+        ));
     }
     let Form(form) = match form {
         Ok(form) => form,
         Err(_) => {
-            return Html(page(
+            return device_page(page(
                 "",
                 Some("The submitted form could not be read. Try again."),
                 false,
-            ))
-            .into_response()
+            ));
         }
     };
     let peer = connection.map(|Extension(ConnectInfo(address))| address);
@@ -74,40 +72,52 @@ pub async fn post(
         .device_verify_rate
         .check(client_ip.as_str())
     {
-        return Html(page(
+        return device_page(page(
             &form.user_code,
             Some("Too many attempts. Wait a minute and try again."),
             false,
-        ))
-        .into_response();
+        ));
     }
     let user_code = normalize_user_code(&form.user_code);
     let Some(identity) = auth.approval_provider().verify(&form.login, &form.secret) else {
-        return Html(page(
+        return device_page(page(
             &user_code,
             Some("The login or secret was not accepted."),
             false,
-        ))
-        .into_response();
+        ));
     };
     if !state
         .gateway_stores
         .device_grants
         .approve(&user_code, identity)
     {
-        return Html(page(
+        return device_page(page(
             &user_code,
             Some("The device code is invalid, expired, or already used."),
             false,
-        ))
-        .into_response();
+        ));
     }
-    Html(page(
+    device_page(page(
         &user_code,
         Some("Device approved. You can return to your device."),
         true,
     ))
-    .into_response()
+}
+
+fn device_page(body: String) -> Response {
+    const CSP: &str = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; \
+base-uri 'none'; frame-ancestors 'none'";
+    (
+        [
+            (header::CONTENT_SECURITY_POLICY, CSP),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (header::X_FRAME_OPTIONS, "DENY"),
+            (header::REFERRER_POLICY, "no-referrer"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        Html(body),
+    )
+        .into_response()
 }
 
 fn same_origin(headers: &HeaderMap, public_url: &str) -> bool {
@@ -249,7 +259,7 @@ mod tests {
 
     use axum::http::{header, HeaderMap, HeaderValue};
 
-    use super::{client_ip, page, same_origin};
+    use super::{client_ip, device_page, page, same_origin};
 
     #[test]
     fn page_escapes_prefilled_code_and_never_auto_submits() {
@@ -257,6 +267,24 @@ mod tests {
         assert!(html.contains("&lt;script&gt;"));
         assert!(!html.contains("<script"));
         assert!(html.contains("method=\"post\""));
+    }
+
+    #[test]
+    fn device_page_sets_browser_security_headers() {
+        let response = device_page(page("ABCD-EFGH", None, false));
+        let headers = response.headers();
+
+        assert_eq!(
+            headers.get(header::CONTENT_SECURITY_POLICY).unwrap(),
+            "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+        );
+        assert_eq!(
+            headers.get(header::X_CONTENT_TYPE_OPTIONS).unwrap(),
+            "nosniff"
+        );
+        assert_eq!(headers.get(header::X_FRAME_OPTIONS).unwrap(), "DENY");
+        assert_eq!(headers.get(header::REFERRER_POLICY).unwrap(), "no-referrer");
+        assert_eq!(headers.get(header::CACHE_CONTROL).unwrap(), "no-store");
     }
 
     #[test]
