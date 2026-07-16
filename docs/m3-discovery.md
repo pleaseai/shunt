@@ -59,6 +59,17 @@ is the documented default. Discovery is only useful if shunt exposes a **Claude-
 - A discovered id should also have a matching `[[routes]]` entry (id → provider + `upstream_model`)
   so selecting it actually routes; validate this linkage at config load (warn if a `[[models]]`
   id has no route).
+- **Alias is the model-of-record on both directions.** An alias route sends `upstream_model`
+  outbound (`normalize_upstream_model`); on the return path the relay rewrites the response's
+  `model` back to the alias — `message_start.message.model` for streaming and the top-level
+  `model` for non-streaming. The upstream reports *its own* model id, which in a multi-hop chain
+  (shunt → LiteLLM → …) differs from `upstream_model` too, so the rewrite is keyed on the alias,
+  never on `upstream_model`. Without it Claude Code records the raw upstream id in the session
+  transcript and cannot restore the model on `--resume` ("Session model … could not be restored").
+  Gated on `route.model != upstream_model`, so plain passthrough (api.anthropic.com, where the
+  dated snapshot id is the client's model-of-record) stays byte-for-byte. The Responses adapter
+  already preserves the alias by seeding its SSE machine with `route.model`; see
+  `src/adapters/anthropic/model_rewrite.rs` for the native-relay parity (issue #172).
 
 ## 5. Model map + effort (`codex/models.rs`)
 
@@ -103,3 +114,7 @@ and `count_tokens_uses_tiktoken_by_default` in `tests/passthrough.rs`.
   responds without an upstream call.
 - Config validation: a `[[models]]` id lacking a `[[routes]]` entry warns.
 - `map_model` / `effort_for` table + suffix + override precedence (pure unit tests).
+- Alias model-of-record rewrite on the return path: `model_rewrite` unit tests (streaming frame,
+  chunk-split frame, non-streaming body, passthrough no-op) plus the
+  `discovery_alias_*_rewrites_leaked_upstream_model` and `passthrough_route_preserves_real_upstream_model`
+  integration tests in `tests/passthrough.rs`.
