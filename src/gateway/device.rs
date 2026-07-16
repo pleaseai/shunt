@@ -193,7 +193,7 @@ fn normalize_user_code(code: &str) -> String {
         .filter(|character| *character != '-')
         .flat_map(char::to_uppercase)
         .collect();
-    if compact.len() == 8 {
+    if compact.is_ascii() && compact.len() == 8 {
         format!("{}-{}", &compact[..4], &compact[4..])
     } else {
         compact
@@ -301,6 +301,7 @@ mod tests {
     fn user_code_normalization_accepts_omitted_separator() {
         assert_eq!(normalize_user_code(" bcdfghjk "), "BCDF-GHJK");
         assert_eq!(normalize_user_code("bcdf-ghjk"), "BCDF-GHJK");
+        assert_eq!(normalize_user_code("éééé"), "ÉÉÉÉ");
     }
 
     #[test]
