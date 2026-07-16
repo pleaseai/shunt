@@ -1142,6 +1142,10 @@ impl Config {
             .extract()
             .map_err(Box::new)?;
         let config = config.validate()?;
+        // Collision reporting belongs to the load boundary rather than
+        // validation: RuntimeState defensively re-validates an already-loaded
+        // config, and logging there would emit the same warning twice.
+        config.warn_identity_collisions();
         // Logged only after validation so a rejected config never boots with a
         // misleading "loaded config" line.
         match &path {
@@ -1165,6 +1169,19 @@ impl Config {
         config_file_candidates(xdg_config_home, homebrew_prefix)
             .into_iter()
             .find(|path| path.is_file())
+    }
+
+    fn warn_identity_collisions(&self) {
+        for (name, provider) in &self.providers {
+            for (identity, accounts) in identity_collisions(&provider.accounts) {
+                tracing::warn!(
+                    provider = %name,
+                    identity = %identity,
+                    accounts = ?accounts,
+                    "multiple account names share one upstream identity; the pool will treat them as one account"
+                );
+            }
+        }
     }
 
     pub fn validate(self) -> Result<Self, ConfigError> {
@@ -1397,14 +1414,6 @@ impl Config {
                         }
                     }
                 }
-            }
-            for (identity, accounts) in identity_collisions(&provider.accounts) {
-                tracing::warn!(
-                    provider = %name,
-                    identity = %identity,
-                    accounts = ?accounts,
-                    "multiple account names share one upstream identity; the pool will treat them as one account"
-                );
             }
             // An xai_oauth provider injects the operator's subscription bearer,
             // so its base_url must stay on an xAI host over https (mirrors
