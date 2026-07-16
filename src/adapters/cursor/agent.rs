@@ -25,8 +25,9 @@
 //!
 //! Wire shape reverse-engineered from the public MIT-licensed `1jehuang/jcode`
 //! project (`crates/jcode-provider-cursor-runtime/src/agent_transport.rs`), which
-//! captured it from the real `cursor-agent` CLI. This is a text-only transport:
-//! tool bridging and image context are not yet mapped to the new wire format.
+//! captured it from the real `cursor-agent` CLI. Assistant text and reasoning,
+//! native MCP tool calls, and inline image context are all mapped to this wire
+//! format; Cursor's own agentic file/shell tools are not exposed.
 
 use std::collections::VecDeque;
 use std::sync::OnceLock;
@@ -58,7 +59,7 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 /// Generation can take a few seconds to start; allow a long first-byte budget.
 const FIRST_BYTE_TIMEOUT: Duration = Duration::from_secs(60);
 /// Cursor keeps the response side open after the assistant message when it
-/// expects a tool exec-result (which this text-only transport never sends), so
+/// expects a tool exec-result (which this stateless bridge never sends), so
 /// finish the turn once output goes quiet.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(4);
 
@@ -101,7 +102,8 @@ fn client_version() -> &'static str {
         .get_or_init(|| {
             std::env::var("SHUNT_CURSOR_CLIENT_VERSION")
                 .ok()
-                .filter(|value| !value.trim().is_empty())
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
                 .unwrap_or_else(|| CLI_CLIENT_VERSION.to_string())
         })
         .as_str()
@@ -306,10 +308,17 @@ impl CursorAgentTurn {
                             .push_back(Err(CursorError::from_reqwest(error)));
                     }
                     // Clean EOF or idle (server waiting for a tool exec-result we
-                    // never send): finish the turn either way.
+                    // never send). Validate the decoder ended on a frame boundary
+                    // so a truncated body surfaces as an error instead of a
+                    // partial/empty success.
                     Ok(None) | Err(_) => {
                         state.finished = true;
-                        state.pending.push_back(Ok(CursorStreamEvent::End));
+                        match state.decoder.finish() {
+                            Ok(()) => state.pending.push_back(Ok(CursorStreamEvent::End)),
+                            Err(error) => state.pending.push_back(Err(CursorError::internal(
+                                format!("cursor frame: {error}"),
+                            ))),
+                        }
                     }
                 }
             }
@@ -353,9 +362,13 @@ impl ReadState {
                 }
                 return;
             }
+            let decompressed;
             let payload = if frame.flags & FLAG_GZIP != 0 {
                 match decode_gzip_frame(&frame.payload) {
-                    Ok(bytes) => bytes,
+                    Ok(bytes) => {
+                        decompressed = bytes;
+                        &decompressed[..]
+                    }
                     Err(error) => {
                         self.finished = true;
                         self.pending
@@ -364,24 +377,28 @@ impl ReadState {
                     }
                 }
             } else {
-                frame.payload.to_vec()
+                &frame.payload[..]
             };
             // A native MCP tool call ends the assistant turn: the model now waits
             // for an exec-result on the stream. The stateless bridge surfaces the
             // call as a tool_use pause and re-runs with the result in history, so
             // finish the turn here rather than sending an exec-result back.
-            if let Some((name, input_json)) = extract_tool_call(&payload) {
+            if let Some((name, input_json)) = extract_tool_call(payload) {
                 self.got_text = true;
                 self.finished = true;
                 self.pending
                     .push_back(Ok(CursorStreamEvent::ToolCall { name, input_json }));
                 return;
             }
-            if let Some(text) = extract_reasoning_text(&payload) {
+            if let Some(text) = extract_reasoning_text(payload) {
+                // Reasoning is upstream output too: once it arrives, switch from
+                // the first-byte budget to the idle budget so a reasoning-only
+                // turn that goes quiet isn't held for the full first-byte window.
+                self.got_text = true;
                 self.pending
                     .push_back(Ok(CursorStreamEvent::ThinkingDelta { text }));
             }
-            if let Some(text) = extract_answer_text(&payload) {
+            if let Some(text) = extract_answer_text(payload) {
                 self.got_text = true;
                 self.pending
                     .push_back(Ok(CursorStreamEvent::TextDelta { text }));
@@ -626,7 +643,7 @@ fn iter_fields(mut buf: &[u8]) -> impl Iterator<Item = PbField<'_>> {
             }
             2 => {
                 let (len, rest) = read_varint(buf)?;
-                let len = len as usize;
+                let len = usize::try_from(len).ok()?;
                 if rest.len() < len {
                     return None;
                 }

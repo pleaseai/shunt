@@ -71,16 +71,21 @@ pub fn frame_cursor_stream(body: &[u8], message_id: &str, model: &str) -> Vec<u8
     framer.into_output()
 }
 
-/// Format an SSE error event.
-pub(crate) fn format_sse_error(error: &str) -> Vec<u8> {
+/// Format an SSE error event with an explicit Anthropic error `type`.
+pub(crate) fn format_sse_error_typed(kind: &str, error: &str) -> Vec<u8> {
     let data = serde_json::json!({
         "type": "error",
         "error": {
-            "type": "api_error",
+            "type": kind,
             "message": error
         }
     });
     format_sse_event_bytes("error", &data)
+}
+
+/// Format an SSE error event (generic `api_error` type).
+pub(crate) fn format_sse_error(error: &str) -> Vec<u8> {
+    format_sse_error_typed("api_error", error)
 }
 
 /// Append a single SSE event to an existing byte buffer.

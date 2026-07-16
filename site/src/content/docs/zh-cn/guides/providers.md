@@ -7,7 +7,7 @@ description: 内置的提供方,以及如何用一个 TOML 表添加任意兼容
 
 - **`kind = "anthropic"`** —— 上游讲 Anthropic Messages API。shunt 将请求透传,可选择注入一个不同的 API 密钥。
 - **`kind = "responses"`** —— 上游讲 OpenAI Responses API。shunt 在 Anthropic Messages ⇄ Responses 之间转换,含流式传输。
-- **`kind = "cursor"`** —— 原生 Cursor 适配器。shunt 将 Cursor 的 ConnectRPC/protobuf AgentService 桥接到 Anthropic Messages API,含流式传输、推理、原生工具调用与内联图像。由内置的 `cursor` 提供方使用。
+- **`kind = "cursor"`** —— 原生 Cursor 适配器。shunt 将 Cursor 的 ConnectRPC/protobuf AgentService 桥接到 Anthropic Messages API,含流式传输、推理(流式响应中)、原生工具调用与内联图像。由内置的 `cursor` 提供方使用。
 
 ## 内置提供方
 

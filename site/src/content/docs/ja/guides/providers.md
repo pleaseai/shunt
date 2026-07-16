@@ -7,7 +7,7 @@ description: 組み込みプロバイダーと、TOML テーブルで任意の A
 
 - **`kind = "anthropic"`** — 上流が Anthropic Messages API を話します。shunt はリクエストをパススルーし、オプションで別の API キーを注入します。
 - **`kind = "responses"`** — 上流が OpenAI Responses API を話します。shunt は Anthropic Messages ⇄ Responses を、ストリーミングを含めて変換します。
-- **`kind = "cursor"`** — ネイティブな Cursor アダプター。shunt は Cursor の ConnectRPC/protobuf AgentService を Anthropic Messages API へブリッジし、ストリーミング・推論・ネイティブなツール呼び出し・インライン画像を含みます。組み込みの `cursor` プロバイダーが使用します。
+- **`kind = "cursor"`** — ネイティブな Cursor アダプター。shunt は Cursor の ConnectRPC/protobuf AgentService を Anthropic Messages API へブリッジし、ストリーミング・推論(ストリーミング応答時)・ネイティブなツール呼び出し・インライン画像を含みます。組み込みの `cursor` プロバイダーが使用します。
 
 ## 組み込みプロバイダー
 

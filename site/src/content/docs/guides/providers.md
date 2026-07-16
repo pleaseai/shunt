@@ -7,7 +7,7 @@ Providers are a **name → config map**: a new upstream is just another `[provid
 
 - **`kind = "anthropic"`** — the upstream speaks the Anthropic Messages API. shunt passes the request through, optionally injecting a different API key.
 - **`kind = "responses"`** — the upstream speaks the OpenAI Responses API. shunt translates Anthropic Messages ⇄ Responses, including streaming.
-- **`kind = "cursor"`** — the native Cursor adapter. shunt bridges Cursor's ConnectRPC/protobuf AgentService to the Anthropic Messages API — streaming, reasoning, native tool calls, and inline images included. Used by the built-in `cursor` provider.
+- **`kind = "cursor"`** — the native Cursor adapter. shunt bridges Cursor's ConnectRPC/protobuf AgentService to the Anthropic Messages API — streaming, reasoning in streaming responses, native tool calls, and inline images included. Used by the built-in `cursor` provider.
 
 ## Built-in providers
 

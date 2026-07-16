@@ -42,7 +42,7 @@ use crate::{
 use self::{
     agent::{CursorAgentClient, CursorAgentTurn},
     response::CursorStreamEvent,
-    sse::{format_sse_error, CursorSseFramer},
+    sse::{format_sse_error_typed, CursorSseFramer},
 };
 
 pub struct CursorAdapter;
@@ -103,16 +103,19 @@ async fn forward(
         .unwrap_or(false);
     // The env context frame carries the working directory; the gateway has no
     // per-request workspace, so use the process cwd (falling back to "/").
-    let cwd = std::env::current_dir()
-        .ok()
-        .and_then(|path| path.to_str().map(ToOwned::to_owned))
-        .unwrap_or_else(|| "/".to_string());
+    static CWD: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let cwd = CWD.get_or_init(|| {
+        std::env::current_dir()
+            .ok()
+            .and_then(|path| path.to_str().map(ToOwned::to_owned))
+            .unwrap_or_else(|| "/".to_string())
+    });
 
     let client = CursorAgentClient::new(state.http_client.clone());
     let params = agent::AgentRunParams {
         prompt: &prompt,
         model_id: &resolved.model_id,
-        cwd: &cwd,
+        cwd,
         mode: resolved.mode.wire_enum(),
         images: &images,
         tools: &tools,
@@ -307,13 +310,17 @@ fn streaming_response(
                     Some(Ok(CursorStreamEvent::Session { .. }))
                     | Some(Ok(CursorStreamEvent::Usage { .. })) => {}
                     Some(Err(error)) => {
+                        let status =
+                            StatusCode::from_u16(error.status).unwrap_or(StatusCode::BAD_GATEWAY);
+                        let kind = crate::model::responses::anthropic_error_type(status);
+                        let detail = connect_error_detail(&error);
                         let message = crate::model::responses::context_overflow_message(
-                            &Value::Null,
+                            &detail,
                             &error.message,
                         )
                         .unwrap_or(error.message);
                         let mut output = framer.take_output();
-                        output.extend_from_slice(&format_sse_error(&message));
+                        output.extend_from_slice(&format_sse_error_typed(kind, &message));
                         return Some((Ok(Bytes::from(output)), (events, framer, true)));
                     }
                 }
@@ -384,6 +391,17 @@ fn map_client_error(error: client::CursorError) -> AdapterError {
     bad_gateway(error.to_string())
 }
 
+/// Parse a Cursor Connect error's `detail` (the raw end-frame JSON body) so the
+/// context-overflow rewrite can read the upstream error `code`. Falls back to
+/// `Value::Null` when there is no detail or it isn't JSON.
+fn connect_error_detail(error: &client::CursorError) -> Value {
+    error
+        .detail
+        .as_deref()
+        .and_then(|detail| serde_json::from_str::<Value>(detail).ok())
+        .unwrap_or(Value::Null)
+}
+
 /// Map an error surfaced while reading a turn (a Connect end-frame error that
 /// carries an upstream status) to the client, reusing the shared status ->
 /// `error.type` table so a Cursor 401/403/429/5xx keeps its meaning instead of
@@ -393,7 +411,8 @@ fn map_cursor_stream_error(error: client::CursorError) -> AdapterError {
     let status = StatusCode::from_u16(error.status).unwrap_or(StatusCode::BAD_GATEWAY);
     let mapped_status = crate::model::responses::client_facing_status(status);
     let kind = crate::model::responses::anthropic_error_type(status);
-    let message = crate::model::responses::context_overflow_message(&Value::Null, &error.message)
+    let detail = connect_error_detail(&error);
+    let message = crate::model::responses::context_overflow_message(&detail, &error.message)
         .unwrap_or(error.message);
     own_error(mapped_status, kind, message)
 }
