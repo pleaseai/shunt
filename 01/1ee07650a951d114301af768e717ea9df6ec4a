@@ -1,0 +1,40 @@
+site/src/content/docs/guides/providers.md
+  s_95b76ba7daeffc::t_8978fbe6282c41 51,63,67-71,75-77,79,82
+  s_95b76ba7daeffc::t_612d9f756989b7 10
+Cargo.toml
+  s_95b76ba7daeffc::t_8940495d3fc073 52-56
+README.md
+  s_95b76ba7daeffc::t_5ed9cb7119918c 97,101
+src/adapters/cursor/agent.rs
+  s_95b76ba7daeffc::t_fd0f3d9d0705d1 175-178,573-577
+  s_95b76ba7daeffc::t_16a35bba65f4fb 8-13
+  s_95b76ba7daeffc::t_6bca34b3cb831f 1-7,14-174,179-572,578-623
+src/adapters/cursor/mod.rs
+  s_95b76ba7daeffc::t_e3a8380c87dfd0 6-17,21,23
+  s_95b76ba7daeffc::t_a17ca2acc0cd2e 213-217,219
+  s_95b76ba7daeffc::t_05363e55b646e7 43-45
+  s_95b76ba7daeffc::t_ef21bf30134fbe 59-60
+  s_95b76ba7daeffc::t_36ae718dbb982a 290-296,299-300
+  s_95b76ba7daeffc::t_56e5bdacd87dab 1
+  s_95b76ba7daeffc::t_b65ef07ff14899 102-109,119-120,123-124,130,134-142,144-168,170,175-204,206-207,210-212,218,220,224-225
+  s_95b76ba7daeffc::t_180e677218d088 110-118
+  s_95b76ba7daeffc::t_40af7175c470bf 143
+Cargo.lock
+  s_95b76ba7daeffc::t_1fc869481ff053 2146
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "011ee07650a951d114301af768e717ea9df6ec4a",
+  "prompts": {},
+  "sessions": {
+    "s_95b76ba7daeffc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b3c31ea5-5eec-4425-a298-2a8c25397fb3",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
