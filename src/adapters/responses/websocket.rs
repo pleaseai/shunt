@@ -38,6 +38,7 @@ pub(super) async fn forward_websocket(
         credential,
         auth,
         turn,
+        codex_quota_account,
         estimate_input,
     } = forward;
     let pool_key = pool_key.filter(|key| !key.is_empty());
@@ -47,6 +48,8 @@ pub(super) async fn forward_websocket(
         ws_url,
         pool_key,
         provider: &route.provider,
+        accounts: &state.accounts,
+        codex_quota_account: codex_quota_account.as_deref(),
         credential,
         auth,
         signature: codex_continuation::signature(&upstream_body),
@@ -99,6 +102,8 @@ struct WsTurnContext<'a> {
     ws_url: String,
     pool_key: Option<&'a str>,
     provider: &'a str,
+    accounts: &'a crate::accounts::AccountPool,
+    codex_quota_account: Option<&'a str>,
     credential: Credential,
     auth: AuthMode,
     signature: String,
@@ -222,6 +227,13 @@ async fn start_ws_turn(
     let turn = codex_ws::begin(&ctx.ws_url, headers, ctx.pool_key)
         .await
         .map_err(|error| ws_connect_error(error, ctx.auth))?;
+    // Only a fresh connection carries new handshake headers. Reused/prewarmed
+    // sockets do not handshake again, so dashboard usage refreshes the next time
+    // this account establishes a new connection.
+    if let (Some(account), Some(headers)) = (ctx.codex_quota_account, turn.handshake_headers()) {
+        ctx.accounts
+            .note_codex_quota(ctx.provider, account, headers);
+    }
 
     let mut frame_body = ctx.upstream_body.clone();
     let mut used_continuation = false;

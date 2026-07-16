@@ -3,7 +3,7 @@ title: Codex Multi-Account
 description: Pool ChatGPT/Codex subscription OAuth accounts with session-sticky selection and cooldown-based reactive failover.
 ---
 
-shunt can pool multiple ChatGPT subscription OAuth credentials behind a `chatgpt_oauth` provider — the built-in `codex` provider, or any `responses` provider using that auth mode. Requests are session-sticky when Claude Code supplies `x-claude-code-session-id`; requests without it use per-provider round-robin. Unlike the [Anthropic account pool](/guides/anthropic-multi-account/), this pool is **reactive-only**: the ChatGPT/Codex backend sends no per-account quota headers, so there is no proactive near-quota rotation — an account is only avoided after it has actually failed.
+shunt can pool multiple ChatGPT subscription OAuth credentials behind a `chatgpt_oauth` provider — the built-in `codex` provider, or any `responses` provider using that auth mode. Requests are session-sticky when Claude Code supplies `x-claude-code-session-id`; requests without it use per-provider round-robin. Unlike the [Anthropic account pool](/guides/anthropic-multi-account/), this pool is **reactive-only**: shunt records the backend's `x-codex-*` 5-hour/7-day usage windows for dashboard display, but deliberately keeps them out of selection. An account is only avoided after it has actually failed.
 
 :::caution[Subscription terms]
 Use subscription credentials only where your account terms permit it. shunt is an unofficial client and does not change OpenAI's account or subscription policies.
@@ -89,7 +89,8 @@ If neither source yields an id, that account fails to resolve and is treated as 
 
 - With `x-claude-code-session-id`: a stable hash picks the sticky account, same mechanism as the Anthropic pool.
 - Without the header: each provider has its own round-robin counter.
-- No quota headers are parsed on this path — Codex sends none — so there is no proactive switch away from a healthy sticky account. An account keeps its turn until it actually fails.
+- Successful responses populate the admin dashboard from `x-codex-primary-*` and `x-codex-secondary-*` headers. shunt maps each group by `window-minutes`: about 300 minutes appears in 5h, about 10080 minutes appears in 7d, and other windows are ignored. Codex has no `7d_oi` analog.
+- Recorded usage is display-only and never changes selection, so there is no proactive switch away from a healthy sticky account. An account keeps its turn until it actually fails.
 - A successful response clears that account's cooldown.
 
 | Trigger | Cooldown |
@@ -106,7 +107,7 @@ If neither source yields an id, that account fails to resolve and is treated as 
 | Response | Behavior |
 | :-- | :-- |
 | 2xx | Relay and mark healthy. |
-| 429 | **Always** cooldown and rotate — Codex has no per-account quota header to distinguish quota exhaustion from transient throttling, so (unlike the Anthropic pool's plain-429 same-account retry) every 429 is treated as exhaustion of that account. |
+| 429 | **Always** cooldown and rotate. The optional Codex rejection signal is recorded for display but does not change failover classification, so every 429 is treated as exhaustion of that account. |
 | 401 with `credentials`/store | Force-refresh, retry the same account once; if the refresh fails, or the retry is still 401, cooldown 5 minutes and rotate. |
 | 401 with `token_env` | Cannot refresh: cooldown 5 minutes and rotate. |
 | 5xx or transport failure | Cooldown 30 seconds and rotate. |
@@ -136,7 +137,7 @@ Use neutral account names on a shared gateway — this header exposes the config
 
 ### WebSocket transport
 
-If the provider also sets `websocket = true` (see [ChatGPT / Codex](/guides/codex/)), the pooled connection cache key is prefixed per account so two accounts never share a socket or its `previous_response_id` continuation state. A WebSocket failure **before** any token streams falls back to HTTP on the **same** account (not a pool rotation); only an HTTP-path failure triggers the failover above.
+If the provider also sets `websocket = true` (see [ChatGPT / Codex](/guides/codex/)), the pooled connection cache key is prefixed per account so two accounts never share a socket or its `previous_response_id` continuation state. A WebSocket failure **before** any token streams falls back to HTTP on the **same** account (not a pool rotation); only an HTTP-path failure triggers the failover above. A fresh WebSocket upgrade records any rate-limit headers from its handshake; reused/prewarmed connections do not handshake again, so their dashboard usage refreshes when a new connection is established.
 
 ## Security constraints
 
@@ -153,8 +154,8 @@ A `chatgpt_oauth` provider with no `accounts` configured (the default `codex` pr
 
 ## Remaining follow-up
 
-- **Quota-aware proactive rotation:** the Anthropic pool's near-quota early switch has no Codex equivalent yet — it needs a live probe of what (if anything) the Codex backend exposes as per-account rate-limit state.
-- **Admin web provisioning:** the opt-in [admin surface](/guides/admin-remote-provisioning/) can run ChatGPT OAuth in the browser, store a refreshable Codex account, and show it in the shared pool table. Codex provides no quota headers, so utilization columns remain empty (`—`).
+- **Quota-aware proactive rotation:** Codex's recorded usage windows are display-only. Feeding them into selection would be a separate behavior change; failover intentionally remains cooldown-based.
+- **Admin web provisioning:** the opt-in [admin surface](/guides/admin-remote-provisioning/) can run ChatGPT OAuth in the browser, store a refreshable Codex account, show it in the shared pool table, and display reported 5h/7d usage (`7d_oi` remains empty because Codex has no analog).
 - **Storm-control:** ramping a freshly switched account's concurrency remains unimplemented for both pools.
 
 See the [M10 behavior specification](https://github.com/pleaseai/shunt/blob/main/docs/m10-codex-multi-account.md) for the full account-pool internals, and the [ChatGPT / Codex guide](/guides/codex/) for single-account setup, model routing, and effort/context configuration.

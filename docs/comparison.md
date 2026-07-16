@@ -89,9 +89,10 @@ selection, per-provider round-robin, model-aware proactive rotation from per-acc
 quota-rejected 429s and 5xx responses (`docs/m8-anthropic-multi-account.md`). The
 Codex/ChatGPT pool (`docs/m10-codex-multi-account.md`) mirrors the reactive half only —
 session-sticky/round-robin selection, cooldowns, forced refresh after 401, rotation on
-429/5xx/credential-resolution failure — because the backend sends no per-account quota
-headers, so there is no proactive near-quota switch and no fill-first ordering across
-accounts. Per-account usage reporting is not implemented for either pool.
+429/5xx/credential-resolution failure. The backend's `x-codex-*` 5h/7d windows are
+recorded for admin-dashboard display only, so there is still no proactive near-quota
+switch or fill-first ordering across accounts. This is quota visibility, not
+per-request token usage or cost accounting.
 ⁸ **[#82]** adds an opt-in, per-provider `tool_search` flag (`src/config.rs:326-337,1198-1211`)
 that maps Claude Code's tool search onto the OpenAI Responses API's own native,
 client-executed `tool_search` protocol — `ToolSearch` → `tool_search`, its `tool_use` →

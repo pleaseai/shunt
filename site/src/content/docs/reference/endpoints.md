@@ -17,7 +17,7 @@ description: The endpoints shunt serves as a Claude Code LLM gateway.
 | `POST` | `/admin/logout` | Clear the browser session |
 | `GET` | `/admin/accounts` | Claude account-store metadata: name, kind, expiry, and UUID; never token material |
 | `GET` | `/admin/accounts/codex` | Codex account-store metadata: name, expiry, and ChatGPT account ID; never token material |
-| `GET` | `/admin/pool` | Per-`claude_oauth`/`chatgpt_oauth`-provider pool state; Codex utilization fields are empty because its backend sends no quota headers |
+| `GET` | `/admin/pool` | Per-`claude_oauth`/`chatgpt_oauth`-provider pool state; Codex rows include reported 5h/7d usage (`7d_oi` has no Codex analog) |
 | `POST` | `/admin/accounts/claude` | Start Claude browser provisioning with `{name, mode}` where `mode` is `oauth` or `setup_token` (omitted defaults to `setup_token`); returns `{authorize_url}` |
 | `POST` | `/admin/accounts/claude/{name}/complete` | Complete Claude provisioning with `{code}` containing `<code>#<state>`; stores the account and reports whether it is live |
 | `DELETE` | `/admin/accounts/claude/{name}` | Remove the named Claude account's store file |

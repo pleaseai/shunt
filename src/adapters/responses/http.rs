@@ -65,6 +65,7 @@ pub(super) async fn forward_http(
         credential,
         auth,
         turn,
+        codex_quota_account: _,
         estimate_input,
     } = forward;
     // Kick off the CPU-bound tiktoken encode on the blocking pool *before* the

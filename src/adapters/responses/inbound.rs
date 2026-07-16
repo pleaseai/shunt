@@ -127,16 +127,12 @@ async fn forward_codex_passthrough(
             accounts_config.len()
         )));
     }
-    let order = state.accounts.select_order(
+    // Codex quota is display-only: this endpoint preserves cooldown-based
+    // selection even when response headers populate the admin dashboard.
+    let order = state.accounts.select_order_cooldown(
         &route.provider,
         &accounts_config,
         pool_key.as_deref(),
-        // Codex exposes no per-model quota signal to order by (same as the
-        // Anthropic-translating pool path).
-        None,
-        // Quota knobs are inert without quota headers, but per-account
-        // priority/disabled still apply.
-        state.config.server.pool.as_ref(),
     );
     let mut last_response: Option<reqwest::Response> = None;
 
@@ -182,6 +178,13 @@ async fn forward_codex_passthrough(
             FirstOutcome::Relay(upstream) => {
                 let status = upstream.status();
                 state.accounts.mark_healthy(&route.provider, &account.name);
+                if status.is_success() {
+                    state.accounts.note_codex_quota(
+                        &route.provider,
+                        &account.name,
+                        upstream.headers(),
+                    );
+                }
                 return Ok((
                     status,
                     with_account_header(relay_passthrough(upstream), &account.name),
@@ -232,6 +235,13 @@ async fn forward_codex_passthrough(
                     RetryOutcome::Relay(retry) => {
                         let retry_status = retry.status();
                         state.accounts.mark_healthy(&route.provider, &account.name);
+                        if retry_status.is_success() {
+                            state.accounts.note_codex_quota(
+                                &route.provider,
+                                &account.name,
+                                retry.headers(),
+                            );
+                        }
                         return Ok((
                             retry_status,
                             with_account_header(relay_passthrough(retry), &account.name),

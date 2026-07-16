@@ -134,7 +134,7 @@ disabled = true              # kept configured, never selected
 - **Burn-rate headroom.** From each window's utilization and reset instant (window lengths are fixed at 5 hours and 7 days), shunt projects the time until the soft threshold is hit at the observed average pace, minus the time until the window resets. Positive headroom means the account survives to its reset at the current pace. Available accounts of equal `priority` order by largest headroom; unobserved windows count as unlimited headroom.
 - **Predictive avoidance.** With `burn_rate_avoidance = true`, an account with negative projected headroom is treated as near quota and rotated off *before* it hits a threshold. Off by default — ordering by headroom happens regardless.
 - **All-near guard.** When every account is past a soft threshold (or predicted to exhaust), the pool does not empty: near accounts serve ordered by best headroom, while accounts at or above `hard_threshold` still sort last, followed only by cooling accounts.
-- **Scope.** The quota knobs act on Claude (Anthropic) pools only — the Codex backend sends no quota headers, so for [Codex pools](/guides/codex-multi-account/) they are inert, while `priority` and `disabled` still apply.
+- **Scope.** The quota knobs act on Claude (Anthropic) pools only. [Codex pools](/guides/codex-multi-account/) record reported 5h/7d usage for display but deliberately exclude it from selection, while `priority` and `disabled` still apply.
 - The admin pool endpoint (`GET /admin/pool`) reports each account's `priority`, `disabled` flag, and — when `[server.pool]` is configured — its current headroom projection in seconds; the dashboard's state column marks disabled accounts.
 
 ## Usage-API reconciliation

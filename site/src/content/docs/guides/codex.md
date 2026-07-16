@@ -27,6 +27,8 @@ and translates the streamed reply back. Three things make it "Codex" rather than
 
 The dialect is keyed on `auth = "chatgpt_oauth"`, not the provider name.
 
+When Codex accounts are pooled, successful backend responses also populate the admin **Pool health** dashboard from the reported `x-codex-*` rate-limit windows. A roughly 5-hour window appears in **5h**, a roughly 7-day window appears in **7d**, and unsupported daily/monthly windows are ignored. Codex has no `7d_oi` analog. This usage is display-only: Codex account selection remains cooldown-based.
+
 ## 1. Log in
 
 Log in once with the Codex CLI. shunt reads and refreshes the file it writes — it does **not**

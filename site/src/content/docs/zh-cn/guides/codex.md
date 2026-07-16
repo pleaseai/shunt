@@ -25,6 +25,8 @@ Messages 请求转换为 OpenAI **Responses API**,发送到 ChatGPT 账户的 Co
 
 该方言由 `auth = "chatgpt_oauth"` 决定,而非提供方名称。
 
+当 Codex 账户组成池时,成功的后端响应还会把所报告的 `x-codex-*` 限流窗口填入管理后台的 **Pool health**。约 5 小时的窗口显示在 **5h**,约 7 天的窗口显示在 **7d**;不受支持的每日、每月窗口会被忽略。Codex 没有 `7d_oi` 对应项。这些用量仅用于显示,Codex 账户选择仍然只基于冷却状态。
+
 ## 1. 登录
 
 用 Codex CLI 登录一次。shunt 读取并刷新它所写入的文件 —— 它**不会**

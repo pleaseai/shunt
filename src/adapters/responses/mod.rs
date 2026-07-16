@@ -177,6 +177,7 @@ async fn forward(
         credential,
         auth,
         turn,
+        codex_quota_account: None,
         estimate_input,
     };
     // Codex WebSocket v2 transport (issue #32), opt-in per provider and only for
