@@ -103,6 +103,13 @@ fn warn_on_restart_only_changes(previous: &Config, next: &Config) {
             "[server.codex_endpoint] was enabled or disabled but requires a restart to register or drop its routes"
         );
     }
+    // The client-facing usage route is also fixed at boot. Token edits hot-apply,
+    // but toggling the table cannot register or drop `/usage` without a restart.
+    if previous.server.usage.is_some() != next.server.usage.is_some() {
+        tracing::warn!(
+            "[server.usage] was enabled or disabled but requires a restart to register or drop its route"
+        );
+    }
     if sentry_changed(previous.sentry.as_ref(), next.sentry.as_ref()) {
         tracing::warn!(
             "[sentry] configuration changed but requires a restart to apply; the Sentry client is initialized once at startup"

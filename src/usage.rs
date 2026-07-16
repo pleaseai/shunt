@@ -94,7 +94,11 @@ fn window_status(
     let least_utilized = snapshots
         .iter()
         .filter(|snapshot| !snapshot.disabled)
-        .filter_map(|snapshot| utilization(snapshot).map(|used| (used, reset(snapshot))))
+        .filter_map(|snapshot| {
+            utilization(snapshot)
+                .filter(|used| used.is_finite())
+                .map(|used| (used, reset(snapshot)))
+        })
         .min_by(|(a, _), (b, _)| a.total_cmp(b));
     match least_utilized {
         Some((used, resets_at)) => WindowStatus {
@@ -112,20 +116,23 @@ fn window_status(
 /// `exhausted` when every selectable account is unavailable, `degraded` when any
 /// is near quota, else `ok`. Disabled accounts never count as selectable.
 fn pool_status(snapshots: &[AccountSnapshot]) -> &'static str {
-    let selectable: Vec<&AccountSnapshot> = snapshots
-        .iter()
-        .filter(|snapshot| !snapshot.disabled)
-        .collect();
-    if selectable.is_empty() {
-        return "exhausted";
+    let mut any_selectable = false;
+    let mut any_available = false;
+    let mut any_near_quota = false;
+
+    for snapshot in snapshots.iter().filter(|snapshot| !snapshot.disabled) {
+        any_selectable = true;
+        any_available |= snapshot.available;
+        any_near_quota |= snapshot.near_quota;
     }
-    if !selectable.iter().any(|snapshot| snapshot.available) {
-        return "exhausted";
+
+    if !any_selectable || !any_available {
+        "exhausted"
+    } else if any_near_quota {
+        "degraded"
+    } else {
+        "ok"
     }
-    if selectable.iter().any(|snapshot| snapshot.near_quota) {
-        return "degraded";
-    }
-    "ok"
 }
 
 /// Round a fraction to four decimals so the response does not echo a raw f64
@@ -280,6 +287,14 @@ mod tests {
         // No account reports the Fable window → null.
         assert_eq!(body["pool"]["windows"]["fable"]["remaining"], Value::Null);
         assert_eq!(body["pool"]["windows"]["fable"]["resets_at"], Value::Null);
+    }
+
+    #[test]
+    fn aggregate_ignores_non_finite_window_utilization() {
+        let snapshots = [snapshot("acct-a", Some(f64::NAN), Some(111), None)];
+        let body = serde_json::to_value(aggregate(&snapshots)).unwrap();
+        assert_eq!(body["pool"]["windows"]["5h"]["remaining"], Value::Null);
+        assert_eq!(body["pool"]["windows"]["5h"]["resets_at"], Value::Null);
     }
 
     #[test]
