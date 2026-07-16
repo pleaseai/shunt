@@ -1,0 +1,19 @@
+src/accounts.rs
+  s_dd341b9fb3858e::t_2dd8b9d0dde5d3 603-606
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "fcdd1ee0dd27539834d9b0c603e52f484baf5e89",
+  "prompts": {},
+  "sessions": {
+    "s_dd341b9fb3858e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "94377d95-a90a-4bcb-9750-8a85ed27aa76",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
