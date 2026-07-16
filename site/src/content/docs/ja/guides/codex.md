@@ -9,7 +9,7 @@ description: ~/.codex/auth.json を再利用して Claude Code の推論を Chat
 このページはエンドツーエンドのセットアップです。各トピックを繰り返すのではなく、より深いトピックページ（[Effort & Context](/ja/guides/effort-and-context/)、[Model Discovery](/ja/guides/model-discovery/)、[Providers](/ja/guides/providers/)）へリンクします。
 
 :::note[Duplicate names for one real account]
-When a Codex pool contains two names with the same `account_id`, shunt counts them as **one account**. The aliases share cooldown, health, and refresh locks, and failover skips the duplicate identity instead of retrying it. The enabled alias with the lowest `priority` (then the first entry) supplies the only token attempted, and shunt logs a duplicate-identity warning. Store discovery reads `tokens.account_id` or the JWT claim and caches the scan by directory mtime. See the [Codex Multi-Account guide](/ja/guides/codex-multi-account/) for details.
+Codex プールに同じ `account_id` を持つ 2 つの名前が含まれる場合、shunt はそれらを **1 つのアカウント**として扱います。エイリアスはクールダウン、ヘルス、リフレッシュロックを共有し、フェイルオーバーは重複したアイデンティティを再試行せずスキップします。`priority` が最も低い有効なエイリアス（次に最初のエントリ）が唯一試行されるトークンを提供し、shunt は重複アイデンティティの警告をログに出力します。ストアディスカバリーは `tokens.account_id` または JWT クレームを読み取り、ディレクトリの mtime でスキャンをキャッシュします。詳細は [Codex Multi-Account guide](/ja/guides/codex-multi-account/) を参照してください。
 :::
 
 ## 仕組み

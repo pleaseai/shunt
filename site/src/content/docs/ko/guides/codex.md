@@ -8,7 +8,7 @@ description: ~/.codex/auth.json을 재사용하여 Claude Code 추론을 ChatGPT
 이 페이지는 처음부터 끝까지의 설정입니다. 더 깊은 주제 페이지([노력 & 컨텍스트](/ko/guides/effort-and-context/), [모델 디스커버리](/ko/guides/model-discovery/), [프로바이더](/ko/guides/providers/))를 반복하는 대신 그쪽으로 링크합니다.
 
 :::note[Duplicate names for one real account]
-When a Codex pool contains two names with the same `account_id`, shunt counts them as **one account**. The aliases share cooldown, health, and refresh locks, and failover skips the duplicate identity instead of retrying it. The enabled alias with the lowest `priority` (then the first entry) supplies the only token attempted, and shunt logs a duplicate-identity warning. Store discovery reads `tokens.account_id` or the JWT claim and caches the scan by directory mtime. See the [Codex Multi-Account guide](/ko/guides/codex-multi-account/) for details.
+Codex 풀에 동일한 `account_id`를 가진 두 이름이 있으면, shunt는 이들을 **하나의 계정**으로 취급합니다. 별칭들은 쿨다운, 헬스, 리프레시 락을 공유하며, 페일오버는 재시도 대신 중복된 아이덴티티를 건너뜁니다. `priority`가 가장 낮은 활성화된 별칭(그다음은 첫 번째 항목)이 유일하게 시도되는 토큰을 제공하며, shunt는 중복 아이덴티티 경고를 로그에 남깁니다. 스토어 디스커버리는 `tokens.account_id` 또는 JWT claim을 읽고, 디렉터리 mtime으로 스캔을 캐시합니다. 자세한 내용은 [Codex 멀티 계정 가이드](/ko/guides/codex-multi-account/)를 참고하세요.
 :::
 
 ## 동작 방식

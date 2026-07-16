@@ -80,7 +80,7 @@ Full OAuth 创建一个新的可刷新 credential;import 把当前的 `~/.claude
 | `name` | 是 | 只含小写字母、数字和连字符的唯一标签。若没有其他来源字段,则解析同名的 shunt 存储文件。 |
 | `credentials` | 可用来源之一 | Claude Code `.credentials.json` 形态的文件。`~/` 会被展开。shunt 在临近过期时刷新,并将刷新后的 token 原子性地写回。 |
 | `token_env` | 可用来源之一 | 包含 setup token 的环境变量。其值按原样使用,401 之后无法刷新。 |
-| `uuid` | 否 | 所选账户的 Anthropic UUID,用于改写已存在的 `metadata.user_id.account_uuid`。 |
+| `uuid` | 否 | 所选账户的 Anthropic UUID,用于改写已存在的 `metadata.user_id.account_uuid`,同时也是池中用于合并别名的稳定身份。 |
 | `threshold` | 否 | `[0.0, 1.0]` 范围内的按账户软配额阈值,适用于所有没有按窗口取值的窗口。较低的取值把该账户标记为提前轮换出去的后备账户。 |
 | `threshold_5h` / `threshold_7d` / `threshold_fable` | 否 | 按窗口的软阈值;各自在其窗口上优先于 `threshold`。 |
 | `priority` | 否 | 粘性账户不健康时的选择优先级;数值越低越优先,默认 `100`。 |
@@ -89,7 +89,7 @@ Full OAuth 创建一个新的可刷新 credential;import 把当前的 `~/.claude
 不要在同一个账户上同时设置 `credentials` 和 `token_env`。
 
 :::note[Duplicate names for one real account]
-`uuid` is also the pool's stable upstream identity. If two names carry the same UUID, shunt counts them as **one account**: they share quota, cooldown, usage, health, and refresh locks, and failover skips the duplicate alias. Sticky hashing and round-robin operate over distinct identities, so adding an alias does not move a session. The representative is the enabled alias with the lowest `priority`, then the first entry; only its token is attempted. shunt logs a duplicate-identity warning. Therefore, if that representative token is invalid while another alias token is valid, shunt still does not try the alias. Removing one alias clears the shared in-process health for the identity.
+`uuid` 也是池的稳定上游身份。如果两个名称携带相同的 UUID,shunt 会将它们视为**同一个账户**:它们共享配额、冷却、使用量、健康状态和刷新锁,故障转移会跳过重复的别名。粘性哈希和轮询基于不同的身份运作,因此添加一个别名不会移动会话。代表账户是 `priority` 最低的已启用别名,其次是第一个条目;只有该代表的 token 会被尝试。shunt 会记录一条重复身份警告。因此,即使该代表 token 失效而另一个别名的 token 有效,shunt 仍不会尝试该别名。移除其中一个别名会清除该身份共享的进程内健康状态。
 :::
 
 ## 选择与主动轮换

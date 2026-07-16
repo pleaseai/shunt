@@ -80,7 +80,7 @@ Full OAuth は新しいリフレッシュ可能な credential を作成します
 | `name` | はい | 小文字・数字・ハイフンのみからなる一意のラベル。他のソースフィールドがない場合、名前が一致する shunt ストアファイルを解決します。 |
 | `credentials` | 使用可能なソースのいずれか 1 つ | Claude Code の `.credentials.json` 形式のファイル。`~/` は展開されます。shunt は期限が近づくとリフレッシュし、リフレッシュ済みトークンをアトミックに書き戻します。 |
 | `token_env` | 使用可能なソースのいずれか 1 つ | setup トークンを含む環境変数。値はそのまま使われ、401 の後にリフレッシュできません。 |
-| `uuid` | いいえ | 既存の `metadata.user_id.account_uuid` を書き換えるための、選択されたアカウントの Anthropic UUID。 |
+| `uuid` | いいえ | 既存の `metadata.user_id.account_uuid` を書き換えるための、選択されたアカウントの Anthropic UUID。プールでエイリアスを統合する際の安定したアイデンティティとしても使われます。 |
 | `threshold` | いいえ | ウィンドウ別の値を持たないすべてのウィンドウに適用される、アカウント単位のソフトなクォータしきい値（`[0.0, 1.0]`）。低い値を設定すると、早めにローテーションで外れるバックアップアカウントになります。 |
 | `threshold_5h` / `threshold_7d` / `threshold_fable` | いいえ | ウィンドウ別のソフトしきい値。それぞれ対応するウィンドウで `threshold` より優先されます。 |
 | `priority` | いいえ | スティッキーなアカウントが不健全なときの選択優先度。値が小さいほど優先され、デフォルトは `100` です。 |
@@ -89,7 +89,7 @@ Full OAuth は新しいリフレッシュ可能な credential を作成します
 1 つのアカウントに `credentials` と `token_env` の両方を設定しないでください。
 
 :::note[Duplicate names for one real account]
-`uuid` is also the pool's stable upstream identity. If two names carry the same UUID, shunt counts them as **one account**: they share quota, cooldown, usage, health, and refresh locks, and failover skips the duplicate alias. Sticky hashing and round-robin operate over distinct identities, so adding an alias does not move a session. The representative is the enabled alias with the lowest `priority`, then the first entry; only its token is attempted. shunt logs a duplicate-identity warning. Therefore, if that representative token is invalid while another alias token is valid, shunt still does not try the alias. Removing one alias clears the shared in-process health for the identity.
+`uuid` はプールの安定した上流アイデンティティでもあります。2 つの名前が同じ UUID を持つ場合、shunt はそれらを **1 つのアカウント**として扱います：クォータ、クールダウン、使用量、ヘルス、リフレッシュロックを共有し、フェイルオーバーは重複したエイリアスをスキップします。スティッキーハッシュとラウンドロビンは別個のアイデンティティ単位で動作するため、エイリアスを追加してもセッションは移動しません。代表となるのは `priority` が最も低い有効なエイリアス、次いで最初のエントリで、その代表のトークンのみが試行されます。shunt は重複アイデンティティの警告をログに出力します。そのため、代表のトークンが無効で別のエイリアスのトークンが有効であっても、shunt はそのエイリアスを試行しません。片方のエイリアスを削除すると、そのアイデンティティで共有されていたプロセス内ヘルスがクリアされます。
 :::
 
 ## 選択とプロアクティブなローテーション

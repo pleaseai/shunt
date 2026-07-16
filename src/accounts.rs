@@ -1,6 +1,6 @@
 use std::{
-    collections::{HashMap, HashSet},
-    sync::{Arc, Mutex, OnceLock},
+    collections::HashMap,
+    sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -171,7 +171,7 @@ impl AccountPool {
             return Vec::new();
         }
 
-        let ident_reps = collapse_representatives(provider, accounts);
+        let ident_reps = collapse_representatives(accounts);
         let distinct = ident_reps.len();
         let start_slot = match session_id {
             Some(session_id) => stable_session_index(session_id, distinct),
@@ -486,18 +486,21 @@ pub(crate) fn account_identity(account: &AccountConfig) -> &str {
     account.uuid.as_deref().unwrap_or(&account.name)
 }
 
-fn collapse_representatives(provider: &str, accounts: &[AccountConfig]) -> Vec<usize> {
+/// Collapse accounts sharing a stable upstream identity ([`account_identity`])
+/// down to one representative per identity, keeping the enabled (or, among
+/// equally-disabled duplicates, the lowest-priority) account as the
+/// representative. Collision *warnings* are not emitted here: this runs on
+/// every [`AccountPool::select_order`] call (the request hot path), so
+/// logging here would re-warn per request. Configured-account collisions are
+/// caught once at config load (`crate::config::identity_collisions`);
+/// store-discovered collisions are caught once per store scan (see
+/// `crate::auth::shared::scan_cached`), not here.
+fn collapse_representatives(accounts: &[AccountConfig]) -> Vec<usize> {
     let mut slots = HashMap::<&str, usize>::new();
     let mut representatives: Vec<usize> = Vec::new();
     for (index, account) in accounts.iter().enumerate() {
         let identity = account_identity(account);
         if let Some(&slot) = slots.get(identity) {
-            warn_identity_collision_once(
-                provider,
-                identity,
-                &accounts[representatives[slot]].name,
-                &account.name,
-            );
             let current = &accounts[representatives[slot]];
             if (current.disabled && !account.disabled)
                 || (current.disabled == account.disabled && account.priority < current.priority)
@@ -510,23 +513,6 @@ fn collapse_representatives(provider: &str, accounts: &[AccountConfig]) -> Vec<u
         }
     }
     representatives
-}
-
-fn warn_identity_collision_once(provider: &str, identity: &str, first: &str, duplicate: &str) {
-    static WARNED: OnceLock<Mutex<HashSet<(String, String)>>> = OnceLock::new();
-    let warned = WARNED.get_or_init(|| Mutex::new(HashSet::new()));
-    if warned
-        .lock()
-        .expect("identity collision warning lock poisoned")
-        .insert((provider.to_string(), identity.to_string()))
-    {
-        tracing::warn!(
-            provider,
-            identity,
-            accounts = ?[first, duplicate],
-            "multiple account names share one upstream identity; the pool will treat them as one account"
-        );
-    }
 }
 
 fn stable_session_index(session_id: &str, account_count: usize) -> usize {
@@ -978,7 +964,7 @@ mod tests {
         let other = account_with_uuid("other", "other");
         let accounts = vec![disabled, preferred, later, other];
 
-        assert_eq!(collapse_representatives("anthropic", &accounts), vec![1, 3]);
+        assert_eq!(collapse_representatives(&accounts), vec![1, 3]);
 
         let mut all_disabled = accounts;
         for account in &mut all_disabled[..3] {

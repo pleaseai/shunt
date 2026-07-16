@@ -372,7 +372,9 @@ fn scan_cached(
     scan: impl Fn() -> io::Result<Vec<AccountConfig>>,
 ) -> io::Result<Vec<AccountConfig>> {
     let Some(modified) = modified else {
-        return scan();
+        let accounts = scan()?;
+        warn_scan_identity_collisions(provider, &accounts);
+        return Ok(accounts);
     };
     let key = (provider.to_string(), dir.to_path_buf());
     {
@@ -391,6 +393,7 @@ fn scan_cached(
     // mtime equals the mtime this request sampled, so a stale write is re-scanned
     // away as soon as a request observes a different directory mtime.
     let accounts = scan()?;
+    warn_scan_identity_collisions(provider, &accounts);
     scan_cache()
         .lock()
         .expect("scan cache mutex poisoned")
@@ -402,6 +405,24 @@ fn scan_cached(
             },
         );
     Ok(accounts)
+}
+
+/// Warn once per scan (not once per request — `scan_cached` only calls this on
+/// a cache miss, i.e. when the store directory's mtime changed) when two
+/// store-discovered accounts resolve to the same runtime identity
+/// (`crate::accounts::account_identity`). This mirrors the config-load
+/// collision warning (`crate::config::identity_collisions`, applied to
+/// `[[providers.*.accounts]]`) but for accounts discovered from the on-disk
+/// store, which config-load validation never sees.
+fn warn_scan_identity_collisions(provider: &str, accounts: &[AccountConfig]) {
+    for (identity, names) in crate::config::identity_collisions(accounts) {
+        tracing::warn!(
+            provider,
+            identity,
+            accounts = ?names,
+            "multiple account names share one upstream identity; the pool will treat them as one account"
+        );
+    }
 }
 
 /// Write an account file born-private: create its parent directory `0700` on Unix
