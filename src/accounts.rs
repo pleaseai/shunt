@@ -600,7 +600,10 @@ fn codex_window_bucket(minutes: i64) -> Option<CodexWindow> {
 }
 
 fn within_five_percent(value: i64, expected: i64) -> bool {
-    value > 0 && value * 100 >= expected * 95 && value * 100 <= expected * 105
+    let Some(scaled) = value.checked_mul(100) else {
+        return false;
+    };
+    scaled >= expected * 95 && scaled <= expected * 105
 }
 
 fn is_fable_model(model: Option<&str>) -> bool {
