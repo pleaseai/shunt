@@ -415,14 +415,14 @@ impl AccountPool {
     /// admin dashboard. A group's `window-minutes` identifies its bucket; the
     /// primary/secondary position does not. This state is deliberately excluded
     /// from Codex account selection by [`Self::select_order_cooldown`].
-    pub fn note_codex_quota(&self, provider: &str, account: &str, headers: &HeaderMap) {
+    pub fn note_codex_quota(&self, provider: &str, account: &AccountConfig, headers: &HeaderMap) {
         let utilization = {
             let mut entries = self.entries.lock().expect("account health lock poisoned");
             let health = entries
-                .entry((provider.to_string(), account.to_string()))
+                .entry((provider.to_string(), account_identity(account).to_string()))
                 .or_default();
             health.observed = true;
-            health.enabled = true;
+            health.enabled = !account.disabled;
             let quota = &mut health.quota;
 
             for (minutes_header, utilization_header, reset_header) in [
@@ -1485,7 +1485,7 @@ mod tests {
             ("x-codex-active-limit", "premium".to_string()),
         ]);
 
-        pool.note_codex_quota("codex", "pro", &headers);
+        pool.note_codex_quota("codex", &accounts[0], &headers);
 
         let snaps = pool.snapshot("codex", &accounts, None, None);
         assert!(snaps[0].has_state);
@@ -1493,6 +1493,22 @@ mod tests {
         assert_eq!(snaps[0].reset_7d, Some(reset));
         assert_eq!(snaps[0].utilization_5h, None);
         assert_eq!(snaps[0].utilization_7d_oi, None);
+    }
+
+    #[test]
+    fn codex_quota_uses_stable_uuid_identity() {
+        let pool = AccountPool::new();
+        let accounts = vec![account_with_uuid("pro", "account-uuid")];
+        let headers = quota_headers(&[
+            ("x-codex-primary-used-percent", "40".to_string()),
+            ("x-codex-primary-window-minutes", "300".to_string()),
+        ]);
+
+        pool.note_codex_quota("codex", &accounts[0], &headers);
+
+        let snaps = pool.snapshot("codex", &accounts, None, None);
+        assert!(snaps[0].has_state);
+        assert_eq!(snaps[0].utilization_5h, Some(0.4));
     }
 
     #[test]
@@ -1504,7 +1520,7 @@ mod tests {
             ("x-codex-primary-window-minutes", "300".to_string()),
         ]);
 
-        pool.note_codex_quota("codex", "pro", &headers);
+        pool.note_codex_quota("codex", &accounts[0], &headers);
 
         let snaps = pool.snapshot("codex", &accounts, None, None);
         assert!(snaps[0].has_state);
@@ -1521,7 +1537,7 @@ mod tests {
             ("x-codex-primary-window-minutes", "1440".to_string()),
         ]);
 
-        pool.note_codex_quota("codex", "pro", &headers);
+        pool.note_codex_quota("codex", &accounts[0], &headers);
 
         let snaps = pool.snapshot("codex", &accounts, None, None);
         assert!(snaps[0].has_state);
@@ -1536,7 +1552,7 @@ mod tests {
         let reset = unix_now() + 3_600;
         pool.note_codex_quota(
             "codex",
-            "pro",
+            &accounts[0],
             &quota_headers(&[
                 ("x-codex-primary-used-percent", "40".to_string()),
                 ("x-codex-primary-window-minutes", "300".to_string()),
@@ -1546,7 +1562,7 @@ mod tests {
 
         pool.note_codex_quota(
             "codex",
-            "pro",
+            &accounts[0],
             &quota_headers(&[
                 ("x-codex-primary-used-percent", "41".to_string()),
                 ("x-codex-primary-window-minutes", "300".to_string()),
@@ -1568,7 +1584,7 @@ mod tests {
                 ("x-codex-primary-window-minutes", "300".to_string()),
             ]);
 
-            pool.note_codex_quota("codex", "pro", &headers);
+            pool.note_codex_quota("codex", &accounts[0], &headers);
 
             let snaps = pool.snapshot("codex", &accounts, None, None);
             assert!(snaps[0].has_state);
@@ -1582,7 +1598,7 @@ mod tests {
         let accounts = vec![account("pro")];
         pool.note_codex_quota(
             "codex",
-            "pro",
+            &accounts[0],
             &quota_headers(&[("x-codex-rate-limit-reached-type", "weekly".to_string())]),
         );
 
@@ -1599,7 +1615,7 @@ mod tests {
         let sticky = initial[0];
         pool.note_codex_quota(
             "codex",
-            &accounts[sticky].name,
+            &accounts[sticky],
             &quota_headers(&[
                 ("x-codex-primary-used-percent", "100".to_string()),
                 ("x-codex-primary-window-minutes", "300".to_string()),

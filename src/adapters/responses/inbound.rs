@@ -170,7 +170,7 @@ async fn forward_codex_passthrough(
 
         state
             .accounts
-            .note_codex_quota(&route.provider, &account.name, upstream.headers());
+            .note_codex_quota(&route.provider, account, upstream.headers());
         match classify_first(&state, &route, account, upstream) {
             // Success or a non-failover 4xx (e.g. 400): the account is fine, so
             // relay the upstream response verbatim — a passthrough client expects
@@ -227,7 +227,7 @@ async fn forward_codex_passthrough(
                 };
                 state
                     .accounts
-                    .note_codex_quota(&route.provider, &account.name, retry.headers());
+                    .note_codex_quota(&route.provider, account, retry.headers());
                 match classify_retry(&state, &route, account, retry) {
                     RetryOutcome::Relay(retry) => {
                         let retry_status = retry.status();
