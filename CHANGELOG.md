@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.19.1](https://github.com/pleaseai/shunt/compare/v0.19.0...v0.19.1) (2026-07-16)
+
+
+### Bug Fixes
+
+* **cursor:** restore cursor:* on the current AgentService wire (HTTP/2 + tools, images, modes) ([#177](https://github.com/pleaseai/shunt/issues/177)) ([2039c27](https://github.com/pleaseai/shunt/commit/2039c274d43ef7d02f6b30830db76b48348d8f30))
+
+
+### Performance Improvements
+
+* request-path hot-path optimizations — Tier 3–4 ([#149](https://github.com/pleaseai/shunt/issues/149)) ([#182](https://github.com/pleaseai/shunt/issues/182)) ([914f4dd](https://github.com/pleaseai/shunt/commit/914f4dd43221ecfe7def21b9c38afb6c9704ddca))
+
 ## [0.19.0](https://github.com/pleaseai/shunt/compare/v0.18.1...v0.19.0) (2026-07-16)
 
 
