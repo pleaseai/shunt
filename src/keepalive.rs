@@ -26,10 +26,13 @@ impl BoundaryTracker {
     }
 
     fn push(&mut self, chunk: &[u8]) {
-        for &byte in chunk {
-            self.tail.rotate_left(1);
-            self.tail[3] = byte;
+        let retained = chunk.len().min(self.tail.len());
+        if retained == 0 {
+            return;
         }
+        let tail_start = self.tail.len() - retained;
+        self.tail.copy_within(retained.., 0);
+        self.tail[tail_start..].copy_from_slice(&chunk[chunk.len() - retained..]);
     }
 
     fn at_boundary(&self) -> bool {
@@ -116,6 +119,13 @@ mod tests {
         assert!(!tracker.at_boundary());
         tracker.push(b"\r\n");
         assert!(tracker.at_boundary(), "\\r\\n\\r\\n counts as a boundary");
+    }
+
+    #[test]
+    fn boundary_tracking_handles_long_chunk_ending_at_boundary() {
+        let mut tracker = BoundaryTracker::new();
+        tracker.push(b"event: message\r\ndata: {}\r\n\r\n");
+        assert!(tracker.at_boundary());
     }
 
     #[tokio::test(start_paused = true)]

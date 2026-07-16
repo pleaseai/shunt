@@ -768,6 +768,8 @@ async fn run_turn(
     let mut output_items = Vec::new();
     let mut turn_state = None;
     let mut deferred = VecDeque::new();
+    let idle = tokio::time::sleep(IDLE_TIMEOUT);
+    tokio::pin!(idle);
     loop {
         let next = if let Some(deferred) = deferred.pop_front() {
             match deferred {
@@ -775,9 +777,16 @@ async fn run_turn(
                 DeferredFrame::Eof => None,
             }
         } else {
-            match tokio::time::timeout(IDLE_TIMEOUT, source.next()).await {
-                Ok(next) => next,
-                Err(_) => {
+            idle.as_mut()
+                .reset(tokio::time::Instant::now() + IDLE_TIMEOUT);
+            // Poll the frame source before the idle timer (matching the
+            // inner-future-first semantics of the `tokio::time::timeout` this
+            // replaced): a frame that arrives as the deadline elapses is still
+            // delivered rather than dropped in favor of the timeout.
+            tokio::select! {
+                biased;
+                next = source.next() => next,
+                _ = &mut idle => {
                     let _ = events
                         .send(Err(CodexWsError::transport(format!(
                             "websocket idle timeout after {}s",
