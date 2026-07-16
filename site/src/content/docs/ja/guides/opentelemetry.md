@@ -51,10 +51,10 @@ authorization = "Bearer <token>"
 | `shunt.latency` | ヒストグラム(ms) | `provider`, `model`, `http.response.status_code` | ストリームではヘッダーまで、それ以外では応答全体のレイテンシ。 |
 | `shunt.ttft` | ヒストグラム(ms) | `provider`, `model` | リクエスト開始から最初の SSE body chunk までの時間。 |
 | `shunt.stream_outcome` | カウンター | `provider`, `model`, `outcome` | SSE の最終結果を 1 件記録: `completed`, `error_event`, `upstream_cut`, `client_disconnect`。 |
-| `shunt.tokens` | カウンター | `provider`, `model`, `kind` | ストリーミング token usage (`input`, `output`, `cache_read`, `cache_creation`)。非ストリーミングは記録しない。 |
+| `shunt.tokens` | カウンター | `provider`, `model`, `kind` | 最後に報告されたストリーミング token usage (`input`, `output`, `cache_read`, `cache_creation`)。非ストリーミングは記録しない。 |
 | `shunt.codex_continuation` | カウンター | `provider`, `outcome` | Codex WebSocket continuation の hit または fallback。 |
 | `shunt.upstream_retries` | カウンター | `provider`, `reason` | 回数制限付きの一時的な upstream retry。 |
-| `shunt.pool.quota_utilization` | ゲージ | `provider`, `window` | `5h`, `7d`, `7d_oi` ごとの最も余裕がある利用可能アカウントの quota utilization。 |
+| `shunt.pool.quota_utilization` | ゲージ | `provider`, `window` | `5h`, `7d`, `7d_oi` ごとに、有効で観測済みかつ期限切れでない quota 値の最小 utilization。 |
 | `shunt.pool.rotations` | カウンター | `provider`, `reason` | アカウントからの切り替えと pool exhaustion の回数。 |
 
 ## プライバシー

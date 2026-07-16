@@ -93,6 +93,7 @@ async fn poll_all(state: &AppState) {
                 continue;
             }
         };
+        state.accounts.sync_enabled_accounts(name, &accounts);
         for account in &accounts {
             poll_account(
                 &state.http_client,

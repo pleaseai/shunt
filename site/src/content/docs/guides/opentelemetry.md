@@ -51,10 +51,10 @@ Each signal toggles independently via `traces` / `metrics` / `logs`.
 | `shunt.latency` | Histogram (ms) | `provider`, `model`, `http.response.status_code` | Header latency for streams; full latency otherwise. |
 | `shunt.ttft` | Histogram (ms) | `provider`, `model` | Request start to the first SSE body chunk. |
 | `shunt.stream_outcome` | Counter | `provider`, `model`, `outcome` | One final SSE result: `completed`, `error_event`, `upstream_cut`, or `client_disconnect`. |
-| `shunt.tokens` | Counter | `provider`, `model`, `kind` | Streaming token usage (`input`, `output`, `cache_read`, `cache_creation`). Non-streaming usage is not recorded. |
+| `shunt.tokens` | Counter | `provider`, `model`, `kind` | Last reported streaming token usage (`input`, `output`, `cache_read`, `cache_creation`). Non-streaming usage is not recorded. |
 | `shunt.codex_continuation` | Counter | `provider`, `outcome` | Codex WebSocket continuation hit or fallback. |
 | `shunt.upstream_retries` | Counter | `provider`, `reason` | Bounded transient upstream retries. |
-| `shunt.pool.quota_utilization` | Gauge | `provider`, `window` | Best available quota utilization for `5h`, `7d`, or `7d_oi`. |
+| `shunt.pool.quota_utilization` | Gauge | `provider`, `window` | Minimum utilization across enabled, observed, non-expired quota values for `5h`, `7d`, or `7d_oi`. |
 | `shunt.pool.rotations` | Counter | `provider`, `reason` | Moves off an account and requests that exhaust the pool. |
 
 ## Privacy

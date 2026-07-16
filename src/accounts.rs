@@ -189,6 +189,25 @@ impl AccountPool {
         Self::default()
     }
 
+    /// Synchronize the provider's current configured identities before an
+    /// out-of-band usage poll updates individual accounts. An identity stays
+    /// enabled when any alias is enabled, and entries removed by a config reload
+    /// stop contributing to pool-wide quota metrics.
+    pub(crate) fn sync_enabled_accounts(&self, provider: &str, accounts: &[AccountConfig]) {
+        let mut entries = self.entries.lock().expect("account health lock poisoned");
+        for ((entry_provider, _), health) in entries.iter_mut() {
+            if entry_provider == provider {
+                health.enabled = false;
+            }
+        }
+        for account in accounts {
+            entries
+                .entry((provider.to_string(), account_identity(account).to_string()))
+                .or_default()
+                .enabled |= !account.disabled;
+        }
+    }
+
     /// Return account indices in the order an adapter should try them.
     ///
     /// `pool` is the optional `[server.pool]` tuning (issue #135). When
@@ -396,7 +415,6 @@ impl AccountPool {
                 .entry((provider.to_string(), account_identity(account).to_string()))
                 .or_default();
             health.observed = true;
-            health.enabled = !account.disabled;
             let quota = &mut health.quota;
 
             update_header(
@@ -452,7 +470,6 @@ impl AccountPool {
                 .entry((provider.to_string(), account_identity(account).to_string()))
                 .or_default();
             health.observed = true;
-            health.enabled = !account.disabled;
             let quota = &mut health.quota;
 
             for (minutes_header, utilization_header, reset_header) in [
@@ -519,7 +536,6 @@ impl AccountPool {
                 .entry((provider.to_string(), account_identity(account).to_string()))
                 .or_default();
             health.observed = true;
-            health.enabled = !account.disabled;
             let quota = &mut health.quota;
             if let Some(window) = &usage.five_hour {
                 quota.utilization_5h = Some(window.utilization);
@@ -987,9 +1003,7 @@ fn pool_utilization(
 
 fn record_pool_utilization(provider: &str, utilization: [Option<f64>; 3]) {
     for (window, value) in ["5h", "7d", "7d_oi"].into_iter().zip(utilization) {
-        if let Some(value) = value {
-            crate::metrics::record_pool_utilization(provider, window, value);
-        }
+        crate::metrics::record_pool_utilization(provider, window, value);
     }
 }
 
@@ -1163,6 +1177,56 @@ mod tests {
             },
         ];
         pool.select_order("anthropic", &accounts, Some("session"), None, None);
+
+        let entries = pool.entries.lock().expect("account health lock poisoned");
+        assert!(entries
+            .get(&("anthropic".to_string(), "shared".to_string()))
+            .is_some_and(|health| health.enabled));
+    }
+
+    #[test]
+    fn syncing_enabled_accounts_preserves_aliases_and_disables_removed_identities() {
+        let pool = AccountPool::new();
+        let initial = vec![
+            account_with_uuid("enabled", "shared"),
+            account_with_uuid("removed", "removed-id"),
+        ];
+        pool.sync_enabled_accounts("anthropic", &initial);
+
+        let current = vec![
+            AccountConfig {
+                name: "disabled-alias".to_string(),
+                uuid: Some("shared".to_string()),
+                disabled: true,
+                ..Default::default()
+            },
+            account_with_uuid("enabled-alias", "shared"),
+        ];
+        pool.sync_enabled_accounts("anthropic", &current);
+
+        let entries = pool.entries.lock().expect("account health lock poisoned");
+        assert!(entries
+            .get(&("anthropic".to_string(), "shared".to_string()))
+            .is_some_and(|health| health.enabled));
+        assert!(entries
+            .get(&("anthropic".to_string(), "removed-id".to_string()))
+            .is_some_and(|health| !health.enabled));
+    }
+
+    #[test]
+    fn quota_update_does_not_override_synchronized_alias_state() {
+        let pool = AccountPool::new();
+        let accounts = vec![
+            account_with_uuid("enabled", "shared"),
+            AccountConfig {
+                name: "disabled".to_string(),
+                uuid: Some("shared".to_string()),
+                disabled: true,
+                ..Default::default()
+            },
+        ];
+        pool.sync_enabled_accounts("anthropic", &accounts);
+        pool.note_quota("anthropic", &accounts[1], &HeaderMap::new());
 
         let entries = pool.entries.lock().expect("account health lock poisoned");
         assert!(entries

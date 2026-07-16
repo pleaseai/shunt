@@ -51,10 +51,10 @@ authorization = "Bearer <token>"
 | `shunt.latency` | 히스토그램(ms) | `provider`, `model`, `http.response.status_code` | 스트림은 헤더 지연 시간, 그 외에는 전체 지연 시간. |
 | `shunt.ttft` | 히스토그램(ms) | `provider`, `model` | 요청 시작부터 첫 SSE 본문 청크까지의 시간. |
 | `shunt.stream_outcome` | 카운터 | `provider`, `model`, `outcome` | SSE 최종 결과 하나: `completed`, `error_event`, `upstream_cut`, `client_disconnect`. |
-| `shunt.tokens` | 카운터 | `provider`, `model`, `kind` | 스트리밍 토큰 사용량(`input`, `output`, `cache_read`, `cache_creation`). 비스트리밍 사용량은 기록하지 않음. |
+| `shunt.tokens` | 카운터 | `provider`, `model`, `kind` | 마지막으로 보고된 스트리밍 토큰 사용량(`input`, `output`, `cache_read`, `cache_creation`). 비스트리밍 사용량은 기록하지 않음. |
 | `shunt.codex_continuation` | 카운터 | `provider`, `outcome` | Codex WebSocket continuation hit 또는 fallback. |
 | `shunt.upstream_retries` | 카운터 | `provider`, `reason` | 제한된 일시적 업스트림 재시도. |
-| `shunt.pool.quota_utilization` | 게이지 | `provider`, `window` | `5h`, `7d`, `7d_oi`별 최적 가용 계정의 quota 사용률. |
+| `shunt.pool.quota_utilization` | 게이지 | `provider`, `window` | `5h`, `7d`, `7d_oi`별 활성 상태이고 관측됐으며 만료되지 않은 quota 값 중 최소 사용률. |
 | `shunt.pool.rotations` | 카운터 | `provider`, `reason` | 계정에서 이동한 횟수와 pool이 소진된 요청 수. |
 
 ## 프라이버시

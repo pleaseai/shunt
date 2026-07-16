@@ -18,10 +18,13 @@
 //! request-derived. Token metrics currently cover streaming responses only;
 //! non-streaming token usage is intentionally out of scope.
 
-use std::sync::OnceLock;
+use std::{
+    collections::HashMap,
+    sync::{Mutex, OnceLock},
+};
 
 use opentelemetry::{
-    metrics::{Counter, Gauge, Histogram},
+    metrics::{Counter, Histogram, ObservableGauge},
     KeyValue,
 };
 use sentry::protocol::Unit;
@@ -37,8 +40,15 @@ struct OtelInstruments {
     tokens: Counter<u64>,
     continuation: Counter<u64>,
     upstream_retries: Counter<u64>,
-    pool_utilization: Gauge<f64>,
+    _pool_utilization: ObservableGauge<f64>,
     pool_rotations: Counter<u64>,
+}
+
+type PoolUtilizationValues = HashMap<(String, &'static str), Option<f64>>;
+
+fn pool_utilization_values() -> &'static Mutex<PoolUtilizationValues> {
+    static VALUES: OnceLock<Mutex<PoolUtilizationValues>> = OnceLock::new();
+    VALUES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn otel_instruments() -> &'static OtelInstruments {
@@ -80,9 +90,26 @@ fn otel_instruments() -> &'static OtelInstruments {
                     "Bounded upstream retries issued for transient failures (issue #48)",
                 )
                 .build(),
-            pool_utilization: meter
-                .f64_gauge("shunt.pool.quota_utilization")
+            _pool_utilization: meter
+                .f64_observable_gauge("shunt.pool.quota_utilization")
                 .with_description("Least quota utilization among enabled pool accounts")
+                .with_callback(|observer| {
+                    let values = pool_utilization_values()
+                        .lock()
+                        .expect("pool utilization metric lock poisoned");
+                    for ((provider, window), value) in values.iter() {
+                        let Some(value) = value else {
+                            continue;
+                        };
+                        observer.observe(
+                            *value,
+                            &[
+                                KeyValue::new("provider", provider.clone()),
+                                KeyValue::new("window", *window),
+                            ],
+                        );
+                    }
+                })
                 .build(),
             pool_rotations: meter
                 .u64_counter("shunt.pool.rotations")
@@ -145,21 +172,29 @@ pub fn record_stream_tokens(provider: &str, model: &str, kind: &'static str, cou
     otel_instruments().tokens.add(count, &attributes);
 }
 
-/// Record the least quota utilization reported by an enabled, non-stale account
-/// for one provider and quota window (`5h`, `7d`, or `7d_oi`).
-pub fn record_pool_utilization(provider: &str, window: &'static str, utilization: f64) {
-    sentry::metrics::gauge("shunt.pool.quota_utilization", utilization)
-        .attribute("provider", provider.to_owned())
-        .attribute("window", window.to_owned())
-        .capture();
-
-    let attributes = [
-        KeyValue::new("provider", provider.to_owned()),
-        KeyValue::new("window", window),
-    ];
-    otel_instruments()
-        .pool_utilization
-        .record(utilization, &attributes);
+/// Replace the current quota utilization for one provider/window series. `None`
+/// suppresses the series from subsequent OpenTelemetry collections after the
+/// last eligible account is disabled, removed, or its window expires.
+pub fn record_pool_utilization(provider: &str, window: &'static str, utilization: Option<f64>) {
+    match utilization {
+        Some(utilization) => {
+            sentry::metrics::gauge("shunt.pool.quota_utilization", utilization)
+                .attribute("provider", provider.to_owned())
+                .attribute("window", window.to_owned())
+                .capture();
+            pool_utilization_values()
+                .lock()
+                .expect("pool utilization metric lock poisoned")
+                .insert((provider.to_owned(), window), Some(utilization));
+        }
+        None => {
+            pool_utilization_values()
+                .lock()
+                .expect("pool utilization metric lock poisoned")
+                .remove(&(provider.to_owned(), window));
+        }
+    }
+    let _ = otel_instruments();
 }
 
 /// Record one move away from a pool account, or one request that found the pool
@@ -297,7 +332,8 @@ mod tests {
     /// Pool metrics honor the same opt-in no-op contract.
     #[test]
     fn record_pool_metrics_are_noop_without_sinks() {
-        record_pool_utilization("anthropic", "5h", 0.25);
+        record_pool_utilization("anthropic", "5h", Some(0.25));
+        record_pool_utilization("anthropic", "5h", None);
         record_pool_rotation("anthropic", "rate_limit");
     }
 
