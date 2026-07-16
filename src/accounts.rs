@@ -40,7 +40,7 @@ enum CodexWindow {
     Weekly,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct QuotaState {
     pub utilization_5h: Option<f64>,
     pub reset_5h: Option<u64>,
@@ -203,13 +203,14 @@ impl AccountPool {
             return Vec::new();
         }
 
+        let provider = provider.to_string();
         let ident_reps = collapse_representatives(accounts);
         let distinct = ident_reps.len();
         let start_slot = match session_id {
             Some(session_id) => stable_session_index(session_id, distinct),
             None => {
                 let mut counters = self.rr.lock().expect("account round-robin lock poisoned");
-                let counter = counters.entry(provider.to_string()).or_default();
+                let counter = counters.entry(provider.clone()).or_default();
                 let start_slot = *counter % distinct;
                 *counter = counter.wrapping_add(1);
                 start_slot
@@ -221,30 +222,35 @@ impl AccountPool {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        let snapshots = {
+        let is_fable = is_fable_model(model);
+        let health_snapshots = {
             let mut entries = self.entries.lock().expect("account health lock poisoned");
-            accounts
-                .iter()
-                .map(|account| {
-                    let health = entries
-                        .entry((provider.to_string(), account_identity(account).to_string()))
-                        .or_default();
-                    expire_stale_quota(&mut health.quota, unix_now);
-                    let quota = if consider_quota {
-                        assess_quota(health, account, model, pool, unix_now)
-                    } else {
-                        QuotaAssessment::ignored()
-                    };
-                    (
-                        health.cooldown_until,
-                        quota,
-                        consider_quota
-                            .then(|| governing_weekly_reset(health, model))
-                            .flatten(),
-                    )
-                })
-                .collect::<Vec<_>>()
+            let mut snapshots = Vec::with_capacity(accounts.len());
+            for account in accounts {
+                let health = entries
+                    .entry((provider.clone(), account_identity(account).to_string()))
+                    .or_default();
+                expire_stale_quota(&mut health.quota, unix_now);
+                let quota = consider_quota.then(|| health.quota.clone());
+                snapshots.push((health.cooldown_until, quota));
+            }
+            snapshots
         };
+        let snapshots = accounts
+            .iter()
+            .zip(health_snapshots)
+            .map(|(account, (cooldown_until, quota))| {
+                let assessment = quota
+                    .as_ref()
+                    .map_or_else(QuotaAssessment::ignored, |quota| {
+                        assess_quota(quota, account, is_fable, pool, unix_now)
+                    });
+                let weekly_reset = quota
+                    .as_ref()
+                    .and_then(|quota| governing_weekly_reset(quota, is_fable));
+                (cooldown_until, assessment, weekly_reset)
+            })
+            .collect::<Vec<_>>();
 
         // The sticky/round-robin slot is computed over distinct identities so
         // adding or removing an alias cannot move an existing session. Disabled
@@ -524,6 +530,7 @@ impl AccountPool {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
+        let is_fable = is_fable_model(model);
         let mut entries = self.entries.lock().expect("account health lock poisoned");
         accounts
             .iter()
@@ -535,7 +542,7 @@ impl AccountPool {
                     return AccountSnapshot::unseen(account);
                 };
                 expire_stale_quota(&mut health.quota, unix_now);
-                let quota = assess_quota(health, account, model, pool, unix_now);
+                let quota = assess_quota(&health.quota, account, is_fable, pool, unix_now);
                 let cooldown_secs_remaining = health
                     .cooldown_until
                     .and_then(|until| until.checked_duration_since(now))
@@ -662,11 +669,11 @@ fn is_fable_model(model: Option<&str>) -> bool {
     model.is_some_and(|model| model.to_ascii_lowercase().contains("fable"))
 }
 
-fn governing_weekly_reset(health: &AccountHealth, model: Option<&str>) -> Option<u64> {
-    if is_fable_model(model) && health.quota.utilization_7d_oi.is_some() {
-        health.quota.reset_7d_oi
+fn governing_weekly_reset(quota: &QuotaState, is_fable: bool) -> Option<u64> {
+    if is_fable && quota.utilization_7d_oi.is_some() {
+        quota.reset_7d_oi
     } else {
-        health.quota.reset_7d
+        quota.reset_7d
     }
 }
 
@@ -727,15 +734,15 @@ impl QuotaAssessment {
 }
 
 fn assess_quota(
-    health: &AccountHealth,
+    quota: &QuotaState,
     account: &AccountConfig,
-    model: Option<&str>,
+    is_fable: bool,
     pool: Option<&PoolConfig>,
     now: u64,
 ) -> QuotaAssessment {
     let hard = pool.map_or(SWITCH_THRESHOLD, |pool| pool.hard_threshold);
     let burn_avoid = pool.is_some_and(|pool| pool.burn_rate_avoidance);
-    let rejected = health.quota.status.as_deref() == Some("rejected");
+    let rejected = quota.status.as_deref() == Some("rejected");
     let mut assessment = QuotaAssessment {
         near: rejected,
         over_hard: false,
@@ -748,23 +755,19 @@ fn assess_quota(
         },
     };
 
-    let weekly = if is_fable_model(model) && health.quota.utilization_7d_oi.is_some() {
+    let weekly = if is_fable && quota.utilization_7d_oi.is_some() {
         (
-            health.quota.utilization_7d_oi,
-            health.quota.reset_7d_oi,
+            quota.utilization_7d_oi,
+            quota.reset_7d_oi,
             QuotaWindow::Fable,
         )
     } else {
-        (
-            health.quota.utilization_7d,
-            health.quota.reset_7d,
-            QuotaWindow::Weekly,
-        )
+        (quota.utilization_7d, quota.reset_7d, QuotaWindow::Weekly)
     };
     let windows = [
         (
-            health.quota.utilization_5h,
-            health.quota.reset_5h,
+            quota.utilization_5h,
+            quota.reset_5h,
             WINDOW_5H_SECS,
             QuotaWindow::FiveHour,
         ),
