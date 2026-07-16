@@ -1,0 +1,73 @@
+src/gateway/mod.rs
+  s_53f119918a707c::t_fbe9fab570759d 42
+  s_53f119918a707c::t_a27331f7598fec 59-62
+  s_53f119918a707c::t_392d06917ee7c3 35
+  s_53f119918a707c::t_ca72f20ec2de08 26
+src/gateway/device.rs
+  s_53f119918a707c::t_7770104a27a222 71
+  s_53f119918a707c::t_9a0f0fc2dc1c2a 156
+  s_53f119918a707c::t_9bd19658e0cc1b 157-175
+  s_53f119918a707c::t_b9f14a9771edba 263-275
+  s_53f119918a707c::t_0d400a9de83c4d 248-249,252
+  s_53f119918a707c::t_83d50ca3b4ab08 262
+src/gateway/store.rs
+  s_53f119918a707c::t_8416ecac38c0b6 245
+  s_53f119918a707c::t_0801e92eb5fdb9 22-23
+  s_53f119918a707c::t_035b558b178794 435-469,475-492
+  s_53f119918a707c::t_4f7032bb5eb9a4 250,252-262,273-274,277-279,283-288,290
+  s_53f119918a707c::t_9a0f0fc2dc1c2a 470-474
+  s_53f119918a707c::t_3b958b52463476 263-272,276
+  s_53f119918a707c::t_efd08e6992dde5 305-310,312-325
+  s_53f119918a707c::t_5c70d923e60ffb 80
+  s_53f119918a707c::t_c542b8f463a998 195-198,201-202,204-213,218-221,226,228-229,234,242
+  s_53f119918a707c::t_8a56baad865529 164-176
+  s_53f119918a707c::t_f236e930060583 230
+  s_53f119918a707c::t_5e54b01da41397 275
+  s_53f119918a707c::t_472c054cfd5f37 1-8,15
+  s_c2caf662a331a1::t_9ea130498da48b 181
+docs/gateway-login.md
+  s_53f119918a707c::t_c24fb4aa7c891b 84-96
+  s_53f119918a707c::t_9ecbb69efc0b78 51
+src/gateway/tests.rs
+  s_53f119918a707c::t_a97c4eb5633fcc 285,320
+  s_53f119918a707c::t_14e384d3a76f71 35
+  s_53f119918a707c::t_77bd69b0da3cdb 3
+  s_53f119918a707c::t_8113b4f4f238ee 281-284,286-319,321-344
+site/src/content/docs/guides/gateway-login.md
+  s_53f119918a707c::t_d00e850c9739b8 34
+  s_53f119918a707c::t_02677a79879d78 70
+  s_53f119918a707c::t_c89c8e570894cf 29
+src/config.rs
+  s_53f119918a707c::t_114913191b9ddc 2310
+  s_53f119918a707c::t_9503c82b6830b4 2263
+  s_53f119918a707c::t_2b4fbf96193da8 344
+  s_53f119918a707c::t_f1f566bb5087ae 2289-2297
+  s_53f119918a707c::t_905a4a140bf20c 280-283
+site/src/content/docs/reference/configuration.md
+  s_53f119918a707c::t_a47ae22aa3d1a4 56-58
+  s_53f119918a707c::t_33b54033eb1fa3 52
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "0119aba6ecfeb281d23fde1a2f0d13ef31ca1cce",
+  "prompts": {},
+  "sessions": {
+    "s_53f119918a707c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fc678f72-9bfe-4f11-b2cc-6342fb0b5c6a",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_c2caf662a331a1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6fcadcc2-5fd9-417c-b291-937300238add",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
