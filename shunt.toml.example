@@ -48,6 +48,10 @@ default_provider = "anthropic" # provider for any model with no route -> pass-th
 # usage_refresh_seconds = 300    # (disabled by default; 0 disables) poll usage
 #                                    API for refreshable Claude accounts only;
 #                                    values below 60 clamp to 60, fixed at boot
+# state_path = "shunt-state.json"  # (disabled by default) persist per-account
+#                                    quota to this file so a restart warm-starts
+#                                    from the last observed utilization; a
+#                                    best-effort cache, re-derived from upstream
 
 # --- Optional: Sentry error reporting to YOUR OWN Sentry project (docs/running.md §3.1).
 # Off unless you set a DSN. Reports gateway-owned diagnostics only — fatal

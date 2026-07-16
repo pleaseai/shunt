@@ -143,6 +143,18 @@ Setting `[server.pool] usage_refresh_seconds` to a positive value spawns one bac
 - **Floor:** a configured value below 60 is clamped up to a 60-second floor to avoid hammering the endpoint.
 - **Fixed at boot:** the interval is read once at startup; a config reload does not start, stop, or re-tune the poller.
 
+## Quota-state persistence (opt-in)
+
+The pool's quota state lives in memory, so a restart begins cold: every account looks unseen until its first post-restart response. Until that response lands, burn-rate avoidance has nothing to project from and `GET /usage` reports empty windows.
+
+Setting `[server.pool] state_path` to a file path persists the pool's per-account quota — the same 5h/`7d`/`7d_oi` utilization and reset values the poller and headers fill — across restarts, so the pool warm-starts from the last observed utilization. It is implemented in `src/state_persist.rs`.
+
+- **Default:** absent disables persistence entirely — no file is read or written and no background task is spawned. Like the poller, whether the task exists is decided once from the boot config; a reload does not start, stop, or re-point it.
+- **Best-effort cache, not a source of truth:** quota is re-derived from upstream responses (and the usage API) regardless. A missing, unreadable, malformed, or version-mismatched file falls back to a cold start — never a boot failure.
+- **Scope:** only `QuotaState` (per-window utilization + reset + the unified `status`) is persisted, keyed by `(provider, account_identity)`. Cooldowns are a monotonic `Instant` (not portable across a restart) and short-lived, so they are intentionally left to lapse on boot. A restored window whose reset has already passed is dropped lazily by the first selection or snapshot after restore, through the same `expire_stale_quota` path a live one uses.
+- **Write cadence:** a background task flushes on a fixed 15-second timer, and only when a quota mutation marked the pool dirty since the last flush (an idle interval writes nothing). Writes use a private (`0600` on Unix) sibling temp file and atomically rename it over the target, so a crash mid-write never leaves a truncated file in place. A failed write keeps the pool dirty and retries on the next tick. When writes succeed, a restart loses at most the newest ~15 seconds of quota, which the next response re-derives anyway.
+- **File format:** JSON with a `version` tag (`1`); an unrecognized version is ignored rather than mis-parsed.
+
 ## Failover behavior
 
 shunt classifies the upstream response before streaming its body. It never retries a response after streaming has begun.

@@ -121,6 +121,8 @@ default_threshold = 0.9      # 모든 창에 대한 소프트 기본값
 default_threshold_5h = 0.95  # 창별 오버라이드
 default_threshold_fable = 0.85
 burn_rate_avoidance = true   # 리셋 전에 임계값에 도달할 것으로 예측되는 계정을 회피
+usage_refresh_seconds = 300  # 갱신 가능 계정의 out-of-band 사용량 재보정
+state_path = "shunt-state.json"  # 재시작 간 쿼터 유지(워밍업)
 
 [[providers.anthropic.accounts]]
 name = "primary"
@@ -141,6 +143,18 @@ disabled = true              # 구성은 유지되지만 절대 선택되지 않
 - **전체 근접 가드(All-near guard).** 모든 계정이 소프트 임계값을 넘겼거나(또는 소진이 예측되면), 풀이 비지 않습니다: 근접 계정은 여유가 가장 큰 순서로 서빙되고, `hard_threshold` 이상인 계정은 여전히 마지막으로 정렬되며, 그다음 쿨다운 중인 계정만 이어집니다.
 - **적용 범위(Scope).** 쿼터 관련 노브는 Claude(Anthropic) 풀에만 작동합니다 — Codex 백엔드는 쿼터 헤더를 보내지 않으므로 [Codex 풀](/ko/guides/codex-multi-account/)에서는 무력화되며, `priority`와 `disabled`는 그곳에서도 계속 적용됩니다.
 - 관리자 풀 엔드포인트(`GET /admin/pool`)는 각 계정의 `priority`, `disabled` 플래그를 보고하며, `[server.pool]`이 구성되어 있으면 현재 여유(headroom) 예측치를 초 단위로 함께 보고합니다; 대시보드의 상태 열은 비활성화된 계정을 표시합니다.
+
+## Usage-API 재보정
+
+쿼터 헤더는 shunt를 통과한 트래픽만 반영합니다. `usage_refresh_seconds`는 `GET /api/oauth/usage`를 폴링해 권위 있는 사용률과 리셋 시각을 동일한 5시간, 공유 주간(`7d`), Fable 전용 주간(`7d_oi`) 창에 적용함으로써 그 간극을 메웁니다.
+
+필드가 없거나 `0`이면 폴링은 꺼집니다; 60 미만의 양수 값은 60초로 올림됩니다. imported된 갱신 가능 계정만 대상이며, 장기 `claude setup-token`과 `token_env` 계정은 토큰이 엔드포인트를 호출할 수 없어 건너뜁니다. 간격은 부팅 시 고정되므로 설정 리로드는 폴러를 시작·중지·재조정하지 않습니다. 이 주기적 보정은 반응형 헤더 상태를 대체하지 않고 보완합니다.
+
+## 쿼터 상태 영속화
+
+풀 쿼터는 메모리에 있으므로 재시작은 cold로 시작합니다: 각 계정은 재시작 후 첫 응답 전까지 미관측 상태로 보이고, 이로 인해 burn-rate 회피가 비활성화되며 트래픽으로 풀이 다시 채워질 때까지 `GET /usage`가 빈 값을 반환합니다. `state_path`를 설정하면 각 계정의 창별 사용률과 리셋을 그 파일에 저장해, 풀이 마지막으로 관측된 상태에서 워밍업합니다.
+
+이 파일은 권위 있는 소스가 아니라 best-effort 캐시입니다 — 쿼터는 어차피 업스트림 응답에서 재도출되므로, 파일이 없거나·오래됐거나·손상돼도 cold start만 발생할 뿐 부팅 실패로 이어지지 않습니다. 쓰기는 비공개 temp 파일(Unix에서 `0600`)을 대상 위로 원자적으로 rename하는 방식이며, 쿼터가 변경됐을 때만 15초 백그라운드 타이머로 이뤄집니다. 쓰기에 실패하면 dirty 상태를 유지하고 다음 tick에서 재시도합니다. 쿨다운은 저장되지 않고(재시작 시 소멸), 복원된 창 중 이미 리셋이 지난 것은 복원 후 첫 선택 또는 snapshot에서 lazy하게 폐기됩니다. 경로는 부팅 시 고정되며, 필드가 없으면 영속화는 꺼집니다.
 
 ## 페일오버 규칙
 
