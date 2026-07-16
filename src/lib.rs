@@ -7,6 +7,7 @@ pub mod config;
 pub mod count_tokens;
 pub mod discovery;
 pub mod error;
+pub mod gateway;
 pub mod headers;
 pub mod keepalive;
 pub mod metrics;

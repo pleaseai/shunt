@@ -1,0 +1,534 @@
+//! Process-lifetime stores for OAuth device grants, refresh tokens, and browser
+//! verification limits.
+//!
+//! Mutating operations opportunistically sweep expired or idle state. Used
+//! refresh-token tombstones are retained for 30 days, capped at 64 per family:
+//! replay within that bounded horizon revokes the active family, while older
+//! tokens still fail as `invalid_grant` without keeping unbounded history.
+
+use std::{
+    collections::HashMap,
+    sync::Mutex,
+    time::{Duration, Instant},
+};
+
+use crate::admin::session::random_id;
+
+use super::approval::Identity;
+
+pub const DEVICE_CODE_TTL: Duration = Duration::from_secs(600);
+pub const INITIAL_POLL_INTERVAL: Duration = Duration::from_secs(5);
+const SLOW_DOWN_INCREMENT: Duration = Duration::from_secs(5);
+const REFRESH_TOMBSTONE_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+const MAX_TOMBSTONES_PER_FAMILY: usize = 64;
+const MAX_DEVICE_GRANTS: usize = 4096;
+const MAX_RATE_LIMIT_IDENTITIES: usize = 4096;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeviceStatus {
+    Pending,
+    Approved(Identity),
+    Denied,
+}
+
+struct DeviceGrant {
+    user_code: String,
+    status: DeviceStatus,
+    expires: Instant,
+    next_poll: Option<Instant>,
+    poll_interval: Duration,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum DevicePoll {
+    Pending,
+    SlowDown,
+    Denied,
+    Expired,
+    Approved(Identity),
+}
+
+#[derive(Default)]
+struct DeviceGrantState {
+    grants: HashMap<String, DeviceGrant>,
+    by_user_code: HashMap<String, String>,
+}
+
+#[derive(Default)]
+pub struct DeviceGrantStore {
+    state: Mutex<DeviceGrantState>,
+}
+
+impl DeviceGrantStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn create(&self, device_code: String, user_code: String) -> bool {
+        self.create_at(device_code, user_code, Instant::now(), DEVICE_CODE_TTL)
+    }
+
+    fn create_at(
+        &self,
+        device_code: String,
+        user_code: String,
+        now: Instant,
+        ttl: Duration,
+    ) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .expect("gateway device-grant lock poisoned");
+        sweep_expired_grants(&mut state, now);
+        if state.by_user_code.contains_key(&user_code)
+            || state.grants.contains_key(&device_code)
+            || state.grants.len() >= MAX_DEVICE_GRANTS
+        {
+            return false;
+        }
+        state
+            .by_user_code
+            .insert(user_code.clone(), device_code.clone());
+        state.grants.insert(
+            device_code,
+            DeviceGrant {
+                user_code,
+                status: DeviceStatus::Pending,
+                expires: now + ttl,
+                next_poll: None,
+                poll_interval: INITIAL_POLL_INTERVAL,
+            },
+        );
+        true
+    }
+
+    pub fn approve(&self, user_code: &str, identity: Identity) -> bool {
+        self.set_status_at(user_code, DeviceStatus::Approved(identity), Instant::now())
+    }
+
+    pub fn deny(&self, user_code: &str) -> bool {
+        self.set_status_at(user_code, DeviceStatus::Denied, Instant::now())
+    }
+
+    fn set_status_at(&self, user_code: &str, status: DeviceStatus, now: Instant) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .expect("gateway device-grant lock poisoned");
+        let Some(device_code) = state.by_user_code.get(user_code).cloned() else {
+            return false;
+        };
+        let Some(grant) = state.grants.get_mut(&device_code) else {
+            return false;
+        };
+        if grant.expires <= now || grant.status != DeviceStatus::Pending {
+            return false;
+        }
+        grant.status = status;
+        true
+    }
+
+    pub fn poll(&self, device_code: &str) -> DevicePoll {
+        self.poll_at(device_code, Instant::now())
+    }
+
+    fn poll_at(&self, device_code: &str, now: Instant) -> DevicePoll {
+        let mut state = self
+            .state
+            .lock()
+            .expect("gateway device-grant lock poisoned");
+        let Some(grant) = state.grants.get_mut(device_code) else {
+            return DevicePoll::Expired;
+        };
+        if grant.expires <= now {
+            let user_code = grant.user_code.clone();
+            state.grants.remove(device_code);
+            state.by_user_code.remove(&user_code);
+            return DevicePoll::Expired;
+        }
+        if grant.next_poll.is_some_and(|next| now < next) {
+            grant.poll_interval += SLOW_DOWN_INCREMENT;
+            grant.next_poll = Some(now + grant.poll_interval);
+            return DevicePoll::SlowDown;
+        }
+        grant.next_poll = Some(now + grant.poll_interval);
+        match &grant.status {
+            DeviceStatus::Pending => DevicePoll::Pending,
+            DeviceStatus::Denied => DevicePoll::Denied,
+            DeviceStatus::Approved(identity) => {
+                let identity = identity.clone();
+                let user_code = grant.user_code.clone();
+                state.grants.remove(device_code);
+                state.by_user_code.remove(&user_code);
+                DevicePoll::Approved(identity)
+            }
+        }
+    }
+}
+
+fn sweep_expired_grants(state: &mut DeviceGrantState, now: Instant) {
+    let expired_user_codes: Vec<_> = state
+        .grants
+        .values()
+        .filter(|grant| grant.expires <= now)
+        .map(|grant| grant.user_code.clone())
+        .collect();
+    state.grants.retain(|_, grant| grant.expires > now);
+    for user_code in expired_user_codes {
+        state.by_user_code.remove(&user_code);
+    }
+}
+
+#[derive(Clone)]
+struct RefreshEntry {
+    identity: Identity,
+    family: String,
+    inactive_since: Option<Instant>,
+}
+
+#[derive(Default)]
+pub struct RefreshTokenStore {
+    tokens: Mutex<HashMap<String, RefreshEntry>>,
+}
+
+impl RefreshTokenStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn issue(&self, identity: Identity) -> String {
+        self.issue_at(identity, Instant::now())
+    }
+
+    fn issue_at(&self, identity: Identity, now: Instant) -> String {
+        let token = random_id();
+        let family = random_id();
+        let mut tokens = self
+            .tokens
+            .lock()
+            .expect("gateway refresh-token lock poisoned");
+        sweep_refresh_tokens(&mut tokens, now);
+        tokens.insert(
+            token.clone(),
+            RefreshEntry {
+                identity,
+                family,
+                inactive_since: None,
+            },
+        );
+        token
+    }
+
+    pub fn rotate(&self, presented: &str) -> Option<(Identity, String)> {
+        self.rotate_at(presented, Instant::now())
+    }
+
+    fn rotate_at(&self, presented: &str, now: Instant) -> Option<(Identity, String)> {
+        let mut tokens = self
+            .tokens
+            .lock()
+            .expect("gateway refresh-token lock poisoned");
+        sweep_refresh_tokens(&mut tokens, now);
+        let entry = tokens.get(presented)?.clone();
+        if entry.inactive_since.is_some() {
+            revoke_family(&mut tokens, &entry.family, now);
+            sweep_refresh_tokens(&mut tokens, now);
+            return None;
+        }
+        if let Some(old) = tokens.get_mut(presented) {
+            old.inactive_since = Some(now);
+        }
+        let next = random_id();
+        tokens.insert(
+            next.clone(),
+            RefreshEntry {
+                identity: entry.identity.clone(),
+                family: entry.family,
+                inactive_since: None,
+            },
+        );
+        sweep_refresh_tokens(&mut tokens, now);
+        Some((entry.identity, next))
+    }
+}
+
+fn revoke_family(tokens: &mut HashMap<String, RefreshEntry>, family: &str, now: Instant) {
+    for entry in tokens.values_mut().filter(|entry| entry.family == family) {
+        entry.inactive_since.get_or_insert(now);
+    }
+}
+
+fn sweep_refresh_tokens(tokens: &mut HashMap<String, RefreshEntry>, now: Instant) {
+    tokens.retain(|_, entry| {
+        entry
+            .inactive_since
+            .is_none_or(|inactive| now.saturating_duration_since(inactive) < REFRESH_TOMBSTONE_TTL)
+    });
+
+    let mut by_family: HashMap<String, Vec<(String, Instant)>> = HashMap::new();
+    for (token, entry) in tokens.iter() {
+        if let Some(since) = entry.inactive_since {
+            by_family
+                .entry(entry.family.clone())
+                .or_default()
+                .push((token.clone(), since));
+        }
+    }
+    for tombstones in by_family.values_mut() {
+        if tombstones.len() > MAX_TOMBSTONES_PER_FAMILY {
+            tombstones.sort_unstable_by_key(|(_, since)| *since);
+            let remove_count = tombstones.len() - MAX_TOMBSTONES_PER_FAMILY;
+            for (token, _) in tombstones.drain(..remove_count) {
+                tokens.remove(&token);
+            }
+        }
+    }
+}
+
+struct RateLimitEntry {
+    window_start: Instant,
+    count: u32,
+    last_seen: Instant,
+}
+
+pub struct PerIpRateLimiter {
+    limits: Mutex<HashMap<String, RateLimitEntry>>,
+    window: Duration,
+    max: u32,
+}
+
+impl PerIpRateLimiter {
+    pub fn new(window: Duration, max: u32) -> Self {
+        Self {
+            limits: Mutex::new(HashMap::new()),
+            window,
+            max,
+        }
+    }
+
+    pub fn check(&self, ip: &str) -> bool {
+        self.check_at(ip, Instant::now())
+    }
+
+    fn check_at(&self, ip: &str, now: Instant) -> bool {
+        let mut limits = self
+            .limits
+            .lock()
+            .expect("gateway rate-limit lock poisoned");
+        limits.retain(|_, entry| now.saturating_duration_since(entry.last_seen) < self.window);
+        if !limits.contains_key(ip) && limits.len() >= MAX_RATE_LIMIT_IDENTITIES {
+            return false;
+        }
+        let entry = limits.entry(ip.to_string()).or_insert(RateLimitEntry {
+            window_start: now,
+            count: 0,
+            last_seen: now,
+        });
+        if now.saturating_duration_since(entry.window_start) >= self.window {
+            entry.window_start = now;
+            entry.count = 0;
+        }
+        entry.last_seen = now;
+        entry.count += 1;
+        entry.count <= self.max
+    }
+}
+
+pub struct GatewayStores {
+    pub device_grants: DeviceGrantStore,
+    pub refresh_tokens: RefreshTokenStore,
+    pub device_verify_rate: PerIpRateLimiter,
+}
+
+impl GatewayStores {
+    pub fn new() -> Self {
+        Self {
+            device_grants: DeviceGrantStore::new(),
+            refresh_tokens: RefreshTokenStore::new(),
+            device_verify_rate: PerIpRateLimiter::new(Duration::from_secs(60), 30),
+        }
+    }
+}
+
+impl Default for GatewayStores {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn identity() -> Identity {
+        Identity {
+            sub: "dev@example.com".into(),
+            email: "dev@example.com".into(),
+            name: "dev".into(),
+        }
+    }
+
+    #[test]
+    fn device_grant_transitions_and_is_single_use() {
+        let store = DeviceGrantStore::new();
+        let now = Instant::now();
+        assert!(store.create_at("device".into(), "BCDF-GHJK".into(), now, DEVICE_CODE_TTL));
+        assert!(!store.create_at(
+            "other-device".into(),
+            "BCDF-GHJK".into(),
+            now,
+            DEVICE_CODE_TTL
+        ));
+
+        assert_eq!(store.poll_at("device", now), DevicePoll::Pending);
+        assert!(store.approve("BCDF-GHJK", identity()));
+        assert_eq!(
+            store.poll_at("device", now + INITIAL_POLL_INTERVAL),
+            DevicePoll::Approved(identity())
+        );
+        assert_eq!(store.poll_at("device", now), DevicePoll::Expired);
+        assert!(!store.approve("BCDF-GHJK", identity()));
+    }
+
+    #[test]
+    fn device_grant_denies_and_expires() {
+        let store = DeviceGrantStore::new();
+        let now = Instant::now();
+        assert!(store.create_at("denied".into(), "BCDF-GHJL".into(), now, DEVICE_CODE_TTL));
+        assert!(store.deny("BCDF-GHJL"));
+        assert_eq!(store.poll_at("denied", now), DevicePoll::Denied);
+
+        assert!(store.create_at("expired".into(), "BCDF-GHJM".into(), now, Duration::ZERO));
+        assert!(!store.set_status_at("BCDF-GHJM", DeviceStatus::Approved(identity()), now,));
+    }
+
+    #[test]
+    fn fast_poll_adds_five_seconds_to_interval() {
+        let store = DeviceGrantStore::new();
+        let now = Instant::now();
+        assert!(store.create_at("device".into(), "BCDF-GHJK".into(), now, DEVICE_CODE_TTL));
+
+        assert_eq!(store.poll_at("device", now), DevicePoll::Pending);
+        assert_eq!(
+            store.poll_at("device", now + Duration::from_secs(4)),
+            DevicePoll::SlowDown
+        );
+        assert_eq!(
+            store.poll_at("device", now + Duration::from_secs(10)),
+            DevicePoll::SlowDown,
+            "the slow-down response extends the next allowed interval to ten seconds"
+        );
+        assert_eq!(
+            store.poll_at("device", now + Duration::from_secs(19)),
+            DevicePoll::SlowDown
+        );
+    }
+
+    #[test]
+    fn refresh_rotates_and_reuse_revokes_the_family() {
+        let store = RefreshTokenStore::new();
+        let first = store.issue(identity());
+        let (rotated_identity, second) = store.rotate(&first).expect("first rotation");
+        assert_eq!(rotated_identity, identity());
+        assert_ne!(first, second);
+
+        assert!(store.rotate(&first).is_none(), "old token is single-use");
+        assert!(
+            store.rotate(&second).is_none(),
+            "reuse detection revokes the newly rotated token"
+        );
+        assert!(store.rotate("unknown").is_none());
+    }
+
+    #[test]
+    fn creating_a_grant_sweeps_abandoned_expired_grants() {
+        let store = DeviceGrantStore::new();
+        let now = Instant::now();
+        assert!(store.create_at("expired".into(), "BCDF-GHJK".into(), now, Duration::ZERO));
+        assert!(store.create_at(
+            "current".into(),
+            "BCDF-GHJL".into(),
+            now + Duration::from_secs(1),
+            DEVICE_CODE_TTL
+        ));
+
+        let state = store.state.lock().unwrap();
+        assert_eq!(state.grants.len(), 1);
+        assert_eq!(state.by_user_code.len(), 1);
+        assert!(state.grants.contains_key("current"));
+        assert!(!state.by_user_code.contains_key("BCDF-GHJK"));
+    }
+
+    #[test]
+    fn refresh_tombstones_are_time_and_count_bounded() {
+        let store = RefreshTokenStore::new();
+        let now = Instant::now();
+        let mut active = store.issue_at(identity(), now);
+        for seconds in 1..=MAX_TOMBSTONES_PER_FAMILY + 2 {
+            active = store
+                .rotate_at(&active, now + Duration::from_secs(seconds as u64))
+                .expect("active token rotates")
+                .1;
+        }
+        assert!(store.tokens.lock().unwrap().len() <= MAX_TOMBSTONES_PER_FAMILY + 1);
+
+        let after_ttl = now + REFRESH_TOMBSTONE_TTL + Duration::from_secs(100);
+        let unrelated = store.issue_at(identity(), after_ttl);
+        let tokens = store.tokens.lock().unwrap();
+        assert_eq!(
+            tokens.len(),
+            2,
+            "old tombstones are swept; active tokens remain"
+        );
+        assert!(tokens.contains_key(&active));
+        assert!(tokens.contains_key(&unrelated));
+    }
+
+    #[test]
+    fn device_grants_reject_admission_at_capacity() {
+        let store = DeviceGrantStore::new();
+        let now = Instant::now();
+        for index in 0..MAX_DEVICE_GRANTS {
+            assert!(store.create_at(
+                format!("device-{index}"),
+                format!("CODE-{index}"),
+                now,
+                DEVICE_CODE_TTL,
+            ));
+        }
+        assert!(!store.create_at("overflow".into(), "OVER-FLOW".into(), now, DEVICE_CODE_TTL,));
+    }
+
+    #[test]
+    fn rate_limit_rejects_new_identity_at_capacity() {
+        let limiter = PerIpRateLimiter::new(Duration::from_secs(60), 1);
+        let now = Instant::now();
+        for index in 0..MAX_RATE_LIMIT_IDENTITIES {
+            assert!(limiter.check_at(&format!("client-{index}"), now));
+        }
+        assert!(!limiter.check_at("overflow", now));
+        assert!(!limiter.check_at("client-0", now));
+    }
+
+    #[test]
+    fn rate_limit_sweep_evicts_idle_ips() {
+        let limiter = PerIpRateLimiter::new(Duration::from_secs(60), 1);
+        let now = Instant::now();
+        assert!(limiter.check_at("192.0.2.1", now));
+        assert!(limiter.check_at("192.0.2.2", now));
+        assert_eq!(limiter.limits.lock().unwrap().len(), 2);
+
+        assert!(limiter.check_at("192.0.2.3", now + Duration::from_secs(60)));
+        let limits = limiter.limits.lock().unwrap();
+        assert_eq!(limits.len(), 1);
+        assert!(limits.contains_key("192.0.2.3"));
+    }
+
+    #[test]
+    fn rate_limit_is_scoped_by_ip() {
+        let limiter = PerIpRateLimiter::new(Duration::from_secs(60), 1);
+        assert!(limiter.check("192.0.2.1"));
+        assert!(!limiter.check("192.0.2.1"));
+        assert!(limiter.check("192.0.2.2"));
+    }
+}

@@ -224,9 +224,12 @@ translation:
 
 ## How this maps onto shunt
 
-shunt implements the `ANTHROPIC_BASE_URL` (Anthropic Messages) gateway surface, not the full
-Claude apps gateway OAuth sign-in. The relevant pieces already covered elsewhere:
+shunt implements the `ANTHROPIC_BASE_URL` surface plus an opt-in first milestone
+of the Claude apps gateway superset. The relevant pieces:
 
+- **OAuth device-flow sign-in** — opt-in `[server.gateway]` implements discovery,
+  device authorization, the CSRF-guarded approval page, device/refresh grants,
+  rotating refresh tokens, and bearer validation ([M-A note](gateway-login.md)).
 - **`/v1/messages` + `count_tokens`** — [M1 — Messages ⇄ Responses
   translation](m1-responses-translation.md).
 - **`/v1/models` discovery** — [M3 — Model discovery](m3-discovery.md) (same wire contract,
@@ -234,28 +237,24 @@ Claude apps gateway OAuth sign-in. The relevant pieces already covered elsewhere
 - **Inbound bearer auth** — [M4 — Inbound client authentication](m4-inbound-auth.md).
 - **SSE streaming / no buffering** — [M5 — SSE keepalive](m5-sse-keepalive.md).
 
-The device-flow sign-in (`/.well-known/oauth-authorization-server`, device authorization,
-verification page, token endpoint) and `/managed/settings` + `/v1/{metrics,logs,traces}` are
-**Claude apps gateway-specific** and not part of shunt's current surface. They are the sections
-to consult if shunt ever grows a first-class `/login` flow.
+The device-flow sign-in endpoints are now available through opt-in `[server.gateway]`
+([M-A](gateway-login.md)). `/managed/settings` and `/v1/{metrics,logs,traces}` remain
+Claude apps gateway-specific follow-ups (M-B and M-C).
 
 ## Conformance & gaps
 
-shunt implements the `ANTHROPIC_BASE_URL` (Anthropic Messages) surface described above. This
-comparison was captured 2026-07-13 against `GET /protocol` from a locally-run Claude apps
-gateway (Claude Code 2.1.207). Tracked under epic #87.
+shunt implements the `ANTHROPIC_BASE_URL` surface and the opt-in M-A device-flow login
+surface described above. This comparison was captured 2026-07-13 against `GET /protocol`
+from a locally-run Claude apps gateway (Claude Code 2.1.207), with M-A wire details
+re-verified against 2.1.211. Tracked under epic #186.
 
-### Endpoints intentionally omitted
+### Endpoints not yet implemented
 
-The following six endpoints are part of the Claude apps gateway **superset**, out of scope for
-the `ANTHROPIC_BASE_URL` surface, and belong to the separate `/login` device-flow track (see
-"How this maps onto shunt" above):
+Two endpoint groups from the Claude apps gateway superset remain follow-ups:
 
-- `GET /.well-known/oauth-authorization-server`, `POST /oauth/device_authorization`,
-  `GET`/`POST /device`, `POST /oauth/token`
-- `GET /managed/settings`
-- `POST /v1/{metrics,logs,traces}` — inbound OTLP *ingest*. Note shunt's `telemetry.rs` is
-  outbound OTLP *export*, a different thing.
+- `GET /managed/settings` (M-B)
+- `POST /v1/{metrics,logs,traces}` (M-C) — inbound OTLP *ingest*. Note shunt's
+  `telemetry.rs` is outbound OTLP *export*, a different thing.
 
 ### Behavioral gaps
 
@@ -282,7 +281,7 @@ the `ANTHROPIC_BASE_URL` surface, and belong to the separate `/login` device-flo
 Not forwarding `anthropic-beta` to the Responses/Cursor backends is correct, not a gap — that
 path is format translation rather than header passthrough, so there is nothing to relay as-is.
 
-This table records the conformance review under epic #87, including resolved gaps.
+This table records the conformance review, including resolved gaps and the M-A login milestone.
 
 ## Reproducing the capture
 
