@@ -151,6 +151,9 @@ pub(super) async fn forward_chatgpt_oauth(
             }
         };
 
+        state
+            .accounts
+            .note_codex_quota(&route.provider, &account.name, upstream.headers());
         match classify_first(&state, &route, account, upstream) {
             FirstOutcome::Relay(upstream) => {
                 // A non-401/429/5xx response means the account itself is fine,
@@ -159,11 +162,6 @@ pub(super) async fn forward_chatgpt_oauth(
                 let status = upstream.status();
                 state.accounts.mark_healthy(&route.provider, &account.name);
                 if status.is_success() {
-                    state.accounts.note_codex_quota(
-                        &route.provider,
-                        &account.name,
-                        upstream.headers(),
-                    );
                     let response = relay_success(
                         &state,
                         upstream,
@@ -224,16 +222,14 @@ pub(super) async fn forward_chatgpt_oauth(
                         continue;
                     }
                 };
+                state
+                    .accounts
+                    .note_codex_quota(&route.provider, &account.name, retry.headers());
                 match classify_retry(&state, &route, account, retry) {
                     RetryOutcome::Relay(retry) => {
                         let retry_status = retry.status();
                         if retry_status.is_success() {
                             state.accounts.mark_healthy(&route.provider, &account.name);
-                            state.accounts.note_codex_quota(
-                                &route.provider,
-                                &account.name,
-                                retry.headers(),
-                            );
                             let response = relay_success(
                                 &state,
                                 retry,

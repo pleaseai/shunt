@@ -171,6 +171,9 @@ async fn forward_codex_passthrough(
             }
         };
 
+        state
+            .accounts
+            .note_codex_quota(&route.provider, &account.name, upstream.headers());
         match classify_first(&state, &route, account, upstream) {
             // Success or a non-failover 4xx (e.g. 400): the account is fine, so
             // relay the upstream response verbatim — a passthrough client expects
@@ -178,13 +181,6 @@ async fn forward_codex_passthrough(
             FirstOutcome::Relay(upstream) => {
                 let status = upstream.status();
                 state.accounts.mark_healthy(&route.provider, &account.name);
-                if status.is_success() {
-                    state.accounts.note_codex_quota(
-                        &route.provider,
-                        &account.name,
-                        upstream.headers(),
-                    );
-                }
                 return Ok((
                     status,
                     with_account_header(relay_passthrough(upstream), &account.name),
@@ -231,17 +227,13 @@ async fn forward_codex_passthrough(
                         continue;
                     }
                 };
+                state
+                    .accounts
+                    .note_codex_quota(&route.provider, &account.name, retry.headers());
                 match classify_retry(&state, &route, account, retry) {
                     RetryOutcome::Relay(retry) => {
                         let retry_status = retry.status();
                         state.accounts.mark_healthy(&route.provider, &account.name);
-                        if retry_status.is_success() {
-                            state.accounts.note_codex_quota(
-                                &route.provider,
-                                &account.name,
-                                retry.headers(),
-                            );
-                        }
                         return Ok((
                             retry_status,
                             with_account_header(relay_passthrough(retry), &account.name),

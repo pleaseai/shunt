@@ -1114,6 +1114,20 @@ mod tests {
     }
 
     #[test]
+    fn codex_rejection_status_is_recorded_for_display_only() {
+        let pool = AccountPool::new();
+        let accounts = vec![account("pro")];
+        pool.note_codex_quota(
+            "codex",
+            "pro",
+            &quota_headers(&[("x-codex-rate-limit-reached-type", "weekly".to_string())]),
+        );
+
+        let snaps = pool.snapshot("codex", &accounts, None, None);
+        assert_eq!(snaps[0].status.as_deref(), Some("weekly"));
+    }
+
+    #[test]
     fn codex_display_quota_does_not_change_cooldown_only_selection() {
         let pool = AccountPool::new();
         let accounts = vec![account("a"), account("b")];
