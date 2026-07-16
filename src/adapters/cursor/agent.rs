@@ -41,7 +41,7 @@ use tokio::time::{interval_at, Instant};
 
 use crate::adapters::cursor::client::CursorError;
 use crate::adapters::cursor::connect::{
-    decode_gzip_frame, parse_connect_error, ConnectFrameDecoder, FLAG_END, FLAG_GZIP,
+    decode_gzip_frame, parse_connect_error, ConnectError, ConnectFrameDecoder, FLAG_END, FLAG_GZIP,
 };
 use crate::adapters::cursor::response::CursorStreamEvent;
 
@@ -307,22 +307,54 @@ impl CursorAgentTurn {
                             .pending
                             .push_back(Err(CursorError::from_reqwest(error)));
                     }
-                    // Clean EOF or idle (server waiting for a tool exec-result we
-                    // never send). Validate the decoder ended on a frame boundary
-                    // so a truncated body surfaces as an error instead of a
+                    // Clean EOF: the turn ended. Validate the decoder finished on
+                    // a frame boundary so a truncated body is an error, not a
                     // partial/empty success.
-                    Ok(None) | Err(_) => {
+                    Ok(None) => {
                         state.finished = true;
-                        match state.decoder.finish() {
-                            Ok(()) => state.pending.push_back(Ok(CursorStreamEvent::End)),
-                            Err(error) => state.pending.push_back(Err(CursorError::internal(
-                                format!("cursor frame: {error}"),
-                            ))),
-                        }
+                        state.pending.push_back(terminal_event(
+                            false,
+                            state.got_text,
+                            state.decoder.finish(),
+                        ));
+                    }
+                    // Budget elapsed. After output this is a normal idle end
+                    // (the server keeps the response open waiting for a tool
+                    // exec-result we never send); before any output it is a
+                    // first-byte stall — surface that as an error, not an empty
+                    // success.
+                    Err(_) => {
+                        state.finished = true;
+                        state.pending.push_back(terminal_event(
+                            true,
+                            state.got_text,
+                            state.decoder.finish(),
+                        ));
                     }
                 }
             }
         })
+    }
+}
+
+/// Decide the terminal event when the upstream byte stream ends. A first-byte
+/// timeout with no assistant output (`timed_out && !got_output`) is an upstream
+/// stall and surfaces as an error rather than an empty success. Otherwise the
+/// decoder must have ended on a frame boundary — leftover buffered bytes mean a
+/// truncated body.
+fn terminal_event(
+    timed_out: bool,
+    got_output: bool,
+    finish: Result<(), ConnectError>,
+) -> Result<CursorStreamEvent, CursorError> {
+    if timed_out && !got_output {
+        return Err(CursorError::internal(
+            "cursor: upstream timed out before sending any output",
+        ));
+    }
+    match finish {
+        Ok(()) => Ok(CursorStreamEvent::End),
+        Err(error) => Err(CursorError::internal(format!("cursor frame: {error}"))),
     }
 }
 
@@ -875,6 +907,34 @@ mod tests {
             images: &[],
             tools: &[],
         }
+    }
+
+    #[test]
+    fn terminal_event_first_byte_timeout_without_output_is_error() {
+        assert!(super::terminal_event(true, false, Ok(())).is_err());
+    }
+
+    #[test]
+    fn terminal_event_idle_timeout_after_output_ends_cleanly() {
+        assert!(matches!(
+            super::terminal_event(true, true, Ok(())),
+            Ok(CursorStreamEvent::End)
+        ));
+    }
+
+    #[test]
+    fn terminal_event_clean_eof_ends_even_without_output() {
+        assert!(matches!(
+            super::terminal_event(false, false, Ok(())),
+            Ok(CursorStreamEvent::End)
+        ));
+    }
+
+    #[test]
+    fn terminal_event_truncated_frame_is_error() {
+        let finish =
+            Err(crate::adapters::cursor::connect::ConnectError::TruncatedFrame { buffered: 3 });
+        assert!(super::terminal_event(false, true, finish).is_err());
     }
 
     #[test]
