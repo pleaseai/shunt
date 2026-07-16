@@ -1,0 +1,33 @@
+src/config.rs
+  s_061f0c21f5acac::t_8ba03fcaf52a02 582-586,590-593,1951-1966
+  s_061f0c21f5acac::t_3ad99c4cf475d1 1967-1978
+site/src/content/docs/zh-cn/guides/codex.md
+  s_061f0c21f5acac::t_8ba03fcaf52a02 15
+tests/admin_surface.rs
+  s_061f0c21f5acac::t_8ba03fcaf52a02 13,970-1148
+  s_061f0c21f5acac::t_1e4a08f1cdb2bd 1149-1151
+tests/multi_account.rs
+  s_061f0c21f5acac::t_8ba03fcaf52a02 95-100,105,901-971
+site/src/content/docs/ja/guides/codex.md
+  s_061f0c21f5acac::t_8ba03fcaf52a02 12
+src/admin/codex.rs
+  s_061f0c21f5acac::t_8ba03fcaf52a02 182-191,218-221,223-232,235-244
+site/src/content/docs/ko/guides/codex.md
+  s_061f0c21f5acac::t_8ba03fcaf52a02 11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "d8e76d8a40378ea5d2bedaaf55204114d39d2dfa",
+  "prompts": {},
+  "sessions": {
+    "s_061f0c21f5acac": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b44a9ffe-6ae9-46b1-87ea-fb27932f5779",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
