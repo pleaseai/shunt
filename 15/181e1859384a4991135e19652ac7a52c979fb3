@@ -1,0 +1,21 @@
+.claude/agent-memory/review-review-pr-test-analyzer/MEMORY.md
+  s_a331df2351166d::t_76a24a22bd5348 12
+.claude/agent-memory/review-review-pr-test-analyzer/shunt-perf-hot-path-coverage.md
+  s_a331df2351166d::t_7cce87b2e9e602 1-32
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "15181e1859384a4991135e19652ac7a52c979fb3",
+  "prompts": {},
+  "sessions": {
+    "s_a331df2351166d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8878477b-b3db-4b34-a05a-fc04bbd7912b",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
