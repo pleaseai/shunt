@@ -573,7 +573,7 @@ async fn connect(
     let connect = tokio_tungstenite::connect_async(request);
     match tokio::time::timeout(CONNECT_TIMEOUT, connect).await {
         Ok(Ok((stream, response))) => {
-            let response_headers = response.headers().clone();
+            let response_headers = response.into_parts().0.headers;
             let turn_state = response_headers
                 .get(TURN_STATE_HEADER)
                 .and_then(|value| value.to_str().ok())

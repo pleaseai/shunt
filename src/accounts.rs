@@ -397,16 +397,27 @@ impl AccountPool {
         health.observed = true;
         let quota = &mut health.quota;
 
-        for group in ["primary", "secondary"] {
-            let minutes = header_value::<i64>(headers, &format!("x-codex-{group}-window-minutes"));
-            let utilization =
-                header_value::<f64>(headers, &format!("x-codex-{group}-used-percent"));
+        for (minutes_header, utilization_header, reset_header) in [
+            (
+                "x-codex-primary-window-minutes",
+                "x-codex-primary-used-percent",
+                "x-codex-primary-reset-at",
+            ),
+            (
+                "x-codex-secondary-window-minutes",
+                "x-codex-secondary-used-percent",
+                "x-codex-secondary-reset-at",
+            ),
+        ] {
+            let minutes = header_value::<i64>(headers, minutes_header);
+            let utilization = header_value::<f64>(headers, utilization_header)
+                .filter(|value| value.is_finite() && (0.0..=100.0).contains(value));
             let (Some(window), Some(utilization)) =
                 (minutes.and_then(codex_window_bucket), utilization)
             else {
                 continue;
             };
-            let reset = header_value::<u64>(headers, &format!("x-codex-{group}-reset-at"));
+            let reset = header_value::<u64>(headers, reset_header);
             match window {
                 CodexWindow::FiveHour => {
                     quota.utilization_5h = Some(utilization / 100.0);
@@ -585,7 +596,7 @@ fn codex_window_bucket(minutes: i64) -> Option<CodexWindow> {
 }
 
 fn within_five_percent(value: i64, expected: i64) -> bool {
-    value > 0 && value as f64 >= expected as f64 * 0.95 && value as f64 <= expected as f64 * 1.05
+    value > 0 && value * 100 >= expected * 95 && value * 100 <= expected * 105
 }
 
 fn is_fable_model(model: Option<&str>) -> bool {
@@ -1049,6 +1060,24 @@ mod tests {
         assert!(snaps[0].has_state);
         assert_eq!(snaps[0].utilization_5h, None);
         assert_eq!(snaps[0].utilization_7d, None);
+    }
+
+    #[test]
+    fn codex_invalid_utilization_is_ignored() {
+        for utilization in ["NaN", "-1", "101"] {
+            let pool = AccountPool::new();
+            let accounts = vec![account("pro")];
+            let headers = quota_headers(&[
+                ("x-codex-primary-used-percent", utilization.to_string()),
+                ("x-codex-primary-window-minutes", "300".to_string()),
+            ]);
+
+            pool.note_codex_quota("codex", "pro", &headers);
+
+            let snaps = pool.snapshot("codex", &accounts, None, None);
+            assert!(snaps[0].has_state);
+            assert_eq!(snaps[0].utilization_5h, None);
+        }
     }
 
     #[test]
