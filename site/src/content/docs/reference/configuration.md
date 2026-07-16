@@ -39,6 +39,21 @@ The named environment variable must contain one or more credentials, for example
 
 Admin tokens are separate credentials from the client tokens configured under `[server.auth]`; do not reuse one credential for both surfaces.
 
+## `[server.gateway]` (optional)
+
+Presence of this table enables the [OAuth device-flow gateway login](/guides/gateway-login/) used by Claude Code's managed `forceLoginMethod: "gateway"`. When absent, shunt does not register `/.well-known/oauth-authorization-server`, `/oauth/device_authorization`, `/oauth/token`, or `/device`.
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `public_url` | required | Externally reachable HTTP(S) origin used as the JWT issuer and base for advertised OAuth endpoints |
+| `jwt_secret_env` | `SHUNT_GATEWAY_JWT_SECRET` | Env var holding the HS256 signing secret (at least 32 bytes) |
+| `users_env` | `SHUNT_GATEWAY_USERS` | Env var holding comma-separated `email:secret` approval users |
+| `token_ttl_seconds` | `3600` | Access-token lifetime; returned as `expires_in` |
+
+Startup fails closed when the URL is invalid, the secret is missing or shorter than 32 bytes, or the user list is empty or malformed. Secrets may contain `:` because only the first colon separates the email and secret. Changes to the environment-backed secret and users hot-apply on config reload; adding or removing the table requires a restart because the route tree is fixed at boot.
+
+The issued bearer authenticates `/v1/messages`, `/v1/messages/count_tokens`, and `/v1/models`. If `[server.auth]` is also present, either credential grants access. Device grants and rotating refresh tokens are process-lifetime, in-memory state in this milestone: a config reload preserves them, but restarting shunt requires every gateway user to sign in again.
+
 ## `[server.codex_endpoint]` (optional)
 
 Presence of this table enables an inbound OpenAI Responses passthrough so the **Codex CLI** can point its `base_url` at shunt and be load-balanced across a ChatGPT/Codex OAuth account pool ([details](/guides/inbound-codex-endpoint/)). When the table is absent, none of those routes are registered.
