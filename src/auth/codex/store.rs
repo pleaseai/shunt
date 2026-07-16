@@ -31,11 +31,35 @@ pub fn account_path(name: &str) -> PathBuf {
     default_accounts_dir().join(format!("{name}.json"))
 }
 
-/// Return store-managed accounts in deterministic name order. Codex accounts
-/// carry no UUID concept — the account id lives inside the token, not the
-/// account entry — so every entry is name-only (`uuid: None`).
+/// Return store-managed accounts in deterministic name order. Each entry's
+/// stable identity is the token's explicit `account_id`, falling back to the
+/// access-token JWT's `chatgpt_account_id` claim.
 pub fn scan_accounts() -> io::Result<Vec<AccountConfig>> {
-    shared::scan_account_dir(&default_accounts_dir(), |_| None)
+    shared::scan_account_dir(&default_accounts_dir(), read_account_id)
+}
+
+pub fn account_id(name: &str) -> Option<String> {
+    read_account_id(&account_path(name))
+}
+
+fn read_account_id(path: &Path) -> Option<String> {
+    let value: Value = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
+    let tokens = value.get("tokens")?;
+    token_account_id(tokens)
+}
+
+fn token_account_id(tokens: &Value) -> Option<String> {
+    tokens
+        .get("account_id")
+        .and_then(Value::as_str)
+        .filter(|account_id| !account_id.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            tokens
+                .get("access_token")
+                .and_then(Value::as_str)
+                .and_then(super::auth::jwt_account_id)
+        })
 }
 
 /// Token-free Codex account metadata exposed by the admin dashboard.
@@ -75,12 +99,7 @@ pub fn account_meta(name: &str) -> Option<CodexAccountMeta> {
         .and_then(shared::jwt_exp)
         .and_then(|expiry| expiry.duration_since(UNIX_EPOCH).ok())
         .and_then(|duration| i64::try_from(duration.as_millis()).ok());
-    let account_id = tokens
-        .get("account_id")
-        .and_then(Value::as_str)
-        .filter(|account_id| !account_id.is_empty())
-        .map(ToOwned::to_owned)
-        .or_else(|| access_token.and_then(super::auth::jwt_account_id));
+    let account_id = token_account_id(tokens);
     Some(CodexAccountMeta {
         name: name.to_string(),
         expires_at,
@@ -313,8 +332,9 @@ mod tests {
         fs::write(accounts_dir.join("ignore.txt"), "not an account").unwrap();
         let accounts = scan_accounts().unwrap();
         assert_eq!(accounts[0].name, "alpha");
-        assert_eq!(accounts[0].uuid, None);
+        assert_eq!(accounts[0].uuid.as_deref(), Some("acct"));
         assert_eq!(accounts[1].name, "zeta");
+        assert_eq!(accounts[1].uuid.as_deref(), Some("acct"));
 
         // The imported file preserves the raw codex auth.json shape verbatim —
         // no claudeAiOauth-style wrapping.
@@ -401,6 +421,26 @@ mod tests {
         let meta = account_meta("claim").unwrap();
         assert_eq!(meta.account_id.as_deref(), Some("acct-from-claim"));
         assert_eq!(meta.expires_at, Some(2_000_000_000_000));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn scan_falls_back_to_jwt_account_id_and_coalesces_aliases() {
+        let _guard = TEST_ENV_LOCK.lock().await;
+        let dir = temp_dir("scan-claim");
+        fs::create_dir_all(&dir).unwrap();
+        let _env = shared::EnvVarGuard::set("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+        let access = access_token(2_000_000_000, "acct-from-claim");
+        let value = json!({"auth_mode":"ChatGPT","tokens":{"access_token":access}});
+        fs::write(dir.join("first.json"), value.to_string()).unwrap();
+        fs::write(dir.join("second.json"), value.to_string()).unwrap();
+
+        let accounts = scan_accounts().unwrap();
+        assert_eq!(accounts.len(), 2);
+        assert_eq!(accounts[0].uuid.as_deref(), Some("acct-from-claim"));
+        assert_eq!(accounts[1].uuid, accounts[0].uuid);
+        assert_eq!(account_id("first").as_deref(), Some("acct-from-claim"));
 
         let _ = fs::remove_dir_all(dir);
     }

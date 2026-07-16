@@ -53,21 +53,14 @@ pub(crate) async fn forward_codex_inbound(
         .config
         .provider(&route.provider)
         .ok_or_else(|| own_error(format!("unknown provider {}", route.provider)))?;
-    let accounts = if provider.accounts.is_empty() {
-        // scan_accounts() does synchronous directory + file I/O; run it on the
-        // blocking pool so it never stalls a runtime worker thread.
-        tokio::task::spawn_blocking(auth::codex::store::scan_accounts)
-            .await
-            .map_err(|error| own_error(format!("codex account store scan task failed: {error}")))?
-            .map_err(|error| {
-                own_error(format!(
-                    "failed to scan codex account store {}: {error}",
-                    auth::codex::store::default_accounts_dir().display()
-                ))
-            })?
-    } else {
-        provider.accounts.clone()
-    };
+    let accounts = auth::shared::resolve_pool_accounts(
+        "codex",
+        &provider.accounts,
+        auth::codex::store::default_accounts_dir(),
+        auth::codex::store::scan_accounts,
+    )
+    .await
+    .map_err(own_error)?;
     if accounts.is_empty() {
         return forward_codex_passthrough_single(state, route, passthrough_headers, body).await;
     }
@@ -164,7 +157,7 @@ async fn forward_codex_passthrough(
             Err(error) => {
                 state
                     .accounts
-                    .cooldown(&route.provider, &account.name, Duration::from_secs(30));
+                    .cooldown(&route.provider, account, Duration::from_secs(30));
                 tracing::warn!(
                     provider = %route.provider,
                     account = %account.name,
@@ -181,7 +174,7 @@ async fn forward_codex_passthrough(
             // the raw Responses body, error or not — and never rotate.
             FirstOutcome::Relay(upstream) => {
                 let status = upstream.status();
-                state.accounts.mark_healthy(&route.provider, &account.name);
+                state.accounts.mark_healthy(&route.provider, account);
                 return Ok((
                     status,
                     with_account_header(relay_passthrough(upstream), &account.name),
@@ -213,11 +206,9 @@ async fn forward_codex_passthrough(
                 {
                     Ok(response) => response,
                     Err(error) => {
-                        state.accounts.cooldown(
-                            &route.provider,
-                            &account.name,
-                            Duration::from_secs(30),
-                        );
+                        state
+                            .accounts
+                            .cooldown(&route.provider, account, Duration::from_secs(30));
                         tracing::warn!(
                             provider = %route.provider,
                             account = %account.name,
@@ -231,7 +222,7 @@ async fn forward_codex_passthrough(
                 match classify_retry(&state, &route, account, retry) {
                     RetryOutcome::Relay(retry) => {
                         let retry_status = retry.status();
-                        state.accounts.mark_healthy(&route.provider, &account.name);
+                        state.accounts.mark_healthy(&route.provider, account);
                         return Ok((
                             retry_status,
                             with_account_header(relay_passthrough(retry), &account.name),

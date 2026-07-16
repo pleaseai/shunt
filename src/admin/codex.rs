@@ -205,8 +205,14 @@ pub(super) async fn complete_codex_account(
     }
     state.admin_stores.pending.remove(&key);
     // Re-provisioning reuses the account name; clear any process-lifetime Codex
-    // pool health from a prior token without touching same-named Claude health.
-    forget_pool_health(&state, AuthMode::ChatgptOauth, &name);
+    // pool health carried over for the newly stored upstream identity.
+    let identity_name = name.clone();
+    let identity = tokio::task::spawn_blocking(move || {
+        codex_store::account_id(&identity_name).unwrap_or(identity_name)
+    })
+    .await
+    .unwrap_or_else(|_| name.clone());
+    forget_pool_health(&state, AuthMode::ChatgptOauth, &identity);
     tracing::info!(account = %name, account_id_present = true, "admin: Codex account stored");
 
     let live =
@@ -237,10 +243,13 @@ pub(super) async fn remove_codex_account_handler(
         return bad_request("account name must match [a-z0-9-]+");
     }
     let target = name.clone();
-    let removed = match tokio::task::spawn_blocking(move || codex_store::remove_account(&target))
-        .await
+    let removed = match tokio::task::spawn_blocking(move || {
+        let identity = codex_store::account_id(&target).unwrap_or_else(|| target.clone());
+        codex_store::remove_account(&target).map(|removed| (removed, identity))
+    })
+    .await
     {
-        Ok(Ok(removed)) => removed,
+        Ok(Ok(result)) => result,
         Ok(Err(error)) => {
             tracing::error!(account = %name, %error, "admin: failed to remove Codex account");
             return internal("failed to remove account");
@@ -250,10 +259,11 @@ pub(super) async fn remove_codex_account_handler(
             return internal("failed to remove account");
         }
     };
+    let (removed, identity) = removed;
     tracing::info!(account = %name, removed, "admin: Codex account removed");
-    // Drop process-lifetime Codex pool health for the removed name so a later
+    // Drop process-lifetime Codex pool health for the removed identity so a later
     // re-add does not inherit stale state, without touching same-named Claude health.
-    forget_pool_health(&state, AuthMode::ChatgptOauth, &name);
+    forget_pool_health(&state, AuthMode::ChatgptOauth, &identity);
     json_secure(json!({ "name": name, "removed": removed }))
 }
 

@@ -530,6 +530,9 @@ pub struct AccountConfig {
     pub credentials: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_env: Option<String>,
+    /// Provider-independent stable upstream identity used to coalesce aliases in
+    /// an account pool: Claude stores `shuntAccountUuid`, while Codex stores
+    /// `chatgpt_account_id`. When absent, pool selection falls back to `name`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uuid: Option<String>,
     /// Soft quota threshold for every window, overriding `[server.pool]`
@@ -574,6 +577,23 @@ impl Default for AccountConfig {
             disabled: false,
         }
     }
+}
+
+pub(crate) fn identity_collisions(accounts: &[AccountConfig]) -> Vec<(String, Vec<String>)> {
+    let mut groups = BTreeMap::<&str, Vec<String>>::new();
+    for account in accounts {
+        if let Some(identity) = account.uuid.as_deref() {
+            groups
+                .entry(identity)
+                .or_default()
+                .push(account.name.clone());
+        }
+    }
+    groups
+        .into_iter()
+        .filter(|(_, names)| names.len() > 1)
+        .map(|(identity, names)| (identity.to_string(), names))
+        .collect()
 }
 
 fn deserialize_optional_credentials_path<'de, D>(
@@ -1353,6 +1373,14 @@ impl Config {
                     }
                 }
             }
+            for (identity, accounts) in identity_collisions(&provider.accounts) {
+                tracing::warn!(
+                    provider = %name,
+                    identity = %identity,
+                    accounts = ?accounts,
+                    "multiple account names share one upstream identity; the pool will treat them as one account"
+                );
+            }
             // An xai_oauth provider injects the operator's subscription bearer,
             // so its base_url must stay on an xAI host over https (mirrors
             // Hermes' endpoint re-validation) — never a gateway that would
@@ -1571,8 +1599,8 @@ mod tests {
     use figment::providers::Format;
 
     use super::{
-        config_file_candidates, host_is_chatgpt, AccountConfig, AdminConfig, AuthMode,
-        CodexEndpointConfig, Config, ConfigError, ConfigFormat, ModelConfig, PoolConfig,
+        config_file_candidates, host_is_chatgpt, identity_collisions, AccountConfig, AdminConfig,
+        AuthMode, CodexEndpointConfig, Config, ConfigError, ConfigFormat, ModelConfig, PoolConfig,
         ProviderKind, ResponsesFlavor, RetryConfig,
     };
 
@@ -1890,6 +1918,32 @@ mod tests {
     // base_url `https://chatgpt.com/backend-api`, so unlike claude_oauth these
     // tests mutate `Config::default()` directly rather than needing a config
     // builder that flips the auth mode first.
+
+    #[test]
+    fn identity_collisions_group_only_explicit_shared_identities() {
+        let mut first = account("first");
+        first.uuid = Some("shared".to_string());
+        let mut second = account("second");
+        second.uuid = Some("shared".to_string());
+        let unique = account("unique");
+        let mut solo = account("solo");
+        solo.uuid = Some("solo-id".to_string());
+
+        assert_eq!(
+            identity_collisions(&[first.clone(), second.clone(), unique, solo]),
+            vec![(
+                "shared".to_string(),
+                vec!["first".to_string(), "second".to_string()]
+            )]
+        );
+
+        let mut config = Config::default();
+        config.providers.get_mut("codex").unwrap().accounts = vec![first, second];
+        assert!(
+            config.validate().is_ok(),
+            "collisions are warnings, not errors"
+        );
+    }
 
     #[test]
     fn chatgpt_oauth_accepts_accounts_on_default_chatgpt_host() {

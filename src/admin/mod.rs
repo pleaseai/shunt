@@ -168,14 +168,12 @@ pub(super) fn check_csrf(kind: &Authenticated, headers: &HeaderMap) -> Option<Re
     }
 }
 
-/// Drop process-lifetime pool health for `account` across every provider using
-/// `auth`, so re-provisioning does not inherit stale cooldown/quota state — while
-/// leaving other auth modes' identically-named accounts untouched (the Claude and
-/// Codex stores independently allow the same account name).
-pub(super) fn forget_pool_health(state: &AppState, auth: AuthMode, account: &str) {
+/// Drop process-lifetime pool health for `identity` across every provider using
+/// `auth`, leaving other auth modes' entries for the same identity untouched.
+pub(super) fn forget_pool_health(state: &AppState, auth: AuthMode, identity: &str) {
     for (provider_name, provider) in &state.config.providers {
         if provider.auth == auth {
-            state.accounts.forget_account(provider_name, account);
+            state.accounts.forget_identity(provider_name, identity);
         }
     }
 }
@@ -663,9 +661,14 @@ async fn complete_account(
     }
     state.admin_stores.pending.remove(&name);
     // Re-provisioning reuses the account name; clear any process-lifetime pool
-    // health carried over from a prior Claude token so the fresh credential is
-    // not treated as cooling/near-quota, without touching same-named Codex health.
-    forget_pool_health(&state, AuthMode::ClaudeOauth, &name);
+    // health carried over for the newly stored upstream identity.
+    let identity_name = name.clone();
+    let identity = tokio::task::spawn_blocking(move || {
+        claude_store::account_uuid(&identity_name).unwrap_or(identity_name)
+    })
+    .await
+    .unwrap_or_else(|_| name.clone());
+    forget_pool_health(&state, AuthMode::ClaudeOauth, &identity);
     tracing::info!(account = %name, "admin: account stored");
 
     // Empty-accounts providers scan the store per request → live immediately;
@@ -711,10 +714,13 @@ async fn remove_account_handler(
         return bad_request("account name must match [a-z0-9-]+");
     }
     let target = name.clone();
-    let removed = match tokio::task::spawn_blocking(move || claude_store::remove_account(&target))
-        .await
+    let removed = match tokio::task::spawn_blocking(move || {
+        let identity = claude_store::account_uuid(&target).unwrap_or_else(|| target.clone());
+        claude_store::remove_account(&target).map(|removed| (removed, identity))
+    })
+    .await
     {
-        Ok(Ok(removed)) => removed,
+        Ok(Ok(result)) => result,
         Ok(Err(error)) => {
             tracing::error!(account = %name, %error, "admin: failed to remove account");
             return internal("failed to remove account");
@@ -724,10 +730,11 @@ async fn remove_account_handler(
             return internal("failed to remove account");
         }
     };
+    let (removed, identity) = removed;
     tracing::info!(account = %name, removed, "admin: account removed");
-    // Drop process-lifetime Claude pool health for the removed name so a later
+    // Drop process-lifetime Claude pool health for the removed identity so a later
     // re-add does not inherit stale cooldown/quota state, without touching Codex.
-    forget_pool_health(&state, AuthMode::ClaudeOauth, &name);
+    forget_pool_health(&state, AuthMode::ClaudeOauth, &identity);
     json_secure(json!({ "name": name, "removed": removed }))
 }
 

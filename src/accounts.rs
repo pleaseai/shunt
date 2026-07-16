@@ -1,6 +1,6 @@
 use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
+    collections::{HashMap, HashSet},
+    sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -171,14 +171,16 @@ impl AccountPool {
             return Vec::new();
         }
 
-        let start = match session_id {
-            Some(session_id) => stable_session_index(session_id, accounts.len()),
+        let ident_reps = collapse_representatives(provider, accounts);
+        let distinct = ident_reps.len();
+        let start_slot = match session_id {
+            Some(session_id) => stable_session_index(session_id, distinct),
             None => {
                 let mut counters = self.rr.lock().expect("account round-robin lock poisoned");
                 let counter = counters.entry(provider.to_string()).or_default();
-                let start = *counter % accounts.len();
+                let start_slot = *counter % distinct;
                 *counter = counter.wrapping_add(1);
-                start
+                start_slot
             }
         };
 
@@ -193,7 +195,7 @@ impl AccountPool {
                 .iter()
                 .map(|account| {
                     let health = entries
-                        .entry((provider.to_string(), account.name.clone()))
+                        .entry((provider.to_string(), account_identity(account).to_string()))
                         .or_default();
                     expire_stale_quota(&mut health.quota, unix_now);
                     (
@@ -205,15 +207,17 @@ impl AccountPool {
                 .collect::<Vec<_>>()
         };
 
-        // The sticky/round-robin start index is computed over the full account
-        // list (so session stickiness survives toggling `disabled`); disabled
-        // accounts are then dropped from the rotation entirely.
-        let rotation = (0..accounts.len())
-            .map(|offset| (start + offset) % accounts.len())
+        // The sticky/round-robin slot is computed over distinct identities so
+        // adding or removing an alias cannot move an existing session. Disabled
+        // aliases yield to an enabled representative; fully disabled identities
+        // are then dropped from the rotation entirely.
+        let rotation = (0..distinct)
+            .map(|offset| ident_reps[(start_slot + offset) % distinct])
             .filter(|&index| !accounts[index].disabled)
             .collect::<Vec<_>>();
-        let (sticky_cooldown, ref sticky_quota, _) = snapshots[start];
-        if !accounts[start].disabled
+        let sticky = ident_reps[start_slot];
+        let (sticky_cooldown, ref sticky_quota, _) = snapshots[sticky];
+        if !accounts[sticky].disabled
             && sticky_cooldown.is_none_or(|until| until <= now)
             && !sticky_quota.near
         {
@@ -300,10 +304,10 @@ impl AccountPool {
             .collect()
     }
 
-    pub fn note_quota(&self, provider: &str, account: &str, headers: &HeaderMap) {
+    pub fn note_quota(&self, provider: &str, account: &AccountConfig, headers: &HeaderMap) {
         let mut entries = self.entries.lock().expect("account health lock poisoned");
         let health = entries
-            .entry((provider.to_string(), account.to_string()))
+            .entry((provider.to_string(), account_identity(account).to_string()))
             .or_default();
         health.observed = true;
         let quota = &mut health.quota;
@@ -354,10 +358,10 @@ impl AccountPool {
     /// modified here: the usage API has no equivalent of the header's `rejected`
     /// signal, so that stays header-driven. Marks the account observed, so the
     /// admin dashboard reports its usage even before the first proxied request.
-    pub fn note_usage(&self, provider: &str, account: &str, usage: &UsageSnapshot) {
+    pub fn note_usage(&self, provider: &str, account: &AccountConfig, usage: &UsageSnapshot) {
         let mut entries = self.entries.lock().expect("account health lock poisoned");
         let health = entries
-            .entry((provider.to_string(), account.to_string()))
+            .entry((provider.to_string(), account_identity(account).to_string()))
             .or_default();
         health.observed = true;
         let quota = &mut health.quota;
@@ -375,30 +379,31 @@ impl AccountPool {
         }
     }
 
-    pub fn cooldown(&self, provider: &str, account: &str, duration: Duration) {
+    pub fn cooldown(&self, provider: &str, account: &AccountConfig, duration: Duration) {
         let mut entries = self.entries.lock().expect("account health lock poisoned");
         let health = entries
-            .entry((provider.to_string(), account.to_string()))
+            .entry((provider.to_string(), account_identity(account).to_string()))
             .or_default();
         health.observed = true;
         health.cooldown_until = Some(Instant::now() + duration);
     }
 
-    pub fn mark_healthy(&self, provider: &str, account: &str) {
+    pub fn mark_healthy(&self, provider: &str, account: &AccountConfig) {
         let mut entries = self.entries.lock().expect("account health lock poisoned");
         let health = entries
-            .entry((provider.to_string(), account.to_string()))
+            .entry((provider.to_string(), account_identity(account).to_string()))
             .or_default();
         health.observed = true;
         health.cooldown_until = None;
     }
 
-    /// Forget pool health for a single `(provider, account)` entry, leaving other
-    /// providers' entries for the same account name untouched.
-    pub fn forget_account(&self, provider: &str, account: &str) {
+    /// Forget pool health for a single `(provider, identity)` entry, leaving
+    /// other providers' entries for the same identity untouched.
+    pub fn forget_identity(&self, provider: &str, identity: &str) {
         let mut entries = self.entries.lock().expect("account health lock poisoned");
-        entries
-            .retain(|(entry_provider, name), _| !(entry_provider == provider && name == account));
+        entries.retain(|(entry_provider, entry_identity), _| {
+            !(entry_provider == provider && entry_identity == identity)
+        });
     }
 
     /// Read-only per-account health snapshot for the admin dashboard, in the
@@ -422,7 +427,7 @@ impl AccountPool {
         accounts
             .iter()
             .map(|account| {
-                let key = (provider.to_string(), account.name.clone());
+                let key = (provider.to_string(), account_identity(account).to_string());
                 let Some(health) = entries.get_mut(&key).filter(|health| health.observed) else {
                     // Never selected, or selected but not yet answered (a default
                     // entry from `select_order`): report a clean, available slot.
@@ -461,16 +466,66 @@ impl AccountPool {
     ///
     /// The map's synchronous mutex is released before the returned lock can be
     /// awaited by the caller.
-    pub fn refresh_lock(&self, provider: &str, account: &str) -> Arc<AsyncMutex<()>> {
+    pub fn refresh_lock(&self, provider: &str, account: &AccountConfig) -> Arc<AsyncMutex<()>> {
         let mut locks = self
             .refresh_locks
             .lock()
             .expect("account refresh-lock map poisoned");
         Arc::clone(
             locks
-                .entry((provider.to_string(), account.to_string()))
+                .entry((provider.to_string(), account_identity(account).to_string()))
                 .or_insert_with(|| Arc::new(AsyncMutex::new(()))),
         )
+    }
+}
+
+/// Stable upstream identity used for pool health and candidate coalescing.
+/// Claude stores `shuntAccountUuid` and Codex stores `chatgpt_account_id` in
+/// [`AccountConfig::uuid`]; accounts without either remain distinct by name.
+pub(crate) fn account_identity(account: &AccountConfig) -> &str {
+    account.uuid.as_deref().unwrap_or(&account.name)
+}
+
+fn collapse_representatives(provider: &str, accounts: &[AccountConfig]) -> Vec<usize> {
+    let mut slots = HashMap::<&str, usize>::new();
+    let mut representatives: Vec<usize> = Vec::new();
+    for (index, account) in accounts.iter().enumerate() {
+        let identity = account_identity(account);
+        if let Some(&slot) = slots.get(identity) {
+            warn_identity_collision_once(
+                provider,
+                identity,
+                &accounts[representatives[slot]].name,
+                &account.name,
+            );
+            let current = &accounts[representatives[slot]];
+            if (current.disabled && !account.disabled)
+                || (current.disabled == account.disabled && account.priority < current.priority)
+            {
+                representatives[slot] = index;
+            }
+        } else {
+            slots.insert(identity, representatives.len());
+            representatives.push(index);
+        }
+    }
+    representatives
+}
+
+fn warn_identity_collision_once(provider: &str, identity: &str, first: &str, duplicate: &str) {
+    static WARNED: OnceLock<Mutex<HashSet<(String, String)>>> = OnceLock::new();
+    let warned = WARNED.get_or_init(|| Mutex::new(HashSet::new()));
+    if warned
+        .lock()
+        .expect("identity collision warning lock poisoned")
+        .insert((provider.to_string(), identity.to_string()))
+    {
+        tracing::warn!(
+            provider,
+            identity,
+            accounts = ?[first, duplicate],
+            "multiple account names share one upstream identity; the pool will treat them as one account"
+        );
     }
 }
 
@@ -764,6 +819,14 @@ mod tests {
         }
     }
 
+    fn account_with_uuid(name: &str, uuid: &str) -> AccountConfig {
+        AccountConfig {
+            name: name.to_string(),
+            uuid: Some(uuid.to_string()),
+            ..Default::default()
+        }
+    }
+
     fn accounts() -> Vec<AccountConfig> {
         ["a", "b", "c", "d"].into_iter().map(account).collect()
     }
@@ -802,15 +865,169 @@ mod tests {
     }
 
     #[test]
+    fn same_identity_is_one_selection_candidate() {
+        let pool = AccountPool::new();
+        let accounts = vec![
+            account_with_uuid("alias-a", "shared"),
+            account_with_uuid("alias-b", "shared"),
+            account_with_uuid("other", "other"),
+        ];
+
+        let order = pool.select_order("anthropic", &accounts, Some("session"), None, None);
+        assert_eq!(order.len(), 2);
+        assert_eq!(
+            order
+                .iter()
+                .map(|&index| account_identity(&accounts[index]))
+                .collect::<HashSet<_>>()
+                .len(),
+            2
+        );
+        assert_eq!(order.iter().filter(|&&index| index < 2).count(), 1);
+    }
+
+    #[test]
+    fn shared_identity_cooldown_applies_to_aliases_and_sorts_last() {
+        let pool = AccountPool::new();
+        let accounts = vec![
+            account_with_uuid("alias-a", "shared"),
+            account_with_uuid("alias-b", "shared"),
+            account_with_uuid("other", "other"),
+        ];
+        pool.cooldown("anthropic", &accounts[0], Duration::from_secs(60));
+
+        let snapshots = pool.snapshot("anthropic", &accounts, None, None);
+        for snapshot in &snapshots[..2] {
+            assert!(snapshot.has_state);
+            assert!(!snapshot.available);
+            assert!(snapshot.cooldown_secs_remaining.is_some());
+        }
+        let order = pool.select_order("anthropic", &accounts, Some("session"), None, None);
+        assert_eq!(account_identity(&accounts[order[0]]), "other");
+        assert_eq!(
+            account_identity(&accounts[*order.last().unwrap()]),
+            "shared"
+        );
+    }
+
+    #[test]
+    fn shared_identity_quota_is_visible_on_every_alias() {
+        let pool = AccountPool::new();
+        let accounts = vec![
+            account_with_uuid("alias-a", "shared"),
+            account_with_uuid("alias-b", "shared"),
+        ];
+        pool.note_quota(
+            "anthropic",
+            &accounts[0],
+            &quota_headers(&[(
+                "anthropic-ratelimit-unified-5h-utilization",
+                "0.99".to_string(),
+            )]),
+        );
+
+        let snapshots = pool.snapshot("anthropic", &accounts, None, None);
+        assert!(snapshots.iter().all(|snapshot| snapshot.near_quota));
+        assert!(snapshots
+            .iter()
+            .all(|snapshot| snapshot.utilization_5h == Some(0.99)));
+    }
+
+    #[test]
+    fn alias_changes_do_not_move_a_sticky_identity() {
+        let pool = AccountPool::new();
+        let base = vec![
+            account_with_uuid("primary", "shared"),
+            account_with_uuid("other", "other"),
+        ];
+        let expanded = vec![
+            account_with_uuid("primary", "shared"),
+            account_with_uuid("primary-alias", "shared"),
+            account_with_uuid("other", "other"),
+        ];
+
+        for session in ["sticky-a", "sticky-b", "sticky-c"] {
+            let base_order = pool.select_order("anthropic", &base, Some(session), None, None);
+            let expanded_order =
+                pool.select_order("anthropic", &expanded, Some(session), None, None);
+            assert_eq!(
+                account_identity(&base[base_order[0]]),
+                account_identity(&expanded[expanded_order[0]])
+            );
+        }
+    }
+
+    #[test]
+    fn accounts_without_uuid_remain_distinct() {
+        let pool = AccountPool::new();
+        let accounts = vec![account("a"), account("b")];
+        let order = pool.select_order("anthropic", &accounts, Some("session"), None, None);
+        assert_eq!(order.len(), accounts.len());
+        assert_eq!(order.iter().copied().collect::<HashSet<_>>().len(), 2);
+    }
+
+    #[test]
+    fn representative_prefers_enabled_then_priority_then_first_seen() {
+        let mut disabled = account_with_uuid("disabled", "shared");
+        disabled.disabled = true;
+        disabled.priority = 1;
+        let mut preferred = account_with_uuid("preferred", "shared");
+        preferred.priority = 10;
+        let mut later = account_with_uuid("later", "shared");
+        later.priority = 10;
+        let other = account_with_uuid("other", "other");
+        let accounts = vec![disabled, preferred, later, other];
+
+        assert_eq!(collapse_representatives("anthropic", &accounts), vec![1, 3]);
+
+        let mut all_disabled = accounts;
+        for account in &mut all_disabled[..3] {
+            account.disabled = true;
+        }
+        let pool = AccountPool::new();
+        let order = pool.select_order("anthropic", &all_disabled, Some("session"), None, None);
+        assert_eq!(order, vec![3]);
+    }
+
+    #[test]
+    fn round_robin_advances_over_distinct_identities() {
+        let pool = AccountPool::new();
+        let accounts = vec![
+            account_with_uuid("alias-a", "shared"),
+            account_with_uuid("alias-b", "shared"),
+            account_with_uuid("other", "other"),
+        ];
+
+        let starts = (0..3)
+            .map(|_| {
+                let order = pool.select_order("anthropic", &accounts, None, None, None);
+                account_identity(&accounts[order[0]])
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(starts, vec!["shared", "other", "shared"]);
+    }
+
+    #[test]
+    fn refresh_locks_are_shared_by_identity() {
+        let pool = AccountPool::new();
+        let first = account_with_uuid("alias-a", "shared");
+        let second = account_with_uuid("alias-b", "shared");
+        assert!(Arc::ptr_eq(
+            &pool.refresh_lock("anthropic", &first),
+            &pool.refresh_lock("anthropic", &second)
+        ));
+    }
+
+    #[test]
     fn healthy_under_threshold_sticky_account_stays_first() {
         let pool = AccountPool::new();
         let accounts = accounts();
         let session = "healthy-sticky";
         let first = pool.select_order("anthropic", &accounts, Some(session), None, None);
-        let sticky = &accounts[first[0]].name;
+        let sticky = first[0];
         pool.note_quota(
             "anthropic",
-            sticky,
+            &accounts[sticky],
             &quota_headers(&[(
                 "anthropic-ratelimit-unified-5h-utilization",
                 "0.97".to_string(),
@@ -831,7 +1048,7 @@ mod tests {
         let sticky = original[0];
         pool.note_quota(
             "anthropic",
-            &accounts[sticky].name,
+            &accounts[sticky],
             &quota_headers(&[(
                 "anthropic-ratelimit-unified-5h-utilization",
                 "0.98".to_string(),
@@ -855,13 +1072,13 @@ mod tests {
         // touched, so it must report as an unseen, available slot.
         pool.note_quota(
             "anthropic",
-            "seen-near",
+            &accounts[0],
             &quota_headers(&[(
                 "anthropic-ratelimit-unified-5h-utilization",
                 "0.99".to_string(),
             )]),
         );
-        pool.cooldown("anthropic", "seen-cool", Duration::from_secs(45));
+        pool.cooldown("anthropic", &accounts[1], Duration::from_secs(45));
 
         let snaps = pool.snapshot("anthropic", &accounts, None, None);
         assert_eq!(snaps.len(), 3);
@@ -884,13 +1101,13 @@ mod tests {
     }
 
     #[test]
-    fn forget_account_is_provider_scoped() {
+    fn forget_identity_is_provider_scoped() {
         let pool = AccountPool::new();
         let accounts = vec![account("main")];
-        pool.cooldown("anthropic", "main", Duration::from_secs(60));
-        pool.cooldown("codex", "main", Duration::from_secs(60));
+        pool.cooldown("anthropic", &accounts[0], Duration::from_secs(60));
+        pool.cooldown("codex", &accounts[0], Duration::from_secs(60));
 
-        pool.forget_account("codex", "main");
+        pool.forget_identity("codex", "main");
 
         let codex = pool.snapshot("codex", &accounts, None, None);
         assert!(!codex[0].has_state);
@@ -911,7 +1128,7 @@ mod tests {
         let sticky = rotation[0];
         pool.note_quota(
             "anthropic",
-            &accounts[sticky].name,
+            &accounts[sticky],
             &quota_headers(&[("anthropic-ratelimit-unified-status", "rejected".to_string())]),
         );
         let now = SystemTime::now()
@@ -924,7 +1141,7 @@ mod tests {
             if position != 0 {
                 pool.note_quota(
                     "anthropic",
-                    &accounts[index].name,
+                    &accounts[index],
                     &quota_headers(&[("anthropic-ratelimit-unified-7d-reset", reset.to_string())]),
                 );
             }
@@ -943,7 +1160,7 @@ mod tests {
         let sticky = rotation[0];
         pool.note_quota(
             "anthropic",
-            &accounts[sticky].name,
+            &accounts[sticky],
             &quota_headers(&[
                 (
                     "anthropic-ratelimit-unified-7d-utilization",
@@ -991,7 +1208,7 @@ mod tests {
             .saturating_sub(1);
         pool.note_quota(
             "anthropic",
-            &accounts[sticky].name,
+            &accounts[sticky],
             &quota_headers(&[
                 (
                     "anthropic-ratelimit-unified-5h-utilization",
@@ -1041,7 +1258,7 @@ mod tests {
         // weekly threshold, so the next selection must rotate away from it.
         pool.note_usage(
             "anthropic",
-            &accounts[sticky].name,
+            &accounts[sticky],
             &UsageSnapshot {
                 five_hour: Some(UsageWindow {
                     utilization: 0.33,
@@ -1073,10 +1290,11 @@ mod tests {
     #[test]
     fn note_usage_omitted_window_leaves_prior_header_value() {
         let pool = AccountPool::new();
+        let accounts = [account("a")];
         // A prior header records a fable (7d_oi) utilization.
         pool.note_quota(
             "anthropic",
-            "a",
+            &accounts[0],
             &quota_headers(&[(
                 "anthropic-ratelimit-unified-7d_oi-utilization",
                 "0.5".to_string(),
@@ -1085,7 +1303,7 @@ mod tests {
         // The usage snapshot reports only 5h/7d — the omitted 7d_oi survives.
         pool.note_usage(
             "anthropic",
-            "a",
+            &accounts[0],
             &UsageSnapshot {
                 five_hour: Some(UsageWindow {
                     utilization: 0.1,
@@ -1113,17 +1331,13 @@ mod tests {
         let pool = AccountPool::new();
         let accounts = vec![account("a"), account("b"), account("c")];
         let sticky = pool.select_order("anthropic", &accounts, Some("sticky"), None, None)[0];
-        pool.cooldown("anthropic", &accounts[sticky].name, Duration::from_secs(30));
+        pool.cooldown("anthropic", &accounts[sticky], Duration::from_secs(30));
         let available = pool.select_order("anthropic", &accounts, Some("sticky"), None, None);
         assert_eq!(available.len(), 3);
         assert_eq!(available[2], sticky);
 
         for (index, seconds) in [(0, 30), (1, 20), (2, 10)] {
-            pool.cooldown(
-                "anthropic",
-                &accounts[index].name,
-                Duration::from_secs(seconds),
-            );
+            pool.cooldown("anthropic", &accounts[index], Duration::from_secs(seconds));
         }
         assert_eq!(
             pool.select_order("anthropic", &accounts, Some("sticky"), None, None),
@@ -1337,7 +1551,7 @@ mod tests {
         accounts[sticky].threshold = Some(0.5);
         pool.note_quota(
             "anthropic",
-            &accounts[sticky].name,
+            &accounts[sticky],
             &quota_headers(&[(
                 "anthropic-ratelimit-unified-5h-utilization",
                 "0.6".to_string(),
@@ -1370,7 +1584,7 @@ mod tests {
         // the backstop long before the reset 4.5h away.
         pool.note_quota(
             "anthropic",
-            &accounts[sticky].name,
+            &accounts[sticky],
             &quota_headers(&[
                 (
                     "anthropic-ratelimit-unified-5h-utilization",
@@ -1409,7 +1623,7 @@ mod tests {
             let sticky = rotation[0];
             pool.note_quota(
                 "anthropic",
-                &accounts[sticky].name,
+                &accounts[sticky],
                 &quota_headers(&[(
                     "anthropic-ratelimit-unified-5h-utilization",
                     "0.99".to_string(),
@@ -1443,7 +1657,7 @@ mod tests {
         for (index, reset_in) in [(0usize, 16_200u64), (1, 9_000), (2, 3_600)] {
             pool.note_quota(
                 "anthropic",
-                &accounts[index].name,
+                &accounts[index],
                 &quota_headers(&[
                     (
                         "anthropic-ratelimit-unified-5h-utilization",
@@ -1480,7 +1694,7 @@ mod tests {
         for (index, reset_in) in [(0usize, 16_200u64), (1, 9_000), (2, 3_600)] {
             pool.note_quota(
                 "anthropic",
-                &accounts[index].name,
+                &accounts[index],
                 &quota_headers(&[
                     (
                         "anthropic-ratelimit-unified-5h-utilization",
@@ -1518,7 +1732,7 @@ mod tests {
         // (a healthy sticky account short-circuits to rotation order).
         pool.note_quota(
             "anthropic",
-            &accounts[sticky].name,
+            &accounts[sticky],
             &quota_headers(&[(
                 "anthropic-ratelimit-unified-5h-utilization",
                 "0.99".to_string(),
@@ -1531,7 +1745,7 @@ mod tests {
         let (slow, fast) = (others[0], others[1]);
         pool.note_quota(
             "anthropic",
-            &accounts[slow].name,
+            &accounts[slow],
             &quota_headers(&[
                 (
                     "anthropic-ratelimit-unified-5h-utilization",
@@ -1545,7 +1759,7 @@ mod tests {
         );
         pool.note_quota(
             "anthropic",
-            &accounts[fast].name,
+            &accounts[fast],
             &quota_headers(&[
                 (
                     "anthropic-ratelimit-unified-5h-utilization",
@@ -1578,7 +1792,7 @@ mod tests {
         for (offset, utilization) in [(0usize, "0.99"), (1, "0.6")] {
             pool.note_quota(
                 "anthropic",
-                &accounts[rotation[offset]].name,
+                &accounts[rotation[offset]],
                 &quota_headers(&[(
                     "anthropic-ratelimit-unified-5h-utilization",
                     utilization.to_string(),
@@ -1638,7 +1852,7 @@ mod tests {
         accounts[1].priority = 200;
         pool.note_quota(
             "anthropic",
-            "seen",
+            &accounts[0],
             &quota_headers(&[
                 (
                     "anthropic-ratelimit-unified-5h-utilization",
