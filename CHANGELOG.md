@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.0](https://github.com/pleaseai/shunt/compare/v0.19.1...v0.20.0) (2026-07-16)
+
+
+### Features
+
+* **pool:** persist account quota state across restarts ([#185](https://github.com/pleaseai/shunt/issues/185)) ([d392bcb](https://github.com/pleaseai/shunt/commit/d392bcb0b758560fe04f0163f6cabbaa4f7b9b67))
+
 ## [0.19.1](https://github.com/pleaseai/shunt/compare/v0.19.0...v0.19.1) (2026-07-16)
 
 
