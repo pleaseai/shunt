@@ -1,0 +1,114 @@
+docs/comparison.md
+  s_2c538f8e9732c1::t_bcd38839938657 92-95
+docs/m10-codex-multi-account.md
+  s_2c538f8e9732c1::t_c05cd5c5220ebb 5,7
+  s_2c538f8e9732c1::t_1ce1eaff5ccbec 166
+  s_2c538f8e9732c1::t_f24800a103ae15 158
+  s_2c538f8e9732c1::t_e7e4a73aa63437 106
+  s_2c538f8e9732c1::t_ed14c143a52a91 128
+src/adapters/responses/inbound.rs
+  s_2c538f8e9732c1::t_40500d87f1a856 130-132
+  s_2c538f8e9732c1::t_acf9dc780040c6 238-244
+  s_2c538f8e9732c1::t_167d5ff71eaf98 181-187
+src/adapters/responses/websocket.rs
+  s_2c538f8e9732c1::t_1d7a2b6e7de41e 41
+  s_2c538f8e9732c1::t_3893e78d5c95b9 51-52
+  s_2c538f8e9732c1::t_7cfa925ada0d7a 105-106
+  s_2c538f8e9732c1::t_8b4971d04ab3ce 230-232,234-236
+  s_2c538f8e9732c1::t_d3f2d5d74ed689 233
+src/adapters/responses/codex_ws.rs
+  s_2c538f8e9732c1::t_8e907e8d1ddc5a 165
+  s_2c538f8e9732c1::t_f48bf335b4876f 358-360
+  s_2c538f8e9732c1::t_7d15f9cdd5f91c 182
+  s_2c538f8e9732c1::t_7e64932cd4b987 557-559,563
+  s_2c538f8e9732c1::t_4968031be4c05b 492-493,497
+  s_2c538f8e9732c1::t_0f8954d03bf3dd 166
+  s_2c538f8e9732c1::t_1ede3e4959a9a5 1263-1265,1268-1275
+  s_2c538f8e9732c1::t_286f5d0a74d931 393
+  s_2c538f8e9732c1::t_68092dc1039b98 1240-1242,1245-1256
+  s_2c538f8e9732c1::t_c26cac9aaeb017 576-577,581
+  s_2c538f8e9732c1::t_a2f3cd58622d7c 1186,1188,1192
+  s_2c538f8e9732c1::t_55d09e9a67e9ea 390-392,394-395
+  s_2c538f8e9732c1::t_902744b20d11b5 1187,1189-1191,1193-1200
+  s_2c538f8e9732c1::t_059a88c3bdf806 1210-1212
+  s_2c538f8e9732c1::t_b112e34f7a9796 477
+docs/m9-admin-surface.md
+  s_2c538f8e9732c1::t_a9753327842e7c 229-232
+src/accounts.rs
+  s_2c538f8e9732c1::t_87c3f1d6547d77 231-235
+  s_2c538f8e9732c1::t_d3f2d5d74ed689 401-403,1000,1002
+  s_2c538f8e9732c1::t_831d7f59f93e07 589,649-658
+  s_2c538f8e9732c1::t_601e00f936e18c 823-824
+  s_2c538f8e9732c1::t_b0eec9c662f543 177-200
+  s_2c538f8e9732c1::t_61e0f0efb790ed 1370-1371
+  s_2c538f8e9732c1::t_cc04a321c09766 238-241
+  s_2c538f8e9732c1::t_c67e6595a965d7 564-565,569-572,577-588
+  s_2c538f8e9732c1::t_df1e2b6051fdac 993-999,1001,1003-1075
+  s_2c538f8e9732c1::t_25c2b501b5bd50 35-42
+  s_2c538f8e9732c1::t_b84914394ff7cd 388-400,404-429
+  s_ff49257dc56b1d::t_02a596a4e1127a 590
+site/src/content/docs/ja/guides/codex.md
+  s_2c538f8e9732c1::t_98f258bcf02c68 24-25
+src/adapters/responses/http.rs
+  s_2c538f8e9732c1::t_df82bea499e2a3 68
+site/src/content/docs/zh-cn/guides/codex.md
+  s_2c538f8e9732c1::t_b54558195f1fb2 28-29
+site/src/content/docs/getting-started/comparison.md
+  s_2c538f8e9732c1::t_374a5d4db7c40e 77
+tests/codex_multi_account.rs
+  s_2c538f8e9732c1::t_7ed03bdd2b1e6d 9
+  s_2c538f8e9732c1::t_9f40e429caf42f 7-8
+site/src/content/docs/guides/anthropic-multi-account.md
+  s_2c538f8e9732c1::t_51d7bd2fa0fd41 137
+src/adapters/responses/pool.rs
+  s_2c538f8e9732c1::t_585b473e0897ac 101
+  s_2c538f8e9732c1::t_0fbf416db7e378 32-33
+  s_2c538f8e9732c1::t_2fca1b9832f960 60-63
+  s_2c538f8e9732c1::t_da345c6fbe7016 162-166
+  s_2c538f8e9732c1::t_13ed625d189917 232-236
+src/adapters/responses/mod.rs
+  s_2c538f8e9732c1::t_68be29bb13bf26 180
+site/src/content/docs/guides/admin-remote-provisioning.md
+  s_2c538f8e9732c1::t_210fe0261802eb 69
+site/src/content/docs/guides/codex-multi-account.md
+  s_2c538f8e9732c1::t_bbfab8ba82b98e 140
+  s_2c538f8e9732c1::t_b2384892d95176 6
+  s_2c538f8e9732c1::t_5ff3c78ac1a778 110
+  s_2c538f8e9732c1::t_40f653718c35f8 92-93
+  s_2c538f8e9732c1::t_63d79f49e2ca45 157-158
+site/src/content/docs/ko/guides/codex.md
+  s_2c538f8e9732c1::t_554b8a754f66f5 22-23
+src/adapters/responses/context.rs
+  s_2c538f8e9732c1::t_842507628f6b32 81-83
+site/src/content/docs/guides/codex.md
+  s_2c538f8e9732c1::t_9ee3eda4eea5bf 30-31
+site/src/content/docs/reference/endpoints.md
+  s_2c538f8e9732c1::t_4179bbdf6e76ce 20
+README.md
+  s_2c538f8e9732c1::t_2adcc55ddbe355 72
+  s_2c538f8e9732c1::t_e8a2212671ffec 78
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "7121ff872d7ccb74a484fea399f635b3c031eef7",
+  "prompts": {},
+  "sessions": {
+    "s_2c538f8e9732c1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "02b9bd4d-ab3a-410b-8642-65539a9d31ff",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_ff49257dc56b1d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d561303-f8eb-4034-afa1-cd22ede4cb05",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
