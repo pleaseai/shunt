@@ -69,7 +69,7 @@ There is no `--long-lived` flag for `shunt login codex` — Codex has no setup-t
 | `name` | yes | Unique label containing only lowercase letters, digits, and hyphens. Without another source field, resolves the matching shunt store file. |
 | `credentials` | one usable source | Codex CLI `auth.json`-shaped file. shunt refreshes near expiry and atomically writes refreshed tokens back, same as `~/.codex/auth.json` itself. |
 | `token_env` | one usable source | Environment variable containing a raw ChatGPT access token. Used verbatim; cannot be refreshed after a 401. |
-| `uuid` | no | Present for structural parity with Anthropic accounts, but **unused** by the Codex path — the account id is resolved from the store or the access token's JWT claim instead. |
+| `uuid` | no | Stable upstream identity used to coalesce aliases. A name-only entry (resolved by a store scan) is filled in automatically before selection runs, so store-scanned aliases coalesce without any config change. A `credentials`- or `token_env`-configured entry's account id is resolved only after selection and never populates `uuid`, so such an entry's identity is its `uuid` when set, else its `name`; it coalesces with another alias whenever that identity equals the other alias's explicit `uuid` or name-fallback identity — set a matching nonblank `uuid` on both entries for a clear, intentional coalesce (shunt also warns on an accidental cross `uuid`/`name` collision). It is not written into the Codex request body. |
 | `priority` | no | Selection priority among available accounts; lower is preferred, default `100`. Honored on the Codex path. |
 | `disabled` | no | `true` removes the account from selection entirely while keeping it in config. Honored on the Codex path. |
 
@@ -83,7 +83,13 @@ Codex has no explicit `uuid` field to configure. Instead, for each account shunt
 2. otherwise decodes the `access_token` JWT and reads the `chatgpt_account_id` claim; and
 3. after any refresh, recomputes the id **only** from the new access token's JWT claim (a refresh response has no separate account-id field).
 
-If neither source yields an id, that account fails to resolve and is treated as a credential-resolution failure below.
+If neither source yields an id, that account fails to resolve and is treated as a credential-resolution failure below. Only a store scan (an empty `accounts` list) writes this resolved id into the in-memory account's `uuid` field ahead of selection — a `credentials`/`token_env`-configured account's id is resolved per request and never feeds back into `uuid`. The store *scan* itself is cached by the store directory mtime, so steady-state discovery performs one directory `stat` and no credential-file reads; resolving the selected account's actual credential still reads its credential file per request as needed to check/refresh expiry.
+
+:::note[Duplicate names for one real account]
+If two store files or configured entries have the same `account_id`, shunt counts them as **one account**. They share cooldown, health, and refresh locks, and failover skips the duplicate alias rather than retrying the same ChatGPT account. Sticky hashing and round-robin operate over distinct identities. The representative is the enabled alias with the lowest `priority`, then the first entry; only its token is attempted, and shunt logs a duplicate-identity warning (configured entries are logged once per successful config load, including reload; store-discovered collisions are logged once per distinct collision set, not once per request). Consequently, an invalid representative is not rescued by a valid non-representative alias.
+
+Deleting a store-managed account through the admin web surface clears that identity's shared in-process health only once no other stored alias still resolves to the same identity; a scan failure preserves the health instead of guessing. This is admin-store delete semantics — removing an alias from the TOML config, or its credentials file directly, does not go through this cleanup.
+:::
 
 ## Selection and cooldowns
 

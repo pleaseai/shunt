@@ -10,7 +10,7 @@ use std::{net::SocketAddr, path::PathBuf, time::SystemTime};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use reqwest::StatusCode;
 use shunt::{
-    config::{AdminConfig, AuthMode, Config},
+    config::{AccountConfig, AdminConfig, AuthMode, Config},
     server,
 };
 use tokio::task::JoinHandle;
@@ -83,14 +83,22 @@ async fn start(mut config: Config) -> Gateway {
     }
 }
 
+/// Monotonic counter appended to `unique_dir()` names: parallel test threads can
+/// call `SystemTime::now()` within the same tick on some platforms, so the
+/// nanosecond timestamp alone is not a reliable uniqueness guarantee under the
+/// full test-suite's concurrency.
+static UNIQUE_DIR_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 fn unique_dir() -> PathBuf {
+    let counter = UNIQUE_DIR_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!(
-        "shunt-admin-test-{}-{}",
+        "shunt-admin-test-{}-{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_nanos(),
+        counter
     ));
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -410,6 +418,589 @@ async fn provisioning_flow_stores_refreshable_oauth_account() {
     std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
     std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
     std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_OAUTH");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn claude_reprovision_clears_orphaned_identity_without_wiping_shared_alias_health() {
+    // Regression test mirroring
+    // `codex_reprovision_clears_orphaned_identity_without_wiping_shared_alias_health`:
+    // reprovisioning "account-a" from an old upstream identity ("acct-old") to a
+    // new one ("shared-id") must (a) drop the now-orphaned old identity's pool
+    // health, and (b) never wipe pool health for the new identity when it is
+    // still shared by another stored account alias.
+    if !can_bind_loopback() {
+        return;
+    }
+    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let dir = unique_dir();
+    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    std::env::set_var(
+        "SHUNT_TEST_ADMIN_TOKENS_CLAUDE_REPROV",
+        "ops:secret-claude-reprov",
+    );
+
+    // "other-account" is a pre-existing store account sharing the identity
+    // ("shared-id") that "account-a" will be reprovisioned onto below.
+    std::fs::write(
+        dir.join("other-account.json"),
+        serde_json::json!({
+            "claudeAiOauth": {
+                "accessToken": "other-access",
+                "refreshToken": "other-refresh",
+                "expiresAt": 4_102_444_800_000i64,
+            },
+            "shuntAccountUuid": "shared-id",
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let token_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "ACCESS-1",
+            "refresh_token": "REFRESH-1",
+            "expires_in": 7200,
+            "account": {"uuid": "acct-old"}
+        })))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .expect(1)
+        .mount(&token_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "ACCESS-2",
+            "refresh_token": "REFRESH-2",
+            "expires_in": 7200,
+            "account": {"uuid": "shared-id"}
+        })))
+        .with_priority(2)
+        .expect(1)
+        .mount(&token_server)
+        .await;
+    std::env::set_var(
+        "SHUNT_CLAUDE_TOKEN_URL",
+        format!("{}/token", token_server.uri()),
+    );
+
+    let mut config = admin_config("SHUNT_TEST_ADMIN_TOKENS_CLAUDE_REPROV");
+    config.server.bind = "127.0.0.1:0".to_string();
+    let listener = tokio::net::TcpListener::bind(config.server.bind_addr().unwrap())
+        .await
+        .unwrap();
+    let addr: SocketAddr = listener.local_addr().unwrap();
+    let (app, _shared, state) = server::build_router(config).unwrap();
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base_url = format!("http://{addr}");
+
+    // Seed pool health: "other-account" (identity "shared-id") is cooling down.
+    let other_account = AccountConfig {
+        name: "other-account".to_string(),
+        uuid: Some("shared-id".to_string()),
+        ..Default::default()
+    };
+    state.accounts.cooldown(
+        "anthropic",
+        &other_account,
+        std::time::Duration::from_secs(300),
+    );
+
+    let client = reqwest::Client::new();
+    let auth = |request: reqwest::RequestBuilder| {
+        request
+            .header("x-shunt-admin-token", "secret-claude-reprov")
+            .header("content-type", "application/json")
+    };
+
+    // First provisioning: account-a -> identity "acct-old".
+    let response = auth(client.post(format!("{base_url}/admin/accounts/claude")))
+        .body(r#"{"name":"account-a","mode":"oauth"}"#)
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    let (_, state1) = authorize_state(&body);
+    let response = auth(client.post(format!(
+        "{base_url}/admin/accounts/claude/account-a/complete"
+    )))
+    .body(serde_json::json!({"code": format!("code-1#{state1}")}).to_string())
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Cool down "account-a" while it is still on "acct-old".
+    let account_a_old = AccountConfig {
+        name: "account-a".to_string(),
+        uuid: Some("acct-old".to_string()),
+        ..Default::default()
+    };
+    state.accounts.cooldown(
+        "anthropic",
+        &account_a_old,
+        std::time::Duration::from_secs(300),
+    );
+    let snapshot = state.accounts.snapshot(
+        "anthropic",
+        std::slice::from_ref(&account_a_old),
+        None,
+        None,
+    );
+    assert!(
+        snapshot[0].has_state,
+        "acct-old health should be observed before reprovisioning"
+    );
+
+    // Reprovision account-a onto "shared-id" -- the same identity as
+    // "other-account".
+    let response = auth(client.post(format!("{base_url}/admin/accounts/claude")))
+        .body(r#"{"name":"account-a","mode":"oauth"}"#)
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    let (_, state2) = authorize_state(&body);
+    let response = auth(client.post(format!(
+        "{base_url}/admin/accounts/claude/account-a/complete"
+    )))
+    .body(serde_json::json!({"code": format!("code-2#{state2}")}).to_string())
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // (a) The now-orphaned "acct-old" identity's health must be cleared.
+    let snapshot = state.accounts.snapshot(
+        "anthropic",
+        std::slice::from_ref(&account_a_old),
+        None,
+        None,
+    );
+    assert!(
+        !snapshot[0].has_state,
+        "orphaned old identity health should have been cleared on reprovision"
+    );
+
+    // (b) "other-account"'s health for the shared "shared-id" identity must
+    // survive, since account-a's reprovision must not unjustly clear health
+    // shared by another alias.
+    let snapshot = state.accounts.snapshot(
+        "anthropic",
+        std::slice::from_ref(&other_account),
+        None,
+        None,
+    );
+    assert!(
+        snapshot[0].has_state,
+        "shared identity health must survive a reprovision of another alias"
+    );
+    assert!(
+        snapshot[0].cooldown_secs_remaining.is_some(),
+        "shared identity's cooldown must not have been wiped"
+    );
+
+    task.abort();
+    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
+    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CLAUDE_REPROV");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn claude_reprovision_clears_blank_uuid_old_identity_using_name_fallback() {
+    // Regression test: the runtime identity of a stored account with no UUID at
+    // all falls back to its own name (`accounts::account_identity`), not to
+    // "no identity". Before the fix, capturing the pre-reprovision identity as
+    // a bare `account_uuid(name)` conflated that legitimate blank-UUID case
+    // with "no prior account existed", so a reprovision that moved a blank-UUID
+    // account onto a real UUID silently left its old name-keyed health entry
+    // stranded forever.
+    if !can_bind_loopback() {
+        return;
+    }
+    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let dir = unique_dir();
+    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    std::env::set_var(
+        "SHUNT_TEST_ADMIN_TOKENS_CLAUDE_BLANK_OLD",
+        "ops:secret-claude-blank-old",
+    );
+
+    let token_server = MockServer::start().await;
+    // First exchange returns no `account` at all -- the stored account carries
+    // no UUID, so its runtime identity is its own name ("account-a").
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "ACCESS-1",
+            "refresh_token": "REFRESH-1",
+            "expires_in": 7200,
+        })))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .expect(1)
+        .mount(&token_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "ACCESS-2",
+            "refresh_token": "REFRESH-2",
+            "expires_in": 7200,
+            "account": {"uuid": "new-id"}
+        })))
+        .with_priority(2)
+        .expect(1)
+        .mount(&token_server)
+        .await;
+    std::env::set_var(
+        "SHUNT_CLAUDE_TOKEN_URL",
+        format!("{}/token", token_server.uri()),
+    );
+
+    let mut config = admin_config("SHUNT_TEST_ADMIN_TOKENS_CLAUDE_BLANK_OLD");
+    config.server.bind = "127.0.0.1:0".to_string();
+    let listener = tokio::net::TcpListener::bind(config.server.bind_addr().unwrap())
+        .await
+        .unwrap();
+    let addr: SocketAddr = listener.local_addr().unwrap();
+    let (app, _shared, state) = server::build_router(config).unwrap();
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base_url = format!("http://{addr}");
+
+    let client = reqwest::Client::new();
+    let auth = |request: reqwest::RequestBuilder| {
+        request
+            .header("x-shunt-admin-token", "secret-claude-blank-old")
+            .header("content-type", "application/json")
+    };
+
+    // First provisioning: account-a stored with no UUID at all.
+    let response = auth(client.post(format!("{base_url}/admin/accounts/claude")))
+        .body(r#"{"name":"account-a","mode":"oauth"}"#)
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    let (_, state1) = authorize_state(&body);
+    let response = auth(client.post(format!(
+        "{base_url}/admin/accounts/claude/account-a/complete"
+    )))
+    .body(serde_json::json!({"code": format!("code-1#{state1}")}).to_string())
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Cool down "account-a" under its name-fallback identity ("account-a").
+    let account_a_blank = AccountConfig {
+        name: "account-a".to_string(),
+        uuid: None,
+        ..Default::default()
+    };
+    state.accounts.cooldown(
+        "anthropic",
+        &account_a_blank,
+        std::time::Duration::from_secs(300),
+    );
+    let snapshot = state.accounts.snapshot(
+        "anthropic",
+        std::slice::from_ref(&account_a_blank),
+        None,
+        None,
+    );
+    assert!(
+        snapshot[0].has_state,
+        "blank-UUID name-fallback identity health should be observed before reprovisioning"
+    );
+
+    // Reprovision account-a onto a real UUID ("new-id").
+    let response = auth(client.post(format!("{base_url}/admin/accounts/claude")))
+        .body(r#"{"name":"account-a","mode":"oauth"}"#)
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    let (_, state2) = authorize_state(&body);
+    let response = auth(client.post(format!(
+        "{base_url}/admin/accounts/claude/account-a/complete"
+    )))
+    .body(serde_json::json!({"code": format!("code-2#{state2}")}).to_string())
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // The now-orphaned blank-UUID ("account-a" name-fallback) identity's
+    // health must be cleared, not stranded.
+    let snapshot = state.accounts.snapshot(
+        "anthropic",
+        std::slice::from_ref(&account_a_blank),
+        None,
+        None,
+    );
+    assert!(
+        !snapshot[0].has_state,
+        "orphaned blank-UUID old identity health should have been cleared on reprovision"
+    );
+
+    task.abort();
+    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
+    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CLAUDE_BLANK_OLD");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn claude_remove_preserves_shared_identity_health_until_last_alias_is_removed() {
+    // Regression test for the admin Claude remove-account identity-health
+    // cleanup: removing one alias of a shared upstream identity must preserve
+    // pool health while a sibling alias still resolves to that identity, and
+    // only clear it once the last alias sharing the identity is gone.
+    if !can_bind_loopback() {
+        return;
+    }
+    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let dir = unique_dir();
+    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    std::env::set_var(
+        "SHUNT_TEST_ADMIN_TOKENS_CLAUDE_REMOVE",
+        "ops:secret-claude-remove",
+    );
+
+    // "alias-a" and "alias-b" both resolve to the shared "shared-id" identity.
+    for name in ["alias-a", "alias-b"] {
+        std::fs::write(
+            dir.join(format!("{name}.json")),
+            serde_json::json!({
+                "claudeAiOauth": {
+                    "accessToken": format!("{name}-access"),
+                    "refreshToken": format!("{name}-refresh"),
+                    "expiresAt": 4_102_444_800_000i64,
+                },
+                "shuntAccountUuid": "shared-id",
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    let mut config = admin_config("SHUNT_TEST_ADMIN_TOKENS_CLAUDE_REMOVE");
+    config.server.bind = "127.0.0.1:0".to_string();
+    let listener = tokio::net::TcpListener::bind(config.server.bind_addr().unwrap())
+        .await
+        .unwrap();
+    let addr: SocketAddr = listener.local_addr().unwrap();
+    let (app, _shared, state) = server::build_router(config).unwrap();
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base_url = format!("http://{addr}");
+
+    let shared_identity = AccountConfig {
+        name: "shared-id".to_string(),
+        uuid: Some("shared-id".to_string()),
+        ..Default::default()
+    };
+    state.accounts.cooldown(
+        "anthropic",
+        &shared_identity,
+        std::time::Duration::from_secs(300),
+    );
+
+    let client = reqwest::Client::new();
+    let auth = |request: reqwest::RequestBuilder| {
+        request.header("x-shunt-admin-token", "secret-claude-remove")
+    };
+
+    // Removing "alias-a" must not clear "shared-id" health: "alias-b" still
+    // resolves to it.
+    let response = auth(client.delete(format!("{base_url}/admin/accounts/claude/alias-a")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!dir.join("alias-a.json").exists());
+    let snapshot = state.accounts.snapshot(
+        "anthropic",
+        std::slice::from_ref(&shared_identity),
+        None,
+        None,
+    );
+    assert!(
+        snapshot[0].has_state,
+        "shared identity health must survive removing one of two aliases"
+    );
+
+    // Removing "alias-b" (the last remaining alias) must now clear it.
+    let response = auth(client.delete(format!("{base_url}/admin/accounts/claude/alias-b")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!dir.join("alias-b.json").exists());
+    let snapshot = state.accounts.snapshot(
+        "anthropic",
+        std::slice::from_ref(&shared_identity),
+        None,
+        None,
+    );
+    assert!(
+        !snapshot[0].has_state,
+        "shared identity health should be cleared once no alias resolves to it any more"
+    );
+
+    task.abort();
+    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CLAUDE_REMOVE");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn claude_remove_preserves_a_configured_providers_health_the_store_scan_cannot_see() {
+    // Regression test: an identity can be shared between a store-scanned
+    // account (removed here) and an *explicitly configured*
+    // `[[providers.<name>.accounts]]` alias on a different, non-empty-accounts
+    // provider -- e.g. a `credentials`/`token_env` entry that never appears in
+    // any store directory scan at all. Before the fix, the removal cleanup
+    // decided whether an identity was "still in use" purely from the store
+    // scan, so it would wipe every provider's health for that identity
+    // (`forget_pool_health` looped every same-auth-mode provider
+    // unconditionally) even though the configured provider's alias still
+    // legitimately relies on it. The fix must check each provider against its
+    // own effective account set: the store scan for a dynamic-discovery
+    // provider, but the provider's own configured accounts for one that sets
+    // `accounts` explicitly.
+    if !can_bind_loopback() {
+        return;
+    }
+    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let dir = unique_dir();
+    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    std::env::set_var(
+        "SHUNT_TEST_ADMIN_TOKENS_CLAUDE_CONFIGURED",
+        "ops:secret-claude-configured",
+    );
+
+    // "account-a" is a store-scanned account sharing the identity ("shared-id")
+    // that a *different*, explicitly configured provider's alias also uses.
+    std::fs::write(
+        dir.join("account-a.json"),
+        serde_json::json!({
+            "claudeAiOauth": {
+                "accessToken": "account-a-access",
+                "refreshToken": "account-a-refresh",
+                "expiresAt": 4_102_444_800_000i64,
+            },
+            "shuntAccountUuid": "shared-id",
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let mut config = admin_config("SHUNT_TEST_ADMIN_TOKENS_CLAUDE_CONFIGURED");
+    // A second Claude provider with an explicitly configured (non-empty)
+    // account list -- never scanned from the store directory -- whose one
+    // alias resolves to the same "shared-id" identity as "account-a" above.
+    let mut configured_provider = config.providers.get("anthropic").unwrap().clone();
+    configured_provider.accounts = vec![AccountConfig {
+        name: "configured-alias".to_string(),
+        uuid: Some("shared-id".to_string()),
+        credentials: Some("/tmp/shunt-test-does-not-need-to-exist.json".to_string()),
+        ..Default::default()
+    }];
+    config
+        .providers
+        .insert("anthropic-configured".to_string(), configured_provider);
+    config.server.bind = "127.0.0.1:0".to_string();
+    let listener = tokio::net::TcpListener::bind(config.server.bind_addr().unwrap())
+        .await
+        .unwrap();
+    let addr: SocketAddr = listener.local_addr().unwrap();
+    let (app, _shared, state) = server::build_router(config).unwrap();
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base_url = format!("http://{addr}");
+
+    let shared_identity = AccountConfig {
+        name: "shared-id".to_string(),
+        uuid: Some("shared-id".to_string()),
+        ..Default::default()
+    };
+    // Seed health on both providers for the shared identity: the
+    // dynamic-discovery "anthropic" provider (which will legitimately lose
+    // the identity once "account-a" is removed, since the store has no other
+    // alias for it) and the explicitly configured "anthropic-configured"
+    // provider (which must keep it, since its own "configured-alias" entry
+    // still resolves to "shared-id" -- a fact the store scan cannot see).
+    state.accounts.cooldown(
+        "anthropic",
+        &shared_identity,
+        std::time::Duration::from_secs(300),
+    );
+    state.accounts.cooldown(
+        "anthropic-configured",
+        &shared_identity,
+        std::time::Duration::from_secs(300),
+    );
+
+    let client = reqwest::Client::new();
+    let auth = |request: reqwest::RequestBuilder| {
+        request.header("x-shunt-admin-token", "secret-claude-configured")
+    };
+
+    let response = auth(client.delete(format!("{base_url}/admin/accounts/claude/account-a")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!dir.join("account-a.json").exists());
+
+    // The dynamic-discovery provider's health is legitimately cleared: no
+    // other store account resolves to "shared-id" any more.
+    let snapshot = state.accounts.snapshot(
+        "anthropic",
+        std::slice::from_ref(&shared_identity),
+        None,
+        None,
+    );
+    assert!(
+        !snapshot[0].has_state,
+        "dynamic-discovery provider health should clear once the store has no other alias"
+    );
+
+    // The explicitly configured provider's health must survive: its own
+    // "configured-alias" account still resolves to "shared-id", even though
+    // the store scan (which drove the dynamic-discovery provider's decision
+    // above) knows nothing about it.
+    let snapshot = state.accounts.snapshot(
+        "anthropic-configured",
+        std::slice::from_ref(&shared_identity),
+        None,
+        None,
+    );
+    assert!(
+        snapshot[0].has_state,
+        "a configured provider's health for an identity its own account list still uses \
+         must not be wiped by an unrelated provider's store-only removal"
+    );
+    assert!(
+        snapshot[0].cooldown_secs_remaining.is_some(),
+        "the configured provider's cooldown must not have been wiped"
+    );
+
+    task.abort();
+    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CLAUDE_CONFIGURED");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -964,6 +1555,423 @@ async fn codex_provisioning_supports_code_state_and_full_redirect() {
     std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
     std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
     std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CODEX");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn codex_reprovision_clears_orphaned_identity_without_wiping_shared_alias_health() {
+    // Regression test for the admin Codex reprovisioning identity-health
+    // cleanup: reprovisioning "account-a" from an old upstream identity to a
+    // new one must (a) drop the now-orphaned old identity's pool health, and
+    // (b) never wipe pool health for the new identity when it is still
+    // shared by another stored account alias.
+    if !can_bind_loopback() {
+        return;
+    }
+    let _lock = CODEX_ENV_LOCK.lock().await;
+    let dir = unique_dir();
+    std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+    std::env::set_var(
+        "SHUNT_TEST_ADMIN_TOKENS_CODEX_REPROV",
+        "ops:secret-codex-reprov",
+    );
+
+    // "other-account" is a pre-existing store account sharing the identity
+    // ("shared-id") that "account-a" will be reprovisioned onto below.
+    let other_access = chatgpt_token(4_102_444_800, "shared-id");
+    std::fs::write(
+        dir.join("other-account.json"),
+        serde_json::json!({
+            "auth_mode": "ChatGPT",
+            "tokens": {
+                "access_token": other_access,
+                "refresh_token": "other-refresh",
+                "account_id": "shared-id",
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let token_server = MockServer::start().await;
+    let first_access = chatgpt_token(4_102_444_800, "acct-old");
+    let second_access = chatgpt_token(4_102_444_800 + 1, "shared-id");
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": first_access,
+            "refresh_token": "refresh-1"
+        })))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .expect(1)
+        .mount(&token_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": second_access,
+            "refresh_token": "refresh-2"
+        })))
+        .with_priority(2)
+        .expect(1)
+        .mount(&token_server)
+        .await;
+    std::env::set_var(
+        "SHUNT_CODEX_TOKEN_URL",
+        format!("{}/token", token_server.uri()),
+    );
+
+    let mut config = admin_config("SHUNT_TEST_ADMIN_TOKENS_CODEX_REPROV");
+    let codex = config.providers.get_mut("codex").unwrap();
+    codex.auth = AuthMode::ChatgptOauth;
+    codex.accounts = Vec::new();
+    config.server.bind = "127.0.0.1:0".to_string();
+    let listener = tokio::net::TcpListener::bind(config.server.bind_addr().unwrap())
+        .await
+        .unwrap();
+    let addr: SocketAddr = listener.local_addr().unwrap();
+    let (app, _shared, state) = server::build_router(config).unwrap();
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base_url = format!("http://{addr}");
+
+    // Seed pool health: "other-account" (identity "shared-id") is cooling down.
+    let other_account = AccountConfig {
+        name: "other-account".to_string(),
+        uuid: Some("shared-id".to_string()),
+        ..Default::default()
+    };
+    state
+        .accounts
+        .cooldown("codex", &other_account, std::time::Duration::from_secs(300));
+
+    let client = reqwest::Client::new();
+    let auth = |request: reqwest::RequestBuilder| {
+        request
+            .header("x-shunt-admin-token", "secret-codex-reprov")
+            .header("content-type", "application/json")
+    };
+
+    // First provisioning: account-a -> identity "acct-old".
+    let response = auth(client.post(format!("{base_url}/admin/accounts/codex")))
+        .body(r#"{"name":"account-a"}"#)
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    let (_, state1) = authorize_state(&body);
+    let response = auth(client.post(format!(
+        "{base_url}/admin/accounts/codex/account-a/complete"
+    )))
+    .body(serde_json::json!({"code": format!("code-1#{state1}")}).to_string())
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Cool down "account-a" while it is still on "acct-old".
+    let account_a_old = AccountConfig {
+        name: "account-a".to_string(),
+        uuid: Some("acct-old".to_string()),
+        ..Default::default()
+    };
+    state
+        .accounts
+        .cooldown("codex", &account_a_old, std::time::Duration::from_secs(300));
+    let snapshot =
+        state
+            .accounts
+            .snapshot("codex", std::slice::from_ref(&account_a_old), None, None);
+    assert!(
+        snapshot[0].has_state,
+        "acct-old health should be observed before reprovisioning"
+    );
+
+    // Reprovision account-a onto "shared-id" -- the same identity as
+    // "other-account".
+    let response = auth(client.post(format!("{base_url}/admin/accounts/codex")))
+        .body(r#"{"name":"account-a"}"#)
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    let (_, state2) = authorize_state(&body);
+    let response = auth(client.post(format!(
+        "{base_url}/admin/accounts/codex/account-a/complete"
+    )))
+    .body(serde_json::json!({"code": format!("code-2#{state2}")}).to_string())
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // (a) The now-orphaned "acct-old" identity's health must be cleared.
+    let snapshot =
+        state
+            .accounts
+            .snapshot("codex", std::slice::from_ref(&account_a_old), None, None);
+    assert!(
+        !snapshot[0].has_state,
+        "orphaned old identity health should have been cleared on reprovision"
+    );
+
+    // (b) "other-account"'s health for the shared "shared-id" identity must
+    // survive, since account-a's reprovision must not unjustly clear health
+    // shared by another alias.
+    let snapshot =
+        state
+            .accounts
+            .snapshot("codex", std::slice::from_ref(&other_account), None, None);
+    assert!(
+        snapshot[0].has_state,
+        "shared identity health must survive a reprovision of another alias"
+    );
+    assert!(
+        snapshot[0].cooldown_secs_remaining.is_some(),
+        "shared identity's cooldown must not have been wiped"
+    );
+
+    task.abort();
+    std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
+    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CODEX_REPROV");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn codex_reprovision_clears_blank_identity_old_account_using_name_fallback() {
+    // Regression test mirroring
+    // `claude_reprovision_clears_blank_uuid_old_identity_using_name_fallback`:
+    // a stored account whose file carries no resolvable `account_id` (nor a
+    // JWT `chatgpt_account_id` claim) still has a runtime identity -- its own
+    // name (`accounts::account_identity`'s fallback) -- not "no identity" at
+    // all. Capturing the pre-reprovision identity as a bare
+    // `account_id(name)` would conflate that with "no prior account existed",
+    // stranding the old name-keyed health entry forever once reprovisioned
+    // onto a real identity.
+    if !can_bind_loopback() {
+        return;
+    }
+    let _lock = CODEX_ENV_LOCK.lock().await;
+    let dir = unique_dir();
+    std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+    std::env::set_var(
+        "SHUNT_TEST_ADMIN_TOKENS_CODEX_BLANK_OLD",
+        "ops:secret-codex-blank-old",
+    );
+
+    // "account-a" already exists in the store, but its file carries no
+    // resolvable identity at all (no `account_id`, and an access token that is
+    // not a parseable JWT) -- so its runtime identity is its own name.
+    std::fs::write(
+        dir.join("account-a.json"),
+        serde_json::json!({
+            "auth_mode": "ChatGPT",
+            "tokens": {
+                "access_token": "not-a-jwt",
+                "refresh_token": "old-refresh",
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let token_server = MockServer::start().await;
+    let new_access = chatgpt_token(4_102_444_800, "new-id");
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": new_access,
+            "refresh_token": "new-refresh"
+        })))
+        .expect(1)
+        .mount(&token_server)
+        .await;
+    std::env::set_var(
+        "SHUNT_CODEX_TOKEN_URL",
+        format!("{}/token", token_server.uri()),
+    );
+
+    let mut config = admin_config("SHUNT_TEST_ADMIN_TOKENS_CODEX_BLANK_OLD");
+    let codex = config.providers.get_mut("codex").unwrap();
+    codex.auth = AuthMode::ChatgptOauth;
+    codex.accounts = Vec::new();
+    config.server.bind = "127.0.0.1:0".to_string();
+    let listener = tokio::net::TcpListener::bind(config.server.bind_addr().unwrap())
+        .await
+        .unwrap();
+    let addr: SocketAddr = listener.local_addr().unwrap();
+    let (app, _shared, state) = server::build_router(config).unwrap();
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base_url = format!("http://{addr}");
+
+    // Cool down "account-a" under its name-fallback identity ("account-a").
+    let account_a_blank = AccountConfig {
+        name: "account-a".to_string(),
+        uuid: None,
+        ..Default::default()
+    };
+    state.accounts.cooldown(
+        "codex",
+        &account_a_blank,
+        std::time::Duration::from_secs(300),
+    );
+    let snapshot =
+        state
+            .accounts
+            .snapshot("codex", std::slice::from_ref(&account_a_blank), None, None);
+    assert!(
+        snapshot[0].has_state,
+        "blank-identity name-fallback health should be observed before reprovisioning"
+    );
+
+    let client = reqwest::Client::new();
+    let auth = |request: reqwest::RequestBuilder| {
+        request
+            .header("x-shunt-admin-token", "secret-codex-blank-old")
+            .header("content-type", "application/json")
+    };
+
+    // Reprovision account-a onto a real identity ("new-id").
+    let response = auth(client.post(format!("{base_url}/admin/accounts/codex")))
+        .body(r#"{"name":"account-a"}"#)
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    let (_, state1) = authorize_state(&body);
+    let response = auth(client.post(format!(
+        "{base_url}/admin/accounts/codex/account-a/complete"
+    )))
+    .body(serde_json::json!({"code": format!("code-1#{state1}")}).to_string())
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // The now-orphaned blank-identity ("account-a" name-fallback) health must
+    // be cleared, not stranded.
+    let snapshot =
+        state
+            .accounts
+            .snapshot("codex", std::slice::from_ref(&account_a_blank), None, None);
+    assert!(
+        !snapshot[0].has_state,
+        "orphaned blank-identity old account health should have been cleared on reprovision"
+    );
+
+    task.abort();
+    std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
+    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CODEX_BLANK_OLD");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn codex_remove_preserves_shared_identity_health_until_last_alias_is_removed() {
+    // Regression test for the admin Codex remove-account identity-health
+    // cleanup: removing one alias of a shared upstream identity must preserve
+    // pool health while a sibling alias still resolves to that identity, and
+    // only clear it once the last alias sharing the identity is gone.
+    if !can_bind_loopback() {
+        return;
+    }
+    let _lock = CODEX_ENV_LOCK.lock().await;
+    let dir = unique_dir();
+    std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+    std::env::set_var(
+        "SHUNT_TEST_ADMIN_TOKENS_CODEX_REMOVE",
+        "ops:secret-codex-remove",
+    );
+
+    // "alias-a" and "alias-b" both resolve to the shared "shared-id" identity.
+    for name in ["alias-a", "alias-b"] {
+        std::fs::write(
+            dir.join(format!("{name}.json")),
+            serde_json::json!({
+                "auth_mode": "ChatGPT",
+                "tokens": {
+                    "access_token": format!("{name}-access"),
+                    "refresh_token": format!("{name}-refresh"),
+                    "account_id": "shared-id",
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    let mut config = admin_config("SHUNT_TEST_ADMIN_TOKENS_CODEX_REMOVE");
+    let codex = config.providers.get_mut("codex").unwrap();
+    codex.auth = AuthMode::ChatgptOauth;
+    codex.accounts = Vec::new();
+    config.server.bind = "127.0.0.1:0".to_string();
+    let listener = tokio::net::TcpListener::bind(config.server.bind_addr().unwrap())
+        .await
+        .unwrap();
+    let addr: SocketAddr = listener.local_addr().unwrap();
+    let (app, _shared, state) = server::build_router(config).unwrap();
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base_url = format!("http://{addr}");
+
+    let shared_identity = AccountConfig {
+        name: "shared-id".to_string(),
+        uuid: Some("shared-id".to_string()),
+        ..Default::default()
+    };
+    state.accounts.cooldown(
+        "codex",
+        &shared_identity,
+        std::time::Duration::from_secs(300),
+    );
+
+    let client = reqwest::Client::new();
+    let auth = |request: reqwest::RequestBuilder| {
+        request.header("x-shunt-admin-token", "secret-codex-remove")
+    };
+
+    // Removing "alias-a" must not clear "shared-id" health: "alias-b" still
+    // resolves to it.
+    let response = auth(client.delete(format!("{base_url}/admin/accounts/codex/alias-a")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!dir.join("alias-a.json").exists());
+    let snapshot =
+        state
+            .accounts
+            .snapshot("codex", std::slice::from_ref(&shared_identity), None, None);
+    assert!(
+        snapshot[0].has_state,
+        "shared identity health must survive removing one of two aliases"
+    );
+
+    // Removing "alias-b" (the last remaining alias) must now clear it.
+    let response = auth(client.delete(format!("{base_url}/admin/accounts/codex/alias-b")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!dir.join("alias-b.json").exists());
+    let snapshot =
+        state
+            .accounts
+            .snapshot("codex", std::slice::from_ref(&shared_identity), None, None);
+    assert!(
+        !snapshot[0].has_state,
+        "shared identity health should be cleared once no alias resolves to it any more"
+    );
+
+    task.abort();
+    std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CODEX_REMOVE");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

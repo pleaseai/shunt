@@ -20,7 +20,8 @@ use crate::{
 };
 
 use super::{
-    authenticate, bad_gateway, bad_request, check_csrf, forget_pool_health, internal, json_secure,
+    authenticate, bad_gateway, bad_request, check_csrf, cleanup_reprovisioned_pool_health,
+    forget_pool_health_if_absent, internal, json_secure, remaining_account_identities,
     session::{PendingAttempt, PendingKind},
     too_many_requests, unauthorized,
 };
@@ -179,6 +180,16 @@ pub(super) async fn complete_codex_account(
         return bad_gateway("Codex token exchange did not return an account id");
     };
 
+    // Capture the pre-store identity before it is overwritten below, so a
+    // reprovision that changes the upstream identity (A -> B) can clean up A's
+    // now-orphaned health entry too, instead of leaving it stranded (only the
+    // newly stored B was ever cleared previously).
+    let old_identity_name = name.clone();
+    let old_identity =
+        tokio::task::spawn_blocking(move || codex_store::account_identity(&old_identity_name))
+            .await
+            .unwrap_or(None);
+
     let account_name = name.clone();
     let access_token = tokens.access_token;
     let id_token = tokens.id_token;
@@ -205,8 +216,28 @@ pub(super) async fn complete_codex_account(
     }
     state.admin_stores.pending.remove(&key);
     // Re-provisioning reuses the account name; clear any process-lifetime Codex
-    // pool health from a prior token without touching same-named Claude health.
-    forget_pool_health(&state, AuthMode::ChatgptOauth, &name);
+    // pool health carried over for the newly stored upstream identity, and for
+    // the identity it replaced (if any). Pool health is keyed by identity, not
+    // name, and may be shared by other stored aliases, so only clear an
+    // identity when no other stored account still resolves to it.
+    let identity_name = name.clone();
+    let new_identity = tokio::task::spawn_blocking(move || {
+        codex_store::account_id(&identity_name).unwrap_or(identity_name)
+    })
+    .await
+    .unwrap_or_else(|_| name.clone());
+    let other_identities =
+        remaining_account_identities(&name, codex_store::scan_accounts_strict).await;
+    if other_identities.is_none() {
+        tracing::warn!(account = %name, "admin: failed to scan Codex account store during reprovision cleanup; preserving dynamic-discovery-provider pool health for the old and new identities");
+    }
+    cleanup_reprovisioned_pool_health(
+        &state,
+        AuthMode::ChatgptOauth,
+        old_identity.as_deref(),
+        &new_identity,
+        other_identities.as_ref(),
+    );
     tracing::info!(account = %name, account_id_present = true, "admin: Codex account stored");
 
     let live =
@@ -237,10 +268,13 @@ pub(super) async fn remove_codex_account_handler(
         return bad_request("account name must match [a-z0-9-]+");
     }
     let target = name.clone();
-    let removed = match tokio::task::spawn_blocking(move || codex_store::remove_account(&target))
-        .await
+    let removed = match tokio::task::spawn_blocking(move || {
+        let identity = codex_store::account_id(&target).unwrap_or_else(|| target.clone());
+        codex_store::remove_account(&target).map(|removed| (removed, identity))
+    })
+    .await
     {
-        Ok(Ok(removed)) => removed,
+        Ok(Ok(result)) => result,
         Ok(Err(error)) => {
             tracing::error!(account = %name, %error, "admin: failed to remove Codex account");
             return internal("failed to remove account");
@@ -250,10 +284,40 @@ pub(super) async fn remove_codex_account_handler(
             return internal("failed to remove account");
         }
     };
+    let (removed, identity) = removed;
     tracing::info!(account = %name, removed, "admin: Codex account removed");
-    // Drop process-lifetime Codex pool health for the removed name so a later
-    // re-add does not inherit stale state, without touching same-named Claude health.
-    forget_pool_health(&state, AuthMode::ChatgptOauth, &name);
+    // Drop process-lifetime Codex pool health for the removed identity so a later
+    // re-add does not inherit stale state, without touching same-named Claude
+    // health. Dynamic-discovery providers are only cleared once a scan
+    // confirms no remaining stored alias still resolves to this identity (a
+    // scan failure fails closed to preserving their health); explicitly
+    // configured providers are checked against their own account list
+    // regardless, since a store scan cannot see `credentials`/`token_env`
+    // aliases at all (see `forget_pool_health_if_absent`).
+    let store_scan_others = match tokio::task::spawn_blocking(codex_store::scan_accounts_strict)
+        .await
+    {
+        Ok(Ok(remaining)) => Some(
+            remaining
+                .into_iter()
+                .map(|account| crate::accounts::account_identity(&account).to_string())
+                .collect::<std::collections::HashSet<String>>(),
+        ),
+        Ok(Err(error)) => {
+            tracing::warn!(account = %name, %error, "admin: failed to scan Codex account store after removal; preserving dynamic-discovery-provider pool health for the removed identity");
+            None
+        }
+        Err(join_error) => {
+            tracing::warn!(account = %name, %join_error, "admin: Codex account store scan task panicked after removal; preserving dynamic-discovery-provider pool health for the removed identity");
+            None
+        }
+    };
+    forget_pool_health_if_absent(
+        &state,
+        AuthMode::ChatgptOauth,
+        &identity,
+        store_scan_others.as_ref(),
+    );
     json_secure(json!({ "name": name, "removed": removed }))
 }
 

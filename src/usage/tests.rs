@@ -151,20 +151,21 @@ fn state_with_auth_and_seeded_pool(token: &str, label: &str) -> (AppState, Strin
         tokens_env: env.clone(),
     });
     config.server.usage = Some(UsageEndpointConfig::default());
+    let account = AccountConfig {
+        name: "acct-a".to_string(),
+        ..AccountConfig::default()
+    };
     config
         .providers
         .get_mut("codex")
         .expect("built-in codex provider")
-        .accounts = vec![AccountConfig {
-        name: "acct-a".to_string(),
-        ..AccountConfig::default()
-    }];
+        .accounts = vec![account.clone()];
     let state = AppState::new(config, reqwest::Client::new()).unwrap();
     // Seed authoritative usage for the codex account (in production the Codex
     // backend has no quota headers; here we seed it to exercise the flow).
     state.accounts.note_usage(
         "codex",
-        "acct-a",
+        &account,
         &UsageSnapshot {
             five_hour: Some(UsageWindow {
                 utilization: 0.25,

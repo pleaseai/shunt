@@ -106,7 +106,15 @@ Because `claude_oauth` is an injected-credential mode, a configured `[server.aut
 
 ## Selection, quota state, and cooldowns
 
-Selection state is per provider and survives config hot reloads for the life of the shunt process. Quota state is tracked per configured account.
+Selection state is per provider and survives config hot reloads for the life of the shunt process. Quota, cooldown, usage, and refresh-lock state are tracked by the real upstream account identity (`uuid`, or the stored `shuntAccountUuid`), falling back to `name` only when no identity is available.
+
+### Identity coalescing
+
+If two configured names or store files resolve to the same identity — an explicit `uuid` when set, else the `name` fallback — shunt treats them as **one logical account**. This means an explicit `uuid` on one entry can coalesce with another entry's name-fallback identity, not only with another explicit `uuid`; set a matching nonblank `uuid` on both entries for a clear, intentional coalesce. The aliases share quota, cooldown, usage, health, and refresh serialization, and `select_order` returns only one representative, so failover never retries the same real account under another label. Session stickiness and round-robin are computed over distinct identities; adding an alias does not move an existing sticky session.
+
+The representative is deterministic: an enabled alias beats a disabled one, then lower `priority`, then the first entry. This choice is independent of health. Consequently, only the representative token is attempted; if it is invalid while a non-representative alias still has a valid token, shunt does not try the second token because the aliases deliberately count as one account. A duplicate identity emits a warning — configured (`[[providers.anthropic.accounts]]`) collisions are logged on every `Config::validate` call (including hot-reload), while store-discovered collisions are logged once per distinct collision set (deduped by a process-wide fingerprint keyed by provider + store directory), not once per request.
+
+Deleting a store-managed account through the admin web surface (`DELETE /admin/accounts/claude/<name>`) clears that identity's shared process-lifetime health only once no other stored alias still resolves to the same identity — a scan of the remaining store accounts confirms that first, and a scan failure preserves the health rather than risking wiping out state a sibling alias still relies on. This is admin-store delete semantics specifically; removing an alias from the TOML `[[providers.<name>.accounts]]` list (or deleting its credentials file directly) does not go through this cleanup at all.
 
 - If the request includes `x-claude-code-session-id`, shunt hashes it with SHA-256 to choose the sticky account. The mapping is deterministic across process restarts while the ordered account list is unchanged. A healthy, non-`disabled` sticky account that is available and under its effective soft threshold stays first, preserving Phase 1 session stickiness.
 - Without that header, shunt uses an independent round-robin counter for each provider.

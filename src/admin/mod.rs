@@ -15,7 +15,7 @@ pub mod session;
 mod codex;
 mod html;
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashSet, io, sync::Arc, time::Duration};
 
 use axum::{
     extract::{rejection::JsonRejection, Path, State},
@@ -168,16 +168,90 @@ pub(super) fn check_csrf(kind: &Authenticated, headers: &HeaderMap) -> Option<Re
     }
 }
 
-/// Drop process-lifetime pool health for `account` across every provider using
-/// `auth`, so re-provisioning does not inherit stale cooldown/quota state — while
-/// leaving other auth modes' identically-named accounts untouched (the Claude and
-/// Codex stores independently allow the same account name).
-pub(super) fn forget_pool_health(state: &AppState, auth: AuthMode, account: &str) {
+/// Drop process-lifetime pool health for `identity`, once per provider using
+/// `auth`, but only where `identity` is confirmed absent from that specific
+/// provider's current account set.
+///
+/// A dynamic-discovery provider (empty `accounts`, scanning the account store
+/// each request) is checked against `store_scan_others` — the identities the
+/// caller found among the *other* remaining/still-stored accounts. An
+/// explicitly configured provider (`[[providers.<name>.accounts]]`, including
+/// `credentials`/`token_env` aliases that never appear in a store scan) is
+/// instead checked against its own configured accounts, since those aliases
+/// only ever coalesce via an explicit matching `uuid` and a store scan cannot
+/// see them at all — using the store scan for such a provider would risk
+/// wiping health a configured alias still relies on. That check considers
+/// every configured account, without excluding one by name: an explicitly
+/// configured entry is a genuine pool member regardless of whether its name
+/// happens to match the store account name the caller just changed/removed —
+/// unlike a store-scanned alias, its identity is entirely config-driven (its
+/// own `uuid`, or a name fallback) and is never re-derived from the store
+/// file, so it cannot be "the same entry" the caller is cleaning up after.
+///
+/// `store_scan_others` of `None` means the store scan itself failed: a
+/// dynamic-discovery provider then fails closed (treated as if the identity
+/// were still present, so its health is preserved) while an explicitly
+/// configured provider — whose account set never depended on that scan to
+/// begin with — is still checked precisely. This also isolates per `AuthMode`
+/// (Claude vs. Codex accounts never share an identity namespace) and per
+/// provider name (multiple dynamic providers of the same auth mode are each
+/// evaluated, and cleared, independently).
+pub(super) fn forget_pool_health_if_absent(
+    state: &AppState,
+    auth: AuthMode,
+    identity: &str,
+    store_scan_others: Option<&HashSet<String>>,
+) {
     for (provider_name, provider) in &state.config.providers {
-        if provider.auth == auth {
-            state.accounts.forget_account(provider_name, account);
+        if provider.auth != auth {
+            continue;
+        }
+        let still_present = if provider.accounts.is_empty() {
+            match store_scan_others {
+                Some(others) => others.contains(identity),
+                None => true,
+            }
+        } else {
+            provider
+                .accounts
+                .iter()
+                .any(|account| crate::accounts::account_identity(account) == identity)
+        };
+        if !still_present {
+            state.accounts.forget_identity(provider_name, identity);
         }
     }
+}
+
+pub(super) async fn remaining_account_identities(
+    account_name: &str,
+    scan: fn() -> io::Result<Vec<crate::config::AccountConfig>>,
+) -> Option<HashSet<String>> {
+    let excluded_name = account_name.to_string();
+    tokio::task::spawn_blocking(move || {
+        scan().ok().map(|accounts| {
+            accounts
+                .into_iter()
+                .filter(|account| account.name != excluded_name)
+                .map(|account| crate::accounts::account_identity(&account).to_string())
+                .collect()
+        })
+    })
+    .await
+    .unwrap_or(None)
+}
+
+pub(super) fn cleanup_reprovisioned_pool_health(
+    state: &AppState,
+    auth: AuthMode,
+    old_identity: Option<&str>,
+    new_identity: &str,
+    other_identities: Option<&HashSet<String>>,
+) {
+    if let Some(old_identity) = old_identity.filter(|old| *old != new_identity) {
+        forget_pool_health_if_absent(state, auth, old_identity, other_identities);
+    }
+    forget_pool_health_if_absent(state, auth, new_identity, other_identities);
 }
 
 /// Same-origin check: prefer Fetch Metadata (`Sec-Fetch-Site`), fall back to
@@ -605,6 +679,16 @@ async fn complete_account(
         return bad_gateway("Claude token exchange did not return an account UUID");
     }
 
+    // Capture the pre-store identity before it is overwritten below, so a
+    // reprovision that changes the upstream identity (A -> B) can clean up A's
+    // now-orphaned health entry too, instead of leaving it stranded (only the
+    // newly stored B was ever cleared previously).
+    let old_identity_name = name.clone();
+    let old_identity =
+        tokio::task::spawn_blocking(move || claude_store::account_identity(&old_identity_name))
+            .await
+            .unwrap_or(None);
+
     let account_name = name.clone();
     let stored = match pending.kind {
         PendingKind::SetupToken => {
@@ -662,10 +746,29 @@ async fn complete_account(
         }
     }
     state.admin_stores.pending.remove(&name);
-    // Re-provisioning reuses the account name; clear any process-lifetime pool
-    // health carried over from a prior Claude token so the fresh credential is
-    // not treated as cooling/near-quota, without touching same-named Codex health.
-    forget_pool_health(&state, AuthMode::ClaudeOauth, &name);
+    // Re-provisioning reuses the account name; clear any process-lifetime Claude
+    // pool health carried over for the newly stored upstream identity, and for
+    // the identity it replaced (if any). Pool health is keyed by identity, not
+    // name, and may be shared by other stored aliases, so only clear an
+    // identity when no other stored account still resolves to it.
+    let identity_name = name.clone();
+    let new_identity = tokio::task::spawn_blocking(move || {
+        claude_store::account_uuid(&identity_name).unwrap_or(identity_name)
+    })
+    .await
+    .unwrap_or_else(|_| name.clone());
+    let other_identities =
+        remaining_account_identities(&name, claude_store::scan_accounts_strict).await;
+    if other_identities.is_none() {
+        tracing::warn!(account = %name, "admin: failed to scan Claude account store during reprovision cleanup; preserving dynamic-discovery-provider pool health for the old and new identities");
+    }
+    cleanup_reprovisioned_pool_health(
+        &state,
+        AuthMode::ClaudeOauth,
+        old_identity.as_deref(),
+        &new_identity,
+        other_identities.as_ref(),
+    );
     tracing::info!(account = %name, "admin: account stored");
 
     // Empty-accounts providers scan the store per request → live immediately;
@@ -711,10 +814,13 @@ async fn remove_account_handler(
         return bad_request("account name must match [a-z0-9-]+");
     }
     let target = name.clone();
-    let removed = match tokio::task::spawn_blocking(move || claude_store::remove_account(&target))
-        .await
+    let removed = match tokio::task::spawn_blocking(move || {
+        let identity = claude_store::account_uuid(&target).unwrap_or_else(|| target.clone());
+        claude_store::remove_account(&target).map(|removed| (removed, identity))
+    })
+    .await
     {
-        Ok(Ok(removed)) => removed,
+        Ok(Ok(result)) => result,
         Ok(Err(error)) => {
             tracing::error!(account = %name, %error, "admin: failed to remove account");
             return internal("failed to remove account");
@@ -724,10 +830,40 @@ async fn remove_account_handler(
             return internal("failed to remove account");
         }
     };
+    let (removed, identity) = removed;
     tracing::info!(account = %name, removed, "admin: account removed");
-    // Drop process-lifetime Claude pool health for the removed name so a later
-    // re-add does not inherit stale cooldown/quota state, without touching Codex.
-    forget_pool_health(&state, AuthMode::ClaudeOauth, &name);
+    // Drop process-lifetime Claude pool health for the removed identity so a
+    // later re-add does not inherit stale cooldown/quota state, without
+    // touching Codex. Dynamic-discovery providers are only cleared once a
+    // scan confirms no remaining stored alias still resolves to this identity
+    // (a scan failure fails closed to preserving their health); explicitly
+    // configured providers are checked against their own account list
+    // regardless, since a store scan cannot see `credentials`/`token_env`
+    // aliases at all (see `forget_pool_health_if_absent`).
+    let store_scan_others = match tokio::task::spawn_blocking(claude_store::scan_accounts_strict)
+        .await
+    {
+        Ok(Ok(remaining)) => Some(
+            remaining
+                .into_iter()
+                .map(|account| crate::accounts::account_identity(&account).to_string())
+                .collect::<std::collections::HashSet<String>>(),
+        ),
+        Ok(Err(error)) => {
+            tracing::warn!(account = %name, %error, "admin: failed to scan Claude account store after removal; preserving dynamic-discovery-provider pool health for the removed identity");
+            None
+        }
+        Err(join_error) => {
+            tracing::warn!(account = %name, %join_error, "admin: Claude account store scan task panicked after removal; preserving dynamic-discovery-provider pool health for the removed identity");
+            None
+        }
+    };
+    forget_pool_health_if_absent(
+        &state,
+        AuthMode::ClaudeOauth,
+        &identity,
+        store_scan_others.as_ref(),
+    );
     json_secure(json!({ "name": name, "removed": removed }))
 }
 
@@ -896,5 +1032,99 @@ mod tests {
         assert_eq!(host_without_port("[::1]:3001"), "::1");
         assert_eq!(host_without_port("[::1]"), "::1");
         assert_eq!(host_without_port("example.com"), "example.com");
+    }
+
+    fn explicit_account(name: &str, uuid: Option<&str>) -> crate::config::AccountConfig {
+        crate::config::AccountConfig {
+            name: name.to_string(),
+            uuid: uuid.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    fn state_with_explicit_provider(
+        provider_name: &str,
+        auth: AuthMode,
+        accounts: Vec<crate::config::AccountConfig>,
+    ) -> AppState {
+        let mut providers = crate::config::ProvidersConfig::new();
+        providers.insert(
+            provider_name.to_string(),
+            crate::config::ProviderConfig {
+                kind: crate::config::ProviderKind::Anthropic,
+                base_url: "https://api.anthropic.com".to_string(),
+                auth,
+                api_key_env: None,
+                api_key_header: Default::default(),
+                effort: None,
+                count_tokens: Default::default(),
+                accounts,
+                websocket: false,
+                tool_search: false,
+                retry: Default::default(),
+            },
+        );
+        let config = crate::config::Config {
+            providers,
+            ..crate::config::Config::default()
+        };
+        AppState::new(config, reqwest::Client::new()).unwrap()
+    }
+
+    // Regression test: an explicitly configured `[[providers.accounts]]` entry
+    // must count as "still present" for its identity even when its name happens
+    // to match the store-account name an admin call just changed/removed —
+    // unlike a store-scanned alias, an explicit entry's identity never
+    // re-derives from the store file, so it can never be "the same entry" the
+    // caller is cleaning up after (see the doc comment on
+    // `forget_pool_health_if_absent`).
+    #[test]
+    fn explicit_configured_account_liveness_is_not_excluded_by_name() {
+        // The explicit account is deliberately named the same as the
+        // store-account name that would have been passed as `changed_name`
+        // before that parameter was removed, to prove the coincidence no
+        // longer causes false exclusion.
+        let account = explicit_account("alice", None); // identity falls back to "alice"
+        let state =
+            state_with_explicit_provider("anthropic", AuthMode::ClaudeOauth, vec![account.clone()]);
+        state
+            .accounts
+            .cooldown("anthropic", &account, Duration::from_secs(60));
+
+        forget_pool_health_if_absent(&state, AuthMode::ClaudeOauth, "alice", None);
+
+        let snapshot = state.accounts.snapshot("anthropic", &[account], None, None);
+        assert!(
+            snapshot[0].has_state,
+            "a live explicitly configured account's health must survive cleanup for a same-named store account"
+        );
+    }
+
+    #[test]
+    fn explicit_configured_provider_still_clears_health_for_a_genuinely_absent_identity() {
+        let live = explicit_account("bob", Some("bob-uuid"));
+        let state =
+            state_with_explicit_provider("anthropic", AuthMode::ClaudeOauth, vec![live.clone()]);
+        // Seed health for an identity that is not among "configured"'s accounts.
+        let orphan = explicit_account("orphan", Some("orphan-uuid"));
+        state
+            .accounts
+            .cooldown("anthropic", &orphan, Duration::from_secs(60));
+        state
+            .accounts
+            .cooldown("anthropic", &live, Duration::from_secs(60));
+
+        forget_pool_health_if_absent(&state, AuthMode::ClaudeOauth, "orphan-uuid", None);
+
+        let orphan_snapshot = state.accounts.snapshot("anthropic", &[orphan], None, None);
+        assert!(
+            !orphan_snapshot[0].has_state,
+            "an identity absent from every configured account must still be cleared"
+        );
+        let live_snapshot = state.accounts.snapshot("anthropic", &[live], None, None);
+        assert!(
+            live_snapshot[0].has_state,
+            "a different, still-configured identity's health must be untouched"
+        );
     }
 }

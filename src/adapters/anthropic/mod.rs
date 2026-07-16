@@ -163,18 +163,16 @@ async fn forward_claude_oauth(
         // below. Hold it only around those two points — never across the upstream
         // POSTs or the PauseSame back-off sleep — so concurrent same-account
         // requests are not serialized behind an unrelated 429 retry-after wait.
-        let refresh_lock = state.accounts.refresh_lock(&route.provider, &account.name);
+        let refresh_lock = state.accounts.refresh_lock(&route.provider, account);
 
         let credential = {
             let _guard = refresh_lock.lock().await;
             match resolve_claude_account(account, &state.http_client).await {
                 Ok(credential) => credential,
                 Err(error) => {
-                    state.accounts.cooldown(
-                        &route.provider,
-                        &account.name,
-                        Duration::from_secs(5 * 60),
-                    );
+                    state
+                        .accounts
+                        .cooldown(&route.provider, account, Duration::from_secs(5 * 60));
                     tracing::warn!(
                         provider = %route.provider,
                         account = %account.name,
@@ -204,7 +202,7 @@ async fn forward_claude_oauth(
             Err(error) => {
                 state
                     .accounts
-                    .cooldown(&route.provider, &account.name, Duration::from_secs(30));
+                    .cooldown(&route.provider, account, Duration::from_secs(30));
                 tracing::warn!(
                     provider = %route.provider,
                     account = %account.name,
@@ -217,11 +215,11 @@ async fn forward_claude_oauth(
 
         state
             .accounts
-            .note_quota(&route.provider, &account.name, upstream.headers());
+            .note_quota(&route.provider, account, upstream.headers());
         let status = upstream.status();
         match accounts::classify(status, upstream.headers()) {
             FailoverAction::Relay => {
-                state.accounts.mark_healthy(&route.provider, &account.name);
+                state.accounts.mark_healthy(&route.provider, account);
                 return relay_response(&state, &route, upstream, Some(&account.name)).await;
             }
             FailoverAction::Rotate => {
@@ -232,9 +230,7 @@ async fn forward_claude_oauth(
                 } else {
                     Duration::from_secs(30)
                 };
-                state
-                    .accounts
-                    .cooldown(&route.provider, &account.name, cooldown);
+                state.accounts.cooldown(&route.provider, account, cooldown);
                 // Log on the way out like every other failover arm in this loop
                 // (resolve/post/refresh errors all warn) — this is the most common
                 // failover trigger (quota-rejected 429 or any 5xx), so an operator
@@ -268,14 +264,12 @@ async fn forward_claude_oauth(
                 };
                 let retry_status = retry.status();
                 if retry_status.is_success() {
-                    state.accounts.mark_healthy(&route.provider, &account.name);
+                    state.accounts.mark_healthy(&route.provider, account);
                 } else {
                     let cooldown = accounts::retry_after(retry.headers())
                         .unwrap_or(delay)
                         .clamp(Duration::from_secs(1), Duration::from_secs(300));
-                    state
-                        .accounts
-                        .cooldown(&route.provider, &account.name, cooldown);
+                    state.accounts.cooldown(&route.provider, account, cooldown);
                     tracing::warn!(
                         provider = %route.provider,
                         account = %account.name,
@@ -296,11 +290,9 @@ async fn forward_claude_oauth(
                         .unwrap_or(false)
                 };
                 if account.token_env.is_some() || is_static {
-                    state.accounts.cooldown(
-                        &route.provider,
-                        &account.name,
-                        Duration::from_secs(5 * 60),
-                    );
+                    state
+                        .accounts
+                        .cooldown(&route.provider, account, Duration::from_secs(5 * 60));
                     // A static credential (token_env or a long-lived setup token)
                     // cannot be refreshed, so a 401 here means it is expired or
                     // revoked. Log it — otherwise the account cycles in and out of
@@ -350,7 +342,7 @@ async fn forward_claude_oauth(
                         Err(error) => {
                             state.accounts.cooldown(
                                 &route.provider,
-                                &account.name,
+                                account,
                                 Duration::from_secs(5 * 60),
                             );
                             tracing::warn!(
@@ -388,11 +380,9 @@ async fn forward_claude_oauth(
                     // Refresh succeeded but the credential is still rejected — the
                     // account is genuinely broken. Cool it down longer and rotate
                     // rather than relaying the 401 to the client.
-                    state.accounts.cooldown(
-                        &route.provider,
-                        &account.name,
-                        Duration::from_secs(5 * 60),
-                    );
+                    state
+                        .accounts
+                        .cooldown(&route.provider, account, Duration::from_secs(5 * 60));
                     last_response = Some(retry);
                     continue;
                 }
@@ -404,7 +394,7 @@ async fn forward_claude_oauth(
                 match accounts::classify(retry_status, retry.headers()) {
                     FailoverAction::Relay => {
                         if retry_status.is_success() {
-                            state.accounts.mark_healthy(&route.provider, &account.name);
+                            state.accounts.mark_healthy(&route.provider, account);
                         }
                         return relay_response(&state, &route, retry, Some(&account.name)).await;
                     }
@@ -422,9 +412,7 @@ async fn forward_claude_oauth(
                         } else {
                             Duration::from_secs(30)
                         };
-                        state
-                            .accounts
-                            .cooldown(&route.provider, &account.name, cooldown);
+                        state.accounts.cooldown(&route.provider, account, cooldown);
                         tracing::warn!(
                             provider = %route.provider,
                             account = %account.name,
@@ -500,13 +488,13 @@ async fn retry_upstream(
         Ok(response) => {
             state
                 .accounts
-                .note_quota(&route.provider, &account.name, response.headers());
+                .note_quota(&route.provider, account, response.headers());
             Some(response)
         }
         Err(error) => {
             state
                 .accounts
-                .cooldown(&route.provider, &account.name, Duration::from_secs(30));
+                .cooldown(&route.provider, account, Duration::from_secs(30));
             tracing::warn!(
                 provider = %route.provider,
                 account = %account.name,

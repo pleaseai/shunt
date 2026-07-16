@@ -92,11 +92,17 @@ fn write_store_account(dir: &std::path::Path, name: &str, access: &str, refresh:
 }
 
 fn test_config(upstream_base_url: &str, first: AccountConfig, second: AccountConfig) -> Config {
+    test_config_accounts(upstream_base_url, vec![first, second])
+}
+
+/// Like `test_config`, but accepts an arbitrary account list (e.g. for tests
+/// that need a duplicate-identity alias alongside two distinct accounts).
+fn test_config_accounts(upstream_base_url: &str, accounts: Vec<AccountConfig>) -> Config {
     let mut config = Config::default();
     let provider = config.providers.get_mut("anthropic").unwrap();
     provider.base_url = upstream_base_url.to_string();
     provider.auth = AuthMode::ClaudeOauth;
-    provider.accounts = vec![first, second];
+    provider.accounts = accounts;
     config.routes.push(RouteConfig {
         model: "pooled-model".to_string(),
         provider: "anthropic".to_string(),
@@ -891,4 +897,75 @@ async fn static_setup_token_account_cools_down_without_refreshing() {
     std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
     std::env::remove_var("SHUNT_TEST_MULTI_SETUPSTATIC_B");
     fs::remove_dir_all(&accounts_dir).ok();
+}
+
+#[tokio::test]
+async fn duplicate_identity_alias_is_never_retried_as_a_separate_account() {
+    // Two aliases sharing the same upstream identity (uuid) coalesce to a
+    // single representative in `AccountPool::select_order`, so a failure on
+    // the representative must rotate straight to a *distinct* identity — the
+    // duplicate alias must never receive a request of its own, either as the
+    // first pick or as a retry target.
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = ["fake-oauth-", "dup-a"].concat();
+    let token_a_dup = ["fake-oauth-", "dup-a-alias"].concat();
+    let token_b = ["fake-oauth-", "dup-b"].concat();
+    std::env::set_var("SHUNT_TEST_MULTI_DUP_A", &token_a);
+    std::env::set_var("SHUNT_TEST_MULTI_DUP_A_ALIAS", &token_a_dup);
+    std::env::set_var("SHUNT_TEST_MULTI_DUP_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(
+            ResponseTemplate::new(500).set_body_string(r#"{"error":"account a upstream error"}"#),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    // The duplicate-identity alias must never be dialed: it is not a distinct
+    // account in the pool's eyes, so it cannot serve as a retry target.
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_a_dup.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"a-dup"}"#))
+        .expect(0)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"b"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config_accounts(
+        &upstream.uri(),
+        vec![
+            account("account-a", "SHUNT_TEST_MULTI_DUP_A", "uuid-shared"),
+            account(
+                "account-a-alias",
+                "SHUNT_TEST_MULTI_DUP_A_ALIAS",
+                "uuid-shared",
+            ),
+            account("account-b", "SHUNT_TEST_MULTI_DUP_B", "uuid-b"),
+        ],
+    ))
+    .await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+    upstream.verify().await;
+
+    std::env::remove_var("SHUNT_TEST_MULTI_DUP_A");
+    std::env::remove_var("SHUNT_TEST_MULTI_DUP_A_ALIAS");
+    std::env::remove_var("SHUNT_TEST_MULTI_DUP_B");
 }
