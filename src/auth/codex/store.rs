@@ -69,7 +69,8 @@ fn read_account_id(path: &Path) -> Option<String> {
 fn read_account_id_strict(path: &Path) -> Result<Option<String>, ()> {
     let bytes = fs::read(path).map_err(|_| ())?;
     let value: Value = serde_json::from_slice(&bytes).map_err(|_| ())?;
-    Ok(value.get("tokens").and_then(token_account_id))
+    let tokens = value.get("tokens").ok_or(())?;
+    Ok(token_account_id(tokens))
 }
 
 /// Like [`scan_accounts`], but a per-file read/parse failure aborts the whole
@@ -497,6 +498,15 @@ mod tests {
 
         fs::write(dir.join("broken.json"), "not valid json").unwrap();
         assert!(scan_accounts_strict().is_err());
+        fs::write(
+            dir.join("broken.json"),
+            json!({"auth_mode":"ChatGPT"}).to_string(),
+        )
+        .unwrap();
+        assert!(
+            scan_accounts_strict().is_err(),
+            "a missing tokens object is a malformed Codex account file"
+        );
         // The lenient scan still tolerates it, falling back to the name.
         let lenient = scan_accounts().unwrap();
         assert!(lenient

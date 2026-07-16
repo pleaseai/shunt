@@ -397,13 +397,18 @@ impl AccountPool {
         health.cooldown_until = None;
     }
 
-    /// Forget pool health for a single `(provider, identity)` entry, leaving
-    /// other providers' entries for the same identity untouched.
+    /// Forget pool health and refresh state for a single `(provider, identity)`,
+    /// leaving other providers' entries for the same identity untouched.
     pub fn forget_identity(&self, provider: &str, identity: &str) {
-        let mut entries = self.entries.lock().expect("account health lock poisoned");
-        entries.retain(|(entry_provider, entry_identity), _| {
-            !(entry_provider == provider && entry_identity == identity)
-        });
+        let key = (provider.to_string(), identity.to_string());
+        self.entries
+            .lock()
+            .expect("account health lock poisoned")
+            .remove(&key);
+        self.refresh_locks
+            .lock()
+            .expect("account refresh-lock map poisoned")
+            .remove(&key);
     }
 
     /// Read-only per-account health snapshot for the admin dashboard, in the
@@ -1113,8 +1118,17 @@ mod tests {
         let accounts = vec![account("main")];
         pool.cooldown("anthropic", &accounts[0], Duration::from_secs(60));
         pool.cooldown("codex", &accounts[0], Duration::from_secs(60));
+        let old_codex_lock = pool.refresh_lock("codex", &accounts[0]);
+        let anthropic_lock = pool.refresh_lock("anthropic", &accounts[0]);
 
         pool.forget_identity("codex", "main");
+
+        let new_codex_lock = pool.refresh_lock("codex", &accounts[0]);
+        assert!(!Arc::ptr_eq(&old_codex_lock, &new_codex_lock));
+        assert!(Arc::ptr_eq(
+            &anthropic_lock,
+            &pool.refresh_lock("anthropic", &accounts[0])
+        ));
 
         let codex = pool.snapshot("codex", &accounts, None, None);
         assert!(!codex[0].has_state);
