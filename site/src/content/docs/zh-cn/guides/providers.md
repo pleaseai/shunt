@@ -92,7 +92,7 @@ provider = "cursor"
 
 | 提供方 | `base_url` | 示例模型 ID |
 | :-- | :-- | :-- |
-| Kimi (Moonshot) | `https://api.moonshot.ai/anthropic` | `kimi-k2.7-code` |
+| Kimi (Moonshot) | `https://api.moonshot.ai/anthropic` | `kimi-k3`, `kimi-k2.7-code` |
 | DeepSeek | `https://api.deepseek.com/anthropic` | `deepseek-v4-pro`、`deepseek-v4-flash` |
 | Z.ai (GLM) | `https://api.z.ai/api/anthropic` | `glm-5.2`、`glm-4.7` |
 | MiniMax | `https://api.minimax.io/anthropic` | 见 [MiniMax 文档](https://platform.minimax.io/docs/token-plan/claude-code) |
@@ -110,11 +110,15 @@ auth = "api_key"
 api_key_env = "KIMI_API_KEY"
 
 [[routes]]
+model = "kimi-k3"
+provider = "kimi"
+
+[[routes]]
 model = "kimi-k2.7-code"
 provider = "kimi"
 ```
 
-然后 `export KIMI_API_KEY=…`,[将 Claude Code 指向 shunt](/zh-cn/guides/connect-claude-code/),并选择 `kimi-k2.7-code`(通过 `ANTHROPIC_CUSTOM_MODEL_OPTION` 或 `ANTHROPIC_MODEL`)。运行 `shunt check` 校验 —— 它会报告路由中的未知提供方、缺失的 `api_key_env` 或错误的 `base_url`。
+然后 `export KIMI_API_KEY=…`,[将 Claude Code 指向 shunt](/zh-cn/guides/connect-claude-code/),并选择 `kimi-k3`(通过 `ANTHROPIC_CUSTOM_MODEL_OPTION` 或 `ANTHROPIC_MODEL`)。运行 `shunt check` 校验 —— 它会报告路由中的未知提供方、缺失的 `api_key_env` 或错误的 `base_url`。
 
 每个提供方键(`kind`、`auth`、`api_key_header`、`count_tokens`……)都在 [配置参考](/zh-cn/reference/configuration/) 中有文档。
 
@@ -126,7 +130,7 @@ provider = "kimi"
 | :-- | :-- | :-- |
 | `shunt-codex` | `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna` | `codex`(ChatGPT 订阅) |
 | `shunt-xai` | `grok-build-0.1`、`grok-4.5`、`grok-4.3` | `xai`(API 密钥)或 `grok`(订阅) |
-| `shunt-kimi` | `kimi-k2.7-code` | `kimi` |
+| `shunt-kimi` | `kimi-k3`, `kimi-k2.7-code` | `kimi` |
 | `shunt-deepseek` | `deepseek-v4-pro`、`deepseek-v4-flash` | `deepseek` |
 | `shunt-zai` | `glm-5.2`、`glm-4.7` | `zai` |
 | `shunt-minimax` | `MiniMax-M3[1m]` | `minimax` |
