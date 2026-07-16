@@ -1,0 +1,23 @@
+src/adapters/cursor/agent.rs
+  s_9a06fdaa8b2793::t_12ec1b131b322d 44
+  s_9a06fdaa8b2793::t_0bb7463c16b645 340-360
+  s_9a06fdaa8b2793::t_28d575c03e2461 935-936
+  s_9a06fdaa8b2793::t_b2908b60f59c74 912-934,937-939
+  s_9a06fdaa8b2793::t_077ea64f107e8d 310-311,313,315-332
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "15593a20be94e62ec5ee37b6b32bf379246c42d2",
+  "prompts": {},
+  "sessions": {
+    "s_9a06fdaa8b2793": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1d7b4796-6c89-4720-b5a3-bb9d6924f0a0",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
