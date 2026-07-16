@@ -117,7 +117,7 @@ fn pool_status(snapshots: &[AccountSnapshot]) -> &'static str {
         .filter(|snapshot| !snapshot.disabled)
         .collect();
     if selectable.is_empty() {
-        return "ok";
+        return "exhausted";
     }
     if !selectable.iter().any(|snapshot| snapshot.available) {
         return "exhausted";
@@ -291,6 +291,14 @@ mod tests {
         let unreported = snapshot("live", None, None, None);
         let body = serde_json::to_value(aggregate(&[disabled, unreported])).unwrap();
         assert_eq!(body["pool"]["windows"]["5h"]["remaining"], Value::Null);
+    }
+
+    #[test]
+    fn aggregate_status_is_exhausted_when_no_selectable_account_exists() {
+        let mut disabled = snapshot("acct-a", Some(0.10), None, None);
+        disabled.disabled = true;
+        let body = serde_json::to_value(aggregate(&[disabled])).unwrap();
+        assert_eq!(body["pool"]["status"], "exhausted");
     }
 
     #[test]
