@@ -107,6 +107,14 @@ pub struct PoolConfig {
     /// clamped to 60 seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage_refresh_seconds: Option<u64>,
+    /// Persist the pool's per-account quota state to this file so a restart
+    /// warm-starts from the last observed utilization instead of an empty pool.
+    /// Unset disables persistence (the default). The file is a best-effort
+    /// cache, not a source of truth: quota is re-derived from upstream anyway,
+    /// so a missing or unreadable file just means a cold start. See
+    /// [`crate::state_persist`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_path: Option<PathBuf>,
 }
 
 pub(crate) fn default_hard_threshold() -> f64 {
@@ -123,6 +131,7 @@ impl Default for PoolConfig {
             default_threshold_fable: None,
             burn_rate_avoidance: false,
             usage_refresh_seconds: None,
+            state_path: None,
         }
     }
 }

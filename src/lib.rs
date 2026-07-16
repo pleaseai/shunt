@@ -18,6 +18,7 @@ pub mod retry;
 pub mod routes;
 pub mod routing;
 pub mod server;
+pub mod state_persist;
 pub mod telemetry;
 pub mod usage;
 pub mod usage_poll;

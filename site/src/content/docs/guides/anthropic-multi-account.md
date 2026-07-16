@@ -122,6 +122,7 @@ default_threshold_5h = 0.95  # per-window overrides
 default_threshold_fable = 0.85
 burn_rate_avoidance = true   # avoid accounts projected to hit a threshold before reset
 usage_refresh_seconds = 300  # reconcile out-of-band usage for refreshable accounts
+state_path = "shunt-state.json"  # persist quota across restarts (warm start)
 
 [[providers.anthropic.accounts]]
 name = "primary"
@@ -148,6 +149,12 @@ disabled = true              # kept configured, never selected
 Quota headers only reflect traffic that flowed through shunt. `usage_refresh_seconds` closes that gap by polling `GET /api/oauth/usage` and applying authoritative utilization and reset times to the same 5-hour, shared weekly (`7d`), and Fable-scoped weekly (`7d_oi`) windows.
 
 Polling is off when the field is absent or `0`; positive values below 60 are clamped to 60 seconds. Only imported, refreshable accounts are eligible. Long-lived `claude setup-token` and `token_env` accounts are skipped because their tokens cannot call the endpoint. The interval is fixed at boot, so a config reload does not start, stop, or re-tune the poller. This periodic correction complements rather than replaces reactive header state.
+
+## Quota-state persistence
+
+Pool quota lives in memory, so a restart begins cold: every account looks unseen until its first post-restart response, which disables burn-rate avoidance and leaves `GET /usage` blank until traffic re-populates the pool. Setting `state_path` persists each account's per-window utilization and reset to that file, so the pool warm-starts from the last observed state.
+
+The file is a best-effort cache, not a source of truth — quota is re-derived from upstream responses regardless, so a missing, stale, or corrupt file only costs a cold start, never a boot failure. Writes use a private (`0600` on Unix) temp file, atomically rename it over the target, and happen on a 15-second background timer only when quota changed. Failed writes remain dirty and retry on the next tick. Cooldowns are not persisted (they lapse on restart), and any restored window whose reset has already passed is dropped lazily by the first selection or snapshot after restore. The path is fixed at boot; persistence is off when the field is absent.
 
 ## Failover rules
 

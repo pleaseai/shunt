@@ -291,6 +291,11 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     // Reload triggers (SIGHUP and config-file watch) run as background tasks and
     // hot-swap the shared runtime state that the router reads per request.
     shunt::reload::spawn_reload_watchers(shared, path).await;
+    // Opt-in `[server.pool] state_path`: warm-start the pool from the last
+    // persisted quota before serving, then flush changes in the background. Both
+    // are no-ops when the key is unset.
+    shunt::state_persist::restore(&state).await;
+    shunt::state_persist::spawn_state_persister(state.clone());
     // Opt-in `[server.pool] usage_refresh_seconds`: poll the Anthropic OAuth
     // usage API in the background, sharing the router's account pool. A no-op
     // when the key is unset.
