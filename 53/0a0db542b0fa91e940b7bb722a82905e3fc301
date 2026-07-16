@@ -1,0 +1,49 @@
+README.md
+  s_42e215ed5819ac::t_a5c16c14620567 80-81
+site/src/content/docs/reference/endpoints.md
+  s_42e215ed5819ac::t_3905df890bc1eb 30
+  s_42e215ed5819ac::t_aebd8c4de69d9e 36-50
+src/lib.rs
+  s_42e215ed5819ac::t_4859338ec8cf59 22
+docs/m12-client-usage-endpoint.md
+  s_42e215ed5819ac::t_be6e6365952356 1-86
+src/usage.rs
+  s_42e215ed5819ac::t_43c9aef960e1ab 418
+  s_42e215ed5819ac::t_cfbbe37b01702d 346-349
+  s_42e215ed5819ac::t_6d950d5adce275 91-92,111-336
+  s_42e215ed5819ac::t_1a30de018641dc 358
+  s_42e215ed5819ac::t_ced81bddeefc1e 400
+  s_42e215ed5819ac::t_09da4ffd941721 342-345,351-355,379-388,411
+  s_42e215ed5819ac::t_5d85b24733d79c 1-90,93-110,337-341,350,356-357,359-378,389-399,401-410,412-417,419-438
+src/config.rs
+  s_42e215ed5819ac::t_0ed0c61a7056c3 61-68
+  s_42e215ed5819ac::t_59bccf7a1a411b 861-862
+  s_42e215ed5819ac::t_6e36e53c8e083c 2033-2046,2052-2055,2057,2061-2062
+  s_42e215ed5819ac::t_5397eb12e298ea 1021
+  s_42e215ed5819ac::t_a89f372863cd73 2047-2051,2056,2058-2060
+  s_42e215ed5819ac::t_60bdb74a074b08 278-288
+  s_42e215ed5819ac::t_8079cd4bc47d59 1429-1435
+  s_42e215ed5819ac::t_c8c78ae2130deb 1603-1605
+src/server.rs
+  s_42e215ed5819ac::t_97fb3b0bea7bf7 99-102
+  s_42e215ed5819ac::t_6d950d5adce275 17
+  s_42e215ed5819ac::t_9d01a5d93c4d67 146-154
+site/src/content/docs/reference/configuration.md
+  s_42e215ed5819ac::t_5b1fc91bea99ca 52-59
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "530a0db542b0fa91e940b7bb722a82905e3fc301",
+  "prompts": {},
+  "sessions": {
+    "s_42e215ed5819ac": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "08c7264c-6fba-4025-8301-06162a2e717f",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
