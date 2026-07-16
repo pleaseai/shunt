@@ -507,8 +507,8 @@ pub(crate) fn account_identity(account: &AccountConfig) -> &str {
 /// store-discovered collisions are caught once per store scan (see
 /// `crate::auth::shared::scan_cached`), not here.
 fn collapse_representatives(accounts: &[AccountConfig]) -> Vec<usize> {
-    let mut slots = HashMap::<&str, usize>::new();
-    let mut representatives: Vec<usize> = Vec::new();
+    let mut slots = HashMap::<&str, usize>::with_capacity(accounts.len());
+    let mut representatives: Vec<usize> = Vec::with_capacity(accounts.len());
     for (index, account) in accounts.iter().enumerate() {
         let identity = account_identity(account);
         if let Some(&slot) = slots.get(identity) {
