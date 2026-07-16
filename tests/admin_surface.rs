@@ -83,14 +83,22 @@ async fn start(mut config: Config) -> Gateway {
     }
 }
 
+/// Monotonic counter appended to `unique_dir()` names: parallel test threads can
+/// call `SystemTime::now()` within the same tick on some platforms, so the
+/// nanosecond timestamp alone is not a reliable uniqueness guarantee under the
+/// full test-suite's concurrency.
+static UNIQUE_DIR_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 fn unique_dir() -> PathBuf {
+    let counter = UNIQUE_DIR_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!(
-        "shunt-admin-test-{}-{}",
+        "shunt-admin-test-{}-{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_nanos(),
+        counter
     ));
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -410,6 +418,197 @@ async fn provisioning_flow_stores_refreshable_oauth_account() {
     std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
     std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
     std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_OAUTH");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn claude_reprovision_clears_orphaned_identity_without_wiping_shared_alias_health() {
+    // Regression test mirroring
+    // `codex_reprovision_clears_orphaned_identity_without_wiping_shared_alias_health`:
+    // reprovisioning "account-a" from an old upstream identity ("acct-old") to a
+    // new one ("shared-id") must (a) drop the now-orphaned old identity's pool
+    // health, and (b) never wipe pool health for the new identity when it is
+    // still shared by another stored account alias.
+    if !can_bind_loopback() {
+        return;
+    }
+    let _lock = CLAUDE_ENV_LOCK.lock().await;
+    let dir = unique_dir();
+    std::env::set_var("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    std::env::set_var(
+        "SHUNT_TEST_ADMIN_TOKENS_CLAUDE_REPROV",
+        "ops:secret-claude-reprov",
+    );
+
+    // "other-account" is a pre-existing store account sharing the identity
+    // ("shared-id") that "account-a" will be reprovisioned onto below.
+    std::fs::write(
+        dir.join("other-account.json"),
+        serde_json::json!({
+            "claudeAiOauth": {
+                "accessToken": "other-access",
+                "refreshToken": "other-refresh",
+                "expiresAt": 4_102_444_800_000i64,
+            },
+            "shuntAccountUuid": "shared-id",
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let token_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "ACCESS-1",
+            "refresh_token": "REFRESH-1",
+            "expires_in": 7200,
+            "account": {"uuid": "acct-old"}
+        })))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .expect(1)
+        .mount(&token_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "ACCESS-2",
+            "refresh_token": "REFRESH-2",
+            "expires_in": 7200,
+            "account": {"uuid": "shared-id"}
+        })))
+        .with_priority(2)
+        .expect(1)
+        .mount(&token_server)
+        .await;
+    std::env::set_var(
+        "SHUNT_CLAUDE_TOKEN_URL",
+        format!("{}/token", token_server.uri()),
+    );
+
+    let mut config = admin_config("SHUNT_TEST_ADMIN_TOKENS_CLAUDE_REPROV");
+    config.server.bind = "127.0.0.1:0".to_string();
+    let listener = tokio::net::TcpListener::bind(config.server.bind_addr().unwrap())
+        .await
+        .unwrap();
+    let addr: SocketAddr = listener.local_addr().unwrap();
+    let (app, _shared, state) = server::build_router(config).unwrap();
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base_url = format!("http://{addr}");
+
+    // Seed pool health: "other-account" (identity "shared-id") is cooling down.
+    let other_account = AccountConfig {
+        name: "other-account".to_string(),
+        uuid: Some("shared-id".to_string()),
+        ..Default::default()
+    };
+    state.accounts.cooldown(
+        "anthropic",
+        &other_account,
+        std::time::Duration::from_secs(300),
+    );
+
+    let client = reqwest::Client::new();
+    let auth = |request: reqwest::RequestBuilder| {
+        request
+            .header("x-shunt-admin-token", "secret-claude-reprov")
+            .header("content-type", "application/json")
+    };
+
+    // First provisioning: account-a -> identity "acct-old".
+    let response = auth(client.post(format!("{base_url}/admin/accounts/claude")))
+        .body(r#"{"name":"account-a","mode":"oauth"}"#)
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    let (_, state1) = authorize_state(&body);
+    let response = auth(client.post(format!(
+        "{base_url}/admin/accounts/claude/account-a/complete"
+    )))
+    .body(serde_json::json!({"code": format!("code-1#{state1}")}).to_string())
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Cool down "account-a" while it is still on "acct-old".
+    let account_a_old = AccountConfig {
+        name: "account-a".to_string(),
+        uuid: Some("acct-old".to_string()),
+        ..Default::default()
+    };
+    state.accounts.cooldown(
+        "anthropic",
+        &account_a_old,
+        std::time::Duration::from_secs(300),
+    );
+    let snapshot = state.accounts.snapshot(
+        "anthropic",
+        std::slice::from_ref(&account_a_old),
+        None,
+        None,
+    );
+    assert!(
+        snapshot[0].has_state,
+        "acct-old health should be observed before reprovisioning"
+    );
+
+    // Reprovision account-a onto "shared-id" -- the same identity as
+    // "other-account".
+    let response = auth(client.post(format!("{base_url}/admin/accounts/claude")))
+        .body(r#"{"name":"account-a","mode":"oauth"}"#)
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    let (_, state2) = authorize_state(&body);
+    let response = auth(client.post(format!(
+        "{base_url}/admin/accounts/claude/account-a/complete"
+    )))
+    .body(serde_json::json!({"code": format!("code-2#{state2}")}).to_string())
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // (a) The now-orphaned "acct-old" identity's health must be cleared.
+    let snapshot = state.accounts.snapshot(
+        "anthropic",
+        std::slice::from_ref(&account_a_old),
+        None,
+        None,
+    );
+    assert!(
+        !snapshot[0].has_state,
+        "orphaned old identity health should have been cleared on reprovision"
+    );
+
+    // (b) "other-account"'s health for the shared "shared-id" identity must
+    // survive, since account-a's reprovision must not unjustly clear health
+    // shared by another alias.
+    let snapshot = state.accounts.snapshot(
+        "anthropic",
+        std::slice::from_ref(&other_account),
+        None,
+        None,
+    );
+    assert!(
+        snapshot[0].has_state,
+        "shared identity health must survive a reprovision of another alias"
+    );
+    assert!(
+        snapshot[0].cooldown_secs_remaining.is_some(),
+        "shared identity's cooldown must not have been wiped"
+    );
+
+    task.abort();
+    std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_CLAUDE_TOKEN_URL");
+    std::env::remove_var("SHUNT_TEST_ADMIN_TOKENS_CLAUDE_REPROV");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
