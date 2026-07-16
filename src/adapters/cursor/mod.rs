@@ -449,6 +449,88 @@ mod tests {
         serde_json::from_slice(&bytes).expect("error body should be JSON")
     }
 
+    fn encode_varint(mut value: u64, out: &mut Vec<u8>) {
+        while value >= 0x80 {
+            out.push(((value as u8) & 0x7f) | 0x80);
+            value >>= 7;
+        }
+        out.push(value as u8);
+    }
+
+    fn field_ld(field: u64, data: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(data.len() + 4);
+        encode_varint((field << 3) | 2, &mut out);
+        encode_varint(data.len() as u64, &mut out);
+        out.extend_from_slice(data);
+        out
+    }
+
+    fn field_str(field: u64, value: &str) -> Vec<u8> {
+        field_ld(field, value.as_bytes())
+    }
+
+    fn connect_frame(payload: &[u8]) -> Vec<u8> {
+        connect::encode_connect_frame(payload, 0).to_vec()
+    }
+
+    fn text_turn_frames(text: &str) -> Vec<u8> {
+        let mut frames = connect_frame(&field_ld(1, &field_ld(1, &field_str(1, text))));
+        frames.extend_from_slice(&connect::encode_connect_frame(b"{}", connect::FLAG_END));
+        frames
+    }
+
+    fn tool_call_turn_frames(name: &str, key: &str, value: &str) -> Vec<u8> {
+        // AgentServerMessage(2) → ExecServerMessage.mcp_args(11) → McpArgs,
+        // where args(2) is a map entry containing a protobuf string Value.
+        let mut entry = field_str(1, key);
+        entry.extend(field_ld(2, &field_ld(3, value.as_bytes())));
+        let mut mcp_args = field_str(5, name);
+        mcp_args.extend(field_ld(2, &entry));
+        let mut frames = connect_frame(&field_ld(2, &field_ld(11, &mcp_args)));
+        frames.extend_from_slice(&connect::encode_connect_frame(b"{}", connect::FLAG_END));
+        frames
+    }
+
+    fn reasoning_turn_frames(text: &str) -> Vec<u8> {
+        let mut frames = connect_frame(&field_ld(1, &field_ld(4, &field_str(1, text))));
+        frames.extend_from_slice(&connect::encode_connect_frame(b"{}", connect::FLAG_END));
+        frames
+    }
+
+    fn error_turn_frames(code: &str, message: &str) -> Vec<u8> {
+        connect::encode_connect_frame(
+            serde_json::json!({"error": {"code": code, "message": message}})
+                .to_string()
+                .as_bytes(),
+            connect::FLAG_END,
+        )
+        .to_vec()
+    }
+
+    async fn turn_from_frames(frames: Vec<u8>) -> CursorAgentTurn {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/turn"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw(frames, "application/connect+proto"),
+            )
+            .mount(&server)
+            .await;
+        let response = reqwest::Client::new()
+            .get(format!("{}/turn", server.uri()))
+            .send()
+            .await
+            .expect("mock turn should be available");
+        CursorAgentTurn::from_response_for_test(response)
+    }
+
+    async fn response_json(response: axum::response::Response) -> Value {
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body should be readable");
+        serde_json::from_slice(&bytes).expect("response body should be JSON")
+    }
+
     #[tokio::test]
     async fn upstream_error_maps_403_to_permission_error() {
         let upstream = upstream_response(403, &[]).await;
@@ -530,6 +612,245 @@ mod tests {
                 .response
                 .status(),
             StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[test]
+    fn extract_cursor_tools_maps_definitions_and_defaults() {
+        let request = serde_json::json!({
+            "tools": [
+                {
+                    "name": "Read",
+                    "description": "Read a file",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"file_path": {"type": "string"}}
+                    }
+                },
+                {"name": "NoSchema", "description": "Uses the default"},
+                {"description": "missing name"}
+            ]
+        });
+
+        let tools = extract_cursor_tools(&request);
+
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[0].name, "Read");
+        assert_eq!(tools[0].description, "Read a file");
+        assert_eq!(tools[0].input_schema["type"], "object");
+        assert_eq!(tools[1].name, "NoSchema");
+        assert_eq!(tools[1].input_schema, serde_json::json!({"type": "object"}));
+        assert!(extract_cursor_tools(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn decode_cursor_images_decodes_base64_and_skips_unsupported_images() {
+        let request = serde_json::json!({
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": "aGVsbG8="
+                        }
+                    },
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/jpeg",
+                            "data": "%%%"
+                        }
+                    },
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "url",
+                            "url": "https://example.com/image.png"
+                        }
+                    }
+                ]
+            }]
+        });
+
+        let images = decode_cursor_images(&request);
+
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].data, b"hello");
+        assert_eq!(images[0].mime_type, "image/png");
+        assert_eq!(images[0].path, "claude-image-1.png");
+        assert!(!images[0].uuid.is_empty());
+    }
+
+    #[tokio::test]
+    async fn aggregate_turn_builds_text_response() {
+        let turn = turn_from_frames(text_turn_frames("hello")).await;
+
+        let (status, response) = aggregate_turn(turn, "msg_test", "cursor:test")
+            .await
+            .expect("turn should aggregate");
+        let body = response_json(response).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["stop_reason"], "end_turn");
+        assert_eq!(body["content"][0]["type"], "text");
+        assert_eq!(body["content"][0]["text"], "hello");
+    }
+
+    #[tokio::test]
+    async fn aggregate_turn_builds_tool_use_response() {
+        let turn = turn_from_frames(tool_call_turn_frames("Read", "file_path", "/tmp/x")).await;
+
+        let (status, response) = aggregate_turn(turn, "msg_test", "cursor:test")
+            .await
+            .expect("turn should aggregate");
+        let body = response_json(response).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["stop_reason"], "tool_use");
+        assert_eq!(body["content"][0]["type"], "tool_use");
+        assert_eq!(body["content"][0]["name"], "Read");
+        assert_eq!(body["content"][0]["input"]["file_path"], "/tmp/x");
+    }
+
+    #[tokio::test]
+    async fn streaming_response_emits_tool_use_pause() {
+        let turn = turn_from_frames(tool_call_turn_frames("Read", "file_path", "/tmp/x")).await;
+        let response = streaming_response(
+            turn,
+            "msg_test".to_string(),
+            "cursor:test".to_string(),
+            std::time::Duration::from_secs(60),
+        );
+
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("SSE response should be readable");
+        let body = String::from_utf8(bytes.to_vec()).expect("SSE body should be UTF-8");
+
+        assert!(body.contains("\"type\":\"tool_use\""));
+        assert!(body.contains("\"stop_reason\":\"tool_use\""));
+        assert!(body.contains("\"partial_json\""));
+        assert!(body.contains("file_path"));
+        assert!(body.contains("/tmp/x"));
+    }
+
+    #[tokio::test]
+    async fn streaming_response_emits_text_and_end_turn() {
+        let turn = turn_from_frames(text_turn_frames("hello")).await;
+        let response = streaming_response(
+            turn,
+            "msg_test".to_string(),
+            "cursor:test".to_string(),
+            std::time::Duration::from_secs(60),
+        );
+
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("SSE response should be readable");
+        let body = String::from_utf8(bytes.to_vec()).expect("SSE body should be UTF-8");
+
+        assert!(body.contains("content_block_delta"));
+        assert!(body.contains("\"text\":\"hello\""));
+        assert!(body.contains("\"stop_reason\":\"end_turn\""));
+    }
+
+    #[tokio::test]
+    async fn aggregate_turn_ignores_reasoning_and_fills_empty_content() {
+        let turn = turn_from_frames(reasoning_turn_frames("thinking")).await;
+
+        let (_, response) = aggregate_turn(turn, "msg_test", "cursor:test")
+            .await
+            .expect("turn should aggregate");
+        let body = response_json(response).await;
+
+        assert_eq!(body["stop_reason"], "end_turn");
+        assert_eq!(
+            body["content"][0],
+            serde_json::json!({"type": "text", "text": ""})
+        );
+    }
+
+    #[tokio::test]
+    async fn aggregate_turn_maps_connect_error() {
+        let turn = turn_from_frames(error_turn_frames("unauthenticated", "bad token")).await;
+
+        let error = aggregate_turn(turn, "msg_test", "cursor:test")
+            .await
+            .expect_err("Connect error should fail aggregation");
+        let status = error.response.status();
+        let body = body_json(error).await;
+
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"]["type"], "authentication_error");
+        assert!(body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("bad token"));
+    }
+
+    #[tokio::test]
+    async fn streaming_response_emits_thinking_delta() {
+        let turn = turn_from_frames(reasoning_turn_frames("thinking")).await;
+        let response = streaming_response(
+            turn,
+            "msg_test".to_string(),
+            "cursor:test".to_string(),
+            std::time::Duration::from_secs(60),
+        );
+
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("SSE response should be readable");
+        let body = String::from_utf8(bytes.to_vec()).expect("SSE body should be UTF-8");
+
+        assert!(body.contains("thinking_delta"));
+        assert!(body.contains("\"thinking\":\"thinking\""));
+        assert!(body.contains("\"stop_reason\":\"end_turn\""));
+    }
+
+    #[tokio::test]
+    async fn streaming_response_formats_connect_error() {
+        let turn = turn_from_frames(error_turn_frames("unauthenticated", "bad token")).await;
+        let response = streaming_response(
+            turn,
+            "msg_test".to_string(),
+            "cursor:test".to_string(),
+            std::time::Duration::from_secs(60),
+        );
+
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("SSE response should be readable");
+        let body = String::from_utf8(bytes.to_vec()).expect("SSE body should be UTF-8");
+
+        assert!(body.contains("event: error"));
+        assert!(body.contains("bad token"));
+    }
+
+    #[test]
+    fn client_and_stream_error_mappers_preserve_semantics() {
+        let client_error = client::CursorError::internal("transport failed");
+        assert_eq!(
+            map_client_error(client_error).response.status(),
+            StatusCode::BAD_GATEWAY
+        );
+
+        let context_error = client::CursorError::new(
+            400,
+            "maximum context length is 100 tokens but 150 tokens were supplied",
+            None,
+        );
+        let mapped = map_cursor_stream_error(context_error);
+        assert_eq!(mapped.response.status(), StatusCode::BAD_REQUEST);
+
+        let invalid_status = client::CursorError::new(99, "invalid status", None);
+        assert_eq!(
+            map_cursor_stream_error(invalid_status).response.status(),
+            StatusCode::BAD_GATEWAY
         );
     }
 }

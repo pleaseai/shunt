@@ -246,6 +246,21 @@ pub struct CursorAgentTurn {
     guard: TurnGuard,
 }
 
+#[cfg(test)]
+impl CursorAgentTurn {
+    pub(super) fn from_response_for_test(response: reqwest::Response) -> Self {
+        let (stop_tx, _stop_rx) = tokio::sync::oneshot::channel();
+        let sender = tokio::spawn(async {});
+        Self {
+            response,
+            guard: TurnGuard {
+                _stop: stop_tx,
+                _sender: sender,
+            },
+        }
+    }
+}
+
 impl CursorAgentTurn {
     pub fn status(&self) -> reqwest::StatusCode {
         self.response.status()
@@ -1029,5 +1044,254 @@ mod tests {
         let payload = field_ld(2, &field_ld(11, &mcp_args));
         let (name, _) = extract_tool_call(&payload).expect("tool call decoded");
         assert_eq!(name, "Preferred");
+    }
+
+    async fn turn_from_frames(frames: Vec<u8>) -> CursorAgentTurn {
+        use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw(frames, "application/connect+proto"),
+            )
+            .mount(&server)
+            .await;
+        let response = reqwest::Client::new()
+            .get(server.uri())
+            .send()
+            .await
+            .expect("mock response should be available");
+        CursorAgentTurn::from_response_for_test(response)
+    }
+
+    fn success_end_frame() -> Bytes {
+        crate::adapters::cursor::connect::encode_connect_frame(b"{}", FLAG_END)
+    }
+
+    fn tool_call_frame(name: &str, args: &[(&str, serde_json::Value)]) -> Bytes {
+        let mut mcp_args = field_str(5, name);
+        for (key, value) in args {
+            let mut entry = field_str(1, key);
+            entry.extend(field_ld(2, &encode_protobuf_value(value)));
+            mcp_args.extend(field_ld(2, &entry));
+        }
+        connect_frame(&field_ld(2, &field_ld(11, &mcp_args)))
+    }
+
+    #[tokio::test]
+    async fn event_stream_emits_text_and_end() {
+        let mut frames = connect_frame(&field_ld(1, &field_ld(1, &field_str(1, "hello")))).to_vec();
+        frames.extend_from_slice(&success_end_frame());
+
+        let events: Vec<_> = turn_from_frames(frames)
+            .await
+            .into_event_stream()
+            .collect()
+            .await;
+
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            &events[0],
+            Ok(CursorStreamEvent::TextDelta { text }) if text == "hello"
+        ));
+        assert!(matches!(&events[1], Ok(CursorStreamEvent::End)));
+    }
+
+    #[tokio::test]
+    async fn event_stream_emits_reasoning_before_text() {
+        let mut frames =
+            connect_frame(&field_ld(1, &field_ld(4, &field_str(1, "thinking")))).to_vec();
+        frames.extend_from_slice(&connect_frame(&field_ld(
+            1,
+            &field_ld(1, &field_str(1, "hello")),
+        )));
+        frames.extend_from_slice(&success_end_frame());
+
+        let events: Vec<_> = turn_from_frames(frames)
+            .await
+            .into_event_stream()
+            .collect()
+            .await;
+
+        assert_eq!(events.len(), 3);
+        assert!(matches!(
+            &events[0],
+            Ok(CursorStreamEvent::ThinkingDelta { text }) if text == "thinking"
+        ));
+        assert!(matches!(
+            &events[1],
+            Ok(CursorStreamEvent::TextDelta { text }) if text == "hello"
+        ));
+        assert!(matches!(&events[2], Ok(CursorStreamEvent::End)));
+    }
+
+    #[tokio::test]
+    async fn event_stream_emits_native_tool_call() {
+        let mut frames = tool_call_frame(
+            "Read",
+            &[
+                ("file_path", serde_json::json!("/tmp/x")),
+                ("limit", serde_json::json!(5)),
+            ],
+        )
+        .to_vec();
+        frames.extend_from_slice(&success_end_frame());
+
+        let events: Vec<_> = turn_from_frames(frames)
+            .await
+            .into_event_stream()
+            .collect()
+            .await;
+
+        let (name, input_json) = events
+            .iter()
+            .find_map(|event| match event {
+                Ok(CursorStreamEvent::ToolCall { name, input_json }) => Some((name, input_json)),
+                _ => None,
+            })
+            .expect("tool call event should be present");
+        assert_eq!(name, "Read");
+        let input: serde_json::Value = serde_json::from_str(input_json).unwrap();
+        assert_eq!(input["file_path"], serde_json::json!("/tmp/x"));
+        assert_eq!(input["limit"].as_f64(), Some(5.0));
+    }
+
+    #[tokio::test]
+    async fn event_stream_surfaces_connect_end_error() {
+        let frame = crate::adapters::cursor::connect::encode_connect_frame(
+            br#"{"error":{"code":"unauthenticated","message":"bad"}}"#,
+            FLAG_END,
+        );
+
+        let events: Vec<_> = turn_from_frames(frame.to_vec())
+            .await
+            .into_event_stream()
+            .collect()
+            .await;
+
+        let error = events
+            .last()
+            .expect("error event should be present")
+            .as_ref()
+            .expect_err("Connect error should fail the turn");
+        assert_eq!(error.status, 401);
+        assert!(error.message.contains("bad"));
+    }
+
+    #[tokio::test]
+    async fn test_turn_exposes_status_and_raw_response() {
+        let turn = turn_from_frames(Vec::new()).await;
+        assert_eq!(turn.status(), reqwest::StatusCode::OK);
+        assert_eq!(turn.into_response().status(), reqwest::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn event_stream_treats_clean_eof_as_end() {
+        let events: Vec<_> = turn_from_frames(Vec::new())
+            .await
+            .into_event_stream()
+            .collect()
+            .await;
+
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], Ok(CursorStreamEvent::End)));
+    }
+
+    #[tokio::test]
+    async fn event_stream_decodes_gzipped_text() {
+        use std::io::Write;
+
+        let payload = field_ld(1, &field_ld(1, &field_str(1, "compressed")));
+        let mut compressed = Vec::new();
+        let mut encoder =
+            flate2::write::GzEncoder::new(&mut compressed, flate2::Compression::fast());
+        encoder.write_all(&payload).unwrap();
+        encoder.finish().unwrap();
+        let mut frames =
+            crate::adapters::cursor::connect::encode_connect_frame(compressed, FLAG_GZIP).to_vec();
+        frames.extend_from_slice(&success_end_frame());
+
+        let events: Vec<_> = turn_from_frames(frames)
+            .await
+            .into_event_stream()
+            .collect()
+            .await;
+
+        assert!(matches!(
+            &events[0],
+            Ok(CursorStreamEvent::TextDelta { text }) if text == "compressed"
+        ));
+        assert!(matches!(&events[1], Ok(CursorStreamEvent::End)));
+    }
+
+    #[tokio::test]
+    async fn event_stream_rejects_invalid_gzip() {
+        let frame = crate::adapters::cursor::connect::encode_connect_frame(b"not-gzip", FLAG_GZIP);
+
+        let events: Vec<_> = turn_from_frames(frame.to_vec())
+            .await
+            .into_event_stream()
+            .collect()
+            .await;
+
+        let error = events[0].as_ref().expect_err("invalid gzip should fail");
+        assert!(error.message.contains("cursor gzip"));
+    }
+
+    #[tokio::test]
+    async fn event_stream_rejects_oversized_frame_header() {
+        // 0x04000001 is one byte over the decoder's 64 MiB payload limit.
+        let events: Vec<_> = turn_from_frames(vec![0, 4, 0, 0, 1])
+            .await
+            .into_event_stream()
+            .collect()
+            .await;
+
+        let error = events[0].as_ref().expect_err("oversized frame should fail");
+        assert!(error.message.contains("cursor frame"));
+    }
+
+    #[test]
+    fn protobuf_field_iterator_handles_all_supported_wire_types() {
+        let mut encoded = field_varint(1, 300);
+        encoded.extend(field_double(2, 1.5));
+        encoded.extend(field_str(3, "value"));
+        encoded.extend([0x25, 1, 2, 3, 4]); // field 4, fixed32 (wire 5)
+
+        let fields: Vec<_> = iter_fields(&encoded)
+            .map(|field| (field.field, field.wire, field.data.to_vec()))
+            .collect();
+
+        assert_eq!(fields.len(), 4);
+        assert_eq!((fields[0].0, fields[0].1), (1, 0));
+        assert_eq!((fields[1].0, fields[1].1), (2, 1));
+        assert_eq!((fields[2].0, fields[2].1), (3, 2));
+        assert_eq!(fields[2].2, b"value");
+        assert_eq!((fields[3].0, fields[3].1), (4, 5));
+    }
+
+    #[test]
+    fn protobuf_parsers_reject_truncated_and_unknown_fields() {
+        for malformed in [
+            vec![0x0a, 5, b'x'],
+            vec![0x0d, 1],
+            vec![0x09, 1],
+            vec![0x0f],
+        ] {
+            assert_eq!(iter_fields(&malformed).count(), 0);
+        }
+        assert!(read_varint(&[]).is_none());
+        assert!(read_varint(&[0x80; 10]).is_none());
+
+        for malformed_value in [
+            Vec::new(),
+            vec![0x1a, 5, b'x'],
+            vec![0x20],
+            vec![0x2a, 5, b'x'],
+            vec![0x32, 5, b'x'],
+            vec![0x3a],
+        ] {
+            assert!(decode_protobuf_value(&malformed_value).is_null());
+        }
     }
 }
