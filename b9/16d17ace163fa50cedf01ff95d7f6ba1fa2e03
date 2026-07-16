@@ -1,0 +1,35 @@
+docs/gateway-login.md
+  s_53f119918a707c::t_9c28d38a8795a0 1-102
+README.md
+  s_53f119918a707c::t_9d6e5952315f12 78-79
+docs/gateway-protocol.md
+  s_53f119918a707c::t_a956be0f026f3d 230-232
+  s_53f119918a707c::t_6edaf3b91fe14d 227-228
+  s_53f119918a707c::t_38a880028f6405 284
+  s_53f119918a707c::t_d1c58bc69cdb96 240-242
+  s_53f119918a707c::t_0c82e8ca83e346 246-249,251,253,255-257
+site/astro.config.mjs
+  s_53f119918a707c::t_9a70a344e05835 113-115
+  s_53f119918a707c::t_b13239d0d30c83 112
+site/src/content/docs/guides/gateway-login.md
+  s_53f119918a707c::t_cc48d14b421845 1-26,29-75
+  s_53f119918a707c::t_524083b2fe271c 27-28
+site/src/content/docs/reference/configuration.md
+  s_53f119918a707c::t_a6e915f08779bf 42-56
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "b916d17ace163fa50cedf01ff95d7f6ba1fa2e03",
+  "prompts": {},
+  "sessions": {
+    "s_53f119918a707c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fc678f72-9bfe-4f11-b2cc-6342fb0b5c6a",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
