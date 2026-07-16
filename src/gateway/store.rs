@@ -21,6 +21,8 @@ pub const INITIAL_POLL_INTERVAL: Duration = Duration::from_secs(5);
 const SLOW_DOWN_INCREMENT: Duration = Duration::from_secs(5);
 const REFRESH_TOMBSTONE_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 const MAX_TOMBSTONES_PER_FAMILY: usize = 64;
+const MAX_DEVICE_GRANTS: usize = 4096;
+const MAX_RATE_LIMIT_IDENTITIES: usize = 4096;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeviceStatus {
@@ -78,7 +80,10 @@ impl DeviceGrantStore {
             .lock()
             .expect("gateway device-grant lock poisoned");
         sweep_expired_grants(&mut state, now);
-        if state.by_user_code.contains_key(&user_code) || state.grants.contains_key(&device_code) {
+        if state.by_user_code.contains_key(&user_code)
+            || state.grants.contains_key(&device_code)
+            || state.grants.len() >= MAX_DEVICE_GRANTS
+        {
             return false;
         }
         state
@@ -98,14 +103,14 @@ impl DeviceGrantStore {
     }
 
     pub fn approve(&self, user_code: &str, identity: Identity) -> bool {
-        self.set_status(user_code, DeviceStatus::Approved(identity))
+        self.set_status_at(user_code, DeviceStatus::Approved(identity), Instant::now())
     }
 
     pub fn deny(&self, user_code: &str) -> bool {
-        self.set_status(user_code, DeviceStatus::Denied)
+        self.set_status_at(user_code, DeviceStatus::Denied, Instant::now())
     }
 
-    fn set_status(&self, user_code: &str, status: DeviceStatus) -> bool {
+    fn set_status_at(&self, user_code: &str, status: DeviceStatus, now: Instant) -> bool {
         let mut state = self
             .state
             .lock()
@@ -116,7 +121,7 @@ impl DeviceGrantStore {
         let Some(grant) = state.grants.get_mut(&device_code) else {
             return false;
         };
-        if grant.expires <= Instant::now() || grant.status != DeviceStatus::Pending {
+        if grant.expires <= now || grant.status != DeviceStatus::Pending {
             return false;
         }
         grant.status = status;
@@ -311,6 +316,9 @@ impl PerIpRateLimiter {
             .lock()
             .expect("gateway rate-limit lock poisoned");
         limits.retain(|_, entry| now.saturating_duration_since(entry.last_seen) < self.window);
+        if !limits.contains_key(ip) && limits.len() >= MAX_RATE_LIMIT_IDENTITIES {
+            return false;
+        }
         let entry = limits.entry(ip.to_string()).or_insert(RateLimitEntry {
             window_start: now,
             count: 0,
@@ -391,7 +399,7 @@ mod tests {
         assert_eq!(store.poll_at("denied", now), DevicePoll::Denied);
 
         assert!(store.create_at("expired".into(), "BCDF-GHJM".into(), now, Duration::ZERO));
-        assert_eq!(store.poll_at("expired", now), DevicePoll::Expired);
+        assert!(!store.set_status_at("BCDF-GHJM", DeviceStatus::Approved(identity()), now,));
     }
 
     #[test]
@@ -474,6 +482,32 @@ mod tests {
         );
         assert!(tokens.contains_key(&active));
         assert!(tokens.contains_key(&unrelated));
+    }
+
+    #[test]
+    fn device_grants_reject_admission_at_capacity() {
+        let store = DeviceGrantStore::new();
+        let now = Instant::now();
+        for index in 0..MAX_DEVICE_GRANTS {
+            assert!(store.create_at(
+                format!("device-{index}"),
+                format!("CODE-{index}"),
+                now,
+                DEVICE_CODE_TTL,
+            ));
+        }
+        assert!(!store.create_at("overflow".into(), "OVER-FLOW".into(), now, DEVICE_CODE_TTL,));
+    }
+
+    #[test]
+    fn rate_limit_rejects_new_identity_at_capacity() {
+        let limiter = PerIpRateLimiter::new(Duration::from_secs(60), 1);
+        let now = Instant::now();
+        for index in 0..MAX_RATE_LIMIT_IDENTITIES {
+            assert!(limiter.check_at(&format!("client-{index}"), now));
+        }
+        assert!(!limiter.check_at("overflow", now));
+        assert!(!limiter.check_at("client-0", now));
     }
 
     #[test]

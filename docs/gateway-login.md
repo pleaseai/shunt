@@ -17,11 +17,13 @@ Implemented endpoints:
 | `POST /device` | Same-origin CSRF guard, per-IP attempt limit, static-user authentication, and grant approval |
 | `POST /oauth/token` | Device grant polling and rotating refresh grant |
 
-OAuth failures use the RFC 6749/RFC 8628 `{"error":"..."}` body. The existing
-`/v1/messages`, `/v1/messages/count_tokens`, and `/v1/models` surfaces accept a
-valid issued bearer token when gateway mode is enabled and keep their Anthropic
-error envelope on authentication failure. If `[server.auth]` is also configured,
-either its static client token or a valid gateway JWT grants access.
+OAuth failures use the RFC 6749/RFC 8628 `{"error":"..."}` body. For
+routes whose selected provider injects a server-side credential, the existing
+`/v1/messages` and `/v1/messages/count_tokens` surfaces accept a valid issued
+bearer token when gateway mode is enabled; `/v1/models` does as well. Passthrough
+providers remain open. Authentication failures keep the Anthropic error envelope.
+If `[server.auth]` is also configured, either its static client token or a valid
+gateway JWT grants access on those gated routes.
 
 Successful device and refresh grants return the same shape:
 
@@ -56,16 +58,18 @@ export SHUNT_GATEWAY_JWT_SECRET="$(openssl rand -base64 48)"
 export SHUNT_GATEWAY_USERS='alice@example.com:<secret>,bob@example.com:<secret>'
 ```
 
-Startup fails closed if `public_url` is not a bare HTTP(S) origin, the token TTL
-is zero, the JWT secret is shorter than 32 bytes, or the users variable is empty
-or malformed. Secret and user changes are re-resolved by config hot reload.
+Startup fails closed if `public_url` is not a bare HTTPS origin (`http` is
+accepted only on loopback), the token TTL is zero, the JWT secret is shorter than
+32 bytes, or the users variable is empty or malformed. Secret and user changes are re-resolved by config hot reload.
 Whether the routes exist is fixed at boot, so adding or removing
 `[server.gateway]` requires a restart.
 
 ## Pluggable approval
 
 The HTTP endpoints depend on the `ApprovalProvider` trait rather than on the
-static-user implementation directly. M-A ships `StaticUsers`, which resolves
+static-user implementation directly. `GatewayAuth::with_approval_provider`
+accepts an `Arc<dyn ApprovalProvider>` for integrations, while M-A ships
+`StaticUsers`, which resolves
 comma-separated `email:secret` entries from `users_env`, compares secrets in
 constant time, and emits an identity with `sub = email`, `email = email`, and
 `name` set to the local part before `@`. A future OIDC provider can implement the
@@ -81,11 +85,12 @@ a human-readable blocked notice, matching the reference gateway behavior.
 
 Device grants, refresh tokens, and rate-limit counters are process-lifetime,
 in-memory stores. They survive a config hot reload but are not written to disk.
-Mutating operations remove expired device grants and idle rate-limit entries.
-Used refresh-token tombstones are retained for 30 days and capped at 64 per
-family, preserving bounded replay detection without process-lifetime growth.
-Restarting shunt invalidates outstanding device codes and refresh tokens, so
-every gateway user must sign in again. File persistence and multi-instance
+Mutating operations remove expired device grants and idle rate-limit entries;
+both stores reject new admission at 4,096 live entries. Used refresh-token
+tombstones are retained for 30 days and capped at 64 per family, preserving
+bounded replay detection without process-lifetime growth. Restarting shunt
+invalidates outstanding device codes and refresh tokens. Existing access JWTs
+remain valid until expiry, after which users must sign in again. File persistence and multi-instance
 coordination are follow-ups; M-A deliberately adds no database.
 
 Use TLS for a non-loopback deployment. By default `/device` rate limiting uses

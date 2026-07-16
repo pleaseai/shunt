@@ -35,12 +35,28 @@ impl GatewayAuth {
         trust_forwarded_for: bool,
         users: StaticUsers,
     ) -> Self {
+        Self::with_approval_provider(
+            public_url,
+            jwt_secret,
+            token_ttl_seconds,
+            trust_forwarded_for,
+            Arc::new(users),
+        )
+    }
+
+    pub fn with_approval_provider(
+        public_url: String,
+        jwt_secret: Vec<u8>,
+        token_ttl_seconds: u64,
+        trust_forwarded_for: bool,
+        approval: Arc<dyn ApprovalProvider>,
+    ) -> Self {
         Self {
             public_url,
             jwt_secret,
             token_ttl_seconds,
             trust_forwarded_for,
-            approval: Arc::new(users),
+            approval,
         }
     }
 

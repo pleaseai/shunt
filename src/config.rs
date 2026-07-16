@@ -302,7 +302,9 @@ impl GatewayConfig {
                 message: error.to_string(),
             }
         })?;
-        if !matches!(public_url.scheme(), "http" | "https")
+        if !(matches!(public_url.scheme(), "https")
+            || public_url.scheme() == "http"
+                && host_is_loopback(public_url.host_str().unwrap_or_default()))
             || public_url.host_str().is_none()
             || !public_url.username().is_empty()
             || public_url.password().is_some()
@@ -311,7 +313,7 @@ impl GatewayConfig {
             || public_url.fragment().is_some()
         {
             return Err(ConfigError::InvalidGatewayPublicUrl {
-                message: "must be an http(s) origin with no userinfo, path, query, or fragment"
+                message: "must be an https origin (http is allowed only on loopback) with no userinfo, path, query, or fragment"
                     .to_string(),
             });
         }
@@ -2323,7 +2325,12 @@ mod tests {
             gateway.resolve(),
             Err(ConfigError::InvalidGatewayPublicUrl { .. })
         ));
-        gateway.public_url = "https://gateway.example".to_string();
+        gateway.public_url = "http://gateway.example".to_string();
+        assert!(matches!(
+            gateway.resolve(),
+            Err(ConfigError::InvalidGatewayPublicUrl { .. })
+        ));
+        gateway.public_url = "http://127.0.0.1:8787".to_string();
         gateway.token_ttl_seconds = 0;
         assert!(matches!(
             gateway.resolve(),

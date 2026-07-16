@@ -22,9 +22,9 @@ jget() { python3 -c "import json,sys;print(json.load(open(sys.argv[1]))[sys.argv
 cmd_up() {
   mkdir -p "$CAP"
   docker rm -f shunt-gw-pg shunt-gw-dex >/dev/null 2>&1 || true
-  docker run --rm -d --name shunt-gw-pg -p "$PG_PORT":5432 \
+  docker run --rm -d --name shunt-gw-pg -p "127.0.0.1:$PG_PORT":5432 \
     -e POSTGRES_HOST_AUTH_METHOD=trust postgres:16-alpine >/dev/null
-  docker run --rm -d --name shunt-gw-dex -p 5556:5556 \
+  docker run --rm -d --name shunt-gw-dex -p 127.0.0.1:5556:5556 \
     -v "$SKILL_DIR/dex.yaml":/etc/dex/config.yaml:ro \
     ghcr.io/dexidp/dex:v2.44.0 dex serve /etc/dex/config.yaml >/dev/null
   for _ in $(seq 1 30); do

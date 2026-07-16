@@ -29,7 +29,7 @@ token_ttl_seconds = 3600                      # default
 trust_forwarded_for = false                   # default
 ```
 
-Startup fails closed if `public_url` is not a bare HTTP(S) origin, `token_ttl_seconds` is zero, the signing secret is shorter than 32 bytes, or the user list is empty or malformed. A secret may contain `:` because only the first colon separates an email from its secret.
+Startup fails closed if `public_url` is not a bare HTTPS origin (`http` is allowed only on loopback), `token_ttl_seconds` is zero, the signing secret is shorter than 32 bytes, or the user list is empty or malformed. A secret may contain `:` because only the first colon separates an email from its secret.
 
 Use HTTPS for every non-loopback deployment. By default, `/device` ignores `X-Forwarded-For` and `X-Real-IP` and rate-limits the socket peer. If shunt is reachable exclusively through a trusted reverse proxy, set `trust_forwarded_for = true` and configure that proxy to remove client-provided forwarding headers before setting its own trusted client address. Never enable this option on a directly exposed gateway.
 
@@ -50,7 +50,7 @@ Managed settings locations depend on the platform:
 - Linux and Windows (WSL): `/etc/claude-code/managed-settings.json`
 - Windows native: `C:\Program Files\ClaudeCode\managed-settings.json`
 
-The URL must equal `public_url`. Claude Code reads the OAuth endpoint paths from shunt's discovery document and sends the issued bearer to `/v1/messages`, `/v1/messages/count_tokens`, and `/v1/models`.
+The URL must equal `public_url`. Claude Code reads the OAuth endpoint paths from shunt's discovery document. The issued bearer gates `/v1/models` and inference requests whose selected provider injects a server-side credential; passthrough providers remain open.
 
 ## 3. Sign in
 
@@ -65,9 +65,9 @@ Pre-filling the code never auto-approves it. The approval POST is same-origin pr
 
 ## Session behavior
 
-Access tokens are HS256 JWTs with a one-hour default lifetime. Claude Code silently refreshes them. Every refresh rotates the opaque refresh token; replaying an old token invalidates the active token in that rotation family and makes Claude Code sign in again.
+Access tokens are HS256 JWTs with a one-hour default lifetime. Claude Code silently refreshes them. Every refresh rotates the opaque refresh token; replaying a retained old token within the 30-day, 64-tombstone bound invalidates the active token in that rotation family and makes Claude Code sign in again.
 
-Device grants, refresh tokens, and attempt counters are in memory in this milestone. Config hot reload keeps them, and changes to the signing secret or user list hot-apply. Expired grants and idle rate-limit entries are removed opportunistically. Used refresh-token tombstones are retained for 30 days and capped at 64 per family. A shunt process restart clears all remaining state, so all gateway users must sign in again. Adding or removing the `[server.gateway]` table itself requires a restart because route registration is fixed at boot.
+Device grants, refresh tokens, and attempt counters are in memory in this milestone. Config hot reload keeps them, and changes to the signing secret or user list hot-apply. Expired grants and idle rate-limit entries are removed opportunistically; device grants and rate-limit identities are each capped at 4,096 entries. Used refresh-token tombstones are retained for 30 days and capped at 64 per family. A shunt process restart clears device grants and refresh sessions; existing access JWTs remain valid until expiry, after which users must sign in again. Adding or removing the `[server.gateway]` table itself requires a restart because route registration is fixed at boot.
 
 When [`[server.auth]`](/guides/shared-gateway/) and `[server.gateway]` are both configured, they compose: either a valid static client token or a valid gateway bearer grants access. This supports a staged migration without breaking existing clients.
 

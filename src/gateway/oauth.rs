@@ -16,6 +16,7 @@ use super::{
 };
 
 const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
+const CLAUDE_CODE_CLIENT_ID: &str = "claude-code";
 const USER_CODE_CHARSET: &[u8] = b"BCDFGHJKLMNPQRSTVWXZ";
 
 #[derive(Serialize)]
@@ -51,7 +52,7 @@ pub async fn discovery(State(state): State<AppState>) -> Response {
 #[derive(Debug, Default, Deserialize)]
 pub struct DeviceAuthorizationForm {
     #[serde(default)]
-    _client_id: String,
+    client_id: String,
     #[serde(default)]
     _scope: String,
 }
@@ -70,14 +71,24 @@ pub async fn device_authorization(
     State(state): State<AppState>,
     form: Result<Form<DeviceAuthorizationForm>, FormRejection>,
 ) -> Response {
-    if form.is_err() {
+    let Form(form) = match form {
+        Ok(form) => form,
+        Err(_) => return no_store(oauth_error(StatusCode::BAD_REQUEST, "invalid_request")),
+    };
+    if form.client_id != CLAUDE_CODE_CLIENT_ID {
         return no_store(oauth_error(StatusCode::BAD_REQUEST, "invalid_request"));
     }
     let state = state.refreshed();
     let Some(auth) = state.gateway_auth else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let (device_code, user_code) = create_device_grant(&state.gateway_stores.device_grants);
+    let Some((device_code, user_code)) = create_device_grant(&state.gateway_stores.device_grants)
+    else {
+        return no_store(oauth_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "temporarily_unavailable",
+        ));
+    };
     let verification_uri = auth.url("/device");
     let response = Json(DeviceAuthorizationResponse {
         device_code,
@@ -95,6 +106,8 @@ pub async fn device_authorization(
 pub struct TokenForm {
     #[serde(default)]
     grant_type: String,
+    #[serde(default)]
+    client_id: String,
     #[serde(default)]
     device_code: String,
     #[serde(default)]
@@ -117,6 +130,13 @@ pub async fn token(
         Ok(form) => form,
         Err(_) => return no_store(oauth_error(StatusCode::BAD_REQUEST, "invalid_request")),
     };
+    if form.grant_type.is_empty()
+        || form.client_id != CLAUDE_CODE_CLIENT_ID
+        || (form.grant_type == DEVICE_GRANT && form.device_code.is_empty())
+        || (form.grant_type == "refresh_token" && form.refresh_token.is_empty())
+    {
+        return no_store(oauth_error(StatusCode::BAD_REQUEST, "invalid_request"));
+    }
     let state = state.refreshed();
     let Some(auth) = state.gateway_auth else {
         return StatusCode::NOT_FOUND.into_response();
@@ -175,14 +195,15 @@ fn no_store(mut response: Response) -> Response {
     response
 }
 
-fn create_device_grant(store: &super::store::DeviceGrantStore) -> (String, String) {
-    loop {
+fn create_device_grant(store: &super::store::DeviceGrantStore) -> Option<(String, String)> {
+    for _ in 0..16 {
         let device_code = random_id();
         let user_code = generate_user_code(&mut rand::rng());
         if store.create(device_code.clone(), user_code.clone()) {
-            return (device_code, user_code);
+            return Some((device_code, user_code));
         }
     }
+    None
 }
 
 fn generate_user_code(rng: &mut impl Rng) -> String {

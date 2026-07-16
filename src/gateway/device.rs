@@ -187,7 +187,17 @@ fn client_ip(headers: &HeaderMap, peer: Option<SocketAddr>, trust_forwarded_for:
 }
 
 fn normalize_user_code(code: &str) -> String {
-    code.trim().to_ascii_uppercase()
+    let compact: String = code
+        .trim()
+        .chars()
+        .filter(|character| *character != '-')
+        .flat_map(char::to_uppercase)
+        .collect();
+    if compact.len() == 8 {
+        format!("{}-{}", &compact[..4], &compact[4..])
+    } else {
+        compact
+    }
 }
 
 fn escape_html(input: &str) -> String {
@@ -259,7 +269,7 @@ mod tests {
 
     use axum::http::{header, HeaderMap, HeaderValue};
 
-    use super::{client_ip, device_page, page, same_origin};
+    use super::{client_ip, device_page, normalize_user_code, page, same_origin};
 
     #[test]
     fn page_escapes_prefilled_code_and_never_auto_submits() {
@@ -285,6 +295,12 @@ mod tests {
         assert_eq!(headers.get(header::X_FRAME_OPTIONS).unwrap(), "DENY");
         assert_eq!(headers.get(header::REFERRER_POLICY).unwrap(), "no-referrer");
         assert_eq!(headers.get(header::CACHE_CONTROL).unwrap(), "no-store");
+    }
+
+    #[test]
+    fn user_code_normalization_accepts_omitted_separator() {
+        assert_eq!(normalize_user_code(" bcdfghjk "), "BCDF-GHJK");
+        assert_eq!(normalize_user_code("bcdf-ghjk"), "BCDF-GHJK");
     }
 
     #[test]

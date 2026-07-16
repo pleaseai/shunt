@@ -138,7 +138,7 @@ async fn full_device_and_refresh_flow_rotates_tokens() {
         form_request(
             "/oauth/token",
             format!(
-                "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code&device_code={device_code}"
+                "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code&device_code={device_code}&client_id=claude-code"
             ),
         ),
     )
@@ -153,7 +153,7 @@ async fn full_device_and_refresh_flow_rotates_tokens() {
         router.clone(),
         form_request(
             "/oauth/token",
-            format!("grant_type=refresh_token&refresh_token={old_refresh}"),
+            format!("grant_type=refresh_token&refresh_token={old_refresh}&client_id=claude-code"),
         ),
     )
     .await;
@@ -164,7 +164,7 @@ async fn full_device_and_refresh_flow_rotates_tokens() {
         router,
         form_request(
             "/oauth/token",
-            format!("grant_type=refresh_token&refresh_token={old_refresh}"),
+            format!("grant_type=refresh_token&refresh_token={old_refresh}&client_id=claude-code"),
         ),
     )
     .await;
@@ -182,7 +182,7 @@ async fn device_grant_error_table_and_csrf_rejection_match_contract() {
 
     let (_, authorization) = json_response(
         router.clone(),
-        form_request("/oauth/device_authorization", ""),
+        form_request("/oauth/device_authorization", "client_id=claude-code"),
     )
     .await;
     let device_code = authorization["device_code"].as_str().unwrap();
@@ -192,7 +192,7 @@ async fn device_grant_error_table_and_csrf_rejection_match_contract() {
         router.clone(),
         form_request(
             "/oauth/token",
-            format!("grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code&device_code={device_code}"),
+            format!("grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code&device_code={device_code}&client_id=claude-code"),
         ),
     )
     .await;
@@ -203,7 +203,7 @@ async fn device_grant_error_table_and_csrf_rejection_match_contract() {
         router.clone(),
         form_request(
             "/oauth/token",
-            format!("grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code&device_code={device_code}"),
+            format!("grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code&device_code={device_code}&client_id=claude-code"),
         ),
     )
     .await;
@@ -228,9 +228,11 @@ async fn device_grant_error_table_and_csrf_rejection_match_contract() {
             Request::builder()
                 .method("POST")
                 .uri("/device")
-                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .header("sec-fetch-site", "cross-site")
-                .body(Body::from("{}"))
+                .body(Body::from(format!(
+                    "user_code={user_code}&login=dev%40example.com&secret=password"
+                )))
                 .unwrap(),
         )
         .await
@@ -249,7 +251,7 @@ async fn device_grant_error_table_and_csrf_rejection_match_contract() {
 
     let (_, denied_authorization) = json_response(
         router.clone(),
-        form_request("/oauth/device_authorization", ""),
+        form_request("/oauth/device_authorization", "client_id=claude-code"),
     )
     .await;
     let denied_device = denied_authorization["device_code"].as_str().unwrap();
@@ -259,7 +261,7 @@ async fn device_grant_error_table_and_csrf_rejection_match_contract() {
         router.clone(),
         form_request(
             "/oauth/token",
-            format!("grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code&device_code={denied_device}"),
+            format!("grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code&device_code={denied_device}&client_id=claude-code"),
         ),
     )
     .await;
@@ -270,7 +272,7 @@ async fn device_grant_error_table_and_csrf_rejection_match_contract() {
         router,
         form_request(
             "/oauth/token",
-            "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code&device_code=unknown",
+            "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code&device_code=unknown&client_id=claude-code",
         ),
     )
     .await;
@@ -346,6 +348,24 @@ async fn device_rate_limit_honors_forwarded_ips_when_enabled() {
 async fn malformed_oauth_forms_use_rfc6749_error_shape() {
     let (config, _env) = GatewayEnv::config("malformed-forms");
     let (router, _, _) = build_router(config).unwrap();
+
+    for (path, body) in [
+        ("/oauth/device_authorization", ""),
+        ("/oauth/device_authorization", "client_id=other"),
+        ("/oauth/token", ""),
+        (
+            "/oauth/token",
+            "grant_type=refresh_token&client_id=claude-code",
+        ),
+        (
+            "/oauth/token",
+            "grant_type=refresh_token&refresh_token=value&client_id=other",
+        ),
+    ] {
+        let (status, error) = json_response(router.clone(), form_request(path, body)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(error, json!({"error": "invalid_request"}));
+    }
 
     for path in ["/oauth/device_authorization", "/oauth/token"] {
         let response = router
@@ -512,6 +532,12 @@ async fn gateway_jwt_is_accepted_on_mapped_messages() {
     std::env::remove_var(upstream_key_env);
 
     assert_eq!(response.status(), StatusCode::OK);
+    let requests = upstream.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(
+        requests[0].headers.get("x-shunt-inbound-client").is_none(),
+        "gateway identity must remain local and not be forwarded upstream"
+    );
 }
 
 #[test]

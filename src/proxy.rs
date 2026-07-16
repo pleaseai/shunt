@@ -250,8 +250,10 @@ fn check_inbound_auth(
         tracing::info!(client = %client, provider = %route.provider, "inbound client authenticated");
         forwarded.remove("authorization");
         forwarded.remove("x-api-key");
-        if let Ok(client) = HeaderValue::from_str(&client) {
-            forwarded.insert("x-shunt-inbound-client", client);
+        if static_client.is_some() {
+            if let Ok(client) = HeaderValue::from_str(&client) {
+                forwarded.insert("x-shunt-inbound-client", client);
+            }
         }
         return Ok(forwarded);
     }

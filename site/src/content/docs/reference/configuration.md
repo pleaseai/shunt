@@ -45,15 +45,15 @@ Presence of this table enables the [OAuth device-flow gateway login](/guides/gat
 
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
-| `public_url` | required | Externally reachable HTTP(S) origin used as the JWT issuer and base for advertised OAuth endpoints |
+| `public_url` | required | Externally reachable HTTPS origin used as the JWT issuer and base for advertised OAuth endpoints; `http` is accepted only for loopback |
 | `jwt_secret_env` | `SHUNT_GATEWAY_JWT_SECRET` | Env var holding the HS256 signing secret (at least 32 bytes) |
 | `users_env` | `SHUNT_GATEWAY_USERS` | Env var holding comma-separated `email:secret` approval users |
 | `token_ttl_seconds` | `3600` | Access-token lifetime; returned as `expires_in` |
 | `trust_forwarded_for` | `false` | Trust `X-Forwarded-For`/`X-Real-IP` as the `/device` rate-limit identity; enable only behind a trusted proxy that replaces client-supplied values |
 
-Startup fails closed when the URL is not a bare HTTP(S) origin, the TTL is zero, the secret is missing or shorter than 32 bytes, or the user list is empty or malformed. Secrets may contain `:` because only the first colon separates the email and secret. Changes to the environment-backed secret and users hot-apply on config reload; adding or removing the table requires a restart because the route tree is fixed at boot.
+Startup fails closed when the URL is not a bare HTTPS origin (`http` is allowed only on loopback), the TTL is zero, the secret is missing or shorter than 32 bytes, or the user list is empty or malformed. Secrets may contain `:` because only the first colon separates the email and secret. Changes to the environment-backed secret and users hot-apply on config reload; adding or removing the table requires a restart because the route tree is fixed at boot.
 
-The issued bearer authenticates `/v1/messages`, `/v1/messages/count_tokens`, and `/v1/models`. If `[server.auth]` is also present, either credential grants access. Device grants and rotating refresh tokens are process-lifetime, in-memory state in this milestone: a config reload preserves them, but restarting shunt requires every gateway user to sign in again. Expired grants and idle rate-limit identities are swept opportunistically. Used refresh-token tombstones are retained for 30 days and capped at 64 per family.
+The issued bearer gates `/v1/models` and `/v1/messages`/`/v1/messages/count_tokens` requests whenever the selected provider injects a server-side credential; passthrough providers remain open. If `[server.auth]` is also present, either credential grants access. Device grants and rotating refresh tokens are process-lifetime, in-memory state in this milestone: a config reload preserves them, but restarting shunt invalidates device grants and refresh sessions. Existing access JWTs remain valid until expiry, after which users must sign in again. Expired grants and idle rate-limit identities are swept opportunistically. Device grants and rate-limit identities are each capped at 4,096 entries. Used refresh-token tombstones are retained for 30 days and capped at 64 per family.
 
 By default, `/device` ignores forwarding headers and rate-limits the socket peer. Set `trust_forwarded_for = true` only when shunt is reachable exclusively through a trusted reverse proxy that removes client-provided forwarding headers before setting its own value. Do not enable it on a directly exposed gateway.
 
