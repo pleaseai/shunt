@@ -579,15 +579,18 @@ impl Default for AccountConfig {
     }
 }
 
+/// Collisions in the same stable-identity key `AccountPool` uses at runtime
+/// (`crate::accounts::account_identity`: explicit `uuid`, falling back to
+/// `name`), so an account with an explicit `uuid` that happens to equal
+/// another account's name-fallback identity is caught here too, not just
+/// explicit-`uuid`-vs-explicit-`uuid` collisions.
 pub(crate) fn identity_collisions(accounts: &[AccountConfig]) -> Vec<(String, Vec<String>)> {
     let mut groups = BTreeMap::<&str, Vec<String>>::new();
     for account in accounts {
-        if let Some(identity) = account.uuid.as_deref() {
-            groups
-                .entry(identity)
-                .or_default()
-                .push(account.name.clone());
-        }
+        groups
+            .entry(crate::accounts::account_identity(account))
+            .or_default()
+            .push(account.name.clone());
     }
     groups
         .into_iter()
@@ -1933,6 +1936,34 @@ mod tests {
             identity_collisions(&[first.clone(), second.clone(), unique, solo]),
             vec![(
                 "shared".to_string(),
+                vec!["first".to_string(), "second".to_string()]
+            )]
+        );
+
+        let mut config = Config::default();
+        config.providers.get_mut("codex").unwrap().accounts = vec![first, second];
+        assert!(
+            config.validate().is_ok(),
+            "collisions are warnings, not errors"
+        );
+    }
+
+    #[test]
+    fn identity_collisions_catches_explicit_uuid_matching_a_name_fallback_identity() {
+        // "first" has no uuid, so its runtime identity falls back to its name
+        // ("first"). A second account whose *explicit* uuid is literally
+        // "first" collides with it at runtime (`account_identity` uses the
+        // same key for both), even though the old implementation only ever
+        // compared explicit uuids against each other.
+        let first = account("first");
+        let mut second = account("second");
+        second.uuid = Some("first".to_string());
+        let unrelated = account("unrelated");
+
+        assert_eq!(
+            identity_collisions(&[first.clone(), second.clone(), unrelated]),
+            vec![(
+                "first".to_string(),
                 vec!["first".to_string(), "second".to_string()]
             )]
         );

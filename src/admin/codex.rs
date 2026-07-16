@@ -179,6 +179,16 @@ pub(super) async fn complete_codex_account(
         return bad_gateway("Codex token exchange did not return an account id");
     };
 
+    // Capture the pre-store identity before it is overwritten below, so a
+    // reprovision that changes the upstream identity (A -> B) can clean up A's
+    // now-orphaned health entry too, instead of leaving it stranded (only the
+    // newly stored B was ever cleared previously).
+    let old_identity_name = name.clone();
+    let old_identity =
+        tokio::task::spawn_blocking(move || codex_store::account_id(&old_identity_name))
+            .await
+            .unwrap_or(None);
+
     let account_name = name.clone();
     let access_token = tokens.access_token;
     let id_token = tokens.id_token;
@@ -205,14 +215,33 @@ pub(super) async fn complete_codex_account(
     }
     state.admin_stores.pending.remove(&key);
     // Re-provisioning reuses the account name; clear any process-lifetime Codex
-    // pool health carried over for the newly stored upstream identity.
+    // pool health carried over for the newly stored upstream identity, and for
+    // the identity it replaced (if any). Pool health is keyed by identity, not
+    // name, and may be shared by other stored aliases, so only clear an
+    // identity when no other stored account still resolves to it.
     let identity_name = name.clone();
-    let identity = tokio::task::spawn_blocking(move || {
-        codex_store::account_id(&identity_name).unwrap_or(identity_name)
+    let other_accounts_name = name.clone();
+    let (new_identity, other_identities) = tokio::task::spawn_blocking(move || {
+        let new_identity = codex_store::account_id(&identity_name).unwrap_or(identity_name);
+        let others: std::collections::HashSet<String> = codex_store::scan_accounts()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|account| account.name != other_accounts_name)
+            .map(|account| account.uuid.unwrap_or(account.name))
+            .collect();
+        (new_identity, others)
     })
     .await
-    .unwrap_or_else(|_| name.clone());
-    forget_pool_health(&state, AuthMode::ChatgptOauth, &identity);
+    .unwrap_or_else(|_| (name.clone(), std::collections::HashSet::new()));
+
+    if let Some(old_identity) = old_identity {
+        if old_identity != new_identity && !other_identities.contains(&old_identity) {
+            forget_pool_health(&state, AuthMode::ChatgptOauth, &old_identity);
+        }
+    }
+    if !other_identities.contains(&new_identity) {
+        forget_pool_health(&state, AuthMode::ChatgptOauth, &new_identity);
+    }
     tracing::info!(account = %name, account_id_present = true, "admin: Codex account stored");
 
     let live =

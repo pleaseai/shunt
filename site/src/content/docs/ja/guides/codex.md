@@ -9,7 +9,7 @@ description: ~/.codex/auth.json を再利用して Claude Code の推論を Chat
 このページはエンドツーエンドのセットアップです。各トピックを繰り返すのではなく、より深いトピックページ（[Effort & Context](/ja/guides/effort-and-context/)、[Model Discovery](/ja/guides/model-discovery/)、[Providers](/ja/guides/providers/)）へリンクします。
 
 :::note[Duplicate names for one real account]
-When a Codex pool contains two names with the same `account_id`, shunt counts them as **one account**. The aliases share cooldown, health, and refresh locks, and failover skips the duplicate identity instead of retrying it. The enabled alias with the lowest `priority` (then the first entry) supplies the only token attempted, and shunt logs a duplicate-identity warning. Store discovery reads `tokens.account_id` or the JWT claim and caches the scan by directory mtime. See the [Codex Multi-Account guide](/guides/codex-multi-account/) for details.
+When a Codex pool contains two names with the same `account_id`, shunt counts them as **one account**. The aliases share cooldown, health, and refresh locks, and failover skips the duplicate identity instead of retrying it. The enabled alias with the lowest `priority` (then the first entry) supplies the only token attempted, and shunt logs a duplicate-identity warning. Store discovery reads `tokens.account_id` or the JWT claim and caches the scan by directory mtime. See the [Codex Multi-Account guide](/ja/guides/codex-multi-account/) for details.
 :::
 
 ## 仕組み
