@@ -72,9 +72,10 @@ pub(super) async fn forward_chatgpt_oauth(
     for index in order {
         let account = &accounts_config[index];
 
-        // Resolve the account's credential under its per-account refresh lock
-        // (see resolve_or_cooldown); a resolution failure cools it down and
-        // rotates to the next account.
+        // Resolve the account's credential without the account-pool refresh lock;
+        // the auth store returns valid tokens concurrently and single-flights any
+        // expired-token refresh internally. A resolution failure cools the
+        // account down and rotates to the next account.
         let credential = match resolve_or_cooldown(&state, &route, account).await {
             Some(credential) => credential,
             None => continue,
@@ -325,17 +326,17 @@ pub(super) fn rotate_cooldown(
     }
 }
 
-/// Resolve one Codex/ChatGPT OAuth account's credential under its per-account
-/// refresh lock. On failure the account is cooled down for 5 minutes and logged,
-/// and `None` signals the caller to rotate to the next account. The lock is
-/// released before the caller sends upstream (never held across a send).
+/// Resolve one Codex/ChatGPT OAuth account's credential. Valid stored tokens
+/// return without synchronization; expired-token refreshes are single-flighted by
+/// [`CodexAuthStore::get_valid_chatgpt`] using the credential path and keep that
+/// auth-layer guard through atomic writeback. On failure the account is cooled
+/// down for 5 minutes and logged, and `None` signals the caller to rotate to the
+/// next account.
 pub(super) async fn resolve_or_cooldown(
     state: &AppState,
     route: &Route,
     account: &AccountConfig,
 ) -> Option<Credential> {
-    let refresh_lock = state.accounts.refresh_lock(&route.provider, account);
-    let _guard = refresh_lock.lock().await;
     match resolve_chatgpt_account(account, &state.http_client).await {
         Ok(credential) => Some(credential),
         Err(error) => {
@@ -523,5 +524,85 @@ pub(super) fn classify_retry(
             RetryOutcome::Rotate(retry)
         }
         FailoverAction::PauseSame => unreachable!("classify_codex never returns PauseSame"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    use serde_json::json;
+
+    use super::*;
+    use crate::{
+        config::Config,
+        routing::{AdapterKind, Route},
+    };
+
+    #[tokio::test]
+    async fn valid_token_resolution_does_not_wait_for_account_refresh_lock() {
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-responses-pool-valid-token-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("auth.json");
+        let payload = json!({
+            "exp": 4_102_444_800_u64,
+            "https://api.openai.com/auth": {"chatgpt_account_id": "acct-valid"}
+        });
+        let access_token = format!(
+            "x.{}.y",
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap())
+        );
+        std::fs::write(
+            &path,
+            json!({
+                "auth_mode": "ChatGPT",
+                "tokens": {
+                    "access_token": access_token.clone(),
+                    "refresh_token": "unused-refresh-token"
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let account = AccountConfig {
+            name: "valid-token".to_string(),
+            credentials: Some(path.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        let route = Route {
+            provider: "codex".to_string(),
+            adapter: AdapterKind::Responses,
+            model: "test-model".to_string(),
+            upstream_model: "test-model".to_string(),
+            effort: None,
+        };
+        let state = AppState::new(Config::default(), reqwest::Client::new()).unwrap();
+
+        // Deliberately hold the account-pool lock. Valid-token resolution must
+        // bypass it; only an auth-layer refresh needs synchronization.
+        let refresh_lock = state.accounts.refresh_lock(&route.provider, &account);
+        let _guard = refresh_lock.lock().await;
+        let credential = tokio::time::timeout(
+            Duration::from_secs(3),
+            resolve_or_cooldown(&state, &route, &account),
+        )
+        .await
+        .expect("valid-token resolution must not wait for the account-pool refresh lock")
+        .expect("valid stored token should resolve");
+
+        assert_eq!(
+            chatgpt_access_token(&credential),
+            Some(access_token.as_str())
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
