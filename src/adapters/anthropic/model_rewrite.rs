@@ -18,11 +18,13 @@ use axum::body::Bytes;
 use futures_util::{stream, Stream, StreamExt};
 use serde_json::Value;
 
+const MAX_FIRST_FRAME_BYTES: usize = 64 * 1024;
+
 /// Rewrite a non-streaming Messages response body's top-level `model` to
 /// `alias` when it is present and differs. A non-JSON body, a body without a
 /// `model` field (e.g. `count_tokens`), or one already equal to `alias` is
 /// returned unchanged.
-pub(super) fn rewrite_response_model(body: Vec<u8>, alias: &str) -> Vec<u8> {
+pub(super) fn rewrite_response_model(body: Bytes, alias: &str) -> Bytes {
     let Ok(mut value) = serde_json::from_slice::<Value>(&body) else {
         return body;
     };
@@ -32,7 +34,7 @@ pub(super) fn rewrite_response_model(body: Vec<u8>, alias: &str) -> Vec<u8> {
     match object.get("model").and_then(Value::as_str) {
         Some(model) if model != alias => {
             object.insert("model".to_string(), Value::String(alias.to_string()));
-            serde_json::to_vec(&value).unwrap_or(body)
+            serde_json::to_vec(&value).map(Bytes::from).unwrap_or(body)
         }
         _ => body,
     }
@@ -77,6 +79,9 @@ where
                 match upstream.next().await {
                     Some(Ok(chunk)) => {
                         buf.extend_from_slice(&chunk);
+                        if buf.len() > MAX_FIRST_FRAME_BYTES {
+                            return Some((Ok(Bytes::from(buf)), (upstream, None, alias)));
+                        }
                         continue;
                     }
                     // A transport error before the first frame completes is
@@ -160,7 +165,10 @@ mod tests {
     use axum::body::Bytes;
     use futures_util::{stream, StreamExt};
 
-    use super::{rewrite_first_model_stream, rewrite_message_start_frame, rewrite_response_model};
+    use super::{
+        rewrite_first_model_stream, rewrite_message_start_frame, rewrite_response_model,
+        MAX_FIRST_FRAME_BYTES,
+    };
 
     type Item = Result<Bytes, std::convert::Infallible>;
 
@@ -180,7 +188,8 @@ mod tests {
 
     #[test]
     fn response_model_rewritten_when_differs() {
-        let body = br#"{"id":"msg_1","model":"kimi-k2.7-code","role":"assistant"}"#.to_vec();
+        let body =
+            Bytes::from_static(br#"{"id":"msg_1","model":"kimi-k2.7-code","role":"assistant"}"#);
         let out = rewrite_response_model(body, "claude-go-kimi-k2.7-code-via-litellm");
         let value: serde_json::Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(value["model"], "claude-go-kimi-k2.7-code-via-litellm");
@@ -190,7 +199,7 @@ mod tests {
 
     #[test]
     fn response_model_untouched_when_matches() {
-        let body = br#"{"model":"claude-alias","x":1}"#.to_vec();
+        let body = Bytes::from_static(br#"{"model":"claude-alias","x":1}"#);
         let original = body.clone();
         assert_eq!(rewrite_response_model(body, "claude-alias"), original);
     }
@@ -198,12 +207,12 @@ mod tests {
     #[test]
     fn response_model_untouched_when_absent_or_non_json() {
         // count_tokens-style body (no model field) and a non-JSON body both pass.
-        let no_model = br#"{"input_tokens":42}"#.to_vec();
+        let no_model = Bytes::from_static(br#"{"input_tokens":42}"#);
         assert_eq!(
             rewrite_response_model(no_model.clone(), "claude-alias"),
             no_model
         );
-        let not_json = b"not json".to_vec();
+        let not_json = Bytes::from_static(b"not json");
         assert_eq!(
             rewrite_response_model(not_json.clone(), "claude-alias"),
             not_json
@@ -271,6 +280,13 @@ mod tests {
         assert!(out.contains("\"model\":\"claude-alias\""));
         assert!(out.contains("event: ping"));
         assert!(!out.contains("kimi-k2.7-code"));
+    }
+
+    #[tokio::test]
+    async fn stream_stops_buffering_when_first_frame_exceeds_limit() {
+        let oversized = "x".repeat(MAX_FIRST_FRAME_BYTES + 1);
+        let out = collect(vec![chunk(&oversized)], Some("claude-alias")).await;
+        assert_eq!(out, oversized);
     }
 
     #[tokio::test]

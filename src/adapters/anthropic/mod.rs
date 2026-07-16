@@ -568,10 +568,7 @@ async fn relay_response(
         // reading it whole to rewrite the top-level `model` respects the
         // "don't buffer SSE unless non-streaming" rule.
         match upstream.bytes().await {
-            Ok(bytes) => Body::from(model_rewrite::rewrite_response_model(
-                bytes.to_vec(),
-                &alias,
-            )),
+            Ok(bytes) => Body::from(model_rewrite::rewrite_response_model(bytes, &alias)),
             Err(error) => return Err(upstream_error(error)),
         }
     } else {
