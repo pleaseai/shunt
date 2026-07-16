@@ -84,7 +84,10 @@ fn token_account_id(tokens: &Value) -> Option<String> {
     tokens
         .get("account_id")
         .and_then(Value::as_str)
-        .filter(|account_id| !account_id.is_empty())
+        // Matches `accounts::account_identity`'s blank-uuid fallback: a
+        // whitespace-only `account_id` is treated the same as a missing one,
+        // not as a distinct (accidentally-colliding) identity.
+        .filter(|account_id| !account_id.trim().is_empty())
         .map(ToOwned::to_owned)
         .or_else(|| {
             tokens

@@ -80,7 +80,7 @@ Full OAuth 创建一个新的可刷新 credential;import 把当前的 `~/.claude
 | `name` | 是 | 只含小写字母、数字和连字符的唯一标签。若没有其他来源字段,则解析同名的 shunt 存储文件。 |
 | `credentials` | 可用来源之一 | Claude Code `.credentials.json` 形态的文件。`~/` 会被展开。shunt 在临近过期时刷新,并将刷新后的 token 原子性地写回。 |
 | `token_env` | 可用来源之一 | 包含 setup token 的环境变量。其值按原样使用,401 之后无法刷新。 |
-| `uuid` | 否 | 所选账户的 Anthropic UUID,用于改写已存在的 `metadata.user_id.account_uuid`,同时也是池中用于合并别名的稳定身份。仅有名称的条目(通过存储扫描解析)会在选择发生前自动从存储的 `shuntAccountUuid` 填充;而通过 `credentials` 或 `token_env` 配置的条目,只有在显式设置了匹配的 `uuid` 时才会与其他别名合并。 |
+| `uuid` | 否 | 所选账户的 Anthropic UUID,用于改写已存在的 `metadata.user_id.account_uuid`,同时也是池中用于合并别名的稳定身份。仅有名称的条目(通过存储扫描解析)会在选择发生前自动从存储的 `shuntAccountUuid` 填充。通过 `credentials` 或 `token_env` 配置的条目,其身份在设置了 `uuid` 时为该值,否则为 `name`;只要该身份与另一别名显式的 `uuid` 或名称回退身份相等,就会与之合并——为清晰、有意的合并,请在两个条目上设置匹配且非空的 `uuid`(当某个显式 `uuid` 意外匹配另一账户的名称回退身份时,shunt 也会发出警告)。 |
 | `threshold` | 否 | `[0.0, 1.0]` 范围内的按账户软配额阈值,适用于所有没有按窗口取值的窗口。较低的取值把该账户标记为提前轮换出去的后备账户。 |
 | `threshold_5h` / `threshold_7d` / `threshold_fable` | 否 | 按窗口的软阈值;各自在其窗口上优先于 `threshold`。 |
 | `priority` | 否 | 粘性账户不健康时的选择优先级;数值越低越优先,默认 `100`。 |

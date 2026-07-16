@@ -162,7 +162,10 @@ fn read_account_uuid(path: &Path) -> Option<String> {
     value
         .get("shuntAccountUuid")
         .and_then(Value::as_str)
-        .filter(|uuid| !uuid.is_empty())
+        // Matches `accounts::account_identity`'s blank-uuid fallback: a
+        // whitespace-only UUID is treated the same as a missing one, not as
+        // a distinct (accidentally-colliding) identity.
+        .filter(|uuid| !uuid.trim().is_empty())
         .map(ToOwned::to_owned)
 }
 
@@ -175,7 +178,7 @@ fn read_account_uuid_strict(path: &Path) -> Result<Option<String>, ()> {
     Ok(value
         .get("shuntAccountUuid")
         .and_then(Value::as_str)
-        .filter(|uuid| !uuid.is_empty())
+        .filter(|uuid| !uuid.trim().is_empty())
         .map(ToOwned::to_owned))
 }
 

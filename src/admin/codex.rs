@@ -251,7 +251,6 @@ pub(super) async fn complete_codex_account(
                     forget_pool_health_if_absent(
                         &state,
                         AuthMode::ChatgptOauth,
-                        &name,
                         old_identity,
                         Some(other_identities),
                     );
@@ -260,7 +259,6 @@ pub(super) async fn complete_codex_account(
             forget_pool_health_if_absent(
                 &state,
                 AuthMode::ChatgptOauth,
-                &name,
                 &new_identity,
                 Some(other_identities),
             );
@@ -272,19 +270,12 @@ pub(super) async fn complete_codex_account(
                     forget_pool_health_if_absent(
                         &state,
                         AuthMode::ChatgptOauth,
-                        &name,
                         old_identity,
                         None,
                     );
                 }
             }
-            forget_pool_health_if_absent(
-                &state,
-                AuthMode::ChatgptOauth,
-                &name,
-                &new_identity,
-                None,
-            );
+            forget_pool_health_if_absent(&state, AuthMode::ChatgptOauth, &new_identity, None);
         }
     }
     tracing::info!(account = %name, account_id_present = true, "admin: Codex account stored");
@@ -364,7 +355,6 @@ pub(super) async fn remove_codex_account_handler(
     forget_pool_health_if_absent(
         &state,
         AuthMode::ChatgptOauth,
-        &name,
         &identity,
         store_scan_others.as_ref(),
     );
