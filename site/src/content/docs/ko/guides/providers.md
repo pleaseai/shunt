@@ -7,7 +7,7 @@ description: 내장 프로바이더와 TOML 테이블로 Anthropic 호환 백엔
 
 - **`kind = "anthropic"`** — 업스트림이 Anthropic Messages API를 사용합니다. shunt는 요청을 패스스루하며, 필요하면 다른 API 키를 주입합니다.
 - **`kind = "responses"`** — 업스트림이 OpenAI Responses API를 사용합니다. shunt는 Anthropic Messages ⇄ Responses를 스트리밍 포함하여 변환합니다.
-- **`kind = "cursor"`** — 네이티브 Cursor 어댑터입니다. shunt는 Cursor의 ConnectRPC/protobuf AgentService(및 그 도구 프로토콜)를 Anthropic Messages API로 스트리밍 포함하여 브리지합니다. 내장 `cursor` 프로바이더가 사용합니다.
+- **`kind = "cursor"`** — 네이티브 Cursor 어댑터입니다. shunt는 Cursor의 ConnectRPC/protobuf AgentService를 Anthropic Messages API로 브리지하며, 스트리밍·추론·네이티브 도구 호출·인라인 이미지를 포함합니다. 내장 `cursor` 프로바이더가 사용합니다.
 
 ## 내장 프로바이더
 
@@ -38,7 +38,7 @@ ChatGPT 계정 Codex 백엔드는 `gpt-*-codex` 슬러그를 **거부**합니다
 
 ### cursor 프로바이더 (Cursor 구독)
 
-내장 `cursor` 프로바이더는 Cursor 자체의 ConnectRPC/protobuf AgentService(`api2.cursor.sh`)를 통해 **Cursor** 구독에 도달합니다 — `kind = "cursor"` 네이티브 어댑터가 이를 Anthropic Messages로, 그리고 그 반대로 스트리밍과 Cursor의 네이티브 도구 호출을 포함하여 변환합니다. 한 번 로그인하세요:
+내장 `cursor` 프로바이더는 Cursor 자체의 ConnectRPC/protobuf AgentService를 통해 **Cursor** 구독에 도달합니다 — `kind = "cursor"` 네이티브 어댑터가 이를 Anthropic Messages로, 그리고 그 반대로 스트리밍을 포함하여 변환합니다. 로그인과 토큰 갱신은 `api2.cursor.sh`를 사용하고, 에이전트 턴은 Cursor의 현재 에이전트 호스트(`agentn.global.api5.cursor.sh`)에 HTTP/2로 실행됩니다. 한 번 로그인하세요:
 
 ```bash
 shunt login cursor
@@ -50,22 +50,26 @@ shunt login cursor
 
 ```toml
 [[routes]]
-model = "cursor:gpt-5.5"
+model = "cursor:default"
 provider = "cursor"
 ```
 
-**모델 id와 에이전트 모드.** 프리픽스가 Cursor의 에이전트 모드를 선택하고 접미사가 Cursor 모델 id입니다:
+:::note[어댑터가 전달하는 것]
+어댑터는 어시스턴트 **텍스트와 추론**을 스트리밍하고, 클라이언트의 **도구**를 네이티브 Cursor MCP 도구 호출로 브리지하며(모델이 호출한 도구는 `stop_reason: "tool_use"`를 가진 Anthropic `tool_use` 블록으로 나타납니다 — 클라이언트가 이를 실행하고 `tool_result`를 되돌려 보내면 shunt가 그 결과를 히스토리에 담아 턴을 다시 실행합니다), **인라인 이미지**(base64 소스, URL 이미지는 건너뜀)를 전달합니다. Cursor 자체의 에이전트형 파일/셸 도구는 노출되지 않으며, 요청이 광고한 도구만 사용됩니다.
+:::
+
+**모델 id와 에이전트 모드.** 프리픽스가 Cursor의 에이전트 모드(Agent / Plan / Ask)를 선택하고 접미사가 Cursor 모델 id입니다. `cursor-agent models`가 보여주는 표시 이름이 아니라 **와이어** id를 사용하세요: Auto는 `default`입니다(`cursor:auto`로 라우팅하면 `Unknown model ID: auto`로 실패합니다). 명명된 모델(예: `cursor:gpt-5.2`)은 이를 허용하는 유료 플랜이 필요하며, 무료 플랜은 `cursor:default`로 제한됩니다.
 
 | 형식 | 에이전트 모드 | 예시 |
 | :-- | :-- | :-- |
-| `cursor:<id>` / `cursor-agent:<id>` | Agent | `cursor:gpt-5.5` |
-| `cursor-plan:<id>` | Plan | `cursor-plan:gpt-5.5` |
-| `cursor-ask:<id>` | Ask | `cursor-ask:gpt-5.5` |
+| `cursor:<id>` / `cursor-agent:<id>` | Agent | `cursor:default` |
+| `cursor-plan:<id>` | Plan | `cursor-plan:default` |
+| `cursor-ask:<id>` | Ask | `cursor-ask:default` |
 
 레거시 축약 이름도 받아들입니다: `cursor`, `cursor-agent`, `cursor-composer`, `cursor-composer-fast`(Agent); `cursor-plan`, `composer-2.5`(Plan); `cursor-ask`, `composer-2.5-fast`(Ask). 그 외의 모델 id는 `invalid_request_error`로 거부됩니다.
 
 :::note[오버라이드]
-`SHUNT_CURSOR_BASE_URL`은 엔드포인트를, `SHUNT_CURSOR_AUTH_FILE`은 자격 증명 경로를, `SHUNT_CURSOR_CLIENT_VERSION`은 `x-cursor-client-version` 헤더를 오버라이드합니다(Cursor가 오래된 클라이언트 버전을 거부하기 시작하면 재빌드 없이 값을 올리세요). `cursor_oauth` 프로바이더는 HTTPS로 Cursor 호스트에 고정됩니다 — `base_url`을 오프-오리진으로 지정하는 것은 베어러 토큰이 유출되지 않도록 거부됩니다.
+`SHUNT_CURSOR_BASE_URL`은 로그인/갱신 엔드포인트를, `SHUNT_CURSOR_AGENT_BASE_URL`은 에이전트 호스트(HTTPS `cursor.sh` 호스트여야 함)를, `SHUNT_CURSOR_AUTH_FILE`은 자격 증명 경로를, `SHUNT_CURSOR_CLIENT_VERSION`은 `x-cursor-client-version` 헤더를 오버라이드합니다(Cursor가 오래된 클라이언트 버전을 거부하기 시작하면 재빌드 없이 값을 올리세요). `cursor_oauth` 프로바이더는 HTTPS로 Cursor 호스트에 고정됩니다 — `base_url`을 오프-오리진으로 지정하는 것은 베어러 토큰이 유출되지 않도록 거부됩니다.
 :::
 
 :::caution[본인의 판단]
