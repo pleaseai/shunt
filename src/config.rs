@@ -50,6 +50,12 @@ pub struct ServerConfig {
     /// `docs/m9-admin-surface.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admin: Option<AdminConfig>,
+    /// Optional OAuth device-flow login surface for Claude apps. Absent ⇒ the
+    /// discovery, device-approval, and token routes are not registered. Secrets
+    /// and static users are resolved from environment variables and hot-reloaded.
+    /// See `docs/gateway-login.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<GatewayConfig>,
     /// Optional opt-in inbound OpenAI Responses (Codex) endpoint. Absent ⇒ no
     /// `/responses` routes are registered at all (today's HTTP surface
     /// unchanged). When set, the Codex CLI can point its `chatgpt_base_url` (or
@@ -250,6 +256,77 @@ impl AdminConfig {
             crate::auth::inbound::InboundAuth::new(header, tokens),
             std::time::Duration::from_secs(self.session_ttl_secs),
             std::time::Duration::from_secs(self.pending_ttl_secs),
+        ))
+    }
+}
+
+/// `[server.gateway]` — opt-in OAuth device-flow login for Claude apps. The
+/// public URL is the JWT issuer and base for every advertised OAuth endpoint.
+/// Signing material and static approval users live in environment variables,
+/// never in the config file. Absent ⇒ no gateway-login routes exist.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct GatewayConfig {
+    /// Externally reachable URL used for issuer and OAuth endpoint metadata.
+    pub public_url: String,
+    /// Env var holding an HS256 signing secret of at least 32 bytes.
+    #[serde(default = "default_gateway_jwt_secret_env")]
+    pub jwt_secret_env: String,
+    /// Env var holding comma-separated `email:secret` approval users.
+    #[serde(default = "default_gateway_users_env")]
+    pub users_env: String,
+    /// Access-token lifetime in seconds.
+    #[serde(default = "default_gateway_token_ttl_seconds")]
+    pub token_ttl_seconds: u64,
+}
+
+fn default_gateway_jwt_secret_env() -> String {
+    "SHUNT_GATEWAY_JWT_SECRET".to_string()
+}
+
+fn default_gateway_users_env() -> String {
+    "SHUNT_GATEWAY_USERS".to_string()
+}
+
+fn default_gateway_token_ttl_seconds() -> u64 {
+    3600
+}
+
+impl GatewayConfig {
+    pub fn resolve(&self) -> Result<crate::gateway::GatewayAuth, ConfigError> {
+        let public_url = reqwest::Url::parse(self.public_url.trim()).map_err(|error| {
+            ConfigError::InvalidGatewayPublicUrl {
+                message: error.to_string(),
+            }
+        })?;
+        if !matches!(public_url.scheme(), "http" | "https") || public_url.host_str().is_none() {
+            return Err(ConfigError::InvalidGatewayPublicUrl {
+                message: "must be an http(s) URL with a host".to_string(),
+            });
+        }
+        let secret = std::env::var(&self.jwt_secret_env).unwrap_or_default();
+        if secret.as_bytes().len() < 32 {
+            return Err(ConfigError::InvalidGatewayJwtSecret {
+                env: self.jwt_secret_env.clone(),
+            });
+        }
+        let raw_users = std::env::var(&self.users_env).unwrap_or_default();
+        if raw_users.trim().is_empty() {
+            return Err(ConfigError::MissingGatewayUsers {
+                env: self.users_env.clone(),
+            });
+        }
+        let users =
+            crate::gateway::approval::StaticUsers::parse(&raw_users).map_err(|message| {
+                ConfigError::InvalidGatewayUsers {
+                    env: self.users_env.clone(),
+                    message,
+                }
+            })?;
+        Ok(crate::gateway::GatewayAuth::new(
+            self.public_url.trim_end_matches('/').to_string(),
+            secret.into_bytes(),
+            self.token_ttl_seconds,
+            users,
         ))
     }
 }
@@ -895,6 +972,18 @@ pub enum ConfigError {
     MissingAdminTokens { env: String },
     #[error("[server.admin] tokens in {env} are invalid: {message}")]
     InvalidAdminTokens { env: String, message: String },
+    #[error("[server.gateway] public_url is invalid: {message}")]
+    InvalidGatewayPublicUrl { message: String },
+    #[error(
+        "[server.gateway] requires {env} to contain a JWT signing secret of at least 32 bytes"
+    )]
+    InvalidGatewayJwtSecret { env: String },
+    #[error(
+        "[server.gateway] is set but {env} is unset or empty; no approval users are configured"
+    )]
+    MissingGatewayUsers { env: String },
+    #[error("[server.gateway] users in {env} are invalid: {message}")]
+    InvalidGatewayUsers { env: String, message: String },
     #[error("[server.auth] is set but {env} is unset or empty; refusing to run open")]
     MissingClientTokens { env: String },
     #[error("invalid client tokens in {env}: {message}")]
@@ -1040,6 +1129,7 @@ impl Default for Config {
                 default_provider: "anthropic".to_string(),
                 auth: None,
                 admin: None,
+                gateway: None,
                 codex_endpoint: None,
                 usage: None,
                 pool: None,
@@ -1195,6 +1285,11 @@ impl Config {
         // an unauthenticated admin surface. Reject it rather than run open.
         if let Some(admin) = &self.server.admin {
             admin.resolve()?;
+        }
+        // Fail closed at boot: a configured gateway must have a valid issuer,
+        // sufficiently strong signing secret, and at least one approval user.
+        if let Some(gateway) = &self.server.gateway {
+            gateway.resolve()?;
         }
         // [server.pool] thresholds are consumed unchecked by pool selection, so
         // an out-of-range (or NaN) value would silently distort load balancing
@@ -1530,6 +1625,18 @@ impl Config {
             .map(|admin| admin.map(std::sync::Arc::new))
     }
 
+    /// Resolve `[server.gateway]` into the hot-reloadable JWT/users snapshot.
+    pub fn resolve_gateway_auth(
+        &self,
+    ) -> Result<Option<std::sync::Arc<crate::gateway::GatewayAuth>>, ConfigError> {
+        self.server
+            .gateway
+            .as_ref()
+            .map(GatewayConfig::resolve)
+            .transpose()
+            .map(|gateway| gateway.map(std::sync::Arc::new))
+    }
+
     /// Look up a provider by name.
     pub fn provider(&self, name: &str) -> Option<&ProviderConfig> {
         self.providers.get(name)
@@ -1642,8 +1749,8 @@ mod tests {
     use super::{
         config_file_candidates, default_auth_header, host_is_chatgpt, identity_collisions,
         AccountConfig, AdminConfig, AuthMode, CodexEndpointConfig, Config, ConfigError,
-        ConfigFormat, InboundAuthConfig, ModelConfig, PoolConfig, ProviderKind, ResponsesFlavor,
-        RetryConfig, UsageEndpointConfig,
+        ConfigFormat, GatewayConfig, InboundAuthConfig, ModelConfig, PoolConfig, ProviderKind,
+        ResponsesFlavor, RetryConfig, UsageEndpointConfig,
     };
 
     #[test]
@@ -2122,6 +2229,60 @@ mod tests {
         assert!(matches!(
             config.validate().unwrap_err(),
             ConfigError::CodexEndpointWrongAuth(provider) if provider == "anthropic"
+        ));
+    }
+
+    #[test]
+    fn gateway_config_fails_closed_and_resolves_valid_environment() {
+        let suffix = std::process::id();
+        let secret_env = format!("SHUNT_GATEWAY_CONFIG_SECRET_{suffix}");
+        let users_env = format!("SHUNT_GATEWAY_CONFIG_USERS_{suffix}");
+        let gateway = GatewayConfig {
+            public_url: "https://gateway.example".to_string(),
+            jwt_secret_env: secret_env.clone(),
+            users_env: users_env.clone(),
+            token_ttl_seconds: 3600,
+        };
+
+        assert!(matches!(
+            gateway.resolve(),
+            Err(ConfigError::InvalidGatewayJwtSecret { .. })
+        ));
+        std::env::set_var(&secret_env, "too-short");
+        assert!(matches!(
+            gateway.resolve(),
+            Err(ConfigError::InvalidGatewayJwtSecret { .. })
+        ));
+        std::env::set_var(&secret_env, "0123456789abcdef0123456789abcdef");
+        assert!(matches!(
+            gateway.resolve(),
+            Err(ConfigError::MissingGatewayUsers { .. })
+        ));
+        std::env::set_var(&users_env, "malformed");
+        assert!(matches!(
+            gateway.resolve(),
+            Err(ConfigError::InvalidGatewayUsers { .. })
+        ));
+        std::env::set_var(&users_env, "dev@example.com:password");
+        let resolved = gateway.resolve().expect("valid gateway config");
+        assert_eq!(resolved.public_url(), "https://gateway.example");
+        assert_eq!(resolved.token_ttl_seconds(), 3600);
+
+        std::env::remove_var(secret_env);
+        std::env::remove_var(users_env);
+    }
+
+    #[test]
+    fn gateway_config_rejects_invalid_public_url() {
+        let gateway = GatewayConfig {
+            public_url: "not a URL".to_string(),
+            jwt_secret_env: "UNUSED_GATEWAY_SECRET".to_string(),
+            users_env: "UNUSED_GATEWAY_USERS".to_string(),
+            token_ttl_seconds: 3600,
+        };
+        assert!(matches!(
+            gateway.resolve(),
+            Err(ConfigError::InvalidGatewayPublicUrl { .. })
         ));
     }
 

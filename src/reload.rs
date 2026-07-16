@@ -19,6 +19,7 @@ use crate::{
     admin::AdminAuth,
     auth::inbound::InboundAuth,
     config::{Config, ConfigError, SentryConfig},
+    gateway::GatewayAuth,
 };
 
 /// The hot-swappable runtime state derived from a loaded config: the config
@@ -32,6 +33,9 @@ pub struct RuntimeState {
     /// admin token/header edits take effect. `None` ⇒ admin surface disabled
     /// (its routes, when registered at boot, then reject every request).
     pub admin_auth: Option<Arc<AdminAuth>>,
+    /// Gateway-login JWT signer/verifier and approval users. Re-resolved on each
+    /// reload while the route tree remains fixed at boot.
+    pub gateway_auth: Option<Arc<GatewayAuth>>,
 }
 
 /// Shared handle to the live [`RuntimeState`]. Cloning is cheap (an `Arc`); a
@@ -46,10 +50,12 @@ impl RuntimeState {
         let config = config.validate()?;
         let inbound_auth = config.resolve_inbound_auth()?;
         let admin_auth = config.resolve_admin_auth()?;
+        let gateway_auth = config.resolve_gateway_auth()?;
         Ok(Self {
             config: Arc::new(config),
             inbound_auth,
             admin_auth,
+            gateway_auth,
         })
     }
 }
@@ -91,6 +97,11 @@ fn warn_on_restart_only_changes(previous: &Config, next: &Config) {
         tracing::warn!(
             "[server.admin] was enabled or disabled but requires a restart to register or drop its routes; \
              on a still-registered surface, disabling it makes every admin route reject requests"
+        );
+    }
+    if previous.server.gateway.is_some() != next.server.gateway.is_some() {
+        tracing::warn!(
+            "[server.gateway] was enabled or disabled but requires a restart to register or drop its routes; disabling a registered surface makes its handlers return 404"
         );
     }
     // Like `[server.admin]`, whether the inbound Responses routes are registered

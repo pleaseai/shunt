@@ -23,19 +23,32 @@ pub struct ModelEntry {
 pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
     // Snapshot the live config so this response reflects the latest reload.
     let state = state.refreshed();
-    if let Some(auth) = &state.inbound_auth {
-        let Some(client) = auth.authenticate_client(&headers) else {
-            tracing::warn!(
-                "inbound auth failed for GET /v1/models: missing or invalid client token"
-            );
-            let message = format!(
-                "missing or invalid credential: this gateway requires a client token (via {}, x-api-key, or Authorization: Bearer) for model discovery; ask the operator for one",
-                auth.header()
-            );
-            return ShuntError::new(StatusCode::UNAUTHORIZED, "authentication_error", message)
-                .into_response();
-        };
+    let static_client = state
+        .inbound_auth
+        .as_ref()
+        .and_then(|auth| auth.authenticate_client(&headers));
+    let gateway_identity = state
+        .gateway_auth
+        .as_ref()
+        .and_then(|auth| auth.authenticate_bearer(&headers));
+    if (state.inbound_auth.is_some() || state.gateway_auth.is_some())
+        && static_client.is_none()
+        && gateway_identity.is_none()
+    {
+        tracing::warn!(
+            "inbound auth failed for GET /v1/models: missing or invalid client credential"
+        );
+        return ShuntError::new(
+            StatusCode::UNAUTHORIZED,
+            "authentication_error",
+            "missing or invalid credential for model discovery",
+        )
+        .into_response();
+    }
+    if let Some(client) = static_client {
         tracing::info!(client = %client, "inbound client authenticated for GET /v1/models");
+    } else if let Some(identity) = gateway_identity {
+        tracing::info!(client = %identity.email, "gateway user authenticated for GET /v1/models");
     }
     let data: Vec<ModelEntry> = state
         .config

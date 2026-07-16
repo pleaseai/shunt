@@ -295,7 +295,11 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     // usage API in the background, sharing the router's account pool. A no-op
     // when the key is unset.
     shunt::usage_poll::spawn_usage_poller(state);
-    axum::serve(listener, router).await?;
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 
