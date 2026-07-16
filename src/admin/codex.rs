@@ -20,8 +20,8 @@ use crate::{
 };
 
 use super::{
-    authenticate, bad_gateway, bad_request, check_csrf, forget_pool_health_if_absent, internal,
-    json_secure,
+    authenticate, bad_gateway, bad_request, check_csrf, cleanup_reprovisioned_pool_health,
+    forget_pool_health_if_absent, internal, json_secure, remaining_account_identities,
     session::{PendingAttempt, PendingKind},
     too_many_requests, unauthorized,
 };
@@ -221,63 +221,23 @@ pub(super) async fn complete_codex_account(
     // name, and may be shared by other stored aliases, so only clear an
     // identity when no other stored account still resolves to it.
     let identity_name = name.clone();
-    let other_accounts_name = name.clone();
-    let (new_identity, other_identities) = tokio::task::spawn_blocking(move || {
-        let new_identity = codex_store::account_id(&identity_name).unwrap_or(identity_name);
-        // `None` (rather than an empty set) means the scan itself failed —
-        // distinguished from "scanned fine, no other accounts share this
-        // identity" so the fail-closed check below can tell the two apart.
-        let others = codex_store::scan_accounts_strict().ok().map(|accounts| {
-            accounts
-                .into_iter()
-                .filter(|account| account.name != other_accounts_name)
-                .map(|account| crate::accounts::account_identity(&account).to_string())
-                .collect::<std::collections::HashSet<String>>()
-        });
-        (new_identity, others)
+    let new_identity = tokio::task::spawn_blocking(move || {
+        codex_store::account_id(&identity_name).unwrap_or(identity_name)
     })
     .await
-    .unwrap_or_else(|_| (name.clone(), None));
-
-    // Fail-closed for dynamic-discovery providers: only clear their health when
-    // the store scan that enumerates remaining aliases actually succeeded.
-    // Explicitly configured providers are checked against their own account
-    // list regardless (see `forget_pool_health_if_absent`), so they are
-    // cleaned up precisely even when the scan below fails.
-    match &other_identities {
-        Some(other_identities) => {
-            if let Some(old_identity) = &old_identity {
-                if old_identity != &new_identity {
-                    forget_pool_health_if_absent(
-                        &state,
-                        AuthMode::ChatgptOauth,
-                        old_identity,
-                        Some(other_identities),
-                    );
-                }
-            }
-            forget_pool_health_if_absent(
-                &state,
-                AuthMode::ChatgptOauth,
-                &new_identity,
-                Some(other_identities),
-            );
-        }
-        None => {
-            tracing::warn!(account = %name, "admin: failed to scan Codex account store during reprovision cleanup; preserving dynamic-discovery-provider pool health for the old and new identities");
-            if let Some(old_identity) = &old_identity {
-                if old_identity != &new_identity {
-                    forget_pool_health_if_absent(
-                        &state,
-                        AuthMode::ChatgptOauth,
-                        old_identity,
-                        None,
-                    );
-                }
-            }
-            forget_pool_health_if_absent(&state, AuthMode::ChatgptOauth, &new_identity, None);
-        }
+    .unwrap_or_else(|_| name.clone());
+    let other_identities =
+        remaining_account_identities(&name, codex_store::scan_accounts_strict).await;
+    if other_identities.is_none() {
+        tracing::warn!(account = %name, "admin: failed to scan Codex account store during reprovision cleanup; preserving dynamic-discovery-provider pool health for the old and new identities");
     }
+    cleanup_reprovisioned_pool_health(
+        &state,
+        AuthMode::ChatgptOauth,
+        old_identity.as_deref(),
+        &new_identity,
+        other_identities.as_ref(),
+    );
     tracing::info!(account = %name, account_id_present = true, "admin: Codex account stored");
 
     let live =

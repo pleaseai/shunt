@@ -69,7 +69,10 @@ fn read_account_id(path: &Path) -> Option<String> {
 fn read_account_id_strict(path: &Path) -> Result<Option<String>, ()> {
     let bytes = fs::read(path).map_err(|_| ())?;
     let value: Value = serde_json::from_slice(&bytes).map_err(|_| ())?;
-    let tokens = value.get("tokens").ok_or(())?;
+    let tokens = value
+        .get("tokens")
+        .filter(|tokens| tokens.is_object())
+        .ok_or(())?;
     Ok(token_account_id(tokens))
 }
 
@@ -506,6 +509,15 @@ mod tests {
         assert!(
             scan_accounts_strict().is_err(),
             "a missing tokens object is a malformed Codex account file"
+        );
+        fs::write(
+            dir.join("broken.json"),
+            json!({"auth_mode":"ChatGPT","tokens":"not an object"}).to_string(),
+        )
+        .unwrap();
+        assert!(
+            scan_accounts_strict().is_err(),
+            "a non-object tokens value is a malformed Codex account file"
         );
         // The lenient scan still tolerates it, falling back to the name.
         let lenient = scan_accounts().unwrap();

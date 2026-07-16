@@ -15,7 +15,7 @@ pub mod session;
 mod codex;
 mod html;
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashSet, io, sync::Arc, time::Duration};
 
 use axum::{
     extract::{rejection::JsonRejection, Path, State},
@@ -200,7 +200,7 @@ pub(super) fn forget_pool_health_if_absent(
     state: &AppState,
     auth: AuthMode,
     identity: &str,
-    store_scan_others: Option<&std::collections::HashSet<String>>,
+    store_scan_others: Option<&HashSet<String>>,
 ) {
     for (provider_name, provider) in &state.config.providers {
         if provider.auth != auth {
@@ -221,6 +221,37 @@ pub(super) fn forget_pool_health_if_absent(
             state.accounts.forget_identity(provider_name, identity);
         }
     }
+}
+
+pub(super) async fn remaining_account_identities(
+    account_name: &str,
+    scan: fn() -> io::Result<Vec<crate::config::AccountConfig>>,
+) -> Option<HashSet<String>> {
+    let excluded_name = account_name.to_string();
+    tokio::task::spawn_blocking(move || {
+        scan().ok().map(|accounts| {
+            accounts
+                .into_iter()
+                .filter(|account| account.name != excluded_name)
+                .map(|account| crate::accounts::account_identity(&account).to_string())
+                .collect()
+        })
+    })
+    .await
+    .unwrap_or(None)
+}
+
+pub(super) fn cleanup_reprovisioned_pool_health(
+    state: &AppState,
+    auth: AuthMode,
+    old_identity: Option<&str>,
+    new_identity: &str,
+    other_identities: Option<&HashSet<String>>,
+) {
+    if let Some(old_identity) = old_identity.filter(|old| *old != new_identity) {
+        forget_pool_health_if_absent(state, auth, old_identity, other_identities);
+    }
+    forget_pool_health_if_absent(state, auth, new_identity, other_identities);
 }
 
 /// Same-origin check: prefer Fetch Metadata (`Sec-Fetch-Site`), fall back to
@@ -721,58 +752,23 @@ async fn complete_account(
     // name, and may be shared by other stored aliases, so only clear an
     // identity when no other stored account still resolves to it.
     let identity_name = name.clone();
-    let other_accounts_name = name.clone();
-    let (new_identity, other_identities) = tokio::task::spawn_blocking(move || {
-        let new_identity = claude_store::account_uuid(&identity_name).unwrap_or(identity_name);
-        // `None` (rather than an empty set) means the scan itself failed —
-        // distinguished from "scanned fine, no other accounts share this
-        // identity" so the fail-closed check below can tell the two apart.
-        let others = claude_store::scan_accounts_strict().ok().map(|accounts| {
-            accounts
-                .into_iter()
-                .filter(|account| account.name != other_accounts_name)
-                .map(|account| crate::accounts::account_identity(&account).to_string())
-                .collect::<std::collections::HashSet<String>>()
-        });
-        (new_identity, others)
+    let new_identity = tokio::task::spawn_blocking(move || {
+        claude_store::account_uuid(&identity_name).unwrap_or(identity_name)
     })
     .await
-    .unwrap_or_else(|_| (name.clone(), None));
-
-    // Fail-closed for dynamic-discovery providers: only clear their health when
-    // the store scan that enumerates remaining aliases actually succeeded.
-    // Explicitly configured providers are checked against their own account
-    // list regardless (see `forget_pool_health_if_absent`), so they are
-    // cleaned up precisely even when the scan below fails.
-    match &other_identities {
-        Some(other_identities) => {
-            if let Some(old_identity) = &old_identity {
-                if old_identity != &new_identity {
-                    forget_pool_health_if_absent(
-                        &state,
-                        AuthMode::ClaudeOauth,
-                        old_identity,
-                        Some(other_identities),
-                    );
-                }
-            }
-            forget_pool_health_if_absent(
-                &state,
-                AuthMode::ClaudeOauth,
-                &new_identity,
-                Some(other_identities),
-            );
-        }
-        None => {
-            tracing::warn!(account = %name, "admin: failed to scan Claude account store during reprovision cleanup; preserving dynamic-discovery-provider pool health for the old and new identities");
-            if let Some(old_identity) = &old_identity {
-                if old_identity != &new_identity {
-                    forget_pool_health_if_absent(&state, AuthMode::ClaudeOauth, old_identity, None);
-                }
-            }
-            forget_pool_health_if_absent(&state, AuthMode::ClaudeOauth, &new_identity, None);
-        }
+    .unwrap_or_else(|_| name.clone());
+    let other_identities =
+        remaining_account_identities(&name, claude_store::scan_accounts_strict).await;
+    if other_identities.is_none() {
+        tracing::warn!(account = %name, "admin: failed to scan Claude account store during reprovision cleanup; preserving dynamic-discovery-provider pool health for the old and new identities");
     }
+    cleanup_reprovisioned_pool_health(
+        &state,
+        AuthMode::ClaudeOauth,
+        old_identity.as_deref(),
+        &new_identity,
+        other_identities.as_ref(),
+    );
     tracing::info!(account = %name, "admin: account stored");
 
     // Empty-accounts providers scan the store per request → live immediately;
