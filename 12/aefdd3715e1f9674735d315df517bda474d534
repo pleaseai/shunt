@@ -1,0 +1,103 @@
+src/proxy.rs
+  s_ebe8e2a93fb5d3::t_e00085068bd89f 210-219
+src/metrics.rs
+  s_ebe8e2a93fb5d3::t_d422d65cfdac74 1,3-4,6-9,12-19,24,35-37,40-41,58-70,83-90
+  s_ebe8e2a93fb5d3::t_8c45a928e7120d 95-133,135-179
+  s_ebe8e2a93fb5d3::t_8b57e90750f69f 134
+  s_ebe8e2a93fb5d3::t_d6553cb4ed024f 272-276
+  s_ebe8e2a93fb5d3::t_d438fb928bf230 289-303
+src/admin/mod.rs
+  s_ebe8e2a93fb5d3::t_fb6c2fdc6bcc07 1115
+  s_ebe8e2a93fb5d3::t_28292c87760a8a 1112
+  s_ebe8e2a93fb5d3::t_6fa1d19cf27cba 1092
+site/src/content/docs/ko/guides/opentelemetry.md
+  s_ebe8e2a93fb5d3::t_6c8282fcbf4be1 46-59
+  s_ebe8e2a93fb5d3::t_f4537d0819894c 41
+site/src/content/docs/ja/reference/configuration.md
+  s_ebe8e2a93fb5d3::t_fe0ac12b6d34c5 110,125
+site/src/content/docs/ko/reference/configuration.md
+  s_ebe8e2a93fb5d3::t_fe0ac12b6d34c5 111,126
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_ebe8e2a93fb5d3::t_fe0ac12b6d34c5 110,125
+src/stream_metrics/tests.rs
+  s_ebe8e2a93fb5d3::t_d8da9f53739855 92-93,95-100
+  s_ebe8e2a93fb5d3::t_731560f948973e 1-91,101-200,204-243
+  s_ebe8e2a93fb5d3::t_860bc6daa77db8 94,201-203
+src/adapters/responses/pool.rs
+  s_ebe8e2a93fb5d3::t_2aa89713164ba8 260
+  s_ebe8e2a93fb5d3::t_0ac5fe5276164a 485-490,544-549
+  s_ebe8e2a93fb5d3::t_860bc6daa77db8 142-147,214-219,350-355,389-394,406-411,438-443,527-532
+site/src/content/docs/ja/guides/opentelemetry.md
+  s_ebe8e2a93fb5d3::t_d5b0af23694d1a 41
+  s_ebe8e2a93fb5d3::t_6ee86fa73d1b96 46-59
+src/lib.rs
+  s_ebe8e2a93fb5d3::t_43a783a1588da0 21
+src/stream_metrics.rs
+  s_ebe8e2a93fb5d3::t_860bc6daa77db8 139,398
+  s_ebe8e2a93fb5d3::t_b758131fa93461 165-197
+  s_ebe8e2a93fb5d3::t_5ff8d0658b5809 198,200-210,213-223,225-229,231-233,235-251,253-263,265-291,294,296
+  s_ebe8e2a93fb5d3::t_1a99274d4281f6 1-127,132-138,140-164,199,211-212,224,230,234,252,264,292-293,295,297-362,365,376-397,399-418
+  s_ebe8e2a93fb5d3::t_e9255921768b9c 128-131
+  s_ebe8e2a93fb5d3::t_f31b3891c95091 363-364,366-375
+src/codex_endpoint.rs
+  s_ebe8e2a93fb5d3::t_34cd1911260613 237-248
+site/src/content/docs/reference/configuration.md
+  s_ebe8e2a93fb5d3::t_fe0ac12b6d34c5 191,206
+src/adapters/anthropic/mod.rs
+  s_ebe8e2a93fb5d3::t_72f0ce1a2baf30 458
+  s_ebe8e2a93fb5d3::t_860bc6daa77db8 173-178,206-211,309-314,403-408,524-529
+  s_ebe8e2a93fb5d3::t_0ac5fe5276164a 239-244,283-288,366,438-443
+site/src/content/docs/zh-cn/guides/opentelemetry.md
+  s_ebe8e2a93fb5d3::t_cb2c234ad1a9af 41
+  s_ebe8e2a93fb5d3::t_b163ba8ad39bb3 46-59
+tests/admin_surface.rs
+  s_ebe8e2a93fb5d3::t_41e007e331ae4b 512,549,715,820,953,959,1652-1657,1689-1694,1834,1945
+site/src/content/docs/guides/opentelemetry.md
+  s_ebe8e2a93fb5d3::t_ee690576bbb024 41
+  s_79a7446d1aaf7e::t_a2d4349cc15680 46-59
+src/adapters/responses/inbound.rs
+  s_ebe8e2a93fb5d3::t_f310f32c94dfe1 248
+  s_ebe8e2a93fb5d3::t_860bc6daa77db8 155-160,212-217
+docs/running.md
+  s_ebe8e2a93fb5d3::t_aa49c513142229 170-183
+  s_ebe8e2a93fb5d3::t_4bf4032d96b868 143-144
+  s_79a7446d1aaf7e::t_ef9d2156092af6 130-131
+src/accounts.rs
+  s_ebe8e2a93fb5d3::t_3c69609033b930 1068,1093-1167,1172-1173,1178-1184
+  s_ebe8e2a93fb5d3::t_175915867f3e4e 86-87
+  s_ebe8e2a93fb5d3::t_98f17fa9ff700a 243
+  s_ebe8e2a93fb5d3::t_e3fe3784610a92 534
+  s_ebe8e2a93fb5d3::t_55d8ffe54c90ac 951-972
+  s_ebe8e2a93fb5d3::t_860bc6daa77db8 1168-1171,1174-1177,1255-1260,1444-1449,1619-1624,1860-1865,1871-1876
+  s_ebe8e2a93fb5d3::t_d8900c15c97a2f 419-454,456-460,465-473
+  s_ebe8e2a93fb5d3::t_b3d86360fe2a7b 1625
+  s_ebe8e2a93fb5d3::t_51365c4ea9f73b 364-371,373-411
+  s_ebe8e2a93fb5d3::t_b2f3b4ca2c1a30 1069-1092
+  s_ebe8e2a93fb5d3::t_aac253df56e30d 485-507,510-516,522,524-525
+  s_ebe8e2a93fb5d3::t_53e8024da67d8c 872-914
+  s_ebe8e2a93fb5d3::t_f2e05c86ddb6c1 230-237
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "12aefdd3715e1f9674735d315df517bda474d534",
+  "prompts": {},
+  "sessions": {
+    "s_79a7446d1aaf7e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-ametric-impl-96f83a9a378a6374",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_ebe8e2a93fb5d3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1c376488-91da-4bba-b7b0-1e6d8674d441",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
