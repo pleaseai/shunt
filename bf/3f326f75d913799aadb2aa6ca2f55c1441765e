@@ -1,0 +1,35 @@
+.release-please-manifest.json
+  s_f8923beebcc70b::t_8d5f1cae1b4f5c 2
+CHANGELOG.md
+  s_f8923beebcc70b::t_868b877a5e44c2 3-10
+Cargo.lock
+  s_f8923beebcc70b::t_00c205e34c7e0a 2665
+Cargo.toml
+  s_f8923beebcc70b::t_acb52729429c29 5
+docs/m3-discovery.md
+  s_f8923beebcc70b::t_f3a8b946ff1a69 62-73,118-121
+src/adapters/anthropic/mod.rs
+  s_f8923beebcc70b::t_aa7b8e966bd878 22-23,99,225,286,409,443,522,524,536-544,559-561,566-573,575
+src/adapters/anthropic/model_rewrite.rs
+  s_f8923beebcc70b::t_91b143735bc488 1-313
+tests/passthrough.rs
+  s_f8923beebcc70b::t_3faed4cf997805 6,688-845
+.please/docs/review/rejected-findings.jsonl
+  s_f8923beebcc70b::t_a33a1ed6ca2c8b 15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "bf3f326f75d913799aadb2aa6ca2f55c1441765e",
+  "prompts": {},
+  "sessions": {
+    "s_f8923beebcc70b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c343b8cf-5686-491c-b325-fb766319578d",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
