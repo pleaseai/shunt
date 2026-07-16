@@ -768,6 +768,8 @@ async fn run_turn(
     let mut output_items = Vec::new();
     let mut turn_state = None;
     let mut deferred = VecDeque::new();
+    let idle = tokio::time::sleep(IDLE_TIMEOUT);
+    tokio::pin!(idle);
     loop {
         let next = if let Some(deferred) = deferred.pop_front() {
             match deferred {
@@ -775,9 +777,16 @@ async fn run_turn(
                 DeferredFrame::Eof => None,
             }
         } else {
-            match tokio::time::timeout(IDLE_TIMEOUT, source.next()).await {
-                Ok(next) => next,
-                Err(_) => {
+            idle.as_mut()
+                .reset(tokio::time::Instant::now() + IDLE_TIMEOUT);
+            // Poll the frame source before the idle timer (matching the
+            // inner-future-first semantics of the `tokio::time::timeout` this
+            // replaced): a frame that arrives as the deadline elapses is still
+            // delivered rather than dropped in favor of the timeout.
+            tokio::select! {
+                biased;
+                next = source.next() => next,
+                _ = &mut idle => {
                     let _ = events
                         .send(Err(CodexWsError::transport(format!(
                             "websocket idle timeout after {}s",
@@ -1349,6 +1358,79 @@ mod tests {
             saw_error,
             "a close before a terminal event surfaced a transport error"
         );
+        server.await.unwrap();
+    }
+
+    /// Silence during an active turn must surface the turn-level idle timeout as a
+    /// transport error rather than ending the event channel quietly or hanging.
+    #[tokio::test(start_paused = true)]
+    async fn turn_idle_timeout_surfaces_transport_error() {
+        use tokio::net::TcpListener;
+        use tokio::sync::oneshot;
+
+        // Use real time while loopback I/O is in flight: a fully paused runtime can
+        // auto-advance to the only pending timer before the OS delivers a frame.
+        tokio::time::resume();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (release_server, hold_server) = oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            let Some(Ok(Message::Text(_))) = ws.next().await else {
+                panic!("expected a client frame");
+            };
+            ws.send(Message::Text(
+                r#"{"type":"response.created","response":{"id":"resp_1"}}"#.to_string(),
+            ))
+            .await
+            .unwrap();
+            // Keep the socket open but silent until the client observes its timeout.
+            let _ = hold_server.await;
+        });
+
+        let frame = response_create_frame(serde_json::json!({"model": "m", "input": []}));
+        let mut events = open_simple(
+            &format!("ws://{addr}/codex/responses"),
+            HeaderMap::new(),
+            &frame,
+            None,
+        )
+        .await
+        .expect("websocket should connect");
+
+        let first = events
+            .recv()
+            .await
+            .expect("the non-terminal event should arrive")
+            .expect("the first event should not be a transport error");
+        assert_eq!(first.event.as_deref(), Some("response.created"));
+
+        tokio::time::pause();
+        // Let run_turn return to its read loop and arm the reset idle timer before
+        // moving the paused clock beyond the turn-level deadline.
+        tokio::task::yield_now().await;
+        tokio::time::advance(IDLE_TIMEOUT + Duration::from_secs(1)).await;
+
+        let error = match events
+            .recv()
+            .await
+            .expect("the idle timeout should produce an event")
+        {
+            Err(error) => error,
+            Ok(event) => panic!("expected an idle-timeout error, got {:?}", event.event),
+        };
+        assert!(
+            error.message.contains("idle timeout"),
+            "unexpected error: {}",
+            error.message
+        );
+        assert!(
+            events.recv().await.is_none(),
+            "the event channel ends after the transport error"
+        );
+
+        drop(release_server);
         server.await.unwrap();
     }
 

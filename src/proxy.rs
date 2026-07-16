@@ -210,12 +210,10 @@ async fn forward(
     result
 }
 
-/// Enforce `[server.auth]` on injected-credential routes and strip the client
-/// token header from what gets forwarded upstream. The gate accepts the same
-/// credential slots as discovery (`x-shunt-token`, then `Authorization:
-/// Bearer`, then `x-api-key`), so on a gated route every accepted slot is
-/// stripped — a gate token must never travel upstream. Returns the headers to
-/// forward. Token values are never logged.
+/// Enforce configured client authentication on injected-credential routes and
+/// strip every accepted credential slot from what gets forwarded upstream.
+/// `[server.auth]` tokens and `[server.gateway]` JWTs compose as alternatives:
+/// either valid credential grants access when both features are enabled.
 fn check_inbound_auth(
     state: &AppState,
     route: &routing::Route,
@@ -223,51 +221,58 @@ fn check_inbound_auth(
 ) -> Result<HeaderMap, Box<ForwardError>> {
     let mut forwarded = headers.clone();
     forwarded.remove("x-shunt-inbound-client");
-    let Some(auth) = &state.inbound_auth else {
-        return Ok(forwarded);
-    };
-    forwarded.remove(auth.header());
+    if let Some(auth) = &state.inbound_auth {
+        forwarded.remove(auth.header());
+    }
 
     let injects_credential = state
         .config
         .provider(&route.provider)
         .map(|provider| provider.auth != AuthMode::Passthrough)
         .unwrap_or(false);
-    if !injects_credential {
+    if !injects_credential || (state.inbound_auth.is_none() && state.gateway_auth.is_none()) {
         return Ok(forwarded);
     }
 
-    match auth.authenticate_client(headers) {
-        Some(client) => {
-            tracing::info!(client = %client, provider = %route.provider, "inbound client authenticated");
-            // The injected-credential adapters all replace these headers with
-            // the provider credential, but strip them here too so the "gate
-            // tokens never leak upstream" boundary does not depend on adapter
-            // behavior.
-            forwarded.remove("authorization");
-            forwarded.remove("x-api-key");
-            if let Ok(client) = HeaderValue::from_str(client) {
+    let static_client = state
+        .inbound_auth
+        .as_ref()
+        .and_then(|auth| auth.authenticate_client(headers));
+    let gateway_identity = state
+        .gateway_auth
+        .as_ref()
+        .and_then(|auth| auth.authenticate_bearer(headers));
+    if static_client.is_some() || gateway_identity.is_some() {
+        let client = static_client
+            .map(str::to_string)
+            .or_else(|| gateway_identity.map(|claims| claims.email))
+            .expect("one composed authentication branch matched");
+        tracing::info!(client = %client, provider = %route.provider, "inbound client authenticated");
+        forwarded.remove("authorization");
+        forwarded.remove("x-api-key");
+        if static_client.is_some() {
+            if let Ok(client) = HeaderValue::from_str(&client) {
                 forwarded.insert("x-shunt-inbound-client", client);
             }
-            Ok(forwarded)
         }
-        None => {
-            tracing::warn!(provider = %route.provider, "inbound auth failed: missing or invalid client token");
-            let message = format!(
-                "missing or invalid credential: this gateway requires a client token (via {}, Authorization: Bearer, or x-api-key) for mapped models; ask the operator for one",
-                auth.header()
-            );
-            Err(Box::new(ForwardError {
-                message: "inbound authentication failed".to_string(),
-                response: ShuntError::new(
-                    StatusCode::UNAUTHORIZED,
-                    "authentication_error",
-                    message,
-                )
-                .into_response(),
-            }))
-        }
+        return Ok(forwarded);
     }
+
+    tracing::warn!(provider = %route.provider, "inbound auth failed: missing or invalid client credential");
+    let message = if let Some(auth) = &state.inbound_auth {
+        format!(
+            "missing or invalid credential: this gateway requires a client token (via {}, Authorization: Bearer, or x-api-key) or gateway login",
+            auth.header()
+        )
+    } else {
+        "missing or invalid credential: sign in to this gateway and send the issued bearer token"
+            .to_string()
+    };
+    Err(Box::new(ForwardError {
+        message: "inbound authentication failed".to_string(),
+        response: ShuntError::new(StatusCode::UNAUTHORIZED, "authentication_error", message)
+            .into_response(),
+    }))
 }
 
 pub(crate) fn is_count_tokens(uri: &Uri) -> bool {

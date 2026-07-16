@@ -19,6 +19,7 @@ use crate::{
     admin::AdminAuth,
     auth::inbound::InboundAuth,
     config::{Config, ConfigError, SentryConfig},
+    gateway::GatewayAuth,
 };
 
 /// The hot-swappable runtime state derived from a loaded config: the config
@@ -32,6 +33,9 @@ pub struct RuntimeState {
     /// admin token/header edits take effect. `None` ⇒ admin surface disabled
     /// (its routes, when registered at boot, then reject every request).
     pub admin_auth: Option<Arc<AdminAuth>>,
+    /// Gateway-login JWT signer/verifier and approval users. Re-resolved on each
+    /// reload while the route tree remains fixed at boot.
+    pub gateway_auth: Option<Arc<GatewayAuth>>,
 }
 
 /// Shared handle to the live [`RuntimeState`]. Cloning is cheap (an `Arc`); a
@@ -46,10 +50,12 @@ impl RuntimeState {
         let config = config.validate()?;
         let inbound_auth = config.resolve_inbound_auth()?;
         let admin_auth = config.resolve_admin_auth()?;
+        let gateway_auth = config.resolve_gateway_auth()?;
         Ok(Self {
             config: Arc::new(config),
             inbound_auth,
             admin_auth,
+            gateway_auth,
         })
     }
 }
@@ -67,7 +73,14 @@ pub fn reload(shared: &SharedState, path: Option<&std::path::Path>) -> Result<()
     let new_config = Config::load(path)?;
     let previous = shared.load();
     warn_on_restart_only_changes(&previous.config, &new_config);
-    let new_state = RuntimeState::from_config(new_config)?;
+    let mut new_state = RuntimeState::from_config(new_config)?;
+    // Route registration and JWT acceptance are one boot-time capability. Keep
+    // that capability fixed while still replacing signer/users when enabled.
+    new_state.gateway_auth = match (&previous.gateway_auth, new_state.gateway_auth.take()) {
+        (Some(_), Some(reloaded)) => Some(reloaded),
+        (Some(running), None) => Some(running.clone()),
+        (None, _) => None,
+    };
     shared.store(Arc::new(new_state));
     tracing::info!("configuration reloaded successfully");
     Ok(())
@@ -91,6 +104,11 @@ fn warn_on_restart_only_changes(previous: &Config, next: &Config) {
         tracing::warn!(
             "[server.admin] was enabled or disabled but requires a restart to register or drop its routes; \
              on a still-registered surface, disabling it makes every admin route reject requests"
+        );
+    }
+    if previous.server.gateway.is_some() != next.server.gateway.is_some() {
+        tracing::warn!(
+            "[server.gateway] was enabled or disabled but requires a restart; the running route and JWT-auth capability remains unchanged"
         );
     }
     // Like `[server.admin]`, whether the inbound Responses routes are registered
@@ -441,6 +459,79 @@ mod tests {
         reload(&shared, Some(&path)).expect("reload with auth succeeds");
         assert!(shared.load().inbound_auth.is_some());
         std::env::remove_var(&env);
+    }
+
+    #[test]
+    fn reload_reresolves_gateway_auth() {
+        let dir = temp_dir("gateway-auth");
+        let _guard = TempDirGuard(dir.clone());
+        let path = dir.join("shunt.toml");
+        let suffix = std::process::id();
+        let secret_env = format!("SHUNT_RELOAD_GATEWAY_SECRET_{suffix}");
+        let users_env = format!("SHUNT_RELOAD_GATEWAY_USERS_{suffix}");
+        std::env::set_var(&secret_env, "0123456789abcdef0123456789abcdef");
+        std::env::set_var(&users_env, "alice@example.com:first-secret");
+        std::fs::write(
+            &path,
+            format!(
+                "[server.gateway]\npublic_url = \"https://gateway.example\"\njwt_secret_env = \"{secret_env}\"\nusers_env = \"{users_env}\"\n"
+            ),
+        )
+        .unwrap();
+        let shared = shared_from(Config::load(Some(&path)).unwrap());
+        let first = shared.load().gateway_auth.clone().unwrap();
+        assert!(first
+            .approval_provider()
+            .verify("alice@example.com", "first-secret")
+            .is_some());
+
+        std::env::set_var(&users_env, "alice@example.com:second-secret");
+        reload(&shared, Some(&path)).expect("gateway users reload");
+        let second = shared.load().gateway_auth.clone().unwrap();
+        assert!(second
+            .approval_provider()
+            .verify("alice@example.com", "first-secret")
+            .is_none());
+        assert!(second
+            .approval_provider()
+            .verify("alice@example.com", "second-secret")
+            .is_some());
+
+        std::env::remove_var(secret_env);
+        std::env::remove_var(users_env);
+    }
+
+    #[test]
+    fn reload_keeps_gateway_capability_fixed_at_boot() {
+        let dir = temp_dir("gateway-toggle");
+        let _guard = TempDirGuard(dir.clone());
+        let path = dir.join("shunt.toml");
+        let suffix = format!("{}_toggle", std::process::id());
+        let secret_env = format!("SHUNT_RELOAD_GATEWAY_SECRET_{suffix}");
+        let users_env = format!("SHUNT_RELOAD_GATEWAY_USERS_{suffix}");
+        std::env::set_var(&secret_env, "0123456789abcdef0123456789abcdef");
+        std::env::set_var(&users_env, "alice@example.com:first-secret");
+        let gateway_config = format!(
+            "[server.gateway]\npublic_url = \"https://gateway.example\"\njwt_secret_env = \"{secret_env}\"\nusers_env = \"{users_env}\"\n"
+        );
+
+        std::fs::write(&path, "[server]\ndefault_provider = \"anthropic\"\n").unwrap();
+        let disabled_at_boot = shared_from(Config::load(Some(&path)).unwrap());
+        std::fs::write(&path, &gateway_config).unwrap();
+        reload(&disabled_at_boot, Some(&path)).expect("gateway addition validates");
+        assert!(disabled_at_boot.load().config.server.gateway.is_some());
+        assert!(disabled_at_boot.load().gateway_auth.is_none());
+
+        let enabled_at_boot = shared_from(Config::load(Some(&path)).unwrap());
+        let original_auth = enabled_at_boot.load().gateway_auth.clone().unwrap();
+        std::fs::write(&path, "[server]\ndefault_provider = \"anthropic\"\n").unwrap();
+        reload(&enabled_at_boot, Some(&path)).expect("gateway removal validates");
+        let retained_auth = enabled_at_boot.load().gateway_auth.clone().unwrap();
+        assert!(enabled_at_boot.load().config.server.gateway.is_none());
+        assert!(Arc::ptr_eq(&original_auth, &retained_auth));
+
+        std::env::remove_var(secret_env);
+        std::env::remove_var(users_env);
     }
 
     #[test]

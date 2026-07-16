@@ -14,10 +14,7 @@ pub async fn run(provider: &str) -> anyhow::Result<()> {
     if provider != "cursor" {
         bail!("unknown Cursor login provider {provider:?}");
     }
-    let base_url = std::env::var("SHUNT_CURSOR_BASE_URL")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "https://api2.cursor.sh".to_string());
+    let base_url = super::resolve_base_url("https://api2.cursor.sh");
     run_with_base(&base_url).await
 }
 

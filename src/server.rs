@@ -12,7 +12,9 @@ use crate::{
     auth::inbound::InboundAuth,
     codex_endpoint,
     config::{Config, ConfigError},
-    discovery, protocol, proxy,
+    discovery,
+    gateway::{self, GatewayAuth, GatewayStores},
+    protocol, proxy,
     reload::{RuntimeState, SharedState},
     routes, usage,
 };
@@ -32,6 +34,10 @@ pub struct AppState {
     /// [`AppState::accounts`], created once and kept across reloads so an
     /// operator's browser session is not dropped by an unrelated config edit.
     pub admin_stores: Arc<AdminStores>,
+    /// Gateway-login JWT/users snapshot for this request (None ⇒ disabled).
+    pub gateway_auth: Option<Arc<GatewayAuth>>,
+    /// Process-lifetime device grants, refresh tokens, and verification rate limits.
+    pub gateway_stores: Arc<GatewayStores>,
     /// The live, hot-swappable runtime state a reload updates. Private so the
     /// only way in is a snapshot method that keeps `config`/`inbound_auth`/
     /// `admin_auth` consistent with it.
@@ -49,6 +55,7 @@ impl AppState {
             http_client,
             Arc::new(AccountPool::new()),
             Arc::new(AdminStores::new()),
+            Arc::new(GatewayStores::new()),
         ))
     }
 
@@ -58,15 +65,18 @@ impl AppState {
         http_client: reqwest::Client,
         accounts: Arc<AccountPool>,
         admin_stores: Arc<AdminStores>,
+        gateway_stores: Arc<GatewayStores>,
     ) -> Self {
         let current = shared.load();
         Self {
             config: current.config.clone(),
             inbound_auth: current.inbound_auth.clone(),
             admin_auth: current.admin_auth.clone(),
+            gateway_auth: current.gateway_auth.clone(),
             http_client,
             accounts,
             admin_stores,
+            gateway_stores,
             shared,
         }
     }
@@ -80,6 +90,7 @@ impl AppState {
             self.http_client.clone(),
             self.accounts.clone(),
             self.admin_stores.clone(),
+            self.gateway_stores.clone(),
         )
     }
 }
@@ -92,6 +103,9 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     // Whether the admin surface exists is decided once here, from the initial
     // config: a reload cannot add or drop routes (it only re-resolves tokens).
     let admin_enabled = config.server.admin.is_some();
+    // Gateway-login routes are likewise fixed at boot; signing/user edits are
+    // re-resolved through `gateway_auth`, while toggling requires a restart.
+    let gateway_enabled = config.server.gateway.is_some();
     // The inbound Responses (Codex) routes are likewise registered once from the
     // initial config; a reload can only change the target provider, not add or
     // drop the routes.
@@ -107,6 +121,7 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
         reqwest::Client::new(),
         Arc::new(AccountPool::new()),
         Arc::new(AdminStores::new()),
+        Arc::new(GatewayStores::new()),
     );
 
     // `/` and `/health` stay unauthenticated even when `[server.auth]` is
@@ -128,6 +143,13 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     // request against the separate `[server.admin]` credential.
     if admin_enabled {
         router = router.merge(admin::admin_router());
+    }
+
+    // Opt-in Claude apps gateway login surface (M-A): registered only when
+    // `[server.gateway]` was present at boot. OAuth handlers remain unauthenticated;
+    // minted JWTs gate the existing inference and discovery routes.
+    if gateway_enabled {
+        router = router.merge(gateway::gateway_router());
     }
 
     // Opt-in inbound Responses (Codex) endpoint: registered only when

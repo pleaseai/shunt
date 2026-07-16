@@ -2,7 +2,7 @@
 # crates.io package name; the library and binary keep the short name `shunt`
 # (the bare `shunt` crate name is taken by an unrelated project).
 name = "shunt-gateway"
-version = "0.19.0"
+version = "0.20.0"
 edition = "2021"
 description = "Claude Code LLM gateway — an Anthropic Messages proxy that routes models to OpenAI/Codex and Anthropic-compatible backends"
 license = "MIT OR Apache-2.0"
@@ -34,6 +34,7 @@ futures-util = "0.3"
 # Parse the HTTP-date form of `Retry-After` (RFC 7231); already in the tree via
 # reqwest/hyper, promoted to a direct dep for `accounts::retry_after`.
 httpdate = "1"
+hmac = "0.12"
 notify = "8.2.0"
 # OpenTelemetry export (opt-in `[otel]`). The OTLP exporter speaks HTTP/protobuf
 # over reqwest's *blocking* client so the SDK's dedicated-thread batch span/log
@@ -49,7 +50,11 @@ opentelemetry-semantic-conventions = "0.32"
 prost = "0.13"
 rand = "0.9"
 regex-lite = "0.1"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+# `http2` is required for the Cursor agent transport: `agent.v1.AgentService/Run`
+# sits behind an AWS ALB that only serves HTTP/2 for that path, and an HTTP/1.1
+# request is rejected with an empty `awselb/2.0` HTTP 464 (issue #170). With the
+# feature enabled the shared client negotiates h2 via ALPN.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "http2"] }
 rpassword = "7"
 # Feature unification compiles both rustls crypto providers into the binary
 # (aws-lc-rs via sentry's reqwest `rustls` feature, ring via reqwest's own

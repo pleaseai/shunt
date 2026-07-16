@@ -1,0 +1,45 @@
+# Claude apps gateway config for the local reference probe.
+# Throwaway dev fixture — jwt_secret / client_secret / api_key are
+# deliberately fake dummy values, never used outside 127.0.0.1.
+#
+# Run (loopback issuer needs the SSRF-guard override):
+#   CLAUDE_GATEWAY_ALLOW_LOOPBACK=1 claude gateway --config gateway.yaml
+#
+# http:// public_url is accepted on loopback (verified 2.1.211).
+
+listen:
+  host: 127.0.0.1
+  port: 8790
+  public_url: http://127.0.0.1:8790
+
+oidc:
+  issuer: http://127.0.0.1:5556/dex
+  client_id: claude-gateway
+  client_secret: gateway-secret
+
+session:
+  jwt_secret: c2h1bnQtZ2F0ZXdheS1wcm9iZS1kZXYtc2VjcmV0LTAwMDE=
+  ttl_hours: 1
+
+store:
+  postgres_url: postgres://postgres@127.0.0.1:55432/postgres
+
+upstreams:
+  - provider: anthropic
+    auth:
+      api_key: sk-ant-dummy-probe-key
+
+managed:
+  policies:
+    - match: {}
+      cli:
+        availableModels: [claude-opus-4-8, claude-sonnet-4-6, claude-haiku-4-5]
+        env:
+          DISABLE_UPDATES: "1"
+
+# Pointing at the driver's local sink (driver.sh sink-start) so the
+# OTLP relay path can be observed. Configuring forward_to is also what
+# makes /managed/settings push the OTEL_* env block to clients.
+telemetry:
+  forward_to:
+    - url: http://127.0.0.1:44318

@@ -35,6 +35,17 @@ impl CursorAgentMode {
             CursorAgentMode::Ask => "AGENT_MODE_ASK",
         }
     }
+
+    /// The `AgentMode` protobuf enum value on the current agent wire
+    /// (`UserMessage.mode`, field 4). From the `agent.v1` descriptor:
+    /// `AGENT_MODE_AGENT = 1`, `AGENT_MODE_ASK = 2`, `AGENT_MODE_PLAN = 3`.
+    pub fn wire_enum(&self) -> u64 {
+        match self {
+            CursorAgentMode::Agent => 1,
+            CursorAgentMode::Ask => 2,
+            CursorAgentMode::Plan => 3,
+        }
+    }
 }
 
 /// Resolve a model string into a (model_id, mode) pair.
@@ -200,5 +211,13 @@ mod tests {
         for m in CURSOR_LEGACY_MODELS {
             assert!(models.contains(&m.to_string()), "missing {m}");
         }
+    }
+
+    #[test]
+    fn mode_wire_enum_matches_agent_v1_descriptor() {
+        // AgentMode enum: AGENT = 1, ASK = 2, PLAN = 3.
+        assert_eq!(CursorAgentMode::Agent.wire_enum(), 1);
+        assert_eq!(CursorAgentMode::Ask.wire_enum(), 2);
+        assert_eq!(CursorAgentMode::Plan.wire_enum(), 3);
     }
 }

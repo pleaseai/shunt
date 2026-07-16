@@ -39,6 +39,24 @@ The named environment variable must contain one or more credentials, for example
 
 Admin tokens are separate credentials from the client tokens configured under `[server.auth]`; do not reuse one credential for both surfaces.
 
+## `[server.gateway]` (optional)
+
+Presence of this table enables the [OAuth device-flow gateway login](/guides/gateway-login/) used by Claude Code's managed `forceLoginMethod: "gateway"`. When absent, shunt does not register `/.well-known/oauth-authorization-server`, `/oauth/device_authorization`, `/oauth/token`, or `/device`.
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `public_url` | required | Externally reachable HTTPS origin used as the JWT issuer and base for advertised OAuth endpoints; `http` is accepted only for loopback |
+| `jwt_secret_env` | `SHUNT_GATEWAY_JWT_SECRET` | Env var holding the HS256 signing secret (at least 32 bytes) |
+| `users_env` | `SHUNT_GATEWAY_USERS` | Env var holding comma-separated `email:secret` approval users |
+| `token_ttl_seconds` | `3600` | Access-token lifetime; returned as `expires_in` |
+| `trust_forwarded_for` | `false` | Trust `X-Forwarded-For`/`X-Real-IP` as the `/device` rate-limit identity; enable only behind a trusted proxy that replaces client-supplied values |
+
+Startup fails closed when the URL is not a bare HTTPS origin (`http` is allowed only on loopback), the TTL is zero, the secret is missing or shorter than 32 bytes, or the user list is empty or malformed. Secrets may contain `:` because only the first colon separates the email and secret. Changes to the environment-backed secret and users hot-apply on config reload; adding or removing the table requires a restart because the route tree is fixed at boot.
+
+The issued bearer gates `/v1/models` and `/v1/messages`/`/v1/messages/count_tokens` requests whenever the selected provider injects a server-side credential; passthrough providers remain open. If `[server.auth]` is also present, either credential grants access. Device grants and rotating refresh tokens are process-lifetime, in-memory state in this milestone: a config reload preserves them, but restarting shunt invalidates device grants and refresh sessions. Existing access JWTs remain valid until expiry, after which users must sign in again. Expired grants and idle rate-limit identities are swept opportunistically. Device grants and rate-limit identities are each capped at 4,096 entries. Used refresh-token tombstones are retained for 30 days and capped at 64 per family.
+
+By default, `/device` ignores forwarding headers and rate-limits the socket peer. Set `trust_forwarded_for = true` only when shunt is reachable exclusively through a trusted reverse proxy that removes client-provided forwarding headers before setting its own value. Do not enable it on a directly exposed gateway.
+
 ## `[server.codex_endpoint]` (optional)
 
 Presence of this table enables an inbound OpenAI Responses passthrough so the **Codex CLI** can point its `base_url` at shunt and be load-balanced across a ChatGPT/Codex OAuth account pool ([details](/guides/inbound-codex-endpoint/)). When the table is absent, none of those routes are registered.
@@ -70,10 +88,13 @@ Quota-aware load-balancing tuning for Claude (Anthropic) account pools ([details
 | `default_threshold_fable` | unset | Soft default for the fable-only weekly (`7d_oi`) window |
 | `burn_rate_avoidance` | `false` | Also avoid accounts projected to exhaust a window's soft threshold before that window resets |
 | `usage_refresh_seconds` | disabled (`0`/absent) | Poll interval, in seconds, for `GET /api/oauth/usage`; a positive value below 60 is clamped up to a 60-second floor |
+| `state_path` | unset | File the pool's per-account quota state is persisted to, so a restart warm-starts from the last observed utilization instead of an empty pool. Absent disables persistence (the default) |
 
 For each window `X`, the effective soft threshold resolves as: account `threshold_X` → account `threshold` → `default_threshold_X` → `default_threshold` → `hard_threshold`, and is capped at `hard_threshold`. All thresholds are utilization fractions in `[0.0, 1.0]`; out-of-range values fail startup. Quota headers exist only on the Anthropic backend, so these knobs are inert for Codex/ChatGPT pools — the per-account `priority` and `disabled` keys below still apply there.
 
 A positive `usage_refresh_seconds` additionally starts a background poller that reconciles Claude account-pool quota state against the Anthropic OAuth usage API ([details](/guides/anthropic-multi-account/#usage-api-reconciliation)); absent or `0` disables it (the default). Only imported (refreshable) `claude_oauth` accounts are polled — a long-lived `claude setup-token` or `token_env` account is skipped because the usage endpoint rejects a non-refreshable token. The poller reconciles the pool's header-derived 5h/weekly/Fable (`7d_oi`) quota state with authoritative usage, including out-of-band consumption of the same account outside shunt. The interval is fixed at boot; a config reload does not start, stop, or re-tune the poller.
+
+`state_path` persists the pool's quota state (per-window utilization and reset, across every provider's accounts) to disk. Without it, a restart begins with an empty pool: every account looks unseen until its first post-restart response, which disables burn-rate avoidance and leaves `GET /usage` blank until traffic re-populates the pool. The file is a best-effort cache, not a source of truth — quota is re-derived from upstream responses regardless, so a missing, stale, or corrupt file only costs a cold start, never a boot failure. Writes use a private (`0600` on Unix) temp file, atomically rename it over the target, and happen on a background timer only when quota changed; failed writes retry on the next tick. Cooldowns are not persisted (they lapse on restart), and any restored window whose reset has already passed is dropped lazily by the first selection or snapshot after restore. The path is fixed at boot; a config reload does not start, stop, or re-point persistence.
 
 ## `[providers.<name>]`
 

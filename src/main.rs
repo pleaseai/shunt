@@ -150,7 +150,7 @@ fn login(
             // Logging in should not require a fully valid gateway config:
             // read the optional override best-effort and fall back to the
             // default Cursor host if the config fails to load or omits it.
-            let base_url = Config::load(config_path)
+            let default_base = Config::load(config_path)
                 .ok()
                 .and_then(|config| {
                     config
@@ -158,6 +158,7 @@ fn login(
                         .map(|provider| provider.base_url.clone())
                 })
                 .unwrap_or_else(|| "https://api2.cursor.sh".to_string());
+            let base_url = shunt::auth::cursor::resolve_base_url(default_base);
             shunt::auth::cursor::login::run_with_base(&base_url).await
         }),
         "cursor" => {
@@ -290,11 +291,20 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     // Reload triggers (SIGHUP and config-file watch) run as background tasks and
     // hot-swap the shared runtime state that the router reads per request.
     shunt::reload::spawn_reload_watchers(shared, path).await;
+    // Opt-in `[server.pool] state_path`: warm-start the pool from the last
+    // persisted quota before serving, then flush changes in the background. Both
+    // are no-ops when the key is unset.
+    shunt::state_persist::restore(&state).await;
+    shunt::state_persist::spawn_state_persister(state.clone());
     // Opt-in `[server.pool] usage_refresh_seconds`: poll the Anthropic OAuth
     // usage API in the background, sharing the router's account pool. A no-op
     // when the key is unset.
     shunt::usage_poll::spawn_usage_poller(state);
-    axum::serve(listener, router).await?;
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 
