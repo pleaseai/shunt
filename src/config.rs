@@ -298,13 +298,24 @@ impl GatewayConfig {
                 message: error.to_string(),
             }
         })?;
-        if !matches!(public_url.scheme(), "http" | "https") || public_url.host_str().is_none() {
+        if !matches!(public_url.scheme(), "http" | "https")
+            || public_url.host_str().is_none()
+            || !public_url.username().is_empty()
+            || public_url.password().is_some()
+            || public_url.path() != "/"
+            || public_url.query().is_some()
+            || public_url.fragment().is_some()
+        {
             return Err(ConfigError::InvalidGatewayPublicUrl {
-                message: "must be an http(s) URL with a host".to_string(),
+                message: "must be an http(s) origin with no userinfo, path, query, or fragment"
+                    .to_string(),
             });
         }
+        if self.token_ttl_seconds == 0 {
+            return Err(ConfigError::InvalidGatewayTokenTtl);
+        }
         let secret = std::env::var(&self.jwt_secret_env).unwrap_or_default();
-        if secret.as_bytes().len() < 32 {
+        if secret.len() < 32 {
             return Err(ConfigError::InvalidGatewayJwtSecret {
                 env: self.jwt_secret_env.clone(),
             });
@@ -323,7 +334,7 @@ impl GatewayConfig {
                 }
             })?;
         Ok(crate::gateway::GatewayAuth::new(
-            self.public_url.trim_end_matches('/').to_string(),
+            public_url.as_str().trim_end_matches('/').to_string(),
             secret.into_bytes(),
             self.token_ttl_seconds,
             users,
@@ -974,6 +985,8 @@ pub enum ConfigError {
     InvalidAdminTokens { env: String, message: String },
     #[error("[server.gateway] public_url is invalid: {message}")]
     InvalidGatewayPublicUrl { message: String },
+    #[error("[server.gateway] token_ttl_seconds must be greater than zero")]
+    InvalidGatewayTokenTtl,
     #[error(
         "[server.gateway] requires {env} to contain a JWT signing secret of at least 32 bytes"
     )]
@@ -2273,8 +2286,8 @@ mod tests {
     }
 
     #[test]
-    fn gateway_config_rejects_invalid_public_url() {
-        let gateway = GatewayConfig {
+    fn gateway_config_rejects_invalid_public_url_and_zero_ttl() {
+        let mut gateway = GatewayConfig {
             public_url: "not a URL".to_string(),
             jwt_secret_env: "UNUSED_GATEWAY_SECRET".to_string(),
             users_env: "UNUSED_GATEWAY_USERS".to_string(),
@@ -2283,6 +2296,22 @@ mod tests {
         assert!(matches!(
             gateway.resolve(),
             Err(ConfigError::InvalidGatewayPublicUrl { .. })
+        ));
+        gateway.public_url = "https://gateway.example/path".to_string();
+        assert!(matches!(
+            gateway.resolve(),
+            Err(ConfigError::InvalidGatewayPublicUrl { .. })
+        ));
+        gateway.public_url = "https://user:password@gateway.example".to_string();
+        assert!(matches!(
+            gateway.resolve(),
+            Err(ConfigError::InvalidGatewayPublicUrl { .. })
+        ));
+        gateway.public_url = "https://gateway.example".to_string();
+        gateway.token_ttl_seconds = 0;
+        assert!(matches!(
+            gateway.resolve(),
+            Err(ConfigError::InvalidGatewayTokenTtl)
         ));
     }
 

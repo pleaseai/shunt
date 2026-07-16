@@ -55,10 +55,11 @@ export SHUNT_GATEWAY_JWT_SECRET="$(openssl rand -base64 48)"
 export SHUNT_GATEWAY_USERS='alice@example.com:<secret>,bob@example.com:<secret>'
 ```
 
-Startup fails closed if `public_url` is invalid, the JWT secret is shorter than
-32 bytes, or the users variable is empty or malformed. Secret and user changes
-are re-resolved by config hot reload. Whether the routes exist is fixed at boot,
-so adding or removing `[server.gateway]` requires a restart.
+Startup fails closed if `public_url` is not a bare HTTP(S) origin, the token TTL
+is zero, the JWT secret is shorter than 32 bytes, or the users variable is empty
+or malformed. Secret and user changes are re-resolved by config hot reload.
+Whether the routes exist is fixed at boot, so adding or removing
+`[server.gateway]` requires a restart.
 
 ## Pluggable approval
 

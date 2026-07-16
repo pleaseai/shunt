@@ -38,12 +38,23 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         tracing::warn!(
             "inbound auth failed for GET /v1/models: missing or invalid client credential"
         );
-        return ShuntError::new(
-            StatusCode::UNAUTHORIZED,
-            "authentication_error",
-            "missing or invalid credential for model discovery",
-        )
-        .into_response();
+        let message = match (&state.inbound_auth, &state.gateway_auth) {
+            (Some(auth), Some(_)) => format!(
+                "missing or invalid credential: this gateway requires a client token (via {}, x-api-key, or Authorization: Bearer) or gateway login for model discovery",
+                auth.header()
+            ),
+            (Some(auth), None) => format!(
+                "missing or invalid credential: this gateway requires a client token (via {}, x-api-key, or Authorization: Bearer) for model discovery; ask the operator for one",
+                auth.header()
+            ),
+            (None, Some(_)) => {
+                "missing or invalid credential: sign in to this gateway for model discovery"
+                    .to_string()
+            }
+            (None, None) => unreachable!("authentication gate requires configured auth"),
+        };
+        return ShuntError::new(StatusCode::UNAUTHORIZED, "authentication_error", message)
+            .into_response();
     }
     if let Some(client) = static_client {
         tracing::info!(client = %client, "inbound client authenticated for GET /v1/models");

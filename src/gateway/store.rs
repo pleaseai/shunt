@@ -37,9 +37,14 @@ pub enum DevicePoll {
 }
 
 #[derive(Default)]
+struct DeviceGrantState {
+    grants: HashMap<String, DeviceGrant>,
+    by_user_code: HashMap<String, String>,
+}
+
+#[derive(Default)]
 pub struct DeviceGrantStore {
-    grants: Mutex<HashMap<String, DeviceGrant>>,
-    by_user_code: Mutex<HashMap<String, String>>,
+    state: Mutex<DeviceGrantState>,
 }
 
 impl DeviceGrantStore {
@@ -47,36 +52,38 @@ impl DeviceGrantStore {
         Self::default()
     }
 
-    pub fn create(&self, device_code: String, user_code: String) {
-        self.create_at(device_code, user_code, Instant::now(), DEVICE_CODE_TTL);
+    pub fn create(&self, device_code: String, user_code: String) -> bool {
+        self.create_at(device_code, user_code, Instant::now(), DEVICE_CODE_TTL)
     }
 
-    fn create_at(&self, device_code: String, user_code: String, now: Instant, ttl: Duration) {
-        self.by_user_code
+    fn create_at(
+        &self,
+        device_code: String,
+        user_code: String,
+        now: Instant,
+        ttl: Duration,
+    ) -> bool {
+        let mut state = self
+            .state
             .lock()
-            .expect("gateway user-code lock poisoned")
-            .insert(user_code.clone(), device_code.clone());
-        self.grants
-            .lock()
-            .expect("gateway device-grant lock poisoned")
-            .insert(
-                device_code,
-                DeviceGrant {
-                    user_code,
-                    status: DeviceStatus::Pending,
-                    expires: now + ttl,
-                    next_poll: None,
-                    poll_interval: INITIAL_POLL_INTERVAL,
-                },
-            );
-    }
-
-    pub fn user_code_available(&self, user_code: &str) -> bool {
-        !self
+            .expect("gateway device-grant lock poisoned");
+        if state.by_user_code.contains_key(&user_code) || state.grants.contains_key(&device_code) {
+            return false;
+        }
+        state
             .by_user_code
-            .lock()
-            .expect("gateway user-code lock poisoned")
-            .contains_key(user_code)
+            .insert(user_code.clone(), device_code.clone());
+        state.grants.insert(
+            device_code,
+            DeviceGrant {
+                user_code,
+                status: DeviceStatus::Pending,
+                expires: now + ttl,
+                next_poll: None,
+                poll_interval: INITIAL_POLL_INTERVAL,
+            },
+        );
+        true
     }
 
     pub fn approve(&self, user_code: &str, identity: Identity) -> bool {
@@ -88,20 +95,14 @@ impl DeviceGrantStore {
     }
 
     fn set_status(&self, user_code: &str, status: DeviceStatus) -> bool {
-        let device_code = self
-            .by_user_code
-            .lock()
-            .expect("gateway user-code lock poisoned")
-            .get(user_code)
-            .cloned();
-        let Some(device_code) = device_code else {
-            return false;
-        };
-        let mut grants = self
-            .grants
+        let mut state = self
+            .state
             .lock()
             .expect("gateway device-grant lock poisoned");
-        let Some(grant) = grants.get_mut(&device_code) else {
+        let Some(device_code) = state.by_user_code.get(user_code).cloned() else {
+            return false;
+        };
+        let Some(grant) = state.grants.get_mut(&device_code) else {
             return false;
         };
         if grant.expires <= Instant::now() || grant.status != DeviceStatus::Pending {
@@ -116,20 +117,17 @@ impl DeviceGrantStore {
     }
 
     fn poll_at(&self, device_code: &str, now: Instant) -> DevicePoll {
-        let mut grants = self
-            .grants
+        let mut state = self
+            .state
             .lock()
             .expect("gateway device-grant lock poisoned");
-        let Some(grant) = grants.get_mut(device_code) else {
+        let Some(grant) = state.grants.get_mut(device_code) else {
             return DevicePoll::Expired;
         };
         if grant.expires <= now {
             let user_code = grant.user_code.clone();
-            grants.remove(device_code);
-            self.by_user_code
-                .lock()
-                .expect("gateway user-code lock poisoned")
-                .remove(&user_code);
+            state.grants.remove(device_code);
+            state.by_user_code.remove(&user_code);
             return DevicePoll::Expired;
         }
         if grant.next_poll.is_some_and(|next| now < next) {
@@ -141,21 +139,13 @@ impl DeviceGrantStore {
         match &grant.status {
             DeviceStatus::Pending => DevicePoll::Pending,
             DeviceStatus::Denied => DevicePoll::Denied,
-            DeviceStatus::Approved(identity) => DevicePoll::Approved(identity.clone()),
-        }
-    }
-
-    pub fn consume(&self, device_code: &str) {
-        let grant = self
-            .grants
-            .lock()
-            .expect("gateway device-grant lock poisoned")
-            .remove(device_code);
-        if let Some(grant) = grant {
-            self.by_user_code
-                .lock()
-                .expect("gateway user-code lock poisoned")
-                .remove(&grant.user_code);
+            DeviceStatus::Approved(identity) => {
+                let identity = identity.clone();
+                let user_code = grant.user_code.clone();
+                state.grants.remove(device_code);
+                state.by_user_code.remove(&user_code);
+                DevicePoll::Approved(identity)
+            }
         }
     }
 }
@@ -289,7 +279,13 @@ mod tests {
     fn device_grant_transitions_and_is_single_use() {
         let store = DeviceGrantStore::new();
         let now = Instant::now();
-        store.create_at("device".into(), "BCDF-GHJK".into(), now, DEVICE_CODE_TTL);
+        assert!(store.create_at("device".into(), "BCDF-GHJK".into(), now, DEVICE_CODE_TTL));
+        assert!(!store.create_at(
+            "other-device".into(),
+            "BCDF-GHJK".into(),
+            now,
+            DEVICE_CODE_TTL
+        ));
 
         assert_eq!(store.poll_at("device", now), DevicePoll::Pending);
         assert!(store.approve("BCDF-GHJK", identity()));
@@ -297,7 +293,6 @@ mod tests {
             store.poll_at("device", now + INITIAL_POLL_INTERVAL),
             DevicePoll::Approved(identity())
         );
-        store.consume("device");
         assert_eq!(store.poll_at("device", now), DevicePoll::Expired);
         assert!(!store.approve("BCDF-GHJK", identity()));
     }
@@ -306,11 +301,11 @@ mod tests {
     fn device_grant_denies_and_expires() {
         let store = DeviceGrantStore::new();
         let now = Instant::now();
-        store.create_at("denied".into(), "BCDF-GHJL".into(), now, DEVICE_CODE_TTL);
+        assert!(store.create_at("denied".into(), "BCDF-GHJL".into(), now, DEVICE_CODE_TTL));
         assert!(store.deny("BCDF-GHJL"));
         assert_eq!(store.poll_at("denied", now), DevicePoll::Denied);
 
-        store.create_at("expired".into(), "BCDF-GHJM".into(), now, Duration::ZERO);
+        assert!(store.create_at("expired".into(), "BCDF-GHJM".into(), now, Duration::ZERO));
         assert_eq!(store.poll_at("expired", now), DevicePoll::Expired);
     }
 
@@ -318,7 +313,7 @@ mod tests {
     fn fast_poll_adds_five_seconds_to_interval() {
         let store = DeviceGrantStore::new();
         let now = Instant::now();
-        store.create_at("device".into(), "BCDF-GHJK".into(), now, DEVICE_CODE_TTL);
+        assert!(store.create_at("device".into(), "BCDF-GHJK".into(), now, DEVICE_CODE_TTL));
 
         assert_eq!(store.poll_at("device", now), DevicePoll::Pending);
         assert_eq!(

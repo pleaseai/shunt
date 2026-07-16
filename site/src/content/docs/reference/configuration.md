@@ -50,7 +50,7 @@ Presence of this table enables the [OAuth device-flow gateway login](/guides/gat
 | `users_env` | `SHUNT_GATEWAY_USERS` | Env var holding comma-separated `email:secret` approval users |
 | `token_ttl_seconds` | `3600` | Access-token lifetime; returned as `expires_in` |
 
-Startup fails closed when the URL is invalid, the secret is missing or shorter than 32 bytes, or the user list is empty or malformed. Secrets may contain `:` because only the first colon separates the email and secret. Changes to the environment-backed secret and users hot-apply on config reload; adding or removing the table requires a restart because the route tree is fixed at boot.
+Startup fails closed when the URL is not a bare HTTP(S) origin, the TTL is zero, the secret is missing or shorter than 32 bytes, or the user list is empty or malformed. Secrets may contain `:` because only the first colon separates the email and secret. Changes to the environment-backed secret and users hot-apply on config reload; adding or removing the table requires a restart because the route tree is fixed at boot.
 
 The issued bearer authenticates `/v1/messages`, `/v1/messages/count_tokens`, and `/v1/models`. If `[server.auth]` is also present, either credential grants access. Device grants and rotating refresh tokens are process-lifetime, in-memory state in this milestone: a config reload preserves them, but restarting shunt requires every gateway user to sign in again.
 

@@ -28,7 +28,7 @@ users_env = "SHUNT_GATEWAY_USERS"            # default
 token_ttl_seconds = 3600                      # default
 ```
 
-Startup fails closed if `public_url` is not an HTTP(S) URL, the signing secret is shorter than 32 bytes, or the user list is empty or malformed. A secret may contain `:` because only the first colon separates an email from its secret.
+Startup fails closed if `public_url` is not a bare HTTP(S) origin, `token_ttl_seconds` is zero, the signing secret is shorter than 32 bytes, or the user list is empty or malformed. A secret may contain `:` because only the first colon separates an email from its secret.
 
 Use HTTPS for every non-loopback deployment. If shunt is behind a reverse proxy, have the proxy replace untrusted `X-Forwarded-For` values with its trusted client address; `/device` uses that address for its per-IP attempt limit.
 

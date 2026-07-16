@@ -1,5 +1,5 @@
 use axum::{
-    extract::State,
+    extract::{rejection::FormRejection, State},
     http::{header, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Form, Json,
@@ -68,18 +68,16 @@ struct DeviceAuthorizationResponse {
 
 pub async fn device_authorization(
     State(state): State<AppState>,
-    Form(_form): Form<DeviceAuthorizationForm>,
+    form: Result<Form<DeviceAuthorizationForm>, FormRejection>,
 ) -> Response {
+    if form.is_err() {
+        return no_store(oauth_error(StatusCode::BAD_REQUEST, "invalid_request"));
+    }
     let state = state.refreshed();
     let Some(auth) = state.gateway_auth else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let device_code = random_id();
-    let user_code = unique_user_code(&state.gateway_stores.device_grants);
-    state
-        .gateway_stores
-        .device_grants
-        .create(device_code.clone(), user_code.clone());
+    let (device_code, user_code) = create_device_grant(&state.gateway_stores.device_grants);
     let verification_uri = auth.url("/device");
     let response = Json(DeviceAuthorizationResponse {
         device_code,
@@ -111,7 +109,14 @@ struct TokenResponse {
     expires_in: u64,
 }
 
-pub async fn token(State(state): State<AppState>, Form(form): Form<TokenForm>) -> Response {
+pub async fn token(
+    State(state): State<AppState>,
+    form: Result<Form<TokenForm>, FormRejection>,
+) -> Response {
+    let Form(form) = match form {
+        Ok(form) => form,
+        Err(_) => return no_store(oauth_error(StatusCode::BAD_REQUEST, "invalid_request")),
+    };
     let state = state.refreshed();
     let Some(auth) = state.gateway_auth else {
         return StatusCode::NOT_FOUND.into_response();
@@ -123,10 +128,6 @@ pub async fn token(State(state): State<AppState>, Form(form): Form<TokenForm>) -
             DevicePoll::Denied => oauth_error(StatusCode::BAD_REQUEST, "access_denied"),
             DevicePoll::Expired => oauth_error(StatusCode::BAD_REQUEST, "expired_token"),
             DevicePoll::Approved(identity) => {
-                state
-                    .gateway_stores
-                    .device_grants
-                    .consume(&form.device_code);
                 let refresh_token = state.gateway_stores.refresh_tokens.issue(identity.clone());
                 token_response(&auth, &identity, refresh_token)
             }
@@ -174,11 +175,12 @@ fn no_store(mut response: Response) -> Response {
     response
 }
 
-fn unique_user_code(store: &super::store::DeviceGrantStore) -> String {
+fn create_device_grant(store: &super::store::DeviceGrantStore) -> (String, String) {
     loop {
-        let code = generate_user_code(&mut rand::rng());
-        if store.user_code_available(&code) {
-            return code;
+        let device_code = random_id();
+        let user_code = generate_user_code(&mut rand::rng());
+        if store.create(device_code.clone(), user_code.clone()) {
+            return (device_code, user_code);
         }
     }
 }

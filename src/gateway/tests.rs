@@ -220,6 +220,31 @@ async fn device_grant_error_table_and_csrf_rejection_match_contract() {
     let html = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     assert!(String::from_utf8_lossy(&html).contains("another site"));
 
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/device")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("sec-fetch-site", "cross-site")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert!(String::from_utf8_lossy(&html).contains("another site"));
+    assert!(state.gateway_stores.device_grants.approve(
+        user_code,
+        Identity {
+            sub: "dev@example.com".into(),
+            email: "dev@example.com".into(),
+            name: "dev".into(),
+        }
+    ));
+
     let (_, denied_authorization) = json_response(
         router.clone(),
         form_request("/oauth/device_authorization", ""),
@@ -249,6 +274,37 @@ async fn device_grant_error_table_and_csrf_rejection_match_contract() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(expired, json!({"error": "expired_token"}));
+}
+
+#[tokio::test]
+async fn malformed_oauth_forms_use_rfc6749_error_shape() {
+    let (config, _env) = GatewayEnv::config("malformed-forms");
+    let (router, _, _) = build_router(config).unwrap();
+
+    for path in ["/oauth/device_authorization", "/oauth/token"] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(path)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).unwrap(),
+            json!({"error": "invalid_request"})
+        );
+    }
 }
 
 #[tokio::test]

@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
 use axum::{
-    extract::{ConnectInfo, Query, State},
+    extract::{rejection::FormRejection, ConnectInfo, Query, State},
     http::{header, HeaderMap, StatusCode},
     response::{Html, IntoResponse, Response},
     Extension, Form,
@@ -37,20 +37,36 @@ pub async fn post(
     State(state): State<AppState>,
     connection: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
-    Form(form): Form<DeviceForm>,
+    form: Result<Form<DeviceForm>, FormRejection>,
 ) -> Response {
     let state = state.refreshed();
     let Some(auth) = state.gateway_auth else {
         return StatusCode::NOT_FOUND.into_response();
     };
     if !same_origin(&headers, auth.public_url()) {
+        let user_code = form
+            .as_ref()
+            .ok()
+            .map(|Form(form)| form.user_code.as_str())
+            .unwrap_or_default();
         return Html(page(
-            &form.user_code,
+            user_code,
             Some("This request came from another site and was blocked."),
             false,
         ))
         .into_response();
     }
+    let Form(form) = match form {
+        Ok(form) => form,
+        Err(_) => {
+            return Html(page(
+                "",
+                Some("The submitted form could not be read. Try again."),
+                false,
+            ))
+            .into_response()
+        }
+    };
     let peer = connection.map(|Extension(ConnectInfo(address))| address);
     let client_ip = client_ip(&headers, peer);
     if !state
@@ -95,36 +111,46 @@ pub async fn post(
 }
 
 fn same_origin(headers: &HeaderMap, public_url: &str) -> bool {
-    if let Some(site) = headers
+    let fetch_site = headers
         .get("sec-fetch-site")
-        .and_then(|value| value.to_str().ok())
-    {
-        if matches!(site, "same-origin" | "same-site") {
-            return true;
-        }
-        if site.eq_ignore_ascii_case("cross-site") {
+        .and_then(|value| value.to_str().ok());
+    if fetch_site.is_some_and(|site| site.eq_ignore_ascii_case("cross-site")) {
+        return false;
+    }
+
+    let mut has_origin_signal = false;
+    if let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
+        has_origin_signal = true;
+        if !same_url_origin(origin, public_url) {
             return false;
         }
-    }
-    let expected = public_url.trim_end_matches('/');
-    if let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
-        return origin.trim_end_matches('/').eq_ignore_ascii_case(expected);
     }
     if let Some(referer) = headers
         .get(header::REFERER)
         .and_then(|value| value.to_str().ok())
     {
-        return referer == expected
-            || referer
-                .strip_prefix(expected)
-                .is_some_and(|suffix| suffix.starts_with('/'));
+        has_origin_signal = true;
+        if !same_url_origin(referer, public_url) {
+            return false;
+        }
     }
-    headers
-        .get("sec-fetch-site")
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|site| site.eq_ignore_ascii_case("none"))
-        && !headers.contains_key("sec-fetch-mode")
-        && !headers.contains_key("sec-fetch-dest")
+    has_origin_signal
+        || fetch_site.is_some_and(|site| {
+            matches!(
+                site.to_ascii_lowercase().as_str(),
+                "same-origin" | "same-site" | "none"
+            )
+        })
+}
+
+fn same_url_origin(candidate: &str, public_url: &str) -> bool {
+    let Ok(candidate) = reqwest::Url::parse(candidate) else {
+        return false;
+    };
+    let Ok(public_url) = reqwest::Url::parse(public_url) else {
+        return false;
+    };
+    candidate.origin() == public_url.origin()
 }
 
 fn client_ip(headers: &HeaderMap, peer: Option<SocketAddr>) -> String {
@@ -241,11 +267,28 @@ mod tests {
             header::ORIGIN,
             HeaderValue::from_static("https://gateway.example"),
         );
+        headers.insert(
+            header::REFERER,
+            HeaderValue::from_static("https://gateway.example/device"),
+        );
         assert!(same_origin(&headers, "https://gateway.example"));
         headers.insert(
             header::ORIGIN,
             HeaderValue::from_static("https://attacker.example"),
         );
         assert!(!same_origin(&headers, "https://gateway.example"));
+
+        let mut contradictory = HeaderMap::new();
+        contradictory.insert("sec-fetch-site", HeaderValue::from_static("same-site"));
+        contradictory.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://sibling.example"),
+        );
+        assert!(!same_origin(&contradictory, "https://gateway.example"));
+
+        let mut navigation = HeaderMap::new();
+        navigation.insert("sec-fetch-site", HeaderValue::from_static("none"));
+        assert!(same_origin(&navigation, "https://gateway.example"));
+        assert!(!same_origin(&HeaderMap::new(), "https://gateway.example"));
     }
 }
