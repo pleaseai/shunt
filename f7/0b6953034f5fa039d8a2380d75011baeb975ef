@@ -1,0 +1,19 @@
+src/accounts.rs
+  s_7cf4723f1c6ebe::t_03e53b18a8c0c4 510-511
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "f70b6953034f5fa039d8a2380d75011baeb975ef",
+  "prompts": {},
+  "sessions": {
+    "s_7cf4723f1c6ebe": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "188d5b2a-d21e-449e-ad23-8d3f5a029f9d",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
