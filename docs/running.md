@@ -562,8 +562,10 @@ on the id, so one global value sizes the mapped subagent (e.g. 372k) while the C
 own — no per-subagent env is needed, and the same overflow/compact behavior (§5.8) applies.
 
 Verify named-subagent routing at both ownership boundaries. Claude Code's stream-JSON Agent result
-records the client-side selection as `agentType` + `resolvedModel`; shunt's `GET /routes` records
-the gateway-side `model` → `provider` / `upstream_model` mapping:
+records the client-side selection as `agentType` + `resolvedModel`; this field requires Claude Code
+2.1.174 or newer, and no output on an older client is not evidence that routing fell back. For an
+exact `[[routes]]` entry, shunt's `GET /routes` records the gateway-side `model` → `provider` /
+`upstream_model` mapping:
 
 ```bash
 claude --output-format stream-json --verbose -p \
@@ -573,20 +575,24 @@ claude --output-format stream-json --verbose -p \
       | .tool_use_result?
       | objects
       | select(.resolvedModel?)
-      | [.agentType?, .resolvedModel]
+      | [(.agentType // null), .resolvedModel]
       | @tsv
     '
 
+# `GET /routes` exposes exact `[[routes]]` entries only; it does not expand
+# `[[route_prefixes]]`.
 curl -s "${ANTHROPIC_BASE_URL%/}/routes" \
   | jq '.data[] | select(.model == "gpt-5.6-sol")'
 ```
 
 Diagnose in that order: a `resolvedModel` that differs from the agent's frontmatter means Claude
 Code chose a different model ID before shunt saw the request (check the global env override,
-tool-level override, and agent frontmatter, then inspect `/routes` because shunt may intentionally
-remap that ID); a correct `resolvedModel` with a wrong `/routes` entry is shunt configuration; and
-correct values at both boundaries point to provider auth, entitlement, quota, or compatibility.
-Do not use model self-identification as routing evidence.
+tool-level override, and agent frontmatter, then inspect the matching exact route because shunt may
+intentionally remap that ID); a correct `resolvedModel` with a wrong exact `/routes` entry is shunt
+configuration. For a prefix-routed ID, inspect the active `[[route_prefixes]]` entry instead, then
+send a minimal request through that ID to exercise the effective route. Correct client-side and
+gateway-side evidence points to provider auth, entitlement, quota, or compatibility. Do not use
+model self-identification as routing evidence.
 
 ### 5.5 (Optional) Model discovery
 

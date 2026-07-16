@@ -142,7 +142,9 @@ Then start `claude`, run `/status`, and check the **Anthropic base URL** line sh
 
 The raw requests above verify shunt's routes, but not Claude Code's client-side subagent
 selection. For cross-model review, verify the model Claude Code actually resolved instead of
-trusting the agent name or asking the model to identify itself:
+trusting the agent name or asking the model to identify itself. The `resolvedModel` result field
+requires Claude Code 2.1.174 or newer; no output from this filter on an older client is not evidence
+that routing fell back:
 
 ```bash
 claude --output-format stream-json --verbose -p \
@@ -152,26 +154,31 @@ claude --output-format stream-json --verbose -p \
       | .tool_use_result?
       | objects
       | select(.resolvedModel?)
-      | [.agentType?, .resolvedModel]
+      | [(.agentType // null), .resolvedModel]
       | @tsv
     '
 ```
 
 For the example agent above, the result should be `researcher` and `gpt-5.6-sol`. Then confirm
-that shunt maps the resolved ID to the intended provider and upstream model:
+that shunt maps the resolved ID to the intended provider and upstream model when it uses an exact
+`[[routes]]` entry:
 
 ```bash
 curl -s "${ANTHROPIC_BASE_URL%/}/routes" \
   | jq '.data[] | select(.model == "gpt-5.6-sol")'
 ```
 
+`GET /routes` exposes exact `[[routes]]` entries only; it does not expand `[[route_prefixes]]`.
+For a prefix-routed ID, inspect the active `[[route_prefixes]]` entry instead, then send a minimal
+request through that ID to exercise the effective route.
+
 Interpret the evidence in order:
 
 | Observation | Diagnosis |
 | :-- | :-- |
-| `resolvedModel` differs from the agent's frontmatter | Claude Code selected a different model ID before the request reached shunt. Check `CLAUDE_CODE_SUBAGENT_MODEL`, a tool-level `model` override, missing/stale agent frontmatter, and agent-definition precedence; then inspect `/routes`, because shunt may intentionally remap that ID. |
-| `resolvedModel` is correct, but `/routes` selects the wrong provider or upstream model | Fix the shunt route or prefix configuration. |
-| `resolvedModel` and `/routes` are correct, but inference fails | Check provider authentication, entitlement, quota, and upstream compatibility. |
+| `resolvedModel` differs from the agent's frontmatter | Claude Code selected a different model ID before the request reached shunt. Check `CLAUDE_CODE_SUBAGENT_MODEL`, a tool-level `model` override, missing/stale agent frontmatter, and agent-definition precedence; then inspect the matching route because shunt may intentionally remap that ID. |
+| `resolvedModel` is correct, but the matching exact route or prefix selects the wrong provider or upstream model | Fix the shunt `[[routes]]` or `[[route_prefixes]]` configuration. |
+| `resolvedModel` and the matching gateway configuration are correct, but inference fails | Check provider authentication, entitlement, quota, and upstream compatibility. |
 
 Model self-identification is not routing evidence: a prompt can produce an incorrect model name,
 while `resolvedModel` records Claude Code's selection and `/routes` records shunt's mapping.
