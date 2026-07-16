@@ -509,6 +509,7 @@ async fn claude_reprovision_clears_orphaned_identity_without_wiping_shared_alias
         "anthropic",
         &other_account,
         std::time::Duration::from_secs(300),
+        "transport",
     );
 
     let client = reqwest::Client::new();
@@ -545,6 +546,7 @@ async fn claude_reprovision_clears_orphaned_identity_without_wiping_shared_alias
         "anthropic",
         &account_a_old,
         std::time::Duration::from_secs(300),
+        "transport",
     );
     let snapshot = state.accounts.snapshot(
         "anthropic",
@@ -710,6 +712,7 @@ async fn claude_reprovision_clears_blank_uuid_old_identity_using_name_fallback()
         "anthropic",
         &account_a_blank,
         std::time::Duration::from_secs(300),
+        "transport",
     );
     let snapshot = state.accounts.snapshot(
         "anthropic",
@@ -814,6 +817,7 @@ async fn claude_remove_preserves_shared_identity_health_until_last_alias_is_remo
         "anthropic",
         &shared_identity,
         std::time::Duration::from_secs(300),
+        "transport",
     );
 
     let client = reqwest::Client::new();
@@ -946,11 +950,13 @@ async fn claude_remove_preserves_a_configured_providers_health_the_store_scan_ca
         "anthropic",
         &shared_identity,
         std::time::Duration::from_secs(300),
+        "transport",
     );
     state.accounts.cooldown(
         "anthropic-configured",
         &shared_identity,
         std::time::Duration::from_secs(300),
+        "transport",
     );
 
     let client = reqwest::Client::new();
@@ -1643,9 +1649,12 @@ async fn codex_reprovision_clears_orphaned_identity_without_wiping_shared_alias_
         uuid: Some("shared-id".to_string()),
         ..Default::default()
     };
-    state
-        .accounts
-        .cooldown("codex", &other_account, std::time::Duration::from_secs(300));
+    state.accounts.cooldown(
+        "codex",
+        &other_account,
+        std::time::Duration::from_secs(300),
+        "transport",
+    );
 
     let client = reqwest::Client::new();
     let auth = |request: reqwest::RequestBuilder| {
@@ -1677,9 +1686,12 @@ async fn codex_reprovision_clears_orphaned_identity_without_wiping_shared_alias_
         uuid: Some("acct-old".to_string()),
         ..Default::default()
     };
-    state
-        .accounts
-        .cooldown("codex", &account_a_old, std::time::Duration::from_secs(300));
+    state.accounts.cooldown(
+        "codex",
+        &account_a_old,
+        std::time::Duration::from_secs(300),
+        "transport",
+    );
     let snapshot =
         state
             .accounts
@@ -1819,6 +1831,7 @@ async fn codex_reprovision_clears_blank_identity_old_account_using_name_fallback
         "codex",
         &account_a_blank,
         std::time::Duration::from_secs(300),
+        "transport",
     );
     let snapshot =
         state
@@ -1929,6 +1942,7 @@ async fn codex_remove_preserves_shared_identity_health_until_last_alias_is_remov
         "codex",
         &shared_identity,
         std::time::Duration::from_secs(300),
+        "transport",
     );
 
     let client = reqwest::Client::new();

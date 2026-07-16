@@ -38,10 +38,24 @@ Setting `endpoint = ""` (e.g. `SHUNT_OTEL__ENDPOINT=""`) disables export again w
 | Signal | What's exported | Notes |
 | :-- | :-- | :-- |
 | **Traces** | The per-request `proxy_request` span | Head-based sampling via `sample_ratio`. Low-cardinality; no request/response bodies. |
-| **Metrics** | `shunt.requests` (count) and `shunt.latency` (ms) | Tagged `provider`, `model`, `http.response.status_code` — the same series shunt sends to Sentry. |
+| **Metrics** | The low-cardinality series listed below | The same series shunt sends to Sentry when `[sentry] metrics = true`. |
 | **Logs** | shunt's `tracing` log events, bridged to OTLP | The stderr logs are unaffected. |
 
 Each signal toggles independently via `traces` / `metrics` / `logs`.
+
+### Metric series
+
+| Series | Type | Attributes | Meaning |
+| :-- | :-- | :-- | :-- |
+| `shunt.requests` | Counter | `provider`, `model`, `http.response.status_code` | Proxied inference requests. |
+| `shunt.latency` | Histogram (ms) | `provider`, `model`, `http.response.status_code` | Header latency for streams; full latency otherwise. |
+| `shunt.ttft` | Histogram (ms) | `provider`, `model` | Request start to the first SSE body chunk. |
+| `shunt.stream_outcome` | Counter | `provider`, `model`, `outcome` | One final SSE result: `completed`, `error_event`, `upstream_cut`, or `client_disconnect`. |
+| `shunt.tokens` | Counter | `provider`, `model`, `kind` | Streaming token usage (`input`, `output`, `cache_read`, `cache_creation`). Non-streaming usage is not recorded. |
+| `shunt.codex_continuation` | Counter | `provider`, `outcome` | Codex WebSocket continuation hit or fallback. |
+| `shunt.upstream_retries` | Counter | `provider`, `reason` | Bounded transient upstream retries. |
+| `shunt.pool.quota_utilization` | Gauge | `provider`, `window` | Best available quota utilization for `5h`, `7d`, or `7d_oi`. |
+| `shunt.pool.rotations` | Counter | `provider`, `reason` | Moves off an account and requests that exhaust the pool. |
 
 ## Privacy
 

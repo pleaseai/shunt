@@ -188,7 +188,7 @@ Opt-in error reporting to your own Sentry project. Off unless `dsn` is set; inde
 | :-- | :-- | :-- |
 | `dsn` | — | Sentry project DSN. Empty disables; an invalid DSN is a startup error. |
 | `environment` | — | Optional environment tag on reported events |
-| `metrics` | `false` | Also send usage metrics — the `shunt.requests` / `shunt.latency` series (aggregates only) |
+| `metrics` | `false` | Also send usage metrics — the gateway metric series documented in the OpenTelemetry guide (aggregates only) |
 | `traces_sample_rate` | `0.0` | Also send performance traces: the per-request span becomes a Sentry transaction, head-sampled at this rate in `[0.0, 1.0]`. `0.0` sends no spans; out of range is a startup error. |
 | `include_session_id` | `false` | Attach the client session id to request spans sent to Sentry |
 
@@ -203,7 +203,7 @@ Opt-in OpenTelemetry (OTLP/HTTP) export of traces, metrics, and logs to your own
 | `environment` | — | Optional `deployment.environment.name` |
 | `sample_ratio` | `1.0` | Head-based trace sampling in `[0.0, 1.0]`; out of range is a startup error |
 | `traces` | `true` | Export the per-request `proxy_request` span |
-| `metrics` | `true` | Export the `shunt.requests` / `shunt.latency` series |
+| `metrics` | `true` | Export the gateway metric series documented in the OpenTelemetry guide |
 | `logs` | `true` | Export `tracing` log events (stderr logs unaffected) |
 | `include_session_id` | `false` | Attach the client session id to request spans |
 

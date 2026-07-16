@@ -139,9 +139,12 @@ pub(super) async fn forward_chatgpt_oauth(
         {
             Ok(response) => response,
             Err(error) => {
-                state
-                    .accounts
-                    .cooldown(&route.provider, account, Duration::from_secs(30));
+                state.accounts.cooldown(
+                    &route.provider,
+                    account,
+                    Duration::from_secs(30),
+                    "transport",
+                );
                 tracing::warn!(
                     provider = %route.provider,
                     account = %account.name,
@@ -208,9 +211,12 @@ pub(super) async fn forward_chatgpt_oauth(
                 {
                     Ok(response) => response,
                     Err(error) => {
-                        state
-                            .accounts
-                            .cooldown(&route.provider, account, Duration::from_secs(30));
+                        state.accounts.cooldown(
+                            &route.provider,
+                            account,
+                            Duration::from_secs(30),
+                            "transport",
+                        );
                         tracing::warn!(
                             provider = %route.provider,
                             account = %account.name,
@@ -251,6 +257,7 @@ pub(super) async fn forward_chatgpt_oauth(
         }
     }
 
+    crate::metrics::record_pool_rotation(&route.provider, "exhausted");
     match last_response {
         Some(upstream) => {
             let status = upstream.status();
@@ -340,9 +347,12 @@ pub(super) async fn resolve_or_cooldown(
     match resolve_chatgpt_account(account, &state.http_client).await {
         Ok(credential) => Some(credential),
         Err(error) => {
-            state
-                .accounts
-                .cooldown(&route.provider, account, Duration::from_secs(5 * 60));
+            state.accounts.cooldown(
+                &route.provider,
+                account,
+                Duration::from_secs(5 * 60),
+                "auth",
+            );
             tracing::warn!(
                 provider = %route.provider,
                 account = %account.name,
@@ -376,9 +386,12 @@ pub(super) async fn force_refresh_or_cooldown(
     credential: &Credential,
 ) -> Option<Credential> {
     if account.token_env.is_some() {
-        state
-            .accounts
-            .cooldown(&route.provider, account, Duration::from_secs(5 * 60));
+        state.accounts.cooldown(
+            &route.provider,
+            account,
+            Duration::from_secs(5 * 60),
+            "auth",
+        );
         tracing::warn!(
             provider = %route.provider,
             account = %account.name,
@@ -390,9 +403,12 @@ pub(super) async fn force_refresh_or_cooldown(
     let rejected_access_token = match chatgpt_access_token(credential) {
         Some(access_token) => access_token,
         None => {
-            state
-                .accounts
-                .cooldown(&route.provider, account, Duration::from_secs(5 * 60));
+            state.accounts.cooldown(
+                &route.provider,
+                account,
+                Duration::from_secs(5 * 60),
+                "auth",
+            );
             tracing::warn!(
                 provider = %route.provider,
                 account = %account.name,
@@ -419,9 +435,12 @@ pub(super) async fn force_refresh_or_cooldown(
             account_id: refreshed.account_id,
         }),
         Err(error) => {
-            state
-                .accounts
-                .cooldown(&route.provider, account, Duration::from_secs(5 * 60));
+            state.accounts.cooldown(
+                &route.provider,
+                account,
+                Duration::from_secs(5 * 60),
+                "auth",
+            );
             tracing::warn!(
                 provider = %route.provider,
                 account = %account.name,
@@ -463,7 +482,12 @@ pub(super) fn classify_first(
         FailoverAction::Relay => FirstOutcome::Relay(upstream),
         FailoverAction::Rotate => {
             let cooldown = rotate_cooldown(status, upstream.headers());
-            state.accounts.cooldown(&route.provider, account, cooldown);
+            state.accounts.cooldown(
+                &route.provider,
+                account,
+                cooldown,
+                accounts::rotation_reason(status, upstream.headers()),
+            );
             tracing::warn!(
                 provider = %route.provider,
                 account = %account.name,
@@ -500,9 +524,12 @@ pub(super) fn classify_retry(
 ) -> RetryOutcome {
     let retry_status = retry.status();
     if retry_status == StatusCode::UNAUTHORIZED {
-        state
-            .accounts
-            .cooldown(&route.provider, account, Duration::from_secs(5 * 60));
+        state.accounts.cooldown(
+            &route.provider,
+            account,
+            Duration::from_secs(5 * 60),
+            "auth",
+        );
         tracing::warn!(
             provider = %route.provider,
             account = %account.name,
@@ -514,7 +541,12 @@ pub(super) fn classify_retry(
         FailoverAction::Relay => RetryOutcome::Relay(retry),
         FailoverAction::Rotate | FailoverAction::RefreshRetry => {
             let cooldown = rotate_cooldown(retry_status, retry.headers());
-            state.accounts.cooldown(&route.provider, account, cooldown);
+            state.accounts.cooldown(
+                &route.provider,
+                account,
+                cooldown,
+                accounts::rotation_reason(retry_status, retry.headers()),
+            );
             tracing::warn!(
                 provider = %route.provider,
                 account = %account.name,

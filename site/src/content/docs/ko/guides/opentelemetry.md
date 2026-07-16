@@ -38,10 +38,24 @@ authorization = "Bearer <token>"
 | 시그널 | 내보내는 내용 | 참고 |
 | :-- | :-- | :-- |
 | **트레이스** | 요청별 `proxy_request` 스팬 | `sample_ratio` 기반 head 샘플링. 저(低)카디널리티이며 요청/응답 본문 없음. |
-| **메트릭** | `shunt.requests`(카운트), `shunt.latency`(ms) | `provider`, `model`, `http.response.status_code` 태그 — shunt가 Sentry로 보내는 것과 동일한 계열. |
+| **메트릭** | 아래에 나열된 저카디널리티 계열 | `[sentry] metrics = true`일 때 shunt가 Sentry로 보내는 것과 동일한 계열. |
 | **로그** | shunt의 `tracing` 로그 이벤트를 OTLP로 브리지 | stderr 로그는 영향받지 않음. |
 
 각 시그널은 `traces` / `metrics` / `logs`로 개별 토글합니다.
+
+### 메트릭 계열
+
+| 계열 | 유형 | 속성 | 의미 |
+| :-- | :-- | :-- | :-- |
+| `shunt.requests` | 카운터 | `provider`, `model`, `http.response.status_code` | 프록시된 추론 요청. |
+| `shunt.latency` | 히스토그램(ms) | `provider`, `model`, `http.response.status_code` | 스트림은 헤더 지연 시간, 그 외에는 전체 지연 시간. |
+| `shunt.ttft` | 히스토그램(ms) | `provider`, `model` | 요청 시작부터 첫 SSE 본문 청크까지의 시간. |
+| `shunt.stream_outcome` | 카운터 | `provider`, `model`, `outcome` | SSE 최종 결과 하나: `completed`, `error_event`, `upstream_cut`, `client_disconnect`. |
+| `shunt.tokens` | 카운터 | `provider`, `model`, `kind` | 스트리밍 토큰 사용량(`input`, `output`, `cache_read`, `cache_creation`). 비스트리밍 사용량은 기록하지 않음. |
+| `shunt.codex_continuation` | 카운터 | `provider`, `outcome` | Codex WebSocket continuation hit 또는 fallback. |
+| `shunt.upstream_retries` | 카운터 | `provider`, `reason` | 제한된 일시적 업스트림 재시도. |
+| `shunt.pool.quota_utilization` | 게이지 | `provider`, `window` | `5h`, `7d`, `7d_oi`별 최적 가용 계정의 quota 사용률. |
+| `shunt.pool.rotations` | 카운터 | `provider`, `reason` | 계정에서 이동한 횟수와 pool이 소진된 요청 수. |
 
 ## 프라이버시
 

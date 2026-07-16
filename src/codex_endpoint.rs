@@ -234,7 +234,18 @@ async fn forward(
         status,
         started_at.elapsed().as_secs_f64() * 1000.0,
     );
-    result.map_err(ForwardError::from)
+    result
+        .map(|(status, response)| {
+            let response = crate::stream_metrics::observe_response(
+                response,
+                crate::stream_metrics::Protocol::Responses,
+                provider,
+                model,
+                started_at,
+            );
+            (status, response)
+        })
+        .map_err(ForwardError::from)
 }
 
 /// Namespace the account-pool sticky key with the authenticated inbound client so

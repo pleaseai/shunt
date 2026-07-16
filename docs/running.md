@@ -127,12 +127,8 @@ provider = "openai"
 # dsn = "https://<key>@<org>.ingest.sentry.io/<project>"
 # environment = "home-lab"   # optional environment tag on events
 # metrics = false            # (default) separate opt-in: also send usage metrics.
-#                            # `shunt.requests` (count) and `shunt.latency` (ms
-#                            # distribution; time to response headers for streams;
-#                            # inference calls only, count_tokens excluded), tagged
-#                            # provider, model (the requested id), and
-#                            # `http.response.status_code`. Aggregates only — no
-#                            # prompts, client names, or session ids.
+#                            # See the metric series below. Aggregates only — no
+#                            # prompts, client names, account ids, or session ids.
 # traces_sample_rate = 0.0   # (default) separate opt-in: also send performance
 #                            # traces. The per-request span (method, path) becomes
 #                            # a Sentry transaction, head-sampled at this rate in
@@ -144,8 +140,8 @@ provider = "openai"
 # Optional: OpenTelemetry (OTLP) export to your own collector/backend. Off
 # unless an endpoint is set. Independent of [sentry] — both can run together.
 # Exports up to three signals over OTLP/HTTP (protobuf): request spans
-# (traces), the shunt.requests/shunt.latency series (metrics, same fields as
-# above), and shunt's log events (logs; the stderr logs are unaffected).
+# (traces), the metric series below (metrics), and shunt's log events (logs;
+# the stderr logs are unaffected).
 # Metrics and traces stay low-cardinality and carry no request/response bodies —
 # the span's client session id is attached only when `include_session_id = true`.
 # The logs signal exports shunt's diagnostic events as written, so like the
@@ -170,6 +166,20 @@ provider = "openai"
 # [otel.headers]             # optional per-request headers (e.g. a hosted-collector token)
 # authorization = "Bearer <token>"
 ```
+
+Both metric sinks export the same low-cardinality series:
+
+| Series | Type | Attributes | Meaning |
+| :-- | :-- | :-- | :-- |
+| `shunt.requests` | Counter | `provider`, `model`, `http.response.status_code` | Inference requests; token-count requests are excluded. |
+| `shunt.latency` | Histogram (ms) | `provider`, `model`, `http.response.status_code` | Time to response headers for streams and full latency for non-streaming responses. |
+| `shunt.ttft` | Histogram (ms) | `provider`, `model` | Time from request start to the first SSE body chunk. |
+| `shunt.stream_outcome` | Counter | `provider`, `model`, `outcome` | Exactly one stream result: `completed`, `error_event`, `upstream_cut`, or `client_disconnect`. |
+| `shunt.tokens` | Counter | `provider`, `model`, `kind` | Last reported streaming usage for `input`, `output`, `cache_read`, or `cache_creation`; non-streaming usage is not recorded. |
+| `shunt.codex_continuation` | Counter | `provider`, `outcome` | Codex WebSocket continuation `hit` or full-input `fallback`. |
+| `shunt.upstream_retries` | Counter | `provider`, `reason` | Bounded transient retries. |
+| `shunt.pool.quota_utilization` | Gauge | `provider`, `window` | Minimum utilization across enabled, non-stale accounts for `5h`, `7d`, or `7d_oi`. |
+| `shunt.pool.rotations` | Counter | `provider`, `reason` | Account rotations and pool exhaustion by low-cardinality cause. |
 
 **Routing precedence** (`src/routing.rs`): exact `[[routes]]` match → `[[route_prefixes]]`
 prefix match → `server.default_provider`. A model with no match falls through to Anthropic.

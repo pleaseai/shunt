@@ -207,7 +207,16 @@ async fn forward(
             started_at.elapsed().as_secs_f64() * 1000.0,
         );
     }
-    result
+    result.map(|(status, response)| {
+        let response = crate::stream_metrics::observe_response(
+            response,
+            crate::stream_metrics::Protocol::Anthropic,
+            provider,
+            model,
+            started_at,
+        );
+        (status, response)
+    })
 }
 
 /// Enforce `[server.auth]` on injected-credential routes and strip the client

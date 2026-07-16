@@ -152,9 +152,12 @@ async fn forward_codex_passthrough(
         {
             Ok(response) => response,
             Err(error) => {
-                state
-                    .accounts
-                    .cooldown(&route.provider, account, Duration::from_secs(30));
+                state.accounts.cooldown(
+                    &route.provider,
+                    account,
+                    Duration::from_secs(30),
+                    "transport",
+                );
                 tracing::warn!(
                     provider = %route.provider,
                     account = %account.name,
@@ -206,9 +209,12 @@ async fn forward_codex_passthrough(
                 {
                     Ok(response) => response,
                     Err(error) => {
-                        state
-                            .accounts
-                            .cooldown(&route.provider, account, Duration::from_secs(30));
+                        state.accounts.cooldown(
+                            &route.provider,
+                            account,
+                            Duration::from_secs(30),
+                            "transport",
+                        );
                         tracing::warn!(
                             provider = %route.provider,
                             account = %account.name,
@@ -239,6 +245,7 @@ async fn forward_codex_passthrough(
         }
     }
 
+    crate::metrics::record_pool_rotation(&route.provider, "exhausted");
     match last_response {
         // Passthrough: relay the last upstream response verbatim (status + body),
         // unlike the Anthropic path which re-shapes it into an error envelope.

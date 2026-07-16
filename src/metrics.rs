@@ -1,22 +1,27 @@
-//! Usage/performance metric emission.
+//! Usage/performance and pool-health metric emission.
 //!
-//! Every proxied inference request is recorded to two independent, opt-in
-//! sinks — each a no-op unless its section is configured:
+//! Every series is recorded to two independent, opt-in sinks — each a no-op
+//! unless its section is configured:
 //!
-//! - **Sentry** (`[sentry] metrics = true`): a `shunt.requests` count and a
-//!   `shunt.latency` distribution. Dropped by the SDK when no client is bound
-//!   or `enable_metrics` is off.
-//! - **OpenTelemetry** (`[otel]` with `metrics = true`): the same two series on
-//!   the global meter. A no-op until `crate::telemetry::init` installs a meter
+//! - **Sentry** (`[sentry] metrics = true`): counters, distributions, and gauges
+//!   are dropped by the SDK when no client is bound or `enable_metrics` is off.
+//! - **OpenTelemetry** (`[otel]` with `metrics = true`): the same series use the
+//!   global meter. A no-op until `crate::telemetry::init` installs a meter
 //!   provider, so with `[otel]` absent the instruments are inert.
 //!
-//! Attributes stay low-cardinality (provider/model/status) — never client
-//! names, session ids, or anything request-derived.
+//! Request metrics cover request counts/header latency, streaming TTFT/outcomes
+//! and streaming token usage, Codex continuation decisions, and retries. Pool
+//! metrics expose best-account quota utilization and account rotations.
+//!
+//! Attributes stay low-cardinality (provider/model/status/outcome/kind/window/
+//! reason) — never client names, account ids, session ids, or anything else
+//! request-derived. Token metrics currently cover streaming responses only;
+//! non-streaming token usage is intentionally out of scope.
 
 use std::sync::OnceLock;
 
 use opentelemetry::{
-    metrics::{Counter, Histogram},
+    metrics::{Counter, Gauge, Histogram},
     KeyValue,
 };
 use sentry::protocol::Unit;
@@ -27,8 +32,13 @@ use sentry::protocol::Unit;
 struct OtelInstruments {
     requests: Counter<u64>,
     latency: Histogram<f64>,
+    ttft: Histogram<f64>,
+    stream_outcome: Counter<u64>,
+    tokens: Counter<u64>,
     continuation: Counter<u64>,
     upstream_retries: Counter<u64>,
+    pool_utilization: Gauge<f64>,
+    pool_rotations: Counter<u64>,
 }
 
 fn otel_instruments() -> &'static OtelInstruments {
@@ -45,6 +55,19 @@ fn otel_instruments() -> &'static OtelInstruments {
                 .with_unit("ms")
                 .with_description("Proxied inference request latency")
                 .build(),
+            ttft: meter
+                .f64_histogram("shunt.ttft")
+                .with_unit("ms")
+                .with_description("Time from request start to the first SSE body chunk")
+                .build(),
+            stream_outcome: meter
+                .u64_counter("shunt.stream_outcome")
+                .with_description("How proxied SSE response streams ended")
+                .build(),
+            tokens: meter
+                .u64_counter("shunt.tokens")
+                .with_description("Token usage reported by proxied SSE streams")
+                .build(),
             continuation: meter
                 .u64_counter("shunt.codex_continuation")
                 .with_description(
@@ -57,8 +80,101 @@ fn otel_instruments() -> &'static OtelInstruments {
                     "Bounded upstream retries issued for transient failures (issue #48)",
                 )
                 .build(),
+            pool_utilization: meter
+                .f64_gauge("shunt.pool.quota_utilization")
+                .with_description("Least quota utilization among enabled pool accounts")
+                .build(),
+            pool_rotations: meter
+                .u64_counter("shunt.pool.rotations")
+                .with_description("Account-pool rotations by low-cardinality reason")
+                .build(),
         }
     })
+}
+
+/// Record time from request start to the first successfully forwarded SSE body
+/// chunk. Non-streaming responses do not call this function. Emitted to Sentry
+/// and OpenTelemetry; each sink is inert unless configured.
+pub fn record_ttft(provider: &str, model: &str, milliseconds: f64) {
+    sentry::metrics::distribution("shunt.ttft", milliseconds)
+        .unit(Unit::Millisecond)
+        .attribute("provider", provider.to_owned())
+        .attribute("model", model.to_owned())
+        .capture();
+
+    let attributes = [
+        KeyValue::new("provider", provider.to_owned()),
+        KeyValue::new("model", model.to_owned()),
+    ];
+    otel_instruments().ttft.record(milliseconds, &attributes);
+}
+
+/// Record the final outcome of one SSE response stream. `outcome` is one of
+/// `completed`, `error_event`, `upstream_cut`, or `client_disconnect`; callers
+/// guarantee exactly one record per stream.
+pub fn record_stream_outcome(provider: &str, model: &str, outcome: &'static str) {
+    sentry::metrics::counter("shunt.stream_outcome", 1)
+        .attribute("provider", provider.to_owned())
+        .attribute("model", model.to_owned())
+        .attribute("outcome", outcome.to_owned())
+        .capture();
+
+    let attributes = [
+        KeyValue::new("provider", provider.to_owned()),
+        KeyValue::new("model", model.to_owned()),
+        KeyValue::new("outcome", outcome),
+    ];
+    otel_instruments().stream_outcome.add(1, &attributes);
+}
+
+/// Add one last-seen token count from a completed or interrupted SSE stream.
+/// `kind` is one of `input`, `output`, `cache_read`, or `cache_creation`; absent
+/// usage fields are not emitted by the stream observer.
+pub fn record_stream_tokens(provider: &str, model: &str, kind: &'static str, count: u64) {
+    sentry::metrics::counter("shunt.tokens", count as f64)
+        .attribute("provider", provider.to_owned())
+        .attribute("model", model.to_owned())
+        .attribute("kind", kind.to_owned())
+        .capture();
+
+    let attributes = [
+        KeyValue::new("provider", provider.to_owned()),
+        KeyValue::new("model", model.to_owned()),
+        KeyValue::new("kind", kind),
+    ];
+    otel_instruments().tokens.add(count, &attributes);
+}
+
+/// Record the least quota utilization reported by an enabled, non-stale account
+/// for one provider and quota window (`5h`, `7d`, or `7d_oi`).
+pub fn record_pool_utilization(provider: &str, window: &'static str, utilization: f64) {
+    sentry::metrics::gauge("shunt.pool.quota_utilization", utilization)
+        .attribute("provider", provider.to_owned())
+        .attribute("window", window.to_owned())
+        .capture();
+
+    let attributes = [
+        KeyValue::new("provider", provider.to_owned()),
+        KeyValue::new("window", window),
+    ];
+    otel_instruments()
+        .pool_utilization
+        .record(utilization, &attributes);
+}
+
+/// Record one move away from a pool account, or one request that found the pool
+/// exhausted. Reasons are deliberately low-cardinality and account-free.
+pub fn record_pool_rotation(provider: &str, reason: &'static str) {
+    sentry::metrics::counter("shunt.pool.rotations", 1)
+        .attribute("provider", provider.to_owned())
+        .attribute("reason", reason.to_owned())
+        .capture();
+
+    let attributes = [
+        KeyValue::new("provider", provider.to_owned()),
+        KeyValue::new("reason", reason),
+    ];
+    otel_instruments().pool_rotations.add(1, &attributes);
 }
 
 /// The outcome of a Codex WebSocket continuation decision on a *reused*
@@ -153,7 +269,11 @@ pub fn record_upstream_retry(provider: &str, reason: &'static str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{record_continuation_outcome, record_proxied_request, ContinuationOutcome};
+    use super::{
+        record_continuation_outcome, record_pool_rotation, record_pool_utilization,
+        record_proxied_request, record_stream_outcome, record_stream_tokens, record_ttft,
+        ContinuationOutcome,
+    };
 
     /// The core opt-in contract: recording a proxied request must never panic,
     /// whatever the sink state — the default (no Sentry client, no OTel meter
@@ -164,6 +284,21 @@ mod tests {
     fn record_is_noop_without_sinks() {
         record_proxied_request("openai", "gpt-5.2", 200, 123.4);
         record_proxied_request("anthropic", "claude-opus-4-8", 502, 0.0);
+    }
+
+    /// Stream metrics honor the same opt-in no-op contract.
+    #[test]
+    fn record_stream_metrics_are_noop_without_sinks() {
+        record_ttft("anthropic", "claude-opus-4-8", 42.0);
+        record_stream_outcome("anthropic", "claude-opus-4-8", "completed");
+        record_stream_tokens("anthropic", "claude-opus-4-8", "input", 123);
+    }
+
+    /// Pool metrics honor the same opt-in no-op contract.
+    #[test]
+    fn record_pool_metrics_are_noop_without_sinks() {
+        record_pool_utilization("anthropic", "5h", 0.25);
+        record_pool_rotation("anthropic", "rate_limit");
     }
 
     /// The continuation counter honors the same opt-in no-op contract.
