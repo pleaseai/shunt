@@ -1,0 +1,45 @@
+src/usage_poll.rs
+  s_3c3b03668dbf0c::t_4e3e18f9f2dbd4 96
+src/accounts.rs
+  s_3c3b03668dbf0c::t_3b32869a4f1e19 1006
+  s_3c3b03668dbf0c::t_4b2edc968843b8 192-210
+  s_3c3b03668dbf0c::t_0eba1e083e9858 1187-1236
+site/src/content/docs/guides/opentelemetry.md
+  s_3c3b03668dbf0c::t_a5b1440ab908fe 57
+  s_3c3b03668dbf0c::t_37aff04ee5cce6 54
+src/metrics.rs
+  s_3c3b03668dbf0c::t_a3c3d20c301462 93-94,96-112
+  s_3c3b03668dbf0c::t_09503cae2db75c 47-50
+  s_3c3b03668dbf0c::t_2d030c68d27ab5 175-177,196-197
+  s_3c3b03668dbf0c::t_396f7e98d648e9 179-195
+  s_3c3b03668dbf0c::t_496c73ac2ca280 335-336
+  s_3c3b03668dbf0c::t_996e2daf79ae59 43,51
+  s_3c3b03668dbf0c::t_6bfdb14b1ab19a 21-24,27
+  s_3c3b03668dbf0c::t_7168d78c56653d 178
+  s_3c3b03668dbf0c::t_171b2e3f2bd2ff 52-53
+site/src/content/docs/ko/guides/opentelemetry.md
+  s_3c3b03668dbf0c::t_fd103fe6fa473f 57
+  s_3c3b03668dbf0c::t_df6a339b7dbcac 54
+site/src/content/docs/ja/guides/opentelemetry.md
+  s_3c3b03668dbf0c::t_e243c76ff3234d 54
+  s_3c3b03668dbf0c::t_8bcad28212a607 57
+site/src/content/docs/zh-cn/guides/opentelemetry.md
+  s_3c3b03668dbf0c::t_0cdf111e1a04fb 57
+  s_3c3b03668dbf0c::t_71f996af76d9b4 54
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "ba1c0031027919f305e723dd8297d34945824eb6",
+  "prompts": {},
+  "sessions": {
+    "s_3c3b03668dbf0c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1490fb5d-88e1-4063-abf6-567169babeb7",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
