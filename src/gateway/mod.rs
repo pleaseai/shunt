@@ -23,6 +23,7 @@ pub struct GatewayAuth {
     public_url: String,
     jwt_secret: Vec<u8>,
     token_ttl_seconds: u64,
+    trust_forwarded_for: bool,
     approval: Arc<dyn ApprovalProvider>,
 }
 
@@ -31,12 +32,14 @@ impl GatewayAuth {
         public_url: String,
         jwt_secret: Vec<u8>,
         token_ttl_seconds: u64,
+        trust_forwarded_for: bool,
         users: StaticUsers,
     ) -> Self {
         Self {
             public_url,
             jwt_secret,
             token_ttl_seconds,
+            trust_forwarded_for,
             approval: Arc::new(users),
         }
     }
@@ -51,6 +54,10 @@ impl GatewayAuth {
 
     pub fn token_ttl_seconds(&self) -> u64 {
         self.token_ttl_seconds
+    }
+
+    pub fn trust_forwarded_for(&self) -> bool {
+        self.trust_forwarded_for
     }
 
     pub fn approval_provider(&self) -> &dyn ApprovalProvider {

@@ -48,6 +48,7 @@ public_url = "https://gateway.example.com"
 jwt_secret_env = "SHUNT_GATEWAY_JWT_SECRET" # default
 users_env = "SHUNT_GATEWAY_USERS"           # default
 token_ttl_seconds = 3600                     # default
+trust_forwarded_for = false                  # default
 ```
 
 ```bash
@@ -80,14 +81,19 @@ a human-readable blocked notice, matching the reference gateway behavior.
 
 Device grants, refresh tokens, and rate-limit counters are process-lifetime,
 in-memory stores. They survive a config hot reload but are not written to disk.
-Restarting shunt therefore invalidates outstanding device codes and refresh
-tokens, and every gateway user must sign in again. File persistence and
-multi-instance coordination are follow-ups; M-A deliberately adds no database.
+Mutating operations remove expired device grants and idle rate-limit entries.
+Used refresh-token tombstones are retained for 30 days and capped at 64 per
+family, preserving bounded replay detection without process-lifetime growth.
+Restarting shunt invalidates outstanding device codes and refresh tokens, so
+every gateway user must sign in again. File persistence and multi-instance
+coordination are follow-ups; M-A deliberately adds no database.
 
-Use TLS for a non-loopback deployment. If a reverse proxy supplies
-`X-Forwarded-For`, it must strip any client-supplied forwarding header before
-adding its trusted value because the device verification limiter uses the first
-forwarded address.
+Use TLS for a non-loopback deployment. By default `/device` rate limiting uses
+the socket peer and ignores `X-Forwarded-For` and `X-Real-IP`. Set
+`trust_forwarded_for = true` only when every request reaches shunt through a
+trusted reverse proxy that strips client-supplied forwarding headers and adds
+its own trusted client address. Enabling it on a directly exposed gateway lets
+clients choose their rate-limit identity.
 
 A gateway login session also has the reference gateway's reduced Claude Code
 feature set: WebSearch is disabled, first-party-only beta headers and the

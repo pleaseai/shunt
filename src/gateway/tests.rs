@@ -1,5 +1,6 @@
 use axum::{
     body::{to_bytes, Body},
+    extract::ConnectInfo,
     http::{header, Request, StatusCode},
     Router,
 };
@@ -31,6 +32,7 @@ impl GatewayEnv {
             jwt_secret_env: secret_env.clone(),
             users_env: users_env.clone(),
             token_ttl_seconds: 3600,
+            trust_forwarded_for: false,
         });
         (
             config,
@@ -274,6 +276,70 @@ async fn device_grant_error_table_and_csrf_rejection_match_contract() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(expired, json!({"error": "expired_token"}));
+}
+
+#[tokio::test]
+async fn device_rate_limit_ignores_spoofed_forwarded_ips_by_default() {
+    let (config, _env) = GatewayEnv::config("forwarded-default");
+    let (router, _, _) = build_router(config).unwrap();
+    let peer: std::net::SocketAddr = "203.0.113.4:43123".parse().unwrap();
+
+    for attempt in 0..31 {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/device")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .header(header::ORIGIN, "https://gateway.example")
+                    .header("x-forwarded-for", format!("198.51.100.{attempt}"))
+                    .extension(ConnectInfo(peer))
+                    .body(Body::from(
+                        "user_code=BCDF-GHJK&login=dev%40example.com&secret=wrong",
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let html = String::from_utf8_lossy(&body);
+        if attempt < 30 {
+            assert!(html.contains("login or secret"));
+        } else {
+            assert!(html.contains("Too many attempts"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn device_rate_limit_honors_forwarded_ips_when_enabled() {
+    let (mut config, _env) = GatewayEnv::config("forwarded-opt-in");
+    config.server.gateway.as_mut().unwrap().trust_forwarded_for = true;
+    let (router, _, _) = build_router(config).unwrap();
+    let peer: std::net::SocketAddr = "203.0.113.4:43123".parse().unwrap();
+
+    for attempt in 0..31 {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/device")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .header(header::ORIGIN, "https://gateway.example")
+                    .header("x-forwarded-for", format!("198.51.100.{attempt}"))
+                    .extension(ConnectInfo(peer))
+                    .body(Body::from(
+                        "user_code=BCDF-GHJK&login=dev%40example.com&secret=wrong",
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("login or secret"));
+    }
 }
 
 #[tokio::test]

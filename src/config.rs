@@ -277,6 +277,10 @@ pub struct GatewayConfig {
     /// Access-token lifetime in seconds.
     #[serde(default = "default_gateway_token_ttl_seconds")]
     pub token_ttl_seconds: u64,
+    /// Honor `X-Forwarded-For`/`X-Real-IP` for `/device` rate limiting.
+    /// Enable only behind a trusted proxy that replaces client-supplied values.
+    #[serde(default)]
+    pub trust_forwarded_for: bool,
 }
 
 fn default_gateway_jwt_secret_env() -> String {
@@ -337,6 +341,7 @@ impl GatewayConfig {
             public_url.as_str().trim_end_matches('/').to_string(),
             secret.into_bytes(),
             self.token_ttl_seconds,
+            self.trust_forwarded_for,
             users,
         ))
     }
@@ -2255,6 +2260,7 @@ mod tests {
             jwt_secret_env: secret_env.clone(),
             users_env: users_env.clone(),
             token_ttl_seconds: 3600,
+            trust_forwarded_for: false,
         };
 
         assert!(matches!(
@@ -2280,6 +2286,15 @@ mod tests {
         let resolved = gateway.resolve().expect("valid gateway config");
         assert_eq!(resolved.public_url(), "https://gateway.example");
         assert_eq!(resolved.token_ttl_seconds(), 3600);
+        assert!(!resolved.trust_forwarded_for());
+
+        let trusted = GatewayConfig {
+            trust_forwarded_for: true,
+            ..gateway.clone()
+        }
+        .resolve()
+        .expect("trusted proxy opt-in resolves");
+        assert!(trusted.trust_forwarded_for());
 
         std::env::remove_var(secret_env);
         std::env::remove_var(users_env);
@@ -2292,6 +2307,7 @@ mod tests {
             jwt_secret_env: "UNUSED_GATEWAY_SECRET".to_string(),
             users_env: "UNUSED_GATEWAY_USERS".to_string(),
             token_ttl_seconds: 3600,
+            trust_forwarded_for: false,
         };
         assert!(matches!(
             gateway.resolve(),

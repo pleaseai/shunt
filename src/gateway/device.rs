@@ -68,7 +68,7 @@ pub async fn post(
         }
     };
     let peer = connection.map(|Extension(ConnectInfo(address))| address);
-    let client_ip = client_ip(&headers, peer);
+    let client_ip = client_ip(&headers, peer, auth.trust_forwarded_for());
     if !state
         .gateway_stores
         .device_verify_rate
@@ -153,22 +153,26 @@ fn same_url_origin(candidate: &str, public_url: &str) -> bool {
     candidate.origin() == public_url.origin()
 }
 
-fn client_ip(headers: &HeaderMap, peer: Option<SocketAddr>) -> String {
-    // `X-Forwarded-For` is honored for reverse-proxy deployments; operators must
-    // strip client-supplied forwarding headers at the trusted edge.
-    headers
-        .get("x-forwarded-for")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(',').next())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .or_else(|| {
-            headers
-                .get("x-real-ip")
-                .and_then(|value| value.to_str().ok())
-        })
-        .map(ToOwned::to_owned)
-        .or_else(|| peer.map(|address| address.ip().to_string()))
+fn client_ip(headers: &HeaderMap, peer: Option<SocketAddr>, trust_forwarded_for: bool) -> String {
+    if trust_forwarded_for {
+        if let Some(forwarded) = headers
+            .get("x-forwarded-for")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(',').next())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                headers
+                    .get("x-real-ip")
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+            })
+        {
+            return forwarded.to_string();
+        }
+    }
+    peer.map(|address| address.ip().to_string())
         .unwrap_or_else(|| "unknown".to_string())
 }
 
@@ -241,9 +245,11 @@ input:focus-visible, button:focus-visible {{ outline: 3px solid #315ee8; outline
 
 #[cfg(test)]
 mod tests {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
     use axum::http::{header, HeaderMap, HeaderValue};
 
-    use super::{page, same_origin};
+    use super::{client_ip, page, same_origin};
 
     #[test]
     fn page_escapes_prefilled_code_and_never_auto_submits() {
@@ -251,6 +257,20 @@ mod tests {
         assert!(html.contains("&lt;script&gt;"));
         assert!(!html.contains("<script"));
         assert!(html.contains("method=\"post\""));
+    }
+
+    #[test]
+    fn forwarded_addresses_require_explicit_trust() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            HeaderValue::from_static("198.51.100.8, 192.0.2.3"),
+        );
+        headers.insert("x-real-ip", HeaderValue::from_static("198.51.100.9"));
+        let peer = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 4)), 43123);
+
+        assert_eq!(client_ip(&headers, Some(peer), false), "203.0.113.4");
+        assert_eq!(client_ip(&headers, Some(peer), true), "198.51.100.8");
     }
 
     #[test]
