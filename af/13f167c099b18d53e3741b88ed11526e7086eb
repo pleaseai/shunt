@@ -1,0 +1,32 @@
+.please/docs/review/rejected-findings.jsonl
+  s_f8923beebcc70b::t_d8410250b0ee39 14
+docs/m12-client-usage-endpoint.md
+  s_f8923beebcc70b::t_a28c17d6f44595 54-59
+src/server.rs
+  s_f8923beebcc70b::t_a28c17d6f44595 185-252
+src/usage.rs
+  s_f8923beebcc70b::t_a28c17d6f44595 55-61,85-88,268,442-493
+  s_f8923beebcc70b::t_f0502d8dc78f6a 494
+site/src/content/docs/reference/configuration.md
+  s_f8923beebcc70b::t_a28c17d6f44595 58
+Cargo.toml
+  s_f8923beebcc70b::t_a28c17d6f44595 82
+Cargo.lock
+  s_f8923beebcc70b::t_b8977eac4deee3 2699
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "af13f167c099b18d53e3741b88ed11526e7086eb",
+  "prompts": {},
+  "sessions": {
+    "s_f8923beebcc70b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c343b8cf-5686-491c-b325-fb766319578d",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
