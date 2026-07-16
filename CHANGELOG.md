@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.18.1](https://github.com/pleaseai/shunt/compare/v0.18.0...v0.18.1) (2026-07-15)
+
+
+### Performance Improvements
+
+* **codex:** bound WebSocket event channel ([#167](https://github.com/pleaseai/shunt/issues/167)) ([1c65f7b](https://github.com/pleaseai/shunt/commit/1c65f7b8edfea3804a6fb77bd158378541691e02))
+* **codex:** single-flight CodexAuthStore refresh ([#168](https://github.com/pleaseai/shunt/issues/168)) ([6079053](https://github.com/pleaseai/shunt/commit/60790530d3771cefb1ca4133f4f2ba487d85d021))
+
 ## [0.18.0](https://github.com/pleaseai/shunt/compare/v0.17.0...v0.18.0) (2026-07-15)
 
 

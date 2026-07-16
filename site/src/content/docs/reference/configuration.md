@@ -49,6 +49,14 @@ Presence of this table enables an inbound OpenAI Responses passthrough so the **
 
 Registers `POST /backend-api/codex/responses`, `POST /responses`, and `POST /v1/responses` — all served by the named provider's account pool. When `[server.auth]` is configured they require a valid client token (like the other injected-credential routes); with no `[server.auth]` they are **open** to anyone who can reach them while still injecting the operator's Codex credential, so gate them on anything beyond loopback. Unlike `/v1/messages`, the request is not translated to or from Anthropic Messages; it is relayed to and from the upstream verbatim.
 
+## `[server.usage]` (optional)
+
+Presence of this table registers a client-facing `GET /usage` endpoint that returns a **sanitized, aggregated** view of the shared account pool's quota state, so a non-admin client can anticipate throttling without the admin surface ([endpoint details](/reference/endpoints/)). When the table is absent, the route is not registered.
+
+The table has no keys today — presence alone opts in. It **requires [`[server.auth]`](#serverauth-optional)**: the endpoint identifies its caller by client token, so shunt fails startup if `[server.usage]` is set without inbound auth rather than serve pool telemetry unauthenticated.
+
+`GET /usage` authenticates the same client token as `/v1/messages` (configured header, `x-api-key`, or `Authorization: Bearer`) and reports per-window remaining headroom (`1 - min(utilization)` across non-disabled accounts, i.e. the least reported utilization among non-disabled accounts — a pool-wide aggregate, not a prediction of which account the next request will actually route to), each window's reset, and a coarse `ok`/`degraded`/`exhausted` status. It never exposes account names, counts, priorities, `disabled` flags, thresholds, or per-account numbers — the full per-account detail stays behind the admin-only [`GET /admin/pool`](#serveradmin-optional). The Codex backend publishes no quota headers, so its windows report `null`.
+
 ## `[server.pool]` (optional)
 
 Quota-aware load-balancing tuning for Claude (Anthropic) account pools ([details](/guides/anthropic-multi-account/#tuning-selection-serverpool)). When the table is absent, selection uses the single built-in `0.98` threshold exactly as before this table existed.
