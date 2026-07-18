@@ -1,6 +1,6 @@
 ---
 name: codex-quota-stable-identity
- description: Codex quota recording must receive AccountConfig and key health by account_identity
+description: Codex quota recording must receive AccountConfig and key health by account_identity
 metadata:
   type: project
 ---
