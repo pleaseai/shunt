@@ -1,0 +1,34 @@
+src/adapters/responses/inbound.rs
+  s_71980b6858ec72::t_36fdde46474e33 188-192
+  s_71980b6858ec72::t_2dfa92a5cadd6d 249-253
+src/accounts.rs
+  s_71980b6858ec72::t_a08c7ac18c0e93 1981,2008-2009,2023
+  s_71980b6858ec72::t_f2b8bd01424166 572-577,590
+  s_71980b6858ec72::t_29d63c9fd9d0f7 617-619
+  s_71980b6858ec72::t_ce3dc530e57c59 1991-2002
+  s_71980b6858ec72::t_f41377f02b23dc 1990
+src/adapters/responses/pool.rs
+  s_71980b6858ec72::t_4cc5d736b72991 254
+  s_71980b6858ec72::t_4ab5170f0f5427 119-121
+  s_71980b6858ec72::t_1dbcf84f5e7d5c 176-177,179-181
+src/adapters/anthropic/mod.rs
+  s_71980b6858ec72::t_cde8abb90b1877 304
+  s_71980b6858ec72::t_886b30361a4d2a 450
+  s_71980b6858ec72::t_971acfc19a9948 246-250
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "c46daf28b36373a6ffdebbd7fd7fbd35c46a9e55",
+  "prompts": {},
+  "sessions": {
+    "s_71980b6858ec72": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3d559c97-2eb6-46fd-8f5d-8c7d794ff0e9",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
