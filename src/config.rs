@@ -308,6 +308,28 @@ pub struct GatewayConfig {
     /// Enable only behind a trusted proxy that replaces client-supplied values.
     #[serde(default)]
     pub trust_forwarded_for: bool,
+    /// File persisting refresh sessions across restarts (issue #194). Refresh
+    /// tokens are stored as SHA-256 hashes, written atomically with owner-only
+    /// permissions after each grant or rotation, and restored at boot. Defaults
+    /// to `~/.shunt/gateway-sessions.json` (the directory shunt's account
+    /// stores already use); set `state_path = ""` for memory-only sessions,
+    /// where a restart signs everyone out once their access JWT expires. When
+    /// no home directory can be resolved the default is memory-only too.
+    #[serde(default = "default_gateway_state_path")]
+    pub state_path: Option<std::path::PathBuf>,
+}
+
+/// `~/.shunt/gateway-sessions.json` (`HOME`, falling back to `USERPROFILE` on
+/// Windows), or `None` — memory-only sessions — when neither is set. Unlike
+/// the account stores this never falls back to a working-directory-relative
+/// path: a default-on write should not land in whatever directory shunt
+/// happens to start from.
+fn default_gateway_state_path() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME")
+        .filter(|home| !home.is_empty())
+        .or_else(|| std::env::var_os("USERPROFILE").filter(|home| !home.is_empty()))
+        .map(std::path::PathBuf::from)
+        .map(|home| home.join(".shunt").join("gateway-sessions.json"))
 }
 
 fn default_gateway_jwt_secret_env() -> String {
@@ -323,6 +345,14 @@ fn default_gateway_token_ttl_seconds() -> u64 {
 }
 
 impl GatewayConfig {
+    /// The effective session state file: the configured (or defaulted) path,
+    /// with the empty string (`state_path = ""`) meaning memory-only.
+    pub fn session_state_path(&self) -> Option<&std::path::Path> {
+        self.state_path
+            .as_deref()
+            .filter(|path| !path.as_os_str().is_empty())
+    }
+
     pub fn resolve(&self) -> Result<crate::gateway::GatewayAuth, ConfigError> {
         let public_url = reqwest::Url::parse(self.public_url.trim()).map_err(|error| {
             ConfigError::InvalidGatewayPublicUrl {
@@ -2307,6 +2337,37 @@ mod tests {
     }
 
     #[test]
+    fn gateway_state_path_defaults_on_and_empty_string_disables() {
+        let parsed: GatewayConfig = figment::Figment::from(figment::providers::Toml::string(
+            "public_url = \"https://gateway.example\"",
+        ))
+        .extract()
+        .unwrap();
+        assert_eq!(parsed.state_path, super::default_gateway_state_path());
+        let default_path = parsed
+            .session_state_path()
+            .expect("test environments resolve a home directory");
+        assert!(default_path.ends_with(".shunt/gateway-sessions.json"));
+
+        let disabled: GatewayConfig = figment::Figment::from(figment::providers::Toml::string(
+            "public_url = \"https://gateway.example\"\nstate_path = \"\"",
+        ))
+        .extract()
+        .unwrap();
+        assert_eq!(disabled.session_state_path(), None);
+
+        let explicit: GatewayConfig = figment::Figment::from(figment::providers::Toml::string(
+            "public_url = \"https://gateway.example\"\nstate_path = \"/tmp/sessions.json\"",
+        ))
+        .extract()
+        .unwrap();
+        assert_eq!(
+            explicit.session_state_path(),
+            Some(std::path::Path::new("/tmp/sessions.json"))
+        );
+    }
+
+    #[test]
     fn gateway_config_fails_closed_and_resolves_valid_environment() {
         let suffix = std::process::id();
         let secret_env = format!("SHUNT_GATEWAY_CONFIG_SECRET_{suffix}");
@@ -2317,6 +2378,7 @@ mod tests {
             users_env: users_env.clone(),
             token_ttl_seconds: 3600,
             trust_forwarded_for: false,
+            state_path: None,
         };
 
         assert!(matches!(
@@ -2364,6 +2426,7 @@ mod tests {
             users_env: "UNUSED_GATEWAY_USERS".to_string(),
             token_ttl_seconds: 3600,
             trust_forwarded_for: false,
+            state_path: None,
         };
         assert!(matches!(
             gateway.resolve(),

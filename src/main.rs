@@ -296,6 +296,10 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     // are no-ops when the key is unset.
     shunt::state_persist::restore(&state).await;
     shunt::state_persist::spawn_state_persister(state.clone());
+    // Opt-in `[server.gateway] state_path`: restore gateway-login refresh
+    // sessions before serving; later mutations are written by the token
+    // endpoint itself. A no-op when the key is unset.
+    shunt::gateway::persist::restore(&state).await;
     // Opt-in `[server.pool] usage_refresh_seconds`: poll the Anthropic OAuth
     // usage API in the background, sharing the router's account pool. A no-op
     // when the key is unset.

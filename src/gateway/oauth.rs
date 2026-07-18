@@ -138,7 +138,7 @@ pub async fn token(
         return no_store(oauth_error(StatusCode::BAD_REQUEST, "invalid_request"));
     }
     let state = state.refreshed();
-    let Some(auth) = state.gateway_auth else {
+    let Some(auth) = state.gateway_auth.clone() else {
         return StatusCode::NOT_FOUND.into_response();
     };
     let response = match form.grant_type.as_str() {
@@ -162,6 +162,10 @@ pub async fn token(
         },
         _ => oauth_error(StatusCode::BAD_REQUEST, "unsupported_grant_type"),
     };
+    // Opt-in `[server.gateway] state_path`: put any refresh-token mutation
+    // (grant, rotation, or replay revocation) on disk before responding. A
+    // no-op when the key is unset or nothing changed (e.g. pending polls).
+    super::persist::save_if_dirty(&state).await;
     no_store(response)
 }
 

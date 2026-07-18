@@ -33,6 +33,7 @@ impl GatewayEnv {
             users_env: users_env.clone(),
             token_ttl_seconds: 3600,
             trust_forwarded_for: false,
+            state_path: None,
         });
         (
             config,
@@ -173,6 +174,122 @@ async fn full_device_and_refresh_flow_rotates_tokens() {
     assert!(
         state.gateway_stores.device_grants.poll(device_code) == super::store::DevicePoll::Expired
     );
+}
+
+#[tokio::test]
+async fn state_path_keeps_refresh_sessions_across_a_restart() {
+    let (mut config, _env) = GatewayEnv::config("persist");
+    let dir = std::env::temp_dir().join(format!(
+        "shunt-gateway-restart-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("create test directory");
+    let state_file = dir.join("sessions.json");
+    config.server.gateway.as_mut().unwrap().state_path = Some(state_file.clone());
+
+    let (router, _, _state) = build_router(config.clone()).unwrap();
+    let (_, authorization) = json_response(
+        router.clone(),
+        form_request("/oauth/device_authorization", "client_id=claude-code"),
+    )
+    .await;
+    let device_code = authorization["device_code"].as_str().unwrap();
+    let user_code = authorization["user_code"].as_str().unwrap();
+    let approval = format!("user_code={user_code}&login=dev%40example.com&secret=password");
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/device")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::ORIGIN, "https://gateway.example")
+                .body(Body::from(approval))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, token) = json_response(
+        router.clone(),
+        form_request(
+            "/oauth/token",
+            format!(
+                "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code&device_code={device_code}&client_id=claude-code"
+            ),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let refresh_r1 = token["refresh_token"].as_str().unwrap().to_string();
+    assert!(
+        state_file.exists(),
+        "the token grant writes the state file before responding"
+    );
+
+    // Rotate R1 -> R2 before the "restart" so the persisted file actually
+    // contains a replay tombstone (R1) alongside the new active token (R2).
+    let (status, rotated) = json_response(
+        router.clone(),
+        form_request(
+            "/oauth/token",
+            format!("grant_type=refresh_token&refresh_token={refresh_r1}&client_id=claude-code"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let refresh_r2 = rotated["refresh_token"].as_str().unwrap().to_string();
+
+    let on_disk = std::fs::read_to_string(&state_file).expect("read state file");
+    assert!(
+        !on_disk.contains(&refresh_r1) && !on_disk.contains(&refresh_r2),
+        "the opaque refresh tokens must never be written to disk"
+    );
+
+    // "Restart": a fresh router owns fresh in-memory stores; restore from disk.
+    let (restarted, _, restarted_state) = build_router(config).unwrap();
+    crate::gateway::persist::restore(&restarted_state).await;
+    let (status, refreshed) = json_response(
+        restarted.clone(),
+        form_request(
+            "/oauth/token",
+            format!("grant_type=refresh_token&refresh_token={refresh_r2}&client_id=claude-code"),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "restored session refreshes: {refreshed}"
+    );
+    assert!(
+        refreshed["access_token"]
+            .as_str()
+            .unwrap()
+            .split('.')
+            .count()
+            == 3
+    );
+    assert_ne!(refreshed["refresh_token"], refresh_r2);
+
+    // Replaying R1 — the tombstone created *before* the restart — is still
+    // caught after the restore, which proves the tombstone itself (not just
+    // the active token) survived the JSON round trip through the state file.
+    // This also revokes the family, which is correct rotation semantics.
+    let (status, error) = json_response(
+        restarted,
+        form_request(
+            "/oauth/token",
+            format!("grant_type=refresh_token&refresh_token={refresh_r1}&client_id=claude-code"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(error, json!({"error": "invalid_grant"}));
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[tokio::test]
