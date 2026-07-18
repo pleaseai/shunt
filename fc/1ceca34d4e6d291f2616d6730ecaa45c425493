@@ -1,0 +1,21 @@
+src/gateway/idp.rs
+  s_cfe1ee91b8f169::t_814e5d51c1cafd 118
+src/gateway/idp_client.rs
+  s_cfe1ee91b8f169::t_90bff7863d2fbf 187
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "fc1ceca34d4e6d291f2616d6730ecaa45c425493",
+  "prompts": {},
+  "sessions": {
+    "s_cfe1ee91b8f169": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "88743fb6-71d5-469e-ac89-353ced9f2b3a",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
