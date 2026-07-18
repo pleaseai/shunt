@@ -1,0 +1,140 @@
+README.md
+  s_d18beb053806f3::t_7cc79368776d84 78
+  s_e1fc1cb5985608::t_028933864be001 72
+src/gateway/mod.rs
+  s_d18beb053806f3::t_bc8e52a2e4372d 123-124
+  s_d18beb053806f3::t_a053edff67dc21 6,12,19,26,72-73,133-152,215
+src/gateway/tests.rs
+  s_d18beb053806f3::t_3ffaff43ac37eb 13-15
+  s_d18beb053806f3::t_a2fb59714c93c9 8,42-43,112-144,956-1027,1363,1380-1381,1586-2121
+site/src/content/docs/reference/configuration.md
+  s_d18beb053806f3::t_627ab2128463b2 44
+  s_e1fc1cb5985608::t_6b7b173c2f5bd1 77-105,128,140,142,148-149,222
+src/config.rs
+  s_d18beb053806f3::t_0b1de2d3bc9962 2202
+  s_d18beb053806f3::t_5fe6c5e51d9461 2944
+  s_d18beb053806f3::t_8226234f58f7fe 484
+  s_d18beb053806f3::t_86ee21bc48106e 2745-2746,2796-2797,2905-2906,2941-2942
+  s_d18beb053806f3::t_e3b057047fa465 2464,2928
+  s_e1fc1cb5985608::t_02d9c861f45946 53-57,125-135,153,166-171,313-316,334-342,357-384,472-473,485-625,1411-1426,2095-2104,2203-2204,2430,2438-2443,2465-2474,2929-2940,2943,2945-3045
+.please/docs/review/rejected-findings.jsonl
+  s_d18beb053806f3::t_4e268770cf5913 23-25,33-43
+.release-please-manifest.json
+  s_d18beb053806f3::t_df1ce93dce9627 2
+CHANGELOG.md
+  s_d18beb053806f3::t_4f9ee762f3573c 3-10
+Cargo.lock
+  s_d18beb053806f3::t_4c5601f63c9bd9 2676,2711
+Cargo.toml
+  s_d18beb053806f3::t_5c8f2cd18bbb2e 5,74
+docs/codex-configuration.md
+  s_d18beb053806f3::t_f0322f58c3b193 518
+docs/comparison.md
+  s_d18beb053806f3::t_479461b5ccd081 24-26,90-95,166-171,262,265-272,296-298,303
+docs/gateway-login.md
+  s_d18beb053806f3::t_d30637e6fc5de4 184-188
+docs/gateway-managed-settings.md
+  s_d18beb053806f3::t_27f18c986074e2 1-152
+docs/gateway-protocol.md
+  s_d18beb053806f3::t_422a2cd19abeed 233-236,244-247,251-252,258,261-262
+docs/m10-codex-multi-account.md
+  s_d18beb053806f3::t_300f8409fb8498 5,7,112,170-181,184-185
+docs/m11-inbound-codex-endpoint.md
+  s_d18beb053806f3::t_ff8196142b8923 134
+docs/m8-anthropic-multi-account.md
+  s_d18beb053806f3::t_2333ada32e3dc3 203
+docs/m9-admin-surface.md
+  s_d18beb053806f3::t_63bdcdd55f09da 232
+site/src/content/docs/getting-started/comparison.md
+  s_d18beb053806f3::t_f7f1acd183d57e 16,56,75,77,110
+site/src/content/docs/guides/admin-remote-provisioning.md
+  s_d18beb053806f3::t_48a2554a9357a8 69
+site/src/content/docs/guides/anthropic-multi-account.md
+  s_d18beb053806f3::t_968dbf01b4b62d 126,145,209,211
+site/src/content/docs/guides/codex-multi-account.md
+  s_d18beb053806f3::t_2fc15aef1dcae1 3,6,98-100,164
+site/src/content/docs/guides/codex.md
+  s_d18beb053806f3::t_ab7110533d0c9a 34
+site/src/content/docs/guides/gateway-login.md
+  s_d18beb053806f3::t_454988764b5ea3 101-151,166-168
+site/src/content/docs/ja/getting-started/comparison.md
+  s_d18beb053806f3::t_1a469595f723d4 16,56,75,77,110
+site/src/content/docs/ja/guides/admin-remote-provisioning.md
+  s_d18beb053806f3::t_a5203cd186c1f7 62
+site/src/content/docs/ja/guides/anthropic-multi-account.md
+  s_d18beb053806f3::t_490829e965bf87 126,145,209,211
+site/src/content/docs/ja/guides/codex.md
+  s_d18beb053806f3::t_79cb9174a0eca3 28
+site/src/content/docs/ja/reference/configuration.md
+  s_d18beb053806f3::t_5b714ca5eb38b0 42-88,91,103,105,111-112
+site/src/content/docs/ko/getting-started/comparison.md
+  s_d18beb053806f3::t_0a4020d98df24f 16,56,75,77,110
+site/src/content/docs/ko/guides/admin-remote-provisioning.md
+  s_d18beb053806f3::t_6db31efd9ce277 62
+site/src/content/docs/ko/guides/anthropic-multi-account.md
+  s_d18beb053806f3::t_b5c466c473f1c0 126,145,209,211
+site/src/content/docs/ko/guides/codex.md
+  s_d18beb053806f3::t_a9a05d046169b7 26
+site/src/content/docs/ko/reference/configuration.md
+  s_d18beb053806f3::t_3da287f14f9d9f 42-99,102,114,116,122-123
+site/src/content/docs/reference/endpoints.md
+  s_d18beb053806f3::t_85343f69ea77b4 15,41-52
+site/src/content/docs/zh-cn/getting-started/comparison.md
+  s_d18beb053806f3::t_818d4ed6133c76 16,56,75,77,110
+site/src/content/docs/zh-cn/guides/admin-remote-provisioning.md
+  s_d18beb053806f3::t_ab4aeb0a27ca02 62
+site/src/content/docs/zh-cn/guides/anthropic-multi-account.md
+  s_d18beb053806f3::t_c3b80602456efb 126,145,209,211
+site/src/content/docs/zh-cn/guides/codex.md
+  s_d18beb053806f3::t_479e2562c5d639 32
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_d18beb053806f3::t_306588526e2eec 42-88,91,103,105,111-112
+src/accounts.rs
+  s_d18beb053806f3::t_1da7a5cbd2b298 107-113,126-135,245,280,297-301,454-457,564-567,572-577,585-666,806-832,1855-1858,1861-1862,1873-1894,1896,1901-2042
+src/adapters/anthropic/mod.rs
+  s_d18beb053806f3::t_cce3900c8c0ac4 156-157,160,162-177,246-255,304,322-326,450,452-456
+src/adapters/mod.rs
+  s_d18beb053806f3::t_ba34dd4d12eab8 14-39,59-129
+src/adapters/responses/inbound.rs
+  s_d18beb053806f3::t_7e4e357470bdc2 22,123-127,131-132,134-135,138,141-149,188-192,195-198,249-253,256-259
+src/adapters/responses/pool.rs
+  s_d18beb053806f3::t_64c0a2a9e2d062 32-33,60-65,69-70,74-75,78,81-89,119-122,176-177,179-181,190-193,254,262-265,356-382
+src/gateway/managed.rs
+  s_d18beb053806f3::t_97ab2807ae77a6 1-273
+src/gateway/persist.rs
+  s_d18beb053806f3::t_ce9c23322c507a 315-316
+src/proxy.rs
+  s_d18beb053806f3::t_7180135ce2c8cf 136-140,146-149,226-255,264,271-274,281,291,301
+src/routing.rs
+  s_d18beb053806f3::t_e00c68d9054d82 41-44,52-53,64
+src/server.rs
+  s_d18beb053806f3::t_aad4f451c625c9 148,150-152
+tests/codex_multi_account.rs
+  s_d18beb053806f3::t_ebdc6cc007e67f 7-14,868-1092
+tests/multi_account.rs
+  s_d18beb053806f3::t_e6b7a915dccd58 972-1070
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "ea6bb1b1598b54f0acd46231e20b9c56aea38b98",
+  "prompts": {},
+  "sessions": {
+    "s_d18beb053806f3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a7462634-b5fd-4f70-9cfa-771ea96a8aa6",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_e1fc1cb5985608": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a41d0508-89a8-40f9-bd28-ceb9c4d65b7f",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
