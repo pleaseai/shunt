@@ -3,7 +3,9 @@ title: モデルディスカバリー
 description: Claude Code の /model ピッカーを Claude 命名のエイリアスで自動的に埋める。
 ---
 
-Discovery（`GET /v1/models`）は Claude Code の `/model` ピッカーを自動的に埋められます — **ただし Claude Code は `claude`/`anthropic` で始まらない id をすべて無視します**（[プロトコルリファレンス](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery)）。したがって `gpt-*` id は何をしてもクライアント側で落とされます。discovery が役立つのは、`[[routes]]` エントリが実際の上流スラッグへ書き換える **Claude 命名のエイリアス**を公開するときだけです。
+Discovery（`GET /v1/models`）は Claude Code の `/model` ピッカーを自動的に埋められます。デフォルトでは、shunt は管理者が選定した `[[models]]` エントリを先に返し、その後にリファレンス Claude apps gateway をミラーする組み込み Claude モデルカタログを追加します。同一 id は選定したエントリを優先して重複を除きます。選定したリストだけを公開するには、トップレベルで `auto_include_builtin_models = false` を設定してください。組み込みモデルは専用の `[[routes]]` エントリを必要としません。通常のルーティング規則で解決され、`[[routes]]` と `[[route_prefixes]]` のいずれにも一致しない場合は `server.default_provider` にフォールバックします。
+
+Claude Code は discovery された id が `claude`/`anthropic` で始まらない場合、それを無視します（[プロトコルリファレンス](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery)）。したがって `gpt-*` などの非 Claude モデルを選定リストへ追加するときは、**Claude 命名のエイリアス**を作り、`[[routes]]` エントリで実際の上流スラッグへ書き換えてください。
 
 ```toml
 [[models]]
