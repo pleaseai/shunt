@@ -159,7 +159,7 @@ function untilShort(resetSecs) {{
   const mins = Math.ceil((resetSecs * 1000 - Math.min(Date.now(), resetSecs * 1000)) / 60000);
   if (mins <= 0) return "now";
   const d = Math.floor(mins / 1440), h = Math.floor((mins % 1440) / 60), m = mins % 60;
-  return d > 0 ? d + "d " + h + "h" : h > 0 ? h + "h " + m + "m" : m + "m";
+  return d > 0 ? (h > 0 ? d + "d " + h + "h" : d + "d") : h > 0 ? (m > 0 ? h + "h " + m + "m" : h + "h") : m + "m";
 }}
 function pctReset(v, resetSecs) {{
   return resetSecs ? pct(v) + " · " + untilShort(resetSecs) : pct(v);
