@@ -1,0 +1,55 @@
+src/admin/oidc.rs
+  s_cfe1ee91b8f169::t_d1e30758a426cc 182
+  s_cfe1ee91b8f169::t_f08c00824b8fcd 74,81-89
+src/gateway/tests.rs
+  s_cfe1ee91b8f169::t_36a726ea7f9630 69-78
+  s_cfe1ee91b8f169::t_371dc9dacda85e 189,504,577
+  s_cfe1ee91b8f169::t_8ead20ecf5d65b 191,506,579
+  s_cfe1ee91b8f169::t_5c29d8aac20246 502
+  s_cfe1ee91b8f169::t_408d94e0f76359 503
+  s_cfe1ee91b8f169::t_174779de6f0149 15
+  s_cfe1ee91b8f169::t_1215f7e9517cc2 190,505,578
+tests/admin_surface.rs
+  s_cfe1ee91b8f169::t_59d9576ff189dc 432
+  s_cfe1ee91b8f169::t_9bab8089a60550 13
+  s_cfe1ee91b8f169::t_c7dd0036c92406 433
+  s_cfe1ee91b8f169::t_a8e3b43d65e88f 431
+  s_cfe1ee91b8f169::t_3b2f4a2eaa687b 156-165
+src/gateway/idp_client.rs
+  s_cfe1ee91b8f169::t_a5ba3906943fc6 51,55-74
+  s_cfe1ee91b8f169::t_bdd6ede8d9d63e 52-54
+src/gateway/idp.rs
+  s_cfe1ee91b8f169::t_10a524901abbc7 125-134
+src/config.rs
+  s_cfe1ee91b8f169::t_3e44fd6d3961fa 2473,3090,3095
+  s_cfe1ee91b8f169::t_6678430eecb5f4 2440,2448,3074,3079,3084,3089
+  s_cfe1ee91b8f169::t_d5d72e9ac5c983 2449
+  s_cfe1ee91b8f169::t_504cc5901cf701 2410-2416
+  s_cfe1ee91b8f169::t_2567eb5d748006 3073
+  s_cfe1ee91b8f169::t_24f1dc69b213f4 247-248,250,267-276
+  s_cfe1ee91b8f169::t_a2fd2aaaa99055 3131-3140
+  s_cfe1ee91b8f169::t_540dced4d6a773 2311-2312
+  s_cfe1ee91b8f169::t_bb483742cc9fc7 2383-2392
+  s_cfe1ee91b8f169::t_b88289799147c2 655-656,658-663,672-673,675-680
+  s_cfe1ee91b8f169::t_8db35cd71266d3 346-347
+  s_cfe1ee91b8f169::t_ac6078e5092ff7 3053-3062
+  s_cfe1ee91b8f169::t_b9e704ca757e84 3096,3101
+  s_cfe1ee91b8f169::t_9bab8089a60550 2423-2425
+  s_cfe1ee91b8f169::t_4cba2e8926dbe1 277-278
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "d2ad37a00e704403fc30ed7b579edb39669d685a",
+  "prompts": {},
+  "sessions": {
+    "s_cfe1ee91b8f169": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "88743fb6-71d5-469e-ac89-353ced9f2b3a",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
