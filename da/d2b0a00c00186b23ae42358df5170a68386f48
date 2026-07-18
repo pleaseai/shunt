@@ -1,0 +1,274 @@
+src/config.rs
+  s_6adb8acb856e5b::t_9681b4c2ab4366 3041-3044,3046-3064,3066-3069,3087-3097,3104-3116,3119-3120,3122-3139
+  s_6adb8acb856e5b::t_5c29b4517e17fe 3121
+  s_6adb8acb856e5b::t_b8d974ffd628a6 478-480,482-486,488-491,493-494,496-497,500,505-509,655-656,708,715,785,818,820-826,829-832,835-847,851-853
+  s_6adb8acb856e5b::t_b01d1c0069b1bd 776,780
+  s_6adb8acb856e5b::t_ea07730a7e64e0 1516-1521
+  s_6adb8acb856e5b::t_a9974b669d537c 3040,3098-3103
+  s_6adb8acb856e5b::t_07e1027b0a3da8 3065,3080
+  s_6adb8acb856e5b::t_dcfcb1b31402c9 701
+  s_6adb8acb856e5b::t_3456adb4cbb293 2179
+  s_6adb8acb856e5b::t_fc8cdbdbee2693 3045
+  s_6adb8acb856e5b::t_1d63ace43272a5 332-333,336
+  s_6adb8acb856e5b::t_4b25eb10249c82 2960,3011
+  s_6adb8acb856e5b::t_e6994479052971 1841
+  s_6adb8acb856e5b::t_55601cf59205d9 334-335,337-353,393-395
+  s_6adb8acb856e5b::t_4509fb782e5817 447-450
+  s_6adb8acb856e5b::t_2be2573fe7f005 3070-3074
+  s_6adb8acb856e5b::t_2394039dd3e6b4 487
+  s_6adb8acb856e5b::t_edcc296776e63f 492
+  s_6adb8acb856e5b::t_085c8349568eb3 495
+  s_6adb8acb856e5b::t_87d8374f0269b6 854
+  s_579e17ceff30c3::t_d995e99ba074b8 2411,2416-2420,2425,2430-2434,2439-2443
+  s_579e17ceff30c3::t_35b4ad16c0a277 314,318-319,323,325-328
+  s_579e17ceff30c3::t_78e581516bebce 1496-1501
+  s_579e17ceff30c3::t_fd56739b622639 2369
+  s_579e17ceff30c3::t_b0c15abc8a3e4b 324
+  s_579e17ceff30c3::t_133c79f1027429 657-700,702-707,709-714,719-735,742-774,787-821,827-828,833-834,848-850
+  s_579e17ceff30c3::t_b9dac65291ccb6 2312,2315
+  s_579e17ceff30c3::t_899e27607579a5 2371
+  s_579e17ceff30c3::t_a5516389b8065d 242-268
+  s_579e17ceff30c3::t_6ba323dbdcec66 2478
+  s_579e17ceff30c3::t_c4918d026736de 2370,2372-2410,2412-2415,2421-2424,2426-2429,2435-2438,2444-2468
+  s_579e17ceff30c3::t_2022d100e6926b 320-322
+  s_579e17ceff30c3::t_4d729f5bf16709 279-282
+  s_579e17ceff30c3::t_0f1994a6dfdab1 465-466
+docs/gateway-login.md
+  s_6adb8acb856e5b::t_77a89039448ce9 66-81
+  s_6adb8acb856e5b::t_d256c54c22d701 17,19
+  s_6adb8acb856e5b::t_5aa9d1ed054234 137-139
+  s_6adb8acb856e5b::t_172c9ba2064858 103
+  s_6adb8acb856e5b::t_150ae9861cdbc5 116-124
+  s_6adb8acb856e5b::t_cc785dfcb7e6ba 165-168
+  s_6adb8acb856e5b::t_a6428589d895cd 109-115
+  s_b35784497fcfed::t_17fccf79267725 18
+  s_b35784497fcfed::t_73e8545a3cc131 82-90,92-102
+  s_b35784497fcfed::t_e7502146a54696 129-130
+src/reload.rs
+  s_6adb8acb856e5b::t_6aa2987537a734 499
+  s_6adb8acb856e5b::t_06200023b7b0d9 485,494
+src/gateway/persist.rs
+  s_6adb8acb856e5b::t_312ce49c6aeaec 318
+src/gateway/idp.rs
+  s_6adb8acb856e5b::t_f75b8f6291a8e3 1-3,5-13,15-18,20-37,39-43,50-51,74-78,81-83,85-92,94-96,98-103,105-108,110-114,117-120,122-131,133-139,141-158,159,166-170,172-174,189-192,194-196,218-223,225-228,230-232,242-252,254-275,298-307,309-312
+  s_6adb8acb856e5b::t_88d34bd30d0c3c 73,308
+  s_b35784497fcfed::t_7c670a39f069be 177-181
+  s_b35784497fcfed::t_8b9078503378af 4,14,19,38,44-49,52-72,79-80,84,93,97,104,109,115-116,121,132,140,160-165,171,175-176,182-188,193,197-217,224,229,233-241,253,276-297
+src/gateway/store.rs
+  s_6adb8acb856e5b::t_2657198048cc95 486-493,505-507,508,513-517,520-534,537-544,547-551
+  s_6adb8acb856e5b::t_b7fb752104391f 198
+  s_6adb8acb856e5b::t_d966d77ccd25a4 109-124
+  s_6adb8acb856e5b::t_291220a49538c6 341-342,352-353
+  s_6adb8acb856e5b::t_32137f295685a5 409
+  s_6adb8acb856e5b::t_c6b664097b3813 199-201,204-216,234-235,237-241,244-251,260-266,269-287
+  s_6adb8acb856e5b::t_664bca379c8d93 399
+  s_6adb8acb856e5b::t_f9fcc002f6b217 20
+  s_6adb8acb856e5b::t_5022e5327c71ee 24
+  s_b35784497fcfed::t_e6f9b923f9b42a 217-233,236,242-243
+  s_b35784497fcfed::t_ed75629446e237 15-17
+  s_b35784497fcfed::t_ac1899d1be12a6 535-536
+  s_b35784497fcfed::t_f41a12bea9a100 11
+  s_b35784497fcfed::t_e9a49b734eb02b 354-357
+  s_b35784497fcfed::t_c9619be25659a4 267-268
+  s_b35784497fcfed::t_dc88010a273ec7 343
+  s_b35784497fcfed::t_c61cf1f49b11b9 202-203
+  s_b35784497fcfed::t_930031375f6859 380-393
+  s_b35784497fcfed::t_d4f396aa98f0c1 494-495,518-519,545-546
+site/src/content/docs/reference/configuration.md
+  s_6adb8acb856e5b::t_16bc97c5e8cd55 76-79,81-83,86-88,93
+  s_6adb8acb856e5b::t_78b2bc38fa543a 71
+  s_6adb8acb856e5b::t_2a9a96fc57a81a 80,84-85,90-92,94
+  s_579e17ceff30c3::t_4bda8ad4d110e7 42-62
+src/gateway/tests.rs
+  s_6adb8acb856e5b::t_1317bfae1aa3a7 25
+  s_6adb8acb856e5b::t_efa6a95ae0b803 529
+  s_6adb8acb856e5b::t_61245d59c86160 12,16
+  s_6adb8acb856e5b::t_785a6d460b6e42 87-89
+  s_6adb8acb856e5b::t_507b484984b9e8 369-378
+  s_6adb8acb856e5b::t_8d5a29b2f9ffcd 216-225,227-254,256-257,259-261,273,275-276,279-286,288-315,317-319,321-343,345-362,387-404,406-416,419,421-422,424,426,428-429,432,436,440-441,459-460,462-466,468-473,475-476,478-479,481,490,492-501,505-507,509-514,516-519,521-524,527-528,530-534,536,538-540,547-549
+  s_6adb8acb856e5b::t_a0f6f03eb5dbff 52
+  s_6adb8acb856e5b::t_cffd069ff582dd 45
+  s_6adb8acb856e5b::t_0bbd8ea1076af4 474,477,480,482-489,491,502-504,520,535,537,541-546
+  s_6adb8acb856e5b::t_dd6611bb854499 56-67,69-80
+  s_6adb8acb856e5b::t_41ceea4b91b803 68
+  s_6adb8acb856e5b::t_304bdf29fce89c 101-111
+  s_6adb8acb856e5b::t_ec9610e5e789af 363-364
+  s_6adb8acb856e5b::t_ad8251fb1c6857 1329-1334
+  s_6adb8acb856e5b::t_658e4cfffaedf7 525,551-552,559,561,648-649,826-837,842-843,854,868-869,888,918-919
+  s_6adb8acb856e5b::t_c3f206850585de 316,420,427,461,467,508,526
+  s_b35784497fcfed::t_528c47a616279e 365-368
+  s_b35784497fcfed::t_2012717435b55f 154-163
+  s_b35784497fcfed::t_6bea3ac86792d6 262-272,274,277-278
+  s_b35784497fcfed::t_44d09572d16ea5 379-386
+  s_b35784497fcfed::t_09e209ce902590 417
+  s_b35784497fcfed::t_18de7b6ec84d67 418,423
+  s_b35784497fcfed::t_85067fbd12bd59 425,430-432,434,435-442,444-456
+  s_b35784497fcfed::t_958a8af30f7dd1 567-574
+  s_b35784497fcfed::t_316d55803041ce 226,287,344,515
+  s_b35784497fcfed::t_5f81590d8febdd 566
+  s_b35784497fcfed::t_cd0c4ca7f29df8 550-565,575-579,581,589,621-634,636-650,652,654-664
+  s_b35784497fcfed::t_2ed7554a6059ae 582-588,590-620
+  s_b35784497fcfed::t_bb24795c80b56a 549,665-793,795,797,798-819
+  s_b35784497fcfed::t_fd51b8da824c11 635
+Cargo.toml
+  s_6adb8acb856e5b::t_37e810329dfd6c 57
+src/server.rs
+  s_6adb8acb856e5b::t_b06aee3d2fca1d 39
+  s_6adb8acb856e5b::t_a70465933eafff 37
+src/gateway/idp_client.rs
+  s_6adb8acb856e5b::t_993b4d6cec7a90 1-3,6-9,11-12,15-17,19-37,44-47,49-54,56-61,63-73,76-88,91-106,113-114,118-140,142-147,149,153-156,160-162,168-175,177-179,256-271,272-274
+  s_6adb8acb856e5b::t_e489b8e9259f29 10,48,55,62,141,148,176
+  s_b35784497fcfed::t_7c670a39f069be 164-166,287,290
+  s_b35784497fcfed::t_935aeeb15c3429 227-236,238-248
+  s_b35784497fcfed::t_92e3241fb31105 5
+  s_b35784497fcfed::t_e0c5962067226d 4,13-14,18,38-43,89-90,110-112,115-117,157-159,163,167,180-195,197-199,201-226,237,249-255,275-280,296-297
+  s_b35784497fcfed::t_3e0c82d1122b8b 281-286,288-289,291-295
+  s_b35784497fcfed::t_0a759a2f0b00c7 74-75,107-109,150-152
+  s_b35784497fcfed::t_090085cae01421 196,200
+src/gateway/mod.rs
+  s_6adb8acb856e5b::t_bb8a3eeaa53dd5 43-51
+  s_6adb8acb856e5b::t_04b153a43972c9 70-71
+  s_6adb8acb856e5b::t_b3c01610964dc6 30
+  s_6adb8acb856e5b::t_abaa8e205690ea 3
+  s_6adb8acb856e5b::t_b865ba2a28ecf7 29,31-42,52-63
+  s_6adb8acb856e5b::t_5b11109fdcae08 131,169-174
+  s_6adb8acb856e5b::t_ff1e4a0a1eaa18 109
+  s_6adb8acb856e5b::t_219b6c3ed4f73f 28
+  s_6adb8acb856e5b::t_e0d23aae4d4999 214
+  s_6adb8acb856e5b::t_e3ec7f5fd63cb8 100-108,110-114,122,128-130
+  s_6adb8acb856e5b::t_514ecca18b0c8a 99
+  s_6adb8acb856e5b::t_b38935a1e259fe 132
+  s_b35784497fcfed::t_258278d795a874 177-180
+  s_b35784497fcfed::t_da760c31b97c50 213
+  s_579e17ceff30c3::t_333c901efa4fc6 4
+site/src/content/docs/guides/gateway-login.md
+  s_6adb8acb856e5b::t_46d7255d74d2bb 97,99
+  s_6adb8acb856e5b::t_d473355cac6e44 160
+  s_6adb8acb856e5b::t_ac482a023114b4 33-59
+  s_6adb8acb856e5b::t_1f4abf229af500 60-68
+  s_6adb8acb856e5b::t_85283eb41c6ee1 3
+src/gateway/device.rs
+  s_6adb8acb856e5b::t_a8be1c96686390 78-79
+  s_6adb8acb856e5b::t_5d8ddbe678dee0 122
+  s_6adb8acb856e5b::t_d61a4c1b7e1ae9 181-183,185
+  s_6adb8acb856e5b::t_dd4a3dc140ab4a 346
+  s_6adb8acb856e5b::t_1baa7742b64c7a 63-64
+  s_6adb8acb856e5b::t_4003e9887db586 237-251
+  s_6adb8acb856e5b::t_005a07aadbfe81 86-96
+  s_6adb8acb856e5b::t_ff1c8d17a2b011 269,272-274,276-286,288,294-304
+  s_6adb8acb856e5b::t_cb73680cbd4d26 30-31,33-34
+  s_6adb8acb856e5b::t_9a4d347f6c0d94 338
+  s_6adb8acb856e5b::t_480139e64e9e4f 208
+  s_6adb8acb856e5b::t_38469b139ba799 53-54
+  s_6adb8acb856e5b::t_f2981abebf0db6 324
+  s_6adb8acb856e5b::t_3f7d25772f5704 107-108,114-115
+  s_6adb8acb856e5b::t_f3cb386f14350c 252-258
+  s_6adb8acb856e5b::t_e8e42d6dddaeef 184
+  s_b35784497fcfed::t_5099e20676ec72 275
+  s_b35784497fcfed::t_b5ebbcc230e562 138
+site/src/content/docs/reference/endpoints.md
+  s_b35784497fcfed::t_18da2d88a589a6 43
+  s_b35784497fcfed::t_f1b111f2ed199e 36-41
+  s_b35784497fcfed::t_b70dc9e3023022 42
+  s_579e17ceff30c3::t_0efd168a020ebd 17-19
+src/admin/session.rs
+  s_579e17ceff30c3::t_be1b3928501adf 11
+  s_579e17ceff30c3::t_73a7dd3d0704ca 29
+  s_579e17ceff30c3::t_d974f4a364a304 333-346
+  s_579e17ceff30c3::t_fecb3a3adcaf5b 413-467
+  s_579e17ceff30c3::t_26142b71d69435 316
+  s_579e17ceff30c3::t_2022d100e6926b 218,230
+  s_579e17ceff30c3::t_c490e98dde3703 191-217,219-229,231-259
+  s_579e17ceff30c3::t_08ad47a00fbf25 302
+docs/m9-admin-surface.md
+  s_579e17ceff30c3::t_706e13721857e8 178-180
+  s_579e17ceff30c3::t_d959a2e85d44ee 80-112
+README.md
+  s_579e17ceff30c3::t_bc2616fdb86f57 80
+src/admin/html.rs
+  s_579e17ceff30c3::t_6853585cd502d5 65-66,71-78
+  s_579e17ceff30c3::t_133a4e902a79c8 91
+src/admin/mod.rs
+  s_579e17ceff30c3::t_656a5df9608ca5 92
+  s_579e17ceff30c3::t_28b08d027fd1ae 410
+  s_579e17ceff30c3::t_771abbe77be8bd 287
+  s_579e17ceff30c3::t_5ac46b4402200b 343
+  s_579e17ceff30c3::t_568dfba2bd5dae 437,439-441
+  s_579e17ceff30c3::t_b4093a09616275 1020
+  s_579e17ceff30c3::t_d560abe35d469b 377
+  s_579e17ceff30c3::t_abc81f8ae91935 17
+  s_579e17ceff30c3::t_4e64ca2903d301 58-59
+  s_579e17ceff30c3::t_e4cd660acc287e 405-409
+  s_579e17ceff30c3::t_677097681f6891 117-118
+  s_579e17ceff30c3::t_7795c5ae869cc3 68-69,74-91
+  s_579e17ceff30c3::t_aa1a16f5a18a02 914
+  s_579e17ceff30c3::t_3188a697dd7529 919-945,951-955,958-966
+  s_579e17ceff30c3::t_fe562708a4b236 918
+  s_579e17ceff30c3::t_2022d100e6926b 73
+tests/admin_surface.rs
+  s_579e17ceff30c3::t_e38c06bae178b0 68
+  s_579e17ceff30c3::t_aa682361237c4e 1453-1463
+  s_579e17ceff30c3::t_a3b591e78e96ae 27-28
+  s_579e17ceff30c3::t_43cfe962f097a8 233,238-248
+  s_579e17ceff30c3::t_a74b968722978a 13
+  s_d18beb053806f3::t_d5ca80581aa0f6 100
+  s_579e17ceff30c3::t_51d7dc8dec3573 452-458
+  s_579e17ceff30c3::t_5842b3587d88ab 73,79-86,97-98
+  s_579e17ceff30c3::t_ab1094222238be 99,151-232,234-237,249-443
+site/src/content/docs/guides/admin-remote-provisioning.md
+  s_579e17ceff30c3::t_4a0d04291264f3 133
+  s_579e17ceff30c3::t_e5ec3b47079d92 30-51
+src/admin/oidc.rs
+  s_579e17ceff30c3::t_2c12fd93c9b5a7 10
+  s_579e17ceff30c3::t_43e6b27672ebd4 205
+  s_579e17ceff30c3::t_2022d100e6926b 128-131
+  s_579e17ceff30c3::t_c821160262277f 1-9,11-127,132-204,206-233
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "dad2b0a00c00186b23ae42358df5170a68386f48",
+  "prompts": {},
+  "sessions": {
+    "s_3daa0845fe5f0d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-afixer-iter1-788ed510efa5a718",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_579e17ceff30c3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f33aa51c-db1c-4cdb-a22d-8a35b5c1867d",
+        "model": "claude-fable-5"
+      },
+      "human_author": null
+    },
+    "s_6adb8acb856e5b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e12bb860-e1d1-4cc0-80a6-270eb3b05d88",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_b35784497fcfed": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ef3e5a2d-a66c-46bb-a73a-2e04f22ae177",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_d18beb053806f3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a7462634-b5fd-4f70-9cfa-771ea96a8aa6",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
