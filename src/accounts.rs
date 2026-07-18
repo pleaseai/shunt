@@ -637,6 +637,33 @@ impl AccountPool {
         Some(AdmissionGuard { pool: self, key })
     }
 
+    /// [`Self::try_admit`] applied to the candidate at `position` (0-based) of
+    /// `candidates` in a failover order — the shared admission step of every
+    /// pool loop. The outer `None` means the identity is saturated and the
+    /// caller should rotate to the next candidate; `Some` carries the
+    /// admission to hold — a guard, or `None` when admission gating is
+    /// disabled (`ramp_initial` unset). The final candidate is always
+    /// admitted (`force`): spilling a burst across the pool beats failing
+    /// requests outright.
+    pub fn admit_candidate(
+        self: &Arc<Self>,
+        provider: &str,
+        account: &AccountConfig,
+        ramp_initial: Option<u32>,
+        position: usize,
+        candidates: usize,
+    ) -> Option<Option<AdmissionGuard>> {
+        match ramp_initial {
+            Some(initial) => {
+                let force = position + 1 == candidates;
+                self.clone()
+                    .try_admit(provider, account, initial, force)
+                    .map(Some)
+            }
+            None => Some(None),
+        }
+    }
+
     /// Forget pool health and refresh state for a single `(provider, identity)`,
     /// leaving other providers' entries for the same identity untouched. Removing
     /// persisted quota marks the pool dirty so the next flush removes it on disk.
@@ -1890,6 +1917,29 @@ mod tests {
             .try_admit("codex", &acc, 2, true)
             .expect("force admits past the allowance for the last candidate");
         drop((first, second, forced));
+    }
+
+    #[test]
+    fn admit_candidate_rotates_when_saturated_and_forces_the_last() {
+        let pool = Arc::new(AccountPool::new());
+        let acc = account("a");
+        assert!(
+            matches!(pool.admit_candidate("codex", &acc, None, 0, 2), Some(None)),
+            "disabled gating admits without a guard"
+        );
+        let first = pool
+            .admit_candidate("codex", &acc, Some(1), 0, 2)
+            .expect("first admission fits the initial allowance")
+            .expect("enabled gating returns a guard");
+        assert!(
+            pool.admit_candidate("codex", &acc, Some(1), 0, 2).is_none(),
+            "a saturated identity rotates a non-final candidate"
+        );
+        let forced = pool
+            .admit_candidate("codex", &acc, Some(1), 1, 2)
+            .expect("the final candidate is always admitted")
+            .expect("forced admission still holds a guard");
+        drop((first, forced));
     }
 
     #[test]

@@ -71,38 +71,27 @@ pub(super) async fn forward_chatgpt_oauth(
     );
     let ws_enabled = state.config.codex_websocket_enabled(&route.provider);
     let auth = AuthMode::ChatgptOauth;
-    let ramp_initial = state
-        .config
-        .server
-        .pool
-        .as_ref()
-        .and_then(|pool| pool.storm_ramp_initial());
+    let ramp_initial = state.config.storm_ramp_initial();
     let candidates = order.len();
     let mut last_response: Option<reqwest::Response> = None;
 
     for (position, index) in order.into_iter().enumerate() {
         let account = &accounts_config[index];
 
-        // Storm control (issue #195): a saturated identity defers to the next
-        // candidate instead of piling on, except for the final candidate,
-        // which is always attempted — spilling a burst across the pool beats
-        // failing requests outright. On a relayed success the guard moves into
-        // the response body (`with_admission`), so the slot stays held until
-        // the stream actually finishes; on rotation it drops with the
-        // iteration.
-        let admission = match ramp_initial {
-            Some(initial) => {
-                let force = position + 1 == candidates;
-                match state
-                    .accounts
-                    .clone()
-                    .try_admit(&route.provider, account, initial, force)
-                {
-                    Some(guard) => Some(guard),
-                    None => continue,
-                }
-            }
-            None => None,
+        // Storm control (issue #195, `AccountPool::admit_candidate`): a
+        // saturated identity rotates to the next candidate. On a relayed
+        // success the guard moves into the response body (`with_admission`),
+        // so the slot stays held until the stream actually finishes; on
+        // rotation it drops with the iteration.
+        let admission = match state.accounts.admit_candidate(
+            &route.provider,
+            account,
+            ramp_initial,
+            position,
+            candidates,
+        ) {
+            Some(admission) => admission,
+            None => continue,
         };
 
         // Resolve the account's credential without the account-pool refresh lock;

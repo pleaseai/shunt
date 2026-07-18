@@ -131,36 +131,27 @@ async fn forward_codex_passthrough(
         Some(route.upstream_model.as_str()),
         state.config.server.pool.as_ref(),
     );
-    let ramp_initial = state
-        .config
-        .server
-        .pool
-        .as_ref()
-        .and_then(|pool| pool.storm_ramp_initial());
+    let ramp_initial = state.config.storm_ramp_initial();
     let candidates = order.len();
     let mut last_response: Option<reqwest::Response> = None;
 
     for (position, index) in order.into_iter().enumerate() {
         let account = &accounts_config[index];
 
-        // Storm control (issue #195): defer a saturated identity to the next
-        // candidate, always attempting the final one — mirrors the translating
+        // Storm control (issue #195, `AccountPool::admit_candidate`): defer a
+        // saturated identity to the next candidate — mirrors the translating
         // outbound path (`forward_chatgpt_oauth`). On a relayed success the
         // guard moves into the response body (`with_admission`) so the slot
         // stays held until the stream finishes.
-        let admission = match ramp_initial {
-            Some(initial) => {
-                let force = position + 1 == candidates;
-                match state
-                    .accounts
-                    .clone()
-                    .try_admit(&route.provider, account, initial, force)
-                {
-                    Some(guard) => Some(guard),
-                    None => continue,
-                }
-            }
-            None => None,
+        let admission = match state.accounts.admit_candidate(
+            &route.provider,
+            account,
+            ramp_initial,
+            position,
+            candidates,
+        ) {
+            Some(admission) => admission,
+            None => continue,
         };
 
         // Resolve the account's credential without the account-pool refresh lock;

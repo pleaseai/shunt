@@ -1702,6 +1702,16 @@ impl Config {
             .unwrap_or(false)
     }
 
+    /// The effective storm-control initial admission allowance
+    /// (`[server.pool] ramp_initial_concurrency`), or `None` when no pool is
+    /// configured or the gate is disabled.
+    pub fn storm_ramp_initial(&self) -> Option<u32> {
+        self.server
+            .pool
+            .as_ref()
+            .and_then(PoolConfig::storm_ramp_initial)
+    }
+
     /// Whether the Codex Responses WebSocket v2 transport should be used for
     /// `provider`. Requires both the opt-in `websocket` flag and the ChatGPT/Codex
     /// backend: only that backend serves the `responses_websockets` v2 endpoint,
