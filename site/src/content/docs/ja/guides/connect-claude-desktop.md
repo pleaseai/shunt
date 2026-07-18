@@ -1,0 +1,109 @@
+---
+title: Claude Desktop の接続
+description: Claude Desktop のサードパーティ推論を shunt へ向け、認証してモデルを選択する。
+---
+
+公式の [Deploy Claude Desktop with an LLM gateway](https://claude.com/docs/third-party/claude-desktop/gateway) ガイドに基づいています — shunt *こそ*が、あなたが接続するゲートウェイです。shunt は Anthropic の [Messages API](https://docs.claude.com/en/api/messages)（ストリーミングとツール使用に対応する `POST /v1/messages`）と、オプションの `GET /v1/models` を実装しています。これはまさに、Claude Desktop のサードパーティ推論が期待するゲートウェイ契約です。
+
+:::note[Claude Desktop のゲートウェイ設定はユーザーファイルではなく管理対象です]
+以下のキーはすべて [MDM / Bootstrap 管理設定](https://claude.com/docs/third-party/claude-desktop/mdm)です。アプリ内のウィンドウ（**Developer → Configure Third-Party Inference…**）で設定して `.mobileconfig`（macOS）または `.reg`（Windows）ファイルをエクスポートするか、MDM 経由で配布してください。これらに対応する `~/.claude` のようなユーザーファイルはありません。
+:::
+
+## 1. Claude Desktop を shunt へ向ける
+
+**Developer → Configure Third-Party Inference…** で、**Inference provider** を **Gateway** に設定し、**Gateway base URL** に稼働中の shunt（デフォルトのバインド `127.0.0.1:3001`）を設定します。
+
+| Claude Desktop キー | 値 |
+| :-- | :-- |
+| `inferenceProvider` | `gateway` |
+| `inferenceGatewayBaseUrl` | `http://127.0.0.1:3001`（または公開 shunt URL） |
+
+shunt は平文 HTTP を提供します。ループバック以外へデプロイする場合は、[ゲートウェイの共有](/ja/guides/shared-gateway/)とまったく同じように、前段で TLS を終端するかトンネルを使ってください。
+
+## 2. 認証方式を選ぶ
+
+Claude Desktop には 3 つの方式があります。shunt は静的キー（およびその認証情報ヘルパー版）にそのまま対応しますが、ユーザー単位の SSO は shunt がインバウンドで実装しているゲートウェイ機能ではありません。
+
+| Claude Desktop の方式 | shunt 側 | 備考 |
+| :-- | :-- | :-- |
+| **静的 API キー**（`inferenceGatewayApiKey`） | [`[server.auth]`](/ja/guides/shared-gateway/) クライアントトークン | 推奨。 |
+| **認証情報ヘルパー**（`inferenceCredentialHelper`） | `[server.auth]` クライアントトークンを出力する実行可能ファイル | ゲートウェイ認証情報をすでに発行している組織向け。 |
+| **インタラクティブ SSO**（`inferenceGatewayOidc` + `inferenceCredentialKind: interactive`） | インバウンドでは未対応 | shunt は外部 IdP の JWT ではなく、*静的*トークンを検証します — 以下を参照してください。 |
+
+### 静的 API キー（推奨）
+
+shunt で [`[server.auth]`](/ja/guides/shared-gateway/#インバウンドのクライアントトークン) を有効にし、各ユーザーへクライアントトークンを配布します。
+
+```toml
+[server.auth]
+header = "x-shunt-token"          # default
+tokens_env = "SHUNT_CLIENT_TOKENS"
+```
+
+そのトークンを Claude Desktop の `inferenceGatewayApiKey` に設定します。shunt は `Authorization: Bearer` または `x-api-key` でクライアントトークンを受け付けるため、どちらの **Gateway auth scheme** でも動作します。
+
+| Claude Desktop キー | 値 |
+| :-- | :-- |
+| `inferenceGatewayApiKey` | shunt のクライアントトークン |
+| `inferenceGatewayAuthScheme` | `bearer`（デフォルト）または `x-api-key` |
+
+`[server.auth]` がなければ、shunt はインバウンドの認証情報を要求しません（個人用のループバックゲートウェイなら問題ありません）。それでも Claude Desktop はこのフィールドへの入力を要求するため、任意のプレースホルダーを指定してください。
+
+このトークンは `GET /v1/models` と、注入された認証情報を使う（マッピング/プールされた）モデルをゲートします。[パススルーモデル](/ja/guides/connect-claude-code/#3-マッピングされたプロバイダーの認証情報を用意する)は開いたままで、オペレーター自身のプロバイダー認証情報を運びます。
+
+:::caution[shunt は Claude Desktop の SSO 契約を実装していません]
+Claude Desktop の **Interactive sign-in**（`inferenceGatewayOidc`）では、アプリが外部 IdP（Entra、Okta など）で認証し、その IdP の JWT をゲートウェイへ送ります。ゲートウェイ側では `iss`/`aud` を検証する必要があります。shunt にはインバウンド JWT バリデーターがありません — [`[server.gateway]`](/ja/guides/gateway-login/) の OAuth サーフェスは **Claude Code 向けに構築されたデバイスフローログイン**であり、別の契約です。Claude Desktop でユーザー単位の SSO アトリビューションを行うには、shunt の前段に JWT を検証するプロキシ（LiteLLM、Kong、Envoy）を置くか、ユーザー単位の静的トークンを配布してください。
+:::
+
+## 3. モデルを選択する
+
+shunt は `GET /v1/models` を提供するため、Claude Desktop は起動時にピッカーを自動検出します。何が表示されるかは 2 つの要素で決まります。
+
+**Discovery フィルター。** Claude Desktop の自動 discovery に表示されるのは、*Claude と認識できる* id、つまり tier 名の id（`claude-sonnet-*`、`claude-opus-*`、`claude-haiku-*`、`claude-fable-*`）のみです。shunt の組み込みカタログはリファレンス Claude apps gateway を正確にミラーしています。9 つすべてが tier 名の id なので、Claude Desktop にはそのすべてが表示されます。
+
+```json
+// GET /v1/models — builtin catalog (auto_include_builtin_models), all tier-named
+{ "data": [
+  { "id": "claude-opus-4-6" },   { "id": "claude-sonnet-4-5-20250929" },
+  { "id": "claude-haiku-4-5-20251001" }, { "id": "claude-fable-5" },
+  { "id": "claude-opus-4-8" },   { "id": "claude-opus-4-7" },
+  { "id": "claude-opus-4-1-20250805" },  { "id": "claude-sonnet-5" },
+  { "id": "claude-sonnet-4-6" }
+] }
+```
+
+選定した `claude-<slug>-via-<provider>` エイリアス（Claude Code で機能するパターン）は **Claude Desktop では破棄されます** — [モデルディスカバリー → Claude Desktop は tier 名の id のみを認識します](/ja/guides/model-discovery/#claude-desktop-は-tier-名の-id-のみを認識します)を参照してください。
+
+**非 Anthropic バックエンドを公開する。** 選択肢は 2 つあります。
+
+- **tier 名の id をマッピングする。** `[[routes]]` の `upstream_model` でマッピングすると、Desktop で選択したときにバックエンドへ解決されます。
+
+  ```toml
+  [[routes]]
+  model = "claude-sonnet-5"        # a tier-named id Claude Desktop recognizes
+  provider = "codex"
+  upstream_model = "gpt-5.6-sol"   # real backend slug
+  ```
+
+- **Desktop 側で discovery を上書きする。** shunt がルーティングする正確な id を、明示的な `inferenceModels` リストに指定します。すべてのエントリが完全な id なら、Claude Desktop は `/v1/models` の呼び出しをスキップします。
+
+:::note[`anthropic_family_tier` はまだ出力されません]
+`/v1/models` のエントリに `anthropic_family_tier` フィールド（`sonnet` などの tier 名）が含まれていれば、Claude Desktop は*不透明な*エイリアスも受け付けます。現時点の shunt はこのフィールドを出力しないため（[#211](https://github.com/pleaseai/shunt/issues/211)）、Desktop にバックエンドを表示する現在の方法は、tier 名の id または明示的な `inferenceModels` リストです。
+:::
+
+## 4. 検証
+
+クライアントトークンを使って、shunt が discovery と推論に応答することを確認します。
+
+```bash
+# Discovery — the token gates it when [server.auth] is set
+curl -s "$SHUNT_URL/v1/models" -H "Authorization: Bearer $SHUNT_CLIENT_TOKEN" | jq '.data[].id'
+
+# A tier-named id you mapped -> diverted to the backend
+curl -s -X POST "$SHUNT_URL/v1/messages" \
+  -H "Authorization: Bearer $SHUNT_CLIENT_TOKEN" \
+  -H "anthropic-version: 2023-06-01" -H "content-type: application/json" \
+  -d '{"model":"claude-sonnet-5","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}'
+```
+
+その後 Claude Desktop を開きます。モデルピッカーに tier 名のエントリが表示されるはずです。空の場合は、discovery がフィルターで除外された（tier 名でない id）か、`/v1/models` に到達できていません。フォールバックとして `inferenceModels` を明示的に設定してください。

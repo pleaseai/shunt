@@ -119,6 +119,11 @@ export default defineConfig({
               slug: 'guides/connect-claude-code',
             },
             {
+              label: 'Connect Claude Desktop',
+              translations: { ko: 'Claude Desktop 연결', ja: 'Claude Desktop の接続', 'zh-CN': '连接 Claude Desktop' },
+              slug: 'guides/connect-claude-desktop',
+            },
+            {
               label: 'Connect the Codex CLI',
               translations: { ko: 'Codex CLI 연결', ja: 'Codex CLI の接続', 'zh-CN': '连接 Codex CLI' },
               slug: 'guides/connect-codex-cli',
