@@ -156,7 +156,7 @@ const $ = (id) => document.getElementById(id);
 function esc(v) {{ return v === null || v === undefined ? "" : String(v); }}
 function pct(v) {{ return v === null || v === undefined ? "—" : Math.round(v * 100) + "%"; }}
 function untilShort(resetSecs) {{
-  const mins = Math.floor((resetSecs * 1000 - Date.now()) / 60000);
+  const mins = Math.ceil((resetSecs * 1000 - Math.min(Date.now(), resetSecs * 1000)) / 60000);
   if (mins <= 0) return "now";
   const d = Math.floor(mins / 1440), h = Math.floor((mins % 1440) / 60), m = mins % 60;
   return d > 0 ? d + "d " + h + "h" : h > 0 ? h + "h " + m + "m" : m + "m";
