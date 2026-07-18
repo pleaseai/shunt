@@ -1,0 +1,95 @@
+src/adapters/responses/pool.rs
+  s_247b9924846b28::t_4f9cc20ec5d8fb 70
+  s_247b9924846b28::t_8650381a3cd8de 74-80,83,86-110
+  s_247b9924846b28::t_3a63d9edf89999 32-33
+  s_247b9924846b28::t_56378178c2e522 60-65,69
+  s_252c0b6e0f2fac::t_8a02d36017d2ed 111
+site/src/content/docs/reference/configuration.md
+  s_247b9924846b28::t_91c30bd6f9166a 174
+  s_247b9924846b28::t_f870588c16c221 80
+  s_247b9924846b28::t_c302deb6dbf4ff 92,94
+  s_247b9924846b28::t_4c797d7f59c39e 100-101
+docs/m11-inbound-codex-endpoint.md
+  s_247b9924846b28::t_e30a2a6f1345f8 134
+src/adapters/responses/inbound.rs
+  s_247b9924846b28::t_cb9a8a1a57f823 123-127,131-132
+  s_247b9924846b28::t_938222bb6a9f4b 134-140,143,146-168
+  s_252c0b6e0f2fac::t_2bd243d5a421d0 169
+src/accounts.rs
+  s_247b9924846b28::t_58413e1666e750 297
+  s_247b9924846b28::t_72edcac7435820 459-462
+  s_247b9924846b28::t_cae3a910ad28f4 107-113,126-135
+  s_247b9924846b28::t_59e8b1a6cd02d8 245
+  s_247b9924846b28::t_e59fb06381a071 305-306
+  s_247b9924846b28::t_387adc19e86231 569-572
+  s_247b9924846b28::t_c787b7ac59794c 585-627
+  s_247b9924846b28::t_18264e9e2b1032 767-789
+  s_247b9924846b28::t_e7d3deb962b34f 1858-1957
+  s_247b9924846b28::t_0c1cd4a38f3af2 1812-1815,1818-1819,1830-1851,1853
+docs/m10-codex-multi-account.md
+  s_247b9924846b28::t_f9541de34e78cd 170-180,183-184
+  s_247b9924846b28::t_faea6f5bdcde7e 112
+  s_247b9924846b28::t_3e8add3e234a96 5,7
+src/adapters/anthropic/mod.rs
+  s_247b9924846b28::t_d8cd60863e5bfc 156-162,165,167-192
+site/src/content/docs/guides/codex.md
+  s_247b9924846b28::t_52c3334065c176 34
+docs/codex-configuration.md
+  s_247b9924846b28::t_1b82baec2e8c90 518
+docs/comparison.md
+  s_247b9924846b28::t_02ef3029a9de46 166-171
+  s_247b9924846b28::t_eced5ff361031a 262,265-272
+  s_247b9924846b28::t_cc769d368fba27 24-26
+  s_247b9924846b28::t_7d9caed59b01ac 90-95
+  s_247b9924846b28::t_8abfaae2292e9c 296-298,303
+site/src/content/docs/guides/codex-multi-account.md
+  s_247b9924846b28::t_d0fadf7129a24c 3,6
+  s_247b9924846b28::t_797ff2fa2a3d37 98-100
+  s_247b9924846b28::t_eb04f199397e6b 164
+src/config.rs
+  s_247b9924846b28::t_78b933aca29ea9 149,162-168
+  s_247b9924846b28::t_76c7ec3fc16fdf 124-131
+  s_247b9924846b28::t_f61128212bdab7 169-170
+docs/m8-anthropic-multi-account.md
+  s_247b9924846b28::t_8d4cbad79c37d7 203
+site/src/content/docs/guides/anthropic-multi-account.md
+  s_247b9924846b28::t_444e08b3e23207 145
+  s_247b9924846b28::t_7d23531636fbf8 126
+  s_247b9924846b28::t_63ab7e8e845cf2 209,211
+site/src/content/docs/guides/admin-remote-provisioning.md
+  s_247b9924846b28::t_3ef2f48bb30fcd 69
+docs/m9-admin-surface.md
+  s_247b9924846b28::t_0de927b41dda29 232
+site/src/content/docs/getting-started/comparison.md
+  s_247b9924846b28::t_406e2a41b85d7f 75
+  s_247b9924846b28::t_b4277ddcda0ae2 110
+  s_247b9924846b28::t_d62dce4f7495d8 16
+  s_247b9924846b28::t_d2ca159b6d1880 56
+  s_247b9924846b28::t_0fde04a27f37ce 77
+README.md
+  s_247b9924846b28::t_f8769858aefd82 72
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "42b0189250d5f53849dace1c10b8586661fb82c3",
+  "prompts": {},
+  "sessions": {
+    "s_247b9924846b28": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cf790ea6-317d-422b-83e2-e54777d32352",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_252c0b6e0f2fac": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "727cb08c-6b4c-4134-9270-64698a029b37",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
