@@ -1,0 +1,140 @@
+src/config.rs
+  s_6adb8acb856e5b::t_9681b4c2ab4366 2566-2569,2571-2589,2591-2594,2601-2611,2618-2632,2634-2651
+  s_6adb8acb856e5b::t_5c29b4517e17fe 2633
+  s_6adb8acb856e5b::t_b8d974ffd628a6 373,396-398,400-404,406-409,411-412,414-416,421-426,430-431,442-452,466-475,480-482,484-486,489-491,493-533
+  s_6adb8acb856e5b::t_0f98a4f296c948 487-488
+  s_6adb8acb856e5b::t_b01d1c0069b1bd 453-465
+  s_6adb8acb856e5b::t_ea07730a7e64e0 1190-1195
+  s_6adb8acb856e5b::t_a9974b669d537c 2565,2612-2617
+  s_6adb8acb856e5b::t_f9f415e1468128 1961-1962
+  s_6adb8acb856e5b::t_07e1027b0a3da8 2590,2600
+  s_6adb8acb856e5b::t_dcfcb1b31402c9 432-441
+  s_6adb8acb856e5b::t_3456adb4cbb293 1837
+  s_6adb8acb856e5b::t_fc8cdbdbee2693 2570
+  s_6adb8acb856e5b::t_1d63ace43272a5 272-273,276
+  s_6adb8acb856e5b::t_6ccc7c3cd62169 476-479,483
+  s_6adb8acb856e5b::t_4b25eb10249c82 2487,2536
+  s_6adb8acb856e5b::t_e6994479052971 1499
+  s_6adb8acb856e5b::t_55601cf59205d9 274-275,277-293,324-326
+  s_6adb8acb856e5b::t_4509fb782e5817 350-353
+  s_6adb8acb856e5b::t_2be2573fe7f005 2595-2599
+  s_6adb8acb856e5b::t_2394039dd3e6b4 405
+  s_6adb8acb856e5b::t_edcc296776e63f 410
+  s_6adb8acb856e5b::t_085c8349568eb3 413
+  s_6adb8acb856e5b::t_ce949de281936f 492
+  s_6adb8acb856e5b::t_87d8374f0269b6 534
+docs/gateway-login.md
+  s_6adb8acb856e5b::t_77a89039448ce9 66-81
+  s_6adb8acb856e5b::t_d256c54c22d701 17,19
+  s_6adb8acb856e5b::t_5aa9d1ed054234 119-123
+  s_6adb8acb856e5b::t_5315d9071012ea 18
+  s_6adb8acb856e5b::t_172c9ba2064858 82-88
+  s_6adb8acb856e5b::t_150ae9861cdbc5 101-109
+  s_6adb8acb856e5b::t_cc785dfcb7e6ba 149-152
+  s_6adb8acb856e5b::t_a6428589d895cd 94-100
+src/reload.rs
+  s_6adb8acb856e5b::t_6aa2987537a734 499
+  s_6adb8acb856e5b::t_06200023b7b0d9 485,494
+src/gateway/persist.rs
+  s_6adb8acb856e5b::t_312ce49c6aeaec 316
+src/gateway/idp.rs
+  s_6adb8acb856e5b::t_f75b8f6291a8e3 1-47,49-129,131-150,152-223,225-228
+  s_6adb8acb856e5b::t_88d34bd30d0c3c 48,130,151,224
+src/gateway/store.rs
+  s_6adb8acb856e5b::t_2657198048cc95 436-483
+  s_6adb8acb856e5b::t_b7fb752104391f 196
+  s_6adb8acb856e5b::t_d966d77ccd25a4 107-122
+  s_6adb8acb856e5b::t_291220a49538c6 310-311,320-321
+  s_6adb8acb856e5b::t_32137f295685a5 359
+  s_6adb8acb856e5b::t_c6b664097b3813 197-256
+  s_6adb8acb856e5b::t_664bca379c8d93 349
+  s_6adb8acb856e5b::t_f9fcc002f6b217 15,18
+  s_6adb8acb856e5b::t_5022e5327c71ee 22
+README.md
+  s_6adb8acb856e5b::t_4b6b1e6fb2625a 78
+site/src/content/docs/reference/configuration.md
+  s_6adb8acb856e5b::t_16bc97c5e8cd55 55-58,60-62,65-67,72
+  s_6adb8acb856e5b::t_62630f8a012345 44
+  s_6adb8acb856e5b::t_78b2bc38fa543a 50
+  s_6adb8acb856e5b::t_2a9a96fc57a81a 59,63-64,68-71,73
+src/gateway/tests.rs
+  s_6adb8acb856e5b::t_1317bfae1aa3a7 22
+  s_6adb8acb856e5b::t_efa6a95ae0b803 427
+  s_6adb8acb856e5b::t_61245d59c86160 11,13
+  s_6adb8acb856e5b::t_785a6d460b6e42 82-84
+  s_6adb8acb856e5b::t_507b484984b9e8 272-281
+  s_6adb8acb856e5b::t_8d5a29b2f9ffcd 116-213,215-269,282-321,323-327,329-352,355-356,358-362,364-369,371-372,374-375,377,386,388-397,401-403,405-417,419-422,425-426,428-432,434,436-438,445-447
+  s_6adb8acb856e5b::t_a0f6f03eb5dbff 47
+  s_6adb8acb856e5b::t_cffd069ff582dd 40
+  s_6adb8acb856e5b::t_0bbd8ea1076af4 370,373,376,378-385,387,398-400,418,433,435,439-444
+  s_6adb8acb856e5b::t_137b7fa56c9df3 12
+  s_6adb8acb856e5b::t_dd6611bb854499 51-62,64-75
+  s_6adb8acb856e5b::t_41ceea4b91b803 63
+  s_6adb8acb856e5b::t_304bdf29fce89c 96-106
+  s_6adb8acb856e5b::t_ec9610e5e789af 270-271
+  s_6adb8acb856e5b::t_ad8251fb1c6857 946-951
+  s_6adb8acb856e5b::t_658e4cfffaedf7 353,423,448-501
+  s_6adb8acb856e5b::t_c3f206850585de 214,322,328,354,357,363,404,424
+Cargo.toml
+  s_6adb8acb856e5b::t_37e810329dfd6c 57
+src/server.rs
+  s_6adb8acb856e5b::t_b06aee3d2fca1d 39
+  s_6adb8acb856e5b::t_a70465933eafff 37
+src/gateway/idp_client.rs
+  s_6adb8acb856e5b::t_993b4d6cec7a90 1-8,10-37,39-44,46-51,53-125,127-132,134-154,156-175,177-181
+  s_6adb8acb856e5b::t_e489b8e9259f29 9,38,45,52,126,133,155
+  s_6adb8acb856e5b::t_efa6a95ae0b803 176
+src/gateway/mod.rs
+  s_6adb8acb856e5b::t_bb8a3eeaa53dd5 40-48
+  s_6adb8acb856e5b::t_04b153a43972c9 67-68
+  s_6adb8acb856e5b::t_b3c01610964dc6 27
+  s_6adb8acb856e5b::t_abaa8e205690ea 3-4
+  s_6adb8acb856e5b::t_b865ba2a28ecf7 26,28-39,49-60
+  s_6adb8acb856e5b::t_5b11109fdcae08 124,142-147
+  s_6adb8acb856e5b::t_ff1e4a0a1eaa18 104
+  s_6adb8acb856e5b::t_219b6c3ed4f73f 25
+  s_6adb8acb856e5b::t_e0d23aae4d4999 182-183
+  s_6adb8acb856e5b::t_e3ec7f5fd63cb8 95-103,105-109,117,121-123
+  s_6adb8acb856e5b::t_514ecca18b0c8a 94
+  s_6adb8acb856e5b::t_b38935a1e259fe 125
+site/src/content/docs/guides/gateway-login.md
+  s_6adb8acb856e5b::t_46d7255d74d2bb 97,99
+  s_6adb8acb856e5b::t_ba36123b98298e 96
+  s_6adb8acb856e5b::t_d473355cac6e44 109
+  s_6adb8acb856e5b::t_ac482a023114b4 33-59
+  s_6adb8acb856e5b::t_1f4abf229af500 60-68
+  s_6adb8acb856e5b::t_85283eb41c6ee1 3
+src/gateway/device.rs
+  s_6adb8acb856e5b::t_a8be1c96686390 78-79
+  s_6adb8acb856e5b::t_5d8ddbe678dee0 122
+  s_6adb8acb856e5b::t_d61a4c1b7e1ae9 181-183,185
+  s_6adb8acb856e5b::t_dd4a3dc140ab4a 346
+  s_6adb8acb856e5b::t_1baa7742b64c7a 63-64
+  s_6adb8acb856e5b::t_4003e9887db586 237-251
+  s_6adb8acb856e5b::t_005a07aadbfe81 86-96
+  s_6adb8acb856e5b::t_ff1c8d17a2b011 269,272-286,288,294-304
+  s_6adb8acb856e5b::t_cb73680cbd4d26 30-31,33-34
+  s_6adb8acb856e5b::t_9a4d347f6c0d94 338
+  s_6adb8acb856e5b::t_480139e64e9e4f 208
+  s_6adb8acb856e5b::t_38469b139ba799 53-54
+  s_6adb8acb856e5b::t_f2981abebf0db6 324
+  s_6adb8acb856e5b::t_3f7d25772f5704 107-108,114-115
+  s_6adb8acb856e5b::t_f3cb386f14350c 252-258
+  s_6adb8acb856e5b::t_e8e42d6dddaeef 184
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "be9dfa56dbba2bbea4e64b2776c8ec645bcd5667",
+  "prompts": {},
+  "sessions": {
+    "s_6adb8acb856e5b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e12bb860-e1d1-4cc0-80a6-270eb3b05d88",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
