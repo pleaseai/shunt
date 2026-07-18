@@ -27,6 +27,7 @@ jwt_secret_env = "SHUNT_GATEWAY_JWT_SECRET" # default
 users_env = "SHUNT_GATEWAY_USERS"            # default
 token_ttl_seconds = 3600                      # default
 trust_forwarded_for = false                   # default
+# state_path = "~/.shunt/gateway-sessions.json"  # default; "" = memory-only sessions
 ```
 
 Startup fails closed if `public_url` is not a bare HTTPS origin (`http` is allowed only on loopback), `token_ttl_seconds` is zero, the signing secret is shorter than 32 bytes, or the user list is empty or malformed. A secret may contain `:` because only the first colon separates an email from its secret.
@@ -67,7 +68,9 @@ Pre-filling the code never auto-approves it. The approval POST is same-origin pr
 
 Access tokens are HS256 JWTs with a one-hour default lifetime. Claude Code silently refreshes them. Every refresh rotates the opaque refresh token; replaying a retained old token within the 30-day, 64-tombstone bound invalidates the active token in that rotation family and makes Claude Code sign in again.
 
-Device grants, refresh tokens, and attempt counters are in memory in this milestone. Config hot reload keeps them, and changes to the signing secret or user list hot-apply. Expired grants and idle rate-limit entries are removed opportunistically; device grants and rate-limit identities are each capped at 4,096 entries. Used refresh-token tombstones are retained for 30 days and capped at 64 per family. A shunt process restart clears device grants and refresh sessions; existing access JWTs remain valid until expiry, after which users must sign in again. Adding or removing the `[server.gateway]` table itself requires a restart because route registration is fixed at boot.
+Device grants, refresh tokens, and attempt counters live in memory. Config hot reload keeps them, and changes to the signing secret or user list hot-apply. Expired grants and idle rate-limit entries are removed opportunistically; device grants and rate-limit identities are each capped at 4,096 entries. Used refresh-token tombstones are retained for 30 days and capped at 64 per family, and an active session that goes 30 days without refreshing expires. Adding or removing the `[server.gateway]` table itself requires a restart because route registration is fixed at boot.
+
+Refresh sessions survive a shunt restart by default: shunt writes the refresh-token store to `state_path` (default `~/.shunt/gateway-sessions.json`, atomically, owner-only permissions) after every grant or rotation and restores it at boot, so users keep refreshing instead of re-running the browser flow. Refresh tokens are stored as SHA-256 hashes — the file never contains a usable credential, only token hashes and the signed-in identities. A missing or corrupt file just falls back to memory-only behavior, as does an environment with no resolvable home directory. Set `state_path = ""` for memory-only sessions, where a restart clears refresh sessions and users sign in again once their access JWT expires. Device grants stay memory-only either way (a restart mid-login only costs that attempt), and the state file must not be shared between concurrently running shunt processes.
 
 When [`[server.auth]`](/guides/shared-gateway/) and `[server.gateway]` are both configured, they compose: either a valid static client token or a valid gateway bearer grants access. This supports a staged migration without breaking existing clients.
 

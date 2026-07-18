@@ -17,13 +17,7 @@
 //! (not portable across a restart) and short-lived, so they are intentionally
 //! left to lapse on boot.
 
-use std::{
-    fs,
-    io::{self, Write},
-    path::{Path, PathBuf},
-    sync::atomic::{AtomicUsize, Ordering},
-    time::Duration,
-};
+use std::{fs, io, path::Path, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
@@ -32,7 +26,6 @@ use crate::{accounts::QuotaState, server::AppState};
 /// Bump when the on-disk shape changes incompatibly; a file whose version does
 /// not match is ignored (cold start) rather than mis-parsed.
 const STATE_VERSION: u32 = 1;
-static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 /// How often the background task flushes dirty quota to disk. A restart loses at
 /// most this much of the newest quota, which the next response re-derives anyway.
@@ -195,62 +188,12 @@ fn load(path: &Path) -> io::Result<Option<PersistedPool>> {
     Ok(Some(persisted))
 }
 
-/// Write the state atomically: serialize to a private sibling temp file, then
-/// rename over the target. Rename is atomic on the same filesystem, so a crash
-/// mid-write never leaves a truncated file where a reader would find it.
+/// Write the state atomically via [`crate::atomic_file::write_private_atomic`]:
+/// a private sibling temp file renamed over the target, so a crash mid-write
+/// never leaves a truncated file where a reader would find it.
 fn save(path: &Path, pool: &PersistedPool) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)?;
-        }
-    }
     let json = serde_json::to_vec_pretty(pool).map_err(io::Error::other)?;
-    let tmp = tmp_path(path);
-    if let Err(error) = write_private(&tmp, &json).and_then(|()| fs::rename(&tmp, path)) {
-        let _ = fs::remove_file(&tmp);
-        return Err(error);
-    }
-    Ok(())
-}
-
-/// Unique sibling staging path for an atomic write. Exclusive creation below
-/// prevents a local process from redirecting the write through a symlink.
-fn tmp_path(path: &Path) -> PathBuf {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    parent.join(format!(
-        ".{}.tmp-{}-{}",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("shunt-state"),
-        std::process::id(),
-        counter
-    ))
-}
-
-#[cfg(unix)]
-fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    use std::os::unix::fs::OpenOptionsExt;
-
-    let _ = fs::remove_file(path);
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)?;
-    file.write_all(bytes)?;
-    file.sync_all()
-}
-
-#[cfg(not(unix))]
-fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let _ = fs::remove_file(path);
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)?;
-    file.write_all(bytes)?;
-    file.sync_all()
+    crate::atomic_file::write_private_atomic(path, &json)
 }
 
 #[cfg(test)]
@@ -260,6 +203,7 @@ mod tests {
         accounts::QuotaState,
         config::{AccountConfig, Config, PoolConfig},
     };
+    use std::path::PathBuf;
 
     fn sample_pool() -> PersistedPool {
         PersistedPool {

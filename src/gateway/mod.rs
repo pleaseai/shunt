@@ -2,6 +2,8 @@ pub mod approval;
 mod device;
 pub mod jwt;
 mod oauth;
+pub mod persist;
+pub mod refresh;
 pub mod store;
 
 use std::sync::Arc;
