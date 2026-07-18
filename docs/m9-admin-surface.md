@@ -229,7 +229,7 @@ provider's accounts (its configured list, or the corresponding Claude/Codex stor
 scan for an empty list — the same resolution the adapters use). Codex successful
 responses now populate the 5h/7d fields from `x-codex-*` rate-limit headers;
 unsupported windows are ignored and `7d_oi` remains `None` because Codex has no
-analog. This state is display-only and does not affect Codex account selection.
+analog. Since issue #195 this recorded state also feeds Codex account selection (see `m10-codex-multi-account.md`), in addition to the dashboard display.
 
 ## Shared foundations with gateway login
 

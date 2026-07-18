@@ -29,8 +29,8 @@ use super::websocket::forward_websocket;
 /// account on a pre-stream websocket failure, then classifying the raw HTTP
 /// status with [`accounts::classify_codex`] to decide whether to relay,
 /// rotate to the next account, or force-refresh and retry the same one.
-/// Codex quota headers are recorded for the admin dashboard, but selection
-/// remains deliberately cooldown-based rather than quota-aware.
+/// Codex quota headers recorded by `note_codex_quota` feed both the admin
+/// dashboard and quota-aware selection (issue #195).
 pub(super) async fn forward_chatgpt_oauth(
     state: AppState,
     route: Route,
@@ -57,20 +57,57 @@ pub(super) async fn forward_chatgpt_oauth(
             accounts_config.len()
         )));
     }
-    // Codex usage is recorded for the admin dashboard via note_codex_quota,
-    // but it is deliberately not fed into selection: failover stays
-    // cooldown-based. Per-account priority/disabled still apply.
-    let order = state.accounts.select_order_cooldown(
+    // Codex usage recorded via note_codex_quota (x-codex-* windows) feeds
+    // selection: the pool proactively rotates off near-quota accounts and
+    // orders by burn-rate headroom, exactly like the Claude pool (issue #195).
+    // Codex has no fable-scoped window, so the model only picks the shared
+    // weekly bucket.
+    let order = state.accounts.select_order(
         &route.provider,
         &accounts_config,
         session_id.as_deref(),
+        Some(route.upstream_model.as_str()),
+        state.config.server.pool.as_ref(),
     );
     let ws_enabled = state.config.codex_websocket_enabled(&route.provider);
     let auth = AuthMode::ChatgptOauth;
+    let ramp_initial = state
+        .config
+        .server
+        .pool
+        .as_ref()
+        .and_then(|pool| pool.storm_ramp_initial());
+    let candidates = order.len();
     let mut last_response: Option<reqwest::Response> = None;
 
-    for index in order {
+    for (position, index) in order.into_iter().enumerate() {
         let account = &accounts_config[index];
+
+        // Storm control (issue #195): a saturated identity defers to the next
+        // candidate instead of piling on, except for the final candidate,
+        // which is always attempted — spilling a burst across the pool beats
+        // failing requests outright. The guard holds the admission slot for
+        // the duration of this account's attempt.
+        let _admission = match ramp_initial {
+            Some(initial) => {
+                let force = position + 1 == candidates;
+                match state
+                    .accounts
+                    .try_admit(&route.provider, account, initial, force)
+                {
+                    Some(guard) => Some(guard),
+                    None => {
+                        tracing::debug!(
+                            provider = %route.provider,
+                            account = %account.name,
+                            "storm control deferred admission; trying the next account"
+                        );
+                        continue;
+                    }
+                }
+            }
+            None => None,
+        };
 
         // Resolve the account's credential without the account-pool refresh lock;
         // the auth store returns valid tokens concurrently and single-flights any

@@ -121,6 +121,14 @@ pub struct PoolConfig {
     /// [`crate::state_persist`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_path: Option<PathBuf>,
+    /// Storm control (issue #195): cap concurrent admissions to an account
+    /// identity that just started taking traffic, so a failover switch cannot
+    /// stampede the freshly selected account with every in-flight request at
+    /// once. The cap starts here and doubles per successful response
+    /// (slow-start), and drops back after a cooldown or an idle period. Unset
+    /// or `0` disables admission gating (the default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ramp_initial_concurrency: Option<u32>,
 }
 
 pub(crate) fn default_hard_threshold() -> f64 {
@@ -138,6 +146,7 @@ impl Default for PoolConfig {
             burn_rate_avoidance: false,
             usage_refresh_seconds: None,
             state_path: None,
+            ramp_initial_concurrency: None,
         }
     }
 }
@@ -148,6 +157,15 @@ impl PoolConfig {
         match self.usage_refresh_seconds {
             None | Some(0) => None,
             Some(seconds) => Some(seconds.max(60)),
+        }
+    }
+
+    /// The storm-control initial admission allowance, or `None` when admission
+    /// gating is disabled (unset or `0`).
+    pub fn storm_ramp_initial(&self) -> Option<u32> {
+        match self.ramp_initial_concurrency {
+            None | Some(0) => None,
+            Some(initial) => Some(initial),
         }
     }
 }

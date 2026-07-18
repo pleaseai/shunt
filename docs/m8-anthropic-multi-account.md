@@ -200,7 +200,7 @@ The rewrite is deliberately narrow: it only occurs when the outer request is JSO
 
 Phase 2 quota-aware proactive rotation is implemented. It is model-aware and switches away from a near-quota sticky account before rejection when another account is available under threshold. Issue #135 extends it with per-account/per-window soft thresholds, `priority`, `disabled`, and opt-in burn-rate–aware ordering and predictive avoidance via `[server.pool]`. Phase 1 reactive failover remains the floor: rejected quota responses, authentication failures, transport failures, and 5xx responses still trigger the retry/cooldown behavior above, and every non-`disabled` account remains selectable when all choices are near quota or cooled.
 
-Storm-control—ramping concurrency after switching to a fresh account—remains a later follow-up and is not implemented.
+Storm control—ramping concurrency after switching to a fresh account—shipped with issue #195: the opt-in `[server.pool] ramp_initial_concurrency` slow-start admission gate applies to this pool and the Codex pool alike (see `m10-codex-multi-account.md` §Storm control).
 
 ## Account store
 

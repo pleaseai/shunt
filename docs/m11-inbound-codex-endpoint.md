@@ -131,7 +131,7 @@ about the client's own credential reaches the Codex backend.
 
 ## Account pool reuse (M10)
 
-Session-sticky selection, reactive failover, cooldowns, per-account refresh, and identity coalescing are all reused unchanged from [M10](m10-codex-multi-account.md) — this endpoint adds no new pool logic, only a new entry point into it. Account resolution goes through the shared `resolve_pool_accounts` path: configured entries are used directly, while an empty list uses the store directory-mtime cache and fills each scanned account's stable identity from its Codex `account_id`. The existing empty-store single-account fallback remains unchanged.
+Session-sticky quota-aware selection (issue #195), reactive failover, cooldowns, storm control, per-account refresh, and identity coalescing are all reused unchanged from [M10](m10-codex-multi-account.md) — this endpoint adds no new pool logic, only a new entry point into it. Account resolution goes through the shared `resolve_pool_accounts` path: configured entries are used directly, while an empty list uses the store directory-mtime cache and fills each scanned account's stable identity from its Codex `account_id`. The existing empty-store single-account fallback remains unchanged.
 
 - **Sticky key.** The Codex CLI's own `session-id` request header selects the sticky account (same
   hashing scheme as M10), falling back to `x-claude-code-session-id` for parity with the outbound

@@ -104,6 +104,13 @@ pub struct UsageSnapshot {
     pub seven_day_oi: Option<UsageWindow>,
 }
 
+/// How long an identity must sit with no in-flight requests before storm
+/// control drops its admission allowance back to the initial value. An account
+/// that was idle this long (typically because the pool's traffic was sticky on
+/// another account) re-enters slow start when a failover burst arrives, which
+/// is exactly the stampede the gate exists to absorb (issue #195).
+const RAMP_IDLE_RESET: Duration = Duration::from_secs(60);
+
 #[derive(Debug, Default)]
 struct AccountHealth {
     cooldown_until: Option<Instant>,
@@ -116,6 +123,16 @@ struct AccountHealth {
     /// mean an account has been observed — the admin dashboard's `has_state`
     /// keys off this flag instead of mere entry presence.
     observed: bool,
+    /// Requests currently admitted to this identity by [`AccountPool::try_admit`].
+    /// Only maintained when storm control is configured; stays `0` otherwise.
+    in_flight: u32,
+    /// Storm-control slow-start allowance: the number of concurrent admissions
+    /// this identity currently accepts. `0` means "restart the ramp" — the next
+    /// [`AccountPool::try_admit`] re-seeds it from the configured initial value
+    /// (a fresh entry starts there, and [`AccountPool::cooldown`] resets to it).
+    ramp_allowance: u32,
+    /// Instant of the last admission or release, for the idle-reset rule.
+    ramp_last_activity: Option<Instant>,
 }
 
 /// Token-free, serializable view of one account's pool health for the admin
@@ -225,19 +242,7 @@ impl AccountPool {
         model: Option<&str>,
         pool: Option<&PoolConfig>,
     ) -> Vec<usize> {
-        self.select_order_inner(provider, accounts, session_id, model, pool, true)
-    }
-
-    /// Return account indices using only stickiness/round-robin, priority,
-    /// disabled state, and cooldowns. Recorded quota remains available to
-    /// [`Self::snapshot`] but cannot influence this order.
-    pub fn select_order_cooldown(
-        &self,
-        provider: &str,
-        accounts: &[AccountConfig],
-        session_id: Option<&str>,
-    ) -> Vec<usize> {
-        self.select_order_inner(provider, accounts, session_id, None, None, false)
+        self.select_order_inner(provider, accounts, session_id, model, pool)
     }
 
     fn select_order_inner(
@@ -247,7 +252,6 @@ impl AccountPool {
         session_id: Option<&str>,
         model: Option<&str>,
         pool: Option<&PoolConfig>,
-        consider_quota: bool,
     ) -> Vec<usize> {
         if accounts.is_empty() {
             return Vec::new();
@@ -290,8 +294,7 @@ impl AccountPool {
                     .or_default();
                 health.enabled |= !account.disabled;
                 expire_stale_quota(&mut health.quota, unix_now);
-                let quota = consider_quota.then(|| health.quota.clone());
-                snapshots.push((health.cooldown_until, quota));
+                snapshots.push((health.cooldown_until, health.quota.clone()));
             }
             snapshots
         };
@@ -299,14 +302,8 @@ impl AccountPool {
             .iter()
             .zip(health_snapshots)
             .map(|(account, (cooldown_until, quota))| {
-                let assessment = quota
-                    .as_ref()
-                    .map_or_else(QuotaAssessment::ignored, |quota| {
-                        assess_quota(quota, account, is_fable, pool, unix_now)
-                    });
-                let weekly_reset = quota
-                    .as_ref()
-                    .and_then(|quota| governing_weekly_reset(quota, is_fable));
+                let assessment = assess_quota(&quota, account, is_fable, pool, unix_now);
+                let weekly_reset = governing_weekly_reset(&quota, is_fable);
                 (cooldown_until, assessment, weekly_reset)
             })
             .collect::<Vec<_>>();
@@ -459,10 +456,10 @@ impl AccountPool {
         self.mark_dirty();
     }
 
-    /// Record the Codex backend's positional rate-limit header groups for the
-    /// admin dashboard. A group's `window-minutes` identifies its bucket; the
-    /// primary/secondary position does not. This state is deliberately excluded
-    /// from Codex account selection by [`Self::select_order_cooldown`].
+    /// Record the Codex backend's positional rate-limit header groups. A
+    /// group's `window-minutes` identifies its bucket; the primary/secondary
+    /// position does not. The recorded windows feed both the admin dashboard
+    /// and Codex account selection via [`Self::select_order`] (issue #195).
     pub fn note_codex_quota(&self, provider: &str, account: &AccountConfig, headers: &HeaderMap) {
         {
             let mut entries = self.entries.lock().expect("account health lock poisoned");
@@ -569,6 +566,10 @@ impl AccountPool {
         health.observed = true;
         health.enabled = !account.disabled;
         health.cooldown_until = Some(Instant::now() + duration);
+        // Any failover-worthy failure restarts the storm-control ramp: when the
+        // account comes back it re-enters slow start instead of inheriting the
+        // allowance it had grown before failing.
+        health.ramp_allowance = 0;
         drop(entries);
         crate::metrics::record_pool_rotation(provider, reason);
     }
@@ -581,6 +582,49 @@ impl AccountPool {
         health.observed = true;
         health.enabled = !account.disabled;
         health.cooldown_until = None;
+        // Slow-start growth: each successful response doubles the identity's
+        // admission allowance, so a healthy account leaves the ramp within a
+        // handful of turns. `0` means the ramp is inactive (storm control off,
+        // or a cooldown just reset it) — growing it here would skip the
+        // re-seed in `try_admit`.
+        if health.ramp_allowance > 0 {
+            health.ramp_allowance = health.ramp_allowance.saturating_mul(2);
+        }
+    }
+
+    /// Storm-control admission gate (issue #195): admit a request to this
+    /// account identity only while its in-flight count is under the slow-start
+    /// allowance. The allowance re-seeds to `initial` for an identity that has
+    /// been idle for [`RAMP_IDLE_RESET`] (or whose ramp was reset by
+    /// [`Self::cooldown`]), doubles per successful response
+    /// ([`Self::mark_healthy`]), and is bypassed with `force` so a caller can
+    /// always attempt its last remaining candidate rather than fail the
+    /// request. Returns `None` when the identity is saturated; the returned
+    /// guard releases the slot on drop.
+    pub fn try_admit<'pool>(
+        &'pool self,
+        provider: &str,
+        account: &AccountConfig,
+        initial: u32,
+        force: bool,
+    ) -> Option<AdmissionGuard<'pool>> {
+        let key = (provider.to_string(), account_identity(account).to_string());
+        let now = Instant::now();
+        let mut entries = self.entries.lock().expect("account health lock poisoned");
+        let health = entries.entry(key.clone()).or_default();
+        let idle = health.in_flight == 0
+            && health
+                .ramp_last_activity
+                .is_none_or(|at| now.duration_since(at) >= RAMP_IDLE_RESET);
+        if health.ramp_allowance == 0 || idle {
+            health.ramp_allowance = initial.max(1);
+        }
+        if !force && health.in_flight >= health.ramp_allowance {
+            return None;
+        }
+        health.in_flight = health.in_flight.saturating_add(1);
+        health.ramp_last_activity = Some(now);
+        Some(AdmissionGuard { pool: self, key })
     }
 
     /// Forget pool health and refresh state for a single `(provider, identity)`,
@@ -720,6 +764,29 @@ impl AccountPool {
     }
 }
 
+/// RAII admission slot handed out by [`AccountPool::try_admit`]. Dropping it
+/// releases the identity's in-flight slot and refreshes the idle-reset clock;
+/// hold it across the upstream attempt it admitted.
+#[derive(Debug)]
+pub struct AdmissionGuard<'pool> {
+    pool: &'pool AccountPool,
+    key: AccountKey,
+}
+
+impl Drop for AdmissionGuard<'_> {
+    fn drop(&mut self) {
+        let mut entries = self
+            .pool
+            .entries
+            .lock()
+            .expect("account health lock poisoned");
+        if let Some(health) = entries.get_mut(&self.key) {
+            health.in_flight = health.in_flight.saturating_sub(1);
+            health.ramp_last_activity = Some(Instant::now());
+        }
+    }
+}
+
 /// Stable upstream identity used for pool health and candidate coalescing.
 /// Claude stores `shuntAccountUuid` and Codex stores `chatgpt_account_id` in
 /// [`AccountConfig::uuid`]; accounts without either remain distinct by name.
@@ -854,16 +921,6 @@ struct QuotaAssessment {
     /// Minimum burn-rate headroom in seconds across the governing windows
     /// (see [`window_headroom`]); +∞ when nothing suggests pressure.
     headroom: f64,
-}
-
-impl QuotaAssessment {
-    fn ignored() -> Self {
-        Self {
-            near: false,
-            over_hard: false,
-            headroom: f64::INFINITY,
-        }
-    }
 }
 
 fn assess_quota(
@@ -1752,11 +1809,14 @@ mod tests {
     }
 
     #[test]
-    fn codex_display_quota_does_not_change_cooldown_only_selection() {
+    fn codex_quota_rotates_off_near_quota_sticky_account() {
+        // Issue #195: the recorded x-codex-* windows are no longer display-only —
+        // an exhausted sticky account proactively yields to the other account
+        // even without [server.pool] tuning (legacy 0.98 hard threshold).
         let pool = AccountPool::new();
         let accounts = vec![account("a"), account("b")];
-        let session = "codex-display-only";
-        let initial = pool.select_order_cooldown("codex", &accounts, Some(session));
+        let session = "codex-quota-aware";
+        let initial = pool.select_order("codex", &accounts, Some(session), None, None);
         let sticky = initial[0];
         pool.note_codex_quota(
             "codex",
@@ -1767,10 +1827,132 @@ mod tests {
             ]),
         );
 
+        let order = pool.select_order("codex", &accounts, Some(session), None, None);
+        assert_eq!(order.len(), 2);
+        assert_ne!(order[0], sticky, "exhausted sticky account must yield");
+        assert_eq!(order[1], sticky, "near-quota account stays as fallback");
+    }
+
+    #[test]
+    fn codex_quota_under_threshold_keeps_sticky_account() {
+        let pool = AccountPool::new();
+        let accounts = vec![account("a"), account("b")];
+        let session = "codex-quota-under";
+        let initial = pool.select_order("codex", &accounts, Some(session), None, None);
+        let sticky = initial[0];
+        pool.note_codex_quota(
+            "codex",
+            &accounts[sticky],
+            &quota_headers(&[
+                ("x-codex-primary-used-percent", "50".to_string()),
+                ("x-codex-primary-window-minutes", "300".to_string()),
+            ]),
+        );
+
         assert_eq!(
-            pool.select_order_cooldown("codex", &accounts, Some(session)),
+            pool.select_order("codex", &accounts, Some(session), None, None),
             initial
         );
+    }
+
+    #[test]
+    fn try_admit_caps_concurrency_and_force_bypasses() {
+        let pool = AccountPool::new();
+        let acc = account("a");
+        let first = pool
+            .try_admit("codex", &acc, 2, false)
+            .expect("first admission fits the initial allowance");
+        let second = pool
+            .try_admit("codex", &acc, 2, false)
+            .expect("second admission fits the initial allowance");
+        assert!(
+            pool.try_admit("codex", &acc, 2, false).is_none(),
+            "a saturated identity defers further admissions"
+        );
+        let forced = pool
+            .try_admit("codex", &acc, 2, true)
+            .expect("force admits past the allowance for the last candidate");
+        drop((first, second, forced));
+    }
+
+    #[test]
+    fn admission_release_frees_the_slot() {
+        let pool = AccountPool::new();
+        let acc = account("a");
+        let guard = pool.try_admit("codex", &acc, 1, false).unwrap();
+        assert!(pool.try_admit("codex", &acc, 1, false).is_none());
+        drop(guard);
+        assert!(
+            pool.try_admit("codex", &acc, 1, false).is_some(),
+            "a released slot admits the next request"
+        );
+    }
+
+    #[test]
+    fn admission_is_shared_across_aliases_of_one_identity() {
+        let pool = AccountPool::new();
+        let alias_a = account_with_uuid("alias-a", "shared");
+        let alias_b = account_with_uuid("alias-b", "shared");
+        let guard = pool.try_admit("codex", &alias_a, 1, false).unwrap();
+        assert!(
+            pool.try_admit("codex", &alias_b, 1, false).is_none(),
+            "aliases of one upstream identity share the admission gate"
+        );
+        drop(guard);
+    }
+
+    #[test]
+    fn successful_responses_double_admission_allowance() {
+        let pool = AccountPool::new();
+        let acc = account("a");
+        let guard = pool.try_admit("codex", &acc, 1, false).unwrap();
+        assert!(pool.try_admit("codex", &acc, 1, false).is_none());
+        pool.mark_healthy("codex", &acc);
+        let second = pool
+            .try_admit("codex", &acc, 1, false)
+            .expect("a successful response doubles the allowance");
+        assert!(pool.try_admit("codex", &acc, 1, false).is_none());
+        drop((guard, second));
+    }
+
+    #[test]
+    fn cooldown_restarts_the_admission_ramp() {
+        let pool = AccountPool::new();
+        let acc = account("a");
+        let guard = pool.try_admit("codex", &acc, 1, false).unwrap();
+        pool.mark_healthy("codex", &acc);
+        pool.mark_healthy("codex", &acc);
+        pool.cooldown("codex", &acc, Duration::from_secs(1), "rate_limit");
+        assert!(
+            pool.try_admit("codex", &acc, 1, false).is_none(),
+            "after a cooldown the ramp restarts at the initial allowance"
+        );
+        drop(guard);
+    }
+
+    #[test]
+    fn idle_identity_reenters_slow_start() {
+        let pool = AccountPool::new();
+        let acc = account("a");
+        let guard = pool.try_admit("codex", &acc, 2, false).unwrap();
+        pool.mark_healthy("codex", &acc);
+        drop(guard);
+        {
+            let mut entries = pool.entries.lock().expect("account health lock poisoned");
+            let health = entries
+                .get_mut(&("codex".to_string(), "a".to_string()))
+                .expect("admitted identity has an entry");
+            // Backdate the last activity beyond the idle-reset horizon; `None`
+            // (an impossibly early instant) also counts as idle.
+            health.ramp_last_activity = Instant::now().checked_sub(RAMP_IDLE_RESET);
+        }
+        let first = pool.try_admit("codex", &acc, 2, false).unwrap();
+        let second = pool.try_admit("codex", &acc, 2, false).unwrap();
+        assert!(
+            pool.try_admit("codex", &acc, 2, false).is_none(),
+            "an idle identity re-enters slow start at the initial allowance"
+        );
+        drop((first, second));
     }
 
     #[test]

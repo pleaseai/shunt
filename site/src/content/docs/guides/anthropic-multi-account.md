@@ -123,6 +123,7 @@ default_threshold_fable = 0.85
 burn_rate_avoidance = true   # avoid accounts projected to hit a threshold before reset
 usage_refresh_seconds = 300  # reconcile out-of-band usage for refreshable accounts
 state_path = "shunt-state.json"  # persist quota across restarts (warm start)
+ramp_initial_concurrency = 2 # storm control: slow-start a freshly switched account
 
 [[providers.anthropic.accounts]]
 name = "primary"
@@ -141,7 +142,7 @@ disabled = true              # kept configured, never selected
 - **Burn-rate headroom.** From each window's utilization and reset instant (window lengths are fixed at 5 hours and 7 days), shunt projects the time until the soft threshold is hit at the observed average pace, minus the time until the window resets. Positive headroom means the account survives to its reset at the current pace. Available accounts of equal `priority` order by largest headroom; unobserved windows count as unlimited headroom.
 - **Predictive avoidance.** With `burn_rate_avoidance = true`, an account with negative projected headroom is treated as near quota and rotated off *before* it hits a threshold. Off by default — ordering by headroom happens regardless.
 - **All-near guard.** When every account is past a soft threshold (or predicted to exhaust), the pool does not empty: near accounts serve ordered by best headroom, while accounts at or above `hard_threshold` still sort last, followed only by cooling accounts.
-- **Scope.** The quota knobs act on Claude (Anthropic) pools only. [Codex pools](/guides/codex-multi-account/) record reported 5h/7d usage for display but deliberately exclude it from selection, while `priority` and `disabled` still apply.
+- **Scope.** The quota knobs act on both pool families: this pool from its `anthropic-ratelimit-unified-*` headers, and [Codex pools](/guides/codex-multi-account/) from their reported `x-codex-*` 5h/7d windows (issue #195). Codex has no Fable-scoped `7d_oi` window, so `default_threshold_fable` is inert there; `priority` and `disabled` apply everywhere.
 - The admin pool endpoint (`GET /admin/pool`) reports each account's `priority`, `disabled` flag, and — when `[server.pool]` is configured — its current headroom projection in seconds; the dashboard's state column marks disabled accounts.
 
 ## Usage-API reconciliation
@@ -205,8 +206,8 @@ Claude Code may encode account metadata as JSON inside the string-valued `metada
 
 These startup checks prevent an OAuth bearer from being sent off-origin or over plaintext. The HTTPS and host checks are **relaxed for loopback hosts** (`localhost`, `127.0.0.1`, `[::1]`, etc.): a loopback `base_url` may use plain HTTP and any host, so a local debugging proxy or mock can receive the traffic — the bearer cannot leave the operator's machine. Non-loopback hosts are always held to HTTPS + `anthropic.com`. On a shared deployment, also configure [`[server.auth]`](/guides/shared-gateway/#inbound-client-tokens) because `claude_oauth` spends gateway-owned credentials. Clients then authenticate with the `ANTHROPIC_AUTH_TOKEN` they already send (accepted as the client token via `Authorization: Bearer`, alongside `x-shunt-token` and `x-api-key`) — on a pool-only gateway no `ANTHROPIC_CUSTOM_HEADERS` line is needed.
 
-## Remaining follow-up
+## Storm control
 
-- **Storm-control:** ramping a freshly switched account's concurrency remains a later follow-up and is not implemented.
+Setting `[server.pool] ramp_initial_concurrency` (off by default) gates concurrent admissions per account identity with a slow-start ramp, so a failover switch cannot stampede the freshly selected account with every in-flight request at once. An identity that just started taking traffic admits at most the configured number of concurrent requests; each successful response doubles the allowance, a failover restarts the ramp, and a denied request spills to the next account in selection order (the last candidate is always attempted). See [`[server.pool]`](/reference/configuration/#serverpool-optional).
 
 The implementation behavior was informed by [KarpelesLab/teamclaude](https://github.com/KarpelesLab/teamclaude) and the shipped Claude Code binary. shunt has no runtime dependency on teamclaude.

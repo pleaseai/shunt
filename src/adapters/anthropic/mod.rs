@@ -153,10 +153,43 @@ async fn forward_claude_oauth(
     );
     let url = upstream_url(&state, &route, uri);
     let base_body = normalize_upstream_model(body, &route.upstream_model);
+    let ramp_initial = state
+        .config
+        .server
+        .pool
+        .as_ref()
+        .and_then(|pool| pool.storm_ramp_initial());
+    let candidates = order.len();
     let mut last_response = None;
 
-    for index in order {
+    for (position, index) in order.into_iter().enumerate() {
         let account = &accounts[index];
+
+        // Storm control (issue #195): a saturated identity defers to the next
+        // candidate instead of piling on, except for the final candidate,
+        // which is always attempted — spilling a burst across the pool beats
+        // failing requests outright. The guard holds the admission slot for
+        // the duration of this account's attempt.
+        let _admission = match ramp_initial {
+            Some(initial) => {
+                let force = position + 1 == candidates;
+                match state
+                    .accounts
+                    .try_admit(&route.provider, account, initial, force)
+                {
+                    Some(guard) => Some(guard),
+                    None => {
+                        tracing::debug!(
+                            provider = %route.provider,
+                            account = %account.name,
+                            "storm control deferred admission; trying the next account"
+                        );
+                        continue;
+                    }
+                }
+            }
+            None => None,
+        };
         // The per-account refresh_lock serializes only credential refreshes for
         // one account: resolve_claude_account can refresh-on-read and write the
         // token back, and the explicit force_refresh in the RefreshRetry branch

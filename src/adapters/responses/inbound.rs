@@ -120,17 +120,52 @@ async fn forward_codex_passthrough(
             accounts_config.len()
         )));
     }
-    // Codex quota is display-only: this endpoint preserves cooldown-based
-    // selection even when response headers populate the admin dashboard.
-    let order = state.accounts.select_order_cooldown(
+    // Recorded x-codex-* quota windows feed selection here exactly as on the
+    // translating outbound path: near-quota accounts rotate proactively and
+    // available accounts order by burn-rate headroom (issue #195). The
+    // passthrough body's model is a label only (no fable-scoped Codex window).
+    let order = state.accounts.select_order(
         &route.provider,
         &accounts_config,
         pool_key.as_deref(),
+        Some(route.upstream_model.as_str()),
+        state.config.server.pool.as_ref(),
     );
+    let ramp_initial = state
+        .config
+        .server
+        .pool
+        .as_ref()
+        .and_then(|pool| pool.storm_ramp_initial());
+    let candidates = order.len();
     let mut last_response: Option<reqwest::Response> = None;
 
-    for index in order {
+    for (position, index) in order.into_iter().enumerate() {
         let account = &accounts_config[index];
+
+        // Storm control (issue #195): defer a saturated identity to the next
+        // candidate, always attempting the final one — mirrors the translating
+        // outbound path (`forward_chatgpt_oauth`).
+        let _admission = match ramp_initial {
+            Some(initial) => {
+                let force = position + 1 == candidates;
+                match state
+                    .accounts
+                    .try_admit(&route.provider, account, initial, force)
+                {
+                    Some(guard) => Some(guard),
+                    None => {
+                        tracing::debug!(
+                            provider = %route.provider,
+                            account = %account.name,
+                            "storm control deferred admission; trying the next account"
+                        );
+                        continue;
+                    }
+                }
+            }
+            None => None,
+        };
 
         // Resolve the account's credential without the account-pool refresh lock;
         // the shared auth store returns valid tokens concurrently and
