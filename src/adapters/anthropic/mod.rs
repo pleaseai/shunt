@@ -243,7 +243,11 @@ async fn forward_claude_oauth(
         let status = upstream.status();
         match accounts::classify(status, upstream.headers()) {
             FailoverAction::Relay => {
-                state.accounts.mark_healthy(&route.provider, account);
+                // A relayed 4xx still clears the cooldown (the account answered)
+                // but only a success grows the storm-control allowance.
+                state
+                    .accounts
+                    .mark_healthy(&route.provider, account, status.is_success());
                 return relay_response(&state, &route, upstream, Some(&account.name))
                     .await
                     .map(|(status, response)| {
@@ -297,7 +301,7 @@ async fn forward_claude_oauth(
                 };
                 let retry_status = retry.status();
                 if retry_status.is_success() {
-                    state.accounts.mark_healthy(&route.provider, account);
+                    state.accounts.mark_healthy(&route.provider, account, true);
                 } else {
                     let cooldown = accounts::retry_after(retry.headers())
                         .unwrap_or(delay)
@@ -443,7 +447,7 @@ async fn forward_claude_oauth(
                 match accounts::classify(retry_status, retry.headers()) {
                     FailoverAction::Relay => {
                         if retry_status.is_success() {
-                            state.accounts.mark_healthy(&route.provider, account);
+                            state.accounts.mark_healthy(&route.provider, account, true);
                         }
                         return relay_response(&state, &route, retry, Some(&account.name))
                             .await

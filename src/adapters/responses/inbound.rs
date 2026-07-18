@@ -185,7 +185,11 @@ async fn forward_codex_passthrough(
             // the raw Responses body, error or not — and never rotate.
             FirstOutcome::Relay(upstream) => {
                 let status = upstream.status();
-                state.accounts.mark_healthy(&route.provider, account);
+                // Relayed 4xx bodies pass through verbatim, but only a real
+                // success grows the storm-control allowance.
+                state
+                    .accounts
+                    .mark_healthy(&route.provider, account, status.is_success());
                 return Ok((
                     status,
                     crate::adapters::with_admission(
@@ -242,7 +246,11 @@ async fn forward_codex_passthrough(
                 match classify_retry(&state, &route, account, retry) {
                     RetryOutcome::Relay(retry) => {
                         let retry_status = retry.status();
-                        state.accounts.mark_healthy(&route.provider, account);
+                        state.accounts.mark_healthy(
+                            &route.provider,
+                            account,
+                            retry_status.is_success(),
+                        );
                         return Ok((
                             retry_status,
                             crate::adapters::with_admission(

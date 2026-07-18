@@ -569,7 +569,12 @@ impl AccountPool {
         crate::metrics::record_pool_rotation(provider, reason);
     }
 
-    pub fn mark_healthy(&self, provider: &str, account: &AccountConfig) {
+    /// Clear any cooldown and record the account as observed-healthy.
+    /// `turn_succeeded` gates slow-start growth: a relayed client error (4xx)
+    /// proves the account reachable — hence healthy — but must not pre-warm
+    /// storm-control capacity, or a burst of malformed requests would bypass
+    /// slow start before valid traffic arrives.
+    pub fn mark_healthy(&self, provider: &str, account: &AccountConfig, turn_succeeded: bool) {
         let mut entries = self.entries.lock().expect("account health lock poisoned");
         let health = entries
             .entry((provider.to_string(), account_identity(account).to_string()))
@@ -582,7 +587,7 @@ impl AccountPool {
         // handful of turns. `0` means the ramp is inactive (storm control off,
         // or a cooldown just reset it) — growing it here would skip the
         // re-seed in `try_admit`.
-        if health.ramp_allowance > 0 {
+        if turn_succeeded && health.ramp_allowance > 0 {
             health.ramp_allowance = health.ramp_allowance.saturating_mul(2);
         }
     }
@@ -607,9 +612,11 @@ impl AccountPool {
         force: bool,
     ) -> Option<AdmissionGuard> {
         let key = (provider.to_string(), account_identity(account).to_string());
-        let now = Instant::now();
         {
             let mut entries = self.entries.lock().expect("account health lock poisoned");
+            // Captured under the lock so `ramp_last_activity` (only ever
+            // written under this same lock) can never be later than `now`.
+            let now = Instant::now();
             let health = entries.entry(key.clone()).or_default();
             let idle = health.in_flight == 0
                 && health
@@ -1971,7 +1978,7 @@ mod tests {
         let acc = account("a");
         let guard = pool.clone().try_admit("codex", &acc, 1, false).unwrap();
         assert!(pool.clone().try_admit("codex", &acc, 1, false).is_none());
-        pool.mark_healthy("codex", &acc);
+        pool.mark_healthy("codex", &acc, true);
         let second = pool
             .clone()
             .try_admit("codex", &acc, 1, false)
@@ -1981,12 +1988,25 @@ mod tests {
     }
 
     #[test]
+    fn relayed_client_errors_do_not_grow_admission_allowance() {
+        let pool = Arc::new(AccountPool::new());
+        let acc = account("a");
+        let guard = pool.clone().try_admit("codex", &acc, 1, false).unwrap();
+        pool.mark_healthy("codex", &acc, false);
+        assert!(
+            pool.clone().try_admit("codex", &acc, 1, false).is_none(),
+            "a relayed client error must not grow the slow-start allowance"
+        );
+        drop(guard);
+    }
+
+    #[test]
     fn cooldown_restarts_the_admission_ramp() {
         let pool = Arc::new(AccountPool::new());
         let acc = account("a");
         let guard = pool.clone().try_admit("codex", &acc, 1, false).unwrap();
-        pool.mark_healthy("codex", &acc);
-        pool.mark_healthy("codex", &acc);
+        pool.mark_healthy("codex", &acc, true);
+        pool.mark_healthy("codex", &acc, true);
         pool.cooldown("codex", &acc, Duration::from_secs(1), "rate_limit");
         assert!(
             pool.clone().try_admit("codex", &acc, 1, false).is_none(),
@@ -2000,7 +2020,7 @@ mod tests {
         let pool = Arc::new(AccountPool::new());
         let acc = account("a");
         let guard = pool.clone().try_admit("codex", &acc, 2, false).unwrap();
-        pool.mark_healthy("codex", &acc);
+        pool.mark_healthy("codex", &acc, true);
         drop(guard);
         {
             let mut entries = pool.entries.lock().expect("account health lock poisoned");

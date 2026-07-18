@@ -116,7 +116,9 @@ pub(super) async fn forward_chatgpt_oauth(
             .await
             {
                 Ok((status, response)) => {
-                    state.accounts.mark_healthy(&route.provider, account);
+                    state
+                        .accounts
+                        .mark_healthy(&route.provider, account, status.is_success());
                     let response = crate::adapters::with_admission(response, admission);
                     return Ok((status, with_account_header(response, &account.name)));
                 }
@@ -171,9 +173,12 @@ pub(super) async fn forward_chatgpt_oauth(
             FirstOutcome::Relay(upstream) => {
                 // A non-401/429/5xx response means the account itself is fine,
                 // whether or not this particular request succeeded (mirrors the
-                // Anthropic adapter's top-level Relay arm).
+                // Anthropic adapter's top-level Relay arm) — but only a real
+                // success grows the storm-control allowance.
                 let status = upstream.status();
-                state.accounts.mark_healthy(&route.provider, account);
+                state
+                    .accounts
+                    .mark_healthy(&route.provider, account, status.is_success());
                 if status.is_success() {
                     let response = relay_success(
                         &state,
@@ -246,7 +251,7 @@ pub(super) async fn forward_chatgpt_oauth(
                     RetryOutcome::Relay(retry) => {
                         let retry_status = retry.status();
                         if retry_status.is_success() {
-                            state.accounts.mark_healthy(&route.provider, account);
+                            state.accounts.mark_healthy(&route.provider, account, true);
                             let response = relay_success(
                                 &state,
                                 retry,
