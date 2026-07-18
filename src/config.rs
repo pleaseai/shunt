@@ -472,8 +472,7 @@ fn resolve_gateway_policy(
         .as_ref()
         .and_then(|matcher| matcher.emails.as_ref())
         .map(|emails| validate_gateway_policy_emails(emails, index))
-        .transpose()?
-        .map(<[String]>::to_vec);
+        .transpose()?;
     let settings = toml_to_json(&policy.cli)
         .map_err(|key| ConfigError::InvalidGatewayPolicyValue { index, key })?;
     let settings = settings
@@ -489,14 +488,17 @@ fn resolve_gateway_policy(
 fn validate_gateway_policy_emails(
     emails: &[String],
     index: usize,
-) -> Result<&[String], ConfigError> {
+) -> Result<Vec<String>, ConfigError> {
     if emails.is_empty() {
         return Err(ConfigError::EmptyGatewayPolicyEmails { index });
     }
     if let Some(email_index) = emails.iter().position(|email| email.trim().is_empty()) {
         return Err(ConfigError::EmptyGatewayPolicyEmail { index, email_index });
     }
-    Ok(emails)
+    Ok(emails
+        .iter()
+        .map(|email| email.trim().to_string())
+        .collect())
 }
 
 fn validate_gateway_telemetry(

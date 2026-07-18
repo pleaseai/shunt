@@ -38,11 +38,19 @@ pub(crate) fn resolve_all(
     let mut by_email = HashMap::new();
     for policy in policies.iter().filter(|policy| policy.emails.is_some()) {
         for email in policy.emails.as_ref().expect("filtered user policy") {
-            by_email.entry(email.clone()).or_insert_with(|| {
-                let mut settings = catch_all.clone();
-                merge(&mut settings, &policy.settings, None);
-                inject_telemetry(settings, telemetry_push, public_url)
-            });
+            if by_email.contains_key(email) {
+                tracing::debug!(
+                    email,
+                    "gateway email already matched by an earlier policy; skipping"
+                );
+                continue;
+            }
+            let mut settings = catch_all.clone();
+            merge(&mut settings, &policy.settings, None);
+            by_email.insert(
+                email.clone(),
+                inject_telemetry(settings, telemetry_push, public_url),
+            );
         }
     }
 
@@ -76,7 +84,7 @@ pub(crate) fn available_models(settings: &Value) -> Option<&[Value]> {
         .map(Vec::as_slice)
 }
 
-pub fn merge(base: &mut Value, overlay: &Value, key: Option<&str>) {
+pub(crate) fn merge(base: &mut Value, overlay: &Value, key: Option<&str>) {
     match (base, overlay) {
         (Value::Object(base), Value::Object(overlay)) => {
             for (child_key, overlay_value) in overlay {
