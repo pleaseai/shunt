@@ -1,0 +1,24 @@
+site/src/content/docs/ja/guides/providers.md
+  s_0275f50485c868::t_65c37d9e807efd 130
+shunt.toml.example
+  s_0275f50485c868::t_3d852cc2f81cb8 267-270
+site/src/content/docs/zh-cn/guides/providers.md
+  s_0275f50485c868::t_81e86722525ab8 95
+  s_0275f50485c868::t_42ad120e5684cd 133
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "8d186ca83e371ad82fa0a08ad3f3b66bc8b0a894",
+  "prompts": {},
+  "sessions": {
+    "s_0275f50485c868": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "efded9a9-660b-469e-b816-b1acca86a94d",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
