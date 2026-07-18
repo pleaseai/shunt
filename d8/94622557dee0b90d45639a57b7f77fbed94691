@@ -1,0 +1,27 @@
+src/codex_analytics.rs
+  s_c298516ab9e00d::t_ca2ae662a25e7f 67
+  s_c298516ab9e00d::t_d8cfea8385f8b7 72-87,89,93-102,104,106-107
+  s_c298516ab9e00d::t_0940951eb2e3d8 114-119,127-129,133-136,146,148-149
+  s_c298516ab9e00d::t_2a0ffdfe033d79 112-113,120-126,130-131,138-139,145
+  s_c298516ab9e00d::t_0575ad3f5ab682 282-299,302-303,306,311-315,317-318,322-330
+  s_c298516ab9e00d::t_949c2416b043bc 27,32-36
+  s_c298516ab9e00d::t_430aa6d15b9b58 218-219
+  s_c298516ab9e00d::t_d1997c39b91327 157-161,165
+  s_c298516ab9e00d::t_6f89d0b2cd2165 331
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "d894622557dee0b90d45639a57b7f77fbed94691",
+  "prompts": {},
+  "sessions": {
+    "s_c298516ab9e00d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "31f402bc-f5b9-4322-80fb-8a9379399e6c",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
