@@ -166,10 +166,7 @@ impl PoolConfig {
     /// The storm-control initial admission allowance, or `None` when admission
     /// gating is disabled (unset or `0`).
     pub fn storm_ramp_initial(&self) -> Option<u32> {
-        match self.ramp_initial_concurrency {
-            None | Some(0) => None,
-            Some(initial) => Some(initial),
-        }
+        self.ramp_initial_concurrency.filter(|&initial| initial > 0)
     }
 }
 

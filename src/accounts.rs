@@ -277,7 +277,7 @@ impl AccountPool {
             .unwrap_or_default()
             .as_secs();
         let is_fable = is_fable_model(model);
-        let health_snapshots = {
+        let snapshots = {
             let mut entries = self.entries.lock().expect("account health lock poisoned");
             // Treat this selection snapshot as the authoritative enabled set for
             // the provider. Entries left behind by a config reload must not keep
@@ -294,19 +294,14 @@ impl AccountPool {
                     .or_default();
                 health.enabled |= !account.disabled;
                 expire_stale_quota(&mut health.quota, unix_now);
-                snapshots.push((health.cooldown_until, health.quota.clone()));
+                // Assessing under the lock is pure CPU work and avoids cloning
+                // each account's QuotaState just to assess it after release.
+                let assessment = assess_quota(&health.quota, account, is_fable, pool, unix_now);
+                let weekly_reset = governing_weekly_reset(&health.quota, is_fable);
+                snapshots.push((health.cooldown_until, assessment, weekly_reset));
             }
             snapshots
         };
-        let snapshots = accounts
-            .iter()
-            .zip(health_snapshots)
-            .map(|(account, (cooldown_until, quota))| {
-                let assessment = assess_quota(&quota, account, is_fable, pool, unix_now);
-                let weekly_reset = governing_weekly_reset(&quota, is_fable);
-                (cooldown_until, assessment, weekly_reset)
-            })
-            .collect::<Vec<_>>();
 
         // The sticky/round-robin slot is computed over distinct identities so
         // adding or removing an alias cannot move an existing session. Disabled
