@@ -1,0 +1,25 @@
+src/codex_analytics.rs
+  s_c298516ab9e00d::t_9e6993b620fbf9 293-307
+  s_c298516ab9e00d::t_72d3112ed6c0a3 153-159,162,164
+  s_c298516ab9e00d::t_f13ebf7c90591d 118-123,126,130-133,142,144-145
+  s_c298516ab9e00d::t_f2300ca1861deb 82-87,89
+  s_c298516ab9e00d::t_3102f7a00a4932 336-345
+  s_c298516ab9e00d::t_f2f924d9091890 212
+  s_c298516ab9e00d::t_b933a6e14192a2 292
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "9c57cb33100c94c1e95e8e33f159d4d910f3df72",
+  "prompts": {},
+  "sessions": {
+    "s_c298516ab9e00d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "31f402bc-f5b9-4322-80fb-8a9379399e6c",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
