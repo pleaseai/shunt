@@ -1,7 +1,7 @@
 pub mod approval;
 mod device;
 mod idp;
-mod idp_client;
+pub(crate) mod idp_client;
 pub mod jwt;
 pub mod managed;
 mod oauth;

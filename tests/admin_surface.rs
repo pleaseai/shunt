@@ -10,7 +10,7 @@ use std::{net::SocketAddr, path::PathBuf, time::SystemTime};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use reqwest::StatusCode;
 use shunt::{
-    config::{AccountConfig, AdminConfig, AuthMode, Config},
+    config::{AccountConfig, AdminConfig, AdminOidcConfig, AuthMode, Config, OidcProviderConfig},
     server,
 };
 use tokio::task::JoinHandle;
@@ -24,6 +24,8 @@ use wiremock::{
 static CLAUDE_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// Serializes tests that mutate the shared `SHUNT_CODEX_*` process env.
 static CODEX_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// Serializes admin OIDC tests because their config resolves process environment.
+static ADMIN_OIDC_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 struct Gateway {
     base_url: String,
@@ -63,16 +65,25 @@ fn admin_config(tokens_env: &str) -> Config {
         tokens_env: tokens_env.to_string(),
         session_ttl_secs: 3600,
         pending_ttl_secs: 600,
+        oidc: None,
     });
     config
 }
 
-async fn start(mut config: Config) -> Gateway {
+async fn start_with_addr(mut config: Config) -> Gateway {
     config.server.bind = "127.0.0.1:0".to_string();
     let listener = tokio::net::TcpListener::bind(config.server.bind_addr().unwrap())
         .await
         .unwrap();
     let addr: SocketAddr = listener.local_addr().unwrap();
+    if let Some(oidc) = config
+        .server
+        .admin
+        .as_mut()
+        .and_then(|admin| admin.oidc.as_mut())
+    {
+        oidc.public_url = format!("http://{addr}");
+    }
     let (app, _shared, _state) = server::build_router(config).unwrap();
     let task = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -81,6 +92,10 @@ async fn start(mut config: Config) -> Gateway {
         base_url: format!("http://{addr}"),
         task,
     }
+}
+
+async fn start(config: Config) -> Gateway {
+    start_with_addr(config).await
 }
 
 /// Monotonic counter appended to `unique_dir()` names: parallel test threads can
@@ -133,6 +148,301 @@ fn authorize_state(body: &serde_json::Value) -> (reqwest::Url, String) {
     (url, state)
 }
 
+fn admin_oidc_config(tokens_env: &str, secret_env: &str, idp: &MockServer) -> Config {
+    let mut config = admin_config(tokens_env);
+    config.server.admin.as_mut().unwrap().oidc = Some(AdminOidcConfig {
+        public_url: "http://127.0.0.1:1".into(),
+        client_secret_env: secret_env.into(),
+        provider: OidcProviderConfig {
+            issuer: idp.uri(),
+            client_id: "admin-client".into(),
+            allowed_domains: vec!["example.com".into()],
+            allowed_emails: vec![],
+            scopes: vec![],
+            authorization_endpoint: Some(format!("{}/authorize", idp.uri())),
+            token_endpoint: Some(format!("{}/token", idp.uri())),
+            userinfo_endpoint: Some(format!("{}/userinfo", idp.uri())),
+        },
+    });
+    config
+}
+
+fn response_cookie(response: &reqwest::Response) -> Option<String> {
+    response
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .find(|value| value.starts_with("shunt_admin_session="))
+        .map(|value| value.split(';').next().unwrap().to_string())
+}
+
+async fn oidc_state(client: &reqwest::Client, gateway: &Gateway) -> (reqwest::Url, String) {
+    let response = client
+        .post(format!("{}/admin/oidc/start", gateway.base_url))
+        .header("sec-fetch-site", "same-origin")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FOUND);
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    let location = reqwest::Url::parse(response.headers()["location"].to_str().unwrap()).unwrap();
+    let state = location
+        .query_pairs()
+        .find(|(key, _)| key == "state")
+        .map(|(_, value)| value.into_owned())
+        .expect("OIDC redirect carries state");
+    (location, state)
+}
+
+#[tokio::test]
+async fn admin_oidc_full_flow_mints_session_and_preserves_header_auth() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _lock = ADMIN_OIDC_ENV_LOCK.lock().await;
+    let idp = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token":"oidc-access"
+        })))
+        .expect(1)
+        .mount(&idp)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/userinfo"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "sub":"admin-subject", "email":"Admin@Example.com", "email_verified":true,
+            "name":"Admin Operator"
+        })))
+        .expect(1)
+        .mount(&idp)
+        .await;
+    std::env::set_var("SHUNT_TEST_ADMIN_OIDC_TOKENS", "ops:admin-secret");
+    std::env::set_var("SHUNT_TEST_ADMIN_OIDC_SECRET", "client-secret");
+    let gateway = start_with_addr(admin_oidc_config(
+        "SHUNT_TEST_ADMIN_OIDC_TOKENS",
+        "SHUNT_TEST_ADMIN_OIDC_SECRET",
+        &idp,
+    ))
+    .await;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+
+    let response = client
+        .get(format!("{}/admin/login", gateway.base_url))
+        .send()
+        .await
+        .unwrap();
+    // The SSO form's POST redirects to the external IdP; Chrome/WebKit apply
+    // `form-action` to that redirect, so the login-page CSP must allow it.
+    let csp = response.headers()["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        csp.contains("form-action 'self' https: http://127.0.0.1:* http://localhost:*"),
+        "login page with SSO must widen form-action for the IdP redirect: {csp}"
+    );
+    let login = response.text().await.unwrap();
+    assert!(login.contains("Sign in with SSO"));
+    assert!(login.contains("action=\"/admin/oidc/start\""));
+
+    let (location, state) = oidc_state(&client, &gateway).await;
+    let params: std::collections::HashMap<_, _> = location.query_pairs().into_owned().collect();
+    assert_eq!(params["client_id"], "admin-client");
+    assert_eq!(
+        params["redirect_uri"],
+        format!("{}/admin/oidc/callback", gateway.base_url)
+    );
+    assert_eq!(params["scope"], "openid email profile");
+    assert_eq!(params["code_challenge_method"], "S256");
+    assert!(!params["code_challenge"].is_empty());
+
+    let response = client
+        .get(format!(
+            "{}/admin/oidc/callback?code=authorization-code&state={state}",
+            gateway.base_url
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(response.headers()["location"], "/admin");
+    let cookie = response_cookie(&response).expect("OIDC callback sets admin session cookie");
+    let dashboard = client
+        .get(format!("{}/admin", gateway.base_url))
+        .header("cookie", cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(dashboard.status(), StatusCode::OK);
+
+    let requests = idp.received_requests().await.unwrap();
+    let token = requests
+        .iter()
+        .find(|request| request.url.path() == "/token")
+        .unwrap();
+    let body = String::from_utf8(token.body.clone()).unwrap();
+    let form_url = reqwest::Url::parse(&format!("https://form.invalid/?{body}")).unwrap();
+    let form: std::collections::HashMap<_, _> = form_url.query_pairs().into_owned().collect();
+    assert_eq!(form["code"], "authorization-code");
+    assert_eq!(form["client_secret"], "client-secret");
+    assert_eq!(form["redirect_uri"], params["redirect_uri"]);
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        URL_SAFE_NO_PAD.encode(Sha256::digest(form["code_verifier"].as_bytes())),
+        params["code_challenge"]
+    );
+
+    let header_response = client
+        .get(format!("{}/admin/pool", gateway.base_url))
+        .header("x-shunt-admin-token", "admin-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(header_response.status(), StatusCode::OK);
+
+    std::env::remove_var("SHUNT_TEST_ADMIN_OIDC_TOKENS");
+    std::env::remove_var("SHUNT_TEST_ADMIN_OIDC_SECRET");
+}
+
+#[tokio::test]
+async fn admin_oidc_rejects_replay_disallowed_email_provider_error_and_cross_origin() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _lock = ADMIN_OIDC_ENV_LOCK.lock().await;
+    let idp = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token":"oidc-access"
+        })))
+        .mount(&idp)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/userinfo"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "sub":"outside-subject", "email":"user@outside.test", "email_verified":true
+        })))
+        .mount(&idp)
+        .await;
+    std::env::set_var("SHUNT_TEST_ADMIN_OIDC_REJECT_TOKENS", "ops:admin-secret");
+    std::env::set_var("SHUNT_TEST_ADMIN_OIDC_REJECT_SECRET", "client-secret");
+    let gateway = start_with_addr(admin_oidc_config(
+        "SHUNT_TEST_ADMIN_OIDC_REJECT_TOKENS",
+        "SHUNT_TEST_ADMIN_OIDC_REJECT_SECRET",
+        &idp,
+    ))
+    .await;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+
+    let response = client
+        .post(format!("{}/admin/oidc/start", gateway.base_url))
+        .header("sec-fetch-site", "cross-site")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(response_cookie(&response).is_none());
+
+    let (_, denied_state) = oidc_state(&client, &gateway).await;
+    let denied = client
+        .get(format!(
+            "{}/admin/oidc/callback?code=x&state={denied_state}",
+            gateway.base_url
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    assert!(response_cookie(&denied).is_none());
+    let denied_html = denied.text().await.unwrap();
+    assert!(denied_html.contains("not authorized"));
+    assert!(!denied_html.contains("outside.test"));
+
+    let replay = client
+        .get(format!(
+            "{}/admin/oidc/callback?code=x&state={denied_state}",
+            gateway.base_url
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(replay.status(), StatusCode::BAD_REQUEST);
+    assert!(response_cookie(&replay).is_none());
+    assert!(replay
+        .text()
+        .await
+        .unwrap()
+        .contains("invalid or has expired"));
+
+    let (_, error_state) = oidc_state(&client, &gateway).await;
+    let provider_error = client
+        .get(format!(
+            "{}/admin/oidc/callback?error=access_denied&state={error_state}",
+            gateway.base_url
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(provider_error.status(), StatusCode::BAD_REQUEST);
+    assert!(response_cookie(&provider_error).is_none());
+    let error_html = provider_error.text().await.unwrap();
+    assert!(error_html.contains("identity provider reported an error"));
+    assert!(!error_html.contains("access_denied"));
+
+    std::env::remove_var("SHUNT_TEST_ADMIN_OIDC_REJECT_TOKENS");
+    std::env::remove_var("SHUNT_TEST_ADMIN_OIDC_REJECT_SECRET");
+}
+
+#[tokio::test]
+async fn admin_oidc_discovery_builds_authorization_redirect() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _lock = ADMIN_OIDC_ENV_LOCK.lock().await;
+    let idp = MockServer::start().await;
+    Mock::given(path("/.well-known/openid-configuration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "issuer": idp.uri(),
+            "authorization_endpoint": format!("{}/discovered-authorize", idp.uri()),
+            "token_endpoint": format!("{}/token", idp.uri()),
+            "userinfo_endpoint": format!("{}/userinfo", idp.uri())
+        })))
+        .expect(1)
+        .mount(&idp)
+        .await;
+    std::env::set_var("SHUNT_TEST_ADMIN_OIDC_DISCOVERY_TOKENS", "ops:admin-secret");
+    std::env::set_var("SHUNT_TEST_ADMIN_OIDC_DISCOVERY_SECRET", "client-secret");
+    let mut config = admin_oidc_config(
+        "SHUNT_TEST_ADMIN_OIDC_DISCOVERY_TOKENS",
+        "SHUNT_TEST_ADMIN_OIDC_DISCOVERY_SECRET",
+        &idp,
+    );
+    let oidc = config.server.admin.as_mut().unwrap().oidc.as_mut().unwrap();
+    oidc.provider.authorization_endpoint = None;
+    oidc.provider.token_endpoint = None;
+    oidc.provider.userinfo_endpoint = None;
+    let gateway = start_with_addr(config).await;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let (location, _) = oidc_state(&client, &gateway).await;
+    assert_eq!(location.path(), "/discovered-authorize");
+
+    std::env::remove_var("SHUNT_TEST_ADMIN_OIDC_DISCOVERY_TOKENS");
+    std::env::remove_var("SHUNT_TEST_ADMIN_OIDC_DISCOVERY_SECRET");
+}
+
 #[tokio::test]
 async fn admin_routes_are_absent_without_the_block() {
     if !can_bind_loopback() {
@@ -141,7 +451,13 @@ async fn admin_routes_are_absent_without_the_block() {
     // Default config has no [server.admin], so the routes must not be registered.
     let gateway = start(Config::default()).await;
     let client = reqwest::Client::new();
-    for route in ["/admin", "/admin/login", "/admin/pool"] {
+    for route in [
+        "/admin",
+        "/admin/login",
+        "/admin/oidc/start",
+        "/admin/oidc/callback",
+        "/admin/pool",
+    ] {
         let response = client
             .get(format!("{}{route}", gateway.base_url))
             .send()
@@ -1135,6 +1451,17 @@ async fn browser_session_dashboard_csrf_accept_and_logout() {
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .unwrap();
+
+    // Without OIDC the login page keeps the strict same-origin form-action.
+    let response = client
+        .get(format!("{}/admin/login", gateway.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert!(response.headers()["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .contains("form-action 'self';"));
 
     // Sign in with the admin token → session cookie.
     let response = client

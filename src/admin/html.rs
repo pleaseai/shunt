@@ -62,11 +62,20 @@ a { color: #4661ff; }
 "#;
 
 /// The login form. `error` is shown above the form when a prior attempt failed.
-pub fn login_page(error: Option<&str>) -> String {
+/// When configured, `sso_label` adds an external identity-provider sign-in form.
+pub fn login_page(error: Option<&str>, sso_label: Option<&str>) -> String {
     let error_block = match error {
         Some(message) => format!(r#"<div class="msg err">{}</div>"#, escape_html(message)),
         None => String::new(),
     };
+    let sso_form = sso_label.map_or_else(String::new, |label| {
+        format!(
+            r#"<form method="post" action="/admin/oidc/start" style="margin-top:.8rem">
+<button class="secondary" type="submit">{}</button>
+</form>"#,
+            escape_html(label)
+        )
+    });
     format!(
         r#"<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -79,6 +88,7 @@ pub fn login_page(error: Option<&str>) -> String {
 <input id="token" name="token" type="password" autocomplete="current-password" autofocus>
 <div style="margin-top:.8rem"><button type="submit">Sign in</button></div>
 </form>
+{sso_form}
 </div>
 <p class="muted" style="margin-top:1rem;font-size:.85rem">Provisions upstream Claude and Codex accounts and shows pool health. Bind behind HTTPS/a tunnel.</p>
 </main></body></html>"#

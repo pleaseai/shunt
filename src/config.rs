@@ -239,6 +239,41 @@ pub struct AdminConfig {
     /// Pending-login lifetime (time to open the authorize URL and paste back).
     #[serde(default = "default_admin_pending_ttl_secs")]
     pub pending_ttl_secs: u64,
+    /// Optional external identity provider for browser sign-in.
+    #[serde(default)]
+    pub oidc: Option<AdminOidcConfig>,
+}
+
+/// Fields shared by every `[*.oidc]` provider table. Kept in one struct so the
+/// admin and gateway OIDC configs cannot drift and are not counted as duplicated.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct OidcProviderConfig {
+    pub issuer: String,
+    pub client_id: String,
+    #[serde(default)]
+    pub allowed_domains: Vec<String>,
+    #[serde(default)]
+    pub allowed_emails: Vec<String>,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    #[serde(default)]
+    pub authorization_endpoint: Option<String>,
+    #[serde(default)]
+    pub token_endpoint: Option<String>,
+    #[serde(default)]
+    pub userinfo_endpoint: Option<String>,
+}
+
+/// `[server.admin.oidc]` — optional OIDC provider for admin browser sign-in.
+/// Admin tokens remain mandatory; OIDC is an additional browser login path.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AdminOidcConfig {
+    /// Externally reachable admin origin used to build the callback URL.
+    pub public_url: String,
+    #[serde(default = "default_admin_oidc_secret_env")]
+    pub client_secret_env: String,
+    #[serde(flatten)]
+    pub provider: OidcProviderConfig,
 }
 
 fn default_admin_header() -> String {
@@ -247,6 +282,10 @@ fn default_admin_header() -> String {
 
 fn default_admin_tokens_env() -> String {
     "SHUNT_ADMIN_TOKENS".to_string()
+}
+
+fn default_admin_oidc_secret_env() -> String {
+    "SHUNT_ADMIN_OIDC_SECRET".to_string()
 }
 
 fn default_admin_session_ttl_secs() -> u64 {
@@ -280,11 +319,21 @@ impl AdminConfig {
                 message,
             }
         })?;
-        Ok(crate::admin::AdminAuth::new(
+        let mut auth = crate::admin::AdminAuth::new(
             crate::auth::inbound::InboundAuth::new(header, tokens),
             std::time::Duration::from_secs(self.session_ttl_secs),
             std::time::Duration::from_secs(self.pending_ttl_secs),
-        ))
+        );
+        if let Some(oidc) = &self.oidc {
+            let public_url = resolve_public_origin(&oidc.public_url, |message| {
+                ConfigError::InvalidAdminOidc { message }
+            })?;
+            auth = auth.with_oidc(
+                public_url.as_str().trim_end_matches('/').to_string(),
+                oidc.resolve()?,
+            );
+        }
+        Ok(auth)
     }
 }
 
@@ -292,22 +341,10 @@ impl AdminConfig {
 /// Secrets remain environment-backed and an allowlist is mandatory.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GatewayOidcConfig {
-    pub issuer: String,
-    pub client_id: String,
     #[serde(default = "default_gateway_oidc_secret_env")]
     pub client_secret_env: String,
-    #[serde(default)]
-    pub allowed_domains: Vec<String>,
-    #[serde(default)]
-    pub allowed_emails: Vec<String>,
-    #[serde(default)]
-    pub scopes: Vec<String>,
-    #[serde(default)]
-    pub authorization_endpoint: Option<String>,
-    #[serde(default)]
-    pub token_endpoint: Option<String>,
-    #[serde(default)]
-    pub userinfo_endpoint: Option<String>,
+    #[serde(flatten)]
+    pub provider: OidcProviderConfig,
 }
 
 /// `[server.gateway]` — opt-in OAuth device-flow login and managed policy for
@@ -421,24 +458,9 @@ impl GatewayConfig {
     }
 
     pub fn resolve(&self) -> Result<crate::gateway::GatewayAuth, ConfigError> {
-        let public_url = reqwest::Url::parse(self.public_url.trim()).map_err(|error| {
-            ConfigError::InvalidGatewayPublicUrl {
-                message: error.to_string(),
-            }
+        let public_url = resolve_public_origin(&self.public_url, |message| {
+            ConfigError::InvalidGatewayPublicUrl { message }
         })?;
-        let secure_origin = url_uses_safe_transport(&public_url);
-        let bare_origin = public_url.host_str().is_some()
-            && public_url.username().is_empty()
-            && public_url.password().is_none()
-            && public_url.path() == "/"
-            && public_url.query().is_none()
-            && public_url.fragment().is_none();
-        if !secure_origin || !bare_origin {
-            return Err(ConfigError::InvalidGatewayPublicUrl {
-                message: "must be an https origin (http is allowed only on loopback) with no userinfo, path, query, or fragment"
-                    .to_string(),
-            });
-        }
         if self.token_ttl_seconds == 0 {
             return Err(ConfigError::InvalidGatewayTokenTtl);
         }
@@ -628,88 +650,169 @@ fn toml_to_json(value: &toml::Value) -> Result<serde_json::Value, String> {
 
 impl GatewayOidcConfig {
     fn resolve(&self) -> Result<crate::gateway::ResolvedIdp, ConfigError> {
-        let issuer = self.issuer.trim();
-        if issuer.is_empty() {
-            return Err(ConfigError::InvalidGatewayOidc {
-                message: "issuer must not be empty".to_string(),
-            });
-        }
-        let issuer_url = validate_gateway_idp_url(issuer, true, "issuer")?;
-        let issuer = if issuer_url.path() == "/" {
-            issuer_url.as_str().trim_end_matches('/').to_string()
-        } else {
-            issuer_url.as_str().to_string()
-        };
-        if self.client_id.trim().is_empty() {
-            return Err(ConfigError::InvalidGatewayOidc {
-                message: "client_id must not be empty".to_string(),
-            });
-        }
-        let client_secret = std::env::var(&self.client_secret_env).unwrap_or_default();
-        if client_secret.trim().is_empty() {
-            return Err(ConfigError::MissingGatewayOidcSecret {
-                env: self.client_secret_env.clone(),
-            });
-        }
-        let allowed_domains: Vec<_> = self
-            .allowed_domains
-            .iter()
-            .map(|domain| domain.trim().to_ascii_lowercase())
-            .filter(|domain| !domain.is_empty())
-            .collect();
-        let allowed_emails: Vec<_> = self
-            .allowed_emails
-            .iter()
-            .map(|email| email.trim().to_ascii_lowercase())
-            .filter(|email| !email.is_empty())
-            .collect();
-        if allowed_domains.is_empty() && allowed_emails.is_empty() {
-            return Err(ConfigError::MissingGatewayOidcAllowlist);
-        }
-        let endpoint = |value: &Option<String>, key| {
-            value
-                .as_deref()
-                .map(|raw| validate_gateway_idp_url(raw, false, key))
-                .transpose()
-                .map(|url| url.map(Into::into))
-        };
-        let scopes = if self.scopes.is_empty() {
-            ["openid", "email", "profile"]
-                .into_iter()
-                .map(str::to_string)
-                .collect()
-        } else {
-            let scopes: Vec<_> = self
-                .scopes
-                .iter()
-                .map(|scope| scope.trim())
-                .filter(|scope| !scope.is_empty())
-                .map(str::to_string)
-                .collect();
-            for required in ["openid", "email"] {
-                if !scopes.iter().any(|scope| scope == required) {
-                    return Err(ConfigError::InvalidGatewayOidc {
-                        message: format!("scopes must include {required}"),
-                    });
-                }
-            }
-            scopes
-        };
-        Ok(crate::gateway::ResolvedIdp {
-            issuer,
-            client_id: self.client_id.trim().to_string(),
-            client_secret,
-            allowed_domains,
-            allowed_emails,
-            scopes,
-            authorization_endpoint: endpoint(
-                &self.authorization_endpoint,
-                "authorization_endpoint",
-            )?,
-            token_endpoint: endpoint(&self.token_endpoint, "token_endpoint")?,
-            userinfo_endpoint: endpoint(&self.userinfo_endpoint, "userinfo_endpoint")?,
-        })
+        resolve_oidc(
+            OidcSection::Gateway,
+            &self.provider.issuer,
+            &self.provider.client_id,
+            &self.client_secret_env,
+            &self.provider.allowed_domains,
+            &self.provider.allowed_emails,
+            &self.provider.scopes,
+            &self.provider.authorization_endpoint,
+            &self.provider.token_endpoint,
+            &self.provider.userinfo_endpoint,
+        )
     }
+}
+
+impl AdminOidcConfig {
+    fn resolve(&self) -> Result<crate::gateway::ResolvedIdp, ConfigError> {
+        resolve_oidc(
+            OidcSection::Admin,
+            &self.provider.issuer,
+            &self.provider.client_id,
+            &self.client_secret_env,
+            &self.provider.allowed_domains,
+            &self.provider.allowed_emails,
+            &self.provider.scopes,
+            &self.provider.authorization_endpoint,
+            &self.provider.token_endpoint,
+            &self.provider.userinfo_endpoint,
+        )
+    }
+}
+
+#[derive(Clone, Copy)]
+enum OidcSection {
+    Gateway,
+    Admin,
+}
+
+impl OidcSection {
+    fn invalid(self, message: impl Into<String>) -> ConfigError {
+        let message = message.into();
+        match self {
+            Self::Gateway => ConfigError::InvalidGatewayOidc { message },
+            Self::Admin => ConfigError::InvalidAdminOidc { message },
+        }
+    }
+
+    fn missing_secret(self, env: String) -> ConfigError {
+        match self {
+            Self::Gateway => ConfigError::MissingGatewayOidcSecret { env },
+            Self::Admin => ConfigError::MissingAdminOidcSecret { env },
+        }
+    }
+
+    fn missing_allowlist(self) -> ConfigError {
+        match self {
+            Self::Gateway => ConfigError::MissingGatewayOidcAllowlist,
+            Self::Admin => ConfigError::MissingAdminOidcAllowlist,
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_oidc(
+    section: OidcSection,
+    issuer: &str,
+    client_id: &str,
+    client_secret_env: &str,
+    allowed_domains: &[String],
+    allowed_emails: &[String],
+    scopes: &[String],
+    authorization_endpoint: &Option<String>,
+    token_endpoint: &Option<String>,
+    userinfo_endpoint: &Option<String>,
+) -> Result<crate::gateway::ResolvedIdp, ConfigError> {
+    let issuer = issuer.trim();
+    if issuer.is_empty() {
+        return Err(section.invalid("issuer must not be empty"));
+    }
+    let issuer_url = validate_idp_url(section, issuer, true, "issuer")?;
+    let issuer = if issuer_url.path() == "/" {
+        issuer_url.as_str().trim_end_matches('/').to_string()
+    } else {
+        issuer_url.as_str().to_string()
+    };
+    if client_id.trim().is_empty() {
+        return Err(section.invalid("client_id must not be empty"));
+    }
+    let client_secret = std::env::var(client_secret_env).unwrap_or_default();
+    if client_secret.trim().is_empty() {
+        return Err(section.missing_secret(client_secret_env.to_string()));
+    }
+    let allowed_domains: Vec<_> = allowed_domains
+        .iter()
+        .map(|domain| domain.trim().to_ascii_lowercase())
+        .filter(|domain| !domain.is_empty())
+        .collect();
+    let allowed_emails: Vec<_> = allowed_emails
+        .iter()
+        .map(|email| email.trim().to_ascii_lowercase())
+        .filter(|email| !email.is_empty())
+        .collect();
+    if allowed_domains.is_empty() && allowed_emails.is_empty() {
+        return Err(section.missing_allowlist());
+    }
+    let endpoint = |value: &Option<String>, key| {
+        value
+            .as_deref()
+            .map(|raw| validate_idp_url(section, raw, false, key))
+            .transpose()
+            .map(|url| url.map(Into::into))
+    };
+    let scopes = if scopes.is_empty() {
+        ["openid", "email", "profile"]
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    } else {
+        let scopes: Vec<_> = scopes
+            .iter()
+            .map(|scope| scope.trim())
+            .filter(|scope| !scope.is_empty())
+            .map(str::to_string)
+            .collect();
+        for required in ["openid", "email"] {
+            if !scopes.iter().any(|scope| scope == required) {
+                return Err(section.invalid(format!("scopes must include {required}")));
+            }
+        }
+        scopes
+    };
+    Ok(crate::gateway::ResolvedIdp {
+        issuer,
+        client_id: client_id.trim().to_string(),
+        client_secret,
+        allowed_domains,
+        allowed_emails,
+        scopes,
+        authorization_endpoint: endpoint(authorization_endpoint, "authorization_endpoint")?,
+        token_endpoint: endpoint(token_endpoint, "token_endpoint")?,
+        userinfo_endpoint: endpoint(userinfo_endpoint, "userinfo_endpoint")?,
+    })
+}
+
+fn resolve_public_origin(
+    raw: &str,
+    invalid: impl Fn(String) -> ConfigError,
+) -> Result<reqwest::Url, ConfigError> {
+    let public_url = reqwest::Url::parse(raw.trim()).map_err(|error| invalid(error.to_string()))?;
+    let secure_origin = url_uses_safe_transport(&public_url);
+    let bare_origin = public_url.host_str().is_some()
+        && public_url.username().is_empty()
+        && public_url.password().is_none()
+        && public_url.path() == "/"
+        && public_url.query().is_none()
+        && public_url.fragment().is_none();
+    if !secure_origin || !bare_origin {
+        return Err(invalid(
+            "must be an https origin (http is allowed only on loopback) with no userinfo, path, query, or fragment"
+                .to_string(),
+        ));
+    }
+    Ok(public_url)
 }
 
 fn url_uses_safe_transport(url: &reqwest::Url) -> bool {
@@ -717,14 +820,14 @@ fn url_uses_safe_transport(url: &reqwest::Url) -> bool {
         || url.scheme() == "http" && host_is_loopback(url.host_str().unwrap_or_default())
 }
 
-fn validate_gateway_idp_url(
+fn validate_idp_url(
+    section: OidcSection,
     raw: &str,
     issuer: bool,
     key: &str,
 ) -> Result<reqwest::Url, ConfigError> {
-    let url = reqwest::Url::parse(raw).map_err(|error| ConfigError::InvalidGatewayOidc {
-        message: format!("{key} is not a valid URL: {error}"),
-    })?;
+    let url = reqwest::Url::parse(raw)
+        .map_err(|error| section.invalid(format!("{key} is not a valid URL: {error}")))?;
     let invalid_issuer_parts = issuer && url.query().is_some();
     if !url_uses_safe_transport(&url)
         || url.host_str().is_none()
@@ -738,11 +841,9 @@ fn validate_gateway_idp_url(
         } else {
             "userinfo or fragment"
         };
-        return Err(ConfigError::InvalidGatewayOidc {
-            message: format!(
-                "{key} must use https (or http on loopback), include a host, and contain no {parts}"
-            ),
-        });
+        return Err(section.invalid(format!(
+            "{key} must use https (or http on loopback), include a host, and contain no {parts}"
+        )));
     }
     Ok(url)
 }
@@ -1388,6 +1489,12 @@ pub enum ConfigError {
     MissingAdminTokens { env: String },
     #[error("[server.admin] tokens in {env} are invalid: {message}")]
     InvalidAdminTokens { env: String, message: String },
+    #[error("[server.admin.oidc] is invalid: {message}")]
+    InvalidAdminOidc { message: String },
+    #[error("[server.admin.oidc] requires {env} to contain a non-empty client secret")]
+    MissingAdminOidcSecret { env: String },
+    #[error("[server.admin.oidc] requires at least one allowed_domains or allowed_emails entry")]
+    MissingAdminOidcAllowlist,
     #[error("[server.gateway] public_url is invalid: {message}")]
     InvalidGatewayPublicUrl { message: String },
     #[error("[server.gateway] token_ttl_seconds must be greater than zero")]
@@ -2198,10 +2305,11 @@ mod tests {
 
     use super::{
         config_file_candidates, default_auth_header, host_is_chatgpt, identity_collisions,
-        AccountConfig, AdminConfig, AuthMode, CodexEndpointConfig, Config, ConfigError,
-        ConfigFormat, GatewayConfig, GatewayOidcConfig, GatewayPolicyConfig, GatewayPolicyMatch,
-        GatewayTelemetryConfig, GatewayTelemetryDestination, InboundAuthConfig, ModelConfig,
-        PoolConfig, ProviderKind, ResponsesFlavor, RetryConfig, UsageEndpointConfig,
+        AccountConfig, AdminConfig, AdminOidcConfig, AuthMode, CodexEndpointConfig, Config,
+        ConfigError, ConfigFormat, GatewayConfig, GatewayOidcConfig, GatewayPolicyConfig,
+        GatewayPolicyMatch, GatewayTelemetryConfig, GatewayTelemetryDestination, InboundAuthConfig,
+        ModelConfig, OidcProviderConfig, PoolConfig, ProviderKind, ResponsesFlavor, RetryConfig,
+        UsageEndpointConfig,
     };
 
     #[test]
@@ -2255,6 +2363,116 @@ mod tests {
         assert_eq!(admin.tokens_env, "SHUNT_ADMIN_TOKENS");
         assert_eq!(admin.session_ttl_secs, 3600);
         assert_eq!(admin.pending_ttl_secs, 600);
+        assert!(admin.oidc.is_none());
+    }
+
+    #[test]
+    fn admin_oidc_config_resolves_defaults_and_fails_closed() {
+        let suffix = std::process::id();
+        let tokens_env = format!("SHUNT_ADMIN_OIDC_CONFIG_TOKENS_{suffix}");
+        let secret_env = format!("SHUNT_ADMIN_OIDC_CONFIG_SECRET_{suffix}");
+        std::env::set_var(&tokens_env, "ops:admin-token");
+        let mut admin = AdminConfig {
+            header: "x-shunt-admin-token".into(),
+            tokens_env: tokens_env.clone(),
+            session_ttl_secs: 3600,
+            pending_ttl_secs: 600,
+            oidc: Some(AdminOidcConfig {
+                public_url: "http://127.0.0.1:8787".into(),
+                client_secret_env: secret_env.clone(),
+                provider: OidcProviderConfig {
+                    issuer: "https://accounts.example.com/dex".into(),
+                    client_id: "client-id".into(),
+                    allowed_domains: vec![" Example.COM ".into()],
+                    allowed_emails: vec![],
+                    scopes: vec![],
+                    authorization_endpoint: None,
+                    token_endpoint: None,
+                    userinfo_endpoint: None,
+                },
+            }),
+        };
+
+        assert!(matches!(
+            admin.resolve(),
+            Err(ConfigError::MissingAdminOidcSecret { .. })
+        ));
+        std::env::set_var(&secret_env, "client-secret");
+        let auth = admin.resolve().expect("valid admin OIDC config resolves");
+        let idp = auth.oidc().expect("OIDC is attached");
+        assert_eq!(idp.scopes, ["openid", "email", "profile"]);
+        assert!(idp.email_allowed("developer@example.com"));
+        assert_eq!(
+            auth.oidc_callback_url().as_deref(),
+            Some("http://127.0.0.1:8787/admin/oidc/callback")
+        );
+
+        admin
+            .oidc
+            .as_mut()
+            .unwrap()
+            .provider
+            .allowed_domains
+            .clear();
+        assert!(matches!(
+            admin.resolve(),
+            Err(ConfigError::MissingAdminOidcAllowlist)
+        ));
+        {
+            let oidc = admin.oidc.as_mut().unwrap();
+            oidc.provider
+                .allowed_emails
+                .push("developer@example.com".into());
+            oidc.public_url = "https://admin.example/path".into();
+        }
+        assert!(matches!(
+            admin.resolve(),
+            Err(ConfigError::InvalidAdminOidc { .. })
+        ));
+        admin.oidc.as_mut().unwrap().public_url = "http://admin.example".into();
+        assert!(matches!(
+            admin.resolve(),
+            Err(ConfigError::InvalidAdminOidc { .. })
+        ));
+        {
+            let oidc = admin.oidc.as_mut().unwrap();
+            oidc.public_url = "https://admin.example".into();
+            oidc.provider.issuer.clear();
+        }
+        assert!(matches!(
+            admin.resolve(),
+            Err(ConfigError::InvalidAdminOidc { .. })
+        ));
+        {
+            let oidc = admin.oidc.as_mut().unwrap();
+            oidc.provider.issuer = "https://accounts.example.com".into();
+            oidc.provider.client_id.clear();
+        }
+        assert!(matches!(
+            admin.resolve(),
+            Err(ConfigError::InvalidAdminOidc { .. })
+        ));
+
+        std::env::remove_var(tokens_env);
+        std::env::remove_var(secret_env);
+    }
+
+    #[test]
+    fn admin_oidc_deserialization_defaults_secret_env_and_scopes() {
+        let oidc: AdminOidcConfig = serde_json::from_str(
+            r#"{
+                "public_url":"https://admin.example",
+                "issuer":"https://accounts.example.com",
+                "client_id":"client-id",
+                "allowed_emails":["developer@example.com"]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(oidc.client_secret_env, "SHUNT_ADMIN_OIDC_SECRET");
+        assert!(
+            oidc.provider.scopes.is_empty(),
+            "empty config scopes resolve to defaults"
+        );
     }
 
     #[test]
@@ -2264,6 +2482,7 @@ mod tests {
             tokens_env: "SHUNT_TEST_ADMIN_RESOLVE".to_string(),
             session_ttl_secs: 1800,
             pending_ttl_secs: 300,
+            oidc: None,
         };
 
         // Success: a valid `name:token` env resolves with the configured TTLs.
@@ -2830,15 +3049,17 @@ mod tests {
         let suffix = std::process::id();
         let secret_env = format!("SHUNT_GATEWAY_OIDC_CONFIG_SECRET_{suffix}");
         let mut oidc = GatewayOidcConfig {
-            issuer: "https://accounts.example.com/dex".into(),
-            client_id: "client-id".into(),
             client_secret_env: secret_env.clone(),
-            allowed_domains: vec![],
-            allowed_emails: vec![],
-            scopes: vec![],
-            authorization_endpoint: None,
-            token_endpoint: None,
-            userinfo_endpoint: None,
+            provider: OidcProviderConfig {
+                issuer: "https://accounts.example.com/dex".into(),
+                client_id: "client-id".into(),
+                allowed_domains: vec![],
+                allowed_emails: vec![],
+                scopes: vec![],
+                authorization_endpoint: None,
+                token_endpoint: None,
+                userinfo_endpoint: None,
+            },
         };
         assert!(matches!(
             oidc.resolve(),
@@ -2849,35 +3070,35 @@ mod tests {
             oidc.resolve(),
             Err(ConfigError::MissingGatewayOidcAllowlist)
         ));
-        oidc.allowed_domains.push("example.com".into());
-        oidc.issuer.clear();
+        oidc.provider.allowed_domains.push("example.com".into());
+        oidc.provider.issuer.clear();
         assert!(matches!(
             oidc.resolve(),
             Err(ConfigError::InvalidGatewayOidc { .. })
         ));
-        oidc.issuer = "https://accounts.example.com/dex?tenant=x".into();
+        oidc.provider.issuer = "https://accounts.example.com/dex?tenant=x".into();
         assert!(matches!(
             oidc.resolve(),
             Err(ConfigError::InvalidGatewayOidc { .. })
         ));
-        oidc.issuer = "https://accounts.example.com/dex/".into();
+        oidc.provider.issuer = "https://accounts.example.com/dex/".into();
         assert_eq!(
             oidc.resolve().unwrap().issuer,
             "https://accounts.example.com/dex/"
         );
-        oidc.issuer = "https://accounts.example.com/dex".into();
-        oidc.scopes = vec!["openid".into(), "profile".into()];
+        oidc.provider.issuer = "https://accounts.example.com/dex".into();
+        oidc.provider.scopes = vec!["openid".into(), "profile".into()];
         assert!(matches!(
             oidc.resolve(),
             Err(ConfigError::InvalidGatewayOidc { .. })
         ));
-        oidc.scopes.push("email".into());
-        oidc.authorization_endpoint = Some("http://idp.example/authorize".into());
+        oidc.provider.scopes.push("email".into());
+        oidc.provider.authorization_endpoint = Some("http://idp.example/authorize".into());
         assert!(matches!(
             oidc.resolve(),
             Err(ConfigError::InvalidGatewayOidc { .. })
         ));
-        oidc.authorization_endpoint = Some("http://127.0.0.1:8787/authorize".into());
+        oidc.provider.authorization_endpoint = Some("http://127.0.0.1:8787/authorize".into());
         assert!(oidc.resolve().is_ok());
         std::env::remove_var(secret_env);
     }
@@ -2906,15 +3127,17 @@ mod tests {
             telemetry: None,
             state_path: None,
             oidc: Some(GatewayOidcConfig {
-                issuer: "https://accounts.example.com".into(),
-                client_id: "client-id".into(),
                 client_secret_env: oidc_env.clone(),
-                allowed_domains: vec!["example.com".into()],
-                allowed_emails: vec![],
-                scopes: vec![],
-                authorization_endpoint: None,
-                token_endpoint: None,
-                userinfo_endpoint: None,
+                provider: OidcProviderConfig {
+                    issuer: "https://accounts.example.com".into(),
+                    client_id: "client-id".into(),
+                    allowed_domains: vec!["example.com".into()],
+                    allowed_emails: vec![],
+                    scopes: vec![],
+                    authorization_endpoint: None,
+                    token_endpoint: None,
+                    userinfo_endpoint: None,
+                },
             }),
         };
         let resolved = gateway.resolve().expect("OIDC-only gateway resolves");

@@ -14,6 +14,7 @@ pub mod session;
 
 mod codex;
 mod html;
+mod oidc;
 
 use std::{collections::HashSet, io, sync::Arc, time::Duration};
 
@@ -54,6 +55,8 @@ pub struct AdminAuth {
     inbound: InboundAuth,
     session_ttl: Duration,
     pending_ttl: Duration,
+    oidc: Option<Arc<crate::gateway::ResolvedIdp>>,
+    oidc_public_url: Option<String>,
 }
 
 impl AdminAuth {
@@ -62,7 +65,29 @@ impl AdminAuth {
             inbound,
             session_ttl,
             pending_ttl,
+            oidc: None,
+            oidc_public_url: None,
         }
+    }
+
+    pub fn with_oidc(mut self, public_url: String, idp: crate::gateway::ResolvedIdp) -> Self {
+        self.oidc = Some(Arc::new(idp));
+        self.oidc_public_url = Some(public_url);
+        self
+    }
+
+    pub fn oidc(&self) -> Option<&crate::gateway::ResolvedIdp> {
+        self.oidc.as_deref()
+    }
+
+    pub(crate) fn oidc_arc(&self) -> Option<Arc<crate::gateway::ResolvedIdp>> {
+        self.oidc.clone()
+    }
+
+    pub(crate) fn oidc_callback_url(&self) -> Option<String> {
+        self.oidc_public_url
+            .as_deref()
+            .map(|url| format!("{url}/admin/oidc/callback"))
     }
 
     pub fn session_ttl(&self) -> Duration {
@@ -89,6 +114,8 @@ pub fn admin_router() -> Router<AppState> {
     Router::new()
         .route("/admin", get(dashboard))
         .route("/admin/login", get(login_page).post(login_submit))
+        .route("/admin/oidc/start", post(oidc::start))
+        .route("/admin/oidc/callback", get(oidc::callback))
         .route("/admin/logout", post(logout))
         .route("/admin/accounts", get(list_accounts))
         .route("/admin/pool", get(pool))
@@ -257,7 +284,7 @@ pub(super) fn cleanup_reprovisioned_pool_health(
 /// Same-origin check: prefer Fetch Metadata (`Sec-Fetch-Site`), fall back to
 /// comparing the `Origin` authority to `Host`. A missing `Origin` (non-browser)
 /// is allowed — the CSRF token and `SameSite=Strict` cookie still gate the call.
-fn same_origin(headers: &HeaderMap) -> bool {
+pub(super) fn same_origin(headers: &HeaderMap) -> bool {
     if let Some(site) = headers
         .get("sec-fetch-site")
         .and_then(|value| value.to_str().ok())
@@ -313,7 +340,7 @@ fn session_cookie(headers: &HeaderMap) -> Option<String> {
 /// that sends `X-Forwarded-Proto` or preserves the external `Host`. Trusting
 /// `X-Forwarded-Proto` only ever *adds* `Secure`, so a spoofed value cannot
 /// weaken the cookie.
-fn secure_cookie(headers: &HeaderMap) -> bool {
+pub(super) fn secure_cookie(headers: &HeaderMap) -> bool {
     if headers
         .get("x-forwarded-proto")
         .and_then(|value| value.to_str().ok())
@@ -347,7 +374,7 @@ fn host_without_port(host: &str) -> &str {
     host.rsplit_once(':').map_or(host, |(name, _)| name)
 }
 
-fn set_cookie(sid: &str, secure: bool, ttl: Duration) -> String {
+pub(super) fn set_cookie(sid: &str, secure: bool, ttl: Duration) -> String {
     let mut cookie = format!(
         "{SESSION_COOKIE}={sid}; HttpOnly; SameSite=Strict; Path=/admin; Max-Age={}",
         ttl.as_secs()
@@ -375,7 +402,12 @@ async fn login_page(State(state): State<AppState>, headers: HeaderMap) -> Respon
     if authenticate(&state, &headers).is_some() {
         return redirect("/admin");
     }
-    html_page(html::login_page(None))
+    let sso_label = state
+        .admin_auth
+        .as_deref()
+        .and_then(AdminAuth::oidc)
+        .map(crate::gateway::ResolvedIdp::button_label);
+    login_response(StatusCode::OK, None, sso_label)
 }
 
 #[derive(Deserialize)]
@@ -402,11 +434,11 @@ async fn login_submit(
         Err(_) => String::new(),
     };
     if !auth.authenticate_token(&token) {
-        return (
+        return login_response(
             StatusCode::UNAUTHORIZED,
-            html_body(html::login_page(Some("Invalid admin token."))),
-        )
-            .into_response();
+            Some("Invalid admin token."),
+            auth.oidc().map(crate::gateway::ResolvedIdp::button_label),
+        );
     }
     let (sid, _csrf) = state.admin_stores.sessions.create(auth.session_ttl());
     let cookie = set_cookie(&sid, secure_cookie(&headers), auth.session_ttl());
@@ -879,27 +911,59 @@ fn admin_token_url() -> String {
 
 // --- response helpers ----------------------------------------------------------
 
-fn html_page(body: String) -> Response {
+pub(super) fn html_page(body: String) -> Response {
     html_body(body).into_response()
 }
 
-fn html_body(body: String) -> Response {
+pub(super) fn html_body(body: String) -> Response {
+    html_body_with_form_action(body, "'self'")
+}
+
+/// The login page, with the CSP `form-action` widened to the identity provider
+/// when the SSO form is present: Chrome and WebKit enforce `form-action`
+/// against the post-submission redirect chain (w3c/webappsec-csp#8), so the
+/// strict `'self'` policy would block the
+/// `POST /admin/oidc/start` -> `302` -> IdP hop. The discovered authorization
+/// endpoint is not known when this page renders, so allow what
+/// `idp_client::validate_endpoint` accepts: any `https` origin plus loopback
+/// `http` (IPv6 loopback is not expressible as a CSP host-source).
+pub(super) fn login_response(
+    status: StatusCode,
+    error: Option<&str>,
+    sso_label: Option<&str>,
+) -> Response {
+    let form_action = if sso_label.is_some() {
+        "'self' https: http://127.0.0.1:* http://localhost:*"
+    } else {
+        "'self'"
+    };
+    let mut response = html_body_with_form_action(html::login_page(error, sso_label), form_action);
+    *response.status_mut() = status;
+    response
+}
+
+fn html_body_with_form_action(body: String, form_action: &str) -> Response {
     // Defense-in-depth headers for the admin pages: a tight CSP (the pages use
     // only same-origin fetch plus inline script/style, no external resources),
     // clickjacking/sniffing guards, a conservative referrer policy, and
     // `no-store` so the session-specific CSRF token and account data are never
     // cached by the browser or a shared intermediary.
-    const CSP: &str = "default-src 'none'; script-src 'unsafe-inline'; \
-style-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; form-action 'self'; \
-base-uri 'none'; frame-ancestors 'none'";
+    let csp = format!(
+        "default-src 'none'; script-src 'unsafe-inline'; \
+style-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; form-action {form_action}; \
+base-uri 'none'; frame-ancestors 'none'"
+    );
     (
         [
-            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
-            (header::CONTENT_SECURITY_POLICY, CSP),
-            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
-            (header::X_FRAME_OPTIONS, "DENY"),
-            (header::REFERRER_POLICY, "strict-origin-when-cross-origin"),
-            (header::CACHE_CONTROL, "no-store"),
+            (header::CONTENT_TYPE, "text/html; charset=utf-8".to_string()),
+            (header::CONTENT_SECURITY_POLICY, csp),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+            (header::X_FRAME_OPTIONS, "DENY".to_string()),
+            (
+                header::REFERRER_POLICY,
+                "strict-origin-when-cross-origin".to_string(),
+            ),
+            (header::CACHE_CONTROL, "no-store".to_string()),
         ],
         body,
     )
@@ -953,7 +1017,7 @@ pub(super) fn too_many_requests(message: &str) -> Response {
     ShuntError::new(StatusCode::TOO_MANY_REQUESTS, "rate_limit_error", message).into_response()
 }
 
-fn not_found() -> Response {
+pub(super) fn not_found() -> Response {
     ShuntError::new(StatusCode::NOT_FOUND, "not_found_error", "not found").into_response()
 }
 

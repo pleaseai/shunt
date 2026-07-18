@@ -39,6 +39,27 @@ The named environment variable must contain one or more credentials, for example
 
 Admin tokens are separate credentials from the client tokens configured under `[server.auth]`; do not reuse one credential for both surfaces.
 
+### `[server.admin.oidc]` (optional)
+
+Presence of this subtable adds an OIDC/SSO button to the admin browser login page. Admin tokens remain mandatory for API/curl access and as the token-form fallback. The allowlist is matched case-insensitively.
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `public_url` | required | Externally reachable bare HTTPS origin for the admin surface; loopback HTTP is allowed. The redirect URI is `{public_url}/admin/oidc/callback` |
+| `issuer` | required | OIDC discovery issuer. Must use HTTPS, except HTTP on loopback; a path is allowed |
+| `client_id` | required | OIDC client id |
+| `client_secret_env` | `SHUNT_ADMIN_OIDC_SECRET` | Env var holding the non-empty client secret |
+| `allowed_domains` | `[]` | Case-insensitive email domains allowed to administer shunt |
+| `allowed_emails` | `[]` | Case-insensitive full email addresses allowed to administer shunt |
+| `scopes` | `openid email profile` | Scopes sent to the authorization endpoint |
+| `authorization_endpoint` | discovery | Advanced authorization URL override; HTTPS or loopback HTTP only |
+| `token_endpoint` | discovery | Advanced token URL override; HTTPS or loopback HTTP only |
+| `userinfo_endpoint` | discovery | Advanced OIDC UserInfo URL override; HTTPS or loopback HTTP only |
+
+At least one non-empty `allowed_domains` or `allowed_emails` entry is mandatory. Startup also fails closed for an invalid `public_url`, empty issuer/client id, or missing client secret. shunt accepts only a non-empty UserInfo email with `email_verified = true`. The browser flow uses PKCE and a `pending_ttl_secs`-bound, single-use state; callback/token/UserInfo failures produce generic browser messages without echoing provider input. The callback re-checks the current hot-reloaded allowlist before minting the same HttpOnly admin session cookie as token login, then redirects to the fixed `/admin` target.
+
+For GitHub, SAML, or another non-OIDC provider, use an OIDC broker such as Dex; direct provider-specific OAuth2 integrations are out of scope.
+
 ## `[server.gateway]` (optional)
 
 Presence of this table enables the [OAuth device-flow gateway login](/guides/gateway-login/) used by Claude Code's managed `forceLoginMethod: "gateway"`. When absent, shunt does not register `/.well-known/oauth-authorization-server`, `/oauth/device_authorization`, `/oauth/token`, `/device`, `/device/authorize`, `/device/callback`, or `/managed/settings`.

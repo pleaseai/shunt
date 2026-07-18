@@ -12,7 +12,7 @@ use crate::{
     config::{
         Config, GatewayConfig, GatewayOidcConfig, GatewayPolicyConfig, GatewayPolicyMatch,
         GatewayTelemetryConfig, GatewayTelemetryDestination, InboundAuthConfig, ModelConfig,
-        RouteConfig,
+        OidcProviderConfig, RouteConfig,
     },
     server::{build_router, AppState},
 };
@@ -65,15 +65,17 @@ impl GatewayEnv {
             std::env::remove_var(&env.users_env);
         }
         config.server.gateway.as_mut().unwrap().oidc = Some(GatewayOidcConfig {
-            issuer,
-            client_id: "client-id".into(),
             client_secret_env: oidc_secret_env.clone(),
-            allowed_domains: vec!["example.com".into()],
-            allowed_emails: vec![],
-            scopes: vec![],
-            authorization_endpoint: None,
-            token_endpoint: None,
-            userinfo_endpoint: None,
+            provider: OidcProviderConfig {
+                issuer,
+                client_id: "client-id".into(),
+                allowed_domains: vec!["example.com".into()],
+                allowed_emails: vec![],
+                scopes: vec![],
+                authorization_endpoint: None,
+                token_endpoint: None,
+                userinfo_endpoint: None,
+            },
         });
         env.oidc_secret_env = Some(oidc_secret_env);
         (config, env)
@@ -184,9 +186,9 @@ fn set_oidc_endpoint_overrides(config: &mut Config, idp: &wiremock::MockServer) 
         .oidc
         .as_mut()
         .unwrap();
-    oidc.authorization_endpoint = Some(format!("{}/authorize", idp.uri()));
-    oidc.token_endpoint = Some(format!("{}/token", idp.uri()));
-    oidc.userinfo_endpoint = Some(format!("{}/userinfo", idp.uri()));
+    oidc.provider.authorization_endpoint = Some(format!("{}/authorize", idp.uri()));
+    oidc.provider.token_endpoint = Some(format!("{}/token", idp.uri()));
+    oidc.provider.userinfo_endpoint = Some(format!("{}/userinfo", idp.uri()));
 }
 
 async fn begin_oidc_callback(router: &Router) -> (Value, String) {
@@ -497,11 +499,11 @@ async fn oidc_callback_uses_endpoint_overrides_and_exact_email_allowlist() {
         .oidc
         .as_mut()
         .unwrap();
-    oidc.allowed_domains.clear();
-    oidc.allowed_emails = vec!["exact@outside.test".into()];
-    oidc.authorization_endpoint = Some(format!("{}/authorize", idp.uri()));
-    oidc.token_endpoint = Some(format!("{}/token", idp.uri()));
-    oidc.userinfo_endpoint = Some(format!("{}/userinfo", idp.uri()));
+    oidc.provider.allowed_domains.clear();
+    oidc.provider.allowed_emails = vec!["exact@outside.test".into()];
+    oidc.provider.authorization_endpoint = Some(format!("{}/authorize", idp.uri()));
+    oidc.provider.token_endpoint = Some(format!("{}/token", idp.uri()));
+    oidc.provider.userinfo_endpoint = Some(format!("{}/userinfo", idp.uri()));
     let (router, _, state) = build_router(config).unwrap();
     let (_, authorization) = json_response(
         router.clone(),
@@ -572,9 +574,9 @@ async fn oidc_callback_uses_authorize_snapshot_across_reload() {
         .oidc
         .as_mut()
         .unwrap();
-    oidc.authorization_endpoint = Some(format!("{}/authorize", old_idp.uri()));
-    oidc.token_endpoint = Some(format!("{}/token", old_idp.uri()));
-    oidc.userinfo_endpoint = Some(format!("{}/userinfo", old_idp.uri()));
+    oidc.provider.authorization_endpoint = Some(format!("{}/authorize", old_idp.uri()));
+    oidc.provider.token_endpoint = Some(format!("{}/token", old_idp.uri()));
+    oidc.provider.userinfo_endpoint = Some(format!("{}/userinfo", old_idp.uri()));
 
     let (router, shared, _) = build_router(config).unwrap();
     let (_, state) = begin_oidc_callback(&router).await;
