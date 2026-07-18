@@ -480,7 +480,21 @@ impl GatewayOidcConfig {
                 .map(str::to_string)
                 .collect()
         } else {
-            self.scopes.clone()
+            let scopes: Vec<_> = self
+                .scopes
+                .iter()
+                .map(|scope| scope.trim())
+                .filter(|scope| !scope.is_empty())
+                .map(str::to_string)
+                .collect();
+            for required in ["openid", "email"] {
+                if !scopes.iter().any(|scope| scope == required) {
+                    return Err(ConfigError::InvalidGatewayOidc {
+                        message: format!("scopes must include {required}"),
+                    });
+                }
+            }
+            scopes
         };
         Ok(crate::gateway::ResolvedIdp {
             issuer,
@@ -2605,6 +2619,12 @@ mod tests {
             "https://accounts.example.com/dex/"
         );
         oidc.issuer = "https://accounts.example.com/dex".into();
+        oidc.scopes = vec!["openid".into(), "profile".into()];
+        assert!(matches!(
+            oidc.resolve(),
+            Err(ConfigError::InvalidGatewayOidc { .. })
+        ));
+        oidc.scopes.push("email".into());
         oidc.authorization_endpoint = Some("http://idp.example/authorize".into());
         assert!(matches!(
             oidc.resolve(),

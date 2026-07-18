@@ -249,7 +249,14 @@ impl OidcStateStore {
             .lock()
             .expect("gateway OIDC-state lock poisoned");
         states.retain(|_, pending| pending.expires > now);
-        if states.contains_key(&state) || states.len() >= MAX_OIDC_STATES {
+        if states.contains_key(&state) {
+            return false;
+        }
+        // Keep exactly one active browser authorization per device grant. A
+        // second click replaces the old state so an abandoned tab cannot later
+        // deny or approve the same grant independently.
+        states.retain(|_, pending| pending.user_code != user_code);
+        if states.len() >= MAX_OIDC_STATES {
             return false;
         }
         states.insert(
@@ -489,10 +496,20 @@ mod tests {
             now,
             OIDC_STATE_TTL,
         ));
-        let pending = store.take_at("state", now).expect("state exists");
-        assert_eq!(pending.user_code, "BCDF-GHJK");
-        assert_eq!(pending.verifier, "verifier");
+        assert!(store.insert_at(
+            "replacement".into(),
+            "BCDF-GHJK".into(),
+            "new-verifier".into(),
+            idp(),
+            "https://gateway.example/device/callback".into(),
+            now,
+            OIDC_STATE_TTL,
+        ));
         assert!(store.take_at("state", now).is_none());
+        let pending = store
+            .take_at("replacement", now)
+            .expect("replacement state exists");
+        assert_eq!(pending.verifier, "new-verifier");
 
         assert!(store.insert_at(
             "expired".into(),

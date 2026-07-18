@@ -93,7 +93,7 @@ The URL must equal `public_url`. Claude Code reads the OAuth endpoint paths from
 Start Claude Code and run `/login`. The CLI shows a device code and opens the gateway's `/device` page. On that page:
 
 1. Confirm the displayed device code.
-2. Select **Sign in with Google** or **Sign in with SSO**, then finish the provider login. If static users are also configured, entering an email and secret and selecting **Approve device** remains available.
+2. Select the SSO button (**Sign in with Google** for Google, **Sign in with SSO** for other providers), then finish the provider login. If static users are also configured, entering an email and secret and selecting **Approve device** remains available.
 3. Return to Claude Code after the success page appears.
 
 Pre-filling the code never auto-approves it. The password approval POST is same-origin protected. The external callback instead binds the cross-site redirect with a single-use, ten-minute OAuth state and PKCE; provider errors are never echoed into the page.

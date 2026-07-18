@@ -88,7 +88,7 @@ allowed_domains = ["example.com"]
 | `client_secret_env` | `SHUNT_GATEWAY_OIDC_SECRET` | Environment variable holding the non-empty client secret |
 | `allowed_domains` | `[]` | Case-insensitive email domains allowed to approve a device |
 | `allowed_emails` | `[]` | Case-insensitive full email addresses allowed to approve a device |
-| `scopes` | `openid email profile` | Scopes sent to the authorization endpoint |
+| `scopes` | `openid email profile` | Scopes sent to the authorization endpoint; custom values must include `openid` and `email` |
 | `authorization_endpoint` | OIDC discovery | Advanced authorization URL override |
 | `token_endpoint` | OIDC discovery | Advanced token URL override |
 | `userinfo_endpoint` | OIDC discovery | Advanced UserInfo URL override |
