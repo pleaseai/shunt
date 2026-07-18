@@ -621,7 +621,7 @@ impl AccountPool {
             let idle = health.in_flight == 0
                 && health
                     .ramp_last_activity
-                    .is_none_or(|at| now.duration_since(at) >= RAMP_IDLE_RESET);
+                    .is_none_or(|at| now.saturating_duration_since(at) >= RAMP_IDLE_RESET);
             if health.ramp_allowance == 0 || idle {
                 health.ramp_allowance = initial.max(1);
             }
