@@ -115,6 +115,7 @@ pub async fn authorize(
         idp.clone(),
         redirect_uri.clone(),
     ) {
+        tracing::warn!("gateway: OIDC state store is full or state collision occurred");
         return error_page(
             &auth,
             &user_code,

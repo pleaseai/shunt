@@ -184,7 +184,7 @@ async fn discover(state: &AppState, idp: &ResolvedIdp) -> Result<DiscoveredEndpo
         .json()
         .await
         .context("OIDC discovery returned invalid JSON")?;
-    if endpoints.issuer != idp.issuer {
+    if endpoints.issuer.trim_end_matches('/') != idp.issuer.trim_end_matches('/') {
         return Err(anyhow!(
             "OIDC discovery issuer does not match configured issuer"
         ));
