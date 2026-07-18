@@ -28,6 +28,21 @@ export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
 
 对于没有别名的 `gpt-*` id,请改用 `ANTHROPIC_CUSTOM_MODEL_OPTION` —— 见 [连接 Claude Code](/zh-cn/guides/connect-claude-code/#4-select-a-mapped-model)。
 
+## Claude Desktop 只识别 tier 命名的 id
+
+Claude Code 接受任何以 `claude`/`anthropic` 开头的发现 id,但 **Claude Desktop 更严格**:它只显示 tier 命名的 id —— `claude-sonnet-*`、`claude-opus-*`、`claude-haiku-*`、`claude-fable-*`。因此上面的 `claude-<slug>-via-<provider>` 别名会出现在 Claude Code 中,但由于 `gpt` 不是 tier 名称,它会**在 Claude Desktop 中被静默丢弃**。
+
+内置目录全部是 tier 命名的,因此在 Desktop 中仍然可见;丢失的只有你维护的 `claude-<slug>-via-<provider>` 别名。要向 Claude Desktop 公开非 Anthropic 后端,请复用一个 tier 命名的 id,并通过 `[[routes]]` 的 `upstream_model` 进行映射:
+
+```toml
+[[routes]]
+model = "claude-sonnet-5"        # Claude Desktop 识别的 tier 命名 id
+provider = "codex"
+upstream_model = "gpt-5.6-sol"   # 真实后端 slug
+```
+
+在 Desktop 中选择它会解析到预期的上游。该 route 会覆盖内置目录中该 id 的默认路由,因此请选择一个后端映射对用户仍然有意义的 tier 名称。
+
 ## 发现需要一个网关凭据
 
 仅有 claude.ai OAuth *登录* 不会触发发现。只有当设置了 `ANTHROPIC_AUTH_TOKEN`、一个 API 密钥或一个 `apiKeyHelper` 时,Claude Code 才会发起 `/v1/models` 请求;在纯 Max/Pro 订阅登录下它什么都不发送 —— 没有请求抵达 shunt,也没有缓存被写入 —— 即使开启了标志也是如此。见 [选择凭据](/zh-cn/guides/connect-claude-code/#2-choose-the-anthropic-credential);`claude setup-token` 是推荐路径。

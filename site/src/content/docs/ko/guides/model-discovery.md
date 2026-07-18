@@ -28,6 +28,21 @@ export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
 
 별칭이 없는 `gpt-*` id에는 대신 `ANTHROPIC_CUSTOM_MODEL_OPTION`을 사용하세요 — [Claude Code 연결](/ko/guides/connect-claude-code/#4-select-a-mapped-model)을 참고하세요.
 
+## Claude Desktop은 tier 이름 id만 인식합니다
+
+Claude Code는 `claude`/`anthropic`으로 시작하는 디스커버리 id를 모두 받아들이지만, **Claude Desktop은 더 엄격합니다**. `claude-sonnet-*`, `claude-opus-*`, `claude-haiku-*`, `claude-fable-*` 같은 tier 이름 id만 표시합니다. 따라서 위의 `claude-<slug>-via-<provider>` 별칭은 Claude Code에는 나타나지만 `gpt`가 tier 이름이 아니므로 **Claude Desktop에서는 조용히 버려집니다**.
+
+내장 카탈로그는 모두 tier 이름이라 Desktop에서도 그대로 보입니다. 사라지는 것은 선별한 `claude-<slug>-via-<provider>` 별칭뿐입니다. 비-Anthropic 백엔드를 Claude Desktop에 노출하려면 tier 이름 id를 재사용하고 `[[routes]]`의 `upstream_model`로 매핑하세요:
+
+```toml
+[[routes]]
+model = "claude-sonnet-5"        # Claude Desktop이 인식하는 tier 이름 id
+provider = "codex"
+upstream_model = "gpt-5.6-sol"   # 실제 백엔드 슬러그
+```
+
+Desktop에서 이를 선택하면 의도한 업스트림으로 해석됩니다. 이 route는 해당 id에 대한 내장 카탈로그의 기본 라우팅을 덮어쓰므로, 백엔드 매핑이 사용자에게 여전히 의미 있는 tier 이름을 고르세요.
+
 ## 디스커버리에는 게이트웨이 자격 증명이 필요합니다
 
 claude.ai OAuth *로그인*만으로는 디스커버리가 발동하지 않습니다. Claude Code는 `ANTHROPIC_AUTH_TOKEN`, API 키, 또는 `apiKeyHelper`가 설정되어 있을 때만 `/v1/models` 요청을 보냅니다. 순수 Max/Pro 구독 로그인에서는 아무것도 보내지 않으며 — 요청이 shunt에 도달하지 않고, 캐시도 기록되지 않습니다 — 플래그가 켜져 있어도 그렇습니다. [자격 증명 선택](/ko/guides/connect-claude-code/#2-choose-the-anthropic-credential)을 참고하세요; `claude setup-token`이 권장 경로입니다.

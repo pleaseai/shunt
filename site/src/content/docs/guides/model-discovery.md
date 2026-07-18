@@ -28,6 +28,21 @@ The alias appears in `/model` labeled *From gateway*; selecting it sends `claude
 
 For `gpt-*` ids without an alias, use `ANTHROPIC_CUSTOM_MODEL_OPTION` instead — see [Connect Claude Code](/guides/connect-claude-code/#4-select-a-mapped-model).
 
+## Claude Desktop recognizes only tier-named ids
+
+Claude Code accepts any discovered id beginning with `claude`/`anthropic`, but **Claude Desktop is stricter**: it surfaces only tier-named ids — `claude-sonnet-*`, `claude-opus-*`, `claude-haiku-*`, `claude-fable-*`. A `claude-<slug>-via-<provider>` alias like the one above therefore shows up in Claude Code but is **silently dropped by Claude Desktop**, since `gpt` is not a tier name.
+
+The builtin catalog is all tier-named, so it stays visible in Desktop; only your curated `claude-<slug>-via-<provider>` aliases are lost. To expose a non-Anthropic backend to Claude Desktop, reuse a tier-named id and map it with a `[[routes]]` `upstream_model`:
+
+```toml
+[[routes]]
+model = "claude-sonnet-5"        # a tier-named id Claude Desktop recognizes
+provider = "codex"
+upstream_model = "gpt-5.6-sol"   # real backend slug
+```
+
+Selecting it in Desktop resolves to the intended upstream. The route overrides the builtin catalog entry's default routing for that id, so pick a tier name whose backend mapping stays meaningful to your users.
+
 ## Discovery needs a gateway credential
 
 A claude.ai OAuth *login* alone won't trigger discovery. Claude Code only issues the `/v1/models` request when `ANTHROPIC_AUTH_TOKEN`, an API key, or an `apiKeyHelper` is set; under a plain Max/Pro subscription login it sends nothing — no request reaches shunt, no cache is written — even with the flag on. See [choosing the credential](/guides/connect-claude-code/#2-choose-the-anthropic-credential); `claude setup-token` is the recommended route.
