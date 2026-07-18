@@ -28,8 +28,9 @@ pub(crate) fn with_admission(
     };
     let (parts, body) = response.into_parts();
     let stream = body.into_data_stream().map(move |chunk| {
-        // Capturing the guard by reference keeps it alive for the stream's
-        // lifetime; it drops with the closure when the stream does.
+        // The `move` closure owns the guard; this reference only forces the
+        // capture (a variable the body never touches is not captured at all).
+        // The owned guard then drops with the closure when the stream does.
         let _held = &guard;
         chunk
     });
