@@ -1,0 +1,65 @@
+site/src/content/docs/ja/reference/endpoints.md
+  s_5ee548acf78ec5::t_a097d14dcf1597 27-31
+  s_5ee548acf78ec5::t_2f1b730fb8b266 35-36
+src/lib.rs
+  s_5ee548acf78ec5::t_517f867d5a81dd 6
+README.md
+  s_5ee548acf78ec5::t_5face70c25d9e6 74
+site/src/content/docs/guides/inbound-codex-endpoint.md
+  s_5ee548acf78ec5::t_b8cbd3e192d1b5 24-35
+site/src/content/docs/guides/opentelemetry.md
+  s_5ee548acf78ec5::t_4c6e127317e993 56
+tests/inbound_codex_endpoint.rs
+  s_5ee548acf78ec5::t_f1258308ad87b8 214-307,309-317,320-333
+  s_5ee548acf78ec5::t_106fd8eb89a048 308,318-319
+  s_5ee548acf78ec5::t_62311aa7a7d850 996-997
+src/server.rs
+  s_5ee548acf78ec5::t_b38781df311a30 13
+  s_5ee548acf78ec5::t_71d9364633a1e6 157-160,165-173
+docs/m11-inbound-codex-endpoint.md
+  s_5ee548acf78ec5::t_cd8fa1759f4f7c 57,63-78
+  s_5ee548acf78ec5::t_d1bd17fcb9ac49 79
+site/src/content/docs/ko/reference/endpoints.md
+  s_5ee548acf78ec5::t_b095a2b6b561f6 27-31
+  s_5ee548acf78ec5::t_1e19cd7ad45dac 35-36
+src/metrics.rs
+  s_5ee548acf78ec5::t_f8d567583b3d08 327-329
+  s_5ee548acf78ec5::t_203293fe25b54c 90-93
+  s_5ee548acf78ec5::t_05a940452d4f18 294-305
+  s_5ee548acf78ec5::t_6178e8dc4b3156 13-15,18-21
+  s_5ee548acf78ec5::t_ddae2c208bea57 366-371
+  s_5ee548acf78ec5::t_9f101b6ecbcbe5 44
+site/src/content/docs/reference/endpoints.md
+  s_5ee548acf78ec5::t_a16361a4ddb8ea 30-31
+  s_5ee548acf78ec5::t_ebcaa328fafdb7 36
+site/src/content/docs/ko/guides/opentelemetry.md
+  s_5ee548acf78ec5::t_0af254ea644a2b 56
+site/src/content/docs/zh-cn/guides/opentelemetry.md
+  s_5ee548acf78ec5::t_c07ac35955c246 56
+src/codex_analytics.rs
+  s_5ee548acf78ec5::t_5991ec18cae7e1 1-26,28-38,42-67,72-73,88-94,98-110,115-131
+  s_5ee548acf78ec5::t_106fd8eb89a048 27,39-41,95-97,111-114
+  s_5ee548acf78ec5::t_35b2f0609c60db 71
+  s_5ee548acf78ec5::t_7e71fe5dbfeaeb 68-70,74-87
+site/src/content/docs/ja/guides/opentelemetry.md
+  s_5ee548acf78ec5::t_68bf12232c2bbe 56
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_5ee548acf78ec5::t_699ef3d178491a 35-36
+  s_5ee548acf78ec5::t_4bbb364cbe375f 27-31
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "bc15e1840f21f2efe22d71d7c5e6557239c63b44",
+  "prompts": {},
+  "sessions": {
+    "s_5ee548acf78ec5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "86764430-932f-458a-b223-5f15f3736942",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
