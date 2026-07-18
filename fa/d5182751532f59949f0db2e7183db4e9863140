@@ -1,0 +1,52 @@
+README.md
+  s_cba1772c5551a0::t_e19369d6670f4d 160
+src/discovery.rs
+  s_cba1772c5551a0::t_05d50e4a3848fc 161-165,168,170-171,181-238
+  s_cba1772c5551a0::t_f2ea57d30cf572 11-25
+  s_cba1772c5551a0::t_41f71c28191e1f 79,88-99
+  s_cba1772c5551a0::t_7c9ef5a7c89923 119
+  s_cba1772c5551a0::t_a4104975a804e7 155-159
+  s_cba1772c5551a0::t_12891a3b117bd2 160
+  s_cba1772c5551a0::t_f32e25c0880891 166-167
+  s_cba1772c5551a0::t_f749c47b55dfb5 169
+src/config.rs
+  s_cba1772c5551a0::t_ff7a2546be085a 18-19
+  s_cba1772c5551a0::t_fc94b83c52003e 36-39,1585
+  s_cba1772c5551a0::t_3d821ffadd3380 3788-3794,3802-3805
+  s_cba1772c5551a0::t_9ecd451234e8fb 3795-3801
+site/src/content/docs/ko/guides/model-discovery.md
+  s_cba1772c5551a0::t_e72db1286c26a5 6-8
+docs/m3-discovery.md
+  s_cba1772c5551a0::t_a58bf5361061bd 55-59,61-62
+  s_cba1772c5551a0::t_48416c98e66f96 118-120
+site/src/content/docs/guides/model-discovery.md
+  s_cba1772c5551a0::t_f0282aadc14162 6-8
+site/src/content/docs/ja/guides/model-discovery.md
+  s_cba1772c5551a0::t_dd2acdc6704edf 6-8
+site/src/content/docs/zh-cn/guides/model-discovery.md
+  s_cba1772c5551a0::t_eb5bb05e68d88f 6-8
+site/src/content/docs/ja/reference/configuration.md
+  s_cba1772c5551a0::t_34f7c275446ccc 153-154
+site/src/content/docs/ko/reference/configuration.md
+  s_cba1772c5551a0::t_a3f677314f13a4 165-166
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_cba1772c5551a0::t_0a9ab60d1a10c0 153-154
+site/src/content/docs/reference/configuration.md
+  s_cba1772c5551a0::t_197fa67e83b488 250-251
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "fad5182751532f59949f0db2e7183db4e9863140",
+  "prompts": {},
+  "sessions": {
+    "s_cba1772c5551a0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ea9dde39-6a19-40ac-8c62-3edf398bc6b4",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
