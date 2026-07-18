@@ -102,7 +102,7 @@ Most third-party "use Claude Code with X" gateways are Anthropic-Messages-compat
 
 | Provider | `base_url` | Example model IDs |
 | :-- | :-- | :-- |
-| Kimi (Moonshot) | `https://api.moonshot.ai/anthropic` | `kimi-k3`, `kimi-k2.7-code` |
+| Kimi (Moonshot) | `https://api.moonshot.ai/anthropic` | `kimi-k3[1m]`, `kimi-k2.7-code` |
 | DeepSeek | `https://api.deepseek.com/anthropic` | `deepseek-v4-pro`, `deepseek-v4-flash` |
 | Z.ai (GLM) | `https://api.z.ai/api/anthropic` | `glm-5.2`, `glm-4.7` |
 | MiniMax | `https://api.minimax.io/anthropic` | see [MiniMax docs](https://platform.minimax.io/docs/token-plan/claude-code) |
@@ -120,7 +120,7 @@ auth = "api_key"
 api_key_env = "KIMI_API_KEY"
 
 [[routes]]
-model = "kimi-k3"
+model = "kimi-k3[1m]"
 provider = "kimi"
 
 [[routes]]
@@ -128,7 +128,7 @@ model = "kimi-k2.7-code"
 provider = "kimi"
 ```
 
-Then `export KIMI_API_KEY=…`, [point Claude Code at shunt](/guides/connect-claude-code/), and select `kimi-k3` (via `ANTHROPIC_CUSTOM_MODEL_OPTION` or `ANTHROPIC_MODEL`). Run `shunt check` to validate — it reports an unknown provider in a route, a missing `api_key_env`, or a bad `base_url`.
+Then `export KIMI_API_KEY=…`, [point Claude Code at shunt](/guides/connect-claude-code/), and select `kimi-k3[1m]` (via `ANTHROPIC_CUSTOM_MODEL_OPTION` or `ANTHROPIC_MODEL`). Run `shunt check` to validate — it reports an unknown provider in a route, a missing `api_key_env`, or a bad `base_url`.
 
 Every provider key (`kind`, `auth`, `api_key_header`, `count_tokens`, …) is documented in the [Configuration Reference](/reference/configuration/).
 
@@ -140,7 +140,7 @@ The [`pleaseai/shunt` marketplace](https://github.com/pleaseai/shunt/tree/main/p
 | :-- | :-- | :-- |
 | `shunt-codex` | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` | `codex` (ChatGPT subscription) |
 | `shunt-xai` | `grok-build-0.1`, `grok-4.5`, `grok-4.3` | `xai` (API key) or `grok` (subscription) |
-| `shunt-kimi` | `kimi-k3`, `kimi-k2.7-code` | `kimi` |
+| `shunt-kimi` | `kimi-k3[1m]`, `kimi-k2.7-code` | `kimi` |
 | `shunt-deepseek` | `deepseek-v4-pro`, `deepseek-v4-flash` | `deepseek` |
 | `shunt-zai` | `glm-5.2`, `glm-4.7` | `zai` |
 | `shunt-minimax` | `MiniMax-M3[1m]` | `minimax` |

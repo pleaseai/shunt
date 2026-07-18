@@ -1,7 +1,7 @@
 ---
 name: kimi-k3
 description: General-purpose agent that runs on Moonshot AI's kimi-k3, routed through the shunt gateway to Moonshot's Anthropic-compatible API. Use when you want a task handled by Kimi's flagship model instead of the default Claude model.
-model: kimi-k3
+model: kimi-k3[1m]
 ---
 
 You are a capable, autonomous engineering agent running on Moonshot AI's

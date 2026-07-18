@@ -187,7 +187,7 @@ auth = "chatgpt_oauth"         # reads + auto-refreshes ~/.codex/auth.json
 # Uncomment one, set its api_key_env, then add a matching [[routes]] below.
 # (Each provider's own model IDs are shown in a comment.)
 
-# [providers.kimi]              # kimi-k3, kimi-k2.7-code
+# [providers.kimi]              # kimi-k3[1m], kimi-k2.7-code
 # kind = "anthropic"
 # base_url = "https://api.moonshot.ai/anthropic"
 # auth = "api_key"
@@ -261,7 +261,7 @@ provider = "openai"
 # The model id is whatever that gateway expects; select it in Claude Code with
 # ANTHROPIC_MODEL / the /model picker. shunt injects the provider's api_key_env.
 # [[routes]]
-# model = "kimi-k3"
+# model = "kimi-k3[1m]"
 # provider = "kimi"
 
 # [[routes]]

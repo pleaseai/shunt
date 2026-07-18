@@ -108,7 +108,7 @@ The `cursor:` / `cursor-agent:` / `cursor-plan:` / `cursor-ask:` prefixes pick C
 
 | Provider | `base_url` | Example model IDs |
 | :-- | :-- | :-- |
-| Kimi (Moonshot) | `https://api.moonshot.ai/anthropic` | `kimi-k3`, `kimi-k2.7-code` |
+| Kimi (Moonshot) | `https://api.moonshot.ai/anthropic` | `kimi-k3[1m]`, `kimi-k2.7-code` |
 | DeepSeek | `https://api.deepseek.com/anthropic` | `deepseek-v4-pro`, `deepseek-v4-flash` |
 | Z.ai (GLM) | `https://api.z.ai/api/anthropic` | `glm-5.2`, `glm-4.7` |
 | MiniMax | `https://api.minimax.io/anthropic` | see [MiniMax docs](https://platform.minimax.io/docs/token-plan/claude-code) |
@@ -123,7 +123,7 @@ auth = "api_key"
 api_key_env = "KIMI_API_KEY"
 
 [[routes]]
-model = "kimi-k3"
+model = "kimi-k3[1m]"
 provider = "kimi"
 
 [[routes]]

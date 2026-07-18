@@ -13,7 +13,7 @@ Only the model that generates the tokens changes.
 
 | Agent (`@`-mention)          | Model id (`model:`) |
 | ---------------------------- | ------------------- |
-| `shunt-kimi:kimi-k3`         | `kimi-k3`           |
+| `shunt-kimi:kimi-k3`         | `kimi-k3[1m]`       |
 | `shunt-kimi:kimi-k2.7-code`  | `kimi-k2.7-code`    |
 
 Kimi is served over Moonshot's **Anthropic-compatible** endpoint, so shunt
@@ -43,7 +43,7 @@ route:
    api_key_env = "KIMI_API_KEY"
 
    [[routes]]
-   model = "kimi-k3"
+   model = "kimi-k3[1m]"
    provider = "kimi"
 
    [[routes]]
@@ -72,7 +72,7 @@ Without a running shunt gateway mapping this id, Claude Code will send
 ```
 
 Or set every subagent to Kimi for a session with
-`CLAUDE_CODE_SUBAGENT_MODEL=kimi-k3`.
+`CLAUDE_CODE_SUBAGENT_MODEL="kimi-k3[1m]"`.
 
 Both require a running shunt gateway with the slug routed to the `kimi` provider —
 see [Prerequisites](#prerequisites). Without it the request fails against Anthropic.
