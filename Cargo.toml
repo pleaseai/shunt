@@ -71,6 +71,7 @@ sha2 = "0.10"
 thiserror = "2"
 tiktoken-rs = "0.12.0"
 tokio = { version = "1", features = ["full"] }
+toml = "0.8"
 # Codex Responses WebSocket v2 transport (issue #32). rustls + bundled webpki
 # roots keeps TLS self-contained and consistent with reqwest's rustls-tls, with
 # no OpenSSL/native-tls system dependency.

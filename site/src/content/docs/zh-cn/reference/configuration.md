@@ -39,6 +39,30 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 
 管理员 token 与 `[server.auth]` 下配置的客户端 token 是相互独立的凭据;不要在两个界面上复用同一个凭据。
 
+## `[server.gateway]`(可选)
+
+此表启用 Claude Code 的 OAuth device-flow 登录。支持 `public_url`(必需)、`jwt_secret_env`(默认 `SHUNT_GATEWAY_JWT_SECRET`)、`users_env`(默认 `SHUNT_GATEWAY_USERS`)、`token_ttl_seconds`(默认 `3600`)以及 `trust_forwarded_for`(默认 `false`)。
+
+非空的 `[[server.gateway.policies]]` 列表启用经过认证的 `GET /managed/settings`。每条策略可包含可选的 `[server.gateway.policies.match]` 与 `emails`,而 `[server.gateway.policies.cli]` 是开放 schema 的 Claude Code managed settings 对象。省略 `match` 或使用空 `match` 即为 catch-all。所有 catch-all 按顺序合并,然后只把第一个邮箱精确匹配(区分大小写)的用户策略合并到顶层。对象递归合并;数组通常替换,但键名包含 `deny` 的数组会进行去重并集。
+
+没有 `policies` 时 endpoint 返回 `404`;已配置策略解析为空文档时返回 `200` 和 `settings: {}`。响应的 `ETag` 等于 `checksum`,匹配的 `If-None-Match` 返回 `304`。解析出的字符串数组 `availableModels` 还会在服务端约束 gateway JWT 用户的 `/v1/messages` 与 `/v1/messages/count_tokens`。
+
+非空的 `[server.gateway.telemetry].forward_to` 列表会向 managed settings 注入六个 env 值:启用 Claude Code telemetry、三个 OTLP exporter、以 `public_url` 为 endpoint,以及 `http/protobuf` protocol。发生冲突时策略中的 env 值优先。每个 destination 接受 HTTP(S) `url` 和可选的字符串 `headers` map。M-B 目前只启用 env push;OTLP ingest/relay route 将在 M-C(#189)中加入。
+
+```toml
+[[server.gateway.policies]]
+[server.gateway.policies.match]
+emails = ["alice@example.com"]
+[server.gateway.policies.cli]
+availableModels = ["claude-opus-4-8"]
+[server.gateway.policies.cli.env]
+DISABLE_UPDATES = "1"
+
+[server.gateway.telemetry]
+[[server.gateway.telemetry.forward_to]]
+url = "https://collector.example.com"
+```
+
 ## `[server.pool]`(可选)
 
 面向 Claude(Anthropic)账户池的配额感知负载均衡调优([详情](/zh-cn/guides/anthropic-multi-account/#调优选择serverpool))。此表不存在时,选择逻辑使用单一的内置 `0.98` 阈值,与该表出现之前的行为完全一致。

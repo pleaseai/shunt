@@ -1,6 +1,7 @@
 pub mod approval;
 mod device;
 pub mod jwt;
+pub mod managed;
 mod oauth;
 pub mod store;
 
@@ -14,6 +15,7 @@ use axum::{
 
 use crate::server::AppState;
 
+pub use managed::ResolvedPolicy;
 pub use store::GatewayStores;
 
 use approval::{ApprovalProvider, StaticUsers};
@@ -25,6 +27,8 @@ pub struct GatewayAuth {
     token_ttl_seconds: u64,
     trust_forwarded_for: bool,
     approval: Arc<dyn ApprovalProvider>,
+    policies: Option<Vec<ResolvedPolicy>>,
+    telemetry_push: bool,
 }
 
 impl GatewayAuth {
@@ -57,7 +61,27 @@ impl GatewayAuth {
             token_ttl_seconds,
             trust_forwarded_for,
             approval,
+            policies: None,
+            telemetry_push: false,
         }
+    }
+
+    pub fn with_managed_policies(
+        mut self,
+        policies: Option<Vec<ResolvedPolicy>>,
+        telemetry_push: bool,
+    ) -> Self {
+        self.policies = policies;
+        self.telemetry_push = telemetry_push;
+        self
+    }
+
+    pub fn policies(&self) -> Option<&[ResolvedPolicy]> {
+        self.policies.as_deref()
+    }
+
+    pub fn telemetry_push(&self) -> bool {
+        self.telemetry_push
     }
 
     pub fn public_url(&self) -> &str {
@@ -112,6 +136,7 @@ pub fn gateway_router() -> Router<AppState> {
         )
         .route("/oauth/token", post(oauth::token))
         .route("/device", get(device::get).post(device::post))
+        .route("/managed/settings", get(managed::get))
 }
 
 #[cfg(test)]

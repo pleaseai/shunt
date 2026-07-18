@@ -2708,6 +2708,7 @@ dependencies = [
  "tiktoken-rs",
  "tokio",
  "tokio-tungstenite",
+ "toml",
  "tower",
  "tracing",
  "tracing-opentelemetry",

@@ -230,6 +230,10 @@ of the Claude apps gateway superset. The relevant pieces:
 - **OAuth device-flow sign-in** — opt-in `[server.gateway]` implements discovery,
   device authorization, the CSRF-guarded approval page, device/refresh grants,
   rotating refresh tokens, and bearer validation ([M-A note](gateway-login.md)).
+- **Managed settings** — authenticated `GET /managed/settings` resolves ordered
+  per-user policies, supports `ETag`/`304`, pushes the managed telemetry
+  environment, and enforces `availableModels` on inference
+  ([M-B note](gateway-managed-settings.md)).
 - **`/v1/messages` + `count_tokens`** — [M1 — Messages ⇄ Responses
   translation](m1-responses-translation.md).
 - **`/v1/models` discovery** — [M3 — Model discovery](m3-discovery.md) (same wire contract,
@@ -237,24 +241,25 @@ of the Claude apps gateway superset. The relevant pieces:
 - **Inbound bearer auth** — [M4 — Inbound client authentication](m4-inbound-auth.md).
 - **SSE streaming / no buffering** — [M5 — SSE keepalive](m5-sse-keepalive.md).
 
-The device-flow sign-in endpoints are now available through opt-in `[server.gateway]`
-([M-A](gateway-login.md)). `/managed/settings` and `/v1/{metrics,logs,traces}` remain
-Claude apps gateway-specific follow-ups (M-B and M-C).
+The device-flow sign-in endpoints and per-user managed settings are available
+through opt-in `[server.gateway]` ([M-A](gateway-login.md),
+[M-B](gateway-managed-settings.md)). `/v1/{metrics,logs,traces}` remains the
+Claude apps gateway-specific M-C follow-up.
 
 ## Conformance & gaps
 
-shunt implements the `ANTHROPIC_BASE_URL` surface and the opt-in M-A device-flow login
-surface described above. This comparison was captured 2026-07-13 against `GET /protocol`
+shunt implements the `ANTHROPIC_BASE_URL` surface and the opt-in M-A device-flow
+login plus M-B managed-settings surfaces described above. This comparison was captured 2026-07-13 against `GET /protocol`
 from a locally-run Claude apps gateway (Claude Code 2.1.207), with M-A wire details
 re-verified against 2.1.211. Tracked under epic #186.
 
 ### Endpoints not yet implemented
 
-Two endpoint groups from the Claude apps gateway superset remain follow-ups:
+One endpoint group from the Claude apps gateway superset remains a follow-up:
 
-- `GET /managed/settings` (M-B)
 - `POST /v1/{metrics,logs,traces}` (M-C) — inbound OTLP *ingest*. Note shunt's
-  `telemetry.rs` is outbound OTLP *export*, a different thing.
+  `telemetry.rs` is outbound OTLP *export*, a different thing. M-B accepts the
+  destination config and pushes client env, but does not register ingest routes.
 
 ### Behavioral gaps
 

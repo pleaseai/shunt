@@ -145,9 +145,9 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
         router = router.merge(admin::admin_router());
     }
 
-    // Opt-in Claude apps gateway login surface (M-A): registered only when
+    // Opt-in Claude apps gateway surface (M-A/M-B): registered only when
     // `[server.gateway]` was present at boot. OAuth handlers remain unauthenticated;
-    // minted JWTs gate the existing inference and discovery routes.
+    // minted JWTs gate managed settings plus existing inference and discovery routes.
     if gateway_enabled {
         router = router.merge(gateway::gateway_router());
     }

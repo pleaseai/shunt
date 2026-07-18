@@ -50,10 +50,11 @@ pub struct ServerConfig {
     /// `docs/m9-admin-surface.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admin: Option<AdminConfig>,
-    /// Optional OAuth device-flow login surface for Claude apps. Absent ⇒ the
-    /// discovery, device-approval, and token routes are not registered. Secrets
-    /// and static users are resolved from environment variables and hot-reloaded.
-    /// See `docs/gateway-login.md`.
+    /// Optional OAuth device-flow login and per-user managed-policy surface for
+    /// Claude apps. Absent ⇒ discovery, device approval, token, and managed
+    /// settings routes are not registered. Secrets, static users, and policies
+    /// are resolved into the hot-reloadable gateway snapshot.
+    /// See `docs/gateway-login.md` and `docs/gateway-managed-settings.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gateway: Option<GatewayConfig>,
     /// Optional opt-in inbound OpenAI Responses (Codex) endpoint. Absent ⇒ no
@@ -269,10 +270,10 @@ impl AdminConfig {
     }
 }
 
-/// `[server.gateway]` — opt-in OAuth device-flow login for Claude apps. The
-/// public URL is the JWT issuer and base for every advertised OAuth endpoint.
-/// Signing material and static approval users live in environment variables,
-/// never in the config file. Absent ⇒ no gateway-login routes exist.
+/// `[server.gateway]` — opt-in OAuth device-flow login and managed policy for
+/// Claude apps. The public URL is the JWT issuer and base for every advertised
+/// OAuth endpoint. Signing material and static approval users live in environment
+/// variables, never in the config file. Absent ⇒ no gateway routes exist.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GatewayConfig {
     /// Externally reachable URL used for issuer and OAuth endpoint metadata.
@@ -290,6 +291,42 @@ pub struct GatewayConfig {
     /// Enable only behind a trusted proxy that replaces client-supplied values.
     #[serde(default)]
     pub trust_forwarded_for: bool,
+    /// Ordered per-user managed-settings policies. `None` keeps the endpoint at
+    /// its explicit "no managed policy" 404 behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policies: Option<Vec<GatewayPolicyConfig>>,
+    /// Client telemetry configuration. M-B uses this only to push the six OTLP
+    /// environment variables; the inbound relay routes arrive in M-C (#189).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telemetry: Option<GatewayTelemetryConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct GatewayPolicyConfig {
+    #[serde(rename = "match", default, skip_serializing_if = "Option::is_none")]
+    pub matcher: Option<GatewayPolicyMatch>,
+    /// Open-schema `managed-settings.json` document.
+    pub cli: toml::Value,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GatewayPolicyMatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emails: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct GatewayTelemetryConfig {
+    #[serde(default)]
+    pub forward_to: Vec<GatewayTelemetryDestination>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct GatewayTelemetryDestination {
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub headers: Option<BTreeMap<String, String>>,
 }
 
 fn default_gateway_jwt_secret_env() -> String {
@@ -348,13 +385,99 @@ impl GatewayConfig {
                     message,
                 }
             })?;
+        let policies = self
+            .policies
+            .as_ref()
+            .map(|policies| {
+                if policies.is_empty() {
+                    return Err(ConfigError::EmptyGatewayPolicies);
+                }
+                policies
+                    .iter()
+                    .enumerate()
+                    .map(|(index, policy)| {
+                        let emails = match policy
+                            .matcher
+                            .as_ref()
+                            .and_then(|matcher| matcher.emails.as_ref())
+                        {
+                            Some(emails) if emails.is_empty() => {
+                                return Err(ConfigError::EmptyGatewayPolicyEmails { index });
+                            }
+                            Some(emails) => {
+                                if let Some(email_index) =
+                                    emails.iter().position(|email| email.trim().is_empty())
+                                {
+                                    return Err(ConfigError::EmptyGatewayPolicyEmail {
+                                        index,
+                                        email_index,
+                                    });
+                                }
+                                Some(emails.clone())
+                            }
+                            None => None,
+                        };
+                        let settings = toml_to_json(&policy.cli);
+                        if !settings.is_object() {
+                            return Err(ConfigError::InvalidGatewayPolicyCli { index });
+                        }
+                        Ok(crate::gateway::ResolvedPolicy { emails, settings })
+                    })
+                    .collect::<Result<Vec<_>, ConfigError>>()
+            })
+            .transpose()?;
+        let telemetry_push = self
+            .telemetry
+            .as_ref()
+            .is_some_and(|telemetry| !telemetry.forward_to.is_empty());
+        if let Some(telemetry) = &self.telemetry {
+            for (index, destination) in telemetry.forward_to.iter().enumerate() {
+                let url = reqwest::Url::parse(destination.url.trim()).map_err(|error| {
+                    ConfigError::InvalidGatewayTelemetryUrl {
+                        index,
+                        message: error.to_string(),
+                    }
+                })?;
+                if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+                    return Err(ConfigError::InvalidGatewayTelemetryUrl {
+                        index,
+                        message: format!(
+                            "must be an http(s) URL with a host, got `{}`",
+                            destination.url
+                        ),
+                    });
+                }
+            }
+        }
         Ok(crate::gateway::GatewayAuth::new(
             public_url.as_str().trim_end_matches('/').to_string(),
             secret.into_bytes(),
             self.token_ttl_seconds,
             self.trust_forwarded_for,
             users,
-        ))
+        )
+        .with_managed_policies(policies, telemetry_push))
+    }
+}
+
+fn toml_to_json(value: &toml::Value) -> serde_json::Value {
+    match value {
+        toml::Value::String(value) => serde_json::Value::String(value.clone()),
+        toml::Value::Integer(value) => serde_json::Value::Number((*value).into()),
+        toml::Value::Float(value) => serde_json::Number::from_f64(*value)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
+        toml::Value::Boolean(value) => serde_json::Value::Bool(*value),
+        toml::Value::Datetime(value) => serde_json::Value::String(value.to_string()),
+        toml::Value::Array(values) => {
+            serde_json::Value::Array(values.iter().map(toml_to_json).collect())
+        }
+        toml::Value::Table(values) => serde_json::Value::Object(
+            values
+                .iter()
+                .map(|(key, value)| (key.clone(), toml_to_json(value)))
+                .collect(),
+        ),
     }
 }
 
@@ -1013,6 +1136,16 @@ pub enum ConfigError {
     MissingGatewayUsers { env: String },
     #[error("[server.gateway] users in {env} are invalid: {message}")]
     InvalidGatewayUsers { env: String, message: String },
+    #[error("[server.gateway.policies] must contain at least one policy when configured")]
+    EmptyGatewayPolicies,
+    #[error("[server.gateway.policies][{index}].match.emails must contain at least one email when present")]
+    EmptyGatewayPolicyEmails { index: usize },
+    #[error("[server.gateway.policies][{index}].match.emails[{email_index}] must not be empty")]
+    EmptyGatewayPolicyEmail { index: usize, email_index: usize },
+    #[error("[server.gateway.policies][{index}].cli must be a table/object")]
+    InvalidGatewayPolicyCli { index: usize },
+    #[error("[server.gateway.telemetry].forward_to[{index}].url is invalid: {message}")]
+    InvalidGatewayTelemetryUrl { index: usize, message: String },
     #[error("[server.auth] is set but {env} is unset or empty; refusing to run open")]
     MissingClientTokens { env: String },
     #[error("invalid client tokens in {env}: {message}")]
@@ -1778,8 +1911,9 @@ mod tests {
     use super::{
         config_file_candidates, default_auth_header, host_is_chatgpt, identity_collisions,
         AccountConfig, AdminConfig, AuthMode, CodexEndpointConfig, Config, ConfigError,
-        ConfigFormat, GatewayConfig, InboundAuthConfig, ModelConfig, PoolConfig, ProviderKind,
-        ResponsesFlavor, RetryConfig, UsageEndpointConfig,
+        ConfigFormat, GatewayConfig, GatewayPolicyConfig, GatewayPolicyMatch,
+        GatewayTelemetryConfig, GatewayTelemetryDestination, InboundAuthConfig, ModelConfig,
+        PoolConfig, ProviderKind, ResponsesFlavor, RetryConfig, UsageEndpointConfig,
     };
 
     #[test]
@@ -2272,6 +2406,8 @@ mod tests {
             users_env: users_env.clone(),
             token_ttl_seconds: 3600,
             trust_forwarded_for: false,
+            policies: None,
+            telemetry: None,
         };
 
         assert!(matches!(
@@ -2319,6 +2455,8 @@ mod tests {
             users_env: "UNUSED_GATEWAY_USERS".to_string(),
             token_ttl_seconds: 3600,
             trust_forwarded_for: false,
+            policies: None,
+            telemetry: None,
         };
         assert!(matches!(
             gateway.resolve(),
@@ -2345,6 +2483,66 @@ mod tests {
             gateway.resolve(),
             Err(ConfigError::InvalidGatewayTokenTtl)
         ));
+    }
+
+    #[test]
+    fn gateway_config_rejects_invalid_managed_policy_and_telemetry() {
+        let suffix = format!("{}_managed", std::process::id());
+        let secret_env = format!("SHUNT_GATEWAY_CONFIG_SECRET_{suffix}");
+        let users_env = format!("SHUNT_GATEWAY_CONFIG_USERS_{suffix}");
+        std::env::set_var(&secret_env, "0123456789abcdef0123456789abcdef");
+        std::env::set_var(&users_env, "dev@example.com:password");
+        let base = GatewayConfig {
+            public_url: "https://gateway.example".to_string(),
+            jwt_secret_env: secret_env.clone(),
+            users_env: users_env.clone(),
+            token_ttl_seconds: 3600,
+            trust_forwarded_for: false,
+            policies: None,
+            telemetry: None,
+        };
+
+        let mut gateway = base.clone();
+        gateway.policies = Some(vec![]);
+        assert!(matches!(
+            gateway.resolve(),
+            Err(ConfigError::EmptyGatewayPolicies)
+        ));
+
+        gateway.policies = Some(vec![GatewayPolicyConfig {
+            matcher: Some(GatewayPolicyMatch {
+                emails: Some(vec![]),
+            }),
+            cli: toml::Value::Table(toml::Table::new()),
+        }]);
+        assert!(matches!(
+            gateway.resolve(),
+            Err(ConfigError::EmptyGatewayPolicyEmails { index: 0 })
+        ));
+
+        gateway.policies = Some(vec![GatewayPolicyConfig {
+            matcher: None,
+            cli: toml::Value::String("not-an-object".to_string()),
+        }]);
+        assert!(matches!(
+            gateway.resolve(),
+            Err(ConfigError::InvalidGatewayPolicyCli { index: 0 })
+        ));
+
+        gateway.policies = None;
+        gateway.telemetry = Some(GatewayTelemetryConfig {
+            forward_to: vec![GatewayTelemetryDestination {
+                url: "ftp://collector.example".to_string(),
+                headers: None,
+            }],
+        });
+        assert!(matches!(
+            gateway.resolve(),
+            Err(ConfigError::InvalidGatewayTelemetryUrl { index: 0, .. })
+        ));
+
+        std::env::remove_var(secret_env);
+        std::env::remove_var(users_env);
     }
 
     #[test]

@@ -142,7 +142,33 @@ async fn forward(
     // The client-token header is stripped below either way (and on gated routes
     // the standard credential headers too), so a gate token never leaks
     // upstream.
-    let headers = check_inbound_auth(&state, &route, headers).map_err(|error| *error)?;
+    let (headers, gateway_claims) =
+        check_inbound_auth(&state, &route, headers).map_err(|error| *error)?;
+    if let (Some(auth), Some(claims)) = (&state.gateway_auth, gateway_claims.as_ref()) {
+        if let Some(settings) = crate::gateway::managed::resolve(auth, claims) {
+            if let Some(available_models) = crate::gateway::managed::available_models(&settings) {
+                if let Some(model) = serde_json::from_slice::<Value>(&body)
+                    .ok()
+                    .and_then(|request| request.get("model")?.as_str().map(str::to_string))
+                {
+                    if !available_models.contains(&model.as_str()) {
+                        let message = format!(
+                            "model \"{model}\" is not permitted by this gateway's managed policy"
+                        );
+                        return Err(ForwardError {
+                            message: message.clone(),
+                            response: ShuntError::new(
+                                StatusCode::BAD_REQUEST,
+                                "invalid_request_error",
+                                message,
+                            )
+                            .into_response(),
+                        });
+                    }
+                }
+            }
+        }
+    }
     let headers = &headers;
     // The Responses API has no token-counting endpoint. For a responses-routed
     // model, either count locally with tiktoken (the default) or return 501
@@ -227,34 +253,34 @@ fn check_inbound_auth(
     state: &AppState,
     route: &routing::Route,
     headers: &HeaderMap,
-) -> Result<HeaderMap, Box<ForwardError>> {
+) -> Result<(HeaderMap, Option<crate::gateway::jwt::Claims>), Box<ForwardError>> {
     let mut forwarded = headers.clone();
     forwarded.remove("x-shunt-inbound-client");
     if let Some(auth) = &state.inbound_auth {
         forwarded.remove(auth.header());
     }
 
+    let gateway_identity = state
+        .gateway_auth
+        .as_ref()
+        .and_then(|auth| auth.authenticate_bearer(headers));
     let injects_credential = state
         .config
         .provider(&route.provider)
         .map(|provider| provider.auth != AuthMode::Passthrough)
         .unwrap_or(false);
     if !injects_credential || (state.inbound_auth.is_none() && state.gateway_auth.is_none()) {
-        return Ok(forwarded);
+        return Ok((forwarded, gateway_identity));
     }
 
     let static_client = state
         .inbound_auth
         .as_ref()
         .and_then(|auth| auth.authenticate_client(headers));
-    let gateway_identity = state
-        .gateway_auth
-        .as_ref()
-        .and_then(|auth| auth.authenticate_bearer(headers));
     if static_client.is_some() || gateway_identity.is_some() {
         let client = static_client
             .map(str::to_string)
-            .or_else(|| gateway_identity.map(|claims| claims.email))
+            .or_else(|| gateway_identity.as_ref().map(|claims| claims.email.clone()))
             .expect("one composed authentication branch matched");
         tracing::info!(client = %client, provider = %route.provider, "inbound client authenticated");
         forwarded.remove("authorization");
@@ -264,7 +290,7 @@ fn check_inbound_auth(
                 forwarded.insert("x-shunt-inbound-client", client);
             }
         }
-        return Ok(forwarded);
+        return Ok((forwarded, gateway_identity));
     }
 
     tracing::warn!(provider = %route.provider, "inbound auth failed: missing or invalid client credential");

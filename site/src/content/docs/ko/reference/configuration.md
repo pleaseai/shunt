@@ -39,6 +39,30 @@ description: 모든 shunt.toml 키 — server, providers, routes, models.
 
 관리자 토큰은 `[server.auth]` 아래에 구성되는 클라이언트 토큰과 별개의 자격 증명입니다; 하나의 자격 증명을 두 표면에 재사용하지 마세요.
 
+## `[server.gateway]` (선택)
+
+이 테이블은 Claude Code의 OAuth device-flow 로그인을 활성화합니다. `public_url`(필수), `jwt_secret_env`(기본 `SHUNT_GATEWAY_JWT_SECRET`), `users_env`(기본 `SHUNT_GATEWAY_USERS`), `token_ttl_seconds`(기본 `3600`), `trust_forwarded_for`(기본 `false`)를 지원합니다.
+
+비어 있지 않은 `[[server.gateway.policies]]` 목록은 인증된 `GET /managed/settings`를 활성화합니다. 각 정책의 선택적 `[server.gateway.policies.match]`에는 `emails`를 둘 수 있고, `[server.gateway.policies.cli]`는 스키마가 열린 Claude Code managed settings 객체입니다. `match` 생략 또는 빈 `match`는 catch-all입니다. 모든 catch-all을 순서대로 병합한 뒤, 이메일이 대소문자를 포함해 정확히 일치하는 첫 사용자 정책만 위에 병합합니다. 객체는 재귀 병합하고 배열은 교체하되, 키 이름에 `deny`가 포함된 배열은 중복 없이 합집합으로 병합합니다.
+
+`policies`가 없으면 endpoint는 `404`를 반환하고, 구성된 정책이 빈 문서로 해석되면 `200`과 `settings: {}`를 반환합니다. 응답의 `ETag`는 `checksum`과 같으며 일치하는 `If-None-Match`에는 `304`를 반환합니다. 해석된 `availableModels` 문자열 배열은 gateway JWT 사용자의 `/v1/messages`와 `/v1/messages/count_tokens`에서도 서버 측으로 강제됩니다.
+
+비어 있지 않은 `[server.gateway.telemetry].forward_to` 목록은 Claude Code telemetry 활성화 값과 OTLP exporter 세 개, `public_url` endpoint, `http/protobuf` protocol의 총 여섯 env 값을 managed settings에 주입합니다. 정책의 env 값이 충돌 시 우선합니다. 각 destination은 HTTP(S) `url`과 선택적 문자열 `headers` map을 받습니다. M-B에서는 env push만 활성화하며, OTLP ingest/relay route는 M-C(#189)에서 추가됩니다.
+
+```toml
+[[server.gateway.policies]]
+[server.gateway.policies.match]
+emails = ["alice@example.com"]
+[server.gateway.policies.cli]
+availableModels = ["claude-opus-4-8"]
+[server.gateway.policies.cli.env]
+DISABLE_UPDATES = "1"
+
+[server.gateway.telemetry]
+[[server.gateway.telemetry.forward_to]]
+url = "https://collector.example.com"
+```
+
 ## `[server.pool]` (선택)
 
 Claude(Anthropic) 계정 풀을 위한 쿼터 인지 로드 밸런싱 튜닝([상세](/ko/guides/anthropic-multi-account/#선택-튜닝-serverpool)). 테이블이 없으면 선택은 이 테이블이 존재하기 이전과 동일하게 단일 내장 `0.98` 임계값을 사용합니다.

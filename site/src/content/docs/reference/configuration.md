@@ -55,6 +55,33 @@ Startup fails closed when the URL is not a bare HTTPS origin (`http` is allowed 
 
 The issued bearer gates `/v1/models` and `/v1/messages`/`/v1/messages/count_tokens` requests whenever the selected provider injects a server-side credential; passthrough providers remain open. If `[server.auth]` is also present, either credential grants access. Device grants and rotating refresh tokens are process-lifetime, in-memory state in this milestone: a config reload preserves them, but restarting shunt invalidates device grants and refresh sessions. Existing access JWTs remain valid until expiry, after which users must sign in again. Expired grants and idle rate-limit identities are swept opportunistically. Device grants and rate-limit identities are each capped at 4,096 entries. Used refresh-token tombstones are retained for 30 days and capped at 64 per family.
 
+### `[[server.gateway.policies]]` (optional)
+
+An ordered, non-empty policy list enables authenticated `GET /managed/settings`. Each policy has an optional `[server.gateway.policies.match]` table and a required open-schema `[server.gateway.policies.cli]` object. `match` omitted, `match = {}`, or no `emails` means catch-all; an explicit empty `emails` list or blank entry fails startup.
+
+All catch-all policies merge in order, then the first exact, case-sensitive email match merges on top. Objects merge recursively; arrays replace except keys containing `deny`, whose arrays union without duplicates. No `policies` key makes the endpoint return `404`; a configured list that resolves to no keys returns `200` with `settings: {}`. Responses carry `uuid`, `checksum`, and an `ETag` equal to the checksum; matching `If-None-Match` returns `304`.
+
+If the resolved `cli.availableModels` is an array of strings, gateway-JWT requests to `/v1/messages` and `/v1/messages/count_tokens` are rejected with `400 invalid_request_error` when their top-level `model` is absent from the list. Static `[server.auth]` credentials remain unrestricted because they do not identify a gateway policy user.
+
+### `[server.gateway.telemetry]` (optional)
+
+`forward_to` is an array of destinations with a required HTTP(S) `url` and optional string `headers` map. A non-empty list injects six values into managed `settings.env`: `CLAUDE_CODE_ENABLE_TELEMETRY=1`, the `OTEL_METRICS_EXPORTER`, `OTEL_LOGS_EXPORTER`, and `OTEL_TRACES_EXPORTER` values set to `otlp`, `OTEL_EXPORTER_OTLP_ENDPOINT` set to `public_url`, and `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`. Policy env values win on conflicts. This table gates only the environment push in M-B; inbound OTLP ingest/relay is M-C (#189).
+
+```toml
+[[server.gateway.policies]]
+[server.gateway.policies.match]
+emails = ["alice@example.com"]
+[server.gateway.policies.cli]
+availableModels = ["claude-opus-4-8"]
+[server.gateway.policies.cli.env]
+DISABLE_UPDATES = "1"
+
+[server.gateway.telemetry]
+[[server.gateway.telemetry.forward_to]]
+url = "https://collector.example.com"
+headers = { "x-api-key" = "..." }
+```
+
 By default, `/device` ignores forwarding headers and rate-limits the socket peer. Set `trust_forwarded_for = true` only when shunt is reachable exclusively through a trusted reverse proxy that removes client-provided forwarding headers before setting its own value. Do not enable it on a directly exposed gateway.
 
 ## `[server.codex_endpoint]` (optional)

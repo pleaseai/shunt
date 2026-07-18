@@ -39,6 +39,30 @@ description: すべての shunt.toml キー — server、providers、routes、mo
 
 管理トークンは `[server.auth]` の下で設定されるクライアントトークンとは別個の認証情報です。1 つの認証情報を両方のサーフェスで再利用しないでください。
 
+## `[server.gateway]`（オプション）
+
+このテーブルは Claude Code の OAuth device-flow ログインを有効化します。`public_url`（必須）、`jwt_secret_env`（デフォルト `SHUNT_GATEWAY_JWT_SECRET`）、`users_env`（デフォルト `SHUNT_GATEWAY_USERS`）、`token_ttl_seconds`（デフォルト `3600`）、`trust_forwarded_for`（デフォルト `false`）をサポートします。
+
+空でない `[[server.gateway.policies]]` リストは、認証済み `GET /managed/settings` を有効化します。各ポリシーには任意の `[server.gateway.policies.match]` と `emails` を設定でき、`[server.gateway.policies.cli]` はオープンスキーマの Claude Code managed settings オブジェクトです。`match` の省略または空の `match` は catch-all です。すべての catch-all を順番にマージし、その上にメールアドレスが大文字小文字を含めて完全一致する最初のユーザーポリシーだけをマージします。オブジェクトは再帰的にマージし、配列は置換します。ただしキー名に `deny` を含む配列は、重複なしの和集合になります。
+
+`policies` がなければ endpoint は `404`、設定済みポリシーが空の文書に解決されれば `200` と `settings: {}` を返します。レスポンスの `ETag` は `checksum` と同じで、一致する `If-None-Match` には `304` を返します。解決された文字列配列 `availableModels` は、gateway JWT ユーザーの `/v1/messages` と `/v1/messages/count_tokens` にもサーバー側で適用されます。
+
+空でない `[server.gateway.telemetry].forward_to` リストは、Claude Code telemetry 有効化、3 つの OTLP exporter、`public_url` endpoint、`http/protobuf` protocol の合計 6 つの env 値を managed settings に注入します。競合時はポリシーの env 値が優先されます。各 destination は HTTP(S) `url` と任意の文字列 `headers` map を受け付けます。M-B は env push のみを有効化し、OTLP ingest/relay route は M-C（#189）で追加されます。
+
+```toml
+[[server.gateway.policies]]
+[server.gateway.policies.match]
+emails = ["alice@example.com"]
+[server.gateway.policies.cli]
+availableModels = ["claude-opus-4-8"]
+[server.gateway.policies.cli.env]
+DISABLE_UPDATES = "1"
+
+[server.gateway.telemetry]
+[[server.gateway.telemetry.forward_to]]
+url = "https://collector.example.com"
+```
+
 ## `[server.pool]`（オプション）
 
 Claude（Anthropic）アカウントプール向けの、クォータを考慮した負荷分散のチューニングです（[詳細](/ja/guides/anthropic-multi-account/#選択のチューニングserverpool)）。テーブルが存在しない場合、選択はこのテーブルが導入される前と同じ、組み込みの単一しきい値 `0.98` を使います。
