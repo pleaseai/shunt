@@ -79,8 +79,14 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Body)
             1
         }
         RecordedEvents::Client(names) => {
+            // Take the cardinality-registry lock once for the whole batch rather
+            // than per event; recording a counter is a cheap CPU-bound op, so it
+            // is done inside the lock without cloning the sanitized name out.
+            let mut seen = distinct_event_registry()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             for name in &names {
-                crate::metrics::record_codex_client_event(&bounded_event_name(name));
+                crate::metrics::record_codex_client_event(bounded_client_event(&mut seen, name));
             }
             names.len()
         }
@@ -109,31 +115,22 @@ fn events_for_body(read: Result<&[u8], ()>) -> RecordedEvents {
     }
 }
 
-/// Envelope for a Codex analytics batch. Only the batch shape and the three
-/// event-name fields are deserialized; `event_params` and any other payload are
-/// walked and discarded by serde without becoming struct fields, so the common
-/// case never builds a `Value` tree for a large nested event body (and the
-/// 256 KiB read cap bounds the worst case regardless). The name fields stay
-/// `Value` so a present-but-non-string field (e.g. a numeric `event_type`) is
-/// treated as absent and falls through to the next candidate rather than
-/// failing the whole batch.
+/// Envelope for a Codex analytics batch. Each element is kept as a `Value` so a
+/// malformed element (a bare string or number, or an object missing a name)
+/// degrades per-event to `other` instead of failing the whole batch, and a
+/// non-string name field falls through to the next candidate. The 256 KiB read
+/// cap bounds how much a single body can parse, so keeping elements as `Value`
+/// does not open an unbounded-allocation vector.
 #[derive(Deserialize)]
 struct AnalyticsBatch {
-    events: Option<Vec<AnalyticsEvent>>,
-}
-
-#[derive(Deserialize)]
-struct AnalyticsEvent {
-    event_type: Option<Value>,
-    event_name: Option<Value>,
-    name: Option<Value>,
+    events: Option<Vec<Value>>,
 }
 
 /// `None` only when the body is not a `{"events": [...]}` batch at all; an
-/// individual event without a recognizable string name field degrades to
-/// `other` instead of discarding the rest of the batch. Each candidate is
-/// checked with `as_str` before falling through, so a non-string `event_type`
-/// does not suppress a valid `event_name`/`name`.
+/// individual event that is not an object, or that lacks a recognizable string
+/// name field, degrades to `other` instead of discarding the rest of the batch.
+/// Each candidate is checked with `as_str` before falling through, so a
+/// non-string `event_type` does not suppress a valid `event_name`/`name`.
 fn parse_event_names(body: &[u8]) -> Option<Vec<String>> {
     let batch: AnalyticsBatch = serde_json::from_slice(body).ok()?;
     let events = batch.events?;
@@ -142,11 +139,10 @@ fn parse_event_names(body: &[u8]) -> Option<Vec<String>> {
             .iter()
             .map(|event| {
                 event
-                    .event_type
-                    .as_ref()
+                    .get("event_type")
                     .and_then(Value::as_str)
-                    .or_else(|| event.event_name.as_ref().and_then(Value::as_str))
-                    .or_else(|| event.name.as_ref().and_then(Value::as_str))
+                    .or_else(|| event.get("event_name").and_then(Value::as_str))
+                    .or_else(|| event.get("name").and_then(Value::as_str))
                     .unwrap_or(OTHER_EVENT)
                     .to_owned()
             })
@@ -154,20 +150,18 @@ fn parse_event_names(body: &[u8]) -> Option<Vec<String>> {
     )
 }
 
-/// Sanitize a client-supplied event name and fold it to `other` once the
-/// process-wide distinct-name budget is spent. A name that sanitizes to a
-/// reserved system reason code (`read_error`/`unparsed`/`other`) is also folded
-/// to `other`, so a client can never reach the system-generated buckets that
-/// `post` records directly.
-fn bounded_event_name(event: &str) -> String {
+/// Map one client-supplied event name to its bounded, sanitized metric value,
+/// using `seen` as the distinct-name budget. A name that sanitizes to a reserved
+/// system reason code (`read_error`/`unparsed`/`other`) folds to `other`, so a
+/// client can never reach the system-generated buckets that `post` records
+/// directly; a novel name past the budget also folds, capping cardinality.
+/// Returns a borrow (no per-event allocation).
+fn bounded_client_event<'a>(seen: &mut HashSet<String>, event: &'a str) -> &'a str {
     let sanitized = sanitize_event_name(event);
     if is_reserved(sanitized) {
-        return OTHER_EVENT.to_owned();
+        return OTHER_EVENT;
     }
-    let mut seen = distinct_event_registry()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    bound_within_cap(&mut seen, sanitized).to_owned()
+    bound_within_cap(seen, sanitized)
 }
 
 /// The three fixed reason codes shunt itself emits — bounded by construction.
@@ -215,7 +209,7 @@ fn sanitize_event_name(event: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::{
-        bound_within_cap, bounded_event_name, events_for_body, parse_event_names,
+        bound_within_cap, bounded_client_event, events_for_body, parse_event_names,
         sanitize_event_name, RecordedEvents, MAX_DISTINCT_EVENTS, OTHER_EVENT,
     };
     use std::collections::HashSet;
@@ -296,6 +290,22 @@ mod tests {
     }
 
     #[test]
+    fn malformed_element_does_not_discard_the_batch() {
+        // A non-object element (bare string/number) degrades to `other` per event
+        // rather than failing the whole batch and dropping valid siblings (cubic P2).
+        let body = br#"{"events":[{"event_type":"codex.turn_started"},"junk",42,{"name":"codex.tool_call"}]}"#;
+        assert_eq!(
+            parse_event_names(body),
+            Some(vec![
+                "codex.turn_started".to_owned(),
+                "other".to_owned(),
+                "other".to_owned(),
+                "codex.tool_call".to_owned(),
+            ])
+        );
+    }
+
+    #[test]
     fn events_for_body_records_one_name_per_event() {
         let body = br#"{"events":[{"event_type":"codex.turn_started"},{"event_type":"codex.turn_completed"}]}"#;
         assert_eq!(
@@ -323,10 +333,16 @@ mod tests {
     fn client_names_cannot_impersonate_reserved_codes() {
         // A client event that sanitizes to a reserved system reason code folds to
         // `other`, so the `read_error`/`unparsed` buckets stay system-only
-        // (greptile P2). These inputs early-return before the global registry.
-        assert_eq!(bounded_event_name("read_error"), OTHER_EVENT);
-        assert_eq!(bounded_event_name("unparsed"), OTHER_EVENT);
-        assert_eq!(bounded_event_name("other"), OTHER_EVENT);
+        // (greptile P2).
+        let mut seen = HashSet::new();
+        assert_eq!(bounded_client_event(&mut seen, "read_error"), OTHER_EVENT);
+        assert_eq!(bounded_client_event(&mut seen, "unparsed"), OTHER_EVENT);
+        assert_eq!(bounded_client_event(&mut seen, "other"), OTHER_EVENT);
+        // A real client name still passes through and consumes the budget.
+        assert_eq!(
+            bounded_client_event(&mut seen, "codex.turn_started"),
+            "codex.turn_started"
+        );
     }
 
     #[test]
