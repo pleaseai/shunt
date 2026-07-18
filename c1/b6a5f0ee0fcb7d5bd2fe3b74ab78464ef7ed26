@@ -1,0 +1,63 @@
+.please/docs/review/rejected-findings.jsonl
+  s_247b9924846b28::t_0f916fdce4c8e4 23
+src/config.rs
+  s_247b9924846b28::t_8988b44b317d1a 129-132
+  s_247b9924846b28::t_9228437c5a6c3d 2064-2073
+  s_247b9924846b28::t_5ee1b926f02ce2 2029,2037-2042
+  s_247b9924846b28::t_9c6ed8833febd8 2063
+src/adapters/responses/pool.rs
+  s_247b9924846b28::t_7e5209edee8021 89-93,98,102
+  s_247b9924846b28::t_b6d0624c6cbe99 145
+  s_247b9924846b28::t_531abe4dfacf68 210-213
+  s_247b9924846b28::t_daf4bc9cfa2660 282-285
+site/src/content/docs/ko/reference/configuration.md
+  s_247b9924846b28::t_3e52aeff579933 64
+src/adapters/anthropic/mod.rs
+  s_247b9924846b28::t_bc2ecb21ae429f 459-463
+  s_247b9924846b28::t_78b9c73523a36f 258-262
+  s_247b9924846b28::t_23a3437a9df58b 329-333
+  s_247b9924846b28::t_f3301c4476699d 171-175,180,184
+docs/m10-codex-multi-account.md
+  s_247b9924846b28::t_2947195bf287b5 178
+site/src/content/docs/ja/reference/configuration.md
+  s_247b9924846b28::t_a54899764052d0 64
+src/accounts.rs
+  s_247b9924846b28::t_e5995ef59fc520 1874,1885,1897,1899-1900,1903,1910,1913,1925,1927-1928,1934,1940,1942,1947,1955,1957,1969-1970,1972
+  s_247b9924846b28::t_6870fa4a32b7ee 1877,1881,1889,1931
+  s_247b9924846b28::t_b6d0624c6cbe99 1915-1917
+  s_247b9924846b28::t_33113c78f78b0f 778-783,785-786,790
+  s_247b9924846b28::t_225d6e36528211 603-608,613
+  s_247b9924846b28::t_31e83ad4b27727 616-635
+tests/codex_multi_account.rs
+  s_247b9924846b28::t_e9621a3971a29f 868-892,897-1015,1017-1092
+  s_247b9924846b28::t_ec2a5643530e9a 7-14
+  s_247b9924846b28::t_b6d0624c6cbe99 893-896,1016
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_247b9924846b28::t_ca82bb9cbcdcf9 64
+site/src/content/docs/reference/configuration.md
+  s_247b9924846b28::t_71a4bd17e93e55 100
+src/adapters/mod.rs
+  s_247b9924846b28::t_5a35a0c495a97d 96,98
+  s_247b9924846b28::t_4d1333a0bd329f 58-95,97,99-128
+  s_247b9924846b28::t_9c4d0cba0ebb1a 14-38
+src/adapters/responses/inbound.rs
+  s_247b9924846b28::t_fbc57ba3d36adc 214-217
+  s_247b9924846b28::t_f2c847b30d3d15 271-274
+  s_247b9924846b28::t_c277eb9a9c0af1 148-151,156,160
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "c1b6a5f0ee0fcb7d5bd2fe3b74ab78464ef7ed26",
+  "prompts": {},
+  "sessions": {
+    "s_247b9924846b28": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cf790ea6-317d-422b-83e2-e54777d32352",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
