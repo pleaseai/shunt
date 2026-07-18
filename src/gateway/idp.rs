@@ -122,27 +122,17 @@ pub async fn authorize(
             "Sign-in with the identity provider is unavailable right now.",
         );
     }
-    let mut location = match reqwest::Url::parse(&endpoint) {
-        Ok(url) => url,
-        Err(error) => {
-            tracing::warn!(%error, "gateway: identity-provider authorization endpoint is invalid");
-            return error_page(
-                &auth,
-                &user_code,
-                StatusCode::BAD_GATEWAY,
-                "Sign-in with the identity provider is unavailable right now.",
-            );
-        }
+    let Some(location) =
+        idp_client::authorization_url(&endpoint, &idp, &redirect_uri, &pkce.state, &pkce.challenge)
+    else {
+        tracing::warn!("gateway: identity-provider authorization endpoint is invalid");
+        return error_page(
+            &auth,
+            &user_code,
+            StatusCode::BAD_GATEWAY,
+            "Sign-in with the identity provider is unavailable right now.",
+        );
     };
-    location.query_pairs_mut().extend_pairs([
-        ("response_type", "code"),
-        ("client_id", idp.client_id.as_str()),
-        ("redirect_uri", redirect_uri.as_str()),
-        ("scope", idp.scopes.join(" ").as_str()),
-        ("state", pkce.state.as_str()),
-        ("code_challenge", pkce.challenge.as_str()),
-        ("code_challenge_method", "S256"),
-    ]);
     redirect(location)
 }
 

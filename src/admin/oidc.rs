@@ -71,32 +71,23 @@ pub async fn start(State(state): State<AppState>, headers: HeaderMap) -> Respons
         redirect_uri.clone(),
         auth.pending_ttl(),
     ) {
+        tracing::warn!("admin: OIDC state store is full or state collision occurred");
         return error_page(
             &auth,
             StatusCode::BAD_GATEWAY,
             "Sign-in with the identity provider is unavailable right now.",
         );
     }
-    let mut location = match reqwest::Url::parse(&endpoint) {
-        Ok(url) => url,
-        Err(error) => {
-            tracing::warn!(%error, "admin: identity-provider authorization endpoint is invalid");
-            return error_page(
-                &auth,
-                StatusCode::BAD_GATEWAY,
-                "Sign-in with the identity provider is unavailable right now.",
-            );
-        }
+    let Some(location) =
+        idp_client::authorization_url(&endpoint, &idp, &redirect_uri, &pkce.state, &pkce.challenge)
+    else {
+        tracing::warn!("admin: identity-provider authorization endpoint is invalid");
+        return error_page(
+            &auth,
+            StatusCode::BAD_GATEWAY,
+            "Sign-in with the identity provider is unavailable right now.",
+        );
     };
-    location.query_pairs_mut().extend_pairs([
-        ("response_type", "code"),
-        ("client_id", idp.client_id.as_str()),
-        ("redirect_uri", redirect_uri.as_str()),
-        ("scope", idp.scopes.join(" ").as_str()),
-        ("state", pkce.state.as_str()),
-        ("code_challenge", pkce.challenge.as_str()),
-        ("code_challenge_method", "S256"),
-    ]);
     redirect_to_idp(location)
 }
 
@@ -186,10 +177,9 @@ pub async fn callback(
             "This account is not authorized for this admin surface.",
         );
     }
-    let email = identity.email;
     let (sid, _csrf) = state.admin_stores.sessions.create(auth.session_ttl());
     let cookie = set_cookie(&sid, secure_cookie(&headers), auth.session_ttl());
-    tracing::info!(%email, "admin: OIDC browser session created");
+    tracing::info!("admin: OIDC browser session created");
     (
         StatusCode::SEE_OTHER,
         [

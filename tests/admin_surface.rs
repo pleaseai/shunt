@@ -10,7 +10,7 @@ use std::{net::SocketAddr, path::PathBuf, time::SystemTime};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use reqwest::StatusCode;
 use shunt::{
-    config::{AccountConfig, AdminConfig, AdminOidcConfig, AuthMode, Config},
+    config::{AccountConfig, AdminConfig, AdminOidcConfig, AuthMode, Config, OidcProviderConfig},
     server,
 };
 use tokio::task::JoinHandle;
@@ -152,15 +152,17 @@ fn admin_oidc_config(tokens_env: &str, secret_env: &str, idp: &MockServer) -> Co
     let mut config = admin_config(tokens_env);
     config.server.admin.as_mut().unwrap().oidc = Some(AdminOidcConfig {
         public_url: "http://127.0.0.1:1".into(),
-        issuer: idp.uri(),
-        client_id: "admin-client".into(),
         client_secret_env: secret_env.into(),
-        allowed_domains: vec!["example.com".into()],
-        allowed_emails: vec![],
-        scopes: vec![],
-        authorization_endpoint: Some(format!("{}/authorize", idp.uri())),
-        token_endpoint: Some(format!("{}/token", idp.uri())),
-        userinfo_endpoint: Some(format!("{}/userinfo", idp.uri())),
+        provider: OidcProviderConfig {
+            issuer: idp.uri(),
+            client_id: "admin-client".into(),
+            allowed_domains: vec!["example.com".into()],
+            allowed_emails: vec![],
+            scopes: vec![],
+            authorization_endpoint: Some(format!("{}/authorize", idp.uri())),
+            token_endpoint: Some(format!("{}/token", idp.uri())),
+            userinfo_endpoint: Some(format!("{}/userinfo", idp.uri())),
+        },
     });
     config
 }
@@ -426,9 +428,9 @@ async fn admin_oidc_discovery_builds_authorization_redirect() {
         &idp,
     );
     let oidc = config.server.admin.as_mut().unwrap().oidc.as_mut().unwrap();
-    oidc.authorization_endpoint = None;
-    oidc.token_endpoint = None;
-    oidc.userinfo_endpoint = None;
+    oidc.provider.authorization_endpoint = None;
+    oidc.provider.token_endpoint = None;
+    oidc.provider.userinfo_endpoint = None;
     let gateway = start_with_addr(config).await;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())

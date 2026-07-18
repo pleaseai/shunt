@@ -48,6 +48,30 @@ pub async fn authorization_endpoint(state: &AppState, idp: &ResolvedIdp) -> Resu
     Ok(discover(state, idp).await?.authorization_endpoint)
 }
 
+/// Build the OIDC authorization redirect URL with the standard authorization-code
+/// + PKCE query parameters shared by every browser sign-in entry point.
+///
+/// Returns `None` when the discovered endpoint is not a valid URL.
+pub fn authorization_url(
+    endpoint: &str,
+    idp: &crate::gateway::ResolvedIdp,
+    redirect_uri: &str,
+    state: &str,
+    challenge: &str,
+) -> Option<reqwest::Url> {
+    let mut location = reqwest::Url::parse(endpoint).ok()?;
+    location.query_pairs_mut().extend_pairs([
+        ("response_type", "code"),
+        ("client_id", idp.client_id.as_str()),
+        ("redirect_uri", redirect_uri),
+        ("scope", idp.scopes.join(" ").as_str()),
+        ("state", state),
+        ("code_challenge", challenge),
+        ("code_challenge_method", "S256"),
+    ]);
+    Some(location)
+}
+
 async fn token_endpoint(state: &AppState, idp: &ResolvedIdp) -> Result<String> {
     if let Some(endpoint) = &idp.token_endpoint {
         return Ok(endpoint.clone());
