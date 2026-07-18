@@ -1,0 +1,124 @@
+src/proxy.rs
+  s_ea03d2d7880bf8::t_ac2559b365f093 137
+  s_ea03d2d7880bf8::t_1db1ac7d6d0c85 152-154
+  s_ea03d2d7880bf8::t_2639d61010ed43 149-151,156-167
+  s_ea03d2d7880bf8::t_5270ed64ca6be0 136,138-140
+src/gateway/tests.rs
+  s_ea03d2d7880bf8::t_b469ed59d0ba99 618-631
+  s_ea03d2d7880bf8::t_68312be0d1c538 1037,1039-1043
+  s_ea03d2d7880bf8::t_e92183db5b2c0d 786-787
+  s_ea03d2d7880bf8::t_177da0b82ad884 1133
+  s_ea03d2d7880bf8::t_e7c6f9dda01700 764,769-783,785,788
+  s_ea03d2d7880bf8::t_1f330ee74de3ee 617,763,765-768,784,789-848,868-869,872-881,890-896,902-904,975
+  s_ea03d2d7880bf8::t_a5c07c6e9404db 905-962
+  s_ea03d2d7880bf8::t_6c5815fc64ab51 717-726
+  s_ea03d2d7880bf8::t_8517121e79d85d 976-1022
+  s_ea03d2d7880bf8::t_fc8caf44557993 1052
+  s_ea03d2d7880bf8::t_3f8cf63944c2c0 1090,1097-1125,1131
+  s_ea03d2d7880bf8::t_bfe59e6f4e8ab9 849-867,870-871,882-889,897-901
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_ea03d2d7880bf8::t_3c23dc5c88cda3 56
+  s_ea03d2d7880bf8::t_cf137e29d11519 44
+  s_ea03d2d7880bf8::t_6620ab3754365a 46-54,58,63,65,67-70,84,87
+  s_ea03d2d7880bf8::t_ca9aed7b5e5492 62
+  s_ea03d2d7880bf8::t_ed5d9dd33c29fc 66
+  s_ea03d2d7880bf8::t_2ce88d125105e8 60
+  s_ea03d2d7880bf8::t_14488d2d3a17e0 64
+  s_b35784497fcfed::t_cd8bc0509fc930 55,57,88
+site/src/content/docs/reference/endpoints.md
+  s_ea03d2d7880bf8::t_5ab075b6cce026 15
+  s_ea03d2d7880bf8::t_0bf7f67ed5b47c 33-44
+src/server.rs
+  s_ea03d2d7880bf8::t_72c8d52414daa7 150-152
+site/src/content/docs/guides/gateway-login.md
+  s_ea03d2d7880bf8::t_9a740386860b9f 89-92
+  s_ea03d2d7880bf8::t_1eb0603ae28b2a 98-102
+  s_ea03d2d7880bf8::t_d5e5bd7d17c48b 93-95
+src/config.rs
+  s_ea03d2d7880bf8::t_3a56dd9c5a705e 1185-1190
+  s_ea03d2d7880bf8::t_7504f8d5c4b135 421-430
+  s_ea03d2d7880bf8::t_cc05acd4cace1b 2568-2580
+  s_ea03d2d7880bf8::t_6d12730079a286 298
+  s_ea03d2d7880bf8::t_b797f742a72295 2567,2590-2591,2593-2600,2602-2607,2621-2631
+  s_ea03d2d7880bf8::t_5224446ac429c4 469-493,495-496,499-502,505-518
+  s_ea03d2d7880bf8::t_f40cf2c535947b 2608-2620
+  s_ea03d2d7880bf8::t_873f431a938456 299-300
+  s_ea03d2d7880bf8::t_3440577715ba6c 2592
+  s_ea03d2d7880bf8::t_ba45715381da88 2601
+site/src/content/docs/ko/reference/configuration.md
+  s_ea03d2d7880bf8::t_f45e324191498e 56
+  s_ea03d2d7880bf8::t_bc510e37016d79 60
+  s_ea03d2d7880bf8::t_7c5cb4cf699fcf 46-54,58,63,65,67-70,84,87
+  s_ea03d2d7880bf8::t_c57e99c94a3eb0 62
+  s_ea03d2d7880bf8::t_5c798a30caec95 44
+  s_ea03d2d7880bf8::t_9ac0bba1f30944 66
+  s_ea03d2d7880bf8::t_21685dcb794750 64
+  s_b35784497fcfed::t_e127a113899dcb 55,57,88
+.please/docs/review/rejected-findings.jsonl
+  s_ea03d2d7880bf8::t_bac5b866ac0a4a 23-32
+  s_ea03d2d7880bf8::t_5553eb07ff38d8 33
+site/src/content/docs/reference/configuration.md
+  s_ea03d2d7880bf8::t_911f17ac21944b 44
+  s_ea03d2d7880bf8::t_c1f3e7831617e2 66
+  s_ea03d2d7880bf8::t_ca4e205ea8d22a 64
+  s_ea03d2d7880bf8::t_5b43b1a9ac1188 60
+  s_ea03d2d7880bf8::t_e916c743d67b2e 62
+  s_b35784497fcfed::t_e4ae9e5acb2775 65
+src/routing.rs
+  s_ea03d2d7880bf8::t_a27b0800e25ea4 52-53
+  s_ea03d2d7880bf8::t_67c2f0495ba5a1 64
+  s_ea03d2d7880bf8::t_46b212042ed117 44
+  s_ea03d2d7880bf8::t_507753dcdcd5ac 41-43
+site/src/content/docs/ja/reference/configuration.md
+  s_ea03d2d7880bf8::t_3c2ecfb9306aae 46-54,58,63,65,67-70,84,87
+  s_ea03d2d7880bf8::t_e1115c74d8054c 62
+  s_ea03d2d7880bf8::t_203f8fc7d9612a 66
+  s_ea03d2d7880bf8::t_47d0847362eaf8 64
+  s_ea03d2d7880bf8::t_e2d045b8f54780 56
+  s_ea03d2d7880bf8::t_d6dd15a3920a4e 60
+  s_ea03d2d7880bf8::t_69efcf6f272afd 44
+  s_b35784497fcfed::t_8c46c429b0adc2 55,57,88
+docs/gateway-managed-settings.md
+  s_ea03d2d7880bf8::t_070c2dcb95c18b 79-83
+  s_ea03d2d7880bf8::t_026728979259f1 48-50
+  s_ea03d2d7880bf8::t_31d8177f875848 133-138
+  s_ea03d2d7880bf8::t_af336e4d3acf07 20
+  s_ea03d2d7880bf8::t_18f394d0495bf9 39-42
+src/gateway/mod.rs
+  s_ea03d2d7880bf8::t_f98b21907e85d0 8
+  s_ea03d2d7880bf8::t_7d45f81caef8c0 70,75-80,84-87
+  s_ea03d2d7880bf8::t_b59523cc6aa436 31-32
+  s_ea03d2d7880bf8::t_5367e58ea99a6d 22
+  s_ea03d2d7880bf8::t_8ec96beae87c99 65-66
+  s_ea03d2d7880bf8::t_53c29b7ec6c335 15
+src/gateway/managed.rs
+  s_ea03d2d7880bf8::t_400b6beeace30a 23-25,28-33,35,37-46,49-56,63,69,75
+  s_ea03d2d7880bf8::t_6ca5276726763c 72,76
+  s_ea03d2d7880bf8::t_59419d1152f632 1-2
+  s_ea03d2d7880bf8::t_2089c3f4fadc9b 212-235
+  s_ea03d2d7880bf8::t_9e99da4ddcaac9 122,131,133-134
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "db0f144015e2f0279424e7f54ad224476a807209",
+  "prompts": {},
+  "sessions": {
+    "s_b35784497fcfed": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ef3e5a2d-a66c-46bb-a73a-2e04f22ae177",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_ea03d2d7880bf8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3af54540-f58e-40a4-aaf0-0fb31ce0e252",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
