@@ -430,26 +430,8 @@ async fn oidc_callback_rejects_bad_state_idp_error_and_unverified_email() {
     assert_eq!(bad_status, StatusCode::BAD_REQUEST);
     assert!(html.contains("invalid or has expired"));
 
-    let (_, denied_authorization) = json_response(
-        router.clone(),
-        form_request("/oauth/device_authorization", "client_id=claude-code"),
-    )
-    .await;
-    let denied_user = denied_authorization["user_code"].as_str().unwrap();
+    let (denied_authorization, denied_state) = begin_oidc_callback(&router).await;
     let denied_device = denied_authorization["device_code"].as_str().unwrap();
-    let authorize = router
-        .clone()
-        .oneshot(oidc_authorize_request(denied_user))
-        .await
-        .unwrap();
-    let location =
-        reqwest::Url::parse(authorize.headers()[header::LOCATION].to_str().unwrap()).unwrap();
-    let denied_state = location
-        .query_pairs()
-        .find(|(key, _)| key == "state")
-        .unwrap()
-        .1
-        .into_owned();
     let (denied_status, html) = html_response(
         router.clone(),
         get_request(&format!(
@@ -473,25 +455,7 @@ async fn oidc_callback_rejects_bad_state_idp_error_and_unverified_email() {
         state.gateway_stores.device_grants.poll(denied_device)
     );
 
-    let (_, authorization) = json_response(
-        router.clone(),
-        form_request("/oauth/device_authorization", "client_id=claude-code"),
-    )
-    .await;
-    let user_code = authorization["user_code"].as_str().unwrap();
-    let authorize = router
-        .clone()
-        .oneshot(oidc_authorize_request(user_code))
-        .await
-        .unwrap();
-    let location =
-        reqwest::Url::parse(authorize.headers()[header::LOCATION].to_str().unwrap()).unwrap();
-    let state = location
-        .query_pairs()
-        .find(|(key, _)| key == "state")
-        .unwrap()
-        .1
-        .into_owned();
+    let (_, state) = begin_oidc_callback(&router).await;
     let (_, html) = html_response(
         router.clone(),
         get_request(&format!("/device/callback?code=x&state={state}")),
@@ -613,25 +577,7 @@ async fn oidc_callback_uses_authorize_snapshot_across_reload() {
     oidc.userinfo_endpoint = Some(format!("{}/userinfo", old_idp.uri()));
 
     let (router, shared, _) = build_router(config).unwrap();
-    let (_, authorization) = json_response(
-        router.clone(),
-        form_request("/oauth/device_authorization", "client_id=claude-code"),
-    )
-    .await;
-    let user_code = authorization["user_code"].as_str().unwrap();
-    let authorize = router
-        .clone()
-        .oneshot(oidc_authorize_request(user_code))
-        .await
-        .unwrap();
-    let location =
-        reqwest::Url::parse(authorize.headers()[header::LOCATION].to_str().unwrap()).unwrap();
-    let state = location
-        .query_pairs()
-        .find(|(key, _)| key == "state")
-        .unwrap()
-        .1
-        .into_owned();
+    let (_, state) = begin_oidc_callback(&router).await;
 
     let dir = std::env::temp_dir().join(format!(
         "shunt-gateway-oidc-reload-{}-{}",
@@ -889,25 +835,7 @@ async fn oidc_callback_rejects_email_outside_allowlist() {
         .await;
     let (config, _env) = GatewayEnv::oidc_config("oidc-allowlist", idp.uri(), false);
     let (router, _, _) = build_router(config).unwrap();
-    let (_, authorization) = json_response(
-        router.clone(),
-        form_request("/oauth/device_authorization", "client_id=claude-code"),
-    )
-    .await;
-    let user_code = authorization["user_code"].as_str().unwrap();
-    let authorize = router
-        .clone()
-        .oneshot(oidc_authorize_request(user_code))
-        .await
-        .unwrap();
-    let location =
-        reqwest::Url::parse(authorize.headers()[header::LOCATION].to_str().unwrap()).unwrap();
-    let state = location
-        .query_pairs()
-        .find(|(key, _)| key == "state")
-        .unwrap()
-        .1
-        .into_owned();
+    let (_, state) = begin_oidc_callback(&router).await;
     let (_, html) = html_response(
         router,
         get_request(&format!("/device/callback?code=x&state={state}")),
