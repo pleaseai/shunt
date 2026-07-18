@@ -11,7 +11,7 @@ use crate::{error::ShuntError, server::AppState};
 /// Builtin catalog mirrored from the reference Claude apps gateway, captured
 /// live from `claude gateway` 2.1.214 on 2026-07-18. An upstream catalog change
 /// should be reflected by updating this one table.
-const BUILTIN_MODEL_IDS: [&str; 9] = [
+const BUILTIN_MODEL_IDS: &[&str] = &[
     "claude-opus-4-6",
     "claude-sonnet-4-5-20250929",
     "claude-haiku-4-5-20251001",
@@ -86,7 +86,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         })
         .collect();
     if state.config.auto_include_builtin_models {
-        for id in BUILTIN_MODEL_IDS {
+        for &id in BUILTIN_MODEL_IDS {
             if data.iter().all(|model| model.id != id) {
                 data.push(ModelEntry {
                     id: id.to_string(),
