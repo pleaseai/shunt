@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.21.0](https://github.com/pleaseai/shunt/compare/v0.20.0...v0.21.0) (2026-07-18)
+
+
+### Features
+
+* **gateway:** OAuth device-flow login with pluggable approval provider ([#192](https://github.com/pleaseai/shunt/issues/192)) ([6f7164c](https://github.com/pleaseai/shunt/commit/6f7164cab18a7ec2a133a89a3df5c940df9044f9))
+* **metrics:** add streaming and pool observability ([#191](https://github.com/pleaseai/shunt/issues/191)) ([d8ad836](https://github.com/pleaseai/shunt/commit/d8ad83654f90ac7e9c0acc6557843ff6d93a984e))
+
 ## [0.20.0](https://github.com/pleaseai/shunt/compare/v0.19.1...v0.20.0) (2026-07-16)
 
 
