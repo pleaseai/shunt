@@ -123,6 +123,7 @@ default_threshold_fable = 0.85
 burn_rate_avoidance = true   # 避开按预测会在重置前触及阈值的账户
 usage_refresh_seconds = 300  # 为可刷新账户校正带外用量
 state_path = "shunt-state.json"  # 跨重启保留配额(热启动)
+ramp_initial_concurrency = 2 # 风暴控制:对刚切换过来的账户逐步放行(slow-start)
 
 [[providers.anthropic.accounts]]
 name = "primary"
@@ -141,7 +142,7 @@ disabled = true              # 保留配置,但永不被选中
 - **燃烧率余量。**根据每个窗口的使用率与重置时刻(窗口长度固定为 5 小时和 7 天),shunt 按观测到的平均速度预测触及软阈值所需的时间,再减去窗口重置所需的时间。余量为正意味着按当前速度该账户能撑到重置。`priority` 相同的可用账户按余量最大者优先排序;未观测到的窗口按无限余量计。
 - **预测性规避。**设置 `burn_rate_avoidance = true` 时,预测余量为负的账户被视为接近配额,在真正触及阈值*之前*就被轮换掉。默认关闭 —— 而按余量排序始终生效。
 - **全员接近配额的兜底。**当每个账户都超过了软阈值(或被预测将耗尽)时,池不会变空:接近配额的账户按最佳余量的顺序继续服务,而达到或超过 `hard_threshold` 的账户仍排在最后,其后才是冷却中的账户。
-- **适用范围。**这些配额旋钮只作用于 Claude(Anthropic)池 —— Codex 后端不发送配额头部,因此对 [Codex 池](/zh-cn/guides/codex-multi-account/) 它们不起作用,而 `priority` 和 `disabled` 仍然适用。
+- **适用范围。**这些配额旋钮作用于两个池家族: 本池依据 `anthropic-ratelimit-unified-*` 头部,[Codex 池](/zh-cn/guides/codex-multi-account/)依据上报的 `x-codex-*` 5h/7d 窗口(issue #195)。Codex 没有 Fable 专属的 `7d_oi` 窗口,因此 `default_threshold_fable` 在那里不起作用;`priority` 和 `disabled` 在所有池中都适用。
 - 管理池端点(`GET /admin/pool`)会报告每个账户的 `priority`、`disabled` 标志,以及在配置了 `[server.pool]` 时该账户当前以秒为单位的余量预测;仪表板的状态列会标记被禁用的账户。
 
 ## Usage-API 对账
@@ -205,8 +206,8 @@ Claude Code 可能把账户元数据以 JSON 形式编码在字符串值的 `met
 
 这些启动检查防止 OAuth bearer 被发送到源之外或以明文传输。HTTPS 与主机检查在**回环主机上放宽**(`localhost`、`127.0.0.1`、`[::1]` 等):回环的 `base_url` 可以使用纯 HTTP 和任意主机,这样本地调试代理或 mock 能接收流量 —— bearer 无法离开运营者的机器。非回环主机始终要求 HTTPS + `anthropic.com`。在共享部署上,还应配置 [`[server.auth]`](/zh-cn/guides/shared-gateway/#入站客户端-token),因为 `claude_oauth` 花费的是网关自有的凭据。客户端随后可以用它已经在发送的 `ANTHROPIC_AUTH_TOKEN` 完成认证(客户端 token 除 `x-shunt-token`、`x-api-key` 外,也接受 `Authorization: Bearer`)—— 在仅池化的网关上不需要 `ANTHROPIC_CUSTOM_HEADERS` 行。
 
-## 遗留的后续事项
+## 风暴控制(storm control)
 
-- **风暴控制(storm-control):** 对刚切换过来的账户逐步提升并发仍是后续工作,尚未实现。
+设置 `[server.pool] ramp_initial_concurrency`(默认关闭)会按账户身份以 slow-start 逐步放行(ramp)并发准入,这样一次故障转移切换就不会用所有在途请求同时冲垮刚选中的账户。刚开始承接流量的身份最多准入所配置数量的并发请求;每次成功响应把额度翻倍,一次故障转移会重启该 ramp,被拒绝的请求则顺延到选择顺序中的下一个账户(最后一个候选始终会被尝试)。参见 [`[server.pool]`](/zh-cn/reference/configuration/#serverpool可选)。
 
 实现行为参考了 [KarpelesLab/teamclaude](https://github.com/KarpelesLab/teamclaude) 与随产品发布的 Claude Code 二进制。shunt 对 teamclaude 没有运行时依赖。
