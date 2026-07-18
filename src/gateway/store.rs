@@ -8,11 +8,13 @@
 
 use std::{
     collections::HashMap,
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
-use super::{approval::Identity, idp_client::DiscoveredEndpoints, refresh::RefreshTokenStore};
+use super::{
+    approval::Identity, idp_client::DiscoveredEndpoints, refresh::RefreshTokenStore, ResolvedIdp,
+};
 
 pub const DEVICE_CODE_TTL: Duration = Duration::from_secs(600);
 pub const OIDC_STATE_TTL: Duration = Duration::from_secs(600);
@@ -197,6 +199,8 @@ fn sweep_expired_grants(state: &mut DeviceGrantState, now: Instant) {
 pub struct OidcPending {
     pub user_code: String,
     pub verifier: String,
+    pub idp: Arc<ResolvedIdp>,
+    pub redirect_uri: String,
     expires: Instant,
 }
 
@@ -210,15 +214,33 @@ impl OidcStateStore {
         Self::default()
     }
 
-    pub fn insert(&self, state: String, user_code: String, verifier: String) -> bool {
-        self.insert_at(state, user_code, verifier, Instant::now(), OIDC_STATE_TTL)
+    pub fn insert(
+        &self,
+        state: String,
+        user_code: String,
+        verifier: String,
+        idp: Arc<ResolvedIdp>,
+        redirect_uri: String,
+    ) -> bool {
+        self.insert_at(
+            state,
+            user_code,
+            verifier,
+            idp,
+            redirect_uri,
+            Instant::now(),
+            OIDC_STATE_TTL,
+        )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn insert_at(
         &self,
         state: String,
         user_code: String,
         verifier: String,
+        idp: Arc<ResolvedIdp>,
+        redirect_uri: String,
         now: Instant,
         ttl: Duration,
     ) -> bool {
@@ -235,6 +257,8 @@ impl OidcStateStore {
             OidcPending {
                 user_code,
                 verifier,
+                idp,
+                redirect_uri,
                 expires: now + ttl,
             },
         );
@@ -309,6 +333,7 @@ pub struct GatewayStores {
     pub device_verify_rate: PerIpRateLimiter,
     pub oidc_states: OidcStateStore,
     pub oidc_discovery: Mutex<HashMap<String, DiscoveredEndpoints>>,
+    pub oidc_client: reqwest::Client,
 }
 
 impl GatewayStores {
@@ -319,6 +344,10 @@ impl GatewayStores {
             device_verify_rate: PerIpRateLimiter::new(Duration::from_secs(60), 30),
             oidc_states: OidcStateStore::new(),
             oidc_discovery: Mutex::new(HashMap::new()),
+            oidc_client: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("OIDC HTTP client configuration is valid"),
         }
     }
 }
@@ -339,6 +368,20 @@ mod tests {
             email: "dev@example.com".into(),
             name: "dev".into(),
         }
+    }
+
+    fn idp() -> Arc<ResolvedIdp> {
+        Arc::new(ResolvedIdp {
+            issuer: "https://idp.example".into(),
+            client_id: "client".into(),
+            client_secret: "secret".into(),
+            allowed_domains: vec!["example.com".into()],
+            allowed_emails: vec![],
+            scopes: vec!["openid".into()],
+            authorization_endpoint: None,
+            token_endpoint: None,
+            userinfo_endpoint: None,
+        })
     }
 
     #[test]
@@ -441,6 +484,8 @@ mod tests {
             "state".into(),
             "BCDF-GHJK".into(),
             "verifier".into(),
+            idp(),
+            "https://gateway.example/device/callback".into(),
             now,
             OIDC_STATE_TTL,
         ));
@@ -453,6 +498,8 @@ mod tests {
             "expired".into(),
             "BCDF-GHJL".into(),
             "verifier".into(),
+            idp(),
+            "https://gateway.example/device/callback".into(),
             now,
             Duration::ZERO,
         ));
@@ -468,6 +515,8 @@ mod tests {
                 format!("state-{index}"),
                 format!("CODE-{index}"),
                 format!("verifier-{index}"),
+                idp(),
+                "https://gateway.example/device/callback".into(),
                 now,
                 OIDC_STATE_TTL,
             ));
@@ -476,6 +525,8 @@ mod tests {
             "overflow".into(),
             "OVER-FLOW".into(),
             "verifier".into(),
+            idp(),
+            "https://gateway.example/device/callback".into(),
             now,
             OIDC_STATE_TTL,
         ));

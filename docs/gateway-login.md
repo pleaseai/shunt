@@ -15,7 +15,7 @@ Implemented endpoints:
 | `POST /oauth/device_authorization` | RFC 8628 device authorization; 256-bit opaque device code, base-20 `XXXX-XXXX` user code, 600-second lifetime, 5-second polling interval |
 | `GET /device` | Browser approval form; a `user_code` query parameter only pre-fills the form and never auto-approves |
 | `POST /device` | Same-origin CSRF guard, per-IP attempt limit, optional static-user authentication, and grant approval |
-| `GET /device/authorize` | Starts an allowlisted OIDC sign-in with a single-use state and PKCE |
+| `POST /device/authorize` | Starts an allowlisted OIDC sign-in only after explicit same-origin browser confirmation, with a single-use state and PKCE |
 | `GET /device/callback` | Exchanges the IdP code, verifies the email identity and allowlist, and approves the existing device grant |
 | `POST /oauth/token` | Device grant polling and rotating refresh grant |
 
@@ -79,12 +79,27 @@ allowed_domains = ["example.com"]
 # allowed_emails = ["contractor@outside.example"]
 ```
 
-`[server.gateway.oidc]` requires an issuer, a non-empty client secret, and at
-least one `allowed_domains` or `allowed_emails` entry. Endpoint overrides are
-available for advanced deployments and tests, but every configured or discovered
-endpoint must use HTTPS, except that HTTP is accepted on loopback. Providers that
-do not expose standard OIDC, including GitHub or a SAML identity provider, should
-be connected through an OIDC broker such as Dex; direct OAuth2 integrations are
+`[server.gateway.oidc]` exposes the following keys:
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `issuer` | required | OIDC discovery issuer; HTTPS is required except for loopback HTTP |
+| `client_id` | required | Non-empty OIDC client identifier |
+| `client_secret_env` | `SHUNT_GATEWAY_OIDC_SECRET` | Environment variable holding the non-empty client secret |
+| `allowed_domains` | `[]` | Case-insensitive email domains allowed to approve a device |
+| `allowed_emails` | `[]` | Case-insensitive full email addresses allowed to approve a device |
+| `scopes` | `openid email profile` | Scopes sent to the authorization endpoint |
+| `authorization_endpoint` | OIDC discovery | Advanced authorization URL override |
+| `token_endpoint` | OIDC discovery | Advanced token URL override |
+| `userinfo_endpoint` | OIDC discovery | Advanced UserInfo URL override |
+
+At least one `allowed_domains` or `allowed_emails` entry is required. When an
+endpoint override is omitted, shunt resolves it from
+`{issuer}/.well-known/openid-configuration` and requires the returned issuer to
+match the configured issuer exactly. Every configured or discovered endpoint
+must use HTTPS, except that HTTP is accepted on loopback. Providers that do not
+expose standard OIDC, including GitHub or a SAML identity provider, should be
+connected through an OIDC broker such as Dex; direct OAuth2 integrations are
 out of scope.
 
 ## Pluggable approval
@@ -111,8 +126,8 @@ SSO button is rendered.
 The browser form is server-rendered and uses no client-side script. Its mutation
 is accepted only with a same-origin `Origin` or `Referer`, a same-origin/same-site
 Fetch Metadata signal, or a browser-navigation `Sec-Fetch-Site: none` request
-without contradictory cross-site hints. A rejected request returns HTTP 200 with
-a human-readable blocked notice, matching the reference gateway behavior.
+without contradictory cross-site hints. A rejected request returns a human-readable
+HTML error page with a non-success HTTP status.
 
 ## State and operational boundary
 

@@ -147,6 +147,10 @@ impl GatewayAuth {
         self.oidc.as_deref()
     }
 
+    pub(crate) fn oidc_arc(&self) -> Option<Arc<ResolvedIdp>> {
+        self.oidc.clone()
+    }
+
     pub fn url(&self, path: &str) -> String {
         format!("{}{}", self.public_url.trim_end_matches('/'), path)
     }
@@ -179,7 +183,7 @@ pub fn gateway_router() -> Router<AppState> {
         )
         .route("/oauth/token", post(oauth::token))
         .route("/device", get(device::get).post(device::post))
-        .route("/device/authorize", get(idp::authorize))
+        .route("/device/authorize", post(idp::authorize))
         .route("/device/callback", get(idp::callback))
 }
 

@@ -135,7 +135,7 @@ base-uri 'none'; frame-ancestors 'none'";
         .into_response()
 }
 
-fn same_origin(headers: &HeaderMap, public_url: &str) -> bool {
+pub(super) fn same_origin(headers: &HeaderMap, public_url: &str) -> bool {
     let fetch_site = headers
         .get("sec-fetch-site")
         .and_then(|value| value.to_str().ok());
@@ -272,7 +272,7 @@ pub(super) fn page(
         let sso_form = oidc_label
             .map(|label| {
                 format!(
-                    r#"<form method="get" action="/device/authorize">
+                    r#"<form method="post" action="/device/authorize">
 <label for="sso-user-code">Device code</label>
 <input id="sso-user-code" name="user_code" value="{user_code}" autocomplete="one-time-code" spellcheck="false" required autofocus>
 <button type="submit">{}</button>

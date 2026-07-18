@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
 use axum::{
-    extract::{ConnectInfo, Query, State},
+    extract::{rejection::FormRejection, ConnectInfo, Form, Query, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Extension,
@@ -11,12 +11,12 @@ use serde::Deserialize;
 use crate::{auth::shared::generate_pkce, server::AppState};
 
 use super::{
-    device::{auth_page, client_ip, device_page, normalize_user_code},
+    device::{auth_page, client_ip, device_page, normalize_user_code, same_origin},
     idp_client,
 };
 
 #[derive(Default, Deserialize)]
-pub struct AuthorizeQuery {
+pub struct AuthorizeForm {
     #[serde(default)]
     user_code: String,
 }
@@ -35,27 +35,53 @@ pub async fn authorize(
     State(state): State<AppState>,
     connection: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
-    Query(query): Query<AuthorizeQuery>,
+    form: Result<Form<AuthorizeForm>, FormRejection>,
 ) -> Response {
     let state = state.refreshed();
     let Some(auth) = state.gateway_auth.clone() else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let Some(idp) = auth.oidc() else {
+    let user_code = form
+        .as_ref()
+        .ok()
+        .map(|Form(form)| form.user_code.as_str())
+        .unwrap_or_default();
+    if !same_origin(&headers, auth.public_url()) {
         return error_page(
             &auth,
-            &query.user_code,
+            user_code,
+            StatusCode::FORBIDDEN,
+            "This request came from another site and was blocked.",
+        );
+    }
+    let Form(form) = match form {
+        Ok(form) => form,
+        Err(_) => {
+            return error_page(
+                &auth,
+                "",
+                StatusCode::BAD_REQUEST,
+                "The submitted form could not be read. Try again.",
+            );
+        }
+    };
+    let Some(idp) = auth.oidc_arc() else {
+        return error_page(
+            &auth,
+            &form.user_code,
+            StatusCode::BAD_GATEWAY,
             "External sign-in is not configured.",
         );
     };
     if !check_rate_limit(&state, &auth, &headers, connection) {
         return error_page(
             &auth,
-            &query.user_code,
+            &form.user_code,
+            StatusCode::TOO_MANY_REQUESTS,
             "Too many attempts. Wait a minute and try again.",
         );
     }
-    let user_code = normalize_user_code(&query.user_code);
+    let user_code = normalize_user_code(&form.user_code);
     if !state
         .gateway_stores
         .device_grants
@@ -64,29 +90,35 @@ pub async fn authorize(
         return error_page(
             &auth,
             &user_code,
+            StatusCode::BAD_REQUEST,
             "The device code is invalid, expired, or already used.",
         );
     }
-    let endpoint = match idp_client::authorization_endpoint(&state, idp).await {
+    let endpoint = match idp_client::authorization_endpoint(&state, &idp).await {
         Ok(endpoint) => endpoint,
         Err(error) => {
             tracing::warn!(%error, "gateway: identity-provider discovery failed");
             return error_page(
                 &auth,
                 &user_code,
+                StatusCode::BAD_GATEWAY,
                 "Sign-in with the identity provider is unavailable right now.",
             );
         }
     };
+    let redirect_uri = auth.url("/device/callback");
     let pkce = generate_pkce();
     if !state.gateway_stores.oidc_states.insert(
         pkce.state.clone(),
         user_code.clone(),
         pkce.verifier,
+        idp.clone(),
+        redirect_uri.clone(),
     ) {
         return error_page(
             &auth,
             &user_code,
+            StatusCode::BAD_GATEWAY,
             "Sign-in with the identity provider is unavailable right now.",
         );
     }
@@ -97,6 +129,7 @@ pub async fn authorize(
             return error_page(
                 &auth,
                 &user_code,
+                StatusCode::BAD_GATEWAY,
                 "Sign-in with the identity provider is unavailable right now.",
             );
         }
@@ -104,7 +137,7 @@ pub async fn authorize(
     location.query_pairs_mut().extend_pairs([
         ("response_type", "code"),
         ("client_id", idp.client_id.as_str()),
-        ("redirect_uri", auth.url("/device/callback").as_str()),
+        ("redirect_uri", redirect_uri.as_str()),
         ("scope", idp.scopes.join(" ").as_str()),
         ("state", pkce.state.as_str()),
         ("code_challenge", pkce.challenge.as_str()),
@@ -123,59 +156,89 @@ pub async fn callback(
     let Some(auth) = state.gateway_auth.clone() else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let Some(idp) = auth.oidc() else {
-        return error_page(&auth, "", "External sign-in is not configured.");
-    };
     if !check_rate_limit(&state, &auth, &headers, connection) {
-        return error_page(&auth, "", "Too many attempts. Wait a minute and try again.");
-    }
-    if query.error.is_some() {
-        return error_page(&auth, "", "The identity provider reported an error.");
+        return error_page(
+            &auth,
+            "",
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many attempts. Wait a minute and try again.",
+        );
     }
     let Some(pending) = state.gateway_stores.oidc_states.take(&query.state) else {
         return error_page(
             &auth,
             "",
+            StatusCode::BAD_REQUEST,
             "This sign-in link is invalid or has expired. Start again from the device page.",
         );
     };
+    if let Some(provider_error) = query.error.as_deref() {
+        let provider_error = sanitized_provider_error(provider_error);
+        tracing::warn!(
+            provider_error,
+            "gateway: identity provider rejected authorization"
+        );
+        state.gateway_stores.device_grants.deny(&pending.user_code);
+        return error_page(
+            &auth,
+            &pending.user_code,
+            StatusCode::BAD_REQUEST,
+            "The identity provider reported an error.",
+        );
+    }
     if query.code.trim().is_empty() {
         return error_page(
             &auth,
             &pending.user_code,
+            StatusCode::BAD_REQUEST,
             "The identity provider reported an error.",
         );
     }
-    let redirect_uri = auth.url("/device/callback");
-    let access_token =
-        match idp_client::exchange_code(&state, idp, &query.code, &pending.verifier, &redirect_uri)
-            .await
-        {
-            Ok(token) => token,
-            Err(error) => {
-                tracing::warn!(%error, "gateway: identity-provider token exchange failed");
-                return error_page(
-                    &auth,
-                    &pending.user_code,
-                    "Sign-in with the identity provider is unavailable right now.",
-                );
-            }
-        };
-    let identity = match idp_client::fetch_identity(&state, idp, &access_token).await {
+    let access_token = match idp_client::exchange_code(
+        &state,
+        &pending.idp,
+        &query.code,
+        &pending.verifier,
+        &pending.redirect_uri,
+    )
+    .await
+    {
+        Ok(token) => token,
+        Err(error) => {
+            tracing::warn!(%error, "gateway: identity-provider token exchange failed");
+            return error_page(
+                &auth,
+                &pending.user_code,
+                StatusCode::BAD_GATEWAY,
+                "Sign-in with the identity provider is unavailable right now.",
+            );
+        }
+    };
+    let identity = match idp_client::fetch_identity(&state, &pending.idp, &access_token).await {
         Ok(identity) => identity,
         Err(error) => {
             tracing::warn!(%error, "gateway: identity-provider userinfo request failed");
             return error_page(
                 &auth,
                 &pending.user_code,
+                StatusCode::BAD_GATEWAY,
                 "Sign-in with the identity provider is unavailable right now.",
             );
         }
     };
-    if !idp.email_allowed(&identity.email) {
+    let Some(current_idp) = auth.oidc() else {
         return error_page(
             &auth,
             &pending.user_code,
+            StatusCode::FORBIDDEN,
+            "This account is not authorized for this gateway.",
+        );
+    };
+    if !current_idp.email_allowed(&identity.email) {
+        return error_page(
+            &auth,
+            &pending.user_code,
+            StatusCode::FORBIDDEN,
             "This account is not authorized for this gateway.",
         );
     }
@@ -187,6 +250,7 @@ pub async fn callback(
         return error_page(
             &auth,
             &pending.user_code,
+            StatusCode::BAD_REQUEST,
             "The device code is invalid, expired, or already used.",
         );
     }
@@ -209,8 +273,28 @@ fn check_rate_limit(
     state.gateway_stores.device_verify_rate.check(&ip)
 }
 
-fn error_page(auth: &super::GatewayAuth, user_code: &str, message: &str) -> Response {
-    device_page(auth_page(auth, user_code, Some(message), false))
+fn error_page(
+    auth: &super::GatewayAuth,
+    user_code: &str,
+    status: StatusCode,
+    message: &str,
+) -> Response {
+    let mut response = device_page(auth_page(auth, user_code, Some(message), false));
+    *response.status_mut() = status;
+    response
+}
+
+fn sanitized_provider_error(error: &str) -> &str {
+    if !error.is_empty()
+        && error.len() <= 64
+        && error
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+    {
+        error
+    } else {
+        "invalid_provider_error"
+    }
 }
 
 fn redirect(location: reqwest::Url) -> Response {

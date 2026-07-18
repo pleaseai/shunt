@@ -28,6 +28,14 @@ description: The endpoints shunt serves as a Claude Code LLM gateway.
 | `POST` | `/responses` | Inbound Codex CLI passthrough — bare `base_url` form |
 | `POST` | `/v1/responses` | Inbound Codex CLI passthrough — `/v1`-suffixed `base_url` form |
 | `GET` | `/usage` | Client-facing sanitized pool usage — per-window remaining headroom and reset for the shared account pool; never account identity or capacity |
+| `GET` | `/.well-known/oauth-authorization-server` | Gateway OAuth discovery metadata |
+| `POST` | `/oauth/device_authorization` | Start a gateway device authorization grant |
+| `POST` | `/oauth/token` | Poll a device grant or refresh a gateway session |
+| `GET`, `POST` | `/device` | Browser device-code confirmation page and password approval form |
+| `POST` | `/device/authorize` | Start OIDC approval after explicit same-origin browser confirmation |
+| `GET` | `/device/callback` | Complete the OIDC authorization-code callback |
+
+The gateway discovery, device, token, and browser routes exist only when [`[server.gateway]`](/reference/configuration/#servergateway-optional) is configured at startup. `POST /device/authorize` and `GET /device/callback` additionally require [`[server.gateway.oidc]`](/reference/configuration/#servergatewayoidc-optional); without OIDC configuration they return a browser error page rather than starting an external sign-in. Adding or removing `[server.gateway]` requires a restart because route registration is fixed at boot, while changes to its resolved credentials and OIDC configuration hot-apply.
 
 The `/admin*` routes exist only when [`[server.admin]`](/reference/configuration/#serveradmin-optional) is configured; without that table, none of them are registered.
 

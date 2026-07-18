@@ -1,7 +1,8 @@
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
-use reqwest::{header, Client, Url};
+use futures_util::StreamExt;
+use reqwest::{header, Response, Url};
 use serde::Deserialize;
 
 use crate::{gateway::approval::Identity, server::AppState};
@@ -9,9 +10,12 @@ use crate::{gateway::approval::Identity, server::AppState};
 use super::ResolvedIdp;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const ERROR_BODY_LIMIT: usize = 4096;
+const ERROR_FIELD_LIMIT: usize = 200;
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct DiscoveredEndpoints {
+    pub issuer: String,
     pub authorization_endpoint: String,
     pub token_endpoint: String,
     pub userinfo_endpoint: String,
@@ -29,6 +33,12 @@ struct OidcUserInfo {
     #[serde(default)]
     email_verified: bool,
     name: Option<String>,
+}
+
+#[derive(Default, Deserialize)]
+struct OidcErrorResponse {
+    error: Option<String>,
+    error_description: Option<String>,
 }
 
 pub async fn authorization_endpoint(state: &AppState, idp: &ResolvedIdp) -> Result<String> {
@@ -61,7 +71,8 @@ pub async fn exchange_code(
 ) -> Result<String> {
     let endpoint = token_endpoint(state, idp).await?;
     let response = state
-        .http_client
+        .gateway_stores
+        .oidc_client
         .post(endpoint)
         .timeout(REQUEST_TIMEOUT)
         .header(header::ACCEPT, "application/json")
@@ -75,9 +86,8 @@ pub async fn exchange_code(
         ])
         .send()
         .await
-        .context("token endpoint request failed")?
-        .error_for_status()
-        .context("token endpoint returned an error")?;
+        .context("token endpoint request failed")?;
+    let response = require_success(response, "token endpoint").await?;
     let tokens: TokenResponse = response
         .json()
         .await
@@ -94,12 +104,17 @@ pub async fn fetch_identity(
     access_token: &str,
 ) -> Result<Identity> {
     let endpoint = userinfo_endpoint(state, idp).await?;
-    let info: OidcUserInfo = get_bearer(&state.http_client, &endpoint, access_token)
+    let response = state
+        .gateway_stores
+        .oidc_client
+        .get(endpoint)
+        .timeout(REQUEST_TIMEOUT)
+        .bearer_auth(access_token)
         .send()
         .await
-        .context("userinfo request failed")?
-        .error_for_status()
-        .context("userinfo endpoint returned an error")?
+        .context("userinfo request failed")?;
+    let info: OidcUserInfo = require_success(response, "userinfo endpoint")
+        .await?
         .json()
         .await
         .context("userinfo endpoint returned invalid JSON")?;
@@ -132,18 +147,24 @@ async fn discover(state: &AppState, idp: &ResolvedIdp) -> Result<DiscoveredEndpo
         "{}/.well-known/openid-configuration",
         idp.issuer.trim_end_matches('/')
     );
-    let endpoints: DiscoveredEndpoints = state
-        .http_client
+    let response = state
+        .gateway_stores
+        .oidc_client
         .get(discovery_url)
         .timeout(REQUEST_TIMEOUT)
         .send()
         .await
-        .context("OIDC discovery request failed")?
-        .error_for_status()
-        .context("OIDC discovery returned an error")?
+        .context("OIDC discovery request failed")?;
+    let endpoints: DiscoveredEndpoints = require_success(response, "OIDC discovery")
+        .await?
         .json()
         .await
         .context("OIDC discovery returned invalid JSON")?;
+    if endpoints.issuer != idp.issuer {
+        return Err(anyhow!(
+            "OIDC discovery issuer does not match configured issuer"
+        ));
+    }
     validate_endpoint(&endpoints.authorization_endpoint, "authorization_endpoint")?;
     validate_endpoint(&endpoints.token_endpoint, "token_endpoint")?;
     validate_endpoint(&endpoints.userinfo_endpoint, "userinfo_endpoint")?;
@@ -154,6 +175,82 @@ async fn discover(state: &AppState, idp: &ResolvedIdp) -> Result<DiscoveredEndpo
         .expect("gateway OIDC-discovery lock poisoned")
         .insert(idp.issuer.clone(), endpoints.clone());
     Ok(endpoints)
+}
+
+async fn require_success(response: Response, endpoint: &str) -> Result<Response> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
+    }
+    Err(anyhow!(
+        "{endpoint} returned HTTP {status}{}",
+        sanitized_error_suffix(response).await
+    ))
+}
+
+async fn sanitized_error_suffix(response: Response) -> String {
+    let bytes = read_limited_body(response).await;
+    let Ok(error) = serde_json::from_slice::<OidcErrorResponse>(&bytes) else {
+        return String::new();
+    };
+    let code = error.error.as_deref().and_then(sanitize_error_code);
+    let description = error
+        .error_description
+        .as_deref()
+        .and_then(sanitize_error_description);
+    match (code, description) {
+        (Some(code), Some(description)) => {
+            format!(": error={code}, error_description={description}")
+        }
+        (Some(code), None) => format!(": error={code}"),
+        (None, Some(description)) => format!(": error_description={description}"),
+        (None, None) => String::new(),
+    }
+}
+
+async fn read_limited_body(response: Response) -> Vec<u8> {
+    let mut stream = response.bytes_stream();
+    let mut body = Vec::new();
+    while body.len() < ERROR_BODY_LIMIT {
+        let Some(chunk) = stream.next().await else {
+            break;
+        };
+        let Ok(chunk) = chunk else {
+            break;
+        };
+        let remaining = ERROR_BODY_LIMIT - body.len();
+        body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+    }
+    body
+}
+
+fn sanitize_error_code(value: &str) -> Option<String> {
+    let valid = !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'));
+    valid.then(|| value.to_string())
+}
+
+fn sanitize_error_description(value: &str) -> Option<String> {
+    let sanitized: String = value
+        .split_ascii_whitespace()
+        .filter(|word| {
+            let lower = word.to_ascii_lowercase();
+            !lower.contains("token")
+                && !lower.contains("secret")
+                && !lower.contains("code=")
+                && !lower.contains("authorization:")
+                && !lower.starts_with("bearer")
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(ERROR_FIELD_LIMIT)
+        .collect();
+    (!sanitized.trim().is_empty()).then_some(sanitized)
 }
 
 fn validate_endpoint(raw: &str, name: &str) -> Result<()> {
@@ -172,10 +269,29 @@ fn validate_endpoint(raw: &str, name: &str) -> Result<()> {
     Ok(())
 }
 
-fn get_bearer(client: &Client, url: &str, token: &str) -> reqwest::RequestBuilder {
-    client.get(url).timeout(REQUEST_TIMEOUT).bearer_auth(token)
-}
-
 fn local_part(email: &str) -> &str {
     email.split('@').next().unwrap_or(email)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_fields_are_sanitized_and_bounded() {
+        assert_eq!(
+            sanitize_error_code("invalid_grant"),
+            Some("invalid_grant".into())
+        );
+        assert_eq!(sanitize_error_code("bad code"), None);
+        assert_eq!(
+            sanitize_error_description("bad\nclient secret=do-not-log retry"),
+            Some("bad client retry".into())
+        );
+        assert_eq!(sanitize_error_description("token secret"), None);
+        assert_eq!(
+            sanitize_error_description(&"x".repeat(300)).unwrap().len(),
+            200
+        );
+    }
 }
