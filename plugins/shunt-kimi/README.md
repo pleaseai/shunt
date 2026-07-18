@@ -1,7 +1,8 @@
 # shunt-kimi
 
-A Claude Code subagent that runs on Moonshot AI's **kimi-k2.7-code**, routed
-through the [shunt](https://github.com/pleaseai/shunt) gateway.
+Claude Code subagents that run on Moonshot AI's **kimi-k3** and
+**kimi-k2.7-code**, routed through the [shunt](https://github.com/pleaseai/shunt)
+gateway.
 
 Unlike a CLI hand-off (which drops persona and preloaded skills), shunt diverts
 only *token generation* at the inference layer. The session keeps running inside
@@ -12,6 +13,7 @@ Only the model that generates the tokens changes.
 
 | Agent (`@`-mention)          | Model id (`model:`) |
 | ---------------------------- | ------------------- |
+| `shunt-kimi:kimi-k3`         | `kimi-k3[1m]`       |
 | `shunt-kimi:kimi-k2.7-code`  | `kimi-k2.7-code`    |
 
 Kimi is served over Moonshot's **Anthropic-compatible** endpoint, so shunt
@@ -41,6 +43,10 @@ route:
    api_key_env = "KIMI_API_KEY"
 
    [[routes]]
+   model = "kimi-k3[1m]"
+   provider = "kimi"
+
+   [[routes]]
    model = "kimi-k2.7-code"
    provider = "kimi"
    ```
@@ -62,11 +68,11 @@ Without a running shunt gateway mapping this id, Claude Code will send
 ## Usage
 
 ```
-@shunt-kimi:kimi-k2.7-code  refactor this module and run the tests
+@shunt-kimi:kimi-k3  refactor this module and run the tests
 ```
 
 Or set every subagent to Kimi for a session with
-`CLAUDE_CODE_SUBAGENT_MODEL=kimi-k2.7-code`.
+`CLAUDE_CODE_SUBAGENT_MODEL="kimi-k3[1m]"`.
 
 Both require a running shunt gateway with the slug routed to the `kimi` provider —
 see [Prerequisites](#prerequisites). Without it the request fails against Anthropic.

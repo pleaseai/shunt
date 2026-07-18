@@ -92,7 +92,7 @@ OAuth를 통해 사용자의 **SuperGrok / X Premium+** 구독을 사용하고(`
 
 | 프로바이더 | `base_url` | 예시 모델 ID |
 | :-- | :-- | :-- |
-| Kimi (Moonshot) | `https://api.moonshot.ai/anthropic` | `kimi-k2.7-code` |
+| Kimi (Moonshot) | `https://api.moonshot.ai/anthropic` | `kimi-k3[1m]`, `kimi-k2.7-code` |
 | DeepSeek | `https://api.deepseek.com/anthropic` | `deepseek-v4-pro`, `deepseek-v4-flash` |
 | Z.ai (GLM) | `https://api.z.ai/api/anthropic` | `glm-5.2`, `glm-4.7` |
 | MiniMax | `https://api.minimax.io/anthropic` | [MiniMax 문서](https://platform.minimax.io/docs/token-plan/claude-code) 참고 |
@@ -110,11 +110,15 @@ auth = "api_key"
 api_key_env = "KIMI_API_KEY"
 
 [[routes]]
+model = "kimi-k3[1m]"
+provider = "kimi"
+
+[[routes]]
 model = "kimi-k2.7-code"
 provider = "kimi"
 ```
 
-그런 다음 `export KIMI_API_KEY=…`를 실행하고, [Claude Code를 shunt에 연결](/ko/guides/connect-claude-code/)한 뒤, `kimi-k2.7-code`를 선택하세요(`ANTHROPIC_CUSTOM_MODEL_OPTION` 또는 `ANTHROPIC_MODEL`을 통해). `shunt check`를 실행하여 검증하세요 — 라우트의 알 수 없는 프로바이더, 누락된 `api_key_env`, 잘못된 `base_url`을 보고합니다.
+그런 다음 `export KIMI_API_KEY=…`를 실행하고, [Claude Code를 shunt에 연결](/ko/guides/connect-claude-code/)한 뒤, `kimi-k3[1m]`를 선택하세요(`ANTHROPIC_CUSTOM_MODEL_OPTION` 또는 `ANTHROPIC_MODEL`을 통해). `shunt check`를 실행하여 검증하세요 — 라우트의 알 수 없는 프로바이더, 누락된 `api_key_env`, 잘못된 `base_url`을 보고합니다.
 
 모든 프로바이더 키(`kind`, `auth`, `api_key_header`, `count_tokens` 등)는 [구성 레퍼런스](/ko/reference/configuration/)에 문서화되어 있습니다.
 
@@ -126,7 +130,7 @@ provider = "kimi"
 | :-- | :-- | :-- |
 | `shunt-codex` | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` | `codex` (ChatGPT 구독) |
 | `shunt-xai` | `grok-build-0.1`, `grok-4.5`, `grok-4.3` | `xai` (API 키) 또는 `grok` (구독) |
-| `shunt-kimi` | `kimi-k2.7-code` | `kimi` |
+| `shunt-kimi` | `kimi-k3[1m]`, `kimi-k2.7-code` | `kimi` |
 | `shunt-deepseek` | `deepseek-v4-pro`, `deepseek-v4-flash` | `deepseek` |
 | `shunt-zai` | `glm-5.2`, `glm-4.7` | `zai` |
 | `shunt-minimax` | `MiniMax-M3[1m]` | `minimax` |

@@ -208,7 +208,7 @@ shunt injects the key and forwards the request. Ready-to-use entries (uncomment 
 
 | Provider | `base_url` | Example model IDs |
 | :-- | :-- | :-- |
-| Kimi (Moonshot) | `https://api.moonshot.ai/anthropic` | `kimi-k2.7-code` |
+| Kimi (Moonshot) | `https://api.moonshot.ai/anthropic` | `kimi-k3[1m]`, `kimi-k2.7-code` |
 | DeepSeek | `https://api.deepseek.com/anthropic` | `deepseek-v4-pro`, `deepseek-v4-flash` |
 | Z.ai (GLM) | `https://api.z.ai/api/anthropic` | `glm-5.2`, `glm-4.7` |
 | MiniMax | `https://api.minimax.io/anthropic` | see [MiniMax docs](https://platform.minimax.io/docs/token-plan/claude-code) |
@@ -226,11 +226,15 @@ auth = "api_key"
 api_key_env = "KIMI_API_KEY"
 
 [[routes]]
+model = "kimi-k3[1m]"
+provider = "kimi"
+
+[[routes]]
 model = "kimi-k2.7-code"
 provider = "kimi"
 ```
 
-Then `export KIMI_API_KEY=…`, point Claude Code at shunt (§5.1), and select `kimi-k2.7-code`
+Then `export KIMI_API_KEY=…`, point Claude Code at shunt (§5.1), and select `kimi-k3[1m]`
 (via `ANTHROPIC_MODEL` or the `/model` picker). Run `shunt check` to validate — it reports an
 unknown provider in a route, a missing `api_key_env`, or a bad `base_url`.
 
