@@ -108,6 +108,78 @@ fn form_request(path: &str, body: impl Into<String>) -> Request<Body> {
         .unwrap()
 }
 
+async fn device_attempt(
+    router: &Router,
+    peer: std::net::SocketAddr,
+    forwarded_for: &str,
+) -> String {
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/device")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::ORIGIN, "https://gateway.example")
+                .header("x-forwarded-for", forwarded_for)
+                .extension(ConnectInfo(peer))
+                .body(Body::from(
+                    "user_code=BCDF-GHJK&login=dev%40example.com&secret=wrong",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    String::from_utf8(body.to_vec()).unwrap()
+}
+
+fn inference_request(path: &str, authorization: (&str, &str), model: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(path)
+        .header(authorization.0, authorization.1)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({
+                "model": model,
+                "max_tokens": 16,
+                "messages": [{"role": "user", "content": "hi"}]
+            })
+            .to_string(),
+        ))
+        .unwrap()
+}
+
+async fn responses_upstream() -> wiremock::MockServer {
+    use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
+            "text/event-stream",
+        ))
+        .mount(&upstream)
+        .await;
+    upstream
+}
+
+fn temp_config_path(label: &str) -> (std::path::PathBuf, std::path::PathBuf, String) {
+    let suffix = format!(
+        "{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let dir = std::env::temp_dir().join(format!("shunt-{label}-{suffix}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("shunt.toml");
+    (dir, path, suffix)
+}
+
 #[tokio::test]
 async fn discovery_has_exact_reference_shape() {
     let (config, _env) = GatewayEnv::config("discovery");
@@ -443,25 +515,7 @@ async fn device_rate_limit_ignores_spoofed_forwarded_ips_by_default() {
     let peer: std::net::SocketAddr = "203.0.113.4:43123".parse().unwrap();
 
     for attempt in 0..31 {
-        let response = router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/device")
-                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                    .header(header::ORIGIN, "https://gateway.example")
-                    .header("x-forwarded-for", format!("198.51.100.{attempt}"))
-                    .extension(ConnectInfo(peer))
-                    .body(Body::from(
-                        "user_code=BCDF-GHJK&login=dev%40example.com&secret=wrong",
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let html = String::from_utf8_lossy(&body);
+        let html = device_attempt(&router, peer, &format!("198.51.100.{attempt}")).await;
         if attempt < 30 {
             assert!(html.contains("login or secret"));
         } else {
@@ -478,25 +532,8 @@ async fn device_rate_limit_honors_forwarded_ips_when_enabled() {
     let peer: std::net::SocketAddr = "203.0.113.4:43123".parse().unwrap();
 
     for attempt in 0..31 {
-        let response = router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/device")
-                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                    .header(header::ORIGIN, "https://gateway.example")
-                    .header("x-forwarded-for", format!("198.51.100.{attempt}"))
-                    .extension(ConnectInfo(peer))
-                    .body(Body::from(
-                        "user_code=BCDF-GHJK&login=dev%40example.com&secret=wrong",
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        assert!(String::from_utf8_lossy(&body).contains("login or secret"));
+        let html = device_attempt(&router, peer, &format!("198.51.100.{attempt}")).await;
+        assert!(html.contains("login or secret"));
     }
 }
 
@@ -963,17 +1000,7 @@ async fn managed_settings_empty_telemetry_targets_do_not_inject_env() {
 
 #[test]
 fn managed_policy_deserializes_from_real_toml() {
-    let suffix = format!(
-        "{}_{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    );
-    let dir = std::env::temp_dir().join(format!("shunt-managed-toml-{suffix}"));
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("shunt.toml");
+    let (dir, path, suffix) = temp_config_path("managed-toml");
     let secret_env = format!("SHUNT_REAL_TOML_SECRET_{suffix}");
     let users_env = format!("SHUNT_REAL_TOML_USERS_{suffix}");
     std::env::set_var(&secret_env, "0123456789abcdef0123456789abcdef");
@@ -1020,17 +1047,7 @@ allow = ["Read"]
 
 #[tokio::test]
 async fn managed_settings_hot_reload_serves_new_policy_and_etag() {
-    let suffix = format!(
-        "{}_{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    );
-    let dir = std::env::temp_dir().join(format!("shunt-managed-reload-{suffix}"));
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("shunt.toml");
+    let (dir, path, suffix) = temp_config_path("managed-reload");
     let secret_env = format!("SHUNT_MANAGED_RELOAD_SECRET_{suffix}");
     let users_env = format!("SHUNT_MANAGED_RELOAD_USERS_{suffix}");
     std::env::set_var(&secret_env, "0123456789abcdef0123456789abcdef");
@@ -1139,16 +1156,7 @@ async fn empty_available_models_denies_all_gateway_inference_routes() {
 
 #[tokio::test]
 async fn available_models_policy_denies_or_allows_gateway_requests() {
-    use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
-
-    let upstream = MockServer::start().await;
-    Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(200).set_body_raw(
-            "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
-            "text/event-stream",
-        ))
-        .mount(&upstream)
-        .await;
+    let upstream = responses_upstream().await;
     let (mut config, _env) = GatewayEnv::config("managed-enforcement");
     let key_env = format!("SHUNT_GATEWAY_POLICY_UPSTREAM_{}", std::process::id());
     let client_env = format!("SHUNT_GATEWAY_POLICY_CLIENT_{}", std::process::id());
@@ -1176,24 +1184,14 @@ async fn available_models_policy_denies_or_allows_gateway_requests() {
     )]);
     let (router, _, _) = build_router(config).unwrap();
     let bearer = gateway_bearer("dev@example.com");
-    let request_body = |model: &str| {
-        json!({
-            "model": model,
-            "max_tokens": 16,
-            "messages": [{"role": "user", "content": "hi"}]
-        })
-        .to_string()
-    };
 
     let (status, body) = json_response(
         router.clone(),
-        Request::builder()
-            .method("POST")
-            .uri("/v1/messages")
-            .header(header::AUTHORIZATION, format!("Bearer {bearer}"))
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(request_body("denied")))
-            .unwrap(),
+        inference_request(
+            "/v1/messages",
+            (header::AUTHORIZATION.as_str(), &format!("Bearer {bearer}")),
+            "denied",
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -1205,43 +1203,33 @@ async fn available_models_policy_denies_or_allows_gateway_requests() {
 
     let response = router
         .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/messages")
-                .header(header::AUTHORIZATION, format!("Bearer {bearer}"))
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(request_body("allowed[1m]")))
-                .unwrap(),
-        )
+        .oneshot(inference_request(
+            "/v1/messages",
+            (header::AUTHORIZATION.as_str(), &format!("Bearer {bearer}")),
+            "allowed[1m]",
+        ))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
     let (status, body) = json_response(
         router.clone(),
-        Request::builder()
-            .method("POST")
-            .uri("/v1/messages/count_tokens")
-            .header(header::AUTHORIZATION, format!("Bearer {bearer}"))
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(request_body("denied")))
-            .unwrap(),
+        inference_request(
+            "/v1/messages/count_tokens",
+            (header::AUTHORIZATION.as_str(), &format!("Bearer {bearer}")),
+            "denied",
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"]["type"], "invalid_request_error");
 
     let response = router
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/messages")
-                .header("x-shunt-token", "static-token")
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(request_body("denied")))
-                .unwrap(),
-        )
+        .oneshot(inference_request(
+            "/v1/messages",
+            ("x-shunt-token", "static-token"),
+            "denied",
+        ))
         .await
         .unwrap();
     std::env::remove_var(key_env);
@@ -1252,16 +1240,7 @@ async fn available_models_policy_denies_or_allows_gateway_requests() {
 
 #[tokio::test]
 async fn gateway_policy_without_available_models_is_unrestricted() {
-    use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
-
-    let upstream = MockServer::start().await;
-    Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(200).set_body_raw(
-            "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
-            "text/event-stream",
-        ))
-        .mount(&upstream)
-        .await;
+    let upstream = responses_upstream().await;
     let (mut config, _env) = GatewayEnv::config("managed-unrestricted");
     let key_env = format!("SHUNT_GATEWAY_UNRESTRICTED_{}", std::process::id());
     std::env::set_var(&key_env, "upstream-key");
@@ -1279,22 +1258,11 @@ async fn gateway_policy_without_available_models_is_unrestricted() {
     let (router, _, _) = build_router(config).unwrap();
     let bearer = gateway_bearer("dev@example.com");
     let response = router
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/messages")
-                .header(header::AUTHORIZATION, format!("Bearer {bearer}"))
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    json!({
-                        "model": "any-model",
-                        "max_tokens": 16,
-                        "messages": [{"role": "user", "content": "hi"}]
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
+        .oneshot(inference_request(
+            "/v1/messages",
+            (header::AUTHORIZATION.as_str(), &format!("Bearer {bearer}")),
+            "any-model",
+        ))
         .await
         .unwrap();
     std::env::remove_var(key_env);

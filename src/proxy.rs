@@ -145,30 +145,8 @@ async fn forward(
     // upstream.
     let (headers, gateway_claims) =
         check_inbound_auth(&state, &route, headers).map_err(|error| *error)?;
-    if let (Some(auth), Some(claims)) = (&state.gateway_auth, gateway_claims.as_ref()) {
-        if let Some(settings) = auth.managed_settings(&claims.email) {
-            if let Some(available_models) = crate::gateway::managed::available_models(settings) {
-                let policy_model = routing::strip_context_window_hint(&requested_model);
-                if !available_models
-                    .iter()
-                    .any(|model| model.as_str() == Some(policy_model))
-                {
-                    let message = format!(
-                        "model \"{requested_model}\" is not permitted by this gateway's managed policy"
-                    );
-                    return Err(ForwardError {
-                        message: message.clone(),
-                        response: ShuntError::new(
-                            StatusCode::BAD_REQUEST,
-                            "invalid_request_error",
-                            message,
-                        )
-                        .into_response(),
-                    });
-                }
-            }
-        }
-    }
+    enforce_managed_model_policy(&state, gateway_claims.as_ref(), &requested_model)
+        .map_err(|error| *error)?;
     let headers = &headers;
     // The Responses API has no token-counting endpoint. For a responses-routed
     // model, either count locally with tiktoken (the default) or return 501
@@ -243,6 +221,36 @@ async fn forward(
         );
         (status, response)
     })
+}
+
+fn enforce_managed_model_policy(
+    state: &AppState,
+    claims: Option<&crate::gateway::jwt::Claims>,
+    requested_model: &str,
+) -> Result<(), Box<ForwardError>> {
+    let Some((auth, claims)) = state.gateway_auth.as_ref().zip(claims) else {
+        return Ok(());
+    };
+    let Some(available_models) = auth
+        .managed_settings(&claims.email)
+        .and_then(crate::gateway::managed::available_models)
+    else {
+        return Ok(());
+    };
+    let policy_model = routing::strip_context_window_hint(requested_model);
+    if available_models
+        .iter()
+        .any(|model| model.as_str() == Some(policy_model))
+    {
+        return Ok(());
+    }
+    let message =
+        format!("model \"{requested_model}\" is not permitted by this gateway's managed policy");
+    Err(Box::new(ForwardError {
+        message: message.clone(),
+        response: ShuntError::new(StatusCode::BAD_REQUEST, "invalid_request_error", message)
+            .into_response(),
+    }))
 }
 
 /// Enforce configured client authentication on injected-credential routes and

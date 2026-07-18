@@ -434,75 +434,8 @@ impl GatewayConfig {
                     message,
                 }
             })?;
-        let policies = self
-            .policies
-            .as_ref()
-            .map(|policies| {
-                if policies.is_empty() {
-                    return Err(ConfigError::EmptyGatewayPolicies);
-                }
-                policies
-                    .iter()
-                    .enumerate()
-                    .map(|(index, policy)| {
-                        let emails = match policy
-                            .matcher
-                            .as_ref()
-                            .and_then(|matcher| matcher.emails.as_ref())
-                        {
-                            Some(emails) if emails.is_empty() => {
-                                return Err(ConfigError::EmptyGatewayPolicyEmails { index });
-                            }
-                            Some(emails) => {
-                                if let Some(email_index) =
-                                    emails.iter().position(|email| email.trim().is_empty())
-                                {
-                                    return Err(ConfigError::EmptyGatewayPolicyEmail {
-                                        index,
-                                        email_index,
-                                    });
-                                }
-                                Some(emails.clone())
-                            }
-                            None => None,
-                        };
-                        let settings = toml_to_json(&policy.cli)
-                            .map_err(|key| ConfigError::InvalidGatewayPolicyValue { index, key })?;
-                        let settings = settings
-                            .as_object()
-                            .ok_or(ConfigError::InvalidGatewayPolicyCli { index })?;
-                        validate_managed_policy(settings, index)?;
-                        Ok(crate::gateway::managed::ResolvedPolicy {
-                            emails,
-                            settings: serde_json::Value::Object(settings.clone()),
-                        })
-                    })
-                    .collect::<Result<Vec<_>, ConfigError>>()
-            })
-            .transpose()?;
-        let telemetry_push = self
-            .telemetry
-            .as_ref()
-            .is_some_and(|telemetry| !telemetry.forward_to.is_empty());
-        if let Some(telemetry) = &self.telemetry {
-            for (index, destination) in telemetry.forward_to.iter().enumerate() {
-                let url = reqwest::Url::parse(destination.url.trim()).map_err(|error| {
-                    ConfigError::InvalidGatewayTelemetryUrl {
-                        index,
-                        message: error.to_string(),
-                    }
-                })?;
-                if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
-                    return Err(ConfigError::InvalidGatewayTelemetryUrl {
-                        index,
-                        message: format!(
-                            "must be an http(s) URL with a host, got `{}`",
-                            destination.url
-                        ),
-                    });
-                }
-            }
-        }
+        let policies = resolve_gateway_policies(self.policies.as_deref())?;
+        let telemetry_push = validate_gateway_telemetry(self.telemetry.as_ref())?;
         Ok(crate::gateway::GatewayAuth::new(
             public_url.as_str().trim_end_matches('/').to_string(),
             secret.into_bytes(),
@@ -512,6 +445,92 @@ impl GatewayConfig {
         )
         .with_managed_policies(policies, telemetry_push))
     }
+}
+
+fn resolve_gateway_policies(
+    policies: Option<&[GatewayPolicyConfig]>,
+) -> Result<Option<Vec<crate::gateway::managed::ResolvedPolicy>>, ConfigError> {
+    policies
+        .map(|policies| {
+            if policies.is_empty() {
+                return Err(ConfigError::EmptyGatewayPolicies);
+            }
+            policies
+                .iter()
+                .enumerate()
+                .map(resolve_gateway_policy)
+                .collect()
+        })
+        .transpose()
+}
+
+fn resolve_gateway_policy(
+    (index, policy): (usize, &GatewayPolicyConfig),
+) -> Result<crate::gateway::managed::ResolvedPolicy, ConfigError> {
+    let emails = policy
+        .matcher
+        .as_ref()
+        .and_then(|matcher| matcher.emails.as_ref())
+        .map(|emails| validate_gateway_policy_emails(emails, index))
+        .transpose()?
+        .map(<[String]>::to_vec);
+    let settings = toml_to_json(&policy.cli)
+        .map_err(|key| ConfigError::InvalidGatewayPolicyValue { index, key })?;
+    let settings = settings
+        .as_object()
+        .ok_or(ConfigError::InvalidGatewayPolicyCli { index })?;
+    validate_managed_policy(settings, index)?;
+    Ok(crate::gateway::managed::ResolvedPolicy {
+        emails,
+        settings: serde_json::Value::Object(settings.clone()),
+    })
+}
+
+fn validate_gateway_policy_emails(
+    emails: &[String],
+    index: usize,
+) -> Result<&[String], ConfigError> {
+    if emails.is_empty() {
+        return Err(ConfigError::EmptyGatewayPolicyEmails { index });
+    }
+    if let Some(email_index) = emails.iter().position(|email| email.trim().is_empty()) {
+        return Err(ConfigError::EmptyGatewayPolicyEmail { index, email_index });
+    }
+    Ok(emails)
+}
+
+fn validate_gateway_telemetry(
+    telemetry: Option<&GatewayTelemetryConfig>,
+) -> Result<bool, ConfigError> {
+    let Some(telemetry) = telemetry else {
+        return Ok(false);
+    };
+    for (index, destination) in telemetry.forward_to.iter().enumerate() {
+        validate_gateway_telemetry_destination(destination, index)?;
+    }
+    Ok(!telemetry.forward_to.is_empty())
+}
+
+fn validate_gateway_telemetry_destination(
+    destination: &GatewayTelemetryDestination,
+    index: usize,
+) -> Result<(), ConfigError> {
+    let url = reqwest::Url::parse(destination.url.trim()).map_err(|error| {
+        ConfigError::InvalidGatewayTelemetryUrl {
+            index,
+            message: error.to_string(),
+        }
+    })?;
+    if matches!(url.scheme(), "http" | "https") && url.host_str().is_some() {
+        return Ok(());
+    }
+    Err(ConfigError::InvalidGatewayTelemetryUrl {
+        index,
+        message: format!(
+            "must be an http(s) URL with a host, got `{}`",
+            destination.url
+        ),
+    })
 }
 
 fn validate_managed_policy(
