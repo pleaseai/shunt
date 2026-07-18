@@ -1,0 +1,24 @@
+site/src/content/docs/guides/gateway-login.md
+  s_d18beb053806f3::t_8940236d81b579 105
+docs/gateway-login.md
+  s_d18beb053806f3::t_664571ad995c79 134-136
+src/config.rs
+  s_d18beb053806f3::t_c94f6a09f84a20 438-443
+  s_d18beb053806f3::t_e8ddade88db73d 2602-2606
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "59f68ae49dc567564ff4c30a54d76a15917ec158",
+  "prompts": {},
+  "sessions": {
+    "s_d18beb053806f3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a7462634-b5fd-4f70-9cfa-771ea96a8aa6",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
