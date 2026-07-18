@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.23.0](https://github.com/pleaseai/shunt/compare/v0.22.0...v0.23.0) (2026-07-18)
+
+
+### Features
+
+* **admin:** add OIDC browser login to the admin surface ([#205](https://github.com/pleaseai/shunt/issues/205)) ([f87a4ee](https://github.com/pleaseai/shunt/commit/f87a4ee816d578817bfea4a8081a4972af125b58))
+* **codex:** 분석 이벤트 수신 후 폐기 싱크 추가 ([#204](https://github.com/pleaseai/shunt/issues/204)) ([f4e0e8b](https://github.com/pleaseai/shunt/commit/f4e0e8b92609850a0eec3ccb3af92c8946306143))
+* **gateway:** add OIDC approval provider for device login ([#202](https://github.com/pleaseai/shunt/issues/202)) ([d0d0202](https://github.com/pleaseai/shunt/commit/d0d02020486616b3ea21b724288725d8424b4a0f))
+* **gateway:** M-B — per-user GET /managed/settings with ETag/304 and telemetry env push ([#199](https://github.com/pleaseai/shunt/issues/199)) ([9503cea](https://github.com/pleaseai/shunt/commit/9503cea0eb4fad3dd49988b6844c1bf103da89ec))
+
 ## [0.22.0](https://github.com/pleaseai/shunt/compare/v0.21.0...v0.22.0) (2026-07-18)
 
 
