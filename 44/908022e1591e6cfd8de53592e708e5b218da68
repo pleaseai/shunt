@@ -1,0 +1,50 @@
+site/src/content/docs/ja/guides/providers.md
+  s_0275f50485c868::t_88f0038e7b7038 110
+  s_0275f50485c868::t_6e60f29b312552 92
+  s_0275f50485c868::t_493889cfdae4e6 118
+  s_0275f50485c868::t_0f85373b8966d3 130
+README.md
+  s_0275f50485c868::t_75e0701a2767f0 111
+  s_0275f50485c868::t_29aac8122785c3 126
+site/src/content/docs/zh-cn/guides/providers.md
+  s_0275f50485c868::t_2767d2990a7fd8 95,133
+  s_0275f50485c868::t_6eb1991ea5cd0f 113
+  s_0275f50485c868::t_06f42cf4734b10 121
+plugins/shunt-kimi/README.md
+  s_0275f50485c868::t_9e19c3fd0f0966 16
+  s_0275f50485c868::t_c64d14c2b239e3 46
+  s_0275f50485c868::t_d275eb9259892d 75
+site/src/content/docs/ko/guides/providers.md
+  s_0275f50485c868::t_c23e077df98a9f 95,133
+  s_0275f50485c868::t_5e27c62c706673 121
+  s_0275f50485c868::t_946fb56580adc7 113
+site/src/content/docs/guides/providers.md
+  s_0275f50485c868::t_4727a4cbdaf0df 123
+  s_0275f50485c868::t_93d02580e45a1c 105,143
+  s_0275f50485c868::t_662547215e6daf 131
+shunt.toml.example
+  s_0275f50485c868::t_a6ce209564ee57 264
+  s_0275f50485c868::t_a10b666b288e35 190
+plugins/shunt-kimi/agents/kimi-k3.md
+  s_0275f50485c868::t_af64a73a452e17 4
+docs/running.md
+  s_0275f50485c868::t_1af409be40d6ec 211
+  s_0275f50485c868::t_cc15086467e23b 229
+  s_0275f50485c868::t_5bebc0ba4803e6 237
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "44908022e1591e6cfd8de53592e708e5b218da68",
+  "prompts": {},
+  "sessions": {
+    "s_0275f50485c868": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "efded9a9-660b-469e-b816-b1acca86a94d",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
