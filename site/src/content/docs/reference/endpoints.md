@@ -14,7 +14,9 @@ description: The endpoints shunt serves as a Claude Code LLM gateway.
 | `POST` | `/v1/messages/count_tokens` | [Token counting](/guides/effort-and-context/#token-counting-count_tokens) |
 | `GET` | `/managed/settings` | Per-user Claude Code managed settings for a gateway JWT; supports `ETag`, `If-None-Match`, and `304 Not Modified` |
 | `GET` | `/admin` | Admin dashboard (HTML); redirects to `/admin/login` when not signed in |
-| `GET`, `POST` | `/admin/login` | Admin-token login form and browser-session creation |
+| `GET`, `POST` | `/admin/login` | Admin-token login form, optional OIDC affordance, and browser-session creation |
+| `POST` | `/admin/oidc/start` | Start the optional same-origin admin OIDC/PKCE login |
+| `GET` | `/admin/oidc/callback` | Complete OIDC login, enforce the current allowlist, and create the browser session |
 | `POST` | `/admin/logout` | Clear the browser session |
 | `GET` | `/admin/accounts` | Claude account-store metadata: name, kind, expiry, and UUID; never token material |
 | `GET` | `/admin/accounts/codex` | Codex account-store metadata: name, expiry, and ChatGPT account ID; never token material |

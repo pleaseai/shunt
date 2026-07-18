@@ -77,6 +77,39 @@ devices; admin tokens add upstream accounts. Configuration validation is
 malformed is a startup error, never a silently-open admin surface (identical
 discipline to `[server.auth]`).
 
+### Optional OIDC browser login
+
+`[server.admin.oidc]` adds an allowlisted OIDC/SSO button to the token login page.
+Admin tokens remain mandatory as the API/curl credential and fallback browser
+login; OIDC is an additional browser path, not a replacement security boundary.
+
+```toml
+[server.admin.oidc]
+public_url = "https://admin.example.com"
+issuer = "https://accounts.example.com"
+client_id = "shunt-admin"
+client_secret_env = "SHUNT_ADMIN_OIDC_SECRET"
+allowed_domains = ["example.com"]
+# allowed_emails = ["operator@example.net"]
+# scopes = ["openid", "email", "profile"]
+```
+
+The registered redirect URI is
+`{public_url}/admin/oidc/callback`. `public_url` must be a bare HTTPS origin
+(loopback HTTP is allowed for local development). The issuer and optional endpoint
+overrides use HTTPS or loopback HTTP only. Startup also fails closed for an empty
+issuer/client id, missing or empty client-secret environment variable, or an empty
+email/domain allowlist.
+
+`POST /admin/oidc/start` is same-origin guarded and rate-limited, discovers or uses
+the configured authorization endpoint, creates PKCE plus a short-lived single-use
+state, and redirects to the provider. The callback consumes that state before any
+exchange, obtains a verified-email identity through the provider's token and
+UserInfo endpoints, and re-checks the **current hot-reloaded allowlist** before
+minting the ordinary admin session cookie. Provider input and exchange failures
+produce generic browser pages; secrets, codes, and tokens are never logged or
+echoed. Success always redirects to the fixed `/admin` target.
+
 ## Runtime wiring
 
 The split mirrors how M4/M8 already separate hot-reloadable config from
@@ -142,7 +175,9 @@ process-lifetime state:
 | Method | Path | Purpose |
 | :-- | :-- | :-- |
 | `GET` | `/admin` | Dashboard (HTML); redirects to `/admin/login` when not signed in |
-| `GET`,`POST` | `/admin/login` | Token login form → session cookie |
+| `GET`,`POST` | `/admin/login` | Token or OIDC login form → session cookie |
+| `POST` | `/admin/oidc/start` | Start the optional same-origin OIDC/PKCE browser login |
+| `GET` | `/admin/oidc/callback` | Complete OIDC login, enforce the current allowlist, and mint a session |
 | `POST` | `/admin/logout` | Clear the session |
 | `GET` | `/admin/accounts` | JSON: Claude store metadata (name, kind, expiry, UUID — never the token) |
 | `GET` | `/admin/accounts/codex` | JSON: Codex store metadata (name, expiry, account ID — never the token) |

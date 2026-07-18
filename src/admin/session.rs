@@ -8,7 +8,7 @@
 
 use std::{
     collections::HashMap,
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -26,6 +26,7 @@ pub(crate) fn random_id() -> String {
 /// wrong paste can be retried a few times but code/state guessing cannot run
 /// indefinitely (the 256-bit `state` already makes guessing infeasible).
 const MAX_PENDING_ATTEMPTS: u32 = 5;
+const MAX_OIDC_STATES: usize = 4096;
 
 struct Session {
     csrf: String,
@@ -187,6 +188,75 @@ impl PendingStore {
     }
 }
 
+/// The PKCE snapshot needed to complete one admin OIDC browser login.
+pub struct OidcPending {
+    pub verifier: String,
+    pub idp: Arc<crate::gateway::ResolvedIdp>,
+    pub redirect_uri: String,
+    expires: Instant,
+}
+
+/// Short-lived, single-use admin OIDC states keyed by the PKCE state value.
+#[derive(Default)]
+pub struct OidcStateStore {
+    states: Mutex<HashMap<String, OidcPending>>,
+}
+
+impl OidcStateStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn insert(
+        &self,
+        state: String,
+        verifier: String,
+        idp: Arc<crate::gateway::ResolvedIdp>,
+        redirect_uri: String,
+        ttl: Duration,
+    ) -> bool {
+        self.insert_at(state, verifier, idp, redirect_uri, Instant::now(), ttl)
+    }
+
+    fn insert_at(
+        &self,
+        state: String,
+        verifier: String,
+        idp: Arc<crate::gateway::ResolvedIdp>,
+        redirect_uri: String,
+        now: Instant,
+        ttl: Duration,
+    ) -> bool {
+        let mut states = self.states.lock().expect("admin OIDC-state lock poisoned");
+        states.retain(|_, pending| pending.expires > now);
+        if states.contains_key(&state) || states.len() >= MAX_OIDC_STATES {
+            return false;
+        }
+        states.insert(
+            state,
+            OidcPending {
+                verifier,
+                idp,
+                redirect_uri,
+                expires: now + ttl,
+            },
+        );
+        true
+    }
+
+    pub fn take(&self, state: &str) -> Option<OidcPending> {
+        self.take_at(state, Instant::now())
+    }
+
+    fn take_at(&self, state: &str, now: Instant) -> Option<OidcPending> {
+        self.states
+            .lock()
+            .expect("admin OIDC-state lock poisoned")
+            .remove(state)
+            .filter(|pending| pending.expires > now)
+    }
+}
+
 struct Window {
     start: Instant,
     count: u32,
@@ -229,6 +299,7 @@ impl RateLimiter {
 pub struct AdminStores {
     pub sessions: SessionStore,
     pub pending: PendingStore,
+    pub oidc_states: OidcStateStore,
     /// Guards the completion endpoint against code-guessing storms.
     pub complete_rate: RateLimiter,
     /// Guards the login endpoint against admin-token brute-force. Coarse and
@@ -242,6 +313,7 @@ impl AdminStores {
         Self {
             sessions: SessionStore::new(),
             pending: PendingStore::new(),
+            oidc_states: OidcStateStore::new(),
             complete_rate: RateLimiter::new(Duration::from_secs(60), 30),
             login_rate: RateLimiter::new(Duration::from_secs(60), 30),
         }
@@ -257,6 +329,20 @@ impl Default for AdminStores {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn idp() -> Arc<crate::gateway::ResolvedIdp> {
+        Arc::new(crate::gateway::ResolvedIdp {
+            issuer: "https://idp.example".into(),
+            client_id: "client".into(),
+            client_secret: "secret".into(),
+            allowed_domains: vec!["example.com".into()],
+            allowed_emails: vec![],
+            scopes: vec!["openid".into()],
+            authorization_endpoint: None,
+            token_endpoint: None,
+            userinfo_endpoint: None,
+        })
+    }
 
     #[test]
     fn session_round_trips_and_expires() {
@@ -322,6 +408,61 @@ mod tests {
             Duration::from_millis(0),
         );
         assert!(matches!(store.attempt("x"), PendingAttempt::NotFound));
+    }
+
+    #[test]
+    fn oidc_states_are_single_use_and_expire() {
+        let store = OidcStateStore::new();
+        let now = Instant::now();
+        assert!(store.insert_at(
+            "state".into(),
+            "verifier".into(),
+            idp(),
+            "https://admin.example/admin/oidc/callback".into(),
+            now,
+            Duration::from_secs(60),
+        ));
+        let pending = store.take_at("state", now).expect("state exists");
+        assert_eq!(pending.verifier, "verifier");
+        assert_eq!(
+            pending.redirect_uri,
+            "https://admin.example/admin/oidc/callback"
+        );
+        assert!(store.take_at("state", now).is_none());
+
+        assert!(store.insert_at(
+            "expired".into(),
+            "verifier".into(),
+            idp(),
+            "https://admin.example/admin/oidc/callback".into(),
+            now,
+            Duration::ZERO,
+        ));
+        assert!(store.take_at("expired", now).is_none());
+    }
+
+    #[test]
+    fn oidc_states_reject_admission_at_capacity() {
+        let store = OidcStateStore::new();
+        let now = Instant::now();
+        for index in 0..MAX_OIDC_STATES {
+            assert!(store.insert_at(
+                format!("state-{index}"),
+                format!("verifier-{index}"),
+                idp(),
+                "https://admin.example/admin/oidc/callback".into(),
+                now,
+                Duration::from_secs(60),
+            ));
+        }
+        assert!(!store.insert_at(
+            "overflow".into(),
+            "verifier".into(),
+            idp(),
+            "https://admin.example/admin/oidc/callback".into(),
+            now,
+            Duration::from_secs(60),
+        ));
     }
 
     #[test]

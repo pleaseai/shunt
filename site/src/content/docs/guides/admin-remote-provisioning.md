@@ -27,6 +27,28 @@ shunt run
 
 Credentials use the same comma-separated `name:token` format as `SHUNT_CLIENT_TOKENS`, but they are a separate security boundary. Do not reuse a `[server.auth]` client token as an admin token. Startup fails closed if `[server.admin]` is present but its token environment variable is unset, empty, or malformed.
 
+### Add OIDC/SSO browser login
+
+Keep the admin token configured, then add an optional OIDC provider for browser sign-in:
+
+```toml
+[server.admin.oidc]
+public_url = "https://admin.example.com"
+issuer = "https://accounts.example.com"
+client_id = "shunt-admin"
+client_secret_env = "SHUNT_ADMIN_OIDC_SECRET"
+allowed_domains = ["example.com"]
+# allowed_emails = ["operator@example.net"]
+```
+
+```bash
+export SHUNT_ADMIN_OIDC_SECRET="<provider client secret>"
+```
+
+Register `https://admin.example.com/admin/oidc/callback` as the provider redirect URI. `public_url` must be the externally reachable bare HTTPS origin; plain HTTP is accepted only for loopback development. At least one allowed domain or full email is required, and shunt accepts only an OIDC UserInfo identity whose email is non-empty and verified.
+
+The login page retains the admin-token form and adds **Sign in with SSO** (or **Sign in with Google** for Google's issuer). The start request is same-origin guarded, uses PKCE and a short-lived single-use state, and is rate-limited with token login. On callback, shunt exchanges the code without exposing it, fetches the verified identity, re-checks the current hot-reloaded allowlist, creates the ordinary HttpOnly admin session, and redirects only to `/admin`. Provider errors remain generic in the browser, and shunt never logs tokens, secrets, or authorization codes. For GitHub or SAML, put an OIDC broker such as Dex in front rather than configuring provider-specific OAuth2 directly.
+
 See the [configuration reference](/reference/configuration/#serveradmin-optional) for every key and default. The [endpoint reference](/reference/endpoints/) lists the browser and JSON routes.
 
 ## Provision a Claude account in the browser
@@ -108,7 +130,7 @@ A refreshable account must have one active owner. OAuth refresh may replace the 
 
 - Put the admin surface behind HTTPS or a trusted tunnel such as WireGuard or Tailscale. shunt serves plain HTTP itself; use TLS termination in front when exposing it remotely.
 - Generate a strong admin token and keep it separate from `[server.auth]` client credentials. Admin access can add and remove upstream accounts.
-- Browser login creates an HttpOnly, SameSite=Strict session cookie. The cookie is Secure except on loopback hosts, so local HTTP development still works.
+- Browser login creates an HttpOnly, SameSite=Strict session cookie whether authentication used the admin token or OIDC. The cookie is Secure except on loopback hosts, so local HTTP development still works.
 - Mutating browser requests require a per-session `x-csrf-token` and pass a same-origin check. API/curl calls authenticate with the admin header instead and do not carry ambient cookie authority.
 - Provisioning completion is rate-limited. shunt never logs or returns token material, and account additions and removals are audit-logged by account name.
 
