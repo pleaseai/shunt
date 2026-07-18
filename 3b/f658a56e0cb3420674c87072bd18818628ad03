@@ -1,0 +1,19 @@
+src/accounts.rs
+  s_71980b6858ec72::t_692a31213faa35 624
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "3bf658a56e0cb3420674c87072bd18818628ad03",
+  "prompts": {},
+  "sessions": {
+    "s_71980b6858ec72": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3d559c97-2eb6-46fd-8f5d-8c7d794ff0e9",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
