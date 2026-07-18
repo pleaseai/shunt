@@ -1,0 +1,36 @@
+.please/docs/review/rejected-findings.jsonl
+  s_252c0b6e0f2fac::t_b2efc924d23619 23-29
+README.md
+  s_252c0b6e0f2fac::t_ab8bf67ecfa1c3 78
+site/src/content/docs/reference/configuration.md
+  s_252c0b6e0f2fac::t_a78da9e7e33fcc 53
+src/gateway/tests.rs
+  s_252c0b6e0f2fac::t_7b9105328da00e 227,232-238,240-245,248-249,276,278-281
+  s_252c0b6e0f2fac::t_91647d8dce0e57 239,259,286
+site/src/content/docs/guides/gateway-login.md
+  s_252c0b6e0f2fac::t_3d5e8da59d89fc 73-75
+docs/gateway-login.md
+  s_252c0b6e0f2fac::t_a094631042c804 54
+  s_252c0b6e0f2fac::t_22592be627d23d 99-120
+src/gateway/persist.rs
+  s_252c0b6e0f2fac::t_91647d8dce0e57 312
+  s_252c0b6e0f2fac::t_d9a69a03222040 216-233
+  s_252c0b6e0f2fac::t_dd6b500e5f0629 261,268-277
+  s_252c0b6e0f2fac::t_36c1f970ee8310 293-311,313-333
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "c6f4ca89e1ec4d45c5a13a250aacd711f39a6fe6",
+  "prompts": {},
+  "sessions": {
+    "s_252c0b6e0f2fac": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "727cb08c-6b4c-4134-9270-64698a029b37",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
