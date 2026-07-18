@@ -33,6 +33,10 @@ src/config.rs
   s_579e17ceff30c3::t_2022d100e6926b 320-322
   s_579e17ceff30c3::t_4d729f5bf16709 279-282
   s_579e17ceff30c3::t_0f1994a6dfdab1 465-466
+  s_7ce3f74635e5e7::t_fdb6d6ffb9ebf8 716-718
+  s_7ce3f74635e5e7::t_c4827c9ad06a42 2313-2314
+  s_7ce3f74635e5e7::t_2d3e1e96bb46f0 736-741
+  s_7ce3f74635e5e7::t_3b075834aa8b8f 775,777-779,781-783,786
 docs/gateway-login.md
   s_6adb8acb856e5b::t_77a89039448ce9 66-81
   s_6adb8acb856e5b::t_d256c54c22d701 17,19
@@ -250,6 +254,14 @@ src/admin/oidc.rs
       "agent_id": {
         "tool": "claude",
         "id": "e12bb860-e1d1-4cc0-80a6-270eb3b05d88",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_7ce3f74635e5e7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "efbf716c-c26e-414a-820f-5da87124398b",
         "model": "claude-fable-5"
       },
       "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
