@@ -1,6 +1,6 @@
 ---
 title: Gateway Login
-description: Let Claude Code sign in to shunt with the OAuth device flow and local approval users.
+description: Let Claude Code sign in to shunt with the OAuth device flow, local approval users, or an OIDC provider such as Google.
 ---
 
 Gateway login gives each Claude Code user their own rotating OAuth session instead of distributing one shared client token. It is an opt-in surface: without `[server.gateway]`, none of the OAuth or device-approval routes exist.
@@ -30,7 +30,42 @@ trust_forwarded_for = false                   # default
 # state_path = "~/.shunt/gateway-sessions.json"  # default; "" = memory-only sessions
 ```
 
-Startup fails closed if `public_url` is not a bare HTTPS origin (`http` is allowed only on loopback), `token_ttl_seconds` is zero, the signing secret is shorter than 32 bytes, or the user list is empty or malformed. A secret may contain `:` because only the first colon separates an email from its secret.
+Startup fails closed if `public_url` is not a bare HTTPS origin (`http` is allowed only on loopback), `token_ttl_seconds` is zero, the signing secret is shorter than 32 bytes, or neither a valid user list nor a valid external IdP is configured. A static-user secret may contain `:` because only the first colon separates an email from its secret.
+
+### Use Google OIDC instead
+
+Create an OAuth web client in Google Cloud with this exact authorized redirect URI:
+
+```text
+https://gateway.example.com/device/callback
+```
+
+Put its secret in the gateway environment, then configure the issuer and a mandatory allowlist:
+
+```bash
+export SHUNT_GATEWAY_OIDC_SECRET='<google-client-secret>'
+```
+
+```toml
+[server.gateway.oidc]
+issuer = "https://accounts.google.com"
+client_id = "<google-client-id>"
+client_secret_env = "SHUNT_GATEWAY_OIDC_SECRET" # default
+allowed_domains = ["example.com"]
+# allowed_emails = ["contractor@outside.example"]
+```
+
+Google uses the default `openid email profile` scopes. shunt requires Google UserInfo to return `email_verified = true`, then admits the user only when the case-insensitive full email or domain matches the allowlist.
+
+For GitHub, SAML, or another provider that does not expose the standard OIDC
+surface shunt expects, put an OIDC identity provider such as [Dex](https://dexidp.io/docs/connectors/)
+in front of it and configure the Dex issuer here. Direct provider-specific OAuth2
+integrations are out of scope.
+
+At least one non-empty `allowed_domains` or `allowed_emails` entry is required;
+shunt refuses to start without it. `users_env` becomes optional when
+`[server.gateway.oidc]` is configured. Leave `SHUNT_GATEWAY_USERS` set to show
+both SSO and password sign-in, or unset it to show only the provider button.
 
 Use HTTPS for every non-loopback deployment. By default, `/device` ignores `X-Forwarded-For` and `X-Real-IP` and rate-limits the socket peer. If shunt is reachable exclusively through a trusted reverse proxy, set `trust_forwarded_for = true` and configure that proxy to remove client-provided forwarding headers before setting its own trusted client address. Never enable this option on a directly exposed gateway.
 
@@ -58,11 +93,10 @@ The URL must equal `public_url`. Claude Code reads the OAuth endpoint paths from
 Start Claude Code and run `/login`. The CLI shows a device code and opens the gateway's `/device` page. On that page:
 
 1. Confirm the displayed device code.
-2. Enter an email and secret from `SHUNT_GATEWAY_USERS`.
-3. Select **Approve device**.
-4. Return to Claude Code after the success page appears.
+2. Select **Sign in with Google** or **Sign in with SSO**, then finish the provider login. If static users are also configured, entering an email and secret and selecting **Approve device** remains available.
+3. Return to Claude Code after the success page appears.
 
-Pre-filling the code never auto-approves it. The approval POST is same-origin protected; a cross-site submission is blocked with a notice instead of changing the grant.
+Pre-filling the code never auto-approves it. The password approval POST is same-origin protected. The external callback instead binds the cross-site redirect with a single-use, ten-minute OAuth state and PKCE; provider errors are never echoed into the page.
 
 ## Session behavior
 
@@ -72,7 +106,7 @@ Device grants, refresh tokens, and attempt counters live in memory. Config hot r
 
 Refresh sessions survive a shunt restart by default: shunt writes the refresh-token store to `state_path` (default `~/.shunt/gateway-sessions.json`, atomically, owner-only permissions (0600 on Unix)) after every grant or rotation and restores it at boot, so users keep refreshing instead of re-running the browser flow. Refresh tokens are stored as SHA-256 hashes — the file never contains a usable credential, only token hashes and the signed-in identities. A missing or corrupt file just falls back to memory-only behavior, as does an environment with no resolvable home directory. Set `state_path = ""` for memory-only sessions, where a restart clears refresh sessions and users sign in again once their access JWT expires. Device grants stay memory-only either way (a restart mid-login only costs that attempt), and the state file must not be shared between concurrently running shunt processes.
 
-Note that refresh grants mint tokens from the identity stored with the session and do not re-check the approval user list, so removing a user from `users_env` does not end an existing session. To deprovision a user immediately, also delete the state file (or set `state_path = ""`) and restart.
+Note that refresh grants mint tokens from the identity stored with the session and do not re-check the static user list or external IdP allowlist, so removing a user from either approval source does not end an existing session. To deprovision a user immediately, also delete the state file (or set `state_path = ""`) and restart.
 
 When [`[server.auth]`](/guides/shared-gateway/) and `[server.gateway]` are both configured, they compose: either a valid static client token or a valid gateway bearer grants access. This supports a staged migration without breaking existing clients.
 

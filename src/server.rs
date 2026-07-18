@@ -34,9 +34,9 @@ pub struct AppState {
     /// [`AppState::accounts`], created once and kept across reloads so an
     /// operator's browser session is not dropped by an unrelated config edit.
     pub admin_stores: Arc<AdminStores>,
-    /// Gateway-login JWT/users snapshot for this request (None ⇒ disabled).
+    /// Gateway-login JWT/approval snapshot for this request (None ⇒ disabled).
     pub gateway_auth: Option<Arc<GatewayAuth>>,
-    /// Process-lifetime device grants, refresh tokens, and verification rate limits.
+    /// Process-lifetime device grants, IdP states/cache, refresh tokens, and limits.
     pub gateway_stores: Arc<GatewayStores>,
     /// The live, hot-swappable runtime state a reload updates. Private so the
     /// only way in is a snapshot method that keeps `config`/`inbound_auth`/

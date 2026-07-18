@@ -14,7 +14,9 @@ Implemented endpoints:
 | `GET /.well-known/oauth-authorization-server` | RFC 8414 metadata plus `gateway_protocol_version: 1` |
 | `POST /oauth/device_authorization` | RFC 8628 device authorization; 256-bit opaque device code, base-20 `XXXX-XXXX` user code, 600-second lifetime, 5-second polling interval |
 | `GET /device` | Browser approval form; a `user_code` query parameter only pre-fills the form and never auto-approves |
-| `POST /device` | Same-origin CSRF guard, per-IP attempt limit, static-user authentication, and grant approval |
+| `POST /device` | Same-origin CSRF guard, per-IP attempt limit, optional static-user authentication, and grant approval |
+| `GET /device/authorize` | Starts an allowlisted OIDC sign-in with a single-use state and PKCE |
+| `GET /device/callback` | Exchanges the IdP code, verifies the email identity and allowlist, and approves the existing device grant |
 | `POST /oauth/token` | Device grant polling and rotating refresh grant |
 
 OAuth failures use the RFC 6749/RFC 8628 `{"error":"..."}` body. For
@@ -61,20 +63,50 @@ export SHUNT_GATEWAY_USERS='alice@example.com:<secret>,bob@example.com:<secret>'
 
 Startup fails closed if `public_url` is not a bare HTTPS origin (`http` is
 accepted only on loopback), the token TTL is zero, the JWT secret is shorter than
-32 bytes, or the users variable is empty or malformed. Secret and user changes are re-resolved by config hot reload.
-Whether the routes exist is fixed at boot, so adding or removing
-`[server.gateway]` requires a restart.
+32 bytes, or neither a valid static-user list nor an external IdP is configured.
+Secret, user, and IdP changes are re-resolved by config hot reload. Whether the
+routes exist is fixed at boot, so adding or removing `[server.gateway]` requires a
+restart.
+
+An external IdP replaces the password form when `users_env` is unset or empty:
+
+```toml
+[server.gateway.oidc]
+issuer = "https://accounts.google.com"
+client_id = "gateway-client-id"
+client_secret_env = "SHUNT_GATEWAY_OIDC_SECRET" # default
+allowed_domains = ["example.com"]
+# allowed_emails = ["contractor@outside.example"]
+```
+
+`[server.gateway.oidc]` requires an issuer, a non-empty client secret, and at
+least one `allowed_domains` or `allowed_emails` entry. Endpoint overrides are
+available for advanced deployments and tests, but every configured or discovered
+endpoint must use HTTPS, except that HTTP is accepted on loopback. Providers that
+do not expose standard OIDC, including GitHub or a SAML identity provider, should
+be connected through an OIDC broker such as Dex; direct OAuth2 integrations are
+out of scope.
 
 ## Pluggable approval
 
 The HTTP endpoints depend on the `ApprovalProvider` trait rather than on the
 static-user implementation directly. `GatewayAuth::with_approval_provider`
-accepts an `Arc<dyn ApprovalProvider>` for integrations, while M-A ships
-`StaticUsers`, which resolves
-comma-separated `email:secret` entries from `users_env`, compares secrets in
-constant time, and emits an identity with `sub = email`, `email = email`, and
-`name` set to the local part before `@`. A future OIDC provider can implement the
-same trait without changing the device or token endpoints.
+accepts an `Arc<dyn ApprovalProvider>` with its existing constructor shape, while
+`GatewayAuth::with_optional_approval(...).with_oidc(...)` builds an external-IdP
+or mixed approval surface. `StaticUsers` resolves comma-separated
+`email:secret` entries from `users_env`, compares secrets in constant time, and
+emits an identity with `sub = email`, `email = email`, and `name` set to the local
+part before `@`.
+
+The shipped external provider supports discovery-based OIDC. It accepts only a
+non-empty UserInfo email with `email_verified = true`, then applies the
+case-insensitive domain/email allowlist. The browser leg uses a 256-bit,
+single-use, ten-minute state plus PKCE, and token/UserInfo calls have a ten-second
+timeout. The gateway deliberately uses the authenticated UserInfo endpoint rather
+than validating an ID token against JWKS: it needs the current verified email
+claim for authorization, while the access token remains server-side. The static
+form remains available when `users_env` is populated; when it is absent, only the
+SSO button is rendered.
 
 The browser form is server-rendered and uses no client-side script. Its mutation
 is accepted only with a same-origin `Origin` or `Referer`, a same-origin/same-site
@@ -84,10 +116,11 @@ a human-readable blocked notice, matching the reference gateway behavior.
 
 ## State and operational boundary
 
-Device grants, refresh tokens, and rate-limit counters are process-lifetime,
-in-memory stores that survive a config hot reload. Mutating operations remove
-expired device grants and idle rate-limit entries; both stores reject new
-admission at 4,096 live entries. Used refresh-token tombstones are retained
+Device grants, IdP states, refresh tokens, discovery results, and rate-limit
+counters are process-lifetime, in-memory stores that survive a config hot reload.
+IdP states and device grants expire after ten minutes and each rejects new
+admission at 4,096 live entries. Mutating operations remove expired device
+grants, IdP states, and idle rate-limit entries. Used refresh-token tombstones are retained
 for 30 days and capped at 64 per family, preserving bounded replay detection
 without process-lifetime growth; active refresh tokens that go 30 days without
 rotating expire the same way.
@@ -113,10 +146,10 @@ sharing grants and replay detection between concurrent gateway instances
 remains a follow-up, and this change deliberately adds no database.
 
 Refresh grants mint tokens from the identity stored with the session and do
-not re-check the `users_env` approval list, so removing a user from
-`users_env` does not end an existing session — with persistence default-on,
-the session survives up to the 30-day idle horizon. To deprovision a user
-immediately, also delete the state file (or set `state_path = ""`) and
+not re-check `users_env` or the external IdP allowlist, so removing a user from
+either approval source does not end an existing session — with persistence
+default-on, the session survives up to the 30-day idle horizon. To deprovision a
+user immediately, also delete the state file (or set `state_path = ""`) and
 restart.
 
 Use TLS for a non-loopback deployment. By default `/device` rate limiting uses

@@ -269,6 +269,28 @@ impl AdminConfig {
     }
 }
 
+/// `[server.gateway.oidc]` — optional OIDC provider for browser approval.
+/// Secrets remain environment-backed and an allowlist is mandatory.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct GatewayOidcConfig {
+    pub issuer: String,
+    pub client_id: String,
+    #[serde(default = "default_gateway_oidc_secret_env")]
+    pub client_secret_env: String,
+    #[serde(default)]
+    pub allowed_domains: Vec<String>,
+    #[serde(default)]
+    pub allowed_emails: Vec<String>,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    #[serde(default)]
+    pub authorization_endpoint: Option<String>,
+    #[serde(default)]
+    pub token_endpoint: Option<String>,
+    #[serde(default)]
+    pub userinfo_endpoint: Option<String>,
+}
+
 /// `[server.gateway]` — opt-in OAuth device-flow login for Claude apps. The
 /// public URL is the JWT issuer and base for every advertised OAuth endpoint.
 /// Signing material and static approval users live in environment variables,
@@ -299,6 +321,9 @@ pub struct GatewayConfig {
     /// no home directory can be resolved the default is memory-only too.
     #[serde(default = "default_gateway_state_path")]
     pub state_path: Option<std::path::PathBuf>,
+    /// Optional external identity provider for browser approval.
+    #[serde(default)]
+    pub oidc: Option<GatewayOidcConfig>,
 }
 
 /// `~/.shunt/gateway-sessions.json` (`HOME`, falling back to `USERPROFILE` on
@@ -322,6 +347,10 @@ fn default_gateway_users_env() -> String {
     "SHUNT_GATEWAY_USERS".to_string()
 }
 
+fn default_gateway_oidc_secret_env() -> String {
+    "SHUNT_GATEWAY_OIDC_SECRET".to_string()
+}
+
 fn default_gateway_token_ttl_seconds() -> u64 {
     3600
 }
@@ -341,9 +370,7 @@ impl GatewayConfig {
                 message: error.to_string(),
             }
         })?;
-        let secure_origin = public_url.scheme() == "https"
-            || public_url.scheme() == "http"
-                && host_is_loopback(public_url.host_str().unwrap_or_default());
+        let secure_origin = url_uses_safe_transport(&public_url);
         let bare_origin = public_url.host_str().is_some()
             && public_url.username().is_empty()
             && public_url.password().is_none()
@@ -366,26 +393,143 @@ impl GatewayConfig {
             });
         }
         let raw_users = std::env::var(&self.users_env).unwrap_or_default();
-        if raw_users.trim().is_empty() {
-            return Err(ConfigError::MissingGatewayUsers {
-                env: self.users_env.clone(),
-            });
-        }
-        let users =
-            crate::gateway::approval::StaticUsers::parse(&raw_users).map_err(|message| {
-                ConfigError::InvalidGatewayUsers {
+        let approval = if raw_users.trim().is_empty() {
+            if self.oidc.is_none() {
+                return Err(ConfigError::MissingGatewayUsers {
                     env: self.users_env.clone(),
-                    message,
-                }
-            })?;
-        Ok(crate::gateway::GatewayAuth::new(
+                });
+            }
+            None
+        } else {
+            let users =
+                crate::gateway::approval::StaticUsers::parse(&raw_users).map_err(|message| {
+                    ConfigError::InvalidGatewayUsers {
+                        env: self.users_env.clone(),
+                        message,
+                    }
+                })?;
+            Some(std::sync::Arc::new(users)
+                as std::sync::Arc<
+                    dyn crate::gateway::approval::ApprovalProvider,
+                >)
+        };
+        let mut auth = crate::gateway::GatewayAuth::with_optional_approval(
             public_url.as_str().trim_end_matches('/').to_string(),
             secret.into_bytes(),
             self.token_ttl_seconds,
             self.trust_forwarded_for,
-            users,
-        ))
+            approval,
+        );
+        if let Some(oidc) = &self.oidc {
+            auth = auth.with_oidc(oidc.resolve()?);
+        }
+        Ok(auth)
     }
+}
+
+impl GatewayOidcConfig {
+    fn resolve(&self) -> Result<crate::gateway::ResolvedIdp, ConfigError> {
+        let issuer = self.issuer.trim();
+        if issuer.is_empty() {
+            return Err(ConfigError::InvalidGatewayOidc {
+                message: "issuer must not be empty".to_string(),
+            });
+        }
+        let issuer = validate_gateway_idp_url(issuer, true, "issuer")?
+            .as_str()
+            .trim_end_matches('/')
+            .to_string();
+        if self.client_id.trim().is_empty() {
+            return Err(ConfigError::InvalidGatewayOidc {
+                message: "client_id must not be empty".to_string(),
+            });
+        }
+        let client_secret = std::env::var(&self.client_secret_env).unwrap_or_default();
+        if client_secret.trim().is_empty() {
+            return Err(ConfigError::MissingGatewayOidcSecret {
+                env: self.client_secret_env.clone(),
+            });
+        }
+        let allowed_domains: Vec<_> = self
+            .allowed_domains
+            .iter()
+            .map(|domain| domain.trim().to_ascii_lowercase())
+            .filter(|domain| !domain.is_empty())
+            .collect();
+        let allowed_emails: Vec<_> = self
+            .allowed_emails
+            .iter()
+            .map(|email| email.trim().to_ascii_lowercase())
+            .filter(|email| !email.is_empty())
+            .collect();
+        if allowed_domains.is_empty() && allowed_emails.is_empty() {
+            return Err(ConfigError::MissingGatewayOidcAllowlist);
+        }
+        let endpoint = |value: &Option<String>, key| {
+            value
+                .as_deref()
+                .map(|raw| validate_gateway_idp_url(raw, false, key))
+                .transpose()
+                .map(|url| url.map(Into::into))
+        };
+        let scopes = if self.scopes.is_empty() {
+            ["openid", "email", "profile"]
+                .into_iter()
+                .map(str::to_string)
+                .collect()
+        } else {
+            self.scopes.clone()
+        };
+        Ok(crate::gateway::ResolvedIdp {
+            issuer,
+            client_id: self.client_id.trim().to_string(),
+            client_secret,
+            allowed_domains,
+            allowed_emails,
+            scopes,
+            authorization_endpoint: endpoint(
+                &self.authorization_endpoint,
+                "authorization_endpoint",
+            )?,
+            token_endpoint: endpoint(&self.token_endpoint, "token_endpoint")?,
+            userinfo_endpoint: endpoint(&self.userinfo_endpoint, "userinfo_endpoint")?,
+        })
+    }
+}
+
+fn url_uses_safe_transport(url: &reqwest::Url) -> bool {
+    url.scheme() == "https"
+        || url.scheme() == "http" && host_is_loopback(url.host_str().unwrap_or_default())
+}
+
+fn validate_gateway_idp_url(
+    raw: &str,
+    issuer: bool,
+    key: &str,
+) -> Result<reqwest::Url, ConfigError> {
+    let url = reqwest::Url::parse(raw).map_err(|error| ConfigError::InvalidGatewayOidc {
+        message: format!("{key} is not a valid URL: {error}"),
+    })?;
+    let invalid_issuer_parts = issuer && url.query().is_some();
+    if !url_uses_safe_transport(&url)
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+        || invalid_issuer_parts
+    {
+        let parts = if issuer {
+            "userinfo, query, or fragment"
+        } else {
+            "userinfo or fragment"
+        };
+        return Err(ConfigError::InvalidGatewayOidc {
+            message: format!(
+                "{key} must use https (or http on loopback), include a host, and contain no {parts}"
+            ),
+        });
+    }
+    Ok(url)
 }
 
 /// `[server.codex_endpoint]` — opt-in inbound OpenAI Responses (Codex) endpoint.
@@ -1043,6 +1187,12 @@ pub enum ConfigError {
     MissingGatewayUsers { env: String },
     #[error("[server.gateway] users in {env} are invalid: {message}")]
     InvalidGatewayUsers { env: String, message: String },
+    #[error("[server.gateway.oidc] is invalid: {message}")]
+    InvalidGatewayOidc { message: String },
+    #[error("[server.gateway.oidc] requires {env} to contain a non-empty client secret")]
+    MissingGatewayOidcSecret { env: String },
+    #[error("[server.gateway.oidc] requires at least one allowed_domains or allowed_emails entry")]
+    MissingGatewayOidcAllowlist,
     #[error("[server.auth] is set but {env} is unset or empty; refusing to run open")]
     MissingClientTokens { env: String },
     #[error("invalid client tokens in {env}: {message}")]
@@ -1346,7 +1496,7 @@ impl Config {
             admin.resolve()?;
         }
         // Fail closed at boot: a configured gateway must have a valid issuer,
-        // sufficiently strong signing secret, and at least one approval user.
+        // sufficiently strong signing secret, and at least one approval path.
         if let Some(gateway) = &self.server.gateway {
             gateway.resolve()?;
         }
@@ -1684,7 +1834,7 @@ impl Config {
             .map(|admin| admin.map(std::sync::Arc::new))
     }
 
-    /// Resolve `[server.gateway]` into the hot-reloadable JWT/users snapshot.
+    /// Resolve `[server.gateway]` into the hot-reloadable JWT/approval snapshot.
     pub fn resolve_gateway_auth(
         &self,
     ) -> Result<Option<std::sync::Arc<crate::gateway::GatewayAuth>>, ConfigError> {
@@ -1808,8 +1958,8 @@ mod tests {
     use super::{
         config_file_candidates, default_auth_header, host_is_chatgpt, identity_collisions,
         AccountConfig, AdminConfig, AuthMode, CodexEndpointConfig, Config, ConfigError,
-        ConfigFormat, GatewayConfig, InboundAuthConfig, ModelConfig, PoolConfig, ProviderKind,
-        ResponsesFlavor, RetryConfig, UsageEndpointConfig,
+        ConfigFormat, GatewayConfig, GatewayOidcConfig, InboundAuthConfig, ModelConfig, PoolConfig,
+        ProviderKind, ResponsesFlavor, RetryConfig, UsageEndpointConfig,
     };
 
     #[test]
@@ -2334,6 +2484,7 @@ mod tests {
             token_ttl_seconds: 3600,
             trust_forwarded_for: false,
             state_path: None,
+            oidc: None,
         };
 
         assert!(matches!(
@@ -2382,6 +2533,7 @@ mod tests {
             token_ttl_seconds: 3600,
             trust_forwarded_for: false,
             state_path: None,
+            oidc: None,
         };
         assert!(matches!(
             gateway.resolve(),
@@ -2408,6 +2560,93 @@ mod tests {
             gateway.resolve(),
             Err(ConfigError::InvalidGatewayTokenTtl)
         ));
+    }
+
+    #[test]
+    fn gateway_oidc_config_fails_closed() {
+        let suffix = std::process::id();
+        let secret_env = format!("SHUNT_GATEWAY_OIDC_CONFIG_SECRET_{suffix}");
+        let mut oidc = GatewayOidcConfig {
+            issuer: "https://accounts.example.com/dex".into(),
+            client_id: "client-id".into(),
+            client_secret_env: secret_env.clone(),
+            allowed_domains: vec![],
+            allowed_emails: vec![],
+            scopes: vec![],
+            authorization_endpoint: None,
+            token_endpoint: None,
+            userinfo_endpoint: None,
+        };
+        assert!(matches!(
+            oidc.resolve(),
+            Err(ConfigError::MissingGatewayOidcSecret { .. })
+        ));
+        std::env::set_var(&secret_env, "client-secret");
+        assert!(matches!(
+            oidc.resolve(),
+            Err(ConfigError::MissingGatewayOidcAllowlist)
+        ));
+        oidc.allowed_domains.push("example.com".into());
+        oidc.issuer.clear();
+        assert!(matches!(
+            oidc.resolve(),
+            Err(ConfigError::InvalidGatewayOidc { .. })
+        ));
+        oidc.issuer = "https://accounts.example.com/dex?tenant=x".into();
+        assert!(matches!(
+            oidc.resolve(),
+            Err(ConfigError::InvalidGatewayOidc { .. })
+        ));
+        oidc.issuer = "https://accounts.example.com/dex".into();
+        oidc.authorization_endpoint = Some("http://idp.example/authorize".into());
+        assert!(matches!(
+            oidc.resolve(),
+            Err(ConfigError::InvalidGatewayOidc { .. })
+        ));
+        oidc.authorization_endpoint = Some("http://127.0.0.1:8787/authorize".into());
+        assert!(oidc.resolve().is_ok());
+        std::env::remove_var(secret_env);
+    }
+
+    #[test]
+    fn gateway_oidc_requires_issuer_when_deserializing() {
+        let missing = serde_json::from_str::<GatewayOidcConfig>(r#"{"client_id":"client-id"}"#);
+        assert!(missing.is_err());
+    }
+
+    #[test]
+    fn gateway_oidc_makes_static_users_optional() {
+        let suffix = std::process::id();
+        let jwt_env = format!("SHUNT_GATEWAY_OPTIONAL_USERS_JWT_{suffix}");
+        let users_env = format!("SHUNT_GATEWAY_OPTIONAL_USERS_LIST_{suffix}");
+        let oidc_env = format!("SHUNT_GATEWAY_OPTIONAL_USERS_OIDC_{suffix}");
+        std::env::set_var(&jwt_env, "0123456789abcdef0123456789abcdef");
+        std::env::set_var(&oidc_env, "client-secret");
+        let gateway = GatewayConfig {
+            public_url: "https://gateway.example".into(),
+            jwt_secret_env: jwt_env.clone(),
+            users_env: users_env.clone(),
+            token_ttl_seconds: 3600,
+            trust_forwarded_for: false,
+            state_path: None,
+            oidc: Some(GatewayOidcConfig {
+                issuer: "https://accounts.example.com".into(),
+                client_id: "client-id".into(),
+                client_secret_env: oidc_env.clone(),
+                allowed_domains: vec!["example.com".into()],
+                allowed_emails: vec![],
+                scopes: vec![],
+                authorization_endpoint: None,
+                token_endpoint: None,
+                userinfo_endpoint: None,
+            }),
+        };
+        let resolved = gateway.resolve().expect("OIDC-only gateway resolves");
+        assert!(resolved.approval_provider().is_none());
+        assert!(resolved.oidc().is_some());
+        std::env::remove_var(jwt_env);
+        std::env::remove_var(users_env);
+        std::env::remove_var(oidc_env);
     }
 
     #[test]

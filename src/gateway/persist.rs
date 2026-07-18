@@ -313,6 +313,7 @@ mod tests {
             token_ttl_seconds: 3600,
             trust_forwarded_for: false,
             state_path: Some(path.clone()),
+            oidc: None,
         });
         let state = AppState::new(config, reqwest::Client::new()).expect("gateway config resolves");
 

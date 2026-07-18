@@ -27,10 +27,11 @@ pub struct DeviceForm {
 }
 
 pub async fn get(State(state): State<AppState>, Query(query): Query<DeviceQuery>) -> Response {
-    if state.refreshed().gateway_auth.is_none() {
+    let state = state.refreshed();
+    let Some(auth) = state.gateway_auth else {
         return StatusCode::NOT_FOUND.into_response();
-    }
-    device_page(page(&query.user_code, None, false))
+    };
+    device_page(auth_page(&auth, &query.user_code, None, false))
 }
 
 pub async fn post(
@@ -49,7 +50,8 @@ pub async fn post(
             .ok()
             .map(|Form(form)| form.user_code.as_str())
             .unwrap_or_default();
-        return device_page(page(
+        return device_page(auth_page(
+            &auth,
             user_code,
             Some("This request came from another site and was blocked."),
             false,
@@ -58,7 +60,8 @@ pub async fn post(
     let Form(form) = match form {
         Ok(form) => form,
         Err(_) => {
-            return device_page(page(
+            return device_page(auth_page(
+                &auth,
                 "",
                 Some("The submitted form could not be read. Try again."),
                 false,
@@ -72,15 +75,25 @@ pub async fn post(
         .device_verify_rate
         .check(client_ip.as_str())
     {
-        return device_page(page(
+        return device_page(auth_page(
+            &auth,
             &form.user_code,
             Some("Too many attempts. Wait a minute and try again."),
             false,
         ));
     }
     let user_code = normalize_user_code(&form.user_code);
-    let Some(identity) = auth.approval_provider().verify(&form.login, &form.secret) else {
-        return device_page(page(
+    let Some(approval) = auth.approval_provider() else {
+        return device_page(auth_page(
+            &auth,
+            &user_code,
+            Some("Password sign-in is disabled on this gateway; use the sign-in button."),
+            false,
+        ));
+    };
+    let Some(identity) = approval.verify(&form.login, &form.secret) else {
+        return device_page(auth_page(
+            &auth,
             &user_code,
             Some("The login or secret was not accepted."),
             false,
@@ -91,20 +104,22 @@ pub async fn post(
         .device_grants
         .approve(&user_code, identity)
     {
-        return device_page(page(
+        return device_page(auth_page(
+            &auth,
             &user_code,
             Some("The device code is invalid, expired, or already used."),
             false,
         ));
     }
-    device_page(page(
+    device_page(auth_page(
+        &auth,
         &user_code,
         Some("Device approved. You can return to your device."),
         true,
     ))
 }
 
-fn device_page(body: String) -> Response {
+pub(super) fn device_page(body: String) -> Response {
     const CSP: &str = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; \
 base-uri 'none'; frame-ancestors 'none'";
     (
@@ -163,7 +178,11 @@ fn same_url_origin(candidate: &str, public_url: &str) -> bool {
     candidate.origin() == public_url.origin()
 }
 
-fn client_ip(headers: &HeaderMap, peer: Option<SocketAddr>, trust_forwarded_for: bool) -> String {
+pub(super) fn client_ip(
+    headers: &HeaderMap,
+    peer: Option<SocketAddr>,
+    trust_forwarded_for: bool,
+) -> String {
     if trust_forwarded_for {
         if let Some(forwarded) = headers
             .get("x-forwarded-for")
@@ -186,7 +205,7 @@ fn client_ip(headers: &HeaderMap, peer: Option<SocketAddr>, trust_forwarded_for:
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-fn normalize_user_code(code: &str) -> String {
+pub(super) fn normalize_user_code(code: &str) -> String {
     let compact: String = code
         .trim()
         .chars()
@@ -215,7 +234,28 @@ fn escape_html(input: &str) -> String {
     output
 }
 
-fn page(user_code: &str, notice: Option<&str>, success: bool) -> String {
+pub(super) fn auth_page(
+    auth: &super::GatewayAuth,
+    user_code: &str,
+    notice: Option<&str>,
+    success: bool,
+) -> String {
+    page(
+        user_code,
+        notice,
+        success,
+        auth.oidc().map(super::ResolvedIdp::button_label),
+        auth.approval_provider().is_some(),
+    )
+}
+
+pub(super) fn page(
+    user_code: &str,
+    notice: Option<&str>,
+    success: bool,
+    oidc_label: Option<&str>,
+    password_enabled: bool,
+) -> String {
     let user_code = escape_html(user_code);
     let notice = notice
         .map(|message| {
@@ -226,20 +266,42 @@ fn page(user_code: &str, notice: Option<&str>, success: bool) -> String {
             )
         })
         .unwrap_or_default();
-    let form = if success {
+    let forms = if success {
         String::new()
     } else {
-        format!(
-            r#"<form method="post" action="/device">
+        let sso_form = oidc_label
+            .map(|label| {
+                format!(
+                    r#"<form method="get" action="/device/authorize">
+<label for="sso-user-code">Device code</label>
+<input id="sso-user-code" name="user_code" value="{user_code}" autocomplete="one-time-code" spellcheck="false" required autofocus>
+<button type="submit">{}</button>
+</form>"#,
+                    escape_html(label)
+                )
+            })
+            .unwrap_or_default();
+        let password_form = if password_enabled {
+            format!(
+                r#"<form method="post" action="/device">
 <label for="user-code">Device code</label>
-<input id="user-code" name="user_code" value="{user_code}" autocomplete="one-time-code" spellcheck="false" required autofocus>
+<input id="user-code" name="user_code" value="{user_code}" autocomplete="one-time-code" spellcheck="false" required{}>
 <label for="login">Email</label>
 <input id="login" name="login" type="email" autocomplete="username" required>
 <label for="current-password">Secret</label>
 <input id="current-password" name="secret" type="password" autocomplete="current-password" required enterkeyhint="done">
 <button type="submit">Approve device</button>
-</form>"#
-        )
+</form>"#,
+                if oidc_label.is_none() {
+                    " autofocus"
+                } else {
+                    ""
+                }
+            )
+        } else {
+            String::new()
+        };
+        format!("{sso_form}{password_form}")
     };
     format!(
         r#"<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -259,7 +321,7 @@ input:focus-visible, button:focus-visible {{ outline: 3px solid #315ee8; outline
 @media (prefers-color-scheme: dark) {{ body {{ background: #16181d; color: #eee; }} }}
 </style></head><body><main><div class="card"><h1>Approve this device</h1>
 <p>Enter the code shown by Claude Code, then sign in with a gateway account.</p>
-{notice}{form}</div></main></body></html>"#
+{notice}{forms}</div></main></body></html>"#
     )
 }
 
@@ -273,7 +335,7 @@ mod tests {
 
     #[test]
     fn page_escapes_prefilled_code_and_never_auto_submits() {
-        let html = page("<script>", None, false);
+        let html = page("<script>", None, false, None, true);
         assert!(html.contains("&lt;script&gt;"));
         assert!(!html.contains("<script"));
         assert!(html.contains("method=\"post\""));
@@ -281,7 +343,7 @@ mod tests {
 
     #[test]
     fn device_page_sets_browser_security_headers() {
-        let response = device_page(page("ABCD-EFGH", None, false));
+        let response = device_page(page("ABCD-EFGH", None, false, None, true));
         let headers = response.headers();
 
         assert_eq!(

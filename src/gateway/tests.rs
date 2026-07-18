@@ -8,7 +8,9 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 
 use crate::{
-    config::{Config, GatewayConfig, InboundAuthConfig, ModelConfig, RouteConfig},
+    config::{
+        Config, GatewayConfig, GatewayOidcConfig, InboundAuthConfig, ModelConfig, RouteConfig,
+    },
     server::{build_router, AppState},
 };
 
@@ -17,6 +19,7 @@ use super::{approval::Identity, jwt};
 struct GatewayEnv {
     secret_env: String,
     users_env: String,
+    oidc_secret_env: Option<String>,
 }
 
 impl GatewayEnv {
@@ -34,14 +37,41 @@ impl GatewayEnv {
             token_ttl_seconds: 3600,
             trust_forwarded_for: false,
             state_path: None,
+            oidc: None,
         });
         (
             config,
             Self {
                 secret_env,
                 users_env,
+                oidc_secret_env: None,
             },
         )
+    }
+    fn oidc_config(label: &str, issuer: String, users: bool) -> (Config, Self) {
+        let (mut config, mut env) = Self::config(label);
+        let oidc_secret_env = format!(
+            "SHUNT_GATEWAY_TEST_OIDC_SECRET_{}_{}",
+            std::process::id(),
+            label
+        );
+        std::env::set_var(&oidc_secret_env, "client-secret");
+        if !users {
+            std::env::remove_var(&env.users_env);
+        }
+        config.server.gateway.as_mut().unwrap().oidc = Some(GatewayOidcConfig {
+            issuer,
+            client_id: "client-id".into(),
+            client_secret_env: oidc_secret_env.clone(),
+            allowed_domains: vec!["example.com".into()],
+            allowed_emails: vec![],
+            scopes: vec![],
+            authorization_endpoint: None,
+            token_endpoint: None,
+            userinfo_endpoint: None,
+        });
+        env.oidc_secret_env = Some(oidc_secret_env);
+        (config, env)
     }
 }
 
@@ -49,6 +79,9 @@ impl Drop for GatewayEnv {
     fn drop(&mut self) {
         std::env::remove_var(&self.secret_env);
         std::env::remove_var(&self.users_env);
+        if let Some(env) = &self.oidc_secret_env {
+            std::env::remove_var(env);
+        }
     }
 }
 
@@ -60,6 +93,17 @@ async fn json_response(router: Router, request: Request<Body>) -> (StatusCode, V
     (status, value)
 }
 
+async fn html_response(router: Router, request: Request<Body>) -> (StatusCode, String) {
+    let response = router.oneshot(request).await.unwrap();
+    let status = response.status();
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    (status, String::from_utf8(body.to_vec()).unwrap())
+}
+
+fn get_request(path: &str) -> Request<Body> {
+    Request::builder().uri(path).body(Body::empty()).unwrap()
+}
+
 fn form_request(path: &str, body: impl Into<String>) -> Request<Body> {
     Request::builder()
         .method("POST")
@@ -67,6 +111,392 @@ fn form_request(path: &str, body: impl Into<String>) -> Request<Body> {
         .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
         .body(Body::from(body.into()))
         .unwrap()
+}
+
+#[tokio::test]
+async fn oidc_device_page_modes_and_disabled_password_post() {
+    let (config, _env) = GatewayEnv::oidc_config(
+        "oidc-page-only",
+        "https://accounts.google.com".into(),
+        false,
+    );
+    let (router, _, _) = build_router(config).unwrap();
+    let (_, html) = html_response(router.clone(), get_request("/device?user_code=BCDF-GHJK")).await;
+    assert!(html.contains("Sign in with Google"));
+    assert!(html.contains("method=\"get\" action=\"/device/authorize\""));
+    assert!(!html.contains("Approve device"));
+
+    let (_, html) = html_response(
+        router,
+        Request::builder()
+            .method("POST")
+            .uri("/device")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header(header::ORIGIN, "https://gateway.example")
+            .body(Body::from("user_code=BCDF-GHJK&login=x&secret=y"))
+            .unwrap(),
+    )
+    .await;
+    assert!(html.contains("Password sign-in is disabled"));
+
+    let (config, _env) = GatewayEnv::oidc_config(
+        "oidc-page-both",
+        "https://accounts.example.com".into(),
+        true,
+    );
+    let (router, _, _) = build_router(config).unwrap();
+    let (_, html) = html_response(router, get_request("/device")).await;
+    assert!(html.contains("Sign in with SSO"));
+    assert!(html.contains("Approve device"));
+}
+
+#[tokio::test]
+async fn oidc_authorize_rejects_unknown_code_and_builds_pkce_redirect() {
+    use wiremock::{matchers::path, Mock, MockServer, ResponseTemplate};
+
+    let idp = MockServer::start().await;
+    Mock::given(path("/.well-known/openid-configuration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "authorization_endpoint": format!("{}/authorize", idp.uri()),
+            "token_endpoint": format!("{}/token", idp.uri()),
+            "userinfo_endpoint": format!("{}/userinfo", idp.uri())
+        })))
+        .mount(&idp)
+        .await;
+    let (config, _env) = GatewayEnv::oidc_config("oidc-authorize", idp.uri(), false);
+    let (router, _, state) = build_router(config).unwrap();
+
+    let (_, html) = html_response(
+        router.clone(),
+        get_request("/device/authorize?user_code=NOPE-CODE"),
+    )
+    .await;
+    assert!(html.contains("invalid, expired, or already used"));
+
+    let (_, authorization) = json_response(
+        router.clone(),
+        form_request("/oauth/device_authorization", "client_id=claude-code"),
+    )
+    .await;
+    let user_code = authorization["user_code"].as_str().unwrap();
+    let response = router
+        .oneshot(get_request(&format!(
+            "/device/authorize?user_code={user_code}"
+        )))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FOUND);
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    let location =
+        reqwest::Url::parse(response.headers()[header::LOCATION].to_str().unwrap()).unwrap();
+    assert_eq!(location.path(), "/authorize");
+    let params: std::collections::HashMap<_, _> = location.query_pairs().into_owned().collect();
+    assert_eq!(params["client_id"], "client-id");
+    assert_eq!(
+        params["redirect_uri"],
+        "https://gateway.example/device/callback"
+    );
+    assert_eq!(params["scope"], "openid email profile");
+    assert_eq!(params["code_challenge_method"], "S256");
+    assert!(!params["code_challenge"].is_empty());
+    let pending = state
+        .gateway_stores
+        .oidc_states
+        .take(&params["state"])
+        .unwrap();
+    assert_eq!(pending.user_code, user_code);
+}
+
+#[tokio::test]
+async fn oidc_callback_completes_device_flow_and_enforces_allowlist() {
+    use wiremock::{
+        matchers::{method, path},
+        Mock, MockServer, ResponseTemplate,
+    };
+
+    let idp = MockServer::start().await;
+    Mock::given(path("/.well-known/openid-configuration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "authorization_endpoint": format!("{}/authorize", idp.uri()),
+            "token_endpoint": format!("{}/token", idp.uri()),
+            "userinfo_endpoint": format!("{}/userinfo", idp.uri())
+        })))
+        .mount(&idp)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"access_token":"access"})))
+        .mount(&idp)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/userinfo"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "sub":"subject-1", "email":"Dev@Example.com", "email_verified":true, "name":"Developer"
+        })))
+        .mount(&idp)
+        .await;
+    let (config, _env) = GatewayEnv::oidc_config("oidc-e2e", idp.uri(), false);
+    let (router, _, _) = build_router(config).unwrap();
+    let (_, authorization) = json_response(
+        router.clone(),
+        form_request("/oauth/device_authorization", "client_id=claude-code"),
+    )
+    .await;
+    let user_code = authorization["user_code"].as_str().unwrap();
+    let device_code = authorization["device_code"].as_str().unwrap();
+    let authorize = router
+        .clone()
+        .oneshot(get_request(&format!(
+            "/device/authorize?user_code={user_code}"
+        )))
+        .await
+        .unwrap();
+    let location =
+        reqwest::Url::parse(authorize.headers()[header::LOCATION].to_str().unwrap()).unwrap();
+    let params: std::collections::HashMap<_, _> = location.query_pairs().into_owned().collect();
+    let state = &params["state"];
+    let (_, html) = html_response(
+        router.clone(),
+        get_request(&format!("/device/callback?code=auth-code&state={state}")),
+    )
+    .await;
+    assert!(html.contains("return to your device"));
+    let requests = idp.received_requests().await.unwrap();
+    let token = requests
+        .iter()
+        .find(|request| request.url.path() == "/token")
+        .unwrap();
+    let body = String::from_utf8(token.body.clone()).unwrap();
+    let form_url = reqwest::Url::parse(&format!("https://form.invalid/?{body}")).unwrap();
+    let form: std::collections::HashMap<_, _> = form_url.query_pairs().into_owned().collect();
+    assert_eq!(
+        form["redirect_uri"],
+        "https://gateway.example/device/callback"
+    );
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        URL_SAFE_NO_PAD.encode(Sha256::digest(form["code_verifier"].as_bytes())),
+        params["code_challenge"]
+    );
+
+    let (status, token) = json_response(
+        router,
+        form_request(
+            "/oauth/token",
+            format!("grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code&device_code={device_code}&client_id=claude-code"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(token["token_type"], "Bearer");
+}
+
+#[tokio::test]
+async fn oidc_callback_rejects_bad_state_idp_error_and_unverified_email() {
+    use wiremock::{matchers::path, Mock, MockServer, ResponseTemplate};
+
+    let idp = MockServer::start().await;
+    Mock::given(path("/.well-known/openid-configuration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "authorization_endpoint": format!("{}/authorize", idp.uri()),
+            "token_endpoint": format!("{}/token", idp.uri()),
+            "userinfo_endpoint": format!("{}/userinfo", idp.uri())
+        })))
+        .mount(&idp)
+        .await;
+    Mock::given(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"access_token":"access"})))
+        .mount(&idp)
+        .await;
+    Mock::given(path("/userinfo"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "sub":"subject-1", "email":"dev@example.com", "email_verified":false
+        })))
+        .mount(&idp)
+        .await;
+    let (config, _env) = GatewayEnv::oidc_config("oidc-reject", idp.uri(), false);
+    let (router, _, _) = build_router(config).unwrap();
+    let (_, html) = html_response(
+        router.clone(),
+        get_request("/device/callback?code=x&state=bad"),
+    )
+    .await;
+    assert!(html.contains("invalid or has expired"));
+    let (_, html) = html_response(
+        router.clone(),
+        get_request("/device/callback?error=denied&state=x"),
+    )
+    .await;
+    assert!(html.contains("identity provider reported an error"));
+    assert!(!html.contains("denied"));
+
+    let (_, authorization) = json_response(
+        router.clone(),
+        form_request("/oauth/device_authorization", "client_id=claude-code"),
+    )
+    .await;
+    let user_code = authorization["user_code"].as_str().unwrap();
+    let authorize = router
+        .clone()
+        .oneshot(get_request(&format!(
+            "/device/authorize?user_code={user_code}"
+        )))
+        .await
+        .unwrap();
+    let location =
+        reqwest::Url::parse(authorize.headers()[header::LOCATION].to_str().unwrap()).unwrap();
+    let state = location
+        .query_pairs()
+        .find(|(key, _)| key == "state")
+        .unwrap()
+        .1
+        .into_owned();
+    let (_, html) = html_response(
+        router.clone(),
+        get_request(&format!("/device/callback?code=x&state={state}")),
+    )
+    .await;
+    assert!(html.contains("unavailable right now"));
+    let (_, reused) = html_response(
+        router,
+        get_request(&format!("/device/callback?code=x&state={state}")),
+    )
+    .await;
+    assert!(reused.contains("invalid or has expired"));
+}
+
+#[tokio::test]
+async fn oidc_callback_uses_endpoint_overrides_and_exact_email_allowlist() {
+    use wiremock::{matchers::path, Mock, MockServer, ResponseTemplate};
+
+    let idp = MockServer::start().await;
+    Mock::given(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"access_token":"access"})))
+        .mount(&idp)
+        .await;
+    Mock::given(path("/userinfo"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "sub":"subject-override",
+            "email":"exact@outside.test",
+            "email_verified":true,
+            "name":null
+        })))
+        .mount(&idp)
+        .await;
+    let (mut config, _env) = GatewayEnv::oidc_config("oidc-overrides", idp.uri(), false);
+    let oidc = config
+        .server
+        .gateway
+        .as_mut()
+        .unwrap()
+        .oidc
+        .as_mut()
+        .unwrap();
+    oidc.allowed_domains.clear();
+    oidc.allowed_emails = vec!["exact@outside.test".into()];
+    oidc.authorization_endpoint = Some(format!("{}/authorize", idp.uri()));
+    oidc.token_endpoint = Some(format!("{}/token", idp.uri()));
+    oidc.userinfo_endpoint = Some(format!("{}/userinfo", idp.uri()));
+    let (router, _, state) = build_router(config).unwrap();
+    let (_, authorization) = json_response(
+        router.clone(),
+        form_request("/oauth/device_authorization", "client_id=claude-code"),
+    )
+    .await;
+    let user_code = authorization["user_code"].as_str().unwrap();
+    let device_code = authorization["device_code"].as_str().unwrap();
+    let authorize = router
+        .clone()
+        .oneshot(get_request(&format!(
+            "/device/authorize?user_code={user_code}"
+        )))
+        .await
+        .unwrap();
+    let location =
+        reqwest::Url::parse(authorize.headers()[header::LOCATION].to_str().unwrap()).unwrap();
+    assert_eq!(location.path(), "/authorize");
+    let state_param = location
+        .query_pairs()
+        .find(|(key, _)| key == "state")
+        .unwrap()
+        .1
+        .into_owned();
+    let (_, html) = html_response(
+        router,
+        get_request(&format!("/device/callback?code=x&state={state_param}")),
+    )
+    .await;
+    assert!(html.contains("return to your device"));
+    match state.gateway_stores.device_grants.poll(device_code) {
+        super::store::DevicePoll::Approved(identity) => {
+            assert_eq!(identity.sub, "subject-override");
+            assert_eq!(identity.email, "exact@outside.test");
+            assert_eq!(identity.name, "exact");
+        }
+        other => panic!("expected approved identity, got {other:?}"),
+    }
+    assert!(idp
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .all(|request| request.url.path() != "/.well-known/openid-configuration"));
+}
+
+#[tokio::test]
+async fn oidc_callback_rejects_email_outside_allowlist() {
+    use wiremock::{matchers::path, Mock, MockServer, ResponseTemplate};
+
+    let idp = MockServer::start().await;
+    Mock::given(path("/.well-known/openid-configuration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "authorization_endpoint": format!("{}/authorize", idp.uri()),
+            "token_endpoint": format!("{}/token", idp.uri()),
+            "userinfo_endpoint": format!("{}/userinfo", idp.uri())
+        })))
+        .mount(&idp)
+        .await;
+    Mock::given(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"access_token":"access"})))
+        .mount(&idp)
+        .await;
+    Mock::given(path("/userinfo"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "sub":"subject-2", "email":"user@outside.test", "email_verified":true
+        })))
+        .mount(&idp)
+        .await;
+    let (config, _env) = GatewayEnv::oidc_config("oidc-allowlist", idp.uri(), false);
+    let (router, _, _) = build_router(config).unwrap();
+    let (_, authorization) = json_response(
+        router.clone(),
+        form_request("/oauth/device_authorization", "client_id=claude-code"),
+    )
+    .await;
+    let user_code = authorization["user_code"].as_str().unwrap();
+    let authorize = router
+        .clone()
+        .oneshot(get_request(&format!(
+            "/device/authorize?user_code={user_code}"
+        )))
+        .await
+        .unwrap();
+    let location =
+        reqwest::Url::parse(authorize.headers()[header::LOCATION].to_str().unwrap()).unwrap();
+    let state = location
+        .query_pairs()
+        .find(|(key, _)| key == "state")
+        .unwrap()
+        .1
+        .into_owned();
+    let (_, html) = html_response(
+        router,
+        get_request(&format!("/device/callback?code=x&state={state}")),
+    )
+    .await;
+    assert!(html.contains("not authorized for this gateway"));
+    assert!(!html.contains("outside.test"));
 }
 
 #[tokio::test]
@@ -513,7 +943,12 @@ async fn malformed_oauth_forms_use_rfc6749_error_shape() {
 #[tokio::test]
 async fn routes_are_absent_without_gateway_config() {
     let (router, _, _) = build_router(Config::default()).unwrap();
-    for path in ["/.well-known/oauth-authorization-server", "/device"] {
+    for path in [
+        "/.well-known/oauth-authorization-server",
+        "/device",
+        "/device/authorize",
+        "/device/callback",
+    ] {
         let response = router
             .clone()
             .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())

@@ -482,6 +482,7 @@ mod tests {
         let first = shared.load().gateway_auth.clone().unwrap();
         assert!(first
             .approval_provider()
+            .unwrap()
             .verify("alice@example.com", "first-secret")
             .is_some());
 
@@ -490,10 +491,12 @@ mod tests {
         let second = shared.load().gateway_auth.clone().unwrap();
         assert!(second
             .approval_provider()
+            .unwrap()
             .verify("alice@example.com", "first-secret")
             .is_none());
         assert!(second
             .approval_provider()
+            .unwrap()
             .verify("alice@example.com", "second-secret")
             .is_some());
 

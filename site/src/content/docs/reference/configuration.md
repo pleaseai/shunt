@@ -41,18 +41,36 @@ Admin tokens are separate credentials from the client tokens configured under `[
 
 ## `[server.gateway]` (optional)
 
-Presence of this table enables the [OAuth device-flow gateway login](/guides/gateway-login/) used by Claude Code's managed `forceLoginMethod: "gateway"`. When absent, shunt does not register `/.well-known/oauth-authorization-server`, `/oauth/device_authorization`, `/oauth/token`, or `/device`.
+Presence of this table enables the [OAuth device-flow gateway login](/guides/gateway-login/) used by Claude Code's managed `forceLoginMethod: "gateway"`. When absent, shunt does not register `/.well-known/oauth-authorization-server`, `/oauth/device_authorization`, `/oauth/token`, `/device`, `/device/authorize`, or `/device/callback`.
 
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
 | `public_url` | required | Externally reachable HTTPS origin used as the JWT issuer and base for advertised OAuth endpoints; `http` is accepted only for loopback |
 | `jwt_secret_env` | `SHUNT_GATEWAY_JWT_SECRET` | Env var holding the HS256 signing secret (at least 32 bytes) |
-| `users_env` | `SHUNT_GATEWAY_USERS` | Env var holding comma-separated `email:secret` approval users |
+| `users_env` | `SHUNT_GATEWAY_USERS` | Env var holding comma-separated `email:secret` approval users; optional when `[server.gateway.oidc]` is configured |
 | `token_ttl_seconds` | `3600` | Access-token lifetime; returned as `expires_in` |
 | `trust_forwarded_for` | `false` | Trust `X-Forwarded-For`/`X-Real-IP` as the `/device` rate-limit identity; enable only behind a trusted proxy that replaces client-supplied values |
 | `state_path` | `~/.shunt/gateway-sessions.json` | File persisting refresh sessions across restarts; tokens are stored as SHA-256 hashes and written atomically with owner-only permissions (0600 on Unix). Set `""` for memory-only sessions (also the fallback when no home directory resolves) |
 
-Startup fails closed when the URL is not a bare HTTPS origin (`http` is allowed only on loopback), the TTL is zero, the secret is missing or shorter than 32 bytes, or the user list is empty or malformed. Secrets may contain `:` because only the first colon separates the email and secret. Changes to the environment-backed secret and users hot-apply on config reload; adding or removing the table requires a restart because the route tree is fixed at boot.
+Startup fails closed when the URL is not a bare HTTPS origin (`http` is allowed only on loopback), the TTL is zero, the secret is missing or shorter than 32 bytes, or neither a valid static-user list nor a valid external IdP is configured. Static-user secrets may contain `:` because only the first colon separates the email and secret. Changes to the environment-backed secrets, users, and IdP configuration hot-apply on config reload; adding or removing the gateway table requires a restart because the route tree is fixed at boot.
+
+### `[server.gateway.oidc]` (optional)
+
+Presence of this subtable replaces or supplements the password approval form with an OIDC provider such as Google. An allowlist is always required and is matched case-insensitively.
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `issuer` | required | OIDC discovery issuer. Must use HTTPS, except HTTP on loopback; a path is allowed |
+| `client_id` | required | OIDC client id |
+| `client_secret_env` | `SHUNT_GATEWAY_OIDC_SECRET` | Env var holding the non-empty client secret |
+| `allowed_domains` | `[]` | Case-insensitive email domains allowed to approve a device |
+| `allowed_emails` | `[]` | Case-insensitive full email addresses allowed to approve a device |
+| `scopes` | `openid email profile` | Scopes sent to the authorization endpoint |
+| `authorization_endpoint` | discovery | Advanced authorization URL override; HTTPS or loopback HTTP only |
+| `token_endpoint` | discovery | Advanced token URL override; HTTPS or loopback HTTP only |
+| `userinfo_endpoint` | discovery | Advanced OIDC UserInfo URL override; HTTPS or loopback HTTP only |
+
+At least one non-empty `allowed_domains` or `allowed_emails` entry is mandatory. shunt accepts only a non-empty UserInfo email with `email_verified = true`. The browser flow uses a single-use ten-minute state and PKCE, and callback/token/UserInfo failures produce generic browser messages without echoing provider input. The redirect URI registered at the provider is `{public_url}/device/callback`. For GitHub, SAML, or another non-OIDC provider, use an OIDC broker such as Dex; direct provider-specific OAuth2 integrations are out of scope.
 
 The issued bearer gates `/v1/models` and `/v1/messages`/`/v1/messages/count_tokens` requests whenever the selected provider injects a server-side credential; passthrough providers remain open. If `[server.auth]` is also present, either credential grants access. Refresh sessions persist across restarts by default: `state_path` (tokens hashed at rest) is restored at boot, so users keep silently refreshing. The file must not be shared between concurrent shunt processes. With `state_path = ""`, sessions are memory-only — a config reload preserves them, but restarting shunt invalidates them and users sign in again once their access JWT expires. Device grants and rate-limit counters are always memory-only; a restart mid-login only costs that attempt. Expired grants and idle rate-limit identities are swept opportunistically. Device grants and rate-limit identities are each capped at 4,096 entries. Used refresh-token tombstones are retained for 30 days and capped at 64 per family; active refresh tokens idle for 30 days expire.
 

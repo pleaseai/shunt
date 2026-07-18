@@ -54,7 +54,7 @@ regex-lite = "0.1"
 # sits behind an AWS ALB that only serves HTTP/2 for that path, and an HTTP/1.1
 # request is rejected with an empty `awselb/2.0` HTTP 464 (issue #170). With the
 # feature enabled the shared client negotiates h2 via ALPN.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "http2"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "http2", "json"] }
 rpassword = "7"
 # Feature unification compiles both rustls crypto providers into the binary
 # (aws-lc-rs via sentry's reqwest `rustls` feature, ring via reqwest's own
