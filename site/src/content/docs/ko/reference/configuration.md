@@ -50,10 +50,11 @@ description: 모든 shunt.toml 키 — server, providers, routes, models.
 | `users_env` | `SHUNT_GATEWAY_USERS` | 쉼표로 구분된 `email:secret` approval user를 담는 env 변수 |
 | `token_ttl_seconds` | `3600` | access token 수명. `expires_in`으로 반환 |
 | `trust_forwarded_for` | `false` | `/device` rate-limit identity로 `X-Forwarded-For`/`X-Real-IP`를 신뢰. client 제공 값을 교체하는 trusted proxy 뒤에서만 활성화 |
+| `state_path` | `~/.shunt/gateway-sessions.json` | 재시작 후에도 refresh session을 유지하는 파일. token은 SHA-256 hash로 저장하고 Unix에서는 소유자 전용 권한(`0600`)으로 원자적으로 기록. `""`로 설정하면 memory-only session 사용(home directory를 찾지 못한 경우에도 동일) |
 
 URL이 경로 등을 포함하지 않은 HTTPS origin이 아니거나(`http`는 loopback에서만 허용), TTL이 0이거나, secret이 없거나 32 bytes 미만이거나, user list가 비었거나 잘못되면 시작은 fail closed합니다. secret에는 `:`를 포함할 수 있으며 첫 번째 colon만 email과 secret을 구분합니다. env-backed secret과 user 변경은 config reload 시 반영되지만, route tree는 boot 시 고정되므로 테이블 추가·제거에는 restart가 필요합니다.
 
-발급된 bearer는 선택된 provider가 server-side credential을 주입할 때 `/v1/models`, `/v1/messages`, `/v1/messages/count_tokens`를 인증합니다. passthrough provider는 open 상태를 유지합니다. `[server.auth]`도 있으면 어느 credential이든 access를 허용합니다. device grant와 rotating refresh token은 process-lifetime in-memory state입니다. config reload에서는 유지되지만 restart하면 무효화됩니다.
+발급된 bearer는 선택된 provider가 server-side credential을 주입할 때 `/v1/models`, `/v1/messages`, `/v1/messages/count_tokens`를 인증합니다. passthrough provider는 open 상태를 유지합니다. `[server.auth]`도 있으면 어느 credential이든 access를 허용합니다. refresh session은 기본적으로 재시작 후에도 유지됩니다. boot 시 `state_path`의 token hash를 복원하므로 사용자는 계속 silent refresh할 수 있습니다. 이 파일을 여러 shunt process가 동시에 공유하면 안 됩니다. `state_path = ""`이면 session은 memory-only이며, config reload에서는 유지되지만 shunt를 재시작하면 access JWT 만료 후 다시 로그인해야 합니다. Device grant와 rate-limit counter는 항상 memory-only이므로 로그인 도중 재시작하면 해당 시도만 손실됩니다. 만료된 grant와 idle rate-limit identity는 opportunistic하게 정리되며 각각 최대 4,096개로 제한됩니다. 사용한 refresh-token tombstone은 30일 동안 family당 최대 64개 유지되고, 30일 동안 사용하지 않은 active refresh token은 만료됩니다.
 
 ### `[[server.gateway.policies]]` (선택)
 
@@ -85,6 +86,16 @@ headers = { "x-api-key" = "..." }
 ```
 
 기본적으로 `/device`는 forwarding header를 무시하고 socket peer를 rate limit합니다. shunt가 client 제공 forwarding header를 제거하고 자체 값을 설정하는 trusted reverse proxy를 통해서만 도달 가능한 경우에만 `trust_forwarded_for = true`를 설정하세요. 직접 노출된 gateway에서는 활성화하지 마세요.
+
+## `[server.codex_endpoint]` (선택)
+
+이 테이블은 **Codex CLI**가 `base_url`을 shunt로 지정하고 ChatGPT/Codex OAuth 계정 풀 사이에서 load balancing될 수 있도록 inbound OpenAI Responses passthrough를 활성화합니다([상세](/ko/guides/inbound-codex-endpoint/)). 테이블이 없으면 해당 route는 등록되지 않습니다.
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `provider` | `codex` | inbound request를 처리할 `[providers.<name>]` 테이블 이름. `auth = "chatgpt_oauth"`를 사용해야 함 |
+
+`POST /backend-api/codex/responses`, `POST /responses`, `POST /v1/responses`를 등록하며, 모두 지정한 provider의 account pool이 처리합니다. `[server.auth]`가 있으면 다른 server-side credential route처럼 유효한 client token을 요구합니다. `[server.auth]`가 없으면 operator의 Codex credential을 주입하면서도 접근 가능한 누구에게나 **open** 상태이므로 loopback 외 환경에서는 반드시 보호하세요. `/v1/messages`와 달리 request는 Anthropic Messages로 변환하거나 그 반대로 변환하지 않고 upstream과 verbatim relay합니다.
 
 ## `[server.pool]` (선택)
 

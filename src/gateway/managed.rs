@@ -83,7 +83,15 @@ pub fn merge(base: &mut Value, overlay: &Value, key: Option<&str>) {
                 match base.get_mut(child_key) {
                     Some(base_value) => merge(base_value, overlay_value, Some(child_key)),
                     None => {
-                        base.insert(child_key.clone(), overlay_value.clone());
+                        let mut inserted = match overlay_value {
+                            Value::Object(_) => Value::Object(Map::new()),
+                            Value::Array(_) if child_key.to_ascii_lowercase().contains("deny") => {
+                                Value::Array(Vec::new())
+                            }
+                            _ => overlay_value.clone(),
+                        };
+                        merge(&mut inserted, overlay_value, Some(child_key));
+                        base.insert(child_key.clone(), inserted);
                     }
                 }
             }
@@ -206,6 +214,27 @@ mod tests {
                 },
                 "env": {"BASE": "1", "OVERLAY": "1", "SHARED": "overlay"},
                 "nested": {"left": true, "right": true}
+            })
+        );
+    }
+
+    #[test]
+    fn merge_deduplicates_deny_arrays_introduced_with_new_objects() {
+        let mut base = json!({});
+        merge(
+            &mut base,
+            &json!({
+                "permissions": {"deny": ["Bash", "Bash", "Write"]},
+                "customDenyList": ["first", "first", "second"]
+            }),
+            None,
+        );
+
+        assert_eq!(
+            base,
+            json!({
+                "permissions": {"deny": ["Bash", "Write"]},
+                "customDenyList": ["first", "second"]
             })
         );
     }
