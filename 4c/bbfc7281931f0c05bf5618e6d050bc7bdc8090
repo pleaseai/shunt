@@ -1,0 +1,21 @@
+.please/docs/review/rejected-findings.jsonl
+  s_247b9924846b28::t_0663970186f1e0 24-25
+tests/multi_account.rs
+  s_247b9924846b28::t_1575eb032a419e 972-1070
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "4cbbfc7281931f0c05bf5618e6d050bc7bdc8090",
+  "prompts": {},
+  "sessions": {
+    "s_247b9924846b28": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cf790ea6-317d-422b-83e2-e54777d32352",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
