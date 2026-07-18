@@ -10,13 +10,15 @@
 //!   provider, so with `[otel]` absent the instruments are inert.
 //!
 //! Request metrics cover request counts/header latency, streaming TTFT/outcomes
-//! and streaming token usage, Codex continuation decisions, and retries. Pool
-//! metrics expose best-account quota utilization and account rotations.
+//! and streaming token usage, Codex continuation decisions and sanitized client
+//! analytics event names, and retries. Pool metrics expose best-account quota
+//! utilization and account rotations.
 //!
 //! Attributes stay low-cardinality (provider/model/status/outcome/kind/window/
-//! reason) — never client names, account ids, session ids, or anything else
-//! request-derived. Token metrics currently cover streaming responses only;
-//! non-streaming token usage is intentionally out of scope.
+//! reason, plus the sanitized `event` on `shunt.codex_client_events`) — never
+//! client names, account ids, session ids, or anything else request-derived.
+//! Token metrics currently cover streaming responses only; non-streaming token
+//! usage is intentionally out of scope.
 
 use std::{
     collections::HashMap,
@@ -39,6 +41,7 @@ struct OtelInstruments {
     stream_outcome: Counter<u64>,
     tokens: Counter<u64>,
     continuation: Counter<u64>,
+    codex_client_events: Counter<u64>,
     upstream_retries: Counter<u64>,
     _pool_utilization: ObservableGauge<f64>,
     pool_rotations: Counter<u64>,
@@ -83,6 +86,10 @@ fn otel_instruments() -> &'static OtelInstruments {
                 .with_description(
                     "Codex WebSocket continuation decisions (hit vs full-input fallback)",
                 )
+                .build(),
+            codex_client_events: meter
+                .u64_counter("shunt.codex_client_events")
+                .with_description("Sanitized Codex client analytics event counts")
                 .build(),
             upstream_retries: meter
                 .u64_counter("shunt.upstream_retries")
@@ -284,6 +291,18 @@ pub fn record_continuation_outcome(provider: &str, outcome: ContinuationOutcome)
     otel_instruments().continuation.add(1, &attributes);
 }
 
+/// Record one sanitized Codex CLI product-analytics event name. The caller
+/// guarantees the `event` attribute contains only the bounded allowlist accepted
+/// by `codex_analytics`; no event properties or payload data reach either sink.
+pub fn record_codex_client_event(event: &str) {
+    sentry::metrics::counter("shunt.codex_client_events", 1)
+        .attribute("event", event.to_owned())
+        .capture();
+
+    let attributes = [KeyValue::new("event", event.to_owned())];
+    otel_instruments().codex_client_events.add(1, &attributes);
+}
+
 /// Record one bounded upstream retry (issue #48): a `shunt.upstream_retries`
 /// count tagged with the provider and a low-cardinality `reason` — the transient
 /// status (`429`/`502`/`503`/`504`) or `transport` for a connection-level error.
@@ -305,9 +324,9 @@ pub fn record_upstream_retry(provider: &str, reason: &'static str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        record_continuation_outcome, record_pool_rotation, record_pool_utilization,
-        record_proxied_request, record_stream_outcome, record_stream_tokens, record_ttft,
-        ContinuationOutcome,
+        record_codex_client_event, record_continuation_outcome, record_pool_rotation,
+        record_pool_utilization, record_proxied_request, record_stream_outcome,
+        record_stream_tokens, record_ttft, ContinuationOutcome,
     };
 
     /// The core opt-in contract: recording a proxied request must never panic,
@@ -342,6 +361,12 @@ mod tests {
     fn record_continuation_is_noop_without_sinks() {
         record_continuation_outcome("codex", ContinuationOutcome::Hit);
         record_continuation_outcome("codex", ContinuationOutcome::Fallback);
+    }
+
+    /// The Codex client-event counter honors the same opt-in no-op contract.
+    #[test]
+    fn record_codex_client_event_is_noop_without_sinks() {
+        record_codex_client_event("codex.turn_completed");
     }
 
     /// The upstream-retry counter honors the same opt-in no-op contract.

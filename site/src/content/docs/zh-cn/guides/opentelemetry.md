@@ -53,6 +53,7 @@ authorization = "Bearer <token>"
 | `shunt.stream_outcome` | 计数器 | `provider`, `model`, `outcome` | 每个 SSE 记录一个最终结果：`completed`、`error_event`、`upstream_cut` 或 `client_disconnect`。 |
 | `shunt.tokens` | 计数器 | `provider`, `model`, `kind` | 最后报告的流式 token 用量（`input`、`output`、`cache_read`、`cache_creation`）；不记录非流式用量。 |
 | `shunt.codex_continuation` | 计数器 | `provider`, `outcome` | Codex WebSocket continuation 的 hit 或 fallback。 |
+| `shunt.codex_client_events` | 计数器 | `event` | 按净化后的事件名称统计 Codex CLI 分析事件；payload 和属性会被丢弃。 |
 | `shunt.upstream_retries` | 计数器 | `provider`, `reason` | 有次数限制的临时上游重试。 |
 | `shunt.pool.quota_utilization` | 仪表 | `provider`, `window` | `5h`、`7d` 或 `7d_oi` 窗口中已启用、已观测且未过期的 quota 值的最小使用率。 |
 | `shunt.pool.rotations` | 计数器 | `provider`, `reason` | 离开账户的切换次数以及 pool 耗尽的请求数。 |

@@ -211,6 +211,126 @@ async fn post_responses(
     request.send().await.unwrap()
 }
 
+async fn post_analytics(
+    gateway: &TestGateway,
+    endpoint_path: &str,
+    body: &str,
+    client_token: Option<&str>,
+) -> reqwest::Response {
+    let mut request = reqwest::Client::new()
+        .post(format!("{}{}", gateway.base_url, endpoint_path))
+        .header("content-type", "application/json")
+        .body(body.to_string());
+    if let Some(token) = client_token {
+        request = request.header("x-shunt-token", token);
+    }
+    request.send().await.unwrap()
+}
+
+#[tokio::test]
+async fn analytics_sink_accepts_upstream_batch_shape() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let gateway = start_gateway_with(test_config("http://127.0.0.1:1", vec![])).await;
+    let body = serde_json::json!({
+        "events": [
+            {"event_type": "codex.turn_started", "event_params": {"private": "discarded"}},
+            {"event_type": "codex.turn_completed", "event_params": {}}
+        ]
+    });
+
+    let response = post_analytics(
+        &gateway,
+        "/backend-api/codex/analytics-events/events",
+        &body.to_string(),
+        None,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("application/json")
+    );
+    assert_eq!(response.text().await.unwrap(), "{}");
+}
+
+#[tokio::test]
+async fn analytics_sink_accepts_malformed_json() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let gateway = start_gateway_with(test_config("http://127.0.0.1:1", vec![])).await;
+
+    let response = post_analytics(
+        &gateway,
+        "/backend-api/codex/analytics-events/events",
+        "{not-json",
+        None,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.text().await.unwrap(), "{}");
+}
+
+#[tokio::test]
+async fn both_analytics_sink_paths_are_registered() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let gateway = start_gateway_with(test_config("http://127.0.0.1:1", vec![])).await;
+    let body = r#"{"events":[{"event_type":"codex.turn_started","event_params":{}}]}"#;
+
+    for endpoint_path in [
+        "/backend-api/codex/analytics-events/events",
+        "/codex/analytics-events/events",
+    ] {
+        let response = post_analytics(&gateway, endpoint_path, body, None).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "path {endpoint_path} should be routed"
+        );
+        assert_eq!(response.text().await.unwrap(), "{}");
+    }
+}
+
+#[tokio::test]
+async fn analytics_sink_matches_inbound_auth_posture() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let tokens_env = format!("SHUNT_TEST_INBOUND_ANALYTICS_TOKENS_{}", std::process::id());
+    std::env::set_var(&tokens_env, "cli:analytics-secret");
+    let mut config = test_config("http://127.0.0.1:1", vec![]);
+    config.server.auth = Some(InboundAuthConfig {
+        header: "x-shunt-token".to_string(),
+        tokens_env: tokens_env.clone(),
+    });
+    let gateway = start_gateway_with(config).await;
+    let body = r#"{"events":[{"event_type":"codex.turn_started","event_params":{}}]}"#;
+
+    let unauthenticated =
+        post_analytics(&gateway, "/codex/analytics-events/events", body, None).await;
+    assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+    let authenticated = post_analytics(
+        &gateway,
+        "/codex/analytics-events/events",
+        body,
+        Some("analytics-secret"),
+    )
+    .await;
+    assert_eq!(authenticated.status(), StatusCode::OK);
+
+    std::env::remove_var(&tokens_env);
+}
+
 #[tokio::test]
 async fn forwards_body_verbatim_and_injects_pool_credential() {
     // The inbound Responses body reaches the upstream byte-identical, carrying the
@@ -873,6 +993,8 @@ async fn endpoint_is_absent_without_opt_in_config() {
         "/backend-api/codex/responses",
         "/responses",
         "/v1/responses",
+        "/backend-api/codex/analytics-events/events",
+        "/codex/analytics-events/events",
     ] {
         let response = post_responses(&gateway, endpoint_path, None, None).await;
         assert_eq!(

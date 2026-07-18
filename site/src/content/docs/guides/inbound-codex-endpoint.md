@@ -21,7 +21,18 @@ shunt check
 shunt run
 ```
 
-Startup validation rejects an unknown `provider` or one that doesn't use `auth = "chatgpt_oauth"` — the endpoint injects the operator's Codex bearer, so only a `chatgpt_oauth` provider qualifies. See the [configuration reference](/reference/configuration/#servercodex_endpoint-optional) for every key and default, and [HTTP Endpoints](/reference/endpoints/) for the three registered routes.
+Startup validation rejects an unknown `provider` or one that doesn't use `auth = "chatgpt_oauth"` — the endpoint injects the operator's Codex bearer, so only a `chatgpt_oauth` provider qualifies. See the [configuration reference](/reference/configuration/#servercodex_endpoint-optional) for every key and default, and [HTTP Endpoints](/reference/endpoints/) for the registered routes.
+
+## Client analytics sink
+
+The Codex CLI also posts product analytics to the base URL. shunt accepts both paths the CLI can produce:
+
+- `POST /backend-api/codex/analytics-events/events`
+- `POST /codex/analytics-events/events`
+
+These routes use the same `[server.auth]` policy as the Responses routes but never forward telemetry upstream, because choosing one pooled account would misattribute the client event to that account. They always return `200 {}` after authentication, including for malformed, unreadable, or oversized bodies.
+
+The payload and event properties are neither logged nor exported. shunt records only the sanitized `event_type` as the `event` attribute on the opt-in `shunt.codex_client_events` counter: names may contain lowercase ASCII letters, digits, `.`, `_`, and `-`, up to 64 bytes; invalid names become `other`, and unrecognized batches become `unparsed`. Without Sentry or OpenTelemetry metrics enabled, this is a pure discard sink.
 
 ## Point the Codex CLI at shunt
 

@@ -54,11 +54,28 @@ When opted in, shunt registers three routes, all mapping to one passthrough hand
 | `POST` | `/responses` |
 | `POST` | `/v1/responses` |
 
-Three paths exist because the Codex CLI always appends `/responses` to whatever `base_url` it is
+Three Responses paths exist because the Codex CLI always appends `/responses` to whatever `base_url` it is
 pointed at: a base ending in `/backend-api/codex` produces `/backend-api/codex/responses` (the
 literal path the real ChatGPT backend uses), a base ending in `/v1` produces `/v1/responses`, and
 a bare base produces `/responses`. Registering all three lets an operator use either CLI setup
 style (§ "Codex CLI setup" below) without shunt needing to know which one a given client chose.
+
+### Client analytics sink
+
+The same opt-in also registers `POST /backend-api/codex/analytics-events/events` and
+`POST /codex/analytics-events/events`, covering the default ChatGPT-style and root-style
+`chatgpt_base_url` forms. The Codex CLI posts JSON batches shaped as
+`{"events":[{"event_type":"...","event_params":{...}}]}`. shunt authenticates these routes the
+same way as the Responses routes, accepts the body, and always returns `200` with `{}` after the
+auth check. It never forwards the batch: selecting one pooled account would misattribute the
+client's product telemetry to that account.
+
+The body and event properties are discarded without logging or export. Only a per-event-name
+`shunt.codex_client_events` counter is emitted to the already opt-in Sentry/OpenTelemetry metric
+sinks. Event names are limited to 64 bytes and to lowercase ASCII letters, digits, `.`, `_`, and
+`-`; invalid names become `other`, while malformed or unrecognized batches are counted once as
+`unparsed`. Oversized or unreadable bodies also succeed and are counted as `unparsed`. With no
+metric sink configured, these routes are pure discard sinks.
 
 ## Fixed provider routing
 

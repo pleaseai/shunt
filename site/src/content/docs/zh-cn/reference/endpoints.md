@@ -24,8 +24,15 @@ description: shunt 作为 Claude Code LLM 网关所提供的端点。
 | `POST` | `/admin/accounts/codex` | 用 `{name}` 开始 ChatGPT OAuth;返回 `{authorize_url}` |
 | `POST` | `/admin/accounts/codex/{name}/complete` | 用包含完整 localhost redirect URL 或 `<code>#<state>` 的 `{code}` 完成 Codex 预配 |
 | `DELETE` | `/admin/accounts/codex/{name}` | 删除指定 Codex 账户的存储文件 |
+| `POST` | `/backend-api/codex/responses` | 入站 Codex CLI 透传 —— 镜像真实 ChatGPT 后端路径 |
+| `POST` | `/responses` | 入站 Codex CLI 透传 —— 裸 `base_url` 形式 |
+| `POST` | `/v1/responses` | 入站 Codex CLI 透传 —— 带 `/v1` 后缀的 `base_url` 形式 |
+| `POST` | `/backend-api/codex/analytics-events/events` | Codex CLI 分析 sink —— 接收后丢弃，仅记录净化后的事件名称计数器 |
+| `POST` | `/codex/analytics-events/events` | Codex CLI 分析 sink —— 根路径式 `chatgpt_base_url` 形式 |
 
 `/admin*` 路由仅在配置了 [`[server.admin]`](/zh-cn/reference/configuration/#serveradmin可选) 时存在;没有该表时,它们一个都不会注册。
+
+入站 Codex Responses 和分析路由仅在配置了 [`[server.codex_endpoint]`](/zh-cn/reference/configuration/) 时存在。Responses 路由逐字中继 OpenAI Responses 请求和响应。两个分析路由采用相同的入站认证策略，不转发或保留客户端 payload，并在认证后对无效 JSON 或超大正文也返回 `200 {}`。只有净化后的事件名称会记录到 `shunt.codex_client_events`；未配置指标 sink 时，它们是纯丢弃 sink。
 
 即使启用了 [`[server.auth]`](/zh-cn/guides/shared-gateway/),`GET /` 和 `GET /health` 也保持开放(健康检查工具通常无法附带 token),并且不暴露任何敏感信息 —— 只有状态、版本以及已经公开的端点列表。
 

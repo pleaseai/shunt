@@ -3,6 +3,7 @@ pub mod adapters;
 pub mod admin;
 mod atomic_file;
 pub mod auth;
+pub mod codex_analytics;
 pub mod codex_endpoint;
 pub mod config;
 pub mod count_tokens;

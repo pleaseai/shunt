@@ -53,6 +53,7 @@ authorization = "Bearer <token>"
 | `shunt.stream_outcome` | 카운터 | `provider`, `model`, `outcome` | SSE 최종 결과 하나: `completed`, `error_event`, `upstream_cut`, `client_disconnect`. |
 | `shunt.tokens` | 카운터 | `provider`, `model`, `kind` | 마지막으로 보고된 스트리밍 토큰 사용량(`input`, `output`, `cache_read`, `cache_creation`). 비스트리밍 사용량은 기록하지 않음. |
 | `shunt.codex_continuation` | 카운터 | `provider`, `outcome` | Codex WebSocket continuation hit 또는 fallback. |
+| `shunt.codex_client_events` | 카운터 | `event` | 정제된 이벤트 이름별 Codex CLI 분석 이벤트. payload와 속성은 폐기됨. |
 | `shunt.upstream_retries` | 카운터 | `provider`, `reason` | 제한된 일시적 업스트림 재시도. |
 | `shunt.pool.quota_utilization` | 게이지 | `provider`, `window` | `5h`, `7d`, `7d_oi`별 활성 상태이고 관측됐으며 만료되지 않은 quota 값 중 최소 사용률. |
 | `shunt.pool.rotations` | 카운터 | `provider`, `reason` | 계정에서 이동한 횟수와 pool이 소진된 요청 수. |

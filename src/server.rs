@@ -10,7 +10,7 @@ use crate::{
     accounts::AccountPool,
     admin::{self, AdminAuth, AdminStores},
     auth::inbound::InboundAuth,
-    codex_endpoint,
+    codex_analytics, codex_endpoint,
     config::{Config, ConfigError},
     discovery,
     gateway::{self, GatewayAuth, GatewayStores},
@@ -154,15 +154,23 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
 
     // Opt-in inbound Responses (Codex) endpoint: registered only when
     // `[server.codex_endpoint]` is set, so the default HTTP surface is unchanged.
-    // The Codex CLI appends `/responses` to whatever base_url it is pointed at, so
-    // all three paths (the ChatGPT-backend mirror plus the custom-provider forms)
-    // map to one passthrough handler. Gated by `[server.auth]` like the other
-    // injected-credential routes.
+    // The Codex CLI appends `/responses` and its analytics path to the configured
+    // base URL. Responses use the passthrough handler; analytics is accepted and
+    // discarded locally after recording sanitized counters. Both are gated by
+    // `[server.auth]` like the other injected-credential routes.
     if codex_endpoint_enabled {
         router = router
             .route("/backend-api/codex/responses", post(codex_endpoint::post))
             .route("/responses", post(codex_endpoint::post))
-            .route("/v1/responses", post(codex_endpoint::post));
+            .route("/v1/responses", post(codex_endpoint::post))
+            .route(
+                "/backend-api/codex/analytics-events/events",
+                post(codex_analytics::post),
+            )
+            .route(
+                "/codex/analytics-events/events",
+                post(codex_analytics::post),
+            );
     }
 
     // Opt-in client-facing usage endpoint (`GET /usage`): registered only when
