@@ -161,6 +161,58 @@ fn oidc_authorize_request(user_code: &str) -> Request<Body> {
         .unwrap()
 }
 
+async fn mount_oidc_discovery(idp: &wiremock::MockServer) {
+    use wiremock::{matchers::path, Mock, ResponseTemplate};
+
+    Mock::given(path("/.well-known/openid-configuration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "issuer": idp.uri(),
+            "authorization_endpoint": format!("{}/authorize", idp.uri()),
+            "token_endpoint": format!("{}/token", idp.uri()),
+            "userinfo_endpoint": format!("{}/userinfo", idp.uri())
+        })))
+        .mount(idp)
+        .await;
+}
+
+fn set_oidc_endpoint_overrides(config: &mut Config, idp: &wiremock::MockServer) {
+    let oidc = config
+        .server
+        .gateway
+        .as_mut()
+        .unwrap()
+        .oidc
+        .as_mut()
+        .unwrap();
+    oidc.authorization_endpoint = Some(format!("{}/authorize", idp.uri()));
+    oidc.token_endpoint = Some(format!("{}/token", idp.uri()));
+    oidc.userinfo_endpoint = Some(format!("{}/userinfo", idp.uri()));
+}
+
+async fn begin_oidc_callback(router: &Router) -> (Value, String) {
+    let (_, authorization) = json_response(
+        router.clone(),
+        form_request("/oauth/device_authorization", "client_id=claude-code"),
+    )
+    .await;
+    let authorize = router
+        .clone()
+        .oneshot(oidc_authorize_request(
+            authorization["user_code"].as_str().unwrap(),
+        ))
+        .await
+        .unwrap();
+    let location =
+        reqwest::Url::parse(authorize.headers()[header::LOCATION].to_str().unwrap()).unwrap();
+    let state = location
+        .query_pairs()
+        .find(|(key, _)| key == "state")
+        .unwrap()
+        .1
+        .into_owned();
+    (authorization, state)
+}
+
 #[tokio::test]
 async fn oidc_device_page_modes_and_disabled_password_post() {
     let (config, _env) = GatewayEnv::oidc_config(
@@ -200,18 +252,10 @@ async fn oidc_device_page_modes_and_disabled_password_post() {
 
 #[tokio::test]
 async fn oidc_authorize_rejects_unknown_code_and_builds_pkce_redirect() {
-    use wiremock::{matchers::path, Mock, MockServer, ResponseTemplate};
+    use wiremock::MockServer;
 
     let idp = MockServer::start().await;
-    Mock::given(path("/.well-known/openid-configuration"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "issuer": idp.uri(),
-            "authorization_endpoint": format!("{}/authorize", idp.uri()),
-            "token_endpoint": format!("{}/token", idp.uri()),
-            "userinfo_endpoint": format!("{}/userinfo", idp.uri())
-        })))
-        .mount(&idp)
-        .await;
+    mount_oidc_discovery(&idp).await;
     let (config, _env) = GatewayEnv::oidc_config("oidc-authorize", idp.uri(), false);
     let (router, _, state) = build_router(config).unwrap();
 
@@ -273,15 +317,7 @@ async fn oidc_callback_completes_device_flow_and_enforces_allowlist() {
     };
 
     let idp = MockServer::start().await;
-    Mock::given(path("/.well-known/openid-configuration"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "issuer": idp.uri(),
-            "authorization_endpoint": format!("{}/authorize", idp.uri()),
-            "token_endpoint": format!("{}/token", idp.uri()),
-            "userinfo_endpoint": format!("{}/userinfo", idp.uri())
-        })))
-        .mount(&idp)
-        .await;
+    mount_oidc_discovery(&idp).await;
     Mock::given(method("POST"))
         .and(path("/token"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"access_token":"access"})))
@@ -366,15 +402,7 @@ async fn oidc_callback_rejects_bad_state_idp_error_and_unverified_email() {
     use wiremock::{matchers::path, Mock, MockServer, ResponseTemplate};
 
     let idp = MockServer::start().await;
-    Mock::given(path("/.well-known/openid-configuration"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "issuer": idp.uri(),
-            "authorization_endpoint": format!("{}/authorize", idp.uri()),
-            "token_endpoint": format!("{}/token", idp.uri()),
-            "userinfo_endpoint": format!("{}/userinfo", idp.uri())
-        })))
-        .mount(&idp)
-        .await;
+    mount_oidc_discovery(&idp).await;
     Mock::given(path("/token"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"access_token":"access"})))
         .mount(&idp)
@@ -674,38 +702,9 @@ async fn oidc_token_redirect_is_not_followed() {
         .mount(&idp)
         .await;
     let (mut config, _env) = GatewayEnv::oidc_config("oidc-no-redirect", idp.uri(), false);
-    let oidc = config
-        .server
-        .gateway
-        .as_mut()
-        .unwrap()
-        .oidc
-        .as_mut()
-        .unwrap();
-    oidc.authorization_endpoint = Some(format!("{}/authorize", idp.uri()));
-    oidc.token_endpoint = Some(format!("{}/token", idp.uri()));
-    oidc.userinfo_endpoint = Some(format!("{}/userinfo", idp.uri()));
+    set_oidc_endpoint_overrides(&mut config, &idp);
     let (router, _, _) = build_router(config).unwrap();
-    let (_, authorization) = json_response(
-        router.clone(),
-        form_request("/oauth/device_authorization", "client_id=claude-code"),
-    )
-    .await;
-    let authorize = router
-        .clone()
-        .oneshot(oidc_authorize_request(
-            authorization["user_code"].as_str().unwrap(),
-        ))
-        .await
-        .unwrap();
-    let location =
-        reqwest::Url::parse(authorize.headers()[header::LOCATION].to_str().unwrap()).unwrap();
-    let state = location
-        .query_pairs()
-        .find(|(key, _)| key == "state")
-        .unwrap()
-        .1
-        .into_owned();
+    let (_, state) = begin_oidc_callback(&router).await;
     let (status, html) = html_response(
         router,
         get_request(&format!("/device/callback?code=x&state={state}")),
@@ -846,37 +845,10 @@ async fn oidc_callback_failures_are_terminal_and_generic() {
             .await;
         let (mut config, _env) =
             GatewayEnv::oidc_config(&format!("oidc-callback-failure-{index}"), idp.uri(), false);
-        let oidc = config
-            .server
-            .gateway
-            .as_mut()
-            .unwrap()
-            .oidc
-            .as_mut()
-            .unwrap();
-        oidc.authorization_endpoint = Some(format!("{}/authorize", idp.uri()));
-        oidc.token_endpoint = Some(format!("{}/token", idp.uri()));
-        oidc.userinfo_endpoint = Some(format!("{}/userinfo", idp.uri()));
+        set_oidc_endpoint_overrides(&mut config, &idp);
         let (router, _, state) = build_router(config).unwrap();
-        let (_, authorization) = json_response(
-            router.clone(),
-            form_request("/oauth/device_authorization", "client_id=claude-code"),
-        )
-        .await;
+        let (authorization, callback_state) = begin_oidc_callback(&router).await;
         let user_code = authorization["user_code"].as_str().unwrap();
-        let authorize = router
-            .clone()
-            .oneshot(oidc_authorize_request(user_code))
-            .await
-            .unwrap();
-        let location =
-            reqwest::Url::parse(authorize.headers()[header::LOCATION].to_str().unwrap()).unwrap();
-        let callback_state = location
-            .query_pairs()
-            .find(|(key, _)| key == "state")
-            .unwrap()
-            .1
-            .into_owned();
         let (status, html) = html_response(
             router.clone(),
             get_request(&format!(
@@ -904,15 +876,7 @@ async fn oidc_callback_rejects_email_outside_allowlist() {
     use wiremock::{matchers::path, Mock, MockServer, ResponseTemplate};
 
     let idp = MockServer::start().await;
-    Mock::given(path("/.well-known/openid-configuration"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "issuer": idp.uri(),
-            "authorization_endpoint": format!("{}/authorize", idp.uri()),
-            "token_endpoint": format!("{}/token", idp.uri()),
-            "userinfo_endpoint": format!("{}/userinfo", idp.uri())
-        })))
-        .mount(&idp)
-        .await;
+    mount_oidc_discovery(&idp).await;
     Mock::given(path("/token"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"access_token":"access"})))
         .mount(&idp)
