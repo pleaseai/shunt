@@ -10,3 +10,4 @@
 - [shunt Codex admin coverage](shunt-codex-admin-coverage.md) — PR #144 Codex admin OAuth happy path/storage/list/pool/delete are strong; gaps remain for state/account-id rejection, Codex-route CSRF wiring, and pending-kind isolation.
 - [shunt account scan cache coverage](shunt-account-scan-cache-coverage.md) — PR #163 covers hit/invalidation triggers without race risk, but never asserts changed scan output replaces the cached account list.
 - [shunt perf hot-path coverage](shunt-perf-hot-path-coverage.md) — PR #182 auth single-flight and quota behavior are covered; WS idle-timer reset/tie and BoundaryTracker len-0/3 cases are not.
+- [shunt client usage fable coverage](shunt-client-usage-fable-coverage.md) — PR #179 usage aggregate tests cover 5h/7d but omit populated fable (7d_oi) data, leaving that production mapping unguarded.

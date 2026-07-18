@@ -1,0 +1,1 @@
+- [Codex quota stable identity](codex-quota-stable-identity.md) — Pass AccountConfig to quota recording so UUID-backed state matches snapshots.
