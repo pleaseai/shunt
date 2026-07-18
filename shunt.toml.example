@@ -264,6 +264,10 @@ provider = "openai"
 # model = "kimi-k3"
 # provider = "kimi"
 
+# [[routes]]
+# model = "kimi-k2.7-code"
+# provider = "kimi"
+
 # Catch-all: send every gpt-* id to a provider.
 [[route_prefixes]]
 prefix = "gpt-"

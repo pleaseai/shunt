@@ -127,7 +127,7 @@ provider = "kimi"
 | :-- | :-- | :-- |
 | `shunt-codex` | `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna` | `codex`（ChatGPT サブスクリプション） |
 | `shunt-xai` | `grok-build-0.1`、`grok-4.5`、`grok-4.3` | `xai`（API キー）または `grok`（サブスクリプション） |
-| `shunt-kimi` | `kimi-k3`, `kimi-k2.7-code` | `kimi` |
+| `shunt-kimi` | `kimi-k3`、`kimi-k2.7-code` | `kimi` |
 | `shunt-deepseek` | `deepseek-v4-pro`、`deepseek-v4-flash` | `deepseek` |
 | `shunt-zai` | `glm-5.2`、`glm-4.7` | `zai` |
 | `shunt-minimax` | `MiniMax-M3[1m]` | `minimax` |

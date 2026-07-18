@@ -92,7 +92,7 @@ provider = "cursor"
 
 | 提供方 | `base_url` | 示例模型 ID |
 | :-- | :-- | :-- |
-| Kimi (Moonshot) | `https://api.moonshot.ai/anthropic` | `kimi-k3`, `kimi-k2.7-code` |
+| Kimi (Moonshot) | `https://api.moonshot.ai/anthropic` | `kimi-k3`、`kimi-k2.7-code` |
 | DeepSeek | `https://api.deepseek.com/anthropic` | `deepseek-v4-pro`、`deepseek-v4-flash` |
 | Z.ai (GLM) | `https://api.z.ai/api/anthropic` | `glm-5.2`、`glm-4.7` |
 | MiniMax | `https://api.minimax.io/anthropic` | 见 [MiniMax 文档](https://platform.minimax.io/docs/token-plan/claude-code) |
@@ -130,7 +130,7 @@ provider = "kimi"
 | :-- | :-- | :-- |
 | `shunt-codex` | `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna` | `codex`(ChatGPT 订阅) |
 | `shunt-xai` | `grok-build-0.1`、`grok-4.5`、`grok-4.3` | `xai`(API 密钥)或 `grok`(订阅) |
-| `shunt-kimi` | `kimi-k3`, `kimi-k2.7-code` | `kimi` |
+| `shunt-kimi` | `kimi-k3`、`kimi-k2.7-code` | `kimi` |
 | `shunt-deepseek` | `deepseek-v4-pro`、`deepseek-v4-flash` | `deepseek` |
 | `shunt-zai` | `glm-5.2`、`glm-4.7` | `zai` |
 | `shunt-minimax` | `MiniMax-M3[1m]` | `minimax` |
