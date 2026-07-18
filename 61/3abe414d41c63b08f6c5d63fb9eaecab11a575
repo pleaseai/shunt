@@ -1,0 +1,19 @@
+.claude/agent-memory/review-review-issue-fixer/codex-quota-stable-identity.md
+  s_aab6363b66583b::t_97095f370e1a18 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "613abe414d41c63b08f6c5d63fb9eaecab11a575",
+  "prompts": {},
+  "sessions": {
+    "s_aab6363b66583b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ed0ce3bc-419e-4ffe-987a-b091d7ec3eaa",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
