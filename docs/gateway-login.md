@@ -131,8 +131,9 @@ HTML error page with a non-success HTTP status.
 
 ## State and operational boundary
 
-Device grants, IdP states, refresh tokens, discovery results, and rate-limit
-counters are process-lifetime, in-memory stores that survive a config hot reload.
+Device grants, IdP states, discovery results, and rate-limit counters are
+process-lifetime, in-memory stores that survive a config hot reload. Refresh-token
+sessions also survive hot reload and are persisted by default as described below.
 IdP states and device grants expire after ten minutes and each rejects new
 admission at 4,096 live entries. Mutating operations remove expired device
 grants, IdP states, and idle rate-limit entries. Used refresh-token tombstones are retained

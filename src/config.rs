@@ -435,10 +435,12 @@ impl GatewayOidcConfig {
                 message: "issuer must not be empty".to_string(),
             });
         }
-        let issuer = validate_gateway_idp_url(issuer, true, "issuer")?
-            .as_str()
-            .trim_end_matches('/')
-            .to_string();
+        let issuer_url = validate_gateway_idp_url(issuer, true, "issuer")?;
+        let issuer = if issuer_url.path() == "/" {
+            issuer_url.as_str().trim_end_matches('/').to_string()
+        } else {
+            issuer_url.as_str().to_string()
+        };
         if self.client_id.trim().is_empty() {
             return Err(ConfigError::InvalidGatewayOidc {
                 message: "client_id must not be empty".to_string(),
@@ -2597,6 +2599,11 @@ mod tests {
             oidc.resolve(),
             Err(ConfigError::InvalidGatewayOidc { .. })
         ));
+        oidc.issuer = "https://accounts.example.com/dex/".into();
+        assert_eq!(
+            oidc.resolve().unwrap().issuer,
+            "https://accounts.example.com/dex/"
+        );
         oidc.issuer = "https://accounts.example.com/dex".into();
         oidc.authorization_endpoint = Some("http://idp.example/authorize".into());
         assert!(matches!(
