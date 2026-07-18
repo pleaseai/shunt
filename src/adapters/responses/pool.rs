@@ -29,8 +29,8 @@ use super::websocket::forward_websocket;
 /// account on a pre-stream websocket failure, then classifying the raw HTTP
 /// status with [`accounts::classify_codex`] to decide whether to relay,
 /// rotate to the next account, or force-refresh and retry the same one.
-/// Codex quota headers are recorded for the admin dashboard, but selection
-/// remains deliberately cooldown-based rather than quota-aware.
+/// Codex quota headers recorded by `note_codex_quota` feed both the admin
+/// dashboard and quota-aware selection (issue #195).
 pub(super) async fn forward_chatgpt_oauth(
     state: AppState,
     route: Route,
@@ -57,28 +57,36 @@ pub(super) async fn forward_chatgpt_oauth(
             accounts_config.len()
         )));
     }
-    // Codex usage is recorded for the admin dashboard via note_codex_quota,
-    // but it is deliberately not fed into selection: failover stays
-    // cooldown-based. Per-account priority/disabled still apply.
-    let order = state.accounts.select_order_cooldown(
+    // Codex usage recorded via note_codex_quota (x-codex-* windows) feeds
+    // selection: the pool proactively rotates off near-quota accounts and
+    // orders by burn-rate headroom, exactly like the Claude pool (issue #195).
+    // Codex has no fable-scoped window, so the model only picks the shared
+    // weekly bucket.
+    let order = state.accounts.select_order(
         &route.provider,
         &accounts_config,
         session_id.as_deref(),
+        Some(route.upstream_model.as_str()),
+        state.config.server.pool.as_ref(),
     );
     let ws_enabled = state.config.codex_websocket_enabled(&route.provider);
     let auth = AuthMode::ChatgptOauth;
+    let ramp_initial = state.config.storm_ramp_initial();
+    let candidates = order.len();
     let mut last_response: Option<reqwest::Response> = None;
 
-    for index in order {
+    for (position, index) in order.into_iter().enumerate() {
         let account = &accounts_config[index];
 
-        // Resolve the account's credential without the account-pool refresh lock;
-        // the auth store returns valid tokens concurrently and single-flights any
-        // expired-token refresh internally. A resolution failure cools the
-        // account down and rotates to the next account.
-        let credential = match resolve_or_cooldown(&state, &route, account).await {
-            Some(credential) => credential,
-            None => continue,
+        // Storm-control admission + credential resolution (issue #195): a
+        // saturated identity or failed auth rotates to the next candidate
+        // (see `admit_and_resolve`); on a relayed success the guard moves
+        // into the response body (`with_admission`), so the slot stays held
+        // until the stream actually finishes.
+        let Some((admission, credential)) =
+            admit_and_resolve(&state, &route, account, ramp_initial, position, candidates).await
+        else {
+            continue;
         };
 
         // Prefixing the pool key with the account name is the key point of
@@ -108,7 +116,10 @@ pub(super) async fn forward_chatgpt_oauth(
             .await
             {
                 Ok((status, response)) => {
-                    state.accounts.mark_healthy(&route.provider, account);
+                    state
+                        .accounts
+                        .mark_healthy(&route.provider, account, status.is_success());
+                    let response = crate::adapters::with_admission(response, admission);
                     return Ok((status, with_account_header(response, &account.name)));
                 }
                 Err(error) => {
@@ -162,9 +173,12 @@ pub(super) async fn forward_chatgpt_oauth(
             FirstOutcome::Relay(upstream) => {
                 // A non-401/429/5xx response means the account itself is fine,
                 // whether or not this particular request succeeded (mirrors the
-                // Anthropic adapter's top-level Relay arm).
+                // Anthropic adapter's top-level Relay arm) — but only a real
+                // success grows the storm-control allowance.
                 let status = upstream.status();
-                state.accounts.mark_healthy(&route.provider, account);
+                state
+                    .accounts
+                    .mark_healthy(&route.provider, account, status.is_success());
                 if status.is_success() {
                     let response = relay_success(
                         &state,
@@ -173,7 +187,10 @@ pub(super) async fn forward_chatgpt_oauth(
                         turn.relay(&route),
                     )
                     .await?;
-                    let response = with_account_header(response, &account.name);
+                    let response = crate::adapters::with_admission(
+                        with_account_header(response, &account.name),
+                        admission,
+                    );
                     // Surface the real status (a `502` when a backend error event
                     // fired on the non-streaming path, issue #113) to the access
                     // log and metrics rather than a hardcoded `200`.
@@ -234,7 +251,7 @@ pub(super) async fn forward_chatgpt_oauth(
                     RetryOutcome::Relay(retry) => {
                         let retry_status = retry.status();
                         if retry_status.is_success() {
-                            state.accounts.mark_healthy(&route.provider, account);
+                            state.accounts.mark_healthy(&route.provider, account, true);
                             let response = relay_success(
                                 &state,
                                 retry,
@@ -242,7 +259,10 @@ pub(super) async fn forward_chatgpt_oauth(
                                 turn.relay(&route),
                             )
                             .await?;
-                            let response = with_account_header(response, &account.name);
+                            let response = crate::adapters::with_admission(
+                                with_account_header(response, &account.name),
+                                admission,
+                            );
                             // Surface the real status (issue #113) rather than a
                             // hardcoded `200` — see the relay arm above.
                             return Ok((response.status(), response));
@@ -331,6 +351,33 @@ pub(super) fn rotate_cooldown(
     } else {
         Duration::from_secs(30)
     }
+}
+
+/// Shared per-candidate prelude of the outbound pool and inbound passthrough
+/// loops: storm-control admission for the candidate
+/// ([`crate::accounts::AccountPool::admit_candidate`]), then credential
+/// resolution ([`resolve_or_cooldown`]). `None` rotates to the next candidate —
+/// the identity is either saturated or failed auth (already cooled down). The
+/// returned guard (present when storm control is enabled) must be held for the
+/// whole account attempt; on a relayed success move it into the response body
+/// (`with_admission`) so the slot stays held until the stream finishes.
+pub(super) async fn admit_and_resolve(
+    state: &AppState,
+    route: &Route,
+    account: &AccountConfig,
+    ramp_initial: Option<u32>,
+    position: usize,
+    candidates: usize,
+) -> Option<(Option<accounts::AdmissionGuard>, Credential)> {
+    let admission = state.accounts.admit_candidate(
+        &route.provider,
+        account,
+        ramp_initial,
+        position,
+        candidates,
+    )?;
+    let credential = resolve_or_cooldown(state, route, account).await?;
+    Some((admission, credential))
 }
 
 /// Resolve one Codex/ChatGPT OAuth account's credential. Valid stored tokens

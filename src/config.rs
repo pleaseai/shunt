@@ -122,6 +122,17 @@ pub struct PoolConfig {
     /// [`crate::state_persist`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_path: Option<PathBuf>,
+    /// Storm control (issue #195): cap concurrent admissions to an account
+    /// identity that just started taking traffic, so a failover switch cannot
+    /// stampede the freshly selected account with every in-flight request at
+    /// once. The cap starts here and doubles per successful response
+    /// (slow-start), and drops back after a cooldown or an idle period. Unset
+    /// or `0` disables admission gating (the default). A pool whose accounts
+    /// all resolve to one upstream identity is effectively ungated: the last
+    /// remaining candidate is always admitted so gating can never fail a
+    /// request, and a single-identity pool only ever has a last candidate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ramp_initial_concurrency: Option<u32>,
 }
 
 pub(crate) fn default_hard_threshold() -> f64 {
@@ -139,6 +150,7 @@ impl Default for PoolConfig {
             burn_rate_avoidance: false,
             usage_refresh_seconds: None,
             state_path: None,
+            ramp_initial_concurrency: None,
         }
     }
 }
@@ -150,6 +162,12 @@ impl PoolConfig {
             None | Some(0) => None,
             Some(seconds) => Some(seconds.max(60)),
         }
+    }
+
+    /// The storm-control initial admission allowance, or `None` when admission
+    /// gating is disabled (unset or `0`).
+    pub fn storm_ramp_initial(&self) -> Option<u32> {
+        self.ramp_initial_concurrency.filter(|&initial| initial > 0)
     }
 }
 
@@ -300,6 +318,15 @@ pub struct GatewayConfig {
     /// routes arrive in M-C (#189).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telemetry: Option<GatewayTelemetryConfig>,
+    /// File persisting refresh sessions across restarts (issue #194). Refresh
+    /// tokens are stored as SHA-256 hashes, written atomically with owner-only
+    /// permissions after each grant or rotation, and restored at boot. Defaults
+    /// to `~/.shunt/gateway-sessions.json` (the directory shunt's account
+    /// stores already use); set `state_path = ""` for memory-only sessions,
+    /// where a restart signs everyone out once their access JWT expires. When
+    /// no home directory can be resolved the default is memory-only too.
+    #[serde(default = "default_gateway_state_path")]
+    pub state_path: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -330,6 +357,19 @@ pub struct GatewayTelemetryDestination {
     pub headers: Option<BTreeMap<String, String>>,
 }
 
+/// `~/.shunt/gateway-sessions.json` (`HOME`, falling back to `USERPROFILE` on
+/// Windows), or `None` — memory-only sessions — when neither is set. Unlike
+/// the account stores this never falls back to a working-directory-relative
+/// path: a default-on write should not land in whatever directory shunt
+/// happens to start from.
+fn default_gateway_state_path() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME")
+        .filter(|home| !home.is_empty())
+        .or_else(|| std::env::var_os("USERPROFILE").filter(|home| !home.is_empty()))
+        .map(std::path::PathBuf::from)
+        .map(|home| home.join(".shunt").join("gateway-sessions.json"))
+}
+
 fn default_gateway_jwt_secret_env() -> String {
     "SHUNT_GATEWAY_JWT_SECRET".to_string()
 }
@@ -343,6 +383,14 @@ fn default_gateway_token_ttl_seconds() -> u64 {
 }
 
 impl GatewayConfig {
+    /// The effective session state file: the configured (or defaulted) path,
+    /// with the empty string (`state_path = ""`) meaning memory-only.
+    pub fn session_state_path(&self) -> Option<&std::path::Path> {
+        self.state_path
+            .as_deref()
+            .filter(|path| !path.as_os_str().is_empty())
+    }
+
     pub fn resolve(&self) -> Result<crate::gateway::GatewayAuth, ConfigError> {
         let public_url = reqwest::Url::parse(self.public_url.trim()).map_err(|error| {
             ConfigError::InvalidGatewayPublicUrl {
@@ -1858,6 +1906,16 @@ impl Config {
             .unwrap_or(false)
     }
 
+    /// The effective storm-control initial admission allowance
+    /// (`[server.pool] ramp_initial_concurrency`), or `None` when no pool is
+    /// configured or the gate is disabled.
+    pub fn storm_ramp_initial(&self) -> Option<u32> {
+        self.server
+            .pool
+            .as_ref()
+            .and_then(PoolConfig::storm_ramp_initial)
+    }
+
     /// Whether the Codex Responses WebSocket v2 transport should be used for
     /// `provider`. Requires both the opt-in `websocket` flag and the ChatGPT/Codex
     /// backend: only that backend serves the `responses_websockets` v2 endpoint,
@@ -2183,7 +2241,7 @@ mod tests {
     #[test]
     fn pool_config_and_account_thresholds_parse_from_toml() {
         let pool: PoolConfig = figment::Figment::from(figment::providers::Toml::string(
-            "default_threshold = 0.85\nburn_rate_avoidance = true",
+            "default_threshold = 0.85\nburn_rate_avoidance = true\nramp_initial_concurrency = 4",
         ))
         .extract()
         .unwrap();
@@ -2191,6 +2249,12 @@ mod tests {
         assert_eq!(pool.default_threshold, Some(0.85));
         assert_eq!(pool.default_threshold_5h, None);
         assert!(pool.burn_rate_avoidance);
+        assert_eq!(pool.ramp_initial_concurrency, Some(4));
+        assert_eq!(
+            PoolConfig::default().ramp_initial_concurrency,
+            None,
+            "storm control defaults to disabled"
+        );
 
         let account: AccountConfig = figment::Figment::from(figment::providers::Toml::string(
             "name = \"backup\"\nthreshold = 0.5\nthreshold_fable = 0.4\npriority = 10\ndisabled = true",
@@ -2209,6 +2273,17 @@ mod tests {
         assert_eq!(bare.threshold, None);
         assert_eq!(bare.priority, 100, "serde default");
         assert!(!bare.disabled);
+    }
+
+    #[test]
+    fn storm_ramp_initial_treats_zero_and_absent_as_disabled() {
+        for (configured, expected) in [(None, None), (Some(0), None), (Some(5), Some(5))] {
+            let pool = PoolConfig {
+                ramp_initial_concurrency: configured,
+                ..Default::default()
+            };
+            assert_eq!(pool.storm_ramp_initial(), expected, "{configured:?}");
+        }
     }
 
     #[test]
@@ -2440,6 +2515,37 @@ mod tests {
     }
 
     #[test]
+    fn gateway_state_path_defaults_on_and_empty_string_disables() {
+        let parsed: GatewayConfig = figment::Figment::from(figment::providers::Toml::string(
+            "public_url = \"https://gateway.example\"",
+        ))
+        .extract()
+        .unwrap();
+        assert_eq!(parsed.state_path, super::default_gateway_state_path());
+        let default_path = parsed
+            .session_state_path()
+            .expect("test environments resolve a home directory");
+        assert!(default_path.ends_with(".shunt/gateway-sessions.json"));
+
+        let disabled: GatewayConfig = figment::Figment::from(figment::providers::Toml::string(
+            "public_url = \"https://gateway.example\"\nstate_path = \"\"",
+        ))
+        .extract()
+        .unwrap();
+        assert_eq!(disabled.session_state_path(), None);
+
+        let explicit: GatewayConfig = figment::Figment::from(figment::providers::Toml::string(
+            "public_url = \"https://gateway.example\"\nstate_path = \"/tmp/sessions.json\"",
+        ))
+        .extract()
+        .unwrap();
+        assert_eq!(
+            explicit.session_state_path(),
+            Some(std::path::Path::new("/tmp/sessions.json"))
+        );
+    }
+
+    #[test]
     fn gateway_config_fails_closed_and_resolves_valid_environment() {
         let suffix = std::process::id();
         let secret_env = format!("SHUNT_GATEWAY_CONFIG_SECRET_{suffix}");
@@ -2452,6 +2558,7 @@ mod tests {
             trust_forwarded_for: false,
             policies: None,
             telemetry: None,
+            state_path: None,
         };
 
         assert!(matches!(
@@ -2501,6 +2608,7 @@ mod tests {
             trust_forwarded_for: false,
             policies: None,
             telemetry: None,
+            state_path: None,
         };
         assert!(matches!(
             gateway.resolve(),
@@ -2544,6 +2652,7 @@ mod tests {
             trust_forwarded_for: false,
             policies: None,
             telemetry: None,
+            state_path: None,
         };
 
         let mut gateway = base.clone();

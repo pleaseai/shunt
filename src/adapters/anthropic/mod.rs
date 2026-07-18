@@ -153,10 +153,28 @@ async fn forward_claude_oauth(
     );
     let url = upstream_url(&state, &route, uri);
     let base_body = normalize_upstream_model(body, &route.upstream_model);
+    let ramp_initial = state.config.storm_ramp_initial();
+    let candidates = order.len();
     let mut last_response = None;
 
-    for index in order {
+    for (position, index) in order.into_iter().enumerate() {
         let account = &accounts[index];
+
+        // Storm control (issue #195, `AccountPool::admit_candidate`): a
+        // saturated identity rotates to the next candidate. On a relayed
+        // success the guard moves into the response body (`with_admission`),
+        // so the slot stays held until the stream actually finishes; on
+        // rotation it drops with the iteration.
+        let admission = match state.accounts.admit_candidate(
+            &route.provider,
+            account,
+            ramp_initial,
+            position,
+            candidates,
+        ) {
+            Some(admission) => admission,
+            None => continue,
+        };
         // The per-account refresh_lock serializes only credential refreshes for
         // one account: resolve_claude_account can refresh-on-read and write the
         // token back, and the explicit force_refresh in the RefreshRetry branch
@@ -225,8 +243,16 @@ async fn forward_claude_oauth(
         let status = upstream.status();
         match accounts::classify(status, upstream.headers()) {
             FailoverAction::Relay => {
-                state.accounts.mark_healthy(&route.provider, account);
-                return relay_response(&state, &route, upstream, Some(&account.name)).await;
+                // A relayed 4xx still clears the cooldown (the account answered)
+                // but only a success grows the storm-control allowance.
+                state
+                    .accounts
+                    .mark_healthy(&route.provider, account, status.is_success());
+                return relay_response(&state, &route, upstream, Some(&account.name))
+                    .await
+                    .map(|(status, response)| {
+                        (status, crate::adapters::with_admission(response, admission))
+                    });
             }
             FailoverAction::Rotate => {
                 let cooldown = if status == StatusCode::TOO_MANY_REQUESTS {
@@ -275,7 +301,7 @@ async fn forward_claude_oauth(
                 };
                 let retry_status = retry.status();
                 if retry_status.is_success() {
-                    state.accounts.mark_healthy(&route.provider, account);
+                    state.accounts.mark_healthy(&route.provider, account, true);
                 } else {
                     let cooldown = accounts::retry_after(retry.headers())
                         .unwrap_or(delay)
@@ -293,7 +319,11 @@ async fn forward_claude_oauth(
                         "Claude OAuth throttle retry did not succeed; cooling down account"
                     );
                 }
-                return relay_response(&state, &route, retry, Some(&account.name)).await;
+                return relay_response(&state, &route, retry, Some(&account.name))
+                    .await
+                    .map(|(status, response)| {
+                        (status, crate::adapters::with_admission(response, admission))
+                    });
             }
             FailoverAction::RefreshRetry => {
                 // account_is_static_store_token() reads the account file from
@@ -417,9 +447,13 @@ async fn forward_claude_oauth(
                 match accounts::classify(retry_status, retry.headers()) {
                     FailoverAction::Relay => {
                         if retry_status.is_success() {
-                            state.accounts.mark_healthy(&route.provider, account);
+                            state.accounts.mark_healthy(&route.provider, account, true);
                         }
-                        return relay_response(&state, &route, retry, Some(&account.name)).await;
+                        return relay_response(&state, &route, retry, Some(&account.name))
+                            .await
+                            .map(|(status, response)| {
+                                (status, crate::adapters::with_admission(response, admission))
+                            });
                     }
                     // Exhaustive rather than `_` so a new FailoverAction variant
                     // forces a decision here. RefreshRetry cannot recur (a 401 is

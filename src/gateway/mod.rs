@@ -3,6 +3,8 @@ mod device;
 pub mod jwt;
 pub mod managed;
 mod oauth;
+pub mod persist;
+pub mod refresh;
 pub mod store;
 
 use std::{collections::HashMap, sync::Arc};

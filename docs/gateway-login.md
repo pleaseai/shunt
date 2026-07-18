@@ -51,6 +51,7 @@ jwt_secret_env = "SHUNT_GATEWAY_JWT_SECRET" # default
 users_env = "SHUNT_GATEWAY_USERS"           # default
 token_ttl_seconds = 3600                     # default
 trust_forwarded_for = false                  # default
+# state_path = "~/.shunt/gateway-sessions.json"  # default; "" = memory-only sessions
 ```
 
 ```bash
@@ -84,14 +85,39 @@ a human-readable blocked notice, matching the reference gateway behavior.
 ## State and operational boundary
 
 Device grants, refresh tokens, and rate-limit counters are process-lifetime,
-in-memory stores. They survive a config hot reload but are not written to disk.
-Mutating operations remove expired device grants and idle rate-limit entries;
-both stores reject new admission at 4,096 live entries. Used refresh-token
-tombstones are retained for 30 days and capped at 64 per family, preserving
-bounded replay detection without process-lifetime growth. Restarting shunt
-invalidates outstanding device codes and refresh tokens. Existing access JWTs
-remain valid until expiry, after which users must sign in again. File persistence and multi-instance
-coordination are follow-ups; M-A deliberately adds no database.
+in-memory stores that survive a config hot reload. Mutating operations remove
+expired device grants and idle rate-limit entries; both stores reject new
+admission at 4,096 live entries. Used refresh-token tombstones are retained
+for 30 days and capped at 64 per family, preserving bounded replay detection
+without process-lifetime growth; active refresh tokens that go 30 days without
+rotating expire the same way.
+
+The refresh-token store additionally persists to `state_path` by default
+(`~/.shunt/gateway-sessions.json` — the directory shunt's account stores
+already use; issue #194), mirroring the pool quota cache
+(`src/state_persist.rs`): the token endpoint writes the store — atomically,
+owner-only permissions (0600 on Unix) — after every grant, rotation, or replay
+revocation, before the response is sent, and boot restores it before serving,
+so a restart keeps managed logins alive. Tokens are keyed by SHA-256 both in
+memory and on disk (they are 256-bit random, so an unsalted hash suffices), so
+the file never holds a usable credential — only token hashes, rotation-family
+ids, timestamps, and the signed-in identities. Reading is best-effort: a
+missing, corrupt, or version-mismatched file falls back to memory-only
+behavior, never a boot failure. Setting `state_path = ""` keeps sessions
+memory-only — then restarting shunt invalidates outstanding refresh tokens,
+and existing access JWTs remain valid until expiry, after which users must
+sign in again; an environment with no resolvable home directory behaves the
+same. Device grants and rate-limit counters stay memory-only by design (a
+restart mid-login only costs that attempt). The state file is single-process;
+sharing grants and replay detection between concurrent gateway instances
+remains a follow-up, and this change deliberately adds no database.
+
+Refresh grants mint tokens from the identity stored with the session and do
+not re-check the `users_env` approval list, so removing a user from
+`users_env` does not end an existing session — with persistence default-on,
+the session survives up to the 30-day idle horizon. To deprovision a user
+immediately, also delete the state file (or set `state_path = ""`) and
+restart.
 
 Use TLS for a non-loopback deployment. By default `/device` rate limiting uses
 the socket peer and ignores `X-Forwarded-For` and `X-Real-IP`. Set
@@ -115,3 +141,9 @@ environment push, and `availableModels` enforcement. See the
 
 - **M-C:** authenticated inbound OTLP `POST /v1/{metrics,logs,traces}` sink and
   optional verbatim relay.
+- **Multi-instance session sharing:** move refresh sessions (and device grants)
+  behind a shared backend (e.g. PostgreSQL) that owns the state, with atomic
+  token rotation, so concurrent gateway instances agree on grants and replay
+  detection. The store's narrow `issue`/`rotate`/`export`/`import` surface and
+  epoch-based, hash-keyed records are designed to make that a contained
+  swap; the `state_path` file stays the single-process default.

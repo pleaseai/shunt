@@ -1,10 +1,10 @@
-//! Process-lifetime stores for OAuth device grants, refresh tokens, and browser
-//! verification limits.
+//! Process-lifetime stores for OAuth device grants and browser verification
+//! limits, plus the [`GatewayStores`] bundle that also carries the refresh
+//! token store ([`super::refresh`]).
 //!
-//! Mutating operations opportunistically sweep expired or idle state. Used
-//! refresh-token tombstones are retained for 30 days, capped at 64 per family:
-//! replay within that bounded horizon revokes the active family, while older
-//! tokens still fail as `invalid_grant` without keeping unbounded history.
+//! Mutating operations opportunistically sweep expired or idle state. Device
+//! grants and rate-limit counters are deliberately memory-only: they are
+//! short-lived, so a restart only costs an in-flight login attempt.
 
 use std::{
     collections::HashMap,
@@ -12,15 +12,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::admin::session::random_id;
-
-use super::approval::Identity;
+use super::{approval::Identity, refresh::RefreshTokenStore};
 
 pub const DEVICE_CODE_TTL: Duration = Duration::from_secs(600);
 pub const INITIAL_POLL_INTERVAL: Duration = Duration::from_secs(5);
 const SLOW_DOWN_INCREMENT: Duration = Duration::from_secs(5);
-const REFRESH_TOMBSTONE_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
-const MAX_TOMBSTONES_PER_FAMILY: usize = 64;
 const MAX_DEVICE_GRANTS: usize = 4096;
 const MAX_RATE_LIMIT_IDENTITIES: usize = 4096;
 
@@ -179,112 +175,6 @@ fn sweep_expired_grants(state: &mut DeviceGrantState, now: Instant) {
     }
 }
 
-#[derive(Clone)]
-struct RefreshEntry {
-    identity: Identity,
-    family: String,
-    inactive_since: Option<Instant>,
-}
-
-#[derive(Default)]
-pub struct RefreshTokenStore {
-    tokens: Mutex<HashMap<String, RefreshEntry>>,
-}
-
-impl RefreshTokenStore {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn issue(&self, identity: Identity) -> String {
-        self.issue_at(identity, Instant::now())
-    }
-
-    fn issue_at(&self, identity: Identity, now: Instant) -> String {
-        let token = random_id();
-        let family = random_id();
-        let mut tokens = self
-            .tokens
-            .lock()
-            .expect("gateway refresh-token lock poisoned");
-        sweep_refresh_tokens(&mut tokens, now);
-        tokens.insert(
-            token.clone(),
-            RefreshEntry {
-                identity,
-                family,
-                inactive_since: None,
-            },
-        );
-        token
-    }
-
-    pub fn rotate(&self, presented: &str) -> Option<(Identity, String)> {
-        self.rotate_at(presented, Instant::now())
-    }
-
-    fn rotate_at(&self, presented: &str, now: Instant) -> Option<(Identity, String)> {
-        let mut tokens = self
-            .tokens
-            .lock()
-            .expect("gateway refresh-token lock poisoned");
-        sweep_refresh_tokens(&mut tokens, now);
-        let entry = tokens.get(presented)?.clone();
-        if entry.inactive_since.is_some() {
-            revoke_family(&mut tokens, &entry.family, now);
-            sweep_refresh_tokens(&mut tokens, now);
-            return None;
-        }
-        if let Some(old) = tokens.get_mut(presented) {
-            old.inactive_since = Some(now);
-        }
-        let next = random_id();
-        tokens.insert(
-            next.clone(),
-            RefreshEntry {
-                identity: entry.identity.clone(),
-                family: entry.family,
-                inactive_since: None,
-            },
-        );
-        sweep_refresh_tokens(&mut tokens, now);
-        Some((entry.identity, next))
-    }
-}
-
-fn revoke_family(tokens: &mut HashMap<String, RefreshEntry>, family: &str, now: Instant) {
-    for entry in tokens.values_mut().filter(|entry| entry.family == family) {
-        entry.inactive_since.get_or_insert(now);
-    }
-}
-
-fn sweep_refresh_tokens(tokens: &mut HashMap<String, RefreshEntry>, now: Instant) {
-    tokens.retain(|_, entry| {
-        entry
-            .inactive_since
-            .is_none_or(|inactive| now.saturating_duration_since(inactive) < REFRESH_TOMBSTONE_TTL)
-    });
-
-    let mut by_family: HashMap<String, Vec<(String, Instant)>> = HashMap::new();
-    for (token, entry) in tokens.iter() {
-        if let Some(since) = entry.inactive_since {
-            by_family
-                .entry(entry.family.clone())
-                .or_default()
-                .push((token.clone(), since));
-        }
-    }
-    for tombstones in by_family.values_mut() {
-        if tombstones.len() > MAX_TOMBSTONES_PER_FAMILY {
-            tombstones.sort_unstable_by_key(|(_, since)| *since);
-            let remove_count = tombstones.len() - MAX_TOMBSTONES_PER_FAMILY;
-            for (token, _) in tombstones.drain(..remove_count) {
-                tokens.remove(&token);
-            }
-        }
-    }
-}
-
 struct RateLimitEntry {
     window_start: Instant,
     count: u32,
@@ -425,22 +315,6 @@ mod tests {
     }
 
     #[test]
-    fn refresh_rotates_and_reuse_revokes_the_family() {
-        let store = RefreshTokenStore::new();
-        let first = store.issue(identity());
-        let (rotated_identity, second) = store.rotate(&first).expect("first rotation");
-        assert_eq!(rotated_identity, identity());
-        assert_ne!(first, second);
-
-        assert!(store.rotate(&first).is_none(), "old token is single-use");
-        assert!(
-            store.rotate(&second).is_none(),
-            "reuse detection revokes the newly rotated token"
-        );
-        assert!(store.rotate("unknown").is_none());
-    }
-
-    #[test]
     fn creating_a_grant_sweeps_abandoned_expired_grants() {
         let store = DeviceGrantStore::new();
         let now = Instant::now();
@@ -457,31 +331,6 @@ mod tests {
         assert_eq!(state.by_user_code.len(), 1);
         assert!(state.grants.contains_key("current"));
         assert!(!state.by_user_code.contains_key("BCDF-GHJK"));
-    }
-
-    #[test]
-    fn refresh_tombstones_are_time_and_count_bounded() {
-        let store = RefreshTokenStore::new();
-        let now = Instant::now();
-        let mut active = store.issue_at(identity(), now);
-        for seconds in 1..=MAX_TOMBSTONES_PER_FAMILY + 2 {
-            active = store
-                .rotate_at(&active, now + Duration::from_secs(seconds as u64))
-                .expect("active token rotates")
-                .1;
-        }
-        assert!(store.tokens.lock().unwrap().len() <= MAX_TOMBSTONES_PER_FAMILY + 1);
-
-        let after_ttl = now + REFRESH_TOMBSTONE_TTL + Duration::from_secs(100);
-        let unrelated = store.issue_at(identity(), after_ttl);
-        let tokens = store.tokens.lock().unwrap();
-        assert_eq!(
-            tokens.len(),
-            2,
-            "old tombstones are swept; active tokens remain"
-        );
-        assert!(tokens.contains_key(&active));
-        assert!(tokens.contains_key(&unrelated));
     }
 
     #[test]

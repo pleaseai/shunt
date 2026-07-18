@@ -123,6 +123,7 @@ default_threshold_fable = 0.85
 burn_rate_avoidance = true   # avoid accounts projected to hit a threshold before reset
 usage_refresh_seconds = 300  # reconcile out-of-band usage for refreshable accounts
 state_path = "shunt-state.json"  # persist quota across restarts (warm start)
+ramp_initial_concurrency = 2 # storm control: slow-start a freshly switched account
 
 [[providers.anthropic.accounts]]
 name = "primary"
@@ -141,7 +142,7 @@ disabled = true              # kept configured, never selected
 - **バーンレートの余裕（headroom）。** 各ウィンドウの使用率とリセット時刻から（ウィンドウ長は 5 時間と 7 日に固定されています）、shunt は観測された平均ペースでソフトしきい値に達するまでの時間から、ウィンドウがリセットされるまでの時間を差し引いて予測します。余裕がプラスであれば、そのアカウントは現在のペースでもリセットまで持ちこたえます。同じ `priority` の利用可能なアカウントは、余裕が大きい順に並びます。観測されていないウィンドウは無制限の余裕として扱われます。
 - **予測的な回避。** `burn_rate_avoidance = true` にすると、予測された余裕がマイナスのアカウントはクォータに近いものとして扱われ、しきい値に達する*前に*ローテーションで外されます。デフォルトはオフです — 余裕による順序付け自体は、この設定に関係なく行われます。
 - **全アカウント接近時のガード。** すべてのアカウントがソフトしきい値を超えている（または使い切ると予測される）場合でも、プールが空になることはありません。接近しているアカウントは余裕が大きい順に提供され、`hard_threshold` 以上のアカウントは引き続き最後にソートされ、その後にクールダウン中のアカウントだけが続きます。
-- **適用範囲。** クォータ関連のノブは Claude（Anthropic）プールにのみ作用します — Codex バックエンドはクォータヘッダーを送らないため、[Codex プール](/ja/guides/codex-multi-account/)ではこれらは無効ですが、`priority` と `disabled` は引き続き適用されます。
+- **適用範囲。** クォータ関連のノブは両方のプールファミリーに作用します: このプールは `anthropic-ratelimit-unified-*` ヘッダーから、[Codex プール](/ja/guides/codex-multi-account/)は報告された `x-codex-*` 5h/7d ウィンドウから動作します（issue #195）。Codex には Fable スコープの `7d_oi` ウィンドウがないため `default_threshold_fable` はそこでは無効ですが、`priority` と `disabled` はどこでも適用されます。
 - 管理プールエンドポイント（`GET /admin/pool`）は、各アカウントの `priority`、`disabled` フラグ、そして `[server.pool]` が設定されている場合は現在の余裕予測（秒単位）を報告します。ダッシュボードの状態列は無効化されたアカウントを示します。
 
 ## Usage-API との突き合わせ
@@ -205,8 +206,8 @@ Claude Code は、文字列値の `metadata.user_id` の中にアカウントメ
 
 これらの起動時チェックは、OAuth ベアラーがオリジン外へ、あるいは平文で送られるのを防ぎます。HTTPS とホストのチェックは**ループバックホストでは緩和**されます（`localhost`、`127.0.0.1`、`[::1]` など）。ループバックの `base_url` は平文 HTTP と任意のホストを使えるため、ローカルのデバッグプロキシやモックがトラフィックを受け取れます — ベアラーがオペレーターのマシンから出ることはありません。非ループバックのホストには常に HTTPS + `anthropic.com` が求められます。共有デプロイでは、`claude_oauth` がゲートウェイ所有の認証情報を消費するため、[`[server.auth]`](/ja/guides/shared-gateway/#インバウンドのクライアントトークン) も設定してください。クライアントは、すでに送っている `ANTHROPIC_AUTH_TOKEN` で認証されます（クライアントトークンは `x-shunt-token`、`x-api-key` と並んで `Authorization: Bearer` でも受け付けられます）— プール専用ゲートウェイなら `ANTHROPIC_CUSTOM_HEADERS` の行は不要です。
 
-## 残っているフォローアップ
+## ストーム制御（storm control）
 
-- **ストーム制御（storm-control）:** 切り替え直後のアカウントの並行度を徐々に上げる処理は今後のフォローアップであり、未実装です。
+`[server.pool] ramp_initial_concurrency`（デフォルトは無効）を設定すると、アカウントアイデンティティごとの並行受け入れをスロースタートのランプでゲートします。これにより、フェイルオーバーの切り替えで、進行中のすべてのリクエストが切り替え直後のアカウントに一度に殺到することを防げます。トラフィックを受け始めたばかりのアイデンティティは、設定された数までの並行リクエストしか受け入れません。成功レスポンスごとに許容量が倍増し、フェイルオーバーはランプをリセットし、拒否されたリクエストは選択順で次のアカウントに回されます（最後の候補は常に試行されます）。[`[server.pool]`](/ja/reference/configuration/#serverpoolオプション) を参照してください。
 
 実装の挙動は [KarpelesLab/teamclaude](https://github.com/KarpelesLab/teamclaude) と、出荷されている Claude Code バイナリを参考にしています。shunt は teamclaude へのランタイム依存を持ちません。
