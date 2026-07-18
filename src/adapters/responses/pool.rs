@@ -78,29 +78,15 @@ pub(super) async fn forward_chatgpt_oauth(
     for (position, index) in order.into_iter().enumerate() {
         let account = &accounts_config[index];
 
-        // Storm control (issue #195, `AccountPool::admit_candidate`): a
-        // saturated identity rotates to the next candidate. On a relayed
-        // success the guard moves into the response body (`with_admission`),
-        // so the slot stays held until the stream actually finishes; on
-        // rotation it drops with the iteration.
-        let admission = match state.accounts.admit_candidate(
-            &route.provider,
-            account,
-            ramp_initial,
-            position,
-            candidates,
-        ) {
-            Some(admission) => admission,
-            None => continue,
-        };
-
-        // Resolve the account's credential without the account-pool refresh lock;
-        // the auth store returns valid tokens concurrently and single-flights any
-        // expired-token refresh internally. A resolution failure cools the
-        // account down and rotates to the next account.
-        let credential = match resolve_or_cooldown(&state, &route, account).await {
-            Some(credential) => credential,
-            None => continue,
+        // Storm-control admission + credential resolution (issue #195): a
+        // saturated identity or failed auth rotates to the next candidate
+        // (see `admit_and_resolve`); on a relayed success the guard moves
+        // into the response body (`with_admission`), so the slot stays held
+        // until the stream actually finishes.
+        let Some((admission, credential)) =
+            admit_and_resolve(&state, &route, account, ramp_initial, position, candidates).await
+        else {
+            continue;
         };
 
         // Prefixing the pool key with the account name is the key point of
@@ -360,6 +346,33 @@ pub(super) fn rotate_cooldown(
     } else {
         Duration::from_secs(30)
     }
+}
+
+/// Shared per-candidate prelude of the outbound pool and inbound passthrough
+/// loops: storm-control admission for the candidate
+/// ([`crate::accounts::AccountPool::admit_candidate`]), then credential
+/// resolution ([`resolve_or_cooldown`]). `None` rotates to the next candidate —
+/// the identity is either saturated or failed auth (already cooled down). The
+/// returned guard (present when storm control is enabled) must be held for the
+/// whole account attempt; on a relayed success move it into the response body
+/// (`with_admission`) so the slot stays held until the stream finishes.
+pub(super) async fn admit_and_resolve(
+    state: &AppState,
+    route: &Route,
+    account: &AccountConfig,
+    ramp_initial: Option<u32>,
+    position: usize,
+    candidates: usize,
+) -> Option<(Option<accounts::AdmissionGuard>, Credential)> {
+    let admission = state.accounts.admit_candidate(
+        &route.provider,
+        account,
+        ramp_initial,
+        position,
+        candidates,
+    )?;
+    let credential = resolve_or_cooldown(state, route, account).await?;
+    Some((admission, credential))
 }
 
 /// Resolve one Codex/ChatGPT OAuth account's credential. Valid stored tokens

@@ -19,7 +19,7 @@ use crate::{
 use super::{
     error::own_error,
     pool::{
-        classify_first, classify_retry, force_refresh_or_cooldown, resolve_or_cooldown,
+        admit_and_resolve, classify_first, classify_retry, force_refresh_or_cooldown,
         with_account_header, FirstOutcome, RetryOutcome,
     },
     request::responses_url,
@@ -138,29 +138,15 @@ async fn forward_codex_passthrough(
     for (position, index) in order.into_iter().enumerate() {
         let account = &accounts_config[index];
 
-        // Storm control (issue #195, `AccountPool::admit_candidate`): defer a
-        // saturated identity to the next candidate — mirrors the translating
-        // outbound path (`forward_chatgpt_oauth`). On a relayed success the
-        // guard moves into the response body (`with_admission`) so the slot
-        // stays held until the stream finishes.
-        let admission = match state.accounts.admit_candidate(
-            &route.provider,
-            account,
-            ramp_initial,
-            position,
-            candidates,
-        ) {
-            Some(admission) => admission,
-            None => continue,
-        };
-
-        // Resolve the account's credential without the account-pool refresh lock;
-        // the shared auth store returns valid tokens concurrently and
-        // single-flights expired-token refreshes internally. A resolution
-        // failure cools the account down and rotates to the next account.
-        let credential = match resolve_or_cooldown(&state, &route, account).await {
-            Some(credential) => credential,
-            None => continue,
+        // Storm-control admission + credential resolution shared with the
+        // translating outbound path (issue #195, `admit_and_resolve`): a
+        // saturated identity or failed auth rotates to the next candidate; on
+        // a relayed success the guard moves into the response body
+        // (`with_admission`) so the slot stays held until the stream finishes.
+        let Some((admission, credential)) =
+            admit_and_resolve(&state, &route, account, ramp_initial, position, candidates).await
+        else {
+            continue;
         };
 
         let upstream = match passthrough_send(
