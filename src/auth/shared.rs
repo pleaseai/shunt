@@ -10,10 +10,7 @@ use std::{
     collections::HashMap,
     env, fs, io,
     path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Mutex, OnceLock,
-    },
+    sync::{Mutex, OnceLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -25,7 +22,6 @@ use sha2::{Digest, Sha256};
 use crate::config::AccountConfig;
 
 const EXPIRY_BUFFER: Duration = Duration::from_secs(5 * 60);
-static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 /// A freshly generated PKCE verifier/challenge plus an independent OAuth state.
 pub(crate) struct PkceChallenge {
@@ -146,56 +142,10 @@ pub(crate) fn token_refresh_client() -> reqwest::Client {
 }
 
 pub(crate) fn write_auth_file_atomic(path: &Path, value: &Value) -> io::Result<()> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let temp = parent.join(format!(
-        ".{}.tmp-{}-{}",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("auth"),
-        std::process::id(),
-        counter
-    ));
     let bytes = serde_json::to_vec_pretty(value)?;
-    // The temp file must be born private: chmod-after-write would leave a
-    // window where the tokens sit at the umask default on multi-user hosts.
-    if let Err(error) = write_private(&temp, &bytes).and_then(|()| fs::rename(&temp, path)) {
-        let _ = fs::remove_file(&temp);
-        return Err(error);
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    // `mode(0o600)` only applies when the file is created, so a stale or
-    // pre-created temp at this predictable path would keep its old mode.
-    // Remove any leftover, then require exclusive creation: if something
-    // recreates the path in between, fail instead of writing tokens into a
-    // file someone else owns.
-    let _ = fs::remove_file(path);
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)?;
-    file.write_all(bytes)?;
-    file.sync_all()
-}
-
-#[cfg(not(unix))]
-fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    use std::io::Write;
-
-    let _ = fs::remove_file(path);
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)?;
-    file.write_all(bytes)?;
-    file.sync_all()
+    // Deliberately the no-mkdir entry point: a missing credential directory
+    // stays an error rather than being created with umask-default permissions.
+    crate::atomic_file::write_private_atomic_in_existing_dir(path, &bytes)
 }
 
 /// Validate a store account name: non-empty and `[a-z0-9-]+` only. Shared by the
@@ -577,7 +527,10 @@ impl Drop for EnvVarGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
 
     fn temp_dir(tag: &str) -> PathBuf {
         std::env::temp_dir().join(format!(

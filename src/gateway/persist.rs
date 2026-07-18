@@ -132,6 +132,11 @@ pub async fn save_if_dirty(state: &AppState) {
     // Serialization + the filesystem write are blocking; keep them off the
     // async worker. The snapshot itself briefly locks the store in the task.
     let result = tokio::task::spawn_blocking(move || {
+        // The gate spans export through the completed write: `take_dirty`
+        // above only claims the flag, so without it two concurrent grants
+        // could export in one order and rename in the other, persisting a
+        // pre-revocation snapshot over a newer one.
+        let _gate = stores.refresh_tokens.persist_gate();
         let persisted = PersistedSessions {
             version: STATE_VERSION,
             refresh_tokens: stores

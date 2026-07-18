@@ -18,7 +18,7 @@ use std::{
     collections::HashMap,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Mutex,
+        Mutex, MutexGuard,
     },
 };
 
@@ -83,6 +83,9 @@ pub struct RefreshTokenStore {
     /// Set by mutations, cleared by [`Self::take_dirty`]; gates persistence so
     /// non-mutating polls never rewrite the state file.
     dirty: AtomicBool,
+    /// Serializes the persistence layer's export-then-write cycles; see
+    /// [`Self::persist_gate`].
+    persist_gate: Mutex<()>,
 }
 
 impl RefreshTokenStore {
@@ -207,6 +210,18 @@ impl RefreshTokenStore {
     /// retries it.
     pub fn mark_dirty(&self) {
         self.dirty.store(true, Ordering::Relaxed);
+    }
+
+    /// Serialize persistence snapshot-and-write cycles: hold the returned
+    /// guard from [`Self::export`] until the state file write completes.
+    /// [`Self::take_dirty`] only claims the flag — without this gate two
+    /// concurrent saves could export in one order and rename their files in
+    /// the other, leaving a pre-revocation snapshot on disk that would
+    /// resurrect a replay-revoked token at the next boot.
+    pub fn persist_gate(&self) -> MutexGuard<'_, ()> {
+        self.persist_gate
+            .lock()
+            .expect("gateway refresh persist gate poisoned")
     }
 }
 
