@@ -1,0 +1,35 @@
+site/src/content/docs/ko/guides/model-discovery.md
+  s_6a3572ee968ace::t_5341d300fa5a19 6
+site/src/content/docs/guides/model-discovery.md
+  s_6a3572ee968ace::t_d83368642e14e7 6
+site/src/content/docs/ja/reference/configuration.md
+  s_6a3572ee968ace::t_4cc59ffbdd78e8 153
+docs/m3-discovery.md
+  s_6a3572ee968ace::t_72e69d5624e41d 58-60
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_6a3572ee968ace::t_82fe295b422b01 153
+site/src/content/docs/zh-cn/guides/model-discovery.md
+  s_6a3572ee968ace::t_32a01c12e31aae 6
+site/src/content/docs/ja/guides/model-discovery.md
+  s_6a3572ee968ace::t_c43f1eb770aa71 6
+site/src/content/docs/ko/reference/configuration.md
+  s_6a3572ee968ace::t_48ae4801fe73c3 165
+site/src/content/docs/reference/configuration.md
+  s_6a3572ee968ace::t_ebaf1eca4b030b 250
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "f484674fc53c5d853360c6472f5e72584f1fee95",
+  "prompts": {},
+  "sessions": {
+    "s_6a3572ee968ace": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "897ec8f4-4acd-4637-8fb1-f479e50984fd",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
