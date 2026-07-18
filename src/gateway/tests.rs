@@ -224,15 +224,29 @@ async fn state_path_keeps_refresh_sessions_across_a_restart() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let refresh_token = token["refresh_token"].as_str().unwrap();
+    let refresh_r1 = token["refresh_token"].as_str().unwrap().to_string();
     assert!(
         state_file.exists(),
         "the token grant writes the state file before responding"
     );
+
+    // Rotate R1 -> R2 before the "restart" so the persisted file actually
+    // contains a replay tombstone (R1) alongside the new active token (R2).
+    let (status, rotated) = json_response(
+        router.clone(),
+        form_request(
+            "/oauth/token",
+            format!("grant_type=refresh_token&refresh_token={refresh_r1}&client_id=claude-code"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let refresh_r2 = rotated["refresh_token"].as_str().unwrap().to_string();
+
     let on_disk = std::fs::read_to_string(&state_file).expect("read state file");
     assert!(
-        !on_disk.contains(refresh_token),
-        "the opaque refresh token must never be written to disk"
+        !on_disk.contains(&refresh_r1) && !on_disk.contains(&refresh_r2),
+        "the opaque refresh tokens must never be written to disk"
     );
 
     // "Restart": a fresh router owns fresh in-memory stores; restore from disk.
@@ -242,7 +256,7 @@ async fn state_path_keeps_refresh_sessions_across_a_restart() {
         restarted.clone(),
         form_request(
             "/oauth/token",
-            format!("grant_type=refresh_token&refresh_token={refresh_token}&client_id=claude-code"),
+            format!("grant_type=refresh_token&refresh_token={refresh_r2}&client_id=claude-code"),
         ),
     )
     .await;
@@ -259,14 +273,17 @@ async fn state_path_keeps_refresh_sessions_across_a_restart() {
             .count()
             == 3
     );
-    assert_ne!(refreshed["refresh_token"], refresh_token);
+    assert_ne!(refreshed["refresh_token"], refresh_r2);
 
-    // Replaying the pre-restart token is still caught after the restore.
+    // Replaying R1 — the tombstone created *before* the restart — is still
+    // caught after the restore, which proves the tombstone itself (not just
+    // the active token) survived the JSON round trip through the state file.
+    // This also revokes the family, which is correct rotation semantics.
     let (status, error) = json_response(
         restarted,
         form_request(
             "/oauth/token",
-            format!("grant_type=refresh_token&refresh_token={refresh_token}&client_id=claude-code"),
+            format!("grant_type=refresh_token&refresh_token={refresh_r1}&client_id=claude-code"),
         ),
     )
     .await;

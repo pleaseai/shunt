@@ -213,13 +213,24 @@ mod tests {
     fn sample_sessions() -> PersistedSessions {
         PersistedSessions {
             version: STATE_VERSION,
-            refresh_tokens: vec![PersistedRefreshToken {
-                token_sha256: "a".repeat(64),
-                identity: identity(),
-                family: "family-a".into(),
-                inactive_since: None,
-                issued_at: 1_000_000,
-            }],
+            refresh_tokens: vec![
+                PersistedRefreshToken {
+                    token_sha256: "a".repeat(64),
+                    identity: identity(),
+                    family: "family-a".into(),
+                    inactive_since: None,
+                    issued_at: 1_000_000,
+                },
+                // A replay tombstone in the same family: superseded by rotation,
+                // but retained so a later replay of it is still caught.
+                PersistedRefreshToken {
+                    token_sha256: "b".repeat(64),
+                    identity: identity(),
+                    family: "family-a".into(),
+                    inactive_since: Some(1_000_500),
+                    issued_at: 1_000_000,
+                },
+            ],
         }
     }
 
@@ -247,13 +258,23 @@ mod tests {
 
         let loaded = load(&path).expect("load succeeds").expect("file present");
         assert_eq!(loaded.version, STATE_VERSION);
-        assert_eq!(loaded.refresh_tokens.len(), 1);
+        assert_eq!(loaded.refresh_tokens.len(), 2);
         let record = &loaded.refresh_tokens[0];
         assert_eq!(record.token_sha256, "a".repeat(64));
         assert_eq!(record.identity, identity());
         assert_eq!(record.family, "family-a");
         assert_eq!(record.inactive_since, None);
         assert_eq!(record.issued_at, 1_000_000);
+        let tombstone = &loaded.refresh_tokens[1];
+        assert_eq!(tombstone.token_sha256, "b".repeat(64));
+        assert_eq!(tombstone.identity, identity());
+        assert_eq!(tombstone.family, "family-a");
+        assert_eq!(
+            tombstone.inactive_since,
+            Some(1_000_500),
+            "a replay tombstone's inactive_since must round-trip through JSON"
+        );
+        assert_eq!(tombstone.issued_at, 1_000_000);
         remove_test_dir(&path);
     }
 
@@ -266,6 +287,47 @@ mod tests {
         save(&path, &sample_sessions()).expect("save succeeds");
         let mode = fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
+        remove_test_dir(&path);
+    }
+
+    #[tokio::test]
+    async fn failed_save_keeps_sessions_dirty_for_retry() {
+        let path = temp_file("save-failure");
+        fs::create_dir(&path).expect("target directory makes rename fail");
+
+        let secret_env = format!("SHUNT_GATEWAY_TEST_PERSIST_SECRET_{}", std::process::id());
+        let users_env = format!("SHUNT_GATEWAY_TEST_PERSIST_USERS_{}", std::process::id());
+        std::env::set_var(&secret_env, "0123456789abcdef0123456789abcdef");
+        std::env::set_var(&users_env, "dev@example.com:password");
+
+        let mut config = crate::config::Config::default();
+        config.server.gateway = Some(crate::config::GatewayConfig {
+            public_url: "https://gateway.example".into(),
+            jwt_secret_env: secret_env.clone(),
+            users_env: users_env.clone(),
+            token_ttl_seconds: 3600,
+            trust_forwarded_for: false,
+            state_path: Some(path.clone()),
+        });
+        let state = AppState::new(config, reqwest::Client::new()).expect("gateway config resolves");
+
+        state.gateway_stores.refresh_tokens.issue(identity());
+
+        save_if_dirty(&state).await;
+
+        assert!(
+            state.gateway_stores.refresh_tokens.take_dirty(),
+            "failed save must be retried"
+        );
+        let entries = fs::read_dir(path.parent().unwrap())
+            .expect("read test directory")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("read entries");
+        assert_eq!(entries.len(), 1, "failed save must clean up its temp file");
+        assert_eq!(entries[0].path(), path);
+
+        std::env::remove_var(&secret_env);
+        std::env::remove_var(&users_env);
         remove_test_dir(&path);
     }
 

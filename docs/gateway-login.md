@@ -51,6 +51,7 @@ jwt_secret_env = "SHUNT_GATEWAY_JWT_SECRET" # default
 users_env = "SHUNT_GATEWAY_USERS"           # default
 token_ttl_seconds = 3600                     # default
 trust_forwarded_for = false                  # default
+# state_path = "~/.shunt/gateway-sessions.json"  # default; "" = memory-only sessions
 ```
 
 ```bash
@@ -95,21 +96,28 @@ The refresh-token store additionally persists to `state_path` by default
 (`~/.shunt/gateway-sessions.json` — the directory shunt's account stores
 already use; issue #194), mirroring the pool quota cache
 (`src/state_persist.rs`): the token endpoint writes the store — atomically,
-owner-only permissions — after every grant, rotation, or replay revocation,
-before the response is sent, and boot restores it before serving, so a restart
-keeps managed logins alive. Tokens are keyed by SHA-256 both in memory and on
-disk (they are 256-bit random, so an unsalted hash suffices), so the file
-never holds a usable credential — only token hashes, rotation-family ids,
-timestamps, and the signed-in identities. Reading is best-effort: a missing,
-corrupt, or version-mismatched file falls back to memory-only behavior, never
-a boot failure. Setting `state_path = ""` keeps sessions memory-only — then
-restarting shunt invalidates outstanding refresh tokens, and existing access
-JWTs remain valid until expiry, after which users must sign in again; an
-environment with no resolvable home directory behaves the same. Device grants
-and rate-limit counters stay memory-only by design (a restart mid-login only
-costs that attempt). The state file is single-process; sharing grants and
-replay detection between concurrent gateway instances remains a follow-up, and
-this change deliberately adds no database.
+owner-only permissions (0600 on Unix) — after every grant, rotation, or replay
+revocation, before the response is sent, and boot restores it before serving,
+so a restart keeps managed logins alive. Tokens are keyed by SHA-256 both in
+memory and on disk (they are 256-bit random, so an unsalted hash suffices), so
+the file never holds a usable credential — only token hashes, rotation-family
+ids, timestamps, and the signed-in identities. Reading is best-effort: a
+missing, corrupt, or version-mismatched file falls back to memory-only
+behavior, never a boot failure. Setting `state_path = ""` keeps sessions
+memory-only — then restarting shunt invalidates outstanding refresh tokens,
+and existing access JWTs remain valid until expiry, after which users must
+sign in again; an environment with no resolvable home directory behaves the
+same. Device grants and rate-limit counters stay memory-only by design (a
+restart mid-login only costs that attempt). The state file is single-process;
+sharing grants and replay detection between concurrent gateway instances
+remains a follow-up, and this change deliberately adds no database.
+
+Refresh grants mint tokens from the identity stored with the session and do
+not re-check the `users_env` approval list, so removing a user from
+`users_env` does not end an existing session — with persistence default-on,
+the session survives up to the 30-day idle horizon. To deprovision a user
+immediately, also delete the state file (or set `state_path = ""`) and
+restart.
 
 Use TLS for a non-loopback deployment. By default `/device` rate limiting uses
 the socket peer and ignores `X-Forwarded-For` and `X-Real-IP`. Set
