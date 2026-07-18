@@ -5,11 +5,14 @@ use axum::{
     Router,
 };
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 
 use crate::{
     config::{
-        Config, GatewayConfig, GatewayOidcConfig, InboundAuthConfig, ModelConfig, RouteConfig,
+        Config, GatewayConfig, GatewayOidcConfig, GatewayPolicyConfig, GatewayPolicyMatch,
+        GatewayTelemetryConfig, GatewayTelemetryDestination, InboundAuthConfig, ModelConfig,
+        RouteConfig,
     },
     server::{build_router, AppState},
 };
@@ -36,6 +39,8 @@ impl GatewayEnv {
             users_env: users_env.clone(),
             token_ttl_seconds: 3600,
             trust_forwarded_for: false,
+            policies: None,
+            telemetry: None,
             state_path: None,
             oidc: None,
         });
@@ -102,6 +107,39 @@ async fn html_response(router: Router, request: Request<Body>) -> (StatusCode, S
 
 fn get_request(path: &str) -> Request<Body> {
     Request::builder().uri(path).body(Body::empty()).unwrap()
+}
+
+fn policy(emails: Option<Vec<&str>>, cli: impl Into<toml::Value>) -> GatewayPolicyConfig {
+    GatewayPolicyConfig {
+        matcher: emails.map(|emails| GatewayPolicyMatch {
+            emails: Some(emails.into_iter().map(str::to_string).collect()),
+        }),
+        cli: cli.into(),
+    }
+}
+
+fn gateway_bearer(email: &str) -> String {
+    jwt::mint(
+        &Identity {
+            sub: email.to_string(),
+            email: email.to_string(),
+            name: email.split('@').next().unwrap_or(email).to_string(),
+        },
+        "https://gateway.example",
+        b"0123456789abcdef0123456789abcdef",
+        3600,
+    )
+}
+
+fn managed_request(bearer: Option<&str>, if_none_match: Option<&str>) -> Request<Body> {
+    let mut builder = Request::builder().uri("/managed/settings");
+    if let Some(bearer) = bearer {
+        builder = builder.header(header::AUTHORIZATION, format!("Bearer {bearer}"));
+    }
+    if let Some(value) = if_none_match {
+        builder = builder.header(header::IF_NONE_MATCH, value);
+    }
+    builder.body(Body::empty()).unwrap()
 }
 
 fn form_request(path: &str, body: impl Into<String>) -> Request<Body> {
@@ -915,6 +953,78 @@ async fn oidc_callback_rejects_email_outside_allowlist() {
     assert!(!html.contains("outside.test"));
 }
 
+async fn device_attempt(
+    router: &Router,
+    peer: std::net::SocketAddr,
+    forwarded_for: &str,
+) -> String {
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/device")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::ORIGIN, "https://gateway.example")
+                .header("x-forwarded-for", forwarded_for)
+                .extension(ConnectInfo(peer))
+                .body(Body::from(
+                    "user_code=BCDF-GHJK&login=dev%40example.com&secret=wrong",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    String::from_utf8(body.to_vec()).unwrap()
+}
+
+fn inference_request(path: &str, authorization: (&str, &str), model: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(path)
+        .header(authorization.0, authorization.1)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({
+                "model": model,
+                "max_tokens": 16,
+                "messages": [{"role": "user", "content": "hi"}]
+            })
+            .to_string(),
+        ))
+        .unwrap()
+}
+
+async fn responses_upstream() -> wiremock::MockServer {
+    use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
+            "text/event-stream",
+        ))
+        .mount(&upstream)
+        .await;
+    upstream
+}
+
+fn temp_config_path(label: &str) -> (std::path::PathBuf, std::path::PathBuf, String) {
+    let suffix = format!(
+        "{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let dir = std::env::temp_dir().join(format!("shunt-{label}-{suffix}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("shunt.toml");
+    (dir, path, suffix)
+}
+
 #[tokio::test]
 async fn discovery_has_exact_reference_shape() {
     let (config, _env) = GatewayEnv::config("discovery");
@@ -1250,25 +1360,7 @@ async fn device_rate_limit_ignores_spoofed_forwarded_ips_by_default() {
     let peer: std::net::SocketAddr = "203.0.113.4:43123".parse().unwrap();
 
     for attempt in 0..31 {
-        let response = router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/device")
-                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                    .header(header::ORIGIN, "https://gateway.example")
-                    .header("x-forwarded-for", format!("198.51.100.{attempt}"))
-                    .extension(ConnectInfo(peer))
-                    .body(Body::from(
-                        "user_code=BCDF-GHJK&login=dev%40example.com&secret=wrong",
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let html = String::from_utf8_lossy(&body);
+        let html = device_attempt(&router, peer, &format!("198.51.100.{attempt}")).await;
         if attempt < 30 {
             assert!(html.contains("login or secret"));
         } else {
@@ -1285,25 +1377,8 @@ async fn device_rate_limit_honors_forwarded_ips_when_enabled() {
     let peer: std::net::SocketAddr = "203.0.113.4:43123".parse().unwrap();
 
     for attempt in 0..31 {
-        let response = router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/device")
-                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                    .header(header::ORIGIN, "https://gateway.example")
-                    .header("x-forwarded-for", format!("198.51.100.{attempt}"))
-                    .extension(ConnectInfo(peer))
-                    .body(Body::from(
-                        "user_code=BCDF-GHJK&login=dev%40example.com&secret=wrong",
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        assert!(String::from_utf8_lossy(&body).contains("login or secret"));
+        let html = device_attempt(&router, peer, &format!("198.51.100.{attempt}")).await;
+        assert!(html.contains("login or secret"));
     }
 }
 
@@ -1506,6 +1581,542 @@ async fn gateway_jwt_is_accepted_on_mapped_messages() {
         requests[0].headers.get("x-shunt-inbound-client").is_none(),
         "gateway identity must remain local and not be forwarded upstream"
     );
+}
+
+#[tokio::test]
+async fn managed_policy_matching_merges_catch_alls_and_uses_first_user_match() {
+    let (mut config, _env) = GatewayEnv::config("managed-matching");
+    config.server.gateway.as_mut().unwrap().policies = Some(vec![
+        policy(None, toml::toml! { env = { BASE = "1", SHARED = "first" } }),
+        policy(
+            None,
+            toml::toml! { env = { SECOND = "1", SHARED = "second" } },
+        ),
+        policy(
+            Some(vec!["alice@example.com"]),
+            toml::toml! { marker = "first-match" },
+        ),
+        policy(
+            Some(vec!["alice@example.com"]),
+            toml::toml! { marker = "must-not-win" },
+        ),
+    ]);
+    let (router, _, _) = build_router(config).unwrap();
+
+    let alice = gateway_bearer("alice@example.com");
+    let (status, body) = json_response(router.clone(), managed_request(Some(&alice), None)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["settings"]["marker"], "first-match");
+    assert_eq!(
+        body["settings"]["env"],
+        json!({"BASE": "1", "SECOND": "1", "SHARED": "second"})
+    );
+
+    let bob = gateway_bearer("bob@example.com");
+    let (_, body) = json_response(router, managed_request(Some(&bob), None)).await;
+    assert!(body["settings"].get("marker").is_none());
+    assert_eq!(body["settings"]["env"]["BASE"], "1");
+}
+
+#[tokio::test]
+async fn managed_policy_email_matching_is_exact_and_case_sensitive() {
+    let (mut config, _env) = GatewayEnv::config("managed-case-sensitive-email");
+    config.server.gateway.as_mut().unwrap().policies = Some(vec![policy(
+        Some(vec!["alice@example.com"]),
+        toml::toml! { marker = "lowercase-match-only" },
+    )]);
+    let (router, _, _) = build_router(config).unwrap();
+    let bearer = gateway_bearer("Alice@example.com");
+
+    let (status, body) = json_response(router, managed_request(Some(&bearer), None)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["settings"], json!({}));
+}
+
+#[tokio::test]
+async fn managed_policy_without_catch_all_serves_match_or_empty_document() {
+    let (mut config, _env) = GatewayEnv::config("managed-no-catch-all");
+    config.server.gateway.as_mut().unwrap().policies = Some(vec![policy(
+        Some(vec!["alice@example.com"]),
+        toml::toml! { availableModels = ["allowed"] },
+    )]);
+    let (router, _, _) = build_router(config).unwrap();
+
+    let alice = gateway_bearer("alice@example.com");
+    let (_, alice_body) = json_response(router.clone(), managed_request(Some(&alice), None)).await;
+    assert_eq!(
+        alice_body["settings"]["availableModels"],
+        json!(["allowed"])
+    );
+
+    let bob = gateway_bearer("bob@example.com");
+    let (status, bob_body) = json_response(router, managed_request(Some(&bob), None)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(bob_body["settings"], json!({}));
+}
+
+#[tokio::test]
+async fn managed_settings_injects_telemetry_env_and_policy_wins() {
+    let (mut config, _env) = GatewayEnv::config("managed-telemetry");
+    let gateway = config.server.gateway.as_mut().unwrap();
+    gateway.policies = Some(vec![policy(
+        None,
+        toml::toml! { env = { OTEL_METRICS_EXPORTER = "policy", CUSTOM = "yes" } },
+    )]);
+    gateway.telemetry = Some(GatewayTelemetryConfig {
+        forward_to: vec![GatewayTelemetryDestination {
+            url: "https://collector.example".to_string(),
+            headers: None,
+        }],
+    });
+    let (router, _, _) = build_router(config).unwrap();
+    let bearer = gateway_bearer("dev@example.com");
+
+    let (_, body) = json_response(router, managed_request(Some(&bearer), None)).await;
+    assert_eq!(
+        body["settings"]["env"],
+        json!({
+            "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+            "OTEL_METRICS_EXPORTER": "policy",
+            "OTEL_LOGS_EXPORTER": "otlp",
+            "OTEL_TRACES_EXPORTER": "otlp",
+            "OTEL_EXPORTER_OTLP_ENDPOINT": "https://gateway.example",
+            "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+            "CUSTOM": "yes"
+        })
+    );
+}
+
+#[tokio::test]
+async fn managed_settings_wire_has_hashes_etag_and_lenient_304() {
+    let (mut config, _env) = GatewayEnv::config("managed-wire");
+    config.server.gateway.as_mut().unwrap().policies =
+        Some(vec![policy(None, toml::Value::Table(toml::Table::new()))]);
+    let (router, _, _) = build_router(config).unwrap();
+    let bearer = gateway_bearer("dev@example.com");
+
+    let response = router
+        .clone()
+        .oneshot(managed_request(Some(&bearer), None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let etag = response
+        .headers()
+        .get(header::ETAG)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(body["uuid"].as_str().unwrap().starts_with("sha256:"));
+    assert!(body["checksum"].as_str().unwrap().starts_with("sha256:"));
+    assert_eq!(body["settings"], json!({}));
+    let settings_bytes = serde_json::to_vec(&body["settings"]).unwrap();
+    assert_eq!(
+        body["checksum"],
+        format!("sha256:{:x}", Sha256::digest(settings_bytes))
+    );
+    assert_eq!(etag, format!("\"{}\"", body["checksum"].as_str().unwrap()));
+
+    let legacy_etag = body["checksum"].as_str().unwrap().to_string();
+    for candidate in [
+        etag.clone(),
+        legacy_etag,
+        format!("W/{etag}"),
+        format!("\"other\", {etag}"),
+        "*".to_string(),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(managed_request(Some(&bearer), Some(&candidate)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(response.headers().get(header::ETAG).unwrap(), &etag);
+        assert!(to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+    let response = router
+        .oneshot(managed_request(Some(&bearer), Some("sha256:different")))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn managed_settings_rejects_missing_bearer_and_reports_no_policy() {
+    let (config, _env) = GatewayEnv::config("managed-errors");
+    let (router, _, _) = build_router(config).unwrap();
+
+    let (status, body) = json_response(router.clone(), managed_request(None, None)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["type"], "error");
+    assert_eq!(body["error"]["type"], "authentication_error");
+
+    let bearer = gateway_bearer("dev@example.com");
+    let (status, body) = json_response(router, managed_request(Some(&bearer), None)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"]["type"], "not_found_error");
+    assert_eq!(body["error"]["message"], "no managed policy");
+}
+
+#[tokio::test]
+async fn managed_settings_uuid_is_derived_from_subject_not_email() {
+    let (mut config, _env) = GatewayEnv::config("managed-uuid");
+    config.server.gateway.as_mut().unwrap().policies =
+        Some(vec![policy(None, toml::Value::Table(toml::Table::new()))]);
+    let (router, _, _) = build_router(config).unwrap();
+    let bearer = |sub: &str, email: &str| {
+        jwt::mint(
+            &Identity {
+                sub: sub.to_string(),
+                email: email.to_string(),
+                name: "managed user".to_string(),
+            },
+            "https://gateway.example",
+            b"0123456789abcdef0123456789abcdef",
+            3600,
+        )
+    };
+    let first = bearer("stable-subject", "alice@example.com");
+    let same_subject = bearer("stable-subject", "renamed@example.com");
+    let other_subject = bearer("different-subject", "alice@example.com");
+
+    let (_, first) = json_response(router.clone(), managed_request(Some(&first), None)).await;
+    let (_, repeated) =
+        json_response(router.clone(), managed_request(Some(&same_subject), None)).await;
+    let (_, other) = json_response(router, managed_request(Some(&other_subject), None)).await;
+
+    assert_eq!(first["uuid"], repeated["uuid"]);
+    assert_ne!(first["uuid"], other["uuid"]);
+}
+
+#[tokio::test]
+async fn managed_settings_rejects_malformed_bearer_headers() {
+    let (mut config, _env) = GatewayEnv::config("managed-auth-errors");
+    config.server.gateway.as_mut().unwrap().policies =
+        Some(vec![policy(None, toml::Value::Table(toml::Table::new()))]);
+    let (router, _, _) = build_router(config).unwrap();
+    let wrong_signature = jwt::mint(
+        &Identity {
+            sub: "dev@example.com".into(),
+            email: "dev@example.com".into(),
+            name: "dev".into(),
+        },
+        "https://gateway.example",
+        b"abcdef0123456789abcdef0123456789",
+        3600,
+    );
+
+    for authorization in [
+        "Basic abc".to_string(),
+        "Bearer ".to_string(),
+        "Bearer garbage.jwt".to_string(),
+        format!("Bearer {wrong_signature}"),
+    ] {
+        let (status, body) = json_response(
+            router.clone(),
+            Request::builder()
+                .uri("/managed/settings")
+                .header(header::AUTHORIZATION, authorization)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["type"], "error");
+        assert_eq!(body["error"]["type"], "authentication_error");
+    }
+}
+
+#[tokio::test]
+async fn managed_settings_empty_telemetry_targets_do_not_inject_env() {
+    let (mut config, _env) = GatewayEnv::config("managed-empty-telemetry");
+    let gateway = config.server.gateway.as_mut().unwrap();
+    gateway.policies = Some(vec![policy(None, toml::toml! { env = { POLICY = "yes" } })]);
+    gateway.telemetry = Some(GatewayTelemetryConfig {
+        forward_to: Vec::new(),
+    });
+    let (router, _, _) = build_router(config).unwrap();
+    let bearer = gateway_bearer("dev@example.com");
+
+    let (_, body) = json_response(router, managed_request(Some(&bearer), None)).await;
+    assert_eq!(body["settings"]["env"], json!({"POLICY": "yes"}));
+}
+
+#[test]
+fn managed_policy_deserializes_from_real_toml() {
+    let (dir, path, suffix) = temp_config_path("managed-toml");
+    let secret_env = format!("SHUNT_REAL_TOML_SECRET_{suffix}");
+    let users_env = format!("SHUNT_REAL_TOML_USERS_{suffix}");
+    std::env::set_var(&secret_env, "0123456789abcdef0123456789abcdef");
+    std::env::set_var(&users_env, "dev@example.com:password");
+    std::fs::write(
+        &path,
+        format!(
+            r#"
+[server.gateway]
+public_url = "https://gateway.example"
+jwt_secret_env = "{secret_env}"
+users_env = "{users_env}"
+
+[[server.gateway.policies]]
+[server.gateway.policies.match]
+emails = ["dev@example.com"]
+[server.gateway.policies.cli]
+availableModels = ["allowed"]
+[server.gateway.policies.cli.env]
+CUSTOM = "yes"
+[server.gateway.policies.cli.permissions]
+allow = ["Read"]
+"#
+        ),
+    )
+    .unwrap();
+
+    let config = Config::load(Some(&path)).unwrap();
+    let gateway = config.server.gateway.as_ref().unwrap();
+    let policy = &gateway.policies.as_ref().unwrap()[0];
+    assert_eq!(
+        policy.matcher.as_ref().unwrap().emails.as_deref(),
+        Some(["dev@example.com".to_string()].as_slice())
+    );
+    assert_eq!(policy.cli["availableModels"].as_array().unwrap().len(), 1);
+    assert_eq!(policy.cli["env"]["CUSTOM"].as_str(), Some("yes"));
+    assert_eq!(policy.cli["permissions"]["allow"][0].as_str(), Some("Read"));
+    assert!(config.resolve_gateway_auth().unwrap().is_some());
+
+    std::env::remove_var(secret_env);
+    std::env::remove_var(users_env);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn managed_settings_hot_reload_serves_new_policy_and_etag() {
+    let (dir, path, suffix) = temp_config_path("managed-reload");
+    let secret_env = format!("SHUNT_MANAGED_RELOAD_SECRET_{suffix}");
+    let users_env = format!("SHUNT_MANAGED_RELOAD_USERS_{suffix}");
+    std::env::set_var(&secret_env, "0123456789abcdef0123456789abcdef");
+    std::env::set_var(&users_env, "dev@example.com:password");
+    let document = |model: &str, telemetry: bool| {
+        let telemetry = if telemetry {
+            "\n[server.gateway.telemetry]\n[[server.gateway.telemetry.forward_to]]\nurl = \"https://collector.example\"\n"
+        } else {
+            ""
+        };
+        format!(
+            "[server.gateway]\npublic_url = \"https://gateway.example\"\njwt_secret_env = \"{secret_env}\"\nusers_env = \"{users_env}\"\n\n[[server.gateway.policies]]\n[server.gateway.policies.cli]\navailableModels = [\"{model}\"]\n{telemetry}"
+        )
+    };
+    std::fs::write(&path, document("first", false)).unwrap();
+    let (router, shared, _) = build_router(Config::load(Some(&path)).unwrap()).unwrap();
+    let bearer = gateway_bearer("dev@example.com");
+
+    let response = router
+        .clone()
+        .oneshot(managed_request(Some(&bearer), None))
+        .await
+        .unwrap();
+    let first_etag = response.headers()[header::ETAG].clone();
+    let first: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(first["settings"]["availableModels"], json!(["first"]));
+    assert!(first["settings"].get("env").is_none());
+
+    std::fs::write(&path, document("second", true)).unwrap();
+    crate::reload::reload(&shared, Some(&path)).unwrap();
+    let response = router
+        .oneshot(managed_request(Some(&bearer), None))
+        .await
+        .unwrap();
+    assert_ne!(response.headers()[header::ETAG], first_etag);
+    let second: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(second["settings"]["availableModels"], json!(["second"]));
+    assert_eq!(second["settings"]["env"]["OTEL_METRICS_EXPORTER"], "otlp");
+
+    std::env::remove_var(secret_env);
+    std::env::remove_var(users_env);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn managed_settings_without_telemetry_does_not_inject_env() {
+    let (mut config, _env) = GatewayEnv::config("managed-no-telemetry");
+    config.server.gateway.as_mut().unwrap().policies =
+        Some(vec![policy(None, toml::Value::Table(toml::Table::new()))]);
+    let (router, _, _) = build_router(config).unwrap();
+    let bearer = gateway_bearer("dev@example.com");
+
+    let (_, body) = json_response(router, managed_request(Some(&bearer), None)).await;
+    assert!(body["settings"].get("env").is_none());
+}
+
+#[tokio::test]
+async fn empty_available_models_denies_all_gateway_inference_routes() {
+    use wiremock::MockServer;
+
+    let upstream = MockServer::start().await;
+    let (mut config, _env) = GatewayEnv::config("managed-deny-all");
+    let key_env = format!("SHUNT_GATEWAY_DENY_ALL_{}", std::process::id());
+    std::env::set_var(&key_env, "upstream-key");
+    let provider = config.providers.get_mut("openai").unwrap();
+    provider.base_url = upstream.uri();
+    provider.api_key_env = Some(key_env.clone());
+    config.routes = vec![RouteConfig {
+        model: "blocked".to_string(),
+        provider: "openai".to_string(),
+        upstream_model: None,
+        effort: None,
+    }];
+    config.server.gateway.as_mut().unwrap().policies =
+        Some(vec![policy(None, toml::toml! { availableModels = [] })]);
+    let (router, _, _) = build_router(config).unwrap();
+    let bearer = gateway_bearer("dev@example.com");
+    let body = json!({
+        "model": "blocked",
+        "max_tokens": 16,
+        "messages": [{"role": "user", "content": "hi"}]
+    })
+    .to_string();
+
+    for path in ["/v1/messages", "/v1/messages/count_tokens"] {
+        let (status, response) = json_response(
+            router.clone(),
+            Request::builder()
+                .method("POST")
+                .uri(path)
+                .header(header::AUTHORIZATION, format!("Bearer {bearer}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.clone()))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(response["error"]["type"], "invalid_request_error");
+    }
+
+    std::env::remove_var(key_env);
+    assert!(upstream.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn available_models_policy_denies_or_allows_gateway_requests() {
+    let upstream = responses_upstream().await;
+    let (mut config, _env) = GatewayEnv::config("managed-enforcement");
+    let key_env = format!("SHUNT_GATEWAY_POLICY_UPSTREAM_{}", std::process::id());
+    let client_env = format!("SHUNT_GATEWAY_POLICY_CLIENT_{}", std::process::id());
+    std::env::set_var(&key_env, "upstream-key");
+    std::env::set_var(&client_env, "static-user:static-token");
+    config.server.auth = Some(InboundAuthConfig {
+        header: "x-shunt-token".to_string(),
+        tokens_env: client_env.clone(),
+    });
+    let provider = config.providers.get_mut("openai").unwrap();
+    provider.base_url = upstream.uri();
+    provider.api_key_env = Some(key_env.clone());
+    config.routes = ["allowed", "denied"]
+        .into_iter()
+        .map(|model| RouteConfig {
+            model: model.to_string(),
+            provider: "openai".to_string(),
+            upstream_model: Some("upstream-allowed".to_string()),
+            effort: None,
+        })
+        .collect();
+    config.server.gateway.as_mut().unwrap().policies = Some(vec![policy(
+        None,
+        toml::toml! { availableModels = ["allowed"] },
+    )]);
+    let (router, _, _) = build_router(config).unwrap();
+    let bearer = gateway_bearer("dev@example.com");
+
+    let (status, body) = json_response(
+        router.clone(),
+        inference_request(
+            "/v1/messages",
+            (header::AUTHORIZATION.as_str(), &format!("Bearer {bearer}")),
+            "denied",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["type"], "invalid_request_error");
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("denied"));
+
+    let response = router
+        .clone()
+        .oneshot(inference_request(
+            "/v1/messages",
+            (header::AUTHORIZATION.as_str(), &format!("Bearer {bearer}")),
+            "allowed[1m]",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let (status, body) = json_response(
+        router.clone(),
+        inference_request(
+            "/v1/messages/count_tokens",
+            (header::AUTHORIZATION.as_str(), &format!("Bearer {bearer}")),
+            "denied",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["type"], "invalid_request_error");
+
+    let response = router
+        .oneshot(inference_request(
+            "/v1/messages",
+            ("x-shunt-token", "static-token"),
+            "denied",
+        ))
+        .await
+        .unwrap();
+    std::env::remove_var(key_env);
+    std::env::remove_var(client_env);
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(upstream.received_requests().await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn gateway_policy_without_available_models_is_unrestricted() {
+    let upstream = responses_upstream().await;
+    let (mut config, _env) = GatewayEnv::config("managed-unrestricted");
+    let key_env = format!("SHUNT_GATEWAY_UNRESTRICTED_{}", std::process::id());
+    std::env::set_var(&key_env, "upstream-key");
+    let provider = config.providers.get_mut("openai").unwrap();
+    provider.base_url = upstream.uri();
+    provider.api_key_env = Some(key_env.clone());
+    config.routes = vec![RouteConfig {
+        model: "any-model".to_string(),
+        provider: "openai".to_string(),
+        upstream_model: None,
+        effort: None,
+    }];
+    config.server.gateway.as_mut().unwrap().policies =
+        Some(vec![policy(None, toml::toml! { env = { TEST = "1" } })]);
+    let (router, _, _) = build_router(config).unwrap();
+    let bearer = gateway_bearer("dev@example.com");
+    let response = router
+        .oneshot(inference_request(
+            "/v1/messages",
+            (header::AUTHORIZATION.as_str(), &format!("Bearer {bearer}")),
+            "any-model",
+        ))
+        .await
+        .unwrap();
+    std::env::remove_var(key_env);
+    assert_eq!(response.status(), StatusCode::OK);
 }
 
 #[test]

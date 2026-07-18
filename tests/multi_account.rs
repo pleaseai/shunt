@@ -969,3 +969,102 @@ async fn duplicate_identity_alias_is_never_retried_as_a_separate_account() {
     std::env::remove_var("SHUNT_TEST_MULTI_DUP_A_ALIAS");
     std::env::remove_var("SHUNT_TEST_MULTI_DUP_B");
 }
+
+#[tokio::test]
+async fn storm_control_spills_concurrent_request_to_next_account() {
+    // Issue #195 storm control on the Anthropic pool loop: with
+    // `ramp_initial_concurrency = 1`, a second concurrent request for the same
+    // sticky account is denied admission (`try_admit` in `forward_claude_oauth`)
+    // and spills to the next account instead of piling onto the first. Mirrors
+    // the Codex suite's test of the same name — the two adapters wire the
+    // admission gate independently, so each needs its own regression coverage.
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = ["fake-oauth-", "storm-a"].concat();
+    let token_b = ["fake-oauth-", "storm-b"].concat();
+    std::env::set_var("SHUNT_TEST_MULTI_STORM_A", &token_a);
+    std::env::set_var("SHUNT_TEST_MULTI_STORM_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    // Account-a's turn is slow, so it is still in flight (holding its single
+    // admission slot) when the second request arrives.
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_millis(500))
+                .set_body_string(r#"{"account":"a"}"#),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"b"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let mut config = test_config(
+        &upstream.uri(),
+        account("account-a", "SHUNT_TEST_MULTI_STORM_A", "uuid-storm-a"),
+        account("account-b", "SHUNT_TEST_MULTI_STORM_B", "uuid-storm-b"),
+    );
+    config.server.pool = Some(shunt::config::PoolConfig {
+        ramp_initial_concurrency: Some(1),
+        ..Default::default()
+    });
+    let gateway = start_gateway_with(config).await;
+
+    // Both requests carry a session id that maps to account-a under the REAL
+    // bucket assignment (`accounts::stable_session_index`: first 8 bytes of
+    // SHA-256, big-endian, mod count) — this file's `session_id_for_account`
+    // helper hashes with `DefaultHasher` and would land on the wrong account.
+    let session_id = (0..1000)
+        .map(|candidate| format!("session-{candidate}"))
+        .find(|session_id| {
+            use sha2::{Digest, Sha256};
+            let digest = Sha256::digest(session_id.as_bytes());
+            let prefix = u64::from_be_bytes(digest[..8].try_into().unwrap());
+            prefix % 2 == 0
+        })
+        .expect("a session id should map to account-a");
+
+    let first = {
+        let gateway_url = gateway.base_url.clone();
+        let session_id = session_id.clone();
+        tokio::spawn(async move {
+            reqwest::Client::new()
+                .post(format!("{gateway_url}/v1/messages"))
+                .header("content-type", "application/json")
+                .header("x-claude-code-session-id", session_id)
+                .body(
+                    r#"{"model":"pooled-model","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}"#,
+                )
+                .send()
+                .await
+                .unwrap()
+        })
+    };
+    // Give the first request time to reach the upstream and occupy the slot.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let second = post_messages(&gateway, Some(&session_id)).await;
+    assert_eq!(second.status(), StatusCode::OK);
+    assert_eq!(
+        second.headers().get("x-shunt-account").unwrap(),
+        "account-b",
+        "a gated concurrent request should spill to the next account"
+    );
+
+    let first = first.await.unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    assert_eq!(first.headers().get("x-shunt-account").unwrap(), "account-a");
+    upstream.verify().await;
+
+    std::env::remove_var("SHUNT_TEST_MULTI_STORM_A");
+    std::env::remove_var("SHUNT_TEST_MULTI_STORM_B");
+}

@@ -41,7 +41,7 @@ Admin tokens are separate credentials from the client tokens configured under `[
 
 ## `[server.gateway]` (optional)
 
-Presence of this table enables the [OAuth device-flow gateway login](/guides/gateway-login/) used by Claude Code's managed `forceLoginMethod: "gateway"`. When absent, shunt does not register `/.well-known/oauth-authorization-server`, `/oauth/device_authorization`, `/oauth/token`, `/device`, `/device/authorize`, or `/device/callback`.
+Presence of this table enables the [OAuth device-flow gateway login](/guides/gateway-login/) used by Claude Code's managed `forceLoginMethod: "gateway"`. When absent, shunt does not register `/.well-known/oauth-authorization-server`, `/oauth/device_authorization`, `/oauth/token`, `/device`, `/device/authorize`, `/device/callback`, or `/managed/settings`.
 
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
@@ -74,6 +74,35 @@ At least one non-empty `allowed_domains` or `allowed_emails` entry is mandatory.
 
 The issued bearer gates `/v1/models` and `/v1/messages`/`/v1/messages/count_tokens` requests whenever the selected provider injects a server-side credential; passthrough providers remain open. If `[server.auth]` is also present, either credential grants access. Refresh sessions persist across restarts by default: `state_path` (tokens hashed at rest) is restored at boot, so users keep silently refreshing. The file must not be shared between concurrent shunt processes. With `state_path = ""`, sessions are memory-only — a config reload preserves them, but restarting shunt invalidates them and users sign in again once their access JWT expires. Device grants and rate-limit counters are always memory-only; a restart mid-login only costs that attempt. Expired grants and idle rate-limit identities are swept opportunistically. Device grants and rate-limit identities are each capped at 4,096 entries. Used refresh-token tombstones are retained for 30 days and capped at 64 per family; active refresh tokens idle for 30 days expire.
 
+### `[[server.gateway.policies]]` (optional)
+
+Presence of `[server.gateway]` registers authenticated `GET /managed/settings`; an ordered, non-empty policy list supplies its managed document. Each policy has an optional `[server.gateway.policies.match]` table and a required open-schema `[server.gateway.policies.cli]` object. `match` omitted, `match = {}`, or no `emails` means catch-all; an explicit empty `emails` list or blank entry fails startup.
+
+All catch-all policies merge in order, then the first exact, case-sensitive email match merges on top. Objects merge recursively; arrays replace except keys containing `deny`, whose arrays union without duplicates. Known keys are validated at startup and hot reload: `availableModels`, when present, must be an array containing only strings, and `env`, when present, must be a table containing only scalar string, number, or boolean values. Unknown keys remain open-schema, but every value must be JSON-representable; non-finite floats are rejected.
+
+No `policies` key makes the endpoint return `404`. With policies configured but no matching user-specific or catch-all settings, it returns `200` with a telemetry-only `settings.env` when telemetry is enabled, and `settings: {}` otherwise. Responses carry `uuid`, `checksum`, and a quoted `ETag` containing the checksum; matching `If-None-Match` returns `304`.
+
+If the resolved `cli.availableModels` is an array of strings, gateway-JWT requests to `/v1/messages` and `/v1/messages/count_tokens` are rejected with `400 invalid_request_error` when their top-level `model`, after stripping one trailing Claude Code context-window hint (`[1m]` or `[1M]`), is absent from the list. Static `[server.auth]` credentials remain unrestricted because they do not identify a gateway policy user.
+
+### `[server.gateway.telemetry]` (optional)
+
+`forward_to` is an array of destinations with a required HTTP(S) `url` and optional string `headers` map. A non-empty list injects six values into managed `settings.env`: `CLAUDE_CODE_ENABLE_TELEMETRY=1`, the `OTEL_METRICS_EXPORTER`, `OTEL_LOGS_EXPORTER`, and `OTEL_TRACES_EXPORTER` values set to `otlp`, `OTEL_EXPORTER_OTLP_ENDPOINT` set to `public_url`, and `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`. Policy env values win on conflicts. This table gates only the environment push in M-B; inbound OTLP ingest/relay is M-C (#189).
+
+```toml
+[[server.gateway.policies]]
+[server.gateway.policies.match]
+emails = ["alice@example.com"]
+[server.gateway.policies.cli]
+availableModels = ["claude-opus-4-8"]
+[server.gateway.policies.cli.env]
+DISABLE_UPDATES = "1"
+
+[server.gateway.telemetry]
+[[server.gateway.telemetry.forward_to]]
+url = "https://collector.example.com"
+headers = { "x-api-key" = "..." }
+```
+
 By default, `/device` ignores forwarding headers and rate-limits the socket peer. Set `trust_forwarded_for = true` only when shunt is reachable exclusively through a trusted reverse proxy that removes client-provided forwarding headers before setting its own value. Do not enable it on a directly exposed gateway.
 
 ## `[server.codex_endpoint]` (optional)
@@ -96,7 +125,7 @@ The table has no keys today — presence alone opts in. It **requires [`[server.
 
 ## `[server.pool]` (optional)
 
-Quota-aware load-balancing tuning for Claude (Anthropic) account pools ([details](/guides/anthropic-multi-account/#tuning-selection-serverpool)). When the table is absent, selection uses the single built-in `0.98` threshold exactly as before this table existed.
+Quota-aware load-balancing tuning for the account pools — Claude (Anthropic) ([details](/guides/anthropic-multi-account/#tuning-selection-serverpool)) and, since issue #195, Codex/ChatGPT ([details](/guides/codex-multi-account/)). When the table is absent, selection uses the single built-in `0.98` threshold exactly as before this table existed.
 
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
@@ -108,12 +137,15 @@ Quota-aware load-balancing tuning for Claude (Anthropic) account pools ([details
 | `burn_rate_avoidance` | `false` | Also avoid accounts projected to exhaust a window's soft threshold before that window resets |
 | `usage_refresh_seconds` | disabled (`0`/absent) | Poll interval, in seconds, for `GET /api/oauth/usage`; a positive value below 60 is clamped up to a 60-second floor |
 | `state_path` | unset | File the pool's per-account quota state is persisted to, so a restart warm-starts from the last observed utilization instead of an empty pool. Absent disables persistence (the default) |
+| `ramp_initial_concurrency` | disabled (`0`/absent) | Storm control: initial concurrent-admission allowance for an account identity that just started taking traffic. `0` or absent disables admission gating |
 
-For each window `X`, the effective soft threshold resolves as: account `threshold_X` → account `threshold` → `default_threshold_X` → `default_threshold` → `hard_threshold`, and is capped at `hard_threshold`. All thresholds are utilization fractions in `[0.0, 1.0]`; out-of-range values fail startup. Quota headers exist only on the Anthropic backend, so these knobs are inert for Codex/ChatGPT pools — the per-account `priority` and `disabled` keys below still apply there.
+For each window `X`, the effective soft threshold resolves as: account `threshold_X` → account `threshold` → `default_threshold_X` → `default_threshold` → `hard_threshold`, and is capped at `hard_threshold`. All thresholds are utilization fractions in `[0.0, 1.0]`; out-of-range values fail startup. The threshold and burn-rate knobs govern both pool families: the Anthropic pool from its `anthropic-ratelimit-unified-*` headers, and the Codex/ChatGPT pool from its `x-codex-*` 5-hour/weekly windows (Codex has no Fable-scoped `7d_oi` window, so `default_threshold_fable` is inert there). `usage_refresh_seconds` is Anthropic-only — Codex has no out-of-band usage API.
 
 A positive `usage_refresh_seconds` additionally starts a background poller that reconciles Claude account-pool quota state against the Anthropic OAuth usage API ([details](/guides/anthropic-multi-account/#usage-api-reconciliation)); absent or `0` disables it (the default). Only imported (refreshable) `claude_oauth` accounts are polled — a long-lived `claude setup-token` or `token_env` account is skipped because the usage endpoint rejects a non-refreshable token. The poller reconciles the pool's header-derived 5h/weekly/Fable (`7d_oi`) quota state with authoritative usage, including out-of-band consumption of the same account outside shunt. The interval is fixed at boot; a config reload does not start, stop, or re-tune the poller.
 
 `state_path` persists the pool's quota state (per-window utilization and reset, across every provider's accounts) to disk. Without it, a restart begins with an empty pool: every account looks unseen until its first post-restart response, which disables burn-rate avoidance and leaves `GET /usage` blank until traffic re-populates the pool. The file is a best-effort cache, not a source of truth — quota is re-derived from upstream responses regardless, so a missing, stale, or corrupt file only costs a cold start, never a boot failure. Writes use a private (`0600` on Unix) temp file, atomically rename it over the target, and happen on a background timer only when quota changed; failed writes retry on the next tick. Cooldowns are not persisted (they lapse on restart), and any restored window whose reset has already passed is dropped lazily by the first selection or snapshot after restore. The path is fixed at boot; a config reload does not start, stop, or re-point persistence.
+
+A positive `ramp_initial_concurrency` enables **storm control** on every account pool: after a failover switch, concurrent in-flight requests would otherwise all land on the freshly selected account at once. With the gate on, an identity that just started taking traffic (fresh, back from a cooldown, or idle for 60 seconds) admits at most the configured number of concurrent requests; each successful response doubles the allowance (slow start), a failover-worthy failure restarts the ramp, and a denied request spills to the next account in selection order. The last remaining candidate is always attempted regardless of the gate, so gating can defer but never fail a request that an ungated pool would have served. Note this also means a pool whose accounts all resolve to a single upstream identity is effectively ungated: its only candidate is always the last candidate, so the setting only takes effect with two or more distinct account identities.
 
 ## `[providers.<name>]`
 
@@ -187,7 +219,7 @@ token_env = "CLAUDE_BACKUP_OAUTH_TOKEN"
 
 A name-only entry reads `~/.shunt/accounts/claude/<name>.json`, created with `shunt login claude --name <name> --mode <mode>` (`<mode>` is one of `oauth`, `import`, or `setup-token`); the interactive CLI prompts for these three modes and recommends refreshable OAuth. `--long-lived` remains a deprecated alias for `--mode setup-token`. `SHUNT_CLAUDE_ACCOUNTS_DIR` overrides the store directory. An empty account list scans all valid store files. Refreshable OAuth/import files are updated in place when the provider rotates their refresh token, so each file must have one active owner: do not share or independently copy it across running shunt processes. Provision each process separately, or use a static setup token when appropriate. `claude_oauth` additionally requires an HTTPS `base_url` whose host is `anthropic.com` or a subdomain, preventing bearer leakage to another origin — except for loopback hosts (`localhost`, `127.0.0.1`, `[::1]`, …), which are exempt from both checks so a local debugging proxy or mock can be used over plain HTTP.
 
-Account selection is session-sticky and quota-aware. On every upstream response handled by the `claude_oauth` account pool, shunt records `anthropic-ratelimit-unified-5h-utilization`, `anthropic-ratelimit-unified-7d-utilization`, `anthropic-ratelimit-unified-7d_oi-utilization`, `anthropic-ratelimit-unified-5h-reset`, `anthropic-ratelimit-unified-7d-reset`, `anthropic-ratelimit-unified-7d_oi-reset`, and `anthropic-ratelimit-unified-status`. Status `rejected`, shared 5-hour utilization at or above its threshold, or the model's governing weekly utilization at or above its threshold makes an account near quota — the threshold is the built-in `0.98` unless tuned per account (`threshold*` above) or pool-wide ([`[server.pool]`](#serverpool-optional)). Fable models use `7d_oi` when available, falling back to `7d`; all other families, including Sonnet, use shared `7d`. shunt keeps a healthy under-threshold sticky account, but rotates off a near-quota or cooled one and prefers available under-threshold accounts by `priority`, then by soonest governing-weekly reset (or, with `[server.pool]` configured, by largest burn-rate headroom — the projected time to threshold at the observed pace minus the time to reset; `burn_rate_avoidance = true` additionally treats a negative projection as near quota), then near-quota accounts (best headroom first when `[server.pool]` is set, so an all-near pool degrades to best-margin-first while accounts past `hard_threshold` still sort last), then cooled accounts. Expired quota buckets clear automatically, and every non-disabled account remains selectable. Reactive failover remains active. Storm-control for freshly switched account concurrency is not implemented.
+Account selection is session-sticky and quota-aware. On every upstream response handled by the `claude_oauth` account pool, shunt records `anthropic-ratelimit-unified-5h-utilization`, `anthropic-ratelimit-unified-7d-utilization`, `anthropic-ratelimit-unified-7d_oi-utilization`, `anthropic-ratelimit-unified-5h-reset`, `anthropic-ratelimit-unified-7d-reset`, `anthropic-ratelimit-unified-7d_oi-reset`, and `anthropic-ratelimit-unified-status`. Status `rejected`, shared 5-hour utilization at or above its threshold, or the model's governing weekly utilization at or above its threshold makes an account near quota — the threshold is the built-in `0.98` unless tuned per account (`threshold*` above) or pool-wide ([`[server.pool]`](#serverpool-optional)). Fable models use `7d_oi` when available, falling back to `7d`; all other families, including Sonnet, use shared `7d`. shunt keeps a healthy under-threshold sticky account, but rotates off a near-quota or cooled one and prefers available under-threshold accounts by `priority`, then by soonest governing-weekly reset (or, with `[server.pool]` configured, by largest burn-rate headroom — the projected time to threshold at the observed pace minus the time to reset; `burn_rate_avoidance = true` additionally treats a negative projection as near quota), then near-quota accounts (best headroom first when `[server.pool]` is set, so an all-near pool degrades to best-margin-first while accounts past `hard_threshold` still sort last), then cooled accounts. Expired quota buckets clear automatically, and every non-disabled account remains selectable. Reactive failover remains active. Storm control for freshly switched account concurrency is available via [`[server.pool]` `ramp_initial_concurrency`](#serverpool-optional) (off by default).
 
 See [Anthropic Multi-Account](/guides/anthropic-multi-account/) for the complete selection and failover behavior. The behavior reference is [KarpelesLab/teamclaude](https://github.com/KarpelesLab/teamclaude); shunt has no runtime dependency on it.
 

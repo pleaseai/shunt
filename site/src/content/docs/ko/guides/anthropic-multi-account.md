@@ -123,6 +123,7 @@ default_threshold_fable = 0.85
 burn_rate_avoidance = true   # 리셋 전에 임계값에 도달할 것으로 예측되는 계정을 회피
 usage_refresh_seconds = 300  # 갱신 가능 계정의 out-of-band 사용량 재보정
 state_path = "shunt-state.json"  # 재시작 간 쿼터 유지(워밍업)
+ramp_initial_concurrency = 2 # 폭주 제어: 방금 전환된 계정을 슬로 스타트
 
 [[providers.anthropic.accounts]]
 name = "primary"
@@ -141,7 +142,7 @@ disabled = true              # 구성은 유지되지만 절대 선택되지 않
 - **번-레이트 여유(Burn-rate headroom).** 각 창의 사용률과 리셋 시점(창 길이는 5시간과 7일로 고정)으로부터, shunt는 관측된 평균 속도로 소프트 임계값에 도달할 때까지의 시간에서 창이 리셋될 때까지의 시간을 뺀 값을 예측합니다. 여유(headroom)가 양수이면 현재 속도로도 리셋 시점까지 버틸 수 있다는 뜻입니다. `priority`가 같은 사용 가능한 계정은 여유가 큰 순서로 정렬되며, 관측되지 않은 창은 무제한 여유로 간주됩니다.
 - **예측적 회피(Predictive avoidance).** `burn_rate_avoidance = true`이면, 예측된 여유가 음수인 계정은 임계값에 도달하기 *전에* 쿼터 근접 상태로 간주되어 로테이션됩니다. 기본값은 꺼짐이며 — 여유 기준 정렬 자체는 이 설정과 무관하게 항상 이루어집니다.
 - **전체 근접 가드(All-near guard).** 모든 계정이 소프트 임계값을 넘겼거나(또는 소진이 예측되면), 풀이 비지 않습니다: 근접 계정은 여유가 가장 큰 순서로 서빙되고, `hard_threshold` 이상인 계정은 여전히 마지막으로 정렬되며, 그다음 쿨다운 중인 계정만 이어집니다.
-- **적용 범위(Scope).** 쿼터 관련 노브는 Claude(Anthropic) 풀에만 작동합니다 — Codex 백엔드는 쿼터 헤더를 보내지 않으므로 [Codex 풀](/ko/guides/codex-multi-account/)에서는 무력화되며, `priority`와 `disabled`는 그곳에서도 계속 적용됩니다.
+- **적용 범위(Scope).** 쿼터 관련 노브는 두 풀 계열 모두에 작동합니다: 이 풀은 `anthropic-ratelimit-unified-*` 헤더로부터, [Codex 풀](/ko/guides/codex-multi-account/)은 보고된 `x-codex-*` 5h/7d 윈도우로부터 동작합니다(이슈 #195). Codex에는 Fable 범위의 `7d_oi` 창이 없어 `default_threshold_fable`은 그곳에서 무력화되며, `priority`와 `disabled`는 어디서나 적용됩니다.
 - 관리자 풀 엔드포인트(`GET /admin/pool`)는 각 계정의 `priority`, `disabled` 플래그를 보고하며, `[server.pool]`이 구성되어 있으면 현재 여유(headroom) 예측치를 초 단위로 함께 보고합니다; 대시보드의 상태 열은 비활성화된 계정을 표시합니다.
 
 ## Usage-API 재보정
@@ -205,8 +206,8 @@ Claude Code는 문자열 값인 `metadata.user_id` 안에 계정 메타데이터
 
 이 시작 검사는 OAuth bearer가 다른 오리진으로, 또는 평문으로 전송되는 것을 막습니다. HTTPS와 호스트 검사는 **루프백 호스트에서는 완화**됩니다(`localhost`, `127.0.0.1`, `[::1]` 등): 루프백 `base_url`은 평문 HTTP와 임의의 호스트를 쓸 수 있어 로컬 디버깅 프록시나 목(mock)이 트래픽을 받을 수 있습니다 — bearer가 운영자의 머신을 벗어날 수는 없습니다. 루프백이 아닌 호스트에는 항상 HTTPS + `anthropic.com`이 요구됩니다. 공유 배포에서는 `claude_oauth`가 게이트웨이 소유 자격 증명을 소비하므로 [`[server.auth]`](/ko/guides/shared-gateway/#인바운드-클라이언트-토큰)도 함께 구성하세요. 클라이언트는 이미 보내고 있는 `ANTHROPIC_AUTH_TOKEN`으로 인증됩니다(`x-shunt-token`, `x-api-key`와 나란히 `Authorization: Bearer`로도 클라이언트 토큰을 받습니다) — 풀 전용 게이트웨이라면 `ANTHROPIC_CUSTOM_HEADERS` 줄이 필요 없습니다.
 
-## 남은 후속 작업
+## 폭주 제어(storm control)
 
-- **폭주 제어(storm-control):** 새로 전환된 계정의 동시성을 서서히 올리는 것은 이후 후속 작업으로 남아 있으며 구현되지 않았습니다.
+`[server.pool] ramp_initial_concurrency`(기본값 꺼짐)를 설정하면 계정 아이덴티티별 동시 허용(admission)을 슬로 스타트 램프로 제어하므로, 페일오버 전환이 방금 선택된 계정에 진행 중인 모든 요청을 한꺼번에 몰아넣지 못합니다. 방금 트래픽을 받기 시작한 아이덴티티는 최대 구성된 개수만큼의 동시 요청만 허용하며, 성공 응답마다 허용치가 두 배로 늘고(슬로 스타트), 페일오버는 램프를 다시 시작하며, 거부된 요청은 선택 순서상 다음 계정으로 넘어갑니다(마지막 후보는 항상 시도됩니다). [`[server.pool]`](/ko/reference/configuration/)를 참고하세요.
 
 구현 동작은 [KarpelesLab/teamclaude](https://github.com/KarpelesLab/teamclaude)와 배포된 Claude Code 바이너리를 참고했습니다. shunt는 teamclaude에 대한 런타임 의존성이 없습니다.

@@ -4,10 +4,14 @@
 //! Two behaviors set this suite apart from the Anthropic one, both driven by
 //! `accounts::classify_codex` (see `src/accounts.rs`):
 //!
-//! - Codex quota/rejection headers are display-only, so every 429 rotates to
-//!   the next account — there is no `PauseSame` sub-case, and no analog of the
-//!   Anthropic suite's `plain_429_retries_the_same_account_...`
-//!   or `pause_same_retry_succeeds_and_relays_...` tests.
+//! - Codex 429 responses carry no per-response retry-after signal that maps to
+//!   `PauseSame`, so every 429 rotates to the next account — there is no
+//!   `PauseSame` sub-case, and no analog of the Anthropic suite's
+//!   `plain_429_retries_the_same_account_...` or
+//!   `pause_same_retry_succeeds_and_relays_...` tests. (Since issue #195 the
+//!   recorded `x-codex-*` quota headers do feed proactive selection ordering —
+//!   see `codex_quota_headers_drive_proactive_rotation` below — they are just
+//!   not a same-account pause signal.)
 //! - A `token_env` (static) account has no store-file "setup token" marker
 //!   concept: the `RefreshRetry` check is `account.token_env.is_some()` only,
 //!   so there is no analog of `static_setup_token_account_cools_down_...`.
@@ -860,4 +864,229 @@ async fn websocket_enabled_pool_falls_back_to_http_and_streams() {
 
     std::env::remove_var("SHUNT_TEST_CODEX_WSPOOL_A");
     std::env::remove_var("SHUNT_TEST_CODEX_WSPOOL_B");
+}
+
+#[tokio::test]
+async fn codex_quota_headers_drive_proactive_rotation() {
+    // Issue #195: recorded `x-codex-*` quota windows feed `select_order`, so a
+    // sticky account whose observed 5h utilization crosses the threshold is
+    // rotated off proactively — before it ever returns a 429.
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-quota-a");
+    let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-quota-b");
+    std::env::set_var("SHUNT_TEST_CODEX_QUOTA_A", &token_a);
+    std::env::set_var("SHUNT_TEST_CODEX_QUOTA_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    // Account-a succeeds but reports its 5h window at 99% used (>= the legacy
+    // 0.98 near-quota threshold), with a far-future reset so the recorded
+    // window is not expired away before the next selection.
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-codex-primary-window-minutes", "300")
+                .insert_header("x-codex-primary-used-percent", "99")
+                .insert_header(
+                    "x-codex-primary-reset-at",
+                    FAR_FUTURE_EXP.to_string().as_str(),
+                )
+                .set_body_string(sse_body("account a served")),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(sse_body("account b served")))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        account("account-a", "SHUNT_TEST_CODEX_QUOTA_A"),
+        account("account-b", "SHUNT_TEST_CODEX_QUOTA_B"),
+    ))
+    .await;
+
+    // Both requests carry a session id that hashes to account-a, so absent the
+    // quota signal the pool would stay sticky on account-a for both.
+    let session_id = session_id_for_account(0, 2);
+    let response = post_messages(&gateway, Some(&session_id)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-a"
+    );
+
+    let response = post_messages(&gateway, Some(&session_id)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b",
+        "a near-quota sticky account should be rotated off proactively"
+    );
+    upstream.verify().await;
+
+    std::env::remove_var("SHUNT_TEST_CODEX_QUOTA_A");
+    std::env::remove_var("SHUNT_TEST_CODEX_QUOTA_B");
+}
+
+#[tokio::test]
+async fn storm_control_spills_concurrent_request_to_next_account() {
+    // Issue #195 storm control: with `ramp_initial_concurrency = 1`, a second
+    // concurrent request for the same sticky account is denied admission and
+    // spills to the next account instead of piling onto the first.
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-storm-a");
+    let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-storm-b");
+    std::env::set_var("SHUNT_TEST_CODEX_STORM_A", &token_a);
+    std::env::set_var("SHUNT_TEST_CODEX_STORM_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    // Account-a's turn is slow, so it is still in flight (holding its single
+    // admission slot) when the second request arrives.
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_millis(500))
+                .set_body_string(sse_body("account a served")),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(sse_body("account b served")))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let mut config = test_config(
+        &upstream.uri(),
+        account("account-a", "SHUNT_TEST_CODEX_STORM_A"),
+        account("account-b", "SHUNT_TEST_CODEX_STORM_B"),
+    );
+    config.server.pool = Some(shunt::config::PoolConfig {
+        ramp_initial_concurrency: Some(1),
+        ..Default::default()
+    });
+    let gateway = start_gateway_with(config).await;
+
+    let session_id = session_id_for_account(0, 2);
+    let first = {
+        let gateway_url = gateway.base_url.clone();
+        let session_id = session_id.clone();
+        tokio::spawn(async move {
+            reqwest::Client::new()
+                .post(format!("{gateway_url}/v1/messages"))
+                .header("content-type", "application/json")
+                .header("x-claude-code-session-id", session_id)
+                .body(
+                    r#"{"model":"pooled-codex-model","max_tokens":16,"stream":false,"messages":[{"role":"user","content":"hi"}]}"#,
+                )
+                .send()
+                .await
+                .unwrap()
+        })
+    };
+    // Give the first request time to reach the upstream and occupy the slot.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let second = post_messages(&gateway, Some(&session_id)).await;
+    assert_eq!(second.status(), StatusCode::OK);
+    assert_eq!(
+        second.headers().get("x-shunt-account").unwrap(),
+        "account-b",
+        "a gated concurrent request should spill to the next account"
+    );
+
+    let first = first.await.unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    assert_eq!(first.headers().get("x-shunt-account").unwrap(), "account-a");
+    upstream.verify().await;
+
+    std::env::remove_var("SHUNT_TEST_CODEX_STORM_A");
+    std::env::remove_var("SHUNT_TEST_CODEX_STORM_B");
+}
+
+#[tokio::test]
+async fn storm_control_last_candidate_is_always_admitted() {
+    // The gate must defer, never fail: a pool whose only (and therefore last)
+    // candidate is at its admission cap still serves every concurrent request.
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-storm-solo");
+    std::env::set_var("SHUNT_TEST_CODEX_STORM_SOLO", &token_a);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_millis(300))
+                .set_body_string(sse_body("solo account served")),
+        )
+        .expect(2)
+        .mount(&upstream)
+        .await;
+
+    let mut config = Config::default();
+    let provider = config.providers.get_mut("codex").unwrap();
+    provider.base_url = upstream.uri();
+    provider.accounts = vec![account("account-solo", "SHUNT_TEST_CODEX_STORM_SOLO")];
+    config.routes.push(RouteConfig {
+        model: "pooled-codex-model".to_string(),
+        provider: "codex".to_string(),
+        upstream_model: None,
+        effort: None,
+    });
+    config.server.pool = Some(shunt::config::PoolConfig {
+        ramp_initial_concurrency: Some(1),
+        ..Default::default()
+    });
+    let gateway = start_gateway_with(config).await;
+
+    let first = {
+        let gateway_url = gateway.base_url.clone();
+        tokio::spawn(async move {
+            reqwest::Client::new()
+                .post(format!("{gateway_url}/v1/messages"))
+                .header("content-type", "application/json")
+                .body(
+                    r#"{"model":"pooled-codex-model","max_tokens":16,"stream":false,"messages":[{"role":"user","content":"hi"}]}"#,
+                )
+                .send()
+                .await
+                .unwrap()
+        })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // The solo account is over its allowance of 1, but as the last remaining
+    // candidate it is force-admitted rather than exhausting the pool.
+    let second = post_messages(&gateway, None).await;
+    assert_eq!(second.status(), StatusCode::OK);
+    assert_eq!(
+        second.headers().get("x-shunt-account").unwrap(),
+        "account-solo"
+    );
+
+    let first = first.await.unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    upstream.verify().await;
+
+    std::env::remove_var("SHUNT_TEST_CODEX_STORM_SOLO");
 }

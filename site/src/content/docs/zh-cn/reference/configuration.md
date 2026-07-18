@@ -39,9 +39,56 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 
 管理员 token 与 `[server.auth]` 下配置的客户端 token 是相互独立的凭据;不要在两个界面上复用同一个凭据。
 
+## `[server.gateway]`(可选)
+
+存在此表即启用 Claude Code managed `forceLoginMethod: "gateway"` 使用的 [OAuth device-flow gateway 登录](/zh-cn/guides/gateway-login/)。此表不存在时,shunt 不会注册 `/.well-known/oauth-authorization-server`、`/oauth/device_authorization`、`/oauth/token`、`/device` 或 `/managed/settings`。
+
+| 键 | 默认 | 含义 |
+| :-- | :-- | :-- |
+| `public_url` | 必需 | 对外可达的 HTTPS origin,用作 JWT issuer 和 OAuth endpoint 基址;仅 loopback 允许 `http` |
+| `jwt_secret_env` | `SHUNT_GATEWAY_JWT_SECRET` | 保存至少 32 bytes 的 HS256 signing secret 的 env 变量 |
+| `users_env` | `SHUNT_GATEWAY_USERS` | 保存逗号分隔的 `email:secret` approval user 的 env 变量 |
+| `token_ttl_seconds` | `3600` | access token 生命周期,以 `expires_in` 返回 |
+| `trust_forwarded_for` | `false` | 将 `X-Forwarded-For`/`X-Real-IP` 信任为 `/device` rate-limit identity;只能在会替换 client 所提供值的 trusted proxy 后启用 |
+
+如果 URL 不是不带路径等内容的 HTTPS origin(仅 loopback 允许 `http`)、TTL 为 0、secret 缺失或少于 32 bytes,或者 user list 为空或格式错误,启动会 fail closed。secret 可以包含 `:`,只有第一个 colon 用于分隔 email 与 secret。env-backed secret 和 user 的变更会在 config reload 时生效;由于 route tree 在 boot 时固定,添加或移除此表需要 restart。
+
+颁发的 bearer 会在所选 provider 注入 server-side credential 时认证 `/v1/models`、`/v1/messages` 和 `/v1/messages/count_tokens`。passthrough provider 仍保持 open。如果还存在 `[server.auth]`,任一 credential 都能授权访问。device grant 和 rotating refresh token 是 process-lifetime in-memory state:config reload 会保留它们,但 restart 会使其失效。
+
+### `[[server.gateway.policies]]`(可选)
+
+存在 `[server.gateway]` 即会注册经过认证的 `GET /managed/settings`;有序且非空的 policy list 为其提供 managed document。每条 policy 都有可选的 `[server.gateway.policies.match]` 和必需的 open-schema `[server.gateway.policies.cli]` object。省略 `match`、使用 `match = {}` 或不设置 `emails` 都表示 catch-all。显式空 `emails` list 或空白 entry 会导致启动错误。
+
+所有 catch-all policy 按顺序 merge,然后在其上 merge 第一个 email 精确匹配(case-sensitive)的 policy。object 递归 merge;array 通常替换,但 key 包含 `deny` 的 array 会做无重复 union。已知 key 会在启动和 hot reload 时验证:`availableModels` 必须是仅包含 string 的 array;`env` 必须是仅包含 string、number 或 boolean scalar value 的 table。未知 key 保持 open-schema,但所有 value 都必须可用 JSON 表示;非有限 float 会被拒绝。
+
+没有 `policies` 时 endpoint 返回 `404`。已配置 policy 但没有匹配的 user-specific 或 catch-all settings 时,若 telemetry 已启用则返回带有仅 telemetry `settings.env` 的 `200`,否则返回带有 `settings: {}` 的 `200`。response 包含 `uuid`、`checksum` 和保存 checksum 的 quoted `ETag`;匹配的 `If-None-Match` 返回 `304`。
+
+解析后的 `cli.availableModels` 会应用于 gateway JWT request 的 `/v1/messages` 和 `/v1/messages/count_tokens`。比较前会从 top-level `model` 移除一个末尾 Claude Code context-window hint（`[1m]` 或 `[1M]`）;若剩余 model 不在 list 中,则返回 `400 invalid_request_error`。static `[server.auth]` credential 无法标识 gateway policy user,因此不受此限制。
+
+### `[server.gateway.telemetry]`(可选)
+
+`forward_to` 是 destination array,每项具有必需的 HTTP(S) `url` 和可选的 string `headers` map。非空 list 会向 managed `settings.env` 注入 6 个值:`CLAUDE_CODE_ENABLE_TELEMETRY=1`、`OTEL_METRICS_EXPORTER`/`OTEL_LOGS_EXPORTER`/`OTEL_TRACES_EXPORTER=otlp`、`OTEL_EXPORTER_OTLP_ENDPOINT=public_url`、`OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`。发生冲突时 policy env value 优先。此表在 M-B 中只控制 environment push;inbound OTLP ingest/relay 属于 M-C(#189)。
+
+```toml
+[[server.gateway.policies]]
+[server.gateway.policies.match]
+emails = ["alice@example.com"]
+[server.gateway.policies.cli]
+availableModels = ["claude-opus-4-8"]
+[server.gateway.policies.cli.env]
+DISABLE_UPDATES = "1"
+
+[server.gateway.telemetry]
+[[server.gateway.telemetry.forward_to]]
+url = "https://collector.example.com"
+headers = { "x-api-key" = "..." }
+```
+
+默认情况下,`/device` 忽略 forwarding header 并按 socket peer 做 rate limit。只有在 shunt 仅能通过会删除 client 所提供 forwarding header 并设置自身值的 trusted reverse proxy 访问时,才设置 `trust_forwarded_for = true`。不要在直接暴露的 gateway 上启用。
+
 ## `[server.pool]`(可选)
 
-面向 Claude(Anthropic)账户池的配额感知负载均衡调优([详情](/zh-cn/guides/anthropic-multi-account/#调优选择serverpool))。此表不存在时,选择逻辑使用单一的内置 `0.98` 阈值,与该表出现之前的行为完全一致。
+面向账户池的配额感知负载均衡调优 —— Claude(Anthropic)([详情](/zh-cn/guides/anthropic-multi-account/#调优选择serverpool)),以及自 issue #195 起的 Codex/ChatGPT([详情](/zh-cn/guides/codex-multi-account/))。此表不存在时,选择逻辑使用单一的内置 `0.98` 阈值,与该表出现之前的行为完全一致。
 
 | 键 | 默认 | 含义 |
 | :-- | :-- | :-- |
@@ -53,12 +100,15 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 | `burn_rate_avoidance` | `false` | 同时避开按预测会在窗口重置之前耗尽其软阈值的账户 |
 | `usage_refresh_seconds` | 禁用(`0`/未设置) | `GET /api/oauth/usage` 的轮询间隔(秒);低于 60 的正值会向上取到 60 秒下限 |
 | `state_path` | 未设置 | 用于持久化池中按账户配额状态的文件;重启时从最后观测到的使用率热启动,而非从空池开始。未设置则禁用持久化(默认) |
+| `ramp_initial_concurrency` | 禁用(`0`/未设置) | 风暴控制:对刚开始承接流量的账户身份的初始并发准入额度。`0` 或未设置则禁用准入门控 |
 
-对每个窗口 `X`,生效的软阈值按以下顺序解析:账户 `threshold_X` → 账户 `threshold` → `default_threshold_X` → `default_threshold` → `hard_threshold`,并以 `hard_threshold` 为上限。所有阈值都是 `[0.0, 1.0]` 范围内的使用率分数;超出范围会导致启动失败。配额头部只存在于 Anthropic 后端,因此这些旋钮对 Codex/ChatGPT 池不起作用 —— 按账户的 `priority` 和 `disabled` 键(见[账户字段](/zh-cn/guides/anthropic-multi-account/#账户字段))在那里仍然适用。
+对每个窗口 `X`,生效的软阈值按以下顺序解析:账户 `threshold_X` → 账户 `threshold` → `default_threshold_X` → `default_threshold` → `hard_threshold`,并以 `hard_threshold` 为上限。所有阈值都是 `[0.0, 1.0]` 范围内的使用率分数;超出范围会导致启动失败。阈值与 burn-rate 旋钮对两个池家族都生效:Anthropic 池取自其 `anthropic-ratelimit-unified-*` 头部,Codex/ChatGPT 池取自其 `x-codex-*` 5 小时/周窗口(Codex 没有 Fable 范围的 `7d_oi` 窗口,因此 `default_threshold_fable` 在那里不起作用)。`usage_refresh_seconds` 仅限 Anthropic —— Codex 没有带外 usage API。
 
 正的 `usage_refresh_seconds` 还会启动一个后台轮询器,把 Claude 账户池的配额状态与 Anthropic OAuth usage API 对账校正;未设置或为 `0` 时禁用(默认)。只有 imported(可刷新)的 `claude_oauth` 账户会被轮询 —— 长期 `claude setup-token` 或 `token_env` 账户会被跳过,因为 usage 端点会拒绝不可刷新的令牌。轮询器会把基于头部的 5h/周/Fable(`7d_oi`)配额状态,与包含 shunt 之外同一账户消耗在内的权威用量对账。间隔在启动时固定;配置重载不会启动、停止或重新调整轮询器。
 
 `state_path` 会把池的配额状态(所有 provider 账户的按窗口使用率与重置)写入磁盘。不设置时,重启会从空池开始:每个账户在重启后首个响应之前都显示为未观测,这会禁用 burn-rate 规避,并使 `GET /usage` 在流量重新填充池之前返回空值。该文件是尽力而为的缓存,而非权威来源 —— 配额无论如何都会从上游响应重新导出,因此文件缺失、陈旧或损坏只会导致冷启动,绝不会导致启动失败。写入使用私有 temp 文件(Unix 上为 `0600`)并将其原子重命名覆盖目标,且仅在配额发生变化时按后台定时器进行。写入失败时会在下一个 tick 重试。冷却不会被持久化(重启即失效),恢复的窗口中重置已过期的会在恢复后的首次选择或 snapshot 时延迟丢弃。路径在启动时固定;配置重载不会启动、停止或改变持久化路径。
+
+正的 `ramp_initial_concurrency` 会在每个账户池上启用**风暴控制(storm control)**:一次故障转移切换之后,在途的并发请求本会全部同时落到刚选中的账户上。开启该门控后,刚开始承接流量的身份(全新、刚从冷却回来,或空闲 60 秒)最多准入所配置数量的并发请求;每次成功响应把额度翻倍(slow start),一次达到故障转移条件的失败会重启该 ramp,被拒绝的请求则顺延到选择顺序中的下一个账户。无论门控如何,最后一个候选始终会被尝试,因此门控只能推迟、而绝不会失败一个未门控的池本会服务的请求。这也意味着,若池中所有账户都解析到同一个上游身份,则该池实际上不受门控:唯一的候选同时也是最后一个候选,因此该设置仅在存在两个及以上不同账户身份时才生效。
 
 ## `[providers.<name>]`
 

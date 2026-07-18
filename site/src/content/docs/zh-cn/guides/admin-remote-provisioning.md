@@ -59,7 +59,7 @@ shunt run
 
 ## 查看池健康状况
 
-仪表盘展示配置了 `auth = "claude_oauth"` 或 `auth = "chatgpt_oauth"` 的 provider 的账户存储元数据与当前状态。Claude 行显示从上游观测到的配额使用率。Codex 不发送配额 header,因此使用率列保持为 `—`;shunt 不会推断或解析 Codex 使用量。
+仪表盘展示配置了 `auth = "claude_oauth"` 或 `auth = "chatgpt_oauth"` 的 provider 的账户存储元数据与当前状态。Claude 行包含从上游响应观测到的 5 小时、共享 7 天与 `7d_oi` 使用率,以及状态和冷却状态。Codex 行显示 `x-codex-*` 响应 header 中所报告的 5 小时和 7 天窗口;不受支持的窗口会被忽略,`7d_oi` 保持为 `—`,因为 Codex 没有对应项。Codex 用量也会像 Claude 用量一样,用于配额感知的账户选择(issue #195)。
 
 账户列表只暴露元数据:账户名、凭据类型(`setup_token` 或 `imported`)、过期时间和 UUID。它绝不返回 token 材料。shunt 在选择账户时如何使用配额状态、冷却和感知模型的周桶,见 [Anthropic 多账户](/zh-cn/guides/anthropic-multi-account/#选择与主动轮换)。
 

@@ -312,6 +312,8 @@ mod tests {
             users_env: users_env.clone(),
             token_ttl_seconds: 3600,
             trust_forwarded_for: false,
+            policies: None,
+            telemetry: None,
             state_path: Some(path.clone()),
             oidc: None,
         });

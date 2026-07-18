@@ -181,10 +181,13 @@ one-hour cache-TTL beta are omitted, and sign-in requires a browser. Personal
 single-user installations that do not need managed identity should continue to
 use `ANTHROPIC_BASE_URL` and, when needed, `[server.auth]`.
 
+For per-user policy after sign-in, shunt now serves authenticated
+`GET /managed/settings` with ordered email matching, `ETag`/`304`, telemetry
+environment push, and `availableModels` enforcement. See the
+[M-B managed-settings note](gateway-managed-settings.md).
+
 ## Follow-ups
 
-- **M-B:** authenticated `GET /managed/settings`, policy matching, ETag/304, and
-  the managed telemetry environment push.
 - **M-C:** authenticated inbound OTLP `POST /v1/{metrics,logs,traces}` sink and
   optional verbatim relay.
 - **Multi-instance session sharing:** move refresh sessions (and device grants)

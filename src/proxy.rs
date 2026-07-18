@@ -133,16 +133,20 @@ async fn forward(
             }
         })?;
     let body = normalize_request_body(body.to_vec());
-    let route = routing::resolve(&state.config, &body).map_err(|error| ForwardError {
-        message: "failed to route request".to_string(),
-        response: error.into_response(),
-    })?;
+    let (route, requested_model) =
+        routing::resolve_request(&state.config, &body).map_err(|error| ForwardError {
+            message: "failed to route request".to_string(),
+            response: error.into_response(),
+        })?;
     // Inbound client auth (M4): only routes where shunt injects a server-side
     // credential are gated — passthrough callers pay with their own credential.
     // The client-token header is stripped below either way (and on gated routes
     // the standard credential headers too), so a gate token never leaks
     // upstream.
-    let headers = check_inbound_auth(&state, &route, headers).map_err(|error| *error)?;
+    let (headers, gateway_claims) =
+        check_inbound_auth(&state, &route, headers).map_err(|error| *error)?;
+    enforce_managed_model_policy(&state, gateway_claims.as_ref(), &requested_model)
+        .map_err(|error| *error)?;
     let headers = &headers;
     // The Responses API has no token-counting endpoint. For a responses-routed
     // model, either count locally with tiktoken (the default) or return 501
@@ -219,6 +223,36 @@ async fn forward(
     })
 }
 
+fn enforce_managed_model_policy(
+    state: &AppState,
+    claims: Option<&crate::gateway::jwt::Claims>,
+    requested_model: &str,
+) -> Result<(), Box<ForwardError>> {
+    let Some((auth, claims)) = state.gateway_auth.as_ref().zip(claims) else {
+        return Ok(());
+    };
+    let Some(available_models) = auth
+        .managed_settings(&claims.email)
+        .and_then(crate::gateway::managed::available_models)
+    else {
+        return Ok(());
+    };
+    let policy_model = routing::strip_context_window_hint(requested_model);
+    if available_models
+        .iter()
+        .any(|model| model.as_str() == Some(policy_model))
+    {
+        return Ok(());
+    }
+    let message =
+        format!("model \"{requested_model}\" is not permitted by this gateway's managed policy");
+    Err(Box::new(ForwardError {
+        message: message.clone(),
+        response: ShuntError::new(StatusCode::BAD_REQUEST, "invalid_request_error", message)
+            .into_response(),
+    }))
+}
+
 /// Enforce configured client authentication on injected-credential routes and
 /// strip every accepted credential slot from what gets forwarded upstream.
 /// `[server.auth]` tokens and `[server.gateway]` JWTs compose as alternatives:
@@ -227,34 +261,34 @@ fn check_inbound_auth(
     state: &AppState,
     route: &routing::Route,
     headers: &HeaderMap,
-) -> Result<HeaderMap, Box<ForwardError>> {
+) -> Result<(HeaderMap, Option<crate::gateway::jwt::Claims>), Box<ForwardError>> {
     let mut forwarded = headers.clone();
     forwarded.remove("x-shunt-inbound-client");
     if let Some(auth) = &state.inbound_auth {
         forwarded.remove(auth.header());
     }
 
+    let gateway_identity = state
+        .gateway_auth
+        .as_ref()
+        .and_then(|auth| auth.authenticate_bearer(headers));
     let injects_credential = state
         .config
         .provider(&route.provider)
         .map(|provider| provider.auth != AuthMode::Passthrough)
         .unwrap_or(false);
     if !injects_credential || (state.inbound_auth.is_none() && state.gateway_auth.is_none()) {
-        return Ok(forwarded);
+        return Ok((forwarded, gateway_identity));
     }
 
     let static_client = state
         .inbound_auth
         .as_ref()
         .and_then(|auth| auth.authenticate_client(headers));
-    let gateway_identity = state
-        .gateway_auth
-        .as_ref()
-        .and_then(|auth| auth.authenticate_bearer(headers));
     if static_client.is_some() || gateway_identity.is_some() {
         let client = static_client
             .map(str::to_string)
-            .or_else(|| gateway_identity.map(|claims| claims.email))
+            .or_else(|| gateway_identity.as_ref().map(|claims| claims.email.clone()))
             .expect("one composed authentication branch matched");
         tracing::info!(client = %client, provider = %route.provider, "inbound client authenticated");
         forwarded.remove("authorization");
@@ -264,7 +298,7 @@ fn check_inbound_auth(
                 forwarded.insert("x-shunt-inbound-client", client);
             }
         }
-        return Ok(forwarded);
+        return Ok((forwarded, gateway_identity));
     }
 
     tracing::warn!(provider = %route.provider, "inbound auth failed: missing or invalid client credential");

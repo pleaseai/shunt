@@ -2,9 +2,9 @@
 
 M10 adds an account pool to a Codex/ChatGPT provider authenticated with ChatGPT subscription OAuth, mirroring [M8's](m8-anthropic-multi-account.md) Anthropic account pool onto `auth = "chatgpt_oauth"`. shunt chooses an account per request, injects that account's ChatGPT bearer, and retries another account after an upstream failure before relaying a response to Claude Code.
 
-M10 remains **reactive-only**, unlike M8. Three differences from the Anthropic pool are worth calling out up front:
+Since issue #195, M10 selection is **quota-aware**, sharing M8's selection machinery. Three differences from the Anthropic pool are worth calling out up front:
 
-1. **Cooldown-based reactive failover, no proactive rotation.** shunt now parses the ChatGPT/Codex backend's `x-codex-*` 5-hour and 7-day windows for display in the admin dashboard, but deliberately excludes that state from `select_order()`. Selection remains pure session-sticky-or-round-robin, filtered by cooldown and account priority/disabled state; an account is only avoided after it has actually failed.
+1. **Same proactive selection engine, Codex-shaped quota signal.** shunt parses the ChatGPT/Codex backend's `x-codex-*` 5-hour and 7-day windows and feeds them into the same `select_order()` used by the Anthropic pool: a near-quota sticky account proactively yields, available accounts order by `priority` then (with `[server.pool]`) burn-rate headroom, and `[server.pool]` thresholds/`burn_rate_avoidance` apply. Codex has no `7d_oi` (Fable) analog, so only the 5-hour and shared weekly windows govern; the optional `x-codex-rate-limit-reached-type` value is recorded for display but is not the Anthropic `rejected` signal and does not itself mark an account near quota. Reactive cooldown-based failover remains the safety floor.
 2. **No `account_uuid` body rewrite.** M8's Anthropic pool rewrites an existing `metadata.user_id.account_uuid` to the selected account's Anthropic UUID. Codex has no equivalent request-body field — its account id is sent via the `chatgpt-account-id` header. The pool stores the resolved `account_id` in the shared `AccountConfig.uuid` field as its provider-independent stable identity so aliases can be coalesced; it is never written into the Codex request body.
 3. **Errors are translated, not relayed verbatim.** When the pool is exhausted after seeing at least one upstream response, shunt re-shapes that last response into an Anthropic-style error envelope (`build_upstream_error`) rather than relaying the raw Codex/OpenAI body — the opposite of M8, which relays the last upstream response unchanged. If every account fails before any upstream response exists (for example, every credential fails to resolve), shunt returns a gateway-owned `502 bad gateway` with the fixed message `all Codex OAuth accounts failed before receiving an upstream response`.
 
@@ -109,7 +109,7 @@ Selection state is per provider and survives config hot reloads for the life of 
 
 - If the request includes `x-claude-code-session-id`, shunt hashes it with SHA-256 to choose the sticky account — the same mechanism M8 uses, unchanged.
 - Without that header, shunt uses an independent round-robin counter for each provider.
-- Successful pooled responses populate the admin dashboard from `x-codex-primary-*` and `x-codex-secondary-*` headers. Each group is mapped by `window-minutes` (about 300 minutes → 5h; about 10080 minutes → 7d); other windows are ignored, and Codex has no `7d_oi` analog. This is display-only: `select_order_cooldown()` ignores the recorded quota, so there is no proactive switch away from a healthy sticky account. An account is only skipped once it is in cooldown.
+- Successful pooled responses record quota from `x-codex-primary-*` and `x-codex-secondary-*` headers. Each group is mapped by `window-minutes` (about 300 minutes → 5h; about 10080 minutes → 7d); other windows are ignored, and Codex has no `7d_oi` analog. The recorded windows feed both the admin dashboard and `select_order()` (issue #195): a sticky account at or past its threshold (the built-in `0.98`, or the `[server.pool]`/per-account soft thresholds) proactively yields to an account with more headroom before it ever returns a 429.
 - A successful response clears that account's cooldown.
 
 Cooldown durations:
@@ -167,7 +167,19 @@ If the provider also opts into the experimental Codex WebSocket transport, the p
 
 A `chatgpt_oauth` provider with no `[[providers.<name>.accounts]]` configured (the default `codex` provider, as documented in [`codex-configuration.md`](codex-configuration.md)) behaves byte-identically to before M10: it reads and refreshes `~/.codex/auth.json` (or `$CODEX_AUTH_FILE`) directly, with no pool, no cooldowns, and no `x-shunt-account` header.
 
+## Storm control (`ramp_initial_concurrency`)
+
+Issue #195 also closes M10's storm-control gap. With `[server.pool] ramp_initial_concurrency = N` set (unset or `0` disables it, the default), every account pool — Codex and Anthropic alike — gates concurrent admissions per upstream identity with a slow-start ramp:
+
+- An identity that just started taking traffic (fresh entry, back from a cooldown, or idle for 60 seconds) admits at most `N` concurrent requests.
+- Each successful response doubles the allowance, so a healthy account leaves the ramp within a handful of turns.
+- A request denied admission spills to the next account in selection order instead of piling on; the **last** remaining candidate is always attempted regardless of the gate, so a saturated pool degrades to pre-#195 behavior rather than failing the request.
+- A failover-worthy failure (429/5xx/401/transport) restarts that identity's ramp.
+- Gating is per upstream identity and only ever defers to *other* candidates, so a pool whose accounts all resolve to a single identity is effectively ungated — its only candidate is also its last candidate and is always admitted.
+
+This prevents the post-failover stampede where every in-flight request lands on the freshly selected account at once.
+
 ## Out of scope / follow-up
 
-- **Quota-aware proactive rotation.** Codex's `x-codex-*` windows are currently display-only. Feeding them into selection would be a separate behavior change; failover intentionally remains cooldown-based.
-- **Storm-control.** Same open follow-up as M8: ramping concurrency after switching to a fresh account is not implemented for either pool.
+- **Quota-aware rotation and storm control shipped with issue #195** (see above); both former follow-ups are closed.
+- **Out-of-band usage reconciliation.** The Anthropic pool can poll `GET /api/oauth/usage` (`usage_refresh_seconds`); Codex has no equivalent usage API, so its quota state refreshes only from response headers.

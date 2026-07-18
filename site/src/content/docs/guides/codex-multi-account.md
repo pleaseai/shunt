@@ -1,9 +1,9 @@
 ---
 title: Codex Multi-Account
-description: Pool ChatGPT/Codex subscription OAuth accounts with session-sticky selection and cooldown-based reactive failover.
+description: Pool ChatGPT/Codex subscription OAuth accounts with session-sticky, quota-aware proactive selection and reactive failover.
 ---
 
-shunt can pool multiple ChatGPT subscription OAuth credentials behind a `chatgpt_oauth` provider — the built-in `codex` provider, or any `responses` provider using that auth mode. Requests are session-sticky when Claude Code supplies `x-claude-code-session-id`; requests without it use per-provider round-robin. Unlike the [Anthropic account pool](/guides/anthropic-multi-account/), this pool is **reactive-only**: shunt records the backend's `x-codex-*` 5-hour/7-day usage windows for dashboard display, but deliberately keeps them out of selection. An account is only avoided after it has actually failed.
+shunt can pool multiple ChatGPT subscription OAuth credentials behind a `chatgpt_oauth` provider — the built-in `codex` provider, or any `responses` provider using that auth mode. Requests are session-sticky when Claude Code supplies `x-claude-code-session-id`; requests without it use per-provider round-robin. Like the [Anthropic account pool](/guides/anthropic-multi-account/), selection is **quota-aware**: shunt records the backend's `x-codex-*` 5-hour/7-day usage windows and proactively rotates off a sticky account that nears its quota, while cooldown-based reactive failover remains the safety floor.
 
 :::caution[Subscription terms]
 Use subscription credentials only where your account terms permit it. shunt is an unofficial client and does not change OpenAI's account or subscription policies.
@@ -95,8 +95,9 @@ Deleting a store-managed account through the admin web surface clears that ident
 
 - With `x-claude-code-session-id`: a stable hash picks the sticky account, same mechanism as the Anthropic pool.
 - Without the header: each provider has its own round-robin counter.
-- Successful responses populate the admin dashboard from `x-codex-primary-*` and `x-codex-secondary-*` headers. shunt maps each group by `window-minutes`: about 300 minutes appears in 5h, about 10080 minutes appears in 7d, and other windows are ignored. Codex has no `7d_oi` analog.
-- Recorded usage is display-only and never changes selection, so there is no proactive switch away from a healthy sticky account. An account keeps its turn until it actually fails.
+- Successful responses record usage from `x-codex-primary-*` and `x-codex-secondary-*` headers. shunt maps each group by `window-minutes`: about 300 minutes appears in 5h, about 10080 minutes appears in 7d, and other windows are ignored. Codex has no `7d_oi` analog.
+- Recorded usage feeds selection, exactly as in the [Anthropic pool](/guides/anthropic-multi-account/): a sticky account at or past its threshold (the built-in `0.98`, or the [`[server.pool]`](/reference/configuration/#serverpool-optional)/per-account soft thresholds) proactively yields to the account with the most headroom, and `burn_rate_avoidance` and priority/headroom ordering apply. The `x-codex-rate-limit-reached-type` value is recorded for display only.
+- With `[server.pool] ramp_initial_concurrency` set, a slow-start admission gate protects a freshly selected account from being stampeded after a failover; see [`[server.pool]`](/reference/configuration/#serverpool-optional).
 - A successful response clears that account's cooldown.
 
 | Trigger | Cooldown |
@@ -160,8 +161,7 @@ A `chatgpt_oauth` provider with no `accounts` configured (the default `codex` pr
 
 ## Remaining follow-up
 
-- **Quota-aware proactive rotation:** Codex's recorded usage windows are display-only. Feeding them into selection would be a separate behavior change; failover intentionally remains cooldown-based.
+- **Out-of-band usage reconciliation:** the Anthropic pool can poll an authoritative usage API (`usage_refresh_seconds`); Codex has no equivalent, so its quota state refreshes only from response headers.
 - **Admin web provisioning:** the opt-in [admin surface](/guides/admin-remote-provisioning/) can run ChatGPT OAuth in the browser, store a refreshable Codex account, show it in the shared pool table, and display reported 5h/7d usage (`7d_oi` remains empty because Codex has no analog).
-- **Storm-control:** ramping a freshly switched account's concurrency remains unimplemented for both pools.
 
 See the [M10 behavior specification](https://github.com/pleaseai/shunt/blob/main/docs/m10-codex-multi-account.md) for the full account-pool internals, and the [ChatGPT / Codex guide](/guides/codex/) for single-account setup, model routing, and effort/context configuration.

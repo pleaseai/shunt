@@ -98,6 +98,57 @@ Start Claude Code and run `/login`. The CLI shows a device code and opens the ga
 
 Pre-filling the code never auto-approves it. The password approval POST is same-origin protected. The external callback instead binds the cross-site redirect with a single-use, ten-minute OAuth state and PKCE; provider errors are never echoed into the page.
 
+## Managed settings and model policy
+
+After sign-in, shunt serves the user's resolved policy from authenticated
+`GET /managed/settings`. Configure ordered `[[server.gateway.policies]]` entries:
+
+```toml
+[[server.gateway.policies]]
+[server.gateway.policies.match]
+emails = ["alice@example.com"]
+[server.gateway.policies.cli]
+availableModels = ["claude-opus-4-8"]
+[server.gateway.policies.cli.env]
+DISABLE_UPDATES = "1"
+
+[[server.gateway.policies]]
+match = {} # catch-all
+[server.gateway.policies.cli.permissions]
+deny = ["WebFetch"]
+```
+
+All catch-all entries merge in order. The first email-specific match then merges
+on top. Objects merge recursively, allow-list arrays replace, and arrays whose
+key contains `deny` are unioned without duplicates. A configured policy always
+returns `200`; when no user-specific or catch-all settings apply, the response
+contains only the injected telemetry `env` if telemetry is enabled, and `{}`
+otherwise. Omitting `policies` returns `404` so Claude Code can distinguish “no
+managed policy.” Responses include a stable
+per-user `uuid`, a settings `checksum`, and an RFC-quoted `ETag` containing that
+checksum; `If-None-Match` returns `304` when unchanged and also accepts weak,
+comma-list, wildcard, and legacy-unquoted validators.
+
+When `availableModels` resolves to an array of strings, shunt also enforces it on
+`/v1/messages` and `/v1/messages/count_tokens` for that gateway user. It strips
+one trailing Claude Code context-window hint (`[1m]` or `[1M]`) from the
+client-requested model before comparison, so `allowed[1m]` matches an `allowed`
+entry. A denied model receives `400 invalid_request_error` without contacting
+the upstream.
+
+A non-empty telemetry destination list pushes the six standard Claude Code OTLP
+environment values. Policy `env` keys override injected defaults:
+
+```toml
+[server.gateway.telemetry]
+[[server.gateway.telemetry.forward_to]]
+url = "https://collector.example.com"
+# headers = { "x-api-key" = "..." }
+```
+
+This configuration gates the managed environment push now. The authenticated
+OTLP ingest/relay routes arrive separately in M-C (#189).
+
 ## Session behavior
 
 Access tokens are HS256 JWTs with a one-hour default lifetime. Claude Code silently refreshes them. Every refresh rotates the opaque refresh token; replaying a retained old token within the 30-day, 64-tombstone bound invalidates the active token in that rotation family and makes Claude Code sign in again.
@@ -112,4 +163,6 @@ When [`[server.auth]`](/guides/shared-gateway/) and `[server.gateway]` are both 
 
 ## What comes next
 
-This milestone implements login and bearer validation only. Per-user managed policy from `GET /managed/settings` and inbound OTLP telemetry are separate follow-ups. Until the managed-settings endpoint lands, deploy the `forceLoginMethod` and `forceLoginGatewayUrl` settings through your existing device-management system.
+Managed policy, `ETag` caching, telemetry environment push, and server-side model
+allow-list enforcement are described above. Authenticated inbound OTLP telemetry
+remains the separate M-C follow-up.

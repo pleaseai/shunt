@@ -12,6 +12,7 @@ description: The endpoints shunt serves as a Claude Code LLM gateway.
 | `GET` | `/routes` | shunt-native route discovery — returns the configured `[[routes]]` table verbatim (model → provider/upstream_model/effort mapping, including claude-prefixed discovery aliases); distinct from `/v1/models`, which serves the narrower Anthropic-protocol discovery response (`id`/`display_name` only) |
 | `POST` | `/v1/messages` | Inference — routed per the request's `model` id |
 | `POST` | `/v1/messages/count_tokens` | [Token counting](/guides/effort-and-context/#token-counting-count_tokens) |
+| `GET` | `/managed/settings` | Per-user Claude Code managed settings for a gateway JWT; supports `ETag`, `If-None-Match`, and `304 Not Modified` |
 | `GET` | `/admin` | Admin dashboard (HTML); redirects to `/admin/login` when not signed in |
 | `GET`, `POST` | `/admin/login` | Admin-token login form and browser-session creation |
 | `POST` | `/admin/logout` | Clear the browser session |
@@ -36,6 +37,18 @@ description: The endpoints shunt serves as a Claude Code LLM gateway.
 | `GET` | `/device/callback` | Complete the OIDC authorization-code callback |
 
 The gateway discovery, device, token, and browser routes exist only when [`[server.gateway]`](/reference/configuration/#servergateway-optional) is configured at startup. `POST /device/authorize` and `GET /device/callback` additionally require [`[server.gateway.oidc]`](/reference/configuration/#servergatewayoidc-optional); without OIDC configuration they return a browser error page rather than starting an external sign-in. Adding or removing `[server.gateway]` requires a restart because route registration is fixed at boot, while changes to its resolved credentials and OIDC configuration hot-apply.
+
+The `/managed/settings` route exists only when [`[server.gateway]`](/reference/configuration/#servergateway-optional) was enabled at boot. A valid gateway bearer JWT is required; static `[server.auth]` tokens do not authenticate this endpoint. When `[[server.gateway.policies]]` is configured, the response is:
+
+```json
+{
+  "uuid": "sha256:<stable-user-hash>",
+  "checksum": "sha256:<settings-hash>",
+  "settings": { "availableModels": ["claude-opus-4-8"] }
+}
+```
+
+`ETag` is the quoted checksum (`"sha256:<settings-hash>"`). Send it back in `If-None-Match` to receive `304 Not Modified` with an empty body when settings have not changed; comma-separated validator lists, weak validators, `*`, and legacy unquoted checksum values are accepted. No configured `policies` returns `404`; a policy that resolves to an empty document returns `200` with `settings: {}`.
 
 The `/admin*` routes exist only when [`[server.admin]`](/reference/configuration/#serveradmin-optional) is configured; without that table, none of them are registered.
 

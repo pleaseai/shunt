@@ -19,7 +19,7 @@ use crate::{
 use super::{
     error::own_error,
     pool::{
-        classify_first, classify_retry, force_refresh_or_cooldown, resolve_or_cooldown,
+        admit_and_resolve, classify_first, classify_retry, force_refresh_or_cooldown,
         with_account_header, FirstOutcome, RetryOutcome,
     },
     request::responses_url,
@@ -120,25 +120,33 @@ async fn forward_codex_passthrough(
             accounts_config.len()
         )));
     }
-    // Codex quota is display-only: this endpoint preserves cooldown-based
-    // selection even when response headers populate the admin dashboard.
-    let order = state.accounts.select_order_cooldown(
+    // Recorded x-codex-* quota windows feed selection here exactly as on the
+    // translating outbound path: near-quota accounts rotate proactively and
+    // available accounts order by burn-rate headroom (issue #195). The
+    // passthrough body's model is a label only (no fable-scoped Codex window).
+    let order = state.accounts.select_order(
         &route.provider,
         &accounts_config,
         pool_key.as_deref(),
+        Some(route.upstream_model.as_str()),
+        state.config.server.pool.as_ref(),
     );
+    let ramp_initial = state.config.storm_ramp_initial();
+    let candidates = order.len();
     let mut last_response: Option<reqwest::Response> = None;
 
-    for index in order {
+    for (position, index) in order.into_iter().enumerate() {
         let account = &accounts_config[index];
 
-        // Resolve the account's credential without the account-pool refresh lock;
-        // the shared auth store returns valid tokens concurrently and
-        // single-flights expired-token refreshes internally. A resolution
-        // failure cools the account down and rotates to the next account.
-        let credential = match resolve_or_cooldown(&state, &route, account).await {
-            Some(credential) => credential,
-            None => continue,
+        // Storm-control admission + credential resolution shared with the
+        // translating outbound path (issue #195, `admit_and_resolve`): a
+        // saturated identity or failed auth rotates to the next candidate; on
+        // a relayed success the guard moves into the response body
+        // (`with_admission`) so the slot stays held until the stream finishes.
+        let Some((admission, credential)) =
+            admit_and_resolve(&state, &route, account, ramp_initial, position, candidates).await
+        else {
+            continue;
         };
 
         let upstream = match passthrough_send(
@@ -177,10 +185,17 @@ async fn forward_codex_passthrough(
             // the raw Responses body, error or not — and never rotate.
             FirstOutcome::Relay(upstream) => {
                 let status = upstream.status();
-                state.accounts.mark_healthy(&route.provider, account);
+                // Relayed 4xx bodies pass through verbatim, but only a real
+                // success grows the storm-control allowance.
+                state
+                    .accounts
+                    .mark_healthy(&route.provider, account, status.is_success());
                 return Ok((
                     status,
-                    with_account_header(relay_passthrough(upstream), &account.name),
+                    crate::adapters::with_admission(
+                        with_account_header(relay_passthrough(upstream), &account.name),
+                        admission,
+                    ),
                 ));
             }
             FirstOutcome::Rotate(upstream) => {
@@ -231,10 +246,17 @@ async fn forward_codex_passthrough(
                 match classify_retry(&state, &route, account, retry) {
                     RetryOutcome::Relay(retry) => {
                         let retry_status = retry.status();
-                        state.accounts.mark_healthy(&route.provider, account);
+                        state.accounts.mark_healthy(
+                            &route.provider,
+                            account,
+                            retry_status.is_success(),
+                        );
                         return Ok((
                             retry_status,
-                            with_account_header(relay_passthrough(retry), &account.name),
+                            crate::adapters::with_admission(
+                                with_account_header(relay_passthrough(retry), &account.name),
+                                admission,
+                            ),
                         ));
                     }
                     RetryOutcome::Rotate(retry) => {
