@@ -150,6 +150,8 @@ headers = { "x-api-key" = "..." }
 
 由 `GET /v1/models` 为 [模型发现](/zh-cn/guides/model-discovery/) 返回的条目。id 必须以 `claude` 或 `anthropic` 开头,否则 Claude Code 会忽略它们。
 
+顶层 `auto_include_builtin_models` 键默认为 `true`。启用后,shunt 会先返回管理员维护的 `[[models]]` 条目,再追加与参考 Claude apps gateway 保持一致的内置 Claude 模型目录。对于 id 完全相同的条目,会保留管理员维护的条目并去重。若只想公开 `[[models]]` 列表,请将其设为 `false`。内置模型通过 `server.default_provider` 路由,因此不需要 `[[routes]]` 条目。
+
 | 键 | 必需 | 含义 |
 | :-- | :-- | :-- |
 | `id` | ✅ | 暴露给 Claude Code 的模型 id |

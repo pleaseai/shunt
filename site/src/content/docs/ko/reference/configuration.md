@@ -162,6 +162,8 @@ headers = { "x-api-key" = "..." }
 
 [모델 디스커버리](/ko/guides/model-discovery/)를 위해 `GET /v1/models`가 반환하는 항목. id는 반드시 `claude` 또는 `anthropic`으로 시작해야 하며, 그렇지 않으면 Claude Code가 무시합니다.
 
+최상위 `auto_include_builtin_models` 키의 기본값은 `true`입니다. 활성화하면 shunt는 관리자가 선별한 `[[models]]` 항목을 먼저 반환한 뒤, 레퍼런스 Claude apps gateway를 미러링하는 내장 Claude 모델 카탈로그를 추가합니다. id가 정확히 같은 항목은 선별된 항목을 우선하여 중복을 제거합니다. `[[models]]` 목록만 노출하려면 `false`로 설정하세요. 내장 모델은 `server.default_provider`를 통해 라우팅되므로 `[[routes]]` 항목이 필요하지 않습니다.
+
 | 키 | 필수 | 의미 |
 | :-- | :-- | :-- |
 | `id` | ✅ | Claude Code에 노출되는 모델 id |

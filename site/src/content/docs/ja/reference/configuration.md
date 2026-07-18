@@ -150,6 +150,8 @@ headers = { "x-api-key" = "..." }
 
 [model discovery](/ja/guides/model-discovery/) 向けに `GET /v1/models` が返すエントリ。id は `claude` または `anthropic` で始まる必要があります。さもないと Claude Code が無視します。
 
+トップレベルの `auto_include_builtin_models` キーはデフォルトで `true` です。有効な場合、shunt は管理者が選定した `[[models]]` エントリを先に返し、その後にリファレンス Claude apps gateway をミラーする組み込み Claude モデルカタログを追加します。同一 id は選定したエントリを優先して重複を除きます。`[[models]]` リストだけを公開するには `false` に設定してください。組み込みモデルは `server.default_provider` 経由でルーティングされるため、`[[routes]]` エントリは不要です。
+
 | キー | 必須 | 意味 |
 | :-- | :-- | :-- |
 | `id` | ✅ | Claude Code に公開されるモデル id |

@@ -247,6 +247,8 @@ Prefix-match routing entries — checked after exact routes:
 
 Entries returned by `GET /v1/models` for [model discovery](/guides/model-discovery/). Ids must begin with `claude` or `anthropic` or Claude Code ignores them.
 
+The top-level `auto_include_builtin_models` key defaults to `true`. When enabled, shunt returns these curated `[[models]]` entries first, then its builtin Claude catalog mirroring the reference Claude apps gateway, with exact-id duplicates removed in favor of the curated entry. Set it to `false` to expose only the `[[models]]` list. Builtin models route through `server.default_provider`, so they do not need a `[[routes]]` entry.
+
 | Key | Required | Meaning |
 | :-- | :-- | :-- |
 | `id` | ✅ | Model id exposed to Claude Code |

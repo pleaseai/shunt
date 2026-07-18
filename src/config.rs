@@ -15,6 +15,8 @@ use thiserror::Error;
 pub struct Config {
     pub server: ServerConfig,
     pub providers: ProvidersConfig,
+    #[serde(default = "default_auto_include_builtin_models")]
+    pub auto_include_builtin_models: bool,
     #[serde(default)]
     pub models: Vec<ModelConfig>,
     #[serde(default)]
@@ -29,6 +31,10 @@ pub struct Config {
     /// no exporter is created and nothing ever leaves the machine.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub otel: Option<OtelConfig>,
+}
+
+fn default_auto_include_builtin_models() -> bool {
+    true
 }
 
 /// Providers are a name → config map, so a new upstream is just another
@@ -1576,6 +1582,7 @@ impl Default for Config {
                 sse_keepalive_seconds: default_sse_keepalive_seconds(),
             },
             providers,
+            auto_include_builtin_models: true,
             models: Vec::new(),
             routes: Vec::new(),
             route_prefixes: Vec::new(),
@@ -3776,6 +3783,24 @@ mod tests {
                 "/usr/local/etc/shunt.yml",
             ]
         );
+    }
+
+    #[test]
+    fn auto_include_builtin_models_defaults_to_true() {
+        assert!(Config::default().auto_include_builtin_models);
+    }
+
+    #[test]
+    fn auto_include_builtin_models_parses_false_from_toml() {
+        let config: Config =
+            figment::Figment::from(figment::providers::Serialized::defaults(Config::default()))
+                .merge(figment::providers::Toml::string(
+                    "auto_include_builtin_models = false",
+                ))
+                .extract()
+                .unwrap();
+
+        assert!(!config.auto_include_builtin_models);
     }
 
     #[test]

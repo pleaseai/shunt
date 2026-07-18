@@ -3,7 +3,9 @@ title: Model Discovery
 description: Populate Claude Code's /model picker automatically with Claude-named aliases.
 ---
 
-Discovery (`GET /v1/models`) can populate Claude Code's `/model` picker automatically — **but Claude Code ignores any id that doesn't begin with `claude`/`anthropic`** ([protocol reference](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery)). So a `gpt-*` id is dropped client-side no matter what; discovery is only useful when you expose a **Claude-named alias** that a `[[routes]]` entry rewrites to the real upstream slug:
+Discovery (`GET /v1/models`) can populate Claude Code's `/model` picker automatically. By default, shunt returns the admin-curated `[[models]]` entries first, followed by its builtin Claude model catalog mirroring the reference Claude apps gateway. Exact-id duplicates are removed in favor of the curated entry. Set the top-level `auto_include_builtin_models = false` to expose only the curated list. Builtin models route through `server.default_provider` and need no `[[routes]]` entry.
+
+Claude Code ignores any discovered id that doesn't begin with `claude`/`anthropic` ([protocol reference](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery)). Therefore, add a **Claude-named alias** when curating a non-Claude model such as `gpt-*`, and use a `[[routes]]` entry to rewrite it to the real upstream slug:
 
 ```toml
 [[models]]

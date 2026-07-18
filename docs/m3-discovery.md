@@ -52,10 +52,14 @@ is the documented default. Discovery is only useful if shunt exposes a **Claude-
   id = "claude-opus-via-codex"      # must start with claude/anthropic to be honored
   display_name = "Opus (via Codex)"
   ```
-- Return `{ "data": [...] }` verbatim from config; no upstream call.
+- Return `{ "data": [...] }` from local config; no upstream call.
+- The top-level `auto_include_builtin_models` key mirrors the reference Claude apps gateway and
+  defaults to `true`: append the builtin Claude catalog after `[[models]]`, deduplicating by exact
+  id so the curated entry wins. Builtins route through the default provider and do not require a
+  `[[routes]]` entry. Set the key to `false` for a strictly curated response.
 - Never redirect; respond well under 3 s.
-- If `[[models]]` is empty, return `{ "data": [] }` (discovery simply adds nothing; the custom
-  model option still works).
+- If `[[models]]` is empty and `auto_include_builtin_models = false`, return `{ "data": [] }`
+  (discovery simply adds nothing; the custom model option still works).
 - A discovered id should also have a matching `[[routes]]` entry (id → provider + `upstream_model`)
   so selecting it actually routes; validate this linkage at config load (warn if a `[[models]]`
   id has no route).
@@ -111,8 +115,9 @@ and `count_tokens_uses_tiktoken_by_default` in `tests/passthrough.rs`.
 
 ## 8. Tests
 
-- `/v1/models` returns configured entries; empty list when unconfigured; never emits a redirect;
-  responds without an upstream call.
+- `/v1/models` returns curated entries followed by deduplicated builtins by default; disabling
+  `auto_include_builtin_models` returns only configured entries (including an empty list); never
+  emits a redirect; responds without an upstream call.
 - Config validation: a `[[models]]` id lacking a `[[routes]]` entry warns.
 - `map_model` / `effort_for` table + suffix + override precedence (pure unit tests).
 - Alias model-of-record rewrite on the return path: `model_rewrite` unit tests (streaming frame,
