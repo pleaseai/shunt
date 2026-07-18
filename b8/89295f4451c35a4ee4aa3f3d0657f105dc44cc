@@ -1,0 +1,127 @@
+site/src/content/docs/ja/getting-started/comparison.md
+  s_23de6628d27a7d::t_44c95d28606dc6 16,56,75,77,110
+site/src/content/docs/ja/guides/anthropic-multi-account.md
+  s_23de6628d27a7d::t_44c95d28606dc6 126,145,209,211
+site/src/content/docs/ko/guides/codex.md
+  s_23de6628d27a7d::t_44c95d28606dc6 26
+docs/m11-inbound-codex-endpoint.md
+  s_23de6628d27a7d::t_44c95d28606dc6 134
+docs/gateway-login.md
+  s_23de6628d27a7d::t_44c95d28606dc6 54,88-120,144-149
+docs/m9-admin-surface.md
+  s_23de6628d27a7d::t_44c95d28606dc6 232
+site/src/content/docs/ko/getting-started/comparison.md
+  s_23de6628d27a7d::t_44c95d28606dc6 16,56,75,77,110
+site/src/content/docs/guides/admin-remote-provisioning.md
+  s_23de6628d27a7d::t_44c95d28606dc6 69
+site/src/content/docs/zh-cn/guides/anthropic-multi-account.md
+  s_23de6628d27a7d::t_44c95d28606dc6 126,145,209,211
+docs/comparison.md
+  s_23de6628d27a7d::t_44c95d28606dc6 24-26,90-95,166-171,262,265-272,296-298,303
+src/gateway/persist.rs
+  s_23de6628d27a7d::t_a94bb4e415efa0 315-316
+  s_23de6628d27a7d::t_44c95d28606dc6 1-314,317-368
+src/state_persist.rs
+  s_23de6628d27a7d::t_44c95d28606dc6 20,191-193,196,206
+src/atomic_file.rs
+  s_23de6628d27a7d::t_44c95d28606dc6 1-107
+.please/docs/review/rejected-findings.jsonl
+  s_23de6628d27a7d::t_670b3f5b1c6a87 23-32
+site/src/content/docs/guides/gateway-login.md
+  s_23de6628d27a7d::t_44c95d28606dc6 30,122-126
+tests/multi_account.rs
+  s_23de6628d27a7d::t_44c95d28606dc6 972-1070
+site/src/content/docs/ko/reference/configuration.md
+  s_23de6628d27a7d::t_44c95d28606dc6 91,103,105,111
+  s_23de6628d27a7d::t_c905eaf321f223 112
+site/src/content/docs/ja/guides/admin-remote-provisioning.md
+  s_23de6628d27a7d::t_44c95d28606dc6 62
+site/src/content/docs/guides/codex-multi-account.md
+  s_23de6628d27a7d::t_44c95d28606dc6 3,6,98-100,164
+site/src/content/docs/getting-started/comparison.md
+  s_23de6628d27a7d::t_44c95d28606dc6 16,56,75,77,110
+site/src/content/docs/guides/anthropic-multi-account.md
+  s_23de6628d27a7d::t_44c95d28606dc6 126,145,209,211
+docs/m8-anthropic-multi-account.md
+  s_23de6628d27a7d::t_44c95d28606dc6 203
+site/src/content/docs/ja/guides/codex.md
+  s_23de6628d27a7d::t_44c95d28606dc6 28
+site/src/content/docs/ja/reference/configuration.md
+  s_23de6628d27a7d::t_44c95d28606dc6 91,103,105,111
+  s_23de6628d27a7d::t_de44dbee2b391c 112
+src/adapters/mod.rs
+  s_23de6628d27a7d::t_44c95d28606dc6 14-39,59-129
+src/auth/shared.rs
+  s_23de6628d27a7d::t_44c95d28606dc6 13,146-148,530-533
+src/gateway/mod.rs
+  s_23de6628d27a7d::t_44c95d28606dc6 6-7
+docs/m10-codex-multi-account.md
+  s_23de6628d27a7d::t_44c95d28606dc6 5,7,112,170-181,184-185
+src/gateway/refresh.rs
+  s_23de6628d27a7d::t_44c95d28606dc6 1-406
+src/accounts.rs
+  s_23de6628d27a7d::t_44c95d28606dc6 107-113,126-135,245,280,297-301,454-457,564-567,572-577,585-666,806-832,1855-1858,1861-1862,1873-1894,1896,1901-2041
+  s_23de6628d27a7d::t_5874055201205c 2042
+src/gateway/store.rs
+  s_23de6628d27a7d::t_44c95d28606dc6 1-3,5-7,15
+site/src/content/docs/zh-cn/guides/codex.md
+  s_23de6628d27a7d::t_44c95d28606dc6 32
+src/adapters/responses/inbound.rs
+  s_23de6628d27a7d::t_44c95d28606dc6 22,123-127,131-132,134-135,138,141-149,188-192,195-198,249-253,256-259
+src/lib.rs
+  s_23de6628d27a7d::t_44c95d28606dc6 4
+src/main.rs
+  s_23de6628d27a7d::t_44c95d28606dc6 299-302
+tests/codex_multi_account.rs
+  s_23de6628d27a7d::t_44c95d28606dc6 7-14,868-1092
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_23de6628d27a7d::t_44c95d28606dc6 91,103,105,111
+  s_23de6628d27a7d::t_6e02a3dca7a1d0 112
+site/src/content/docs/ko/guides/admin-remote-provisioning.md
+  s_23de6628d27a7d::t_44c95d28606dc6 62
+site/src/content/docs/reference/configuration.md
+  s_23de6628d27a7d::t_44c95d28606dc6 53,57,110,122,124,130-131,204
+site/src/content/docs/ko/guides/anthropic-multi-account.md
+  s_23de6628d27a7d::t_44c95d28606dc6 126,145,209,211
+src/adapters/anthropic/mod.rs
+  s_23de6628d27a7d::t_44c95d28606dc6 156-157,160,162-177,246-255,304,322-326,450,452-456
+site/src/content/docs/zh-cn/guides/admin-remote-provisioning.md
+  s_23de6628d27a7d::t_44c95d28606dc6 62
+src/gateway/tests.rs
+  s_23de6628d27a7d::t_44c95d28606dc6 42,218-331
+  s_23de6628d27a7d::t_0fd48afe8f10a7 332-333
+src/adapters/responses/pool.rs
+  s_23de6628d27a7d::t_44c95d28606dc6 32-33,60-65,69-70,74-75,78,81-89,119-122,176-177,179-181,190-193,254,262-265,356-380
+  s_23de6628d27a7d::t_6df8f945e7998b 381-382
+src/config.rs
+  s_23de6628d27a7d::t_b06a51d57eafeb 321-329
+  s_23de6628d27a7d::t_d5189b659f7252 2655
+  s_23de6628d27a7d::t_44c95d28606dc6 125-135,153,166-171,360-372,386-393,1909-1918,2244,2252-2257,2278-2288,2517-2547,2561,2611
+site/src/content/docs/guides/codex.md
+  s_23de6628d27a7d::t_44c95d28606dc6 34
+docs/codex-configuration.md
+  s_23de6628d27a7d::t_44c95d28606dc6 518
+README.md
+  s_23de6628d27a7d::t_6be78f912cfcb3 78
+  s_23de6628d27a7d::t_44c95d28606dc6 72
+src/gateway/oauth.rs
+  s_23de6628d27a7d::t_44c95d28606dc6 141,165-168
+site/src/content/docs/zh-cn/getting-started/comparison.md
+  s_23de6628d27a7d::t_44c95d28606dc6 16,56,75,77,110
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "b889295f4451c35a4ee4aa3f3d0657f105dc44cc",
+  "prompts": {},
+  "sessions": {
+    "s_23de6628d27a7d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fda9fb12-0c44-4f03-8018-56fee43f6df6",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
