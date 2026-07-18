@@ -1,0 +1,29 @@
+site/src/content/docs/ko/guides/connect-claude-desktop.md
+  s_e8a5653e7716a1::t_9e243a797dfe6b 1-109
+site/astro.config.mjs
+  s_e8a5653e7716a1::t_d71638c518ff2b 122-125
+  s_e8a5653e7716a1::t_7d1fad21e7912f 121
+site/src/content/docs/zh-cn/guides/connect-claude-desktop.md
+  s_e8a5653e7716a1::t_7d7c85fb984f76 1-109
+site/src/content/docs/ja/guides/connect-claude-desktop.md
+  s_e8a5653e7716a1::t_1dc1046a193931 1-109
+site/src/content/docs/guides/connect-claude-desktop.md
+  s_e8a5653e7716a1::t_63deadadedc440 62-75
+  s_e8a5653e7716a1::t_0d4c9bf9524e91 1-61,76-109
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "ec3bee6fa009f5bfc331bdfaec8fdf7c89aa77e2",
+  "prompts": {},
+  "sessions": {
+    "s_e8a5653e7716a1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0712266-ce40-4711-8eae-50ff8fc6476e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
