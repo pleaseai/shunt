@@ -126,7 +126,10 @@ pub struct PoolConfig {
     /// stampede the freshly selected account with every in-flight request at
     /// once. The cap starts here and doubles per successful response
     /// (slow-start), and drops back after a cooldown or an idle period. Unset
-    /// or `0` disables admission gating (the default).
+    /// or `0` disables admission gating (the default). A pool whose accounts
+    /// all resolve to one upstream identity is effectively ungated: the last
+    /// remaining candidate is always admitted so gating can never fail a
+    /// request, and a single-identity pool only ever has a last candidate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ramp_initial_concurrency: Option<u32>,
 }
@@ -2023,7 +2026,7 @@ mod tests {
     #[test]
     fn pool_config_and_account_thresholds_parse_from_toml() {
         let pool: PoolConfig = figment::Figment::from(figment::providers::Toml::string(
-            "default_threshold = 0.85\nburn_rate_avoidance = true",
+            "default_threshold = 0.85\nburn_rate_avoidance = true\nramp_initial_concurrency = 4",
         ))
         .extract()
         .unwrap();
@@ -2031,6 +2034,12 @@ mod tests {
         assert_eq!(pool.default_threshold, Some(0.85));
         assert_eq!(pool.default_threshold_5h, None);
         assert!(pool.burn_rate_avoidance);
+        assert_eq!(pool.ramp_initial_concurrency, Some(4));
+        assert_eq!(
+            PoolConfig::default().ramp_initial_concurrency,
+            None,
+            "storm control defaults to disabled"
+        );
 
         let account: AccountConfig = figment::Figment::from(figment::providers::Toml::string(
             "name = \"backup\"\nthreshold = 0.5\nthreshold_fable = 0.4\npriority = 10\ndisabled = true",
@@ -2049,6 +2058,17 @@ mod tests {
         assert_eq!(bare.threshold, None);
         assert_eq!(bare.priority, 100, "serde default");
         assert!(!bare.disabled);
+    }
+
+    #[test]
+    fn storm_ramp_initial_treats_zero_and_absent_as_disabled() {
+        for (configured, expected) in [(None, None), (Some(0), None), (Some(5), Some(5))] {
+            let pool = PoolConfig {
+                ramp_initial_concurrency: configured,
+                ..Default::default()
+            };
+            assert_eq!(pool.storm_ramp_initial(), expected, "{configured:?}");
+        }
     }
 
     #[test]

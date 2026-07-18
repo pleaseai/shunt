@@ -86,24 +86,20 @@ pub(super) async fn forward_chatgpt_oauth(
         // Storm control (issue #195): a saturated identity defers to the next
         // candidate instead of piling on, except for the final candidate,
         // which is always attempted — spilling a burst across the pool beats
-        // failing requests outright. The guard holds the admission slot for
-        // the duration of this account's attempt.
-        let _admission = match ramp_initial {
+        // failing requests outright. On a relayed success the guard moves into
+        // the response body (`with_admission`), so the slot stays held until
+        // the stream actually finishes; on rotation it drops with the
+        // iteration.
+        let admission = match ramp_initial {
             Some(initial) => {
                 let force = position + 1 == candidates;
                 match state
                     .accounts
+                    .clone()
                     .try_admit(&route.provider, account, initial, force)
                 {
                     Some(guard) => Some(guard),
-                    None => {
-                        tracing::debug!(
-                            provider = %route.provider,
-                            account = %account.name,
-                            "storm control deferred admission; trying the next account"
-                        );
-                        continue;
-                    }
+                    None => continue,
                 }
             }
             None => None,
@@ -146,6 +142,7 @@ pub(super) async fn forward_chatgpt_oauth(
             {
                 Ok((status, response)) => {
                     state.accounts.mark_healthy(&route.provider, account);
+                    let response = crate::adapters::with_admission(response, admission);
                     return Ok((status, with_account_header(response, &account.name)));
                 }
                 Err(error) => {
@@ -210,7 +207,10 @@ pub(super) async fn forward_chatgpt_oauth(
                         turn.relay(&route),
                     )
                     .await?;
-                    let response = with_account_header(response, &account.name);
+                    let response = crate::adapters::with_admission(
+                        with_account_header(response, &account.name),
+                        admission,
+                    );
                     // Surface the real status (a `502` when a backend error event
                     // fired on the non-streaming path, issue #113) to the access
                     // log and metrics rather than a hardcoded `200`.
@@ -279,7 +279,10 @@ pub(super) async fn forward_chatgpt_oauth(
                                 turn.relay(&route),
                             )
                             .await?;
-                            let response = with_account_header(response, &account.name);
+                            let response = crate::adapters::with_admission(
+                                with_account_header(response, &account.name),
+                                admission,
+                            );
                             // Surface the real status (issue #113) rather than a
                             // hardcoded `200` — see the relay arm above.
                             return Ok((response.status(), response));

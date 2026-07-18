@@ -600,30 +600,40 @@ impl AccountPool {
     /// ([`Self::mark_healthy`]), and is bypassed with `force` so a caller can
     /// always attempt its last remaining candidate rather than fail the
     /// request. Returns `None` when the identity is saturated; the returned
-    /// guard releases the slot on drop.
-    pub fn try_admit<'pool>(
-        &'pool self,
+    /// guard releases the slot on drop. The guard is owned (holds the pool
+    /// `Arc`) so callers can move it into the relayed response body stream —
+    /// for a streaming turn the slot must stay held until the stream finishes,
+    /// not just until upstream returns headers (the response body is lazy).
+    pub fn try_admit(
+        self: Arc<Self>,
         provider: &str,
         account: &AccountConfig,
         initial: u32,
         force: bool,
-    ) -> Option<AdmissionGuard<'pool>> {
+    ) -> Option<AdmissionGuard> {
         let key = (provider.to_string(), account_identity(account).to_string());
         let now = Instant::now();
-        let mut entries = self.entries.lock().expect("account health lock poisoned");
-        let health = entries.entry(key.clone()).or_default();
-        let idle = health.in_flight == 0
-            && health
-                .ramp_last_activity
-                .is_none_or(|at| now.duration_since(at) >= RAMP_IDLE_RESET);
-        if health.ramp_allowance == 0 || idle {
-            health.ramp_allowance = initial.max(1);
+        {
+            let mut entries = self.entries.lock().expect("account health lock poisoned");
+            let health = entries.entry(key.clone()).or_default();
+            let idle = health.in_flight == 0
+                && health
+                    .ramp_last_activity
+                    .is_none_or(|at| now.duration_since(at) >= RAMP_IDLE_RESET);
+            if health.ramp_allowance == 0 || idle {
+                health.ramp_allowance = initial.max(1);
+            }
+            if !force && health.in_flight >= health.ramp_allowance {
+                tracing::debug!(
+                    provider,
+                    account = %account.name,
+                    "storm control deferred admission; trying the next account"
+                );
+                return None;
+            }
+            health.in_flight = health.in_flight.saturating_add(1);
+            health.ramp_last_activity = Some(now);
         }
-        if !force && health.in_flight >= health.ramp_allowance {
-            return None;
-        }
-        health.in_flight = health.in_flight.saturating_add(1);
-        health.ramp_last_activity = Some(now);
         Some(AdmissionGuard { pool: self, key })
     }
 
@@ -765,15 +775,19 @@ impl AccountPool {
 }
 
 /// RAII admission slot handed out by [`AccountPool::try_admit`]. Dropping it
-/// releases the identity's in-flight slot and refreshes the idle-reset clock;
-/// hold it across the upstream attempt it admitted.
+/// releases the identity's in-flight slot and refreshes the idle-reset clock.
+/// Hold it across the whole upstream attempt it admitted — for a relayed
+/// streaming response that means moving it into the response body stream
+/// (see `adapters::with_admission`), so the slot stays occupied until the
+/// stream finishes or the client disconnects, not just until upstream
+/// returned headers.
 #[derive(Debug)]
-pub struct AdmissionGuard<'pool> {
-    pool: &'pool AccountPool,
+pub struct AdmissionGuard {
+    pool: Arc<AccountPool>,
     key: AccountKey,
 }
 
-impl Drop for AdmissionGuard<'_> {
+impl Drop for AdmissionGuard {
     fn drop(&mut self) {
         let mut entries = self
             .pool
@@ -1857,19 +1871,22 @@ mod tests {
 
     #[test]
     fn try_admit_caps_concurrency_and_force_bypasses() {
-        let pool = AccountPool::new();
+        let pool = Arc::new(AccountPool::new());
         let acc = account("a");
         let first = pool
+            .clone()
             .try_admit("codex", &acc, 2, false)
             .expect("first admission fits the initial allowance");
         let second = pool
+            .clone()
             .try_admit("codex", &acc, 2, false)
             .expect("second admission fits the initial allowance");
         assert!(
-            pool.try_admit("codex", &acc, 2, false).is_none(),
+            pool.clone().try_admit("codex", &acc, 2, false).is_none(),
             "a saturated identity defers further admissions"
         );
         let forced = pool
+            .clone()
             .try_admit("codex", &acc, 2, true)
             .expect("force admits past the allowance for the last candidate");
         drop((first, second, forced));
@@ -1877,25 +1894,27 @@ mod tests {
 
     #[test]
     fn admission_release_frees_the_slot() {
-        let pool = AccountPool::new();
+        let pool = Arc::new(AccountPool::new());
         let acc = account("a");
-        let guard = pool.try_admit("codex", &acc, 1, false).unwrap();
-        assert!(pool.try_admit("codex", &acc, 1, false).is_none());
+        let guard = pool.clone().try_admit("codex", &acc, 1, false).unwrap();
+        assert!(pool.clone().try_admit("codex", &acc, 1, false).is_none());
         drop(guard);
         assert!(
-            pool.try_admit("codex", &acc, 1, false).is_some(),
+            pool.clone().try_admit("codex", &acc, 1, false).is_some(),
             "a released slot admits the next request"
         );
     }
 
     #[test]
     fn admission_is_shared_across_aliases_of_one_identity() {
-        let pool = AccountPool::new();
+        let pool = Arc::new(AccountPool::new());
         let alias_a = account_with_uuid("alias-a", "shared");
         let alias_b = account_with_uuid("alias-b", "shared");
-        let guard = pool.try_admit("codex", &alias_a, 1, false).unwrap();
+        let guard = pool.clone().try_admit("codex", &alias_a, 1, false).unwrap();
         assert!(
-            pool.try_admit("codex", &alias_b, 1, false).is_none(),
+            pool.clone()
+                .try_admit("codex", &alias_b, 1, false)
+                .is_none(),
             "aliases of one upstream identity share the admission gate"
         );
         drop(guard);
@@ -1903,28 +1922,29 @@ mod tests {
 
     #[test]
     fn successful_responses_double_admission_allowance() {
-        let pool = AccountPool::new();
+        let pool = Arc::new(AccountPool::new());
         let acc = account("a");
-        let guard = pool.try_admit("codex", &acc, 1, false).unwrap();
-        assert!(pool.try_admit("codex", &acc, 1, false).is_none());
+        let guard = pool.clone().try_admit("codex", &acc, 1, false).unwrap();
+        assert!(pool.clone().try_admit("codex", &acc, 1, false).is_none());
         pool.mark_healthy("codex", &acc);
         let second = pool
+            .clone()
             .try_admit("codex", &acc, 1, false)
             .expect("a successful response doubles the allowance");
-        assert!(pool.try_admit("codex", &acc, 1, false).is_none());
+        assert!(pool.clone().try_admit("codex", &acc, 1, false).is_none());
         drop((guard, second));
     }
 
     #[test]
     fn cooldown_restarts_the_admission_ramp() {
-        let pool = AccountPool::new();
+        let pool = Arc::new(AccountPool::new());
         let acc = account("a");
-        let guard = pool.try_admit("codex", &acc, 1, false).unwrap();
+        let guard = pool.clone().try_admit("codex", &acc, 1, false).unwrap();
         pool.mark_healthy("codex", &acc);
         pool.mark_healthy("codex", &acc);
         pool.cooldown("codex", &acc, Duration::from_secs(1), "rate_limit");
         assert!(
-            pool.try_admit("codex", &acc, 1, false).is_none(),
+            pool.clone().try_admit("codex", &acc, 1, false).is_none(),
             "after a cooldown the ramp restarts at the initial allowance"
         );
         drop(guard);
@@ -1932,9 +1952,9 @@ mod tests {
 
     #[test]
     fn idle_identity_reenters_slow_start() {
-        let pool = AccountPool::new();
+        let pool = Arc::new(AccountPool::new());
         let acc = account("a");
-        let guard = pool.try_admit("codex", &acc, 2, false).unwrap();
+        let guard = pool.clone().try_admit("codex", &acc, 2, false).unwrap();
         pool.mark_healthy("codex", &acc);
         drop(guard);
         {
@@ -1946,10 +1966,10 @@ mod tests {
             // (an impossibly early instant) also counts as idle.
             health.ramp_last_activity = Instant::now().checked_sub(RAMP_IDLE_RESET);
         }
-        let first = pool.try_admit("codex", &acc, 2, false).unwrap();
-        let second = pool.try_admit("codex", &acc, 2, false).unwrap();
+        let first = pool.clone().try_admit("codex", &acc, 2, false).unwrap();
+        let second = pool.clone().try_admit("codex", &acc, 2, false).unwrap();
         assert!(
-            pool.try_admit("codex", &acc, 2, false).is_none(),
+            pool.clone().try_admit("codex", &acc, 2, false).is_none(),
             "an idle identity re-enters slow start at the initial allowance"
         );
         drop((first, second));

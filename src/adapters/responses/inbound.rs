@@ -145,23 +145,19 @@ async fn forward_codex_passthrough(
 
         // Storm control (issue #195): defer a saturated identity to the next
         // candidate, always attempting the final one — mirrors the translating
-        // outbound path (`forward_chatgpt_oauth`).
-        let _admission = match ramp_initial {
+        // outbound path (`forward_chatgpt_oauth`). On a relayed success the
+        // guard moves into the response body (`with_admission`) so the slot
+        // stays held until the stream finishes.
+        let admission = match ramp_initial {
             Some(initial) => {
                 let force = position + 1 == candidates;
                 match state
                     .accounts
+                    .clone()
                     .try_admit(&route.provider, account, initial, force)
                 {
                     Some(guard) => Some(guard),
-                    None => {
-                        tracing::debug!(
-                            provider = %route.provider,
-                            account = %account.name,
-                            "storm control deferred admission; trying the next account"
-                        );
-                        continue;
-                    }
+                    None => continue,
                 }
             }
             None => None,
@@ -215,7 +211,10 @@ async fn forward_codex_passthrough(
                 state.accounts.mark_healthy(&route.provider, account);
                 return Ok((
                     status,
-                    with_account_header(relay_passthrough(upstream), &account.name),
+                    crate::adapters::with_admission(
+                        with_account_header(relay_passthrough(upstream), &account.name),
+                        admission,
+                    ),
                 ));
             }
             FirstOutcome::Rotate(upstream) => {
@@ -269,7 +268,10 @@ async fn forward_codex_passthrough(
                         state.accounts.mark_healthy(&route.provider, account);
                         return Ok((
                             retry_status,
-                            with_account_header(relay_passthrough(retry), &account.name),
+                            crate::adapters::with_admission(
+                                with_account_header(relay_passthrough(retry), &account.name),
+                                admission,
+                            ),
                         ));
                     }
                     RetryOutcome::Rotate(retry) => {

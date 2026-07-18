@@ -175,6 +175,7 @@ Issue #195 also closes M10's storm-control gap. With `[server.pool] ramp_initial
 - Each successful response doubles the allowance, so a healthy account leaves the ramp within a handful of turns.
 - A request denied admission spills to the next account in selection order instead of piling on; the **last** remaining candidate is always attempted regardless of the gate, so a saturated pool degrades to pre-#195 behavior rather than failing the request.
 - A failover-worthy failure (429/5xx/401/transport) restarts that identity's ramp.
+- Gating is per upstream identity and only ever defers to *other* candidates, so a pool whose accounts all resolve to a single identity is effectively ungated — its only candidate is also its last candidate and is always admitted.
 
 This prevents the post-failover stampede where every in-flight request lands on the freshly selected account at once.
 
