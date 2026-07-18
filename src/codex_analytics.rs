@@ -24,11 +24,16 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{error::ShuntError, server::AppState};
 
-const MAX_ANALYTICS_BODY_BYTES: usize = 8 * 1024 * 1024;
+// Analytics batches run to a few tens of KiB; cap well above that but far below
+// a size that could exhaust memory if a client streams a large body (OWASP
+// A05 — resource limits). An over-cap body degrades to a `read_error` count and
+// still returns 200.
+const MAX_ANALYTICS_BODY_BYTES: usize = 256 * 1024;
 const MAX_EVENT_NAME_BYTES: usize = 64;
 /// Upper bound on the number of distinct sanitized event names ever emitted as
 /// the `event` attribute. Well beyond the handful of real Codex event types, so
@@ -59,55 +64,89 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Body)
         }
     }
 
-    // A body-read failure (over the 8 MiB cap or a transport error) is counted
+    // A body-read failure (over the 256 KiB cap or a transport error) is counted
     // distinctly from an unparseable body, so an operator can tell "Codex
     // changed its payload" from "clients keep exceeding the limit"; both still
     // return 200 to honor the accept-and-discard contract.
     let read = to_bytes(body, MAX_ANALYTICS_BODY_BYTES).await;
-    let event_names = names_for_body(read.as_deref().map_err(|_| ()));
+    let event_count = match events_for_body(read.as_deref().map_err(|_| ())) {
+        // System reason codes are emitted verbatim — never sanitized or capped —
+        // so operators can trust the `read_error`/`unparsed` buckets. Client
+        // event names go through `bounded_event_name`, which folds any name that
+        // collides with a reserved code, so a client can never reach them.
+        RecordedEvents::Reason(code) => {
+            crate::metrics::record_codex_client_event(code);
+            1
+        }
+        RecordedEvents::Client(names) => {
+            for name in &names {
+                crate::metrics::record_codex_client_event(&bounded_event_name(name));
+            }
+            names.len()
+        }
+    };
 
-    for event_name in &event_names {
-        crate::metrics::record_codex_client_event(&bounded_event_name(event_name));
-    }
-
-    tracing::debug!(
-        event_count = event_names.len(),
-        "accepted inbound codex analytics events"
-    );
+    tracing::debug!(event_count, "accepted inbound codex analytics events");
     (StatusCode::OK, Json(serde_json::json!({}))).into_response()
 }
 
-/// The event names to record for one request body, one entry per event. `Err`
-/// (body unreadable — oversized or a transport failure) yields a single
-/// `read_error`; a body that is not a `{"events": [...]}` batch yields a single
-/// `unparsed`; a batch yields one raw event name per event. The returned names
-/// are not yet sanitized or cardinality-capped — the caller applies
-/// `bounded_event_name` per name at record time.
-fn names_for_body(read: Result<&[u8], ()>) -> Vec<String> {
+/// The events to record for one request body. A body-read failure (oversized or
+/// a transport error) or an unparseable body maps to a single system reason
+/// code; a batch maps to one raw client event name per event.
+#[cfg_attr(test, derive(Debug, PartialEq))]
+enum RecordedEvents {
+    Reason(&'static str),
+    Client(Vec<String>),
+}
+
+fn events_for_body(read: Result<&[u8], ()>) -> RecordedEvents {
     match read {
-        Err(()) => vec![READ_ERROR_EVENT.to_owned()],
+        Err(()) => RecordedEvents::Reason(READ_ERROR_EVENT),
         Ok(body) => match parse_event_names(body) {
-            Some(names) => names,
-            None => vec![UNPARSED_EVENT.to_owned()],
+            Some(names) => RecordedEvents::Client(names),
+            None => RecordedEvents::Reason(UNPARSED_EVENT),
         },
     }
 }
 
+/// Envelope for a Codex analytics batch. Only the batch shape and the three
+/// event-name fields are deserialized; `event_params` and any other payload are
+/// walked and discarded by serde without becoming struct fields, so the common
+/// case never builds a `Value` tree for a large nested event body (and the
+/// 256 KiB read cap bounds the worst case regardless). The name fields stay
+/// `Value` so a present-but-non-string field (e.g. a numeric `event_type`) is
+/// treated as absent and falls through to the next candidate rather than
+/// failing the whole batch.
+#[derive(Deserialize)]
+struct AnalyticsBatch {
+    events: Option<Vec<AnalyticsEvent>>,
+}
+
+#[derive(Deserialize)]
+struct AnalyticsEvent {
+    event_type: Option<Value>,
+    event_name: Option<Value>,
+    name: Option<Value>,
+}
+
 /// `None` only when the body is not a `{"events": [...]}` batch at all; an
-/// individual event without a recognizable name field degrades to `other`
-/// instead of discarding the rest of the batch.
+/// individual event without a recognizable string name field degrades to
+/// `other` instead of discarding the rest of the batch. Each candidate is
+/// checked with `as_str` before falling through, so a non-string `event_type`
+/// does not suppress a valid `event_name`/`name`.
 fn parse_event_names(body: &[u8]) -> Option<Vec<String>> {
-    let payload: Value = serde_json::from_slice(body).ok()?;
-    let events = payload.get("events")?.as_array()?;
+    let batch: AnalyticsBatch = serde_json::from_slice(body).ok()?;
+    let events = batch.events?;
     Some(
         events
             .iter()
             .map(|event| {
                 event
-                    .get("event_type")
-                    .or_else(|| event.get("event_name"))
-                    .or_else(|| event.get("name"))
+                    .event_type
+                    .as_ref()
                     .and_then(Value::as_str)
+                    .or_else(|| event.event_name.as_ref().and_then(Value::as_str))
+                    .or_else(|| event.name.as_ref().and_then(Value::as_str))
                     .unwrap_or(OTHER_EVENT)
                     .to_owned()
             })
@@ -115,13 +154,15 @@ fn parse_event_names(body: &[u8]) -> Option<Vec<String>> {
     )
 }
 
-/// Sanitize a raw event name, then fold it to `other` once the process-wide
-/// distinct-name budget is spent. Reserved reason codes (`other`, `unparsed`,
-/// `read_error`) are fixed and never consume the budget.
+/// Sanitize a client-supplied event name and fold it to `other` once the
+/// process-wide distinct-name budget is spent. A name that sanitizes to a
+/// reserved system reason code (`read_error`/`unparsed`/`other`) is also folded
+/// to `other`, so a client can never reach the system-generated buckets that
+/// `post` records directly.
 fn bounded_event_name(event: &str) -> String {
     let sanitized = sanitize_event_name(event);
     if is_reserved(sanitized) {
-        return sanitized.to_owned();
+        return OTHER_EVENT.to_owned();
     }
     let mut seen = distinct_event_registry()
         .lock()
@@ -174,8 +215,8 @@ fn sanitize_event_name(event: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::{
-        bound_within_cap, names_for_body, parse_event_names, sanitize_event_name,
-        MAX_DISTINCT_EVENTS, OTHER_EVENT,
+        bound_within_cap, bounded_event_name, events_for_body, parse_event_names,
+        sanitize_event_name, RecordedEvents, MAX_DISTINCT_EVENTS, OTHER_EVENT,
     };
     use std::collections::HashSet;
 
@@ -238,24 +279,54 @@ mod tests {
     }
 
     #[test]
-    fn names_for_body_records_one_name_per_event() {
-        let body = br#"{"events":[{"event_type":"codex.turn_started"},{"event_type":"codex.turn_completed"}]}"#;
+    fn non_string_event_type_falls_through_to_alternate_fields() {
+        // A present-but-non-string `event_type` must not suppress a valid
+        // `event_name`/`name` fallback (cubic P3), nor fail the whole batch.
+        let body = br#"{"events":[
+            {"event_type":123,"event_name":"codex.turn_completed"},
+            {"event_type":{"nested":true},"name":"codex.tool_call"}
+        ]}"#;
         assert_eq!(
-            names_for_body(Ok(body)),
-            vec![
-                "codex.turn_started".to_owned(),
-                "codex.turn_completed".to_owned()
-            ]
+            parse_event_names(body),
+            Some(vec![
+                "codex.turn_completed".to_owned(),
+                "codex.tool_call".to_owned(),
+            ])
         );
     }
 
     #[test]
-    fn names_for_body_distinguishes_read_error_from_unparsed() {
-        assert_eq!(names_for_body(Err(())), vec!["read_error".to_owned()]);
+    fn events_for_body_records_one_name_per_event() {
+        let body = br#"{"events":[{"event_type":"codex.turn_started"},{"event_type":"codex.turn_completed"}]}"#;
         assert_eq!(
-            names_for_body(Ok(b"{not-json")),
-            vec!["unparsed".to_owned()]
+            events_for_body(Ok(body)),
+            RecordedEvents::Client(vec![
+                "codex.turn_started".to_owned(),
+                "codex.turn_completed".to_owned()
+            ])
         );
+    }
+
+    #[test]
+    fn events_for_body_distinguishes_read_error_from_unparsed() {
+        assert_eq!(
+            events_for_body(Err(())),
+            RecordedEvents::Reason("read_error")
+        );
+        assert_eq!(
+            events_for_body(Ok(b"{not-json")),
+            RecordedEvents::Reason("unparsed")
+        );
+    }
+
+    #[test]
+    fn client_names_cannot_impersonate_reserved_codes() {
+        // A client event that sanitizes to a reserved system reason code folds to
+        // `other`, so the `read_error`/`unparsed` buckets stay system-only
+        // (greptile P2). These inputs early-return before the global registry.
+        assert_eq!(bounded_event_name("read_error"), OTHER_EVENT);
+        assert_eq!(bounded_event_name("unparsed"), OTHER_EVENT);
+        assert_eq!(bounded_event_name("other"), OTHER_EVENT);
     }
 
     #[test]
