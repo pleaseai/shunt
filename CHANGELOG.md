@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.22.0](https://github.com/pleaseai/shunt/compare/v0.21.0...v0.22.0) (2026-07-18)
+
+
+### Features
+
+* **gateway:** persist gateway-login OAuth sessions across restarts ([#197](https://github.com/pleaseai/shunt/issues/197)) ([dfbdd8c](https://github.com/pleaseai/shunt/commit/dfbdd8ca6c5ffe22cd2cff9c28a9149b67bb60d9))
+* **pool:** quota-aware Codex scheduling and storm control ([#198](https://github.com/pleaseai/shunt/issues/198)) ([fb8868f](https://github.com/pleaseai/shunt/commit/fb8868f2fcfeddf14cdbed17c8fa723207eb03a7))
+
 ## [0.21.0](https://github.com/pleaseai/shunt/compare/v0.20.0...v0.21.0) (2026-07-18)
 
 
