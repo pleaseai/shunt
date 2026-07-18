@@ -55,8 +55,9 @@ is the documented default. Discovery is only useful if shunt exposes a **Claude-
 - Return `{ "data": [...] }` from local config; no upstream call.
 - The top-level `auto_include_builtin_models` key mirrors the reference Claude apps gateway and
   defaults to `true`: append the builtin Claude catalog after `[[models]]`, deduplicating by exact
-  id so the curated entry wins. Builtins route through the default provider and do not require a
-  `[[routes]]` entry. Set the key to `false` for a strictly curated response.
+  id so the curated entry wins. Builtins need no dedicated `[[routes]]` entry; they resolve
+  through the normal routing rules, falling back to the default provider when no `[[routes]]` or
+  `[[route_prefixes]]` entry matches. Set the key to `false` for a strictly curated response.
 - Never redirect; respond well under 3 s.
 - If `[[models]]` is empty and `auto_include_builtin_models = false`, return `{ "data": [] }`
   (discovery simply adds nothing; the custom model option still works).

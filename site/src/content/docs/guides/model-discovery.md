@@ -3,7 +3,7 @@ title: Model Discovery
 description: Populate Claude Code's /model picker automatically with Claude-named aliases.
 ---
 
-Discovery (`GET /v1/models`) can populate Claude Code's `/model` picker automatically. By default, shunt returns the admin-curated `[[models]]` entries first, followed by its builtin Claude model catalog mirroring the reference Claude apps gateway. Exact-id duplicates are removed in favor of the curated entry. Set the top-level `auto_include_builtin_models = false` to expose only the curated list. Builtin models route through `server.default_provider` and need no `[[routes]]` entry.
+Discovery (`GET /v1/models`) can populate Claude Code's `/model` picker automatically. By default, shunt returns the admin-curated `[[models]]` entries first, followed by its builtin Claude model catalog mirroring the reference Claude apps gateway. Exact-id duplicates are removed in favor of the curated entry. Set the top-level `auto_include_builtin_models = false` to expose only the curated list. Builtin models need no dedicated `[[routes]]` entry — they resolve through your normal routing rules, falling back to `server.default_provider` when no `[[routes]]` or `[[route_prefixes]]` entry matches.
 
 Claude Code ignores any discovered id that doesn't begin with `claude`/`anthropic` ([protocol reference](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery)). Therefore, add a **Claude-named alias** when curating a non-Claude model such as `gpt-*`, and use a `[[routes]]` entry to rewrite it to the real upstream slug:
 
