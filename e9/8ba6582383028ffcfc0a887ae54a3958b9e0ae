@@ -1,0 +1,76 @@
+site/src/content/docs/ja/guides/admin-remote-provisioning.md
+  s_247b9924846b28::t_2d7169aa14b2a5 62
+site/src/content/docs/zh-cn/guides/admin-remote-provisioning.md
+  s_247b9924846b28::t_012544c2e7babf 62
+site/src/content/docs/zh-cn/guides/codex.md
+  s_247b9924846b28::t_2e2f3ae5d7c525 32
+site/src/content/docs/ja/getting-started/comparison.md
+  s_247b9924846b28::t_46f08452f058b9 56
+  s_247b9924846b28::t_219376204220ab 16
+  s_247b9924846b28::t_d381f5d604f3b3 77
+  s_247b9924846b28::t_689ddaef1c668c 75
+  s_247b9924846b28::t_00eeb28f613cae 110
+site/src/content/docs/ko/getting-started/comparison.md
+  s_247b9924846b28::t_cbede12516e797 110
+  s_247b9924846b28::t_6d1b39bd899be0 56
+  s_247b9924846b28::t_d381f5d604f3b3 77
+  s_247b9924846b28::t_0a627be53c6146 75
+  s_247b9924846b28::t_b1dba3dcb0febb 16
+site/src/content/docs/ko/guides/admin-remote-provisioning.md
+  s_247b9924846b28::t_0f0dcb3a2fad42 62
+site/src/content/docs/ja/reference/configuration.md
+  s_247b9924846b28::t_7c8491206855d4 58
+  s_247b9924846b28::t_4d49799b6ae61e 56
+  s_247b9924846b28::t_affdf469194d77 64
+  s_247b9924846b28::t_a70e4e00962ac7 44
+  s_247b9924846b28::t_577ca26279d9bb 65
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_247b9924846b28::t_bf2ac403a961ad 44
+  s_247b9924846b28::t_d0debeeee968fc 64
+  s_247b9924846b28::t_7aeddff8bcadf2 56,58
+  s_247b9924846b28::t_4378250e977de2 65
+site/src/content/docs/zh-cn/guides/anthropic-multi-account.md
+  s_247b9924846b28::t_a0f974c7039c22 145
+  s_247b9924846b28::t_6d9d22dc8264c9 126
+  s_247b9924846b28::t_da8206ef03496f 209,211
+site/src/content/docs/ja/guides/anthropic-multi-account.md
+  s_247b9924846b28::t_34fca15da0917d 209,211
+  s_247b9924846b28::t_a0f974c7039c22 145
+  s_247b9924846b28::t_ba1ddeb18c7d4c 126
+site/src/content/docs/zh-cn/getting-started/comparison.md
+  s_247b9924846b28::t_f4595abfd54afc 110
+  s_247b9924846b28::t_2fe87e924883b5 75
+  s_247b9924846b28::t_fbc1a31d0a0582 16
+  s_247b9924846b28::t_5359ce8a69a427 56
+  s_247b9924846b28::t_d381f5d604f3b3 77
+site/src/content/docs/ko/guides/anthropic-multi-account.md
+  s_247b9924846b28::t_3393e6651c1ecd 126
+  s_247b9924846b28::t_a0f974c7039c22 145
+  s_247b9924846b28::t_3b0b7c603828e8 209,211
+site/src/content/docs/ja/guides/codex.md
+  s_247b9924846b28::t_be26a1ad240c38 28
+site/src/content/docs/ko/reference/configuration.md
+  s_247b9924846b28::t_daff4d648598de 58
+  s_247b9924846b28::t_f158962dc25478 44
+  s_247b9924846b28::t_ad1698d45fa1e1 56
+  s_247b9924846b28::t_689f4cb543d089 64
+  s_247b9924846b28::t_059cb8fb44e5b3 65
+site/src/content/docs/ko/guides/codex.md
+  s_247b9924846b28::t_c17c9467b43729 26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "e98ba6582383028ffcfc0a887ae54a3958b9e0ae",
+  "prompts": {},
+  "sessions": {
+    "s_247b9924846b28": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cf790ea6-317d-422b-83e2-e54777d32352",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
