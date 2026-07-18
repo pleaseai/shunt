@@ -15,10 +15,10 @@
 //! utilization and account rotations.
 //!
 //! Attributes stay low-cardinality (provider/model/status/outcome/kind/window/
-//! reason, plus the sanitized `event` on `shunt.codex_client_events`) — never
-//! client names, account ids, session ids, or anything else request-derived.
-//! Token metrics currently cover streaming responses only; non-streaming token
-//! usage is intentionally out of scope.
+//! reason, plus the sanitized, cardinality-capped `event` on
+//! `shunt.codex_client_events`) — never client names, account ids, session ids,
+//! or anything else request-derived. Token metrics currently cover streaming
+//! responses only; non-streaming token usage is intentionally out of scope.
 
 use std::{
     collections::HashMap,
@@ -292,8 +292,9 @@ pub fn record_continuation_outcome(provider: &str, outcome: ContinuationOutcome)
 }
 
 /// Record one sanitized Codex CLI product-analytics event name. The caller
-/// guarantees the `event` attribute contains only the bounded allowlist accepted
-/// by `codex_analytics`; no event properties or payload data reach either sink.
+/// (`codex_analytics`) guarantees the `event` attribute is sanitized to a
+/// bounded character set and length and capped to a finite number of distinct
+/// names; no event properties or payload data reach either sink.
 pub fn record_codex_client_event(event: &str) {
     sentry::metrics::counter("shunt.codex_client_events", 1)
         .attribute("event", event.to_owned())

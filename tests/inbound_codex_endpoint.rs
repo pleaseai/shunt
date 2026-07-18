@@ -318,6 +318,25 @@ async fn analytics_sink_matches_inbound_auth_posture() {
     let unauthenticated =
         post_analytics(&gateway, "/codex/analytics-events/events", body, None).await;
     assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+    // A gateway-owned auth failure on this endpoint must reach the OpenAI
+    // Responses client in its own error envelope, not the Anthropic one.
+    let missing_token_body: serde_json::Value =
+        serde_json::from_str(&unauthenticated.text().await.unwrap()).unwrap();
+    assert_openai_error_shape(&missing_token_body, "authentication_error");
+
+    // A wrong (non-empty) token is rejected the same way — auth is not merely a
+    // presence check.
+    let invalid = post_analytics(
+        &gateway,
+        "/codex/analytics-events/events",
+        body,
+        Some("wrong-secret"),
+    )
+    .await;
+    assert_eq!(invalid.status(), StatusCode::UNAUTHORIZED);
+    let invalid_body: serde_json::Value =
+        serde_json::from_str(&invalid.text().await.unwrap()).unwrap();
+    assert_openai_error_shape(&invalid_body, "authentication_error");
 
     let authenticated = post_analytics(
         &gateway,
@@ -327,6 +346,7 @@ async fn analytics_sink_matches_inbound_auth_posture() {
     )
     .await;
     assert_eq!(authenticated.status(), StatusCode::OK);
+    assert_eq!(authenticated.text().await.unwrap(), "{}");
 
     std::env::remove_var(&tokens_env);
 }
