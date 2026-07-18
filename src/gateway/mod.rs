@@ -5,20 +5,21 @@ pub mod managed;
 mod oauth;
 pub mod store;
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use axum::{
     http::HeaderMap,
     routing::{get, post},
     Router,
 };
+use serde_json::Value;
 
 use crate::server::AppState;
 
-pub use managed::ResolvedPolicy;
 pub use store::GatewayStores;
 
 use approval::{ApprovalProvider, StaticUsers};
+use managed::ResolvedPolicy;
 
 #[derive(Clone)]
 pub struct GatewayAuth {
@@ -27,8 +28,8 @@ pub struct GatewayAuth {
     token_ttl_seconds: u64,
     trust_forwarded_for: bool,
     approval: Arc<dyn ApprovalProvider>,
-    policies: Option<Vec<ResolvedPolicy>>,
-    telemetry_push: bool,
+    managed_default: Option<Value>,
+    managed_by_email: HashMap<String, Value>,
 }
 
 impl GatewayAuth {
@@ -61,27 +62,29 @@ impl GatewayAuth {
             token_ttl_seconds,
             trust_forwarded_for,
             approval,
-            policies: None,
-            telemetry_push: false,
+            managed_default: None,
+            managed_by_email: HashMap::new(),
         }
     }
 
-    pub fn with_managed_policies(
+    pub(crate) fn with_managed_policies(
         mut self,
         policies: Option<Vec<ResolvedPolicy>>,
         telemetry_push: bool,
     ) -> Self {
-        self.policies = policies;
-        self.telemetry_push = telemetry_push;
+        if let Some(policies) = policies {
+            let (managed_default, managed_by_email) =
+                managed::resolve_all(&policies, telemetry_push, &self.public_url);
+            self.managed_default = Some(managed_default);
+            self.managed_by_email = managed_by_email;
+        }
         self
     }
 
-    pub fn policies(&self) -> Option<&[ResolvedPolicy]> {
-        self.policies.as_deref()
-    }
-
-    pub fn telemetry_push(&self) -> bool {
-        self.telemetry_push
+    pub(crate) fn managed_settings(&self, email: &str) -> Option<&Value> {
+        self.managed_by_email
+            .get(email)
+            .or(self.managed_default.as_ref())
     }
 
     pub fn public_url(&self) -> &str {

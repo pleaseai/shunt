@@ -41,13 +41,33 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 
 ## `[server.gateway]`(可选)
 
-此表启用 Claude Code 的 OAuth device-flow 登录。支持 `public_url`(必需)、`jwt_secret_env`(默认 `SHUNT_GATEWAY_JWT_SECRET`)、`users_env`(默认 `SHUNT_GATEWAY_USERS`)、`token_ttl_seconds`(默认 `3600`)以及 `trust_forwarded_for`(默认 `false`)。
+存在此表即启用 Claude Code managed `forceLoginMethod: "gateway"` 使用的 [OAuth device-flow gateway 登录](/zh-cn/guides/gateway-login/)。此表不存在时,shunt 不会注册 `/.well-known/oauth-authorization-server`、`/oauth/device_authorization`、`/oauth/token`、`/device` 或 `/managed/settings`。
 
-非空的 `[[server.gateway.policies]]` 列表启用经过认证的 `GET /managed/settings`。每条策略可包含可选的 `[server.gateway.policies.match]` 与 `emails`,而 `[server.gateway.policies.cli]` 是开放 schema 的 Claude Code managed settings 对象。省略 `match` 或使用空 `match` 即为 catch-all。所有 catch-all 按顺序合并,然后只把第一个邮箱精确匹配(区分大小写)的用户策略合并到顶层。对象递归合并;数组通常替换,但键名包含 `deny` 的数组会进行去重并集。
+| 键 | 默认 | 含义 |
+| :-- | :-- | :-- |
+| `public_url` | 必需 | 对外可达的 HTTPS origin,用作 JWT issuer 和 OAuth endpoint 基址;仅 loopback 允许 `http` |
+| `jwt_secret_env` | `SHUNT_GATEWAY_JWT_SECRET` | 保存至少 32 bytes 的 HS256 signing secret 的 env 变量 |
+| `users_env` | `SHUNT_GATEWAY_USERS` | 保存逗号分隔的 `email:secret` approval user 的 env 变量 |
+| `token_ttl_seconds` | `3600` | access token 生命周期,以 `expires_in` 返回 |
+| `trust_forwarded_for` | `false` | 将 `X-Forwarded-For`/`X-Real-IP` 信任为 `/device` rate-limit identity;只能在会替换 client 所提供值的 trusted proxy 后启用 |
 
-没有 `policies` 时 endpoint 返回 `404`;已配置策略解析为空文档时返回 `200` 和 `settings: {}`。响应的 `ETag` 等于 `checksum`,匹配的 `If-None-Match` 返回 `304`。解析出的字符串数组 `availableModels` 还会在服务端约束 gateway JWT 用户的 `/v1/messages` 与 `/v1/messages/count_tokens`。
+如果 URL 不是不带路径等内容的 HTTPS origin(仅 loopback 允许 `http`)、TTL 为 0、secret 缺失或少于 32 bytes,或者 user list 为空或格式错误,启动会 fail closed。secret 可以包含 `:`,只有第一个 colon 用于分隔 email 与 secret。env-backed secret 和 user 的变更会在 config reload 时生效;由于 route tree 在 boot 时固定,添加或移除此表需要 restart。
 
-非空的 `[server.gateway.telemetry].forward_to` 列表会向 managed settings 注入六个 env 值:启用 Claude Code telemetry、三个 OTLP exporter、以 `public_url` 为 endpoint,以及 `http/protobuf` protocol。发生冲突时策略中的 env 值优先。每个 destination 接受 HTTP(S) `url` 和可选的字符串 `headers` map。M-B 目前只启用 env push;OTLP ingest/relay route 将在 M-C(#189)中加入。
+颁发的 bearer 会在所选 provider 注入 server-side credential 时认证 `/v1/models`、`/v1/messages` 和 `/v1/messages/count_tokens`。passthrough provider 仍保持 open。如果还存在 `[server.auth]`,任一 credential 都能授权访问。device grant 和 rotating refresh token 是 process-lifetime in-memory state:config reload 会保留它们,但 restart 会使其失效。
+
+### `[[server.gateway.policies]]`(可选)
+
+存在 `[server.gateway]` 即会注册经过认证的 `GET /managed/settings`;有序且非空的 policy list 为其提供 managed document。每条 policy 都有可选的 `[server.gateway.policies.match]` 和必需的 open-schema `[server.gateway.policies.cli]` object。省略 `match`、使用 `match = {}` 或不设置 `emails` 都表示 catch-all。显式空 `emails` list 或空白 entry 会导致启动错误。
+
+所有 catch-all policy 按顺序 merge,然后在其上 merge 第一个 email 精确匹配(case-sensitive)的 policy。object 递归 merge;array 通常替换,但 key 包含 `deny` 的 array 会做无重复 union。已知 key 会在启动和 hot reload 时验证:`availableModels` 必须是仅包含 string 的 array;`env` 必须是仅包含 string、number 或 boolean scalar value 的 table。未知 key 保持 open-schema,但所有 value 都必须可用 JSON 表示;非有限 float 会被拒绝。
+
+没有 `policies` 时 endpoint 返回 `404`。已配置 policy 但没有匹配的 user-specific 或 catch-all settings 时,若 telemetry 已启用则返回带有仅 telemetry `settings.env` 的 `200`,否则返回带有 `settings: {}` 的 `200`。response 包含 `uuid`、`checksum` 和保存 checksum 的 quoted `ETag`;匹配的 `If-None-Match` 返回 `304`。
+
+解析后的 `cli.availableModels` 会应用于 gateway JWT request 的 `/v1/messages` 和 `/v1/messages/count_tokens`。比较前会从 top-level `model` 移除一个末尾 Claude Code context-window hint（`[1m]` 或 `[1M]`）;若剩余 model 不在 list 中,则返回 `400 invalid_request_error`。static `[server.auth]` credential 无法标识 gateway policy user,因此不受此限制。
+
+### `[server.gateway.telemetry]`(可选)
+
+`forward_to` 是 destination array,每项具有必需的 HTTP(S) `url` 和可选的 string `headers` map。非空 list 会向 managed `settings.env` 注入 6 个值:`CLAUDE_CODE_ENABLE_TELEMETRY=1`、`OTEL_METRICS_EXPORTER`/`OTEL_LOGS_EXPORTER`/`OTEL_TRACES_EXPORTER=otlp`、`OTEL_EXPORTER_OTLP_ENDPOINT=public_url`、`OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`。发生冲突时 policy env value 优先。此表在 M-B 中只控制 environment push;inbound OTLP ingest/relay 属于 M-C(#189)。
 
 ```toml
 [[server.gateway.policies]]
@@ -61,7 +81,10 @@ DISABLE_UPDATES = "1"
 [server.gateway.telemetry]
 [[server.gateway.telemetry.forward_to]]
 url = "https://collector.example.com"
+headers = { "x-api-key" = "..." }
 ```
+
+默认情况下,`/device` 忽略 forwarding header 并按 socket peer 做 rate limit。只有在 shunt 仅能通过会删除 client 所提供 forwarding header 并设置自身值的 trusted reverse proxy 访问时,才设置 `trust_forwarded_for = true`。不要在直接暴露的 gateway 上启用。
 
 ## `[server.pool]`(可选)
 

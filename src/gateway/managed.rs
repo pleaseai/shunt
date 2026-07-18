@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use axum::{
     extract::State,
     http::{header, HeaderMap, HeaderValue, StatusCode},
@@ -9,8 +11,6 @@ use sha2::{Digest, Sha256};
 
 use crate::{error::ShuntError, server::AppState};
 
-use super::{jwt::Claims, GatewayAuth};
-
 const TELEMETRY_ENV: [(&str, &str); 5] = [
     ("CLAUDE_CODE_ENABLE_TELEMETRY", "1"),
     ("OTEL_METRICS_EXPORTER", "otlp"),
@@ -20,51 +20,60 @@ const TELEMETRY_ENV: [(&str, &str); 5] = [
 ];
 
 #[derive(Clone, Debug)]
-pub struct ResolvedPolicy {
-    pub emails: Option<Vec<String>>,
-    pub settings: Value,
+pub(crate) struct ResolvedPolicy {
+    pub(crate) emails: Option<Vec<String>>,
+    pub(crate) settings: Value,
 }
 
-pub fn resolve(auth: &GatewayAuth, claims: &Claims) -> Option<Value> {
-    let policies = auth.policies()?;
-    let mut settings = Value::Object(Map::new());
-
+pub(crate) fn resolve_all(
+    policies: &[ResolvedPolicy],
+    telemetry_push: bool,
+    public_url: &str,
+) -> (Value, HashMap<String, Value>) {
+    let mut catch_all = Value::Object(Map::new());
     for policy in policies.iter().filter(|policy| policy.emails.is_none()) {
-        merge(&mut settings, &policy.settings, None);
-    }
-    if let Some(policy) = policies.iter().find(|policy| {
-        policy
-            .emails
-            .as_ref()
-            .is_some_and(|emails| emails.iter().any(|email| email == &claims.email))
-    }) {
-        merge(&mut settings, &policy.settings, None);
+        merge(&mut catch_all, &policy.settings, None);
     }
 
-    if auth.telemetry_push() {
+    let mut by_email = HashMap::new();
+    for policy in policies.iter().filter(|policy| policy.emails.is_some()) {
+        for email in policy.emails.as_ref().expect("filtered user policy") {
+            by_email.entry(email.clone()).or_insert_with(|| {
+                let mut settings = catch_all.clone();
+                merge(&mut settings, &policy.settings, None);
+                inject_telemetry(settings, telemetry_push, public_url)
+            });
+        }
+    }
+
+    (
+        inject_telemetry(catch_all, telemetry_push, public_url),
+        by_email,
+    )
+}
+
+fn inject_telemetry(mut settings: Value, telemetry_push: bool, public_url: &str) -> Value {
+    if telemetry_push {
         let mut env = Map::new();
         for (key, value) in TELEMETRY_ENV {
             env.insert(key.to_string(), Value::String(value.to_string()));
         }
         env.insert(
             "OTEL_EXPORTER_OTLP_ENDPOINT".to_string(),
-            Value::String(auth.public_url().trim_end_matches('/').to_string()),
+            Value::String(public_url.trim_end_matches('/').to_string()),
         );
         let mut injected = json!({ "env": env });
         merge(&mut injected, &settings, None);
         settings = injected;
     }
-
-    Some(settings)
+    settings
 }
 
-pub fn available_models(settings: &Value) -> Option<Vec<&str>> {
+pub(crate) fn available_models(settings: &Value) -> Option<&[Value]> {
     settings
         .get("availableModels")?
-        .as_array()?
-        .iter()
-        .map(Value::as_str)
-        .collect()
+        .as_array()
+        .map(Vec::as_slice)
 }
 
 pub fn merge(base: &mut Value, overlay: &Value, key: Option<&str>) {
@@ -110,7 +119,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         )
         .into_response();
     };
-    let Some(settings) = resolve(&auth, &claims) else {
+    let Some(settings) = auth.managed_settings(&claims.email) else {
         return ShuntError::new(
             StatusCode::NOT_FOUND,
             "not_found_error",
@@ -119,9 +128,10 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         .into_response();
     };
 
-    let settings_bytes = serde_json::to_vec(&settings).expect("managed settings serialize");
+    let settings_bytes = serde_json::to_vec(settings).expect("managed settings serialize");
     let checksum = sha256_label(&settings_bytes);
-    let etag = HeaderValue::from_str(&checksum).expect("SHA-256 ETag is a valid header value");
+    let quoted_etag = format!("\"{checksum}\"");
+    let etag = HeaderValue::from_str(&quoted_etag).expect("SHA-256 ETag is a valid header value");
     if if_none_match(&headers, &checksum) {
         let mut response = StatusCode::NOT_MODIFIED.into_response();
         response.headers_mut().insert(header::ETAG, etag);
@@ -196,6 +206,30 @@ mod tests {
                 },
                 "env": {"BASE": "1", "OVERLAY": "1", "SHARED": "overlay"},
                 "nested": {"left": true, "right": true}
+            })
+        );
+    }
+
+    #[test]
+    fn merge_unions_deny_arrays_case_insensitively() {
+        let mut base = json!({
+            "permissions": {"DeNy": ["Bash", "WebFetch"]},
+            "customDenyList": ["first"]
+        });
+        merge(
+            &mut base,
+            &json!({
+                "permissions": {"DeNy": ["WebFetch", "Write"]},
+                "customDenyList": ["first", "second"]
+            }),
+            None,
+        );
+
+        assert_eq!(
+            base,
+            json!({
+                "permissions": {"DeNy": ["Bash", "WebFetch", "Write"]},
+                "customDenyList": ["first", "second"]
             })
         );
     }

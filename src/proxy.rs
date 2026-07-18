@@ -133,10 +133,11 @@ async fn forward(
             }
         })?;
     let body = normalize_request_body(body.to_vec());
-    let route = routing::resolve(&state.config, &body).map_err(|error| ForwardError {
-        message: "failed to route request".to_string(),
-        response: error.into_response(),
-    })?;
+    let (route, requested_model) =
+        routing::resolve_request(&state.config, &body).map_err(|error| ForwardError {
+            message: "failed to route request".to_string(),
+            response: error.into_response(),
+        })?;
     // Inbound client auth (M4): only routes where shunt injects a server-side
     // credential are gated — passthrough callers pay with their own credential.
     // The client-token header is stripped below either way (and on gated routes
@@ -145,26 +146,25 @@ async fn forward(
     let (headers, gateway_claims) =
         check_inbound_auth(&state, &route, headers).map_err(|error| *error)?;
     if let (Some(auth), Some(claims)) = (&state.gateway_auth, gateway_claims.as_ref()) {
-        if let Some(settings) = crate::gateway::managed::resolve(auth, claims) {
-            if let Some(available_models) = crate::gateway::managed::available_models(&settings) {
-                if let Some(model) = serde_json::from_slice::<Value>(&body)
-                    .ok()
-                    .and_then(|request| request.get("model")?.as_str().map(str::to_string))
+        if let Some(settings) = auth.managed_settings(&claims.email) {
+            if let Some(available_models) = crate::gateway::managed::available_models(settings) {
+                let policy_model = routing::strip_context_window_hint(&requested_model);
+                if !available_models
+                    .iter()
+                    .any(|model| model.as_str() == Some(policy_model))
                 {
-                    if !available_models.contains(&model.as_str()) {
-                        let message = format!(
-                            "model \"{model}\" is not permitted by this gateway's managed policy"
-                        );
-                        return Err(ForwardError {
-                            message: message.clone(),
-                            response: ShuntError::new(
-                                StatusCode::BAD_REQUEST,
-                                "invalid_request_error",
-                                message,
-                            )
-                            .into_response(),
-                        });
-                    }
+                    let message = format!(
+                        "model \"{requested_model}\" is not permitted by this gateway's managed policy"
+                    );
+                    return Err(ForwardError {
+                        message: message.clone(),
+                        response: ShuntError::new(
+                            StatusCode::BAD_REQUEST,
+                            "invalid_request_error",
+                            message,
+                        )
+                        .into_response(),
+                    });
                 }
             }
         }

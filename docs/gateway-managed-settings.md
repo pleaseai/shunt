@@ -17,7 +17,7 @@ policy” response.
 | Request | Response |
 | :-- | :-- |
 | Valid gateway bearer, matching or catch-all policy | `200` with the resolved document |
-| Valid gateway bearer, policies configured but no user-specific match | `200` with the catch-all result, or `{}` when no catch-all exists |
+| Valid gateway bearer, policies configured but no user-specific match | `200` with the catch-all result; without a catch-all, a telemetry-only `env` when telemetry is enabled, otherwise `{}` |
 | Valid gateway bearer, no `policies` configured | `404 not_found_error` |
 | Missing, expired, or invalid gateway bearer | `401 authentication_error` |
 | Matching `If-None-Match` | `304`, the same `ETag`, and an empty body |
@@ -36,16 +36,18 @@ A successful response has this shape:
 ```
 
 `checksum` is the SHA-256 digest of the serialized `settings` JSON bytes. The
-response `ETag` is that checksum verbatim, without quotes. `If-None-Match`
-accepts comma-separated candidates, quoted tags, weak tags such as
-`W/"sha256:…"`, and `*`. `uuid` is stable for the JWT subject and does not expose
-the subject itself.
+response `ETag` is that checksum as an RFC-quoted entity tag, for example
+`"sha256:…"`. `If-None-Match` accepts comma-separated candidates, quoted tags,
+weak tags such as `W/"sha256:…"`, `*`, and the legacy unquoted checksum form.
+`uuid` is stable for the JWT subject and does not expose the subject itself.
 
 `404` and an empty policy are intentionally different:
 
 - No `policies` key means the operator has not configured managed policy, so the
   endpoint returns `404`.
-- Configured policies that resolve to no keys return `200` with `settings: {}`.
+- Configured policies with no matching user or catch-all settings still return
+  `200`. The response contains a telemetry-only `settings.env` when telemetry is
+  enabled, and `settings: {}` otherwise.
 
 ## Configuration
 
@@ -74,9 +76,11 @@ headers = { "x-api-key" = "collector-secret" }
 ```
 
 `cli` is an open-schema `managed-settings.json` object. shunt preserves unknown
-keys instead of pinning the gateway to one Claude Code settings version. A
-configured empty policy list, scalar/non-object `cli`, empty `emails` list,
-blank email, or non-HTTP(S) telemetry destination fails startup.
+keys instead of pinning the gateway to one Claude Code settings version, but all
+values must be JSON-representable; non-finite floats are rejected. A configured
+empty policy list, scalar/non-object `cli`, empty `emails` list, blank email,
+malformed `availableModels` or `env`, or non-HTTP(S) telemetry destination fails
+startup.
 
 Policy and telemetry edits hot-apply through the existing gateway auth snapshot.
 Adding or removing `[server.gateway]` itself still requires a restart because
@@ -126,9 +130,12 @@ relay routes `POST /v1/{metrics,logs,traces}` land in M-C (#189).
 ## `availableModels` enforcement
 
 For a request authenticated with a gateway JWT, shunt resolves the same per-user
-policy before forwarding `/v1/messages` or `/v1/messages/count_tokens`. If the
-resolved document contains an `availableModels` array of strings and the
-request's top-level `model` is not present, shunt returns:
+policy before forwarding `/v1/messages` or `/v1/messages/count_tokens`. Before
+comparison, shunt strips one trailing Claude Code context-window hint (`[1m]` or
+`[1M]`) from the client-requested top-level `model`; the remaining model must be
+present in a resolved `availableModels` array of strings. For example,
+`allowed[1m]` is permitted by `availableModels = ["allowed"]`. Otherwise, shunt
+returns:
 
 ```json
 {

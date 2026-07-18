@@ -38,6 +38,10 @@ struct RoutingView {
 }
 
 pub fn resolve(config: &Config, body: &[u8]) -> Result<Route, ShuntError> {
+    resolve_request(config, body).map(|(route, _)| route)
+}
+
+pub(crate) fn resolve_request(config: &Config, body: &[u8]) -> Result<(Route, String), ShuntError> {
     let view: RoutingView = serde_json::from_slice(body).map_err(|error| {
         ShuntError::new(
             StatusCode::BAD_REQUEST,
@@ -45,7 +49,8 @@ pub fn resolve(config: &Config, body: &[u8]) -> Result<Route, ShuntError> {
             format!("request body must include a JSON model field: {error}"),
         )
     })?;
-    Ok(resolve_model(config, &view.model))
+    let route = resolve_model(config, &view.model);
+    Ok((route, view.model))
 }
 
 /// Claude Code appends a `[1m]` suffix to a model id as a *client-side* hint that
@@ -56,7 +61,7 @@ pub fn resolve(config: &Config, body: &[u8]) -> Result<Route, ShuntError> {
 /// (ASCII case-insensitive) before route matching and before forwarding upstream
 /// so the documented `[1m]` lever works through the gateway. `strip_suffix`
 /// operates on char boundaries, so this stays panic-free on non-ASCII ids.
-fn strip_context_window_hint(model: &str) -> &str {
+pub(crate) fn strip_context_window_hint(model: &str) -> &str {
     model
         .strip_suffix("[1m]")
         .or_else(|| model.strip_suffix("[1M]"))

@@ -295,8 +295,9 @@ pub struct GatewayConfig {
     /// its explicit "no managed policy" 404 behavior.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policies: Option<Vec<GatewayPolicyConfig>>,
-    /// Client telemetry configuration. M-B uses this only to push the six OTLP
-    /// environment variables; the inbound relay routes arrive in M-C (#189).
+    /// Client telemetry configuration. M-B uses this only to push the telemetry
+    /// enable flag plus five `OTEL_*` environment variables; the inbound relay
+    /// routes arrive in M-C (#189).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telemetry: Option<GatewayTelemetryConfig>,
 }
@@ -417,11 +418,16 @@ impl GatewayConfig {
                             }
                             None => None,
                         };
-                        let settings = toml_to_json(&policy.cli);
-                        if !settings.is_object() {
-                            return Err(ConfigError::InvalidGatewayPolicyCli { index });
-                        }
-                        Ok(crate::gateway::ResolvedPolicy { emails, settings })
+                        let settings = toml_to_json(&policy.cli)
+                            .map_err(|key| ConfigError::InvalidGatewayPolicyValue { index, key })?;
+                        let settings = settings
+                            .as_object()
+                            .ok_or(ConfigError::InvalidGatewayPolicyCli { index })?;
+                        validate_managed_policy(settings, index)?;
+                        Ok(crate::gateway::managed::ResolvedPolicy {
+                            emails,
+                            settings: serde_json::Value::Object(settings.clone()),
+                        })
                     })
                     .collect::<Result<Vec<_>, ConfigError>>()
             })
@@ -460,24 +466,56 @@ impl GatewayConfig {
     }
 }
 
-fn toml_to_json(value: &toml::Value) -> serde_json::Value {
+fn validate_managed_policy(
+    settings: &serde_json::Map<String, serde_json::Value>,
+    index: usize,
+) -> Result<(), ConfigError> {
+    if let Some(available_models) = settings.get("availableModels") {
+        let valid = available_models
+            .as_array()
+            .is_some_and(|models| models.iter().all(serde_json::Value::is_string));
+        if !valid {
+            return Err(ConfigError::InvalidGatewayAvailableModels { index });
+        }
+    }
+    if let Some(env) = settings.get("env") {
+        let valid = env.as_object().is_some_and(|env| {
+            env.values()
+                .all(|value| value.is_string() || value.is_number() || value.is_boolean())
+        });
+        if !valid {
+            return Err(ConfigError::InvalidGatewayPolicyEnv { index });
+        }
+    }
+    Ok(())
+}
+
+fn toml_to_json(value: &toml::Value) -> Result<serde_json::Value, String> {
     match value {
-        toml::Value::String(value) => serde_json::Value::String(value.clone()),
-        toml::Value::Integer(value) => serde_json::Value::Number((*value).into()),
+        toml::Value::String(value) => Ok(serde_json::Value::String(value.clone())),
+        toml::Value::Integer(value) => Ok(serde_json::Value::Number((*value).into())),
         toml::Value::Float(value) => serde_json::Number::from_f64(*value)
             .map(serde_json::Value::Number)
-            .unwrap_or(serde_json::Value::Null),
-        toml::Value::Boolean(value) => serde_json::Value::Bool(*value),
-        toml::Value::Datetime(value) => serde_json::Value::String(value.to_string()),
-        toml::Value::Array(values) => {
-            serde_json::Value::Array(values.iter().map(toml_to_json).collect())
-        }
-        toml::Value::Table(values) => serde_json::Value::Object(
+            .ok_or_else(|| "non-finite float".to_string()),
+        toml::Value::Boolean(value) => Ok(serde_json::Value::Bool(*value)),
+        toml::Value::Datetime(value) => Ok(serde_json::Value::String(value.to_string())),
+        toml::Value::Array(values) => Ok(serde_json::Value::Array(
             values
                 .iter()
-                .map(|(key, value)| (key.clone(), toml_to_json(value)))
-                .collect(),
-        ),
+                .enumerate()
+                .map(|(index, value)| toml_to_json(value).map_err(|key| format!("[{index}]{key}")))
+                .collect::<Result<Vec<_>, _>>()?,
+        )),
+        toml::Value::Table(values) => Ok(serde_json::Value::Object(
+            values
+                .iter()
+                .map(|(key, value)| {
+                    toml_to_json(value)
+                        .map(|value| (key.clone(), value))
+                        .map_err(|child| format!(".{key}{child}"))
+                })
+                .collect::<Result<serde_json::Map<_, _>, _>>()?,
+        )),
     }
 }
 
@@ -1144,6 +1182,12 @@ pub enum ConfigError {
     EmptyGatewayPolicyEmail { index: usize, email_index: usize },
     #[error("[server.gateway.policies][{index}].cli must be a table/object")]
     InvalidGatewayPolicyCli { index: usize },
+    #[error("[server.gateway.policies][{index}].cli{key} contains a non-finite float")]
+    InvalidGatewayPolicyValue { index: usize, key: String },
+    #[error("[server.gateway.policies][{index}].cli.availableModels must be an array of strings")]
+    InvalidGatewayAvailableModels { index: usize },
+    #[error("[server.gateway.policies][{index}].cli.env must be a table of scalar values")]
+    InvalidGatewayPolicyEnv { index: usize },
     #[error("[server.gateway.telemetry].forward_to[{index}].url is invalid: {message}")]
     InvalidGatewayTelemetryUrl { index: usize, message: String },
     #[error("[server.auth] is set but {env} is unset or empty; refusing to run open")]
@@ -2521,12 +2565,68 @@ mod tests {
         ));
 
         gateway.policies = Some(vec![GatewayPolicyConfig {
+            matcher: Some(GatewayPolicyMatch {
+                emails: Some(vec!["dev@example.com".to_string(), "  ".to_string()]),
+            }),
+            cli: toml::Value::Table(toml::Table::new()),
+        }]);
+        assert!(matches!(
+            gateway.resolve(),
+            Err(ConfigError::EmptyGatewayPolicyEmail {
+                index: 0,
+                email_index: 1
+            })
+        ));
+
+        gateway.policies = Some(vec![GatewayPolicyConfig {
             matcher: None,
             cli: toml::Value::String("not-an-object".to_string()),
         }]);
         assert!(matches!(
             gateway.resolve(),
             Err(ConfigError::InvalidGatewayPolicyCli { index: 0 })
+        ));
+
+        gateway.policies = Some(vec![GatewayPolicyConfig {
+            matcher: None,
+            cli: toml::toml! { availableModels = ["allowed", 3] }.into(),
+        }]);
+        assert!(matches!(
+            gateway.resolve(),
+            Err(ConfigError::InvalidGatewayAvailableModels { index: 0 })
+        ));
+
+        gateway.policies = Some(vec![GatewayPolicyConfig {
+            matcher: None,
+            cli: toml::toml! { env = { VALID = "yes", INVALID = ["nested"] } }.into(),
+        }]);
+        assert!(matches!(
+            gateway.resolve(),
+            Err(ConfigError::InvalidGatewayPolicyEnv { index: 0 })
+        ));
+
+        gateway.policies = Some(vec![GatewayPolicyConfig {
+            matcher: None,
+            cli: toml::toml! {
+                env = { STRING = "yes", NUMBER = 1, BOOLEAN = true }
+            }
+            .into(),
+        }]);
+        let resolved = gateway.resolve().expect("scalar env values are valid");
+        let settings = resolved.managed_settings("dev@example.com").unwrap();
+        assert_eq!(settings["env"]["STRING"], serde_json::json!("yes"));
+        assert_eq!(settings["env"]["NUMBER"], serde_json::json!(1));
+        assert_eq!(settings["env"]["BOOLEAN"], serde_json::json!(true));
+
+        let mut cli = toml::Table::new();
+        cli.insert("weight".to_string(), toml::Value::Float(f64::INFINITY));
+        gateway.policies = Some(vec![GatewayPolicyConfig {
+            matcher: None,
+            cli: toml::Value::Table(cli),
+        }]);
+        assert!(matches!(
+            gateway.resolve(),
+            Err(ConfigError::InvalidGatewayPolicyValue { index: 0, .. })
         ));
 
         gateway.policies = None;

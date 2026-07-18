@@ -86,14 +86,20 @@ deny = ["WebFetch"]
 All catch-all entries merge in order. The first email-specific match then merges
 on top. Objects merge recursively, allow-list arrays replace, and arrays whose
 key contains `deny` are unioned without duplicates. A configured policy always
-returns `200`, even when it resolves to `{}`; omitting `policies` returns `404`
-so Claude Code can distinguish “no managed policy.” Responses include a stable
-per-user `uuid`, a settings `checksum`, and the same checksum as `ETag`;
-`If-None-Match` returns `304` when unchanged.
+returns `200`; when no user-specific or catch-all settings apply, the response
+contains only the injected telemetry `env` if telemetry is enabled, and `{}`
+otherwise. Omitting `policies` returns `404` so Claude Code can distinguish “no
+managed policy.” Responses include a stable
+per-user `uuid`, a settings `checksum`, and an RFC-quoted `ETag` containing that
+checksum; `If-None-Match` returns `304` when unchanged and also accepts weak,
+comma-list, wildcard, and legacy-unquoted validators.
 
 When `availableModels` resolves to an array of strings, shunt also enforces it on
-`/v1/messages` and `/v1/messages/count_tokens` for that gateway user. A denied
-model receives `400 invalid_request_error` without contacting the upstream.
+`/v1/messages` and `/v1/messages/count_tokens` for that gateway user. It strips
+one trailing Claude Code context-window hint (`[1m]` or `[1M]`) from the
+client-requested model before comparison, so `allowed[1m]` matches an `allowed`
+entry. A denied model receives `400 invalid_request_error` without contacting
+the upstream.
 
 A non-empty telemetry destination list pushes the six standard Claude Code OTLP
 environment values. Policy `env` keys override injected defaults:

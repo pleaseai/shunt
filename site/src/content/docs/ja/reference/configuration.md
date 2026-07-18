@@ -41,13 +41,33 @@ description: すべての shunt.toml キー — server、providers、routes、mo
 
 ## `[server.gateway]`（オプション）
 
-このテーブルは Claude Code の OAuth device-flow ログインを有効化します。`public_url`（必須）、`jwt_secret_env`（デフォルト `SHUNT_GATEWAY_JWT_SECRET`）、`users_env`（デフォルト `SHUNT_GATEWAY_USERS`）、`token_ttl_seconds`（デフォルト `3600`）、`trust_forwarded_for`（デフォルト `false`）をサポートします。
+このテーブルの存在が、Claude Code の managed `forceLoginMethod: "gateway"` で使う [OAuth device-flow gateway ログイン](/ja/guides/gateway-login/)を有効化します。テーブルがなければ、shunt は `/.well-known/oauth-authorization-server`、`/oauth/device_authorization`、`/oauth/token`、`/device`、`/managed/settings` を登録しません。
 
-空でない `[[server.gateway.policies]]` リストは、認証済み `GET /managed/settings` を有効化します。各ポリシーには任意の `[server.gateway.policies.match]` と `emails` を設定でき、`[server.gateway.policies.cli]` はオープンスキーマの Claude Code managed settings オブジェクトです。`match` の省略または空の `match` は catch-all です。すべての catch-all を順番にマージし、その上にメールアドレスが大文字小文字を含めて完全一致する最初のユーザーポリシーだけをマージします。オブジェクトは再帰的にマージし、配列は置換します。ただしキー名に `deny` を含む配列は、重複なしの和集合になります。
+| キー | デフォルト | 意味 |
+| :-- | :-- | :-- |
+| `public_url` | 必須 | JWT issuer および OAuth endpoint の基点となる外部公開 HTTPS origin。`http` は loopback のみ許可 |
+| `jwt_secret_env` | `SHUNT_GATEWAY_JWT_SECRET` | 32 bytes 以上の HS256 signing secret を保持する env 変数 |
+| `users_env` | `SHUNT_GATEWAY_USERS` | カンマ区切りの `email:secret` approval user を保持する env 変数 |
+| `token_ttl_seconds` | `3600` | access token の寿命。`expires_in` として返される |
+| `trust_forwarded_for` | `false` | `/device` の rate-limit identity として `X-Forwarded-For`／`X-Real-IP` を信頼する。client 提供値を置換する trusted proxy の背後でのみ有効化 |
 
-`policies` がなければ endpoint は `404`、設定済みポリシーが空の文書に解決されれば `200` と `settings: {}` を返します。レスポンスの `ETag` は `checksum` と同じで、一致する `If-None-Match` には `304` を返します。解決された文字列配列 `availableModels` は、gateway JWT ユーザーの `/v1/messages` と `/v1/messages/count_tokens` にもサーバー側で適用されます。
+URL が path 等を含まない HTTPS origin でない場合（`http` は loopback のみ許可）、TTL が 0 の場合、secret がないか 32 bytes 未満の場合、または user list が空・不正な場合、起動は fail closed します。secret には `:` を含められ、最初の colon だけが email と secret を分けます。env-backed secret と user の変更は config reload で反映されますが、route tree は boot 時に固定されるため、テーブルの追加・削除には restart が必要です。
 
-空でない `[server.gateway.telemetry].forward_to` リストは、Claude Code telemetry 有効化、3 つの OTLP exporter、`public_url` endpoint、`http/protobuf` protocol の合計 6 つの env 値を managed settings に注入します。競合時はポリシーの env 値が優先されます。各 destination は HTTP(S) `url` と任意の文字列 `headers` map を受け付けます。M-B は env push のみを有効化し、OTLP ingest/relay route は M-C（#189）で追加されます。
+発行された bearer は、選択された provider が server-side credential を注入する場合に `/v1/models`、`/v1/messages`、`/v1/messages/count_tokens` を認証します。passthrough provider は open のままです。`[server.auth]` もある場合は、どちらかの credential で access できます。device grant と rotating refresh token は process-lifetime の in-memory state です。config reload では維持されますが、restart では無効になります。
+
+### `[[server.gateway.policies]]`（オプション）
+
+`[server.gateway]` が存在すると、認証済み `GET /managed/settings` が登録されます。順序付きの空でない policy list は、その managed document を提供します。各 policy は任意の `[server.gateway.policies.match]` と、必須の open-schema `[server.gateway.policies.cli]` object を持ちます。`match` の省略、`match = {}`、または `emails` なしは catch-all です。明示的な空の `emails` list または空白 entry は起動エラーです。
+
+すべての catch-all policy を順番に merge し、その上に最初の完全一致（case-sensitive）email policy を merge します。object は再帰的に merge し、array は置換します。ただし key に `deny` を含む array は重複なしの union になります。既知の key は起動時と hot reload 時に検証されます。`availableModels` は string のみの array、`env` は string・number・boolean の scalar value のみを含む table でなければなりません。未知の key は open-schema のままですが、すべての value は JSON で表現可能でなければならず、非有限 float は拒否されます。
+
+`policies` がなければ endpoint は `404` を返します。policy が設定されていても user-specific または catch-all settings が一致しない場合、telemetry が有効なら telemetry のみの `settings.env` を、無効なら `settings: {}` を含む `200` を返します。response は `uuid`、`checksum`、checksum を含む quoted `ETag` を持ち、一致する `If-None-Match` には `304` を返します。
+
+解決された `cli.availableModels` は gateway JWT request の `/v1/messages` と `/v1/messages/count_tokens` に適用されます。top-level `model` から末尾の Claude Code context-window hint（`[1m]` または `[1M]`）を 1 つ取り除いてから比較し、list にない場合は `400 invalid_request_error` になります。static `[server.auth]` credential は gateway policy user を識別しないため、この制限の対象外です。
+
+### `[server.gateway.telemetry]`（オプション）
+
+`forward_to` は、必須の HTTP(S) `url` と任意の string `headers` map を持つ destination の array です。空でない list は managed `settings.env` に 6 つの値を注入します。`CLAUDE_CODE_ENABLE_TELEMETRY=1`、`OTEL_METRICS_EXPORTER`／`OTEL_LOGS_EXPORTER`／`OTEL_TRACES_EXPORTER=otlp`、`OTEL_EXPORTER_OTLP_ENDPOINT=public_url`、`OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` です。競合時は policy の env value が優先します。この table が M-B で制御するのは environment push のみで、inbound OTLP ingest／relay は M-C（#189）です。
 
 ```toml
 [[server.gateway.policies]]
@@ -61,7 +81,10 @@ DISABLE_UPDATES = "1"
 [server.gateway.telemetry]
 [[server.gateway.telemetry.forward_to]]
 url = "https://collector.example.com"
+headers = { "x-api-key" = "..." }
 ```
+
+デフォルトでは `/device` は forwarding header を無視し、socket peer を rate limit します。shunt が、client 提供の forwarding header を削除して自分の値を設定する trusted reverse proxy からのみ到達可能な場合に限り、`trust_forwarded_for = true` を設定してください。直接公開された gateway では有効化しないでください。
 
 ## `[server.pool]`（オプション）
 

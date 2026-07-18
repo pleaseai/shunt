@@ -147,7 +147,9 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
 
     // Opt-in Claude apps gateway surface (M-A/M-B): registered only when
     // `[server.gateway]` was present at boot. OAuth handlers remain unauthenticated;
-    // minted JWTs gate managed settings plus existing inference and discovery routes.
+    // minted JWTs authenticate managed settings and injected-credential inference.
+    // Static client tokens are a separate alternative, and `/v1/models` keeps its
+    // existing endpoint-specific authentication behavior.
     if gateway_enabled {
         router = router.merge(gateway::gateway_router());
     }
