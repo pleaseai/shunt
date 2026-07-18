@@ -1,0 +1,19 @@
+src/adapters/mod.rs
+  s_71980b6858ec72::t_caa5e8b409f33c 31-33
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "89ee348357c17ada5d487207bcaae07e5bf133be",
+  "prompts": {},
+  "sessions": {
+    "s_71980b6858ec72": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3d559c97-2eb6-46fd-8f5d-8c7d794ff0e9",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
