@@ -1,0 +1,26 @@
+site/src/content/docs/ko/reference/configuration.md
+  s_68e4730c7b55f3::t_546703bf1c73f2 57
+  s_68e4730c7b55f3::t_5af208326281e2 90-99
+  s_68e4730c7b55f3::t_5f16d9ea29f14d 53
+src/gateway/managed.rs
+  s_68e4730c7b55f3::t_a658e4d65d92c5 86-87,89-94
+  s_68e4730c7b55f3::t_d0a95ab5cbc5d6 88
+  s_68e4730c7b55f3::t_9b166cd979d771 222-241
+  s_68e4730c7b55f3::t_ff5788e16b620c 221
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "a10a918a6109edc6d9ebc302f4d7e77aa5080a5e",
+  "prompts": {},
+  "sessions": {
+    "s_68e4730c7b55f3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cb239611-fcf4-465b-95ca-2cf6ee3e1064",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
