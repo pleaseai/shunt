@@ -18,7 +18,7 @@
 **OpenAI**, **ChatGPT/Codex**(`codex login`으로 구독을 재사용), **xAI**(API 키), **Grok**(`shunt login xai`로 SuperGrok / X Premium+ 구독을 재사용), **Cursor**(`shunt login cursor`로 구독을 재사용), **Anthropic** 패스스루가 기본 내장되어 있으며, Anthropic Messages 호환 백엔드(Kimi, DeepSeek, GLM, MiniMax, OpenRouter, Vercel AI Gateway 등)라면 무엇이든 TOML 테이블 하나만 추가하면 됩니다. 코드 변경은 필요 없습니다.
 
 > [!NOTE]
-> `shunt`는 활발히 개발 중인 1.0 미만(pre-1.0) 소프트웨어입니다. [SemVer](https://semver.org/lang/ko/#spec-item-4) 관례에 따라 `0.x` 릴리스에는 설정 키, CLI, 동작에 대한 호환성이 깨지는 변경(breaking change)이 포함될 수 있으니, 업그레이드 전에 [릴리스 노트](https://github.com/pleaseai/shunt/releases)를 확인하세요.
+> `shunt`는 활발히 개발 중인 1.0 미만(pre-1.0) 소프트웨어입니다. [SemVer](https://semver.org/lang/ko/#spec) 관례에 따라 `0.x` 릴리스에는 설정 키, CLI, 동작에 대한 호환성이 깨지는 변경(breaking change)이 포함될 수 있으니, 업그레이드 전에 [릴리스 노트](https://github.com/pleaseai/shunt/releases)를 확인하세요.
 
 ## 설치
 

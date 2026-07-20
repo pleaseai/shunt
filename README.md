@@ -19,7 +19,7 @@ The name is the mechanism: an electrical/railway *shunt* diverts a selected part
 It ships with **OpenAI**, **ChatGPT/Codex** (reuse your subscription via `codex login`), **xAI** (API key), **Grok** (reuse your SuperGrok / X Premium+ subscription via `shunt login xai`), **Cursor** (reuse your subscription via `shunt login cursor`), and **Anthropic** passthrough built in — and any Anthropic-Messages-compatible backend (Kimi, DeepSeek, GLM, MiniMax, OpenRouter, Vercel AI Gateway, …) is one TOML table or YAML mapping away, no code changes.
 
 > [!NOTE]
-> `shunt` is pre-1.0 software under active development. Per [SemVer](https://semver.org/#spec-item-4), `0.x` releases may include breaking changes to configuration keys, the CLI, and behavior — check the [release notes](https://github.com/pleaseai/shunt/releases) before upgrading.
+> `shunt` is pre-1.0 software under active development. Per [SemVer](https://semver.org/#spec), `0.x` releases may include breaking changes to configuration keys, the CLI, and behavior — check the [release notes](https://github.com/pleaseai/shunt/releases) before upgrading.
 
 ## Install
 
