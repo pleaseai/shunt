@@ -40,7 +40,7 @@ branching). Unknown preset name → config error listing available presets.
 | `openai` | responses | `https://api.openai.com/v1` | `api_key`, env `OPENAI_API_KEY` |
 | `xai` | responses | `https://api.x.ai/v1` | `api_key`, env `XAI_API_KEY` |
 | `grok` | responses | `https://cli-chat-proxy.grok.com/v1` | `xai_oauth` |
-| `kimi` | anthropic | `https://api.moonshot.ai/anthropic` | `api_key`, env `KIMI_API_KEY` |
+| `kimi` | anthropic | `https://api.moonshot.ai/anthropic` | `api_key`, env `MOONSHOT_API_KEY` |
 | `cursor` | cursor | Cursor backend (current documented URL) | `cursor_oauth` |
 
 Exact URLs must be taken from the existing adapters/docs at implementation

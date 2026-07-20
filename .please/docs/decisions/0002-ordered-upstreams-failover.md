@@ -56,7 +56,7 @@ auth = { mode = "claude_oauth", account = "acct-1" }
 [[upstreams]]
 name = "kimi"
 provider = "kimi"
-auth = { mode = "api_key", env = "KIMI_API_KEY" }
+auth = { mode = "api_key", env = "MOONSHOT_API_KEY" }
 
 [[upstreams]]
 name = "anthropic-2"
