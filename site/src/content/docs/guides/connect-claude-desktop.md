@@ -63,13 +63,14 @@ shunt serves `GET /v1/models`, so Claude Desktop auto-discovers the picker at la
 
 ```json
 // GET /v1/models — builtin catalog (auto_include_builtin_models), all tier-named
+// (each entry also carries "type": "model")
 { "data": [
   { "id": "claude-opus-4-6" },   { "id": "claude-sonnet-4-5-20250929" },
   { "id": "claude-haiku-4-5-20251001" }, { "id": "claude-fable-5" },
   { "id": "claude-opus-4-8" },   { "id": "claude-opus-4-7" },
   { "id": "claude-opus-4-1-20250805" },  { "id": "claude-sonnet-5" },
   { "id": "claude-sonnet-4-6" }
-] }
+], "has_more": false, "first_id": null, "last_id": null }
 ```
 
 A curated `claude-<slug>-via-<provider>` alias (the pattern that works in Claude Code) is **dropped by Claude Desktop** — see [Model Discovery → Claude Desktop recognizes only tier-named ids](/guides/model-discovery/#claude-desktop-recognizes-only-tier-named-ids).

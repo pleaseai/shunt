@@ -23,16 +23,34 @@ const BUILTIN_MODEL_IDS: &[&str] = &[
     "claude-sonnet-4-6",
 ];
 
+/// Anthropic list envelope. shunt never paginates, so the cursor fields are
+/// constant, but the reference gateway serializes them and clients may expect
+/// the full shape (#213).
 #[derive(Debug, Serialize)]
 pub struct ModelsResponse {
     pub data: Vec<ModelEntry>,
+    pub has_more: bool,
+    pub first_id: Option<String>,
+    pub last_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct ModelEntry {
+    #[serde(rename = "type")]
+    pub entry_type: &'static str,
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+}
+
+impl ModelEntry {
+    pub fn new(id: String, display_name: Option<String>) -> Self {
+        Self {
+            entry_type: "model",
+            id,
+            display_name,
+        }
+    }
 }
 
 pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -80,25 +98,25 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         .config
         .models
         .iter()
-        .map(|model| ModelEntry {
-            id: model.id.clone(),
-            display_name: model.display_name.clone(),
-        })
+        .map(|model| ModelEntry::new(model.id.clone(), model.display_name.clone()))
         .collect();
     if state.config.auto_include_builtin_models {
         for &id in BUILTIN_MODEL_IDS {
             if data.iter().all(|model| model.id != id) {
-                data.push(ModelEntry {
-                    id: id.to_string(),
-                    // The reference repeats the id as display_name. Claude Code
-                    // falls back to the id, so omit it for an equivalent smaller body.
-                    display_name: None,
-                });
+                // The reference repeats the id as display_name. Claude Code
+                // falls back to the id, so omit it for an equivalent smaller body.
+                data.push(ModelEntry::new(id.to_string(), None));
             }
         }
     }
     tracing::info!(models = data.len(), "served GET /v1/models discovery");
-    Json(ModelsResponse { data }).into_response()
+    Json(ModelsResponse {
+        data,
+        has_more: false,
+        first_id: None,
+        last_id: None,
+    })
+    .into_response()
 }
 
 #[cfg(test)]
@@ -143,9 +161,12 @@ mod tests {
             body,
             json!({
                 "data": [
-                    {"id": "claude-opus-via-codex", "display_name": "Opus (via Codex)"},
-                    {"id": "anthropic-sonnet-via-codex"}
-                ]
+                    {"type": "model", "id": "claude-opus-via-codex", "display_name": "Opus (via Codex)"},
+                    {"type": "model", "id": "anthropic-sonnet-via-codex"}
+                ],
+                "has_more": false,
+                "first_id": null,
+                "last_id": null
             })
         );
     }
@@ -164,7 +185,10 @@ mod tests {
             .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-        assert_eq!(body, json!({"data": []}));
+        assert_eq!(
+            body,
+            json!({"data": [], "has_more": false, "first_id": null, "last_id": null})
+        );
     }
 
     #[tokio::test]
@@ -182,16 +206,19 @@ mod tests {
             body,
             json!({
                 "data": [
-                    {"id": "claude-opus-4-6"},
-                    {"id": "claude-sonnet-4-5-20250929"},
-                    {"id": "claude-haiku-4-5-20251001"},
-                    {"id": "claude-fable-5"},
-                    {"id": "claude-opus-4-8"},
-                    {"id": "claude-opus-4-7"},
-                    {"id": "claude-opus-4-1-20250805"},
-                    {"id": "claude-sonnet-5"},
-                    {"id": "claude-sonnet-4-6"}
-                ]
+                    {"type": "model", "id": "claude-opus-4-6"},
+                    {"type": "model", "id": "claude-sonnet-4-5-20250929"},
+                    {"type": "model", "id": "claude-haiku-4-5-20251001"},
+                    {"type": "model", "id": "claude-fable-5"},
+                    {"type": "model", "id": "claude-opus-4-8"},
+                    {"type": "model", "id": "claude-opus-4-7"},
+                    {"type": "model", "id": "claude-opus-4-1-20250805"},
+                    {"type": "model", "id": "claude-sonnet-5"},
+                    {"type": "model", "id": "claude-sonnet-4-6"}
+                ],
+                "has_more": false,
+                "first_id": null,
+                "last_id": null
             })
         );
     }
@@ -223,17 +250,20 @@ mod tests {
             body,
             json!({
                 "data": [
-                    {"id": "claude-opus-4-8", "display_name": "Opus Curated"},
-                    {"id": "claude-custom-model"},
-                    {"id": "claude-opus-4-6"},
-                    {"id": "claude-sonnet-4-5-20250929"},
-                    {"id": "claude-haiku-4-5-20251001"},
-                    {"id": "claude-fable-5"},
-                    {"id": "claude-opus-4-7"},
-                    {"id": "claude-opus-4-1-20250805"},
-                    {"id": "claude-sonnet-5"},
-                    {"id": "claude-sonnet-4-6"}
-                ]
+                    {"type": "model", "id": "claude-opus-4-8", "display_name": "Opus Curated"},
+                    {"type": "model", "id": "claude-custom-model"},
+                    {"type": "model", "id": "claude-opus-4-6"},
+                    {"type": "model", "id": "claude-sonnet-4-5-20250929"},
+                    {"type": "model", "id": "claude-haiku-4-5-20251001"},
+                    {"type": "model", "id": "claude-fable-5"},
+                    {"type": "model", "id": "claude-opus-4-7"},
+                    {"type": "model", "id": "claude-opus-4-1-20250805"},
+                    {"type": "model", "id": "claude-sonnet-5"},
+                    {"type": "model", "id": "claude-sonnet-4-6"}
+                ],
+                "has_more": false,
+                "first_id": null,
+                "last_id": null
             })
         );
     }

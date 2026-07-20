@@ -63,13 +63,14 @@ shunt는 `GET /v1/models`를 제공하므로 Claude Desktop은 시작할 때 모
 
 ```json
 // GET /v1/models — 내장 카탈로그(auto_include_builtin_models), 모두 tier 이름 id
+// (각 항목에는 "type": "model"도 포함됨)
 { "data": [
   { "id": "claude-opus-4-6" },   { "id": "claude-sonnet-4-5-20250929" },
   { "id": "claude-haiku-4-5-20251001" }, { "id": "claude-fable-5" },
   { "id": "claude-opus-4-8" },   { "id": "claude-opus-4-7" },
   { "id": "claude-opus-4-1-20250805" },  { "id": "claude-sonnet-5" },
   { "id": "claude-sonnet-4-6" }
-] }
+], "has_more": false, "first_id": null, "last_id": null }
 ```
 
 선별된 `claude-<slug>-via-<provider>` 별칭(Claude Code에서 동작하는 패턴)은 **Claude Desktop에서 버려집니다**. [모델 디스커버리 → Claude Desktop은 tier 이름 id만 인식합니다](/ko/guides/model-discovery/#claude-desktop은-tier-이름-id만-인식합니다)를 참고하세요.
