@@ -1,0 +1,56 @@
+docs/running.md
+  s_a97abd114ec285::t_29dd1d248d6ddc 99-100
+site/src/content/docs/zh-cn/guides/model-discovery.md
+  s_a97abd114ec285::t_d4f03540dfa427 23
+site/src/content/docs/ko/reference/configuration.md
+  s_a97abd114ec285::t_1ce68078c2ee38 143
+  s_a97abd114ec285::t_5b3ae7d579dba7 145
+  s_a97abd114ec285::t_0112499eb4685e 169
+  s_a97abd114ec285::t_b3ca2ab7789122 144
+docs/m3-discovery.md
+  s_a97abd114ec285::t_8a6e7cb56030f8 69-70
+site/src/content/docs/reference/configuration.md
+  s_a97abd114ec285::t_efe9309f180308 249
+  s_a97abd114ec285::t_cbff10819571c5 275
+  s_a97abd114ec285::t_e40ddfa54fc3f1 251
+  s_a97abd114ec285::t_53835ea7ff1ccb 250
+site/src/content/docs/ja/reference/configuration.md
+  s_a97abd114ec285::t_7061ce5f7f4098 133
+  s_a97abd114ec285::t_8fbbc5332a8ab4 157
+  s_a97abd114ec285::t_0882e51d8b692a 131
+  s_a97abd114ec285::t_42610d66431b4e 132
+README.md
+  s_a97abd114ec285::t_a6579f414d3095 37
+.please/docs/decisions/0001-per-provider-upstream-model-map.md
+  s_a97abd114ec285::t_61e4dc79ed4c7a 38-39
+  s_a97abd114ec285::t_cc8022150316ee 46
+  s_a97abd114ec285::t_13d5bd18c138af 54
+  s_a97abd114ec285::t_2889e43e9195e9 61
+site/src/content/docs/ko/guides/model-discovery.md
+  s_a97abd114ec285::t_c751310ad27dc0 23
+site/src/content/docs/guides/model-discovery.md
+  s_a97abd114ec285::t_7391a5407d273b 23
+site/src/content/docs/ja/guides/model-discovery.md
+  s_a97abd114ec285::t_e75c4fb4feb2a2 23
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_a97abd114ec285::t_43f35e07a096d8 157
+  s_a97abd114ec285::t_8d8b9515dfefb2 133
+  s_a97abd114ec285::t_b0fa91b96e840c 131
+  s_a97abd114ec285::t_bff6fe91c512a6 132
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "8985b2243d223ac8ae9be9bb26796d007fb74940",
+  "prompts": {},
+  "sessions": {
+    "s_a97abd114ec285": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "45452c46-56b0-4717-a858-27f46f8c5786",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
