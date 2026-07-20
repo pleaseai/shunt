@@ -30,8 +30,8 @@ const BUILTIN_MODEL_IDS: &[&str] = &[
 pub struct ModelsResponse {
     pub data: Vec<ModelEntry>,
     pub has_more: bool,
-    pub first_id: Option<String>,
-    pub last_id: Option<String>,
+    pub first_id: Option<&'static str>,
+    pub last_id: Option<&'static str>,
 }
 
 #[derive(Debug, Serialize)]
