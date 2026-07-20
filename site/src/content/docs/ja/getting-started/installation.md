@@ -3,6 +3,10 @@ title: インストール
 description: Homebrew、cargo、ビルド済みバイナリ、またはソースから shunt をインストールする。
 ---
 
+:::note[pre-1.0 ソフトウェア]
+`shunt` は活発に開発中の 1.0 未満（pre-1.0）ソフトウェアです。[SemVer](https://semver.org/lang/ja/#spec) の慣例に従い、`0.x` リリースには設定キー・CLI・動作に対する破壊的変更（breaking change）が含まれる場合があります。アップグレード前に[リリースノート](https://github.com/pleaseai/shunt/releases)を確認してください。
+:::
+
 ## Homebrew (macOS / Linux)
 
 ```bash
