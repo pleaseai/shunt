@@ -141,7 +141,15 @@ Cross-cutting:
 - **Inbound auth gating**: inbound auth remains optional exactly as today. When
   inbound auth is configured, the gating check considers the whole chain: the
   request is gated if *any* chain element injects credentials
-  (`auth != passthrough`), not just the first.
+  (`auth != passthrough`), not just the first. Credential stripping moves with
+  it: today `check_inbound_auth` removes the client's `authorization` /
+  `x-api-key` headers up front, which in a mixed chain would destroy the
+  credentials a `passthrough` element must forward. In a chain the gate only
+  authenticates; stripping (and the `x-shunt-inbound-client` stamp) is
+  deferred to per-upstream dispatch and applied only when dispatching to an
+  element that injects credentials, so a `passthrough` element still receives
+  the client's original headers. (The anti-spoof removal of inbound-only
+  headers from unauthenticated requests stays at the gate.)
 - **count_tokens**: answered from the first chain element, as a chain has one
   advertised id; no failover for count_tokens.
 - **Metrics**: per-attempt `record_proxied_request` labeled by upstream name,
@@ -165,9 +173,14 @@ The pool survives as the **intra-upstream** mechanism; the chain is the
   health, cooldowns, in-flight admission counts, refresh locks) is re-keyed
   from provider name to *(store family, stable account identity)*. Identity
   follows the existing `account_identity()` rule — account UUID when present,
-  name as fallback — but cross-upstream sharing requires a verified identity:
-  two upstreams share an account's state only when their accounts carry the
-  same UUID/account id or resolve to the same store entry (bare-name store
+  name as fallback — with the UUID read from the account's *resolved*
+  credentials (the store entry or inline credential material, e.g. the Claude
+  account UUID or `chatgpt_account_id`), not from the static TOML view alone,
+  so an explicit `account = "acct-1"` reference and a whole-store scan that
+  resolve to the same store entry produce the same key and coalesce.
+  Cross-upstream sharing requires this verified identity: two upstreams share
+  an account's state only when their accounts carry the same verified
+  UUID/account id or resolve to the same store entry (bare-name store
   references). A UUID-less inline `AccountConfig` table is upstream-scoped: its
   fallback key is namespaced by the upstream name, so same-named inline
   accounts with different credentials under different upstreams never merge.

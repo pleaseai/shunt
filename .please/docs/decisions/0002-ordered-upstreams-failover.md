@@ -111,9 +111,13 @@ The decision has four parts:
    windows, health, cooldowns, in-flight admission) is keyed by store family
    plus stable account identity, not by upstream name. Identity follows the
    existing `account_identity()` rule — account UUID when present, name as
-   fallback — but cross-upstream sharing requires a verified identity: state is
-   shared only between accounts carrying the same UUID/account id or resolving
-   to the same store entry. UUID-less inline accounts are upstream-scoped (name
+   fallback — with the UUID read from the account's resolved credentials (the
+   store entry or inline credential material), not from the static TOML view
+   alone, so an explicit `account = "x"` reference and a store scan resolving
+   to the same entry coalesce. Cross-upstream sharing requires this verified
+   identity: state is shared only between accounts carrying the same verified
+   UUID/account id or resolving to the same store entry. UUID-less inline
+   accounts are upstream-scoped (name
    fallback namespaced by upstream name), so same-named inline accounts with
    different credentials never merge. Selection scope is per upstream;
    verified-account truth is global, so several upstreams referencing the same
@@ -132,7 +136,9 @@ returned. Responses carry `x-gateway-upstream`, `x-gateway-model`, and
 `x-gateway-upstream-model` headers. Inbound auth remains optional exactly as
 today. When inbound auth is configured, its gating check considers the whole
 chain: the request is gated if any chain member injects credentials
-(`auth != passthrough`), not just the first.
+(`auth != passthrough`), not just the first; client-credential stripping is
+deferred to per-upstream dispatch so a `passthrough` chain member still
+receives the client's original headers.
 
 **Backward compatibility.** The legacy `[providers.<name>]` table keeps
 parsing unchanged. Each legacy provider becomes one implicit upstream named
