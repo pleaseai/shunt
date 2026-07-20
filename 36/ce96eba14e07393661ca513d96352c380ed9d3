@@ -1,0 +1,52 @@
+site/src/content/docs/ko/reference/configuration.md
+  s_05e94059a9439b::t_42d2bd700614ba 242
+  s_05e94059a9439b::t_4358ea9ff2c624 257
+  s_05e94059a9439b::t_6b009345344286 124-172,174-197
+  s_05e94059a9439b::t_82f189975799b4 173
+  s_05e94059a9439b::t_a8a10869cd8325 223,234
+README.md
+  s_05e94059a9439b::t_d976349df18597 59-76,78-79
+  s_05e94059a9439b::t_b2d49996d15ebc 80
+  s_05e94059a9439b::t_fd12dd67218da9 185
+  s_05e94059a9439b::t_65c85c5d7ca0e5 77
+site/src/content/docs/reference/configuration.md
+  s_05e94059a9439b::t_4d88ed4ac22180 171-219,221-244
+  s_05e94059a9439b::t_a232e16076fc61 135
+  s_05e94059a9439b::t_a25f40b886883f 220
+  s_05e94059a9439b::t_c2a739a925982d 363
+  s_05e94059a9439b::t_4724524253c484 329,340
+  s_05e94059a9439b::t_c566d2d731ea89 348
+site/src/content/docs/ja/reference/configuration.md
+  s_05e94059a9439b::t_00f2c5648a03c3 162
+  s_05e94059a9439b::t_a0fa93304d578d 211,222
+  s_05e94059a9439b::t_c6de6b87e45a18 113-161,163-186
+  s_05e94059a9439b::t_34feea6dbe7c64 230
+  s_05e94059a9439b::t_cde6e709eb73d5 245
+docs/upstreams-failover.md
+  s_05e94059a9439b::t_fcdd5c9e16d199 234-253
+  s_05e94059a9439b::t_56eadd01777bcb 267
+  s_05e94059a9439b::t_9229030fc82052 4-5
+  s_05e94059a9439b::t_ff52dee59d3b73 211-212,217-220
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_05e94059a9439b::t_b59d195adab086 113-161,163-186
+  s_05e94059a9439b::t_b88047a8a7288c 211,222
+  s_05e94059a9439b::t_bd15792d8d5fa4 245
+  s_05e94059a9439b::t_acda21f4e55af8 230
+  s_05e94059a9439b::t_95f8cb7910a2ae 162
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "36ce96eba14e07393661ca513d96352c380ed9d3",
+  "prompts": {},
+  "sessions": {
+    "s_05e94059a9439b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4627c43f-c579-4762-a76b-57fb1d2227ed",
+        "model": "claude-fable-5"
+      },
+      "human_author": null
+    }
+  }
+}
