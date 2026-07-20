@@ -1,0 +1,23 @@
+docs/upstreams-failover.md
+  s_05e94059a9439b::t_fbe6faa29279aa 144-152
+  s_05e94059a9439b::t_d21c35beab0d98 176-183
+.please/docs/decisions/0002-ordered-upstreams-failover.md
+  s_05e94059a9439b::t_b64b7f22312870 139-141
+  s_05e94059a9439b::t_1b1a8ac85bb774 114-120
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "83115559a28799a722372868ad4157c70e691168",
+  "prompts": {},
+  "sessions": {
+    "s_05e94059a9439b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4627c43f-c579-4762-a76b-57fb1d2227ed",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
