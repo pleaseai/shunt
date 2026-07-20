@@ -1,0 +1,47 @@
+site/src/content/docs/zh-cn/guides/connect-claude-desktop.md
+  s_6e1b072d594b7b::t_4907f65672809f 66,73
+docs/gateway-protocol.md
+  s_6e1b072d594b7b::t_5e78c2aeba2e6e 277-279
+src/discovery.rs
+  s_6e1b072d594b7b::t_cd3e634c965049 164-169
+  s_6e1b072d594b7b::t_2dc94c6a372671 188-191
+  s_6e1b072d594b7b::t_0e7980ed4dc0a1 101,106-108,113-119
+  s_6e1b072d594b7b::t_3501a154968776 253-266
+  s_6e1b072d594b7b::t_bd3305589ee31f 26-28,32-34,39-40,46-53
+  s_6e1b072d594b7b::t_d52feac2541489 209-221
+  s_64c89a0faf844d::t_fc4174f7fb3075 54-55
+site/src/content/docs/guides/connect-claude-desktop.md
+  s_6e1b072d594b7b::t_2d0386cfece7ff 66,73
+site/src/content/docs/ja/guides/connect-claude-desktop.md
+  s_6e1b072d594b7b::t_427f39eacf345c 66,73
+site/src/content/docs/ko/guides/connect-claude-desktop.md
+  s_6e1b072d594b7b::t_1c0b14454e5f1d 66,73
+docs/m3-discovery.md
+  s_6e1b072d594b7b::t_bac7a85445ec04 63
+  s_6e1b072d594b7b::t_cf64c166c5c456 70-71
+  s_6e1b072d594b7b::t_74eab6d3d6006d 40-45,47-50
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "4378ee9e06195166fecef9ebf32c91fc7fef4911",
+  "prompts": {},
+  "sessions": {
+    "s_64c89a0faf844d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6843cff6-bb35-40cc-b59d-c1a5fd383993",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_6e1b072d594b7b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2d871fcf-9e5f-4040-ba24-30af9d47ba69",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
