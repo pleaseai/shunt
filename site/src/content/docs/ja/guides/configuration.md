@@ -43,7 +43,7 @@ auth = "chatgpt_oauth"         # reuses ~/.codex/auth.json
 
 # --- Routing: how a request's `model` id picks a provider ---
 
-# Exact match wins first. `upstream_model` and `effort` are optional overrides.
+# 一致する [models.upstream_model] エントリが最初に優先されます。[[routes]] はその次に確認される従来の完全一致形式です。
 [[routes]]
 model = "gpt-5.6-sol"
 provider = "codex"
@@ -64,9 +64,10 @@ provider = "openai"
 
 ## ルーティング優先順位
 
-1. リクエストの `model` id に対する厳密な `[[routes]]` マッチ。
-2. `[[route_prefixes]]` のプレフィックスマッチ。
-3. `server.default_provider` — デフォルトは `anthropic` なので、マッチしないモデルは変更なしで Anthropic へフォールスルーします。
+1. リクエストの `model` id に一致する `[models.upstream_model]` エントリ。
+2. リクエストの `model` id に対する厳密な `[[routes]]` マッチ。
+3. `[[route_prefixes]]` のプレフィックスマッチ。
+4. `server.default_provider` — デフォルトは `anthropic` なので、マッチしないモデルは変更なしで Anthropic へフォールスルーします。
 
 ルートは、転送されるモデル id（`upstream_model`）と推論エフォート（`effort`）をモデルごとにオーバーライドできます。
 

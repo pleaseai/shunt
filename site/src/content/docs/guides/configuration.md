@@ -43,7 +43,7 @@ auth = "chatgpt_oauth"         # reuses ~/.codex/auth.json
 
 # --- Routing: how a request's `model` id picks a provider ---
 
-# Exact match wins first. `upstream_model` and `effort` are optional overrides.
+# A matching [models.upstream_model] entry wins first. [[routes]] is the legacy exact-match form checked next.
 [[routes]]
 model = "gpt-5.6-sol"
 provider = "codex"
@@ -93,9 +93,10 @@ The YAML backend parses **YAML 1.1**, where the bare tokens `yes`, `no`, `on`, `
 
 ## Routing precedence
 
-1. Exact `[[routes]]` match on the request's `model` id.
-2. `[[route_prefixes]]` prefix match.
-3. `server.default_provider` — by default `anthropic`, so a model with no match falls through to Anthropic unchanged.
+1. Matching `[models.upstream_model]` entry on the request's `model` id.
+2. Exact `[[routes]]` match on the request's `model` id.
+3. `[[route_prefixes]]` prefix match.
+4. `server.default_provider` — by default `anthropic`, so a model with no match falls through to Anthropic unchanged.
 
 A route can override the forwarded model id (`upstream_model`) and the reasoning effort (`effort`) per model.
 

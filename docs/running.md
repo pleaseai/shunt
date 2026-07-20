@@ -185,8 +185,9 @@ Both metric sinks export the same low-cardinality series:
 | `shunt.pool.quota_utilization` | Gauge | `provider`, `window` | Minimum utilization across enabled, non-stale accounts for `5h`, `7d`, or `7d_oi`. |
 | `shunt.pool.rotations` | Counter | `provider`, `reason` | Account rotations and pool exhaustion by low-cardinality cause. |
 
-**Routing precedence** (`src/routing.rs`): exact `[[routes]]` match → `[[route_prefixes]]`
-prefix match → `server.default_provider`. A model with no match falls through to Anthropic.
+**Routing precedence** (`src/routing.rs`): matching `[models.upstream_model]` entry → exact
+`[[routes]]` match → `[[route_prefixes]]` prefix match → `server.default_provider`. A model
+with no match falls through to Anthropic.
 
 ### 3.2 Adding a provider
 
@@ -526,8 +527,9 @@ skips validation:
 export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
 ```
 
-Then pick it from `/model` in Claude Code. That id is what shunt routes on, so it must match a
-`[[routes]]`/`[[route_prefixes]]` rule in your config.
+Then pick it from `/model` in Claude Code. That id is what shunt routes on, so it must resolve
+through a matching `[models.upstream_model]` entry, `[[routes]]`, or `[[route_prefixes]]` rule in
+your config.
 
 **The two picker-exposure methods split cleanly on the `claude-`/`anthropic-` prefix — they don't
 overlap.** Discovery honors *only* `claude-`/`anthropic-` ids; `ANTHROPIC_CUSTOM_MODEL_OPTION` and

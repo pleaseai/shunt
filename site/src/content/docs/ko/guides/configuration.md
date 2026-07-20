@@ -43,7 +43,7 @@ auth = "chatgpt_oauth"         # ~/.codex/auth.json 재사용
 
 # --- 라우팅: 요청의 `model` id가 프로바이더를 선택하는 방식 ---
 
-# 정확한 일치가 먼저 이깁니다. `upstream_model`과 `effort`는 선택적 오버라이드입니다.
+# 일치하는 [models.upstream_model] 항목이 먼저 적용됩니다. [[routes]]는 그다음 확인하는 레거시 정확 일치 형식입니다.
 [[routes]]
 model = "gpt-5.6-sol"
 provider = "codex"
@@ -64,9 +64,10 @@ provider = "openai"
 
 ## 라우팅 우선순위
 
-1. 요청의 `model` id에 대한 정확한 `[[routes]]` 일치.
-2. `[[route_prefixes]]` 프리픽스 일치.
-3. `server.default_provider` — 기본값은 `anthropic`이므로, 일치하지 않는 모델은 변경 없이 Anthropic으로 흘러갑니다.
+1. 요청의 `model` id와 일치하는 `[models.upstream_model]` 항목.
+2. 요청의 `model` id에 대한 정확한 `[[routes]]` 일치.
+3. `[[route_prefixes]]` 프리픽스 일치.
+4. `server.default_provider` — 기본값은 `anthropic`이므로, 일치하지 않는 모델은 변경 없이 Anthropic으로 흘러갑니다.
 
 라우트는 전달되는 모델 id(`upstream_model`)와 추론 노력(`effort`)을 모델별로 오버라이드할 수 있습니다.
 

@@ -211,8 +211,8 @@ the real reason rather than a generic failure.
 
 ## 6. Routing a model to Codex
 
-A request's `model` id selects the provider. Precedence: exact `[[routes]]` → `[[route_prefixes]]`
-→ `server.default_provider`.
+A request's `model` id selects the provider. Precedence: matching `[models.upstream_model]` entry
+→ exact `[[routes]]` → `[[route_prefixes]]` → `server.default_provider`.
 
 ### 6.1 Exact route
 
@@ -260,8 +260,9 @@ export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
 ```
 
 Adds a picker entry whose id skips validation; that id is exactly what shunt routes on, so it
-must match a `[[routes]]`/`[[route_prefixes]]` rule. This is the recommended path — it's the only
-one that also lets you set an accurate context window (§9).
+must resolve through a matching `[models.upstream_model]` entry, `[[routes]]`, or
+`[[route_prefixes]]` rule. This is the recommended path — it's the only one that also lets you set
+an accurate context window (§9).
 
 ### 7.2 Discovery alias — a `claude-`-named alias rewritten to a Codex slug
 
@@ -319,7 +320,8 @@ so passing one would shadow the slug. Resolution order:
 export CLAUDE_CODE_SUBAGENT_MODEL="gpt-5.6-sol"
 ```
 
-Either way the id must have a `[[routes]]` entry (§6) and, being non-`claude-`, obeys
+Either way the id must resolve through a matching `[models.upstream_model]` entry, `[[routes]]`, or
+`[[route_prefixes]]` rule (§6) and, being non-`claude-`, obeys
 `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` (§8) and `CLAUDE_CODE_MAX_CONTEXT_TOKENS` (§9) — the context
 window follows the id automatically, so one global value sizes the mapped subagent while the Claude
 main keeps its own.
@@ -349,7 +351,7 @@ export ANTHROPIC_DEFAULT_SONNET_MODEL="gpt-5.6-sol"
 ```
 
 ```toml
-# shunt.toml — both resolved ids must have a route
+# shunt.toml — both resolved ids must resolve through routing config
 [[routes]]
 model = "gpt-5.6-luna"
 provider = "codex"

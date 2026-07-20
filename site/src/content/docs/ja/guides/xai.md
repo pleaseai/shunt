@@ -110,7 +110,7 @@ provider = "xai"
 Grok スラッグは `claude-` で始まらないため、Claude Code の `/model` ピッカーは discovery からそれらをリストしません。仕組みは **Codex と同一**です — id をピッカーに直接追加します。
 
 ```bash
-export ANTHROPIC_CUSTOM_MODEL_OPTION="grok-4.5"   # [[routes]] ルールと一致する必要あり
+export ANTHROPIC_CUSTOM_MODEL_OPTION="grok-4.5"   # [models.upstream_model]、[[routes]]、または [[route_prefixes]] で解決する必要あり
 ```
 
 残りは同じ [Codex のセクション](/ja/guides/codex/#4-claude-code-でモデルを選択する)がそのままカバーします。`model:` フロントマターで**サブエージェント**を Grok スラッグに乗せること、そしてセッション全体で **tier エイリアス**（`ANTHROPIC_DEFAULT_SONNET_MODEL`、…）を Grok スラッグへリマップすることです。

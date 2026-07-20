@@ -19,7 +19,7 @@ shunt → Codex) share an upstream but differ in kind:
 | Inbound → upstream body | **Translated**: `translate_request` builds a Responses body from the Anthropic Messages request | **Raw passthrough**: the inbound Responses body is forwarded upstream byte-for-byte, no translation |
 | Upstream → outbound response | **Re-shaped**: `AnthropicSseMachine` turns Responses SSE into Anthropic SSE (or a single Anthropic JSON body) | **Raw passthrough**: the upstream response (SSE or JSON) is relayed verbatim, preserving status and content-type |
 | On pool exhaustion | Re-shapes the last upstream response into an Anthropic-style error envelope (`build_upstream_error`) | Relays the last upstream response verbatim — **not** re-shaped (see below) |
-| Model selects provider? | Yes, via `[[routes]]` / `[[route_prefixes]]` | No — every request goes to the one configured provider; `model` forwards verbatim as a label only |
+| Model selects provider? | Yes, via `[models.upstream_model]` / `[[routes]]` / `[[route_prefixes]]` | No — every request goes to the one configured provider; `model` forwards verbatim as a label only |
 
 Everything else — the M10 account pool, session-sticky selection, cooldowns, and refresh — is
 shared unchanged between the two paths.

@@ -135,7 +135,7 @@ Grok slugs don't start with `claude-`, so Claude Code's `/model` picker won't li
 discovery. The mechanics are **identical to Codex** — add the id to the picker directly:
 
 ```bash
-export ANTHROPIC_CUSTOM_MODEL_OPTION="grok-4.5"   # must match a [[routes]] rule
+export ANTHROPIC_CUSTOM_MODEL_OPTION="grok-4.5"   # must resolve via [models.upstream_model], [[routes]], or [[route_prefixes]]
 ```
 
 The same [Codex section](/guides/codex/#4-select-the-model-in-claude-code) covers the rest verbatim:

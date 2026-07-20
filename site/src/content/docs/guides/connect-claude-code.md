@@ -89,7 +89,7 @@ Claude Code's model discovery only honors ids beginning with `claude`/`anthropic
 export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
 ```
 
-Then pick it from `/model` in Claude Code. That id is what shunt routes on, so it must match a `[[routes]]`/`[[route_prefixes]]` rule in your config.
+Then pick it from `/model` in Claude Code. That id is what shunt routes on, so it must resolve through a matching `[models.upstream_model]` entry, `[[routes]]`, or `[[route_prefixes]]` rule in your config.
 
 The two picker-exposure methods split cleanly on the `claude-`/`anthropic-` prefix — they don't overlap. Discovery honors *only* `claude-`/`anthropic-` ids; `ANTHROPIC_CUSTOM_MODEL_OPTION` and the `CLAUDE_CODE_MAX_CONTEXT_TOKENS` window override apply *only* to ids that do **not** start with that prefix:
 
