@@ -98,8 +98,9 @@ The decision has four parts:
    transitions.
 
 3. **Provider presets.** The optional `provider` field names a built-in preset
-   — a static data table supplying `kind`, `base_url`, the default auth mode
-   (and default API-key env var), and `count_tokens` behavior. Initial set:
+   — a static data table supplying `kind`, `base_url`, and the default auth
+   mode (and default API-key env var). No preset overrides `count_tokens`; it
+   keeps its normal per-upstream default. Initial set:
    `anthropic`, `codex`, `openai`, `xai` (developer API), `grok`
    (subscription CLI proxy), `kimi` (Anthropic-compatible endpoint), `cursor`.
    Explicitly set entry fields always override the preset; omitting `provider`

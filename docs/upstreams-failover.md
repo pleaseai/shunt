@@ -20,7 +20,7 @@ One entry is one failover unit: a named route with its own credential scope.
 | Field | Required | Meaning |
 |---|---|---|
 | `name` | yes | Unique, non-empty, non-whitespace. The identity used by `upstream_model` maps, `[[routes]] provider`, `server.default_provider`, metrics, and the admin surface. |
-| `provider` | no | Built-in preset id (§1.2). Supplies defaults for `kind`, `base_url`, `auth`, `count_tokens`. |
+| `provider` | no | Built-in preset id (§1.2). Supplies defaults for `kind`, `base_url`, and `auth`; no preset overrides `count_tokens` (§1.2). |
 | `kind` | if no preset | Adapter protocol, unchanged enum (`anthropic`, `responses`, `cursor`). |
 | `base_url` | if no preset | As today. |
 | `auth` | no | String or map (§1.3). Default: preset's default auth, else `passthrough`. |
@@ -45,6 +45,12 @@ branching). Unknown preset name → config error listing available presets.
 
 Exact URLs must be taken from the existing adapters/docs at implementation
 time, not from this table if they drift.
+
+No preset overrides `count_tokens`: every upstream keeps the field's normal
+serde default (`tiktoken`), which is only meaningful for `responses` and
+`cursor` kinds — `anthropic`-kind upstreams (including `kimi`) always forward
+`count_tokens` requests upstream regardless of the setting. Operators override
+per upstream with the explicit `count_tokens` field as today.
 
 ### 1.3 `auth` — string or map
 
