@@ -1,0 +1,51 @@
+.please/docs/decisions/0001-per-provider-upstream-model-map.md
+  s_a97abd114ec285::t_89e9a280b7e1b8 1-62
+site/src/content/docs/ja/guides/model-discovery.md
+  s_a97abd114ec285::t_25a929f35961b7 8-27
+.please/docs/decisions/index.md
+  s_a97abd114ec285::t_173b3ab79bf9de 7
+site/src/content/docs/zh-cn/guides/model-discovery.md
+  s_a97abd114ec285::t_a9de3dc0549de4 8-27
+docs/running.md
+  s_a97abd114ec285::t_1d199af1d5fb31 620-621,628-641,643,645
+  s_a97abd114ec285::t_ed5c424bb276d9 116-118
+site/src/content/docs/ja/reference/configuration.md
+  s_a97abd114ec285::t_d4a52f55f379c8 155-165,170
+  s_a97abd114ec285::t_24f3e23ad3d8be 209
+site/src/content/docs/ko/guides/model-discovery.md
+  s_a97abd114ec285::t_9d8b3e389f0f7b 8-27
+README.md
+  s_a97abd114ec285::t_8118bff00cdc71 160
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_a97abd114ec285::t_71eb53e2869d26 155-165,170
+  s_a97abd114ec285::t_b8d951acf6b9d1 209
+site/src/content/docs/reference/configuration.md
+  s_a97abd114ec285::t_2a97cb74669760 273-283,288
+  s_a97abd114ec285::t_64f3dce18e2837 327
+site/src/content/docs/guides/model-discovery.md
+  s_a97abd114ec285::t_0ca12578e927a2 8-9
+  s_a97abd114ec285::t_f55487da3afdff 10-27
+docs/m3-discovery.md
+  s_a97abd114ec285::t_6b424e6e6b909e 71-77
+  s_a97abd114ec285::t_bde6b795e436f7 54-56,58-61
+  s_a97abd114ec285::t_b48a7c33b93df6 133-135
+site/src/content/docs/ko/reference/configuration.md
+  s_a97abd114ec285::t_382d899b8d2b59 221
+  s_a97abd114ec285::t_436f4914859b5d 167-177,182
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "687e01f12d12c616ecd0c37cb1ac579070ff9839",
+  "prompts": {},
+  "sessions": {
+    "s_a97abd114ec285": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "45452c46-56b0-4717-a858-27f46f8c5786",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
