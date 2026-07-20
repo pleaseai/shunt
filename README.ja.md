@@ -105,7 +105,7 @@ provider = "cursor"
 kind = "anthropic"
 base_url = "https://api.moonshot.ai/anthropic"
 auth = "api_key"
-api_key_env = "KIMI_API_KEY"
+api_key_env = "MOONSHOT_API_KEY"
 
 [[routes]]
 model = "kimi-k2.7-code"

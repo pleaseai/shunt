@@ -228,7 +228,7 @@ For example, to route Kimi's model through shunt:
 kind = "anthropic"
 base_url = "https://api.moonshot.ai/anthropic"
 auth = "api_key"
-api_key_env = "KIMI_API_KEY"
+api_key_env = "MOONSHOT_API_KEY"
 
 [[routes]]
 model = "kimi-k3[1m]"
@@ -239,7 +239,7 @@ model = "kimi-k2.7-code"
 provider = "kimi"
 ```
 
-Then `export KIMI_API_KEY=…`, point Claude Code at shunt (§5.1), and select `kimi-k3[1m]`
+Then `export MOONSHOT_API_KEY=…`, point Claude Code at shunt (§5.1), and select `kimi-k3[1m]`
 (via `ANTHROPIC_MODEL` or the `/model` picker). Run `shunt check` to validate — it reports an
 unknown provider in a route, a missing `api_key_env`, or a bad `base_url`.
 

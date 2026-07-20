@@ -107,7 +107,7 @@ OAuth를 통해 사용자의 **SuperGrok / X Premium+** 구독을 사용하고(`
 kind = "anthropic"
 base_url = "https://api.moonshot.ai/anthropic"
 auth = "api_key"
-api_key_env = "KIMI_API_KEY"
+api_key_env = "MOONSHOT_API_KEY"
 
 [[routes]]
 model = "kimi-k3[1m]"
@@ -118,7 +118,7 @@ model = "kimi-k2.7-code"
 provider = "kimi"
 ```
 
-그런 다음 `export KIMI_API_KEY=…`를 실행하고, [Claude Code를 shunt에 연결](/ko/guides/connect-claude-code/)한 뒤, `kimi-k3[1m]`를 선택하세요(`ANTHROPIC_CUSTOM_MODEL_OPTION` 또는 `ANTHROPIC_MODEL`을 통해). `shunt check`를 실행하여 검증하세요 — 라우트의 알 수 없는 프로바이더, 누락된 `api_key_env`, 잘못된 `base_url`을 보고합니다.
+그런 다음 `export MOONSHOT_API_KEY=…`를 실행하고, [Claude Code를 shunt에 연결](/ko/guides/connect-claude-code/)한 뒤, `kimi-k3[1m]`를 선택하세요(`ANTHROPIC_CUSTOM_MODEL_OPTION` 또는 `ANTHROPIC_MODEL`을 통해). `shunt check`를 실행하여 검증하세요 — 라우트의 알 수 없는 프로바이더, 누락된 `api_key_env`, 잘못된 `base_url`을 보고합니다.
 
 모든 프로바이더 키(`kind`, `auth`, `api_key_header`, `count_tokens` 등)는 [구성 레퍼런스](/ko/reference/configuration/)에 문서화되어 있습니다.
 

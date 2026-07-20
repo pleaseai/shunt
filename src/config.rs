@@ -4373,7 +4373,7 @@ id = "claude-sonnet-5"
 kind = "anthropic"
 base_url = "https://api.moonshot.ai/anthropic"
 auth = "api_key"
-api_key_env = "KIMI_API_KEY"
+api_key_env = "MOONSHOT_API_KEY"
 
 [providers.codex]
 effort = "high"
@@ -4391,7 +4391,7 @@ provider = "kimi"
         let kimi = config.provider("kimi").unwrap();
         assert_eq!(kimi.kind, ProviderKind::Anthropic);
         assert_eq!(kimi.auth, AuthMode::ApiKey);
-        assert_eq!(kimi.api_key_env.as_deref(), Some("KIMI_API_KEY"));
+        assert_eq!(kimi.api_key_env.as_deref(), Some("MOONSHOT_API_KEY"));
         // Built-in codex kept its default base_url/auth while gaining effort.
         let codex = config.provider("codex").unwrap();
         assert_eq!(codex.base_url, "https://chatgpt.com/backend-api");
@@ -4462,7 +4462,7 @@ providers:
     kind: anthropic
     base_url: https://api.moonshot.ai/anthropic
     auth: api_key
-    api_key_env: KIMI_API_KEY
+    api_key_env: MOONSHOT_API_KEY
   codex:
     effort: high
 routes:
@@ -4478,7 +4478,7 @@ routes:
         let kimi = config.provider("kimi").unwrap();
         assert_eq!(kimi.kind, ProviderKind::Anthropic);
         assert_eq!(kimi.auth, AuthMode::ApiKey);
-        assert_eq!(kimi.api_key_env.as_deref(), Some("KIMI_API_KEY"));
+        assert_eq!(kimi.api_key_env.as_deref(), Some("MOONSHOT_API_KEY"));
         // Built-in codex kept its default base_url/auth while gaining effort,
         // so YAML deep-merges over the seeded defaults just like TOML does.
         let codex = config.provider("codex").unwrap();

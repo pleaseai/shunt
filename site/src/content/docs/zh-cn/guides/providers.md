@@ -107,7 +107,7 @@ provider = "cursor"
 kind = "anthropic"
 base_url = "https://api.moonshot.ai/anthropic"
 auth = "api_key"
-api_key_env = "KIMI_API_KEY"
+api_key_env = "MOONSHOT_API_KEY"
 
 [[routes]]
 model = "kimi-k3[1m]"
@@ -118,7 +118,7 @@ model = "kimi-k2.7-code"
 provider = "kimi"
 ```
 
-然后 `export KIMI_API_KEY=…`,[将 Claude Code 指向 shunt](/zh-cn/guides/connect-claude-code/),并选择 `kimi-k3[1m]`(通过 `ANTHROPIC_CUSTOM_MODEL_OPTION` 或 `ANTHROPIC_MODEL`)。运行 `shunt check` 校验 —— 它会报告路由中的未知提供方、缺失的 `api_key_env` 或错误的 `base_url`。
+然后 `export MOONSHOT_API_KEY=…`,[将 Claude Code 指向 shunt](/zh-cn/guides/connect-claude-code/),并选择 `kimi-k3[1m]`(通过 `ANTHROPIC_CUSTOM_MODEL_OPTION` 或 `ANTHROPIC_MODEL`)。运行 `shunt check` 校验 —— 它会报告路由中的未知提供方、缺失的 `api_key_env` 或错误的 `base_url`。
 
 每个提供方键(`kind`、`auth`、`api_key_header`、`count_tokens`……)都在 [配置参考](/zh-cn/reference/configuration/) 中有文档。
 
