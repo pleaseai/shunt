@@ -21,7 +21,10 @@ pub const USAGE_PATH: &str = "/api/oauth/usage";
 /// The Anthropic-assigned display name of the Fable-scoped weekly limit in the
 /// usage response's `limits[]` array (`kind == "weekly_scoped"`). Mirrors the
 /// `7d_oi` unified rate-limit bucket shunt tracks for Fable models.
-const FABLE_SCOPE_DISPLAY_NAME: &str = "Fable";
+/// `pub(crate)` so `crate::oauth_usage`'s wire-shape builder emits the same
+/// literal this parser expects, instead of re-hardcoding `"Fable"` a second
+/// time.
+pub(crate) const FABLE_SCOPE_DISPLAY_NAME: &str = "Fable";
 
 /// Fetch and parse the usage snapshot for one OAuth account. `base_url` is the
 /// provider's base (e.g. `https://api.anthropic.com`); `access_token` is a valid
@@ -325,5 +328,59 @@ mod tests {
             .await
             .expect_err("a 401 must surface as an error");
         assert!(error.to_string().contains("401"), "got: {error}");
+    }
+
+    /// Round-trip self-consistency for M-A's inbound synthesizer
+    /// (`crate::oauth_usage::to_wire`): build an [`crate::accounts::AccountSnapshot`],
+    /// run it through `to_wire`, serialize, then feed the resulting JSON back
+    /// through this module's own `parse_window`/`parse_fable_window` and
+    /// assert the recovered utilization/`resets_at` match the input. This
+    /// lives here (not in `oauth_usage`'s own test module) because
+    /// `parse_window`/`parse_fable_window`/`parse_rfc3339_to_epoch_secs` are
+    /// private `fn`s in this module and are not promoted to `pub(crate)` just
+    /// for this test; `oauth_usage::to_wire` is `pub(crate)` instead.
+    #[test]
+    fn oauth_usage_to_wire_round_trips_through_this_modules_own_parser() {
+        use crate::accounts::AccountSnapshot;
+
+        let reset_5h = 1_800_000_000u64; // 2027-01-15T08:00:00Z
+        let reset_7d = reset_5h + 604_800;
+        let reset_fable = reset_5h + 1_200;
+        let snapshot = AccountSnapshot {
+            name: "acct-a".to_string(),
+            has_state: true,
+            available: true,
+            near_quota: false,
+            cooldown_secs_remaining: None,
+            priority: 100,
+            disabled: false,
+            headroom_secs: None,
+            utilization_5h: Some(0.4237),
+            reset_5h: Some(reset_5h),
+            utilization_7d: Some(0.6102),
+            reset_7d: Some(reset_7d),
+            utilization_7d_oi: Some(0.125),
+            reset_7d_oi: Some(reset_fable),
+            status: None,
+        };
+
+        let wire = crate::oauth_usage::to_wire(std::slice::from_ref(&snapshot));
+        let value = serde_json::to_value(&wire).unwrap();
+
+        let five_hour = parse_window(value.get("five_hour")).expect("five_hour present");
+        assert!((five_hour.utilization - 0.4237).abs() < 1e-9);
+        assert_eq!(
+            five_hour.resets_at,
+            parse_rfc3339_to_epoch_secs(value["five_hour"]["resets_at"].as_str().unwrap())
+        );
+        assert_eq!(five_hour.resets_at, Some(reset_5h));
+
+        let seven_day = parse_window(value.get("seven_day")).expect("seven_day present");
+        assert!((seven_day.utilization - 0.6102).abs() < 1e-9);
+        assert_eq!(seven_day.resets_at, Some(reset_7d));
+
+        let fable = parse_fable_window(value.get("limits")).expect("fable limit present");
+        assert!((fable.utilization - 0.125).abs() < 1e-9);
+        assert_eq!(fable.resets_at, Some(reset_fable));
     }
 }

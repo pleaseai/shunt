@@ -14,6 +14,7 @@ pub mod headers;
 pub mod keepalive;
 pub mod metrics;
 pub mod model;
+pub mod oauth_usage;
 pub mod protocol;
 pub mod proxy;
 pub mod reload;

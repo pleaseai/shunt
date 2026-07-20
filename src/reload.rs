@@ -134,6 +134,14 @@ fn warn_on_restart_only_changes(previous: &Config, next: &Config) {
             "[server.usage] was enabled or disabled but requires a restart to register or drop its route"
         );
     }
+    // The Claude Code CLI native usage-bar synthesizer route is likewise fixed
+    // at boot: toggling `[server.oauth_usage]` cannot register or drop
+    // `/api/oauth/usage` without a restart.
+    if previous.server.oauth_usage.is_some() != next.server.oauth_usage.is_some() {
+        tracing::warn!(
+            "[server.oauth_usage] was enabled or disabled but requires a restart to register or drop its route"
+        );
+    }
     if sentry_changed(previous.sentry.as_ref(), next.sentry.as_ref()) {
         tracing::warn!(
             "[sentry] configuration changed but requires a restart to apply; the Sentry client is initialized once at startup"
@@ -561,6 +569,29 @@ mod tests {
         assert_eq!(shared.load().config.server.bind, "127.0.0.1:4002");
         // ...but the operator was warned it requires a restart to take effect.
         assert!(logs.contains("server.bind changed"));
+        assert!(logs.contains("requires a restart"));
+    }
+
+    #[test]
+    fn oauth_usage_toggle_warns_but_reload_still_succeeds() {
+        let dir = temp_dir("oauth-usage-toggle");
+        let _guard = TempDirGuard(dir.clone());
+        let path = dir.join("shunt.toml");
+
+        std::fs::write(&path, "[server]\ndefault_provider = \"anthropic\"\n").unwrap();
+        let shared = shared_from(Config::load(Some(&path)).unwrap());
+
+        std::fs::write(
+            &path,
+            "[server]\ndefault_provider = \"anthropic\"\n\n[server.oauth_usage]\n",
+        )
+        .unwrap();
+        let logs = capture_logs(|| {
+            reload(&shared, Some(&path)).expect("reload succeeds despite oauth_usage toggle");
+        });
+
+        assert!(shared.load().config.server.oauth_usage.is_some());
+        assert!(logs.contains("[server.oauth_usage] was enabled or disabled"));
         assert!(logs.contains("requires a restart"));
     }
 

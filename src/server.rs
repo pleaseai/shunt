@@ -14,7 +14,7 @@ use crate::{
     config::{Config, ConfigError},
     discovery,
     gateway::{self, GatewayAuth, GatewayStores},
-    protocol, proxy,
+    oauth_usage, protocol, proxy,
     reload::{RuntimeState, SharedState},
     routes, usage,
 };
@@ -114,6 +114,11 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     // from the initial config; a reload only re-resolves the client tokens it
     // authenticates against, it cannot add or drop the route.
     let usage_enabled = config.server.usage.is_some();
+    // The Claude Code CLI's own native usage-bar synthesizer (`GET
+    // /api/oauth/usage`, M-A) is likewise registered once from the initial
+    // config; a reload only re-resolves the auth it gates against on a
+    // non-loopback bind, it cannot add or drop the route.
+    let oauth_usage_enabled = config.server.oauth_usage.is_some();
     let runtime = RuntimeState::from_config(config)?;
     let shared: SharedState = Arc::new(arc_swap::ArcSwap::from_pointee(runtime));
     let state = AppState::from_shared(
@@ -184,6 +189,15 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
         router = router.route("/usage", get(usage::get));
     }
 
+    // Opt-in Claude Code CLI native usage-bar synthesizer (`GET
+    // /api/oauth/usage`, M-A): registered only when `[server.oauth_usage]` is
+    // set, so the default HTTP surface is unchanged. Unlike `/usage`, its auth
+    // is bind-topology-gated rather than client-token-gated — see
+    // `oauth_usage::get` and `docs/m14-oauth-usage-endpoint.md`.
+    if oauth_usage_enabled {
+        router = router.route("/api/oauth/usage", get(oauth_usage::get));
+    }
+
     // Clone the state into the router; the returned clone shares the same
     // `AccountPool`/`SharedState` Arcs, so a background poller populating quota
     // writes to the very pool the handlers read.
@@ -223,7 +237,9 @@ mod tests {
     };
     use tower::ServiceExt;
 
-    use crate::config::{AccountConfig, Config, InboundAuthConfig, UsageEndpointConfig};
+    use crate::config::{
+        AccountConfig, Config, InboundAuthConfig, OauthUsageConfig, UsageEndpointConfig,
+    };
 
     use super::build_router;
 
@@ -275,6 +291,36 @@ mod tests {
 
         let request = Request::builder()
             .uri("/usage")
+            .body(Body::empty())
+            .unwrap();
+        let response = router.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn oauth_usage_route_is_registered_and_answers_when_enabled() {
+        // Loopback default bind: the route is unauthenticated, so no
+        // `[server.auth]`/credential is needed for a 200.
+        let mut config = Config::default();
+        config.server.oauth_usage = Some(OauthUsageConfig::default());
+        let (router, _shared, _state) = build_router(config).unwrap();
+
+        let request = Request::builder()
+            .uri("/api/oauth/usage")
+            .body(Body::empty())
+            .unwrap();
+        let response = router.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn oauth_usage_route_is_404_when_server_oauth_usage_is_not_configured() {
+        let (router, _shared, _state) = build_router(Config::default()).unwrap();
+
+        let request = Request::builder()
+            .uri("/api/oauth/usage")
             .body(Body::empty())
             .unwrap();
         let response = router.oneshot(request).await.unwrap();

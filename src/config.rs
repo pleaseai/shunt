@@ -96,6 +96,15 @@ pub struct ServerConfig {
     /// See `docs/m12-client-usage-endpoint.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<UsageEndpointConfig>,
+    /// Optional opt-in inbound `GET /api/oauth/usage` synthesizer for Claude
+    /// Code's own native usage bars (see `docs/m14-oauth-usage-endpoint.md`).
+    /// Absent ⇒ the route is not registered (today's HTTP surface unchanged,
+    /// the path 404s as it does now). Auth is bind-topology-gated, not
+    /// credential-matched — see the milestone doc for why (the CLI's own
+    /// Anthropic OAuth bearer, not a shunt client token, is what actually
+    /// arrives on this route).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth_usage: Option<OauthUsageConfig>,
     /// Optional account-pool tuning (issue #135) and opt-in usage-API
     /// reconciliation. Absent ⇒ legacy quota selection and no background polling.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -903,6 +912,23 @@ fn default_codex_endpoint_provider() -> String {
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct UsageEndpointConfig {}
 
+/// `[server.oauth_usage]` — opt-in inbound `GET /api/oauth/usage` synthesizer.
+/// When present, shunt registers the exact route the Claude Code CLI's own
+/// `fetchUtilization` calls, so its native usage bars (`Current session`,
+/// `Current week`, and — when a Fable-scoped bucket is tracked — `Current
+/// week (Fable)`) show real numbers when the CLI is pointed at shunt.
+/// Presence alone opts in; the table has no fields today. Unlike
+/// `[server.usage]`, this endpoint is **not** gated by `[server.auth]` on a
+/// loopback bind (the CLI presents its own Anthropic OAuth bearer here, not a
+/// shunt client token — see `docs/m14-oauth-usage-endpoint.md`, "Auth
+/// gating"); on a non-loopback bind it requires `[server.auth]` or
+/// `[server.gateway]` to be configured. See that milestone doc for the
+/// verified precondition (which CLI login modes actually trigger the fetch)
+/// and the aggregation policy (Claude-only, routing-aware priority-tiered
+/// worst case — deliberately not the same aggregate `[server.usage]` uses).
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct OauthUsageConfig {}
+
 /// `[sentry]` — opt-in error reporting to the operator's own Sentry project.
 /// Only gateway-owned diagnostics are reported (fatal startup/serve errors,
 /// panics, and `error!` log events, with `warn!`/`info!` as breadcrumbs);
@@ -1561,6 +1587,10 @@ pub enum ConfigError {
     CodexEndpointWrongAuth(String),
     #[error("[server.usage] requires [server.auth]: the usage endpoint must identify a non-admin caller by client token")]
     UsageEndpointRequiresAuth,
+    #[error("[server.oauth_usage] on a non-loopback [server.bind] requires [server.auth] or [server.gateway]: without one, Claude subscription quota telemetry would be served to any caller on the network")]
+    OauthUsageEndpointRequiresAuthOnNonLoopback,
+    #[error("providers.{provider} (claude_oauth) base_url resolves to this gateway's own [server.bind] with [server.oauth_usage] enabled: the outbound usage poller would read back its own synthesized aggregate instead of Anthropic's real usage")]
+    OauthUsageSelfPollLoop { provider: String },
     #[error("route for model {model} references unknown provider: {provider}")]
     UnknownRouteProvider { model: String, provider: String },
     #[error("models entry {model} upstream_model references unknown provider: {provider}")]
@@ -1784,6 +1814,7 @@ impl Default for Config {
                 gateway: None,
                 codex_endpoint: None,
                 usage: None,
+                oauth_usage: None,
                 pool: None,
                 sse_keepalive_seconds: default_sse_keepalive_seconds(),
             },
@@ -2166,6 +2197,27 @@ impl Config {
                             host: host.to_string(),
                         });
                     }
+                } else if self.server.oauth_usage.is_some() {
+                    // A loopback claude_oauth base_url is allowed to be "any
+                    // host" so a local debugging proxy or mock can receive the
+                    // bearer (see the comment above) — but if it happens to
+                    // land on this gateway's own bind port with the usage
+                    // synthesizer enabled, the outbound poller would read back
+                    // its own synthesized aggregate instead of Anthropic's
+                    // real usage. This is a same-loopback-interface,
+                    // same-port heuristic, not an exhaustive topology check
+                    // (it does not resolve DNS names or account for a reverse
+                    // proxy in between) — it exists to catch the realistic
+                    // mistake of copy-pasting shunt's own address into a
+                    // `claude_oauth` provider's `base_url`.
+                    if let Ok(bind) = self.server.bind_addr() {
+                        let port = url.port_or_known_default().unwrap_or(0);
+                        if port == bind.port() {
+                            return Err(ConfigError::OauthUsageSelfPollLoop {
+                                provider: name.clone(),
+                            });
+                        }
+                    }
                 }
             }
             // A chatgpt_oauth provider injects the operator's stored Codex
@@ -2299,6 +2351,23 @@ impl Config {
         // telemetry; fail closed at boot rather than expose it.
         if self.server.usage.is_some() && self.server.auth.is_none() {
             return Err(ConfigError::UsageEndpointRequiresAuth);
+        }
+        // `[server.oauth_usage]` serves Claude subscription quota telemetry
+        // unauthenticated on a loopback bind (the request cannot have
+        // originated off the operator's own machine — see the milestone
+        // doc's "Auth gating"). A non-loopback bind has no such guarantee, so
+        // require at least one of `[server.auth]`/`[server.gateway]` to be
+        // configured; the handler itself only checks for *presence* of a
+        // credential, never a match, so this is the only boot-time gate
+        // against a fully open, unauthenticated non-loopback deployment.
+        if self.server.oauth_usage.is_some() {
+            let non_loopback = self
+                .server
+                .bind_addr()
+                .is_ok_and(|addr| !addr.ip().is_loopback());
+            if non_loopback && self.server.auth.is_none() && self.server.gateway.is_none() {
+                return Err(ConfigError::OauthUsageEndpointRequiresAuthOnNonLoopback);
+            }
         }
         for route in &self.routes {
             if !self.has_provider(&route.provider) {
@@ -2565,8 +2634,8 @@ mod tests {
         AccountConfig, AdminConfig, AdminOidcConfig, AuthMode, CodexEndpointConfig, Config,
         ConfigError, ConfigFormat, GatewayConfig, GatewayOidcConfig, GatewayPolicyConfig,
         GatewayPolicyMatch, GatewayTelemetryConfig, GatewayTelemetryDestination, InboundAuthConfig,
-        ModelConfig, OidcProviderConfig, PoolConfig, ProviderKind, ResponsesFlavor, RetryConfig,
-        UsageEndpointConfig,
+        ModelConfig, OauthUsageConfig, OidcProviderConfig, PoolConfig, ProviderKind,
+        ResponsesFlavor, RetryConfig, UsageEndpointConfig,
     };
 
     fn model_config(id: &str, upstream_model: Option<BTreeMap<String, String>>) -> ModelConfig {
@@ -3562,6 +3631,68 @@ mod tests {
         let result = config.validate();
         std::env::remove_var(&env);
         result.unwrap();
+    }
+
+    #[test]
+    fn oauth_usage_endpoint_alone_on_loopback_bind_validates_without_auth() {
+        // Loopback is the safe, ungated default deployment — no
+        // `[server.auth]`/`[server.gateway]` required.
+        let mut config = Config::default();
+        config.server.bind = "127.0.0.1:3001".to_string();
+        config.server.oauth_usage = Some(OauthUsageConfig::default());
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn oauth_usage_endpoint_on_non_loopback_bind_requires_auth_or_gateway() {
+        let mut config = Config::default();
+        config.server.bind = "0.0.0.0:3001".to_string();
+        config.server.oauth_usage = Some(OauthUsageConfig::default());
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::OauthUsageEndpointRequiresAuthOnNonLoopback
+        ));
+    }
+
+    #[test]
+    fn claude_oauth_provider_pointing_at_this_gateways_own_bind_is_rejected() {
+        // A `claude_oauth` provider's `base_url` resolving to this gateway's
+        // own loopback bind port, with `[server.oauth_usage]` enabled, would
+        // make the outbound usage poller read back its own synthesized
+        // aggregate instead of Anthropic's real usage.
+        let mut config = Config::default();
+        config.server.bind = "127.0.0.1:3001".to_string();
+        config.server.oauth_usage = Some(OauthUsageConfig::default());
+        let anthropic = config.providers.get_mut("anthropic").unwrap();
+        anthropic.auth = AuthMode::ClaudeOauth;
+        anthropic.base_url = "http://127.0.0.1:3001".to_string();
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::OauthUsageSelfPollLoop { provider } if provider == "anthropic"
+        ));
+    }
+
+    #[test]
+    fn claude_oauth_provider_on_a_different_loopback_port_is_unaffected() {
+        // A local debugging proxy/mock on a *different* loopback port must
+        // stay allowed — the self-poll-loop guard only fires on a matching
+        // port.
+        let mut config = Config::default();
+        config.server.bind = "127.0.0.1:3001".to_string();
+        config.server.oauth_usage = Some(OauthUsageConfig::default());
+        let anthropic = config.providers.get_mut("anthropic").unwrap();
+        anthropic.auth = AuthMode::ClaudeOauth;
+        anthropic.base_url = "http://127.0.0.1:9999".to_string();
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn oauth_usage_config_serde_round_trip() {
+        // Presence-as-opt-in: an empty object deserializes, and the type
+        // round-trips through JSON like `UsageEndpointConfig`.
+        let empty: OauthUsageConfig = serde_json::from_str("{}").unwrap();
+        let value = serde_json::to_value(&empty).unwrap();
+        assert_eq!(value, serde_json::json!({}));
     }
 
     #[test]
