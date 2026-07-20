@@ -1,0 +1,39 @@
+docs/running.md
+  s_05e94059a9439b::t_5e196cdac4b57b 231,242
+site/src/content/docs/ko/guides/providers.md
+  s_05e94059a9439b::t_5e196cdac4b57b 110,121
+site/src/content/docs/ja/guides/providers.md
+  s_05e94059a9439b::t_5e196cdac4b57b 107,118
+README.ja.md
+  s_05e94059a9439b::t_5e196cdac4b57b 108
+plugins/shunt-kimi/README.md
+  s_05e94059a9439b::t_5e196cdac4b57b 35,43
+README.ko.md
+  s_05e94059a9439b::t_5e196cdac4b57b 108
+site/src/content/docs/guides/providers.md
+  s_05e94059a9439b::t_5e196cdac4b57b 120,131
+src/config.rs
+  s_05e94059a9439b::t_5e196cdac4b57b 4376,4394,4465,4481
+README.md
+  s_05e94059a9439b::t_5e196cdac4b57b 124
+site/src/content/docs/zh-cn/guides/providers.md
+  s_05e94059a9439b::t_5e196cdac4b57b 110,121
+README.zh-CN.md
+  s_05e94059a9439b::t_5e196cdac4b57b 108
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "f71a1b06b37820ac05ae8907991da7b430c6af2b",
+  "prompts": {},
+  "sessions": {
+    "s_05e94059a9439b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4627c43f-c579-4762-a76b-57fb1d2227ed",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
