@@ -221,6 +221,11 @@ Documented user-facing in the site guide; summarized here.
   `api_key_env`/`api_key_header`/`accounts` into the `auth` map), order
   entries by preference, then add entries to the model's `upstream_model`
   map. Presets typically shrink entries to `name` + `provider` (+ auth scope).
+  Caution: preset auth defaults apply only when the entry omits `auth` — e.g.
+  the `kimi` preset reads `MOONSHOT_API_KEY` (Moonshot's official convention),
+  while older shunt examples used `KIMI_API_KEY`; either export the new name
+  or keep the old one explicitly via
+  `auth = { mode = "api_key", env = "KIMI_API_KEY" }`.
 - Pool persistence file: discarded once on upgrade (cold start), by version
   bump.
 
