@@ -364,6 +364,7 @@ mod tests {
                 effort: None,
                 count_tokens: CountTokens::default(),
                 accounts: vec![account.clone()],
+                account_scope: Vec::new(),
                 websocket: false,
                 tool_search: false,
                 retry: Default::default(),
