@@ -139,10 +139,15 @@ mod tests {
                 ModelConfig {
                     id: "claude-opus-via-codex".to_string(),
                     display_name: Some("Opus (via Codex)".to_string()),
+                    upstream_model: Some(std::collections::BTreeMap::from([(
+                        "codex".to_string(),
+                        "gpt-5.2".to_string(),
+                    )])),
                 },
                 ModelConfig {
                     id: "anthropic-sonnet-via-codex".to_string(),
                     display_name: None,
+                    upstream_model: None,
                 },
             ],
             ..crate::config::Config::default()
@@ -230,10 +235,12 @@ mod tests {
                 ModelConfig {
                     id: "claude-opus-4-8".to_string(),
                     display_name: Some("Opus Curated".to_string()),
+                    upstream_model: None,
                 },
                 ModelConfig {
                     id: "claude-custom-model".to_string(),
                     display_name: None,
+                    upstream_model: None,
                 },
             ],
             ..crate::config::Config::default()

@@ -59,7 +59,15 @@ is the documented default. Discovery is only useful if shunt exposes a **Claude-
   [[models]]
   id = "claude-opus-via-codex"      # must start with claude/anthropic to be honored
   display_name = "Opus (via Codex)"
+
+  [models.upstream_model]
+  codex = "gpt-5.2"
   ```
+- An optional `[models.upstream_model]` table unifies discovery and routing for that id: its single
+  key names a configured provider and its value is the upstream model id. Map-bearing entries route
+  before `[[routes]]`, `[[route_prefixes]]`, and `server.default_provider`; provider-level effort
+  still applies. For exact-id routing, this is the recommended form; exact-match `[[routes]]` is a
+  legacy but indefinitely supported alternative.
 - Return the list envelope above from local config; no upstream call.
 - The top-level `auto_include_builtin_models` key mirrors the reference Claude apps gateway and
   defaults to `true`: append the builtin Claude catalog after `[[models]]`, deduplicating by exact
@@ -69,9 +77,16 @@ is the documented default. Discovery is only useful if shunt exposes a **Claude-
 - Never redirect; respond well under 3 s.
 - If `[[models]]` is empty and `auto_include_builtin_models = false`, return the envelope with
   `"data": []` (discovery simply adds nothing; the custom model option still works).
-- A discovered id should also have a matching `[[routes]]` entry (id → provider + `upstream_model`)
-  so selecting it actually routes; validate this linkage at config load (warn if a `[[models]]`
-  id has no route).
+- A map-less discovered id should also have a matching `[[routes]]` entry (id → provider +
+  `upstream_model`) so selecting it actually routes; config load warns when a map-less `[[models]]`
+  id has no route. A map-bearing entry is already routable and does not emit this warning.
+- Map-bearing entries fail config validation when the map is empty or names more than one provider,
+  the sole provider name or upstream model id is empty or whitespace-only, references an unknown
+  provider, conflicts with a `[[routes]]` entry for the same id, includes a trailing `[1m]`/`[1M]`
+  client hint in the configured id, or duplicates another `[[models]]` id where either entry is
+  map-bearing. Clients strip the context-window hint before matching, so such a map-bearing id would
+  be unreachable. Pure map-less duplicates retain their previous behavior. Exactly one provider is
+  supported until ordered cross-provider failover is implemented.
 - **Alias is the model-of-record on both directions.** An alias route sends `upstream_model`
   outbound (`normalize_upstream_model`); on the return path the relay rewrites the response's
   `model` back to the alias — `message_start.message.model` for streaming and the top-level
@@ -127,7 +142,9 @@ and `count_tokens_uses_tiktoken_by_default` in `tests/passthrough.rs`.
 - `/v1/models` returns curated entries followed by deduplicated builtins by default; disabling
   `auto_include_builtin_models` returns only configured entries (including an empty list); never
   emits a redirect; responds without an upstream call.
-- Config validation: a `[[models]]` id lacking a `[[routes]]` entry warns.
+- Config validation: a map-less `[[models]]` id lacking a `[[routes]]` entry warns; a map-bearing
+  entry hard-errors unless it names exactly one existing provider and has no explicit-route or
+  duplicate-map conflict.
 - `map_model` / `effort_for` table + suffix + override precedence (pure unit tests).
 - Alias model-of-record rewrite on the return path: `model_rewrite` unit tests (streaming frame,
   chunk-split frame, non-streaming body, passthrough no-op) plus the

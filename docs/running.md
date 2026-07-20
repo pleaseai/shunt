@@ -96,7 +96,8 @@ auth = "chatgpt_oauth"         # reuses ~/.codex/auth.json
 
 # --- Routing: how a request's `model` id picks a provider ---
 
-# Exact match wins first. `upstream_model` and `effort` are optional overrides.
+# Legacy exact-match form. `upstream_model` and `effort` are optional overrides.
+# Prefer [[models]] + [models.upstream_model] for exact ids.
 [[routes]]
 model = "gpt-5.6-sol"
 provider = "codex"
@@ -113,6 +114,9 @@ provider = "openai"
 # [[models]]
 # id = "claude-opus-via-codex"
 # display_name = "Opus (via Codex)"
+#
+# [models.upstream_model] # optional: advertise, route, and translate in one entry
+# codex = "gpt-5.2"       # exactly one configured provider is supported
 
 # Optional: error reporting to your own Sentry project. Off unless a DSN is
 # set; nothing is ever sent by default. Only gateway-owned diagnostics are
@@ -181,8 +185,9 @@ Both metric sinks export the same low-cardinality series:
 | `shunt.pool.quota_utilization` | Gauge | `provider`, `window` | Minimum utilization across enabled, non-stale accounts for `5h`, `7d`, or `7d_oi`. |
 | `shunt.pool.rotations` | Counter | `provider`, `reason` | Account rotations and pool exhaustion by low-cardinality cause. |
 
-**Routing precedence** (`src/routing.rs`): exact `[[routes]]` match → `[[route_prefixes]]`
-prefix match → `server.default_provider`. A model with no match falls through to Anthropic.
+**Routing precedence** (`src/routing.rs`): matching `[models.upstream_model]` entry → exact
+`[[routes]]` match → `[[route_prefixes]]` prefix match → `server.default_provider`. A model
+with no match falls through to Anthropic.
 
 ### 3.2 Adding a provider
 
@@ -522,8 +527,9 @@ skips validation:
 export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
 ```
 
-Then pick it from `/model` in Claude Code. That id is what shunt routes on, so it must match a
-`[[routes]]`/`[[route_prefixes]]` rule in your config.
+Then pick it from `/model` in Claude Code. That id is what shunt routes on, so it must resolve
+through a matching `[models.upstream_model]` entry, `[[routes]]`, or `[[route_prefixes]]` rule in
+your config.
 
 **The two picker-exposure methods split cleanly on the `claude-`/`anthropic-` prefix — they don't
 overlap.** Discovery honors *only* `claude-`/`anthropic-` ids; `ANTHROPIC_CUSTOM_MODEL_OPTION` and
@@ -614,17 +620,32 @@ Discovery (`GET /v1/models`) can populate `/model` automatically — **but Claud
 any id that doesn't begin with `claude`/`anthropic`** ([protocol
 reference](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery)). So a `gpt-*`
 id is dropped client-side no matter what; discovery is only useful when you expose a
-**Claude-named alias** that a `[[routes]]` entry rewrites to the real upstream slug:
+**Claude-named alias**. The alias can route and translate directly through a single-provider
+`[models.upstream_model]` table:
 
 ```toml
 [[models]]
 id = "claude-gpt-5.6-sol-via-codex"     # must begin with claude/anthropic
 display_name = "GPT-5.6-Sol (via Codex)"
 
+[models.upstream_model]
+codex = "gpt-5.6-sol"                   # provider = real upstream slug
+```
+
+This map takes precedence over `[[routes]]`, `[[route_prefixes]]`, and `server.default_provider`
+for the advertised id. It must name exactly one configured provider; an unknown provider, an empty
+or multi-provider map, or a same-id `[[routes]]` entry is a startup error. Existing map-less
+`[[models]]` entries can continue to use a separate route:
+
+```toml
+[[models]]
+id = "claude-gpt-5.6-sol-via-codex"
+display_name = "GPT-5.6-Sol (via Codex)"
+
 [[routes]]
-model = "claude-gpt-5.6-sol-via-codex"  # the alias Claude Code sends
+model = "claude-gpt-5.6-sol-via-codex"
 provider = "codex"
-upstream_model = "gpt-5.6-sol"          # real slug forwarded to the ChatGPT backend
+upstream_model = "gpt-5.6-sol"
 ```
 
 Then enable discovery (Claude Code v2.1.129+) and restart shunt + Claude Code:

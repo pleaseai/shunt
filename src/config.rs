@@ -1410,6 +1410,8 @@ pub struct RouteConfig {
 pub struct ModelConfig {
     pub id: String,
     pub display_name: Option<String>,
+    #[serde(default)]
+    pub upstream_model: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1485,6 +1487,20 @@ pub enum ConfigError {
     UsageEndpointRequiresAuth,
     #[error("route for model {model} references unknown provider: {provider}")]
     UnknownRouteProvider { model: String, provider: String },
+    #[error("models entry {model} upstream_model references unknown provider: {provider}")]
+    UnknownModelProvider { model: String, provider: String },
+    #[error("models entry {model} upstream_model must name exactly one provider (got {count}); cross-provider failover is not implemented")]
+    ModelUpstreamProviderCount { model: String, count: usize },
+    #[error("models entry {model} upstream_model provider name must not be empty")]
+    EmptyModelUpstreamProvider { model: String },
+    #[error("models entry {model} upstream_model for provider {provider} must not be empty")]
+    EmptyModelUpstream { model: String, provider: String },
+    #[error("model {model} is declared both in [[routes]] and in a [[models]] upstream_model entry; remove one")]
+    ModelRouteConflict { model: String },
+    #[error("models entry {model} has an upstream_model map but its id ends with a [1m] or [1M] context-window hint; clients strip that hint before model matching, so the entry is unreachable")]
+    ModelUpstreamContextWindowHint { model: String },
+    #[error("duplicate [[models]] id {model}; ids must be unique when any matching entry has an upstream_model map")]
+    DuplicateModelId { model: String },
     #[error("route prefix {prefix} references unknown provider: {provider}")]
     UnknownPrefixProvider { prefix: String, provider: String },
     #[error("server.auth.header is not a valid header name: {header}")]
@@ -2130,6 +2146,62 @@ impl Config {
                 });
             }
         }
+        let mut model_ids = HashSet::new();
+        let mut model_upstream_ids = HashSet::new();
+        for model in &self.models {
+            let duplicate_id = !model_ids.insert(&model.id);
+            let Some(upstream_models) = &model.upstream_model else {
+                if duplicate_id && model_upstream_ids.contains(&model.id) {
+                    return Err(ConfigError::DuplicateModelId {
+                        model: model.id.clone(),
+                    });
+                }
+                continue;
+            };
+            if crate::routing::strip_context_window_hint(&model.id) != model.id {
+                return Err(ConfigError::ModelUpstreamContextWindowHint {
+                    model: model.id.clone(),
+                });
+            }
+            if duplicate_id {
+                return Err(ConfigError::DuplicateModelId {
+                    model: model.id.clone(),
+                });
+            }
+            model_upstream_ids.insert(&model.id);
+            if upstream_models.len() != 1 {
+                return Err(ConfigError::ModelUpstreamProviderCount {
+                    model: model.id.clone(),
+                    count: upstream_models.len(),
+                });
+            }
+            let (provider, upstream_model) = upstream_models
+                .iter()
+                .next()
+                .expect("one upstream provider was validated");
+            if provider.trim().is_empty() {
+                return Err(ConfigError::EmptyModelUpstreamProvider {
+                    model: model.id.clone(),
+                });
+            }
+            if upstream_model.trim().is_empty() {
+                return Err(ConfigError::EmptyModelUpstream {
+                    model: model.id.clone(),
+                    provider: provider.clone(),
+                });
+            }
+            if !self.has_provider(provider) {
+                return Err(ConfigError::UnknownModelProvider {
+                    model: model.id.clone(),
+                    provider: provider.clone(),
+                });
+            }
+            if self.routes.iter().any(|route| route.model == model.id) {
+                return Err(ConfigError::ModelRouteConflict {
+                    model: model.id.clone(),
+                });
+            }
+        }
         for route in &self.route_prefixes {
             if !self.has_provider(&route.provider) {
                 return Err(ConfigError::UnknownPrefixProvider {
@@ -2139,7 +2211,9 @@ impl Config {
             }
         }
         for model in &self.models {
-            if !self.routes.iter().any(|route| route.model == model.id) {
+            if model.upstream_model.is_none()
+                && !self.routes.iter().any(|route| route.model == model.id)
+            {
                 tracing::warn!(
                     model_id = %model.id,
                     "configured discovery model has no matching route"
@@ -2304,6 +2378,7 @@ impl ServerConfig {
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::BTreeMap,
         io::{self, Write},
         sync::{Arc, Mutex},
     };
@@ -2318,6 +2393,18 @@ mod tests {
         ModelConfig, OidcProviderConfig, PoolConfig, ProviderKind, ResponsesFlavor, RetryConfig,
         UsageEndpointConfig,
     };
+
+    fn model_config(id: &str, upstream_model: Option<BTreeMap<String, String>>) -> ModelConfig {
+        ModelConfig {
+            id: id.to_string(),
+            display_name: None,
+            upstream_model,
+        }
+    }
+
+    fn model_upstream(provider: &str, upstream_model: &str) -> BTreeMap<String, String> {
+        BTreeMap::from([(provider.to_string(), upstream_model.to_string())])
+    }
 
     #[test]
     fn pool_config_usage_refresh_interval_disables_and_clamps() {
@@ -3326,6 +3413,219 @@ mod tests {
     }
 
     #[test]
+    fn model_upstream_map_parses_from_toml_and_remains_optional() {
+        let config: Config =
+            figment::Figment::from(figment::providers::Serialized::defaults(Config::default()))
+                .merge(figment::providers::Toml::string(
+                    r#"
+[[models]]
+id = "claude-opus-4-8"
+display_name = "Claude Opus 4.8"
+[models.upstream_model]
+codex = "gpt-5.2"
+
+[[models]]
+id = "claude-sonnet-5"
+"#,
+                ))
+                .extract()
+                .unwrap();
+
+        assert_eq!(
+            config.models[0].upstream_model,
+            Some(model_upstream("codex", "gpt-5.2"))
+        );
+        assert!(config.models[1].upstream_model.is_none());
+    }
+
+    #[test]
+    fn model_upstream_map_rejects_unknown_provider() {
+        let config = Config {
+            models: vec![model_config(
+                "claude-opus-4-8",
+                Some(model_upstream("missing", "gpt-5.2")),
+            )],
+            ..Config::default()
+        };
+
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::UnknownModelProvider { model, provider }
+                if model == "claude-opus-4-8" && provider == "missing"
+        ));
+    }
+
+    #[test]
+    fn model_upstream_map_rejects_multiple_providers() {
+        let config = Config {
+            models: vec![model_config(
+                "claude-opus-4-8",
+                Some(BTreeMap::from([
+                    ("codex".to_string(), "gpt-5.2".to_string()),
+                    ("openai".to_string(), "gpt-5.2".to_string()),
+                ])),
+            )],
+            ..Config::default()
+        };
+
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::ModelUpstreamProviderCount { count: 2, .. }
+        ));
+    }
+
+    #[test]
+    fn model_upstream_map_rejects_empty_table() {
+        let config = Config {
+            models: vec![model_config("claude-opus-4-8", Some(BTreeMap::new()))],
+            ..Config::default()
+        };
+
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::ModelUpstreamProviderCount { count: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn model_upstream_map_rejects_empty_upstream_model() {
+        for upstream_model in ["", "   \t\n"] {
+            let config = Config {
+                models: vec![model_config(
+                    "claude-opus-4-8",
+                    Some(model_upstream("codex", upstream_model)),
+                )],
+                ..Config::default()
+            };
+
+            assert!(matches!(
+                config.validate().unwrap_err(),
+                ConfigError::EmptyModelUpstream { model, provider }
+                    if model == "claude-opus-4-8" && provider == "codex"
+            ));
+        }
+    }
+
+    #[test]
+    fn model_upstream_map_rejects_empty_provider_name() {
+        for provider in ["", "   \t\n"] {
+            let mut config = Config::default();
+            let provider_config = config.providers["codex"].clone();
+            config
+                .providers
+                .insert(provider.to_string(), provider_config);
+            config.models = vec![model_config(
+                "claude-opus-4-8",
+                Some(model_upstream(provider, "gpt-5.2")),
+            )];
+
+            assert!(matches!(
+                config.validate().unwrap_err(),
+                ConfigError::EmptyModelUpstreamProvider { model }
+                    if model == "claude-opus-4-8"
+            ));
+        }
+    }
+
+    #[test]
+    fn model_upstream_map_rejects_explicit_route_conflict() {
+        let config = Config {
+            models: vec![model_config(
+                "claude-opus-4-8",
+                Some(model_upstream("codex", "gpt-5.2")),
+            )],
+            routes: vec![super::RouteConfig {
+                model: "claude-opus-4-8".to_string(),
+                provider: "codex".to_string(),
+                upstream_model: Some("gpt-5.2".to_string()),
+                effort: None,
+            }],
+            ..Config::default()
+        };
+
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::ModelRouteConflict { model } if model == "claude-opus-4-8"
+        ));
+    }
+
+    #[test]
+    fn model_upstream_map_rejects_context_window_hint_in_id() {
+        for id in ["claude-opus-4-8[1m]", "claude-opus-4-8[1M]"] {
+            let config = Config {
+                models: vec![model_config(id, Some(model_upstream("codex", "gpt-5.2")))],
+                ..Config::default()
+            };
+
+            assert!(matches!(
+                config.validate().unwrap_err(),
+                ConfigError::ModelUpstreamContextWindowHint { model } if model == id
+            ));
+        }
+    }
+
+    #[test]
+    fn model_upstream_map_rejects_duplicate_map_bearing_ids() {
+        let config = Config {
+            models: vec![
+                model_config("claude-opus-4-8", Some(model_upstream("codex", "gpt-5.2"))),
+                model_config("claude-opus-4-8", Some(model_upstream("codex", "gpt-5.2"))),
+            ],
+            ..Config::default()
+        };
+
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::DuplicateModelId { model } if model == "claude-opus-4-8"
+        ));
+    }
+
+    #[test]
+    fn model_upstream_map_rejects_duplicate_map_less_id_after_mapped_id() {
+        let config = Config {
+            models: vec![
+                model_config("claude-opus-4-8", Some(model_upstream("codex", "gpt-5.2"))),
+                model_config("claude-opus-4-8", None),
+            ],
+            ..Config::default()
+        };
+
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::DuplicateModelId { model } if model == "claude-opus-4-8"
+        ));
+    }
+
+    #[test]
+    fn model_upstream_map_rejects_duplicate_map_less_id_before_mapped_id() {
+        let config = Config {
+            models: vec![
+                model_config("claude-opus-4-8", None),
+                model_config("claude-opus-4-8", Some(model_upstream("codex", "gpt-5.2"))),
+            ],
+            ..Config::default()
+        };
+
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::DuplicateModelId { model } if model == "claude-opus-4-8"
+        ));
+    }
+
+    #[test]
+    fn duplicate_map_less_model_ids_remain_valid() {
+        let config = Config {
+            models: vec![
+                model_config("claude-opus-4-8", None),
+                model_config("claude-opus-4-8", None),
+            ],
+            ..Config::default()
+        };
+
+        config.validate().unwrap();
+    }
+
+    #[test]
     fn validate_warns_when_discovery_model_has_no_matching_route() {
         let output = Arc::new(Mutex::new(Vec::new()));
         let writer_output = Arc::clone(&output);
@@ -3340,6 +3640,7 @@ mod tests {
             models: vec![ModelConfig {
                 id: "claude-opus-via-codex".to_string(),
                 display_name: None,
+                upstream_model: None,
             }],
             ..Config::default()
         };
@@ -3351,6 +3652,34 @@ mod tests {
 
         assert!(logs.contains("configured discovery model has no matching route"));
         assert!(logs.contains("claude-opus-via-codex"));
+    }
+
+    #[test]
+    fn validate_does_not_warn_for_routable_model_upstream_map() {
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let writer_output = Arc::clone(&output);
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || BufferWriter {
+                buffer: Arc::clone(&writer_output),
+            })
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        let config = Config {
+            models: vec![model_config(
+                "claude-opus-via-codex",
+                Some(model_upstream("codex", "gpt-5.2")),
+            )],
+            ..Config::default()
+        };
+
+        tracing::subscriber::with_default(subscriber, || {
+            config.validate().unwrap();
+        });
+        let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+
+        assert!(!logs.contains("configured discovery model has no matching route"));
+        assert!(!logs.contains("claude-opus-via-codex"));
     }
 
     #[test]

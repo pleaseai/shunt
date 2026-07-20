@@ -5,7 +5,26 @@ description: Claude Code の /model ピッカーを Claude 命名のエイリア
 
 Discovery（`GET /v1/models`）は Claude Code の `/model` ピッカーを自動的に埋められます。デフォルトでは、shunt は管理者が選定した `[[models]]` エントリを先に返し、その後にリファレンス Claude apps gateway をミラーする組み込み Claude モデルカタログを追加します。同一 id は選定したエントリを優先して重複を除きます。選定したリストだけを公開するには、トップレベルで `auto_include_builtin_models = false` を設定してください。組み込みモデルは専用の `[[routes]]` エントリを必要としません。通常のルーティング規則で解決され、`[[routes]]` と `[[route_prefixes]]` のいずれにも一致しない場合は `server.default_provider` にフォールバックします。
 
-Claude Code は discovery された id が `claude`/`anthropic` で始まらない場合、それを無視します（[プロトコルリファレンス](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery)）。したがって `gpt-*` などの非 Claude モデルを選定リストへ追加するときは、**Claude 命名のエイリアス**を作り、`[[routes]]` エントリで実際の上流スラッグへ書き換えてください。
+Claude Code は discovery された id が `claude`/`anthropic` で始まらない場合、それを無視するため（[プロトコルリファレンス](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery)）、`gpt-*` などの非 Claude モデルには Claude 命名のエイリアスを使ってください。
+
+## Discovery とルーティングを統合する
+
+選定したモデルでルーティングと上流変換を直接宣言できます。1エントリのマップのキーは設定済み provider 名、値は上流へ送るモデル id です。
+
+```toml
+[[models]]
+id = "claude-gpt-5.6-sol-via-codex"
+display_name = "GPT-5.6-Sol (via Codex)"
+
+[models.upstream_model]
+codex = "gpt-5.6-sol"
+```
+
+このエイリアスを選択すると `codex` へルーティングし、上流には `gpt-5.6-sol` を送ります。このマップは別の `[[routes]]` エントリより推奨される厳密 id の形式であり、`[[routes]]`、`[[route_prefixes]]`、`server.default_provider` より優先されます。エントリごとに設定済み provider を1つだけ指定でき、不正なマップや同じ id の `[[routes]]` エントリは起動エラーです。
+
+## 別のルートを使う
+
+マップのない既存の `[[models]]` エントリは後方互換です。引き続き `[[routes]]` エントリと組み合わせ、実際の上流スラッグへ書き換えられます。
 
 ```toml
 [[models]]

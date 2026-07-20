@@ -70,6 +70,17 @@ pub(crate) fn strip_context_window_hint(model: &str) -> &str {
 
 pub fn resolve_model(config: &Config, model: &str) -> Route {
     let model = strip_context_window_hint(model);
+    for configured_model in &config.models {
+        if configured_model.id == model {
+            if let Some((provider, upstream_model)) = configured_model
+                .upstream_model
+                .as_ref()
+                .and_then(|models| models.iter().next())
+            {
+                return route_for(config, provider, model, upstream_model, None);
+            }
+        }
+    }
     for route in &config.routes {
         if route.model == model {
             return route_for(
@@ -114,9 +125,135 @@ fn route_for(
 
 #[cfg(test)]
 mod tests {
-    use crate::config::{Config, RouteConfig, RoutePrefixConfig};
+    use std::collections::BTreeMap;
+
+    use crate::config::{Config, ModelConfig, RouteConfig, RoutePrefixConfig};
 
     use super::{resolve_model, strip_context_window_hint, AdapterKind};
+
+    fn mapped_model(id: &str, provider: &str, upstream_model: &str) -> ModelConfig {
+        ModelConfig {
+            id: id.to_string(),
+            display_name: None,
+            upstream_model: Some(BTreeMap::from([(
+                provider.to_string(),
+                upstream_model.to_string(),
+            )])),
+        }
+    }
+
+    #[test]
+    fn model_upstream_map_routes_and_translates_the_model() {
+        let config = Config {
+            models: vec![mapped_model("claude-opus-4-8", "codex", "gpt-5.2")],
+            ..Config::default()
+        };
+
+        let route = resolve_model(&config, "claude-opus-4-8");
+
+        assert_eq!(route.provider, "codex");
+        assert_eq!(route.adapter, AdapterKind::Responses);
+        assert_eq!(route.upstream_model, "gpt-5.2");
+        assert_eq!(route.model, "claude-opus-4-8");
+    }
+
+    #[test]
+    fn model_upstream_map_wins_over_exact_route() {
+        // This config is intentionally invalid at boot (`ModelRouteConflict`
+        // rejects a map-bearing id that also has a `[[routes]]` entry); the
+        // resolver is exercised directly to pin the precedence order, so do
+        // not add a `config.validate()` call here.
+        let config = Config {
+            models: vec![mapped_model("claude-opus-4-8", "codex", "gpt-5.2")],
+            routes: vec![RouteConfig {
+                model: "claude-opus-4-8".to_string(),
+                provider: "openai".to_string(),
+                upstream_model: Some("gpt-exact-route".to_string()),
+                effort: None,
+            }],
+            ..Config::default()
+        };
+
+        let route = resolve_model(&config, "claude-opus-4-8");
+
+        assert_eq!(route.provider, "codex");
+        assert_eq!(route.upstream_model, "gpt-5.2");
+    }
+
+    #[test]
+    fn model_upstream_map_wins_over_prefix_and_default_routing() {
+        let mut config = Config {
+            models: vec![mapped_model("claude-opus-4-8", "codex", "gpt-5.2")],
+            route_prefixes: vec![RoutePrefixConfig {
+                prefix: "claude-".to_string(),
+                provider: "openai".to_string(),
+            }],
+            ..Config::default()
+        };
+        config.server.default_provider = "anthropic".to_string();
+
+        let route = resolve_model(&config, "claude-opus-4-8");
+
+        assert_eq!(route.provider, "codex");
+        assert_eq!(route.upstream_model, "gpt-5.2");
+    }
+
+    #[test]
+    fn model_upstream_map_matches_after_stripping_context_window_hint() {
+        let config = Config {
+            models: vec![mapped_model("claude-opus-4-8", "codex", "gpt-5.2")],
+            ..Config::default()
+        };
+
+        let route = resolve_model(&config, "claude-opus-4-8[1m]");
+
+        assert_eq!(route.model, "claude-opus-4-8");
+        assert_eq!(route.upstream_model, "gpt-5.2");
+    }
+
+    #[test]
+    fn model_upstream_map_uses_provider_effort() {
+        let mut config = Config {
+            models: vec![mapped_model("claude-opus-4-8", "codex", "gpt-5.2")],
+            ..Config::default()
+        };
+        config.providers.get_mut("codex").unwrap().effort = Some("high".to_string());
+
+        let route = resolve_model(&config, "claude-opus-4-8");
+
+        assert_eq!(route.effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn model_without_upstream_map_keeps_existing_routing_precedence() {
+        let config = Config {
+            models: vec![ModelConfig {
+                id: "claude-route".to_string(),
+                display_name: None,
+                upstream_model: None,
+            }],
+            routes: vec![RouteConfig {
+                model: "claude-route".to_string(),
+                provider: "codex".to_string(),
+                upstream_model: Some("gpt-route".to_string()),
+                effort: None,
+            }],
+            route_prefixes: vec![RoutePrefixConfig {
+                prefix: "claude-".to_string(),
+                provider: "openai".to_string(),
+            }],
+            ..Config::default()
+        };
+
+        let exact = resolve_model(&config, "claude-route");
+        let prefix = resolve_model(&config, "claude-prefix");
+        let default = resolve_model(&config, "other-model");
+
+        assert_eq!(exact.provider, "codex");
+        assert_eq!(exact.upstream_model, "gpt-route");
+        assert_eq!(prefix.provider, "openai");
+        assert_eq!(default.provider, "anthropic");
+    }
 
     #[test]
     fn strip_context_window_hint_removes_only_a_trailing_1m_suffix() {

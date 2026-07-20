@@ -82,8 +82,8 @@ specifically the ChatGPT-subscription path.
 
 ## 3. Route a model to `codex`
 
-A request's `model` id picks the provider. Precedence: exact `[[routes]]` →
-`[[route_prefixes]]` → `server.default_provider`.
+A request's `model` id picks the provider. Precedence: matching `[models.upstream_model]` entry →
+exact `[[routes]]` → `[[route_prefixes]]` → `server.default_provider`.
 
 ```toml
 [[routes]]
@@ -133,10 +133,11 @@ raw `gpt-*` id needs one of two paths — they split on the `claude-` prefix and
 export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
 ```
 
-That id is exactly what shunt routes on, so it must match a `[[routes]]`/`[[route_prefixes]]`
-rule. This is the recommended path — it's the only one that also lets you set an accurate context
-window. For auto-listing several Codex models in the picker instead, use a `claude-`-named
-[discovery alias](/guides/model-discovery/) (accepting the 200k window trade-off).
+That id is exactly what shunt routes on, so it must resolve through a matching
+`[models.upstream_model]` entry, `[[routes]]`, or `[[route_prefixes]]` rule. This is the recommended
+path — it's the only one that also lets you set an accurate context window. For auto-listing several
+Codex models in the picker instead, use a `claude-`-named [discovery alias](/guides/model-discovery/)
+(accepting the 200k window trade-off).
 
 #### Put a subagent on a Codex slug
 
@@ -159,7 +160,8 @@ Spawn it **without** a `model` override (the tool parameter outranks frontmatter
 `CLAUDE_CODE_SUBAGENT_MODEL` > tool `model` > frontmatter > `inherit`. To force **every** subagent
 onto one slug, set `export CLAUDE_CODE_SUBAGENT_MODEL="gpt-5.6-sol"`.
 
-Either way the slug needs a `[[routes]]` entry and, being non-`claude-`, obeys
+Either way the slug needs explicit routing through a matching `[models.upstream_model]` entry,
+`[[routes]]`, or `[[route_prefixes]]` rule and, being non-`claude-`, obeys
 `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` and `CLAUDE_CODE_MAX_CONTEXT_TOKENS` — the window follows the id
 automatically.
 

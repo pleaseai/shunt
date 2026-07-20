@@ -43,7 +43,7 @@ auth = "chatgpt_oauth"         # 复用 ~/.codex/auth.json
 
 # --- 路由:请求的 `model` id 如何选取提供方 ---
 
-# 精确匹配最先胜出。`upstream_model` 和 `effort` 是可选覆盖。
+# 匹配的 [models.upstream_model] 条目最先胜出。[[routes]] 是随后检查的旧版精确匹配形式。
 [[routes]]
 model = "gpt-5.6-sol"
 provider = "codex"
@@ -64,9 +64,10 @@ provider = "openai"
 
 ## 路由优先级
 
-1. 对请求的 `model` id 的精确 `[[routes]]` 匹配。
-2. `[[route_prefixes]]` 前缀匹配。
-3. `server.default_provider` —— 默认为 `anthropic`,因此无匹配的模型会原样透传给 Anthropic。
+1. 与请求的 `model` id 匹配的 `[models.upstream_model]` 条目。
+2. 对请求的 `model` id 的精确 `[[routes]]` 匹配。
+3. `[[route_prefixes]]` 前缀匹配。
+4. `server.default_provider` —— 默认为 `anthropic`,因此无匹配的模型会原样透传给 Anthropic。
 
 一条路由可以按模型覆盖转发的模型 id(`upstream_model`)和推理力度(`effort`)。
 

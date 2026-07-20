@@ -66,8 +66,8 @@ auth = "chatgpt_oauth"                          # read + auto-refresh ~/.codex/a
 
 ## 3. モデルを `codex` へルーティングする
 
-リクエストの `model` id がプロバイダーを選びます。優先順位: 厳密な `[[routes]]` →
-`[[route_prefixes]]` → `server.default_provider`。
+リクエストの `model` id がプロバイダーを選びます。優先順位: 一致する `[models.upstream_model]` エントリ →
+厳密な `[[routes]]` → `[[route_prefixes]]` → `server.default_provider`。
 
 ```toml
 [[routes]]
@@ -105,7 +105,7 @@ Claude Code の `/model` ピッカーは `claude`/`anthropic` で始まる disco
 export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
 ```
 
-その id はまさに shunt がルーティングに使うものなので、`[[routes]]`/`[[route_prefixes]]` ルールにマッチする必要があります。これが推奨パスです — 正確なコンテキストウィンドウも設定できる唯一のパスです。代わりに複数の Codex モデルをピッカーに自動リストするには、`claude-` 命名の [discovery エイリアス](/ja/guides/model-discovery/)を使います（200k ウィンドウのトレードオフを受け入れる）。
+その id はまさに shunt がルーティングに使うものなので、一致する `[models.upstream_model]` エントリ、`[[routes]]`、または `[[route_prefixes]]` ルールで解決される必要があります。これが推奨パスです — 正確なコンテキストウィンドウも設定できる唯一のパスです。代わりに複数の Codex モデルをピッカーに自動リストするには、`claude-` 命名の [discovery エイリアス](/ja/guides/model-discovery/)を使います（200k ウィンドウのトレードオフを受け入れる）。
 
 #### サブエージェントを Codex スラッグに乗せる
 
@@ -124,7 +124,7 @@ model: gpt-5.6-sol        # was: sonnet (or absent → inherited)
 `model` オーバーライド**なし**でスポーンします（ツールパラメータがフロントマターより優先されます）。解決順序:
 `CLAUDE_CODE_SUBAGENT_MODEL` > ツールの `model` > フロントマター > `inherit`。**すべての**サブエージェントを 1 つのスラッグに強制するには、`export CLAUDE_CODE_SUBAGENT_MODEL="gpt-5.6-sol"` を設定します。
 
-いずれの場合も、スラッグには `[[routes]]` エントリが必要で、非 `claude-` であるため
+いずれの場合も、スラッグは一致する `[models.upstream_model]` エントリ、`[[routes]]`、または `[[route_prefixes]]` ルールによる明示的なルーティングが必要で、非 `claude-` であるため
 `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` と `CLAUDE_CODE_MAX_CONTEXT_TOKENS` に従います — ウィンドウは id に自動的に追随します。
 
 :::tip[既製のエージェント]

@@ -89,7 +89,7 @@ Claude Code의 모델 디스커버리는 `claude`/`anthropic`으로 시작하는
 export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
 ```
 
-그런 다음 Claude Code의 `/model`에서 선택하세요. 그 id가 shunt가 라우팅하는 대상이므로, 구성의 `[[routes]]`/`[[route_prefixes]]` 규칙과 일치해야 합니다.
+그런 다음 Claude Code의 `/model`에서 선택하세요. 그 id가 shunt가 라우팅하는 대상이므로, 일치하는 `[models.upstream_model]` 항목, `[[routes]]`, 또는 `[[route_prefixes]]` 규칙으로 해석되어야 합니다.
 
 두 가지 선택기 노출 방법은 `claude-`/`anthropic-` 프리픽스를 기준으로 깔끔하게 갈리며 — 겹치지 않습니다. 디스커버리는 *오직* `claude-`/`anthropic-` id만 존중하고, `ANTHROPIC_CUSTOM_MODEL_OPTION`과 `CLAUDE_CODE_MAX_CONTEXT_TOKENS` 윈도우 오버라이드는 *오직* 그 프리픽스로 시작하지 **않는** id에만 적용됩니다:
 

@@ -133,7 +133,7 @@ Grok 슬러그는 `claude-`로 시작하지 않으므로, Claude Code의 `/model
 나열하지 않습니다. 메커니즘은 **Codex와 동일합니다** — id를 선택기에 직접 추가하세요:
 
 ```bash
-export ANTHROPIC_CUSTOM_MODEL_OPTION="grok-4.5"   # [[routes]] 규칙과 일치해야 함
+export ANTHROPIC_CUSTOM_MODEL_OPTION="grok-4.5"   # [models.upstream_model], [[routes]], [[route_prefixes]] 중 하나로 해석되어야 함
 ```
 
 동일한 [Codex 섹션](/ko/guides/codex/#4-claude-code에서-모델-선택)이 나머지를 그대로 다룹니다:

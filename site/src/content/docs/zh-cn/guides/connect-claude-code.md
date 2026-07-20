@@ -89,7 +89,7 @@ Claude Code 的模型发现只认以 `claude`/`anthropic` 开头的 id,因此对
 export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
 ```
 
-然后在 Claude Code 中从 `/model` 选择它。该 id 正是 shunt 路由所依据的,因此它必须匹配你配置中的一条 `[[routes]]`/`[[route_prefixes]]` 规则。
+然后在 Claude Code 中从 `/model` 选择它。该 id 正是 shunt 路由所依据的,因此它必须通过匹配的 `[models.upstream_model]` 条目、`[[routes]]` 或 `[[route_prefixes]]` 规则来解析。
 
 两种选择器暴露方法以 `claude-`/`anthropic-` 前缀清晰分界 —— 它们互不重叠。发现*只*认 `claude-`/`anthropic-` id;`ANTHROPIC_CUSTOM_MODEL_OPTION` 和 `CLAUDE_CODE_MAX_CONTEXT_TOKENS` 窗口覆盖*只*适用于**不**以该前缀开头的 id:
 

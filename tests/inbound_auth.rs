@@ -83,6 +83,7 @@ fn with_discovery_model(mut config: Config) -> Config {
     config.models.push(shunt::config::ModelConfig {
         id: "claude-mapped-model".to_string(),
         display_name: Some("Mapped model".to_string()),
+        upstream_model: None,
     });
     config
 }

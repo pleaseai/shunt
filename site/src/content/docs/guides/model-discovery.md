@@ -5,7 +5,26 @@ description: Populate Claude Code's /model picker automatically with Claude-name
 
 Discovery (`GET /v1/models`) can populate Claude Code's `/model` picker automatically. By default, shunt returns the admin-curated `[[models]]` entries first, followed by its builtin Claude model catalog mirroring the reference Claude apps gateway. Exact-id duplicates are removed in favor of the curated entry. Set the top-level `auto_include_builtin_models = false` to expose only the curated list. Builtin models need no dedicated `[[routes]]` entry — they resolve through your normal routing rules, falling back to `server.default_provider` when no `[[routes]]` or `[[route_prefixes]]` entry matches.
 
-Claude Code ignores any discovered id that doesn't begin with `claude`/`anthropic` ([protocol reference](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery)). Therefore, add a **Claude-named alias** when curating a non-Claude model such as `gpt-*`, and use a `[[routes]]` entry to rewrite it to the real upstream slug:
+Claude Code ignores any discovered id that doesn't begin with `claude`/`anthropic` ([protocol reference](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery)), so use a Claude-named alias when curating a non-Claude model such as `gpt-*`.
+
+## Unify discovery and routing
+
+A curated model can declare its routing and upstream translation directly. The one-entry map key is a configured provider name and its value is the model id sent upstream:
+
+```toml
+[[models]]
+id = "claude-gpt-5.6-sol-via-codex"
+display_name = "GPT-5.6-Sol (via Codex)"
+
+[models.upstream_model]
+codex = "gpt-5.6-sol"
+```
+
+Selecting the alias routes it through `codex` and sends `gpt-5.6-sol` upstream. This map is the recommended exact-id form instead of a separate `[[routes]]` entry and takes precedence over `[[routes]]`, `[[route_prefixes]]`, and `server.default_provider`. Exactly one configured provider is supported per entry; invalid maps and a same-id `[[routes]]` entry are startup errors.
+
+## Use a separate route
+
+Map-less `[[models]]` entries remain backward compatible. You can still pair one with a `[[routes]]` entry to rewrite it to the real upstream slug:
 
 ```toml
 [[models]]

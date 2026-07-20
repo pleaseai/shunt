@@ -1355,6 +1355,7 @@ async fn gateway_jwt_and_static_client_token_compose_on_models() {
     config.models = vec![ModelConfig {
         id: "claude-via-gateway".into(),
         display_name: None,
+        upstream_model: None,
     }];
     let (router, _, _) = build_router(config).unwrap();
 
