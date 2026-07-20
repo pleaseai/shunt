@@ -19,7 +19,7 @@ use crate::{
 };
 
 use super::context::{ForwardOptions, RelayOptions};
-use super::error::{backend_error_response, mapped_upstream_error, own_error};
+use super::error::{backend_error_response, mapped_upstream_error, transport_error};
 use super::request::request_builder;
 
 /// Send the upstream Responses HTTP request and return the raw response
@@ -88,14 +88,14 @@ pub(super) async fn forward_http(
     )
     .await
     .map_err(|error| {
-        // Preserve the raw transport cause in logs before own_error maps it to
+        // Preserve the raw transport cause in logs before transport_error maps it to
         // the stable gateway-facing Responses error envelope.
         tracing::warn!(
             provider = %route.provider,
             error = %error,
             "responses upstream request failed after retries"
         );
-        own_error(error.to_string())
+        transport_error(error.to_string())
     })?;
     let status = upstream.status();
     if !status.is_success() {
@@ -196,7 +196,7 @@ pub(super) async fn json_response(
     let body = upstream
         .text()
         .await
-        .map_err(|error| own_error(error.to_string()))?;
+        .map_err(|error| transport_error(error.to_string()))?;
     let mut machine = relay.machine();
     for event in parse_sse_events(&body) {
         let _ = machine.apply(event);

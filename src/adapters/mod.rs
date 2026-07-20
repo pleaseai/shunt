@@ -40,10 +40,21 @@ pub(crate) fn with_admission(
 pub type AdapterResult = Result<(StatusCode, Response), AdapterError>;
 pub type AdapterFuture<'a> = Pin<Box<dyn Future<Output = AdapterResult> + Send + 'a>>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AdapterFailure {
+    /// The upstream returned this status before the adapter mapped it for the client.
+    UpstreamStatus(StatusCode),
+    /// The attempt failed before any upstream response headers were received.
+    BeforeHeaders,
+}
+
 #[derive(Debug)]
 pub struct AdapterError {
     pub message: String,
     pub response: Box<Response>,
+    /// Additive failover metadata. `None` marks a local adapter/auth/validation
+    /// error that must be returned immediately rather than retried elsewhere.
+    pub failure: Option<AdapterFailure>,
 }
 
 pub trait Adapter {

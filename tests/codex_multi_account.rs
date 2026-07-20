@@ -565,8 +565,8 @@ async fn unresolvable_account_cools_down_and_rotates() {
 #[tokio::test]
 async fn all_accounts_unresolvable_returns_bad_gateway() {
     // When every account fails to resolve, the pool never reaches an
-    // upstream: it surfaces a 502 in shunt's own error envelope and the
-    // upstream is never called.
+    // upstream: the proxy exhausts its one-element chain and synthesizes the
+    // contract's 502 in shunt's own error envelope; the upstream is never called.
     if !can_bind_loopback() {
         return;
     }
@@ -596,7 +596,7 @@ async fn all_accounts_unresolvable_returns_bad_gateway() {
     assert_eq!(body["error"]["type"], "api_error");
     assert_eq!(
         body["error"]["message"],
-        "all Codex OAuth accounts failed before receiving an upstream response"
+        "all upstreams failed (1 attempted)"
     );
     upstream.verify().await;
 }

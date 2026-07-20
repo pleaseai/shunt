@@ -303,6 +303,7 @@ fn websocket_headers(credential: Credential) -> Result<HeaderMap, AdapterError> 
             AdapterError {
                 message,
                 response: Box::new(response),
+                failure: None,
             }
         })?;
         headers.insert(name, value);
@@ -340,6 +341,7 @@ fn ws_transport_error(error: CodexWsError) -> AdapterError {
     AdapterError {
         message: error.message,
         response: Box::new(response),
+        failure: None,
     }
 }
 

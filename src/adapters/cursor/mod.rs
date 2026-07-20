@@ -346,49 +346,54 @@ async fn map_upstream_error(upstream: reqwest::Response) -> AdapterError {
         .get("grpc-message")
         .and_then(|value| value.to_str().ok())
         .map(ToOwned::to_owned);
-    let text = upstream.text().await.unwrap_or_default();
-    // Cursor may return a Connect JSON error body (`{"error":{"message":"…"}}`
-    // or a bare `{"message":"…"}`). Parse it once: the body feeds both the
-    // human-readable message and the context-overflow detection below.
-    let body: Option<Value> = serde_json::from_str(&text).ok();
-    let parsed_message = body.as_ref().and_then(|value| {
-        value
-            .pointer("/error/message")
-            .or_else(|| value.get("message"))
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned)
-    });
-    let message = grpc_message
-        .or(parsed_message)
-        .or_else(|| (!text.is_empty()).then_some(text))
-        .unwrap_or_else(|| format!("Cursor upstream returned HTTP {status}"));
-    // Reuse the Responses path's context-overflow rewrite so a Cursor
-    // "context length exceeded" surfaces as Anthropic's "prompt is too long"
-    // wording that triggers Claude Code's auto-compact-and-retry (see
-    // `map_error_value`).
-    let message = crate::model::responses::context_overflow_message(
-        body.as_ref().unwrap_or(&Value::Null),
-        &message,
-    )
-    .unwrap_or(message);
-    // Shares the status -> `error.type` table with the other translated
-    // backends (Responses/Codex, xAI) so Cursor surfaces the same vocabulary
-    // the Anthropic-direct path streams verbatim; see
-    // `docs/gateway-protocol.md#error-envelopes`.
     let mapped_status = crate::model::responses::client_facing_status(status);
     let kind = crate::model::responses::anthropic_error_type(status);
-    let mut error = ShuntError::new(mapped_status, kind, message).into_response();
+    let stream = futures_stream::once(async move {
+        let text = upstream.text().await.unwrap_or_default();
+        let body: Option<Value> = serde_json::from_str(&text).ok();
+        let parsed_message = body.as_ref().and_then(|value| {
+            value
+                .pointer("/error/message")
+                .or_else(|| value.get("message"))
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        });
+        let message = grpc_message
+            .or(parsed_message)
+            .or_else(|| (!text.is_empty()).then_some(text))
+            .unwrap_or_else(|| format!("Cursor upstream returned HTTP {status}"));
+        let message = crate::model::responses::context_overflow_message(
+            body.as_ref().unwrap_or(&Value::Null),
+            &message,
+        )
+        .unwrap_or(message);
+        let envelope = serde_json::json!({
+            "type": "error",
+            "error": {"type": kind, "message": message}
+        });
+        Ok::<Bytes, std::convert::Infallible>(Bytes::from(
+            serde_json::to_vec(&envelope).unwrap_or_default(),
+        ))
+    });
+    let mut error = Response::builder()
+        .status(mapped_status)
+        .header("content-type", "application/json")
+        .body(Body::from_stream(stream))
+        .expect("valid mapped Cursor error response");
     if let Some(value) = retry_after {
         error.headers_mut().insert("retry-after", value);
     }
     AdapterError {
         message: format!("Cursor upstream request failed with {status}"),
         response: Box::new(error),
+        failure: Some(crate::adapters::AdapterFailure::UpstreamStatus(status)),
     }
 }
 
 fn map_client_error(error: client::CursorError) -> AdapterError {
-    bad_gateway(error.to_string())
+    let mut error = bad_gateway(error.to_string());
+    error.failure = Some(crate::adapters::AdapterFailure::BeforeHeaders);
+    error
 }
 
 /// Parse a Cursor Connect error's `detail` (the raw end-frame JSON body) so the
@@ -414,7 +419,9 @@ fn map_cursor_stream_error(error: client::CursorError) -> AdapterError {
     let detail = connect_error_detail(&error);
     let message = crate::model::responses::context_overflow_message(&detail, &error.message)
         .unwrap_or(error.message);
-    own_error(mapped_status, kind, message)
+    let mut error = own_error(mapped_status, kind, message);
+    error.failure = Some(crate::adapters::AdapterFailure::UpstreamStatus(status));
+    error
 }
 
 fn bad_gateway(message: String) -> AdapterError {
@@ -425,6 +432,7 @@ fn own_error(status: StatusCode, kind: &'static str, message: impl Into<String>)
     AdapterError {
         message: "Cursor adapter failed".to_string(),
         response: Box::new(ShuntError::new(status, kind, message).into_response()),
+        failure: None,
     }
 }
 

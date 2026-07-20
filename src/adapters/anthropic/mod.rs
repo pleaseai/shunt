@@ -503,6 +503,7 @@ async fn forward_claude_oauth(
             )
             .into_response(),
         ),
+        failure: Some(crate::adapters::AdapterFailure::BeforeHeaders),
     })
 }
 
@@ -834,6 +835,7 @@ fn upstream_error(error: reqwest::Error) -> AdapterError {
     AdapterError {
         message,
         response: Box::new(UpstreamError::from_reqwest(error).into_response()),
+        failure: Some(crate::adapters::AdapterFailure::BeforeHeaders),
     }
 }
 

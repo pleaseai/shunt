@@ -217,6 +217,7 @@ pub fn auth_error(message: impl Into<String>) -> AdapterError {
     AdapterError {
         message: "authentication failed".to_string(),
         response: Box::new(error.into_response()),
+        failure: None,
     }
 }
 
