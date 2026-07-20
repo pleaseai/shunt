@@ -169,7 +169,8 @@ already parses as shunt's *outbound* usage poller, in the opposite direction:
 ```
 
 `five_hour`/`seven_day` are omitted (not `null`) when no non-disabled Claude account reports
-that window; `limits` is an empty array when no account reports the Fable-scoped window.
+that window; `limits` is omitted entirely (not an empty `[]`) when no account reports the
+Fable-scoped window (`#[serde(skip_serializing_if = "Vec::is_empty")]` on the wire struct).
 `utilization`/`percent` are fractions rounded to two decimals and multiplied by 100;
 `resets_at` is RFC3339 (`crate::auth::shared::format_iso8601`, the same formatter shunt's
 outbound client parses via `parse_rfc3339_to_epoch_secs`).

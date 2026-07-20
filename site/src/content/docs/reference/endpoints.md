@@ -91,7 +91,7 @@ The `/api/oauth/usage` route exists only when [`[server.oauth_usage]`](/referenc
 }
 ```
 
-`five_hour`/`seven_day` are omitted (not `null`) when no non-disabled Claude account reports that window; `limits` is an empty array when no account reports the Fable-scoped window.
+`five_hour`/`seven_day` are omitted (not `null`) when no non-disabled Claude account reports that window; `limits` is omitted entirely (not an empty array) when no account reports the Fable-scoped window.
 
 `GET /` and `GET /health` stay open even when [`[server.auth]`](/guides/shared-gateway/) is enabled (healthcheck tools usually cannot attach tokens) and expose nothing sensitive — only status, version, and the already-public endpoint list. With `[server.auth]` enabled, `GET /v1/models` requires a valid client token in the configured header, `x-api-key`, or `Authorization: Bearer`; it stays open when inbound auth is not configured. `GET /routes` remains open as shunt-native routing metadata.
 
