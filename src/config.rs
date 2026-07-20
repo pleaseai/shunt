@@ -1491,10 +1491,16 @@ pub enum ConfigError {
     UnknownModelProvider { model: String, provider: String },
     #[error("models entry {model} upstream_model must name exactly one provider (got {count}); cross-provider failover is not implemented")]
     ModelUpstreamProviderCount { model: String, count: usize },
+    #[error("models entry {model} upstream_model provider name must not be empty")]
+    EmptyModelUpstreamProvider { model: String },
+    #[error("models entry {model} upstream_model for provider {provider} must not be empty")]
+    EmptyModelUpstream { model: String, provider: String },
     #[error("model {model} is declared both in [[routes]] and in a [[models]] upstream_model entry; remove one")]
     ModelRouteConflict { model: String },
-    #[error("duplicate [[models]] upstream_model entries for model {model}")]
-    DuplicateModelUpstream { model: String },
+    #[error("models entry {model} has an upstream_model map but its id ends with a [1m] or [1M] context-window hint; clients strip that hint before model matching, so the entry is unreachable")]
+    ModelUpstreamContextWindowHint { model: String },
+    #[error("duplicate [[models]] id {model}; ids must be unique when any matching entry has an upstream_model map")]
+    DuplicateModelId { model: String },
     #[error("route prefix {prefix} references unknown provider: {provider}")]
     UnknownPrefixProvider { prefix: String, provider: String },
     #[error("server.auth.header is not a valid header name: {header}")]
@@ -2140,21 +2146,50 @@ impl Config {
                 });
             }
         }
+        let mut model_ids = HashSet::new();
         let mut model_upstream_ids = HashSet::new();
         for model in &self.models {
+            let duplicate_id = !model_ids.insert(&model.id);
             let Some(upstream_models) = &model.upstream_model else {
+                if duplicate_id && model_upstream_ids.contains(&model.id) {
+                    return Err(ConfigError::DuplicateModelId {
+                        model: model.id.clone(),
+                    });
+                }
                 continue;
             };
+            if crate::routing::strip_context_window_hint(&model.id) != model.id {
+                return Err(ConfigError::ModelUpstreamContextWindowHint {
+                    model: model.id.clone(),
+                });
+            }
+            if duplicate_id {
+                return Err(ConfigError::DuplicateModelId {
+                    model: model.id.clone(),
+                });
+            }
+            model_upstream_ids.insert(&model.id);
             if upstream_models.len() != 1 {
                 return Err(ConfigError::ModelUpstreamProviderCount {
                     model: model.id.clone(),
                     count: upstream_models.len(),
                 });
             }
-            let provider = upstream_models
-                .keys()
+            let (provider, upstream_model) = upstream_models
+                .iter()
                 .next()
                 .expect("one upstream provider was validated");
+            if provider.trim().is_empty() {
+                return Err(ConfigError::EmptyModelUpstreamProvider {
+                    model: model.id.clone(),
+                });
+            }
+            if upstream_model.trim().is_empty() {
+                return Err(ConfigError::EmptyModelUpstream {
+                    model: model.id.clone(),
+                    provider: provider.clone(),
+                });
+            }
             if !self.has_provider(provider) {
                 return Err(ConfigError::UnknownModelProvider {
                     model: model.id.clone(),
@@ -2163,11 +2198,6 @@ impl Config {
             }
             if self.routes.iter().any(|route| route.model == model.id) {
                 return Err(ConfigError::ModelRouteConflict {
-                    model: model.id.clone(),
-                });
-            }
-            if !model_upstream_ids.insert(&model.id) {
-                return Err(ConfigError::DuplicateModelUpstream {
                     model: model.id.clone(),
                 });
             }
@@ -3458,6 +3488,46 @@ id = "claude-sonnet-5"
     }
 
     #[test]
+    fn model_upstream_map_rejects_empty_upstream_model() {
+        for upstream_model in ["", "   \t\n"] {
+            let config = Config {
+                models: vec![model_config(
+                    "claude-opus-4-8",
+                    Some(model_upstream("codex", upstream_model)),
+                )],
+                ..Config::default()
+            };
+
+            assert!(matches!(
+                config.validate().unwrap_err(),
+                ConfigError::EmptyModelUpstream { model, provider }
+                    if model == "claude-opus-4-8" && provider == "codex"
+            ));
+        }
+    }
+
+    #[test]
+    fn model_upstream_map_rejects_empty_provider_name() {
+        for provider in ["", "   \t\n"] {
+            let mut config = Config::default();
+            let provider_config = config.providers["codex"].clone();
+            config
+                .providers
+                .insert(provider.to_string(), provider_config);
+            config.models = vec![model_config(
+                "claude-opus-4-8",
+                Some(model_upstream(provider, "gpt-5.2")),
+            )];
+
+            assert!(matches!(
+                config.validate().unwrap_err(),
+                ConfigError::EmptyModelUpstreamProvider { model }
+                    if model == "claude-opus-4-8"
+            ));
+        }
+    }
+
+    #[test]
     fn model_upstream_map_rejects_explicit_route_conflict() {
         let config = Config {
             models: vec![model_config(
@@ -3480,6 +3550,21 @@ id = "claude-sonnet-5"
     }
 
     #[test]
+    fn model_upstream_map_rejects_context_window_hint_in_id() {
+        for id in ["claude-opus-4-8[1m]", "claude-opus-4-8[1M]"] {
+            let config = Config {
+                models: vec![model_config(id, Some(model_upstream("codex", "gpt-5.2")))],
+                ..Config::default()
+            };
+
+            assert!(matches!(
+                config.validate().unwrap_err(),
+                ConfigError::ModelUpstreamContextWindowHint { model } if model == id
+            ));
+        }
+    }
+
+    #[test]
     fn model_upstream_map_rejects_duplicate_map_bearing_ids() {
         let config = Config {
             models: vec![
@@ -3491,15 +3576,47 @@ id = "claude-sonnet-5"
 
         assert!(matches!(
             config.validate().unwrap_err(),
-            ConfigError::DuplicateModelUpstream { model } if model == "claude-opus-4-8"
+            ConfigError::DuplicateModelId { model } if model == "claude-opus-4-8"
         ));
     }
 
     #[test]
-    fn valid_model_upstream_map_passes_validation() {
+    fn model_upstream_map_rejects_duplicate_map_less_id_after_mapped_id() {
         let config = Config {
             models: vec![
                 model_config("claude-opus-4-8", Some(model_upstream("codex", "gpt-5.2"))),
+                model_config("claude-opus-4-8", None),
+            ],
+            ..Config::default()
+        };
+
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::DuplicateModelId { model } if model == "claude-opus-4-8"
+        ));
+    }
+
+    #[test]
+    fn model_upstream_map_rejects_duplicate_map_less_id_before_mapped_id() {
+        let config = Config {
+            models: vec![
+                model_config("claude-opus-4-8", None),
+                model_config("claude-opus-4-8", Some(model_upstream("codex", "gpt-5.2"))),
+            ],
+            ..Config::default()
+        };
+
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::DuplicateModelId { model } if model == "claude-opus-4-8"
+        ));
+    }
+
+    #[test]
+    fn duplicate_map_less_model_ids_remain_valid() {
+        let config = Config {
+            models: vec![
+                model_config("claude-opus-4-8", None),
                 model_config("claude-opus-4-8", None),
             ],
             ..Config::default()
@@ -3535,6 +3652,34 @@ id = "claude-sonnet-5"
 
         assert!(logs.contains("configured discovery model has no matching route"));
         assert!(logs.contains("claude-opus-via-codex"));
+    }
+
+    #[test]
+    fn validate_does_not_warn_for_routable_model_upstream_map() {
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let writer_output = Arc::clone(&output);
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || BufferWriter {
+                buffer: Arc::clone(&writer_output),
+            })
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        let config = Config {
+            models: vec![model_config(
+                "claude-opus-via-codex",
+                Some(model_upstream("codex", "gpt-5.2")),
+            )],
+            ..Config::default()
+        };
+
+        tracing::subscriber::with_default(subscriber, || {
+            config.validate().unwrap();
+        });
+        let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+
+        assert!(!logs.contains("configured discovery model has no matching route"));
+        assert!(!logs.contains("claude-opus-via-codex"));
     }
 
     #[test]

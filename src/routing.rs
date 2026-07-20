@@ -158,6 +158,25 @@ mod tests {
     }
 
     #[test]
+    fn model_upstream_map_wins_over_exact_route() {
+        let config = Config {
+            models: vec![mapped_model("claude-opus-4-8", "codex", "gpt-5.2")],
+            routes: vec![RouteConfig {
+                model: "claude-opus-4-8".to_string(),
+                provider: "openai".to_string(),
+                upstream_model: Some("gpt-exact-route".to_string()),
+                effort: None,
+            }],
+            ..Config::default()
+        };
+
+        let route = resolve_model(&config, "claude-opus-4-8");
+
+        assert_eq!(route.provider, "codex");
+        assert_eq!(route.upstream_model, "gpt-5.2");
+    }
+
+    #[test]
     fn model_upstream_map_wins_over_prefix_and_default_routing() {
         let mut config = Config {
             models: vec![mapped_model("claude-opus-4-8", "codex", "gpt-5.2")],

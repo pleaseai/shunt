@@ -31,7 +31,7 @@ codex = "gpt-5.2"
 
 The key names a configured provider and the value is the model id sent to that provider. A map-bearing model entry unifies discovery, provider selection, and model-id translation. It is resolved before `[[routes]]`, `[[route_prefixes]]`, and `server.default_provider` for the same requested id. Provider-level defaults such as `effort` continue to apply.
 
-For now, the map must contain exactly one provider. Empty maps, multiple providers, unknown providers, a same-id `[[routes]]` entry, and duplicate map-bearing model declarations are configuration errors. The map shape is retained as the extension point for a future ordered cross-provider failover feature, which must define ordering explicitly rather than infer it from `ProvidersConfig`.
+For now, the map must contain exactly one provider. Empty maps, multiple providers, an empty or whitespace-only provider name or upstream model id, unknown providers, a same-id `[[routes]]` entry, a map-bearing id ending in the client-only `[1m]`/`[1M]` context-window hint, and duplicate `[[models]]` ids where at least one entry is map-bearing are configuration errors. Map-bearing ids cannot include that suffix because clients strip it before model matching, which would make the configured entry unreachable. Pure map-less duplicate ids retain their previous behavior. The map shape is retained as the extension point for a future ordered cross-provider failover feature, which must define ordering explicitly rather than infer it from `ProvidersConfig`.
 
 Map-less `[[models]]` entries preserve the previous behavior and continue through exact routes, prefix routes, and the default provider.
 

@@ -154,7 +154,7 @@ headers = { "x-api-key" = "..." }
 
 トップレベルの `auto_include_builtin_models` キーはデフォルトで `true` です。有効な場合、shunt は管理者が選定した `[[models]]` エントリを先に返し、その後にリファレンス Claude apps gateway をミラーする組み込み Claude モデルカタログを追加します。同一 id は選定したエントリを優先して重複を除きます。`[[models]]` リストだけを公開するには `false` に設定してください。組み込みモデルは専用の `[[routes]]` エントリを必要としません。通常のルーティング規則で解決され、`[[routes]]` と `[[route_prefixes]]` のいずれにも一致しない場合は `server.default_provider` にフォールバックします。
 
-選定したエントリに `[models.upstream_model]` を追加すると、1つの宣言で id の公開、ルーティング、上流 id への変換を行えます。厳密な id のルーティングには、`[[routes]]` の代わりにこの形式を推奨します。このテーブルには `provider = "upstream-id"` のペアを正確に1つだけ含める必要があります。その id では `[[routes]]`、`[[route_prefixes]]`、`server.default_provider` より優先され、provider のデフォルト `effort` は引き続き適用されます。空または複数 provider のマップ、未知の provider、同じ id の `[[routes]]` エントリ、マップ付きエントリの重複は起動エラーです。
+選定したエントリに `[models.upstream_model]` を追加すると、1つの宣言で id の公開、ルーティング、上流 id への変換を行えます。厳密な id のルーティングには、`[[routes]]` の代わりにこの形式を推奨します。このテーブルには、空でない provider 名と上流 id からなる `provider = "upstream-id"` のペアを正確に1つだけ含める必要があります。その id では `[[routes]]`、`[[route_prefixes]]`、`server.default_provider` より優先され、provider のデフォルト `effort` は引き続き適用されます。空または複数 provider のマップ、空または空白文字のみの provider 名または上流 id、未知の provider、同じ id の `[[routes]]` エントリ、`[1m]` または `[1M]` で終わるマップ付き id、あるいはいずれか一方がマップ付きである重複 `[[models]]` id は起動エラーです。client はマッチング前に context-window hint を取り除くため、マップ付き id にこの suffix を含めると、そのエントリには到達できません。マップなしエントリ同士の重複は従来の動作を維持します。
 
 ```toml
 [[models]]

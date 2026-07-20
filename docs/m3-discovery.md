@@ -81,9 +81,12 @@ is the documented default. Discovery is only useful if shunt exposes a **Claude-
   `upstream_model`) so selecting it actually routes; config load warns when a map-less `[[models]]`
   id has no route. A map-bearing entry is already routable and does not emit this warning.
 - Map-bearing entries fail config validation when the map is empty or names more than one provider,
-  references an unknown provider, conflicts with a `[[routes]]` entry for the same id, or duplicates
-  another map-bearing `[[models]]` entry with the same id. Exactly one provider is supported until
-  ordered cross-provider failover is implemented.
+  the sole provider name or upstream model id is empty or whitespace-only, references an unknown
+  provider, conflicts with a `[[routes]]` entry for the same id, includes a trailing `[1m]`/`[1M]`
+  client hint in the configured id, or duplicates another `[[models]]` id where either entry is
+  map-bearing. Clients strip the context-window hint before matching, so such a map-bearing id would
+  be unreachable. Pure map-less duplicates retain their previous behavior. Exactly one provider is
+  supported until ordered cross-provider failover is implemented.
 - **Alias is the model-of-record on both directions.** An alias route sends `upstream_model`
   outbound (`normalize_upstream_model`); on the return path the relay rewrites the response's
   `model` back to the alias — `message_start.message.model` for streaming and the top-level

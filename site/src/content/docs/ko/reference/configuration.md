@@ -166,7 +166,7 @@ headers = { "x-api-key" = "..." }
 
 최상위 `auto_include_builtin_models` 키의 기본값은 `true`입니다. 활성화하면 shunt는 관리자가 선별한 `[[models]]` 항목을 먼저 반환한 뒤, 레퍼런스 Claude apps gateway를 미러링하는 내장 Claude 모델 카탈로그를 추가합니다. id가 정확히 같은 항목은 선별된 항목을 우선하여 중복을 제거합니다. `[[models]]` 목록만 노출하려면 `false`로 설정하세요. 내장 모델은 전용 `[[routes]]` 항목이 필요하지 않습니다. 일반 라우팅 규칙으로 해석되며, `[[routes]]`나 `[[route_prefixes]]` 어느 것에도 매칭되지 않을 때 `server.default_provider`로 폴백합니다.
 
-선별한 항목에 `[models.upstream_model]`을 추가하면 하나의 선언으로 id를 노출하고, 라우팅하고, 업스트림 id로 변환할 수 있습니다. 정확한 id를 라우팅할 때는 `[[routes]]` 대신 이 형식을 권장합니다. 이 테이블에는 `provider = "upstream-id"` 쌍이 정확히 하나만 있어야 합니다. 해당 id에 대해서는 `[[routes]]`, `[[route_prefixes]]`, `server.default_provider`보다 우선하며 provider의 기본 `effort`는 그대로 적용됩니다. 비어 있거나 provider가 여러 개인 맵, 알 수 없는 provider, 같은 id의 `[[routes]]` 항목, 중복된 맵 보유 항목은 시작 오류입니다.
+선별한 항목에 `[models.upstream_model]`을 추가하면 하나의 선언으로 id를 노출하고, 라우팅하고, 업스트림 id로 변환할 수 있습니다. 정확한 id를 라우팅할 때는 `[[routes]]` 대신 이 형식을 권장합니다. 이 테이블에는 비어 있지 않은 provider 이름과 업스트림 id로 이루어진 `provider = "upstream-id"` 쌍이 정확히 하나만 있어야 합니다. 해당 id에 대해서는 `[[routes]]`, `[[route_prefixes]]`, `server.default_provider`보다 우선하며 provider의 기본 `effort`는 그대로 적용됩니다. 비어 있거나 provider가 여러 개인 맵, 비어 있거나 공백으로만 이루어진 provider 이름 또는 업스트림 id, 알 수 없는 provider, 같은 id의 `[[routes]]` 항목, `[1m]` 또는 `[1M]`으로 끝나는 맵 보유 id, 한쪽이라도 맵을 보유한 중복 `[[models]]` id는 시작 오류입니다. 클라이언트가 매칭 전에 context-window hint를 제거하므로 맵 보유 id에 이 suffix를 포함하면 해당 항목에 도달할 수 없습니다. 맵이 없는 항목끼리의 중복은 기존 동작을 유지합니다.
 
 ```toml
 [[models]]
