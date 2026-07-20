@@ -38,6 +38,14 @@ pub struct AppState {
     pub gateway_auth: Option<Arc<GatewayAuth>>,
     /// Process-lifetime device grants, IdP states/cache, refresh tokens, and limits.
     pub gateway_stores: Arc<GatewayStores>,
+    /// Whether the listener this process actually bound at startup is
+    /// loopback. Fixed at boot like `server.bind` itself (see
+    /// `reload::warn_on_restart_only_changes`): a reload can rewrite
+    /// `config.server.bind`, but the socket already accepting connections
+    /// does not move until a restart, so auth gates that key off "is this
+    /// bind loopback" must key off this boot-time value, never
+    /// `state.config.server.bind_addr()`.
+    pub boot_is_loopback: bool,
     /// The live, hot-swappable runtime state a reload updates. Private so the
     /// only way in is a snapshot method that keeps `config`/`inbound_auth`/
     /// `admin_auth` consistent with it.
@@ -48,6 +56,7 @@ impl AppState {
     /// Build state from a config, owning a fresh shared store. Used by tests and
     /// by callers that do not thread an external [`SharedState`].
     pub fn new(config: Config, http_client: reqwest::Client) -> Result<Self, ConfigError> {
+        let boot_is_loopback = boot_is_loopback(&config);
         let runtime = RuntimeState::from_config(config)?;
         let shared: SharedState = Arc::new(arc_swap::ArcSwap::from_pointee(runtime));
         Ok(Self::from_shared(
@@ -56,6 +65,7 @@ impl AppState {
             Arc::new(AccountPool::new()),
             Arc::new(AdminStores::new()),
             Arc::new(GatewayStores::new()),
+            boot_is_loopback,
         ))
     }
 
@@ -66,6 +76,7 @@ impl AppState {
         accounts: Arc<AccountPool>,
         admin_stores: Arc<AdminStores>,
         gateway_stores: Arc<GatewayStores>,
+        boot_is_loopback: bool,
     ) -> Self {
         let current = shared.load();
         Self {
@@ -77,6 +88,7 @@ impl AppState {
             accounts,
             admin_stores,
             gateway_stores,
+            boot_is_loopback,
             shared,
         }
     }
@@ -91,8 +103,21 @@ impl AppState {
             self.accounts.clone(),
             self.admin_stores.clone(),
             self.gateway_stores.clone(),
+            self.boot_is_loopback,
         )
     }
+}
+
+/// Whether `config.server.bind` (the value in force at process startup,
+/// before any reload can rewrite it) resolves to a loopback address. Computed
+/// once, from the pre-boot config, and then carried unchanged across reloads
+/// by [`AppState`]/[`AppState::refreshed`] — see `boot_is_loopback`'s field
+/// docs for why a reloaded config must never be consulted here.
+fn boot_is_loopback(config: &Config) -> bool {
+    config
+        .server
+        .bind_addr()
+        .is_ok_and(|addr| addr.ip().is_loopback())
 }
 
 /// Build the router and return it alongside the [`SharedState`] it reads and a
@@ -119,6 +144,11 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     // config; a reload only re-resolves the auth it gates against on a
     // non-loopback bind, it cannot add or drop the route.
     let oauth_usage_enabled = config.server.oauth_usage.is_some();
+    // Like the `_enabled` flags above, the bind's loopback-ness is a boot-time
+    // capability: `oauth_usage::get` gates auth on it, and a later reload
+    // rewriting `server.bind` must not move that gate without a restart (see
+    // `AppState::boot_is_loopback`).
+    let boot_is_loopback = boot_is_loopback(&config);
     let runtime = RuntimeState::from_config(config)?;
     let shared: SharedState = Arc::new(arc_swap::ArcSwap::from_pointee(runtime));
     let state = AppState::from_shared(
@@ -127,6 +157,7 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
         Arc::new(AccountPool::new()),
         Arc::new(AdminStores::new()),
         Arc::new(GatewayStores::new()),
+        boot_is_loopback,
     );
 
     // `/` and `/health` stay unauthenticated even when `[server.auth]` is

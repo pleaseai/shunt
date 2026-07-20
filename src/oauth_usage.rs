@@ -176,17 +176,6 @@ pub(crate) fn to_wire(snapshots: &[AccountSnapshot]) -> OauthUsageWire {
     }
 }
 
-/// Whether the currently-bound address is loopback (the safe, ungated
-/// default deployment). Non-loopback binds require the caller to present some
-/// credential — see [`has_any_credential`].
-fn is_loopback(state: &AppState) -> bool {
-    state
-        .config
-        .server
-        .bind_addr()
-        .is_ok_and(|addr| addr.ip().is_loopback())
-}
-
 /// Whether the request carries a value in any of the three credential-shaped
 /// slots a Claude Code CLI (or any other client) might present: the
 /// dedicated `[server.auth]` header, `x-api-key`, or `Authorization: Bearer`.
@@ -208,7 +197,10 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     // (matches discovery.rs / admin routes / usage::get).
     let state = state.refreshed();
 
-    if !is_loopback(&state) {
+    // `boot_is_loopback` is fixed at process startup (see `AppState` field
+    // docs) — never re-derived from `state.config`, which a reload can
+    // rewrite without moving the actual listener.
+    if !state.boot_is_loopback {
         let auth_header = state
             .inbound_auth
             .as_ref()
