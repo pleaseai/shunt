@@ -112,6 +112,22 @@ fn falls_back_to_full_set_when_no_account_is_available() {
 /// `ClaudeOauth` account on the built-in `anthropic` provider, so the
 /// snapshot path does not touch the account store.
 fn state_with_claude_account(label: &str, bind: &str) -> (AppState, String) {
+    state_with_claude_and_codex_accounts(label, bind, None)
+}
+
+/// Like [`state_with_claude_account`], but when `codex_account` is `Some`,
+/// also gives the built-in `codex` (`ChatgptOauth`) provider one explicit
+/// account of that name — instead of the default empty `accounts: []`, which
+/// would fall back to scanning the real on-disk Claude account store and so
+/// could never deterministically contain a given test account name. Callers
+/// that need to prove the handler's Claude-only provider filter (not just an
+/// accidental account-identity mismatch) need this explicit account so a
+/// deleted filter would actually change the response.
+fn state_with_claude_and_codex_accounts(
+    label: &str,
+    bind: &str,
+    codex_account: Option<&str>,
+) -> (AppState, String) {
     let env = format!(
         "SHUNT_OAUTH_USAGE_TEST_TOKENS_{}_{label}",
         std::process::id()
@@ -130,6 +146,16 @@ fn state_with_claude_account(label: &str, bind: &str) -> (AppState, String) {
         name: "acct-a".to_string(),
         ..AccountConfig::default()
     }];
+    if let Some(codex_account) = codex_account {
+        let codex = config
+            .providers
+            .get_mut("codex")
+            .expect("default config always carries a codex provider");
+        codex.accounts = vec![AccountConfig {
+            name: codex_account.to_string(),
+            ..AccountConfig::default()
+        }];
+    }
     let state = AppState::new(config, reqwest::Client::new()).unwrap();
     (state, env)
 }
@@ -164,8 +190,14 @@ async fn handler_returns_empty_object_when_no_claude_oauth_provider_is_configure
 #[tokio::test]
 async fn sanitization_never_exposes_account_identity_or_capacity() {
     let (state, env) = state_with_claude_account("sanitization", "127.0.0.1:0");
+    // `note_usage` keys its health entry by `account_identity` (name, absent a
+    // uuid) — it must name the *same* account `state_with_claude_account`
+    // configured (`acct-a`), otherwise `AccountPool::snapshot` never finds an
+    // `observed` entry for the configured account and the response body is
+    // `{}`, which would make the leak assertions below pass vacuously
+    // whether or not sanitization actually works.
     let account = AccountConfig {
-        name: "secret-primary".to_string(),
+        name: "acct-a".to_string(),
         priority: 5,
         ..AccountConfig::default()
     };
@@ -187,8 +219,12 @@ async fn sanitization_never_exposes_account_identity_or_capacity() {
         .await
         .unwrap();
     let text = String::from_utf8(bytes.to_vec()).unwrap();
+    // Prove the body actually carries the utilization we noted above — a
+    // non-empty body is the precondition for the leak checks below to mean
+    // anything.
+    let body: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(body["five_hour"]["utilization"], json!(30.0));
     for leak in [
-        "secret-primary",
         "acct-a",
         "\"name\"",
         "\"priority\"",
@@ -204,16 +240,26 @@ async fn sanitization_never_exposes_account_identity_or_capacity() {
 
 /// Deviation 1 regression test: a `ChatgptOauth` (Codex) account's high
 /// utilization must never leak into the Claude-only response.
+///
+/// Configures an *explicit* `codex-acct` account on the `codex`
+/// (`ChatgptOauth`) provider — not the default empty `accounts: []`, which
+/// falls back to scanning the real on-disk Claude account store. With an
+/// empty list, deleting the `provider.auth != AuthMode::ClaudeOauth` filter
+/// in the handler would not have flipped this test's result (the scan would
+/// not turn up an account named `codex-acct` either way), so it would not
+/// have caught that regression. An explicit matching account closes that
+/// gap: only the provider-auth filter stands between the noted 99% and the
+/// response.
 #[tokio::test]
 async fn only_claude_oauth_accounts_contribute_never_chatgpt_oauth() {
-    let (state, env) = state_with_claude_account("provider_filter", "127.0.0.1:0");
-    let anthropic_account = AccountConfig {
-        name: "acct-a".to_string(),
-        ..AccountConfig::default()
-    };
+    let (state, env) =
+        state_with_claude_and_codex_accounts("provider_filter", "127.0.0.1:0", Some("codex-acct"));
     state.accounts.note_usage(
         "anthropic",
-        &anthropic_account,
+        &AccountConfig {
+            name: "acct-a".to_string(),
+            ..AccountConfig::default()
+        },
         &UsageSnapshot {
             five_hour: Some(UsageWindow {
                 utilization: 0.10,
@@ -223,16 +269,24 @@ async fn only_claude_oauth_accounts_contribute_never_chatgpt_oauth() {
             seven_day_oi: None,
         },
     );
-    let codex_account = AccountConfig {
-        name: "codex-acct".to_string(),
-        ..AccountConfig::default()
-    };
     state.accounts.note_usage(
         "codex",
-        &codex_account,
+        &AccountConfig {
+            name: "codex-acct".to_string(),
+            ..AccountConfig::default()
+        },
         &UsageSnapshot {
+            // Deliberately below `SWITCH_THRESHOLD` (0.98): at 0.99 the
+            // account would land in `routing_aware_window`'s "near quota,
+            // unavailable" bucket and get excluded from the worst-case tier
+            // for that reason alone — passing this test either way, whether
+            // or not the provider filter above actually runs. 0.60 stays in
+            // the "available" tier so it competes for (and, if it leaked,
+            // would win) the worst-case slot against the Claude account's
+            // 10%, making the provider filter the only thing standing
+            // between it and the response.
             five_hour: Some(UsageWindow {
-                utilization: 0.99,
+                utilization: 0.60,
                 resets_at: Some(future_reset_secs()),
             }),
             seven_day: None,
@@ -243,7 +297,7 @@ async fn only_claude_oauth_accounts_contribute_never_chatgpt_oauth() {
     let response = get(State(state), HeaderMap::new()).await;
     std::env::remove_var(&env);
     let body = body_json(response).await;
-    // Only the Claude account's 10% shows up; the Codex account's 99% never does.
+    // Only the Claude account's 10% shows up; the Codex account's 60% never does.
     assert_eq!(body["five_hour"]["utilization"], json!(10.0));
 }
 
