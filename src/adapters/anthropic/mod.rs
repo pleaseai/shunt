@@ -113,6 +113,8 @@ async fn forward_claude_oauth(
     let accounts = auth::shared::resolve_pool_accounts(
         "Claude",
         &provider.accounts,
+        &provider.account_scope,
+        crate::accounts::StoreFamily::Claude,
         auth::claude::store::default_accounts_dir(),
         auth::claude::store::scan_accounts,
     )

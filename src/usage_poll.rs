@@ -17,6 +17,7 @@
 //! as static and skipped, mirroring the adapter's non-refreshable 401 handling.
 
 use std::{
+    collections::HashSet,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -75,6 +76,7 @@ pub fn spawn_usage_poller(state: AppState) {
 /// the live shared state so a reloaded provider list / account set is picked up.
 async fn poll_all(state: &AppState) {
     let state = state.refreshed();
+    let mut polled = HashSet::new();
     for (name, provider) in &state.config.providers {
         if provider.auth != AuthMode::ClaudeOauth {
             continue;
@@ -82,6 +84,8 @@ async fn poll_all(state: &AppState) {
         let accounts = match auth::shared::resolve_pool_accounts(
             "Claude",
             &provider.accounts,
+            &provider.account_scope,
+            crate::accounts::StoreFamily::Claude,
             claude::store::default_accounts_dir(),
             claude::store::scan_accounts,
         )
@@ -95,6 +99,9 @@ async fn poll_all(state: &AppState) {
         };
         state.accounts.sync_enabled_accounts(name, &accounts);
         for account in &accounts {
+            if !polled.insert(crate::accounts::account_key(name, account)) {
+                continue;
+            }
             poll_account(
                 &state.http_client,
                 &state.accounts,
@@ -383,6 +390,67 @@ mod tests {
         assert_eq!(snap[0].utilization_5h, Some(0.12));
         assert_eq!(snap[0].utilization_7d, Some(0.34));
 
+        let _ = std::fs::remove_file(creds);
+    }
+
+    #[tokio::test]
+    async fn poll_all_deduplicates_physical_accounts_across_upstreams() {
+        use crate::config::{ApiKeyHeader, Config, CountTokens, ProviderConfig, ProviderKind};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let creds = write_temp(
+            "poll-dedup",
+            r#"{"claudeAiOauth":{"accessToken":"live-token","refreshToken":"r","expiresAt":4000000000000},"shuntAccountUuid":"shared-uuid"}"#,
+        );
+        let mut account = account_with_credentials(&creds);
+        account.uuid = Some("shared-uuid".to_string());
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/oauth/usage"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "five_hour": { "utilization": 10.0 }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut config = Config::default();
+        for name in ["primary", "secondary"] {
+            config.providers.insert(
+                name.to_string(),
+                ProviderConfig {
+                    kind: ProviderKind::Anthropic,
+                    base_url: server.uri(),
+                    auth: AuthMode::ClaudeOauth,
+                    api_key_env: None,
+                    api_key_header: ApiKeyHeader::Bearer,
+                    effort: None,
+                    count_tokens: CountTokens::default(),
+                    accounts: vec![account.clone()],
+                    account_scope: Vec::new(),
+                    websocket: false,
+                    tool_search: false,
+                    retry: Default::default(),
+                },
+            );
+        }
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+
+        poll_all(&state).await;
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        let primary =
+            state
+                .accounts
+                .snapshot("primary", std::slice::from_ref(&account), None, None);
+        let secondary =
+            state
+                .accounts
+                .snapshot("secondary", std::slice::from_ref(&account), None, None);
+        assert_eq!(primary[0].utilization_5h, Some(0.10));
+        assert_eq!(secondary[0].utilization_5h, Some(0.10));
         let _ = std::fs::remove_file(creds);
     }
 

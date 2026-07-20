@@ -98,6 +98,25 @@ async fn start(config: Config) -> Gateway {
     start_with_addr(config).await
 }
 
+async fn start_with_state(mut config: Config) -> (Gateway, shunt::server::AppState) {
+    config.server.bind = "127.0.0.1:0".to_string();
+    let listener = tokio::net::TcpListener::bind(config.server.bind_addr().unwrap())
+        .await
+        .unwrap();
+    let addr: SocketAddr = listener.local_addr().unwrap();
+    let (app, _shared, state) = server::build_router(config).unwrap();
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (
+        Gateway {
+            base_url: format!("http://{addr}"),
+            task,
+        },
+        state,
+    )
+}
+
 /// Monotonic counter appended to `unique_dir()` names: parallel test threads can
 /// call `SystemTime::now()` within the same tick on some platforms, so the
 /// nanosecond timestamp alone is not a reliable uniqueness guarantee under the
@@ -469,6 +488,56 @@ async fn admin_routes_are_absent_without_the_block() {
             "{route} must 404 when admin is disabled"
         );
     }
+}
+
+#[tokio::test]
+async fn admin_pool_repeats_shared_physical_state_per_upstream() {
+    if !can_bind_loopback() {
+        return;
+    }
+    std::env::set_var("SHUNT_TEST_ADMIN_SHARED_POOL", "ops:shared-secret");
+    let mut config = admin_config("SHUNT_TEST_ADMIN_SHARED_POOL");
+    let mut account = AccountConfig {
+        name: "shared-account".to_string(),
+        uuid: Some("shared-uuid".to_string()),
+        ..Default::default()
+    };
+    account.store_family = Some(shunt::accounts::StoreFamily::Claude);
+    let template = config.providers["anthropic"].clone();
+    for name in ["primary", "secondary"] {
+        let mut provider = template.clone();
+        provider.auth = AuthMode::ClaudeOauth;
+        provider.accounts = vec![account.clone()];
+        config.providers.insert(name.to_string(), provider);
+    }
+    config.providers.remove("anthropic");
+    config.server.default_provider = "primary".to_string();
+    let (gateway, state) = start_with_state(config).await;
+    let mut quota = reqwest::header::HeaderMap::new();
+    quota.insert(
+        "anthropic-ratelimit-unified-5h-utilization",
+        reqwest::header::HeaderValue::from_static("0.73"),
+    );
+    state.accounts.note_quota("primary", &account, &quota);
+
+    let response = reqwest::Client::new()
+        .get(format!("{}/admin/pool", gateway.base_url))
+        .header("x-shunt-admin-token", "shared-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = response.json().await.unwrap();
+    let providers = body["providers"].as_array().unwrap();
+    for name in ["primary", "secondary"] {
+        let section = providers
+            .iter()
+            .find(|provider| provider["provider"] == name)
+            .unwrap();
+        assert_eq!(section["accounts"][0]["name"], "shared-account");
+        assert_eq!(section["accounts"][0]["utilization_5h"], 0.73);
+    }
+    std::env::remove_var("SHUNT_TEST_ADMIN_SHARED_POOL");
 }
 
 #[tokio::test]
@@ -1022,6 +1091,8 @@ async fn claude_reprovision_clears_blank_uuid_old_identity_using_name_fallback()
     let account_a_blank = AccountConfig {
         name: "account-a".to_string(),
         uuid: None,
+        store_entry: true,
+        store_family: Some(shunt::accounts::StoreFamily::Claude),
         ..Default::default()
     };
     state.accounts.cooldown(
@@ -1287,8 +1358,8 @@ async fn claude_remove_preserves_a_configured_providers_health_the_store_scan_ca
     assert_eq!(response.status(), StatusCode::OK);
     assert!(!dir.join("account-a.json").exists());
 
-    // The dynamic-discovery provider's health is legitimately cleared: no
-    // other store account resolves to "shared-id" any more.
+    // The physical identity remains live because another configured upstream
+    // still references it, so both upstream views retain the shared state.
     let snapshot = state.accounts.snapshot(
         "anthropic",
         std::slice::from_ref(&shared_identity),
@@ -1296,8 +1367,8 @@ async fn claude_remove_preserves_a_configured_providers_health_the_store_scan_ca
         None,
     );
     assert!(
-        !snapshot[0].has_state,
-        "dynamic-discovery provider health should clear once the store has no other alias"
+        snapshot[0].has_state,
+        "shared physical health must survive while another upstream references it"
     );
 
     // The explicitly configured provider's health must survive: its own
@@ -2152,6 +2223,8 @@ async fn codex_reprovision_clears_blank_identity_old_account_using_name_fallback
     let account_a_blank = AccountConfig {
         name: "account-a".to_string(),
         uuid: None,
+        store_entry: true,
+        store_family: Some(shunt::accounts::StoreFamily::Chatgpt),
         ..Default::default()
     };
     state.accounts.cooldown(

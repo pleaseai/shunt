@@ -147,6 +147,8 @@ async fn forward(
         let accounts = auth::shared::resolve_pool_accounts(
             "codex",
             &provider.accounts,
+            &provider.account_scope,
+            crate::accounts::StoreFamily::Chatgpt,
             auth::codex::store::default_accounts_dir(),
             auth::codex::store::scan_accounts,
         )

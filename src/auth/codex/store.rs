@@ -42,6 +42,10 @@ pub fn account_id(name: &str) -> Option<String> {
     read_account_id(&account_path(name))
 }
 
+pub(crate) fn credential_account_id(path: &Path) -> Option<String> {
+    read_account_id(path)
+}
+
 /// The store account's runtime identity — its `account_id`/JWT `chatgpt_account_id`,
 /// falling back to its own name (matching `accounts::account_identity`'s
 /// blank/missing-uuid fallback) — or `None` when no account file exists for

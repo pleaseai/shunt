@@ -195,59 +195,44 @@ pub(super) fn check_csrf(kind: &Authenticated, headers: &HeaderMap) -> Option<Re
     }
 }
 
-/// Drop process-lifetime pool health for `identity`, once per provider using
-/// `auth`, but only where `identity` is confirmed absent from that specific
-/// provider's current account set.
-///
-/// A dynamic-discovery provider (empty `accounts`, scanning the account store
-/// each request) is checked against `store_scan_others` — the identities the
-/// caller found among the *other* remaining/still-stored accounts. An
-/// explicitly configured provider (`[[providers.<name>.accounts]]`, including
-/// `credentials`/`token_env` aliases that never appear in a store scan) is
-/// instead checked against its own configured accounts, since those aliases
-/// only ever coalesce via an explicit matching `uuid` and a store scan cannot
-/// see them at all — using the store scan for such a provider would risk
-/// wiping health a configured alias still relies on. That check considers
-/// every configured account, without excluding one by name: an explicitly
-/// configured entry is a genuine pool member regardless of whether its name
-/// happens to match the store account name the caller just changed/removed —
-/// unlike a store-scanned alias, its identity is entirely config-driven (its
-/// own `uuid`, or a name fallback) and is never re-derived from the store
-/// file, so it cannot be "the same entry" the caller is cleaning up after.
-///
-/// `store_scan_others` of `None` means the store scan itself failed: a
-/// dynamic-discovery provider then fails closed (treated as if the identity
-/// were still present, so its health is preserved) while an explicitly
-/// configured provider — whose account set never depended on that scan to
-/// begin with — is still checked precisely. This also isolates per `AuthMode`
-/// (Claude vs. Codex accounts never share an identity namespace) and per
-/// provider name (multiple dynamic providers of the same auth mode are each
-/// evaluated, and cleared, independently).
+/// Drop process-lifetime pool health only when no upstream in this store family
+/// still references the physical identity. A failed dynamic-store scan preserves
+/// state (fail closed).
 pub(super) fn forget_pool_health_if_absent(
     state: &AppState,
     auth: AuthMode,
     identity: &str,
     store_scan_others: Option<&HashSet<String>>,
 ) {
-    for (provider_name, provider) in &state.config.providers {
+    let mut uncertain = false;
+    let still_present = state.config.providers.values().any(|provider| {
         if provider.auth != auth {
-            continue;
+            return false;
         }
-        let still_present = if provider.accounts.is_empty() {
+        if provider.accounts.is_empty() {
             match store_scan_others {
                 Some(others) => others.contains(identity),
-                None => true,
+                None => {
+                    uncertain = true;
+                    false
+                }
             }
         } else {
             provider
                 .accounts
                 .iter()
                 .any(|account| crate::accounts::account_identity(account) == identity)
-        };
-        if !still_present {
-            state.accounts.forget_identity(provider_name, identity);
         }
+    });
+    if still_present || uncertain {
+        return;
     }
+    let family = match auth {
+        AuthMode::ClaudeOauth => crate::accounts::StoreFamily::Claude,
+        AuthMode::ChatgptOauth => crate::accounts::StoreFamily::Chatgpt,
+        _ => return,
+    };
+    state.accounts.forget_identity(family, identity);
 }
 
 pub(super) async fn remaining_account_identities(
@@ -513,49 +498,53 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if authenticate(&state, &headers).is_none() {
         return unauthorized();
     }
-    let config = state.config.clone();
-    let accounts = state.accounts.clone();
-    // scan_accounts does file I/O and snapshot locks a std mutex; run off the
-    // async workers. Model is unset — the dashboard governs weekly quota on 7d.
-    let result = tokio::task::spawn_blocking(move || {
-        let mut providers = Vec::new();
-        for (name, provider) in &config.providers {
-            if !matches!(
-                provider.auth,
-                AuthMode::ClaudeOauth | AuthMode::ChatgptOauth
-            ) {
-                continue;
+    let mut providers = Vec::new();
+    for (name, provider) in &state.config.providers {
+        if !matches!(
+            provider.auth,
+            AuthMode::ClaudeOauth | AuthMode::ChatgptOauth
+        ) {
+            continue;
+        }
+        let resolved = match provider.auth {
+            AuthMode::ClaudeOauth => {
+                crate::auth::shared::resolve_pool_accounts(
+                    "Claude",
+                    &provider.accounts,
+                    &provider.account_scope,
+                    crate::accounts::StoreFamily::Claude,
+                    claude_store::default_accounts_dir(),
+                    claude_store::scan_accounts,
+                )
+                .await
             }
-            let resolved = if provider.accounts.is_empty() {
-                // Surface a store read failure as an error (5xx) instead of an
-                // empty pool: a permission/I/O problem must not masquerade as
-                // "no accounts configured" on the dashboard.
-                let scanned = match provider.auth {
-                    AuthMode::ClaudeOauth => claude_store::scan_accounts(),
-                    AuthMode::ChatgptOauth => crate::auth::codex::store::scan_accounts(),
-                    _ => unreachable!("provider auth filtered above"),
-                };
-                scanned.map_err(|error| {
-                    tracing::error!(provider = %name, %error, "admin: failed to scan accounts store");
-                    format!("failed to scan accounts store for provider {name}")
-                })?
-            } else {
-                provider.accounts.clone()
-            };
-            let snapshots = accounts.snapshot(name, &resolved, None, config.server.pool.as_ref());
-            providers.push(json!({ "provider": name, "accounts": snapshots }));
-        }
-        Ok::<_, String>(providers)
-    })
-    .await;
-    match result {
-        Ok(Ok(providers)) => json_secure(json!({ "providers": providers })),
-        Ok(Err(_)) => internal("failed to read pool state"),
-        Err(join_error) => {
-            tracing::error!(%join_error, "admin: pool snapshot task panicked");
-            internal("failed to read pool state")
-        }
+            AuthMode::ChatgptOauth => {
+                crate::auth::shared::resolve_pool_accounts(
+                    "codex",
+                    &provider.accounts,
+                    &provider.account_scope,
+                    crate::accounts::StoreFamily::Chatgpt,
+                    crate::auth::codex::store::default_accounts_dir(),
+                    crate::auth::codex::store::scan_accounts,
+                )
+                .await
+            }
+            _ => unreachable!("provider auth filtered above"),
+        };
+        let resolved = match resolved {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                tracing::error!(provider = %name, %error, "admin: failed to resolve account scope");
+                return internal("failed to read pool state");
+            }
+        };
+        let snapshots =
+            state
+                .accounts
+                .snapshot(name, &resolved, None, state.config.server.pool.as_ref());
+        providers.push(json!({ "provider": name, "accounts": snapshots }));
     }
+    json_secure(json!({ "providers": providers }))
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize)]

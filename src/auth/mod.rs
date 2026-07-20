@@ -110,13 +110,18 @@ pub async fn resolve_claude_account(
     }
 
     if let Some(credentials) = account.credentials.as_deref() {
-        let store = claude::auth::ClaudeAuthStore::new(PathBuf::from(credentials), client.clone());
+        let path = PathBuf::from(credentials);
+        let account_uuid = account
+            .uuid
+            .clone()
+            .or_else(|| claude::store::credential_uuid(&path));
+        let store = claude::auth::ClaudeAuthStore::new(path, client.clone());
         return store
             .get_valid_access_token()
             .await
             .map(|access_token| Credential::ClaudeOauth {
                 access_token,
-                account_uuid: account.uuid.clone(),
+                account_uuid,
             })
             .map_err(|error| auth_error(error.to_string()));
     }

@@ -19,7 +19,7 @@ use rand::RngCore;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::config::AccountConfig;
+use crate::{accounts::StoreFamily, config::AccountConfig};
 
 const EXPIRY_BUFFER: Duration = Duration::from_secs(5 * 60);
 
@@ -228,6 +228,7 @@ pub fn scan_account_dir(
             .map(|(name, path)| AccountConfig {
                 name,
                 uuid: uuid_for(&path),
+                store_entry: true,
                 ..Default::default()
             })
             .collect()
@@ -260,6 +261,7 @@ pub fn scan_account_dir_strict(
             Ok(AccountConfig {
                 name,
                 uuid,
+                store_entry: true,
                 ..Default::default()
             })
         })
@@ -296,38 +298,90 @@ pub fn scan_account_dir_strict(
 pub(crate) async fn resolve_pool_accounts(
     provider_label: &str,
     configured: &[AccountConfig],
+    account_scope: &[String],
+    store_family: StoreFamily,
     accounts_dir: PathBuf,
     scan: fn() -> io::Result<Vec<AccountConfig>>,
 ) -> Result<Vec<AccountConfig>, String> {
-    if !configured.is_empty() {
-        return Ok(configured.to_vec());
+    let mut accounts = if !configured.is_empty() && account_scope.is_empty() {
+        configured.to_vec()
+    } else {
+        // The stat + scan are both synchronous file I/O, so run the whole thing on
+        // the blocking pool — never on a runtime worker thread. The closure still
+        // short-circuits on genuine absence (a cheap stat, no `read_dir`); any other
+        // stat error is surfaced, not masked as "no accounts".
+        let scan_dir = accounts_dir.clone();
+        let provider = provider_label.to_string();
+        let scanned = tokio::task::spawn_blocking(move || {
+            // One stat serves two purposes: the #118 `NotFound` short-circuit (no
+            // `read_dir` when the store is genuinely absent) and the cache signal
+            // (the store directory's mtime). Reusing it keeps steady-state discovery
+            // at one stat and zero credential-file reads.
+            let modified = match fs::metadata(&scan_dir) {
+                Ok(meta) => meta.modified().ok(),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+                Err(error) => return Err(error),
+            };
+            scan_cached(&provider, &scan_dir, modified, scan)
+        })
+        .await
+        .map_err(|error| format!("{provider_label} account store scan task failed: {error}"))?
+        .map_err(|error| {
+            format!(
+                "failed to scan {provider_label} account store {}: {error}",
+                accounts_dir.display()
+            )
+        })?;
+
+        if account_scope.is_empty() {
+            scanned
+        } else {
+            let by_name = scanned
+                .into_iter()
+                .map(|account| (account.name.clone(), account))
+                .collect::<HashMap<_, _>>();
+            let mut scoped = Vec::with_capacity(account_scope.len() + configured.len());
+            for name in account_scope {
+                if let Some(account) = by_name.get(name) {
+                    scoped.push(account.clone());
+                } else {
+                    return Err(format!(
+                        "{provider_label} account scope references missing store account {name:?}"
+                    ));
+                }
+            }
+            scoped.extend_from_slice(configured);
+            scoped
+        }
+    };
+    for account in &mut accounts {
+        account.store_family = Some(store_family);
+        if account
+            .uuid
+            .as_deref()
+            .is_none_or(|id| id.trim().is_empty())
+        {
+            // Store entries already attempted identity extraction during the cached
+            // scan; never re-read their credential files on the per-request path.
+            account.uuid = match (
+                store_family,
+                account.credentials.as_deref(),
+                account.token_env.as_deref(),
+            ) {
+                (StoreFamily::Claude, Some(path), _) if !account.store_entry => {
+                    crate::auth::claude::store::credential_uuid(Path::new(path))
+                }
+                (StoreFamily::Chatgpt, Some(path), _) if !account.store_entry => {
+                    crate::auth::codex::store::credential_account_id(Path::new(path))
+                }
+                (StoreFamily::Chatgpt, None, Some(env_name)) => env::var(env_name)
+                    .ok()
+                    .and_then(|token| crate::auth::codex::auth::jwt_account_id(&token)),
+                _ => None,
+            };
+        }
     }
-    // The stat + scan are both synchronous file I/O, so run the whole thing on
-    // the blocking pool — never on a runtime worker thread. The closure still
-    // short-circuits on genuine absence (a cheap stat, no `read_dir`); any other
-    // stat error is surfaced, not masked as "no accounts".
-    let scan_dir = accounts_dir.clone();
-    let provider = provider_label.to_string();
-    let scanned = tokio::task::spawn_blocking(move || {
-        // One stat serves two purposes: the #118 `NotFound` short-circuit (no
-        // `read_dir` when the store is genuinely absent) and the cache signal
-        // (the store directory's mtime). Reusing it keeps steady-state discovery
-        // at one stat and zero credential-file reads.
-        let modified = match fs::metadata(&scan_dir) {
-            Ok(meta) => meta.modified().ok(),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(error),
-        };
-        scan_cached(&provider, &scan_dir, modified, scan)
-    })
-    .await
-    .map_err(|error| format!("{provider_label} account store scan task failed: {error}"))?;
-    scanned.map_err(|error| {
-        format!(
-            "failed to scan {provider_label} account store {}: {error}",
-            accounts_dir.display()
-        )
-    })
+    Ok(accounts)
 }
 
 /// One cached scan result: the accounts a scan produced and the store directory
@@ -706,8 +760,47 @@ mod tests {
         }])
     }
 
+    fn uuidless_store_account_with_identity_file() -> io::Result<Vec<AccountConfig>> {
+        let dir = temp_dir("pool-store-entry-credential");
+        fs::create_dir_all(&dir)?;
+        let path = dir.join("primary.json");
+        fs::write(&path, r#"{"shuntAccountUuid":"must-not-be-reread"}"#)?;
+        Ok(vec![AccountConfig {
+            name: "primary".to_string(),
+            credentials: Some(path.display().to_string()),
+            store_entry: true,
+            ..Default::default()
+        }])
+    }
+
     fn scan_must_not_run() -> io::Result<Vec<AccountConfig>> {
         panic!("the store scan must be short-circuited");
+    }
+
+    #[tokio::test]
+    async fn resolve_pool_accounts_does_not_reread_scanned_store_credentials() {
+        let dir = temp_dir("pool-store-entry");
+        fs::create_dir_all(&dir).unwrap();
+        let accounts = resolve_pool_accounts(
+            "store-entry-no-reread",
+            &[],
+            &[],
+            StoreFamily::Claude,
+            dir.clone(),
+            uuidless_store_account_with_identity_file,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(accounts.len(), 1);
+        assert!(accounts[0].store_entry);
+        assert_eq!(accounts[0].uuid, None);
+
+        let credential_dir = Path::new(accounts[0].credentials.as_deref().unwrap())
+            .parent()
+            .unwrap();
+        let _ = fs::remove_dir_all(credential_dir);
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
@@ -716,9 +809,16 @@ mod tests {
         // single-account deployment): the scan is skipped entirely, so a scan fn
         // that would panic is never reached and the list is empty.
         let missing = temp_dir("pool-absent").join("does-not-exist");
-        let accounts = resolve_pool_accounts("codex", &[], missing, scan_must_not_run)
-            .await
-            .unwrap();
+        let accounts = resolve_pool_accounts(
+            "codex",
+            &[],
+            &[],
+            StoreFamily::Chatgpt,
+            missing,
+            scan_must_not_run,
+        )
+        .await
+        .unwrap();
         assert!(accounts.is_empty());
     }
 
@@ -728,9 +828,16 @@ mod tests {
         // first request scans and caches it — no-restart discovery is preserved.
         let dir = temp_dir("pool-present");
         fs::create_dir_all(&dir).unwrap();
-        let accounts = resolve_pool_accounts("codex", &[], dir.clone(), one_account)
-            .await
-            .unwrap();
+        let accounts = resolve_pool_accounts(
+            "codex",
+            &[],
+            &[],
+            StoreFamily::Chatgpt,
+            dir.clone(),
+            one_account,
+        )
+        .await
+        .unwrap();
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].name, "primary");
         let _ = fs::remove_dir_all(dir);
@@ -743,11 +850,65 @@ mod tests {
         let dir = temp_dir("pool-configured");
         fs::create_dir_all(&dir).unwrap();
         let configured = one_account().unwrap();
-        let accounts = resolve_pool_accounts("codex", &configured, dir.clone(), scan_must_not_run)
-            .await
-            .unwrap();
+        let accounts = resolve_pool_accounts(
+            "codex",
+            &configured,
+            &[],
+            StoreFamily::Chatgpt,
+            dir.clone(),
+            scan_must_not_run,
+        )
+        .await
+        .unwrap();
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].name, "primary");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn resolve_pool_accounts_enforces_scope_and_preserves_whole_store() {
+        let dir = temp_dir("pool-scope");
+        fs::create_dir_all(&dir).unwrap();
+        fn two_accounts() -> io::Result<Vec<AccountConfig>> {
+            Ok(vec![
+                AccountConfig {
+                    name: "primary".to_string(),
+                    store_entry: true,
+                    ..Default::default()
+                },
+                AccountConfig {
+                    name: "backup".to_string(),
+                    store_entry: true,
+                    ..Default::default()
+                },
+            ])
+        }
+
+        let whole = resolve_pool_accounts(
+            "scope-whole",
+            &[],
+            &[],
+            StoreFamily::Claude,
+            dir.clone(),
+            two_accounts,
+        )
+        .await
+        .unwrap();
+        assert_eq!(account_names(&whole), ["primary", "backup"]);
+
+        let scoped = resolve_pool_accounts(
+            "scope-subset",
+            &[],
+            &["backup".to_string()],
+            StoreFamily::Claude,
+            dir.clone(),
+            two_accounts,
+        )
+        .await
+        .unwrap();
+        assert_eq!(account_names(&scoped), ["backup"]);
+        assert!(scoped[0].store_entry);
+        assert_eq!(scoped[0].store_family, Some(StoreFamily::Claude));
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -760,9 +921,16 @@ mod tests {
         }
         let dir = temp_dir("pool-scan-error");
         fs::create_dir_all(&dir).unwrap();
-        let error = resolve_pool_accounts("codex", &[], dir.clone(), scan_fails)
-            .await
-            .unwrap_err();
+        let error = resolve_pool_accounts(
+            "codex",
+            &[],
+            &[],
+            StoreFamily::Chatgpt,
+            dir.clone(),
+            scan_fails,
+        )
+        .await
+        .unwrap_err();
         assert!(
             error.contains("failed to scan codex account store"),
             "got: {error}"
@@ -975,15 +1143,29 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         POOL_CACHE_SCAN_CALLS.store(0, Ordering::Relaxed);
 
-        let first = resolve_pool_accounts("codex", &[], dir.clone(), counting_scan)
-            .await
-            .unwrap();
+        let first = resolve_pool_accounts(
+            "codex",
+            &[],
+            &[],
+            StoreFamily::Chatgpt,
+            dir.clone(),
+            counting_scan,
+        )
+        .await
+        .unwrap();
         assert_eq!(first.len(), 1);
         assert_eq!(POOL_CACHE_SCAN_CALLS.load(Ordering::Relaxed), 1);
 
-        let second = resolve_pool_accounts("codex", &[], dir.clone(), counting_scan)
-            .await
-            .unwrap();
+        let second = resolve_pool_accounts(
+            "codex",
+            &[],
+            &[],
+            StoreFamily::Chatgpt,
+            dir.clone(),
+            counting_scan,
+        )
+        .await
+        .unwrap();
         assert_eq!(second.len(), 1);
         assert_eq!(POOL_CACHE_SCAN_CALLS.load(Ordering::Relaxed), 1);
 

@@ -1198,6 +1198,15 @@ pub struct AccountConfig {
     /// configuration. Applies to Claude and Codex pools alike.
     #[serde(default)]
     pub disabled: bool,
+    /// Runtime-only provenance used to distinguish a store entry from an inline
+    /// account whose UUID-less name fallback must remain upstream-scoped.
+    #[doc(hidden)]
+    #[serde(skip)]
+    pub store_entry: bool,
+    /// Runtime-only store namespace assigned while resolving an OAuth pool.
+    #[doc(hidden)]
+    #[serde(skip)]
+    pub store_family: Option<crate::accounts::StoreFamily>,
 }
 
 pub(crate) fn default_account_priority() -> u32 {
@@ -1217,6 +1226,8 @@ impl Default for AccountConfig {
             threshold_fable: None,
             priority: default_account_priority(),
             disabled: false,
+            store_entry: false,
+            store_family: None,
         }
     }
 }
