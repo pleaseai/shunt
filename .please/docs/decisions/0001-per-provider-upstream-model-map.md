@@ -2,7 +2,10 @@
 
 ## Status
 
-Accepted
+Accepted — amended by [ADR-0002](0002-ordered-upstreams-failover.md): the
+one-provider restriction is lifted for configurations declared through the
+ordered `[[upstreams]]` list, which supplies the explicit failover ordering
+this ADR required.
 
 ## Date
 
@@ -29,9 +32,26 @@ display_name = "Claude Opus 4.8"
 codex = "gpt-5.2"
 ```
 
-The key names a configured provider and the value is the model id sent to that provider. A map-bearing model entry unifies discovery, provider selection, and model-id translation. It is resolved before `[[routes]]`, `[[route_prefixes]]`, and `server.default_provider` for the same requested id. Provider-level defaults such as `effort` continue to apply.
+In the legacy `[providers.<name>]` form the key names a configured provider;
+under ADR-0002's ordered `[[upstreams]]` form it names an upstream (multiple
+entries allowed). The value is the model id sent to that destination. A
+map-bearing model entry unifies discovery, provider selection, and model-id
+translation. It is resolved before `[[routes]]`, `[[route_prefixes]]`, and
+`server.default_provider` for the same requested id. Provider-level defaults
+such as `effort` continue to apply.
 
-For now, the map must contain exactly one provider. Empty maps, multiple providers, an empty or whitespace-only provider name or upstream model id, unknown providers, a same-id `[[routes]]` entry, a map-bearing id ending in the client-only `[1m]`/`[1M]` context-window hint, and duplicate `[[models]]` ids where at least one entry is map-bearing are configuration errors. Map-bearing ids cannot include that suffix because clients strip it before model matching, which would make the configured entry unreachable. Pure map-less duplicate ids retain their previous behavior. The map shape is retained as the extension point for a future ordered cross-provider failover feature, which must define ordering explicitly rather than infer it from `ProvidersConfig`.
+As originally accepted, the map had to contain exactly one provider; ADR-0002
+lifts this rule for configurations using ordered `[[upstreams]]`. Empty maps,
+multiple entries outside that form, an empty or whitespace-only provider name
+or upstream model id, unknown provider/upstream names, a same-id `[[routes]]`
+entry, a map-bearing id ending in the client-only `[1m]`/`[1M]` context-window hint, and
+duplicate `[[models]]` ids where at least one entry is map-bearing are
+configuration errors. Map-bearing ids cannot include that suffix because
+clients strip it before model matching, which would make the configured entry
+unreachable. Pure map-less duplicate ids retain their previous behavior. The
+map shape was retained as the extension point for an ordered cross-provider
+failover feature, whose ordering must be explicit rather than inferred from
+`ProvidersConfig`.
 
 Map-less `[[models]]` entries preserve the previous behavior and continue through exact routes, prefix routes, and the default provider.
 
@@ -45,23 +65,27 @@ Exact-match `[[routes]]` is soft-deprecated in documentation in favor of a map-b
 - Routing intent is colocated with discovery metadata, reducing configuration drift.
 - Documentation has one recommended exact-id routing form: `[[models]]` with `[models.upstream_model]`.
 - Existing configurations remain valid and retain their routing behavior.
-- The map-shaped schema remains compatible with a future provider-failover capability.
+- The map-shaped schema reserved the extension point that ADR-0002 now realizes
+  as ordered cross-provider failover.
 
 ### Negative
 
-- Cross-provider failover is not available through this map yet.
+- As originally accepted, cross-provider failover was not available through
+  this map; ADR-0002 lifts this for configurations using ordered
+  `[[upstreams]]`.
 - A model id cannot be declared simultaneously in a map-bearing `[[models]]` entry and `[[routes]]`; operators must choose one exact-routing surface.
 - Operators using exact-match `[[routes]]` see a legacy label in documentation, although no migration or removal is planned.
 - Validation adds startup failures for malformed map-bearing entries that would otherwise have fallen through to existing routing rules.
 
 ### Neutral
 
-- Discovery responses remain unchanged because `GET /v1/models` still exposes only `id` and optional `display_name`.
+- Discovery responses remain unchanged by this decision: entries expose `type`,
+  `id`, and optional `display_name` within the standard list envelope.
 - Existing map-less discovery entries without an exact route continue to emit a warning.
 - `[[routes]]`, `[[route_prefixes]]`, and `server.default_provider` retain their runtime behavior; only exact-match `[[routes]]` is soft-deprecated in documentation.
 
 ## Alternatives Considered
 
 - **Keep discovery and routing separate:** Rejected because it preserves duplicated ids and the warning-only linkage that issue #216 is intended to remove.
-- **Option B — explicit per-model provider order:** Rejected for now because shunt has no cross-provider failover runtime semantics. Introducing an ordered provider list before that behavior exists would add configuration surface without an implementable contract. The selected map reserves a compatible hook while enforcing one provider until ordered failover is designed.
+- **Option B — explicit per-model provider order:** Rejected at the time because shunt then had no cross-provider failover runtime semantics. Introducing an ordered provider list before that behavior existed would have added configuration surface without an implementable contract. The selected map reserved a compatible hook while enforcing one provider until ordered failover was designed; ADR-0002 now supplies that design.
 - **Use scalar `provider` and `upstream_model` fields:** Rejected because it diverges from the reference gateway schema and provides no direct extension point for future per-provider mappings.
