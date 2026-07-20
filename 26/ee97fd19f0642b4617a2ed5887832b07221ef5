@@ -1,0 +1,71 @@
+site/src/content/docs/ko/guides/connect-claude-code.md
+  s_c2d19e2e65ee31::t_5723eecd542bb3 92
+site/src/content/docs/guides/codex.md
+  s_c2d19e2e65ee31::t_d2c5cff450bbe7 85-86
+  s_c2d19e2e65ee31::t_945fe6dfc8242a 136-140
+  s_c2d19e2e65ee31::t_a3661519f28a9f 163-164
+site/src/content/docs/guides/xai.md
+  s_c2d19e2e65ee31::t_0f6dfcf767093e 138
+site/src/content/docs/zh-cn/guides/codex.md
+  s_c2d19e2e65ee31::t_8a1d81bccf48f7 159-160
+  s_c2d19e2e65ee31::t_66a68f57240e4a 133-134
+  s_c2d19e2e65ee31::t_3de73bf3d6ebb6 82
+site/src/content/docs/ko/guides/xai.md
+  s_c2d19e2e65ee31::t_783fc4ff472c8a 136
+site/src/content/docs/zh-cn/guides/xai.md
+  s_c2d19e2e65ee31::t_2b80874bd8aa9c 137
+docs/running.md
+  s_c2d19e2e65ee31::t_cbd942b600fbd0 188-190
+  s_c2d19e2e65ee31::t_175cf7d5cf6984 530-532
+site/src/content/docs/ja/guides/codex.md
+  s_c2d19e2e65ee31::t_8537132eebe64c 69-70
+  s_c2d19e2e65ee31::t_4c360fd2ef945e 108
+  s_c2d19e2e65ee31::t_ba67decb8e4abf 127
+site/src/content/docs/ja/guides/xai.md
+  s_c2d19e2e65ee31::t_58980335fd0cc0 113
+site/src/content/docs/ko/guides/codex.md
+  s_c2d19e2e65ee31::t_1c8c46c0b25e3a 104
+  s_c2d19e2e65ee31::t_a38191bb0ad41f 68
+  s_c2d19e2e65ee31::t_0cf831657174da 122
+site/src/content/docs/guides/connect-claude-code.md
+  s_c2d19e2e65ee31::t_34c01b98cbf2e6 92
+site/src/content/docs/ko/guides/configuration.md
+  s_c2d19e2e65ee31::t_9c185ba2f73ca2 46
+  s_c2d19e2e65ee31::t_2e52a8b15fa46e 67-70
+site/src/content/docs/ja/guides/connect-claude-code.md
+  s_c2d19e2e65ee31::t_07ea2c17d994a5 92
+docs/codex-configuration.md
+  s_c2d19e2e65ee31::t_267d7e58c0bc51 263-265
+  s_c2d19e2e65ee31::t_a5c77f8ab5dbb9 354
+  s_c2d19e2e65ee31::t_01865d5972052e 214-215
+  s_c2d19e2e65ee31::t_4384710f479a57 323-324
+site/src/content/docs/guides/configuration.md
+  s_c2d19e2e65ee31::t_fd0b30ef06e91a 96-99
+  s_c2d19e2e65ee31::t_55c35ec03b3603 46
+docs/m11-inbound-codex-endpoint.md
+  s_c2d19e2e65ee31::t_4d69f7c51b044f 22
+site/src/content/docs/zh-cn/guides/configuration.md
+  s_c2d19e2e65ee31::t_6a54e12ef674ac 67-70
+  s_c2d19e2e65ee31::t_53d9f1ada512a4 46
+site/src/content/docs/ja/guides/configuration.md
+  s_c2d19e2e65ee31::t_5fdd636f206d68 67-70
+  s_c2d19e2e65ee31::t_dc0a7bb0b5c75c 46
+site/src/content/docs/zh-cn/guides/connect-claude-code.md
+  s_c2d19e2e65ee31::t_2548f2b070e9c2 92
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "26ee97fd19f0642b4617a2ed5887832b07221ef5",
+  "prompts": {},
+  "sessions": {
+    "s_c2d19e2e65ee31": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "032cd94d-cbf5-4fa0-904f-ad06f79f4d5d",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
