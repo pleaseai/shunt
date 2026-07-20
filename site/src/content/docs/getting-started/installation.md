@@ -3,6 +3,10 @@ title: Installation
 description: Install shunt via Homebrew, cargo, prebuilt binaries, or from source.
 ---
 
+:::note[Pre-1.0 software]
+`shunt` is pre-1.0 software under active development. Per [SemVer](https://semver.org/#spec), `0.x` releases may include breaking changes to configuration keys, the CLI, and behavior — check the [release notes](https://github.com/pleaseai/shunt/releases) before upgrading.
+:::
+
 ## Homebrew (macOS / Linux)
 
 ```bash

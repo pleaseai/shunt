@@ -3,6 +3,10 @@ title: 安装
 description: 通过 Homebrew、cargo、预构建二进制文件或从源码安装 shunt。
 ---
 
+:::note[pre-1.0 软件]
+`shunt` 是仍在活跃开发中的 1.0 之前(pre-1.0)软件。按照 [SemVer](https://semver.org/lang/zh-CN/#spec) 惯例,`0.x` 版本可能包含对配置键、CLI 和行为的破坏性变更(breaking change) —— 升级前请查看[发布说明](https://github.com/pleaseai/shunt/releases)。
+:::
+
 ## Homebrew (macOS / Linux)
 
 ```bash
