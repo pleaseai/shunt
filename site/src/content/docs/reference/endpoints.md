@@ -33,6 +33,7 @@ description: The endpoints shunt serves as a Claude Code LLM gateway.
 | `POST` | `/backend-api/codex/analytics-events/events` | Codex CLI analytics sink — accept and discard; record sanitized event-name counters only |
 | `POST` | `/codex/analytics-events/events` | Codex CLI analytics sink — root-style `chatgpt_base_url` form |
 | `GET` | `/usage` | Client-facing sanitized pool usage — per-window remaining headroom and reset for the shared account pool; never account identity or capacity |
+| `GET` | `/api/oauth/usage` | Claude Code CLI's own native usage-bar fetch path — sanitized, Claude-only, routing-aware worst-case pool usage in Anthropic's own wire shape |
 | `GET` | `/.well-known/oauth-authorization-server` | Gateway OAuth discovery metadata |
 | `POST` | `/oauth/device_authorization` | Start a gateway device authorization grant |
 | `POST` | `/oauth/token` | Poll a device grant or refresh a gateway session |
@@ -72,6 +73,25 @@ The `/usage` route exists only when [`[server.usage]`](/reference/configuration/
   }
 }
 ```
+
+The `/api/oauth/usage` route exists only when [`[server.oauth_usage]`](/reference/configuration/#serveroauth_usage-optional) is configured. It is the exact path the Claude Code CLI's own usage bars fetch (`fetchUtilization`), so when the CLI is pointed at shunt via `ANTHROPIC_BASE_URL`, its unmodified UI can show real numbers — **but only for CLIs using a full interactive `claude login` session**; `claude setup-token` and shared-gateway client-token setups were verified not to trigger the CLI's own fetch (see the [M14 behavior specification](https://github.com/pleaseai/shunt/blob/main/docs/m14-oauth-usage-endpoint.md) for the full precondition evidence). Unlike `GET /usage`, auth is bind-topology-gated: unauthenticated on a loopback [`[server]`](/reference/configuration/#server) bind, and admitting any *presented* credential (never validated against a configured token) on a non-loopback bind, which itself then requires `[server.auth]` or `[server.gateway]` to be configured. It reports only `claude_oauth`-provider accounts, using a routing-aware, priority-tiered worst case per window rather than `/usage`'s pool-wide least-utilized aggregate — the worst case among the accounts the next request can actually route to, not an optimistic pool-wide minimum. It never exposes account names, counts, priorities, `disabled` flags, thresholds, or per-account numbers. Response shape (Anthropic's own `/api/oauth/usage` schema, `resets_at` in RFC3339):
+
+```json
+{
+  "five_hour": { "utilization": 42.37, "resets_at": "2026-07-20T23:00:00Z" },
+  "seven_day": { "utilization": 61.02, "resets_at": "2026-07-27T00:00:00Z" },
+  "limits": [
+    {
+      "kind": "weekly_scoped",
+      "scope": { "model": { "display_name": "Fable" } },
+      "percent": 12.5,
+      "resets_at": "2026-07-27T00:00:00Z"
+    }
+  ]
+}
+```
+
+`five_hour`/`seven_day` are omitted (not `null`) when no non-disabled Claude account reports that window; `limits` is an empty array when no account reports the Fable-scoped window.
 
 `GET /` and `GET /health` stay open even when [`[server.auth]`](/guides/shared-gateway/) is enabled (healthcheck tools usually cannot attach tokens) and expose nothing sensitive — only status, version, and the already-public endpoint list. With `[server.auth]` enabled, `GET /v1/models` requires a valid client token in the configured header, `x-api-key`, or `Authorization: Bearer`; it stays open when inbound auth is not configured. `GET /routes` remains open as shunt-native routing metadata.
 

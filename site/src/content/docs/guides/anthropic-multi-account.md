@@ -147,9 +147,11 @@ disabled = true              # kept configured, never selected
 
 ## Usage-API reconciliation
 
-Quota headers only reflect traffic that flowed through shunt. `usage_refresh_seconds` closes that gap by polling `GET /api/oauth/usage` and applying authoritative utilization and reset times to the same 5-hour, shared weekly (`7d`), and Fable-scoped weekly (`7d_oi`) windows.
+Quota headers only reflect traffic that flowed through shunt. `usage_refresh_seconds` closes that gap by **shunt itself calling out** to Anthropic's `GET /api/oauth/usage` and applying authoritative utilization and reset times to the same 5-hour, shared weekly (`7d`), and Fable-scoped weekly (`7d_oi`) windows.
 
 Polling is off when the field is absent or `0`; positive values below 60 are clamped to 60 seconds. Only imported, refreshable accounts are eligible. Long-lived `claude setup-token` and `token_env` accounts are skipped because their tokens cannot call the endpoint. The interval is fixed at boot, so a config reload does not start, stop, or re-tune the poller. This periodic correction complements rather than replaces reactive header state.
+
+This is the *outbound* direction. shunt can also serve the same path *inbound*: [`[server.oauth_usage]`](/reference/configuration/#serveroauth_usage-optional) registers `GET /api/oauth/usage` on shunt itself, so the Claude Code CLI's own native usage bars get real numbers when the CLI is pointed at shunt (Claude-only, routing-aware priority-tiered worst case per window — not this section's pool-wide reconciliation; see the [endpoint reference](/reference/endpoints/) and the [M14 note](https://github.com/pleaseai/shunt/blob/main/docs/m14-oauth-usage-endpoint.md) for the verified precondition on which CLI login modes actually call it). Do not point a `claude_oauth` provider's `base_url` at this gateway's own bind while `[server.oauth_usage]` is enabled — shunt refuses to boot in that configuration (`ConfigError::OauthUsageSelfPollLoop`), because the outbound poller above would otherwise read back its own synthesized inbound aggregate instead of Anthropic's real usage.
 
 ## Quota-state persistence
 
