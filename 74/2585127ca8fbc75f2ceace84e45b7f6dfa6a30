@@ -1,0 +1,70 @@
+src/adapters/mod.rs
+  s_05e94059a9439b::t_66f8d0eff00d9d 43-50,55-57
+src/adapters/responses/pool.rs
+  s_05e94059a9439b::t_5b45dee45fdf47 286
+  s_05e94059a9439b::t_8e661ce5d5fe61 19
+src/adapters/responses/websocket.rs
+  s_05e94059a9439b::t_06fee8b7bca61b 306,344
+src/proxy.rs
+  s_05e94059a9439b::t_a8f178edd8a590 14,57
+  s_05e94059a9439b::t_a4a0f813639668 4,6
+  s_05e94059a9439b::t_182beef94fbf9b 12
+  s_05e94059a9439b::t_ac28825ecc8d21 13
+src/auth/mod.rs
+  s_05e94059a9439b::t_90cda1ef1bfa3b 220
+src/adapters/responses/error.rs
+  s_05e94059a9439b::t_84928026d2037a 44,95-100
+  s_05e94059a9439b::t_d964d3d47f4fc9 22-43,47-69,72-74,82
+  s_05e94059a9439b::t_f2fea04c48198f 6-12
+  s_05e94059a9439b::t_06301fb3c01328 46
+  s_05e94059a9439b::t_06fee8b7bca61b 91,106
+  s_05e94059a9439b::t_d7558b59c06831 45
+src/adapters/responses/http.rs
+  s_05e94059a9439b::t_167f71bb30c965 91
+  s_05e94059a9439b::t_0cf9673e5f71db 22
+  s_05e94059a9439b::t_f6467c88294a99 98
+  s_05e94059a9439b::t_62806bd453f908 199
+src/adapters/cursor/mod.rs
+  s_05e94059a9439b::t_06fee8b7bca61b 389,423,435
+  s_05e94059a9439b::t_4ad409080b11fd 351-382
+  s_05e94059a9439b::t_d5fa3d3a1ef6b5 394-396
+  s_05e94059a9439b::t_af4907f492d88c 422,424
+src/metrics.rs
+  s_05e94059a9439b::t_3774e6122eeec1 399-406
+  s_05e94059a9439b::t_845912f8881448 46
+  s_05e94059a9439b::t_7a150774b8d8a5 101-104
+  s_05e94059a9439b::t_276cead6978a62 330-344
+tests/failover.rs
+  s_05e94059a9439b::t_8bb0b6e536ee9f 1-59,66-90,96-152,154-180,185-206,210-218,223-251,256-276,281-303,307-309,313-315,320-326,332-348,353-500,505-547
+  s_05e94059a9439b::t_182beef94fbf9b 60-65,153,181-184,207-209,219-222,252-255,277-280,304-306,310-312,316-319,327-331,349-352,501-504
+  s_05e94059a9439b::t_f924f03f7a8bfa 91-95
+src/adapters/anthropic/mod.rs
+  s_05e94059a9439b::t_d7960d139a22d5 506
+  s_05e94059a9439b::t_48f6009d1030a0 838
+src/proxy/failover.rs
+  s_05e94059a9439b::t_182beef94fbf9b 84,101,121,168-169,234-248,451-455
+  s_05e94059a9439b::t_0c60498bcb9ce4 59-66,68-69
+  s_05e94059a9439b::t_a8f178edd8a590 1-58,67,70-83,85-100,102-120,122-149,151,165-167,170-178,226-233,249-450,456-477
+  s_05e94059a9439b::t_89490d5a49ca41 150
+  s_05e94059a9439b::t_d61a7346bbe58f 152-164
+  s_05e94059a9439b::t_635a45b66fefa5 179-225
+tests/codex_multi_account.rs
+  s_05e94059a9439b::t_d1edff73ff425e 568-569
+  s_05e94059a9439b::t_1c1c614a83c2c4 599
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "742585127ca8fbc75f2ceace84e45b7f6dfa6a30",
+  "prompts": {},
+  "sessions": {
+    "s_05e94059a9439b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4627c43f-c579-4762-a76b-57fb1d2227ed",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
