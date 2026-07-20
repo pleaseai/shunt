@@ -1,9 +1,9 @@
-use std::{io::ErrorKind, net::SocketAddr, time::Duration};
+use std::{collections::BTreeMap, io::ErrorKind, net::SocketAddr, time::Duration};
 
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 use shunt::{
-    config::{Config, CountTokens, RouteConfig, RoutePrefixConfig},
+    config::{Config, CountTokens, ModelConfig, RouteConfig, RoutePrefixConfig},
     server,
 };
 use tokio::task::JoinHandle;
@@ -229,6 +229,63 @@ async fn messages_forwards_incoming_credentials_unchanged() {
 
     assert_eq!(response.status(), StatusCode::OK);
     upstream.verify().await;
+}
+
+#[tokio::test]
+async fn model_upstream_map_routes_and_translates_request_end_to_end() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mapped_upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(429).set_body_string(r#"{"detail":"rate limited"}"#))
+        .expect(1)
+        .mount(&mapped_upstream)
+        .await;
+    let prefix_upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&prefix_upstream)
+        .await;
+
+    let mut config = Config::default();
+    let openai = config.providers.get_mut("openai").unwrap();
+    openai.base_url = mapped_upstream.uri();
+    openai.auth = shunt::config::AuthMode::Passthrough;
+    openai.api_key_env = None;
+    config.providers.get_mut("anthropic").unwrap().base_url = prefix_upstream.uri();
+    config.models.push(ModelConfig {
+        id: "claude-opus-4-8".to_string(),
+        display_name: None,
+        upstream_model: Some(BTreeMap::from([(
+            "openai".to_string(),
+            "gpt-map-target".to_string(),
+        )])),
+    });
+    config.route_prefixes = vec![RoutePrefixConfig {
+        prefix: "claude-".to_string(),
+        provider: "anthropic".to_string(),
+    }];
+    let gateway = start_gateway_with(config).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .body(
+            r#"{"model":"claude-opus-4-8","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}"#,
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let requests = mapped_upstream.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    let forwarded: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(forwarded["model"], "gpt-map-target");
+    mapped_upstream.verify().await;
+    prefix_upstream.verify().await;
 }
 
 #[tokio::test]

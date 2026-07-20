@@ -159,6 +159,10 @@ mod tests {
 
     #[test]
     fn model_upstream_map_wins_over_exact_route() {
+        // This config is intentionally invalid at boot (`ModelRouteConflict`
+        // rejects a map-bearing id that also has a `[[routes]]` entry); the
+        // resolver is exercised directly to pin the precedence order, so do
+        // not add a `config.validate()` call here.
         let config = Config {
             models: vec![mapped_model("claude-opus-4-8", "codex", "gpt-5.2")],
             routes: vec![RouteConfig {
