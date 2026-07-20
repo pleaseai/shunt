@@ -1,9 +1,8 @@
 # Ordered upstreams and cross-provider failover
 
 Engineering spec for issue #218, implementing [ADR-0002](../.please/docs/decisions/0002-ordered-upstreams-failover.md).
-Status: **design accepted, implementation pending.** This document is the
-implementation contract; deviations discovered during implementation must be
-recorded here in the same PR.
+Status: **implemented.** This document is the implementation contract; deviations
+found during implementation are recorded in §6.
 
 The reference Claude apps gateway's behavior cited throughout was extracted
 from the shipped `claude` binary (2.1.215): the config schema (zod), the
@@ -209,13 +208,16 @@ Documented user-facing in the site guide; summarized here.
 
 - **No action** for existing configs: the legacy table keeps parsing unchanged,
   implicit upstreams inherit provider names, and existing `upstream_model` maps
-  (keyed by those names) retain their routing and selection semantics. Two
-  deliberate exceptions apply under both config forms. Legacy providers that
+  (keyed by those names) retain their routing and selection semantics. Three
+  behavior changes apply under both config forms. Legacy providers that
   reference the same physical account now share per-account runtime state,
   which was previously provider-scoped; this is a deliberate behavior change
   shipped with this feature and called out in migration. In addition, every
   proxied response now carries the additive `x-gateway-upstream`,
-  `x-gateway-model`, and `x-gateway-upstream-model` metadata headers.
+  `x-gateway-model`, and `x-gateway-upstream-model` metadata headers. Finally,
+  a legacy single-account Codex chain whose attempts all fail before response
+  headers now returns the synthesized `all upstreams failed (N attempted)`
+  message described in §6.
 - **To adopt failover**: rewrite each `[providers.<name>]` table as an
   `[[upstreams]]` entry (`name = "<name>"`, same fields; fold
   `api_key_env`/`api_key_header`/`accounts` into the `auth` map), order
@@ -229,7 +231,26 @@ Documented user-facing in the site guide; summarized here.
 - Pool persistence file: discarded once on upgrade (cold start), by version
   bump.
 
-## 6. Implementation surface
+## 6. Implementation deviations
+
+- **Pre-header failures are not remembered.** An adapter failure translated to a
+  `502` before upstream response headers arrive
+  (`AdapterFailure::BeforeHeaders`) advances the chain but is not eligible for
+  the remembered best failure; only relayed upstream statuses (`429`, `401`,
+  `403`, `404`, and `5xx`) are remembered. If every attempt fails before
+  headers, shunt therefore returns the synthesized `502 api_error`
+  `all upstreams failed (N attempted)`. In particular, a legacy single-account
+  Codex chain that previously returned
+  `all Codex OAuth accounts failed before receiving an upstream response` now
+  returns the synthesized message. This is a third migration behavior change
+  beyond the two deliberate changes originally listed in §5.
+- **Local adapter errors do not fail over.** Gateway-originated errors that do
+  not represent an upstream failure — for example auth misconfiguration,
+  Cursor adapter-owned errors, or WebSocket header construction failures —
+  return immediately without advancing the chain. This keeps configuration
+  errors visible instead of masking them behind another upstream.
+
+## 7. Implementation surface
 
 | Area | Files |
 |---|---|
@@ -243,7 +264,7 @@ Internal identifiers (`ProviderConfig`, `Route.provider`, `route.provider`
 pool keys) keep their names in this change; renaming to `Upstream*` is a
 follow-up.
 
-## 7. Out of scope / follow-ups
+## 8. Out of scope / follow-ups
 
 - Builtin model-catalog fallback for upstreams missing from a model's map
   (reference behavior; shunt stays strict).

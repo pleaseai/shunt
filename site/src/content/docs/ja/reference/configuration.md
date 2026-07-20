@@ -110,7 +110,80 @@ headers = { "x-api-key" = "..." }
 
 正の `ramp_initial_concurrency` は、すべてのアカウントプールで**ストーム制御（storm control）**を有効にします。フェイルオーバーの切り替え後、そうしなければ進行中の並行リクエストがすべて切り替え直後のアカウントに一度に着地してしまいます。ゲートを有効にすると、トラフィックを受け始めたばかりのアイデンティティ（新規、クールダウンから復帰、または 60 秒アイドル）は、設定された数までの並行リクエストしか受け入れません。成功レスポンスごとに許容量が倍増し（スロースタート）、フェイルオーバーに値する失敗はランプをリセットし、拒否されたリクエストは選択順で次のアカウントに回されます。最後に残った候補はゲートに関係なく常に試行されるため、ゲーティングはリクエストを遅延させることはあっても、ゲートなしのプールなら処理できたリクエストを失敗させることは決してありません。これは、プールのすべてのアカウントが単一のアップストリームアイデンティティに解決される場合、実質的にゲートなしと同じであることも意味します。唯一の候補は常に最後の候補でもあるため、この設定は異なるアカウントアイデンティティが 2 つ以上あるときにのみ効果を持ちます。
 
-## `[providers.<name>]`
+## `[[upstreams]]`（順序付きフェイルオーバー）
+
+`[[upstreams]]` は、名前付きアップストリームの順序付き配列です。宣言順がグローバルなフェイルオーバー順となり、モデルの `[models.upstream_model]` マップが参加するエントリを選択します。マップ内の記述順はルーティングに影響しません。
+
+```toml
+[[upstreams]]
+name = "anthropic-primary"
+provider = "anthropic"
+auth = { mode = "claude_oauth", account = "primary" }
+
+[[upstreams]]
+name = "kimi-overflow"
+provider = "kimi"
+
+[[upstreams]]
+name = "codex-fallback"
+provider = "codex"
+
+[[models]]
+id = "claude-opus-4-8"
+[models.upstream_model]
+anthropic-primary = "claude-opus-4-8"
+kimi-overflow = "kimi-k2"
+codex-fallback = "gpt-5.2"
+```
+
+この例では `anthropic-primary`、`kimi-overflow`、`codex-fallback` の順に試行します。モデルマップにないアップストリームは参加しません。
+
+| キー | 必須 | 意味 |
+| :-- | :-- | :-- |
+| `name` | はい | 空でない一意のアップストリーム名。ルート、モデルマップ、`server.default_provider`、メトリクス、管理画面で使われます。 |
+| `provider` | `kind` と `base_url` を設定しない場合 | 組み込み preset。`kind`、`base_url`、デフォルト auth を提供します。明示したフィールドは preset 値を上書きします。 |
+| `kind` | preset がない場合 | `anthropic`、`responses`、`cursor`。 |
+| `base_url` | preset がない場合 | アップストリームの base URL。 |
+| `auth` | いいえ | auth mode の文字列、または mode 固有のマップ。デフォルトは preset の auth、preset もなければ `passthrough`。 |
+| `effort`, `count_tokens`, `websocket`, `tool_search`, `retry` | いいえ | レガシー provider と同じアップストリーム単位の設定。preset は `count_tokens` を上書きしません。 |
+
+利用可能な preset は次のとおりです。
+
+| Preset | Kind | Base URL | デフォルト auth |
+| :-- | :-- | :-- | :-- |
+| `anthropic` | `anthropic` | `https://api.anthropic.com` | `passthrough` |
+| `codex` | `responses` | `https://chatgpt.com/backend-api` | `chatgpt_oauth` |
+| `openai` | `responses` | `https://api.openai.com/v1` | `api_key`, env `OPENAI_API_KEY` |
+| `xai` | `responses` | `https://api.x.ai/v1` | `api_key`, env `XAI_API_KEY` |
+| `grok` | `responses` | `https://cli-chat-proxy.grok.com/v1` | `xai_oauth` |
+| `kimi` | `anthropic` | `https://api.moonshot.ai/anthropic` | `api_key`, env `MOONSHOT_API_KEY` |
+| `cursor` | `cursor` | `https://api2.cursor.sh` | `cursor_oauth` |
+
+`auth = "claude_oauth"` のような文字列は `auth = { mode = "claude_oauth" }` の省略形です。`api_key` マップは `env`（preset が提供しない場合は必須）と `header`（デフォルトは `bearer`、または `x_api_key`）を受け取ります。`claude_oauth` と `chatgpt_oauth` のマップは `account = "name"` または `accounts = [...]` で範囲を絞れますが、両方は指定できません。`accounts` にはストアエントリ名の文字列と完全なアカウントテーブルを指定できます。両方のスコープフィールドを省略するとストア全体を走査します。ChatGPT ストアが空の場合、`chatgpt_oauth` は従来どおり `~/.codex/auth.json` にフォールバックします。`passthrough`、`xai_oauth`、`cursor_oauth` のマップは `mode` のみを受け付け、mode 固有の未知のキーはエラーです。
+
+`[[upstreams]]` と `[providers.*]` を混在させないでください。宣言形式をどちらか一方だけにしないと起動に失敗します。レガシー `[providers.<name>]` は引き続きサポートされ、名前順の暗黙的アップストリームに正規化されます。この形式はフェイルオーバー順を宣言しないため、モデルマップは 0 または 1 エントリだけをサポートします。モデルマップに複数エントリを追加する前に `[[upstreams]]` へ移行してください。
+
+### フェイルオーバー動作
+
+複数エントリのモデルマップでは、宣言済みアップストリーム列からマップ内の名前だけを残してチェーンを構成します。アップストリームのステータスが `429`、`401`、`403`、`404`、任意の `5xx` の場合、またはアップストリームのレスポンスヘッダーを受け取る前に失敗した場合は、次のエントリへ進みます。auth の設定不備やアダプター自身の検証・ヘッダー構築エラーなど、アップストリーム試行を表さないゲートウェイローカルエラーは直ちに返し、設定問題をフェイルオーバーで隠しません。`2xx` ヘッダーを返した後は、その後ストリーミング本文が失敗してもフェイルオーバーしません。
+
+チェーンを使い切ると、`429` → `401`/`403` → `404` → その他の `5xx` の優先順位で、最適な中継済み失敗を返します。ヘッダー前の失敗は最終候補として記憶しません。記憶した中継レスポンスがなければ、`all upstreams failed (N attempted)` というメッセージの `502 api_error` を返します。
+
+プロキシされた成功レスポンスと最終失敗には、`x-gateway-upstream`（選択したアップストリーム名）、`x-gateway-model`（クライアントが要求した id）、`x-gateway-upstream-model`（マッピング後のバックエンド id）が必ず含まれます。`count_tokens` はチェーンの最初の要素だけを使い、フェイルオーバーしません。`[server.codex_endpoint]` は設定された単一アップストリームに固定され、このチェーンには参加しません。
+
+### 既存設定の移行
+
+既存設定に**変更は不要です**。レガシー provider のルーティングと名前順の選択動作は維持されます。アップグレード時には、次の 3 つの追加または意図された動作変更があります。
+
+1. 同じ物理 OAuth アカウントへ解決されるレガシー provider は、クォータウィンドウ、health、cooldown、refresh lock、in-flight admission 状態を共有するようになります。プール永続化キーのスキーマバージョンが上がるため、既存の `state_path` キャッシュは一度無視され、プールは一度コールドスタートします。
+2. すべてのプロキシレスポンスに、上記 3 つの `x-gateway-*` metadata ヘッダーが追加されます。
+3. すべての試行がレスポンスヘッダー前に失敗する従来の単一アカウント Codex チェーンは、`all Codex OAuth accounts failed before receiving an upstream response` の代わりに `all upstreams failed (N attempted)` を返します。
+
+順序付きフェイルオーバーを採用するには、各 `[providers.<name>]` テーブルを同名の `[[upstreams]]` エントリへ書き換え、`api_key_env`、`api_key_header`、OAuth `accounts` を `auth` マップへ移し、優先順に並べ、モデルの `upstream_model` マップへ参加する各名前を追加します。
+
+`kimi` preset は `MOONSHOT_API_KEY` を読み取ります。`api_key_env = "KIMI_API_KEY"` を明示していた古い例はレガシー形式で引き続き動作し、アップストリームでも `auth = { mode = "api_key", env = "KIMI_API_KEY" }` と明示すれば従来の名前を維持できます。preset のデフォルトに依存するユーザーだけが `MOONSHOT_API_KEY` を export する必要があります。
+
+## `[providers.<name>]`（レガシー）
 
 各プロバイダーは、あなたが選んだ名前の下のテーブルです。組み込み（`anthropic`、`openai`、`codex`、`xai`、`grok`、`cursor`）は部分的にオーバーライドできます — 設定マップはディープマージします。
 
@@ -135,7 +208,7 @@ headers = { "x-api-key" = "..." }
 | キー | 必須 | 意味 |
 | :-- | :-- | :-- |
 | `model` | ✅ | Claude Code が送る正確な `model` id |
-| `provider` | ✅ | `[providers.<name>]` テーブルの名前 |
+| `provider` | ✅ | 設定済みアップストリーム名 |
 | `upstream_model` | — | 上流へ転送するモデル id を書き換える |
 | `effort` | — | ルート単位の reasoning エフォートオーバーライド |
 
@@ -146,7 +219,7 @@ headers = { "x-api-key" = "..." }
 | キー | 必須 | 意味 |
 | :-- | :-- | :-- |
 | `prefix` | ✅ | モデル id のプレフィックス、例 `gpt-` |
-| `provider` | ✅ | `[providers.<name>]` テーブルの名前 |
+| `provider` | ✅ | 設定済みアップストリーム名 |
 
 ## `[[models]]`
 
@@ -154,7 +227,7 @@ headers = { "x-api-key" = "..." }
 
 トップレベルの `auto_include_builtin_models` キーはデフォルトで `true` です。有効な場合、shunt は管理者が選定した `[[models]]` エントリを先に返し、その後にリファレンス Claude apps gateway をミラーする組み込み Claude モデルカタログを追加します。同一 id は選定したエントリを優先して重複を除きます。`[[models]]` リストだけを公開するには `false` に設定してください。組み込みモデルは専用の `[[routes]]` エントリを必要としません。通常のルーティング規則で解決され、`[[routes]]` と `[[route_prefixes]]` のいずれにも一致しない場合は `server.default_provider` にフォールバックします。
 
-選定したエントリに `[models.upstream_model]` を追加すると、1つの宣言で id の公開、ルーティング、上流 id への変換を行えます。厳密な id のルーティングには、`[[routes]]` の代わりにこの形式を推奨します。このテーブルには、空でない provider 名と上流 id からなる `provider = "upstream-id"` のペアを正確に1つだけ含める必要があります。その id では `[[routes]]`、`[[route_prefixes]]`、`server.default_provider` より優先され、provider のデフォルト `effort` は引き続き適用されます。空または複数 provider のマップ、空または空白文字のみの provider 名または上流 id、未知の provider、同じ id の `[[routes]]` エントリ、`[1m]` または `[1M]` で終わるマップ付き id、あるいはいずれか一方がマップ付きである重複 `[[models]]` id は起動エラーです。client はマッチング前に context-window hint を取り除くため、マップ付き id にこの suffix を含めると、そのエントリには到達できません。マップなしエントリ同士の重複は従来の動作を維持します。
+選定したエントリに `[models.upstream_model]` を追加すると、1つの宣言で id の公開、ルーティング、上流 id への変換を行えます。厳密な id のルーティングには、`[[routes]]` の代わりにこの形式を推奨します。順序付き `[[upstreams]]` では、マップに 1 つ以上の `upstream = "backend-id"` ペアを含めることができ、`[[upstreams]]` の宣言順でフェイルオーバーチェーンになります。レガシー `[providers.*]` には宣言済み順序がないため、正確に 1 ペアだけを許可します。その id ではマップが `[[routes]]`、`[[route_prefixes]]`、`server.default_provider` より優先され、各アップストリームのデフォルト `effort` がそのチェーン要素に適用されます。空のマップ、空または空白文字のみのアップストリーム名またはバックエンド id、未知のアップストリーム、同じ id の `[[routes]]` エントリ、`[1m]` または `[1M]` で終わるマップ付き id、あるいはいずれか一方がマップ付きである重複 `[[models]]` id は起動エラーです。client はマッチング前に context-window hint を取り除くため、マップ付き id にこの suffix を含めると、そのエントリには到達できません。マップなしエントリ同士の重複は従来の動作を維持します。
 
 ```toml
 [[models]]
@@ -169,7 +242,7 @@ codex = "gpt-5.2"
 | :-- | :-- | :-- |
 | `id` | ✅ | Claude Code に公開されるモデル id |
 | `display_name` | — | `/model` ピッカーに表示されるラベル |
-| `upstream_model` | — | 設定済み provider 名から上流モデル id への1エントリのマップ。`id` を直接ルーティング可能にする |
+| `upstream_model` | — | 設定済みアップストリーム名からバックエンドモデル id へのマップ。順序付き `[[upstreams]]` は複数エントリのフェイルオーバーチェーンを許可し、レガシー provider は 1 エントリだけを許可 |
 
 ## `[sentry]`(任意)
 

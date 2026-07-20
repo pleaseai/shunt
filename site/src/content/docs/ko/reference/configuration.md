@@ -121,7 +121,80 @@ headers = { "x-api-key" = "..." }
 
 양수 `ramp_initial_concurrency`는 모든 계정 풀에 **폭주 제어(storm control)**를 활성화합니다: 페일오버 전환 후에는 진행 중인 동시 요청이 방금 선택된 계정에 한꺼번에 몰릴 수 있습니다. 게이트를 켜면, 방금 트래픽을 받기 시작한 아이덴티티(신규, 쿨다운에서 복귀, 또는 60초간 유휴)는 최대 구성된 개수만큼의 동시 요청만 허용합니다; 성공 응답마다 허용치가 두 배로 늘고(슬로 스타트), 페일오버에 해당하는 실패는 램프를 다시 시작하며, 거부된 요청은 선택 순서상 다음 계정으로 넘어갑니다. 마지막 남은 후보는 게이트와 무관하게 항상 시도되므로, 게이팅은 요청을 미룰 수는 있어도 게이트가 없었다면 서빙됐을 요청을 실패시키는 일은 절대 없습니다. 이는 곧 풀의 모든 계정이 하나의 업스트림 아이덴티티로 귀결되면 사실상 게이트가 없는 것과 같다는 뜻이기도 합니다: 유일한 후보가 곧 마지막 후보이므로, 이 설정은 서로 다른 계정 아이덴티티가 둘 이상일 때만 효력이 있습니다.
 
-## `[providers.<name>]`
+## `[[upstreams]]` (순서가 있는 페일오버)
+
+`[[upstreams]]`는 이름이 지정된 업스트림의 순서 있는 배열입니다. 선언 순서가 전역 페일오버 순서이며, 모델의 `[models.upstream_model]` 맵이 참여할 항목을 선택합니다. 맵에 적힌 텍스트 순서는 라우팅에 영향을 주지 않습니다.
+
+```toml
+[[upstreams]]
+name = "anthropic-primary"
+provider = "anthropic"
+auth = { mode = "claude_oauth", account = "primary" }
+
+[[upstreams]]
+name = "kimi-overflow"
+provider = "kimi"
+
+[[upstreams]]
+name = "codex-fallback"
+provider = "codex"
+
+[[models]]
+id = "claude-opus-4-8"
+[models.upstream_model]
+anthropic-primary = "claude-opus-4-8"
+kimi-overflow = "kimi-k2"
+codex-fallback = "gpt-5.2"
+```
+
+이 예시는 `anthropic-primary`, `kimi-overflow`, `codex-fallback` 순서로 시도합니다. 모델 맵에 없는 업스트림은 참여하지 않습니다.
+
+| 키 | 필수 | 의미 |
+| :-- | :-- | :-- |
+| `name` | 예 | 비어 있지 않은 고유 업스트림 이름. 라우트, 모델 맵, `server.default_provider`, 메트릭, 관리자 화면에서 사용합니다. |
+| `provider` | `kind`와 `base_url`을 직접 설정하지 않은 경우 | 내장 preset. `kind`, `base_url`, 기본 auth를 제공합니다. 명시한 필드가 preset 값을 덮어씁니다. |
+| `kind` | preset이 없는 경우 | `anthropic`, `responses`, `cursor` 중 하나. |
+| `base_url` | preset이 없는 경우 | 업스트림 base URL. |
+| `auth` | 아니요 | auth mode 문자열 또는 mode별 맵. 기본값은 preset의 auth이며, preset도 없으면 `passthrough`입니다. |
+| `effort`, `count_tokens`, `websocket`, `tool_search`, `retry` | 아니요 | 레거시 provider에 설명된 것과 같은 업스트림별 설정. preset은 `count_tokens`를 덮어쓰지 않습니다. |
+
+사용 가능한 preset은 다음과 같습니다.
+
+| Preset | Kind | Base URL | 기본 auth |
+| :-- | :-- | :-- | :-- |
+| `anthropic` | `anthropic` | `https://api.anthropic.com` | `passthrough` |
+| `codex` | `responses` | `https://chatgpt.com/backend-api` | `chatgpt_oauth` |
+| `openai` | `responses` | `https://api.openai.com/v1` | `api_key`, env `OPENAI_API_KEY` |
+| `xai` | `responses` | `https://api.x.ai/v1` | `api_key`, env `XAI_API_KEY` |
+| `grok` | `responses` | `https://cli-chat-proxy.grok.com/v1` | `xai_oauth` |
+| `kimi` | `anthropic` | `https://api.moonshot.ai/anthropic` | `api_key`, env `MOONSHOT_API_KEY` |
+| `cursor` | `cursor` | `https://api2.cursor.sh` | `cursor_oauth` |
+
+`auth = "claude_oauth"` 같은 문자열은 `auth = { mode = "claude_oauth" }`의 축약형입니다. `api_key` 맵은 `env`(preset이 제공하지 않으면 필수)와 `header`(기본 `bearer`, 또는 `x_api_key`)를 받습니다. `claude_oauth`와 `chatgpt_oauth` 맵은 `account = "name"` 또는 `accounts = [...]`로 범위를 좁힐 수 있지만 둘을 함께 쓸 수는 없습니다. `accounts`에는 스토어 항목 이름 문자열과 전체 계정 테이블을 넣을 수 있습니다. 두 범위 필드를 모두 생략하면 전체 스토어를 스캔합니다. ChatGPT 스토어가 비어 있으면 `chatgpt_oauth`는 기존 `~/.codex/auth.json` fallback을 유지합니다. `passthrough`, `xai_oauth`, `cursor_oauth` 맵에는 `mode`만 사용할 수 있으며, mode별로 알 수 없는 키는 오류입니다.
+
+`[[upstreams]]`와 `[providers.*]`를 함께 선언하지 마세요. 정확히 한 가지 선언 형식만 사용하지 않으면 시작에 실패합니다. 레거시 `[providers.<name>]`는 계속 지원되며 이름순의 암시적 업스트림으로 정규화됩니다. 이 형식은 페일오버 순서를 선언하지 않으므로 모델 맵은 항목이 없거나 하나만 있어야 합니다. 모델 맵에 여러 항목을 추가하기 전에 `[[upstreams]]`로 전환하세요.
+
+### 페일오버 동작
+
+여러 항목이 있는 모델 맵에서는 선언한 업스트림 순서에서 맵에 포함된 이름만 남겨 체인을 만듭니다. 업스트림 상태가 `429`, `401`, `403`, `404`, 임의의 `5xx`이거나 업스트림 응답 헤더를 받기 전에 실패하면 다음 항목으로 진행합니다. auth 설정 오류나 어댑터 자체의 검증·헤더 생성 오류처럼 업스트림 시도를 나타내지 않는 게이트웨이 로컬 오류는 즉시 반환하여 잘못된 설정이 페일오버에 가려지지 않게 합니다. `2xx` 헤더를 반환한 뒤에는 스트리밍 본문이 나중에 실패하더라도 페일오버하지 않습니다.
+
+체인을 모두 시도하면 `429` → `401`/`403` → `404` → 기타 `5xx` 우선순위로 가장 적합한 릴레이 실패를 반환합니다. 헤더 이전 실패는 최종 후보로 기억하지 않습니다. 기억한 릴레이 응답이 없으면 `all upstreams failed (N attempted)` 메시지의 `502 api_error`를 반환합니다.
+
+프록시한 성공 응답과 최종 실패에는 모두 `x-gateway-upstream`(선택한 업스트림 이름), `x-gateway-model`(클라이언트가 요청한 id), `x-gateway-upstream-model`(매핑된 백엔드 id)이 포함됩니다. `count_tokens`는 체인의 첫 항목만 사용하며 페일오버하지 않습니다. `[server.codex_endpoint]`는 설정된 업스트림 하나에 고정되며 이 체인에 참여하지 않습니다.
+
+### 기존 설정 마이그레이션
+
+기존 설정은 **변경할 필요가 없습니다**. 레거시 provider의 라우팅과 이름순 선택 동작은 유지됩니다. 업그레이드 시 다음 세 가지 추가 또는 의도된 동작 변경이 적용됩니다.
+
+1. 같은 물리적 OAuth 계정으로 해석되는 레거시 provider는 이제 quota window, health, cooldown, refresh lock, in-flight admission 상태를 공유합니다. 풀 영속화 키 스키마의 버전이 올라가므로 기존 `state_path` 캐시는 한 번 무시되고 풀은 한 번 cold start합니다.
+2. 모든 프록시 응답에 위의 `x-gateway-*` metadata 헤더 세 개가 추가됩니다.
+3. 모든 시도가 응답 헤더 전에 실패하는 레거시 단일 계정 Codex 체인은 이제 `all Codex OAuth accounts failed before receiving an upstream response` 대신 `all upstreams failed (N attempted)`를 반환합니다.
+
+순서 있는 페일오버를 사용하려면 각 `[providers.<name>]` 테이블을 같은 이름의 `[[upstreams]]` 항목으로 바꾸고, `api_key_env`, `api_key_header`, OAuth `accounts`를 `auth` 맵 안으로 옮긴 뒤, 선호 순서대로 항목을 배치하고 모델의 `upstream_model` 맵에 참여할 이름을 각각 추가하세요.
+
+`kimi` preset은 `MOONSHOT_API_KEY`를 읽습니다. `api_key_env = "KIMI_API_KEY"`를 명시한 이전 예제는 레거시 형식에서 계속 동작하며, 업스트림에서도 `auth = { mode = "api_key", env = "KIMI_API_KEY" }`로 기존 이름을 유지할 수 있습니다. preset 기본값에 의존하는 사용자만 `MOONSHOT_API_KEY`를 export해야 합니다.
+
+## `[providers.<name>]` (레거시)
 
 각 프로바이더는 원하는 이름의 테이블입니다. 내장(`anthropic`, `openai`, `codex`, `xai`, `grok`, `cursor`)은 부분 오버라이드할 수 있습니다 — 구성 맵은 깊은 병합됩니다.
 
@@ -147,7 +220,7 @@ headers = { "x-api-key" = "..." }
 | 키 | 필수 | 의미 |
 | :-- | :-- | :-- |
 | `model` | ✅ | Claude Code가 보내는 정확한 `model` id |
-| `provider` | ✅ | `[providers.<name>]` 테이블의 이름 |
+| `provider` | ✅ | 설정된 업스트림 이름 |
 | `upstream_model` | — | 업스트림으로 전달되는 모델 id를 다시 씀 |
 | `effort` | — | 라우트별 추론 노력 오버라이드 |
 
@@ -158,7 +231,7 @@ headers = { "x-api-key" = "..." }
 | 키 | 필수 | 의미 |
 | :-- | :-- | :-- |
 | `prefix` | ✅ | 모델 id 프리픽스, 예: `gpt-` |
-| `provider` | ✅ | `[providers.<name>]` 테이블의 이름 |
+| `provider` | ✅ | 설정된 업스트림 이름 |
 
 ## `[[models]]`
 
@@ -166,7 +239,7 @@ headers = { "x-api-key" = "..." }
 
 최상위 `auto_include_builtin_models` 키의 기본값은 `true`입니다. 활성화하면 shunt는 관리자가 선별한 `[[models]]` 항목을 먼저 반환한 뒤, 레퍼런스 Claude apps gateway를 미러링하는 내장 Claude 모델 카탈로그를 추가합니다. id가 정확히 같은 항목은 선별된 항목을 우선하여 중복을 제거합니다. `[[models]]` 목록만 노출하려면 `false`로 설정하세요. 내장 모델은 전용 `[[routes]]` 항목이 필요하지 않습니다. 일반 라우팅 규칙으로 해석되며, `[[routes]]`나 `[[route_prefixes]]` 어느 것에도 매칭되지 않을 때 `server.default_provider`로 폴백합니다.
 
-선별한 항목에 `[models.upstream_model]`을 추가하면 하나의 선언으로 id를 노출하고, 라우팅하고, 업스트림 id로 변환할 수 있습니다. 정확한 id를 라우팅할 때는 `[[routes]]` 대신 이 형식을 권장합니다. 이 테이블에는 비어 있지 않은 provider 이름과 업스트림 id로 이루어진 `provider = "upstream-id"` 쌍이 정확히 하나만 있어야 합니다. 해당 id에 대해서는 `[[routes]]`, `[[route_prefixes]]`, `server.default_provider`보다 우선하며 provider의 기본 `effort`는 그대로 적용됩니다. 비어 있거나 provider가 여러 개인 맵, 비어 있거나 공백으로만 이루어진 provider 이름 또는 업스트림 id, 알 수 없는 provider, 같은 id의 `[[routes]]` 항목, `[1m]` 또는 `[1M]`으로 끝나는 맵 보유 id, 한쪽이라도 맵을 보유한 중복 `[[models]]` id는 시작 오류입니다. 클라이언트가 매칭 전에 context-window hint를 제거하므로 맵 보유 id에 이 suffix를 포함하면 해당 항목에 도달할 수 없습니다. 맵이 없는 항목끼리의 중복은 기존 동작을 유지합니다.
+선별한 항목에 `[models.upstream_model]`을 추가하면 하나의 선언으로 id를 노출하고, 라우팅하고, 업스트림 id로 변환할 수 있습니다. 정확한 id를 라우팅할 때는 `[[routes]]` 대신 이 형식을 권장합니다. 순서가 있는 `[[upstreams]]`를 사용하면 맵에 하나 이상의 `upstream = "backend-id"` 쌍을 넣을 수 있으며, `[[upstreams]]` 선언 순서에 따라 페일오버 체인이 됩니다. 레거시 `[providers.*]`에는 선언된 순서가 없으므로 정확히 한 쌍만 허용됩니다. 해당 id에 대해서는 맵이 `[[routes]]`, `[[route_prefixes]]`, `server.default_provider`보다 우선하며 각 업스트림의 기본 `effort`가 해당 체인 항목에 적용됩니다. 빈 맵, 비어 있거나 공백으로만 이루어진 업스트림 이름 또는 백엔드 id, 알 수 없는 업스트림, 같은 id의 `[[routes]]` 항목, `[1m]` 또는 `[1M]`으로 끝나는 맵 보유 id, 한쪽이라도 맵을 보유한 중복 `[[models]]` id는 시작 오류입니다. 클라이언트가 매칭 전에 context-window hint를 제거하므로 맵 보유 id에 이 suffix를 포함하면 해당 항목에 도달할 수 없습니다. 맵이 없는 항목끼리의 중복은 기존 동작을 유지합니다.
 
 ```toml
 [[models]]
@@ -181,7 +254,7 @@ codex = "gpt-5.2"
 | :-- | :-- | :-- |
 | `id` | ✅ | Claude Code에 노출되는 모델 id |
 | `display_name` | — | `/model` 선택기에 표시되는 레이블 |
-| `upstream_model` | — | 설정된 provider 이름에서 업스트림 모델 id로 이어지는 단일 항목 맵. `id`를 직접 라우팅할 수도 있게 함 |
+| `upstream_model` | — | 설정된 업스트림 이름에서 백엔드 모델 id로 이어지는 맵. 순서 있는 `[[upstreams]]`는 여러 항목의 페일오버 체인을 허용하고, 레거시 provider는 한 항목만 허용 |
 
 ## `[sentry]` (선택)
 

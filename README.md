@@ -56,7 +56,28 @@ Unmapped models (all your `claude-*` ids) keep working exactly as before — shu
 
 ## Providers
 
-A provider is a `[providers.<name>]` TOML table (or an entry under the YAML `providers` mapping). Two adapter kinds cover most upstreams: `kind = "anthropic"` (the upstream speaks Anthropic Messages; passed through, optionally with a different key) and `kind = "responses"` (the upstream speaks the OpenAI Responses API; shunt translates Anthropic Messages ⇄ Responses, streaming included). A third native kind, `kind = "cursor"`, bridges Cursor's ConnectRPC/protobuf AgentService so a Cursor subscription is reachable through the same Anthropic-Messages interface.
+A provider is either an ordered `[[upstreams]]` entry or a legacy `[providers.<name>]` TOML table (under YAML, an entry in the corresponding sequence or mapping). Two adapter kinds cover most upstreams: `kind = "anthropic"` (the upstream speaks Anthropic Messages; passed through, optionally with a different key) and `kind = "responses"` (the upstream speaks the OpenAI Responses API; shunt translates Anthropic Messages ⇄ Responses, streaming included). A third native kind, `kind = "cursor"`, bridges Cursor's ConnectRPC/protobuf AgentService so a Cursor subscription is reachable through the same Anthropic-Messages interface.
+
+Ordered upstreams enable cross-provider failover. Declaration order is the attempt order; a model's `upstream_model` map selects the participating entries and maps its public id to each backend's id:
+
+```toml
+[[upstreams]]
+name = "anthropic-primary"
+provider = "anthropic" # preset: kind, base_url, and default auth
+auth = { mode = "claude_oauth", account = "primary" }
+
+[[upstreams]]
+name = "codex-fallback"
+provider = "codex" # defaults to chatgpt_oauth
+
+[[models]]
+id = "claude-opus-4-8"
+[models.upstream_model]
+anthropic-primary = "claude-opus-4-8"
+codex-fallback = "gpt-5.6-sol"
+```
+
+This chain tries `anthropic-primary` and then `codex-fallback`. `auth` accepts either a mode string or a map; `claude_oauth` and `chatgpt_oauth` maps can narrow credentials with `account = "name"` or `accounts = [...]`. Legacy `[providers.<name>]` remains supported and becomes implicit name-sorted upstreams. Do not declare both forms: mixing `[[upstreams]]` with `[providers.*]` is a configuration error. See the [configuration reference](https://shunt-docs.pages.dev/reference/configuration/) for presets, failure classes, and migration details.
 
 **Built in:**
 
@@ -161,7 +182,7 @@ Selectivity is driven by the **`model` id on each request**, which Claude Code a
 Claude Code exposes a **first-class gateway contract** behind `ANTHROPIC_BASE_URL` — `shunt` implements this rather than the fragile "hash the subagent's system prompt" heuristic that earlier Claude Code proxies rely on.
 
 - [LLM Gateway Protocol](https://code.claude.com/docs/en/llm-gateway-protocol) — the API contract: endpoints, headers/body fields to forward vs consume, feature pass-through, and attribution. A running gateway serves the machine-readable spec at `GET /protocol`.
-  - [Model discovery](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery) — Claude Code queries `GET /v1/models?limit=1000` at startup (opt-in via `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`) and adds returned models to the `/model` picker. By default, `auto_include_builtin_models = true` appends shunt's builtin Claude catalog after curated `[[models]]` entries, deduplicated by id; set it to `false` for a strictly curated list. A curated entry may also include a single-provider `[models.upstream_model]` map, which makes the advertised id routable through that provider and translates it to the mapped upstream id without a separate `[[routes]]` entry. **Constraint:** entries whose `id` doesn't begin with `claude`/`anthropic` are ignored — non-Claude models must be aliased or added manually.
+  - [Model discovery](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery) — Claude Code queries `GET /v1/models?limit=1000` at startup (opt-in via `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`) and adds returned models to the `/model` picker. By default, `auto_include_builtin_models = true` appends shunt's builtin Claude catalog after curated `[[models]]` entries, deduplicated by id; set it to `false` for a strictly curated list. A curated entry may also include a `[models.upstream_model]` map (multi-entry with ordered `[[upstreams]]`, one entry under legacy providers), which makes the advertised id routable through the mapped upstream(s) and translates it to each mapped backend id without a separate `[[routes]]` entry. **Constraint:** entries whose `id` doesn't begin with `claude`/`anthropic` are ignored — non-Claude models must be aliased or added manually.
   - **System prompt attribution block** — Claude Code prepends a client-version + conversation fingerprint to the system prompt; stable for the conversation lifetime (v2.1.181+). `shunt` forwards it unchanged (never strips it — that's the developer's call via `CLAUDE_CODE_ATTRIBUTION_HEADER=0`).
 - [Add a custom model option](https://code.claude.com/docs/en/model-config#add-a-custom-model-option) — `ANTHROPIC_CUSTOM_MODEL_OPTION` adds a gateway-routed entry to the `/model` picker without replacing built-in aliases; the ID skips validation, so any string the gateway accepts works. **This is the primary way to select a non-Claude model** (e.g. `gpt-5.6-sol`), since discovery ignores ids that don't begin with `claude`/`anthropic`.
 - **Tool search** (`ENABLE_TOOL_SEARCH`) — Claude Code defers MCP/LSP tool schemas and reveals them on demand via a `ToolSearch` tool, reclaiming context the model would otherwise spend on tools it never calls. Because shunt isn't a first-party Anthropic host, Claude Code keeps this **off** unless you opt in with `ENABLE_TOOL_SEARCH=true`; shunt then forwards the `tool_reference` blocks and emulates the server-side progressive reveal on the Codex/Responses path. As an opt-in alternative, `tool_search = true` under `[providers.<name>]` maps this onto the Responses API's own native client-executed `tool_search` protocol instead of the text shim, for a stock OpenAI or ChatGPT/Codex provider routing to a gpt-5.4+ model. See the [Tool search](https://shunt-docs.pages.dev/guides/codex/#tool-search) guide.
