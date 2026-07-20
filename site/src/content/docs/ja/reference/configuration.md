@@ -152,10 +152,22 @@ headers = { "x-api-key" = "..." }
 
 トップレベルの `auto_include_builtin_models` キーはデフォルトで `true` です。有効な場合、shunt は管理者が選定した `[[models]]` エントリを先に返し、その後にリファレンス Claude apps gateway をミラーする組み込み Claude モデルカタログを追加します。同一 id は選定したエントリを優先して重複を除きます。`[[models]]` リストだけを公開するには `false` に設定してください。組み込みモデルは専用の `[[routes]]` エントリを必要としません。通常のルーティング規則で解決され、`[[routes]]` と `[[route_prefixes]]` のいずれにも一致しない場合は `server.default_provider` にフォールバックします。
 
+選定したエントリに `[models.upstream_model]` を追加すると、1つの宣言で id の公開、ルーティング、上流 id への変換を行えます。このテーブルには `provider = "upstream-id"` のペアを正確に1つだけ含める必要があります。その id では `[[routes]]`、`[[route_prefixes]]`、`server.default_provider` より優先され、provider のデフォルト `effort` は引き続き適用されます。空または複数 provider のマップ、未知の provider、同じ id の `[[routes]]` エントリ、マップ付きエントリの重複は起動エラーです。
+
+```toml
+[[models]]
+id = "claude-opus-4-8"
+display_name = "Claude Opus 4.8"
+
+[models.upstream_model]
+codex = "gpt-5.2"
+```
+
 | キー | 必須 | 意味 |
 | :-- | :-- | :-- |
 | `id` | ✅ | Claude Code に公開されるモデル id |
 | `display_name` | — | `/model` ピッカーに表示されるラベル |
+| `upstream_model` | — | 設定済み provider 名から上流モデル id への1エントリのマップ。`id` を直接ルーティング可能にする |
 
 ## `[sentry]`(任意)
 
@@ -194,4 +206,4 @@ headers = { "x-api-key" = "..." }
 
 ## ルーティング優先順位
 
-厳密な `[[routes]]` マッチ → `[[route_prefixes]]` プレフィックスマッチ → `server.default_provider`。
+一致する `[models.upstream_model]` エントリ → 厳密な `[[routes]]` マッチ → `[[route_prefixes]]` プレフィックスマッチ → `server.default_provider`。

@@ -113,6 +113,9 @@ provider = "openai"
 # [[models]]
 # id = "claude-opus-via-codex"
 # display_name = "Opus (via Codex)"
+#
+# [models.upstream_model] # optional: advertise, route, and translate in one entry
+# codex = "gpt-5.2"       # exactly one configured provider is supported
 
 # Optional: error reporting to your own Sentry project. Off unless a DSN is
 # set; nothing is ever sent by default. Only gateway-owned diagnostics are
@@ -614,17 +617,32 @@ Discovery (`GET /v1/models`) can populate `/model` automatically — **but Claud
 any id that doesn't begin with `claude`/`anthropic`** ([protocol
 reference](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery)). So a `gpt-*`
 id is dropped client-side no matter what; discovery is only useful when you expose a
-**Claude-named alias** that a `[[routes]]` entry rewrites to the real upstream slug:
+**Claude-named alias**. The alias can route and translate directly through a single-provider
+`[models.upstream_model]` table:
 
 ```toml
 [[models]]
 id = "claude-gpt-5.6-sol-via-codex"     # must begin with claude/anthropic
 display_name = "GPT-5.6-Sol (via Codex)"
 
+[models.upstream_model]
+codex = "gpt-5.6-sol"                   # provider = real upstream slug
+```
+
+This map takes precedence over `[[routes]]`, `[[route_prefixes]]`, and `server.default_provider`
+for the advertised id. It must name exactly one configured provider; an unknown provider, an empty
+or multi-provider map, or a same-id `[[routes]]` entry is a startup error. Existing map-less
+`[[models]]` entries can continue to use a separate route:
+
+```toml
+[[models]]
+id = "claude-gpt-5.6-sol-via-codex"
+display_name = "GPT-5.6-Sol (via Codex)"
+
 [[routes]]
-model = "claude-gpt-5.6-sol-via-codex"  # the alias Claude Code sends
+model = "claude-gpt-5.6-sol-via-codex"
 provider = "codex"
-upstream_model = "gpt-5.6-sol"          # real slug forwarded to the ChatGPT backend
+upstream_model = "gpt-5.6-sol"
 ```
 
 Then enable discovery (Claude Code v2.1.129+) and restart shunt + Claude Code:

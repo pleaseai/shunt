@@ -164,10 +164,22 @@ headers = { "x-api-key" = "..." }
 
 최상위 `auto_include_builtin_models` 키의 기본값은 `true`입니다. 활성화하면 shunt는 관리자가 선별한 `[[models]]` 항목을 먼저 반환한 뒤, 레퍼런스 Claude apps gateway를 미러링하는 내장 Claude 모델 카탈로그를 추가합니다. id가 정확히 같은 항목은 선별된 항목을 우선하여 중복을 제거합니다. `[[models]]` 목록만 노출하려면 `false`로 설정하세요. 내장 모델은 전용 `[[routes]]` 항목이 필요하지 않습니다. 일반 라우팅 규칙으로 해석되며, `[[routes]]`나 `[[route_prefixes]]` 어느 것에도 매칭되지 않을 때 `server.default_provider`로 폴백합니다.
 
+선별한 항목에 `[models.upstream_model]`을 추가하면 하나의 선언으로 id를 노출하고, 라우팅하고, 업스트림 id로 변환할 수 있습니다. 이 테이블에는 `provider = "upstream-id"` 쌍이 정확히 하나만 있어야 합니다. 해당 id에 대해서는 `[[routes]]`, `[[route_prefixes]]`, `server.default_provider`보다 우선하며 provider의 기본 `effort`는 그대로 적용됩니다. 비어 있거나 provider가 여러 개인 맵, 알 수 없는 provider, 같은 id의 `[[routes]]` 항목, 중복된 맵 보유 항목은 시작 오류입니다.
+
+```toml
+[[models]]
+id = "claude-opus-4-8"
+display_name = "Claude Opus 4.8"
+
+[models.upstream_model]
+codex = "gpt-5.2"
+```
+
 | 키 | 필수 | 의미 |
 | :-- | :-- | :-- |
 | `id` | ✅ | Claude Code에 노출되는 모델 id |
 | `display_name` | — | `/model` 선택기에 표시되는 레이블 |
+| `upstream_model` | — | 설정된 provider 이름에서 업스트림 모델 id로 이어지는 단일 항목 맵. `id`를 직접 라우팅할 수도 있게 함 |
 
 ## `[sentry]` (선택)
 
@@ -206,4 +218,4 @@ headers = { "x-api-key" = "..." }
 
 ## 라우팅 우선순위
 
-정확한 `[[routes]]` 일치 → `[[route_prefixes]]` 프리픽스 일치 → `server.default_provider`.
+일치하는 `[models.upstream_model]` 항목 → 정확한 `[[routes]]` 일치 → `[[route_prefixes]]` 프리픽스 일치 → `server.default_provider`.
