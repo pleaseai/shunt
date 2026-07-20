@@ -128,7 +128,9 @@ headers = { "x-api-key" = "..." }
 
 ## `[[routes]]`
 
-厳密一致のルーティングエントリ — 最初にチェックされます。
+レガシーな厳密一致ルーティングエントリ — 一致する `[models.upstream_model]` エントリの後にチェックされます。
+
+> **レガシー:** 厳密なモデル id には、`[[models]]` エントリと `[models.upstream_model]` の使用を推奨します。1つの信頼できる情報源で id のルーティングと公開を同時に行えます。`[[routes]]` は今後もサポートされますが、推奨する厳密ルーティング形式ではありません。
 
 | キー | 必須 | 意味 |
 | :-- | :-- | :-- |
@@ -152,7 +154,7 @@ headers = { "x-api-key" = "..." }
 
 トップレベルの `auto_include_builtin_models` キーはデフォルトで `true` です。有効な場合、shunt は管理者が選定した `[[models]]` エントリを先に返し、その後にリファレンス Claude apps gateway をミラーする組み込み Claude モデルカタログを追加します。同一 id は選定したエントリを優先して重複を除きます。`[[models]]` リストだけを公開するには `false` に設定してください。組み込みモデルは専用の `[[routes]]` エントリを必要としません。通常のルーティング規則で解決され、`[[routes]]` と `[[route_prefixes]]` のいずれにも一致しない場合は `server.default_provider` にフォールバックします。
 
-選定したエントリに `[models.upstream_model]` を追加すると、1つの宣言で id の公開、ルーティング、上流 id への変換を行えます。このテーブルには `provider = "upstream-id"` のペアを正確に1つだけ含める必要があります。その id では `[[routes]]`、`[[route_prefixes]]`、`server.default_provider` より優先され、provider のデフォルト `effort` は引き続き適用されます。空または複数 provider のマップ、未知の provider、同じ id の `[[routes]]` エントリ、マップ付きエントリの重複は起動エラーです。
+選定したエントリに `[models.upstream_model]` を追加すると、1つの宣言で id の公開、ルーティング、上流 id への変換を行えます。厳密な id のルーティングには、`[[routes]]` の代わりにこの形式を推奨します。このテーブルには `provider = "upstream-id"` のペアを正確に1つだけ含める必要があります。その id では `[[routes]]`、`[[route_prefixes]]`、`server.default_provider` より優先され、provider のデフォルト `effort` は引き続き適用されます。空または複数 provider のマップ、未知の provider、同じ id の `[[routes]]` エントリ、マップ付きエントリの重複は起動エラーです。
 
 ```toml
 [[models]]

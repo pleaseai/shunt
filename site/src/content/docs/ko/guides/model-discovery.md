@@ -20,7 +20,7 @@ display_name = "GPT-5.6-Sol (via Codex)"
 codex = "gpt-5.6-sol"
 ```
 
-이 별칭을 선택하면 `codex`로 라우팅하고 업스트림에는 `gpt-5.6-sol`을 보냅니다. 이 맵은 `[[routes]]`, `[[route_prefixes]]`, `server.default_provider`보다 우선합니다. 항목마다 설정된 provider 하나만 지원하며, 잘못된 맵이나 같은 id의 `[[routes]]` 항목은 시작 오류입니다.
+이 별칭을 선택하면 `codex`로 라우팅하고 업스트림에는 `gpt-5.6-sol`을 보냅니다. 이 맵은 별도의 `[[routes]]` 항목보다 권장되는 정확한 id 형식이며, `[[routes]]`, `[[route_prefixes]]`, `server.default_provider`보다 우선합니다. 항목마다 설정된 provider 하나만 지원하며, 잘못된 맵이나 같은 id의 `[[routes]]` 항목은 시작 오류입니다.
 
 ## 별도 라우트 사용
 

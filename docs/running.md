@@ -96,7 +96,8 @@ auth = "chatgpt_oauth"         # reuses ~/.codex/auth.json
 
 # --- Routing: how a request's `model` id picks a provider ---
 
-# Exact match wins first. `upstream_model` and `effort` are optional overrides.
+# Legacy exact-match form. `upstream_model` and `effort` are optional overrides.
+# Prefer [[models]] + [models.upstream_model] for exact ids.
 [[routes]]
 model = "gpt-5.6-sol"
 provider = "codex"

@@ -66,7 +66,8 @@ is the documented default. Discovery is only useful if shunt exposes a **Claude-
 - An optional `[models.upstream_model]` table unifies discovery and routing for that id: its single
   key names a configured provider and its value is the upstream model id. Map-bearing entries route
   before `[[routes]]`, `[[route_prefixes]]`, and `server.default_provider`; provider-level effort
-  still applies.
+  still applies. For exact-id routing, this is the recommended form; exact-match `[[routes]]` is a
+  legacy but indefinitely supported alternative.
 - Return the list envelope above from local config; no upstream call.
 - The top-level `auto_include_builtin_models` key mirrors the reference Claude apps gateway and
   defaults to `true`: append the builtin Claude catalog after `[[models]]`, deduplicating by exact

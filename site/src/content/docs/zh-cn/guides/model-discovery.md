@@ -20,7 +20,7 @@ display_name = "GPT-5.6-Sol (via Codex)"
 codex = "gpt-5.6-sol"
 ```
 
-选择该别名会将请求路由到 `codex`,并向上游发送 `gpt-5.6-sol`。此映射优先于 `[[routes]]`、`[[route_prefixes]]` 和 `server.default_provider`。每个条目目前只支持一个已配置的 provider;无效映射或同 id 的 `[[routes]]` 条目会导致启动错误。
+选择该别名会将请求路由到 `codex`,并向上游发送 `gpt-5.6-sol`。对于精确 id,此映射比单独的 `[[routes]]` 条目更值得推荐,并且优先于 `[[routes]]`、`[[route_prefixes]]` 和 `server.default_provider`。每个条目目前只支持一个已配置的 provider;无效映射或同 id 的 `[[routes]]` 条目会导致启动错误。
 
 ## 使用单独的路由
 

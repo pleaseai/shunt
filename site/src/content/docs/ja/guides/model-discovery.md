@@ -20,7 +20,7 @@ display_name = "GPT-5.6-Sol (via Codex)"
 codex = "gpt-5.6-sol"
 ```
 
-このエイリアスを選択すると `codex` へルーティングし、上流には `gpt-5.6-sol` を送ります。このマップは `[[routes]]`、`[[route_prefixes]]`、`server.default_provider` より優先されます。エントリごとに設定済み provider を1つだけ指定でき、不正なマップや同じ id の `[[routes]]` エントリは起動エラーです。
+このエイリアスを選択すると `codex` へルーティングし、上流には `gpt-5.6-sol` を送ります。このマップは別の `[[routes]]` エントリより推奨される厳密 id の形式であり、`[[routes]]`、`[[route_prefixes]]`、`server.default_provider` より優先されます。エントリごとに設定済み provider を1つだけ指定でき、不正なマップや同じ id の `[[routes]]` エントリは起動エラーです。
 
 ## 別のルートを使う
 

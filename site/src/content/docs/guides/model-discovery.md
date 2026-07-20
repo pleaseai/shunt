@@ -20,7 +20,7 @@ display_name = "GPT-5.6-Sol (via Codex)"
 codex = "gpt-5.6-sol"
 ```
 
-Selecting the alias routes it through `codex` and sends `gpt-5.6-sol` upstream. This map takes precedence over `[[routes]]`, `[[route_prefixes]]`, and `server.default_provider`. Exactly one configured provider is supported per entry; invalid maps and a same-id `[[routes]]` entry are startup errors.
+Selecting the alias routes it through `codex` and sends `gpt-5.6-sol` upstream. This map is the recommended exact-id form instead of a separate `[[routes]]` entry and takes precedence over `[[routes]]`, `[[route_prefixes]]`, and `server.default_provider`. Exactly one configured provider is supported per entry; invalid maps and a same-id `[[routes]]` entry are startup errors.
 
 ## Use a separate route
 

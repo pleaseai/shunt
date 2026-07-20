@@ -34,6 +34,7 @@ Prebuilt binaries (macOS/Linux, arm64/x64) are attached to each [GitHub release]
 
 ```toml
 # shunt.toml — route a gpt-* id to your ChatGPT subscription
+# [[routes]] is legacy for exact ids; prefer [models.upstream_model].
 [[routes]]
 model = "gpt-5.6-sol"
 provider = "codex"        # reuses `codex login`; use `openai` for OPENAI_API_KEY

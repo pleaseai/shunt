@@ -140,7 +140,9 @@ headers = { "x-api-key" = "..." }
 
 ## `[[routes]]`
 
-정확히 일치하는 라우팅 항목 — 먼저 확인됩니다:
+레거시 exact-match 라우팅 항목 — 일치하는 `[models.upstream_model]` 항목 다음에 확인됩니다:
+
+> **레거시:** 정확한 모델 id에는 `[[models]]` 항목과 `[models.upstream_model]`을 사용하는 편을 권장합니다. 하나의 원본에서 id를 라우팅하는 동시에 노출할 수 있습니다. `[[routes]]`는 계속 지원되지만 더 이상 권장되는 exact routing 형식은 아닙니다.
 
 | 키 | 필수 | 의미 |
 | :-- | :-- | :-- |
@@ -164,7 +166,7 @@ headers = { "x-api-key" = "..." }
 
 최상위 `auto_include_builtin_models` 키의 기본값은 `true`입니다. 활성화하면 shunt는 관리자가 선별한 `[[models]]` 항목을 먼저 반환한 뒤, 레퍼런스 Claude apps gateway를 미러링하는 내장 Claude 모델 카탈로그를 추가합니다. id가 정확히 같은 항목은 선별된 항목을 우선하여 중복을 제거합니다. `[[models]]` 목록만 노출하려면 `false`로 설정하세요. 내장 모델은 전용 `[[routes]]` 항목이 필요하지 않습니다. 일반 라우팅 규칙으로 해석되며, `[[routes]]`나 `[[route_prefixes]]` 어느 것에도 매칭되지 않을 때 `server.default_provider`로 폴백합니다.
 
-선별한 항목에 `[models.upstream_model]`을 추가하면 하나의 선언으로 id를 노출하고, 라우팅하고, 업스트림 id로 변환할 수 있습니다. 이 테이블에는 `provider = "upstream-id"` 쌍이 정확히 하나만 있어야 합니다. 해당 id에 대해서는 `[[routes]]`, `[[route_prefixes]]`, `server.default_provider`보다 우선하며 provider의 기본 `effort`는 그대로 적용됩니다. 비어 있거나 provider가 여러 개인 맵, 알 수 없는 provider, 같은 id의 `[[routes]]` 항목, 중복된 맵 보유 항목은 시작 오류입니다.
+선별한 항목에 `[models.upstream_model]`을 추가하면 하나의 선언으로 id를 노출하고, 라우팅하고, 업스트림 id로 변환할 수 있습니다. 정확한 id를 라우팅할 때는 `[[routes]]` 대신 이 형식을 권장합니다. 이 테이블에는 `provider = "upstream-id"` 쌍이 정확히 하나만 있어야 합니다. 해당 id에 대해서는 `[[routes]]`, `[[route_prefixes]]`, `server.default_provider`보다 우선하며 provider의 기본 `effort`는 그대로 적용됩니다. 비어 있거나 provider가 여러 개인 맵, 알 수 없는 provider, 같은 id의 `[[routes]]` 항목, 중복된 맵 보유 항목은 시작 오류입니다.
 
 ```toml
 [[models]]

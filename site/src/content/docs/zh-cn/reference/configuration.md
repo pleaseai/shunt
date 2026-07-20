@@ -128,7 +128,9 @@ headers = { "x-api-key" = "..." }
 
 ## `[[routes]]`
 
-精确匹配的路由条目 —— 最先检查:
+旧式的精确匹配路由条目 —— 在匹配的 `[models.upstream_model]` 条目之后检查:
+
+> **旧式:** 对于精确模型 id,建议使用 `[[models]]` 条目和 `[models.upstream_model]`;它能以单一事实来源同时路由并公开该 id。`[[routes]]` 将继续获得支持,但不再是推荐的精确路由形式。
 
 | 键 | 必需 | 含义 |
 | :-- | :-- | :-- |
@@ -152,7 +154,7 @@ headers = { "x-api-key" = "..." }
 
 顶层 `auto_include_builtin_models` 键默认为 `true`。启用后,shunt 会先返回管理员维护的 `[[models]]` 条目,再追加与参考 Claude apps gateway 保持一致的内置 Claude 模型目录。对于 id 完全相同的条目,会保留管理员维护的条目并去重。若只想公开 `[[models]]` 列表,请将其设为 `false`。内置模型不需要专门的 `[[routes]]` 条目;它们按常规路由规则解析,当 `[[routes]]` 与 `[[route_prefixes]]` 均未匹配时回退到 `server.default_provider`。
 
-在维护的条目中添加 `[models.upstream_model]`,即可通过同一声明公开 id、进行路由并转换为上游 id。该表必须只包含一个 `provider = "upstream-id"` 键值对。对于这个 id,它优先于 `[[routes]]`、`[[route_prefixes]]` 和 `server.default_provider`;provider 的默认 `effort` 仍会生效。空映射、多 provider 映射、未知 provider、同 id 的 `[[routes]]` 条目或重复的带映射条目都会导致启动错误。
+在维护的条目中添加 `[models.upstream_model]`,即可通过同一声明公开 id、进行路由并转换为上游 id。对于精确 id 路由,建议使用此形式而不是 `[[routes]]`。该表必须只包含一个 `provider = "upstream-id"` 键值对。对于这个 id,它优先于 `[[routes]]`、`[[route_prefixes]]` 和 `server.default_provider`;provider 的默认 `effort` 仍会生效。空映射、多 provider 映射、未知 provider、同 id 的 `[[routes]]` 条目或重复的带映射条目都会导致启动错误。
 
 ```toml
 [[models]]

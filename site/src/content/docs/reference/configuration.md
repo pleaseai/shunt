@@ -246,7 +246,9 @@ See [Anthropic Multi-Account](/guides/anthropic-multi-account/) for the complete
 
 ## `[[routes]]`
 
-Exact-match routing entries — checked first:
+Legacy exact-match routing entries — checked after a matching `[models.upstream_model]` entry:
+
+> **Legacy:** For exact model ids, prefer a `[[models]]` entry with `[models.upstream_model]`; it both routes and advertises the id as one source of truth. `[[routes]]` remains supported indefinitely, but is no longer the recommended exact-routing form.
 
 | Key | Required | Meaning |
 | :-- | :-- | :-- |
@@ -270,7 +272,7 @@ Entries returned by `GET /v1/models` for [model discovery](/guides/model-discove
 
 The top-level `auto_include_builtin_models` key defaults to `true`. When enabled, shunt returns these curated `[[models]]` entries first, then its builtin Claude catalog mirroring the reference Claude apps gateway, with exact-id duplicates removed in favor of the curated entry. Set it to `false` to expose only the `[[models]]` list. Builtin models need no dedicated `[[routes]]` entry — they resolve through your normal routing rules, falling back to `server.default_provider` when no `[[routes]]` or `[[route_prefixes]]` entry matches.
 
-A curated entry can include `[models.upstream_model]` to advertise, route, and translate one id in the same declaration. The table must contain exactly one `provider = "upstream-id"` pair. For that id it takes precedence over `[[routes]]`, `[[route_prefixes]]`, and `server.default_provider`; the provider's default `effort` still applies. An empty or multi-provider map, an unknown provider, a same-id `[[routes]]` entry, or duplicate map-bearing entries is a startup error.
+A curated entry can include `[models.upstream_model]` to advertise, route, and translate one id in the same declaration; this is the recommended form for exact-id routing instead of `[[routes]]`. The table must contain exactly one `provider = "upstream-id"` pair. For that id it takes precedence over `[[routes]]`, `[[route_prefixes]]`, and `server.default_provider`; the provider's default `effort` still applies. An empty or multi-provider map, an unknown provider, a same-id `[[routes]]` entry, or duplicate map-bearing entries is a startup error.
 
 ```toml
 [[models]]
