@@ -1,0 +1,25 @@
+site/src/content/docs/ko/getting-started/installation.md
+  s_5862a586417d57::t_f99224f8bc751f 6-9
+site/src/content/docs/ja/getting-started/installation.md
+  s_5862a586417d57::t_06612568fb3931 6-9
+site/src/content/docs/getting-started/installation.md
+  s_5862a586417d57::t_917e9dd42b35d3 6-9
+site/src/content/docs/zh-cn/getting-started/installation.md
+  s_5862a586417d57::t_f64ca2193776a7 6-9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "4a295501648097ff158d912789d88947987fec28",
+  "prompts": {},
+  "sessions": {
+    "s_5862a586417d57": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4b0c5c7f-2292-4a57-a05e-e2bf5a8cd46d",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
