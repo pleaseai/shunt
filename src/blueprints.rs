@@ -307,6 +307,8 @@ mod tests {
             "https://example.com/line\nbreak",
             "https://user@example.com/docs",
             "https://user:secret@example.com/docs",
+            "ftp://example.com/docs",
+            "file:///tmp/docs",
             "./relative",
             "foo/bar",
             "//example.com",
@@ -319,6 +321,18 @@ mod tests {
                     "accepted {value:?} as {kind:?}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn non_http_urls_follow_the_unknown_blueprint_path() {
+        for value in ["ftp://example.com/docs", "file:///tmp/docs"] {
+            let error = resolve(AddKind::Provider, value).unwrap_err().to_string();
+            assert!(
+                error.contains("unknown provider blueprint"),
+                "unexpected error for {value:?}: {error:?}"
+            );
+            assert!(!error.contains("invalid research URL"));
         }
     }
 
@@ -395,6 +409,34 @@ mod tests {
         assert!(output.contains("provider —"));
         for blueprint in BLUEPRINTS {
             assert!(output.contains(blueprint.slug));
+        }
+    }
+
+    #[test]
+    fn full_listing_displays_registered_aliases_without_empty_suffixes() {
+        let output = list();
+        for blueprint in BLUEPRINTS {
+            let line = output
+                .lines()
+                .find(|line| line.trim_start().starts_with(blueprint.slug))
+                .unwrap_or_else(|| panic!("missing listing line for {:?}", blueprint.slug));
+            if blueprint.aliases.is_empty() {
+                assert!(
+                    !line.contains("(alias:"),
+                    "unexpected alias suffix for {:?}: {line:?}",
+                    blueprint.slug
+                );
+            } else {
+                let expected = format!(
+                    "{} (alias: {})",
+                    blueprint.slug,
+                    blueprint.aliases.join(", ")
+                );
+                assert!(
+                    line.trim_start().starts_with(&expected),
+                    "missing alias display {expected:?} in {line:?}"
+                );
+            }
         }
     }
 

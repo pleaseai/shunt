@@ -137,16 +137,27 @@ fn add(kind: Option<AddKind>, name_or_url: Option<&str>, print: bool) -> anyhow:
     let stdout = std::io::stdout();
     write_add_output(stdout.lock(), output.as_bytes())?;
 
-    if let (false, true, Some(kind), Some(_)) =
-        (print, std::io::stderr().is_terminal(), kind, name_or_url)
-    {
-        let example = match kind {
-            AddKind::Upstream => "shunt add upstream kimi --print | claude",
-            AddKind::Provider => "shunt add provider https://example.com/docs --print | claude",
-        };
-        eprintln!("Hint: pipe this blueprint to an agent, for example: `{example}`");
+    if let (Some(kind), Some(_)) = (kind, name_or_url) {
+        if let Some(hint) = add_hint(kind, print, std::io::stderr().is_terminal()) {
+            eprintln!("{hint}");
+        }
     }
     Ok(())
+}
+
+fn add_hint(kind: AddKind, print: bool, is_tty: bool) -> Option<&'static str> {
+    if print || !is_tty {
+        return None;
+    }
+
+    Some(match kind {
+        AddKind::Upstream => {
+            "Hint: pipe this blueprint to an agent, for example: `shunt add upstream kimi --print | claude`"
+        }
+        AddKind::Provider => {
+            "Hint: pipe this blueprint to an agent, for example: `shunt add provider https://example.com/docs --print | claude`"
+        }
+    })
 }
 
 fn write_add_output(mut writer: impl Write, output: &[u8]) -> std::io::Result<()> {
@@ -532,6 +543,24 @@ mod tests {
 
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
+        }
+    }
+
+    #[test]
+    fn add_hint_is_emitted_for_each_kind_on_a_tty_without_print() {
+        let upstream = add_hint(AddKind::Upstream, false, true).unwrap();
+        assert!(upstream.contains("shunt add upstream kimi --print | claude"));
+
+        let provider = add_hint(AddKind::Provider, false, true).unwrap();
+        assert!(provider.contains("shunt add provider https://example.com/docs --print | claude"));
+    }
+
+    #[test]
+    fn add_hint_is_suppressed_for_print_or_non_tty_stderr() {
+        for kind in [AddKind::Upstream, AddKind::Provider] {
+            assert!(add_hint(kind, true, true).is_none());
+            assert!(add_hint(kind, false, false).is_none());
+            assert!(add_hint(kind, true, false).is_none());
         }
     }
 
