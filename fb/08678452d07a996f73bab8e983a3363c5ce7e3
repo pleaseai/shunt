@@ -1,0 +1,26 @@
+src/blueprints.rs
+  s_c469839fbc3f94::t_fbee7d5c6fcb7b 416-442
+  s_c469839fbc3f94::t_806475b076beaf 310-311
+  s_c469839fbc3f94::t_335e0d8989706f 328-338
+  s_c469839fbc3f94::t_06d0a0453877f4 327,415
+src/main.rs
+  s_c469839fbc3f94::t_690b19525db2bc 140-143,148-160
+  s_c469839fbc3f94::t_0262d41c029234 549-566
+  s_c469839fbc3f94::t_14f37a189f8cc9 161-162
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "fb08678452d07a996f73bab8e983a3363c5ce7e3",
+  "prompts": {},
+  "sessions": {
+    "s_c469839fbc3f94": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b950b702-c191-4963-99c9-c982a6a7e435",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
