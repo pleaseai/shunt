@@ -55,6 +55,7 @@ authorization = "Bearer <token>"
 | `shunt.codex_continuation` | カウンター | `provider`, `outcome` | Codex WebSocket continuation の hit または fallback。 |
 | `shunt.codex_client_events` | カウンター | `event` | サニタイズ済みイベント名ごとの Codex CLI analytics イベント。payload とプロパティは破棄される。 |
 | `shunt.upstream_retries` | カウンター | `provider`, `reason` | 回数制限付きの一時的な upstream retry。 |
+| `shunt.failover` | カウンター | `provider`, `state` | 順序付きアップストリームのフェイルオーバー遷移: `attempted`, `advanced`, `exhausted`。 |
 | `shunt.pool.quota_utilization` | ゲージ | `provider`, `window` | `5h`, `7d`, `7d_oi` ごとに、有効で観測済みかつ期限切れでない quota 値の最小 utilization。 |
 | `shunt.pool.rotations` | カウンター | `provider`, `reason` | アカウントからの切り替えと pool exhaustion の回数。 |
 

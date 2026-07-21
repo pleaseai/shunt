@@ -21,9 +21,9 @@ One entry is one failover unit: a named route with its own credential scope.
 | `name` | yes | Unique, non-empty, non-whitespace. The identity used by `upstream_model` maps, `[[routes]] provider`, `server.default_provider`, metrics, and the admin surface. |
 | `provider` | no | Built-in preset id (§1.2). Supplies defaults for `kind`, `base_url`, and `auth`; no preset overrides `count_tokens` (§1.2). |
 | `kind` | if no preset | Adapter protocol, unchanged enum (`anthropic`, `responses`, `cursor`). |
-| `base_url` | if no preset | As today. |
+| `base_url` | if no preset | Upstream base URL. For `kind = "cursor"`, this is the login/token-refresh surface only; inference uses the fixed agent host `https://agentn.global.api5.cursor.sh`, overridable only with `SHUNT_CURSOR_AGENT_BASE_URL`. |
 | `auth` | no | String or map (§1.3). Default: preset's default auth, else `passthrough`. |
-| other provider fields | no | `effort`, `count_tokens`, `websocket`, `tool_search`, `retry` — unchanged semantics, now per upstream. |
+| other provider fields | no | `effort`, `count_tokens`, `websocket`, `tool_search`, `retry` — unchanged semantics, now per upstream, except that normalized `retry` settings do not apply to the Cursor streaming turn. |
 
 Explicit fields always override preset-supplied values.
 
@@ -75,12 +75,14 @@ strict per-provider auth objects.
 - After load, each legacy provider becomes one implicit upstream named after
   its table key, in name-sorted order (today's `BTreeMap` iteration), flagged
   *unordered*.
-- Declaring both `[[upstreams]]` and any `[providers.*]` → hard error: use
-  exactly one.
+- Declaring both `[[upstreams]]` and any `[providers.*]` in the config file →
+  hard error: use exactly one file-layer declaration form. Environment variables
+  may override fields by normalized upstream/provider name under either form via
+  `SHUNT_PROVIDERS__<name>__<field>`; declare the ordered `[[upstreams]]` array in
+  the config file rather than trying to synthesize the whole array in one env var.
 - A multi-entry `upstream_model` map with legacy (unordered) providers → hard
   error whose message shows the exact rewrite (`[providers.codex]` →
   `[[upstreams]]` + `name = "codex"`). No silent alphabetical failover.
-- `SHUNT_` env-var overrides keep addressing entries by name under both forms.
 
 ### 1.5 Validation summary (new rules)
 
@@ -88,7 +90,7 @@ strict per-provider auth objects.
 2. Unknown `provider` preset → error listing presets.
 3. Without a preset, `kind` and `base_url` are required (as today).
 4. `auth` map: mode-specific strict fields; `account` xor `accounts`.
-5. Both `[[upstreams]]` and `[providers.*]` present → error.
+5. Both `[[upstreams]]` and `[providers.*]` present in the config file → error.
 6. `upstream_model` maps: existing per-entry rules (non-empty key/value, known
    upstream name, no `[1m]` suffix, no `[[routes]]` conflict) unchanged;
    multi-entry maps additionally require ordered `[[upstreams]]`.
@@ -215,9 +217,11 @@ Documented user-facing in the site guide; summarized here.
   shipped with this feature and called out in migration. In addition, every
   proxied response now carries the additive `x-gateway-upstream`,
   `x-gateway-model`, and `x-gateway-upstream-model` metadata headers. Finally,
-  a legacy single-account Codex chain whose attempts all fail before response
-  headers now returns the synthesized `all upstreams failed (N attempted)`
-  message described in §6.
+  on the Anthropic Messages route (`/v1/messages`), a Claude or Codex OAuth pool
+  of any size whose attempts all fail before response headers now returns the
+  synthesized `all upstreams failed (N attempted)` message described in §6.
+  The separate `[server.codex_endpoint]` inbound path is unaffected and keeps
+  `all Codex OAuth accounts failed before receiving an upstream response`.
 - **To adopt failover**: rewrite each `[providers.<name>]` table as an
   `[[upstreams]]` entry (`name = "<name>"`, same fields; fold
   `api_key_env`/`api_key_header`/`accounts` into the `auth` map), order
@@ -239,11 +243,14 @@ Documented user-facing in the site guide; summarized here.
   the remembered best failure; only relayed upstream statuses (`429`, `401`,
   `403`, `404`, and `5xx`) are remembered. If every attempt fails before
   headers, shunt therefore returns the synthesized `502 api_error`
-  `all upstreams failed (N attempted)`. In particular, a legacy single-account
-  Codex chain that previously returned
-  `all Codex OAuth accounts failed before receiving an upstream response` now
-  returns the synthesized message. This is a third migration behavior change
-  beyond the two deliberate changes originally listed in §5.
+  `all upstreams failed (N attempted)`. On the Anthropic Messages route this
+  outer-chain synthesis now replaces the pool-specific pre-header exhaustion
+  messages for Claude and Codex OAuth pools of any size:
+  `all Claude OAuth accounts failed before receiving an upstream response` and
+  `all Codex OAuth accounts failed before receiving an upstream response`.
+  `[server.codex_endpoint]` is unaffected and retains the latter Codex-specific
+  message. This is a third migration behavior change beyond the two deliberate
+  changes originally listed in §5.
 - **Local adapter errors do not fail over.** Gateway-originated errors that do
   not represent an upstream failure — for example auth misconfiguration,
   Cursor adapter-owned errors, or WebSocket header construction failures —

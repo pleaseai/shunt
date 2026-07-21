@@ -48,6 +48,9 @@ failover unit: a named route with its own credential scope. Declaration order
 is the global failover precedence.
 
 ```toml
+[server]
+default_provider = "anthropic-1"
+
 [[upstreams]]
 name = "anthropic-1"
 provider = "anthropic"                                # preset
@@ -88,10 +91,10 @@ The decision has four parts:
 2. **`auth` becomes string-or-map.** The map form absorbs the previous
    provider-level `api_key_env`, `api_key_header`, and `accounts` siblings and
    adds credential *scoping* for OAuth modes: `account = "x"` (single),
-   `accounts = [...]` (subset, full `AccountConfig` tables allowed), or no
-   narrowing (the whole account store; for `chatgpt_oauth` an empty store falls
-   back to the single-account `~/.codex/auth.json` path — today's pool
-   behavior). The string form `auth = "claude_oauth"` remains valid shorthand
+   `accounts = [...]` (non-empty subset, full `AccountConfig` tables allowed), or
+   no narrowing (the whole account store; an explicit `accounts = []` is
+   rejected; for `chatgpt_oauth` an empty store falls back to the single-account
+   `~/.codex/auth.json` path — today's pool behavior). The string form `auth = "claude_oauth"` remains valid shorthand
    for `{ mode = "claude_oauth" }`. The account pool is therefore preserved as the
    *intra-upstream* selection mechanism (quota-aware rotation, burn-rate
    avoidance, storm control), while the chain governs *inter-upstream*

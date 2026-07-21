@@ -115,6 +115,9 @@ headers = { "x-api-key" = "..." }
 `[[upstreams]]` 是命名上游的有序数组。声明顺序就是全局故障转移顺序；模型的 `[models.upstream_model]` 映射选择哪些条目参与。映射中的书写顺序不影响路由。
 
 ```toml
+[server]
+default_provider = "anthropic-primary"
+
 [[upstreams]]
 name = "anthropic-primary"
 provider = "anthropic"
@@ -143,9 +146,9 @@ codex-fallback = "gpt-5.2"
 | `name` | 是 | 非空且唯一的上游名称。路由、模型映射、`server.default_provider`、指标和管理界面都使用它。 |
 | `provider` | 未设置 `kind` + `base_url` 时 | 内置 preset。提供 `kind`、`base_url` 和默认 auth。显式字段覆盖 preset 值。 |
 | `kind` | 无 preset 时 | `anthropic`、`responses` 或 `cursor`。 |
-| `base_url` | 无 preset 时 | 上游 base URL。 |
+| `base_url` | 无 preset 时 | 上游 base URL。对于 `kind = "cursor"`，它仅用于登录/令牌刷新接口；推理使用固定的代理主机 `https://agentn.global.api5.cursor.sh`，且只能通过 `SHUNT_CURSOR_AGENT_BASE_URL` 覆盖。 |
 | `auth` | 否 | auth mode 字符串或特定于 mode 的映射。默认采用 preset 的 auth；没有 preset 时为 `passthrough`。 |
-| `effort`, `count_tokens`, `websocket`, `tool_search`, `retry` | 否 | 与旧式 provider 相同的按上游设置。preset 不会覆盖 `count_tokens`。 |
+| `effort`, `count_tokens`, `websocket`, `tool_search`, `retry` | 否 | 与旧式 provider 相同的按上游设置。preset 不会覆盖 `count_tokens`。Cursor 上游的 `retry` 也会被标准化，但不适用于 Cursor 流式推理请求。 |
 
 可用 preset 如下：
 
@@ -159,9 +162,9 @@ codex-fallback = "gpt-5.2"
 | `kimi` | `anthropic` | `https://api.moonshot.ai/anthropic` | `api_key`, env `MOONSHOT_API_KEY` |
 | `cursor` | `cursor` | `https://api2.cursor.sh` | `cursor_oauth` |
 
-`auth = "claude_oauth"` 这样的字符串是 `auth = { mode = "claude_oauth" }` 的简写。`api_key` 映射接受 `env`（除非 preset 已提供，否则必需）和 `header`（默认为 `bearer`，也可设为 `x_api_key`）。`claude_oauth` 与 `chatgpt_oauth` 映射可用 `account = "name"` 或 `accounts = [...]` 缩小范围，但不能同时设置两者。`accounts` 接受存储条目名称字符串和完整账户表；若省略两个范围字段，则扫描整个存储。若 ChatGPT 存储为空，`chatgpt_oauth` 仍会回退到 `~/.codex/auth.json`。`passthrough`、`xai_oauth`、`cursor_oauth` 映射只接受 `mode`；特定 mode 下的未知键会报错。
+`auth = "claude_oauth"` 这样的字符串是 `auth = { mode = "claude_oauth" }` 的简写。`api_key` 映射接受 `env`（除非 preset 已提供，否则必需）和 `header`（默认为 `bearer`，也可设为 `x_api_key`）。`claude_oauth` 与 `chatgpt_oauth` 映射可用 `account = "name"` 或 `accounts = [...]` 缩小范围，但不能同时设置两者。`accounts` 接受存储条目名称字符串和完整账户表；显式的 `accounts = []` 会被拒绝，而省略两个范围字段则扫描整个存储。若 ChatGPT 存储为空，`chatgpt_oauth` 仍会回退到 `~/.codex/auth.json`。`passthrough`、`xai_oauth`、`cursor_oauth` 映射只接受 `mode`；特定 mode 下的未知键会报错。
 
-不要同时声明 `[[upstreams]]` 与 `[providers.*]`：除非只使用其中一种声明形式，否则启动失败。旧式 `[providers.<name>]` 仍受支持，并会标准化为按名称排序的隐式上游。由于这种形式没有声明故障转移顺序，模型映射只能有零个或一个条目；向模型映射添加多个条目前，请迁移到 `[[upstreams]]`。
+不要在配置文件中同时声明 `[[upstreams]]` 与 `[providers.*]`：文件层同时存在这两种声明形式时，启动会失败。无论采用哪种形式，环境变量都可按标准化后的上游/provider 名称通过 `SHUNT_PROVIDERS__<name>__<field>` 覆盖单个字段。有序的 `[[upstreams]]` 数组本身应在配置文件中声明，不要试图用单个环境变量合成整个数组。旧式 `[providers.<name>]` 仍受支持，并会标准化为按名称排序的隐式上游。由于这种形式没有声明故障转移顺序，模型映射只能有零个或一个条目；向模型映射添加多个条目前，请迁移到 `[[upstreams]]`。
 
 ### 故障转移行为
 
@@ -177,7 +180,7 @@ codex-fallback = "gpt-5.2"
 
 1. 解析到同一物理 OAuth 账户的旧式 provider 现在会共享配额窗口、health、cooldown、refresh lock 和 in-flight admission 状态。池持久化键的 schema 已提升版本，因此现有 `state_path` 缓存会被忽略一次，池会经历一次冷启动。
 2. 每个代理响应都会新增上述三个 `x-gateway-*` metadata 头部。
-3. 若旧式单账户 Codex 链的所有尝试都在响应头之前失败，现在会返回 `all upstreams failed (N attempted)`，而不是 `all Codex OAuth accounts failed before receiving an upstream response`。
+3. 在 Anthropic Messages 路由（`/v1/messages`）上，无论 Claude 或 Codex OAuth 池的规模如何，若所有尝试都在响应头之前失败，现在都会返回 `all upstreams failed (N attempted)`，而不是该池专用的 `all Claude OAuth accounts failed before receiving an upstream response` 或 `all Codex OAuth accounts failed before receiving an upstream response`。单独的 `[server.codex_endpoint]` 入站路径不受影响，并保留 Codex 专用消息。
 
 要采用有序故障转移，请把每个 `[providers.<name>]` 表改写为同名 `[[upstreams]]` 条目，把 `api_key_env`、`api_key_header` 和 OAuth `accounts` 折入 `auth` 映射，按偏好顺序排列条目，然后把每个参与名称加入模型的 `upstream_model` 映射。
 
@@ -190,7 +193,7 @@ codex-fallback = "gpt-5.2"
 | 键 | 取值 | 含义 |
 | :-- | :-- | :-- |
 | `kind` | `anthropic` \| `responses` \| `cursor` | 上游协议 / 适配器。`anthropic` = Messages API(透传,可选择重新设置密钥);`responses` = Anthropic Messages 转换为 OpenAI Responses API;`cursor` = 原生 Cursor ConnectRPC/protobuf AgentService 适配器。 |
-| `base_url` | URL | 上游 base;shunt 追加端点路径。 |
+| `base_url` | URL | 上游 base；shunt 追加端点路径。对于 `kind = "cursor"`，它仅用于登录/令牌刷新接口，不会选择代理/推理主机。 |
 | `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `claude_oauth` \| `xai_oauth` \| `cursor_oauth` | `passthrough` 转发客户端自己的 credential;`api_key` 从 `api_key_env` 注入一个密钥;`chatgpt_oauth` 复用 `~/.codex/auth.json`;`claude_oauth` 从显式 Anthropic 账户中选择;`xai_oauth` 复用来自 `shunt login xai` 的 `~/.shunt/xai-auth.json`(仅经由 HTTPS 发送到 x.ai/grok.com 主机);`cursor_oauth` 复用 `~/.shunt/cursor-auth.json`(`shunt login cursor`)。 |
 | `api_key_env` | 环境变量名 | 当 `auth = "api_key"` 时,从何处读取密钥。 |
 | `api_key_header` | `bearer`(默认) \| `x_api_key` | 注入的密钥在哪个头部中发送。 |

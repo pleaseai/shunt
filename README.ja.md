@@ -54,7 +54,31 @@ claude                                              # /model -> pick gpt-5.6-sol
 
 ## プロバイダー
 
-プロバイダーは `[providers.<name>]` の TOML テーブルです。2 種類のアダプターでほとんどの上流をカバーします。`kind = "anthropic"`（上流が Anthropic Messages を話す場合。別のキーを付けてパススルー可能）と `kind = "responses"`（上流が OpenAI Responses API を話す場合。shunt が Anthropic Messages ⇄ Responses をストリーミング込みで変換）です。3 つ目のネイティブな種類である `kind = "cursor"` は、Cursor の ConnectRPC/protobuf AgentService をブリッジし、Cursor サブスクリプションを同じ Anthropic Messages インターフェース経由で利用できるようにします。
+プロバイダーは、順序付き `[[upstreams]]` エントリまたはレガシーな `[providers.<name>]` TOML テーブルです（YAML では、それぞれ対応する sequence または mapping のエントリ）。2 種類のアダプターでほとんどの上流をカバーします。`kind = "anthropic"`（上流が Anthropic Messages を話す場合。別のキーを付けてパススルー可能）と `kind = "responses"`（上流が OpenAI Responses API を話す場合。shunt が Anthropic Messages ⇄ Responses をストリーミング込みで変換）です。3 つ目のネイティブな種類である `kind = "cursor"` は、Cursor の ConnectRPC/protobuf AgentService をブリッジし、Cursor サブスクリプションを同じ Anthropic Messages インターフェース経由で利用できるようにします。
+
+順序付きアップストリームにより、プロバイダー間のフェイルオーバーが可能になります。宣言順が試行順となり、モデルの `upstream_model` マップが参加するエントリを選択して、公開 id を各バックエンドの id にマッピングします。
+
+```toml
+[server]
+default_provider = "anthropic-primary"
+
+[[upstreams]]
+name = "anthropic-primary"
+provider = "anthropic" # preset: kind, base_url, and default auth
+auth = { mode = "claude_oauth", account = "primary" }
+
+[[upstreams]]
+name = "codex-fallback"
+provider = "codex" # defaults to chatgpt_oauth
+
+[[models]]
+id = "claude-opus-4-8"
+[models.upstream_model]
+anthropic-primary = "claude-opus-4-8"
+codex-fallback = "gpt-5.6-sol"
+```
+
+このチェーンは `anthropic-primary`、次に `codex-fallback` を試行します。`auth` は mode 文字列またはマップを受け付け、`claude_oauth` と `chatgpt_oauth` のマップは `account = "name"` または `accounts = [...]` で認証情報の範囲を絞れます。レガシーな `[providers.<name>]` は引き続きサポートされ、名前順の暗黙的アップストリームになります。設定ファイル内で両方の形式を宣言しないでください。`[[upstreams]]` と `[providers.*]` の混在は設定エラーです。preset、失敗クラス、移行の詳細は [Configuration reference](https://shunt-docs.pages.dev/reference/configuration/) を参照してください。
 
 **標準搭載:**
 

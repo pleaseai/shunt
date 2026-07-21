@@ -121,7 +121,7 @@ Deleting a store-managed account through the admin web surface clears that ident
 | Credential-resolution failure | Cooldown 5 minutes and rotate. |
 | Other status (e.g. `400`) | Relay without failover; mark the account healthy. |
 
-Classification happens before the response body streams, so a mid-stream failure is never replayed. If the pool exhausts its attempts after receiving at least one upstream response, shunt relays a **translated** Anthropic-style error envelope built from that last response — the status (e.g. `429`) is preserved, but the body is re-shaped, not relayed verbatim. This is the opposite of the Anthropic pool, which relays the last upstream response byte-for-byte. If every account fails before any upstream response exists, shunt returns a gateway-owned `502` with the message `all Codex OAuth accounts failed before receiving an upstream response`.
+Classification happens before the response body streams, so a mid-stream failure is never replayed. If the pool exhausts its attempts after receiving at least one upstream response, shunt relays a **translated** Anthropic-style error envelope built from that last response — the status (e.g. `429`) is preserved, but the body is re-shaped, not relayed verbatim. This is the opposite of the Anthropic pool, which relays the last upstream response byte-for-byte. If every account fails before any upstream response exists, the normal Anthropic Messages route (`/v1/messages`) returns a gateway-owned `502 api_error` with `all upstreams failed (N attempted)`. The separate `[server.codex_endpoint]` inbound path is unaffected and retains `all Codex OAuth accounts failed before receiving an upstream response`.
 
 ## Request and response changes
 

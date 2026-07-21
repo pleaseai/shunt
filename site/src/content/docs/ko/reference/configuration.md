@@ -126,6 +126,9 @@ headers = { "x-api-key" = "..." }
 `[[upstreams]]`는 이름이 지정된 업스트림의 순서 있는 배열입니다. 선언 순서가 전역 페일오버 순서이며, 모델의 `[models.upstream_model]` 맵이 참여할 항목을 선택합니다. 맵에 적힌 텍스트 순서는 라우팅에 영향을 주지 않습니다.
 
 ```toml
+[server]
+default_provider = "anthropic-primary"
+
 [[upstreams]]
 name = "anthropic-primary"
 provider = "anthropic"
@@ -154,9 +157,9 @@ codex-fallback = "gpt-5.2"
 | `name` | 예 | 비어 있지 않은 고유 업스트림 이름. 라우트, 모델 맵, `server.default_provider`, 메트릭, 관리자 화면에서 사용합니다. |
 | `provider` | `kind`와 `base_url`을 직접 설정하지 않은 경우 | 내장 preset. `kind`, `base_url`, 기본 auth를 제공합니다. 명시한 필드가 preset 값을 덮어씁니다. |
 | `kind` | preset이 없는 경우 | `anthropic`, `responses`, `cursor` 중 하나. |
-| `base_url` | preset이 없는 경우 | 업스트림 base URL. |
+| `base_url` | preset이 없는 경우 | 업스트림 base URL. `kind = "cursor"`에서는 로그인/토큰 갱신 엔드포인트에만 사용됩니다. 추론은 고정 에이전트 호스트인 `https://agentn.global.api5.cursor.sh`를 사용하며, `SHUNT_CURSOR_AGENT_BASE_URL`로만 재정의할 수 있습니다. |
 | `auth` | 아니요 | auth mode 문자열 또는 mode별 맵. 기본값은 preset의 auth이며, preset도 없으면 `passthrough`입니다. |
-| `effort`, `count_tokens`, `websocket`, `tool_search`, `retry` | 아니요 | 레거시 provider에 설명된 것과 같은 업스트림별 설정. preset은 `count_tokens`를 덮어쓰지 않습니다. |
+| `effort`, `count_tokens`, `websocket`, `tool_search`, `retry` | 아니요 | 레거시 provider에 설명된 것과 같은 업스트림별 설정. preset은 `count_tokens`를 덮어쓰지 않습니다. Cursor 업스트림에서도 `retry`는 정규화되지만 Cursor 스트리밍 턴에는 적용되지 않습니다. |
 
 사용 가능한 preset은 다음과 같습니다.
 
@@ -170,9 +173,9 @@ codex-fallback = "gpt-5.2"
 | `kimi` | `anthropic` | `https://api.moonshot.ai/anthropic` | `api_key`, env `MOONSHOT_API_KEY` |
 | `cursor` | `cursor` | `https://api2.cursor.sh` | `cursor_oauth` |
 
-`auth = "claude_oauth"` 같은 문자열은 `auth = { mode = "claude_oauth" }`의 축약형입니다. `api_key` 맵은 `env`(preset이 제공하지 않으면 필수)와 `header`(기본 `bearer`, 또는 `x_api_key`)를 받습니다. `claude_oauth`와 `chatgpt_oauth` 맵은 `account = "name"` 또는 `accounts = [...]`로 범위를 좁힐 수 있지만 둘을 함께 쓸 수는 없습니다. `accounts`에는 스토어 항목 이름 문자열과 전체 계정 테이블을 넣을 수 있습니다. 두 범위 필드를 모두 생략하면 전체 스토어를 스캔합니다. ChatGPT 스토어가 비어 있으면 `chatgpt_oauth`는 기존 `~/.codex/auth.json` fallback을 유지합니다. `passthrough`, `xai_oauth`, `cursor_oauth` 맵에는 `mode`만 사용할 수 있으며, mode별로 알 수 없는 키는 오류입니다.
+`auth = "claude_oauth"` 같은 문자열은 `auth = { mode = "claude_oauth" }`의 축약형입니다. `api_key` 맵은 `env`(preset이 제공하지 않으면 필수)와 `header`(기본 `bearer`, 또는 `x_api_key`)를 받습니다. `claude_oauth`와 `chatgpt_oauth` 맵은 `account = "name"` 또는 `accounts = [...]`로 범위를 좁힐 수 있지만 둘을 함께 쓸 수는 없습니다. `accounts`에는 스토어 항목 이름 문자열과 전체 계정 테이블을 넣을 수 있습니다. 명시적인 `accounts = []`는 거부되며, 두 범위 필드를 모두 생략하면 전체 스토어를 스캔합니다. ChatGPT 스토어가 비어 있으면 `chatgpt_oauth`는 기존 `~/.codex/auth.json` fallback을 유지합니다. `passthrough`, `xai_oauth`, `cursor_oauth` 맵에는 `mode`만 사용할 수 있으며, mode별로 알 수 없는 키는 오류입니다.
 
-`[[upstreams]]`와 `[providers.*]`를 함께 선언하지 마세요. 정확히 한 가지 선언 형식만 사용하지 않으면 시작에 실패합니다. 레거시 `[providers.<name>]`는 계속 지원되며 이름순의 암시적 업스트림으로 정규화됩니다. 이 형식은 페일오버 순서를 선언하지 않으므로 모델 맵은 항목이 없거나 하나만 있어야 합니다. 모델 맵에 여러 항목을 추가하기 전에 `[[upstreams]]`로 전환하세요.
+구성 파일에서 `[[upstreams]]`와 `[providers.*]`를 함께 선언하지 마세요. 파일 계층에 두 선언 형식이 모두 있으면 시작에 실패합니다. 환경 변수는 어느 형식에서든 정규화된 업스트림/provider 이름을 기준으로 `SHUNT_PROVIDERS__<name>__<field>`를 사용해 개별 필드를 재정의할 수 있습니다. 순서가 있는 `[[upstreams]]` 배열 자체는 하나의 환경 변수로 합성하려 하지 말고 구성 파일에 선언하세요. 레거시 `[providers.<name>]`는 계속 지원되며 이름순의 암시적 업스트림으로 정규화됩니다. 이 형식은 페일오버 순서를 선언하지 않으므로 모델 맵은 항목이 없거나 하나만 있어야 합니다. 모델 맵에 여러 항목을 추가하기 전에 `[[upstreams]]`로 전환하세요.
 
 ### 페일오버 동작
 
@@ -188,7 +191,7 @@ codex-fallback = "gpt-5.2"
 
 1. 같은 물리적 OAuth 계정으로 해석되는 레거시 provider는 이제 quota window, health, cooldown, refresh lock, in-flight admission 상태를 공유합니다. 풀 영속화 키 스키마의 버전이 올라가므로 기존 `state_path` 캐시는 한 번 무시되고 풀은 한 번 cold start합니다.
 2. 모든 프록시 응답에 위의 `x-gateway-*` metadata 헤더 세 개가 추가됩니다.
-3. 모든 시도가 응답 헤더 전에 실패하는 레거시 단일 계정 Codex 체인은 이제 `all Codex OAuth accounts failed before receiving an upstream response` 대신 `all upstreams failed (N attempted)`를 반환합니다.
+3. Anthropic Messages 경로(`/v1/messages`)에서 Claude 또는 Codex OAuth 풀의 크기와 관계없이 모든 시도가 응답 헤더 전에 실패하면, 이제 풀별 메시지인 `all Claude OAuth accounts failed before receiving an upstream response` 또는 `all Codex OAuth accounts failed before receiving an upstream response` 대신 `all upstreams failed (N attempted)`를 반환합니다. 별도의 `[server.codex_endpoint]` 인바운드 경로는 영향을 받지 않으며 Codex 전용 메시지를 유지합니다.
 
 순서 있는 페일오버를 사용하려면 각 `[providers.<name>]` 테이블을 같은 이름의 `[[upstreams]]` 항목으로 바꾸고, `api_key_env`, `api_key_header`, OAuth `accounts`를 `auth` 맵 안으로 옮긴 뒤, 선호 순서대로 항목을 배치하고 모델의 `upstream_model` 맵에 참여할 이름을 각각 추가하세요.
 
@@ -201,7 +204,7 @@ codex-fallback = "gpt-5.2"
 | 키 | 값 | 의미 |
 | :-- | :-- | :-- |
 | `kind` | `anthropic` \| `responses` \| `cursor` | 업스트림 프로토콜 / 어댑터. `anthropic` = Messages API(패스스루, 선택적으로 키 재설정); `responses` = Anthropic Messages를 OpenAI Responses API로 변환; `cursor` = 네이티브 Cursor ConnectRPC/protobuf AgentService 어댑터. |
-| `base_url` | URL | 업스트림 base; shunt가 엔드포인트 경로를 붙입니다. |
+| `base_url` | URL | 업스트림 base; shunt가 엔드포인트 경로를 붙입니다. `kind = "cursor"`에서는 로그인/토큰 갱신 엔드포인트에만 사용되며 에이전트/추론 호스트를 선택하지 않습니다. |
 | `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `claude_oauth` \| `xai_oauth` \| `cursor_oauth` | `passthrough`는 클라이언트 본인의 credential을 전달; `api_key`는 `api_key_env`의 키를 주입; `chatgpt_oauth`는 `~/.codex/auth.json`을 재사용; `claude_oauth`는 명시적 Anthropic 계정에서 선택; `xai_oauth`는 `shunt login xai`의 `~/.shunt/xai-auth.json`을 재사용(HTTPS를 통한 x.ai/grok.com 호스트에만 전송); `cursor_oauth`는 `~/.shunt/cursor-auth.json`을 재사용(`shunt login cursor`). |
 | `api_key_env` | env 변수 이름 | `auth = "api_key"`일 때 키를 읽어오는 곳. |
 | `api_key_header` | `bearer`(기본) \| `x_api_key` | 주입된 키가 전송되는 헤더. |

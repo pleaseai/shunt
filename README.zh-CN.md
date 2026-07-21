@@ -54,7 +54,31 @@ claude                                              # /model -> 选择 gpt-5.6-s
 
 ## 提供方
 
-一个提供方就是一个 `[providers.<name>]` TOML 表(或 YAML `providers` 映射下的一个条目)。两种适配器类型即可覆盖大多数上游:`kind = "anthropic"`(上游讲 Anthropic Messages;透传,可选择换用不同的密钥)和 `kind = "responses"`(上游讲 OpenAI Responses API;shunt 在 Anthropic Messages ⇄ Responses 之间转换,含流式传输)。第三种原生类型 `kind = "cursor"` 桥接 Cursor 的 ConnectRPC/protobuf AgentService,使 Cursor 订阅可通过同一套 Anthropic-Messages 接口访问。
+一个提供方可以是有序的 `[[upstreams]]` 条目，也可以是旧式 `[providers.<name>]` TOML 表（在 YAML 中，分别对应 sequence 或 mapping 中的条目）。两种适配器类型即可覆盖大多数上游：`kind = "anthropic"`（上游讲 Anthropic Messages；透传，可选择换用不同的密钥）和 `kind = "responses"`（上游讲 OpenAI Responses API；shunt 在 Anthropic Messages ⇄ Responses 之间转换，含流式传输）。第三种原生类型 `kind = "cursor"` 桥接 Cursor 的 ConnectRPC/protobuf AgentService，使 Cursor 订阅可通过同一套 Anthropic-Messages 接口访问。
+
+有序上游支持跨提供方故障转移。声明顺序就是尝试顺序；模型的 `upstream_model` 映射选择参与的条目，并将其公开 id 映射到各后端的 id：
+
+```toml
+[server]
+default_provider = "anthropic-primary"
+
+[[upstreams]]
+name = "anthropic-primary"
+provider = "anthropic" # preset: kind, base_url, and default auth
+auth = { mode = "claude_oauth", account = "primary" }
+
+[[upstreams]]
+name = "codex-fallback"
+provider = "codex" # defaults to chatgpt_oauth
+
+[[models]]
+id = "claude-opus-4-8"
+[models.upstream_model]
+anthropic-primary = "claude-opus-4-8"
+codex-fallback = "gpt-5.6-sol"
+```
+
+该链先尝试 `anthropic-primary`，再尝试 `codex-fallback`。`auth` 接受 mode 字符串或映射；`claude_oauth` 与 `chatgpt_oauth` 映射可用 `account = "name"` 或 `accounts = [...]` 缩小凭据范围。旧式 `[providers.<name>]` 仍受支持，并会成为按名称排序的隐式上游。不要在配置文件中同时声明两种形式；混用 `[[upstreams]]` 与 `[providers.*]` 会导致配置错误。有关 preset、失败类别和迁移细节，请参阅[配置参考](https://shunt-docs.pages.dev/reference/configuration/)。
 
 **内置:**
 
