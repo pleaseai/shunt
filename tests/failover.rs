@@ -637,10 +637,10 @@ async fn passthrough_failover_does_not_replay_client_credential_to_next_host() {
     if !can_bind_loopback() {
         return;
     }
-    // Two passthrough upstreams on different hosts. The caller's credential is
-    // host-specific to the first upstream, so on failover it must not be replayed
-    // to the second host: only the first attempt carries it, and the second
-    // attempt fails closed with the credential stripped.
+    // Two passthrough upstreams on different hosts (origins). The caller's
+    // credential is origin-specific to the first upstream, so on failover to a
+    // different origin it must not be replayed: the second attempt fails closed
+    // with the credential stripped.
     let first = MockServer::start().await;
     let second = MockServer::start().await;
     Mock::given(method("POST"))
@@ -681,6 +681,51 @@ async fn passthrough_failover_does_not_replay_client_credential_to_next_host() {
     assert_eq!(response.text().await.unwrap(), "no-replay");
     first.verify().await;
     second.verify().await;
+}
+
+#[tokio::test]
+async fn passthrough_failover_keeps_client_credential_on_the_same_origin() {
+    if !can_bind_loopback() {
+        return;
+    }
+    // Two passthrough entries on the *same* origin (e.g. a model fallback on one
+    // host). The caller's credential is valid for both, so failover must keep it:
+    // the origin never changes, so no stripping happens. A mock that requires the
+    // credential and expects two hits proves both same-origin attempts carried it.
+    let origin = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(header("authorization", "Bearer client-upstream"))
+        .and(header("x-api-key", "client-api-key"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("same-origin-500"))
+        .expect(2)
+        .mount(&origin)
+        .await;
+    let config = chain_config(
+        vec![
+            passthrough("primary", origin.uri()),
+            passthrough("fallback", origin.uri()),
+        ],
+        &[("primary", "model-a"), ("fallback", "model-b")],
+    );
+    let gateway = start_gateway(config).await;
+
+    let response = post_path(
+        &gateway,
+        "/v1/messages",
+        &[
+            ("authorization", "Bearer client-upstream"),
+            ("x-api-key", "client-api-key"),
+        ],
+    )
+    .await;
+
+    // Both same-origin attempts advanced on 500 with the credential intact (the
+    // credential-requiring mock was hit twice), so the chain exhausts and returns
+    // the best relayed failure — the first 500. If the fallback had been stripped
+    // into a 401 the mock would have been hit only once and `verify` would fail.
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_gateway_headers(&response, "primary", "model-a");
+    origin.verify().await;
 }
 
 #[tokio::test]

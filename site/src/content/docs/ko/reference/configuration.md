@@ -183,7 +183,7 @@ codex-fallback = "gpt-5.2"
 
 체인을 모두 시도하면 `429` → `401`/`403` → `404` → 기타 `5xx` 우선순위로 가장 적합한 릴레이 실패를 반환합니다. 헤더 이전 실패는 최종 후보로 기억하지 않습니다. 기억한 릴레이 응답이 없으면 `all upstreams failed (N attempted)` 메시지의 `502 api_error`를 반환합니다.
 
-`passthrough` 업스트림에서는 클라이언트 자신의 `authorization` / `x-api-key`가 **첫 번째** 시도에만 전달됩니다. 이 자격 증명은 기본 업스트림에 대한 호스트 전용이므로, 다른 호스트로의 후속 `passthrough` 시도는 이를 제거하고 페일클로즈(fail closed)하여 호스트 전용 토큰을 다른 출처로 재전송하지 않습니다. `api_key`/OAuth 업스트림은 위치와 무관하게 자체 서버 측 자격 증명을 주입합니다.
+`passthrough` 업스트림에서는 클라이언트 자신의 `authorization` / `x-api-key`가 대상 origin이 기본 업스트림과 일치하는 동안에만 전달됩니다. 이 자격 증명은 origin 전용이므로, **다른** origin으로의 `passthrough` 페일오버 시도는 이를 제거하고 페일클로즈(fail closed)하여 호스트 전용 토큰을 다른 출처로 재전송하지 않습니다. 동일 origin 폴백(예: 한 호스트의 passthrough 항목 2개)은 계속 자격 증명을 유지합니다. `api_key`/OAuth 업스트림은 위치와 무관하게 자체 서버 측 자격 증명을 주입합니다.
 
 프록시한 성공 응답과 최종 실패에는 모두 `x-gateway-upstream`(선택한 업스트림 이름), `x-gateway-model`(클라이언트가 요청한 id), `x-gateway-upstream-model`(매핑된 백엔드 id)이 포함됩니다. `count_tokens`는 체인의 첫 항목만 사용하며 페일오버하지 않습니다. `[server.codex_endpoint]`는 설정된 업스트림 하나에 고정되며 이 체인에 참여하지 않습니다.
 

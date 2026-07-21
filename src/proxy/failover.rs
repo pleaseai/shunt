@@ -74,11 +74,19 @@ pub(super) async fn forward(
         .last()
         .expect("route chains are non-empty after resolution")
         .clone();
+    // Origin the caller's credential was presented for: a passthrough failover
+    // attempt keeps the credential only while its origin matches this one.
+    let primary_origin = provider_origin(&state, &first_route.provider);
     let mut remembered: Option<RememberedFailure> = None;
     for (index, route) in routes.into_iter().enumerate() {
         crate::metrics::record_failover(&route.provider, "attempted");
-        let attempt_headers =
-            headers_for_route(&state, &route, &base_headers, &inbound, index == 0);
+        let attempt_headers = headers_for_route(
+            &state,
+            &route,
+            &base_headers,
+            &inbound,
+            primary_origin.as_deref(),
+        );
         let provider = route.provider.clone();
         let model = route.model.clone();
         let upstream_model = route.upstream_model.clone();
@@ -236,7 +244,16 @@ async fn count_tokens_response(
             CountTokens::Estimate => count_tokens_unsupported(),
         })
     } else {
-        let headers = headers_for_route(&state, &route, base_headers, inbound, true);
+        // Single element (count_tokens uses only the first chain entry), so its
+        // own origin is the primary origin — the caller's credential is kept.
+        let primary_origin = provider_origin(&state, &route.provider);
+        let headers = headers_for_route(
+            &state,
+            &route,
+            base_headers,
+            inbound,
+            primary_origin.as_deref(),
+        );
         dispatch(state, route, uri, &headers, body).await
     };
     match result {
@@ -391,10 +408,11 @@ struct InboundContext {
 }
 
 /// Authenticate once against the whole route chain. Client credential stripping
-/// is deferred to [`headers_for_route`] so the *first* passthrough attempt retains
-/// the caller's upstream credential while credential-injecting attempts cannot leak
-/// it. On failover, later passthrough attempts also strip the caller's credential
-/// so a host-specific token is never replayed to a different upstream host.
+/// is deferred to [`headers_for_route`] so a passthrough attempt retains the
+/// caller's upstream credential while credential-injecting attempts cannot leak
+/// it. On failover, a passthrough attempt keeps the credential only while its
+/// origin matches the primary upstream's, so a host-specific token is never
+/// replayed to a different origin (a same-origin fallback still carries it).
 fn check_inbound_auth(
     state: &AppState,
     routes: &[routing::Route],
@@ -469,20 +487,26 @@ fn headers_for_route(
     route: &routing::Route,
     base: &HeaderMap,
     inbound: &InboundContext,
-    is_first_attempt: bool,
+    primary_origin: Option<&str>,
 ) -> HeaderMap {
     let injects_credential = state
         .config
         .provider(&route.provider)
         .is_some_and(|provider| provider.auth != AuthMode::Passthrough);
     if !injects_credential {
-        // Passthrough forwards the caller's own upstream credential. Only the
-        // first attempt keeps it: the credential is host-specific to the primary
-        // upstream, so replaying it to a *different* host on failover would leak
-        // it outside its intended origin. Later passthrough attempts strip it and
-        // fail closed rather than replay it.
+        // Passthrough forwards the caller's own upstream credential. That
+        // credential is origin-specific to the primary upstream, so it is kept
+        // only while the destination origin matches the primary's: a failover
+        // attempt to a *different* origin strips `authorization` / `x-api-key`
+        // and fails closed rather than replay a host-specific token off-origin.
+        // A same-origin failover (e.g. two passthrough entries on one host)
+        // still carries the credential, so that fallback keeps working.
         let mut headers = base.clone();
-        if !is_first_attempt {
+        let same_origin = matches!(
+            (primary_origin, provider_origin(state, &route.provider).as_deref()),
+            (Some(primary), Some(this)) if primary == this
+        );
+        if !same_origin {
             headers.remove("authorization");
             headers.remove("x-api-key");
         }
@@ -502,6 +526,20 @@ fn headers_for_route(
         }
     }
     headers
+}
+
+/// The origin (scheme + host + port) of a provider's `base_url`, used to decide
+/// whether a passthrough failover attempt targets the same origin the caller's
+/// credential was presented for. `None` when the provider is unknown, its
+/// `base_url` cannot be parsed, or the URL has an opaque origin — callers treat
+/// that as "origin changed" and strip the credential (fail closed).
+fn provider_origin(state: &AppState, provider: &str) -> Option<String> {
+    let base_url = state.config.provider(provider)?.base_url.as_str();
+    let origin = reqwest::Url::parse(base_url)
+        .ok()?
+        .origin()
+        .ascii_serialization();
+    (origin != "null").then_some(origin)
 }
 
 fn stamp_gateway_headers(

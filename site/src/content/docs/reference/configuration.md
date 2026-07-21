@@ -230,7 +230,7 @@ For a multi-entry model map, shunt filters the declared upstream sequence to the
 
 When the chain is exhausted, shunt returns the best relayed failure with preference `429` → `401`/`403` → `404` → other `5xx`. Pre-header failures are not remembered as best failures. If no relayed response was remembered, shunt returns a `502 api_error` with `all upstreams failed (N attempted)`.
 
-For a `passthrough` upstream, the client's own `authorization` / `x-api-key` is forwarded to the **first** attempt only. That credential is host-specific to the primary upstream, so a later `passthrough` attempt on a different host strips it and fails closed rather than replaying a host-specific token to another origin; `api_key`/OAuth upstreams inject their own server-side credential regardless of position.
+For a `passthrough` upstream, the client's own `authorization` / `x-api-key` is forwarded only while the destination origin matches the primary upstream's. That credential is origin-specific, so a `passthrough` failover attempt on a **different** origin strips it and fails closed rather than replaying a host-specific token to another origin; a same-origin fallback (e.g. two passthrough entries on one host) still carries it. `api_key`/OAuth upstreams inject their own server-side credential regardless of position.
 
 Every proxied success or final failure carries `x-gateway-upstream` (selected upstream name), `x-gateway-model` (client-requested id), and `x-gateway-upstream-model` (mapped backend id). `count_tokens` uses only the first chain element and never fails over. `[server.codex_endpoint]` remains pinned to its configured upstream and does not participate in this chain.
 
