@@ -21,11 +21,13 @@ use std::{fs, io, path::Path, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{accounts::QuotaState, server::AppState};
+use crate::{
+    accounts::{AccountKey, QuotaState},
+    server::AppState,
+};
 
-/// Bump when the on-disk shape changes incompatibly; a file whose version does
-/// not match is ignored (cold start) rather than mis-parsed.
-const STATE_VERSION: u32 = 1;
+/// Version 2 replaces the provider-name key with the physical-account key.
+const STATE_VERSION: u32 = 2;
 
 /// How often the background task flushes dirty quota to disk. A restart loses at
 /// most this much of the newest quota, which the next response re-derives anyway.
@@ -38,12 +40,10 @@ struct PersistedPool {
     accounts: Vec<PersistedAccount>,
 }
 
-/// One account's persisted quota, keyed by the same `(provider, identity)` the
-/// pool uses internally ([`crate::accounts::account_identity`]).
+/// One physical account's persisted quota.
 #[derive(Debug, Serialize, Deserialize)]
 struct PersistedAccount {
-    provider: String,
-    identity: String,
+    key: AccountKey,
     quota: QuotaState,
 }
 
@@ -69,7 +69,7 @@ pub async fn restore(state: &AppState) {
                 persisted
                     .accounts
                     .into_iter()
-                    .map(|account| (account.provider, account.identity, account.quota)),
+                    .map(|account| (account.key, account.quota)),
             );
             tracing::info!(
                 path = %path.display(),
@@ -133,11 +133,7 @@ async fn flush(state: &AppState) {
             accounts: accounts
                 .export_quotas()
                 .into_iter()
-                .map(|(provider, identity, quota)| PersistedAccount {
-                    provider,
-                    identity,
-                    quota,
-                })
+                .map(|(key, quota)| PersistedAccount { key, quota })
                 .collect(),
         };
         save(&path, &persisted)
@@ -209,8 +205,7 @@ mod tests {
         PersistedPool {
             version: STATE_VERSION,
             accounts: vec![PersistedAccount {
-                provider: "anthropic".to_string(),
-                identity: "acct-a".to_string(),
+                key: crate::accounts::account_key("anthropic", &account("acct-a")),
                 quota: QuotaState {
                     utilization_5h: Some(0.42),
                     reset_5h: Some(9_999_999_999),
@@ -262,12 +257,14 @@ mod tests {
         let loaded = load(&path).expect("load succeeds").expect("file present");
         assert_eq!(loaded.version, STATE_VERSION);
         assert_eq!(loaded.accounts.len(), 1);
-        let account = &loaded.accounts[0];
-        assert_eq!(account.provider, "anthropic");
-        assert_eq!(account.identity, "acct-a");
-        assert_eq!(account.quota.utilization_5h, Some(0.42));
-        assert_eq!(account.quota.reset_5h, Some(9_999_999_999));
-        assert_eq!(account.quota.status.as_deref(), Some("allowed"));
+        let persisted_account = &loaded.accounts[0];
+        assert_eq!(
+            persisted_account.key,
+            crate::accounts::account_key("anthropic", &account("acct-a"))
+        );
+        assert_eq!(persisted_account.quota.utilization_5h, Some(0.42));
+        assert_eq!(persisted_account.quota.reset_5h, Some(9_999_999_999));
+        assert_eq!(persisted_account.quota.status.as_deref(), Some("allowed"));
 
         remove_test_dir(&path);
     }
@@ -279,8 +276,7 @@ mod tests {
         let replacement = PersistedPool {
             version: STATE_VERSION,
             accounts: vec![PersistedAccount {
-                provider: "codex".to_string(),
-                identity: "acct-b".to_string(),
+                key: crate::accounts::account_key("codex", &account("acct-b")),
                 quota: QuotaState {
                     status: Some("weekly".to_string()),
                     ..Default::default()
@@ -291,8 +287,14 @@ mod tests {
 
         let loaded = load(&path).expect("load succeeds").expect("file present");
         assert_eq!(loaded.accounts.len(), 1);
-        assert_eq!(loaded.accounts[0].provider, "codex");
-        assert_eq!(loaded.accounts[0].identity, "acct-b");
+        assert_eq!(
+            loaded.accounts[0].key,
+            crate::accounts::account_key("codex", &account("acct-b"))
+        );
+        assert_eq!(
+            loaded.accounts[0].key.identity,
+            crate::accounts::account_key("codex", &account("acct-b")).identity
+        );
         assert_eq!(loaded.accounts[0].quota.status.as_deref(), Some("weekly"));
         remove_test_dir(&path);
     }
@@ -328,8 +330,7 @@ mod tests {
         fs::create_dir(&path).expect("target directory makes rename fail");
         let state = state_with_path(path.clone());
         state.accounts.import_quotas([(
-            "anthropic".to_string(),
-            "acct-a".to_string(),
+            crate::accounts::account_key("anthropic", &account("acct-a")),
             sample_pool().accounts.remove(0).quota,
         )]);
         state.accounts.mark_dirty();
@@ -370,7 +371,11 @@ mod tests {
             ("missing", None),
             ("corrupt", Some(b"{ this is not json".to_vec())),
             (
-                "version",
+                "old-version",
+                Some(b"{\"version\":1,\"accounts\":[]}".to_vec()),
+            ),
+            (
+                "future-version",
                 Some(format!("{{\"version\":{},\"accounts\":[]}}", STATE_VERSION + 1).into_bytes()),
             ),
         ] {
@@ -396,8 +401,7 @@ mod tests {
         let expired = PersistedPool {
             version: STATE_VERSION,
             accounts: vec![PersistedAccount {
-                provider: "anthropic".to_string(),
-                identity: "acct-a".to_string(),
+                key: crate::accounts::account_key("anthropic", &account("acct-a")),
                 quota: QuotaState {
                     utilization_5h: Some(1.0),
                     reset_5h: Some(1),

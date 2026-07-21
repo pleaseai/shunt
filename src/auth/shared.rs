@@ -19,7 +19,7 @@ use rand::RngCore;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::config::AccountConfig;
+use crate::{accounts::StoreFamily, config::AccountConfig};
 
 const EXPIRY_BUFFER: Duration = Duration::from_secs(5 * 60);
 
@@ -228,6 +228,7 @@ pub fn scan_account_dir(
             .map(|(name, path)| AccountConfig {
                 name,
                 uuid: uuid_for(&path),
+                store_entry: true,
                 ..Default::default()
             })
             .collect()
@@ -260,6 +261,7 @@ pub fn scan_account_dir_strict(
             Ok(AccountConfig {
                 name,
                 uuid,
+                store_entry: true,
                 ..Default::default()
             })
         })
@@ -296,38 +298,108 @@ pub fn scan_account_dir_strict(
 pub(crate) async fn resolve_pool_accounts(
     provider_label: &str,
     configured: &[AccountConfig],
+    account_scope: &[String],
+    store_family: StoreFamily,
     accounts_dir: PathBuf,
     scan: fn() -> io::Result<Vec<AccountConfig>>,
 ) -> Result<Vec<AccountConfig>, String> {
-    if !configured.is_empty() {
-        return Ok(configured.to_vec());
+    let mut accounts = if !configured.is_empty() && account_scope.is_empty() {
+        configured.to_vec()
+    } else {
+        // The stat + scan are both synchronous file I/O, so run the whole thing on
+        // the blocking pool — never on a runtime worker thread. The closure still
+        // short-circuits on genuine absence (a cheap stat, no `read_dir`); any other
+        // stat error is surfaced, not masked as "no accounts".
+        let scan_dir = accounts_dir.clone();
+        let provider = provider_label.to_string();
+        let scanned = tokio::task::spawn_blocking(move || {
+            // One stat serves two purposes: the #118 `NotFound` short-circuit (no
+            // `read_dir` when the store is genuinely absent) and the cache signal
+            // (the store directory's mtime). Reusing it keeps steady-state discovery
+            // at one stat and zero credential-file reads.
+            let modified = match fs::metadata(&scan_dir) {
+                Ok(meta) => meta.modified().ok(),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+                Err(error) => return Err(error),
+            };
+            scan_cached(&provider, &scan_dir, modified, scan)
+        })
+        .await
+        .map_err(|error| format!("{provider_label} account store scan task failed: {error}"))?
+        .map_err(|error| {
+            format!(
+                "failed to scan {provider_label} account store {}: {error}",
+                accounts_dir.display()
+            )
+        })?;
+
+        if account_scope.is_empty() {
+            scanned
+        } else {
+            let by_name = scanned
+                .into_iter()
+                .map(|account| (account.name.clone(), account))
+                .collect::<HashMap<_, _>>();
+            let mut scoped = Vec::with_capacity(account_scope.len() + configured.len());
+            for name in account_scope {
+                if let Some(account) = by_name.get(name) {
+                    scoped.push(account.clone());
+                } else {
+                    return Err(format!(
+                        "{provider_label} account scope references missing store account {name:?}"
+                    ));
+                }
+            }
+            scoped.extend_from_slice(configured);
+            scoped
+        }
+    };
+    // Assign the store family inline — that touches no I/O — and try to fill each
+    // UUID-less inline account from the warm identity cache. `cached_inline_identity`
+    // is a pure in-memory lookup (no credential read, no `stat`, no env lock), so an
+    // already-resolved inline account is answered here without any blocking I/O on
+    // the runtime worker. Only a not-yet-resolved (cold-cache) credential leaves
+    // `needs_resolution` set.
+    let mut needs_resolution = false;
+    for account in &mut accounts {
+        account.store_family = Some(store_family);
+        if account.store_entry
+            || account
+                .uuid
+                .as_deref()
+                .is_some_and(|id| !id.trim().is_empty())
+        {
+            continue;
+        }
+        match cached_inline_identity(store_family, account) {
+            Some(identity) => account.uuid = Some(identity),
+            None => needs_resolution = true,
+        }
     }
-    // The stat + scan are both synchronous file I/O, so run the whole thing on
-    // the blocking pool — never on a runtime worker thread. The closure still
-    // short-circuits on genuine absence (a cheap stat, no `read_dir`); any other
-    // stat error is surfaced, not masked as "no accounts".
-    let scan_dir = accounts_dir.clone();
-    let provider = provider_label.to_string();
-    let scanned = tokio::task::spawn_blocking(move || {
-        // One stat serves two purposes: the #118 `NotFound` short-circuit (no
-        // `read_dir` when the store is genuinely absent) and the cache signal
-        // (the store directory's mtime). Reusing it keeps steady-state discovery
-        // at one stat and zero credential-file reads.
-        let modified = match fs::metadata(&scan_dir) {
-            Ok(meta) => meta.modified().ok(),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(error),
-        };
-        scan_cached(&provider, &scan_dir, modified, scan)
+    // Everything already known (the steady state) stays entirely on the async path
+    // and never queues a blocking-pool task. Only hop to the blocking pool for the
+    // cold credentials, whose file read (and env lookup) must not run on a runtime
+    // worker thread; results are memoized for the process lifetime (see
+    // [`inline_identity_cache`]).
+    if !needs_resolution {
+        return Ok(accounts);
+    }
+    let accounts = tokio::task::spawn_blocking(move || {
+        for account in &mut accounts {
+            if !account.store_entry
+                && account
+                    .uuid
+                    .as_deref()
+                    .is_none_or(|id| id.trim().is_empty())
+            {
+                account.uuid = resolve_inline_identity(store_family, account);
+            }
+        }
+        accounts
     })
     .await
-    .map_err(|error| format!("{provider_label} account store scan task failed: {error}"))?;
-    scanned.map_err(|error| {
-        format!(
-            "failed to scan {provider_label} account store {}: {error}",
-            accounts_dir.display()
-        )
-    })
+    .map_err(|error| format!("{provider_label} inline identity resolution task failed: {error}"))?;
+    Ok(accounts)
 }
 
 /// One cached scan result: the accounts a scan produced and the store directory
@@ -347,6 +419,142 @@ struct CachedScan {
 fn scan_cache() -> &'static Mutex<HashMap<(String, PathBuf), CachedScan>> {
     static CACHE: OnceLock<Mutex<HashMap<(String, PathBuf), CachedScan>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Cache key for an inline account's resolved upstream identity. Inline
+/// `[[accounts]]` come from static config, so the credential path / env token
+/// that yields an account's identity is fixed for the process lifetime, and the
+/// identity itself (`shuntAccountUuid` / `chatgpt_account_id`) is stable across
+/// token refreshes. The store family is part of the key because the two stores
+/// read different identity fields out of the same credential path.
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum InlineIdentityKey {
+    Credentials { family: StoreFamily, path: String },
+    TokenEnv { name: String },
+}
+
+/// Process-wide memo of resolved inline-account identities. Inline `[[accounts]]`
+/// come from static config, so an account's credential path / env token — and
+/// the identity it yields (`shuntAccountUuid` / `chatgpt_account_id`, stable
+/// across token refreshes) — is fixed for the process (config generation).
+/// Resolution therefore memoizes for the process lifetime: the first request
+/// reads the credential once on the blocking pool, and every later request is
+/// answered from memory with **no filesystem I/O at all** — no read and no
+/// `stat` — so a slow or unavailable credential filesystem can never stall a
+/// runtime worker on the request hot path. Only successful (`Some`) resolutions
+/// are stored, so a briefly-missing or unreadable credential file is retried on
+/// the next request instead of being permanently masked. Caveat: because there
+/// is no per-request probe, re-provisioning an inline credential *file* to a
+/// different OAuth account is not observed mid-flight — it is picked up on the
+/// next config reload, which clears this memo (see
+/// [`clear_inline_identity_cache`], called from `crate::reload::reload`), or on a
+/// process restart. That is acceptable for static config, and the price of
+/// keeping the request path free of blocking I/O.
+fn inline_identity_cache() -> &'static Mutex<HashMap<InlineIdentityKey, String>> {
+    static CACHE: OnceLock<Mutex<HashMap<InlineIdentityKey, String>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Drop every memoized inline identity so the next request re-resolves each from
+/// its credential file / env token. Called on a successful config reload
+/// (`crate::reload::reload`): inline identities memoize for the process lifetime
+/// with no per-request probe, so without this an inline credential file that was
+/// re-provisioned to a *different* OAuth account would keep resolving to the old
+/// physical account UUID (and its quota/health state) until a full restart. A
+/// reload is rare, so a full clear — re-reading each inline credential once on
+/// the next request — is simpler than tracking which paths changed.
+pub(crate) fn clear_inline_identity_cache() {
+    inline_identity_cache()
+        .lock()
+        .expect("inline identity cache mutex poisoned")
+        .clear();
+}
+
+/// The cache key for an inline (non-store) account, or `None` when the account
+/// carries no inline identity source (a store entry, or a config with neither a
+/// credential path nor — for ChatGPT — a token env). No I/O; safe on the async
+/// path.
+fn inline_identity_key(
+    store_family: StoreFamily,
+    account: &AccountConfig,
+) -> Option<InlineIdentityKey> {
+    if account.store_entry {
+        return None;
+    }
+    match (
+        store_family,
+        account.credentials.as_deref(),
+        account.token_env.as_deref(),
+    ) {
+        (family @ (StoreFamily::Claude | StoreFamily::Chatgpt), Some(path), _) => {
+            Some(InlineIdentityKey::Credentials {
+                family,
+                path: path.to_string(),
+            })
+        }
+        (StoreFamily::Chatgpt, None, Some(env_name)) => Some(InlineIdentityKey::TokenEnv {
+            name: env_name.to_string(),
+        }),
+        _ => None,
+    }
+}
+
+/// Serve a memoized inline identity from memory — a single mutex lock and hash
+/// lookup, **no filesystem I/O**. Returns `None` only on a cold cache (the
+/// account has not been resolved yet), signalling the caller to resolve it once
+/// on the blocking pool ([`resolve_inline_identity`]). This is the warm
+/// per-request path: an already-resolved inline account is answered without any
+/// blocking `stat` or read, so a slow credential filesystem cannot stall a
+/// runtime worker.
+fn cached_inline_identity(store_family: StoreFamily, account: &AccountConfig) -> Option<String> {
+    let key = inline_identity_key(store_family, account)?;
+    inline_identity_cache()
+        .lock()
+        .expect("inline identity cache mutex poisoned")
+        .get(&key)
+        .cloned()
+}
+
+/// Resolve an inline account's stable upstream identity from its credential file
+/// or environment token, then memoize it for the process lifetime (see
+/// [`inline_identity_cache`]). This is the cold path — it reads the credential
+/// file / env token — so it must run on the blocking pool, never a runtime
+/// worker thread. The warm path ([`cached_inline_identity`]) already answered
+/// every already-resolved account from memory, so this runs at most once per
+/// inline account. Store entries yield no key (resolved during the cached store
+/// scan; never re-read here).
+fn resolve_inline_identity(store_family: StoreFamily, account: &AccountConfig) -> Option<String> {
+    let key = inline_identity_key(store_family, account)?;
+    {
+        // A concurrent request may have resolved this since the warm-path miss.
+        if let Some(identity) = inline_identity_cache()
+            .lock()
+            .expect("inline identity cache mutex poisoned")
+            .get(&key)
+        {
+            return Some(identity.clone());
+        }
+    }
+    let resolved = match &key {
+        InlineIdentityKey::Credentials {
+            family: StoreFamily::Claude,
+            path,
+        } => crate::auth::claude::store::credential_uuid(Path::new(path)),
+        InlineIdentityKey::Credentials {
+            family: StoreFamily::Chatgpt,
+            path,
+        } => crate::auth::codex::store::credential_account_id(Path::new(path)),
+        InlineIdentityKey::TokenEnv { name } => env::var(name)
+            .ok()
+            .and_then(|token| crate::auth::codex::auth::jwt_account_id(&token)),
+    };
+    if let Some(identity) = &resolved {
+        inline_identity_cache()
+            .lock()
+            .expect("inline identity cache mutex poisoned")
+            .insert(key, identity.clone());
+    }
+    resolved
 }
 
 /// Return the cached scan for `dir` when its stored mtime still matches
@@ -431,7 +639,7 @@ fn last_warned_collisions() -> &'static Mutex<LastWarnedCollisions> {
 /// set, without reintroducing a lock on the request hot path (this is the
 /// scan/store-discovery boundary, not `collapse_representatives`).
 fn warn_scan_identity_collisions(provider: &str, dir: &Path, accounts: &[AccountConfig]) {
-    let collisions = crate::config::identity_collisions(accounts);
+    let collisions = crate::config::identity_collisions(provider, accounts);
     let key = (provider.to_string(), dir.to_path_buf());
     {
         let mut last_warned = last_warned_collisions()
@@ -706,8 +914,193 @@ mod tests {
         }])
     }
 
+    fn uuidless_store_account_with_identity_file() -> io::Result<Vec<AccountConfig>> {
+        let dir = temp_dir("pool-store-entry-credential");
+        fs::create_dir_all(&dir)?;
+        let path = dir.join("primary.json");
+        fs::write(&path, r#"{"shuntAccountUuid":"must-not-be-reread"}"#)?;
+        Ok(vec![AccountConfig {
+            name: "primary".to_string(),
+            credentials: Some(path.display().to_string()),
+            store_entry: true,
+            ..Default::default()
+        }])
+    }
+
     fn scan_must_not_run() -> io::Result<Vec<AccountConfig>> {
         panic!("the store scan must be short-circuited");
+    }
+
+    #[tokio::test]
+    async fn resolve_pool_accounts_does_not_reread_scanned_store_credentials() {
+        let dir = temp_dir("pool-store-entry");
+        fs::create_dir_all(&dir).unwrap();
+        let accounts = resolve_pool_accounts(
+            "store-entry-no-reread",
+            &[],
+            &[],
+            StoreFamily::Claude,
+            dir.clone(),
+            uuidless_store_account_with_identity_file,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(accounts.len(), 1);
+        assert!(accounts[0].store_entry);
+        assert_eq!(accounts[0].uuid, None);
+
+        let credential_dir = Path::new(accounts[0].credentials.as_deref().unwrap())
+            .parent()
+            .unwrap();
+        let _ = fs::remove_dir_all(credential_dir);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn resolve_pool_accounts_memoizes_inline_credential_identity() {
+        // An inline account (not a store entry) with a credentials file but no
+        // uuid resolves its identity from that file once and memoizes it, so the
+        // request hot path never re-reads an unchanged credential file. Configured
+        // + empty scope skips the scan entirely (`scan_must_not_run` proves it).
+        let dir = temp_dir("pool-inline-memo");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("inline.json");
+        fs::write(&path, r#"{"shuntAccountUuid":"inline-identity"}"#).unwrap();
+        let configured = vec![AccountConfig {
+            name: "inline".to_string(),
+            credentials: Some(path.display().to_string()),
+            ..Default::default()
+        }];
+
+        let first = resolve_pool_accounts(
+            "inline-memo",
+            &configured,
+            &[],
+            StoreFamily::Claude,
+            dir.clone(),
+            scan_must_not_run,
+        )
+        .await
+        .unwrap();
+        assert_eq!(first[0].uuid.as_deref(), Some("inline-identity"));
+
+        // Re-reading the unchanged file would still yield the same identity; the
+        // memo serves it without touching disk. (The process-lifetime contract —
+        // a removed/re-provisioned file still serves the cached identity — is
+        // covered by `resolve_pool_accounts_memoizes_inline_identity_for_the_process_lifetime`.)
+        let second = resolve_pool_accounts(
+            "inline-memo",
+            &configured,
+            &[],
+            StoreFamily::Claude,
+            dir.clone(),
+            scan_must_not_run,
+        )
+        .await
+        .unwrap();
+        assert_eq!(second[0].uuid.as_deref(), Some("inline-identity"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn resolve_pool_accounts_memoizes_inline_identity_for_the_process_lifetime() {
+        // Inline identities memoize for the process lifetime: once resolved, later
+        // requests are answered purely from memory with no filesystem probe (no
+        // read, no `stat`), so a slow/unavailable credential filesystem can never
+        // stall a runtime worker on the request path. The trade-off is that a
+        // re-provisioned (or removed) credential *file* is not observed until the
+        // config is reloaded / the process restarts — even after the file is
+        // deleted, the cached identity is still served.
+        let dir = temp_dir("pool-inline-lifetime");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("inline.json");
+        fs::write(&path, r#"{"shuntAccountUuid":"first-identity"}"#).unwrap();
+        let configured = vec![AccountConfig {
+            name: "inline".to_string(),
+            credentials: Some(path.display().to_string()),
+            ..Default::default()
+        }];
+
+        let first = resolve_pool_accounts(
+            "inline-lifetime",
+            &configured,
+            &[],
+            StoreFamily::Claude,
+            dir.clone(),
+            scan_must_not_run,
+        )
+        .await
+        .unwrap();
+        assert_eq!(first[0].uuid.as_deref(), Some("first-identity"));
+
+        // Remove the credential file: with no per-request probe, the memo keeps
+        // serving the identity resolved on the first request (reload-required
+        // contract), rather than doing a blocking read/stat on the request path.
+        fs::remove_file(&path).unwrap();
+        let second = resolve_pool_accounts(
+            "inline-lifetime",
+            &configured,
+            &[],
+            StoreFamily::Claude,
+            dir.clone(),
+            scan_must_not_run,
+        )
+        .await
+        .unwrap();
+        assert_eq!(second[0].uuid.as_deref(), Some("first-identity"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn clear_inline_identity_cache_forces_reresolution_after_reprovisioning() {
+        // The process-lifetime memo is cleared on config reload
+        // (`clear_inline_identity_cache`), which is how a re-provisioned inline
+        // credential file is picked up: without the clear the old identity would
+        // persist, with it the next request re-reads the file's new identity.
+        let dir = temp_dir("pool-inline-reload");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("inline.json");
+        fs::write(&path, r#"{"shuntAccountUuid":"old-account"}"#).unwrap();
+        let configured = vec![AccountConfig {
+            name: "inline".to_string(),
+            credentials: Some(path.display().to_string()),
+            ..Default::default()
+        }];
+        let resolve = || {
+            resolve_pool_accounts(
+                "inline-reload",
+                &configured,
+                &[],
+                StoreFamily::Claude,
+                dir.clone(),
+                scan_must_not_run,
+            )
+        };
+
+        assert_eq!(
+            resolve().await.unwrap()[0].uuid.as_deref(),
+            Some("old-account")
+        );
+
+        // Re-provision the same path to a different account. Mid-flight the memo
+        // still serves the old identity (process-lifetime, no per-request probe).
+        fs::write(&path, r#"{"shuntAccountUuid":"new-account"}"#).unwrap();
+        assert_eq!(
+            resolve().await.unwrap()[0].uuid.as_deref(),
+            Some("old-account")
+        );
+
+        // A reload clears the memo, so the next request re-resolves the new one.
+        clear_inline_identity_cache();
+        assert_eq!(
+            resolve().await.unwrap()[0].uuid.as_deref(),
+            Some("new-account")
+        );
+
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
@@ -716,9 +1109,16 @@ mod tests {
         // single-account deployment): the scan is skipped entirely, so a scan fn
         // that would panic is never reached and the list is empty.
         let missing = temp_dir("pool-absent").join("does-not-exist");
-        let accounts = resolve_pool_accounts("codex", &[], missing, scan_must_not_run)
-            .await
-            .unwrap();
+        let accounts = resolve_pool_accounts(
+            "codex",
+            &[],
+            &[],
+            StoreFamily::Chatgpt,
+            missing,
+            scan_must_not_run,
+        )
+        .await
+        .unwrap();
         assert!(accounts.is_empty());
     }
 
@@ -728,9 +1128,16 @@ mod tests {
         // first request scans and caches it — no-restart discovery is preserved.
         let dir = temp_dir("pool-present");
         fs::create_dir_all(&dir).unwrap();
-        let accounts = resolve_pool_accounts("codex", &[], dir.clone(), one_account)
-            .await
-            .unwrap();
+        let accounts = resolve_pool_accounts(
+            "codex",
+            &[],
+            &[],
+            StoreFamily::Chatgpt,
+            dir.clone(),
+            one_account,
+        )
+        .await
+        .unwrap();
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].name, "primary");
         let _ = fs::remove_dir_all(dir);
@@ -743,11 +1150,65 @@ mod tests {
         let dir = temp_dir("pool-configured");
         fs::create_dir_all(&dir).unwrap();
         let configured = one_account().unwrap();
-        let accounts = resolve_pool_accounts("codex", &configured, dir.clone(), scan_must_not_run)
-            .await
-            .unwrap();
+        let accounts = resolve_pool_accounts(
+            "codex",
+            &configured,
+            &[],
+            StoreFamily::Chatgpt,
+            dir.clone(),
+            scan_must_not_run,
+        )
+        .await
+        .unwrap();
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].name, "primary");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn resolve_pool_accounts_enforces_scope_and_preserves_whole_store() {
+        let dir = temp_dir("pool-scope");
+        fs::create_dir_all(&dir).unwrap();
+        fn two_accounts() -> io::Result<Vec<AccountConfig>> {
+            Ok(vec![
+                AccountConfig {
+                    name: "primary".to_string(),
+                    store_entry: true,
+                    ..Default::default()
+                },
+                AccountConfig {
+                    name: "backup".to_string(),
+                    store_entry: true,
+                    ..Default::default()
+                },
+            ])
+        }
+
+        let whole = resolve_pool_accounts(
+            "scope-whole",
+            &[],
+            &[],
+            StoreFamily::Claude,
+            dir.clone(),
+            two_accounts,
+        )
+        .await
+        .unwrap();
+        assert_eq!(account_names(&whole), ["primary", "backup"]);
+
+        let scoped = resolve_pool_accounts(
+            "scope-subset",
+            &[],
+            &["backup".to_string()],
+            StoreFamily::Claude,
+            dir.clone(),
+            two_accounts,
+        )
+        .await
+        .unwrap();
+        assert_eq!(account_names(&scoped), ["backup"]);
+        assert!(scoped[0].store_entry);
+        assert_eq!(scoped[0].store_family, Some(StoreFamily::Claude));
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -760,9 +1221,16 @@ mod tests {
         }
         let dir = temp_dir("pool-scan-error");
         fs::create_dir_all(&dir).unwrap();
-        let error = resolve_pool_accounts("codex", &[], dir.clone(), scan_fails)
-            .await
-            .unwrap_err();
+        let error = resolve_pool_accounts(
+            "codex",
+            &[],
+            &[],
+            StoreFamily::Chatgpt,
+            dir.clone(),
+            scan_fails,
+        )
+        .await
+        .unwrap_err();
         assert!(
             error.contains("failed to scan codex account store"),
             "got: {error}"
@@ -975,15 +1443,29 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         POOL_CACHE_SCAN_CALLS.store(0, Ordering::Relaxed);
 
-        let first = resolve_pool_accounts("codex", &[], dir.clone(), counting_scan)
-            .await
-            .unwrap();
+        let first = resolve_pool_accounts(
+            "codex",
+            &[],
+            &[],
+            StoreFamily::Chatgpt,
+            dir.clone(),
+            counting_scan,
+        )
+        .await
+        .unwrap();
         assert_eq!(first.len(), 1);
         assert_eq!(POOL_CACHE_SCAN_CALLS.load(Ordering::Relaxed), 1);
 
-        let second = resolve_pool_accounts("codex", &[], dir.clone(), counting_scan)
-            .await
-            .unwrap();
+        let second = resolve_pool_accounts(
+            "codex",
+            &[],
+            &[],
+            StoreFamily::Chatgpt,
+            dir.clone(),
+            counting_scan,
+        )
+        .await
+        .unwrap();
         assert_eq!(second.len(), 1);
         assert_eq!(POOL_CACHE_SCAN_CALLS.load(Ordering::Relaxed), 1);
 

@@ -55,6 +55,7 @@ authorization = "Bearer <token>"
 | `shunt.codex_continuation` | 计数器 | `provider`, `outcome` | Codex WebSocket continuation 的 hit 或 fallback。 |
 | `shunt.codex_client_events` | 计数器 | `event` | 按净化后的事件名称统计 Codex CLI 分析事件；payload 和属性会被丢弃。 |
 | `shunt.upstream_retries` | 计数器 | `provider`, `reason` | 有次数限制的临时上游重试。 |
+| `shunt.failover` | 计数器 | `provider`, `state` | 有序上游故障转移状态：`attempted`、`advanced` 或 `exhausted`。 |
 | `shunt.pool.quota_utilization` | 仪表 | `provider`, `window` | `5h`、`7d` 或 `7d_oi` 窗口中已启用、已观测且未过期的 quota 值的最小使用率。 |
 | `shunt.pool.rotations` | 计数器 | `provider`, `reason` | 离开账户的切换次数以及 pool 耗尽的请求数。 |
 

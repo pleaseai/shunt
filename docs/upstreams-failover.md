@@ -1,9 +1,8 @@
 # Ordered upstreams and cross-provider failover
 
 Engineering spec for issue #218, implementing [ADR-0002](../.please/docs/decisions/0002-ordered-upstreams-failover.md).
-Status: **design accepted, implementation pending.** This document is the
-implementation contract; deviations discovered during implementation must be
-recorded here in the same PR.
+Status: **implemented.** This document is the implementation contract; deviations
+found during implementation are recorded in §6.
 
 The reference Claude apps gateway's behavior cited throughout was extracted
 from the shipped `claude` binary (2.1.215): the config schema (zod), the
@@ -22,9 +21,9 @@ One entry is one failover unit: a named route with its own credential scope.
 | `name` | yes | Unique, non-empty, non-whitespace. The identity used by `upstream_model` maps, `[[routes]] provider`, `server.default_provider`, metrics, and the admin surface. |
 | `provider` | no | Built-in preset id (§1.2). Supplies defaults for `kind`, `base_url`, and `auth`; no preset overrides `count_tokens` (§1.2). |
 | `kind` | if no preset | Adapter protocol, unchanged enum (`anthropic`, `responses`, `cursor`). |
-| `base_url` | if no preset | As today. |
+| `base_url` | if no preset | Upstream base URL. For `kind = "cursor"`, this is the login/token-refresh surface only; inference uses the fixed agent host `https://agentn.global.api5.cursor.sh`, overridable only with `SHUNT_CURSOR_AGENT_BASE_URL`. |
 | `auth` | no | String or map (§1.3). Default: preset's default auth, else `passthrough`. |
-| other provider fields | no | `effort`, `count_tokens`, `websocket`, `tool_search`, `retry` — unchanged semantics, now per upstream. |
+| other provider fields | no | `effort`, `count_tokens`, `websocket`, `tool_search`, `retry` — unchanged semantics, now per upstream, except that normalized `retry` settings do not apply to the Cursor streaming turn. |
 
 Explicit fields always override preset-supplied values.
 
@@ -76,12 +75,14 @@ strict per-provider auth objects.
 - After load, each legacy provider becomes one implicit upstream named after
   its table key, in name-sorted order (today's `BTreeMap` iteration), flagged
   *unordered*.
-- Declaring both `[[upstreams]]` and any `[providers.*]` → hard error: use
-  exactly one.
+- Declaring both `[[upstreams]]` and any `[providers.*]` in the config file →
+  hard error: use exactly one file-layer declaration form. Environment variables
+  may override fields by normalized upstream/provider name under either form via
+  `SHUNT_PROVIDERS__<name>__<field>`; declare the ordered `[[upstreams]]` array in
+  the config file rather than trying to synthesize the whole array in one env var.
 - A multi-entry `upstream_model` map with legacy (unordered) providers → hard
   error whose message shows the exact rewrite (`[providers.codex]` →
   `[[upstreams]]` + `name = "codex"`). No silent alphabetical failover.
-- `SHUNT_` env-var overrides keep addressing entries by name under both forms.
 
 ### 1.5 Validation summary (new rules)
 
@@ -89,7 +90,7 @@ strict per-provider auth objects.
 2. Unknown `provider` preset → error listing presets.
 3. Without a preset, `kind` and `base_url` are required (as today).
 4. `auth` map: mode-specific strict fields; `account` xor `accounts`.
-5. Both `[[upstreams]]` and `[providers.*]` present → error.
+5. Both `[[upstreams]]` and `[providers.*]` present in the config file → error.
 6. `upstream_model` maps: existing per-entry rules (non-empty key/value, known
    upstream name, no `[1m]` suffix, no `[[routes]]` conflict) unchanged;
    multi-entry maps additionally require ordered `[[upstreams]]`.
@@ -155,7 +156,17 @@ Cross-cutting:
   deferred to per-upstream dispatch and applied only when dispatching to an
   element that injects credentials, so a `passthrough` element still receives
   the client's original headers. (The anti-spoof removal of inbound-only
-  headers from unauthenticated requests stays at the gate.)
+  headers from unauthenticated requests stays at the gate.) On failover a
+  `passthrough` attempt keeps the client's `authorization` / `x-api-key` only
+  when the *primary* route is itself `passthrough` **and** the attempt's
+  destination origin matches that primary's: the caller's credential is then its
+  own upstream credential, origin-specific to the primary, so a `passthrough`
+  attempt on a *different* origin strips it and fails closed rather than replaying
+  a host-specific token to another origin. A same-origin fallback (e.g. two
+  passthrough entries on one host) still carries the credential and keeps working.
+  When the primary instead injects its own credential, the client headers are a
+  gateway/client secret rather than an upstream credential, so every `passthrough`
+  fallback strips them regardless of origin.
 - **count_tokens**: answered from the first chain element, as a chain has one
   advertised id; no failover for count_tokens.
 - **Metrics**: per-attempt `record_proxied_request` labeled by upstream name,
@@ -209,13 +220,18 @@ Documented user-facing in the site guide; summarized here.
 
 - **No action** for existing configs: the legacy table keeps parsing unchanged,
   implicit upstreams inherit provider names, and existing `upstream_model` maps
-  (keyed by those names) retain their routing and selection semantics. Two
-  deliberate exceptions apply under both config forms. Legacy providers that
+  (keyed by those names) retain their routing and selection semantics. Three
+  behavior changes apply under both config forms. Legacy providers that
   reference the same physical account now share per-account runtime state,
   which was previously provider-scoped; this is a deliberate behavior change
   shipped with this feature and called out in migration. In addition, every
   proxied response now carries the additive `x-gateway-upstream`,
-  `x-gateway-model`, and `x-gateway-upstream-model` metadata headers.
+  `x-gateway-model`, and `x-gateway-upstream-model` metadata headers. Finally,
+  on the Anthropic Messages route (`/v1/messages`), a Claude or Codex OAuth pool
+  of any size whose attempts all fail before response headers now returns the
+  synthesized `all upstreams failed (N attempted)` message described in §6.
+  The separate `[server.codex_endpoint]` inbound path is unaffected and keeps
+  `all Codex OAuth accounts failed before receiving an upstream response`.
 - **To adopt failover**: rewrite each `[providers.<name>]` table as an
   `[[upstreams]]` entry (`name = "<name>"`, same fields; fold
   `api_key_env`/`api_key_header`/`accounts` into the `auth` map), order
@@ -229,7 +245,29 @@ Documented user-facing in the site guide; summarized here.
 - Pool persistence file: discarded once on upgrade (cold start), by version
   bump.
 
-## 6. Implementation surface
+## 6. Implementation deviations
+
+- **Pre-header failures are not remembered.** An adapter failure translated to a
+  `502` before upstream response headers arrive
+  (`AdapterFailure::BeforeHeaders`) advances the chain but is not eligible for
+  the remembered best failure; only relayed upstream statuses (`429`, `401`,
+  `403`, `404`, and `5xx`) are remembered. If every attempt fails before
+  headers, shunt therefore returns the synthesized `502 api_error`
+  `all upstreams failed (N attempted)`. On the Anthropic Messages route this
+  outer-chain synthesis now replaces the pool-specific pre-header exhaustion
+  messages for Claude and Codex OAuth pools of any size:
+  `all Claude OAuth accounts failed before receiving an upstream response` and
+  `all Codex OAuth accounts failed before receiving an upstream response`.
+  `[server.codex_endpoint]` is unaffected and retains the latter Codex-specific
+  message. This is a third migration behavior change beyond the two deliberate
+  changes originally listed in §5.
+- **Local adapter errors do not fail over.** Gateway-originated errors that do
+  not represent an upstream failure — for example auth misconfiguration,
+  Cursor adapter-owned errors, or WebSocket header construction failures —
+  return immediately without advancing the chain. This keeps configuration
+  errors visible instead of masking them behind another upstream.
+
+## 7. Implementation surface
 
 | Area | Files |
 |---|---|
@@ -243,7 +281,7 @@ Internal identifiers (`ProviderConfig`, `Route.provider`, `route.provider`
 pool keys) keep their names in this change; renaming to `Upstream*` is a
 follow-up.
 
-## 7. Out of scope / follow-ups
+## 8. Out of scope / follow-ups
 
 - Builtin model-catalog fallback for upstreams missing from a model's map
   (reference behavior; shunt stays strict).

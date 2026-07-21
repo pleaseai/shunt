@@ -110,13 +110,27 @@ pub async fn resolve_claude_account(
     }
 
     if let Some(credentials) = account.credentials.as_deref() {
-        let store = claude::auth::ClaudeAuthStore::new(PathBuf::from(credentials), client.clone());
+        let path = PathBuf::from(credentials);
+        let account_uuid = match account.uuid.clone() {
+            Some(uuid) => Some(uuid),
+            None => {
+                // credential_uuid does a synchronous file read; run it on the
+                // blocking pool so it never stalls a runtime worker thread
+                // (mirrors the name-based fallback below).
+                let path = path.clone();
+                tokio::task::spawn_blocking(move || claude::store::credential_uuid(&path))
+                    .await
+                    .ok()
+                    .flatten()
+            }
+        };
+        let store = claude::auth::ClaudeAuthStore::new(path, client.clone());
         return store
             .get_valid_access_token()
             .await
             .map(|access_token| Credential::ClaudeOauth {
                 access_token,
-                account_uuid: account.uuid.clone(),
+                account_uuid,
             })
             .map_err(|error| auth_error(error.to_string()));
     }
@@ -217,6 +231,7 @@ pub fn auth_error(message: impl Into<String>) -> AdapterError {
     AdapterError {
         message: "authentication failed".to_string(),
         response: Box::new(error.into_response()),
+        failure: None,
     }
 }
 

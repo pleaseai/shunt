@@ -113,6 +113,8 @@ async fn forward_claude_oauth(
     let accounts = auth::shared::resolve_pool_accounts(
         "Claude",
         &provider.accounts,
+        &provider.account_scope,
+        crate::accounts::StoreFamily::Claude,
         auth::claude::store::default_accounts_dir(),
         auth::claude::store::scan_accounts,
     )
@@ -251,7 +253,10 @@ async fn forward_claude_oauth(
                 return relay_response(&state, &route, upstream, Some(&account.name))
                     .await
                     .map(|(status, response)| {
-                        (status, crate::adapters::with_admission(response, admission))
+                        (
+                            status,
+                            hold_admission_on_success(status, response, admission),
+                        )
                     });
             }
             FailoverAction::Rotate => {
@@ -322,7 +327,10 @@ async fn forward_claude_oauth(
                 return relay_response(&state, &route, retry, Some(&account.name))
                     .await
                     .map(|(status, response)| {
-                        (status, crate::adapters::with_admission(response, admission))
+                        (
+                            status,
+                            hold_admission_on_success(status, response, admission),
+                        )
                     });
             }
             FailoverAction::RefreshRetry => {
@@ -452,7 +460,10 @@ async fn forward_claude_oauth(
                         return relay_response(&state, &route, retry, Some(&account.name))
                             .await
                             .map(|(status, response)| {
-                                (status, crate::adapters::with_admission(response, admission))
+                                (
+                                    status,
+                                    hold_admission_on_success(status, response, admission),
+                                )
                             });
                     }
                     // Exhaustive rather than `_` so a new FailoverAction variant
@@ -503,6 +514,7 @@ async fn forward_claude_oauth(
             )
             .into_response(),
         ),
+        failure: Some(crate::adapters::AdapterFailure::BeforeHeaders),
     })
 }
 
@@ -573,6 +585,18 @@ async fn retry_upstream(
     }
 }
 
+fn hold_admission_on_success(
+    status: StatusCode,
+    response: axum::response::Response,
+    admission: Option<crate::accounts::AdmissionGuard>,
+) -> axum::response::Response {
+    if status.is_success() {
+        crate::adapters::with_admission(response, admission)
+    } else {
+        response
+    }
+}
+
 async fn relay_response(
     state: &AppState,
     route: &Route,
@@ -623,7 +647,7 @@ async fn relay_response(
         // "don't buffer SSE unless non-streaming" rule.
         match upstream.bytes().await {
             Ok(bytes) => Body::from(model_rewrite::rewrite_response_model(bytes, &alias)),
-            Err(error) => return Err(upstream_error(error)),
+            Err(error) => return Err(post_header_error(error)),
         }
     } else {
         Body::from_stream(upstream.bytes_stream())
@@ -829,23 +853,36 @@ fn upstream_url(state: &AppState, route: &Route, uri: &Uri) -> String {
     format!("{base}{path_and_query}")
 }
 
+fn post_header_error(error: reqwest::Error) -> AdapterError {
+    let message = error.to_string();
+    AdapterError {
+        message,
+        response: Box::new(UpstreamError::from_reqwest(error).into_response()),
+        failure: None,
+    }
+}
+
 fn upstream_error(error: reqwest::Error) -> AdapterError {
     let message = error.to_string();
     AdapterError {
         message,
         response: Box::new(UpstreamError::from_reqwest(error).into_response()),
+        failure: Some(crate::adapters::AdapterFailure::BeforeHeaders),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use axum::http::HeaderMap;
+    use axum::{
+        body::Body,
+        http::{HeaderMap, StatusCode},
+    };
 
     use crate::config::ApiKeyHeader;
 
     use super::{
-        normalize_upstream_model, outbound_headers, rate_limit_kind, rewrite_account_uuid,
-        Credential,
+        hold_admission_on_success, normalize_upstream_model, outbound_headers, rate_limit_kind,
+        rewrite_account_uuid, Credential,
     };
 
     fn client_headers() -> HeaderMap {
@@ -878,6 +915,28 @@ mod tests {
             name: "acct".to_string(),
             ..Default::default()
         }
+    }
+
+    #[tokio::test]
+    async fn relayed_non_success_releases_admission_immediately() {
+        let pool = std::sync::Arc::new(crate::accounts::AccountPool::new());
+        let account = claude_account();
+        let admission = pool
+            .clone()
+            .try_admit("claude", &account, 1, false)
+            .expect("first admission");
+        let response = axum::response::Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::from("not found"))
+            .unwrap();
+
+        let response = hold_admission_on_success(StatusCode::NOT_FOUND, response, Some(admission));
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert!(
+            pool.try_admit("claude", &account, 1, false).is_some(),
+            "a relayed error must release the storm-control slot before its body is consumed"
+        );
     }
 
     #[tokio::test]

@@ -55,6 +55,7 @@ Each signal toggles independently via `traces` / `metrics` / `logs`.
 | `shunt.codex_continuation` | Counter | `provider`, `outcome` | Codex WebSocket continuation hit or fallback. |
 | `shunt.codex_client_events` | Counter | `event` | Codex CLI analytics events by sanitized event name; payloads and properties are discarded. |
 | `shunt.upstream_retries` | Counter | `provider`, `reason` | Bounded transient upstream retries. |
+| `shunt.failover` | Counter | `provider`, `state` | Ordered-upstream failover transitions: `attempted`, `advanced`, or `exhausted`. |
 | `shunt.pool.quota_utilization` | Gauge | `provider`, `window` | Minimum utilization across enabled, observed, non-expired quota values for `5h`, `7d`, or `7d_oi`. |
 | `shunt.pool.rotations` | Counter | `provider`, `reason` | Moves off an account and requests that exhaust the pool. |
 

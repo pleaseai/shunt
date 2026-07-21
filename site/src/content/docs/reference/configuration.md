@@ -132,7 +132,7 @@ Presence of this table enables an inbound OpenAI Responses passthrough so the **
 
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
-| `provider` | `codex` | Name of a `[providers.<name>]` table to serve inbound requests; must use `auth = "chatgpt_oauth"` |
+| `provider` | `codex` | Configured upstream name to serve inbound requests; must use `auth = "chatgpt_oauth"` |
 
 Registers `POST /backend-api/codex/responses`, `POST /responses`, and `POST /v1/responses` — all served by the named provider's account pool. When `[server.auth]` is configured they require a valid client token (like the other injected-credential routes); with no `[server.auth]` they are **open** to anyone who can reach them while still injecting the operator's Codex credential, so gate them on anything beyond loopback. Unlike `/v1/messages`, the request is not translated to or from Anthropic Messages; it is relayed to and from the upstream verbatim.
 
@@ -168,14 +168,92 @@ A positive `usage_refresh_seconds` additionally starts a background poller that 
 
 A positive `ramp_initial_concurrency` enables **storm control** on every account pool: after a failover switch, concurrent in-flight requests would otherwise all land on the freshly selected account at once. With the gate on, an identity that just started taking traffic (fresh, back from a cooldown, or idle for 60 seconds) admits at most the configured number of concurrent requests; each successful response doubles the allowance (slow start), a failover-worthy failure restarts the ramp, and a denied request spills to the next account in selection order. The last remaining candidate is always attempted regardless of the gate, so gating can defer but never fail a request that an ungated pool would have served. Note this also means a pool whose accounts all resolve to a single upstream identity is effectively ungated: its only candidate is always the last candidate, so the setting only takes effect with two or more distinct account identities.
 
-## `[providers.<name>]`
+## `[[upstreams]]` (ordered failover)
+
+`[[upstreams]]` is an ordered array of named upstreams. Declaration order is the global failover order; a model's `[models.upstream_model]` map selects which entries participate. The map's textual order does not affect routing.
+
+```toml
+[server]
+default_provider = "anthropic-primary"
+
+[[upstreams]]
+name = "anthropic-primary"
+provider = "anthropic"
+auth = { mode = "claude_oauth", account = "primary" }
+
+[[upstreams]]
+name = "kimi-overflow"
+provider = "kimi"
+
+[[upstreams]]
+name = "codex-fallback"
+provider = "codex"
+
+[[models]]
+id = "claude-opus-4-8"
+[models.upstream_model]
+anthropic-primary = "claude-opus-4-8"
+kimi-overflow = "kimi-k2"
+codex-fallback = "gpt-5.2"
+```
+
+The example attempts `anthropic-primary`, `kimi-overflow`, and `codex-fallback`, in that order. An upstream omitted from the model map does not participate.
+
+| Key | Required | Meaning |
+| :-- | :-- | :-- |
+| `name` | yes | Unique non-empty upstream name. Routes, model maps, `server.default_provider`, metrics, and admin views use this name. |
+| `provider` | unless `kind` + `base_url` are set | Built-in preset. Supplies `kind`, `base_url`, and default auth. Explicit fields override preset values. |
+| `kind` | without a preset | `anthropic`, `responses`, or `cursor`. |
+| `base_url` | without a preset | Upstream base URL. For `kind = "cursor"`, this is the login/token-refresh surface only; inference uses the fixed agent host `https://agentn.global.api5.cursor.sh`, overridable only with `SHUNT_CURSOR_AGENT_BASE_URL`. |
+| `auth` | no | Auth mode string, or a mode-specific map. Defaults to the preset's auth, otherwise `passthrough`. |
+| `effort`, `count_tokens`, `websocket`, `tool_search`, `retry` | no | Same per-upstream settings documented for legacy providers. Presets do not override `count_tokens`. `retry` is normalized for Cursor upstreams but does not apply to the Cursor streaming turn. |
+
+Available presets:
+
+| Preset | Kind | Base URL | Default auth |
+| :-- | :-- | :-- | :-- |
+| `anthropic` | `anthropic` | `https://api.anthropic.com` | `passthrough` |
+| `codex` | `responses` | `https://chatgpt.com/backend-api` | `chatgpt_oauth` |
+| `openai` | `responses` | `https://api.openai.com/v1` | `api_key`, env `OPENAI_API_KEY` |
+| `xai` | `responses` | `https://api.x.ai/v1` | `api_key`, env `XAI_API_KEY` |
+| `grok` | `responses` | `https://cli-chat-proxy.grok.com/v1` | `xai_oauth` |
+| `kimi` | `anthropic` | `https://api.moonshot.ai/anthropic` | `api_key`, env `MOONSHOT_API_KEY` |
+| `cursor` | `cursor` | `https://api2.cursor.sh` | `cursor_oauth` |
+
+A bare string such as `auth = "claude_oauth"` is shorthand for `auth = { mode = "claude_oauth" }`. `api_key` maps accept `env` (required unless the preset supplies it) and `header` (`bearer` by default, or `x_api_key`). `claude_oauth` and `chatgpt_oauth` maps may select `account = "name"` or `accounts = [...]`, but not both. `accounts` accepts bare store-entry names and full account tables; an explicitly empty `accounts = []` is rejected, while omitting both scope fields scans the whole store. If the ChatGPT store is empty, `chatgpt_oauth` retains its `~/.codex/auth.json` fallback. `passthrough`, `xai_oauth`, and `cursor_oauth` maps take only `mode`; unknown mode-specific keys are errors.
+
+Do not combine `[[upstreams]]` with `[providers.*]` in the config file: startup fails when both file-layer declaration forms are present. Environment variables may override individual fields by normalized upstream/provider name under either form, using `SHUNT_PROVIDERS__<name>__<field>`. Declare the ordered `[[upstreams]]` array in the config file rather than trying to synthesize the whole array with one environment variable. Legacy `[providers.<name>]` remains supported and is normalized to implicit name-sorted upstreams. Because that form has no declared failover order, it supports only zero- or one-entry model maps; use `[[upstreams]]` before adding multiple entries to a model map.
+
+### Failover behavior
+
+For a multi-entry model map, shunt filters the declared upstream sequence to the names in the map. It advances after an upstream status `429`, `401`, `403`, `404`, or any `5xx`, and after a failure before upstream response headers arrive. Gateway-local errors that do not represent an upstream attempt, such as auth misconfiguration or adapter-owned validation/header construction errors, return immediately so failover does not mask the configuration problem. There is no failover after `2xx` headers have been returned, including a later streaming-body failure.
+
+When the chain is exhausted, shunt returns the best relayed failure with preference `429` → `401`/`403` → `404` → other `5xx`. Pre-header failures are not remembered as best failures. If no relayed response was remembered, shunt returns a `502 api_error` with `all upstreams failed (N attempted)`.
+
+For a `passthrough` upstream, the client's own `authorization` / `x-api-key` is forwarded on a failover attempt only when the **primary** route is itself `passthrough` and the attempt's destination origin matches that primary's. The credential is then the caller's own upstream credential, origin-specific to the primary, so a `passthrough` failover attempt on a **different** origin strips it and fails closed rather than replaying a host-specific token to another origin; a same-origin fallback (e.g. two passthrough entries on one host) still carries it. When the primary instead injects a credential (`api_key`/OAuth), the client headers are a gateway/client secret rather than an upstream credential, so every `passthrough` fallback strips them regardless of origin. `api_key`/OAuth upstreams inject their own server-side credential regardless of position.
+
+Every proxied success or final failure carries `x-gateway-upstream` (selected upstream name), `x-gateway-model` (client-requested id), and `x-gateway-upstream-model` (mapped backend id). `count_tokens` uses only the first chain element and never fails over. `[server.codex_endpoint]` remains pinned to its configured upstream and does not participate in this chain.
+
+### Migrating existing configurations
+
+Existing configurations require **no action**. Legacy providers retain their routing and name-sorted selection behavior. Three additive or deliberate behavior changes apply on upgrade:
+
+1. Legacy providers that resolve to the same physical OAuth account now share quota windows, health, cooldown, refresh locks, and in-flight admission state. The pool persistence key schema was version-bumped, so an existing `state_path` cache is ignored once and the pool has one cold start.
+2. Every proxied response gains the three `x-gateway-*` metadata headers described above.
+3. On the Anthropic Messages route (`/v1/messages`), a Claude or Codex OAuth pool of any size in which every attempt fails before response headers now returns `all upstreams failed (N attempted)` instead of its pool-specific `all Claude OAuth accounts failed before receiving an upstream response` or `all Codex OAuth accounts failed before receiving an upstream response` message. The separate `[server.codex_endpoint]` inbound path is unaffected and retains the Codex-specific message.
+
+To opt into ordered failover, rewrite each `[providers.<name>]` table as a `[[upstreams]]` entry with the same name, fold `api_key_env`, `api_key_header`, and OAuth `accounts` into the `auth` map, arrange the entries by preference, and add each participating name to the model's `upstream_model` map.
+
+The `kimi` preset reads `MOONSHOT_API_KEY`. Older examples that explicitly used `api_key_env = "KIMI_API_KEY"` continue to work in the legacy form; an explicit upstream map also preserves that name with `auth = { mode = "api_key", env = "KIMI_API_KEY" }`. Only users relying on the preset default need to export `MOONSHOT_API_KEY`.
+
+## `[providers.<name>]` (legacy)
 
 Each provider is a table under a name of your choosing. Built-ins (`anthropic`, `openai`, `codex`, `xai`, `grok`, `cursor`) can be partially overridden — config maps deep-merge.
 
 | Key | Values | Meaning |
 | :-- | :-- | :-- |
 | `kind` | `anthropic` \| `responses` \| `cursor` | Upstream protocol / adapter. `anthropic` = Messages API (passed through, optionally re-keyed); `responses` = Anthropic Messages translated to the OpenAI Responses API; `cursor` = the native Cursor ConnectRPC/protobuf AgentService adapter. |
-| `base_url` | URL | Upstream base; shunt appends the endpoint path. |
+| `base_url` | URL | Upstream base; shunt appends the endpoint path. For `kind = "cursor"`, this is the login/token-refresh surface only; it does not select the agent/inference host. |
 | `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `claude_oauth` \| `xai_oauth` \| `cursor_oauth` | `passthrough` forwards the client's own credential; `api_key` injects a key from `api_key_env`; `chatgpt_oauth` reuses `~/.codex/auth.json`; `claude_oauth` selects from explicit Anthropic accounts; `xai_oauth` reuses `~/.shunt/xai-auth.json` from `shunt login xai` (only sent to x.ai/grok.com hosts over HTTPS); `cursor_oauth` reuses `~/.shunt/cursor-auth.json` (`shunt login cursor`). |
 | `api_key_env` | env var name | Where the key is read from, when `auth = "api_key"`. |
 | `api_key_header` | `bearer` (default) \| `x_api_key` | Header the injected key is sent in. |
@@ -184,11 +262,11 @@ Each provider is a table under a name of your choosing. Built-ins (`anthropic`, 
 | `count_tokens` | `tiktoken` (default) \| `estimate` | `responses` and `cursor` providers: local tiktoken count vs. `501 not_supported` fallback ([details](/guides/effort-and-context/#token-counting-count_tokens)). |
 | `websocket` | `true` \| `false` (default) | Opt in to the Codex Responses WebSocket v2 transport (ChatGPT/Codex backend only; falls back to HTTP on any transport failure before the first event reaches the client, so it can never do worse than plain HTTP). |
 | `tool_search` | `true` \| `false` (default) | Opt in to the native client-executed `tool_search` protocol for Claude Code's tool search (stock OpenAI / ChatGPT-Codex flavors on GPT-5.4+ models; otherwise the text-based shim is kept). See [Codex → Tool search](/guides/codex/#native-protocol-opt-in). |
-| `retry` | sub-table | Bounded retry/backoff for transient upstream failures. On by default (conservative); see below. |
+| `retry` | sub-table | Bounded retry/backoff for supported transient upstream failures. On by default (conservative); see below. Normalized but inert for the Cursor streaming turn. |
 
 ### `[providers.<name>.retry]`
 
-Bounded retry for **transient** upstream failures on this provider's single-credential upstream calls — the `passthrough`/`api_key` Anthropic path, the single-credential Responses path (`api_key`, `xai_oauth`/Grok, and a `chatgpt_oauth` provider with no pooled accounts), and the Cursor path. It re-issues the request (full body, before any bytes reach the client) on connection-level transport errors (connect reset/refused, timeout) for all of those paths. A transient response *status* — `429`, `502`, `503`, `504`, `529` (Anthropic's "Overloaded") — is retried **only on the Cursor path**; the Anthropic Messages and single-credential Responses calls are non-idempotent creation POSTs, so once a response arrives it is surfaced immediately rather than retried, because the upstream may already have accepted a billable generation (issue #126). It **never** retries any other `4xx` (a request error an identical retry cannot fix), and never retries once a response body has started streaming to the client.
+Bounded retry for **transient** upstream failures on supported single-credential calls: the `passthrough`/`api_key` Anthropic path and the single-credential Responses path (`api_key`, `xai_oauth`/Grok, and a `chatgpt_oauth` provider with no pooled accounts). It re-issues the request (full body, before any bytes reach the client) on connection-level transport errors (connect reset/refused, timeout). Transient response statuses are not retried on these non-idempotent creation POSTs because the upstream may already have accepted a billable generation. The current Cursor adapter's streaming turn is not wrapped in this retry layer, so its normalized `retry` table is inert and a pre-response connection failure surfaces directly. No supported path retries a `4xx` response, and retry never begins after response-body streaming starts.
 
 Backoff is exponential with randomized (full) jitter, capped at `max_backoff_ms`. A server-supplied `Retry-After` takes precedence (both the delta-seconds and HTTP-date forms are honored); if it asks for longer than `max_backoff_ms`, the response is surfaced immediately rather than slept past budget. Retry is **held off `count_tokens`** regardless of this setting. The `claude_oauth` / `chatgpt_oauth` account pools drive their own account-rotation failover and are unaffected by this table.
 
@@ -253,7 +331,7 @@ Legacy exact-match routing entries — checked after a matching `[models.upstrea
 | Key | Required | Meaning |
 | :-- | :-- | :-- |
 | `model` | ✅ | The exact `model` id Claude Code sends |
-| `provider` | ✅ | Name of a `[providers.<name>]` table |
+| `provider` | ✅ | Configured upstream name |
 | `upstream_model` | — | Rewrite the model id forwarded upstream |
 | `effort` | — | Per-route reasoning-effort override |
 
@@ -264,7 +342,7 @@ Prefix-match routing entries — checked after exact routes:
 | Key | Required | Meaning |
 | :-- | :-- | :-- |
 | `prefix` | ✅ | Model-id prefix, e.g. `gpt-` |
-| `provider` | ✅ | Name of a `[providers.<name>]` table |
+| `provider` | ✅ | Configured upstream name |
 
 ## `[[models]]`
 
@@ -272,7 +350,7 @@ Entries returned by `GET /v1/models` for [model discovery](/guides/model-discove
 
 The top-level `auto_include_builtin_models` key defaults to `true`. When enabled, shunt returns these curated `[[models]]` entries first, then its builtin Claude catalog mirroring the reference Claude apps gateway, with exact-id duplicates removed in favor of the curated entry. Set it to `false` to expose only the `[[models]]` list. Builtin models need no dedicated `[[routes]]` entry — they resolve through your normal routing rules, falling back to `server.default_provider` when no `[[routes]]` or `[[route_prefixes]]` entry matches.
 
-A curated entry can include `[models.upstream_model]` to advertise, route, and translate one id in the same declaration; this is the recommended form for exact-id routing instead of `[[routes]]`. The table must contain exactly one `provider = "upstream-id"` pair with a non-empty provider name and upstream id. For that id it takes precedence over `[[routes]]`, `[[route_prefixes]]`, and `server.default_provider`; the provider's default `effort` still applies. An empty or multi-provider map, an empty or whitespace-only provider name or upstream id, an unknown provider, a same-id `[[routes]]` entry, a mapped id ending in `[1m]` or `[1M]`, or a duplicate `[[models]]` id where either entry has a map is a startup error. Clients strip the context-window hint before matching, so including it in a mapped id would make that entry unreachable. Pure map-less duplicate ids retain their previous behavior.
+A curated entry can include `[models.upstream_model]` to advertise, route, and translate one id in the same declaration; this is the recommended form for exact-id routing instead of `[[routes]]`. With ordered `[[upstreams]]`, the map may contain one or more `upstream = "backend-id"` pairs and resolves to a failover chain in `[[upstreams]]` declaration order. With legacy `[providers.*]`, it must contain exactly one pair because that form has no declared order. For that id the map takes precedence over `[[routes]]`, `[[route_prefixes]]`, and `server.default_provider`; each upstream's default `effort` applies to its chain element. An empty map, an empty or whitespace-only upstream name or backend id, an unknown upstream, a same-id `[[routes]]` entry, a mapped id ending in `[1m]` or `[1M]`, or a duplicate `[[models]]` id where either entry has a map is a startup error. Clients strip the context-window hint before matching, so including it in a mapped id would make that entry unreachable. Pure map-less duplicate ids retain their previous behavior.
 
 ```toml
 [[models]]
@@ -287,7 +365,7 @@ codex = "gpt-5.2"
 | :-- | :-- | :-- |
 | `id` | ✅ | Model id exposed to Claude Code |
 | `display_name` | — | Label shown in the `/model` picker |
-| `upstream_model` | — | One-entry map from configured provider name to the upstream model id; also makes `id` directly routable |
+| `upstream_model` | — | Map from configured upstream names to backend model ids; ordered `[[upstreams]]` may produce a multi-entry failover chain, while legacy providers allow one entry |
 
 ## `[sentry]` (optional)
 

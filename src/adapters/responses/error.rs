@@ -3,7 +3,13 @@
 //! Shared by the HTTP path (which reads a `reqwest::Response`) and the
 //! websocket path (which surfaces the same fields from a failed handshake).
 
-use axum::{http::StatusCode, response::IntoResponse};
+use std::convert::Infallible;
+
+use axum::{
+    body::{Body, Bytes},
+    http::{Response, StatusCode},
+    response::IntoResponse,
+};
 use serde_json::{json, Value};
 
 use crate::{adapters::AdapterError, error::ShuntError, model::responses::map_error_value};
@@ -13,21 +19,59 @@ pub(super) async fn mapped_upstream_error(
     upstream: reqwest::Response,
     auth: crate::config::AuthMode,
 ) -> AdapterError {
-    // Claude Code backs off on 429 by honoring Retry-After; the header must
-    // survive the error re-shaping or the client retries blind.
-    let retry_after = upstream
-        .headers()
-        .get("retry-after")
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_string);
-    let text = upstream.text().await.unwrap_or_default();
-    build_upstream_error(status, retry_after, text, auth)
+    let retry_after = upstream.headers().get("retry-after").cloned();
+    let shunt_status = crate::model::responses::client_facing_status(status);
+    let stream = futures_util::stream::once(async move {
+        let text = upstream.text().await.unwrap_or_default();
+        tracing::warn!(%status, ?auth, upstream_error_body = %text, "responses upstream error");
+        let value = upstream_error_value(status, &text, auth);
+        let body = serde_json::to_vec(&map_error_value(&value, status)).unwrap_or_default();
+        Ok::<Bytes, Infallible>(Bytes::from(body))
+    });
+    let mut response = Response::builder()
+        .status(shunt_status)
+        .header("content-type", "application/json")
+        .body(Body::from_stream(stream))
+        .expect("valid mapped upstream error response");
+    if let Some(retry_after) = retry_after {
+        response.headers_mut().insert("retry-after", retry_after);
+    }
+    AdapterError {
+        message: format!("upstream responses request failed with {status}"),
+        response: Box::new(response),
+        failure: Some(crate::adapters::AdapterFailure::UpstreamStatus(status)),
+    }
 }
 
-/// Re-shape an upstream failure (status + body + `retry-after`) into an
-/// Anthropic-shaped [`AdapterError`]. Split out of [`mapped_upstream_error`] so
-/// both the HTTP path (which reads a `reqwest::Response`) and the websocket path
-/// (which surfaces the same fields from a failed handshake) share one mapping.
+fn upstream_error_value(status: StatusCode, text: &str, auth: crate::config::AuthMode) -> Value {
+    if status == StatusCode::UNAUTHORIZED && auth == crate::config::AuthMode::ChatgptOauth {
+        json!({"message": "ChatGPT authentication failed; run codex login"})
+    } else if status == StatusCode::UNAUTHORIZED && auth == crate::config::AuthMode::XaiOauth {
+        json!({"message": "xAI authentication failed; run shunt login xai"})
+    } else if status == StatusCode::FORBIDDEN && auth == crate::config::AuthMode::XaiOauth {
+        let hint = "if this is the xAI subscription tier gate, re-logging in will not help — set XAI_API_KEY or upgrade your plan";
+        let upstream_message = serde_json::from_str::<Value>(text)
+            .ok()
+            .and_then(|value| {
+                value
+                    .pointer("/error/message")
+                    .or_else(|| value.get("message"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .filter(|message| !message.is_empty());
+        match upstream_message {
+            Some(message) => json!({"message": format!("{message} ({hint})")}),
+            None => json!({"message": crate::auth::xai::auth::refresh_error_message(status)}),
+        }
+    } else {
+        serde_json::from_str(text).unwrap_or_else(|_| json!({"message": text}))
+    }
+}
+
+/// Re-shape a buffered websocket handshake failure into an Anthropic-shaped
+/// [`AdapterError`]. HTTP Responses errors use [`mapped_upstream_error`] so their
+/// body remains lazy until the chosen response is consumed.
 pub(super) fn build_upstream_error(
     status: StatusCode,
     retry_after: Option<String>,
@@ -35,35 +79,7 @@ pub(super) fn build_upstream_error(
     auth: crate::config::AuthMode,
 ) -> AdapterError {
     tracing::warn!(%status, ?auth, upstream_error_body = %text, "responses upstream error");
-    let value =
-        if status == StatusCode::UNAUTHORIZED && auth == crate::config::AuthMode::ChatgptOauth {
-            json!({"message": "ChatGPT authentication failed; run codex login"})
-        } else if status == StatusCode::UNAUTHORIZED && auth == crate::config::AuthMode::XaiOauth {
-            json!({"message": "xAI authentication failed; run shunt login xai"})
-        } else if status == StatusCode::FORBIDDEN && auth == crate::config::AuthMode::XaiOauth {
-            // Usually the subscription tier gate (as on refresh), but this
-            // endpoint can also 403 for content policy or model gating — keep
-            // the upstream message when there is one and append the tier-gate
-            // hint, rather than replacing real context with generic guidance.
-            let hint = "if this is the xAI subscription tier gate, re-logging in \
-                        will not help — set XAI_API_KEY or upgrade your plan";
-            let upstream_message = serde_json::from_str::<Value>(&text)
-                .ok()
-                .and_then(|value| {
-                    value
-                        .pointer("/error/message")
-                        .or_else(|| value.get("message"))
-                        .and_then(Value::as_str)
-                        .map(str::to_string)
-                })
-                .filter(|message| !message.is_empty());
-            match upstream_message {
-                Some(message) => json!({"message": format!("{message} ({hint})")}),
-                None => json!({"message": crate::auth::xai::auth::refresh_error_message(status)}),
-            }
-        } else {
-            serde_json::from_str(&text).unwrap_or_else(|_| json!({"message": text}))
-        };
+    let value = upstream_error_value(status, &text, auth);
     let shunt_status = crate::model::responses::client_facing_status(status);
     let mut response = (shunt_status, axum::Json(map_error_value(&value, status))).into_response();
     if let Some(retry_after) = retry_after.and_then(|value| value.parse().ok()) {
@@ -72,7 +88,14 @@ pub(super) fn build_upstream_error(
     AdapterError {
         message: format!("upstream responses request failed with {status}"),
         response: Box::new(response),
+        failure: Some(crate::adapters::AdapterFailure::UpstreamStatus(status)),
     }
+}
+
+pub(super) fn transport_error(message: String) -> AdapterError {
+    let mut error = own_error(message);
+    error.failure = Some(crate::adapters::AdapterFailure::BeforeHeaders);
+    error
 }
 
 pub(super) fn own_error(message: String) -> AdapterError {
@@ -80,6 +103,7 @@ pub(super) fn own_error(message: String) -> AdapterError {
     AdapterError {
         message: "responses adapter failed".to_string(),
         response: Box::new(error.into_response()),
+        failure: None,
     }
 }
 

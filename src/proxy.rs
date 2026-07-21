@@ -1,26 +1,17 @@
 use std::time::Instant;
 
 use axum::{
-    body::{to_bytes, Body},
+    body::Body,
     extract::{OriginalUri, State},
-    http::{HeaderMap, HeaderValue, Method, StatusCode, Uri},
+    http::{HeaderMap, Method, StatusCode, Uri},
     response::IntoResponse,
 };
 use serde_json::Value;
 use tracing::Instrument;
 
-use crate::{
-    adapters::{
-        anthropic::AnthropicAdapter, cursor::CursorAdapter, responses::ResponsesAdapter, Adapter,
-        AdapterError,
-    },
-    config::{AuthMode, CountTokens},
-    count_tokens,
-    error::{ShuntError, UpstreamError},
-    model::responses::anthropic_error_type,
-    routing::{self, AdapterKind},
-    server::AppState,
-};
+use crate::{error::ShuntError, model::responses::anthropic_error_type, server::AppState};
+
+mod failover;
 
 const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024 * 1024;
 
@@ -63,7 +54,7 @@ pub async fn post(
     );
 
     async move {
-        match forward(state, &uri, &headers, body, started_at).await {
+        match failover::forward(state, &uri, &headers, body, started_at).await {
             Ok((status, response)) => {
                 tracing::info!(
                     upstream_status = status.as_u16(),
@@ -91,231 +82,10 @@ struct ForwardError {
     response: axum::response::Response,
 }
 
-impl From<reqwest::Error> for ForwardError {
-    fn from(error: reqwest::Error) -> Self {
-        let message = error.to_string();
-        Self {
-            message,
-            response: UpstreamError::from_reqwest(error).into_response(),
-        }
-    }
-}
-
-impl From<AdapterError> for ForwardError {
-    fn from(error: AdapterError) -> Self {
-        Self {
-            message: error.message,
-            response: *error.response,
-        }
-    }
-}
-
 impl IntoResponse for ForwardError {
     fn into_response(self) -> axum::response::Response {
         self.response
     }
-}
-
-async fn forward(
-    state: AppState,
-    uri: &Uri,
-    headers: &HeaderMap,
-    body: Body,
-    started_at: Instant,
-) -> Result<(StatusCode, axum::response::Response), ForwardError> {
-    let body = to_bytes(body, MAX_REQUEST_BODY_BYTES)
-        .await
-        .map_err(|error| {
-            let message = error.to_string();
-            ForwardError {
-                message: message.clone(),
-                response: UpstreamError::from_message(message).into_response(),
-            }
-        })?;
-    let body = normalize_request_body(body.to_vec());
-    let (route, requested_model) =
-        routing::resolve_request(&state.config, &body).map_err(|error| ForwardError {
-            message: "failed to route request".to_string(),
-            response: error.into_response(),
-        })?;
-    // Inbound client auth (M4): only routes where shunt injects a server-side
-    // credential are gated — passthrough callers pay with their own credential.
-    // The client-token header is stripped below either way (and on gated routes
-    // the standard credential headers too), so a gate token never leaks
-    // upstream.
-    let (headers, gateway_claims) =
-        check_inbound_auth(&state, &route, headers).map_err(|error| *error)?;
-    enforce_managed_model_policy(&state, gateway_claims.as_ref(), &requested_model)
-        .map_err(|error| *error)?;
-    let headers = &headers;
-    // The Responses API has no token-counting endpoint. For a responses-routed
-    // model, either count locally with tiktoken (the default) or return 501
-    // `not_supported` so Claude Code falls back to estimating tokens. Either way
-    // we must NOT let the request reach the responses adapter, which would
-    // translate it into — and bill it as — a full inference call.
-    // Anthropic-routed models still pass through to the upstream count_tokens
-    // endpoint below.
-    if is_count_tokens(uri) && matches!(route.adapter, AdapterKind::Responses | AdapterKind::Cursor)
-    {
-        let mode = state
-            .config
-            .provider(&route.provider)
-            .map(|provider| provider.count_tokens)
-            .unwrap_or(CountTokens::Estimate);
-        return Ok(match mode {
-            CountTokens::Tiktoken => {
-                let input_tokens = count_tokens::count_input_tokens(&body);
-                (
-                    StatusCode::OK,
-                    axum::Json(serde_json::json!({ "input_tokens": input_tokens })).into_response(),
-                )
-            }
-            CountTokens::Estimate => count_tokens_unsupported(),
-        });
-    }
-    let provider = route.provider.clone();
-    let model = route.model.clone();
-    let result = match route.adapter {
-        AdapterKind::Anthropic => {
-            AnthropicAdapter
-                .forward(state, route, uri, headers, body)
-                .await
-        }
-        AdapterKind::Responses => {
-            ResponsesAdapter
-                .forward(state, route, uri, headers, body)
-                .await
-        }
-        AdapterKind::Cursor => {
-            CursorAdapter
-                .forward(state, route, uri, headers, body)
-                .await
-        }
-    };
-    let result = result.map_err(ForwardError::from);
-    // Usage metrics count inference calls only, so Anthropic-routed
-    // count_tokens requests are excluded here just like the Responses-routed
-    // ones that early-returned above — cheap token counts would otherwise be
-    // indistinguishable from real inference in the request/latency series.
-    if !is_count_tokens(uri) {
-        // For streaming responses this measures time to response headers, not
-        // to stream completion — the body is forwarded without buffering.
-        let status = match &result {
-            Ok((status, _)) => status.as_u16(),
-            Err(error) => error.response.status().as_u16(),
-        };
-        crate::metrics::record_proxied_request(
-            &provider,
-            &model,
-            status,
-            started_at.elapsed().as_secs_f64() * 1000.0,
-        );
-    }
-    result.map(|(status, response)| {
-        let response = crate::stream_metrics::observe_response(
-            response,
-            crate::stream_metrics::Protocol::Anthropic,
-            provider,
-            model,
-            started_at,
-        );
-        (status, response)
-    })
-}
-
-fn enforce_managed_model_policy(
-    state: &AppState,
-    claims: Option<&crate::gateway::jwt::Claims>,
-    requested_model: &str,
-) -> Result<(), Box<ForwardError>> {
-    let Some((auth, claims)) = state.gateway_auth.as_ref().zip(claims) else {
-        return Ok(());
-    };
-    let Some(available_models) = auth
-        .managed_settings(&claims.email)
-        .and_then(crate::gateway::managed::available_models)
-    else {
-        return Ok(());
-    };
-    let policy_model = routing::strip_context_window_hint(requested_model);
-    if available_models
-        .iter()
-        .any(|model| model.as_str() == Some(policy_model))
-    {
-        return Ok(());
-    }
-    let message =
-        format!("model \"{requested_model}\" is not permitted by this gateway's managed policy");
-    Err(Box::new(ForwardError {
-        message: message.clone(),
-        response: ShuntError::new(StatusCode::BAD_REQUEST, "invalid_request_error", message)
-            .into_response(),
-    }))
-}
-
-/// Enforce configured client authentication on injected-credential routes and
-/// strip every accepted credential slot from what gets forwarded upstream.
-/// `[server.auth]` tokens and `[server.gateway]` JWTs compose as alternatives:
-/// either valid credential grants access when both features are enabled.
-fn check_inbound_auth(
-    state: &AppState,
-    route: &routing::Route,
-    headers: &HeaderMap,
-) -> Result<(HeaderMap, Option<crate::gateway::jwt::Claims>), Box<ForwardError>> {
-    let mut forwarded = headers.clone();
-    forwarded.remove("x-shunt-inbound-client");
-    if let Some(auth) = &state.inbound_auth {
-        forwarded.remove(auth.header());
-    }
-
-    let gateway_identity = state
-        .gateway_auth
-        .as_ref()
-        .and_then(|auth| auth.authenticate_bearer(headers));
-    let injects_credential = state
-        .config
-        .provider(&route.provider)
-        .map(|provider| provider.auth != AuthMode::Passthrough)
-        .unwrap_or(false);
-    if !injects_credential || (state.inbound_auth.is_none() && state.gateway_auth.is_none()) {
-        return Ok((forwarded, gateway_identity));
-    }
-
-    let static_client = state
-        .inbound_auth
-        .as_ref()
-        .and_then(|auth| auth.authenticate_client(headers));
-    if static_client.is_some() || gateway_identity.is_some() {
-        let client = static_client
-            .map(str::to_string)
-            .or_else(|| gateway_identity.as_ref().map(|claims| claims.email.clone()))
-            .expect("one composed authentication branch matched");
-        tracing::info!(client = %client, provider = %route.provider, "inbound client authenticated");
-        forwarded.remove("authorization");
-        forwarded.remove("x-api-key");
-        if static_client.is_some() {
-            if let Ok(client) = HeaderValue::from_str(&client) {
-                forwarded.insert("x-shunt-inbound-client", client);
-            }
-        }
-        return Ok((forwarded, gateway_identity));
-    }
-
-    tracing::warn!(provider = %route.provider, "inbound auth failed: missing or invalid client credential");
-    let message = if let Some(auth) = &state.inbound_auth {
-        format!(
-            "missing or invalid credential: this gateway requires a client token (via {}, Authorization: Bearer, or x-api-key) or gateway login",
-            auth.header()
-        )
-    } else {
-        "missing or invalid credential: sign in to this gateway and send the issued bearer token"
-            .to_string()
-    };
-    Err(Box::new(ForwardError {
-        message: "inbound authentication failed".to_string(),
-        response: ShuntError::new(StatusCode::UNAUTHORIZED, "authentication_error", message)
-            .into_response(),
-    }))
 }
 
 pub(crate) fn is_count_tokens(uri: &Uri) -> bool {

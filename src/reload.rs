@@ -82,6 +82,12 @@ pub fn reload(shared: &SharedState, path: Option<&std::path::Path>) -> Result<()
         (None, _) => None,
     };
     shared.store(Arc::new(new_state));
+    // Inline-account identities memoize for the process lifetime with no
+    // per-request credential probe, so a credential file re-provisioned to a
+    // different OAuth account would keep resolving to the old identity. A reload
+    // is the point where the operator expects such a change to take effect, so
+    // drop the memo here and let the next request re-resolve each inline account.
+    crate::auth::shared::clear_inline_identity_cache();
     tracing::info!("configuration reloaded successfully");
     Ok(())
 }

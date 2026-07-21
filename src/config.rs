@@ -11,10 +11,27 @@ use figment::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+mod presets;
+mod upstreams;
+
+pub use upstreams::{AccountSelection, AuthMap, UpstreamAuth, UpstreamConfig};
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
     pub server: ServerConfig,
     pub providers: ProvidersConfig,
+    /// Ordered user-facing upstream declarations. When non-empty, validation
+    /// normalizes these entries into `providers` so existing consumers keep one
+    /// name-keyed lookup path.
+    #[serde(default)]
+    pub upstreams: Vec<UpstreamConfig>,
+    /// Effective upstream precedence: declaration order for `[[upstreams]]`, or
+    /// name-sorted `providers` keys for the legacy form.
+    #[serde(skip)]
+    pub upstream_order: Vec<String>,
+    /// Whether `upstream_order` came from an explicit ordered declaration.
+    #[serde(skip)]
+    pub upstreams_ordered: bool,
     #[serde(default = "default_auto_include_builtin_models")]
     pub auto_include_builtin_models: bool,
     #[serde(default)]
@@ -1022,6 +1039,12 @@ pub struct ProviderConfig {
     /// directory will be scanned by the account-pool layer.
     #[serde(default)]
     pub accounts: Vec<AccountConfig>,
+    /// Names of account-store entries selected by the `[[upstreams]].auth`
+    /// scoping syntax. Inline account tables remain in `accounts`; an empty scope
+    /// preserves the existing whole-store scan behavior. For `chatgpt_oauth`, an
+    /// empty store still falls back to `~/.codex/auth.json` as before.
+    #[serde(skip)]
+    pub account_scope: Vec<String>,
     /// Opt in to the Codex Responses WebSocket v2 transport for this provider
     /// (issue #32). Only honored for the ChatGPT/Codex backend; ignored for
     /// stock OpenAI/xAI upstreams, which have no v2 websocket endpoint. When on,
@@ -1139,6 +1162,7 @@ impl RetryConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AccountConfig {
     pub name: String,
     #[serde(
@@ -1175,6 +1199,15 @@ pub struct AccountConfig {
     /// configuration. Applies to Claude and Codex pools alike.
     #[serde(default)]
     pub disabled: bool,
+    /// Runtime-only provenance used to distinguish a store entry from an inline
+    /// account whose UUID-less name fallback must remain upstream-scoped.
+    #[doc(hidden)]
+    #[serde(skip)]
+    pub store_entry: bool,
+    /// Runtime-only store namespace assigned while resolving an OAuth pool.
+    #[doc(hidden)]
+    #[serde(skip)]
+    pub store_family: Option<crate::accounts::StoreFamily>,
 }
 
 pub(crate) fn default_account_priority() -> u32 {
@@ -1194,28 +1227,45 @@ impl Default for AccountConfig {
             threshold_fable: None,
             priority: default_account_priority(),
             disabled: false,
+            store_entry: false,
+            store_family: None,
         }
     }
 }
 
-/// Collisions in the same stable-identity key `AccountPool` uses at runtime
-/// (`crate::accounts::account_identity`: explicit `uuid`, falling back to
-/// `name`), so an account with an explicit `uuid` that happens to equal
-/// another account's name-fallback identity is caught here too, not just
-/// explicit-`uuid`-vs-explicit-`uuid` collisions.
-pub(crate) fn identity_collisions(accounts: &[AccountConfig]) -> Vec<(String, Vec<String>)> {
-    let mut groups = BTreeMap::<&str, Vec<String>>::new();
+/// Configured accounts that will share a single pool slot, grouped by their
+/// shared identity. Grouping is by the pool's own [`crate::accounts::account_key`]
+/// (not the display string), so an explicit `uuid` (`Verified`) is never reported
+/// as colliding with a UUID-less name fallback (`UpstreamInline` / `StoreEntry`)
+/// even when the strings happen to match — the pool keeps those distinct, so
+/// warning on a bare string match would tell operators a separate account is
+/// coalesced when it is not.
+pub(crate) fn identity_collisions(
+    upstream: &str,
+    accounts: &[AccountConfig],
+) -> Vec<(String, Vec<String>)> {
+    let mut groups =
+        std::collections::HashMap::<crate::accounts::AccountKey, (String, Vec<String>)>::new();
     for account in accounts {
+        let key = crate::accounts::account_key(upstream, account);
         groups
-            .entry(crate::accounts::account_identity(account))
-            .or_default()
+            .entry(key)
+            .or_insert_with(|| {
+                (
+                    crate::accounts::account_identity(account).to_string(),
+                    Vec::new(),
+                )
+            })
+            .1
             .push(account.name.clone());
     }
-    groups
-        .into_iter()
+    let mut collisions: Vec<(String, Vec<String>)> = groups
+        .into_values()
         .filter(|(_, names)| names.len() > 1)
-        .map(|(identity, names)| (identity.to_string(), names))
-        .collect()
+        .collect();
+    // Deterministic order for logging/tests (the source `HashMap` is unordered).
+    collisions.sort();
+    collisions
 }
 
 fn deserialize_optional_credentials_path<'de, D>(
@@ -1428,6 +1478,32 @@ pub enum ConfigError {
     MissingConfigFile(PathBuf),
     #[error("failed to read config file {}: {message}", .path.display())]
     ReadConfigFile { path: PathBuf, message: String },
+    #[error("declare either [[upstreams]] or [providers.*], not both; use exactly one provider declaration form")]
+    MixedProviderDeclarationForms,
+    #[error("upstreams[{index}].name must be non-empty and non-whitespace")]
+    EmptyUpstreamName { index: usize },
+    #[error("duplicate [[upstreams]] name \"{name}\"; upstream names must be unique")]
+    DuplicateUpstreamName { name: String },
+    #[error("upstreams[{upstream}].provider references unknown preset \"{preset}\"; available presets: {available}")]
+    UnknownProviderPreset {
+        upstream: String,
+        preset: String,
+        available: String,
+    },
+    #[error("upstreams[{upstream}].kind is required when provider preset is not set")]
+    MissingUpstreamKind { upstream: String },
+    #[error("upstreams[{upstream}].base_url is required when provider preset is not set")]
+    MissingUpstreamBaseUrl { upstream: String },
+    #[error("upstreams[{upstream}].auth uses mode = \"api_key\" but env is not set and the preset supplies no default")]
+    MissingUpstreamApiKeyEnv { upstream: String },
+    #[error("upstreams[{upstream}].auth must set at most one of account or accounts")]
+    UpstreamAuthAccountConflict { upstream: String },
+    #[error("upstreams[{upstream}].auth accounts must not be explicitly empty; omit accounts to use the whole account store")]
+    EmptyUpstreamAccountList { upstream: String },
+    #[error("upstreams[{upstream}].auth account references must be non-empty and non-whitespace")]
+    EmptyUpstreamAccountReference { upstream: String },
+    #[error("SHUNT_PROVIDERS__{upstream}__... references an undeclared [[upstreams]] name")]
+    UnknownUpstreamEnvOverride { upstream: String },
     #[error("server.bind must be a socket address: {0}")]
     BindAddress(#[from] std::net::AddrParseError),
     #[error("providers.{provider}.base_url must be a valid absolute URL: {message}")]
@@ -1489,8 +1565,12 @@ pub enum ConfigError {
     UnknownRouteProvider { model: String, provider: String },
     #[error("models entry {model} upstream_model references unknown provider: {provider}")]
     UnknownModelProvider { model: String, provider: String },
-    #[error("models entry {model} upstream_model must name exactly one provider (got {count}); cross-provider failover is not implemented")]
-    ModelUpstreamProviderCount { model: String, count: usize },
+    #[error("models entry {model} upstream_model must name exactly one provider (got {count}) when using legacy [providers.*]; rewrite as ordered upstreams:\n{rewrite}")]
+    ModelUpstreamProviderCount {
+        model: String,
+        count: usize,
+        rewrite: String,
+    },
     #[error("models entry {model} upstream_model provider name must not be empty")]
     EmptyModelUpstreamProvider { model: String },
     #[error("models entry {model} upstream_model for provider {provider} must not be empty")]
@@ -1598,6 +1678,7 @@ impl ProviderConfig {
             effort: None,
             count_tokens: CountTokens::default(),
             accounts: Vec::new(),
+            account_scope: Vec::new(),
             websocket: false,
             tool_search: false,
             retry: RetryConfig::default(),
@@ -1617,6 +1698,7 @@ impl ProviderConfig {
             effort: None,
             count_tokens: CountTokens::default(),
             accounts: Vec::new(),
+            account_scope: Vec::new(),
             websocket: false,
             tool_search: false,
             retry: RetryConfig::default(),
@@ -1658,6 +1740,7 @@ impl Default for Config {
                     effort: None,
                     count_tokens: CountTokens::default(),
                     accounts: Vec::new(),
+                    account_scope: Vec::new(),
                     websocket: false,
                     tool_search: false,
                     retry: RetryConfig::default(),
@@ -1705,6 +1788,12 @@ impl Default for Config {
                 sse_keepalive_seconds: default_sse_keepalive_seconds(),
             },
             providers,
+            upstreams: Vec::new(),
+            upstream_order: ["anthropic", "codex", "cursor", "grok", "openai", "xai"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            upstreams_ordered: false,
             auto_include_builtin_models: true,
             models: Vec::new(),
             routes: Vec::new(),
@@ -1775,6 +1864,7 @@ impl Config {
             None => Self::find_config_file(),
         };
         let mut figment = Figment::from(Serialized::defaults(Self::default()));
+        let mut file_declares_upstreams = false;
         if let Some(path) = &path {
             // Read the file ourselves instead of `Toml::file`, which silently
             // yields an empty provider for a missing file — a typo'd --config
@@ -1790,17 +1880,37 @@ impl Config {
                     }
                 }
             })?;
+            // Probe only the file layer: serialized defaults always contain the
+            // built-in providers, and env overrides are allowed under either form.
+            let file_figment = match ConfigFormat::from_path(path) {
+                ConfigFormat::Toml => Figment::from(Toml::string(&raw)),
+                ConfigFormat::Yaml => Figment::from(Yaml::string(&raw)),
+            };
+            let file_declares_providers = file_figment.find_value("providers").is_ok();
+            file_declares_upstreams = file_figment.find_value("upstreams").is_ok();
+            if file_declares_providers && file_declares_upstreams {
+                return Err(ConfigError::MixedProviderDeclarationForms);
+            }
             // The parser is chosen by extension so TOML and YAML configs are
             // both accepted; an unknown extension is treated as TOML.
-            figment = match ConfigFormat::from_path(path) {
-                ConfigFormat::Toml => figment.merge(Toml::string(&raw)),
-                ConfigFormat::Yaml => figment.merge(Yaml::string(&raw)),
-            };
+            figment = figment.merge(file_figment);
         }
-        let config: Self = figment
-            .merge(Env::prefixed("SHUNT_").split("__"))
-            .extract()
-            .map_err(Box::new)?;
+        let env = Env::prefixed("SHUNT_").split("__");
+        let mut config: Self = if file_declares_upstreams {
+            // Provider env overrides address normalized upstreams by name; applying
+            // them to the defaults first would let an env var create a legacy
+            // provider and make `providers` leak back into the ordered namespace.
+            figment
+                .merge(env.clone().filter(|key| !key.starts_with("providers.")))
+                .extract()
+                .map_err(Box::new)?
+        } else {
+            figment.merge(env.clone()).extract().map_err(Box::new)?
+        };
+        config.normalize_upstreams()?;
+        if file_declares_upstreams {
+            config.apply_ordered_provider_env(env)?;
+        }
         let config = config.validate()?;
         // Collision reporting belongs to the load boundary rather than
         // validation: RuntimeState defensively re-validates an already-loaded
@@ -1833,7 +1943,7 @@ impl Config {
 
     fn warn_identity_collisions(&self) {
         for (name, provider) in &self.providers {
-            for (identity, accounts) in identity_collisions(&provider.accounts) {
+            for (identity, accounts) in identity_collisions(name, &provider.accounts) {
                 tracing::warn!(
                     provider = %name,
                     identity = %identity,
@@ -1844,7 +1954,54 @@ impl Config {
         }
     }
 
-    pub fn validate(self) -> Result<Self, ConfigError> {
+    fn normalize_upstreams(&mut self) -> Result<(), ConfigError> {
+        if self.upstreams.is_empty() {
+            self.upstream_order = self.providers.keys().cloned().collect();
+            self.upstreams_ordered = false;
+        } else if !self.upstreams_ordered {
+            let (providers, order) = upstreams::normalize(&self.upstreams)?;
+            self.providers = providers;
+            self.upstream_order = order;
+            self.upstreams_ordered = true;
+        }
+        Ok(())
+    }
+
+    fn apply_ordered_provider_env(&mut self, env: Env) -> Result<(), ConfigError> {
+        if !self.upstreams_ordered {
+            return Ok(());
+        }
+        for (key, _) in env.iter() {
+            let key = key.as_str();
+            let Some(rest) = key.strip_prefix("providers.") else {
+                continue;
+            };
+            let name = rest.split('.').next().unwrap_or_default();
+            if !self.providers.contains_key(name) {
+                return Err(ConfigError::UnknownUpstreamEnvOverride {
+                    upstream: name.to_string(),
+                });
+            }
+        }
+        let account_scopes = self
+            .providers
+            .iter()
+            .map(|(name, provider)| (name.clone(), provider.account_scope.clone()))
+            .collect::<BTreeMap<_, _>>();
+        self.providers = Figment::from(Serialized::default("providers", &self.providers))
+            .merge(env.filter(|key| key.starts_with("providers.")))
+            .extract_inner("providers")
+            .map_err(Box::new)?;
+        for (name, scope) in account_scopes {
+            if let Some(provider) = self.providers.get_mut(&name) {
+                provider.account_scope = scope;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn validate(mut self) -> Result<Self, ConfigError> {
+        self.normalize_upstreams()?;
         self.server.bind_addr()?;
         // Fail closed at boot: [server.auth] without resolvable tokens is an
         // error, not an open gateway.
@@ -1940,6 +2097,11 @@ impl Config {
                     .unwrap_or_default()
                     .is_empty()
             {
+                if self.upstreams_ordered {
+                    return Err(ConfigError::MissingUpstreamApiKeyEnv {
+                        upstream: name.clone(),
+                    });
+                }
                 return Err(ConfigError::MissingApiKeyEnv {
                     provider: name.clone(),
                 });
@@ -2169,32 +2331,45 @@ impl Config {
                 });
             }
             model_upstream_ids.insert(&model.id);
-            if upstream_models.len() != 1 {
+            if upstream_models.is_empty() {
+                return Err(ConfigError::ModelUpstreamProviderCount {
+                    model: model.id.clone(),
+                    count: 0,
+                    rewrite: String::new(),
+                });
+            }
+            if upstream_models.len() > 1 && !self.upstreams_ordered {
+                let rewrite = upstream_models
+                    .keys()
+                    .map(|provider| {
+                        format!("[providers.{provider}] -> [[upstreams]] + name = \"{provider}\"")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 return Err(ConfigError::ModelUpstreamProviderCount {
                     model: model.id.clone(),
                     count: upstream_models.len(),
+                    rewrite,
                 });
             }
-            let (provider, upstream_model) = upstream_models
-                .iter()
-                .next()
-                .expect("one upstream provider was validated");
-            if provider.trim().is_empty() {
-                return Err(ConfigError::EmptyModelUpstreamProvider {
-                    model: model.id.clone(),
-                });
-            }
-            if upstream_model.trim().is_empty() {
-                return Err(ConfigError::EmptyModelUpstream {
-                    model: model.id.clone(),
-                    provider: provider.clone(),
-                });
-            }
-            if !self.has_provider(provider) {
-                return Err(ConfigError::UnknownModelProvider {
-                    model: model.id.clone(),
-                    provider: provider.clone(),
-                });
+            for (provider, upstream_model) in upstream_models {
+                if provider.trim().is_empty() {
+                    return Err(ConfigError::EmptyModelUpstreamProvider {
+                        model: model.id.clone(),
+                    });
+                }
+                if upstream_model.trim().is_empty() {
+                    return Err(ConfigError::EmptyModelUpstream {
+                        model: model.id.clone(),
+                        provider: provider.clone(),
+                    });
+                }
+                if !self.has_provider(provider) {
+                    return Err(ConfigError::UnknownModelProvider {
+                        model: model.id.clone(),
+                        provider: provider.clone(),
+                    });
+                }
             }
             if self.routes.iter().any(|route| route.model == model.id) {
                 return Err(ConfigError::ModelRouteConflict {
@@ -2860,7 +3035,7 @@ mod tests {
         solo.uuid = Some("solo-id".to_string());
 
         assert_eq!(
-            identity_collisions(&[first.clone(), second.clone(), unique, solo]),
+            identity_collisions("codex", &[first.clone(), second.clone(), unique, solo]),
             vec![(
                 "shared".to_string(),
                 vec!["first".to_string(), "second".to_string()]
@@ -2876,23 +3051,22 @@ mod tests {
     }
 
     #[test]
-    fn identity_collisions_catches_explicit_uuid_matching_a_name_fallback_identity() {
-        // "first" has no uuid, so its runtime identity falls back to its name
-        // ("first"). A second account whose *explicit* uuid is literally
-        // "first" collides with it at runtime (`account_identity` uses the
-        // same key for both), even though the old implementation only ever
-        // compared explicit uuids against each other.
+    fn identity_collisions_does_not_flag_explicit_uuid_against_a_name_fallback() {
+        // "first" has no uuid, so its pool identity is name-based
+        // (`AccountStateIdentity::UpstreamInline`). A second account whose
+        // *explicit* uuid is literally "first" resolves to
+        // `AccountStateIdentity::Verified` — a different `AccountKey` variant, so
+        // the pool keeps them as two separate accounts. The collision warning must
+        // therefore NOT report them as sharing a slot, even though their display
+        // identity strings match.
         let first = account("first");
         let mut second = account("second");
         second.uuid = Some("first".to_string());
         let unrelated = account("unrelated");
 
-        assert_eq!(
-            identity_collisions(&[first.clone(), second.clone(), unrelated]),
-            vec![(
-                "first".to_string(),
-                vec!["first".to_string(), "second".to_string()]
-            )]
+        assert!(
+            identity_collisions("codex", &[first.clone(), second.clone(), unrelated]).is_empty(),
+            "a Verified uuid and a name fallback are distinct pool identities"
         );
 
         let mut config = Config::default();
@@ -3468,10 +3642,17 @@ id = "claude-sonnet-5"
             ..Config::default()
         };
 
+        let error = config.validate().unwrap_err();
         assert!(matches!(
-            config.validate().unwrap_err(),
+            error,
             ConfigError::ModelUpstreamProviderCount { count: 2, .. }
         ));
+        assert!(error
+            .to_string()
+            .contains("[providers.codex] -> [[upstreams]] + name = \"codex\""));
+        assert!(error
+            .to_string()
+            .contains("[providers.openai] -> [[upstreams]] + name = \"openai\""));
     }
 
     #[test]

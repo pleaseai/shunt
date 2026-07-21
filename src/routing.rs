@@ -42,6 +42,21 @@ pub fn resolve(config: &Config, body: &[u8]) -> Result<Route, ShuntError> {
 }
 
 pub(crate) fn resolve_request(config: &Config, body: &[u8]) -> Result<(Route, String), ShuntError> {
+    resolve_request_chain(config, body).map(|(routes, model)| {
+        (
+            routes
+                .into_iter()
+                .next()
+                .expect("route chains are non-empty"),
+            model,
+        )
+    })
+}
+
+pub(crate) fn resolve_request_chain(
+    config: &Config,
+    body: &[u8],
+) -> Result<(Vec<Route>, String), ShuntError> {
     let view: RoutingView = serde_json::from_slice(body).map_err(|error| {
         ShuntError::new(
             StatusCode::BAD_REQUEST,
@@ -49,8 +64,8 @@ pub(crate) fn resolve_request(config: &Config, body: &[u8]) -> Result<(Route, St
             format!("request body must include a JSON model field: {error}"),
         )
     })?;
-    let route = resolve_model(config, &view.model);
-    Ok((route, view.model))
+    let routes = resolve_model_chain(config, &view.model);
+    Ok((routes, view.model))
 }
 
 /// Claude Code appends a `[1m]` suffix to a model id as a *client-side* hint that
@@ -69,35 +84,63 @@ pub(crate) fn strip_context_window_hint(model: &str) -> &str {
 }
 
 pub fn resolve_model(config: &Config, model: &str) -> Route {
+    resolve_model_chain(config, model)
+        .into_iter()
+        .next()
+        .expect("route chains are non-empty")
+}
+
+pub fn resolve_model_chain(config: &Config, model: &str) -> Vec<Route> {
     let model = strip_context_window_hint(model);
     for configured_model in &config.models {
         if configured_model.id == model {
-            if let Some((provider, upstream_model)) = configured_model
-                .upstream_model
-                .as_ref()
-                .and_then(|models| models.iter().next())
-            {
-                return route_for(config, provider, model, upstream_model, None);
+            if let Some(upstream_models) = configured_model.upstream_model.as_ref() {
+                // Preserve the legacy single-map path even for a Config assembled
+                // directly in code without validation refreshing derived order.
+                if let Some((provider, upstream_model)) = (upstream_models.len() == 1)
+                    .then(|| upstream_models.iter().next())
+                    .flatten()
+                {
+                    return vec![route_for(config, provider, model, upstream_model, None)];
+                }
+                let routes = config
+                    .upstream_order
+                    .iter()
+                    .filter_map(|provider| {
+                        upstream_models.get(provider).map(|upstream_model| {
+                            route_for(config, provider, model, upstream_model, None)
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                if !routes.is_empty() {
+                    return routes;
+                }
             }
         }
     }
     for route in &config.routes {
         if route.model == model {
-            return route_for(
+            return vec![route_for(
                 config,
                 &route.provider,
                 model,
                 route.upstream_model.as_deref().unwrap_or(model),
                 route.effort.clone(),
-            );
+            )];
         }
     }
     for route in &config.route_prefixes {
         if model.starts_with(&route.prefix) {
-            return route_for(config, &route.provider, model, model, None);
+            return vec![route_for(config, &route.provider, model, model, None)];
         }
     }
-    route_for(config, &config.server.default_provider, model, model, None)
+    vec![route_for(
+        config,
+        &config.server.default_provider,
+        model,
+        model,
+        None,
+    )]
 }
 
 fn route_for(
@@ -129,7 +172,10 @@ mod tests {
 
     use crate::config::{Config, ModelConfig, RouteConfig, RoutePrefixConfig};
 
-    use super::{resolve_model, strip_context_window_hint, AdapterKind};
+    use super::{
+        resolve_model, resolve_model_chain, resolve_request, resolve_request_chain,
+        strip_context_window_hint, AdapterKind,
+    };
 
     fn mapped_model(id: &str, provider: &str, upstream_model: &str) -> ModelConfig {
         ModelConfig {
@@ -155,6 +201,20 @@ mod tests {
         assert_eq!(route.adapter, AdapterKind::Responses);
         assert_eq!(route.upstream_model, "gpt-5.2");
         assert_eq!(route.model, "claude-opus-4-8");
+    }
+
+    #[test]
+    fn single_model_map_supports_directly_inserted_legacy_provider() {
+        let mut config = Config::default();
+        let custom = config.providers["codex"].clone();
+        config.providers.insert("custom".into(), custom);
+        config.models = vec![mapped_model("alias", "custom", "upstream-alias")];
+
+        let route = resolve_model(&config, "alias");
+
+        assert_eq!(route.provider, "custom");
+        assert_eq!(route.adapter, AdapterKind::Responses);
+        assert_eq!(route.upstream_model, "upstream-alias");
     }
 
     #[test]
@@ -332,6 +392,90 @@ mod tests {
         assert_eq!(route.adapter, AdapterKind::Responses);
         assert_eq!(route.upstream_model, "gpt-upstream");
         assert_eq!(route.effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn ordered_model_chain_uses_declaration_order_and_per_upstream_defaults() {
+        let mut config = Config {
+            upstreams_ordered: true,
+            upstream_order: vec!["openai".into(), "anthropic".into(), "codex".into()],
+            models: vec![ModelConfig {
+                id: "alias".into(),
+                display_name: None,
+                upstream_model: Some(BTreeMap::from([
+                    ("codex".into(), "gpt-codex".into()),
+                    ("openai".into(), "gpt-openai".into()),
+                ])),
+            }],
+            ..Config::default()
+        };
+        config.providers.get_mut("openai").unwrap().effort = Some("medium".into());
+        config.providers.get_mut("codex").unwrap().effort = Some("high".into());
+
+        let routes = resolve_model_chain(&config, "alias[1M]");
+
+        assert_eq!(routes.len(), 2);
+        assert_eq!(routes[0].provider, "openai");
+        assert_eq!(routes[0].upstream_model, "gpt-openai");
+        assert_eq!(routes[0].effort.as_deref(), Some("medium"));
+        assert_eq!(routes[1].provider, "codex");
+        assert_eq!(routes[1].upstream_model, "gpt-codex");
+        assert_eq!(routes[1].effort.as_deref(), Some("high"));
+        assert!(routes.iter().all(|route| route.model == "alias"));
+        assert_eq!(resolve_model(&config, "alias").provider, "openai");
+    }
+
+    #[test]
+    fn route_prefix_and_default_paths_return_single_element_chains() {
+        let config = Config {
+            routes: vec![RouteConfig {
+                model: "exact".into(),
+                provider: "codex".into(),
+                upstream_model: Some("gpt-exact".into()),
+                effort: Some("high".into()),
+            }],
+            route_prefixes: vec![RoutePrefixConfig {
+                prefix: "gpt-".into(),
+                provider: "openai".into(),
+            }],
+            ..Config::default()
+        };
+
+        for (model, provider) in [
+            ("exact", "codex"),
+            ("gpt-prefix", "openai"),
+            ("other", "anthropic"),
+        ] {
+            let routes = resolve_model_chain(&config, model);
+            assert_eq!(routes.len(), 1);
+            assert_eq!(routes[0].provider, provider);
+        }
+    }
+
+    #[test]
+    fn request_chain_and_legacy_wrapper_return_the_same_requested_model() {
+        let config = Config {
+            upstreams_ordered: true,
+            upstream_order: vec!["codex".into(), "openai".into()],
+            models: vec![ModelConfig {
+                id: "alias".into(),
+                display_name: None,
+                upstream_model: Some(BTreeMap::from([
+                    ("openai".into(), "gpt-openai".into()),
+                    ("codex".into(), "gpt-codex".into()),
+                ])),
+            }],
+            ..Config::default()
+        };
+        let body = br#"{"model":"alias[1m]"}"#;
+
+        let (chain, requested) = resolve_request_chain(&config, body).unwrap();
+        let (first, legacy_requested) = resolve_request(&config, body).unwrap();
+
+        assert_eq!(requested, "alias[1m]");
+        assert_eq!(legacy_requested, requested);
+        assert_eq!(chain[0], first);
+        assert_eq!(first.provider, "codex");
     }
 
     #[test]

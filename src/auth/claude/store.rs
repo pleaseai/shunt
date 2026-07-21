@@ -48,6 +48,10 @@ pub fn account_uuid(name: &str) -> Option<String> {
     read_account_uuid(&account_path(name))
 }
 
+pub(crate) fn credential_uuid(path: &Path) -> Option<String> {
+    read_account_uuid(path)
+}
+
 /// The store account's runtime identity — its `shuntAccountUuid`, falling back
 /// to its own name (matching `accounts::account_identity`'s blank/missing-uuid
 /// fallback) — or `None` when no account file exists for `name` at all.

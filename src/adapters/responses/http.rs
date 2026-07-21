@@ -19,7 +19,7 @@ use crate::{
 };
 
 use super::context::{ForwardOptions, RelayOptions};
-use super::error::{backend_error_response, mapped_upstream_error, own_error};
+use super::error::{backend_error_response, mapped_upstream_error, own_error, transport_error};
 use super::request::request_builder;
 
 /// Send the upstream Responses HTTP request and return the raw response
@@ -88,14 +88,14 @@ pub(super) async fn forward_http(
     )
     .await
     .map_err(|error| {
-        // Preserve the raw transport cause in logs before own_error maps it to
+        // Preserve the raw transport cause in logs before transport_error maps it to
         // the stable gateway-facing Responses error envelope.
         tracing::warn!(
             provider = %route.provider,
             error = %error,
             "responses upstream request failed after retries"
         );
-        own_error(error.to_string())
+        transport_error(error.to_string())
     })?;
     let status = upstream.status();
     if !status.is_success() {
@@ -196,13 +196,17 @@ pub(super) async fn json_response(
     let body = upstream
         .text()
         .await
-        .map_err(|error| own_error(error.to_string()))?;
+        .map_err(|error| own_error(format!("failed to read Responses body: {error}")))?;
     let mut machine = relay.machine();
     for event in parse_sse_events(&body) {
         let _ = machine.apply(event);
     }
     if let Some(error) = machine.take_backend_error() {
-        return Ok(backend_error_response(error));
+        return Err(AdapterError {
+            message: "responses backend error event".into(),
+            response: Box::new(backend_error_response(error)),
+            failure: None,
+        });
     }
     Ok((StatusCode::OK, axum::Json(machine.final_json())).into_response())
 }
@@ -308,12 +312,13 @@ mod tests {
             "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"Rate limit reached\"}}}\n\n",
         );
         let upstream = upstream_response(200, sse).await;
-        let response = json_response(upstream, relay_opts())
+        let error = json_response(upstream, relay_opts())
             .await
-            .expect("json_response builds a response");
+            .expect_err("backend error event should stop failover");
 
-        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-        let body = response_body_json(response).await;
+        assert!(error.failure.is_none());
+        assert_eq!(error.response.status(), StatusCode::BAD_GATEWAY);
+        let body = response_body_json(*error.response).await;
         assert_eq!(body["type"], "error");
         assert_eq!(body["error"]["message"], "Rate limit reached");
     }

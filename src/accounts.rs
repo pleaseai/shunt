@@ -14,7 +14,30 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use crate::config::{AccountConfig, PoolConfig};
 
-type AccountKey = (String, String);
+/// Credential-store namespace. Stable account ids only coalesce inside their
+/// own store family, so a Claude UUID can never collide with a ChatGPT account id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StoreFamily {
+    Claude,
+    Chatgpt,
+}
+
+/// Stable physical-account identity used by every runtime state map.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum AccountStateIdentity {
+    Verified { id: String },
+    StoreEntry { name: String },
+    UpstreamInline { upstream: String, name: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub(crate) struct AccountKey {
+    pub(crate) store_family: StoreFamily,
+    pub(crate) identity: AccountStateIdentity,
+}
+
 type RefreshLock = Arc<AsyncMutex<()>>;
 
 /// Legacy hard threshold, used verbatim when `[server.pool]` is not
@@ -195,6 +218,7 @@ pub struct AccountPool {
     entries: Mutex<HashMap<AccountKey, AccountHealth>>,
     rr: Mutex<HashMap<String, usize>>,
     refresh_locks: Mutex<HashMap<AccountKey, RefreshLock>>,
+    memberships: Mutex<HashMap<String, HashMap<AccountKey, bool>>>,
     /// Set whenever a quota mutation lands, cleared by [`Self::take_dirty`].
     /// Lets the opt-in on-disk persister (see [`crate::state_persist`]) flush
     /// only when quota actually changed, rather than on every timer tick.
@@ -206,23 +230,20 @@ impl AccountPool {
         Self::default()
     }
 
-    /// Synchronize the provider's current configured identities before an
-    /// out-of-band usage poll updates individual accounts. An identity stays
-    /// enabled when any alias is enabled, and entries removed by a config reload
-    /// stop contributing to pool-wide quota metrics.
-    pub(crate) fn sync_enabled_accounts(&self, provider: &str, accounts: &[AccountConfig]) {
-        let mut entries = self.entries.lock().expect("account health lock poisoned");
-        for ((entry_provider, _), health) in entries.iter_mut() {
-            if entry_provider == provider {
-                health.enabled = false;
-            }
-        }
+    /// Synchronize the upstream's current configured identities before an
+    /// out-of-band usage poll updates individual accounts. Membership remains
+    /// upstream-scoped even though each identity's health is global.
+    pub(crate) fn sync_enabled_accounts(&self, upstream: &str, accounts: &[AccountConfig]) {
+        let mut membership = HashMap::new();
         for account in accounts {
-            entries
-                .entry((provider.to_string(), account_identity(account).to_string()))
-                .or_default()
-                .enabled |= !account.disabled;
+            *membership
+                .entry(account_key(upstream, account))
+                .or_default() |= !account.disabled;
         }
+        self.memberships
+            .lock()
+            .expect("account membership lock poisoned")
+            .insert(upstream.to_string(), membership);
     }
 
     /// Return account indices in the order an adapter should try them.
@@ -258,7 +279,8 @@ impl AccountPool {
         }
 
         let provider = provider.to_string();
-        let ident_reps = collapse_representatives(accounts);
+        self.sync_enabled_accounts(&provider, accounts);
+        let ident_reps = collapse_representatives(&provider, accounts);
         let distinct = ident_reps.len();
         let start_slot = match session_id {
             Some(session_id) => stable_session_index(session_id, distinct),
@@ -279,19 +301,9 @@ impl AccountPool {
         let is_fable = is_fable_model(model);
         let snapshots = {
             let mut entries = self.entries.lock().expect("account health lock poisoned");
-            // Treat this selection snapshot as the authoritative enabled set for
-            // the provider. Entries left behind by a config reload must not keep
-            // contributing to pool-wide quota gauges.
-            for ((entry_provider, _), health) in entries.iter_mut() {
-                if entry_provider == &provider {
-                    health.enabled = false;
-                }
-            }
             let mut snapshots = Vec::with_capacity(accounts.len());
             for account in accounts {
-                let health = entries
-                    .entry((provider.clone(), account_identity(account).to_string()))
-                    .or_default();
+                let health = entries.entry(account_key(&provider, account)).or_default();
                 health.enabled |= !account.disabled;
                 expire_stale_quota(&mut health.quota, unix_now);
                 // Assessing under the lock is pure CPU work and avoids cloning
@@ -403,9 +415,7 @@ impl AccountPool {
     pub fn note_quota(&self, provider: &str, account: &AccountConfig, headers: &HeaderMap) {
         {
             let mut entries = self.entries.lock().expect("account health lock poisoned");
-            let health = entries
-                .entry((provider.to_string(), account_identity(account).to_string()))
-                .or_default();
+            let health = entries.entry(account_key(provider, account)).or_default();
             health.observed = true;
             let quota = &mut health.quota;
 
@@ -445,7 +455,7 @@ impl AccountPool {
             {
                 quota.status = Some(status.to_string());
             }
-            let utilization = pool_utilization(&mut entries, provider, unix_now());
+            let utilization = self.pool_utilization_for(provider, &mut entries, unix_now());
             record_pool_utilization(provider, utilization);
         }
         self.mark_dirty();
@@ -458,9 +468,7 @@ impl AccountPool {
     pub fn note_codex_quota(&self, provider: &str, account: &AccountConfig, headers: &HeaderMap) {
         {
             let mut entries = self.entries.lock().expect("account health lock poisoned");
-            let health = entries
-                .entry((provider.to_string(), account_identity(account).to_string()))
-                .or_default();
+            let health = entries.entry(account_key(provider, account)).or_default();
             health.observed = true;
             let quota = &mut health.quota;
 
@@ -507,7 +515,7 @@ impl AccountPool {
             {
                 quota.status = Some(status.to_string());
             }
-            let utilization = pool_utilization(&mut entries, provider, unix_now());
+            let utilization = self.pool_utilization_for(provider, &mut entries, unix_now());
             record_pool_utilization(provider, utilization);
         }
         self.mark_dirty();
@@ -524,9 +532,7 @@ impl AccountPool {
     pub fn note_usage(&self, provider: &str, account: &AccountConfig, usage: &UsageSnapshot) {
         {
             let mut entries = self.entries.lock().expect("account health lock poisoned");
-            let health = entries
-                .entry((provider.to_string(), account_identity(account).to_string()))
-                .or_default();
+            let health = entries.entry(account_key(provider, account)).or_default();
             health.observed = true;
             let quota = &mut health.quota;
             if let Some(window) = &usage.five_hour {
@@ -541,7 +547,7 @@ impl AccountPool {
                 quota.utilization_7d_oi = Some(window.utilization);
                 quota.reset_7d_oi = window.resets_at;
             }
-            let utilization = pool_utilization(&mut entries, provider, unix_now());
+            let utilization = self.pool_utilization_for(provider, &mut entries, unix_now());
             record_pool_utilization(provider, utilization);
         }
         self.mark_dirty();
@@ -555,9 +561,7 @@ impl AccountPool {
         reason: &'static str,
     ) {
         let mut entries = self.entries.lock().expect("account health lock poisoned");
-        let health = entries
-            .entry((provider.to_string(), account_identity(account).to_string()))
-            .or_default();
+        let health = entries.entry(account_key(provider, account)).or_default();
         health.observed = true;
         health.enabled = !account.disabled;
         health.cooldown_until = Some(Instant::now() + duration);
@@ -576,9 +580,7 @@ impl AccountPool {
     /// slow start before valid traffic arrives.
     pub fn mark_healthy(&self, provider: &str, account: &AccountConfig, turn_succeeded: bool) {
         let mut entries = self.entries.lock().expect("account health lock poisoned");
-        let health = entries
-            .entry((provider.to_string(), account_identity(account).to_string()))
-            .or_default();
+        let health = entries.entry(account_key(provider, account)).or_default();
         health.observed = true;
         health.enabled = !account.disabled;
         health.cooldown_until = None;
@@ -611,7 +613,7 @@ impl AccountPool {
         initial: u32,
         force: bool,
     ) -> Option<AdmissionGuard> {
-        let key = (provider.to_string(), account_identity(account).to_string());
+        let key = account_key(provider, account);
         {
             let mut entries = self.entries.lock().expect("account health lock poisoned");
             // Captured under the lock so `ramp_last_activity` (only ever
@@ -666,21 +668,40 @@ impl AccountPool {
         }
     }
 
-    /// Forget pool health and refresh state for a single `(provider, identity)`,
-    /// leaving other providers' entries for the same identity untouched. Removing
-    /// persisted quota marks the pool dirty so the next flush removes it on disk.
-    pub fn forget_identity(&self, provider: &str, identity: &str) {
-        let key = (provider.to_string(), identity.to_string());
-        let removed_quota = self
-            .entries
-            .lock()
-            .expect("account health lock poisoned")
-            .remove(&key)
-            .is_some_and(|health| health.quota.has_signal());
+    /// Forget pool health and refresh state for one physical store identity.
+    /// Removing persisted quota marks the pool dirty so the next flush removes it.
+    pub fn forget_identity(&self, store_family: StoreFamily, identity: &str) {
+        let matches = |key: &AccountKey| {
+            key.store_family == store_family
+                && match &key.identity {
+                    AccountStateIdentity::Verified { id }
+                    | AccountStateIdentity::StoreEntry { name: id } => id == identity,
+                    AccountStateIdentity::UpstreamInline { .. } => false,
+                }
+        };
+        let removed_quota = {
+            let mut entries = self.entries.lock().expect("account health lock poisoned");
+            let removed_quota = entries
+                .iter()
+                .any(|(key, health)| matches(key) && health.quota.has_signal());
+            entries.retain(|key, _| !matches(key));
+            removed_quota
+        };
         self.refresh_locks
             .lock()
             .expect("account refresh-lock map poisoned")
-            .remove(&key);
+            .retain(|key, _| !matches(key));
+        // Purge the forgotten identity from every upstream's membership map too,
+        // so a deleted/rotated account leaves no dead `AccountKey` behind (the
+        // per-upstream map is otherwise only rebuilt on the next
+        // `sync_enabled_accounts`, which never runs for a decommissioned
+        // upstream). Empty inner maps are left in place — harmless, and reused on
+        // the next sync.
+        self.memberships
+            .lock()
+            .expect("account membership lock poisoned")
+            .values_mut()
+            .for_each(|members| members.retain(|key, _| !matches(key)));
         if removed_quota {
             self.mark_dirty();
         }
@@ -708,7 +729,7 @@ impl AccountPool {
         accounts
             .iter()
             .map(|account| {
-                let key = (provider.to_string(), account_identity(account).to_string());
+                let key = account_key(provider, account);
                 let Some(health) = entries.get_mut(&key).filter(|health| health.observed) else {
                     // Never selected, or selected but not yet answered (a default
                     // entry from `select_order`): report a clean, available slot.
@@ -756,34 +777,61 @@ impl AccountPool {
         self.dirty.swap(false, Ordering::Relaxed)
     }
 
-    /// Snapshot every observed account's quota for on-disk persistence, as
-    /// `(provider, identity, quota)` triples. Skips accounts whose quota holds
-    /// no utilization, reset, or status signal. Read-only: it does not expire
-    /// stale windows (a restored quota is expired lazily by the next
-    /// [`Self::select_order`]/[`Self::snapshot`], exactly as a live one is).
-    pub fn export_quotas(&self) -> Vec<(String, String, QuotaState)> {
+    /// Snapshot every observed physical account's quota for on-disk persistence.
+    pub(crate) fn export_quotas(&self) -> Vec<(AccountKey, QuotaState)> {
         let entries = self.entries.lock().expect("account health lock poisoned");
         entries
             .iter()
             .filter(|(_, health)| health.observed && health.quota.has_signal())
-            .map(|((provider, identity), health)| {
-                (provider.clone(), identity.clone(), health.quota.clone())
-            })
+            .map(|(key, health)| (key.clone(), health.quota.clone()))
             .collect()
     }
 
-    /// Seed the pool with quotas restored from disk at boot. Each triple keys an
-    /// account entry by `(provider, identity)`, marking it observed so the admin
-    /// dashboard and `GET /usage` reflect the restored state before the first
-    /// proxied request. Does not mark the pool dirty: freshly restored state
-    /// need not be written straight back.
-    pub fn import_quotas(&self, quotas: impl IntoIterator<Item = (String, String, QuotaState)>) {
+    /// Seed the pool with quotas restored from disk at boot.
+    pub(crate) fn import_quotas(&self, quotas: impl IntoIterator<Item = (AccountKey, QuotaState)>) {
         let mut entries = self.entries.lock().expect("account health lock poisoned");
-        for (provider, identity, quota) in quotas {
-            let health = entries.entry((provider, identity)).or_default();
+        for (key, quota) in quotas {
+            let health = entries.entry(key).or_default();
             health.observed = true;
             health.quota = quota;
         }
+    }
+
+    fn pool_utilization_for(
+        &self,
+        upstream: &str,
+        entries: &mut HashMap<AccountKey, AccountHealth>,
+        now: u64,
+    ) -> [Option<f64>; 3] {
+        let memberships = self
+            .memberships
+            .lock()
+            .expect("account membership lock poisoned");
+        let Some(members) = memberships.get(upstream) else {
+            return [None; 3];
+        };
+        let mut minimums = [None::<f64>; 3];
+        for (key, enabled) in members {
+            if !enabled {
+                continue;
+            }
+            let Some(health) = entries.get_mut(key) else {
+                continue;
+            };
+            expire_stale_quota(&mut health.quota, now);
+            for (minimum, value) in minimums.iter_mut().zip([
+                health.quota.utilization_5h,
+                health.quota.utilization_7d,
+                health.quota.utilization_7d_oi,
+            ]) {
+                let Some(value) = value.filter(|value| value.is_finite()) else {
+                    continue;
+                };
+                let value = value.clamp(0.0, 1.0);
+                *minimum = Some(minimum.map_or(value, |current| current.min(value)));
+            }
+        }
+        minimums
     }
 
     /// Get the async mutex that serializes token refreshes for one account.
@@ -797,7 +845,7 @@ impl AccountPool {
             .expect("account refresh-lock map poisoned");
         Arc::clone(
             locks
-                .entry((provider.to_string(), account_identity(account).to_string()))
+                .entry(account_key(provider, account))
                 .or_insert_with(|| Arc::new(AsyncMutex::new(()))),
         )
     }
@@ -843,6 +891,33 @@ pub(crate) fn account_identity(account: &AccountConfig) -> &str {
     }
 }
 
+pub(crate) fn account_key(upstream: &str, account: &AccountConfig) -> AccountKey {
+    let store_family = account.store_family.unwrap_or_else(|| {
+        // Case-insensitive so an upstream named e.g. `My-Codex` still infers the
+        // ChatGPT store family instead of falling through to Claude.
+        let lower = upstream.to_lowercase();
+        if lower.contains("codex") || lower.contains("chatgpt") {
+            StoreFamily::Chatgpt
+        } else {
+            StoreFamily::Claude
+        }
+    });
+    let identity = match account.uuid.as_deref().filter(|id| !id.trim().is_empty()) {
+        Some(id) => AccountStateIdentity::Verified { id: id.to_string() },
+        None if account.store_entry => AccountStateIdentity::StoreEntry {
+            name: account.name.clone(),
+        },
+        None => AccountStateIdentity::UpstreamInline {
+            upstream: upstream.to_string(),
+            name: account.name.clone(),
+        },
+    };
+    AccountKey {
+        store_family,
+        identity,
+    }
+}
+
 /// Collapse accounts sharing a stable upstream identity ([`account_identity`])
 /// down to one representative per identity, keeping the enabled (or, among
 /// equally-disabled duplicates, the lowest-priority) account as the
@@ -852,12 +927,12 @@ pub(crate) fn account_identity(account: &AccountConfig) -> &str {
 /// caught once at config load (`crate::config::identity_collisions`);
 /// store-discovered collisions are caught once per store scan (see
 /// `crate::auth::shared::scan_cached`), not here.
-fn collapse_representatives(accounts: &[AccountConfig]) -> Vec<usize> {
-    let mut slots = HashMap::<&str, usize>::with_capacity(accounts.len());
+fn collapse_representatives(upstream: &str, accounts: &[AccountConfig]) -> Vec<usize> {
+    let mut slots = HashMap::<AccountKey, usize>::with_capacity(accounts.len());
     let mut representatives: Vec<usize> = Vec::with_capacity(accounts.len());
     for (index, account) in accounts.iter().enumerate() {
-        let identity = account_identity(account);
-        if let Some(&slot) = slots.get(identity) {
+        let identity = account_key(upstream, account);
+        if let Some(&slot) = slots.get(&identity) {
             let current = &accounts[representatives[slot]];
             if (current.disabled && !account.disabled)
                 || (current.disabled == account.disabled && account.priority < current.priority)
@@ -1073,34 +1148,6 @@ fn unix_now() -> u64 {
         .as_secs()
 }
 
-/// Best-account utilization for each non-stale quota window. Disabled entries,
-/// unobserved values, non-finite values, and expired windows are excluded.
-fn pool_utilization(
-    entries: &mut HashMap<AccountKey, AccountHealth>,
-    provider: &str,
-    now: u64,
-) -> [Option<f64>; 3] {
-    let mut minimums = [None::<f64>; 3];
-    for ((entry_provider, _), health) in entries.iter_mut() {
-        if entry_provider != provider || !health.enabled {
-            continue;
-        }
-        expire_stale_quota(&mut health.quota, now);
-        for (minimum, value) in minimums.iter_mut().zip([
-            health.quota.utilization_5h,
-            health.quota.utilization_7d,
-            health.quota.utilization_7d_oi,
-        ]) {
-            let Some(value) = value.filter(|value| value.is_finite()) else {
-                continue;
-            };
-            let value = value.clamp(0.0, 1.0);
-            *minimum = Some(minimum.map_or(value, |current| current.min(value)));
-        }
-    }
-    minimums
-}
-
 fn record_pool_utilization(provider: &str, utilization: [Option<f64>; 3]) {
     for (window, value) in ["5h", "7d", "7d_oi"].into_iter().zip(utilization) {
         crate::metrics::record_pool_utilization(provider, window, value);
@@ -1280,12 +1327,12 @@ mod tests {
 
         let entries = pool.entries.lock().expect("account health lock poisoned");
         assert!(entries
-            .get(&("anthropic".to_string(), "shared".to_string()))
+            .get(&account_key("anthropic", &accounts[0]))
             .is_some_and(|health| health.enabled));
     }
 
     #[test]
-    fn syncing_enabled_accounts_preserves_aliases_and_disables_removed_identities() {
+    fn syncing_enabled_accounts_replaces_upstream_membership() {
         let pool = AccountPool::new();
         let initial = vec![
             account_with_uuid("enabled", "shared"),
@@ -1304,13 +1351,16 @@ mod tests {
         ];
         pool.sync_enabled_accounts("anthropic", &current);
 
-        let entries = pool.entries.lock().expect("account health lock poisoned");
-        assert!(entries
-            .get(&("anthropic".to_string(), "shared".to_string()))
-            .is_some_and(|health| health.enabled));
-        assert!(entries
-            .get(&("anthropic".to_string(), "removed-id".to_string()))
-            .is_some_and(|health| !health.enabled));
+        let memberships = pool
+            .memberships
+            .lock()
+            .expect("account membership lock poisoned");
+        let current_membership = memberships.get("anthropic").unwrap();
+        assert_eq!(current_membership.len(), 1);
+        assert_eq!(
+            current_membership.get(&account_key("anthropic", &current[0])),
+            Some(&true)
+        );
     }
 
     #[test]
@@ -1328,76 +1378,60 @@ mod tests {
         pool.sync_enabled_accounts("anthropic", &accounts);
         pool.note_quota("anthropic", &accounts[1], &HeaderMap::new());
 
-        let entries = pool.entries.lock().expect("account health lock poisoned");
-        assert!(entries
-            .get(&("anthropic".to_string(), "shared".to_string()))
-            .is_some_and(|health| health.enabled));
+        let memberships = pool
+            .memberships
+            .lock()
+            .expect("account membership lock poisoned");
+        assert_eq!(
+            memberships["anthropic"].get(&account_key("anthropic", &accounts[0])),
+            Some(&true)
+        );
     }
 
     #[test]
     fn pool_utilization_uses_best_enabled_non_stale_account() {
         let now = unix_now();
-        let mut entries = HashMap::from([
-            (
-                ("anthropic".to_string(), "best".to_string()),
-                AccountHealth {
-                    quota: QuotaState {
-                        utilization_5h: Some(0.2),
-                        reset_5h: Some(now + 3600),
-                        utilization_7d: Some(0.6),
-                        reset_7d: Some(now + 3600),
-                        ..Default::default()
-                    },
-                    enabled: true,
-                    observed: true,
-                    ..Default::default()
-                },
-            ),
-            (
-                ("anthropic".to_string(), "other".to_string()),
-                AccountHealth {
-                    quota: QuotaState {
-                        utilization_5h: Some(0.7),
-                        reset_5h: Some(now + 3600),
-                        utilization_7d_oi: Some(0.4),
-                        reset_7d_oi: Some(now + 3600),
-                        ..Default::default()
-                    },
-                    enabled: true,
-                    observed: true,
-                    ..Default::default()
-                },
-            ),
-            (
-                ("anthropic".to_string(), "disabled".to_string()),
-                AccountHealth {
-                    quota: QuotaState {
-                        utilization_5h: Some(0.01),
-                        reset_5h: Some(now + 3600),
-                        ..Default::default()
-                    },
-                    enabled: false,
-                    observed: true,
-                    ..Default::default()
-                },
-            ),
-            (
-                ("anthropic".to_string(), "stale".to_string()),
-                AccountHealth {
-                    quota: QuotaState {
-                        utilization_5h: Some(0.05),
-                        reset_5h: Some(now.saturating_sub(1)),
-                        ..Default::default()
-                    },
-                    enabled: true,
-                    observed: true,
-                    ..Default::default()
-                },
-            ),
-        ]);
-
+        let pool = AccountPool::new();
+        let accounts = vec![account("best"), account("other")];
+        pool.sync_enabled_accounts("anthropic", &accounts);
+        pool.note_quota(
+            "anthropic",
+            &accounts[0],
+            &quota_headers(&[
+                ("anthropic-ratelimit-unified-5h-utilization", "0.2".into()),
+                (
+                    "anthropic-ratelimit-unified-5h-reset",
+                    (now + 3600).to_string(),
+                ),
+                ("anthropic-ratelimit-unified-7d-utilization", "0.6".into()),
+                (
+                    "anthropic-ratelimit-unified-7d-reset",
+                    (now + 3600).to_string(),
+                ),
+            ]),
+        );
+        pool.note_quota(
+            "anthropic",
+            &accounts[1],
+            &quota_headers(&[
+                ("anthropic-ratelimit-unified-5h-utilization", "0.7".into()),
+                (
+                    "anthropic-ratelimit-unified-5h-reset",
+                    (now + 3600).to_string(),
+                ),
+                (
+                    "anthropic-ratelimit-unified-7d_oi-utilization",
+                    "0.4".into(),
+                ),
+                (
+                    "anthropic-ratelimit-unified-7d_oi-reset",
+                    (now + 3600).to_string(),
+                ),
+            ]),
+        );
+        let mut entries = pool.entries.lock().expect("account health lock poisoned");
         assert_eq!(
-            pool_utilization(&mut entries, "anthropic", now),
+            pool.pool_utilization_for("anthropic", &mut entries, now),
             [Some(0.2), Some(0.6), Some(0.4)]
         );
     }
@@ -1566,6 +1600,52 @@ mod tests {
     }
 
     #[test]
+    fn verified_identity_shares_state_across_upstreams() {
+        let pool = AccountPool::new();
+        let first = account_with_uuid("explicit", "shared-uuid");
+        let second = account_with_uuid("scanned", "shared-uuid");
+        pool.cooldown("primary", &first, Duration::from_secs(60), "transport");
+
+        let snapshot = pool.snapshot("secondary", &[second], None, None);
+        assert!(snapshot[0].has_state);
+        assert!(!snapshot[0].available);
+        assert!(snapshot[0].cooldown_secs_remaining.is_some());
+    }
+
+    #[test]
+    fn store_reference_and_store_scan_share_name_fallback() {
+        let pool = AccountPool::new();
+        let mut reference = account("acct-1");
+        reference.store_entry = true;
+        reference.store_family = Some(StoreFamily::Claude);
+        let scanned = reference.clone();
+        pool.note_quota(
+            "explicit-upstream",
+            &reference,
+            &quota_headers(&[(
+                "anthropic-ratelimit-unified-5h-utilization",
+                "0.99".to_string(),
+            )]),
+        );
+
+        let snapshot = pool.snapshot("whole-store", &[scanned], None, None);
+        assert!(snapshot[0].near_quota);
+        assert_eq!(snapshot[0].utilization_5h, Some(0.99));
+    }
+
+    #[test]
+    fn uuidless_inline_name_fallback_is_upstream_scoped() {
+        let pool = AccountPool::new();
+        let first = account("same-name");
+        let second = account("same-name");
+        pool.cooldown("primary", &first, Duration::from_secs(60), "transport");
+
+        let snapshot = pool.snapshot("secondary", &[second], None, None);
+        assert!(!snapshot[0].has_state);
+        assert!(snapshot[0].available);
+    }
+
+    #[test]
     fn accounts_without_uuid_remain_distinct() {
         let pool = AccountPool::new();
         let accounts = vec![account("a"), account("b")];
@@ -1586,7 +1666,7 @@ mod tests {
         let other = account_with_uuid("other", "other");
         let accounts = vec![disabled, preferred, later, other];
 
-        assert_eq!(collapse_representatives(&accounts), vec![1, 3]);
+        assert_eq!(collapse_representatives("anthropic", &accounts), vec![1, 3]);
 
         let mut all_disabled = accounts;
         for account in &mut all_disabled[..3] {
@@ -2025,7 +2105,7 @@ mod tests {
         {
             let mut entries = pool.entries.lock().expect("account health lock poisoned");
             let health = entries
-                .get_mut(&("codex".to_string(), "a".to_string()))
+                .get_mut(&account_key("codex", &acc))
                 .expect("admitted identity has an entry");
             // Backdate the last activity beyond the idle-reset horizon; `None`
             // (an impossibly early instant) also counts as idle.
@@ -2041,36 +2121,68 @@ mod tests {
     }
 
     #[test]
-    fn forget_identity_is_provider_scoped() {
+    fn forget_identity_is_store_family_scoped() {
         let pool = AccountPool::new();
-        let accounts = vec![account("main")];
+        let mut anthropic = account("main");
+        anthropic.store_family = Some(StoreFamily::Claude);
+        anthropic.store_entry = true;
+        let mut codex = account("main");
+        codex.store_family = Some(StoreFamily::Chatgpt);
+        codex.store_entry = true;
         pool.cooldown(
             "anthropic",
-            &accounts[0],
+            &anthropic,
             Duration::from_secs(60),
             "transport",
         );
-        pool.cooldown("codex", &accounts[0], Duration::from_secs(60), "transport");
-        let old_codex_lock = pool.refresh_lock("codex", &accounts[0]);
-        let anthropic_lock = pool.refresh_lock("anthropic", &accounts[0]);
+        pool.cooldown("codex", &codex, Duration::from_secs(60), "transport");
+        let old_codex_lock = pool.refresh_lock("codex", &codex);
+        let anthropic_lock = pool.refresh_lock("anthropic", &anthropic);
 
-        pool.forget_identity("codex", "main");
+        pool.forget_identity(StoreFamily::Chatgpt, "main");
 
-        let new_codex_lock = pool.refresh_lock("codex", &accounts[0]);
+        let new_codex_lock = pool.refresh_lock("codex", &codex);
         assert!(!Arc::ptr_eq(&old_codex_lock, &new_codex_lock));
         assert!(Arc::ptr_eq(
             &anthropic_lock,
-            &pool.refresh_lock("anthropic", &accounts[0])
+            &pool.refresh_lock("anthropic", &anthropic)
         ));
 
-        let codex = pool.snapshot("codex", &accounts, None, None);
-        assert!(!codex[0].has_state);
-        assert!(codex[0].available);
+        assert!(!pool.snapshot("codex", &[codex], None, None)[0].has_state);
+        assert!(pool.snapshot("anthropic", &[anthropic], None, None)[0].has_state);
+    }
 
-        let anthropic = pool.snapshot("anthropic", &accounts, None, None);
-        assert!(anthropic[0].has_state);
-        assert!(!anthropic[0].available);
-        assert!(anthropic[0].cooldown_secs_remaining.is_some());
+    #[test]
+    fn forget_identity_purges_membership_entries() {
+        // `forget_identity` must clear the forgotten key from the membership map
+        // too, not just `entries`/`refresh_locks` — otherwise a deleted/rotated
+        // account leaves dead `AccountKey`s accumulating there.
+        let pool = AccountPool::new();
+        let mut codex = account("main");
+        codex.store_family = Some(StoreFamily::Chatgpt);
+        codex.store_entry = true;
+        pool.sync_enabled_accounts("codex", std::slice::from_ref(&codex));
+        let key = account_key("codex", &codex);
+        assert!(
+            pool.memberships
+                .lock()
+                .unwrap()
+                .get("codex")
+                .is_some_and(|members| members.contains_key(&key)),
+            "sync should have recorded the account in the membership map"
+        );
+
+        pool.forget_identity(StoreFamily::Chatgpt, "main");
+
+        assert!(
+            !pool
+                .memberships
+                .lock()
+                .unwrap()
+                .get("codex")
+                .is_some_and(|members| members.contains_key(&key)),
+            "forget_identity should purge the forgotten key from the membership map"
+        );
     }
 
     #[test]
@@ -2185,7 +2297,7 @@ mod tests {
         assert_eq!(selected[0], sticky);
         let entries = pool.entries.lock().unwrap();
         let quota = &entries
-            .get(&("anthropic".to_string(), accounts[sticky].name.clone()))
+            .get(&account_key("anthropic", &accounts[sticky]))
             .unwrap()
             .quota;
         assert_eq!(quota.utilization_5h, None);
@@ -2272,7 +2384,7 @@ mod tests {
         );
         let entries = pool.entries.lock().unwrap();
         let quota = &entries
-            .get(&("anthropic".to_string(), "a".to_string()))
+            .get(&account_key("anthropic", &accounts[0]))
             .unwrap()
             .quota;
         assert_eq!(quota.utilization_5h, Some(0.1));
@@ -2866,8 +2978,7 @@ mod tests {
         );
         let exported = pool.export_quotas();
         assert_eq!(exported.len(), 1);
-        assert_eq!(exported[0].0, "anthropic");
-        assert_eq!(exported[0].1, "a");
+        assert_eq!(exported[0].0, account_key("anthropic", &acct));
 
         // A fresh pool seeded from the export reports the same utilization and
         // re-exports an identical snapshot.
@@ -2883,8 +2994,7 @@ mod tests {
     fn export_import_round_trips_status_only_quota() {
         let pool = AccountPool::new();
         pool.import_quotas([(
-            "anthropic".to_string(),
-            "a".to_string(),
+            account_key("anthropic", &account("a")),
             QuotaState {
                 status: Some("rejected".to_string()),
                 ..Default::default()
@@ -2893,7 +3003,7 @@ mod tests {
 
         let exported = pool.export_quotas();
         assert_eq!(exported.len(), 1);
-        assert_eq!(exported[0].2.status.as_deref(), Some("rejected"));
+        assert_eq!(exported[0].1.status.as_deref(), Some("rejected"));
 
         let restored = AccountPool::new();
         restored.import_quotas(exported);
@@ -2907,8 +3017,7 @@ mod tests {
         let reset = unix_now() + 9_000;
         let pool = AccountPool::new();
         pool.import_quotas([(
-            "anthropic".to_string(),
-            "a".to_string(),
+            account_key("anthropic", &account("a")),
             QuotaState {
                 reset_7d: Some(reset),
                 ..Default::default()
@@ -2917,7 +3026,7 @@ mod tests {
 
         let exported = pool.export_quotas();
         assert_eq!(exported.len(), 1);
-        assert_eq!(exported[0].2.reset_7d, Some(reset));
+        assert_eq!(exported[0].1.reset_7d, Some(reset));
 
         let restored = AccountPool::new();
         restored.import_quotas(exported);
@@ -2937,9 +3046,11 @@ mod tests {
     #[test]
     fn forgetting_persisted_quota_marks_dirty_and_removes_export() {
         let pool = AccountPool::new();
+        let mut stored = account("a");
+        stored.store_entry = true;
+        stored.store_family = Some(StoreFamily::Claude);
         pool.import_quotas([(
-            "anthropic".to_string(),
-            "a".to_string(),
+            account_key("anthropic", &stored),
             QuotaState {
                 utilization_5h: Some(0.5),
                 ..Default::default()
@@ -2948,7 +3059,7 @@ mod tests {
         assert!(!pool.take_dirty(), "restored quota starts clean");
         assert_eq!(pool.export_quotas().len(), 1);
 
-        pool.forget_identity("anthropic", "a");
+        pool.forget_identity(StoreFamily::Claude, "a");
 
         assert!(pool.take_dirty(), "removing persisted quota marks dirty");
         assert!(pool.export_quotas().is_empty());
@@ -2957,9 +3068,12 @@ mod tests {
     #[test]
     fn forgetting_cooldown_only_state_does_not_mark_dirty() {
         let pool = AccountPool::new();
-        pool.cooldown("anthropic", &account("a"), Duration::from_secs(60), "test");
+        let mut stored = account("a");
+        stored.store_entry = true;
+        stored.store_family = Some(StoreFamily::Claude);
+        pool.cooldown("anthropic", &stored, Duration::from_secs(60), "test");
 
-        pool.forget_identity("anthropic", "a");
+        pool.forget_identity(StoreFamily::Claude, "a");
 
         assert!(!pool.take_dirty(), "cooldowns are not persisted");
     }

@@ -43,6 +43,7 @@ struct OtelInstruments {
     continuation: Counter<u64>,
     codex_client_events: Counter<u64>,
     upstream_retries: Counter<u64>,
+    failover: Counter<u64>,
     _pool_utilization: ObservableGauge<f64>,
     pool_rotations: Counter<u64>,
 }
@@ -96,6 +97,10 @@ fn otel_instruments() -> &'static OtelInstruments {
                 .with_description(
                     "Bounded upstream retries issued for transient failures (issue #48)",
                 )
+                .build(),
+            failover: meter
+                .u64_counter("shunt.failover")
+                .with_description("Ordered upstream failover state transitions")
                 .build(),
             _pool_utilization: meter
                 .f64_observable_gauge("shunt.pool.quota_utilization")
@@ -322,6 +327,21 @@ pub fn record_upstream_retry(provider: &str, reason: &'static str) {
     otel_instruments().upstream_retries.add(1, &attributes);
 }
 
+/// Record one ordered-upstream failover transition. `state` is one of
+/// `attempted`, `advanced`, or `exhausted`.
+pub fn record_failover(provider: &str, state: &'static str) {
+    sentry::metrics::counter("shunt.failover", 1)
+        .attribute("provider", provider.to_owned())
+        .attribute("state", state.to_owned())
+        .capture();
+
+    let attributes = [
+        KeyValue::new("provider", provider.to_owned()),
+        KeyValue::new("state", state),
+    ];
+    otel_instruments().failover.add(1, &attributes);
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -375,5 +395,13 @@ mod tests {
     fn record_upstream_retry_is_noop_without_sinks() {
         super::record_upstream_retry("anthropic", "503");
         super::record_upstream_retry("openai", "transport");
+    }
+
+    /// The failover counter honors the same opt-in no-op contract.
+    #[test]
+    fn record_failover_is_noop_without_sinks() {
+        super::record_failover("anthropic", "attempted");
+        super::record_failover("openai", "advanced");
+        super::record_failover("openai", "exhausted");
     }
 }

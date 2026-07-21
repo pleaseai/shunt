@@ -167,68 +167,59 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     };
     tracing::info!(client = %client, "inbound client authenticated for GET /usage");
 
-    let config = state.config.clone();
-    let accounts = state.accounts.clone();
-    // scan_accounts does file I/O and snapshot locks a std mutex; run off the
-    // async workers (mirrors admin::pool). Model is unset — the aggregate spans
-    // every window regardless of any single request's model.
-    let result = tokio::task::spawn_blocking(move || {
-        let mut snapshots = Vec::new();
-        for (name, provider) in &config.providers {
-            if !matches!(
-                provider.auth,
-                AuthMode::ClaudeOauth | AuthMode::ChatgptOauth
-            ) {
-                continue;
+    let mut snapshots = Vec::new();
+    for (name, provider) in &state.config.providers {
+        if !matches!(
+            provider.auth,
+            AuthMode::ClaudeOauth | AuthMode::ChatgptOauth
+        ) {
+            continue;
+        }
+        let resolved = match provider.auth {
+            AuthMode::ClaudeOauth => {
+                crate::auth::shared::resolve_pool_accounts(
+                    "Claude",
+                    &provider.accounts,
+                    &provider.account_scope,
+                    crate::accounts::StoreFamily::Claude,
+                    claude_store::default_accounts_dir(),
+                    claude_store::scan_accounts,
+                )
+                .await
             }
-            let resolved = if provider.accounts.is_empty() {
-                // Surface a store read failure as an error rather than an empty
-                // pool: an I/O/permission problem must not masquerade as "no
-                // accounts, full headroom".
-                let scanned = match provider.auth {
-                    AuthMode::ClaudeOauth => claude_store::scan_accounts(),
-                    AuthMode::ChatgptOauth => crate::auth::codex::store::scan_accounts(),
-                    _ => unreachable!("provider auth filtered above"),
-                };
-                match scanned {
-                    Ok(list) => list,
-                    Err(error) => {
-                        tracing::error!(provider = %name, %error, "usage: failed to scan accounts store");
-                        return Err(());
-                    }
-                }
-            } else {
-                provider.accounts.clone()
-            };
-            snapshots.extend(accounts.snapshot(
-                name,
-                &resolved,
-                None,
-                config.server.pool.as_ref(),
-            ));
-        }
-        Ok(snapshots)
-    })
-    .await;
-
-    match result {
-        Ok(Ok(snapshots)) => Json(aggregate(&snapshots)).into_response(),
-        Ok(Err(())) => ShuntError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "api_error",
-            "failed to read pool usage",
-        )
-        .into_response(),
-        Err(join_error) => {
-            tracing::error!(%join_error, "usage: pool snapshot task panicked");
-            ShuntError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "api_error",
-                "failed to read pool usage",
-            )
-            .into_response()
-        }
+            AuthMode::ChatgptOauth => {
+                crate::auth::shared::resolve_pool_accounts(
+                    "codex",
+                    &provider.accounts,
+                    &provider.account_scope,
+                    crate::accounts::StoreFamily::Chatgpt,
+                    crate::auth::codex::store::default_accounts_dir(),
+                    crate::auth::codex::store::scan_accounts,
+                )
+                .await
+            }
+            _ => unreachable!("provider auth filtered above"),
+        };
+        let resolved = match resolved {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                tracing::error!(provider = %name, %error, "usage: failed to resolve account scope");
+                return ShuntError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "api_error",
+                    "failed to read pool usage",
+                )
+                .into_response();
+            }
+        };
+        snapshots.extend(state.accounts.snapshot(
+            name,
+            &resolved,
+            None,
+            state.config.server.pool.as_ref(),
+        ));
     }
+    Json(aggregate(&snapshots)).into_response()
 }
 
 #[cfg(test)]

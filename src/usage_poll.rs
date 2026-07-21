@@ -17,6 +17,7 @@
 //! as static and skipped, mirroring the adapter's non-refreshable 401 handling.
 
 use std::{
+    collections::HashSet,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -75,6 +76,7 @@ pub fn spawn_usage_poller(state: AppState) {
 /// the live shared state so a reloaded provider list / account set is picked up.
 async fn poll_all(state: &AppState) {
     let state = state.refreshed();
+    let mut polled = HashSet::new();
     for (name, provider) in &state.config.providers {
         if provider.auth != AuthMode::ClaudeOauth {
             continue;
@@ -82,6 +84,8 @@ async fn poll_all(state: &AppState) {
         let accounts = match auth::shared::resolve_pool_accounts(
             "Claude",
             &provider.accounts,
+            &provider.account_scope,
+            crate::accounts::StoreFamily::Claude,
             claude::store::default_accounts_dir(),
             claude::store::scan_accounts,
         )
@@ -95,14 +99,27 @@ async fn poll_all(state: &AppState) {
         };
         state.accounts.sync_enabled_accounts(name, &accounts);
         for account in &accounts {
-            poll_account(
+            if !account_is_refreshable(account).await {
+                continue;
+            }
+            let key = crate::accounts::account_key(name, account);
+            if polled.contains(&key) {
+                continue;
+            }
+            // Mark the physical identity polled only after a snapshot is applied,
+            // so a later valid alias for the same account still reconciles when an
+            // earlier alias fails to resolve its credential or fetch usage.
+            if poll_account(
                 &state.http_client,
                 &state.accounts,
                 name,
                 &provider.base_url,
                 account,
             )
-            .await;
+            .await
+            {
+                polled.insert(key);
+            }
         }
     }
 }
@@ -110,34 +127,38 @@ async fn poll_all(state: &AppState) {
 /// Poll one account: skip non-refreshable credentials, resolve a valid access
 /// token, fetch its usage, and apply it to the pool. Every failure degrades
 /// quietly to a debug log — a missing snapshot just leaves the header-derived
-/// state in place until the next tick.
+/// state in place until the next tick. Returns `true` only when a usage snapshot
+/// was applied, so the caller can leave the physical identity un-deduplicated and
+/// let a later alias retry when this one fails to resolve or fetch.
 async fn poll_account(
     client: &reqwest::Client,
     pool: &AccountPool,
     provider: &str,
     base_url: &str,
     account: &AccountConfig,
-) {
+) -> bool {
     if !account_is_refreshable(account).await {
-        return;
+        return false;
     }
     let credential = match resolve_claude_account(account, client).await {
         Ok(credential) => credential,
         Err(error) => {
             tracing::debug!(provider, account = %account.name, error = %error.message, "usage poller: failed to resolve account credential");
-            return;
+            return false;
         }
     };
     let Credential::ClaudeOauth { access_token, .. } = credential else {
-        return;
+        return false;
     };
     match claude::usage::fetch_usage(client, base_url, &access_token).await {
         Ok(snapshot) => {
             pool.note_usage(provider, account, &snapshot);
             tracing::debug!(provider, account = %account.name, "usage poller: applied usage snapshot");
+            true
         }
         Err(error) => {
             tracing::debug!(provider, account = %account.name, %error, "usage poller: usage fetch failed");
+            false
         }
     }
 }
@@ -364,6 +385,7 @@ mod tests {
                 effort: None,
                 count_tokens: CountTokens::default(),
                 accounts: vec![account.clone()],
+                account_scope: Vec::new(),
                 websocket: false,
                 tool_search: false,
                 retry: Default::default(),
@@ -381,6 +403,136 @@ mod tests {
         assert!(snap[0].has_state, "poll_all must apply the usage snapshot");
         assert_eq!(snap[0].utilization_5h, Some(0.12));
         assert_eq!(snap[0].utilization_7d, Some(0.34));
+
+        let _ = std::fs::remove_file(creds);
+    }
+
+    #[tokio::test]
+    async fn poll_all_deduplicates_physical_accounts_across_upstreams() {
+        use crate::config::{ApiKeyHeader, Config, CountTokens, ProviderConfig, ProviderKind};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let creds = write_temp(
+            "poll-dedup",
+            r#"{"claudeAiOauth":{"accessToken":"live-token","refreshToken":"r","expiresAt":4000000000000},"shuntAccountUuid":"shared-uuid"}"#,
+        );
+        let mut account = account_with_credentials(&creds);
+        account.uuid = Some("shared-uuid".to_string());
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/oauth/usage"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "five_hour": { "utilization": 10.0 }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut config = Config::default();
+        for name in ["primary", "secondary"] {
+            config.providers.insert(
+                name.to_string(),
+                ProviderConfig {
+                    kind: ProviderKind::Anthropic,
+                    base_url: server.uri(),
+                    auth: AuthMode::ClaudeOauth,
+                    api_key_env: None,
+                    api_key_header: ApiKeyHeader::Bearer,
+                    effort: None,
+                    count_tokens: CountTokens::default(),
+                    accounts: vec![account.clone()],
+                    account_scope: Vec::new(),
+                    websocket: false,
+                    tool_search: false,
+                    retry: Default::default(),
+                },
+            );
+        }
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+
+        poll_all(&state).await;
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        let primary =
+            state
+                .accounts
+                .snapshot("primary", std::slice::from_ref(&account), None, None);
+        let secondary =
+            state
+                .accounts
+                .snapshot("secondary", std::slice::from_ref(&account), None, None);
+        assert_eq!(primary[0].utilization_5h, Some(0.10));
+        assert_eq!(secondary[0].utilization_5h, Some(0.10));
+        let _ = std::fs::remove_file(creds);
+    }
+
+    #[tokio::test]
+    async fn non_refreshable_alias_does_not_block_refreshable_alias() {
+        use crate::config::{ApiKeyHeader, Config, CountTokens, ProviderConfig, ProviderKind};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let creds = write_temp(
+            "refreshable-alias",
+            r#"{"claudeAiOauth":{"accessToken":"live-token","refreshToken":"r","expiresAt":4000000000000}}"#,
+        );
+        let static_alias = AccountConfig {
+            name: "static-alias".to_string(),
+            token_env: Some("SHUNT_TEST_STATIC_ALIAS".to_string()),
+            uuid: Some("shared-uuid".to_string()),
+            ..Default::default()
+        };
+        let mut refreshable_alias = account_with_credentials(&creds);
+        refreshable_alias.name = "refreshable-alias".to_string();
+        refreshable_alias.uuid = Some("shared-uuid".to_string());
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/oauth/usage"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "five_hour": { "utilization": 42.0 }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let provider = |account| ProviderConfig {
+            kind: ProviderKind::Anthropic,
+            base_url: server.uri(),
+            auth: AuthMode::ClaudeOauth,
+            api_key_env: None,
+            api_key_header: ApiKeyHeader::Bearer,
+            effort: None,
+            count_tokens: CountTokens::default(),
+            accounts: vec![account],
+            account_scope: Vec::new(),
+            websocket: false,
+            tool_search: false,
+            retry: Default::default(),
+        };
+        let mut config = Config::default();
+        config
+            .providers
+            .insert("a-static".to_string(), provider(static_alias.clone()));
+        config.providers.insert(
+            "b-refreshable".to_string(),
+            provider(refreshable_alias.clone()),
+        );
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+
+        poll_all(&state).await;
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1, "the refreshable alias must be polled");
+        let snapshot = state.accounts.snapshot(
+            "b-refreshable",
+            std::slice::from_ref(&refreshable_alias),
+            None,
+            None,
+        );
+        assert_eq!(snapshot[0].utilization_5h, Some(0.42));
 
         let _ = std::fs::remove_file(creds);
     }
