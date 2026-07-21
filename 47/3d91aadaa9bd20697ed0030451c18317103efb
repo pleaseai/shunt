@@ -1,0 +1,42 @@
+src/config/upstreams.rs
+  s_f38743e5624d66::t_ce98f712943c28 120-124
+src/usage_poll.rs
+  s_f38743e5624d66::t_b170970e1fa52e 470
+  s_f38743e5624d66::t_ef7749be1f14ea 461-469,471-525
+  s_f38743e5624d66::t_8107dea8042836 102-104
+  s_f38743e5624d66::t_18a4fe9d3bef6f 460
+  s_f38743e5624d66::t_527e4f10a290e5 526-528
+src/config/upstreams/tests.rs
+  s_f38743e5624d66::t_73db7ee98371d0 76
+  s_f38743e5624d66::t_d7f5ecd7800558 87-94
+  s_f38743e5624d66::t_73f8d7a2ed6db7 86
+  s_f38743e5624d66::t_3ac81137d4dff0 95-96
+src/admin/mod.rs
+  s_f38743e5624d66::t_98e0f01fa8a92e 1106
+  s_f38743e5624d66::t_0c87cccbb468f1 1198-1203
+  s_f38743e5624d66::t_480d0e3f4e5a49 212-227
+  s_f38743e5624d66::t_959dd580f9b84c 1167-1175,1179-1187,1189-1192
+  s_f38743e5624d66::t_e700afa18d0323 1120
+  s_f38743e5624d66::t_a0efe876448a2d 1176-1178,1188
+  s_f38743e5624d66::t_aeb8cdbcf635d2 1147-1152
+  s_f38743e5624d66::t_35de8f32a6cd98 1166,1193-1194
+src/config.rs
+  s_f38743e5624d66::t_557454a40c7bc6 1486-1487
+  s_f38743e5624d66::t_8455b0f17ec953 1165
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "473d91aadaa9bd20697ed0030451c18317103efb",
+  "prompts": {},
+  "sessions": {
+    "s_f38743e5624d66": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "506c9920-530e-488e-9697-f04aec6b1a21",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
