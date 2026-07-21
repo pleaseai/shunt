@@ -354,21 +354,39 @@ pub(crate) async fn resolve_pool_accounts(
             scoped
         }
     };
-    // Assign the store family and resolve any missing inline identities on the
-    // blocking pool: the credential-file reads (and mtime stats) never run on a
-    // runtime worker thread, and resolved identities are memoized per credential
-    // mtime (see [`resolve_inline_identity`]) so the steady-state request path
-    // stays off full credential reads and the global env lock.
+    // Assign the store family inline — that touches no I/O — and note whether any
+    // *inline* account still needs its identity resolved (a missing/blank UUID on
+    // a non-store account, the only case that can require credential/env reads).
+    let mut needs_resolution = false;
+    for account in &mut accounts {
+        account.store_family = Some(store_family);
+        if !account.store_entry
+            && account
+                .uuid
+                .as_deref()
+                .is_none_or(|id| id.trim().is_empty())
+        {
+            needs_resolution = true;
+        }
+    }
+    // Steady state — every identity already known — stays entirely on the async
+    // path and never queues a blocking-pool task per request. Only hop to the
+    // blocking pool when a credential-file read (or env lookup) is actually
+    // needed: those reads (and the mtime stats) must not run on a runtime worker
+    // thread, and their results are memoized per credential mtime (see
+    // [`resolve_inline_identity`]).
+    if !needs_resolution {
+        return Ok(accounts);
+    }
     let accounts = tokio::task::spawn_blocking(move || {
         for account in &mut accounts {
-            account.store_family = Some(store_family);
             if account
                 .uuid
                 .as_deref()
                 .is_none_or(|id| id.trim().is_empty())
             {
                 // Store entries already attempted identity extraction during the
-                // cached scan; never re-read their credential files here. Inline
+                // cached scan; `resolve_inline_identity` skips them. Inline
                 // accounts resolve their identity from a credential file or env
                 // token, memoized and mtime-invalidated.
                 account.uuid = resolve_inline_identity(store_family, account);
