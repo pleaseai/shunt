@@ -77,7 +77,8 @@ pub(super) async fn forward(
     let mut remembered: Option<RememberedFailure> = None;
     for (index, route) in routes.into_iter().enumerate() {
         crate::metrics::record_failover(&route.provider, "attempted");
-        let attempt_headers = headers_for_route(&state, &route, &base_headers, &inbound);
+        let attempt_headers =
+            headers_for_route(&state, &route, &base_headers, &inbound, index == 0);
         let provider = route.provider.clone();
         let model = route.model.clone();
         let upstream_model = route.upstream_model.clone();
@@ -235,7 +236,7 @@ async fn count_tokens_response(
             CountTokens::Estimate => count_tokens_unsupported(),
         })
     } else {
-        let headers = headers_for_route(&state, &route, base_headers, inbound);
+        let headers = headers_for_route(&state, &route, base_headers, inbound, true);
         dispatch(state, route, uri, &headers, body).await
     };
     match result {
@@ -390,8 +391,10 @@ struct InboundContext {
 }
 
 /// Authenticate once against the whole route chain. Client credential stripping
-/// is deferred to [`headers_for_route`] so passthrough attempts retain the
-/// caller's upstream credential while credential-injecting attempts cannot leak it.
+/// is deferred to [`headers_for_route`] so the *first* passthrough attempt retains
+/// the caller's upstream credential while credential-injecting attempts cannot leak
+/// it. On failover, later passthrough attempts also strip the caller's credential
+/// so a host-specific token is never replayed to a different upstream host.
 fn check_inbound_auth(
     state: &AppState,
     routes: &[routing::Route],
@@ -466,13 +469,24 @@ fn headers_for_route(
     route: &routing::Route,
     base: &HeaderMap,
     inbound: &InboundContext,
+    is_first_attempt: bool,
 ) -> HeaderMap {
     let injects_credential = state
         .config
         .provider(&route.provider)
         .is_some_and(|provider| provider.auth != AuthMode::Passthrough);
     if !injects_credential {
-        return base.clone();
+        // Passthrough forwards the caller's own upstream credential. Only the
+        // first attempt keeps it: the credential is host-specific to the primary
+        // upstream, so replaying it to a *different* host on failover would leak
+        // it outside its intended origin. Later passthrough attempts strip it and
+        // fail closed rather than replay it.
+        let mut headers = base.clone();
+        if !is_first_attempt {
+            headers.remove("authorization");
+            headers.remove("x-api-key");
+        }
+        return headers;
     }
 
     let mut headers = base.clone();

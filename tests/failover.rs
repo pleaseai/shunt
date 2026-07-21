@@ -633,6 +633,57 @@ async fn mixed_chain_is_gated_and_strips_credentials_per_attempt() {
 }
 
 #[tokio::test]
+async fn passthrough_failover_does_not_replay_client_credential_to_next_host() {
+    if !can_bind_loopback() {
+        return;
+    }
+    // Two passthrough upstreams on different hosts. The caller's credential is
+    // host-specific to the first upstream, so on failover it must not be replayed
+    // to the second host: only the first attempt carries it, and the second
+    // attempt fails closed with the credential stripped.
+    let first = MockServer::start().await;
+    let second = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(header("authorization", "Bearer client-upstream"))
+        .and(header("x-api-key", "client-api-key"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("first-500"))
+        .expect(1)
+        .mount(&first)
+        .await;
+    Mock::given(method("POST"))
+        .and(HeaderAbsent("authorization"))
+        .and(HeaderAbsent("x-api-key"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("no-replay"))
+        .expect(1)
+        .mount(&second)
+        .await;
+    let config = chain_config(
+        vec![
+            passthrough("first", first.uri()),
+            passthrough("second", second.uri()),
+        ],
+        &[("first", "model-a"), ("second", "model-b")],
+    );
+    let gateway = start_gateway(config).await;
+
+    let response = post_path(
+        &gateway,
+        "/v1/messages",
+        &[
+            ("authorization", "Bearer client-upstream"),
+            ("x-api-key", "client-api-key"),
+        ],
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_gateway_headers(&response, "second", "model-b");
+    assert_eq!(response.text().await.unwrap(), "no-replay");
+    first.verify().await;
+    second.verify().await;
+}
+
+#[tokio::test]
 async fn count_tokens_uses_only_first_chain_element() {
     if !can_bind_loopback() {
         return;

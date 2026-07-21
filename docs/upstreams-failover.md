@@ -156,7 +156,11 @@ Cross-cutting:
   deferred to per-upstream dispatch and applied only when dispatching to an
   element that injects credentials, so a `passthrough` element still receives
   the client's original headers. (The anti-spoof removal of inbound-only
-  headers from unauthenticated requests stays at the gate.)
+  headers from unauthenticated requests stays at the gate.) On failover the
+  client's `authorization` / `x-api-key` are forwarded to the **first** attempt
+  only: the caller's credential is host-specific to the primary upstream, so a
+  later `passthrough` attempt on a different host strips it and fails closed
+  rather than replaying a host-specific token to another origin.
 - **count_tokens**: answered from the first chain element, as a chain has one
   advertised id; no failover for count_tokens.
 - **Metrics**: per-attempt `record_proxied_request` labeled by upstream name,

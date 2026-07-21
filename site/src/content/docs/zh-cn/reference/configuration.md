@@ -172,6 +172,8 @@ codex-fallback = "gpt-5.2"
 
 链耗尽时，shunt 按 `429` → `401`/`403` → `404` → 其他 `5xx` 的优先级返回最佳的已中继失败。响应头之前的失败不会被记为最佳失败。若没有记住任何已中继响应，则返回消息为 `all upstreams failed (N attempted)` 的 `502 api_error`。
 
+对于 `passthrough` 上游，客户端自己的 `authorization` / `x-api-key` 只会转发给**第一次**尝试。该凭据是主上游的主机专属凭据，因此在不同主机上的后续 `passthrough` 尝试会将其剥离并快速失败（fail closed），而不会把主机专属令牌重放到另一个来源；`api_key`/OAuth 上游无论位置如何都会注入自己的服务端凭据。
+
 每个代理成功响应或最终失败都带有 `x-gateway-upstream`（所选上游名称）、`x-gateway-model`（客户端请求的 id）和 `x-gateway-upstream-model`（映射后的后端 id）。`count_tokens` 只使用链中第一个条目，且不会故障转移。`[server.codex_endpoint]` 仍固定到所配置的单一上游，不参与此链。
 
 ### 迁移现有配置
