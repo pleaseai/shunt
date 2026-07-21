@@ -354,41 +354,45 @@ pub(crate) async fn resolve_pool_accounts(
             scoped
         }
     };
-    // Assign the store family inline — that touches no I/O — and note whether any
-    // *inline* account still needs its identity resolved (a missing/blank UUID on
-    // a non-store account, the only case that can require credential/env reads).
+    // Assign the store family inline — that touches no I/O — and try to fill each
+    // UUID-less inline account from the warm identity cache. `cached_inline_identity`
+    // costs only a mtime `stat` (no credential read, no env lock), so an already-
+    // resolved, unchanged inline account is answered here without scheduling any
+    // blocking task, while the `stat` still detects a re-provisioned credential on
+    // the very next request. Only a cold cache or a changed/vanished credential
+    // leaves `needs_resolution` set.
     let mut needs_resolution = false;
     for account in &mut accounts {
         account.store_family = Some(store_family);
-        if !account.store_entry
-            && account
+        if account.store_entry
+            || account
                 .uuid
                 .as_deref()
-                .is_none_or(|id| id.trim().is_empty())
+                .is_some_and(|id| !id.trim().is_empty())
         {
-            needs_resolution = true;
+            continue;
+        }
+        match cached_inline_identity(store_family, account) {
+            Some(identity) => account.uuid = Some(identity),
+            None => needs_resolution = true,
         }
     }
-    // Steady state — every identity already known — stays entirely on the async
-    // path and never queues a blocking-pool task per request. Only hop to the
-    // blocking pool when a credential-file read (or env lookup) is actually
-    // needed: those reads (and the mtime stats) must not run on a runtime worker
-    // thread, and their results are memoized per credential mtime (see
+    // Everything already known (the steady state) stays entirely on the async path
+    // and never queues a blocking-pool task. Only hop to the blocking pool for the
+    // cold/changed credentials, whose file read (and env lookup) must not run on a
+    // runtime worker thread; results are memoized per credential mtime (see
     // [`resolve_inline_identity`]).
     if !needs_resolution {
         return Ok(accounts);
     }
     let accounts = tokio::task::spawn_blocking(move || {
         for account in &mut accounts {
-            if account
-                .uuid
-                .as_deref()
-                .is_none_or(|id| id.trim().is_empty())
+            if !account.store_entry
+                && account
+                    .uuid
+                    .as_deref()
+                    .is_none_or(|id| id.trim().is_empty())
             {
-                // Store entries already attempted identity extraction during the
-                // cached scan; `resolve_inline_identity` skips them. Inline
-                // accounts resolve their identity from a credential file or env
-                // token, memoized and mtime-invalidated.
                 account.uuid = resolve_inline_identity(store_family, account);
             }
         }
@@ -451,59 +455,100 @@ fn inline_identity_cache() -> &'static Mutex<HashMap<InlineIdentityKey, CachedIn
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Resolve an inline account's stable upstream identity from its credential file
-/// or environment token, memoized (see [`inline_identity_cache`]). Store entries
-/// are skipped — they resolved their identity during the cached store scan and
-/// must never be re-read here. The credential file's mtime is the invalidation
-/// signal (mirroring [`scan_cache`]): re-provisioning the file to a different
-/// account changes its mtime and forces a re-read, so pool identity tracks the
-/// credential currently in use rather than pinning to a stale account. An env
-/// token has no mtime and memoizes for the process lifetime. On a filesystem
-/// with coarse mtime resolution, a change sharing the cached timestamp goes
-/// unnoticed until a later change advances the mtime — the same caveat as the
-/// store-scan cache. Runs on the blocking pool (see the caller), so its stat and
-/// read never touch a runtime worker thread.
-fn resolve_inline_identity(store_family: StoreFamily, account: &AccountConfig) -> Option<String> {
+/// The cache key for an inline (non-store) account, or `None` when the account
+/// carries no inline identity source (a store entry, or a config with neither a
+/// credential path nor — for ChatGPT — a token env). No I/O; safe on the async
+/// path.
+fn inline_identity_key(
+    store_family: StoreFamily,
+    account: &AccountConfig,
+) -> Option<InlineIdentityKey> {
     if account.store_entry {
         return None;
     }
-    let key = match (
+    match (
         store_family,
         account.credentials.as_deref(),
         account.token_env.as_deref(),
     ) {
         (family @ (StoreFamily::Claude | StoreFamily::Chatgpt), Some(path), _) => {
-            InlineIdentityKey::Credentials {
+            Some(InlineIdentityKey::Credentials {
                 family,
                 path: path.to_string(),
-            }
+            })
         }
-        (StoreFamily::Chatgpt, None, Some(env_name)) => InlineIdentityKey::TokenEnv {
+        (StoreFamily::Chatgpt, None, Some(env_name)) => Some(InlineIdentityKey::TokenEnv {
             name: env_name.to_string(),
-        },
-        _ => return None,
-    };
-    let modified = match &key {
+        }),
+        _ => None,
+    }
+}
+
+/// The credential file's mtime — the invalidation signal — or `None` for an env
+/// token (no file) or an unreadable/missing file. A single `stat`, no file read.
+fn inline_identity_mtime(key: &InlineIdentityKey) -> Option<SystemTime> {
+    match key {
         InlineIdentityKey::Credentials { path, .. } => {
             fs::metadata(path).and_then(|meta| meta.modified()).ok()
         }
         InlineIdentityKey::TokenEnv { .. } => None,
-    };
+    }
+}
+
+/// Whether a cached entry is still valid for `key` given the credential file's
+/// current `modified` time. Env tokens are fixed for the process lifetime; a
+/// credential file is trusted only while a current mtime matches the cached one,
+/// so a re-provisioned (or vanished) file re-resolves.
+fn inline_cache_is_fresh(
+    key: &InlineIdentityKey,
+    entry: &CachedInlineIdentity,
+    modified: Option<SystemTime>,
+) -> bool {
+    match key {
+        InlineIdentityKey::TokenEnv { .. } => true,
+        InlineIdentityKey::Credentials { .. } => modified.is_some() && entry.modified == modified,
+    }
+}
+
+/// Serve a memoized inline identity using only a cheap mtime `stat` — never a
+/// credential-file read or the global env lock. Returns `None` on a cold cache
+/// or a changed/vanished credential file, signalling the caller to resolve on
+/// the blocking pool ([`resolve_inline_identity`]) instead. This is the warm
+/// per-request path: an unchanged, already-resolved inline account is answered
+/// without scheduling a blocking task, while the mtime `stat` still detects
+/// re-provisioning on the very next request.
+fn cached_inline_identity(store_family: StoreFamily, account: &AccountConfig) -> Option<String> {
+    let key = inline_identity_key(store_family, account)?;
+    let modified = inline_identity_mtime(&key);
+    let cache = inline_identity_cache()
+        .lock()
+        .expect("inline identity cache mutex poisoned");
+    let entry = cache.get(&key)?;
+    inline_cache_is_fresh(&key, entry, modified).then(|| entry.identity.clone())
+}
+
+/// Resolve an inline account's stable upstream identity from its credential file
+/// or environment token, memoized (see [`inline_identity_cache`]). This is the
+/// cold path — it reads the credential file / env token — so it must run on the
+/// blocking pool, never a runtime worker thread. The warm path
+/// ([`cached_inline_identity`]) already served every unchanged account, so this
+/// only runs for a cold cache or a credential whose mtime changed. Store entries
+/// are skipped — they resolved their identity during the cached store scan and
+/// must never be re-read here. The credential file's mtime is the invalidation
+/// signal (mirroring [`scan_cache`]): re-provisioning the file to a different
+/// account changes its mtime and forces a re-read. On a filesystem with coarse
+/// mtime resolution, a change sharing the cached timestamp goes unnoticed until a
+/// later change advances the mtime — the same caveat as the store-scan cache.
+fn resolve_inline_identity(store_family: StoreFamily, account: &AccountConfig) -> Option<String> {
+    let key = inline_identity_key(store_family, account)?;
+    let modified = inline_identity_mtime(&key);
     {
+        // A concurrent request may have resolved this since the warm-path miss.
         let cache = inline_identity_cache()
             .lock()
             .expect("inline identity cache mutex poisoned");
         if let Some(entry) = cache.get(&key) {
-            // Env tokens are fixed for the process lifetime; a credential file is
-            // only trusted while we have a current mtime that matches the cached
-            // one, so a re-provisioned (or vanished) file re-resolves.
-            let fresh = match &key {
-                InlineIdentityKey::TokenEnv { .. } => true,
-                InlineIdentityKey::Credentials { .. } => {
-                    modified.is_some() && entry.modified == modified
-                }
-            };
-            if fresh {
+            if inline_cache_is_fresh(&key, entry, modified) {
                 return Some(entry.identity.clone());
             }
         }
