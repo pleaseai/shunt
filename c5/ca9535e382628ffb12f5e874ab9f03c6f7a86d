@@ -1,0 +1,25 @@
+.claude/agent-memory/review-review-pr-test-analyzer/shunt-ordered-upstreams-failover-coverage.md
+  s_f38743e5624d66::t_e8def95dad5892 1-12
+.claude/agent-memory/review-review-security-reviewer/project_pr224-ordered-upstreams-failover-security.md
+  s_f38743e5624d66::t_59d125c2553fb3 1-22
+.claude/agent-memory/review-review-security-reviewer/MEMORY.md
+  s_f38743e5624d66::t_589db9d31eda1f 16
+.claude/agent-memory/review-review-pr-test-analyzer/MEMORY.md
+  s_f38743e5624d66::t_e505f0aadef89c 14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "c5ca9535e382628ffb12f5e874ab9f03c6f7a86d",
+  "prompts": {},
+  "sessions": {
+    "s_f38743e5624d66": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "506c9920-530e-488e-9697-f04aec6b1a21",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
