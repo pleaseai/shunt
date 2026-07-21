@@ -2225,9 +2225,16 @@ impl Config {
                             .map(|h| h.trim_start_matches('[').trim_end_matches(']'))
                             .and_then(|h| h.parse::<std::net::IpAddr>().ok())
                         {
-                            // IP literal: reaches the listener only when the
-                            // bind is that exact IP or a wildcard.
-                            Some(ip) => bind.ip().is_unspecified() || bind.ip() == ip,
+                            // IP literal: reaches the listener on an exact match,
+                            // or on a *same-family* wildcard bind — an IPv4
+                            // wildcard (`0.0.0.0`) does not listen on an IPv6
+                            // literal like `[::1]`, and vice versa, so a
+                            // cross-family literal cannot loop back.
+                            Some(ip) => {
+                                bind.ip() == ip
+                                    || (bind.ip().is_unspecified()
+                                        && bind.ip().is_ipv4() == ip.is_ipv4())
+                            }
                             // Non-IP host (e.g. `localhost`): not resolvable
                             // here without DNS, so keep the conservative
                             // same-port match to still catch the copy-paste.
@@ -2378,9 +2385,10 @@ impl Config {
         // originated off the operator's own machine — see the milestone
         // doc's "Auth gating"). A non-loopback bind has no such guarantee, so
         // require at least one of `[server.auth]`/`[server.gateway]` to be
-        // configured; the handler itself only checks for *presence* of a
-        // credential, never a match, so this is the only boot-time gate
-        // against a fully open, unauthenticated non-loopback deployment.
+        // configured: the handler validates the caller against that credential
+        // (a client-token match or a valid gateway JWT, like `/v1/messages`),
+        // so this boot gate guarantees a validator exists rather than leaving
+        // the route open to the network.
         if self.server.oauth_usage.is_some() {
             let non_loopback = self
                 .server
@@ -3751,6 +3759,28 @@ mod tests {
             result.unwrap_err(),
             ConfigError::OauthUsageSelfPollLoop { provider } if provider == "anthropic"
         ));
+    }
+
+    #[test]
+    fn claude_oauth_provider_on_cross_family_wildcard_bind_is_unaffected() {
+        // An IPv4 wildcard bind (`0.0.0.0`) does not listen on an IPv6 loopback
+        // literal, so a same-port `[::1]` provider cannot self-poll it and must
+        // not be rejected.
+        let mut config = Config::default();
+        config.server.bind = "0.0.0.0:3001".to_string();
+        config.server.oauth_usage = Some(OauthUsageConfig::default());
+        let env = format!("SHUNT_SELF_POLL_XFAMILY_{}", std::process::id());
+        std::env::set_var(&env, "tester:tok-secret");
+        config.server.auth = Some(InboundAuthConfig {
+            header: "x-shunt-token".to_string(),
+            tokens_env: env.clone(),
+        });
+        let anthropic = config.providers.get_mut("anthropic").unwrap();
+        anthropic.auth = AuthMode::ClaudeOauth;
+        anthropic.base_url = "http://[::1]:3001".to_string();
+        let result = config.validate();
+        std::env::remove_var(&env);
+        result.unwrap();
     }
 
     #[test]

@@ -224,60 +224,51 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         }
     }
 
-    let config = state.config.clone();
-    let accounts = state.accounts.clone();
-    // scan_accounts does file I/O and snapshot locks a std mutex; run off the
-    // async workers (mirrors usage::get / admin::pool).
-    let result = tokio::task::spawn_blocking(move || {
-        let mut snapshots = Vec::new();
-        for (name, provider) in &config.providers {
-            // Codex/Cursor/etc. never contribute to this endpoint: the CLI is
-            // asking about its own Claude subscription, and blending in a
-            // different backend's utilization would misreport it (see
-            // Deviation 1 in the milestone doc).
-            if provider.auth != AuthMode::ClaudeOauth {
-                continue;
-            }
-            let resolved = if provider.accounts.is_empty() {
-                match claude_store::scan_accounts() {
-                    Ok(list) => list,
-                    Err(error) => {
-                        tracing::error!(provider = %name, %error, "oauth_usage: failed to scan accounts store");
-                        return Err(());
-                    }
-                }
-            } else {
-                provider.accounts.clone()
-            };
-            snapshots.extend(accounts.snapshot(
-                name,
-                &resolved,
-                None,
-                config.server.pool.as_ref(),
-            ));
+    let mut snapshots = Vec::new();
+    for (name, provider) in &state.config.providers {
+        // Codex/Cursor/etc. never contribute to this endpoint: the CLI is
+        // asking about its own Claude subscription, and blending in a
+        // different backend's utilization would misreport it (see Deviation 1
+        // in the milestone doc).
+        if provider.auth != AuthMode::ClaudeOauth {
+            continue;
         }
-        Ok(snapshots)
-    })
-    .await;
-
-    match result {
-        Ok(Ok(snapshots)) => Json(to_wire(&snapshots)).into_response(),
-        Ok(Err(())) => ShuntError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "api_error",
-            "failed to read pool usage",
+        // Resolve accounts through the shared pool resolver — exactly as the
+        // sibling `usage::get` (M12) and the usage poller do — so this endpoint
+        // reflects the same pool the router actually serves: it honors an
+        // upstream's `account_scope` and merges store + inline accounts, rather
+        // than the raw store scan an earlier revision used (which would include
+        // scope-excluded accounts and drop scoped store accounts when inline
+        // accounts are also configured).
+        let resolved = match crate::auth::shared::resolve_pool_accounts(
+            "Claude",
+            &provider.accounts,
+            &provider.account_scope,
+            crate::accounts::StoreFamily::Claude,
+            claude_store::default_accounts_dir(),
+            claude_store::scan_accounts,
         )
-        .into_response(),
-        Err(join_error) => {
-            tracing::error!(%join_error, "oauth_usage: pool snapshot task panicked");
-            ShuntError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "api_error",
-                "failed to read pool usage",
-            )
-            .into_response()
-        }
+        .await
+        {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                tracing::error!(provider = %name, %error, "oauth_usage: failed to resolve account scope");
+                return ShuntError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "api_error",
+                    "failed to read pool usage",
+                )
+                .into_response();
+            }
+        };
+        snapshots.extend(state.accounts.snapshot(
+            name,
+            &resolved,
+            None,
+            state.config.server.pool.as_ref(),
+        ));
     }
+    Json(to_wire(&snapshots)).into_response()
 }
 
 #[cfg(test)]
