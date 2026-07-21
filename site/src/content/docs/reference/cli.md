@@ -27,6 +27,26 @@ shunt check
 
 Reports specific errors: a bad bind address, an unknown provider in a route, a missing `api_key_env`, a bad `base_url`, a wrong adapter/auth combination.
 
+## `shunt add`
+
+Retrieve an embedded Markdown blueprint for a coding agent. Blueprints are implementation guides, not installers: this command never edits files, installs anything, or accesses the network.
+
+```bash
+shunt add                                      # list both blueprint kinds
+shunt add upstream                             # list named upstream guides
+shunt add upstream kimi --print                # print one guide
+shunt add upstream https://example.com/docs    # research a compatible endpoint
+shunt add provider https://example.com/docs    # research a source-code integration
+```
+
+Kinds are `upstream` (configure a shipped preset or compatible endpoint) and `provider` (contribute support for a new provider protocol). A known upstream slug or alias retrieves its named guide. An absolute `http://` or `https://` URL injects that URL into the kind's generic research guide; relative paths are rejected.
+
+Blueprint Markdown always goes to stdout so it can be piped directly to an agent. `--print` makes that intent explicit and suppresses the interactive stderr hint; it does not change stdout content.
+
+```bash
+shunt add upstream kimi --print | claude
+```
+
 ## `shunt token`
 
 Print a Claude subscription OAuth token to **stdout** (logs go to stderr), designed to be wired into Claude Code's `apiKeyHelper`. Two modes:

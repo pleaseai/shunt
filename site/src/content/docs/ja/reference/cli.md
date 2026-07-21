@@ -27,6 +27,26 @@ shunt check
 
 具体的なエラーを報告します: 不正なバインドアドレス、ルート内の未知のプロバイダー、`api_key_env` の欠落、不正な `base_url`、誤ったアダプター/認証の組み合わせ。
 
+## `shunt add`
+
+コーディングエージェント向けの組み込み Markdown blueprint を取得します。Blueprint はインストーラーではなく実装ガイドです。このコマンドはファイルの編集、インストール、ネットワークアクセスを行いません。
+
+```bash
+shunt add                                      # 両方の blueprint kind を一覧表示
+shunt add upstream                             # 名前付き upstream ガイドを一覧表示
+shunt add upstream kimi --print                # ガイドを 1 つ出力
+shunt add upstream https://example.com/docs    # 互換 endpoint を調査
+shunt add provider https://example.com/docs    # ソースコード統合を調査
+```
+
+Kind は `upstream`（提供済み preset または互換 endpoint の設定）と `provider`（新しい provider protocol サポートへの貢献）です。既知の upstream slug または alias を指定すると名前付きガイドを取得します。絶対 `http://` または `https://` URL は、その kind の汎用 research ガイドに挿入されます。相対パスは拒否されます。
+
+Blueprint Markdown はエージェントへ直接パイプできるよう、常に stdout へ出力されます。`--print` はその意図を明示して対話的な stderr hint を抑制しますが、stdout の内容は変えません。
+
+```bash
+shunt add upstream kimi --print | claude
+```
+
 ## `shunt token`
 
 Claude サブスクリプションの OAuth トークンを **stdout** に出力します（ログは stderr へ）。Claude Code の `apiKeyHelper` に組み込むよう設計されています。2 つのモード:

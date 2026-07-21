@@ -1,9 +1,11 @@
+use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use shunt::{
+    blueprints::{self, AddKind},
     config::{Config, OtelConfig, SentryConfig},
     server,
     telemetry::{self, OtelReloadLayer, TelemetryGuard},
@@ -56,6 +58,18 @@ enum Command {
     /// `CLAUDE_CODE_OAUTH_TOKEN`; otherwise auto-refresh mode reads and refreshes
     /// `~/.claude/.credentials.json`.
     Token,
+    /// Retrieve an embedded implementation blueprint for a coding agent.
+    Add {
+        /// Blueprint category (`upstream` or `provider`).
+        #[arg(value_enum)]
+        kind: Option<AddKind>,
+        /// Known blueprint slug or an absolute http(s) research URL.
+        #[arg(requires = "kind")]
+        name_or_url: Option<String>,
+        /// Print raw Markdown for piping to an agent.
+        #[arg(long, requires = "name_or_url")]
+        print: bool,
+    },
     /// Log in to a subscription provider and save its credential for shunt to
     /// inject. Supports `xai`, `cursor`, `claude`, and `codex`.
     Login {
@@ -89,6 +103,11 @@ fn main() -> anyhow::Result<()> {
         Some(Command::Run { config }) => run(config.or(cli.config)),
         Some(Command::Check { config }) => check(config.or(cli.config)),
         Some(Command::Token) => runtime()?.block_on(token()),
+        Some(Command::Add {
+            kind,
+            name_or_url,
+            print,
+        }) => add(kind, name_or_url.as_deref(), print),
         Some(Command::Login {
             provider,
             name,
@@ -106,6 +125,28 @@ fn main() -> anyhow::Result<()> {
         None if cli.check => check(cli.config),
         None => run(cli.config),
     }
+}
+
+fn add(kind: Option<AddKind>, name_or_url: Option<&str>, print: bool) -> anyhow::Result<()> {
+    let output = match (kind, name_or_url) {
+        (None, None) => blueprints::list(),
+        (Some(kind), None) => blueprints::list_kind(kind),
+        (Some(kind), Some(name_or_url)) => blueprints::resolve(kind, name_or_url)?,
+        (None, Some(_)) => unreachable!("clap requires kind before name_or_url"),
+    };
+    print!("{output}");
+    std::io::stdout().flush()?;
+
+    if let (false, true, Some(kind), Some(_)) =
+        (print, std::io::stderr().is_terminal(), kind, name_or_url)
+    {
+        let example = match kind {
+            AddKind::Upstream => "shunt add upstream kimi --print | claude",
+            AddKind::Provider => "shunt add provider https://example.com/docs --print | claude",
+        };
+        eprintln!("Hint: pipe this blueprint to an agent, for example: `{example}`");
+    }
+    Ok(())
 }
 
 /// `--manual` only affects the Claude OAuth browser-callback flow (it skips the
@@ -471,6 +512,48 @@ fn init_telemetry(config: Option<&OtelConfig>) -> Option<TelemetryGuard> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn add_command_parses_listing_forms() {
+        let parsed = Cli::try_parse_from(["shunt", "add"]).unwrap();
+        assert!(matches!(
+            parsed.command,
+            Some(Command::Add {
+                kind: None,
+                name_or_url: None,
+                print: false
+            })
+        ));
+
+        let parsed = Cli::try_parse_from(["shunt", "add", "upstream"]).unwrap();
+        assert!(matches!(
+            parsed.command,
+            Some(Command::Add {
+                kind: Some(AddKind::Upstream),
+                name_or_url: None,
+                print: false
+            })
+        ));
+    }
+
+    #[test]
+    fn add_command_parses_retrieval_with_print() {
+        let parsed = Cli::try_parse_from(["shunt", "add", "upstream", "kimi", "--print"]).unwrap();
+        assert!(matches!(
+            parsed.command,
+            Some(Command::Add {
+                kind: Some(AddKind::Upstream),
+                name_or_url: Some(ref value),
+                print: true
+            }) if value == "kimi"
+        ));
+    }
+
+    #[test]
+    fn add_command_rejects_name_without_kind() {
+        assert!(Cli::try_parse_from(["shunt", "add", "kimi"]).is_err());
+        assert!(Cli::try_parse_from(["shunt", "add", "--print"]).is_err());
+    }
 
     #[test]
     fn manual_flag_without_flag_is_always_valid() {

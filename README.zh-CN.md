@@ -52,6 +52,17 @@ claude                                              # /model -> 选择 gpt-5.6-s
 
 未映射的模型(你所有的 `claude-*` id)会完全照旧工作 —— shunt 使用你自己的凭据将它们转发给 Anthropic。完整演练见 [快速开始](https://shunt-docs.pages.dev/getting-started/quickstart/)。
 
+### Agent 原生设置 blueprint
+
+`shunt add` 用于获取面向编码 agent 的内置 Markdown 实现指南。可用 `shunt add upstream` 列出可用的 upstream blueprint，也可以直接将其输送给 agent：
+
+```bash
+shunt add upstream kimi --print | claude
+shunt add upstream https://provider.example/docs --print | claude
+```
+
+该命令离线且只读：它只打印指南，不会修改文件、安装任何内容或访问网络。若要为全新的 provider protocol 贡献支持，请使用 `shunt add provider <absolute-url>`。
+
 ## 提供方
 
 一个提供方可以是有序的 `[[upstreams]]` 条目，也可以是旧式 `[providers.<name>]` TOML 表（在 YAML 中，分别对应 sequence 或 mapping 中的条目）。两种适配器类型即可覆盖大多数上游：`kind = "anthropic"`（上游讲 Anthropic Messages；透传，可选择换用不同的密钥）和 `kind = "responses"`（上游讲 OpenAI Responses API；shunt 在 Anthropic Messages ⇄ Responses 之间转换，含流式传输）。第三种原生类型 `kind = "cursor"` 桥接 Cursor 的 ConnectRPC/protobuf AgentService，使 Cursor 订阅可通过同一套 Anthropic-Messages 接口访问。

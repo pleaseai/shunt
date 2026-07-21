@@ -52,6 +52,17 @@ claude                                              # /model -> pick gpt-5.6-sol
 
 マッピングされていないモデル（あなたのすべての `claude-*` id）は、これまでとまったく同じように動作します。shunt はあなた自身の認証情報を使って Anthropic へ転送します。詳しい手順は [Quickstart](https://shunt-docs.pages.dev/getting-started/quickstart/) を参照してください。
 
+### エージェントネイティブなセットアップ blueprint
+
+`shunt add` は、コーディングエージェント向けの組み込み Markdown 実装ガイドを取得します。`shunt add upstream` で利用可能な upstream blueprint を一覧表示するか、そのままエージェントへパイプできます。
+
+```bash
+shunt add upstream kimi --print | claude
+shunt add upstream https://provider.example/docs --print | claude
+```
+
+このコマンドはオフラインかつ読み取り専用です。ガイドを出力するだけで、ファイルの編集、インストール、ネットワークアクセスは行いません。まったく新しい provider protocol のサポートに貢献する場合は `shunt add provider <absolute-url>` を使用してください。
+
 ## プロバイダー
 
 プロバイダーは、順序付き `[[upstreams]]` エントリまたはレガシーな `[providers.<name>]` TOML テーブルです（YAML では、それぞれ対応する sequence または mapping のエントリ）。2 種類のアダプターでほとんどの上流をカバーします。`kind = "anthropic"`（上流が Anthropic Messages を話す場合。別のキーを付けてパススルー可能）と `kind = "responses"`（上流が OpenAI Responses API を話す場合。shunt が Anthropic Messages ⇄ Responses をストリーミング込みで変換）です。3 つ目のネイティブな種類である `kind = "cursor"` は、Cursor の ConnectRPC/protobuf AgentService をブリッジし、Cursor サブスクリプションを同じ Anthropic Messages インターフェース経由で利用できるようにします。

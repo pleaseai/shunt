@@ -27,6 +27,26 @@ shunt check
 
 报告具体错误:错误的 bind 地址、路由中的未知提供方、缺失的 `api_key_env`、错误的 `base_url`、错误的适配器/认证组合。
 
+## `shunt add`
+
+获取面向编码 agent 的内置 Markdown blueprint。Blueprint 是实现指南，而不是安装程序：该命令不会修改文件、安装任何内容或访问网络。
+
+```bash
+shunt add                                      # 列出两种 blueprint kind
+shunt add upstream                             # 列出具名 upstream 指南
+shunt add upstream kimi --print                # 打印一份指南
+shunt add upstream https://example.com/docs    # 调研兼容 endpoint
+shunt add provider https://example.com/docs    # 调研源码集成
+```
+
+Kind 分为 `upstream`（配置已提供的 preset 或兼容 endpoint）和 `provider`（贡献新的 provider protocol 支持）。已知的 upstream slug 或 alias 会获取对应的具名指南。绝对 `http://` 或 `https://` URL 会注入该 kind 的通用 research 指南；相对路径会被拒绝。
+
+Blueprint Markdown 始终输出到 stdout，以便直接输送给 agent。`--print` 明确表达这一意图并抑制交互式 stderr hint，但不会改变 stdout 内容。
+
+```bash
+shunt add upstream kimi --print | claude
+```
+
 ## `shunt token`
 
 将一个 Claude 订阅 OAuth token 打印到 **stdout**(日志走 stderr),设计用来接入 Claude Code 的 `apiKeyHelper`。两种模式:

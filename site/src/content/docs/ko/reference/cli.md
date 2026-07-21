@@ -27,6 +27,26 @@ shunt check
 
 구체적인 오류를 보고합니다: 잘못된 bind 주소, 라우트의 알 수 없는 프로바이더, 누락된 `api_key_env`, 잘못된 `base_url`, 잘못된 어댑터/인증 조합.
 
+## `shunt add`
+
+코딩 에이전트용 내장 Markdown blueprint를 가져옵니다. Blueprint는 설치 프로그램이 아니라 구현 가이드입니다. 이 명령은 파일을 수정하거나 설치하거나 네트워크에 접근하지 않습니다.
+
+```bash
+shunt add                                      # 두 blueprint kind 모두 나열
+shunt add upstream                             # 이름이 있는 upstream 가이드 나열
+shunt add upstream kimi --print                # 가이드 하나 출력
+shunt add upstream https://example.com/docs    # 호환 endpoint 조사
+shunt add provider https://example.com/docs    # 소스 코드 통합 조사
+```
+
+Kind는 `upstream`(제공되는 preset 또는 호환 endpoint 구성)과 `provider`(새 provider protocol 지원 기여)입니다. 알려진 upstream slug나 alias는 이름이 있는 가이드를 가져옵니다. 절대 `http://` 또는 `https://` URL은 해당 kind의 일반 research 가이드에 삽입되며, 상대 경로는 거부됩니다.
+
+Blueprint Markdown은 에이전트로 바로 파이프할 수 있도록 항상 stdout으로 출력됩니다. `--print`는 그 의도를 명시하고 대화형 stderr hint를 억제하지만 stdout 내용은 바꾸지 않습니다.
+
+```bash
+shunt add upstream kimi --print | claude
+```
+
 ## `shunt token`
 
 Claude 구독 OAuth 토큰을 **stdout**으로 출력하며(로그는 stderr로), Claude Code의 `apiKeyHelper`에 연결되도록 설계되었습니다. 두 가지 모드:

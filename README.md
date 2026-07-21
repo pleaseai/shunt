@@ -54,6 +54,17 @@ claude                                              # /model -> pick gpt-5.6-sol
 
 Unmapped models (all your `claude-*` ids) keep working exactly as before — shunt forwards them to Anthropic with your own credential. Full walkthrough: [Quickstart](https://shunt-docs.pages.dev/getting-started/quickstart/).
 
+### Agent-native setup blueprints
+
+`shunt add` retrieves embedded Markdown implementation guides for coding agents. List the available upstream blueprints with `shunt add upstream`, or pipe one directly into an agent:
+
+```bash
+shunt add upstream kimi --print | claude
+shunt add upstream https://provider.example/docs --print | claude
+```
+
+The command is offline and read-only: it prints guidance but never edits files, installs anything, or accesses the network. Use `shunt add provider <absolute-url>` when contributing support for a genuinely new provider protocol.
+
 ## Providers
 
 A provider is either an ordered `[[upstreams]]` entry or a legacy `[providers.<name>]` TOML table (under YAML, an entry in the corresponding sequence or mapping). Two adapter kinds cover most upstreams: `kind = "anthropic"` (the upstream speaks Anthropic Messages; passed through, optionally with a different key) and `kind = "responses"` (the upstream speaks the OpenAI Responses API; shunt translates Anthropic Messages ⇄ Responses, streaming included). A third native kind, `kind = "cursor"`, bridges Cursor's ConnectRPC/protobuf AgentService so a Cursor subscription is reachable through the same Anthropic-Messages interface.
