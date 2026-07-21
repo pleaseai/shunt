@@ -1,0 +1,84 @@
+README.md
+  s_f38743e5624d66::t_5ad623117b721b 64-66
+  s_f38743e5624d66::t_57190e905a1f7d 98,100
+  s_f38743e5624d66::t_59b996f4fbd1cc 173-179
+  s_f38743e5624d66::t_8ce813fd229c53 180
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_f38743e5624d66::t_59c31ceae0be18 151
+  s_f38743e5624d66::t_078504419f9d93 196
+  s_f38743e5624d66::t_d7a300b420a22e 167
+  s_f38743e5624d66::t_056343288d480f 165
+  s_f38743e5624d66::t_c9733689cc8db5 183
+  s_f38743e5624d66::t_c815a37dd0327f 149
+  s_f38743e5624d66::t_dc9efc95d2b04c 118-120
+docs/m10-codex-multi-account.md
+  s_f38743e5624d66::t_d8369dc7ab1bfe 9
+  s_f38743e5624d66::t_ac09900d3dd08b 141
+docs/upstreams-failover.md
+  s_f38743e5624d66::t_fdb61d9a51e9ed 220-224
+  s_f38743e5624d66::t_3a9ae62950ff21 24,26
+  s_f38743e5624d66::t_a9282901791963 93
+  s_f38743e5624d66::t_634c1c673eabff 246-253
+  s_f38743e5624d66::t_628ccd7010040f 78-82
+.please/docs/decisions/0002-ordered-upstreams-failover.md
+  s_f38743e5624d66::t_664f33d3fbf94d 94-97
+  s_f38743e5624d66::t_cb8f32039d6f9d 51-53
+README.ja.md
+  s_f38743e5624d66::t_0b912c16ed5f74 57-81
+site/src/content/docs/reference/configuration.md
+  s_f38743e5624d66::t_ce0b7276277318 209
+  s_f38743e5624d66::t_c134de0cba834a 241
+  s_f38743e5624d66::t_a240d49a86564b 225
+  s_f38743e5624d66::t_48ba34a368ee41 267
+  s_f38743e5624d66::t_24f52483dd63cc 254
+  s_f38743e5624d66::t_daeb42c5ee3874 263
+  s_f38743e5624d66::t_24d2c7dfc1e876 207
+  s_f38743e5624d66::t_67fe1723d944e7 176-178
+  s_f38743e5624d66::t_5f2c0ea8c2f796 223
+site/src/content/docs/ja/guides/opentelemetry.md
+  s_f38743e5624d66::t_d11b164612a05e 58
+site/src/content/docs/guides/opentelemetry.md
+  s_f38743e5624d66::t_5c7efde1a6828b 58
+site/src/content/docs/ja/reference/configuration.md
+  s_f38743e5624d66::t_5c72cfaf27e3eb 165
+  s_f38743e5624d66::t_e7d21145886437 167
+  s_f38743e5624d66::t_8680b166114c52 183
+  s_f38743e5624d66::t_92f19ef19617ed 118-120
+  s_f38743e5624d66::t_bf971771eca876 149
+  s_f38743e5624d66::t_0bf65ff1cd2a92 151
+  s_f38743e5624d66::t_cec154adf41527 196
+README.ko.md
+  s_f38743e5624d66::t_4c468b18d226c8 57-81
+site/src/content/docs/ko/guides/opentelemetry.md
+  s_f38743e5624d66::t_5373b49cbccdf7 58
+site/src/content/docs/ko/reference/configuration.md
+  s_f38743e5624d66::t_103fa20cbc7c7f 176
+  s_f38743e5624d66::t_6e9d8f9b7997c9 207
+  s_f38743e5624d66::t_c4e27f64c89fdb 178
+  s_f38743e5624d66::t_c6d2f8ecb833e1 162
+  s_f38743e5624d66::t_9c2cf94f5fb4c3 160
+  s_f38743e5624d66::t_b3953553551cbe 194
+  s_f38743e5624d66::t_1eda8915be82e7 129-131
+site/src/content/docs/guides/codex-multi-account.md
+  s_f38743e5624d66::t_e8e254f02816fd 124
+site/src/content/docs/zh-cn/guides/opentelemetry.md
+  s_f38743e5624d66::t_104d8a98f7ccbc 58
+README.zh-CN.md
+  s_f38743e5624d66::t_7b2c1404ba1710 57-81
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "169552e77eea26fa95d1a8a6fb4576bed1e1d20d",
+  "prompts": {},
+  "sessions": {
+    "s_f38743e5624d66": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "506c9920-530e-488e-9697-f04aec6b1a21",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
