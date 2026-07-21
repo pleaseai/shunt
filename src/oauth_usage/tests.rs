@@ -310,16 +310,34 @@ async fn loopback_bind_serves_unauthenticated_even_with_server_auth_configured()
 }
 
 #[tokio::test]
-async fn non_loopback_bind_admits_any_non_matching_credential() {
-    let (state, env) = state_with_claude_account("non_loopback_unverified", "0.0.0.0:0");
+async fn non_loopback_bind_admits_a_valid_client_token() {
+    let (state, env) = state_with_claude_account("non_loopback_valid", "0.0.0.0:0");
     let mut headers = HeaderMap::new();
-    headers.insert(
-        "authorization",
-        "Bearer some-anthropic-oauth-bearer".parse().unwrap(),
-    );
+    // The helper configures `[server.auth]` header `x-shunt-token` with the
+    // token `tok-secret` (client `tester`).
+    headers.insert("x-shunt-token", "tok-secret".parse().unwrap());
     let response = get(State(state), headers).await;
     std::env::remove_var(&env);
     assert_eq!(response.status(), axum::http::StatusCode::OK);
+}
+
+#[tokio::test]
+async fn non_loopback_bind_rejects_a_fabricated_non_matching_credential() {
+    // A remote caller presenting a header that is *not* a configured client
+    // token (nor a valid gateway JWT) must be rejected — bare presence is not
+    // enough. Guards against scraping pool quota telemetry with a fabricated
+    // `Authorization`/`x-api-key` header on a network-facing bind.
+    let (state, env) = state_with_claude_account("non_loopback_fabricated", "0.0.0.0:0");
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "authorization",
+        "Bearer not-a-configured-token".parse().unwrap(),
+    );
+    let response = get(State(state), headers).await;
+    std::env::remove_var(&env);
+    assert_eq!(response.status(), axum::http::StatusCode::UNAUTHORIZED);
+    let body = body_json(response).await;
+    assert_eq!(body["error"]["type"], "authentication_error");
 }
 
 #[tokio::test]

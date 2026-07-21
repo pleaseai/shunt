@@ -2201,18 +2201,39 @@ impl Config {
                     // A loopback claude_oauth base_url is allowed to be "any
                     // host" so a local debugging proxy or mock can receive the
                     // bearer (see the comment above) — but if it happens to
-                    // land on this gateway's own bind port with the usage
+                    // land on this gateway's own listener with the usage
                     // synthesizer enabled, the outbound poller would read back
                     // its own synthesized aggregate instead of Anthropic's
-                    // real usage. This is a same-loopback-interface,
-                    // same-port heuristic, not an exhaustive topology check
-                    // (it does not resolve DNS names or account for a reverse
-                    // proxy in between) — it exists to catch the realistic
-                    // mistake of copy-pasting shunt's own address into a
-                    // `claude_oauth` provider's `base_url`.
+                    // real usage. Match on host *and* port so a proxy on a
+                    // *different* loopback address (e.g. `[::1]:P` or
+                    // `127.0.0.2:P` while shunt binds `127.0.0.1:P`) is not
+                    // wrongly rejected — that address cannot reach shunt's
+                    // listener. A wildcard bind (`0.0.0.0`/`::`) accepts every
+                    // local address, so any same-port loopback host reaches it.
+                    // Still a heuristic, not an exhaustive topology check (it
+                    // does not resolve DNS names or account for a reverse proxy
+                    // in between): it exists to catch the realistic mistake of
+                    // copy-pasting shunt's own address into a `claude_oauth`
+                    // provider's `base_url`.
                     if let Ok(bind) = self.server.bind_addr() {
                         let port = url.port_or_known_default().unwrap_or(0);
-                        if port == bind.port() {
+                        // `host_str()` returns a bracketed `[::1]` for an IPv6
+                        // literal, which does not parse as an `IpAddr` — strip
+                        // the brackets first so an IPv6 literal compares.
+                        let host_reaches_bind = match url
+                            .host_str()
+                            .map(|h| h.trim_start_matches('[').trim_end_matches(']'))
+                            .and_then(|h| h.parse::<std::net::IpAddr>().ok())
+                        {
+                            // IP literal: reaches the listener only when the
+                            // bind is that exact IP or a wildcard.
+                            Some(ip) => bind.ip().is_unspecified() || bind.ip() == ip,
+                            // Non-IP host (e.g. `localhost`): not resolvable
+                            // here without DNS, so keep the conservative
+                            // same-port match to still catch the copy-paste.
+                            None => true,
+                        };
+                        if port == bind.port() && host_reaches_bind {
                             return Err(ConfigError::OauthUsageSelfPollLoop {
                                 provider: name.clone(),
                             });
@@ -3684,6 +3705,52 @@ mod tests {
         anthropic.auth = AuthMode::ClaudeOauth;
         anthropic.base_url = "http://127.0.0.1:9999".to_string();
         config.validate().unwrap();
+    }
+
+    #[test]
+    fn claude_oauth_provider_on_a_different_loopback_host_same_port_is_unaffected() {
+        // A proxy on a *different* loopback address but the same port cannot
+        // reach a listener bound to a specific loopback IP, so it must not trip
+        // the self-poll guard: shunt binds `127.0.0.1:3001`, the provider is on
+        // `[::1]:3001` (or `127.0.0.2:3001`).
+        for base in ["http://[::1]:3001", "http://127.0.0.2:3001"] {
+            let mut config = Config::default();
+            config.server.bind = "127.0.0.1:3001".to_string();
+            config.server.oauth_usage = Some(OauthUsageConfig::default());
+            let anthropic = config.providers.get_mut("anthropic").unwrap();
+            anthropic.auth = AuthMode::ClaudeOauth;
+            anthropic.base_url = base.to_string();
+            config
+                .validate()
+                .unwrap_or_else(|error| panic!("base {base} should be allowed, got {error:?}"));
+        }
+    }
+
+    #[test]
+    fn claude_oauth_provider_on_wildcard_bind_same_port_loopback_is_rejected() {
+        // A wildcard bind (`0.0.0.0`) listens on every local address, so a
+        // same-port loopback host does reach it and must still trip the guard.
+        let mut config = Config::default();
+        config.server.bind = "0.0.0.0:3001".to_string();
+        config.server.oauth_usage = Some(OauthUsageConfig::default());
+        // A wildcard bind also needs inbound auth to satisfy the non-loopback
+        // precondition; give it a token so validation reaches the self-poll
+        // check rather than failing earlier.
+        let env = format!("SHUNT_SELF_POLL_WILDCARD_{}", std::process::id());
+        std::env::set_var(&env, "tester:tok-secret");
+        config.server.auth = Some(InboundAuthConfig {
+            header: "x-shunt-token".to_string(),
+            tokens_env: env.clone(),
+        });
+        let anthropic = config.providers.get_mut("anthropic").unwrap();
+        anthropic.auth = AuthMode::ClaudeOauth;
+        anthropic.base_url = "http://127.0.0.1:3001".to_string();
+        let result = config.validate();
+        std::env::remove_var(&env);
+        assert!(matches!(
+            result.unwrap_err(),
+            ConfigError::OauthUsageSelfPollLoop { provider } if provider == "anthropic"
+        ));
     }
 
     #[test]

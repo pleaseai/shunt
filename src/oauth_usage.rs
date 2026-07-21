@@ -18,7 +18,7 @@
 
 use axum::{
     extract::State,
-    http::{HeaderMap, HeaderName, StatusCode},
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -115,11 +115,12 @@ fn routing_aware_window(
         .filter(|s| !s.disabled)
         .filter(|s| utilization(s).is_some_and(f64::is_finite))
         .collect();
-    let usable: Vec<&&AccountSnapshot> = candidates.iter().filter(|s| s.available).collect();
-    let pool: Vec<&AccountSnapshot> = if usable.is_empty() {
+    let usable: Vec<&AccountSnapshot> =
+        candidates.iter().copied().filter(|s| s.available).collect();
+    let pool = if usable.is_empty() {
         candidates
     } else {
-        usable.into_iter().copied().collect()
+        usable
     };
     let min_priority = pool.iter().map(|s| s.priority).min()?;
     pool.into_iter()
@@ -176,22 +177,6 @@ pub(crate) fn to_wire(snapshots: &[AccountSnapshot]) -> OauthUsageWire {
     }
 }
 
-/// Whether the request carries a value in any of the three credential-shaped
-/// slots a Claude Code CLI (or any other client) might present: the
-/// dedicated `[server.auth]` header, `x-api-key`, or `Authorization: Bearer`.
-/// Presence is enough — this endpoint does not validate the value against a
-/// configured token list, because the CLI's real traffic presents its own
-/// Anthropic OAuth bearer here, not a shunt client token (see the milestone
-/// doc's "Auth gating" section for why).
-fn has_any_credential(auth_header: Option<&HeaderName>, headers: &HeaderMap) -> bool {
-    let has = |name: &HeaderName| headers.get(name).is_some_and(|v| !v.as_bytes().is_empty());
-    auth_header.is_some_and(has)
-        || has(&axum::http::header::AUTHORIZATION)
-        || headers
-            .get("x-api-key")
-            .is_some_and(|v| !v.as_bytes().is_empty())
-}
-
 pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
     // Snapshot the live config so this response reflects the latest reload
     // (matches discovery.rs / admin routes / usage::get).
@@ -201,36 +186,40 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     // docs) — never re-derived from `state.config`, which a reload can
     // rewrite without moving the actual listener.
     if !state.boot_is_loopback {
-        let auth_header = state
+        // Validate the caller like the gated Messages routes do
+        // (`proxy::check_inbound_auth`): require a real client-token match or a
+        // valid gateway JWT, never mere header presence. A non-loopback bind
+        // always has one of `[server.auth]`/`[server.gateway]` configured (the
+        // `OauthUsageEndpointRequiresAuthOnNonLoopback` config guard), and the
+        // only CLI login mode that fetches `/api/oauth/usage` is a loopback
+        // subscription login — so there is no unverifiable-Anthropic-bearer
+        // caller to accommodate here, and accepting bare presence would let any
+        // remote caller scrape pool quota telemetry with a fabricated header.
+        let static_client = state
             .inbound_auth
             .as_ref()
-            .map(|auth| auth.header().clone());
-        if !has_any_credential(auth_header.as_ref(), &headers) {
+            .and_then(|auth| auth.authenticate_client(&headers));
+        let gateway_client = state
+            .gateway_auth
+            .as_ref()
+            .and_then(|auth| auth.authenticate_bearer(&headers));
+        if static_client.is_none() && gateway_client.is_none() {
             tracing::warn!(
-                "inbound auth failed for GET /api/oauth/usage: no credential presented on a non-loopback bind"
+                "inbound auth failed for GET /api/oauth/usage: missing or invalid credential on a non-loopback bind"
             );
             return ShuntError::new(
                 StatusCode::UNAUTHORIZED,
                 "authentication_error",
-                "missing credential: this gateway requires a client token, gateway login, or an Anthropic OAuth bearer to read usage",
+                "missing or invalid credential: this gateway requires a valid client token or gateway login to read usage",
             )
             .into_response();
         }
-        // Presence is enough; log whether it also happens to match a
-        // configured client token, purely for operator visibility — never
-        // gate on the match (see module docs / milestone doc "Auth gating").
-        let identified = state
-            .inbound_auth
-            .as_ref()
-            .and_then(|auth| auth.authenticate_client(&headers));
-        match identified {
+        match static_client {
             Some(client) => {
                 tracing::info!(client = %client, "inbound client authenticated for GET /api/oauth/usage")
             }
             None => {
-                tracing::debug!(
-                    "inbound credential presented for GET /api/oauth/usage did not match a configured client token; admitted as an unverified Anthropic OAuth bearer"
-                )
+                tracing::info!("inbound gateway login authenticated for GET /api/oauth/usage")
             }
         }
     }

@@ -128,25 +128,25 @@ Two config-validation guards:
 
 ## Auth gating
 
-Unlike `GET /usage` (M12, client-token-gated) or `GET /admin/pool` (M9, admin-token-gated),
-this endpoint's auth model is **bind-topology-gated**, because the caller is the Claude Code
-CLI itself presenting *its own Anthropic OAuth bearer* — not a shunt client token — to a path
-it believes is `api.anthropic.com`. Validating that bearer against shunt's configured client
-tokens would always fail (they are different credentials by construction), and shunt does not
-hold Anthropic's OAuth verification keys to validate it as a real Anthropic bearer either.
+This endpoint's auth model is **bind-topology-gated**: unauthenticated on a loopback bind,
+and validated exactly like the gated Messages routes on a non-loopback bind.
 
 - **Loopback bind** (`127.0.0.1`/`::1`, shunt's own default): served **unauthenticated**. The
   request cannot have originated off the operator's own machine, so this is the same trust
   boundary shunt's other loopback-only affordances already rely on (see the `claude_oauth`
-  provider's loopback `base_url` allowance in `src/config.rs`).
-- **Non-loopback bind**: requires the caller to *present* some credential — the configured
-  `[server.auth]` header, `x-api-key`, or `Authorization: Bearer` — but never validates it
-  against a configured token list. Presence is enough, because legitimate traffic here
-  presents an unverifiable-by-shunt Anthropic OAuth bearer, not a shunt client token. This
-  is enforced only when `[server.oauth_usage]` is configured on a non-loopback bind (see
-  `ConfigError::OauthUsageEndpointRequiresAuthOnNonLoopback` above) — a non-loopback deployment
-  without `[server.auth]`/`[server.gateway]` configured at all fails to boot rather than serve
-  this route open to the network.
+  provider's loopback `base_url` allowance in `src/config.rs`). This is also the *only* bind
+  topology under which the Claude Code CLI actually calls this path: the CLI issues the usage
+  fetch only for a subscription OAuth login talking to `ANTHROPIC_BASE_URL`, and never when an
+  `ANTHROPIC_AUTH_TOKEN` (the shared-gateway client-token pattern) is set.
+- **Non-loopback bind**: requires a **valid** credential — a configured `[server.auth]` client
+  token (via its header, `x-api-key`, or `Authorization: Bearer`) **or** a valid gateway JWT —
+  exactly as `proxy::check_inbound_auth` gates `/v1/messages`. Mere header *presence* is not
+  enough: a fabricated `Authorization: x` must not read pool quota telemetry off a
+  network-facing bind. There is no unverifiable-Anthropic-bearer caller to accommodate here,
+  precisely because the CLI never fetches this path on a non-loopback shared-gateway bind (see
+  the loopback note above). A non-loopback deployment without `[server.auth]`/`[server.gateway]`
+  configured at all fails to boot (`ConfigError::OauthUsageEndpointRequiresAuthOnNonLoopback`),
+  so a validator is always present.
 
 ## Response
 
