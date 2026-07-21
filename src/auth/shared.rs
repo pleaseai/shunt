@@ -363,22 +363,11 @@ pub(crate) async fn resolve_pool_accounts(
         {
             // Store entries already attempted identity extraction during the cached
             // scan; never re-read their credential files on the per-request path.
-            account.uuid = match (
-                store_family,
-                account.credentials.as_deref(),
-                account.token_env.as_deref(),
-            ) {
-                (StoreFamily::Claude, Some(path), _) if !account.store_entry => {
-                    crate::auth::claude::store::credential_uuid(Path::new(path))
-                }
-                (StoreFamily::Chatgpt, Some(path), _) if !account.store_entry => {
-                    crate::auth::codex::store::credential_account_id(Path::new(path))
-                }
-                (StoreFamily::Chatgpt, None, Some(env_name)) => env::var(env_name)
-                    .ok()
-                    .and_then(|token| crate::auth::codex::auth::jwt_account_id(&token)),
-                _ => None,
-            };
+            // Inline accounts resolve their identity from a credential file or
+            // env token here, memoized process-wide (see [`resolve_inline_identity`])
+            // so the request path stays off credential-file reads and the global
+            // env lock.
+            account.uuid = resolve_inline_identity(store_family, account);
         }
     }
     Ok(accounts)
@@ -401,6 +390,86 @@ struct CachedScan {
 fn scan_cache() -> &'static Mutex<HashMap<(String, PathBuf), CachedScan>> {
     static CACHE: OnceLock<Mutex<HashMap<(String, PathBuf), CachedScan>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Cache key for an inline account's resolved upstream identity. Inline
+/// `[[accounts]]` come from static config, so the credential path / env token
+/// that yields an account's identity is fixed for the process lifetime, and the
+/// identity itself (`shuntAccountUuid` / `chatgpt_account_id`) is stable across
+/// token refreshes. The store family is part of the key because the two stores
+/// read different identity fields out of the same credential path.
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum InlineIdentityKey {
+    Credentials { family: StoreFamily, path: String },
+    TokenEnv { name: String },
+}
+
+/// Process-wide memo of resolved inline-account identities. This keeps the
+/// per-request account-resolution path off credential-file reads and the global
+/// environment lock (`std::env::var`), mirroring the store-scan cache
+/// ([`scan_cache`]) and the project's rule against configuration I/O on the
+/// request hot path. Only successful (`Some`) resolutions are stored, so a
+/// briefly-missing or unreadable credential file is retried on the next request
+/// instead of being permanently masked, while a resolved account is never
+/// re-read.
+fn inline_identity_cache() -> &'static Mutex<HashMap<InlineIdentityKey, String>> {
+    static CACHE: OnceLock<Mutex<HashMap<InlineIdentityKey, String>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Resolve an inline account's stable upstream identity from its credential file
+/// or environment token, memoized process-wide (see [`inline_identity_cache`]).
+/// Store entries are skipped — they resolved their identity during the cached
+/// store scan and must never be re-read on the per-request path. Preserves the
+/// prior per-family resolution exactly; only the file read / env lookup is now
+/// cached after the first success.
+fn resolve_inline_identity(store_family: StoreFamily, account: &AccountConfig) -> Option<String> {
+    if account.store_entry {
+        return None;
+    }
+    let key = match (
+        store_family,
+        account.credentials.as_deref(),
+        account.token_env.as_deref(),
+    ) {
+        (family @ (StoreFamily::Claude | StoreFamily::Chatgpt), Some(path), _) => {
+            InlineIdentityKey::Credentials {
+                family,
+                path: path.to_string(),
+            }
+        }
+        (StoreFamily::Chatgpt, None, Some(env_name)) => InlineIdentityKey::TokenEnv {
+            name: env_name.to_string(),
+        },
+        _ => return None,
+    };
+    if let Some(identity) = inline_identity_cache()
+        .lock()
+        .expect("inline identity cache mutex poisoned")
+        .get(&key)
+    {
+        return Some(identity.clone());
+    }
+    let resolved = match &key {
+        InlineIdentityKey::Credentials {
+            family: StoreFamily::Claude,
+            path,
+        } => crate::auth::claude::store::credential_uuid(Path::new(path)),
+        InlineIdentityKey::Credentials {
+            family: StoreFamily::Chatgpt,
+            path,
+        } => crate::auth::codex::store::credential_account_id(Path::new(path)),
+        InlineIdentityKey::TokenEnv { name } => env::var(name)
+            .ok()
+            .and_then(|token| crate::auth::codex::auth::jwt_account_id(&token)),
+    };
+    if let Some(identity) = &resolved {
+        inline_identity_cache()
+            .lock()
+            .expect("inline identity cache mutex poisoned")
+            .insert(key, identity.clone());
+    }
+    resolved
 }
 
 /// Return the cached scan for `dir` when its stored mtime still matches
@@ -800,6 +869,53 @@ mod tests {
             .parent()
             .unwrap();
         let _ = fs::remove_dir_all(credential_dir);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn resolve_pool_accounts_memoizes_inline_credential_identity() {
+        // An inline account (not a store entry) with a credentials file but no
+        // uuid resolves its identity from that file once, then reuses the cached
+        // value — even after the file is deleted — so the request hot path never
+        // re-reads the credential file. Configured + empty scope skips the scan
+        // entirely (`scan_must_not_run` proves it).
+        let dir = temp_dir("pool-inline-memo");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("inline.json");
+        fs::write(&path, r#"{"shuntAccountUuid":"inline-identity"}"#).unwrap();
+        let configured = vec![AccountConfig {
+            name: "inline".to_string(),
+            credentials: Some(path.display().to_string()),
+            ..Default::default()
+        }];
+
+        let first = resolve_pool_accounts(
+            "inline-memo",
+            &configured,
+            &[],
+            StoreFamily::Claude,
+            dir.clone(),
+            scan_must_not_run,
+        )
+        .await
+        .unwrap();
+        assert_eq!(first[0].uuid.as_deref(), Some("inline-identity"));
+
+        // Remove the credential file: a re-read would now yield `None`, but the
+        // memo serves the identity resolved on the first request.
+        fs::remove_file(&path).unwrap();
+        let second = resolve_pool_accounts(
+            "inline-memo",
+            &configured,
+            &[],
+            StoreFamily::Claude,
+            dir.clone(),
+            scan_must_not_run,
+        )
+        .await
+        .unwrap();
+        assert_eq!(second[0].uuid.as_deref(), Some("inline-identity"));
+
         let _ = fs::remove_dir_all(dir);
     }
 

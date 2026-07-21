@@ -39,7 +39,7 @@ pub(super) async fn forward(
                 response: UpstreamError::from_message(message).into_response(),
             }
         })?;
-    let body = normalize_request_body(body.to_vec());
+    let mut body = normalize_request_body(body.to_vec());
     let (mut routes, requested_model) = routing::resolve_request_chain(&state.config, &body)
         .map_err(|error| ForwardError {
             message: "failed to route request".to_string(),
@@ -82,7 +82,17 @@ pub(super) async fn forward(
         let model = route.model.clone();
         let upstream_model = route.upstream_model.clone();
         let attempt_started_at = Instant::now();
-        let result = dispatch(state.clone(), route, uri, &attempt_headers, body.clone()).await;
+        // Move the buffered body into the final attempt instead of cloning it: the
+        // common single-upstream chain then never copies the (up to 64 MB) body,
+        // and a multi-upstream chain only clones for the attempts that precede the
+        // last. `mem::take` (not a bare move) keeps the borrow checker happy inside
+        // the loop; `body` is unused after the loop.
+        let attempt_body = if index + 1 < attempted_total {
+            body.clone()
+        } else {
+            std::mem::take(&mut body)
+        };
+        let result = dispatch(state.clone(), route, uri, &attempt_headers, attempt_body).await;
 
         if !is_count_tokens(uri) {
             let status = match &result {

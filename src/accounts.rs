@@ -882,7 +882,10 @@ pub(crate) fn account_identity(account: &AccountConfig) -> &str {
 
 pub(crate) fn account_key(upstream: &str, account: &AccountConfig) -> AccountKey {
     let store_family = account.store_family.unwrap_or_else(|| {
-        if upstream.contains("codex") || upstream.contains("chatgpt") {
+        // Case-insensitive so an upstream named e.g. `My-Codex` still infers the
+        // ChatGPT store family instead of falling through to Claude.
+        let lower = upstream.to_lowercase();
+        if lower.contains("codex") || lower.contains("chatgpt") {
             StoreFamily::Chatgpt
         } else {
             StoreFamily::Claude
