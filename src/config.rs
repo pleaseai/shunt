@@ -2225,15 +2225,17 @@ impl Config {
                             .map(|h| h.trim_start_matches('[').trim_end_matches(']'))
                             .and_then(|h| h.parse::<std::net::IpAddr>().ok())
                         {
-                            // IP literal: reaches the listener on an exact match,
-                            // or on a *same-family* wildcard bind — an IPv4
-                            // wildcard (`0.0.0.0`) does not listen on an IPv6
-                            // literal like `[::1]`, and vice versa, so a
-                            // cross-family literal cannot loop back.
+                            // IP literal: reaches the listener on an exact
+                            // match, or on a wildcard bind. An IPv4 wildcard
+                            // (`0.0.0.0`) listens on IPv4 only, so it does not
+                            // reach an IPv6 literal like `[::1]`. An IPv6
+                            // wildcard (`[::]`) is dual-stack by default and can
+                            // accept IPv4 too, so treat it conservatively as
+                            // reaching any literal.
                             Some(ip) => {
                                 bind.ip() == ip
                                     || (bind.ip().is_unspecified()
-                                        && bind.ip().is_ipv4() == ip.is_ipv4())
+                                        && (bind.ip().is_ipv6() || ip.is_ipv4()))
                             }
                             // Non-IP host (e.g. `localhost`): not resolvable
                             // here without DNS, so keep the conservative
@@ -3781,6 +3783,31 @@ mod tests {
         let result = config.validate();
         std::env::remove_var(&env);
         result.unwrap();
+    }
+
+    #[test]
+    fn claude_oauth_provider_on_dual_stack_wildcard_bind_same_port_ipv4_is_rejected() {
+        // An IPv6 wildcard bind (`[::]`) is dual-stack by default and accepts
+        // IPv4 connections, so a same-port `127.0.0.1` provider *can* self-poll
+        // it and must still trip the guard.
+        let mut config = Config::default();
+        config.server.bind = "[::]:3001".to_string();
+        config.server.oauth_usage = Some(OauthUsageConfig::default());
+        let env = format!("SHUNT_SELF_POLL_DUALSTACK_{}", std::process::id());
+        std::env::set_var(&env, "tester:tok-secret");
+        config.server.auth = Some(InboundAuthConfig {
+            header: "x-shunt-token".to_string(),
+            tokens_env: env.clone(),
+        });
+        let anthropic = config.providers.get_mut("anthropic").unwrap();
+        anthropic.auth = AuthMode::ClaudeOauth;
+        anthropic.base_url = "http://127.0.0.1:3001".to_string();
+        let result = config.validate();
+        std::env::remove_var(&env);
+        assert!(matches!(
+            result.unwrap_err(),
+            ConfigError::OauthUsageSelfPollLoop { provider } if provider == "anthropic"
+        ));
     }
 
     #[test]
