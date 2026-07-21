@@ -356,11 +356,10 @@ pub(crate) async fn resolve_pool_accounts(
     };
     // Assign the store family inline — that touches no I/O — and try to fill each
     // UUID-less inline account from the warm identity cache. `cached_inline_identity`
-    // costs only a mtime `stat` (no credential read, no env lock), so an already-
-    // resolved, unchanged inline account is answered here without scheduling any
-    // blocking task, while the `stat` still detects a re-provisioned credential on
-    // the very next request. Only a cold cache or a changed/vanished credential
-    // leaves `needs_resolution` set.
+    // is a pure in-memory lookup (no credential read, no `stat`, no env lock), so an
+    // already-resolved inline account is answered here without any blocking I/O on
+    // the runtime worker. Only a not-yet-resolved (cold-cache) credential leaves
+    // `needs_resolution` set.
     let mut needs_resolution = false;
     for account in &mut accounts {
         account.store_family = Some(store_family);
@@ -379,9 +378,9 @@ pub(crate) async fn resolve_pool_accounts(
     }
     // Everything already known (the steady state) stays entirely on the async path
     // and never queues a blocking-pool task. Only hop to the blocking pool for the
-    // cold/changed credentials, whose file read (and env lookup) must not run on a
-    // runtime worker thread; results are memoized per credential mtime (see
-    // [`resolve_inline_identity`]).
+    // cold credentials, whose file read (and env lookup) must not run on a runtime
+    // worker thread; results are memoized for the process lifetime (see
+    // [`inline_identity_cache`]).
     if !needs_resolution {
         return Ok(accounts);
     }
@@ -434,24 +433,23 @@ enum InlineIdentityKey {
     TokenEnv { name: String },
 }
 
-/// A memoized inline-account identity plus the credential-file mtime it was
-/// resolved against (`None` for an env token, which is fixed for the process
-/// lifetime).
-struct CachedInlineIdentity {
-    modified: Option<SystemTime>,
-    identity: String,
-}
-
-/// Process-wide memo of resolved inline-account identities. This keeps the
-/// per-request account-resolution path off full credential-file reads and the
-/// global environment lock (`std::env::var`), mirroring the store-scan cache
-/// ([`scan_cache`]) and the project's rule against configuration I/O on the
-/// request hot path. Only successful (`Some`) resolutions are stored, so a
-/// briefly-missing or unreadable credential file is retried on the next request
-/// instead of being permanently masked.
-fn inline_identity_cache() -> &'static Mutex<HashMap<InlineIdentityKey, CachedInlineIdentity>> {
-    static CACHE: OnceLock<Mutex<HashMap<InlineIdentityKey, CachedInlineIdentity>>> =
-        OnceLock::new();
+/// Process-wide memo of resolved inline-account identities. Inline `[[accounts]]`
+/// come from static config, so an account's credential path / env token — and
+/// the identity it yields (`shuntAccountUuid` / `chatgpt_account_id`, stable
+/// across token refreshes) — is fixed for the process (config generation).
+/// Resolution therefore memoizes for the process lifetime: the first request
+/// reads the credential once on the blocking pool, and every later request is
+/// answered from memory with **no filesystem I/O at all** — no read and no
+/// `stat` — so a slow or unavailable credential filesystem can never stall a
+/// runtime worker on the request hot path. Only successful (`Some`) resolutions
+/// are stored, so a briefly-missing or unreadable credential file is retried on
+/// the next request instead of being permanently masked. Caveat: because there
+/// is no per-request probe, re-provisioning an inline credential *file* to a
+/// different OAuth account is not observed until the config is reloaded / the
+/// process restarts — acceptable for static config, and the price of keeping the
+/// request path free of blocking I/O.
+fn inline_identity_cache() -> &'static Mutex<HashMap<InlineIdentityKey, String>> {
+    static CACHE: OnceLock<Mutex<HashMap<InlineIdentityKey, String>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -484,73 +482,40 @@ fn inline_identity_key(
     }
 }
 
-/// The credential file's mtime — the invalidation signal — or `None` for an env
-/// token (no file) or an unreadable/missing file. A single `stat`, no file read.
-fn inline_identity_mtime(key: &InlineIdentityKey) -> Option<SystemTime> {
-    match key {
-        InlineIdentityKey::Credentials { path, .. } => {
-            fs::metadata(path).and_then(|meta| meta.modified()).ok()
-        }
-        InlineIdentityKey::TokenEnv { .. } => None,
-    }
-}
-
-/// Whether a cached entry is still valid for `key` given the credential file's
-/// current `modified` time. Env tokens are fixed for the process lifetime; a
-/// credential file is trusted only while a current mtime matches the cached one,
-/// so a re-provisioned (or vanished) file re-resolves.
-fn inline_cache_is_fresh(
-    key: &InlineIdentityKey,
-    entry: &CachedInlineIdentity,
-    modified: Option<SystemTime>,
-) -> bool {
-    match key {
-        InlineIdentityKey::TokenEnv { .. } => true,
-        InlineIdentityKey::Credentials { .. } => modified.is_some() && entry.modified == modified,
-    }
-}
-
-/// Serve a memoized inline identity using only a cheap mtime `stat` — never a
-/// credential-file read or the global env lock. Returns `None` on a cold cache
-/// or a changed/vanished credential file, signalling the caller to resolve on
-/// the blocking pool ([`resolve_inline_identity`]) instead. This is the warm
-/// per-request path: an unchanged, already-resolved inline account is answered
-/// without scheduling a blocking task, while the mtime `stat` still detects
-/// re-provisioning on the very next request.
+/// Serve a memoized inline identity from memory — a single mutex lock and hash
+/// lookup, **no filesystem I/O**. Returns `None` only on a cold cache (the
+/// account has not been resolved yet), signalling the caller to resolve it once
+/// on the blocking pool ([`resolve_inline_identity`]). This is the warm
+/// per-request path: an already-resolved inline account is answered without any
+/// blocking `stat` or read, so a slow credential filesystem cannot stall a
+/// runtime worker.
 fn cached_inline_identity(store_family: StoreFamily, account: &AccountConfig) -> Option<String> {
     let key = inline_identity_key(store_family, account)?;
-    let modified = inline_identity_mtime(&key);
-    let cache = inline_identity_cache()
+    inline_identity_cache()
         .lock()
-        .expect("inline identity cache mutex poisoned");
-    let entry = cache.get(&key)?;
-    inline_cache_is_fresh(&key, entry, modified).then(|| entry.identity.clone())
+        .expect("inline identity cache mutex poisoned")
+        .get(&key)
+        .cloned()
 }
 
 /// Resolve an inline account's stable upstream identity from its credential file
-/// or environment token, memoized (see [`inline_identity_cache`]). This is the
-/// cold path — it reads the credential file / env token — so it must run on the
-/// blocking pool, never a runtime worker thread. The warm path
-/// ([`cached_inline_identity`]) already served every unchanged account, so this
-/// only runs for a cold cache or a credential whose mtime changed. Store entries
-/// are skipped — they resolved their identity during the cached store scan and
-/// must never be re-read here. The credential file's mtime is the invalidation
-/// signal (mirroring [`scan_cache`]): re-provisioning the file to a different
-/// account changes its mtime and forces a re-read. On a filesystem with coarse
-/// mtime resolution, a change sharing the cached timestamp goes unnoticed until a
-/// later change advances the mtime — the same caveat as the store-scan cache.
+/// or environment token, then memoize it for the process lifetime (see
+/// [`inline_identity_cache`]). This is the cold path — it reads the credential
+/// file / env token — so it must run on the blocking pool, never a runtime
+/// worker thread. The warm path ([`cached_inline_identity`]) already answered
+/// every already-resolved account from memory, so this runs at most once per
+/// inline account. Store entries yield no key (resolved during the cached store
+/// scan; never re-read here).
 fn resolve_inline_identity(store_family: StoreFamily, account: &AccountConfig) -> Option<String> {
     let key = inline_identity_key(store_family, account)?;
-    let modified = inline_identity_mtime(&key);
     {
         // A concurrent request may have resolved this since the warm-path miss.
-        let cache = inline_identity_cache()
+        if let Some(identity) = inline_identity_cache()
             .lock()
-            .expect("inline identity cache mutex poisoned");
-        if let Some(entry) = cache.get(&key) {
-            if inline_cache_is_fresh(&key, entry, modified) {
-                return Some(entry.identity.clone());
-            }
+            .expect("inline identity cache mutex poisoned")
+            .get(&key)
+        {
+            return Some(identity.clone());
         }
     }
     let resolved = match &key {
@@ -570,13 +535,7 @@ fn resolve_inline_identity(store_family: StoreFamily, account: &AccountConfig) -
         inline_identity_cache()
             .lock()
             .expect("inline identity cache mutex poisoned")
-            .insert(
-                key,
-                CachedInlineIdentity {
-                    modified,
-                    identity: identity.clone(),
-                },
-            );
+            .insert(key, identity.clone());
     }
     resolved
 }
@@ -1010,8 +969,9 @@ mod tests {
         assert_eq!(first[0].uuid.as_deref(), Some("inline-identity"));
 
         // Re-reading the unchanged file would still yield the same identity; the
-        // memo serves it without touching disk. (Invalidation on change is
-        // covered by `resolve_pool_accounts_reresolves_inline_identity_when_...`.)
+        // memo serves it without touching disk. (The process-lifetime contract —
+        // a removed/re-provisioned file still serves the cached identity — is
+        // covered by `resolve_pool_accounts_memoizes_inline_identity_for_the_process_lifetime`.)
         let second = resolve_pool_accounts(
             "inline-memo",
             &configured,
@@ -1028,13 +988,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_pool_accounts_reresolves_inline_identity_when_credential_file_changes() {
-        // The memo is keyed on the credential file's mtime, so re-provisioning the
-        // file to a different account (or removing it) invalidates the cached
-        // identity instead of pinning quota/health state to the previous account.
-        // Deleting the file makes its mtime unavailable, which the cache treats as
-        // "not fresh" and re-resolves — now yielding `None`.
-        let dir = temp_dir("pool-inline-invalidate");
+    async fn resolve_pool_accounts_memoizes_inline_identity_for_the_process_lifetime() {
+        // Inline identities memoize for the process lifetime: once resolved, later
+        // requests are answered purely from memory with no filesystem probe (no
+        // read, no `stat`), so a slow/unavailable credential filesystem can never
+        // stall a runtime worker on the request path. The trade-off is that a
+        // re-provisioned (or removed) credential *file* is not observed until the
+        // config is reloaded / the process restarts — even after the file is
+        // deleted, the cached identity is still served.
+        let dir = temp_dir("pool-inline-lifetime");
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("inline.json");
         fs::write(&path, r#"{"shuntAccountUuid":"first-identity"}"#).unwrap();
@@ -1045,7 +1007,7 @@ mod tests {
         }];
 
         let first = resolve_pool_accounts(
-            "inline-invalidate",
+            "inline-lifetime",
             &configured,
             &[],
             StoreFamily::Claude,
@@ -1056,12 +1018,12 @@ mod tests {
         .unwrap();
         assert_eq!(first[0].uuid.as_deref(), Some("first-identity"));
 
-        // Remove the credential file: the mtime is gone, so the memo must NOT keep
-        // serving the stale identity — the re-resolution reads the missing file and
-        // returns `None`.
+        // Remove the credential file: with no per-request probe, the memo keeps
+        // serving the identity resolved on the first request (reload-required
+        // contract), rather than doing a blocking read/stat on the request path.
         fs::remove_file(&path).unwrap();
         let second = resolve_pool_accounts(
-            "inline-invalidate",
+            "inline-lifetime",
             &configured,
             &[],
             StoreFamily::Claude,
@@ -1070,7 +1032,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(second[0].uuid.as_deref(), None);
+        assert_eq!(second[0].uuid.as_deref(), Some("first-identity"));
 
         let _ = fs::remove_dir_all(dir);
     }
