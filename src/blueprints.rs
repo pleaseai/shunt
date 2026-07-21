@@ -1,7 +1,8 @@
 use std::fmt::Write as _;
 
-use anyhow::bail;
+use anyhow::{anyhow, bail};
 use clap::ValueEnum;
+use url::Url;
 
 const RESEARCH_URL: &str = "{{RESEARCH_URL}}";
 
@@ -121,8 +122,10 @@ pub fn list_kind(kind: AddKind) -> String {
 }
 
 pub fn resolve(kind: AddKind, name_or_url: &str) -> anyhow::Result<String> {
-    if is_absolute_http_url(name_or_url) {
-        return Ok(generic(kind).replace(RESEARCH_URL, name_or_url));
+    if has_http_scheme(name_or_url) {
+        let url = parse_absolute_http_url(name_or_url)
+            .map_err(|reason| anyhow!("invalid research URL: {reason}"))?;
+        return Ok(generic(kind).replace(RESEARCH_URL, url.as_str()));
     }
 
     if let Some(blueprint) = BLUEPRINTS.iter().find(|blueprint| {
@@ -146,8 +149,39 @@ fn generic(kind: AddKind) -> &'static str {
     }
 }
 
-fn is_absolute_http_url(value: &str) -> bool {
-    value.starts_with("http://") || value.starts_with("https://")
+fn has_http_scheme(value: &str) -> bool {
+    value
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http://"))
+        || value
+            .get(..8)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"))
+}
+
+fn parse_absolute_http_url(value: &str) -> Result<Url, String> {
+    if value.chars().any(char::is_whitespace) {
+        return Err("whitespace is not allowed".to_owned());
+    }
+
+    let authority = value
+        .find("://")
+        .and_then(|delimiter| value.get(delimiter + 3..))
+        .and_then(|remainder| remainder.split(['/', '?', '#']).next())
+        .unwrap_or_default();
+    if authority.is_empty() {
+        return Err("missing host".to_owned());
+    }
+
+    let url = Url::parse(value).map_err(|error| error.to_string())?;
+    if url.username().is_empty() && url.password().is_none() {
+        if url.host().is_some() {
+            Ok(url)
+        } else {
+            Err("missing host".to_owned())
+        }
+    } else {
+        Err("credentials are not allowed".to_owned())
+    }
 }
 
 fn available_slugs(kind: AddKind) -> String {
@@ -195,17 +229,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resolves_slugs_and_aliases() {
-        let kimi = resolve(AddKind::Upstream, "kimi").unwrap();
-        assert_eq!(kimi, resolve(AddKind::Upstream, "moonshot").unwrap());
-        assert_eq!(
-            resolve(AddKind::Upstream, "anthropic").unwrap(),
-            resolve(AddKind::Upstream, "claude").unwrap()
-        );
-        assert_eq!(
-            resolve(AddKind::Upstream, "codex").unwrap(),
-            resolve(AddKind::Upstream, "chatgpt").unwrap()
-        );
+    fn every_registered_slug_and_alias_resolves_to_its_body() {
+        for blueprint in BLUEPRINTS {
+            assert_eq!(
+                resolve(blueprint.kind, blueprint.slug).unwrap(),
+                blueprint.body
+            );
+            for alias in blueprint.aliases {
+                assert_eq!(resolve(blueprint.kind, alias).unwrap(), blueprint.body);
+            }
+        }
+    }
+
+    #[test]
+    fn upstream_slugs_and_aliases_are_rejected_as_provider_blueprints() {
+        for blueprint in BLUEPRINTS
+            .iter()
+            .filter(|blueprint| blueprint.kind == AddKind::Upstream)
+        {
+            for name in std::iter::once(blueprint.slug).chain(blueprint.aliases.iter().copied()) {
+                let error = resolve(AddKind::Provider, name).unwrap_err().to_string();
+                assert!(
+                    error.contains("unknown provider blueprint"),
+                    "unexpected error for {name:?}: {error:?}"
+                );
+                assert!(
+                    error.contains("none (URL only)"),
+                    "missing provider availability for {name:?}: {error:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -228,27 +281,91 @@ mod tests {
     }
 
     #[test]
-    fn relative_paths_and_non_urls_are_rejected() {
-        for value in ["./x", "foo/bar", "docs.example.com/provider"] {
+    fn accepts_absolute_http_urls_and_injects_canonical_serialization() {
+        for (input, expected) in [
+            ("HTTP://EXAMPLE.COM:80/docs", "http://example.com/docs"),
+            (
+                "HTTPS://EXAMPLE.COM:443/provider/../docs",
+                "https://example.com/docs",
+            ),
+        ] {
+            let body = resolve(AddKind::Upstream, input).unwrap();
+            assert!(body.contains(expected), "missing {expected:?} in output");
             assert!(
-                resolve(AddKind::Upstream, value).is_err(),
-                "accepted {value}"
-            );
-            assert!(
-                resolve(AddKind::Provider, value).is_err(),
-                "accepted {value}"
+                !body.contains(input),
+                "raw input was interpolated: {input:?}"
             );
         }
     }
 
     #[test]
-    fn research_url_is_fully_injected_for_both_kinds() {
+    fn rejects_malformed_and_non_absolute_urls() {
+        for value in [
+            "https://",
+            "http:///path",
+            "https:// bad",
+            "https://example.com/line\nbreak",
+            "https://user@example.com/docs",
+            "https://user:secret@example.com/docs",
+            "./relative",
+            "foo/bar",
+            "//example.com",
+            "?query",
+            "#fragment",
+        ] {
+            for kind in [AddKind::Upstream, AddKind::Provider] {
+                assert!(
+                    resolve(kind, value).is_err(),
+                    "accepted {value:?} as {kind:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn url_shaped_inputs_report_specific_validation_errors() {
+        for (value, reason) in [
+            ("https://", "missing host"),
+            ("http:///path", "missing host"),
+            ("https:// bad", "whitespace is not allowed"),
+            (
+                "https://user@example.com/docs",
+                "credentials are not allowed",
+            ),
+            (
+                "https://user:secret@example.com/docs",
+                "credentials are not allowed",
+            ),
+            ("https://example.com:bad", "invalid port number"),
+        ] {
+            let error = resolve(AddKind::Provider, value).unwrap_err().to_string();
+            assert!(
+                error.contains("invalid research URL"),
+                "unexpected error for {value:?}: {error:?}"
+            );
+            assert!(
+                error.contains(reason),
+                "missing {reason:?} for {value:?}: {error:?}"
+            );
+            assert!(!error.contains("unknown provider blueprint"));
+        }
+    }
+
+    #[test]
+    fn research_url_uses_the_distinct_template_for_each_kind() {
         let url = "https://example.com/provider/docs";
-        for kind in [AddKind::Upstream, AddKind::Provider] {
-            let body = resolve(kind, url).unwrap();
+        let upstream = resolve(AddKind::Upstream, url).unwrap();
+        let provider = resolve(AddKind::Provider, url).unwrap();
+
+        for body in [&upstream, &provider] {
             assert!(body.contains(url));
             assert!(!body.contains(RESEARCH_URL));
         }
+        assert!(upstream.contains("## Add the upstream"));
+        assert!(!upstream.contains("## Establish the protocol contract"));
+        assert!(provider.contains("## Establish the protocol contract"));
+        assert!(!provider.contains("## Add the upstream"));
+        assert_ne!(upstream, provider);
     }
 
     #[test]

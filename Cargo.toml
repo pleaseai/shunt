@@ -11,7 +11,7 @@ readme = "README.md"
 keywords = ["claude", "gateway", "proxy", "anthropic", "openai"]
 categories = ["command-line-utilities", "web-programming::http-server"]
 # Keep the published tarball to what's needed to build and use the crate.
-include = ["src/**", "README.md", "LICENSE-MIT", "LICENSE-APACHE", "shunt.toml.example", "shunt.yaml.example"]
+include = ["src/**", "blueprints/**", "README.md", "LICENSE-MIT", "LICENSE-APACHE", "shunt.toml.example", "shunt.yaml.example"]
 
 [lib]
 name = "shunt"
@@ -80,6 +80,7 @@ tracing = "0.1"
 tracing-opentelemetry = "0.33"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1", features = ["v4"] }
+url = "2.5.8"
 
 [dev-dependencies]
 divan = { version = "5.0.1", package = "codspeed-divan-compat" }

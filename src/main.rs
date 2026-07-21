@@ -1,4 +1,4 @@
-use std::io::{IsTerminal, Write};
+use std::io::{ErrorKind, IsTerminal, Write};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
@@ -134,8 +134,8 @@ fn add(kind: Option<AddKind>, name_or_url: Option<&str>, print: bool) -> anyhow:
         (Some(kind), Some(name_or_url)) => blueprints::resolve(kind, name_or_url)?,
         (None, Some(_)) => unreachable!("clap requires kind before name_or_url"),
     };
-    print!("{output}");
-    std::io::stdout().flush()?;
+    let stdout = std::io::stdout();
+    write_add_output(stdout.lock(), output.as_bytes())?;
 
     if let (false, true, Some(kind), Some(_)) =
         (print, std::io::stderr().is_terminal(), kind, name_or_url)
@@ -147,6 +147,14 @@ fn add(kind: Option<AddKind>, name_or_url: Option<&str>, print: bool) -> anyhow:
         eprintln!("Hint: pipe this blueprint to an agent, for example: `{example}`");
     }
     Ok(())
+}
+
+fn write_add_output(mut writer: impl Write, output: &[u8]) -> std::io::Result<()> {
+    let result = writer.write_all(output).and_then(|()| writer.flush());
+    match result {
+        Err(error) if error.kind() == ErrorKind::BrokenPipe => Ok(()),
+        result => result,
+    }
 }
 
 /// `--manual` only affects the Claude OAuth browser-callback flow (it skips the
@@ -511,7 +519,33 @@ fn init_telemetry(config: Option<&OtelConfig>) -> Option<TelemetryGuard> {
 
 #[cfg(test)]
 mod tests {
+    use std::io;
+
     use super::*;
+
+    struct FailingWriter(ErrorKind);
+
+    impl Write for FailingWriter {
+        fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
+            Err(io::Error::from(self.0))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn add_output_treats_broken_pipe_as_success() {
+        assert!(write_add_output(FailingWriter(ErrorKind::BrokenPipe), b"blueprint").is_ok());
+    }
+
+    #[test]
+    fn add_output_propagates_other_write_errors() {
+        let error =
+            write_add_output(FailingWriter(ErrorKind::WriteZero), b"blueprint").unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::WriteZero);
+    }
 
     #[test]
     fn add_command_parses_listing_forms() {
