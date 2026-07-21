@@ -1,0 +1,38 @@
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_1fd35b2f88e9c9::t_84347d343d6df9 175
+site/src/content/docs/reference/configuration.md
+  s_1fd35b2f88e9c9::t_28ed7fd2f15ef4 233
+site/src/content/docs/ja/reference/configuration.md
+  s_1fd35b2f88e9c9::t_42fd95a6d9fc23 175
+src/proxy/failover.rs
+  s_1fd35b2f88e9c9::t_1b1069d714f427 490,497-503,505-509,531-537,542
+  s_1fd35b2f88e9c9::t_596b2aa43add71 247-249
+  s_1fd35b2f88e9c9::t_6cab5d1542f8a7 411-415
+  s_1fd35b2f88e9c9::t_ee918e440535c6 250-256,538-541
+  s_1fd35b2f88e9c9::t_5eb115c6408567 77-79,83-89
+  s_1fd35b2f88e9c9::t_450349a6c27bf5 543-544
+site/src/content/docs/ko/reference/configuration.md
+  s_1fd35b2f88e9c9::t_3e9f925cb0f459 186
+tests/failover.rs
+  s_1fd35b2f88e9c9::t_3ab22b4f153bd8 640-643,686-721,726,728
+  s_1fd35b2f88e9c9::t_d289d9afeeca31 722-725,727
+  s_1fd35b2f88e9c9::t_52f434c1168fff 729-730
+docs/upstreams-failover.md
+  s_1fd35b2f88e9c9::t_6a4228d8900b0d 159-165
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "8cad0bb8c20c04362f4e5623497c74547d9f2045",
+  "prompts": {},
+  "sessions": {
+    "s_1fd35b2f88e9c9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9791b96a-9f36-4f42-9ab4-58591073b442",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
