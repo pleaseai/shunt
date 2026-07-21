@@ -445,12 +445,29 @@ enum InlineIdentityKey {
 /// are stored, so a briefly-missing or unreadable credential file is retried on
 /// the next request instead of being permanently masked. Caveat: because there
 /// is no per-request probe, re-provisioning an inline credential *file* to a
-/// different OAuth account is not observed until the config is reloaded / the
-/// process restarts — acceptable for static config, and the price of keeping the
-/// request path free of blocking I/O.
+/// different OAuth account is not observed mid-flight — it is picked up on the
+/// next config reload, which clears this memo (see
+/// [`clear_inline_identity_cache`], called from `crate::reload::reload`), or on a
+/// process restart. That is acceptable for static config, and the price of
+/// keeping the request path free of blocking I/O.
 fn inline_identity_cache() -> &'static Mutex<HashMap<InlineIdentityKey, String>> {
     static CACHE: OnceLock<Mutex<HashMap<InlineIdentityKey, String>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Drop every memoized inline identity so the next request re-resolves each from
+/// its credential file / env token. Called on a successful config reload
+/// (`crate::reload::reload`): inline identities memoize for the process lifetime
+/// with no per-request probe, so without this an inline credential file that was
+/// re-provisioned to a *different* OAuth account would keep resolving to the old
+/// physical account UUID (and its quota/health state) until a full restart. A
+/// reload is rare, so a full clear — re-reading each inline credential once on
+/// the next request — is simpler than tracking which paths changed.
+pub(crate) fn clear_inline_identity_cache() {
+    inline_identity_cache()
+        .lock()
+        .expect("inline identity cache mutex poisoned")
+        .clear();
 }
 
 /// The cache key for an inline (non-store) account, or `None` when the account
@@ -1033,6 +1050,55 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(second[0].uuid.as_deref(), Some("first-identity"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn clear_inline_identity_cache_forces_reresolution_after_reprovisioning() {
+        // The process-lifetime memo is cleared on config reload
+        // (`clear_inline_identity_cache`), which is how a re-provisioned inline
+        // credential file is picked up: without the clear the old identity would
+        // persist, with it the next request re-reads the file's new identity.
+        let dir = temp_dir("pool-inline-reload");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("inline.json");
+        fs::write(&path, r#"{"shuntAccountUuid":"old-account"}"#).unwrap();
+        let configured = vec![AccountConfig {
+            name: "inline".to_string(),
+            credentials: Some(path.display().to_string()),
+            ..Default::default()
+        }];
+        let resolve = || {
+            resolve_pool_accounts(
+                "inline-reload",
+                &configured,
+                &[],
+                StoreFamily::Claude,
+                dir.clone(),
+                scan_must_not_run,
+            )
+        };
+
+        assert_eq!(
+            resolve().await.unwrap()[0].uuid.as_deref(),
+            Some("old-account")
+        );
+
+        // Re-provision the same path to a different account. Mid-flight the memo
+        // still serves the old identity (process-lifetime, no per-request probe).
+        fs::write(&path, r#"{"shuntAccountUuid":"new-account"}"#).unwrap();
+        assert_eq!(
+            resolve().await.unwrap()[0].uuid.as_deref(),
+            Some("old-account")
+        );
+
+        // A reload clears the memo, so the next request re-resolves the new one.
+        clear_inline_identity_cache();
+        assert_eq!(
+            resolve().await.unwrap()[0].uuid.as_deref(),
+            Some("new-account")
+        );
 
         let _ = fs::remove_dir_all(dir);
     }
