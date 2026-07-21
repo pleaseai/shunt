@@ -1,4 +1,12 @@
-use std::{collections::BTreeMap, io::ErrorKind, net::SocketAddr};
+use std::{
+    collections::BTreeMap,
+    io::ErrorKind,
+    net::SocketAddr,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+};
 
 use reqwest::StatusCode;
 use serde_json::{json, Value};
@@ -9,7 +17,11 @@ use shunt::{
     },
     server,
 };
-use tokio::task::JoinHandle;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpListener,
+    task::JoinHandle,
+};
 use wiremock::{
     matchers::{header, method, path},
     Match, Mock, MockServer, Request, ResponseTemplate,
@@ -126,6 +138,30 @@ async fn start_gateway(mut config: Config) -> TestGateway {
 
 async fn post(gateway: &TestGateway) -> reqwest::Response {
     post_path(gateway, "/v1/messages", &[]).await
+}
+
+async fn spawn_truncated_http_upstream(
+    content_type: &'static str,
+    partial_body: &'static [u8],
+) -> (String, Arc<AtomicUsize>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let server_hits = hits.clone();
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        server_hits.fetch_add(1, Ordering::SeqCst);
+        let mut request = [0_u8; 8192];
+        let _ = socket.read(&mut request).await;
+        let declared_length = partial_body.len() + 64;
+        let headers = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: {content_type}\r\ncontent-length: {declared_length}\r\nconnection: close\r\n\r\n"
+        );
+        socket.write_all(headers.as_bytes()).await.unwrap();
+        socket.write_all(partial_body).await.unwrap();
+        socket.flush().await.unwrap();
+    });
+    (format!("http://{addr}"), hits)
 }
 
 async fn post_path(
@@ -461,6 +497,71 @@ async fn responses_post_2xx_backend_error_stops_without_replaying_turn() {
         "first upstream accepted then failed"
     );
     responses.verify().await;
+    skipped.verify().await;
+}
+
+#[tokio::test]
+async fn anthropic_truncated_200_body_stops_without_replaying_turn() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let (first_url, first_hits) =
+        spawn_truncated_http_upstream("application/json", br#"{"id":"partial""#).await;
+    let skipped = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("must not replay"))
+        .expect(0)
+        .mount(&skipped)
+        .await;
+    let config = chain_config(
+        vec![
+            passthrough("anthropic", first_url),
+            passthrough("skipped", skipped.uri()),
+        ],
+        &[("anthropic", "claude-test"), ("skipped", "claude-next")],
+    );
+    let gateway = start_gateway(config).await;
+
+    let response = post(&gateway).await;
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    assert_gateway_headers(&response, "anthropic", "claude-test");
+    assert_eq!(first_hits.load(Ordering::SeqCst), 1);
+    skipped.verify().await;
+}
+
+#[tokio::test]
+async fn responses_truncated_200_body_stops_without_replaying_turn() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let partial = b"event: response.created\ndata: {\"response\":{\"id\":\"partial\"}}\n\n";
+    let (first_url, first_hits) = spawn_truncated_http_upstream("text/event-stream", partial).await;
+    let skipped = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("must not replay"))
+        .expect(0)
+        .mount(&skipped)
+        .await;
+    let config = chain_config(
+        vec![
+            upstream(
+                "responses",
+                first_url,
+                ProviderKind::Responses,
+                UpstreamAuth::Shorthand(AuthMode::Passthrough),
+            ),
+            passthrough("skipped", skipped.uri()),
+        ],
+        &[("responses", "gpt-test"), ("skipped", "claude-test")],
+    );
+    let gateway = start_gateway(config).await;
+
+    let response = post(&gateway).await;
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    assert_gateway_headers(&response, "responses", "gpt-test");
+    assert_eq!(first_hits.load(Ordering::SeqCst), 1);
     skipped.verify().await;
 }
 

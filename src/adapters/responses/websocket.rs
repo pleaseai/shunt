@@ -17,7 +17,7 @@ use crate::{
 use super::codex_continuation;
 use super::codex_ws::{self, CodexWsError, CodexWsEvents};
 use super::context::ForwardOptions;
-use super::error::{build_upstream_error, own_error};
+use super::error::build_upstream_error;
 use super::request::{responses_url, CODEX_CLIENT_VERSION, CODEX_USER_AGENT};
 use super::ws_stream::{json_events_response, stream_events_response};
 
@@ -174,7 +174,7 @@ fn commit_or_fallback(
     match first {
         Some(Ok(event)) => Ok((Some(Ok(event)), events)),
         Some(Err(error)) => Err(ws_transport_error(error)),
-        None => Err(own_error(
+        None => Err(ws_before_headers_error(
             "codex websocket closed before any event".to_string(),
         )),
     }
@@ -303,7 +303,7 @@ fn websocket_headers(credential: Credential) -> Result<HeaderMap, AdapterError> 
             AdapterError {
                 message,
                 response: Box::new(response),
-                failure: None,
+                failure: Some(crate::adapters::AdapterFailure::BeforeHeaders),
             }
         })?;
         headers.insert(name, value);
@@ -337,9 +337,16 @@ fn websocket_headers(credential: Credential) -> Result<HeaderMap, AdapterError> 
 }
 
 fn ws_transport_error(error: CodexWsError) -> AdapterError {
-    let response = ShuntError::bad_gateway(error.message.clone()).into_response();
+    ws_before_headers_error(error.message)
+}
+
+/// Every websocket failure before connection or the first event is safe to
+/// replay over HTTP. Failures after the first event remain unclassified so the
+/// fallback gates stop instead of duplicating an accepted turn.
+fn ws_before_headers_error(message: String) -> AdapterError {
+    let response = ShuntError::bad_gateway(message.clone()).into_response();
     AdapterError {
-        message: error.message,
+        message,
         response: Box::new(response),
         failure: Some(crate::adapters::AdapterFailure::BeforeHeaders),
     }
@@ -467,11 +474,13 @@ mod tests {
             "a pre-first-event transport error falls back to HTTP"
         );
 
-        // An empty stream (channel closed before any event) also falls back.
+        // An empty stream (channel closed before any event) also falls back and
+        // carries the pre-header classification consumed by both fallback gates.
         let (_tx, rx) = mpsc::channel(16);
-        assert!(
-            commit_or_fallback(None, rx).is_err(),
-            "an empty stream falls back to HTTP"
+        let error = commit_or_fallback(None, rx).expect_err("an empty stream falls back to HTTP");
+        assert_eq!(
+            error.failure,
+            Some(crate::adapters::AdapterFailure::BeforeHeaders)
         );
     }
 
@@ -530,13 +539,17 @@ mod tests {
         use super::{websocket_headers, Credential};
 
         // An account-id with a control character cannot be a header value; the
-        // builder returns a 502 gateway error rather than panicking.
+        // builder returns a pre-header 502 gateway error rather than panicking.
         let error = websocket_headers(Credential::ChatGptOAuth {
             access_token: "ok".to_string(),
             account_id: "bad\nid".to_string(),
         })
         .expect_err("a malformed header value is rejected");
         assert_eq!(error.response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            error.failure,
+            Some(crate::adapters::AdapterFailure::BeforeHeaders)
+        );
     }
 
     #[test]

@@ -16,7 +16,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use futures_util::{SinkExt, StreamExt};
 use reqwest::StatusCode;
 use shunt::{
-    config::{Config, RouteConfig},
+    config::{AccountConfig, Config, RouteConfig},
     server,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -79,7 +79,10 @@ fn can_bind_loopback() -> bool {
 /// A minimal unsigned JWT (`x.<payload>.y`) with a far-future `exp`, so the codex
 /// auth store treats it as valid without any network refresh.
 fn fake_jwt(exp: u64) -> String {
-    let payload = serde_json::json!({ "exp": exp });
+    let payload = serde_json::json!({
+        "exp": exp,
+        "https://api.openai.com/auth": {"chatgpt_account_id": "acct_fallback"}
+    });
     format!(
         "x.{}.y",
         URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap())
@@ -306,6 +309,20 @@ fn codex_ws_config(base_url: String) -> Config {
     config
 }
 
+fn pooled_codex_ws_config(base_url: String, token_envs: [&str; 2]) -> Config {
+    let mut config = codex_ws_config(base_url);
+    config.providers.get_mut("codex").unwrap().accounts = token_envs
+        .into_iter()
+        .enumerate()
+        .map(|(index, token_env)| AccountConfig {
+            name: format!("account-{index}"),
+            token_env: Some(token_env.to_string()),
+            ..Default::default()
+        })
+        .collect();
+    config
+}
+
 /// A mock Codex upstream that serves BOTH the websocket upgrade and the HTTP
 /// Responses `POST` on one port, so a turn can open a socket, have it drop, and
 /// fall back to HTTP against the same `base_url`. The websocket half performs the
@@ -313,6 +330,13 @@ fn codex_ws_config(base_url: String) -> Config {
 /// and increments the returned counter, so a test can assert whether the HTTP
 /// fallback ran. Returns the upstream base URL and that counter.
 async fn spawn_dual_upstream(drop: WsDrop) -> (String, Arc<AtomicUsize>) {
+    spawn_counted_dual_upstream(drop, Arc::new(AtomicUsize::new(0))).await
+}
+
+async fn spawn_counted_dual_upstream(
+    drop: WsDrop,
+    total_hits: Arc<AtomicUsize>,
+) -> (String, Arc<AtomicUsize>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let http_hits = Arc::new(AtomicUsize::new(0));
@@ -322,6 +346,7 @@ async fn spawn_dual_upstream(drop: WsDrop) -> (String, Arc<AtomicUsize>) {
             let Ok((socket, _)) = listener.accept().await else {
                 return;
             };
+            total_hits.fetch_add(1, Ordering::SeqCst);
             if request_is_websocket(&socket).await {
                 tokio::spawn(serve_ws(socket, drop));
             } else {
@@ -513,6 +538,47 @@ async fn websocket_drop_after_first_event_surfaces_clean_error() {
 
     std::env::remove_var("CODEX_AUTH_FILE");
     let _ = std::fs::remove_file(auth_path);
+}
+
+#[tokio::test]
+async fn pooled_websocket_drop_after_first_event_stops_without_http_or_rotation() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = ENV_LOCK.lock().await;
+
+    let total_hits = Arc::new(AtomicUsize::new(0));
+    let (base_url, http_hits) =
+        spawn_counted_dual_upstream(WsDrop::AfterFirstEvent, total_hits.clone()).await;
+    let token = fake_jwt(4_000_000_000);
+    std::env::set_var("SHUNT_WS_POOL_TOKEN_A", &token);
+    std::env::set_var("SHUNT_WS_POOL_TOKEN_B", &token);
+    let gateway = start_gateway_with(pooled_codex_ws_config(
+        base_url,
+        ["SHUNT_WS_POOL_TOKEN_A", "SHUNT_WS_POOL_TOKEN_B"],
+    ))
+    .await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .header("content-type", "application/json")
+        .body(
+            r#"{"model":"codex-fallback-model","max_tokens":16,"stream":false,"messages":[{"role":"user","content":"hi"}]}"#,
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    assert_eq!(http_hits.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        total_hits.load(Ordering::SeqCst),
+        1,
+        "only the first account's websocket may be attempted"
+    );
+
+    std::env::remove_var("SHUNT_WS_POOL_TOKEN_A");
+    std::env::remove_var("SHUNT_WS_POOL_TOKEN_B");
 }
 
 /// The non-streaming analogue of the mid-stream drop: a `stream:false` client
