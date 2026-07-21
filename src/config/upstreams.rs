@@ -117,6 +117,11 @@ fn absorb_oauth_scope(
     provider.auth = mode;
     let selections = match (account, accounts) {
         (Some(name), None) => vec![AccountSelection::Reference(name)],
+        (None, Some(accounts)) if accounts.is_empty() => {
+            return Err(ConfigError::EmptyUpstreamAccountList {
+                upstream: upstream.to_string(),
+            });
+        }
         (None, Some(accounts)) => accounts,
         (None, None) => Vec::new(),
         (Some(_), Some(_)) => unreachable!("account xor accounts was checked"),

@@ -99,6 +99,9 @@ async fn poll_all(state: &AppState) {
         };
         state.accounts.sync_enabled_accounts(name, &accounts);
         for account in &accounts {
+            if !account_is_refreshable(account).await {
+                continue;
+            }
             if !polled.insert(crate::accounts::account_key(name, account)) {
                 continue;
             }
@@ -451,6 +454,75 @@ mod tests {
                 .snapshot("secondary", std::slice::from_ref(&account), None, None);
         assert_eq!(primary[0].utilization_5h, Some(0.10));
         assert_eq!(secondary[0].utilization_5h, Some(0.10));
+        let _ = std::fs::remove_file(creds);
+    }
+
+    #[tokio::test]
+    async fn non_refreshable_alias_does_not_block_refreshable_alias() {
+        use crate::config::{ApiKeyHeader, Config, CountTokens, ProviderConfig, ProviderKind};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let creds = write_temp(
+            "refreshable-alias",
+            r#"{"claudeAiOauth":{"accessToken":"live-token","refreshToken":"r","expiresAt":4000000000000}}"#,
+        );
+        let static_alias = AccountConfig {
+            name: "static-alias".to_string(),
+            token_env: Some("SHUNT_TEST_STATIC_ALIAS".to_string()),
+            uuid: Some("shared-uuid".to_string()),
+            ..Default::default()
+        };
+        let mut refreshable_alias = account_with_credentials(&creds);
+        refreshable_alias.name = "refreshable-alias".to_string();
+        refreshable_alias.uuid = Some("shared-uuid".to_string());
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/oauth/usage"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "five_hour": { "utilization": 42.0 }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let provider = |account| ProviderConfig {
+            kind: ProviderKind::Anthropic,
+            base_url: server.uri(),
+            auth: AuthMode::ClaudeOauth,
+            api_key_env: None,
+            api_key_header: ApiKeyHeader::Bearer,
+            effort: None,
+            count_tokens: CountTokens::default(),
+            accounts: vec![account],
+            account_scope: Vec::new(),
+            websocket: false,
+            tool_search: false,
+            retry: Default::default(),
+        };
+        let mut config = Config::default();
+        config
+            .providers
+            .insert("a-static".to_string(), provider(static_alias.clone()));
+        config.providers.insert(
+            "b-refreshable".to_string(),
+            provider(refreshable_alias.clone()),
+        );
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+
+        poll_all(&state).await;
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1, "the refreshable alias must be polled");
+        let snapshot = state.accounts.snapshot(
+            "b-refreshable",
+            std::slice::from_ref(&refreshable_alias),
+            None,
+            None,
+        );
+        assert_eq!(snapshot[0].utilization_5h, Some(0.42));
+
         let _ = std::fs::remove_file(creds);
     }
 

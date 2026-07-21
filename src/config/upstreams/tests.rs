@@ -73,6 +73,7 @@ auth = { mode = "claude_oauth", accounts = ["stored", { name = "inline", token_e
 fn strict_auth_map_and_upstream_fields_reject_typos() {
     for raw in [
         "name = \"x\"\nprovider = \"openai\"\nauth = { mode = \"api_key\", typo = \"x\" }",
+        "name = \"x\"\nprovider = \"anthropic\"\nauth = { mode = \"claude_oauth\", accounts = [{ name = \"inline\", token_envv = \"TOKEN\" }] }",
         "name = \"x\"\nprovider = \"openai\"\ntypo = true",
     ] {
         let error = Figment::from(Toml::string(raw))
@@ -80,6 +81,17 @@ fn strict_auth_map_and_upstream_fields_reject_typos() {
             .unwrap_err();
         assert!(!error.to_string().is_empty());
     }
+}
+
+#[test]
+fn explicitly_empty_accounts_are_rejected() {
+    let upstream = parse(
+        "name = \"a\"\nprovider = \"anthropic\"\nauth = { mode = \"claude_oauth\", accounts = [] }",
+    );
+    assert!(matches!(
+        normalize(&[upstream]).unwrap_err(),
+        ConfigError::EmptyUpstreamAccountList { upstream } if upstream == "a"
+    ));
 }
 
 #[test]

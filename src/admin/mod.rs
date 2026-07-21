@@ -209,19 +209,23 @@ pub(super) fn forget_pool_health_if_absent(
         if provider.auth != auth {
             return false;
         }
-        if provider.accounts.is_empty() {
-            match store_scan_others {
-                Some(others) => others.contains(identity),
-                None => {
-                    uncertain = true;
-                    false
-                }
+        let inline_match = provider
+            .accounts
+            .iter()
+            .any(|account| crate::accounts::account_identity(account) == identity);
+        if inline_match {
+            return true;
+        }
+        let draws_from_store = !provider.account_scope.is_empty() || provider.accounts.is_empty();
+        if !draws_from_store {
+            return false;
+        }
+        match store_scan_others {
+            Some(others) => others.contains(identity),
+            None => {
+                uncertain = true;
+                false
             }
-        } else {
-            provider
-                .accounts
-                .iter()
-                .any(|account| crate::accounts::account_identity(account) == identity)
         }
     });
     if still_present || uncertain {
@@ -1099,6 +1103,7 @@ mod tests {
         provider_name: &str,
         auth: AuthMode,
         accounts: Vec<crate::config::AccountConfig>,
+        account_scope: Vec<String>,
     ) -> AppState {
         let mut providers = crate::config::ProvidersConfig::new();
         providers.insert(
@@ -1112,7 +1117,7 @@ mod tests {
                 effort: None,
                 count_tokens: Default::default(),
                 accounts,
-                account_scope: Vec::new(),
+                account_scope,
                 websocket: false,
                 tool_search: false,
                 retry: Default::default(),
@@ -1139,8 +1144,12 @@ mod tests {
         // before that parameter was removed, to prove the coincidence no
         // longer causes false exclusion.
         let account = explicit_account("alice", None); // identity falls back to "alice"
-        let state =
-            state_with_explicit_provider("anthropic", AuthMode::ClaudeOauth, vec![account.clone()]);
+        let state = state_with_explicit_provider(
+            "anthropic",
+            AuthMode::ClaudeOauth,
+            vec![account.clone()],
+            Vec::new(),
+        );
         state
             .accounts
             .cooldown("anthropic", &account, Duration::from_secs(60), "transport");
@@ -1155,10 +1164,43 @@ mod tests {
     }
 
     #[test]
+    fn scoped_store_account_preserves_health_alongside_inline_accounts() {
+        let inline = explicit_account("inline", Some("inline-uuid"));
+        let scoped = explicit_account("stored", Some("stored-uuid"));
+        let state = state_with_explicit_provider(
+            "anthropic",
+            AuthMode::ClaudeOauth,
+            vec![inline],
+            vec!["team-*".to_string()],
+        );
+        state
+            .accounts
+            .cooldown("anthropic", &scoped, Duration::from_secs(60), "transport");
+        let stored_identities = HashSet::from(["stored-uuid".to_string()]);
+
+        forget_pool_health_if_absent(
+            &state,
+            AuthMode::ClaudeOauth,
+            "stored-uuid",
+            Some(&stored_identities),
+        );
+
+        let snapshot = state.accounts.snapshot("anthropic", &[scoped], None, None);
+        assert!(
+            snapshot[0].has_state,
+            "a scoped store identity must preserve shared health when inline accounts also exist"
+        );
+    }
+
+    #[test]
     fn explicit_configured_provider_still_clears_health_for_a_genuinely_absent_identity() {
         let live = explicit_account("bob", Some("bob-uuid"));
-        let state =
-            state_with_explicit_provider("anthropic", AuthMode::ClaudeOauth, vec![live.clone()]);
+        let state = state_with_explicit_provider(
+            "anthropic",
+            AuthMode::ClaudeOauth,
+            vec![live.clone()],
+            Vec::new(),
+        );
         // Seed health for an identity that is not among "configured"'s accounts.
         let orphan = explicit_account("orphan", Some("orphan-uuid"));
         state

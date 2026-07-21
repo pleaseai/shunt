@@ -1162,6 +1162,7 @@ impl RetryConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AccountConfig {
     pub name: String,
     #[serde(
@@ -1482,6 +1483,8 @@ pub enum ConfigError {
     MissingUpstreamApiKeyEnv { upstream: String },
     #[error("upstreams[{upstream}].auth must set at most one of account or accounts")]
     UpstreamAuthAccountConflict { upstream: String },
+    #[error("upstreams[{upstream}].auth accounts must not be explicitly empty; omit accounts to use the whole account store")]
+    EmptyUpstreamAccountList { upstream: String },
     #[error("upstreams[{upstream}].auth account references must be non-empty and non-whitespace")]
     EmptyUpstreamAccountReference { upstream: String },
     #[error("SHUNT_PROVIDERS__{upstream}__... references an undeclared [[upstreams]] name")]
