@@ -1,0 +1,19 @@
+.claude/agent-memory/review-review-pr-test-analyzer/shunt-ordered-upstreams-failover-coverage.md
+  s_f38743e5624d66::t_7c2af3c97abc29 3,8,10,12-14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "950cfd7deeff6649d7c1e626a475782f5cfc774e",
+  "prompts": {},
+  "sessions": {
+    "s_f38743e5624d66": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "506c9920-530e-488e-9697-f04aec6b1a21",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
