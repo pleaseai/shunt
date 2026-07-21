@@ -111,10 +111,19 @@ pub async fn resolve_claude_account(
 
     if let Some(credentials) = account.credentials.as_deref() {
         let path = PathBuf::from(credentials);
-        let account_uuid = account
-            .uuid
-            .clone()
-            .or_else(|| claude::store::credential_uuid(&path));
+        let account_uuid = match account.uuid.clone() {
+            Some(uuid) => Some(uuid),
+            None => {
+                // credential_uuid does a synchronous file read; run it on the
+                // blocking pool so it never stalls a runtime worker thread
+                // (mirrors the name-based fallback below).
+                let path = path.clone();
+                tokio::task::spawn_blocking(move || claude::store::credential_uuid(&path))
+                    .await
+                    .ok()
+                    .flatten()
+            }
+        };
         let store = claude::auth::ClaudeAuthStore::new(path, client.clone());
         return store
             .get_valid_access_token()

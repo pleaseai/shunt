@@ -729,6 +729,73 @@ async fn passthrough_failover_keeps_client_credential_on_the_same_origin() {
 }
 
 #[tokio::test]
+async fn injected_primary_failover_strips_client_credential_on_same_origin_passthrough() {
+    if !can_bind_loopback() {
+        return;
+    }
+    // The primary route *injects* its own credential, so the caller's
+    // `authorization` / `x-api-key` are a gateway/client secret, not an upstream
+    // credential presented for any origin. A passthrough fallback on the *same*
+    // origin as the injected primary must therefore still strip them (fail
+    // closed) rather than replay them upstream — the same-origin retention only
+    // applies when the primary itself is passthrough.
+    let key_env = format!("SHUNT_INJECTED_PRIMARY_KEY_{}", std::process::id());
+    std::env::set_var(&key_env, "upstream-key");
+    let origin = MockServer::start().await;
+    // Injected primary attempt: carries the injected bearer, caller creds gone.
+    Mock::given(method("POST"))
+        .and(header("authorization", "Bearer upstream-key"))
+        .and(HeaderAbsent("x-api-key"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("injected-500"))
+        .expect(1)
+        .mount(&origin)
+        .await;
+    // Passthrough fallback attempt on the same origin: caller creds must be
+    // stripped, not replayed, even though the origin is unchanged.
+    Mock::given(method("POST"))
+        .and(HeaderAbsent("authorization"))
+        .and(HeaderAbsent("x-api-key"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("stripped-on-fallback"))
+        .expect(1)
+        .mount(&origin)
+        .await;
+    let config = chain_config(
+        vec![
+            upstream(
+                "primary",
+                origin.uri(),
+                ProviderKind::Anthropic,
+                UpstreamAuth::Map(AuthMap::ApiKey {
+                    env: Some(key_env.clone()),
+                    header: ApiKeyHeader::Bearer,
+                }),
+            ),
+            passthrough("fallback", origin.uri()),
+        ],
+        &[("primary", "model-a"), ("fallback", "model-b")],
+    );
+    let gateway = start_gateway(config).await;
+
+    let response = post_path(
+        &gateway,
+        "/v1/messages",
+        &[
+            ("authorization", "Bearer client-upstream"),
+            ("x-api-key", "client-api-key"),
+        ],
+    )
+    .await;
+
+    std::env::remove_var(key_env);
+    // The fallback answered only because the caller credential was stripped: a
+    // replayed credential would have matched neither mock (404), not 200.
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_gateway_headers(&response, "fallback", "model-b");
+    assert_eq!(response.text().await.unwrap(), "stripped-on-fallback");
+    origin.verify().await;
+}
+
+#[tokio::test]
 async fn count_tokens_uses_only_first_chain_element() {
     if !can_bind_loopback() {
         return;

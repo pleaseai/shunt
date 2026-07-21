@@ -158,11 +158,15 @@ Cross-cutting:
   the client's original headers. (The anti-spoof removal of inbound-only
   headers from unauthenticated requests stays at the gate.) On failover a
   `passthrough` attempt keeps the client's `authorization` / `x-api-key` only
-  while its destination origin matches the primary upstream's: the caller's
-  credential is origin-specific, so a `passthrough` attempt on a *different*
-  origin strips it and fails closed rather than replaying a host-specific token
-  to another origin. A same-origin fallback (e.g. two passthrough entries on one
-  host) still carries the credential and keeps working.
+  when the *primary* route is itself `passthrough` **and** the attempt's
+  destination origin matches that primary's: the caller's credential is then its
+  own upstream credential, origin-specific to the primary, so a `passthrough`
+  attempt on a *different* origin strips it and fails closed rather than replaying
+  a host-specific token to another origin. A same-origin fallback (e.g. two
+  passthrough entries on one host) still carries the credential and keeps working.
+  When the primary instead injects its own credential, the client headers are a
+  gateway/client secret rather than an upstream credential, so every `passthrough`
+  fallback strips them regardless of origin.
 - **count_tokens**: answered from the first chain element, as a chain has one
   advertised id; no failover for count_tokens.
 - **Metrics**: per-attempt `record_proxied_request` labeled by upstream name,

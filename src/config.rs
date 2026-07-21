@@ -1233,24 +1233,39 @@ impl Default for AccountConfig {
     }
 }
 
-/// Collisions in the same stable-identity key `AccountPool` uses at runtime
-/// (`crate::accounts::account_identity`: explicit `uuid`, falling back to
-/// `name`), so an account with an explicit `uuid` that happens to equal
-/// another account's name-fallback identity is caught here too, not just
-/// explicit-`uuid`-vs-explicit-`uuid` collisions.
-pub(crate) fn identity_collisions(accounts: &[AccountConfig]) -> Vec<(String, Vec<String>)> {
-    let mut groups = BTreeMap::<&str, Vec<String>>::new();
+/// Configured accounts that will share a single pool slot, grouped by their
+/// shared identity. Grouping is by the pool's own [`crate::accounts::account_key`]
+/// (not the display string), so an explicit `uuid` (`Verified`) is never reported
+/// as colliding with a UUID-less name fallback (`UpstreamInline` / `StoreEntry`)
+/// even when the strings happen to match — the pool keeps those distinct, so
+/// warning on a bare string match would tell operators a separate account is
+/// coalesced when it is not.
+pub(crate) fn identity_collisions(
+    upstream: &str,
+    accounts: &[AccountConfig],
+) -> Vec<(String, Vec<String>)> {
+    let mut groups =
+        std::collections::HashMap::<crate::accounts::AccountKey, (String, Vec<String>)>::new();
     for account in accounts {
+        let key = crate::accounts::account_key(upstream, account);
         groups
-            .entry(crate::accounts::account_identity(account))
-            .or_default()
+            .entry(key)
+            .or_insert_with(|| {
+                (
+                    crate::accounts::account_identity(account).to_string(),
+                    Vec::new(),
+                )
+            })
+            .1
             .push(account.name.clone());
     }
-    groups
-        .into_iter()
+    let mut collisions: Vec<(String, Vec<String>)> = groups
+        .into_values()
         .filter(|(_, names)| names.len() > 1)
-        .map(|(identity, names)| (identity.to_string(), names))
-        .collect()
+        .collect();
+    // Deterministic order for logging/tests (the source `HashMap` is unordered).
+    collisions.sort();
+    collisions
 }
 
 fn deserialize_optional_credentials_path<'de, D>(
@@ -1928,7 +1943,7 @@ impl Config {
 
     fn warn_identity_collisions(&self) {
         for (name, provider) in &self.providers {
-            for (identity, accounts) in identity_collisions(&provider.accounts) {
+            for (identity, accounts) in identity_collisions(name, &provider.accounts) {
                 tracing::warn!(
                     provider = %name,
                     identity = %identity,
@@ -3020,7 +3035,7 @@ mod tests {
         solo.uuid = Some("solo-id".to_string());
 
         assert_eq!(
-            identity_collisions(&[first.clone(), second.clone(), unique, solo]),
+            identity_collisions("codex", &[first.clone(), second.clone(), unique, solo]),
             vec![(
                 "shared".to_string(),
                 vec!["first".to_string(), "second".to_string()]
@@ -3036,23 +3051,22 @@ mod tests {
     }
 
     #[test]
-    fn identity_collisions_catches_explicit_uuid_matching_a_name_fallback_identity() {
-        // "first" has no uuid, so its runtime identity falls back to its name
-        // ("first"). A second account whose *explicit* uuid is literally
-        // "first" collides with it at runtime (`account_identity` uses the
-        // same key for both), even though the old implementation only ever
-        // compared explicit uuids against each other.
+    fn identity_collisions_does_not_flag_explicit_uuid_against_a_name_fallback() {
+        // "first" has no uuid, so its pool identity is name-based
+        // (`AccountStateIdentity::UpstreamInline`). A second account whose
+        // *explicit* uuid is literally "first" resolves to
+        // `AccountStateIdentity::Verified` — a different `AccountKey` variant, so
+        // the pool keeps them as two separate accounts. The collision warning must
+        // therefore NOT report them as sharing a slot, even though their display
+        // identity strings match.
         let first = account("first");
         let mut second = account("second");
         second.uuid = Some("first".to_string());
         let unrelated = account("unrelated");
 
-        assert_eq!(
-            identity_collisions(&[first.clone(), second.clone(), unrelated]),
-            vec![(
-                "first".to_string(),
-                vec!["first".to_string(), "second".to_string()]
-            )]
+        assert!(
+            identity_collisions("codex", &[first.clone(), second.clone(), unrelated]).is_empty(),
+            "a Verified uuid and a name fallback are distinct pool identities"
         );
 
         let mut config = Config::default();

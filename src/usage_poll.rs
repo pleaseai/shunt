@@ -102,17 +102,24 @@ async fn poll_all(state: &AppState) {
             if !account_is_refreshable(account).await {
                 continue;
             }
-            if !polled.insert(crate::accounts::account_key(name, account)) {
+            let key = crate::accounts::account_key(name, account);
+            if polled.contains(&key) {
                 continue;
             }
-            poll_account(
+            // Mark the physical identity polled only after a snapshot is applied,
+            // so a later valid alias for the same account still reconciles when an
+            // earlier alias fails to resolve its credential or fetch usage.
+            if poll_account(
                 &state.http_client,
                 &state.accounts,
                 name,
                 &provider.base_url,
                 account,
             )
-            .await;
+            .await
+            {
+                polled.insert(key);
+            }
         }
     }
 }
@@ -120,34 +127,38 @@ async fn poll_all(state: &AppState) {
 /// Poll one account: skip non-refreshable credentials, resolve a valid access
 /// token, fetch its usage, and apply it to the pool. Every failure degrades
 /// quietly to a debug log — a missing snapshot just leaves the header-derived
-/// state in place until the next tick.
+/// state in place until the next tick. Returns `true` only when a usage snapshot
+/// was applied, so the caller can leave the physical identity un-deduplicated and
+/// let a later alias retry when this one fails to resolve or fetch.
 async fn poll_account(
     client: &reqwest::Client,
     pool: &AccountPool,
     provider: &str,
     base_url: &str,
     account: &AccountConfig,
-) {
+) -> bool {
     if !account_is_refreshable(account).await {
-        return;
+        return false;
     }
     let credential = match resolve_claude_account(account, client).await {
         Ok(credential) => credential,
         Err(error) => {
             tracing::debug!(provider, account = %account.name, error = %error.message, "usage poller: failed to resolve account credential");
-            return;
+            return false;
         }
     };
     let Credential::ClaudeOauth { access_token, .. } = credential else {
-        return;
+        return false;
     };
     match claude::usage::fetch_usage(client, base_url, &access_token).await {
         Ok(snapshot) => {
             pool.note_usage(provider, account, &snapshot);
             tracing::debug!(provider, account = %account.name, "usage poller: applied usage snapshot");
+            true
         }
         Err(error) => {
             tracing::debug!(provider, account = %account.name, %error, "usage poller: usage fetch failed");
+            false
         }
     }
 }

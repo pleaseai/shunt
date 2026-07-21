@@ -691,6 +691,17 @@ impl AccountPool {
             .lock()
             .expect("account refresh-lock map poisoned")
             .retain(|key, _| !matches(key));
+        // Purge the forgotten identity from every upstream's membership map too,
+        // so a deleted/rotated account leaves no dead `AccountKey` behind (the
+        // per-upstream map is otherwise only rebuilt on the next
+        // `sync_enabled_accounts`, which never runs for a decommissioned
+        // upstream). Empty inner maps are left in place — harmless, and reused on
+        // the next sync.
+        self.memberships
+            .lock()
+            .expect("account membership lock poisoned")
+            .values_mut()
+            .for_each(|members| members.retain(|key, _| !matches(key)));
         if removed_quota {
             self.mark_dirty();
         }
@@ -2139,6 +2150,39 @@ mod tests {
 
         assert!(!pool.snapshot("codex", &[codex], None, None)[0].has_state);
         assert!(pool.snapshot("anthropic", &[anthropic], None, None)[0].has_state);
+    }
+
+    #[test]
+    fn forget_identity_purges_membership_entries() {
+        // `forget_identity` must clear the forgotten key from the membership map
+        // too, not just `entries`/`refresh_locks` — otherwise a deleted/rotated
+        // account leaves dead `AccountKey`s accumulating there.
+        let pool = AccountPool::new();
+        let mut codex = account("main");
+        codex.store_family = Some(StoreFamily::Chatgpt);
+        codex.store_entry = true;
+        pool.sync_enabled_accounts("codex", std::slice::from_ref(&codex));
+        let key = account_key("codex", &codex);
+        assert!(
+            pool.memberships
+                .lock()
+                .unwrap()
+                .get("codex")
+                .is_some_and(|members| members.contains_key(&key)),
+            "sync should have recorded the account in the membership map"
+        );
+
+        pool.forget_identity(StoreFamily::Chatgpt, "main");
+
+        assert!(
+            !pool
+                .memberships
+                .lock()
+                .unwrap()
+                .get("codex")
+                .is_some_and(|members| members.contains_key(&key)),
+            "forget_identity should purge the forgotten key from the membership map"
+        );
     }
 
     #[test]

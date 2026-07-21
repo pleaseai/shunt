@@ -354,22 +354,30 @@ pub(crate) async fn resolve_pool_accounts(
             scoped
         }
     };
-    for account in &mut accounts {
-        account.store_family = Some(store_family);
-        if account
-            .uuid
-            .as_deref()
-            .is_none_or(|id| id.trim().is_empty())
-        {
-            // Store entries already attempted identity extraction during the cached
-            // scan; never re-read their credential files on the per-request path.
-            // Inline accounts resolve their identity from a credential file or
-            // env token here, memoized process-wide (see [`resolve_inline_identity`])
-            // so the request path stays off credential-file reads and the global
-            // env lock.
-            account.uuid = resolve_inline_identity(store_family, account);
+    // Assign the store family and resolve any missing inline identities on the
+    // blocking pool: the credential-file reads (and mtime stats) never run on a
+    // runtime worker thread, and resolved identities are memoized per credential
+    // mtime (see [`resolve_inline_identity`]) so the steady-state request path
+    // stays off full credential reads and the global env lock.
+    let accounts = tokio::task::spawn_blocking(move || {
+        for account in &mut accounts {
+            account.store_family = Some(store_family);
+            if account
+                .uuid
+                .as_deref()
+                .is_none_or(|id| id.trim().is_empty())
+            {
+                // Store entries already attempted identity extraction during the
+                // cached scan; never re-read their credential files here. Inline
+                // accounts resolve their identity from a credential file or env
+                // token, memoized and mtime-invalidated.
+                account.uuid = resolve_inline_identity(store_family, account);
+            }
         }
-    }
+        accounts
+    })
+    .await
+    .map_err(|error| format!("{provider_label} inline identity resolution task failed: {error}"))?;
     Ok(accounts)
 }
 
@@ -404,25 +412,39 @@ enum InlineIdentityKey {
     TokenEnv { name: String },
 }
 
+/// A memoized inline-account identity plus the credential-file mtime it was
+/// resolved against (`None` for an env token, which is fixed for the process
+/// lifetime).
+struct CachedInlineIdentity {
+    modified: Option<SystemTime>,
+    identity: String,
+}
+
 /// Process-wide memo of resolved inline-account identities. This keeps the
-/// per-request account-resolution path off credential-file reads and the global
-/// environment lock (`std::env::var`), mirroring the store-scan cache
+/// per-request account-resolution path off full credential-file reads and the
+/// global environment lock (`std::env::var`), mirroring the store-scan cache
 /// ([`scan_cache`]) and the project's rule against configuration I/O on the
 /// request hot path. Only successful (`Some`) resolutions are stored, so a
 /// briefly-missing or unreadable credential file is retried on the next request
-/// instead of being permanently masked, while a resolved account is never
-/// re-read.
-fn inline_identity_cache() -> &'static Mutex<HashMap<InlineIdentityKey, String>> {
-    static CACHE: OnceLock<Mutex<HashMap<InlineIdentityKey, String>>> = OnceLock::new();
+/// instead of being permanently masked.
+fn inline_identity_cache() -> &'static Mutex<HashMap<InlineIdentityKey, CachedInlineIdentity>> {
+    static CACHE: OnceLock<Mutex<HashMap<InlineIdentityKey, CachedInlineIdentity>>> =
+        OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Resolve an inline account's stable upstream identity from its credential file
-/// or environment token, memoized process-wide (see [`inline_identity_cache`]).
-/// Store entries are skipped — they resolved their identity during the cached
-/// store scan and must never be re-read on the per-request path. Preserves the
-/// prior per-family resolution exactly; only the file read / env lookup is now
-/// cached after the first success.
+/// or environment token, memoized (see [`inline_identity_cache`]). Store entries
+/// are skipped — they resolved their identity during the cached store scan and
+/// must never be re-read here. The credential file's mtime is the invalidation
+/// signal (mirroring [`scan_cache`]): re-provisioning the file to a different
+/// account changes its mtime and forces a re-read, so pool identity tracks the
+/// credential currently in use rather than pinning to a stale account. An env
+/// token has no mtime and memoizes for the process lifetime. On a filesystem
+/// with coarse mtime resolution, a change sharing the cached timestamp goes
+/// unnoticed until a later change advances the mtime — the same caveat as the
+/// store-scan cache. Runs on the blocking pool (see the caller), so its stat and
+/// read never touch a runtime worker thread.
 fn resolve_inline_identity(store_family: StoreFamily, account: &AccountConfig) -> Option<String> {
     if account.store_entry {
         return None;
@@ -443,12 +465,30 @@ fn resolve_inline_identity(store_family: StoreFamily, account: &AccountConfig) -
         },
         _ => return None,
     };
-    if let Some(identity) = inline_identity_cache()
-        .lock()
-        .expect("inline identity cache mutex poisoned")
-        .get(&key)
+    let modified = match &key {
+        InlineIdentityKey::Credentials { path, .. } => {
+            fs::metadata(path).and_then(|meta| meta.modified()).ok()
+        }
+        InlineIdentityKey::TokenEnv { .. } => None,
+    };
     {
-        return Some(identity.clone());
+        let cache = inline_identity_cache()
+            .lock()
+            .expect("inline identity cache mutex poisoned");
+        if let Some(entry) = cache.get(&key) {
+            // Env tokens are fixed for the process lifetime; a credential file is
+            // only trusted while we have a current mtime that matches the cached
+            // one, so a re-provisioned (or vanished) file re-resolves.
+            let fresh = match &key {
+                InlineIdentityKey::TokenEnv { .. } => true,
+                InlineIdentityKey::Credentials { .. } => {
+                    modified.is_some() && entry.modified == modified
+                }
+            };
+            if fresh {
+                return Some(entry.identity.clone());
+            }
+        }
     }
     let resolved = match &key {
         InlineIdentityKey::Credentials {
@@ -467,7 +507,13 @@ fn resolve_inline_identity(store_family: StoreFamily, account: &AccountConfig) -
         inline_identity_cache()
             .lock()
             .expect("inline identity cache mutex poisoned")
-            .insert(key, identity.clone());
+            .insert(
+                key,
+                CachedInlineIdentity {
+                    modified,
+                    identity: identity.clone(),
+                },
+            );
     }
     resolved
 }
@@ -554,7 +600,7 @@ fn last_warned_collisions() -> &'static Mutex<LastWarnedCollisions> {
 /// set, without reintroducing a lock on the request hot path (this is the
 /// scan/store-discovery boundary, not `collapse_representatives`).
 fn warn_scan_identity_collisions(provider: &str, dir: &Path, accounts: &[AccountConfig]) {
-    let collisions = crate::config::identity_collisions(accounts);
+    let collisions = crate::config::identity_collisions(provider, accounts);
     let key = (provider.to_string(), dir.to_path_buf());
     {
         let mut last_warned = last_warned_collisions()
@@ -875,10 +921,9 @@ mod tests {
     #[tokio::test]
     async fn resolve_pool_accounts_memoizes_inline_credential_identity() {
         // An inline account (not a store entry) with a credentials file but no
-        // uuid resolves its identity from that file once, then reuses the cached
-        // value — even after the file is deleted — so the request hot path never
-        // re-reads the credential file. Configured + empty scope skips the scan
-        // entirely (`scan_must_not_run` proves it).
+        // uuid resolves its identity from that file once and memoizes it, so the
+        // request hot path never re-reads an unchanged credential file. Configured
+        // + empty scope skips the scan entirely (`scan_must_not_run` proves it).
         let dir = temp_dir("pool-inline-memo");
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("inline.json");
@@ -901,9 +946,9 @@ mod tests {
         .unwrap();
         assert_eq!(first[0].uuid.as_deref(), Some("inline-identity"));
 
-        // Remove the credential file: a re-read would now yield `None`, but the
-        // memo serves the identity resolved on the first request.
-        fs::remove_file(&path).unwrap();
+        // Re-reading the unchanged file would still yield the same identity; the
+        // memo serves it without touching disk. (Invalidation on change is
+        // covered by `resolve_pool_accounts_reresolves_inline_identity_when_...`.)
         let second = resolve_pool_accounts(
             "inline-memo",
             &configured,
@@ -915,6 +960,54 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(second[0].uuid.as_deref(), Some("inline-identity"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn resolve_pool_accounts_reresolves_inline_identity_when_credential_file_changes() {
+        // The memo is keyed on the credential file's mtime, so re-provisioning the
+        // file to a different account (or removing it) invalidates the cached
+        // identity instead of pinning quota/health state to the previous account.
+        // Deleting the file makes its mtime unavailable, which the cache treats as
+        // "not fresh" and re-resolves — now yielding `None`.
+        let dir = temp_dir("pool-inline-invalidate");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("inline.json");
+        fs::write(&path, r#"{"shuntAccountUuid":"first-identity"}"#).unwrap();
+        let configured = vec![AccountConfig {
+            name: "inline".to_string(),
+            credentials: Some(path.display().to_string()),
+            ..Default::default()
+        }];
+
+        let first = resolve_pool_accounts(
+            "inline-invalidate",
+            &configured,
+            &[],
+            StoreFamily::Claude,
+            dir.clone(),
+            scan_must_not_run,
+        )
+        .await
+        .unwrap();
+        assert_eq!(first[0].uuid.as_deref(), Some("first-identity"));
+
+        // Remove the credential file: the mtime is gone, so the memo must NOT keep
+        // serving the stale identity — the re-resolution reads the missing file and
+        // returns `None`.
+        fs::remove_file(&path).unwrap();
+        let second = resolve_pool_accounts(
+            "inline-invalidate",
+            &configured,
+            &[],
+            StoreFamily::Claude,
+            dir.clone(),
+            scan_must_not_run,
+        )
+        .await
+        .unwrap();
+        assert_eq!(second[0].uuid.as_deref(), None);
 
         let _ = fs::remove_dir_all(dir);
     }
