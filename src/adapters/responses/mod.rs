@@ -195,13 +195,14 @@ async fn forward(
         match forward_websocket(&state, &route, pool_key.as_deref(), forward_options.clone()).await
         {
             Ok(response) => return Ok(response),
-            Err(error) => {
+            Err(error) if error.failure.is_some() => {
                 tracing::warn!(
                     provider = %route.provider,
                     error = %error.message,
                     "codex websocket failed before streaming; falling back to HTTP"
                 );
             }
+            Err(error) => return Err(error),
         }
     }
     forward_http(&state, &route, forward_options, session_id.as_deref()).await

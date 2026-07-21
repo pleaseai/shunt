@@ -81,6 +81,7 @@ pub(super) async fn forward(
         let provider = route.provider.clone();
         let model = route.model.clone();
         let upstream_model = route.upstream_model.clone();
+        let attempt_started_at = Instant::now();
         let result = dispatch(state.clone(), route, uri, &attempt_headers, body.clone()).await;
 
         if !is_count_tokens(uri) {
@@ -92,7 +93,7 @@ pub(super) async fn forward(
                 &provider,
                 &model,
                 status,
-                started_at.elapsed().as_secs_f64() * 1000.0,
+                attempt_started_at.elapsed().as_secs_f64() * 1000.0,
             );
         }
 
@@ -104,6 +105,12 @@ pub(super) async fn forward(
                         status, response, provider, model, started_at,
                     ));
                 }
+                tracing::warn!(
+                    provider = %provider,
+                    model = %model,
+                    status = status.as_u16(),
+                    "upstream response triggered failover advance"
+                );
                 remember_failure(
                     &mut remembered,
                     status,
@@ -123,6 +130,13 @@ pub(super) async fn forward(
                     Some(AdapterFailure::UpstreamStatus(raw_status))
                         if is_advance_status(raw_status) =>
                     {
+                        tracing::warn!(
+                            provider = %provider,
+                            model = %model,
+                            status = raw_status.as_u16(),
+                            message = %message,
+                            "upstream error triggered failover advance"
+                        );
                         remember_failure(
                             &mut remembered,
                             raw_status,
@@ -131,7 +145,14 @@ pub(super) async fn forward(
                             model,
                         );
                     }
-                    Some(AdapterFailure::BeforeHeaders) => {}
+                    Some(AdapterFailure::BeforeHeaders) => {
+                        tracing::warn!(
+                            provider = %provider,
+                            model = %model,
+                            message = %message,
+                            "upstream failed before response headers; advancing failover"
+                        );
+                    }
                     _ => {
                         return Err(ForwardError {
                             message,

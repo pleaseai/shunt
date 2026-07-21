@@ -413,6 +413,58 @@ async fn responses_raw_404_advances_despite_client_facing_502_mapping() {
 }
 
 #[tokio::test]
+async fn responses_post_2xx_backend_error_stops_without_replaying_turn() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let responses = MockServer::start().await;
+    let skipped = MockServer::start().await;
+    let failed_turn = concat!(
+        "event: response.created\n",
+        "data: {\"response\":{\"id\":\"resp_1\"}}\n\n",
+        "event: response.failed\n",
+        "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"first upstream accepted then failed\"}}}\n\n",
+    );
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(failed_turn))
+        .expect(1)
+        .mount(&responses)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("must not replay"))
+        .expect(0)
+        .mount(&skipped)
+        .await;
+    let config = chain_config(
+        vec![
+            upstream(
+                "responses",
+                responses.uri(),
+                ProviderKind::Responses,
+                UpstreamAuth::Shorthand(AuthMode::Passthrough),
+            ),
+            passthrough("skipped", skipped.uri()),
+        ],
+        &[("responses", "gpt-test"), ("skipped", "claude-test")],
+    );
+    let gateway = start_gateway(config).await;
+
+    let response = post(&gateway).await;
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    assert_gateway_headers(&response, "responses", "gpt-test");
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["type"], "error");
+    assert_eq!(
+        body["error"]["message"],
+        "first upstream accepted then failed"
+    );
+    responses.verify().await;
+    skipped.verify().await;
+}
+
+#[tokio::test]
 async fn mixed_chain_is_gated_and_strips_credentials_per_attempt() {
     if !can_bind_loopback() {
         return;

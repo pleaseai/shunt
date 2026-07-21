@@ -92,7 +92,7 @@ pub(super) async fn forward_websocket(
         // See `forward_http`: surface the real status (a `502` when a backend
         // error event fired, issue #113) to the access log and metrics rather
         // than a hardcoded `200`.
-        let response = json_events_response(buffered, events, turn.relay(route)).await;
+        let response = json_events_response(buffered, events, turn.relay(route)).await?;
         Ok((response.status(), response))
     }
 }
@@ -341,7 +341,7 @@ fn ws_transport_error(error: CodexWsError) -> AdapterError {
     AdapterError {
         message: error.message,
         response: Box::new(response),
-        failure: None,
+        failure: Some(crate::adapters::AdapterFailure::BeforeHeaders),
     }
 }
 

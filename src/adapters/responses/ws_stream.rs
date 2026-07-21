@@ -11,7 +11,7 @@ use axum::{
 use futures_util::stream;
 use serde_json::json;
 
-use crate::{error::ShuntError, model::responses::map_error_value};
+use crate::{adapters::AdapterError, error::ShuntError, model::responses::map_error_value};
 
 use super::codex_ws::{CodexWsError, CodexWsEvents};
 use super::context::RelayOptions;
@@ -105,7 +105,7 @@ pub(super) async fn json_events_response(
     buffered: BufferedEvent,
     mut events: CodexWsEvents,
     relay: RelayOptions,
-) -> axum::response::Response {
+) -> Result<axum::response::Response, AdapterError> {
     let mut machine = relay.machine();
     let mut buffered = buffered;
     loop {
@@ -121,7 +121,11 @@ pub(super) async fn json_events_response(
                 // it lands instead of looping on `recv()` for a channel close the
                 // backend may never send — that would hang the request.
                 if let Some(error) = machine.take_backend_error() {
-                    return backend_error_response(error);
+                    return Err(AdapterError {
+                        message: "responses backend error event".into(),
+                        response: Box::new(backend_error_response(error)),
+                        failure: None,
+                    });
                 }
             }
             Some(Err(error)) => {
@@ -131,12 +135,16 @@ pub(super) async fn json_events_response(
                 } else {
                     error.body
                 };
-                return ShuntError::bad_gateway(message).into_response();
+                return Err(AdapterError {
+                    message: "responses websocket stream error".into(),
+                    response: Box::new(ShuntError::bad_gateway(message).into_response()),
+                    failure: None,
+                });
             }
             None => break,
         }
     }
-    (StatusCode::OK, axum::Json(machine.final_json())).into_response()
+    Ok((StatusCode::OK, axum::Json(machine.final_json())).into_response())
 }
 
 /// Render a websocket transport error as an Anthropic `error` SSE event.
@@ -212,9 +220,14 @@ mod tests {
             .unwrap();
         drop(tx);
 
-        let response = json_events_response(None, rx, relay_opts()).await;
-        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let error = json_events_response(None, rx, relay_opts())
+            .await
+            .expect_err("mid-stream transport error should stop failover");
+        assert!(error.failure.is_none());
+        assert_eq!(error.response.status(), StatusCode::BAD_GATEWAY);
+        let bytes = to_bytes(error.response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
         assert!(body.to_string().contains("upstream blew up"));
     }
@@ -231,7 +244,9 @@ mod tests {
         .unwrap();
         drop(tx);
 
-        let response = json_events_response(None, rx, relay_opts()).await;
+        let response = json_events_response(None, rx, relay_opts())
+            .await
+            .expect("clean events should build a response");
         assert_eq!(response.status(), StatusCode::OK);
     }
 
@@ -258,10 +273,15 @@ mod tests {
         .unwrap();
         drop(tx);
 
-        let response = json_events_response(None, rx, relay_opts()).await;
+        let error = json_events_response(None, rx, relay_opts())
+            .await
+            .expect_err("backend error event should stop failover");
 
-        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(error.failure.is_none());
+        assert_eq!(error.response.status(), StatusCode::BAD_GATEWAY);
+        let bytes = to_bytes(error.response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["type"], "error");
         assert_eq!(body["error"]["message"], "Rate limit reached");
@@ -286,15 +306,19 @@ mod tests {
         // Deliberately keep `tx` alive: the channel never closes, so the collector
         // must return on the error event rather than looping forever on `recv()`.
 
-        let response = tokio::time::timeout(
+        let error = tokio::time::timeout(
             std::time::Duration::from_secs(5),
             json_events_response(None, rx, relay_opts()),
         )
         .await
-        .expect("collector returns without waiting for channel close");
+        .expect("collector returns without waiting for channel close")
+        .expect_err("backend error event should stop failover");
 
-        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(error.failure.is_none());
+        assert_eq!(error.response.status(), StatusCode::BAD_GATEWAY);
+        let bytes = to_bytes(error.response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["type"], "error");
         assert_eq!(body["error"]["message"], "Rate limit reached");

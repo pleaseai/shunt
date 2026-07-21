@@ -122,13 +122,11 @@ pub(super) async fn forward_chatgpt_oauth(
                     let response = crate::adapters::with_admission(response, admission);
                     return Ok((status, with_account_header(response, &account.name)));
                 }
-                Err(error) => {
+                Err(error) if error.failure.is_some() => {
                     // A pre-stream websocket failure (connect/handshake/send) falls
                     // back to HTTP on the SAME account, exactly like the
                     // single-account path in `forward` — only an HTTP failure
-                    // triggers account-pool failover below. (A mid-stream failure
-                    // is instead surfaced as an SSE error event and never reaches
-                    // here — the response has already begun by then.)
+                    // triggers account-pool failover below.
                     tracing::warn!(
                         provider = %route.provider,
                         account = %account.name,
@@ -136,6 +134,7 @@ pub(super) async fn forward_chatgpt_oauth(
                         "codex websocket failed before streaming; falling back to HTTP for this account"
                     );
                 }
+                Err(error) => return Err(error),
             }
         }
 

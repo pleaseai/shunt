@@ -419,8 +419,8 @@ fn map_cursor_stream_error(error: client::CursorError) -> AdapterError {
     let detail = connect_error_detail(&error);
     let message = crate::model::responses::context_overflow_message(&detail, &error.message)
         .unwrap_or(error.message);
-    let mut error = own_error(mapped_status, kind, message);
-    error.failure = Some(crate::adapters::AdapterFailure::UpstreamStatus(status));
+    let error = own_error(mapped_status, kind, message);
+    debug_assert!(error.failure.is_none());
     error
 }
 
@@ -626,6 +626,18 @@ mod tests {
             body["error"]["message"],
             "prompt is too long: 372982 tokens > 272000 maximum"
         );
+    }
+
+    #[test]
+    fn cursor_stream_error_keeps_client_mapping_but_stops_failover() {
+        let error = map_cursor_stream_error(client::CursorError::new(
+            503,
+            "backend failed after accepting turn",
+            None,
+        ));
+
+        assert!(error.failure.is_none());
+        assert_eq!(error.response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[test]
