@@ -52,6 +52,15 @@ claude                                              # /model -> pick gpt-5.6-sol
 
 マッピングされていないモデル（あなたのすべての `claude-*` id）は、これまでとまったく同じように動作します。shunt はあなた自身の認証情報を使って Anthropic へ転送します。詳しい手順は [Quickstart](https://shunt-docs.pages.dev/getting-started/quickstart/) を参照してください。
 
+### スターター設定
+
+`shunt init` は、既存のディレクトリにコメント付きの `shunt.toml` を作成します。デフォルトの passthrough starter をそのまま使うか、マッピングされていないモデルの fallback を変えずに順序付き upstream preset を scaffold できます。
+
+```bash
+shunt init
+shunt init --upstream codex --upstream kimi
+```
+
 ### エージェントネイティブなセットアップ blueprint
 
 `shunt add` は、コーディングエージェント向けの組み込み Markdown 実装ガイドを取得します。`shunt add upstream` で利用可能な upstream blueprint を一覧表示するか、そのままエージェントへパイプできます。

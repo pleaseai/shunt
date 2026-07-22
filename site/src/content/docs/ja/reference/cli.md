@@ -1,6 +1,6 @@
 ---
 title: CLI
-description: shunt コマンドライン — run、check、token、provider login。
+description: shunt コマンドライン — run、check、init、add、token、provider login。
 ---
 
 ## `shunt run`
@@ -26,6 +26,21 @@ shunt check
 ```
 
 具体的なエラーを報告します: 不正なバインドアドレス、ルート内の未知のプロバイダー、`api_key_env` の欠落、不正な `base_url`、誤ったアダプター/認証の組み合わせ。
+
+## `shunt init`
+
+既存のディレクトリに starter `shunt.toml` を作成します。このコマンドはそのファイルだけを書き込み、インストールやネットワークアクセスは行いません。
+
+```bash
+shunt init
+shunt init --upstream codex --upstream kimi
+shunt init --root /path/to/project
+shunt init --force
+```
+
+Upstream を指定しない場合、starter はすべてコメントで構成され、shunt のデフォルト passthrough 設定として読み込まれます。`--upstream` を繰り返すと、failover 順に preset エントリを追加できます。指定できる名前は `anthropic`、`codex`、`openai`、`xai`、`grok`、`kimi`、`cursor` です。Starter は `server.default_provider` を設定しないため、マッピングされていないトラフィックはデフォルトの Anthropic passthrough のままです。
+
+Root のデフォルトは現在のディレクトリで、あらかじめ存在している必要があります。そこに `shunt.toml`、`shunt.yaml`、`shunt.yml` のいずれかがある場合、`--force` なしでは何も書き込まず停止します。強制 init が上書きするのは `shunt.toml` だけです。YAML variant はそのまま残り、config discovery では新しい TOML ファイルが優先されます。
 
 ## `shunt add`
 

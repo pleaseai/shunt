@@ -1,6 +1,6 @@
 ---
 title: CLI
-description: shunt 命令行 —— run、check、token 和 provider login。
+description: shunt 命令行 —— run、check、init、add、token 和 provider login。
 ---
 
 ## `shunt run`
@@ -26,6 +26,21 @@ shunt check
 ```
 
 报告具体错误:错误的 bind 地址、路由中的未知提供方、缺失的 `api_key_env`、错误的 `base_url`、错误的适配器/认证组合。
+
+## `shunt init`
+
+在现有目录中创建 starter `shunt.toml`。该命令只写入这一个文件，不会安装任何内容或访问网络。
+
+```bash
+shunt init
+shunt init --upstream codex --upstream kimi
+shunt init --root /path/to/project
+shunt init --force
+```
+
+不指定 upstream 时，starter 完全由注释组成，加载后使用 shunt 的默认 passthrough 配置。重复使用 `--upstream` 可按 failover 顺序添加 preset 条目；可用名称为 `anthropic`、`codex`、`openai`、`xai`、`grok`、`kimi` 和 `cursor`。Starter 不设置 `server.default_provider`，因此未映射流量仍使用默认 Anthropic passthrough。
+
+Root 默认为当前目录，并且必须已经存在。如果其中已有 `shunt.toml`、`shunt.yaml` 或 `shunt.yml`，则不带 `--force` 时会停止且不写入任何内容。强制 init 只覆盖 `shunt.toml`；YAML variant 保持不变，config discovery 会优先使用新的 TOML 文件。
 
 ## `shunt add`
 
