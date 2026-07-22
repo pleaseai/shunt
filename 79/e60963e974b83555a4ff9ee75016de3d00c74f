@@ -1,0 +1,34 @@
+README.ko.md
+  s_539fecc57ecebc::t_e6c536cfce257e 64
+docs/add-command.md
+  s_539fecc57ecebc::t_6f4c43df060489 28
+blueprints/upstream/anthropic.md
+  s_539fecc57ecebc::t_9b9e54ac5a7cff 72-73
+blueprints/upstream/xai.md
+  s_539fecc57ecebc::t_62373c4eca09b7 60-61
+blueprints/upstream/kimi.md
+  s_539fecc57ecebc::t_d752d08de22711 61-62
+  s_539fecc57ecebc::t_160a193d4219a5 75,78
+blueprints/upstream/codex.md
+  s_539fecc57ecebc::t_b8d70a772bf38d 67-68
+site/src/content/docs/ja/reference/cli.md
+  s_539fecc57ecebc::t_003f58032f7600 42
+blueprints/upstream/openai.md
+  s_539fecc57ecebc::t_f86668638bbbee 61-62
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "79e60963e974b83555a4ff9ee75016de3d00c74f",
+  "prompts": {},
+  "sessions": {
+    "s_539fecc57ecebc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "726953e1-a801-4ea7-95b0-56b9545a8aee",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
