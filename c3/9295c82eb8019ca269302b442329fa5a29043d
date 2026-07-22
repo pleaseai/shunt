@@ -1,0 +1,41 @@
+site/src/content/docs/ja/reference/cli.md
+  s_5b08260bf0e353::t_0c4e7669fcd0cc 30-43
+  s_5b08260bf0e353::t_3a964f63784926 3
+  s_5b08260bf0e353::t_bf707b98a6b4cb 44
+site/src/content/docs/reference/cli.md
+  s_5b08260bf0e353::t_3ffa7dca57698b 30-43
+  s_5b08260bf0e353::t_1d266e420bb209 3
+  s_5b08260bf0e353::t_f99e85a29158fb 44
+README.zh-CN.md
+  s_5b08260bf0e353::t_8ff6c0ce688445 55-63
+site/src/content/docs/ko/reference/cli.md
+  s_5b08260bf0e353::t_887eb483ac1198 30-43
+  s_5b08260bf0e353::t_b3bffaeae6b38a 3
+  s_5b08260bf0e353::t_e6df535f863238 44
+site/src/content/docs/zh-cn/reference/cli.md
+  s_5b08260bf0e353::t_121dfb4a8561ed 3
+  s_5b08260bf0e353::t_17c15cba2c8a89 30-43
+  s_5b08260bf0e353::t_3dfec84c709298 29
+README.ko.md
+  s_5b08260bf0e353::t_e84b5c34ed59cd 55-63
+README.md
+  s_5b08260bf0e353::t_93fc847a90d41d 57-65
+README.ja.md
+  s_5b08260bf0e353::t_f891000c207e46 55-63
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "c39295c82eb8019ca269302b442329fa5a29043d",
+  "prompts": {},
+  "sessions": {
+    "s_5b08260bf0e353": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c864abd7-a517-4347-bb08-09742da98b71",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
