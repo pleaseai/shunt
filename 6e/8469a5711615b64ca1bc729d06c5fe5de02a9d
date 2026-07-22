@@ -1,0 +1,27 @@
+blueprints/upstream/xai.md
+  s_539fecc57ecebc::t_2f850b97c6681d 60
+blueprints/upstream/anthropic.md
+  s_539fecc57ecebc::t_38be4dfc50e969 72
+blueprints/upstream/codex.md
+  s_539fecc57ecebc::t_e9735b8d9078d9 67
+blueprints/upstream/openai.md
+  s_539fecc57ecebc::t_b09c179eaaa1ab 61
+blueprints/upstream/kimi.md
+  s_539fecc57ecebc::t_a86c8eb5ca942a 61
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "6e8469a5711615b64ca1bc729d06c5fe5de02a9d",
+  "prompts": {},
+  "sessions": {
+    "s_539fecc57ecebc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "726953e1-a801-4ea7-95b0-56b9545a8aee",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
