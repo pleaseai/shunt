@@ -587,12 +587,12 @@ mod tests {
     }
 
     #[test]
-    fn add_output_treats_broken_pipe_as_success() {
+    fn cli_output_treats_broken_pipe_as_success() {
         assert!(write_cli_output(FailingWriter(ErrorKind::BrokenPipe), b"output").is_ok());
     }
 
     #[test]
-    fn add_output_propagates_other_write_errors() {
+    fn cli_output_propagates_other_write_errors() {
         let error = write_cli_output(FailingWriter(ErrorKind::WriteZero), b"output").unwrap_err();
         assert_eq!(error.kind(), ErrorKind::WriteZero);
     }
