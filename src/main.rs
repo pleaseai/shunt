@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand};
 use shunt::{
     blueprints::{self, AddKind},
     config::{Config, OtelConfig, SentryConfig},
-    server,
+    init, server,
     telemetry::{self, OtelReloadLayer, TelemetryGuard},
 };
 use tracing_subscriber::{
@@ -58,6 +58,18 @@ enum Command {
     /// `CLAUDE_CODE_OAUTH_TOKEN`; otherwise auto-refresh mode reads and refreshes
     /// `~/.claude/.credentials.json`.
     Token,
+    /// Create a starter `shunt.toml` in an existing directory.
+    Init {
+        /// Upstream preset to scaffold. May be repeated in failover order.
+        #[arg(long)]
+        upstream: Vec<String>,
+        /// Existing directory in which to write `shunt.toml`.
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Overwrite `shunt.toml` even when a config variant already exists.
+        #[arg(long)]
+        force: bool,
+    },
     /// Retrieve an embedded implementation blueprint for a coding agent.
     Add {
         /// Blueprint category (`upstream` or `provider`).
@@ -103,6 +115,11 @@ fn main() -> anyhow::Result<()> {
         Some(Command::Run { config }) => run(config.or(cli.config)),
         Some(Command::Check { config }) => check(config.or(cli.config)),
         Some(Command::Token) => runtime()?.block_on(token()),
+        Some(Command::Init {
+            upstream,
+            root,
+            force,
+        }) => init(upstream, root.as_deref(), force),
         Some(Command::Add {
             kind,
             name_or_url,
@@ -127,6 +144,23 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
+fn init(upstream: Vec<String>, root: Option<&std::path::Path>, force: bool) -> anyhow::Result<()> {
+    let path = init::write_starter(root, &upstream, force)?;
+    let stdout = std::io::stdout();
+    write_cli_output(
+        stdout.lock(),
+        format!("Wrote {}\n", path.display()).as_bytes(),
+    )?;
+    if let Some(hint) = init_hint(std::io::stderr().is_terminal()) {
+        eprintln!("{hint}");
+    }
+    Ok(())
+}
+
+fn init_hint(is_tty: bool) -> Option<&'static str> {
+    is_tty.then_some("Hint: validate with `shunt check`, then start the gateway with `shunt run`.")
+}
+
 fn add(kind: Option<AddKind>, name_or_url: Option<&str>, print: bool) -> anyhow::Result<()> {
     let output = match (kind, name_or_url) {
         (None, None) => blueprints::list(),
@@ -135,7 +169,7 @@ fn add(kind: Option<AddKind>, name_or_url: Option<&str>, print: bool) -> anyhow:
         (None, Some(_)) => unreachable!("clap requires kind before name_or_url"),
     };
     let stdout = std::io::stdout();
-    write_add_output(stdout.lock(), output.as_bytes())?;
+    write_cli_output(stdout.lock(), output.as_bytes())?;
 
     if let (Some(kind), Some(_)) = (kind, name_or_url) {
         if let Some(hint) = add_hint(kind, print, std::io::stderr().is_terminal()) {
@@ -160,7 +194,7 @@ fn add_hint(kind: AddKind, print: bool, is_tty: bool) -> Option<&'static str> {
     })
 }
 
-fn write_add_output(mut writer: impl Write, output: &[u8]) -> std::io::Result<()> {
+fn write_cli_output(mut writer: impl Write, output: &[u8]) -> std::io::Result<()> {
     let result = writer.write_all(output).and_then(|()| writer.flush());
     match result {
         Err(error) if error.kind() == ErrorKind::BrokenPipe => Ok(()),
@@ -547,6 +581,57 @@ mod tests {
     }
 
     #[test]
+    fn init_hint_is_suppressed_for_non_tty_stderr() {
+        assert!(init_hint(true).is_some());
+        assert!(init_hint(false).is_none());
+    }
+
+    #[test]
+    fn add_output_treats_broken_pipe_as_success() {
+        assert!(write_cli_output(FailingWriter(ErrorKind::BrokenPipe), b"output").is_ok());
+    }
+
+    #[test]
+    fn add_output_propagates_other_write_errors() {
+        let error = write_cli_output(FailingWriter(ErrorKind::WriteZero), b"output").unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::WriteZero);
+    }
+
+    #[test]
+    fn init_command_parses_all_forms() {
+        let parsed = Cli::try_parse_from(["shunt", "init"]).unwrap();
+        assert!(matches!(
+            parsed.command,
+            Some(Command::Init {
+                upstream,
+                root: None,
+                force: false,
+            }) if upstream.is_empty()
+        ));
+
+        let parsed = Cli::try_parse_from([
+            "shunt",
+            "init",
+            "--upstream",
+            "codex",
+            "--upstream",
+            "kimi",
+            "--root",
+            "/tmp/project",
+            "--force",
+        ])
+        .unwrap();
+        assert!(matches!(
+            parsed.command,
+            Some(Command::Init {
+                upstream,
+                root: Some(ref root),
+                force: true,
+            }) if upstream == ["codex", "kimi"] && root == std::path::Path::new("/tmp/project")
+        ));
+    }
+
+    #[test]
     fn add_hint_is_emitted_for_each_kind_on_a_tty_without_print() {
         let upstream = add_hint(AddKind::Upstream, false, true).unwrap();
         assert!(upstream.contains("shunt add upstream kimi --print | claude"));
@@ -562,18 +647,6 @@ mod tests {
             assert!(add_hint(kind, false, false).is_none());
             assert!(add_hint(kind, true, false).is_none());
         }
-    }
-
-    #[test]
-    fn add_output_treats_broken_pipe_as_success() {
-        assert!(write_add_output(FailingWriter(ErrorKind::BrokenPipe), b"blueprint").is_ok());
-    }
-
-    #[test]
-    fn add_output_propagates_other_write_errors() {
-        let error =
-            write_add_output(FailingWriter(ErrorKind::WriteZero), b"blueprint").unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::WriteZero);
     }
 
     #[test]

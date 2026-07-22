@@ -12,6 +12,7 @@ pub mod discovery;
 pub mod error;
 pub mod gateway;
 pub mod headers;
+pub mod init;
 pub mod keepalive;
 pub mod metrics;
 pub mod model;

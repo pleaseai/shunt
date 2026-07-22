@@ -1,5 +1,12 @@
 use super::{AuthMode, ProviderKind};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderPresetView {
+    pub name: &'static str,
+    pub auth: AuthMode,
+    pub api_key_env: Option<&'static str>,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ProviderPreset {
     pub name: &'static str,
@@ -73,9 +80,17 @@ pub(super) fn available_names() -> String {
         .join(", ")
 }
 
+pub fn provider_presets() -> impl ExactSizeIterator<Item = ProviderPresetView> {
+    PRESETS.iter().map(|preset| ProviderPresetView {
+        name: preset.name,
+        auth: preset.auth,
+        api_key_env: preset.api_key_env,
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{available_names, find, PRESETS};
+    use super::{available_names, find, provider_presets, PRESETS};
     use crate::config::{AuthMode, ProviderKind};
 
     #[test]
@@ -96,6 +111,18 @@ mod tests {
             available_names(),
             "anthropic, codex, openai, xai, grok, kimi, cursor"
         );
+    }
+
+    #[test]
+    fn public_view_exposes_only_init_scaffolding_metadata() {
+        let views = provider_presets().collect::<Vec<_>>();
+        assert_eq!(views.len(), PRESETS.len());
+        assert_eq!(views[0].name, "anthropic");
+        assert_eq!(views[0].auth, AuthMode::Passthrough);
+        assert_eq!(views[0].api_key_env, None);
+        assert_eq!(views[2].name, "openai");
+        assert_eq!(views[2].auth, AuthMode::ApiKey);
+        assert_eq!(views[2].api_key_env, Some("OPENAI_API_KEY"));
     }
 
     #[test]
