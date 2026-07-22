@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.24.0](https://github.com/pleaseai/shunt/compare/v0.23.0...v0.24.0) (2026-07-22)
+
+
+### Features
+
+* **admin:** show time-until-reset per quota window in pool dashboard ([#206](https://github.com/pleaseai/shunt/issues/206)) ([3272daa](https://github.com/pleaseai/shunt/commit/3272daa4a1ad143e4b1ee5ec75f15090e0241728))
+* **cli:** add `shunt add` blueprint discovery command ([#225](https://github.com/pleaseai/shunt/issues/225)) ([0302c3a](https://github.com/pleaseai/shunt/commit/0302c3a90821020d5f8a173dbbbebead22080419))
+* **cli:** add `shunt init` starter-config command ([#228](https://github.com/pleaseai/shunt/issues/228)) ([1d2ce53](https://github.com/pleaseai/shunt/commit/1d2ce534423dda7761aa3145724faf2b88150425))
+* **config:** ordered [[upstreams]] cross-provider failover ([#218](https://github.com/pleaseai/shunt/issues/218)) ([#224](https://github.com/pleaseai/shunt/issues/224)) ([2a90a1a](https://github.com/pleaseai/shunt/commit/2a90a1a2cb05716d6eb5a1083ccd8c14b34aee48))
+* **config:** unify model discovery and routing with a per-provider upstream_model map on [[models]] ([#217](https://github.com/pleaseai/shunt/issues/217)) ([21ded1d](https://github.com/pleaseai/shunt/commit/21ded1d5cca576c6101b2787dfdd7fdc6b82aaa5))
+* **discovery:** auto-include builtin Claude model catalog ([#208](https://github.com/pleaseai/shunt/issues/208)) ([4904fa2](https://github.com/pleaseai/shunt/commit/4904fa2427b219fb6ac74e8ede2da3d1dd5af323))
+* **discovery:** match reference gateway list shape on /v1/models ([#215](https://github.com/pleaseai/shunt/issues/215)) ([3664357](https://github.com/pleaseai/shunt/commit/366435775a156a09c0c4d275267a99c83d0985f3))
+* **site:** migrate docs site from Starlight to Cloudflare Nimbus ([#231](https://github.com/pleaseai/shunt/issues/231)) ([8f345b8](https://github.com/pleaseai/shunt/commit/8f345b8f73176748f985b9a10043d4ce14738418))
+* **usage:** synthesize native /usage bars via GET /api/oauth/usage ([#227](https://github.com/pleaseai/shunt/issues/227)) ([267a8f7](https://github.com/pleaseai/shunt/commit/267a8f79359e2b7c38644726962bf7647f5924a7))
+
 ## [0.23.0](https://github.com/pleaseai/shunt/compare/v0.22.0...v0.23.0) (2026-07-18)
 
 
