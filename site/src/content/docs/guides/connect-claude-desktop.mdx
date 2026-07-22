@@ -1,0 +1,128 @@
+---
+title: Connect Claude Desktop
+description: Point Claude Desktop's third-party inference at shunt, authenticate, and pick models.
+---
+
+Based on the official [Deploy Claude Desktop with an LLM gateway](https://claude.com/docs/third-party/claude-desktop/gateway) guide — shunt *is* the gateway you point it at. shunt implements the Anthropic [Messages API](https://docs.claude.com/en/api/messages) (`POST /v1/messages` with streaming and tool use) and the optional `GET /v1/models`, which is exactly the gateway contract Claude Desktop's third-party inference expects.
+
+
+
+<Aside type="note" title="Claude Desktop's gateway config is managed, not a user file">
+
+Every key below is an [MDM / Bootstrap managed setting](https://claude.com/docs/third-party/claude-desktop/mdm). Set them in the in-app window (**Developer → Configure Third-Party Inference…**), which exports a `.mobileconfig` (macOS) or `.reg` (Windows) file, or push them through your MDM. There is no `~/.claude`-style user file for these.
+
+</Aside>
+
+
+
+## 1. Point Claude Desktop at shunt
+
+In **Developer → Configure Third-Party Inference…**, set **Inference provider** to **Gateway** and **Gateway base URL** to your running shunt (default bind `127.0.0.1:3001`):
+
+| Claude Desktop key | Value |
+| :-- | :-- |
+| `inferenceProvider` | `gateway` |
+| `inferenceGatewayBaseUrl` | `http://127.0.0.1:3001` (or your public shunt URL) |
+
+shunt serves plain HTTP; for anything beyond a loopback deployment, terminate TLS in front or tunnel it, exactly as for [sharing the gateway](/guides/shared-gateway/).
+
+## 2. Choose an authentication approach
+
+Claude Desktop offers three approaches. shunt maps cleanly onto the static key (and its credential-helper variant); per-user SSO is a gateway-side capability shunt does **not** implement inbound.
+
+| Claude Desktop approach | shunt side | Notes |
+| :-- | :-- | :-- |
+| **Static API key** (`inferenceGatewayApiKey`) | [`[server.auth]`](/guides/shared-gateway/) client token | Recommended. |
+| **Credential helper** (`inferenceCredentialHelper`) | an executable printing a `[server.auth]` client token | For orgs that already mint gateway credentials. |
+| **Interactive SSO** (`inferenceGatewayOidc` + `inferenceCredentialKind: interactive`) | not supported inbound | shunt validates *static* tokens, not external-IdP JWTs — see below. |
+
+### Static API key (recommended)
+
+Enable [`[server.auth]`](/guides/shared-gateway/#inbound-client-tokens) on shunt and hand each user a client token:
+
+```toml
+[server.auth]
+header = "x-shunt-token"          # default
+tokens_env = "SHUNT_CLIENT_TOKENS"
+```
+
+Put that token in Claude Desktop's `inferenceGatewayApiKey`. shunt accepts the client token in `Authorization: Bearer` or `x-api-key`, so either **Gateway auth scheme** works:
+
+| Claude Desktop key | Value |
+| :-- | :-- |
+| `inferenceGatewayApiKey` | your shunt client token |
+| `inferenceGatewayAuthScheme` | `bearer` (default) or `x-api-key` |
+
+Without `[server.auth]`, shunt requires no inbound credential (fine for a personal loopback gateway); Claude Desktop still wants the field populated, so enter any placeholder.
+
+The token gates `GET /v1/models` and injected-credential (mapped/pooled) models; [passthrough models](/guides/connect-claude-code/#3-provide-the-mapped-providers-credential) stay open and carry the operator's own provider credential.
+
+
+
+<Aside type="caution" title="shunt does not implement Claude Desktop's SSO contract">
+
+Claude Desktop's **Interactive sign-in** (`inferenceGatewayOidc`) has the app authenticate against an external IdP (Entra, Okta, …) and send that IdP's JWT to the gateway, which must validate `iss`/`aud`. shunt has no inbound JWT validator — its [`[server.gateway]`](/guides/gateway-login/) OAuth surface is a **device-flow login built for Claude Code**, a different contract. For per-user SSO attribution with Claude Desktop, front shunt with a JWT-validating proxy (LiteLLM, Kong, Envoy), or hand out per-user static tokens.
+
+</Aside>
+
+
+
+## 3. Select models
+
+shunt serves `GET /v1/models`, so Claude Desktop auto-discovers the picker at launch. Two things govern what appears.
+
+**Discovery filter.** Claude Desktop's auto-discovery shows only *recognizably Claude* ids — the tier-named ones (`claude-sonnet-*`, `claude-opus-*`, `claude-haiku-*`, `claude-fable-*`). shunt's builtin catalog mirrors the reference Claude apps gateway exactly — nine tier-named ids, so Claude Desktop shows every one:
+
+```json
+// GET /v1/models — builtin catalog (auto_include_builtin_models), all tier-named
+// (each entry also carries "type": "model")
+{ "data": [
+  { "id": "claude-opus-4-6" },   { "id": "claude-sonnet-4-5-20250929" },
+  { "id": "claude-haiku-4-5-20251001" }, { "id": "claude-fable-5" },
+  { "id": "claude-opus-4-8" },   { "id": "claude-opus-4-7" },
+  { "id": "claude-opus-4-1-20250805" },  { "id": "claude-sonnet-5" },
+  { "id": "claude-sonnet-4-6" }
+], "has_more": false, "first_id": null, "last_id": null }
+```
+
+A curated `claude-<slug>-via-<provider>` alias (the pattern that works in Claude Code) is **dropped by Claude Desktop** — see [Model Discovery → Claude Desktop recognizes only tier-named ids](/guides/model-discovery/#claude-desktop-recognizes-only-tier-named-ids).
+
+**Exposing a non-Anthropic backend.** Two options:
+
+- **Map a tier-named id** with a `[[routes]]` `upstream_model`, so selecting it in Desktop resolves to your backend:
+
+  ```toml
+  [[routes]]
+  model = "claude-sonnet-5"        # a tier-named id Claude Desktop recognizes
+  provider = "codex"
+  upstream_model = "gpt-5.6-sol"   # real backend slug
+  ```
+
+- **Override discovery on the Desktop side** with an explicit `inferenceModels` list of the exact ids shunt routes on. When every entry is a full id, Claude Desktop skips the `/v1/models` call.
+
+
+
+<Aside type="note" title="`anthropic_family_tier` is not emitted yet">
+
+Claude Desktop will also accept an *opaque* alias if the `/v1/models` entry carries an `anthropic_family_tier` field (a tier name such as `sonnet`). shunt does not emit this field today ([#211](https://github.com/pleaseai/shunt/issues/211)), so tier-named ids or an explicit `inferenceModels` list are the current ways to surface a backend in Desktop.
+
+</Aside>
+
+
+
+## 4. Verify
+
+Confirm shunt answers discovery and inference with the client token:
+
+```bash
+# Discovery — the token gates it when [server.auth] is set
+curl -s "$SHUNT_URL/v1/models" -H "Authorization: Bearer $SHUNT_CLIENT_TOKEN" | jq '.data[].id'
+
+# A tier-named id you mapped -> diverted to the backend
+curl -s -X POST "$SHUNT_URL/v1/messages" \
+  -H "Authorization: Bearer $SHUNT_CLIENT_TOKEN" \
+  -H "anthropic-version: 2023-06-01" -H "content-type: application/json" \
+  -d '{"model":"claude-sonnet-5","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}'
+```
+
+Then open Claude Desktop; the model picker should list the tier-named entries. If it is empty, discovery was filtered out (non-tier ids) or `/v1/models` was unreachable — set `inferenceModels` explicitly as a fallback.

@@ -1,0 +1,141 @@
+---
+import { render, type CollectionEntry } from "astro:content";
+import DocsLayout from "../layouts/DocsLayout.astro";
+import {
+  getBreadcrumbs,
+  getDocsStaticPaths,
+  getEditUrl,
+  getLastUpdated,
+  getPrevNext,
+  getTOC,
+} from "@cloudflare/nimbus-docs";
+import { config } from "virtual:nimbus/config";
+import { components } from "../components";
+import {
+  buildLocaleSidebar,
+  localeFromEntryId,
+  localeFromSlug,
+  localizedPath,
+  LOCALES,
+  stripLocalePrefix,
+  type Locale,
+} from "../lib/i18n";
+
+interface RouteProps {
+  entry: CollectionEntry<"docs">;
+  fallback?: boolean;
+  locale?: Locale;
+}
+
+export const prerender = true;
+export async function getStaticPaths(context: Parameters<typeof getDocsStaticPaths>[0]) {
+  const routeSlug = (entryId: string): string | undefined => {
+    if (entryId === "index") return undefined;
+    return entryId.endsWith("/index") ? entryId.slice(0, -"/index".length) : entryId;
+  };
+  const basePaths = (await getDocsStaticPaths(context)) as unknown as Array<{
+    params: { slug?: string };
+    props: RouteProps;
+  }>;
+  const realEntryIds = new Set(basePaths.map(({ props }) => props.entry.id));
+  const englishPaths = basePaths.filter(({ props }) => localeFromEntryId(props.entry.id) === "");
+
+  const realPaths = basePaths.map(({ props }) => ({
+    params: { slug: routeSlug(props.entry.id) },
+    props: {
+      ...props,
+      locale: localeFromEntryId(props.entry.id),
+    },
+  }));
+
+  const fallbackPaths = (Object.keys(LOCALES) as Locale[])
+    .filter((locale) => locale !== "")
+    .flatMap((locale) =>
+      englishPaths.flatMap(({ props }) => {
+        const englishSlug = props.entry.id === "index" ? "" : props.entry.id;
+        const localizedEntryId = englishSlug ? `${locale}/${englishSlug}` : locale;
+        if (realEntryIds.has(localizedEntryId)) return [];
+
+        return [{
+          params: { slug: [locale, englishSlug].filter(Boolean).join("/") },
+          props: { entry: props.entry, fallback: true, locale },
+        }];
+      }),
+    );
+
+  return [...realPaths, ...fallbackPaths];
+}
+
+const { entry, fallback = false, locale: routeLocale } = Astro.props as RouteProps;
+const locale = routeLocale ?? localeFromSlug(Astro.url.pathname);
+const { Content, headings } = await render(entry);
+const currentSlug = Astro.url.pathname.replace(/\/$/, "") || "/";
+
+const isCustom = entry.data.mode === "custom";
+const sidebarOn =
+  !isCustom &&
+  config.features?.sidebar !== false &&
+  entry.data.sidebar !== false;
+const tocOn =
+  !isCustom &&
+  config.features?.tableOfContents !== false &&
+  entry.data.tableOfContents !== false;
+
+const sidebar = sidebarOn ? buildLocaleSidebar(locale, currentSlug) : false;
+const prevNext = await getPrevNext(currentSlug, {
+  sidebarTree: sidebar === false ? [] : sidebar,
+  overrides: { prev: entry.data.prev, next: entry.data.next },
+});
+const breadcrumbs = locale === "" && !fallback
+  ? await getBreadcrumbs(currentSlug, { collection: entry.collection })
+  : [
+      { label: locale === "" ? "Home" : LOCALES[locale].label, href: localizedPath(locale, "") },
+      { label: entry.data.title },
+    ];
+const editUrl = await getEditUrl(entry);
+const lastUpdated = entry.data.lastUpdated ?? await getLastUpdated(entry);
+const tocConfig = entry.data.tableOfContents;
+const toc = tocOn && tocConfig !== false ? getTOC(headings, tocConfig) : false;
+const englishSlug = stripLocalePrefix(entry.id) === "index" ? "" : stripLocalePrefix(entry.id);
+const markdownEntryId = fallback ? englishSlug : entry.id;
+const markdownPath = markdownEntryId ? `/${markdownEntryId}/index.md` : "/index.md";
+const markdownUrl = Astro.site ? new URL(markdownPath, Astro.site).href : markdownPath;
+const socialImage = locale === "" && !fallback
+  ? entry.data.socialImage ?? `/og/${entry.id}.png`
+  : "/og.png";
+const htmlLang = fallback ? "en" : LOCALES[locale].code;
+const fallbackNotices: Record<Exclude<Locale, "">, string> = {
+  ko: "이 페이지는 아직 번역되지 않았습니다. 영어 원문을 표시합니다.",
+  ja: "このページはまだ翻訳されていません。英語の原文を表示しています。",
+  "zh-cn": "此页面尚未翻译，当前显示英文原文。",
+};
+const banner = fallback && locale !== ""
+  ? { content: fallbackNotices[locale], type: "note" as const }
+  : entry.data.banner;
+---
+
+<DocsLayout
+  title={entry.data.title}
+  description={entry.data.description}
+  sidebar={sidebar}
+  headings={toc}
+  breadcrumbs={breadcrumbs}
+  prevNext={prevNext}
+  mode={entry.data.mode}
+  banner={banner}
+  head={entry.data.head}
+  searchable={fallback ? false : entry.data.searchable}
+  noindex={entry.data.noindex}
+  markdownUrl={markdownUrl}
+  socialImage={socialImage}
+  lastUpdated={lastUpdated}
+  editUrl={editUrl}
+  draft={entry.data.draft}
+  audience={entry.data.audience}
+  collection={entry.collection}
+  entryId={fallback ? undefined : entry.id}
+  lang={htmlLang}
+  locale={locale}
+>
+  <Content components={components} />
+</DocsLayout>

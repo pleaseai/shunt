@@ -1,0 +1,136 @@
+---
+title: Cursor
+description: Reach your Cursor subscription through the native ConnectRPC adapter — login, agent modes, model ids, tools, images, and overrides.
+---
+
+The built-in **`cursor`** provider reaches your **Cursor** subscription through Cursor's own
+ConnectRPC/protobuf AgentService. The **`kind = "cursor"`** native adapter bridges it to the
+Anthropic Messages API — streaming, reasoning in streaming responses, native tool calls, and
+inline images included. Login and token refresh use `api2.cursor.sh`; agent turns run over
+HTTP/2 against Cursor's current agent host (`agentn.global.api5.cursor.sh`).
+
+## Quick start
+
+Let a coding agent wire it up for you — `shunt add` prints an embedded setup blueprint
+(offline and read-only; the agent edits the config, the command never does):
+
+```bash
+shunt add upstream cursor --print | claude
+```
+
+Or follow the manual steps below.
+
+## 1. Log in
+
+```bash
+shunt login cursor
+```
+
+This runs the Cursor OAuth flow and writes `~/.shunt/cursor-auth.json`, which shunt reads and
+auto-refreshes. If the file is missing or expired, shunt returns an `authentication_error`
+telling you to run `shunt login cursor` again.
+
+## 2. Configure the upstream
+
+The provider is seeded by default, so no table is required — route a `cursor:*` model id and
+you're done. To declare it explicitly (for ordered failover), the `cursor` preset supplies the
+native adapter, `base_url = "https://api2.cursor.sh"`, and `auth = "cursor_oauth"`:
+
+```toml
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic"   # keep Anthropic as the default for unrouted models (e.g. claude-*)
+
+[[upstreams]]
+name = "cursor"
+provider = "cursor"
+```
+
+Ordered `[[upstreams]]` replace shunt's built-in providers (including the seeded `cursor`), so an
+explicit config must also declare the `anthropic` default it still falls back to
+(`server.default_provider` defaults to `anthropic`).
+
+The legacy `[providers.cursor]` table form remains supported — but do not mix `[[upstreams]]`
+and `[providers.*]` in one file.
+
+## 3. Model ids and agent modes
+
+The prefix selects Cursor's agent mode (Agent / Plan / Ask) and the suffix is the Cursor model
+id. Use the **wire** id, not the display name from `cursor-agent models`: Auto is `default`
+(routing `cursor:auto` fails with `Unknown model ID: auto`). Named models (e.g. `cursor:gpt-5.2`)
+require a paid plan that entitles them; free plans are limited to `cursor:default`.
+
+| Form | Agent mode | Example |
+| :-- | :-- | :-- |
+| `cursor:<id>` / `cursor-agent:<id>` | Agent | `cursor:default` |
+| `cursor-plan:<id>` | Plan | `cursor-plan:default` |
+| `cursor-ask:<id>` | Ask | `cursor-ask:default` |
+
+Legacy bare names are also accepted: `cursor`, `cursor-agent`, `cursor-composer`,
+`cursor-composer-fast` (Agent); `cursor-plan`, `composer-2.5` (Plan); `cursor-ask`,
+`composer-2.5-fast` (Ask). Any other model id is rejected with an `invalid_request_error`.
+
+Route directly, or expose a Claude-named alias to [model discovery](/guides/model-discovery/):
+
+```toml
+[[routes]]
+model = "cursor:default"
+provider = "cursor"
+
+# Or: advertise + route in one declaration
+[[models]]
+id = "claude-cursor-default"
+display_name = "Cursor Auto"
+
+[models.upstream_model]
+cursor = "cursor:default"
+```
+
+## What the adapter carries
+
+The adapter streams assistant **text and reasoning**, bridges your client's **tools** as native
+Cursor MCP tool calls (a tool the model invokes surfaces as an Anthropic `tool_use` block with
+`stop_reason: "tool_use"`; you run it and send the `tool_result` back, and shunt re-runs the turn
+with that result in history), and forwards **inline images** (base64 sources; URL images are
+skipped). Cursor's own agentic file/shell tools are not exposed — only the tools your request
+advertises.
+
+## Verify
+
+```bash
+shunt check    # -> config ok
+shunt run
+curl -sS http://127.0.0.1:3001/v1/messages \
+  -H 'anthropic-version: 2023-06-01' \
+  -H 'content-type: application/json' \
+  -d '{"model":"cursor:default","max_tokens":16,"messages":[{"role":"user","content":"Reply with OK."}]}'
+```
+
+Confirm the response's `x-gateway-upstream` header names `cursor`, then
+[point Claude Code at shunt](/guides/connect-claude-code/).
+
+
+
+<Aside type="note" title="Overrides">
+
+`SHUNT_CURSOR_BASE_URL` overrides the login/refresh endpoint, `SHUNT_CURSOR_AGENT_BASE_URL` the
+agent host (must stay an HTTPS `cursor.sh` host), `SHUNT_CURSOR_AUTH_FILE` the credential path,
+and `SHUNT_CURSOR_CLIENT_VERSION` the `x-cursor-client-version` header (bump it without a rebuild
+if Cursor starts rejecting a stale client version). A `cursor_oauth` provider is pinned to a
+Cursor host over HTTPS — pointing `base_url` off-origin is refused so the bearer token cannot
+leak.
+
+</Aside>
+
+
+
+
+
+<Aside type="caution" title="Your own call">
+
+Reusing a Cursor subscription from an unofficial client is your own call — it may run afoul of
+Cursor's terms or account enforcement. Use at your own risk.
+
+</Aside>
+
+

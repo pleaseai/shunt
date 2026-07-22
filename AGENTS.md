@@ -28,7 +28,7 @@
 - `tests/`: protocol and translation integration tests.
 - `README.md`: top-level project overview (features, quickstart, supported providers/models).
 - `docs/`: engineering specs and milestone records (`m1`–`m7`, config, running, `RELEASING`).
-- `site/`: published user documentation (Astro Starlight → Cloudflare Pages); sources under `site/src/content/docs/` (`getting-started`, `guides`, `reference`).
+- `site/`: published Nimbus documentation site deployed to Cloudflare Pages; sources under `site/src/content/docs/` (`getting-started`, `guides`, `providers`, `reference`) with custom locale fallback routing.
 - `wiki/`: generated Astro Starlight wiki (memex — do not hand-edit; regenerate).
 
 ## Code Style

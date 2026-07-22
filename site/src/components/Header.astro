@@ -1,0 +1,146 @@
+---
+import { Icon } from "astro-icon/components";
+import { Button } from "./ui/button";
+import { LinkButton } from "./ui/link-button";
+import { ThemeToggle } from "./ui/theme-toggle";
+import { SearchTrigger } from "./ui/search";
+import { config } from "virtual:nimbus/config";
+import { getSidebarSections } from "@cloudflare/nimbus-docs";
+import {
+  buildLocaleSidebar,
+  localizedPath,
+  LOCALES,
+  type Locale,
+} from "@/lib/i18n";
+
+interface Props {
+  collection?: string;
+  entryId?: string;
+  showSidebar?: boolean;
+  locale?: Locale;
+  showLanguageSwitcher?: boolean;
+}
+
+const {
+  collection,
+  showSidebar = true,
+  locale = "",
+  showLanguageSwitcher = true,
+} = Astro.props;
+const currentSlug = Astro.url.pathname.replace(/\/$/, "") || "/";
+const sections = locale === ""
+  ? await getSidebarSections(currentSlug, { collection })
+  : buildLocaleSidebar(locale, currentSlug).flatMap((item) => {
+      if (item.type !== "group") return [];
+      const firstLink = item.children.find((child) => child.type === "link");
+      return firstLink
+        ? [{
+            label: item.label,
+            href: firstLink.href,
+            isActive: item.children.some(
+              (child) => child.type === "link" && child.isCurrent,
+            ),
+          }]
+        : [];
+    });
+const showSections = sections.length >= 2;
+const localeLinks = (Object.keys(LOCALES) as Locale[]).map((targetLocale) => ({
+  ...LOCALES[targetLocale],
+  locale: targetLocale,
+  href: localizedPath(targetLocale, currentSlug),
+}));
+---
+
+<header class="sticky top-0 z-30 border-b border-border bg-card/80 backdrop-blur-lg">
+  <div class="mx-auto flex items-center justify-between h-14 px-4 lg:px-6">
+    <div class="flex items-center gap-3">
+      {showSidebar && (
+        <Button
+          variant="ghost"
+          shape="square"
+          size="sm"
+          icon="ph:list"
+          aria-label="Open navigation"
+          data-menu-btn
+          class="lg:hidden text-muted-foreground"
+        />
+      )}
+
+      <a href={localizedPath(locale, "")} class="group">
+        <span class="font-semibold text-sm text-foreground group-hover:text-primary transition-colors">
+          {config.title}
+        </span>
+      </a>
+
+      {showSections && (
+        <nav aria-label="Sections" class="hidden md:flex items-center gap-1 ml-4 pl-4 border-l border-border h-6">
+          {sections.map((section) => (
+            <a
+              href={section.href}
+              aria-current={section.isActive ? "page" : undefined}
+              class:list={[
+                "px-2 py-1 rounded-md text-[0.8125rem] font-medium no-underline transition-colors",
+                section.isActive
+                  ? "text-foreground bg-accent"
+                  : "text-muted-foreground hover:text-foreground hover:bg-accent/60",
+              ]}
+            >
+              {section.label}
+            </a>
+          ))}
+        </nav>
+      )}
+    </div>
+
+    <div class="flex items-center gap-2">
+      {showLanguageSwitcher && (
+        <details class="relative" data-language-switcher>
+          <summary
+            class="flex h-8 cursor-pointer list-none items-center gap-1 rounded-md px-2 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2 [&::-webkit-details-marker]:hidden"
+            aria-label="Choose language"
+          >
+            <Icon name="ph:translate" class="h-4 w-4" />
+            <span class="hidden sm:inline">{LOCALES[locale].label}</span>
+            <Icon name="ph:caret-down" class="h-3.5 w-3.5" />
+          </summary>
+          <nav
+            aria-label="Languages"
+            class="absolute right-0 top-full z-40 mt-2 min-w-36 rounded-md border border-border bg-card p-1 shadow-lg"
+          >
+            {localeLinks.map((item) => (
+              <a
+                href={item.href}
+                lang={item.code}
+                aria-current={item.locale === locale ? "page" : undefined}
+                class:list={[
+                  "block rounded px-3 py-2 text-sm no-underline transition-colors hover:bg-accent",
+                  item.locale === locale
+                    ? "bg-accent text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                ]}
+              >
+                {item.label}
+              </a>
+            ))}
+          </nav>
+        </details>
+      )}
+      {config.search !== false && <SearchTrigger />}
+      {config.github && (
+        <LinkButton
+          href={config.github}
+          variant="minimal"
+          shape="square"
+          size="sm"
+          aria-label="GitHub"
+          target="_blank"
+          rel="noopener"
+          class="text-muted-foreground"
+        >
+          <Icon name="ph:github-logo" class="w-4 h-4" />
+        </LinkButton>
+      )}
+      <ThemeToggle />
+    </div>
+  </div>
+</header>

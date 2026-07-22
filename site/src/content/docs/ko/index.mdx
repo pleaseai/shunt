@@ -1,37 +1,29 @@
 ---
 title: shunt
 description: Claude Code를 어떤 모델로든 우회하세요 — 스펙을 준수하는 Claude Code LLM 게이트웨이.
-template: splash
-hero:
-  tagline: Claude Code를 어떤 모델로든 우회하세요. 매핑한 모델만 다른 프로바이더로 우회시키는 투명 게이트웨이입니다 — 그 외 모든 것은 변경 없이 Anthropic으로 그대로 전달됩니다.
-  actions:
-    - text: 빠른 시작
-      link: /ko/getting-started/quickstart/
-      icon: right-arrow
-    - text: 왜 shunt인가?
-      link: /ko/getting-started/why-shunt/
-      variant: minimal
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
+Claude Code를 어떤 모델로든 우회하세요. 매핑한 모델만 다른 프로바이더로 우회시키는 투명 게이트웨이입니다 — 그 외 모든 것은 변경 없이 Anthropic으로 그대로 전달됩니다.
 
-<CardGrid stagger>
-  <Card title="전역이 아닌 모델별" icon="setting">
+[빠른 시작](/ko/getting-started/quickstart/) · [왜 shunt인가?](/ko/getting-started/why-shunt/)
+
+<CardGrid>
+  <Card title="전역이 아닌 모델별" icon="ph:sliders-horizontal">
     라우팅은 각 요청의 `model` id로 결정됩니다. 메인 세션은
     Claude에 두고, 지정한 모델만 — 단일 서브에이전트 단위까지 —
     프롬프트 지문 인식 없이 우회하세요.
   </Card>
-  <Card title="스펙을 준수하는 게이트웨이" icon="approve-check">
+  <Card title="스펙을 준수하는 게이트웨이" icon="ph:seal-check">
     공식 [Claude Code LLM 게이트웨이
     프로토콜](https://code.claude.com/docs/en/llm-gateway-protocol)을 구현합니다:
     `/v1/messages`, `/v1/models` 디스커버리, 토큰 카운팅, 어트리뷰션
     패스스루.
   </Card>
-  <Card title="OpenAI & ChatGPT/Codex" icon="rocket">
+  <Card title="OpenAI & ChatGPT/Codex" icon="ph:rocket-launch">
     Anthropic Messages ⇄ OpenAI Responses API를 변환합니다 — OpenAI
     API 키를 통하거나, `codex login`으로 재사용한 ChatGPT 구독을 통해서요.
   </Card>
-  <Card title="Anthropic 호환 백엔드라면 무엇이든" icon="puzzle">
+  <Card title="Anthropic 호환 백엔드라면 무엇이든" icon="ph:puzzle-piece">
     Kimi, DeepSeek, GLM, MiniMax, OpenRouter, Vercel AI Gateway 등은
     `[providers.<name>]` 테이블 하나면 됩니다 — 코드 변경은 없습니다.
   </Card>

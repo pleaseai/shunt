@@ -1,37 +1,29 @@
 ---
 title: shunt
 description: Shunt Claude Code to any model — a spec-compliant Claude Code LLM gateway.
-template: splash
-hero:
-  tagline: Shunt Claude Code to any model. A transparent gateway that diverts only the models you map to another provider — everything else passes through to Anthropic unchanged.
-  actions:
-    - text: Quickstart
-      link: /getting-started/quickstart/
-      icon: right-arrow
-    - text: Why shunt?
-      link: /getting-started/why-shunt/
-      variant: minimal
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
+Shunt Claude Code to any model. A transparent gateway that diverts only the models you map to another provider — everything else passes through to Anthropic unchanged.
 
-<CardGrid stagger>
-  <Card title="Per-model, not global" icon="setting">
+[Quickstart](/getting-started/quickstart/) · [Why shunt?](/getting-started/why-shunt/)
+
+<CardGrid>
+  <Card title="Per-model, not global" icon="ph:sliders-horizontal">
     Routing is driven by each request's `model` id. Keep the main session on
     Claude and divert only the models you name — down to a single subagent —
     with no prompt fingerprinting.
   </Card>
-  <Card title="Spec-compliant gateway" icon="approve-check">
+  <Card title="Spec-compliant gateway" icon="ph:seal-check">
     Implements the official [Claude Code LLM gateway
     protocol](https://code.claude.com/docs/en/llm-gateway-protocol):
     `/v1/messages`, `/v1/models` discovery, token counting, and attribution
     pass-through.
   </Card>
-  <Card title="OpenAI & ChatGPT/Codex" icon="rocket">
+  <Card title="OpenAI & ChatGPT/Codex" icon="ph:rocket-launch">
     Translates Anthropic Messages ⇄ the OpenAI Responses API — over an OpenAI
     API key, or a reused ChatGPT subscription via `codex login`.
   </Card>
-  <Card title="Any Anthropic-compatible backend" icon="puzzle">
+  <Card title="Any Anthropic-compatible backend" icon="ph:puzzle-piece">
     Kimi, DeepSeek, GLM, MiniMax, OpenRouter, Vercel AI Gateway and friends are
     one `[providers.<name>]` table away — no code changes.
   </Card>

@@ -1,0 +1,62 @@
+---
+title: 설치
+description: Homebrew, cargo, 사전 빌드 바이너리 또는 소스로 shunt 설치하기.
+---
+
+
+
+<Aside type="note" title="pre-1.0 소프트웨어">
+
+`shunt`는 활발히 개발 중인 1.0 미만(pre-1.0) 소프트웨어입니다. [SemVer](https://semver.org/lang/ko/#spec) 관례에 따라 `0.x` 릴리스에는 설정 키, CLI, 동작에 대한 호환성이 깨지는 변경(breaking change)이 포함될 수 있으니, 업그레이드 전에 [릴리스 노트](https://github.com/pleaseai/shunt/releases)를 확인하세요.
+
+</Aside>
+
+
+
+## Homebrew (macOS / Linux)
+
+```bash
+brew install pleaseai/tap/shunt
+```
+
+## Cargo
+
+크레이트는 `shunt-gateway`로 게시됩니다(바이너리는 여전히 `shunt`입니다):
+
+```bash
+cargo install shunt-gateway
+```
+
+## 사전 빌드 바이너리
+
+각 [GitHub 릴리스](https://github.com/pleaseai/shunt/releases)에는 macOS(arm64/x64)와 Linux(arm64/x64)용 독립 실행 바이너리와 `SHA256SUMS` 파일이 첨부됩니다:
+
+```bash
+# OS/CPU에 맞는 애셋을 선택합니다 (darwin/linux × arm64/x64)
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+ARCH=$(uname -m); case "$ARCH" in x86_64) ARCH=x64 ;; aarch64) ARCH=arm64 ;; esac
+curl -fsSLO "https://github.com/pleaseai/shunt/releases/latest/download/shunt-${OS}-${ARCH}"
+chmod +x "shunt-${OS}-${ARCH}" && mv "shunt-${OS}-${ARCH}" /usr/local/bin/shunt
+```
+
+## 소스에서 빌드
+
+`cargo`가 포함된 stable Rust가 필요합니다:
+
+```bash
+git clone https://github.com/pleaseai/shunt
+cd shunt
+cargo build --release   # -> target/release/shunt
+```
+
+`cargo run -- <args>`로 소스 트리에서 바로 실행할 수도 있습니다.
+
+## Claude Code 연결을 위한 사전 요구 사항
+
+- **Claude Code** — 최신 버전이면 무엇이든 됩니다. [모델 디스커버리](/ko/guides/model-discovery/)를 원한다면 v2.1.129+가 필요합니다.
+- 매핑할 프로바이더에 대한 자격 증명:
+  - `openai` 프로바이더용 **OpenAI API 키**, 또는
+  - `codex` 프로바이더용 Codex CLI를 통한 **ChatGPT 로그인**(`codex login`).
+- 일반적인 **Anthropic 자격 증명**(claude.ai 로그인 또는 API 키) — shunt는 매핑하지 *않은* 모든 모델에 대해 이를 그대로 전달합니다.
+
+다음: [빠른 시작](/ko/getting-started/quickstart/).

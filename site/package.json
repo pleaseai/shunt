@@ -1,25 +1,35 @@
 {
   "name": "shunt-docs",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.12"
   },
   "scripts": {
     "dev": "astro dev",
-    "build": "astro build && npm run build:worker",
-    "build:worker": "esbuild worker/index.ts --bundle --platform=browser --conditions=workerd,worker --format=esm --outfile=dist/_worker.js",
-    "preview": "astro preview"
+    "build": "astro build",
+    "preview": "astro preview",
+    "typecheck": "astro check",
+    "lint:docs": "nimbus-docs lint"
   },
   "dependencies": {
-    "@astrojs/starlight": "^0.41.3",
-    "astro": "^7.0.7",
-    "starlight-llms-txt": "^0.11.0",
-    "starlight-page-actions": "^0.6.2"
+    "@cloudflare/nimbus-docs": "^0.6.1",
+    "@fontsource-variable/inter": "^5.2.8",
+    "@fontsource-variable/jetbrains-mono": "^5.2.8",
+    "@iconify-json/ph": "^1.2.0",
+    "astro": "^7.0.0",
+    "astro-icon": "^1.1.0",
+    "astro-og-canvas": "^0.13.0",
+    "canvaskit-wasm": "^0.41.1",
+    "clsx": "^2.1.1",
+    "tailwind-merge": "^3.5.0"
   },
   "devDependencies": {
-    "@wave-rf/cloudflare-md-router": "^0.2.1",
-    "esbuild": "^0.28.1"
+    "@astrojs/check": "^0.9.8",
+    "@tailwindcss/vite": "^4.1.4",
+    "pagefind": "^1.5.2",
+    "tailwindcss": "^4.1.4",
+    "typescript": "^5.8.3"
   }
 }
