@@ -85,7 +85,8 @@ pub(super) fn request_builder(
                 .header("x-grok-client-identifier", GROK_CLIENT_IDENTIFIER)
                 .header("x-grok-client-version", GROK_CLIENT_VERSION);
         }
-        Credential::ClaudeOauth { access_token, .. } => {
+        Credential::ClaudeOauth { access_token, .. }
+        | Credential::GoogleOauth { access_token, .. } => {
             request = request.bearer_auth(access_token);
         }
         // A Responses provider configured with passthrough auth is a

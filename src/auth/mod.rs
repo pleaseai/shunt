@@ -12,6 +12,7 @@ use crate::{
 pub mod claude;
 pub mod codex;
 pub mod cursor;
+pub mod google;
 pub mod inbound;
 pub mod shared;
 pub mod xai;
@@ -33,6 +34,11 @@ pub enum Credential {
     XaiOauth { access_token: String },
     /// Cursor OAuth bearer.
     CursorOauth { access_token: String },
+    /// Google OAuth bearer & project ID (Gemini Code Assist / Google One AI Pro).
+    GoogleOauth {
+        access_token: String,
+        project_id: String,
+    },
     ClaudeOauth {
         access_token: String,
         account_uuid: Option<String>,
@@ -90,6 +96,18 @@ pub async fn resolve_credential(
         AuthMode::ClaudeOauth => Err(auth_error(
             "claude_oauth is resolved per-account by the account pool, not resolve_credential",
         )),
+        AuthMode::GoogleOauth => {
+            let store =
+                google::auth::GoogleAuthStore::new(default_google_auth_path(), client.clone());
+            store
+                .get_valid()
+                .await
+                .map(|credential| Credential::GoogleOauth {
+                    access_token: credential.access_token,
+                    project_id: credential.project_id,
+                })
+        }
+        AuthMode::None => Ok(Credential::Passthrough),
     }
 }
 
@@ -260,6 +278,19 @@ pub fn default_cursor_auth_path() -> PathBuf {
                 .map(|home| home.join(".shunt").join("cursor-auth.json"))
         })
         .unwrap_or_else(|| PathBuf::from(".shunt/cursor-auth.json"))
+}
+
+pub(crate) fn default_google_auth_path() -> PathBuf {
+    env::var_os("GEMINI_AUTH_FILE")
+        .map(PathBuf::from)
+        .or_else(|| {
+            env::var_os("HOME")
+                .filter(|home| !home.is_empty())
+                .or_else(|| env::var_os("USERPROFILE").filter(|home| !home.is_empty()))
+                .map(PathBuf::from)
+                .map(|home| home.join(".gemini").join("oauth_creds.json"))
+        })
+        .unwrap_or_else(|| PathBuf::from(".gemini/oauth_creds.json"))
 }
 
 /// shunt-owned xAI credential file: `$SHUNT_XAI_AUTH_FILE`, else

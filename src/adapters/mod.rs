@@ -8,7 +8,9 @@ use axum::{
 use crate::{routing::Route, server::AppState};
 
 pub mod anthropic;
+pub mod antigravity;
 pub mod cursor;
+pub mod gemini;
 pub mod responses;
 
 /// Tie a storm-control [`AdmissionGuard`](crate::accounts::AdmissionGuard) to a
