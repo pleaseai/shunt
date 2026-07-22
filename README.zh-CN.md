@@ -52,6 +52,15 @@ claude                                              # /model -> 选择 gpt-5.6-s
 
 未映射的模型(你所有的 `claude-*` id)会完全照旧工作 —— shunt 使用你自己的凭据将它们转发给 Anthropic。完整演练见 [快速开始](https://shunt-docs.pages.dev/getting-started/quickstart/)。
 
+### 起始配置
+
+`shunt init` 会在现有目录中创建带注释的 `shunt.toml`。你可以保留默认 passthrough starter，也可以 scaffold 有序 upstream preset，而不改变未映射模型的 fallback：
+
+```bash
+shunt init
+shunt init --upstream codex --upstream kimi
+```
+
 ### Agent 原生设置 blueprint
 
 `shunt add` 用于获取面向编码 agent 的内置 Markdown 实现指南。可用 `shunt add upstream` 列出可用的 upstream blueprint，也可以直接将其输送给 agent：

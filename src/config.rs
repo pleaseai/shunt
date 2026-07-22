@@ -14,6 +14,7 @@ use thiserror::Error;
 mod presets;
 mod upstreams;
 
+pub use presets::{provider_presets, ProviderPresetView};
 pub use upstreams::{AccountSelection, AuthMap, UpstreamAuth, UpstreamConfig};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1838,7 +1839,7 @@ impl Default for Config {
 /// Config file basenames tried in each search directory, in priority order.
 /// TOML stays first so an existing `shunt.toml` always wins over a `.yaml`
 /// dropped alongside it; `.yaml` is preferred over the terser `.yml`.
-const CONFIG_FILENAMES: [&str; 3] = ["shunt.toml", "shunt.yaml", "shunt.yml"];
+pub(crate) const CONFIG_FILENAMES: [&str; 3] = ["shunt.toml", "shunt.yaml", "shunt.yml"];
 
 /// Standard config search directories, in order: the current directory, then
 /// `$XDG_CONFIG_HOME/shunt` (defaulting to `~/.config`), then

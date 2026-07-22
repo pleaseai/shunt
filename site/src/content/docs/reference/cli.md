@@ -1,6 +1,6 @@
 ---
 title: CLI
-description: The shunt command line — run, check, token, and provider login.
+description: The shunt command line — run, check, init, add, token, and provider login.
 ---
 
 ## `shunt run`
@@ -26,6 +26,21 @@ shunt check
 ```
 
 Reports specific errors: a bad bind address, an unknown provider in a route, a missing `api_key_env`, a bad `base_url`, a wrong adapter/auth combination.
+
+## `shunt init`
+
+Create a starter `shunt.toml` in an existing directory. The command only writes that file and never installs anything or accesses the network.
+
+```bash
+shunt init
+shunt init --upstream codex --upstream kimi
+shunt init --root /path/to/project
+shunt init --force
+```
+
+With no upstreams, the starter is fully commented and loads to shunt's passthrough defaults. Repeat `--upstream` to add preset entries in failover order; accepted names are `anthropic`, `codex`, `openai`, `xai`, `grok`, `kimi`, and `cursor`. Unmapped traffic remains on the default Anthropic passthrough because the starter does not set `server.default_provider`. When you request presets, a trailing `anthropic` passthrough upstream is appended automatically (unless you name `anthropic` yourself) so the generated file passes `shunt check` while keeping that fallback.
+
+The root defaults to the current directory and must already exist. If `shunt.toml`, `shunt.yaml`, or `shunt.yml` exists there, init stops without writing unless `--force` is set. Forced init overwrites only `shunt.toml`; YAML variants stay untouched, and the new TOML file takes precedence during config discovery.
 
 ## `shunt add`
 

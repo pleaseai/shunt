@@ -54,6 +54,15 @@ claude                                              # /model -> pick gpt-5.6-sol
 
 Unmapped models (all your `claude-*` ids) keep working exactly as before — shunt forwards them to Anthropic with your own credential. Full walkthrough: [Quickstart](https://shunt-docs.pages.dev/getting-started/quickstart/).
 
+### Starter configuration
+
+`shunt init` creates a commented `shunt.toml` in an existing directory. Keep the default passthrough starter, or scaffold ordered upstream presets without changing the fallback for unmapped models:
+
+```bash
+shunt init
+shunt init --upstream codex --upstream kimi
+```
+
 ### Agent-native setup blueprints
 
 `shunt add` retrieves embedded Markdown implementation guides for coding agents. List the available upstream blueprints with `shunt add upstream`, or pipe one directly into an agent:
