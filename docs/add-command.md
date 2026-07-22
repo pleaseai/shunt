@@ -25,4 +25,4 @@ Blueprint Markdown always goes to stdout without decoration, including when `--p
 
 ## Follow-up
 
-The upstream blueprint registry repeats the preset identifiers and descriptions defined by the ordered `[[upstreams]]` work in `docs/upstreams-failover.md`. Once both implementations are on `main`, unify the blueprint slug table and the config preset table behind one source of truth so a new preset cannot ship without a corresponding registry decision.
+The upstream blueprint registry in `src/blueprints.rs` defines its own slugs, one-line descriptions, and Markdown bodies, duplicating the preset identifiers introduced by the ordered `[[upstreams]]` work (see `docs/upstreams-failover.md`). Once both implementations are on `main`, unify the blueprint registry and the config preset table behind one source of truth so a new preset cannot ship without a corresponding registry decision.

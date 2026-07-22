@@ -61,7 +61,7 @@ shunt add upstream kimi --print | claude
 shunt add upstream https://provider.example/docs --print | claude
 ```
 
-이 명령은 오프라인이고 읽기 전용입니다. 안내만 출력하며 파일을 수정하거나 설치하거나 네트워크에 접근하지 않습니다. 완전히 새로운 provider protocol 지원에 기여하려면 `shunt add provider <absolute-url>`을 사용하세요.
+이 명령은 오프라인이고 읽기 전용입니다. 안내만 출력하며 파일을 수정하거나 설치하거나 네트워크에 접근하지 않습니다. 완전히 새로운 provider protocol 지원에 기여하려면 `shunt add provider <absolute-http(s)-url>`을 사용하세요.
 
 ## 프로바이더
 

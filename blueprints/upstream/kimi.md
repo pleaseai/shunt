@@ -58,6 +58,8 @@ Do not continue until it prints exactly `config ok`.
 
 ## Verify live
 
+> These checks assume the gateway's defaults: it listens on `127.0.0.1:3001` with no `[server.auth]`, you reuse any explicit `--config` from the steps above, and the optional model-routing block was applied. If the deployment differs, adjust the URL, send the configured inbound client token, pass the same `--config`, or use a model id from discovery.
+
 Start `shunt run`, then inspect discovery:
 
 ```bash
@@ -70,10 +72,10 @@ Send one minimal request:
 curl -sS http://127.0.0.1:3001/v1/messages \
   -H 'anthropic-version: 2023-06-01' \
   -H 'content-type: application/json' \
-  -d '{"model":"claude-kimi-via-moonshot","max_tokens":16,"messages":[{"role":"user","content":"Reply with OK."}]}'
+  -d '{"model":"claude-kimi-via-moonshot","max_tokens":256,"messages":[{"role":"user","content":"Reply with OK."}]}'
 ```
 
-Confirm a successful response and that the selected upstream is `kimi`.
+Confirm a successful response and that the selected upstream is `kimi`. Raise `max_tokens` if a reasoning model consumes the budget before emitting the reply.
 
 ## Safety rules
 

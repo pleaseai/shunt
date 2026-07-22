@@ -39,7 +39,7 @@ shunt add upstream https://example.com/docs    # 互換 endpoint を調査
 shunt add provider https://example.com/docs    # ソースコード統合を調査
 ```
 
-Kind は `upstream`（提供済み preset または互換 endpoint の設定）と `provider`（新しい provider protocol サポートへの貢献）です。既知の upstream slug または alias を指定すると名前付きガイドを取得します。絶対 `http://` または `https://` URL は、その kind の汎用 research ガイドに挿入されます。相対パスは拒否されます。
+Kind は `upstream`（提供済み preset または互換 endpoint の設定）と `provider`（新しい provider protocol サポートへの貢献）です。既知の upstream slug または alias を指定すると名前付きガイドを取得します。空白や認証情報を含まず正しく解析できる絶対 `http://` または `https://` URL は、その kind の汎用 research ガイドに挿入されます。相対パスや不正な URL は拒否されます。
 
 Blueprint Markdown はエージェントへ直接パイプできるよう、常に stdout へ出力されます。`--print` はその意図を明示して対話的な stderr hint を抑制しますが、stdout の内容は変えません。
 

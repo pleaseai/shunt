@@ -69,6 +69,8 @@ Do not continue until it prints exactly `config ok`.
 
 ## Verify live
 
+> These checks assume the gateway's defaults: it listens on `127.0.0.1:3001` with no `[server.auth]`, you reuse any explicit `--config` from the steps above, and the model entry below is discoverable. If the deployment differs, adjust the URL, send the configured inbound client token, pass the same `--config`, or use a model id from discovery.
+
 Start the gateway with `shunt run`, then inspect discovery:
 
 ```bash
