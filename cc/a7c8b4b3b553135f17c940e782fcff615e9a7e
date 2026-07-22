@@ -1,0 +1,89 @@
+site/src/content/docs/zh-cn/guides/xai.md
+  s_7053ac3e7cfa4f::t_aea4991b753b8e 25-36
+README.ja.md
+  s_7053ac3e7cfa4f::t_d1e668ae627f11 128
+README.md
+  s_7053ac3e7cfa4f::t_d1e668ae627f11 144
+site/src/content/docs/ja/guides/providers.md
+  s_7053ac3e7cfa4f::t_293759f33bafc3 43,45,47
+  s_7053ac3e7cfa4f::t_8ae0fd6e90ad42 62,66-74
+  s_7053ac3e7cfa4f::t_90060350aa609d 16-23
+site/src/content/docs/ja/guides/xai.md
+  s_7053ac3e7cfa4f::t_058ee9ca3027c8 19-29
+site/src/content/docs/providers/kimi.md
+  s_7053ac3e7cfa4f::t_511871a589a7fc 1-87
+site/src/content/docs/providers/mimo.md
+  s_7053ac3e7cfa4f::t_7715042c17aa29 1-89
+site/astro.config.mjs
+  s_7053ac3e7cfa4f::t_1401c4e0df8777 71-72,75-77,80-85,97-139
+site/src/content/docs/zh-cn/guides/codex.md
+  s_7053ac3e7cfa4f::t_f47dcd0307863f 18-28
+site/src/content/docs/guides/codex.md
+  s_7053ac3e7cfa4f::t_7ee954858996f8 20-30
+site/src/content/docs/ko/guides/xai.md
+  s_7053ac3e7cfa4f::t_f65355c2fcfde7 24-34
+site/src/content/docs/providers/vercel-ai-gateway.md
+  s_7053ac3e7cfa4f::t_1691732856c5d2 1-71
+site/src/content/docs/guides/providers.md
+  s_7053ac3e7cfa4f::t_a4347474224b62 56-61,63-64
+  s_7053ac3e7cfa4f::t_eca2deac7c5761 16-26
+  s_43c6ab44b5b6ce::t_c1949fae4561e1 82,86-96
+site/src/content/docs/providers/openai.md
+  s_7053ac3e7cfa4f::t_e6fa66a91f1071 1-103
+site/src/content/docs/providers/deepseek.md
+  s_7053ac3e7cfa4f::t_4c0556647bdaeb 1-86
+site/src/content/docs/providers/zai.md
+  s_7053ac3e7cfa4f::t_c5578a97050b73 1-86
+site/src/content/docs/guides/xai.md
+  s_7053ac3e7cfa4f::t_ec5cedf1cda8b5 26-37
+site/src/content/docs/providers/anthropic.md
+  s_7053ac3e7cfa4f::t_21cc1a55ca74ef 1-135
+site/src/content/docs/ja/guides/codex.md
+  s_7053ac3e7cfa4f::t_a3569183f0044f 15-24
+site/src/content/docs/providers/openrouter.md
+  s_7053ac3e7cfa4f::t_514882a3f39e91 1-70
+README.ko.md
+  s_7053ac3e7cfa4f::t_d1e668ae627f11 128
+README.zh-CN.md
+  s_7053ac3e7cfa4f::t_d1e668ae627f11 128
+site/src/content/docs/zh-cn/guides/providers.md
+  s_7053ac3e7cfa4f::t_890933191d11e7 16-26
+  s_7053ac3e7cfa4f::t_8125d4c0947c88 46-47,53-54
+  s_7053ac3e7cfa4f::t_13b54b66a3d56b 72,76-86
+  s_7053ac3e7cfa4f::t_086de734b4970e 48,50-51
+site/src/content/docs/providers/cursor.md
+  s_7053ac3e7cfa4f::t_3a57c76ad1c058 1-116
+site/src/content/docs/providers/minimax.md
+  s_7053ac3e7cfa4f::t_00f8e81f08e745 1-83
+site/src/content/docs/ko/guides/codex.md
+  s_7053ac3e7cfa4f::t_4def406292d176 14-23
+site/src/content/docs/ko/guides/providers.md
+  s_7053ac3e7cfa4f::t_f553d5dec022a7 43,45
+  s_7053ac3e7cfa4f::t_ef758b2103f8a7 65,69-77
+  s_7053ac3e7cfa4f::t_0b84ebd1652f7d 47
+  s_7053ac3e7cfa4f::t_6eb1216e1ec8fa 16-23
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "cca7c8b4b3b553135f17c940e782fcff615e9a7e",
+  "prompts": {},
+  "sessions": {
+    "s_43c6ab44b5b6ce": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b3d09de1-3272-41a8-b95d-be7aeec3b189",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_7053ac3e7cfa4f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4a7cbb72-09c5-4efc-aee6-c28c72e5d873",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
