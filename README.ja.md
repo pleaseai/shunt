@@ -125,7 +125,7 @@ model = "cursor:gpt-5.5"                             # cursor-plan:<id> / cursor
 provider = "cursor"
 ```
 
-`cursor:` / `cursor-agent:` / `cursor-plan:` / `cursor-ask:` プレフィックスが Cursor のエージェントモードを選択し、サフィックスが Cursor のモデル id です。詳細は [Providers → Cursor](https://shunt-docs.pages.dev/providers/cursor/) を参照してください。
+`cursor:` / `cursor-agent:` / `cursor-plan:` / `cursor-ask:` プレフィックスが Cursor のエージェントモードを選択し、サフィックスが Cursor のモデル id です。詳細は [Providers → Cursor](https://shunt-docs.pages.dev/ja/providers/cursor/) を参照してください。
 
 **あらゆる Anthropic 互換バックエンド**が、テーブルを 1 つ書くだけで使えます。コード変更は不要です。
 
