@@ -68,18 +68,21 @@ export default defineConfig({
           ],
         },
         {
-          label: 'Guides',
-          translations: { ko: '가이드', ja: 'ガイド', 'zh-CN': '指南' },
+          label: 'Providers',
+          translations: { ko: '프로바이더', ja: 'プロバイダー', 'zh-CN': '提供方' },
           items: [
             {
-              label: 'Configuration',
-              translations: { ko: '설정', ja: '設定', 'zh-CN': '配置' },
-              slug: 'guides/configuration',
+              label: 'Overview',
+              translations: { ko: '개요', ja: '概要', 'zh-CN': '概览' },
+              slug: 'guides/providers',
             },
             {
-              label: 'Providers',
-              translations: { ko: '프로바이더', ja: 'プロバイダー', 'zh-CN': '提供方' },
-              slug: 'guides/providers',
+              label: 'Anthropic',
+              slug: 'providers/anthropic',
+            },
+            {
+              label: 'OpenAI',
+              slug: 'providers/openai',
             },
             {
               label: 'ChatGPT / Codex',
@@ -90,6 +93,49 @@ export default defineConfig({
               label: 'xAI / Grok',
               translations: { ko: 'xAI / Grok', ja: 'xAI / Grok', 'zh-CN': 'xAI / Grok' },
               slug: 'guides/xai',
+            },
+            {
+              label: 'Cursor',
+              slug: 'providers/cursor',
+            },
+            {
+              label: 'Kimi (Moonshot)',
+              slug: 'providers/kimi',
+            },
+            {
+              label: 'DeepSeek',
+              slug: 'providers/deepseek',
+            },
+            {
+              label: 'Z.ai (GLM)',
+              slug: 'providers/zai',
+            },
+            {
+              label: 'MiniMax',
+              slug: 'providers/minimax',
+            },
+            {
+              label: 'Mimo (Xiaomi)',
+              slug: 'providers/mimo',
+            },
+            {
+              label: 'OpenRouter',
+              slug: 'providers/openrouter',
+            },
+            {
+              label: 'Vercel AI Gateway',
+              slug: 'providers/vercel-ai-gateway',
+            },
+          ],
+        },
+        {
+          label: 'Guides',
+          translations: { ko: '가이드', ja: 'ガイド', 'zh-CN': '指南' },
+          items: [
+            {
+              label: 'Configuration',
+              translations: { ko: '설정', ja: '設定', 'zh-CN': '配置' },
+              slug: 'guides/configuration',
             },
             {
               label: 'Anthropic Multi-Account',

@@ -23,6 +23,18 @@ An **API key** only works against **`xai`**. Route your Grok slugs to whichever 
 credential you have.
 :::
 
+## Quick start
+
+Let a coding agent wire it up for you — `shunt add` prints the setup blueprint for either path
+(offline and read-only; the agent edits the config, the command never does):
+
+```bash
+shunt add upstream grok --print | claude   # SuperGrok / X Premium+ subscription (OAuth)
+shunt add upstream xai --print | claude    # xAI developer API (XAI_API_KEY)
+```
+
+Or follow the manual steps below.
+
 ## How it works
 
 shunt translates Claude Code's Anthropic Messages request into the OpenAI **Responses API**, sends

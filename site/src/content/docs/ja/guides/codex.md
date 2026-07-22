@@ -12,6 +12,16 @@ description: ~/.codex/auth.json を再利用して Claude Code の推論を Chat
 Codex プールに同じ `account_id` を持つ 2 つの名前が含まれる場合、shunt はそれらを **1 つのアカウント**として扱います — ただし、その `account_id` が実際に解決されている場合に限ります。ストアで検出されたエイリアス（`accounts` リストが空の場合）はストアスキャン自体が解決するため、自動的に coalesce されます。`credentials` または `token_env` で明示的に設定されたエントリは selection の後、リクエストごとに id を解決します — そのアイデンティティは設定されていれば非空白の `uuid`、なければ `name` です。このアイデンティティが他のエイリアスの明示的な `uuid` または name-fallback アイデンティティと一致する場合に coalesce されるため、意図的に coalesce させたい場合は両方に一致する非空白の `uuid` を設定してください — shunt は明示的な `uuid` が別アカウントの name-fallback アイデンティティと偶然一致した場合にも警告します。coalesce されたエイリアスはクールダウン、ヘルス、リフレッシュロックを共有し、フェイルオーバーは重複したアイデンティティを再試行せずスキップします。`priority` が最も低い有効なエイリアス（次に最初のエントリ）が唯一試行されるトークンを提供し、shunt は重複アイデンティティの警告をログに出力します。ストアディスカバリーは `tokens.account_id` または JWT クレームを読み取り、ディレクトリの mtime でスキャンをキャッシュします。詳細は [Codex Multi-Account guide](/ja/guides/codex-multi-account/) を参照してください。
 :::
 
+## クイックスタート
+
+コーディングエージェントにセットアップを任せることもできます。`shunt add` はこのプロバイダーのセットアップ用ブループリントを出力します（オフラインかつ読み取り専用で、設定を編集するのはエージェントです。このコマンド自体は編集しません）。
+
+```bash
+shunt add upstream codex --print | claude
+```
+
+または、以下の手順に沿って手動で設定してください。
+
 ## 仕組み
 
 `codex` は組み込みの **`kind = "responses"`** プロバイダーです。shunt は Claude Code の Anthropic

@@ -22,6 +22,18 @@ description: 将 Claude Code 推理路由到 xAI 的 Grok —— 使用你的 Su
 **API 密钥** 只对 **`xai`** 有效。请将你的 Grok slug 路由到与你所持凭据相匹配的那个提供方。
 :::
 
+## 快速开始
+
+让编码 agent 为你完成接入 —— `shunt add` 会打印任一路径的设置蓝图
+(离线且只读;配置由 agent 编辑,该命令绝不会修改配置):
+
+```bash
+shunt add upstream grok --print | claude   # SuperGrok / X Premium+ 订阅(OAuth)
+shunt add upstream xai --print | claude    # xAI 开发者 API(XAI_API_KEY)
+```
+
+或者按照下面的手动步骤操作。
+
 ## 工作原理
 
 shunt 将 Claude Code 的 Anthropic Messages 请求转换为 OpenAI **Responses API**,发送

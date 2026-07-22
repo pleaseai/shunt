@@ -13,12 +13,14 @@ description: 내장 프로바이더와 TOML 테이블로 Anthropic 호환 백엔
 
 | 이름 | 종류 | 인증 | 백엔드 |
 | :-- | :-- | :-- | :-- |
-| `anthropic` | `anthropic` | `passthrough` | `api.anthropic.com` — 호출자 본인의 자격 증명을 전달 |
-| `openai` | `responses` | `api_key` (`OPENAI_API_KEY`) | `api.openai.com/v1` |
-| `codex` | `responses` | `chatgpt_oauth` | `chatgpt.com/backend-api` — `~/.codex/auth.json` 재사용 |
-| `xai` | `responses` | `api_key` (`XAI_API_KEY`) | `api.x.ai/v1` — xAI 개발자 API |
-| `grok` | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` — `shunt login xai`를 통한 SuperGrok / X Premium+ 구독 |
-| `cursor` | `cursor` | `cursor_oauth` | `api2.cursor.sh` — `~/.shunt/cursor-auth.json` 재사용 (`shunt login cursor`) |
+| [`anthropic`](/ko/providers/anthropic/) | `anthropic` | `passthrough` | `api.anthropic.com` — 호출자 본인의 자격 증명을 전달 |
+| [`openai`](/ko/providers/openai/) | `responses` | `api_key` (`OPENAI_API_KEY`) | `api.openai.com/v1` |
+| [`codex`](/ko/guides/codex/) | `responses` | `chatgpt_oauth` | `chatgpt.com/backend-api` — `~/.codex/auth.json` 재사용 |
+| [`xai`](/ko/guides/xai/) | `responses` | `api_key` (`XAI_API_KEY`) | `api.x.ai/v1` — xAI 개발자 API |
+| [`grok`](/ko/guides/xai/) | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` — `shunt login xai`를 통한 SuperGrok / X Premium+ 구독 |
+| [`cursor`](/ko/providers/cursor/) | `cursor` | `cursor_oauth` | `api2.cursor.sh` — `~/.shunt/cursor-auth.json` 재사용 (`shunt login cursor`) |
+
+각 이름은 전체 설정을 설명하는 해당 프로바이더의 전용 페이지로 연결됩니다. `shunt add upstream <name>`은 모든 내장 프로바이더의 단계별 블루프린트를 출력합니다. 이를 코딩 에이전트에 파이프로 전달하면(`shunt add upstream codex --print | claude`) 에이전트가 구성을 연결하도록 할 수 있습니다. [CLI 레퍼런스](/ko/reference/cli/#shunt-add)를 참고하세요.
 
 ### codex 프로바이더 (ChatGPT 구독)
 
@@ -38,39 +40,11 @@ ChatGPT 계정 Codex 백엔드는 `gpt-*-codex` 슬러그를 **거부**합니다
 
 ### cursor 프로바이더 (Cursor 구독)
 
-내장 `cursor` 프로바이더는 Cursor 자체의 ConnectRPC/protobuf AgentService를 통해 **Cursor** 구독에 도달합니다 — `kind = "cursor"` 네이티브 어댑터가 이를 Anthropic Messages로, 그리고 그 반대로 스트리밍을 포함하여 변환합니다. 로그인과 토큰 갱신은 `api2.cursor.sh`를 사용하고, 에이전트 턴은 Cursor의 현재 에이전트 호스트(`agentn.global.api5.cursor.sh`)에 HTTP/2로 실행됩니다. 한 번 로그인하세요:
+내장 `cursor` 프로바이더는 Cursor 자체의 ConnectRPC/protobuf AgentService를 통해 **Cursor** 구독에 도달합니다. `kind = "cursor"` 네이티브 어댑터가 이를 Anthropic Messages로, 그리고 그 반대로 변환하며 스트리밍, 추론, 네이티브 도구 호출, 인라인 이미지를 지원합니다.
 
-```bash
-shunt login cursor
-```
+`shunt login cursor`로 한 번 로그인한 뒤 `cursor:default`, `cursor-plan:default`, `cursor-ask:default` 같은 `cursor:*` 모델 id를 라우팅하세요. 프로바이더는 기본으로 시드되므로 구성 테이블은 필요하지 않습니다.
 
-이 명령은 Cursor OAuth 플로우를 실행하고 `~/.shunt/cursor-auth.json`을 기록하며, shunt가 이를 읽고 자동 갱신합니다. 파일이 없거나 만료되면, shunt는 `shunt login cursor`를 실행하라는 `authentication_error`를 반환합니다.
-
-`cursor:*` 모델 id를 이 프로바이더로 라우팅하세요 — 프로바이더는 기본으로 시드되므로 `[providers.cursor]` 테이블은 필요하지 않습니다:
-
-```toml
-[[routes]]
-model = "cursor:default"
-provider = "cursor"
-```
-
-:::note[어댑터가 전달하는 것]
-어댑터는 어시스턴트 **텍스트와 추론**을 스트리밍하고, 클라이언트의 **도구**를 네이티브 Cursor MCP 도구 호출로 브리지하며(모델이 호출한 도구는 `stop_reason: "tool_use"`를 가진 Anthropic `tool_use` 블록으로 나타납니다 — 클라이언트가 이를 실행하고 `tool_result`를 되돌려 보내면 shunt가 그 결과를 히스토리에 담아 턴을 다시 실행합니다), **인라인 이미지**(base64 소스, URL 이미지는 건너뜀)를 전달합니다. Cursor 자체의 에이전트형 파일/셸 도구는 노출되지 않으며, 요청이 광고한 도구만 사용됩니다.
-:::
-
-**모델 id와 에이전트 모드.** 프리픽스가 Cursor의 에이전트 모드(Agent / Plan / Ask)를 선택하고 접미사가 Cursor 모델 id입니다. `cursor-agent models`가 보여주는 표시 이름이 아니라 **와이어** id를 사용하세요: Auto는 `default`입니다(`cursor:auto`로 라우팅하면 `Unknown model ID: auto`로 실패합니다). 명명된 모델(예: `cursor:gpt-5.2`)은 이를 허용하는 유료 플랜이 필요하며, 무료 플랜은 `cursor:default`로 제한됩니다.
-
-| 형식 | 에이전트 모드 | 예시 |
-| :-- | :-- | :-- |
-| `cursor:<id>` / `cursor-agent:<id>` | Agent | `cursor:default` |
-| `cursor-plan:<id>` | Plan | `cursor-plan:default` |
-| `cursor-ask:<id>` | Ask | `cursor-ask:default` |
-
-레거시 축약 이름도 받아들입니다: `cursor`, `cursor-agent`, `cursor-composer`, `cursor-composer-fast`(Agent); `cursor-plan`, `composer-2.5`(Plan); `cursor-ask`, `composer-2.5-fast`(Ask). 그 외의 모델 id는 `invalid_request_error`로 거부됩니다.
-
-:::note[오버라이드]
-`SHUNT_CURSOR_BASE_URL`은 로그인/갱신 엔드포인트를, `SHUNT_CURSOR_AGENT_BASE_URL`은 에이전트 호스트(HTTPS `cursor.sh` 호스트여야 함)를, `SHUNT_CURSOR_AUTH_FILE`은 자격 증명 경로를, `SHUNT_CURSOR_CLIENT_VERSION`은 `x-cursor-client-version` 헤더를 오버라이드합니다(Cursor가 오래된 클라이언트 버전을 거부하기 시작하면 재빌드 없이 값을 올리세요). `cursor_oauth` 프로바이더는 HTTPS로 Cursor 호스트에 고정됩니다 — `base_url`을 오프-오리진으로 지정하는 것은 베어러 토큰이 유출되지 않도록 거부됩니다.
-:::
+전체 설정 — 로그인, 에이전트 모드, 와이어 모델 id, 어댑터 기능, 오버라이드 — 은 전용 [Cursor 프로바이더 페이지](/ko/providers/cursor/)를 참고하세요.
 
 :::caution[본인의 판단]
 비공식 클라이언트에서 Cursor 구독을 재사용하는 것은 본인의 판단입니다 — Cursor의 약관이나 계정 제재에 저촉될 수 있습니다. 사용에 따른 책임은 본인에게 있습니다.
@@ -88,17 +62,19 @@ OAuth를 통해 사용자의 **SuperGrok / X Premium+** 구독을 사용하고(`
 
 ## Anthropic 호환 백엔드 추가
 
-대부분의 서드파티 "Claude Code를 X와 함께 쓰기" 게이트웨이는 Anthropic-Messages 호환입니다: `kind = "anthropic"`에 `auth = "api_key"`이며, `base_url`과 키 env 변수만 다릅니다. 바로 사용할 수 있는 base:
+대부분의 서드파티 "Claude Code를 X와 함께 쓰기" 게이트웨이는 Anthropic-Messages 호환입니다: `kind = "anthropic"`에 `auth = "api_key"`이며, `base_url`과 키 env 변수만 다릅니다. 바로 사용할 수 있는 base(각 프로바이더는 전체 설정을 설명하는 전용 페이지로 연결됨):
 
 | 프로바이더 | `base_url` | 예시 모델 ID |
 | :-- | :-- | :-- |
-| Kimi (Moonshot) | `https://api.moonshot.ai/anthropic` | `kimi-k3[1m]`, `kimi-k2.7-code` |
-| DeepSeek | `https://api.deepseek.com/anthropic` | `deepseek-v4-pro`, `deepseek-v4-flash` |
-| Z.ai (GLM) | `https://api.z.ai/api/anthropic` | `glm-5.2`, `glm-4.7` |
-| MiniMax | `https://api.minimax.io/anthropic` | [MiniMax 문서](https://platform.minimax.io/docs/token-plan/claude-code) 참고 |
-| Mimo (Xiaomi) | `https://api.xiaomimimo.com/anthropic` | `mimo-v2.5-pro` — [Mimo 문서](https://mimo.mi.com/docs/en-US/tokenplan/integration/claudecode) 참고 |
-| OpenRouter | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8` |
-| Vercel AI Gateway | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8`(`x_api_key`를 받아들임) |
+| [Kimi (Moonshot)](/ko/providers/kimi/) | `https://api.moonshot.ai/anthropic` | `kimi-k3[1m]`, `kimi-k2.7-code` |
+| [DeepSeek](/ko/providers/deepseek/) | `https://api.deepseek.com/anthropic` | `deepseek-v4-pro`, `deepseek-v4-flash` |
+| [Z.ai (GLM)](/ko/providers/zai/) | `https://api.z.ai/api/anthropic` | `glm-5.2`, `glm-4.7` |
+| [MiniMax](/ko/providers/minimax/) | `https://api.minimax.io/anthropic` | [MiniMax 문서](https://platform.minimax.io/docs/token-plan/claude-code) 참고 |
+| [Mimo (Xiaomi)](/ko/providers/mimo/) | `https://api.xiaomimimo.com/anthropic` | `mimo-v2.5-pro` — [Mimo 문서](https://mimo.mi.com/docs/en-US/tokenplan/integration/claudecode) 참고 |
+| [OpenRouter](/ko/providers/openrouter/) | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8` |
+| [Vercel AI Gateway](/ko/providers/vercel-ai-gateway/) | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8`(`x_api_key`를 받아들임) |
+
+이 표에 없는 프로바이더의 경우 `shunt add upstream <docs-url>`은 프로바이더 자체 문서를 바탕으로 코딩 에이전트가 구성을 연결하도록 안내하는 리서치 블루프린트를 출력합니다(`shunt add upstream https://docs.example.com --print | claude`).
 
 예를 들어, Kimi의 모델을 shunt를 통해 라우팅하려면:
 
