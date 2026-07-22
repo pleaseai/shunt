@@ -55,31 +55,29 @@ pub fn write_starter(
     }
 
     let path = root.join("shunt.toml");
-    let mut options = OpenOptions::new();
-    options.write(true);
+    let body = render_starter(&presets);
     if force {
-        // `create_new` (below) refuses to follow a symlink, but `truncate` would
-        // follow `shunt.toml -> elsewhere` and overwrite the link target outside
-        // `root`. Reject a symlink so `--force` keeps the non-force path's safety.
-        if let Ok(metadata) = std::fs::symlink_metadata(&path) {
-            if metadata.file_type().is_symlink() {
-                bail!(
-                    "refusing to overwrite symlink {}; remove it or point --root elsewhere",
-                    path.display()
-                );
-            }
-        }
-        options.create(true).truncate(true);
+        // Atomically replace any existing config: render into a private sibling
+        // temp, then rename it over `shunt.toml`. Exclusive temp creation plus the
+        // rename never follow a symlink at the target — so `--force` cannot be
+        // raced into truncating a file outside `root` — and the previous config
+        // survives a failed write because the rename only swaps in a file that was
+        // written and flushed in full.
+        crate::atomic_file::write_private_atomic_in_existing_dir(&path, body.as_bytes())
+            .with_context(|| format!("failed to write {}", path.display()))?;
     } else {
-        options.create_new(true);
+        // `create_new` refuses to clobber or follow a symlink, so a file that
+        // appears after the existing-config guard cannot be overwritten.
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .with_context(|| format!("failed to create {}", path.display()))?;
+        file.write_all(body.as_bytes())
+            .with_context(|| format!("failed to write {}", path.display()))?;
+        file.flush()
+            .with_context(|| format!("failed to write {}", path.display()))?;
     }
-    let mut file = options
-        .open(&path)
-        .with_context(|| format!("failed to create {}", path.display()))?;
-    file.write_all(render_starter(&presets).as_bytes())
-        .with_context(|| format!("failed to write {}", path.display()))?;
-    file.flush()
-        .with_context(|| format!("failed to write {}", path.display()))?;
     Ok(path)
 }
 
@@ -180,12 +178,10 @@ fn render_starter(presets: &[ProviderPresetView]) -> String {
 
 fn credential_source(preset: ProviderPresetView) -> String {
     match preset.auth {
-        AuthMode::ApiKey => format!(
-            "requires ${} in the environment.",
-            preset
-                .api_key_env
-                .expect("API-key presets must declare api_key_env")
-        ),
+        AuthMode::ApiKey => match preset.api_key_env {
+            Some(env) => format!("requires ${env} in the environment."),
+            None => "requires an API key in the environment.".to_string(),
+        },
         AuthMode::ChatgptOauth => "`shunt login codex`.".to_string(),
         AuthMode::XaiOauth => "`shunt login xai`.".to_string(),
         AuthMode::CursorOauth => "`shunt login cursor`.".to_string(),
@@ -341,6 +337,10 @@ mod tests {
             "requires $OPENAI_API_KEY in the environment."
         );
         assert_eq!(
+            credential_source(view(AuthMode::ApiKey, None)),
+            "requires an API key in the environment."
+        );
+        assert_eq!(
             credential_source(view(AuthMode::ChatgptOauth, None)),
             "`shunt login codex`."
         );
@@ -364,7 +364,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn force_refuses_to_overwrite_a_symlink() {
+    fn force_replaces_a_symlink_without_touching_its_target() {
         use std::os::unix::fs::symlink;
 
         let dir = TempDir::new("force-symlink");
@@ -373,13 +373,16 @@ mod tests {
         let link = dir.0.join("shunt.toml");
         symlink(&victim, &link).unwrap();
 
-        let error = write_starter(Some(&dir.0), &[], true).unwrap_err();
-        assert!(error.to_string().contains("refusing to overwrite symlink"));
-        // The link target must survive untouched, and the link stays a link.
+        // The atomic replace never follows the link: it swaps the `shunt.toml`
+        // entry for a real file and leaves the link target untouched, closing the
+        // symlink-follow / TOCTOU hazard the old truncate path had.
+        let path = write_starter(Some(&dir.0), &[], true).unwrap();
+        assert_eq!(path, link);
         assert_eq!(std::fs::read_to_string(&victim).unwrap(), "victim contents");
-        assert!(std::fs::symlink_metadata(&link)
+        let meta = std::fs::symlink_metadata(&link).unwrap();
+        assert!(meta.file_type().is_file());
+        assert!(std::fs::read_to_string(&link)
             .unwrap()
-            .file_type()
-            .is_symlink());
+            .contains("shunt.toml"));
     }
 }
