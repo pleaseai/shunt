@@ -58,7 +58,7 @@ Do not continue until it prints exactly `config ok`.
 
 ## Verify live
 
-> These checks assume the gateway's defaults: it listens on `127.0.0.1:3001` with no `[server.auth]`, you reuse any explicit `--config` from the steps above, and the optional model-routing block was applied (the request below uses `claude-gpt-5-4-via-openai` from that block). If the deployment differs, adjust the URL, send the configured inbound client token, pass the same `--config`, or use a model id from discovery.
+> These checks assume the gateway's defaults: it listens on `127.0.0.1:3001` with no `[server.auth]`, you reuse any explicit `--config` from the steps above, and the optional model-routing block was applied (the request below uses `claude-gpt-5-4-via-openai` from that block). If the deployment differs, adjust the URL, send the configured inbound client token, pass the same `--config`, or use a model id explicitly routed to `openai`.
 
 Start `shunt run`, then inspect discovery:
 
