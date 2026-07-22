@@ -36,56 +36,43 @@ struct Blueprint {
     body: &'static str,
 }
 
+/// Declare an upstream [`Blueprint`] from its slug, aliases, and description.
+///
+/// The Markdown body is resolved from the slug (`blueprints/upstream/<slug>.md`),
+/// keeping each registry entry a single line so the table stays readable and the
+/// slug-to-file mapping cannot drift.
+macro_rules! upstream_blueprint {
+    ($slug:literal, $aliases:expr, $description:literal) => {
+        Blueprint {
+            kind: AddKind::Upstream,
+            slug: $slug,
+            aliases: $aliases,
+            description: $description,
+            body: include_str!(concat!("../blueprints/upstream/", $slug, ".md")),
+        }
+    };
+}
+
 const BLUEPRINTS: &[Blueprint] = &[
-    Blueprint {
-        kind: AddKind::Upstream,
-        slug: "anthropic",
-        aliases: &["claude"],
-        description: "Anthropic API — passthrough or pooled Claude OAuth accounts",
-        body: include_str!("../blueprints/upstream/anthropic.md"),
-    },
-    Blueprint {
-        kind: AddKind::Upstream,
-        slug: "codex",
-        aliases: &["chatgpt"],
-        description: "ChatGPT/Codex backend via chatgpt_oauth",
-        body: include_str!("../blueprints/upstream/codex.md"),
-    },
-    Blueprint {
-        kind: AddKind::Upstream,
-        slug: "openai",
-        aliases: &[],
-        description: "OpenAI Responses API via OPENAI_API_KEY",
-        body: include_str!("../blueprints/upstream/openai.md"),
-    },
-    Blueprint {
-        kind: AddKind::Upstream,
-        slug: "xai",
-        aliases: &[],
-        description: "xAI API via XAI_API_KEY",
-        body: include_str!("../blueprints/upstream/xai.md"),
-    },
-    Blueprint {
-        kind: AddKind::Upstream,
-        slug: "grok",
-        aliases: &[],
-        description: "SuperGrok subscription via xai_oauth login",
-        body: include_str!("../blueprints/upstream/grok.md"),
-    },
-    Blueprint {
-        kind: AddKind::Upstream,
-        slug: "kimi",
-        aliases: &["moonshot"],
-        description: "Moonshot Kimi (Anthropic-compatible) via MOONSHOT_API_KEY",
-        body: include_str!("../blueprints/upstream/kimi.md"),
-    },
-    Blueprint {
-        kind: AddKind::Upstream,
-        slug: "cursor",
-        aliases: &[],
-        description: "Cursor subscription via cursor_oauth login",
-        body: include_str!("../blueprints/upstream/cursor.md"),
-    },
+    upstream_blueprint!(
+        "anthropic",
+        &["claude"],
+        "Anthropic API — passthrough or pooled Claude OAuth accounts"
+    ),
+    upstream_blueprint!(
+        "codex",
+        &["chatgpt"],
+        "ChatGPT/Codex backend via chatgpt_oauth"
+    ),
+    upstream_blueprint!("openai", &[], "OpenAI Responses API via OPENAI_API_KEY"),
+    upstream_blueprint!("xai", &[], "xAI API via XAI_API_KEY"),
+    upstream_blueprint!("grok", &[], "SuperGrok subscription via xai_oauth login"),
+    upstream_blueprint!(
+        "kimi",
+        &["moonshot"],
+        "Moonshot Kimi (Anthropic-compatible) via MOONSHOT_API_KEY"
+    ),
+    upstream_blueprint!("cursor", &[], "Cursor subscription via cursor_oauth login"),
 ];
 
 const GENERIC_UPSTREAM: &str = include_str!("../blueprints/upstream/_generic.md");
