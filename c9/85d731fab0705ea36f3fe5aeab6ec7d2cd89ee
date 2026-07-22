@@ -1,0 +1,361 @@
+site/src/components/ui/toc/toc.client.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-328
+site/src/content/docs/guides/configuration.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-126
+site/src/components/ui/banner/index.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1
+site/src/content/docs/reference/cli.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-150
+site/src/components/Header.astro
+  s_ba5a2501c370a2::t_f079d0b687782e 9-14,20-21,24-29,31-45,47-51,69,96-127
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-8,15-19,22-23,30,46,52-68,70-95,128-146
+site/package.json
+  s_ba5a2501c370a2::t_85f5c0d2370b95 7,14,17,33
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 3,11-13,18-26,29-32
+site/src/content.config.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-5,8-17
+site/src/components/ui/search/providers/pagefind.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-80
+site/src/components/ui/sidebar/SidebarLink.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-37
+site/src/content/docs/ja/guides/connect-claude-code.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-163
+site/src/content/docs/ja/index.mdx
+  s_ba5a2501c370a2::t_946a4222d8c484 6,8-11,16,22,26
+site/src/pages/og/_og-card-config.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-39
+site/src/components/ui/collapsible/index.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-3
+site/src/components/ui/page-actions/index.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1
+site/src/components/ui/code/index.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1
+site/src/components/ui/layer-card/LayerCardContent.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-16
+site/src/components/ui/card/Card.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-21
+site/src/components/ui/card-grid/index.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1
+site/src/content/docs/ja/guides/connect-claude-desktop.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-128
+site/src/content/docs/getting-started/installation.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-62
+site/src/content/docs/ko/guides/admin-remote-provisioning.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-108
+site/src/content/docs/guides/effort-and-context.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-101
+site/src/content/docs/ja/getting-started/installation.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-62
+site/src/content/docs/zh-cn/guides/codex.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-423
+site/src/components/ui/sidebar/sidebar.client.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-209
+AGENTS.md
+  s_ba5a2501c370a2::t_1065edf843ec3b 31
+site/src/components/ui/tabs/index.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-5
+site/src/content/docs/ko/index.mdx
+  s_ba5a2501c370a2::t_e5394cbc473384 6,8-11,16,22,26
+site/src/components/AgentDirective.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-16
+site/src/content/docs/zh-cn/guides/anthropic-multi-account.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-231
+site/src/content/docs/ko/guides/providers.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-132
+site/src/components/ui/package-managers/PackageManagers.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-123
+site/src/components/ui/layer-card/index.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-3
+site/src/pages/[...slug]/index.mdx.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-69
+site/src/content/docs/guides/shared-gateway.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-62
+site/src/components/ui/page-actions/page-actions.client.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-54
+site/src/content/docs/ko/guides/connect-claude-desktop.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-128
+site/src/components/ui/card-grid/CardGrid.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-15
+site/src/components/ui/badge/index.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1
+site/src/content/docs/guides/providers.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-151
+site/src/components/ui/sidebar/SidebarFilter.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-20
+site/src/layouts/DocsLayout.astro
+  s_ba5a2501c370a2::t_43dd811a70e56c 19
+  s_ba5a2501c370a2::t_61cf855ab94bda 78,80
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-18,20-21,23,25-77,79,81-334
+  s_ba5a2501c370a2::t_82e14da887af1b 22,24
+site/src/content/docs/ja/getting-started/comparison.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-125
+site/src/pages/llms.txt.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-50
+site/src/pages/robots.txt.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-17
+site/src/content/docs/ko/getting-started/comparison.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-125
+site/src/components/ui/sidebar/Sidebar.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-64
+site/src/content/docs/zh-cn/getting-started/comparison.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-125
+site/src/components/ui/breadcrumbs/Breadcrumbs.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-84
+site/src/content/docs/zh-cn/guides/shared-gateway.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-62
+site/src/components/ui/tabs/TabsContent.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-24
+site/src/components/ui/dialog/DialogContent.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-21
+site/src/components/ui/tabs/TabsList.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-26
+site/src/content/docs/ko/guides/connect-claude-code.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-163
+site/src/components/ui/aside/Aside.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-75
+site/src/components/ui/steps/Steps.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-115
+site/src/content/docs/guides/codex.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-435
+site/src/content/docs/guides/codex-multi-account.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-179
+site/src/components/ui/collapsible/CollapsibleTrigger.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-21
+site/src/content/docs/guides/opentelemetry.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-96
+site/src/content/docs/ko/reference/cli.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-150
+site/src/content/docs/zh-cn/guides/effort-and-context.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-99
+site/src/components/Render.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-106
+site/src/components/ui/theme-toggle/index.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1
+site/src/components/ui/dialog/Dialog.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-54
+site/src/pages/[...slug]/index.md.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-78
+site/src/content/docs/index.mdx
+  s_ba5a2501c370a2::t_ca3e4629582952 6,8-11,16,22,26
+site/src/content/docs/ko/getting-started/installation.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-62
+site/src/content/docs/zh-cn/guides/connect-claude-code.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-163
+site/src/content/docs/ko/guides/anthropic-multi-account.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-231
+site/src/components/ui/tabs/tabs.client.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-72
+site/src/pages/404.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-8,10-29
+  s_ba5a2501c370a2::t_4602c13d1dae43 9
+site/src/components.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-25
+site/.gitignore
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-3,5-22
+  s_ba5a2501c370a2::t_d4073b302ada80 4
+site/src/components/ui/tabs/Tabs.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-36
+site/src/content/docs/zh-cn/reference/cli.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-150
+site/src/pages/llms-full.txt.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-12
+site/src/components/ui/breadcrumbs/index.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1
+site/src/content/docs/ja/guides/effort-and-context.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-99
+site/src/content/docs/providers/cursor.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-136
+site/src/content/docs/ja/guides/admin-remote-provisioning.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-108
+site/src/components/ui/card/index.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1
+site/astro.config.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-5,7-8,12,20-43
+  s_ba5a2501c370a2::t_daff42a75c04cb 6,9-11,13-19
+.github/workflows/deploy-docs.yml
+  s_ba5a2501c370a2::t_c8a289c7a9bf28 1
+site/src/pages/og/[...slug].ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-3,5,10-28
+  s_ba5a2501c370a2::t_888c99cac54d1d 4,6-9
+site/src/components/ui/steps/Step.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-26
+site/src/lib/cn.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-7
+site/src/components/ui/banner/banner.client.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-49
+site/src/content/docs/ja/guides/providers.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-129
+site/src/content/docs/ja/guides/xai.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-236
+site/src/content/docs/ko/guides/codex.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-367
+site/src/components/ui/sidebar/SidebarGroup.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-192
+site/src/content/docs/zh-cn/getting-started/installation.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-62
+site/src/components/ui/collapsible/collapsible.client.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-22
+site/src/pages/[section]/llms.txt.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-64
+site/src/components/ui/badge/Badge.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-43
+site/src/components/ui/toc/index.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1
+site/src/content/docs/zh-cn/guides/connect-claude-desktop.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-128
+site/src/components/ui/theme-toggle/ThemeToggle.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-32
+site/src/components/ui/search/SearchDialog.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-118
+site/src/content/docs/guides/xai.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-278
+site/src/components/ui/search/search.client.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-201
+site/src/content/docs/ko/guides/opentelemetry.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-96
+site/src/components/ui/toc/TOC.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-95
+site/src/content/docs/ko/guides/effort-and-context.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-99
+site/src/content/docs/ja/reference/cli.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-150
+site/src/content/docs/zh-cn/guides/providers.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-141
+site/src/components/ui/button/variants.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-82
+site/src/components/ui/sidebar/index.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-4
+site/src/content/docs/guides/connect-claude-desktop.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-128
+site/src/components/ui/package-managers/index.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1
+site/src/content/docs/guides/gateway-login.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-174
+site/src/content/docs/zh-cn/guides/opentelemetry.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-96
+site/src/pages/[...slug].astro
+  s_ba5a2501c370a2::t_5f02722ace73a4 2,6,9,14-22,24-29,37-55,57-64,66-67,69-71,84,89-94,99,103-114,125,127,136-138
+  s_ba5a2501c370a2::t_d199c3d23a8d07 31,36
+  s_ba5a2501c370a2::t_e68a4ceb74481a 32-35
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1,3-5,7-8,10-13,23,30,65,68,72-83,85-88,95-98,102,115-124,126,128-135,139-141
+  s_ba5a2501c370a2::t_49dcad20f31eb0 56
+  s_ba5a2501c370a2::t_bf88b39fa72838 100-101
+site/src/styles/prose.css
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-307
+site/src/components/ui/button/index.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-13
+site/src/content/docs/ja/guides/codex.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-387
+site/src/components/ui/code/Code.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-36
+site/src/content/docs/zh-cn/index.mdx
+  s_ba5a2501c370a2::t_9eee24b43c9594 6,8-11,16,22,26
+site/README.md
+  s_ba5a2501c370a2::t_87495a201a8278 3-5,9-12,15-24,26,28,30,32
+site/src/content/docs/guides/connect-codex-cli.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-289
+site/src/components/ui/tabs/TabsTrigger.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-31
+site/src/components/ui/button/Button.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-69
+site/src/components/ui/dialog/DialogClose.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-36
+site/src/components/ui/steps/index.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-2
+site/src/components/ui/pagination/Pagination.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-36
+site/tsconfig.json
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-11
+site/src/content/docs/providers/mimo.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-103
+site/src/content/docs/providers/openai.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-117
+site/src/content/docs/ja/guides/anthropic-multi-account.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-231
+site/src/content/docs/providers/anthropic.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-141
+site/src/content/docs/getting-started/comparison.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-125
+site/src/components/ui/package-managers/package-managers.client.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-55
+site/src/components/ui/dialog/index.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-3
+site/src/components/ui/collapsible/Collapsible.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-25
+site/src/components/ui/tabs/TabItem.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-30
+site/src/content/docs/guides/anthropic-multi-account.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-233
+site/src/components/ui/search/SearchTrigger.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-42
+site/src/content/docs/guides/connect-claude-code.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-208
+site/src/layouts/BaseLayout.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-12,14-24,26-118
+  s_ba5a2501c370a2::t_01114c5a7b4266 13
+  s_ba5a2501c370a2::t_eabff6b83fc706 25
+site/src/content/docs/guides/admin-remote-provisioning.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-143
+site/src/components/ui/search/index.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-2
+site/src/content/docs/zh-cn/guides/admin-remote-provisioning.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-108
+site/src/components/ui/link-button/LinkButton.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-76
+site/src/components/ui/layer-card/LayerCard.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-23
+site/src/content/docs/ja/guides/opentelemetry.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-96
+site/src/components/ui/pagination/index.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1
+site/src/components/ui/link-button/index.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1
+site/src/components/ui/theme-toggle/theme-toggle.client.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-31
+site/src/content/docs/ko/guides/shared-gateway.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-62
+site/src/lib/i18n.ts
+  s_ba5a2501c370a2::t_24c776c1d5a4c6 1-141
+site/src/content/docs/ja/guides/shared-gateway.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-62
+site/src/components/ui/steps/steps.client.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-20
+site/src/components/ui/collapsible/CollapsibleContent.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-27
+site/src/content/partials/example.mdx
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-4
+site/src/pages/og.png.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-17
+site/src/content/docs/ko/guides/xai.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-275
+site/src/components/ui/page-actions/PageActions.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-65
+site/src/content/docs/zh-cn/guides/xai.mdx
+  s_ba5a2501c370a2::t_f2afed425105e2 1-277
+site/src/components/ui/layer-card/LayerCardHeader.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-16
+site/src/components/ui/banner/Banner.astro
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-82
+site/src/components/ui/aside/index.ts
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1
+site/src/styles/globals.css
+  s_ba5a2501c370a2::t_3b4c239d47f5cc 1-491
+site/package-lock.json
+  s_ba5a2501c370a2::t_19149c172d7db0 3,9-20,23-27,30-52,55-80,82-84,90-98,102-104,118-120,134-136,150-152,166-168,182-184,198-200,214-216,230-232,246-248,251,273-314,341-343,349,354-356,425-434,637-639,642,647-649,652-653,655-689,692-715,718-721,723-726,728-732,734-746,749-769,1217-1238,1241-1267,1270-1273,1276-1280,1283-1292,1295-1311,1314-1323,1326-1333,1837-1880,1887-1897,1975,1989,2003,2017,2031,2045,2059,2363-2366,2368-2377,2379-2382,2384-2391,2393-2396,2398-2404,2406-2409,2411-2416,2418-2421,2423-2430,2432-2435,2437-2442,2444-2447,2449-2455,2457-2460,2462-2468,2470-2480,2482-2490,2492-2519,2521,2523,2527,2529-2531,2533-2536,2538,2540,2544,2546-2548,2550-2553,2555,2557,2561,2563-2565,2567-2570,2572,2574,2578,2580-2582,2584-2587,2589,2591,2597-2599,2601-2604,2606,2608,2614-2616,2618-2621,2623,2625,2631-2633,2635-2638,2642,2648-2650,2652-2655,2659,2665-2667,2669-2679,2682,2684,2687-2697,2699-2702,2706,2712-2714,2716-2719,2723,2730,2733-2737,2740-2742,2744-2745,2822-2824,2827,2845-2854,2856-2858,2861-2873,2876-2881,2884-2944,2947-2980,3002-3043,3056-3081,3148-3150,3153,3155,3167,3184,3231-3245,3248-3250,3253-3281,3303-3307,3315-3318,3321-3330,3383-3424,3426-3429,3432,3435,3441-3449,3465-3479,3499-3518,3547-3552,3554-3556,3559,3715-3726,3728-3730,3831-3890,3892-3894,3897,3904-3906,3982-3991,4101-4105,4113-4139,4155-4171,4181-4189,4243-4268,4270-4273,4297-4301,4303-4306,4309-4315,4581-4591,4593-4607,4609,4618-4621,4623-4624,4626-4627,4694-4698,4701,4726-4735,4758-4764,4771-4775,4778,4781-4786,5036-5052,6139-6151,6154,6157,6160-6192,6195,6213-6219,6221-6223,6239-6241,6294-6296,6323-6331,6350-6352,6365-6367,6393-6395,6402,6472-6527,6552-6562,6564-6566,6583,6591-6595,6597-6598,6601,6603-6604,6635-6670,6678-6681,6684,6782-6785,6789-6790,6797-6800,6803-6809,6812-6815,6819-6820,6827-6830,6833-6838,6845-6848,6851-6855,6862-6865,6868-6873,6880-6883,6886-6891,6898-6901,6905-6910,6917-6920,6923-6927,6934-6937,6941-6945,6952,6954-6955,6959-6981,7065-7091,7195-7199,7339-7353,7394-7398,7400-7404,7407-7409,7412,7429-7441,7461-7463,7485-7531,7599-7629,7648-7656,7658-7660,7682-7697,7941-7944,7946-7948,7950-7962,7965-7966,8012-8014,8019-8020,8088-8111,8114-8116,8118-8119,8121-8137,8140-8145,8148-8152,8155-8157,8159-8160,8162-8175,8177-8187,8190-8194,8196-8202,8204-8210,8213-8217,8220,8222-8228,8231-8235,8237-8240,8242,8245,8250-8389,8400-8445,8452-8551,8561-8580
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "c985d731fab0705ea36f3fe5aeab6ec7d2cd89ee",
+  "prompts": {},
+  "sessions": {
+    "s_ba5a2501c370a2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c0e42548-8049-481c-bcb3-4a9bd6e720b4",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
