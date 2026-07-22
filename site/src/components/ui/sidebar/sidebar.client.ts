@@ -162,10 +162,13 @@ function initPersistence(root: HTMLElement): (() => void) | null {
   document.addEventListener("visibilitychange", handleVisibility);
   window.addEventListener("pagehide", save);
 
-  let raf = 0;
+  // Debounce the write so scrolling stays jank-free: persist only after motion
+  // settles rather than on every frame. pagehide/visibilitychange above still
+  // capture the final state if the page is left mid-scroll.
+  let scrollTimeout: number | undefined;
   function handleScroll() {
-    cancelAnimationFrame(raf);
-    raf = requestAnimationFrame(save);
+    if (scrollTimeout) window.clearTimeout(scrollTimeout);
+    scrollTimeout = window.setTimeout(save, 150);
   }
   scrollHost.addEventListener("scroll", handleScroll);
 
@@ -174,7 +177,7 @@ function initPersistence(root: HTMLElement): (() => void) | null {
     document.removeEventListener("visibilitychange", handleVisibility);
     window.removeEventListener("pagehide", save);
     scrollHost.removeEventListener("scroll", handleScroll);
-    cancelAnimationFrame(raf);
+    if (scrollTimeout) window.clearTimeout(scrollTimeout);
   };
 }
 

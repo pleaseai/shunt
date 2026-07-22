@@ -11,11 +11,13 @@ interface Props extends HTMLAttributes<"nav"> {
 
 const { items, maxVisible = 4, class: className, ...attrs } = Astro.props;
 
-// Determine if we need to collapse the middle
-const shouldCollapse = items.length > maxVisible;
 // When collapsed: Home + first segment + ... + last 2 (parent + current)
 const headCount = 2; // Home + first segment
 const tailCount = 2; // parent + current page
+// Only collapse when there are more items than the head+tail slots can show;
+// otherwise the head and tail slices overlap and duplicate a segment
+// (reproducible with maxVisible < headCount + tailCount).
+const shouldCollapse = items.length > maxVisible && items.length > headCount + tailCount;
 const headItems = shouldCollapse ? items.slice(0, headCount) : items;
 const collapsedItems = shouldCollapse ? items.slice(headCount, items.length - tailCount) : [];
 const tailItems = shouldCollapse ? items.slice(items.length - tailCount) : [];
