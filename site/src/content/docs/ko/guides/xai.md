@@ -21,6 +21,17 @@ description: Claude Code 추론을 xAI의 Grok으로 라우팅하기 — SuperGr
 **API 키**는 오직 **`xai`**에서만 동작합니다. 보유한 자격 증명에 맞는 프로바이더로 Grok 슬러그를 라우팅하세요.
 :::
 
+## 빠른 시작
+
+코딩 에이전트가 대신 구성하도록 하세요. `shunt add`는 두 경로 중 어느 쪽이든 설정 블루프린트를 출력합니다(오프라인·읽기 전용이며, 구성은 에이전트가 편집하고 이 명령은 절대 편집하지 않습니다):
+
+```bash
+shunt add upstream grok --print | claude   # SuperGrok / X Premium+ 구독(OAuth)
+shunt add upstream xai --print | claude    # xAI 개발자 API(XAI_API_KEY)
+```
+
+또는 아래의 수동 단계를 따르세요.
+
 ## 동작 방식
 
 shunt는 Claude Code의 Anthropic Messages 요청을 OpenAI **Responses API**로 변환하여 xAI로 보내고,

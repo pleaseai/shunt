@@ -13,12 +13,17 @@ Providers are a **name → config map**: a new upstream is just another `[provid
 
 | Name | Kind | Auth | Backend |
 | :-- | :-- | :-- | :-- |
-| `anthropic` | `anthropic` | `passthrough` | `api.anthropic.com` — forwards the caller's own credential |
-| `openai` | `responses` | `api_key` (`OPENAI_API_KEY`) | `api.openai.com/v1` |
-| `codex` | `responses` | `chatgpt_oauth` | `chatgpt.com/backend-api` — reuses `~/.codex/auth.json` |
-| `xai` | `responses` | `api_key` (`XAI_API_KEY`) | `api.x.ai/v1` — the developer API, billed per token |
-| `grok` | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` — the Grok CLI proxy; reuses `~/.shunt/xai-auth.json` |
-| `cursor` | `cursor` | `cursor_oauth` | `api2.cursor.sh` — reuses `~/.shunt/cursor-auth.json` (`shunt login cursor`) |
+| [`anthropic`](/providers/anthropic/) | `anthropic` | `passthrough` | `api.anthropic.com` — forwards the caller's own credential |
+| [`openai`](/providers/openai/) | `responses` | `api_key` (`OPENAI_API_KEY`) | `api.openai.com/v1` |
+| [`codex`](/guides/codex/) | `responses` | `chatgpt_oauth` | `chatgpt.com/backend-api` — reuses `~/.codex/auth.json` |
+| [`xai`](/guides/xai/) | `responses` | `api_key` (`XAI_API_KEY`) | `api.x.ai/v1` — the developer API, billed per token |
+| [`grok`](/guides/xai/) | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` — the Grok CLI proxy; reuses `~/.shunt/xai-auth.json` |
+| [`cursor`](/providers/cursor/) | `cursor` | `cursor_oauth` | `api2.cursor.sh` — reuses `~/.shunt/cursor-auth.json` (`shunt login cursor`) |
+
+Each name links to that provider's dedicated page with the full setup. `shunt add upstream <name>`
+prints a step-by-step blueprint for any built-in provider — pipe it into a coding agent
+(`shunt add upstream codex --print | claude`) to have the agent wire the config for you. See the
+[CLI reference](/reference/cli/#shunt-add).
 
 ### The codex provider (ChatGPT subscription)
 
@@ -48,39 +53,15 @@ The ChatGPT-account Codex backend **rejects** `gpt-*-codex` slugs — it only ac
 
 ### The cursor provider (Cursor subscription)
 
-The built-in `cursor` provider reaches your **Cursor** subscription through Cursor's own ConnectRPC/protobuf AgentService — the `kind = "cursor"` native adapter translates it to and from Anthropic Messages, streaming included. Login and token refresh use `api2.cursor.sh`; agent turns run over HTTP/2 against Cursor's current agent host (`agentn.global.api5.cursor.sh`). Log in once:
+The built-in `cursor` provider reaches your **Cursor** subscription through Cursor's own
+ConnectRPC/protobuf AgentService — the `kind = "cursor"` native adapter translates it to and from
+Anthropic Messages, streaming, reasoning, native tool calls, and inline images included. Log in
+once with `shunt login cursor`, then route a `cursor:*` model id (`cursor:default`,
+`cursor-plan:default`, `cursor-ask:default`, …) — the provider is seeded by default, so no config
+table is required.
 
-```bash
-shunt login cursor
-```
-
-This runs the Cursor OAuth flow and writes `~/.shunt/cursor-auth.json`, which shunt reads and auto-refreshes. If the file is missing or expired, shunt returns an `authentication_error` telling you to run `shunt login cursor`.
-
-Route a `cursor:*` model id to it — the provider is seeded by default, so no `[providers.cursor]` table is required:
-
-```toml
-[[routes]]
-model = "cursor:default"
-provider = "cursor"
-```
-
-:::note[What the adapter carries]
-The adapter streams assistant **text and reasoning**, bridges your client's **tools** as native Cursor MCP tool calls (a tool the model invokes surfaces as an Anthropic `tool_use` block with `stop_reason: "tool_use"`; you run it and send the `tool_result` back, and shunt re-runs the turn with that result in history), and forwards **inline images** (base64 sources; URL images are skipped). Cursor's own agentic file/shell tools are not exposed — only the tools your request advertises.
-:::
-
-**Model ids and agent modes.** The prefix selects Cursor's agent mode (Agent / Plan / Ask) and the suffix is the Cursor model id. Use the **wire** id, not the display name from `cursor-agent models`: Auto is `default` (routing `cursor:auto` fails with `Unknown model ID: auto`). Named models (e.g. `cursor:gpt-5.2`) require a paid plan that entitles them; free plans are limited to `cursor:default`.
-
-| Form | Agent mode | Example |
-| :-- | :-- | :-- |
-| `cursor:<id>` / `cursor-agent:<id>` | Agent | `cursor:default` |
-| `cursor-plan:<id>` | Plan | `cursor-plan:default` |
-| `cursor-ask:<id>` | Ask | `cursor-ask:default` |
-
-Legacy bare names are also accepted: `cursor`, `cursor-agent`, `cursor-composer`, `cursor-composer-fast` (Agent); `cursor-plan`, `composer-2.5` (Plan); `cursor-ask`, `composer-2.5-fast` (Ask). Any other model id is rejected with an `invalid_request_error`.
-
-:::note[Overrides]
-`SHUNT_CURSOR_BASE_URL` overrides the login/refresh endpoint, `SHUNT_CURSOR_AGENT_BASE_URL` the agent host (must stay an HTTPS `cursor.sh` host), `SHUNT_CURSOR_AUTH_FILE` the credential path, and `SHUNT_CURSOR_CLIENT_VERSION` the `x-cursor-client-version` header (bump it without a rebuild if Cursor starts rejecting a stale client version). A `cursor_oauth` provider is pinned to a Cursor host over HTTPS — pointing `base_url` off-origin is refused so the bearer token cannot leak.
-:::
+For the full setup — login, agent modes, wire model ids, adapter capabilities, and overrides —
+see the dedicated [Cursor provider page](/providers/cursor/).
 
 :::caution[Your own call]
 Reusing a Cursor subscription from an unofficial client is your own call — it may run afoul of Cursor's terms or account enforcement. Use at your own risk.
@@ -98,17 +79,21 @@ entitlement gotchas — see the dedicated [xAI / Grok guide](/guides/xai/).
 
 ## Adding an Anthropic-compatible backend
 
-Most third-party "use Claude Code with X" gateways are Anthropic-Messages-compatible: `kind = "anthropic"` with `auth = "api_key"`, differing only in `base_url` and the key env var. Ready-to-use bases:
+Most third-party "use Claude Code with X" gateways are Anthropic-Messages-compatible: `kind = "anthropic"` with `auth = "api_key"`, differing only in `base_url` and the key env var. Ready-to-use bases (each provider links to a dedicated page with the full setup):
 
 | Provider | `base_url` | Example model IDs |
 | :-- | :-- | :-- |
-| Kimi (Moonshot) | `https://api.moonshot.ai/anthropic` | `kimi-k3[1m]`, `kimi-k2.7-code` |
-| DeepSeek | `https://api.deepseek.com/anthropic` | `deepseek-v4-pro`, `deepseek-v4-flash` |
-| Z.ai (GLM) | `https://api.z.ai/api/anthropic` | `glm-5.2`, `glm-4.7` |
-| MiniMax | `https://api.minimax.io/anthropic` | see [MiniMax docs](https://platform.minimax.io/docs/token-plan/claude-code) |
-| Mimo (Xiaomi) | `https://api.xiaomimimo.com/anthropic` | `mimo-v2.5-pro` — see [Mimo docs](https://mimo.mi.com/docs/en-US/tokenplan/integration/claudecode) |
-| OpenRouter | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8` |
-| Vercel AI Gateway | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8` (accepts `x_api_key`) |
+| [Kimi (Moonshot)](/providers/kimi/) | `https://api.moonshot.ai/anthropic` | `kimi-k3[1m]`, `kimi-k2.7-code` |
+| [DeepSeek](/providers/deepseek/) | `https://api.deepseek.com/anthropic` | `deepseek-v4-pro`, `deepseek-v4-flash` |
+| [Z.ai (GLM)](/providers/zai/) | `https://api.z.ai/api/anthropic` | `glm-5.2`, `glm-4.7` |
+| [MiniMax](/providers/minimax/) | `https://api.minimax.io/anthropic` | see [MiniMax docs](https://platform.minimax.io/docs/token-plan/claude-code) |
+| [Mimo (Xiaomi)](/providers/mimo/) | `https://api.xiaomimimo.com/anthropic` | `mimo-v2.5-pro` — see [Mimo docs](https://mimo.mi.com/docs/en-US/tokenplan/integration/claudecode) |
+| [OpenRouter](/providers/openrouter/) | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8` |
+| [Vercel AI Gateway](/providers/vercel-ai-gateway/) | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8` (accepts `x_api_key`) |
+
+For a provider not in this table, `shunt add upstream <docs-url>` prints a research blueprint
+that walks a coding agent through wiring it up from the provider's own documentation
+(`shunt add upstream https://docs.example.com --print | claude`).
 
 For example, to route Kimi's model through shunt:
 

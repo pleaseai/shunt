@@ -125,7 +125,7 @@ model = "cursor:gpt-5.5"                             # cursor-plan:<id> / cursor
 provider = "cursor"
 ```
 
-`cursor:` / `cursor-agent:` / `cursor-plan:` / `cursor-ask:` 前缀用于选择 Cursor 的 agent 模式;后缀是 Cursor 模型 id。详情见 [提供方 → Cursor](https://shunt-docs.pages.dev/guides/providers/#the-cursor-provider-cursor-subscription)。
+`cursor:` / `cursor-agent:` / `cursor-plan:` / `cursor-ask:` 前缀用于选择 Cursor 的 agent 模式;后缀是 Cursor 模型 id。详情见 [提供方 → Cursor](https://shunt-docs.pages.dev/providers/cursor/)。
 
 **任何兼容 Anthropic 的后端**只需一个表即可接入 —— 无需改动代码:
 
