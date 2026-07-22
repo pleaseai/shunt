@@ -33,11 +33,18 @@ The `openai` preset supplies `kind = "responses"`, `base_url = "https://api.open
 
 ```toml
 [[upstreams]]
+name = "anthropic"
+provider = "anthropic"   # keep Anthropic as the default for unrouted models (e.g. claude-*)
+
+[[upstreams]]
 name = "openai"
 provider = "openai"
 # effort = "high"          # optional default reasoning effort
 # count_tokens = "tiktoken" # default; "estimate" opts out of local counting
 ```
+
+Ordered `[[upstreams]]` replace shunt's built-in providers, so the config must declare the
+`anthropic` default it still falls back to (`server.default_provider` defaults to `anthropic`).
 
 Explicit fields override preset defaults. The legacy `[providers.openai]` table form remains
 supported — but do not mix `[[upstreams]]` and `[providers.*]` in one file.
@@ -50,7 +57,8 @@ Export the key in the environment that launches shunt — never write it into th
 export OPENAI_API_KEY='...'
 ```
 
-`shunt check` fails with a clear error if the variable is missing.
+`shunt check` validates the config's structure but does not read the key's value — if
+`OPENAI_API_KEY` is unset, the first request routed to `openai` returns an authentication error.
 
 ## Models & routing
 

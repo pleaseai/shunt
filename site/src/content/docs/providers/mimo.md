@@ -23,6 +23,10 @@ Or follow the manual steps below.
 
 ```toml
 [[upstreams]]
+name = "anthropic"
+provider = "anthropic"   # keep Anthropic as the default for unrouted models (e.g. claude-*)
+
+[[upstreams]]
 name = "mimo"
 kind = "anthropic"
 base_url = "https://api.xiaomimimo.com/anthropic"
@@ -32,6 +36,9 @@ auth = { mode = "api_key", env = "MIMO_API_KEY" }
 model = "mimo-v2.5-pro"
 provider = "mimo"
 ```
+
+Ordered `[[upstreams]]` replace shunt's built-in providers, so the config must declare the
+`anthropic` default it still falls back to (`server.default_provider` defaults to `anthropic`).
 
 :::note[base_url depends on your plan]
 `https://api.xiaomimimo.com/anthropic` is the pay-as-you-go host. On a **Token Plan**, use
@@ -49,15 +56,16 @@ The legacy `[providers.mimo]` table form remains supported — but do not mix `[
 export MIMO_API_KEY='...'
 ```
 
-Never write the key into the config. `shunt check` fails with a clear error if the variable is
-missing.
+Never write the key into the config. `shunt check` validates the config's structure but does not
+read the key's value — if `MIMO_API_KEY` is unset, the first request routed to `mimo` returns an
+authentication error.
 
 ## Models
 
 | Model id | Notes |
 | :-- | :-- |
 | `mimo-v2.5-pro` | standard context |
-| `mimo-v2.5-pro[1m]` | 1M-context variant — route this literal slug too if you want extended context |
+| `mimo-v2.5-pro[1m]` | 1M-context form of the same model; shunt strips `[1m]` before matching, so the `mimo-v2.5-pro` route above already serves it — no separate route needed |
 
 Select a routed id in Claude Code via `ANTHROPIC_MODEL`, `ANTHROPIC_CUSTOM_MODEL_OPTION`, or a
 subagent's `model:` frontmatter. To surface an entry in the `/model` picker instead, advertise a

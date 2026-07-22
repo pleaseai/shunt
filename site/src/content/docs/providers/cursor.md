@@ -38,9 +38,17 @@ native adapter, `base_url = "https://api2.cursor.sh"`, and `auth = "cursor_oauth
 
 ```toml
 [[upstreams]]
+name = "anthropic"
+provider = "anthropic"   # keep Anthropic as the default for unrouted models (e.g. claude-*)
+
+[[upstreams]]
 name = "cursor"
 provider = "cursor"
 ```
+
+Ordered `[[upstreams]]` replace shunt's built-in providers (including the seeded `cursor`), so an
+explicit config must also declare the `anthropic` default it still falls back to
+(`server.default_provider` defaults to `anthropic`).
 
 The legacy `[providers.cursor]` table form remains supported — but do not mix `[[upstreams]]`
 and `[providers.*]` in one file.

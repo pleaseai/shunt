@@ -25,17 +25,26 @@ and API-key auth from `MOONSHOT_API_KEY`:
 
 ```toml
 [[upstreams]]
+name = "anthropic"
+provider = "anthropic"   # keep Anthropic as the default for unrouted models (e.g. claude-*)
+
+[[upstreams]]
 name = "kimi"
 provider = "kimi"
 
 [[routes]]
-model = "kimi-k3[1m]"
+model = "kimi-k3"
 provider = "kimi"
 
 [[routes]]
 model = "kimi-k2.7-code"
 provider = "kimi"
 ```
+
+Ordered `[[upstreams]]` replace shunt's built-in providers, so the config that routes to `kimi`
+must also declare the `anthropic` default it still points at (`server.default_provider` defaults
+to `anthropic`); drop the `anthropic` entry only if you also set `default_provider` to a declared
+upstream.
 
 The legacy `[providers.kimi]` table form remains supported (older examples used
 `api_key_env = "KIMI_API_KEY"`, which still works when set explicitly) — but do not mix
@@ -47,14 +56,15 @@ The legacy `[providers.kimi]` table form remains supported (older examples used
 export MOONSHOT_API_KEY='...'
 ```
 
-Never write the key into the config. `shunt check` fails with a clear error if the variable is
-missing.
+Never write the key into the config. `shunt check` validates the config's structure but does not
+read the key's value — if `MOONSHOT_API_KEY` is unset, the first request routed to `kimi` returns
+an authentication error.
 
 ## Models
 
 | Model id | Notes |
 | :-- | :-- |
-| `kimi-k3[1m]` | frontier tier; `[1m]` is Claude Code's 1M-context marker — route the literal slug |
+| `kimi-k3` | frontier tier; a client may append Claude Code's `[1m]` context marker (`kimi-k3[1m]`) — shunt strips it before matching, so route the unsuffixed id |
 | `kimi-k2.7-code` | coding-focused tier |
 
 Select a routed id in Claude Code via `ANTHROPIC_MODEL`, `ANTHROPIC_CUSTOM_MODEL_OPTION`, or a

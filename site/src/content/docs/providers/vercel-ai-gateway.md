@@ -24,6 +24,10 @@ Or follow the manual steps below.
 
 ```toml
 [[upstreams]]
+name = "anthropic"
+provider = "anthropic"   # keep Anthropic as the default for unrouted models (e.g. claude-*)
+
+[[upstreams]]
 name = "vercel"
 kind = "anthropic"
 base_url = "https://ai-gateway.vercel.sh"
@@ -33,6 +37,9 @@ auth = { mode = "api_key", env = "AI_GATEWAY_API_KEY" }
 model = "anthropic/claude-opus-4.8"
 provider = "vercel"
 ```
+
+Ordered `[[upstreams]]` replace shunt's built-in providers, so the config must declare the
+`anthropic` default it still falls back to (`server.default_provider` defaults to `anthropic`).
 
 The gateway accepts both bearer auth (the default) and Anthropic's `x-api-key` header — add
 `header = "x_api_key"` to the auth map if you prefer the latter. The legacy `[providers.vercel]`
@@ -44,8 +51,9 @@ table form remains supported — but do not mix `[[upstreams]]` and `[providers.
 export AI_GATEWAY_API_KEY='...'
 ```
 
-Never write the key into the config. `shunt check` fails with a clear error if the variable is
-missing.
+Never write the key into the config. `shunt check` validates the config's structure but does not
+read the key's value — if `AI_GATEWAY_API_KEY` is unset, the first request routed to `vercel`
+returns an authentication error.
 
 ## Models
 

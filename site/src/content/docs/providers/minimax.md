@@ -23,15 +23,22 @@ Or follow the manual steps below.
 
 ```toml
 [[upstreams]]
+name = "anthropic"
+provider = "anthropic"   # keep Anthropic as the default for unrouted models (e.g. claude-*)
+
+[[upstreams]]
 name = "minimax"
 kind = "anthropic"
 base_url = "https://api.minimax.io/anthropic"
 auth = { mode = "api_key", env = "MINIMAX_API_KEY" }
 
 [[routes]]
-model = "MiniMax-M3[1m]"
+model = "MiniMax-M3"
 provider = "minimax"
 ```
+
+Ordered `[[upstreams]]` replace shunt's built-in providers, so the config must declare the
+`anthropic` default it still falls back to (`server.default_provider` defaults to `anthropic`).
 
 The legacy `[providers.minimax]` table form remains supported — but do not mix `[[upstreams]]`
 and `[providers.*]` in one file.
@@ -42,21 +49,22 @@ and `[providers.*]` in one file.
 export MINIMAX_API_KEY='...'
 ```
 
-Never write the key into the config. `shunt check` fails with a clear error if the variable is
-missing.
+Never write the key into the config. `shunt check` validates the config's structure but does not
+read the key's value — if `MINIMAX_API_KEY` is unset, the first request routed to `minimax`
+returns an authentication error.
 
 ## Models
 
 | Model id | Notes |
 | :-- | :-- |
-| `MiniMax-M3[1m]` | 1M-token context; `[1m]` is Claude Code's context marker — MiniMax's own [Claude Code integration](https://platform.minimax.io/docs/token-plan/claude-code) documents this exact slug, so route the literal id |
+| `MiniMax-M3` | 1M-token context; a client may append Claude Code's `[1m]` marker (`MiniMax-M3[1m]`, the slug MiniMax's own [Claude Code integration](https://platform.minimax.io/docs/token-plan/claude-code) documents) — shunt strips it before matching, so route the unsuffixed id |
 
 Select the routed id in Claude Code via `ANTHROPIC_MODEL`, `ANTHROPIC_CUSTOM_MODEL_OPTION`, or a
 subagent's `model:` frontmatter. To surface an entry in the `/model` picker instead, advertise a
 `claude`-prefixed alias with a `[models.upstream_model]` map — see
-[Model Discovery](/guides/model-discovery/). Note a mapped id must **not** end in `[1m]`
-(clients strip the hint before matching), so keep the literal `MiniMax-M3[1m]` on the
-`[[routes]]` form.
+[Model Discovery](/guides/model-discovery/). A mapped id must **not** end in `[1m]` — clients
+strip the hint before matching, which also makes a `[[routes]]` entry keyed on `MiniMax-M3[1m]`
+unreachable, so always route the unsuffixed `MiniMax-M3`.
 
 ## Verify
 

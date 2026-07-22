@@ -24,6 +24,10 @@ Or follow the manual steps below.
 
 ```toml
 [[upstreams]]
+name = "anthropic"
+provider = "anthropic"   # keep Anthropic as the default for unrouted models (e.g. claude-*)
+
+[[upstreams]]
 name = "openrouter"
 kind = "anthropic"
 base_url = "https://openrouter.ai/api"
@@ -34,6 +38,9 @@ model = "anthropic/claude-opus-4.8"
 provider = "openrouter"
 ```
 
+Ordered `[[upstreams]]` replace shunt's built-in providers, so the config must declare the
+`anthropic` default it still falls back to (`server.default_provider` defaults to `anthropic`).
+
 The legacy `[providers.openrouter]` table form remains supported — but do not mix
 `[[upstreams]]` and `[providers.*]` in one file.
 
@@ -43,8 +50,9 @@ The legacy `[providers.openrouter]` table form remains supported — but do not 
 export OPENROUTER_API_KEY='...'
 ```
 
-Never write the key into the config. `shunt check` fails with a clear error if the variable is
-missing.
+Never write the key into the config. `shunt check` validates the config's structure but does not
+read the key's value — if `OPENROUTER_API_KEY` is unset, the first request routed to `openrouter`
+returns an authentication error.
 
 ## Models
 
