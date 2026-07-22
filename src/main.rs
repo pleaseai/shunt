@@ -105,6 +105,22 @@ enum Command {
         #[arg(long)]
         manual: bool,
     },
+    /// Set up and inspect the admin usage dashboard.
+    Dashboard {
+        #[command(subcommand)]
+        action: DashboardAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum DashboardAction {
+    /// Enable the dashboard in one step: generate an admin token file, add
+    /// `[server.admin]` + `[server.oauth_usage]` to the config, and print the
+    /// URL. Idempotent — safe to re-run.
+    Setup {
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -139,6 +155,7 @@ fn main() -> anyhow::Result<()> {
             manual,
             cli.config.as_deref(),
         ),
+        Some(Command::Dashboard { action }) => dashboard(action, cli.config),
         None if cli.check => check(cli.config),
         None => run(cli.config),
     }
@@ -199,6 +216,68 @@ fn write_cli_output(mut writer: impl Write, output: &[u8]) -> std::io::Result<()
     match result {
         Err(error) if error.kind() == ErrorKind::BrokenPipe => Ok(()),
         result => result,
+    }
+}
+
+/// `shunt dashboard <action>`. Setup is synchronous filesystem work — no async
+/// runtime needed.
+fn dashboard(action: DashboardAction, global_config: Option<PathBuf>) -> anyhow::Result<()> {
+    match action {
+        DashboardAction::Setup { config } => {
+            let path = config.or(global_config);
+            let outcome = shunt::dashboard::setup(path.as_deref())?;
+            print_dashboard_setup(&outcome);
+            Ok(())
+        }
+    }
+}
+
+fn print_dashboard_setup(outcome: &shunt::dashboard::SetupOutcome) {
+    println!("Admin usage dashboard configured.\n");
+
+    if outcome.admin_already_configured {
+        println!(
+            "  [server.admin] was already present in {} — left untouched.",
+            outcome.config_path.display()
+        );
+    } else {
+        println!(
+            "  config     {} (added [server.admin])",
+            outcome.config_path.display()
+        );
+    }
+    if outcome.oauth_usage_block_added {
+        println!("             added [server.oauth_usage] for Claude Code /usage bars");
+    }
+
+    match &outcome.token {
+        Some(token) => {
+            let token_state = if outcome.token_reused {
+                "reused existing"
+            } else {
+                "generated"
+            };
+            println!(
+                "  token file {} ({}, owner-only)",
+                outcome.token_file.display(),
+                token_state
+            );
+            println!("\n  Dashboard  {}", outcome.dashboard_url);
+            println!("  Log in with this admin token:\n");
+            println!("      {token}\n");
+        }
+        None => {
+            // Admin was pre-configured; the token lives in the user's own
+            // tokens_env / tokens_file, so we cannot echo it.
+            println!("\n  Dashboard  {}", outcome.dashboard_url);
+            println!("  Log in with an admin token from your existing [server.admin] source.\n");
+        }
+    }
+
+    if outcome.admin_already_configured {
+        println!("Restart shunt if you have not already (admin routes register at boot).");
+    } else {
+        println!("Restart shunt to register the dashboard routes:  shunt run");
     }
 }
 

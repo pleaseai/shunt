@@ -73,9 +73,21 @@ Admin credentials reuse the inbound-auth token format
 ([`m4-inbound-auth.md`](m4-inbound-auth.md)) and its constant-time compare, but
 are a **separate credential** from `[server.auth]`: client tokens are handed to
 devices; admin tokens add upstream accounts. Configuration validation is
-**fail-closed** — a present `[server.admin]` whose tokens env is unset, empty, or
+**fail-closed** — a present `[server.admin]` whose token source is unset, empty, or
 malformed is a startup error, never a silently-open admin surface (identical
 discipline to `[server.auth]`).
+
+The token source can be a **file** instead of the environment: `tokens_file` (a
+path, `~` expanded) holds the same `name:token` pairs, one per line or
+comma-separated. When `tokens_env` is non-empty it wins; otherwise the file is
+read, and an unreadable configured file is a startup error. This exists so the
+token does not have to live in the launch environment. `shunt dashboard setup`
+automates the whole enablement: it writes a random `admin:<token>` to
+`~/.shunt/admin-token` (owner-only, `0600`, via the same atomic-write path as
+credential writeback), records it as `[server.admin].tokens_file`, adds
+`[server.oauth_usage]`, and prints the dashboard URL. It is idempotent —
+re-running reuses the token and appends no duplicate block — and leaves any
+pre-existing `[server.admin]` untouched.
 
 ### Optional OIDC browser login
 

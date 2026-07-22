@@ -266,6 +266,12 @@ pub struct AdminConfig {
     /// Env var holding the `name:token` admin pairs.
     #[serde(default = "default_admin_tokens_env")]
     pub tokens_env: String,
+    /// Optional file holding `name:token` admin pairs, as an alternative to the
+    /// environment variable — written by `shunt dashboard setup` so the admin
+    /// surface works without exporting a secret into the launch env. One pair
+    /// per line (or comma-separated). `tokens_env`, when non-empty, wins.
+    #[serde(default, deserialize_with = "deserialize_optional_credentials_path")]
+    pub tokens_file: Option<String>,
     /// Browser session lifetime after login.
     #[serde(default = "default_admin_session_ttl_secs")]
     pub session_ttl_secs: u64,
@@ -317,6 +323,17 @@ fn default_admin_tokens_env() -> String {
     "SHUNT_ADMIN_TOKENS".to_string()
 }
 
+/// `~/.shunt/admin-token` (`HOME`, falling back to `USERPROFILE` on Windows), or
+/// `None` when neither is set. This is where `shunt dashboard setup` writes the
+/// generated admin token and what it records as `[server.admin].tokens_file`.
+pub fn default_admin_token_file() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .filter(|home| !home.is_empty())
+        .or_else(|| std::env::var_os("USERPROFILE").filter(|home| !home.is_empty()))
+        .map(PathBuf::from)
+        .map(|home| home.join(".shunt").join("admin-token"))
+}
+
 fn default_admin_oidc_secret_env() -> String {
     "SHUNT_ADMIN_OIDC_SECRET".to_string()
 }
@@ -340,7 +357,22 @@ impl AdminConfig {
                 header: self.header.clone(),
             }
         })?;
-        let raw = std::env::var(&self.tokens_env).unwrap_or_default();
+        let mut raw = std::env::var(&self.tokens_env).unwrap_or_default();
+        // The env var wins; fall back to the token file only when it is unset or
+        // empty, so an explicit export always overrides the on-disk secret.
+        if raw.trim().is_empty() {
+            if let Some(path) = &self.tokens_file {
+                let contents = std::fs::read_to_string(path).map_err(|error| {
+                    ConfigError::UnreadableAdminTokensFile {
+                        path: path.clone(),
+                        message: error.to_string(),
+                    }
+                })?;
+                // `parse_tokens` splits on commas; normalise newlines so a
+                // one-pair-per-line file parses the same as a comma list.
+                raw = contents.replace(['\r', '\n'], ",");
+            }
+        }
         if raw.trim().is_empty() {
             return Err(ConfigError::MissingAdminTokens {
                 env: self.tokens_env.clone(),
@@ -1620,6 +1652,8 @@ pub enum ConfigError {
     InvalidAdminHeader { header: String },
     #[error("[server.admin] is set but {env} is unset or empty; refusing to run open")]
     MissingAdminTokens { env: String },
+    #[error("[server.admin] tokens_file {path} could not be read: {message}")]
+    UnreadableAdminTokensFile { path: String, message: String },
     #[error("[server.admin] tokens in {env} are invalid: {message}")]
     InvalidAdminTokens { env: String, message: String },
     #[error("[server.admin.oidc] is invalid: {message}")]
@@ -2745,6 +2779,7 @@ mod tests {
         let mut admin = AdminConfig {
             header: "x-shunt-admin-token".into(),
             tokens_env: tokens_env.clone(),
+            tokens_file: None,
             session_ttl_secs: 3600,
             pending_ttl_secs: 600,
             oidc: Some(AdminOidcConfig {
@@ -2850,6 +2885,7 @@ mod tests {
         let base = AdminConfig {
             header: "x-shunt-admin-token".to_string(),
             tokens_env: "SHUNT_TEST_ADMIN_RESOLVE".to_string(),
+            tokens_file: None,
             session_ttl_secs: 1800,
             pending_ttl_secs: 300,
             oidc: None,
@@ -2886,6 +2922,54 @@ mod tests {
             Err(ConfigError::InvalidAdminHeader { .. })
         ));
         std::env::remove_var("SHUNT_TEST_ADMIN_RESOLVE");
+    }
+
+    #[test]
+    fn admin_config_resolve_falls_back_to_tokens_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-admin-tokens-file-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let token_path = dir.join("admin-token");
+        // A one-pair-per-line file, as `shunt dashboard setup` writes it.
+        std::fs::write(&token_path, "admin:file-secret\n").unwrap();
+
+        let env_name = "SHUNT_TEST_ADMIN_FILE_FALLBACK";
+        std::env::remove_var(env_name);
+        let base = AdminConfig {
+            header: "x-shunt-admin-token".to_string(),
+            tokens_env: env_name.to_string(),
+            tokens_file: Some(token_path.to_string_lossy().into_owned()),
+            session_ttl_secs: 1800,
+            pending_ttl_secs: 300,
+            oidc: None,
+        };
+
+        // Env unset ⇒ the file is read.
+        base.resolve()
+            .expect("token file resolves when env is unset");
+
+        // Env set ⇒ it wins over the file.
+        std::env::set_var(env_name, "ops:env-secret");
+        base.resolve()
+            .expect("env tokens resolve and take precedence");
+        std::env::remove_var(env_name);
+
+        // A configured-but-unreadable file is a startup error, not open access.
+        let missing = AdminConfig {
+            tokens_file: Some(dir.join("does-not-exist").to_string_lossy().into_owned()),
+            ..base.clone()
+        };
+        assert!(matches!(
+            missing.resolve(),
+            Err(ConfigError::UnreadableAdminTokensFile { .. })
+        ));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     struct BufferWriter {
