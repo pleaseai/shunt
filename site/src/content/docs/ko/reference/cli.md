@@ -38,7 +38,7 @@ shunt init --root /path/to/project
 shunt init --force
 ```
 
-Upstream을 지정하지 않으면 starter 전체가 주석으로 구성되어 shunt의 기본 passthrough 설정으로 로드됩니다. `--upstream`을 반복하면 failover 순서대로 preset 항목을 추가합니다. 사용할 수 있는 이름은 `anthropic`, `codex`, `openai`, `xai`, `grok`, `kimi`, `cursor`입니다. Starter는 `server.default_provider`를 설정하지 않으므로 매핑되지 않은 트래픽은 기본 Anthropic passthrough를 유지합니다.
+Upstream을 지정하지 않으면 starter 전체가 주석으로 구성되어 shunt의 기본 passthrough 설정으로 로드됩니다. `--upstream`을 반복하면 failover 순서대로 preset 항목을 추가합니다. 사용할 수 있는 이름은 `anthropic`, `codex`, `openai`, `xai`, `grok`, `kimi`, `cursor`입니다. Starter는 `server.default_provider`를 설정하지 않으므로 매핑되지 않은 트래픽은 기본 Anthropic passthrough를 유지합니다. Preset을 지정하면 생성된 파일이 `shunt check`를 통과하면서도 이 fallback을 유지하도록 마지막에 `anthropic` passthrough upstream이 자동으로 추가됩니다(직접 `anthropic`을 지정한 경우는 제외).
 
 Root의 기본값은 현재 디렉터리이며 이미 존재해야 합니다. 그 안에 `shunt.toml`, `shunt.yaml`, `shunt.yml` 중 하나가 있으면 `--force` 없이는 아무것도 쓰지 않고 중단합니다. 강제 init은 `shunt.toml`만 덮어씁니다. YAML variant는 그대로 남고, config discovery에서는 새 TOML 파일이 우선합니다.
 

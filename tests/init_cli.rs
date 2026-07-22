@@ -102,6 +102,39 @@ fn missing_root_directory_is_rejected_without_creation() {
 }
 
 #[test]
+fn init_with_upstreams_produces_a_config_that_passes_check() {
+    let dir = TempDir::new("check");
+    let created = init(&dir.0, &["--upstream", "codex", "--upstream", "kimi"]);
+    assert!(created.status.success(), "stderr: {}", stderr(&created));
+
+    let toml = dir.0.join("shunt.toml");
+    let checked = shunt(&["check", "--config", toml.to_str().expect("UTF-8 temp path")]);
+    assert!(
+        checked.status.success(),
+        "generated preset config failed `shunt check`: {}",
+        stderr(&checked)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn force_refuses_to_follow_a_symlink() {
+    use std::os::unix::fs::symlink;
+
+    let dir = TempDir::new("force-symlink");
+    let victim = dir.0.join("victim.txt");
+    std::fs::write(&victim, "victim contents").unwrap();
+    symlink(&victim, dir.0.join("shunt.toml")).unwrap();
+
+    let output = init(&dir.0, &["--force"]);
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(stderr(&output).contains("refusing to overwrite symlink"));
+    assert_eq!(std::fs::read_to_string(&victim).unwrap(), "victim contents");
+}
+
+#[test]
 fn unknown_and_duplicate_upstreams_are_rejected() {
     let unknown_dir = TempDir::new("unknown");
     let unknown = init(&unknown_dir.0, &["--upstream", "unknown"]);

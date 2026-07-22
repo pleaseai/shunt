@@ -4,7 +4,7 @@
 
 ## Content generation
 
-The starter begins with validation and run instructions. With no `--upstream`, the rest is commented guidance, so loading the file preserves shunt's default passthrough behavior. Repeating `--upstream <preset>` emits ordered `[[upstreams]]` entries and credential comments derived from the config preset registry, followed by a commented `models.upstream_model` example for the first requested preset. It never sets `server.default_provider`, so unmapped traffic is not silently diverted.
+The starter begins with validation and run instructions. With no `--upstream`, the rest is commented guidance, so loading the file preserves shunt's default passthrough behavior. Repeating `--upstream <preset>` emits ordered `[[upstreams]]` entries and credential comments derived from the config preset registry, followed by a commented `models.upstream_model` example for the first requested preset. Because declaring `[[upstreams]]` replaces the built-in provider set, a trailing `anthropic` passthrough upstream is appended automatically (unless you request `anthropic` yourself) so the generated file passes `shunt check` and unmapped models keep their Anthropic fallback. It never sets `server.default_provider`, so unmapped traffic is not silently diverted.
 
 The accepted preset names are `anthropic`, `codex`, `openai`, `xai`, `grok`, `kimi`, and `cursor`. Unknown and duplicate values fail before the file is opened.
 
