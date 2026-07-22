@@ -1,0 +1,20 @@
+src/blueprints.rs
+  s_539fecc57ecebc::t_d5cd9823e22249 39-55,57-61,67-75
+  s_539fecc57ecebc::t_83de0a3b2a1eac 62-66
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "a09c88ba56c74cc14d0444ebb5018333989957d2",
+  "prompts": {},
+  "sessions": {
+    "s_539fecc57ecebc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "726953e1-a801-4ea7-95b0-56b9545a8aee",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
