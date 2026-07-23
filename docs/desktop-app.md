@@ -115,7 +115,7 @@ web while native commands replace screens one at a time.
 │   ├─ config: read + write shunt.toml         │
 │   │    (toml_edit, format-preserving)        │
 │   ├─ secrets: OS keychain ↔ env injection    │
-│   └─ validate: shunt's Config::validate      │
+│   └─ validate: shunt's Config::load path     │
 │                                              │
 │         │ spawns, injects env                │
 │         ▼                                    │
@@ -143,8 +143,12 @@ Two ways to run the gateway from the app:
   no second process — but the app must reproduce main.rs's bootstrap and own the
   reload loop. Defer; revisit if the sidecar boundary becomes limiting.
 
-v1 uses the **sidecar**. Config editing and validation still call shunt's Rust
-logic directly (see below), so "sidecar for serving, in-process for editing."
+v1 uses the **sidecar**. Only **config-file editing and validation** run
+in-process (the file is on disk, shared with the sidecar); everything that touches
+the sidecar's **live runtime state** — account provisioning and the pool snapshot —
+goes through the sidecar's admin HTTP surface, because that state lives in the
+sidecar process, not the desktop app. So: "sidecar for serving and for runtime
+state; in-process only for editing the shared config file."
 
 ### Phase A — shell + lifecycle (fastest working app)
 
@@ -152,13 +156,20 @@ logic directly (see below), so "sidecar for serving, in-process for editing."
 - The window embeds `http://127.0.0.1:<port>/admin` (existing M9 HTML). Reuses
   account add/remove and the pool dashboard immediately.
 - App owns the config path (default `$XDG_CONFIG_HOME/shunt/shunt.toml`, the same
-  location `Config::find_config_file` searches) and the `SHUNT_ADMIN_TOKENS` env
-  it injects, so the embedded admin surface authenticates without operator setup.
+  location `Config::find_config_file` searches) and generates the
+  `SHUNT_ADMIN_TOKENS` value it injects into the sidecar. Injecting that env only
+  lets the sidecar *validate* the token — the embedded webview must still
+  authenticate, or `/admin` redirects to `/admin/login`. So the app logs in on the
+  operator's behalf: it POSTs the token to `/admin/login` to obtain the session
+  cookie for the webview (or attaches the admin header to webview requests). The
+  operator does no manual login either way.
 
 ### Phase B — native upstream/account CRUD
 
-- Native frontend screens for upstreams, accounts, and pool, backed by
-  `#[tauri::command]`s that read/write the config and stores directly.
+- Native frontend screens for upstreams, accounts, and pool. `#[tauri::command]`s
+  write the config **file** in-process (upstream CRUD), while account provisioning
+  and the pool snapshot call the sidecar's admin HTTP (their state is in the
+  sidecar, and the handlers/helpers are not exported — see below).
 - Replaces the embedded admin web screen-by-screen; the admin web remains for
   remote deployments and as a fallback.
 
@@ -179,10 +190,14 @@ Constraints:
   identical. (`UpstreamConfig` already derives `Serialize` with
   `skip_serializing_if` on optionals, so rendering a *new* entry is clean; editing
   an existing one is a keyed `toml_edit` mutation.)
-- **Validate before write.** Reuse shunt's `Config::validate` (the `shunt check`
-  logic) on the candidate config *before* touching the file, so the UI rejects a
-  bad edit up front. Even so, the reload path is fail-safe: an invalid file that
-  somehow lands leaves the running config unchanged.
+- **Validate before write.** Run the candidate *file text* through the full
+  `Config::load` path — the figment parse (which catches TOML syntax errors,
+  `deny_unknown_fields`, wrong declaration form, and env-merge errors) **plus**
+  `Config::validate` — before touching the file. That is exactly what `shunt
+  check` runs. `Config::validate` alone operates on an already-parsed `Config`, so
+  on its own it would miss the malformed-file cases the UI most needs to reject.
+  Even so, the reload path is fail-safe: an invalid file that somehow lands leaves
+  the running config unchanged.
 - **Atomic write + hot-reload.** Write to a temp file and rename over the target
   (`atomic_file.rs` already exists in the tree). shunt watches the parent
   directory with a 400 ms debounce and detects atomic renames, so the write
@@ -264,11 +279,11 @@ Native commands, mapping to existing shunt logic rather than the HTTP admin API:
 | Command | Backing logic |
 | :-- | :-- |
 | `config_read` | `Config::load` + read raw file for `toml_edit` |
-| `config_validate` | `Config::validate` |
-| `upstream_upsert` / `upstream_remove` / `upstream_reorder` | `toml_edit` mutation + validate + atomic write |
-| `account_add_claude` / `account_add_codex` / `account_remove` | reuse `auth/claude/login.rs`, `admin/codex.rs`, stores |
+| `config_validate` | full `Config::load` (figment parse + `Config::validate`) |
+| `upstream_upsert` / `upstream_remove` / `upstream_reorder` | `toml_edit` mutation + full `Config::load` validation + atomic write (in-process — the config file is shared on disk) |
+| `account_add_claude` / `account_add_codex` / `account_remove` | **call the sidecar admin HTTP** (`POST`/`DELETE /admin/accounts/*`). The Claude OAuth helpers (`auth/claude/login.rs`) are crate-private and the Codex handlers (`admin/codex.rs`) are admin-module-private and need server state, so direct reuse from a separate `desktop/` crate would not compile unless shunt exports them (see Open questions) |
 | `secret_set` / `secret_delete` | keychain plugin + env-name assignment |
-| `pool_snapshot` | `AccountPool::snapshot` (or `GET /admin/pool` in Phase A) |
+| `pool_snapshot` | **`GET /admin/pool` on the sidecar.** `AccountPool` is the *sidecar* process's live runtime state (quota/cooldown accrued while serving), so calling `AccountPool::snapshot` from the desktop process would read an empty local pool, not the sidecar's |
 | `gateway_start` / `gateway_stop` / `gateway_restart` | sidecar process control |
 
 ## Security
@@ -294,9 +309,9 @@ Local single-user changes the model from the remote admin web:
 1. **Phase A — shell.** `desktop/` Tauri crate; tray + window; spawn/stop shunt
    sidecar; embed `/admin`; own the managed config path and injected admin token.
    Deliverable: a launchable app that runs shunt and shows the existing admin UI.
-2. **Config writer.** `toml_edit`-based upstream read/write + `Config::validate`
-   gate + atomic write; verify hot-reload picks it up. (This is the core new
-   capability; both phases need it.)
+2. **Config writer.** `toml_edit`-based upstream read/write + full `Config::load`
+   validation gate + atomic write; verify hot-reload picks it up. (This is the core
+   new capability; both phases need it.)
 3. **Phase B — native screens.** Upstreams CRUD, then accounts, then pool, each
    replacing the embedded page. Keychain-backed secret entry for API-key
    upstreams with automatic restart.
@@ -313,14 +328,21 @@ Local single-user changes the model from the remote admin web:
 - **Config-writer home.** Does the `toml_edit` writer + env-name assignment belong
   in the `shunt` crate (so the CLI can share it, e.g. a future `shunt upstream
   add`) or only in the desktop crate? Sharing it in the lib is likely worth it.
+- **Exporting provisioning helpers.** v1 routes account provisioning and pool
+  reads through the sidecar's admin HTTP, because the Claude/Codex provisioning
+  helpers are crate/module-private and the pool is sidecar-local runtime state.
+  Should shunt instead export those helpers (and an out-of-process way to read pool
+  state) so Phase B can call them in-process, or is admin HTTP the intended
+  long-term integration boundary?
 - **Secret env-name scheme.** Confirm a collision-free, stable naming convention
-  for generated `api_key_env` values and document it.
+  for the generated API-key env-var names (the `auth.env` value on an API-key
+  upstream) and document it.
 
 ## Testing
 
 - **Config writer (unit).** `toml_edit` upsert/remove/reorder preserves unrelated
   content and comments; round-trips through `Config::load`; rejects an edit that
-  fails `Config::validate` without writing; atomic write leaves no partial file.
+  fails the full `Config::load` validation without writing; atomic write leaves no partial file.
 - **Secret flow (unit).** env-name generation is stable and collision-free;
   keychain value never appears in the rendered config or logs.
 - **Reload integration.** A written config is picked up by the file watcher
