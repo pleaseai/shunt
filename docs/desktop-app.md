@@ -21,9 +21,10 @@ shunt today has two provisioning surfaces:
 
 Neither covers the **local single-user** case well:
 
-- The admin web is **read/append-only for accounts and never touches the config
-  file**. Upstreams (`[[upstreams]]`) can only be added, removed, or reordered by
-  editing `shunt.toml` by hand. There is no UI for upstream CRUD anywhere.
+- The admin web offers **full CRUD for Claude/Codex account-store files** (add,
+  list, remove, replace) but **never writes the config file**, and there is no
+  upstream CRUD anywhere. Upstreams (`[[upstreams]]`) can only be added, removed,
+  or reordered by editing `shunt.toml` by hand.
 - The admin web **cannot set secrets**: API keys and tokens live in the process
   environment (`api_key_env`, `tokens_env`), which a running remote server cannot
   rewrite for itself.
@@ -198,11 +199,12 @@ matching shunt's actual reload semantics ([`config-reload.md`](config-reload.md)
 | Change | Applies on | Notes |
 | :-- | :-- | :-- |
 | Add/edit/remove/reorder `[[upstreams]]` | **reload** (file write) | hot, no restart |
-| Add/remove account (OAuth store file) | **reload** | empty-account provider scans store per request |
-| `[server.auth]` tokens, routes, models | **reload** | |
+| Add/remove account (OAuth store file) | **next request** | the store dir's mtime changes and the account is rescanned on the next request; no config write, so the reload path is not triggered at all. Explicitly-scoped `accounts` entries still need a config edit + reload |
+| `[server.auth]` tokens, routes, models | **reload** | token/header edits within an already-enabled surface hot-apply |
 | `server.bind` (port/host) | **restart** | listener already bound |
+| Toggle a boot-registered surface on/off — `[server.admin]`, `[server.gateway]`, `[server.codex_endpoint]`, `[server.usage]`, `[server.oauth_usage]` | **restart** | routes are registered once at boot; edits *within* an already-enabled surface still hot-apply |
 | Any **env-held secret** (API key, admin token) | **restart** | see problem 2 |
-| `[sentry]` | **restart** | client init once |
+| `[sentry]`, `[otel]` | **restart** | initialized once at startup |
 
 The app drives restart itself (it owns the sidecar), so "requires restart" is a
 one-click action, not a manual step.
@@ -210,25 +212,31 @@ one-click action, not a manual step.
 ## Hard problem 2 — secrets and env injection
 
 shunt keeps secrets **out of the config file**: API keys and tokens are named env
-vars (`api_key_env = "OPENAI_API_KEY"`, `tokens_env = "SHUNT_ADMIN_TOKENS"`,
-`client_secret_env`, …), read from the process environment at load and **re-read
-from the same startup environment on reload** — a reload never re-reads a rotated
-value. OAuth account credentials are different: they live in `0600` store files
-the stores already own.
+vars, read from the process environment — but at **different times**. Config-backed
+auth/OIDC secrets (`tokens_env = "SHUNT_ADMIN_TOKENS"`, `client_secret_env`, …) are
+resolved on config **load and reload** (src/config.rs). API keys (an API-key
+upstream's `auth.env`) and inline account `token_env` values are looked up **per
+request** during credential resolution (src/auth/mod.rs). Either way the value
+comes from the process's environment, which is **fixed at spawn** — a running shunt
+cannot rewrite its own environment, so a rotated secret is not picked up until the
+process is restarted with the new environment. OAuth account credentials are
+different: they live in `0600` store files the stores already own.
 
 The desktop model:
 
 - **API keys / tokens → OS keychain.** When the operator enters an API key for an
-  API-key upstream, the app writes the config with `api_key_env = "SHUNT_UPSTREAM_<name>_KEY"`
-  (a generated, stable env name) and stores the **value** in the OS keychain via
-  the Tauri secure-storage plugin. On spawn, the app reads the keychain and passes
-  the value as that env var to the sidecar. The secret never touches the config
-  file or logs.
+  API-key upstream, the app writes the config with
+  `auth = { mode = "api_key", env = "SHUNT_UPSTREAM_<name>_KEY" }` — `[[upstreams]]`
+  carries the env name inside the `auth` map's `env` field, not the legacy
+  top-level `api_key_env` of the `[providers.<name>]` form — and stores the
+  **value** in the OS keychain via the Tauri secure-storage plugin. On spawn, the
+  app reads the keychain and passes the value as that env var to the sidecar. The
+  secret never touches the config file or logs.
 - **OAuth accounts → existing stores.** Claude/Codex account provisioning reuses
   the M9 flows and their `0600` store writes unchanged. No new secret path.
-- **Restart on secret change.** Because shunt reads env only at process start,
-  changing a keychain-backed secret requires respawning the sidecar with the new
-  environment. The app does this automatically (one click / automatic), so the
+- **Restart on secret change.** Because the sidecar's environment is fixed at
+  spawn, changing a keychain-backed secret requires respawning the sidecar with the
+  new environment. The app does this automatically (one click / automatic), so the
   "env can't hot-reload" limitation is invisible to the user.
 
 This is precisely the capability the remote admin web lacks: a co-located process
