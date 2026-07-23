@@ -32,10 +32,11 @@ Presence of this table enables the admin web surface for browser account provisi
 | :-- | :-- | :-- |
 | `header` | `x-shunt-admin-token` | Header carrying the admin token for API/curl calls |
 | `tokens_env` | `SHUNT_ADMIN_TOKENS` | Env var holding comma-separated `name:token` pairs |
+| `tokens_file` | _(unset)_ | Path to a file holding `name:token` pairs (one per line, or comma-separated), used when `tokens_env` is unset/empty |
 | `session_ttl_secs` | `3600` | Browser session lifetime after login, in seconds |
 | `pending_ttl_secs` | `600` | Time allowed to finish a started provisioning flow, in seconds |
 
-The named environment variable must contain one or more credentials, for example `SHUNT_ADMIN_TOKENS="ops:<token>"`. Startup fails closed if the table is present but the variable is unset, empty, or malformed.
+Admin tokens can come from the environment or a file. The named environment variable must contain one or more credentials, for example `SHUNT_ADMIN_TOKENS="ops:<token>"`. Alternatively, set `tokens_file` to a path (`~` is expanded) and put the pairs there — this is what [`shunt dashboard setup`](/reference/cli/#shunt-dashboard-setup) writes to `~/.shunt/admin-token`, so no secret has to live in the launch environment. When both are set, a non-empty `tokens_env` wins. Startup fails closed if the table is present but neither source yields a valid credential (unset/empty/malformed, or an unreadable `tokens_file`).
 
 Admin tokens are separate credentials from the client tokens configured under `[server.auth]`; do not reuse one credential for both surfaces.
 

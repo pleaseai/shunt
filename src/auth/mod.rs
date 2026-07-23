@@ -13,6 +13,7 @@ pub mod claude;
 pub mod codex;
 pub mod cursor;
 pub mod inbound;
+pub mod observation;
 pub mod shared;
 pub mod xai;
 

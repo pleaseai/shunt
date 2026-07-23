@@ -227,9 +227,9 @@ async fn start_ws_turn(
     let turn = codex_ws::begin(&ctx.ws_url, headers, ctx.pool_key)
         .await
         .map_err(|error| ws_connect_error(error, ctx.auth))?;
-    // Only a fresh connection carries new handshake headers. Reused/prewarmed
-    // sockets do not handshake again, so dashboard usage refreshes the next time
-    // this account establishes a new connection.
+    // Fresh connections carry live handshake headers; reused connections reuse the
+    // headers captured when the socket was first established so dashboard quota
+    // capture still runs on every turn.
     if let (Some(account), Some(headers)) = (ctx.codex_quota_account, turn.handshake_headers()) {
         ctx.accounts
             .note_codex_quota(ctx.provider, account, headers);

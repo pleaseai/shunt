@@ -65,7 +65,7 @@ pub(super) async fn forward_http(
         credential,
         auth,
         turn,
-        codex_quota_account: _,
+        codex_quota_account,
         estimate_input,
     } = forward;
     // Kick off the CPU-bound tiktoken encode on the blocking pool *before* the
@@ -97,6 +97,11 @@ pub(super) async fn forward_http(
         );
         transport_error(error.to_string())
     })?;
+    if let Some(account) = &codex_quota_account {
+        state
+            .accounts
+            .note_codex_quota(&route.provider, account, upstream.headers());
+    }
     let status = upstream.status();
     if !status.is_success() {
         return Err(mapped_upstream_error(status, upstream, auth).await);

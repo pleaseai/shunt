@@ -26,12 +26,13 @@ use axum::{
     Form, Json, Router,
 };
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::{
     auth::{
         claude::{auth as claude_auth, login as claude_login, store as claude_store},
         inbound::{constant_time_eq, InboundAuth},
+        observation::{self, ObservedCredential, ObservedProvider},
     },
     config::AuthMode,
     error::ShuntError,
@@ -118,6 +119,7 @@ pub fn admin_router() -> Router<AppState> {
         .route("/admin/oidc/callback", get(oidc::callback))
         .route("/admin/logout", post(logout))
         .route("/admin/accounts", get(list_accounts))
+        .route("/admin/observed", get(observed_accounts))
         .route("/admin/pool", get(pool))
         .route("/admin/accounts/claude", post(add_account))
         .route(
@@ -493,6 +495,321 @@ async fn list_accounts(State(state): State<AppState>, headers: HeaderMap) -> Res
         Err(join_error) => {
             tracing::error!(%join_error, "admin: list_account_meta task panicked");
             internal("failed to list accounts")
+        }
+    }
+}
+
+async fn observed_accounts(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let state = Arc::new(state.refreshed());
+    if authenticate(&state, &headers).is_none() {
+        return unauthorized();
+    }
+
+    let discovered = match tokio::task::spawn_blocking(observation::discover).await {
+        Ok(discovered) => discovered,
+        Err(join_error) => {
+            tracing::error!(%join_error, "admin: observed credential discovery task panicked");
+            return internal("failed to discover local credentials");
+        }
+    };
+
+    let rows = futures_util::future::join_all(
+        discovered
+            .into_iter()
+            .map(|observed| build_observed_row(Arc::clone(&state), observed)),
+    )
+    .await;
+
+    json_secure(json!({ "accounts": rows }))
+}
+
+async fn build_observed_row(state: Arc<AppState>, observed: ObservedCredential) -> Value {
+    let provider = observed.provider.as_str();
+    let source = observed.source.as_str();
+    if !observed.valid && observed.provider != ObservedProvider::Kimi {
+        return json!({
+            "provider": provider,
+            "identity": observed.identity,
+            "detail": observed.detail,
+            "source": source,
+            "ownership": "observed",
+            "signal": observed.provider.signal(),
+            "state": "expired",
+            "message": "Re-authenticate with the provider CLI; shunt never refreshes observed credentials."
+        });
+    }
+
+    match observed.provider {
+        ObservedProvider::Claude => {
+            build_claude_observed_row(&state, observed, provider, source).await
+        }
+        ObservedProvider::Codex => build_codex_observed_row(&state, observed, provider, source),
+        ObservedProvider::Gemini => {
+            build_gemini_observed_row(&state, observed, provider, source).await
+        }
+        ObservedProvider::Kimi => build_kimi_observed_row(&state, observed, provider, source).await,
+        ObservedProvider::Cursor => {
+            build_cursor_observed_row(&state, observed, provider, source).await
+        }
+        ObservedProvider::Grok => build_grok_observed_row(&state, observed, provider, source).await,
+    }
+}
+
+async fn build_claude_observed_row(
+    state: &AppState,
+    observed: ObservedCredential,
+    provider: &str,
+    source: &str,
+) -> Value {
+    let cached = state
+        .admin_stores
+        .observed_usage
+        .claude(&observed.access_token);
+    let usage = match cached {
+        Some(usage) => Ok(usage),
+        None => crate::auth::claude::usage::fetch_usage(
+            &state.http_client,
+            "https://api.anthropic.com",
+            &observed.access_token,
+        )
+        .await
+        .inspect(|usage| {
+            state
+                .admin_stores
+                .observed_usage
+                .store_claude(&observed.access_token, usage.clone())
+        }),
+    };
+    match usage {
+        Ok(usage) => json!({
+            "provider": provider,
+            "identity": observed.identity,
+            "detail": observed.detail,
+            "source": source,
+            "ownership": "observed",
+            "signal": "quota",
+            "state": "available",
+            "utilization_5h": usage.five_hour.as_ref().map(|window| window.utilization),
+            "reset_5h": usage.five_hour.as_ref().and_then(|window| window.resets_at),
+            "utilization_7d": usage.seven_day.as_ref().map(|window| window.utilization),
+            "reset_7d": usage.seven_day.as_ref().and_then(|window| window.resets_at),
+            "utilization_7d_oi": usage.seven_day_oi.as_ref().map(|window| window.utilization),
+            "reset_7d_oi": usage.seven_day_oi.as_ref().and_then(|window| window.resets_at)
+        }),
+        Err(error) => {
+            tracing::debug!(%error, "admin: read-only Claude usage observation failed");
+            json!({
+                "provider": provider,
+                "identity": observed.identity,
+                "detail": observed.detail,
+                "source": source,
+                "ownership": "observed",
+                "signal": "quota",
+                "state": "unavailable",
+                "message": "Usage could not be read with the current Claude Code login."
+            })
+        }
+    }
+}
+
+fn build_codex_observed_row(
+    state: &AppState,
+    observed: ObservedCredential,
+    provider: &str,
+    source: &str,
+) -> Value {
+    let account = crate::config::AccountConfig {
+        name: "local-codex".to_string(),
+        uuid: observed.account_id.clone(),
+        ..Default::default()
+    };
+    let snapshot = state
+        .config
+        .providers
+        .iter()
+        .filter(|(_, config)| config.auth == AuthMode::ChatgptOauth)
+        .filter_map(|(provider_name, _)| {
+            state
+                .accounts
+                .snapshot(
+                    provider_name,
+                    std::slice::from_ref(&account),
+                    None,
+                    state.config.server.pool.as_ref(),
+                )
+                .into_iter()
+                .next()
+        })
+        .find(|snapshot| snapshot.has_state);
+    let has_state = snapshot.as_ref().is_some_and(|snapshot| snapshot.has_state);
+    json!({
+        "provider": provider,
+        "identity": observed.identity,
+        "detail": observed.detail,
+        "source": source,
+        "ownership": "observed",
+        "signal": "response-derived",
+        "state": if has_state { "available" } else { "waiting-for-traffic" },
+        "message": if has_state { None } else { Some("Usage appears after a GPT response carries x-codex-* quota headers.") },
+        "utilization_5h": snapshot.as_ref().and_then(|snapshot| snapshot.utilization_5h),
+        "reset_5h": snapshot.as_ref().and_then(|snapshot| snapshot.reset_5h),
+        "utilization_7d": snapshot.as_ref().and_then(|snapshot| snapshot.utilization_7d),
+        "reset_7d": snapshot.as_ref().and_then(|snapshot| snapshot.reset_7d),
+        "utilization_7d_oi": snapshot.as_ref().and_then(|snapshot| snapshot.utilization_7d_oi),
+        "reset_7d_oi": snapshot.as_ref().and_then(|snapshot| snapshot.reset_7d_oi)
+    })
+}
+
+async fn build_gemini_observed_row(
+    state: &AppState,
+    observed: ObservedCredential,
+    provider: &str,
+    source: &str,
+) -> Value {
+    match observation::fetch_gemini_quota(&state.http_client, &observed.access_token).await {
+        Ok(snapshot) => json!({
+            "provider": provider,
+            "identity": snapshot.account_label,
+            "detail": snapshot.detail.or(Some(observed.identity)),
+            "source": if snapshot.account_label.starts_with("Antigravity") { "Antigravity local service (read-only)" } else { source },
+            "ownership": "observed",
+            "signal": "quota",
+            "state": "available",
+            "quota_buckets": snapshot.buckets.into_iter().filter_map(|bucket| {
+                let label = bucket.model_id?;
+                Some(json!({
+                    "label": label.strip_prefix("gemini-").unwrap_or(&label).replace('-', " "),
+                    "remaining": bucket.remaining_fraction,
+                    "remaining_amount": bucket.remaining_amount,
+                    "reset_time": bucket.reset_time
+                }))
+            }).collect::<Vec<_>>()
+        }),
+        Err(error) => {
+            tracing::debug!(%error, "admin: read-only Gemini quota observation failed");
+            json!({
+                "provider": provider,
+                "identity": observed.identity,
+                "detail": observed.detail,
+                "source": source,
+                "ownership": "observed",
+                "signal": "quota",
+                "state": "unavailable",
+                "message": "Gemini quota could not be read with the current Gemini CLI login."
+            })
+        }
+    }
+}
+
+async fn build_kimi_observed_row(
+    state: &AppState,
+    observed: ObservedCredential,
+    provider: &str,
+    source: &str,
+) -> Value {
+    let sidecar_base_url = state
+        .config
+        .providers
+        .iter()
+        .find(|(name, provider)| {
+            name.eq_ignore_ascii_case("kimi") || provider.base_url.contains("/coding")
+        })
+        .map(|(_, provider)| provider.base_url.as_str());
+    match observation::fetch_kimi_quota(
+        &state.http_client,
+        &observed.access_token,
+        sidecar_base_url,
+    )
+    .await
+    {
+        Ok(buckets) => json!({
+            "provider": provider,
+            "identity": "Kimi Code",
+            "detail": observed.identity,
+            "source": source,
+            "ownership": "observed",
+            "signal": "quota",
+            "state": "available",
+            "quota_buckets": buckets
+        }),
+        Err(error) => {
+            tracing::debug!(%error, "admin: read-only Kimi quota observation failed");
+            json!({
+                "provider": provider,
+                "identity": "Kimi Code",
+                "detail": observed.identity,
+                "source": source,
+                "ownership": "observed",
+                "signal": "quota",
+                "state": "unavailable",
+                "message": "Kimi quota could not be read with the current Kimi Code login."
+            })
+        }
+    }
+}
+
+async fn build_cursor_observed_row(
+    state: &AppState,
+    observed: ObservedCredential,
+    provider: &str,
+    source: &str,
+) -> Value {
+    match observation::fetch_cursor_quota(&state.http_client).await {
+        Ok(snapshot) => json!({
+            "provider": provider,
+            "identity": snapshot.account_label,
+            "detail": snapshot.detail.or(observed.detail),
+            "source": "Cursor.app session (read-only)",
+            "ownership": "observed",
+            "signal": "quota",
+            "state": "available",
+            "quota_buckets": snapshot.buckets
+        }),
+        Err(error) => {
+            tracing::debug!(%error, "admin: read-only Cursor quota observation failed");
+            json!({
+                "provider": provider,
+                "identity": observed.identity,
+                "detail": observed.detail,
+                "source": source,
+                "ownership": "observed",
+                "signal": "quota",
+                "state": "unavailable",
+                "message": "Cursor quota could not be read from the current Cursor.app login."
+            })
+        }
+    }
+}
+
+async fn build_grok_observed_row(
+    state: &AppState,
+    observed: ObservedCredential,
+    provider: &str,
+    source: &str,
+) -> Value {
+    match observation::fetch_grok_quota(&state.http_client, &observed.access_token).await {
+        Ok(snapshot) => json!({
+            "provider": provider,
+            "identity": snapshot.account_label,
+            "detail": snapshot.detail.or(observed.detail),
+            "source": source,
+            "ownership": "observed",
+            "signal": "quota",
+            "state": "available",
+            "quota_buckets": snapshot.buckets
+        }),
+        Err(error) => {
+            tracing::debug!(%error, "admin: read-only Grok quota observation failed");
+            json!({
+                "provider": provider,
+                "identity": observed.identity,
+                "detail": observed.detail,
+                "source": source,
+                "ownership": "observed",
+                "signal": "quota",
+                "state": "unavailable",
+                "message": "Grok quota could not be read with the current Grok CLI login."
+            })
         }
     }
 }

@@ -63,6 +63,7 @@ fn admin_config(tokens_env: &str) -> Config {
     config.server.admin = Some(AdminConfig {
         header: "x-shunt-admin-token".to_string(),
         tokens_env: tokens_env.to_string(),
+        tokens_file: None,
         session_ttl_secs: 3600,
         pending_ttl_secs: 600,
         oidc: None,
@@ -475,6 +476,7 @@ async fn admin_routes_are_absent_without_the_block() {
         "/admin/login",
         "/admin/oidc/start",
         "/admin/oidc/callback",
+        "/admin/observed",
         "/admin/pool",
     ] {
         let response = client
@@ -550,12 +552,14 @@ async fn admin_api_requires_authentication() {
     let client = reqwest::Client::new();
 
     // No credential at all.
-    let response = client
-        .get(format!("{}/admin/pool", gateway.base_url))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    for route in ["/admin/observed", "/admin/pool"] {
+        let response = client
+            .get(format!("{}{route}", gateway.base_url))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
 
     // Wrong admin token.
     let response = client

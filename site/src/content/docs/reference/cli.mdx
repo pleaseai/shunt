@@ -62,6 +62,18 @@ Blueprint Markdown always goes to stdout so it can be piped directly to an agent
 shunt add upstream kimi --print | claude
 ```
 
+## `shunt dashboard setup`
+
+Stand up the admin usage dashboard in one step instead of editing config, inventing an admin token, and exporting an env var by hand:
+
+```bash
+shunt dashboard setup
+# -> generates ~/.shunt/admin-token (owner-only), adds [server.admin] +
+#    [server.oauth_usage] to your config, and prints the dashboard URL + token.
+```
+
+It writes a random admin token to `~/.shunt/admin-token` (mode `0600`) and records it as `[server.admin].tokens_file`, so the admin surface works **without** exporting `SHUNT_ADMIN_TOKENS`. It also enables `[server.oauth_usage]` so Claude Code's native `/usage` bars render. The command is idempotent: re-running reuses the existing token and never duplicates a config block, and it leaves an existing `[server.admin]` block untouched (keeping your own `tokens_env`/`tokens_file`). Admin routes register at boot, so **restart shunt** afterwards. Pass `--config <path>` to target a specific file.
+
 ## `shunt token`
 
 Print a Claude subscription OAuth token to **stdout** (logs go to stderr), designed to be wired into Claude Code's `apiKeyHelper`. Two modes:

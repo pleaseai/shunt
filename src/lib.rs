@@ -8,6 +8,7 @@ pub mod codex_analytics;
 pub mod codex_endpoint;
 pub mod config;
 pub mod count_tokens;
+pub mod dashboard;
 pub mod discovery;
 pub mod error;
 pub mod gateway;
