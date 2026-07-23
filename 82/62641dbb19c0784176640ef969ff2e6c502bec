@@ -1,0 +1,28 @@
+docs/desktop-app.md
+  s_9cd5818dc79ed9::t_6b985c72c4eb69 286,288,291-295
+  s_45f4d606171b59::t_6277fc9bfb49af 296
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "8262641dbb19c0784176640ef969ff2e6c502bec",
+  "prompts": {},
+  "sessions": {
+    "s_45f4d606171b59": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1aa5af8d-e9dc-4b73-8882-304c5db41f28",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_9cd5818dc79ed9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c603408f-2733-4b6d-a5ad-3f5e7a72696f",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
