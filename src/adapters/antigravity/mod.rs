@@ -129,10 +129,26 @@ pub fn extract_antigravity_prompt(request: &Value) -> String {
                     parts.push(format!("{role}: {t}"));
                 } else if let Some(arr) = content.as_array() {
                     for b in arr {
-                        if b.get("type").and_then(Value::as_str) == Some("text") {
-                            if let Some(t) = b.get("text").and_then(Value::as_str) {
-                                parts.push(format!("{role}: {t}"));
+                        match b.get("type").and_then(Value::as_str) {
+                            Some("text") => {
+                                if let Some(t) = b.get("text").and_then(Value::as_str) {
+                                    parts.push(format!("{role}: {t}"));
+                                }
                             }
+                            Some("tool_use") => {
+                                let name = b.get("name").and_then(Value::as_str).unwrap_or("tool");
+                                let input = b.get("input").cloned().unwrap_or_else(|| json!({}));
+                                parts.push(format!("{role} tool_use {name}: {input}"));
+                            }
+                            Some("tool_result") => {
+                                let content = b
+                                    .get("content")
+                                    .map(ToString::to_string)
+                                    .unwrap_or_default();
+                                parts.push(format!("{role} tool_result: {content}"));
+                            }
+                            Some("image") => parts.push(format!("{role}: [image omitted]")),
+                            _ => {}
                         }
                     }
                 }
@@ -144,6 +160,11 @@ pub fn extract_antigravity_prompt(request: &Value) -> String {
 }
 
 pub fn find_agy_binary() -> Option<PathBuf> {
+    static CACHE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(find_agy_binary_uncached).clone()
+}
+
+fn find_agy_binary_uncached() -> Option<PathBuf> {
     if let Ok(env_path) = std::env::var("AGY_BIN") {
         let p = PathBuf::from(env_path);
         if p.exists() {
@@ -151,8 +172,16 @@ pub fn find_agy_binary() -> Option<PathBuf> {
         }
     }
 
-    if let Ok(home) = std::env::var("HOME") {
-        let p = PathBuf::from(home).join(".gemini/antigravity-cli/bin/agy");
+    if let Some(home) = std::env::var_os("HOME")
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("USERPROFILE")
+                .filter(|home| !home.is_empty())
+                .map(PathBuf::from)
+        })
+    {
+        let p = home.join(".gemini/antigravity-cli/bin/agy");
         if p.exists() {
             return Some(p);
         }
