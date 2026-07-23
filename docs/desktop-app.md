@@ -268,7 +268,9 @@ owner that can rewrite the child's environment and restart it.
    (`presets.rs`) prefill provider defaults.
 3. **Accounts** — Claude and Codex accounts: add (OAuth/setup-token flow),
    remove; per-account metadata (name, kind, expiry) — never the token.
-4. **Pool** — read-only quota/cooldown dashboard (`AccountPool::snapshot`).
+4. **Pool** — read-only quota/cooldown dashboard via `GET /admin/pool` on the
+   sidecar (the endpoint returns `AccountPool::snapshot` data; the desktop process
+   never calls the type directly, since the live pool is sidecar-local).
 5. **Settings** — bind address, `[server.auth]` client tokens, admin token
    (auto-managed for the embedded web), log level.
 
