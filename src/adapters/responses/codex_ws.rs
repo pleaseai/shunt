@@ -153,6 +153,9 @@ struct Connection {
     pool_key: Option<String>,
     /// The `x-codex-turn-state` captured from the handshake, if present.
     handshake_turn_state: Option<String>,
+    /// Quota headers from the connection's upgrade response. Reused turns do not
+    /// perform a fresh handshake, but dashboard quota capture still reads them.
+    handshake_headers: HeaderMap,
 }
 
 impl Connection {
@@ -177,6 +180,7 @@ impl Connection {
             last_used_at: Mutex::new(Instant::now()),
             pool_key,
             handshake_turn_state,
+            handshake_headers: handshake_headers.clone(),
         });
         tokio::spawn(run_connection(conn.clone(), source, command_rx));
         Ok((conn, handshake_headers))
@@ -387,10 +391,19 @@ impl Turn {
         self.conn.handshake_turn_state.as_deref()
     }
 
-    /// Headers from a newly established connection's upgrade response. A reused
-    /// connection returns `None` because it did not perform a fresh handshake.
+    /// Headers from the connection's upgrade response. Fresh connections return
+    /// the live handshake headers; reused connections return the headers captured
+    /// when the socket was first established.
     pub fn handshake_headers(&self) -> Option<&HeaderMap> {
-        self.handshake_headers.as_ref()
+        if self.reused {
+            if self.conn.handshake_headers.is_empty() {
+                None
+            } else {
+                Some(&self.conn.handshake_headers)
+            }
+        } else {
+            self.handshake_headers.as_ref()
+        }
     }
 
     /// Dispatch the `response.create` frame to the connection's reader and stream
@@ -1275,8 +1288,8 @@ mod tests {
             .await
             .expect("second turn reuses connection");
         assert!(
-            turn2.handshake_headers().is_none(),
-            "a reused connection performs no new handshake"
+            turn2.handshake_headers().is_some(),
+            "a reused connection still exposes the stored handshake quota headers"
         );
         let mut turn2 = turn2
             .stream(&frame, RecordPlan::none())

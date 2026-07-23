@@ -1904,7 +1904,7 @@ fn config_file_candidates(
 /// A config file's serialization format, selected by its extension so both
 /// `--config foo.yaml` and a discovered `shunt.yaml` are parsed as YAML.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ConfigFormat {
+pub(crate) enum ConfigFormat {
     Toml,
     Yaml,
 }
@@ -1913,7 +1913,7 @@ impl ConfigFormat {
     /// Detect the format from a path's extension. `.yaml`/`.yml` (any case)
     /// are YAML; everything else — including no extension — is TOML, which
     /// preserves the historical `shunt.toml` default.
-    fn from_path(path: &Path) -> Self {
+    pub(crate) fn from_path(path: &Path) -> Self {
         match path.extension().and_then(|ext| ext.to_str()) {
             Some(ext) if ext.eq_ignore_ascii_case("yaml") || ext.eq_ignore_ascii_case("yml") => {
                 ConfigFormat::Yaml

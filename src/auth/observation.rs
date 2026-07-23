@@ -12,7 +12,6 @@ use serde_json::Value;
 
 use crate::auth::shared::{is_token_valid_at, jwt_claims};
 
-const CLAUDE_KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
 const GOOGLE_LOAD_CODE_ASSIST_URL: &str =
     "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist";
 const GOOGLE_RETRIEVE_QUOTA_URL: &str =
@@ -946,7 +945,7 @@ fn discover_cursor() -> Option<ObservedCredential> {
 
 fn discover_cursor_app() -> Option<ObservedCredential> {
     let session = read_cursor_app_session().ok()?;
-    Some(ObservedCredential {
+    (!session.cookie.is_empty()).then_some(ObservedCredential {
         provider: ObservedProvider::Cursor,
         identity: "Cursor account".to_string(),
         detail: Some("Cursor.app login".to_string()),
@@ -955,7 +954,6 @@ fn discover_cursor_app() -> Option<ObservedCredential> {
         access_token: String::new(),
         account_id: None,
     })
-    .filter(|_| !session.cookie.is_empty())
 }
 
 fn read_cursor_identity() -> Option<(String, String)> {
@@ -1080,6 +1078,7 @@ fn read_json(path: &PathBuf) -> Option<Value> {
 fn read_claude_keychain() -> Option<Value> {
     use std::process::Command;
 
+    const CLAUDE_KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
     let output = Command::new("/usr/bin/security")
         .args(["find-generic-password", "-s", CLAUDE_KEYCHAIN_SERVICE, "-w"])
         .output()

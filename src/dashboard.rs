@@ -15,7 +15,7 @@ use anyhow::Context;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use rand::RngCore;
 
-use crate::config::{self, Config};
+use crate::config::{self, Config, ConfigFormat};
 
 /// What [`setup`] did, for the CLI to report to the user.
 pub struct SetupOutcome {
@@ -86,7 +86,7 @@ pub fn setup(explicit_config: Option<&Path>) -> anyhow::Result<SetupOutcome> {
 
     // Config: ensure the two dashboard blocks exist without disturbing comments
     // or key order in the rest of the file.
-    let ensured = ensure_blocks(&existing, &token_file);
+    let ensured = ensure_blocks(&existing, &token_file, &config_path);
     if ensured.text != existing {
         crate::atomic_file::write_private_atomic(&config_path, ensured.text.as_bytes())
             .with_context(|| format!("writing {}", config_path.display()))?;
@@ -105,10 +105,17 @@ pub fn setup(explicit_config: Option<&Path>) -> anyhow::Result<SetupOutcome> {
 }
 
 /// Ensure `[server.admin]` (with a `tokens_file`) and `[server.oauth_usage]` are
-/// present. Pure text transform: appends only the blocks that are missing and
-/// never touches an existing `[server.admin]` (the user may point it at
-/// `tokens_env` or their own file).
-fn ensure_blocks(existing: &str, token_file: &Path) -> EnsureResult {
+/// present. Pure text transform for TOML: appends only the blocks that are
+/// missing and never touches an existing `[server.admin]`. For YAML, parses and
+/// merges `server.admin` / `server.oauth_usage` so the file stays valid YAML.
+fn ensure_blocks(existing: &str, token_file: &Path, config_path: &Path) -> EnsureResult {
+    match ConfigFormat::from_path(config_path) {
+        ConfigFormat::Toml => ensure_blocks_toml(existing, token_file),
+        ConfigFormat::Yaml => ensure_blocks_yaml(existing, token_file),
+    }
+}
+
+fn ensure_blocks_toml(existing: &str, token_file: &Path) -> EnsureResult {
     let admin_present = has_uncommented_table(existing, "server.admin");
     let oauth_present = has_uncommented_table(existing, "server.oauth_usage");
 
@@ -118,7 +125,7 @@ fn ensure_blocks(existing: &str, token_file: &Path) -> EnsureResult {
             "\n# ── Usage dashboard (added by `shunt dashboard setup`) ──────────────────\n\
              [server.admin]\n\
              tokens_file = \"{}\"\n",
-            token_file.display()
+            format_config_path(token_file)
         ));
     }
     if !oauth_present {
@@ -143,6 +150,98 @@ fn ensure_blocks(existing: &str, token_file: &Path) -> EnsureResult {
         oauth_usage_block_added: !oauth_present,
         admin_already_configured: admin_present,
     }
+}
+
+fn ensure_blocks_yaml(existing: &str, token_file: &Path) -> EnsureResult {
+    let admin_present = yaml_has_table(existing, "server", "admin");
+    let oauth_present = yaml_has_table(existing, "server", "oauth_usage");
+
+    let mut root = if existing.trim().is_empty() {
+        serde_yaml::Mapping::new()
+    } else {
+        match serde_yaml::from_str::<serde_yaml::Value>(existing) {
+            Ok(serde_yaml::Value::Mapping(mapping)) => mapping,
+            Ok(_) => {
+                return EnsureResult {
+                    text: existing.to_string(),
+                    admin_block_added: false,
+                    oauth_usage_block_added: false,
+                    admin_already_configured: admin_present,
+                };
+            }
+            Err(_) => {
+                return EnsureResult {
+                    text: existing.to_string(),
+                    admin_block_added: false,
+                    oauth_usage_block_added: false,
+                    admin_already_configured: admin_present,
+                };
+            }
+        }
+    };
+
+    let mut changed = false;
+    if !admin_present {
+        let server = root
+            .entry(serde_yaml::Value::String("server".to_string()))
+            .or_insert_with(|| serde_yaml::Mapping::new().into());
+        if let Some(server) = server.as_mapping_mut() {
+            let admin = server
+                .entry(serde_yaml::Value::String("admin".to_string()))
+                .or_insert_with(|| serde_yaml::Mapping::new().into());
+            if let Some(admin) = admin.as_mapping_mut() {
+                admin.insert(
+                    serde_yaml::Value::String("tokens_file".to_string()),
+                    serde_yaml::Value::String(format_config_path(token_file)),
+                );
+                changed = true;
+            }
+        }
+    }
+    if !oauth_present {
+        let server = root
+            .entry(serde_yaml::Value::String("server".to_string()))
+            .or_insert_with(|| serde_yaml::Mapping::new().into());
+        if let Some(server) = server.as_mapping_mut() {
+            server.insert(
+                serde_yaml::Value::String("oauth_usage".to_string()),
+                serde_yaml::Mapping::new().into(),
+            );
+            changed = true;
+        }
+    }
+
+    let text = if changed {
+        serde_yaml::to_string(&serde_yaml::Value::Mapping(root))
+            .unwrap_or_else(|_| existing.to_string())
+    } else {
+        existing.to_string()
+    };
+
+    EnsureResult {
+        text,
+        admin_block_added: !admin_present && changed,
+        oauth_usage_block_added: !oauth_present && changed,
+        admin_already_configured: admin_present,
+    }
+}
+
+fn yaml_has_table(existing: &str, section: &str, table: &str) -> bool {
+    if existing.trim().is_empty() {
+        return false;
+    }
+    let Ok(serde_yaml::Value::Mapping(root)) = serde_yaml::from_str(existing) else {
+        return false;
+    };
+    root.get(section)
+        .and_then(|section| section.get(table))
+        .is_some()
+}
+
+/// Format a filesystem path for insertion into TOML/YAML config text. Forward
+/// slashes avoid invalid TOML escape sequences on Windows backslash paths.
+fn format_config_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 /// True when an uncommented table header for `dotted` (its own table or a
@@ -219,7 +318,11 @@ mod tests {
 
     #[test]
     fn adds_both_blocks_to_empty_config() {
-        let out = ensure_blocks("", Path::new("/home/u/.shunt/admin-token"));
+        let out = ensure_blocks(
+            "",
+            Path::new("/home/u/.shunt/admin-token"),
+            Path::new("shunt.toml"),
+        );
         assert!(out.admin_block_added);
         assert!(out.oauth_usage_block_added);
         assert!(!out.admin_already_configured);
@@ -233,7 +336,11 @@ mod tests {
     #[test]
     fn is_idempotent_when_both_blocks_present() {
         let src = "[server.admin]\ntokens_file = \"/x\"\n\n[server.oauth_usage]\n";
-        let out = ensure_blocks(src, Path::new("/home/u/.shunt/admin-token"));
+        let out = ensure_blocks(
+            src,
+            Path::new("/home/u/.shunt/admin-token"),
+            Path::new("shunt.toml"),
+        );
         assert!(!out.admin_block_added);
         assert!(!out.oauth_usage_block_added);
         assert!(out.admin_already_configured);
@@ -243,7 +350,7 @@ mod tests {
     #[test]
     fn respects_existing_admin_but_adds_oauth_usage() {
         let src = "[server.admin]\ntokens_env = \"MY_TOKENS\"\n";
-        let out = ensure_blocks(src, Path::new("/t"));
+        let out = ensure_blocks(src, Path::new("/t"), Path::new("shunt.toml"));
         assert!(
             !out.admin_block_added,
             "must not touch an existing admin block"
@@ -258,7 +365,7 @@ mod tests {
     #[test]
     fn ignores_commented_out_blocks() {
         let src = "# [server.admin]\n# [server.oauth_usage]\n";
-        let out = ensure_blocks(src, Path::new("/t"));
+        let out = ensure_blocks(src, Path::new("/t"), Path::new("shunt.toml"));
         assert!(out.admin_block_added);
         assert!(out.oauth_usage_block_added);
     }
@@ -266,7 +373,7 @@ mod tests {
     #[test]
     fn treats_admin_subtable_as_present() {
         let src = "[server.admin.oidc]\npublic_url = \"https://x\"\n";
-        let out = ensure_blocks(src, Path::new("/t"));
+        let out = ensure_blocks(src, Path::new("/t"), Path::new("shunt.toml"));
         assert!(
             !out.admin_block_added,
             "an oidc subtable implies admin is configured"
@@ -299,5 +406,35 @@ mod tests {
         assert!(a
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+    }
+
+    #[test]
+    fn toml_path_uses_forward_slashes_on_windows_paths() {
+        let out = ensure_blocks(
+            "",
+            Path::new(r"C:\Users\u\.shunt\admin-token"),
+            Path::new("shunt.toml"),
+        );
+        assert!(out
+            .text
+            .contains(r#"tokens_file = "C:/Users/u/.shunt/admin-token""#));
+    }
+
+    #[test]
+    fn yaml_setup_emits_valid_yaml_blocks() {
+        let out = ensure_blocks(
+            "server:\n  bind: 127.0.0.1:3001\n",
+            Path::new("/home/u/.shunt/admin-token"),
+            Path::new("shunt.yaml"),
+        );
+        assert!(out.admin_block_added);
+        assert!(out.oauth_usage_block_added);
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&out.text).expect("valid yaml");
+        assert_eq!(
+            parsed["server"]["admin"]["tokens_file"].as_str(),
+            Some("/home/u/.shunt/admin-token")
+        );
+        assert!(parsed["server"]["oauth_usage"].is_mapping());
+        assert!(!out.text.contains("[server.admin]"));
     }
 }
