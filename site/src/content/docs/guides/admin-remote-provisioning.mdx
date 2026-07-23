@@ -1,11 +1,13 @@
 ---
 title: Admin & Remote Provisioning
-description: Enable shunt's admin web surface to provision Claude and Codex accounts remotely and inspect account-pool health.
+description: Automatically inspect Claude and GPT usage, and optionally manage shunt-owned pool accounts.
 ---
 
-shunt can expose an admin-authenticated web surface for provisioning upstream Claude and Codex/ChatGPT accounts and viewing the state of each `claude_oauth` and `chatgpt_oauth` account pool. It is opt-in: when `[server.admin]` is absent, none of the `/admin*` routes are registered and shunt's default HTTP surface is unchanged.
+shunt can expose an admin-authenticated **Accounts and usage** view. It automatically observes supported provider logins already present on the gateway host: Claude Code, Codex CLI, Gemini CLI, Kimi Code, Grok CLI, and Cursor.app. It is opt-in: when `[server.admin]` is absent, none of the `/admin*` routes are registered and shunt's default HTTP surface is unchanged.
 
-This builds on the [Anthropic multi-account](/guides/anthropic-multi-account/) and [Codex multi-account](/guides/codex-multi-account/) stores. The Claude form can create a refreshable full-OAuth account or a one-year, inference-only setup-token account. The Codex form creates a refreshable ChatGPT OAuth account. Importing existing credential files remains CLI-only.
+Observation is strictly read-only. shunt reads current access/session material only in memory and never refreshes, copies, or writes the source credential. Cursor.app's SQLite state is opened read-only. An expired source is shown as unavailable and must be renewed with its provider client. The table reports each provider's native signal: Claude's 5-hour/weekly/model-family windows, response-derived GPT/Codex windows, all Gemini Code Assist model buckets, Kimi's weekly and 5-hour limits, Grok credit/product usage, and Cursor billing-cycle/Auto + Composer/named-model usage.
+
+Managed account provisioning is a separate advanced action. Expanding **Manage pool accounts** lets you create shunt-owned Claude or Codex credentials for load-balancing. These managed copies live in `~/.shunt/accounts/` and shunt owns their refresh/writeback; they are not required merely to view local usage.
 
 ## Enable the admin surface
 
@@ -86,9 +88,18 @@ name = "codex-backup"
 
 `SHUNT_CODEX_TOKEN_URL` overrides the ChatGPT token endpoint for local integration testing. shunt accepts HTTPS overrides or plain HTTP loopback URLs only; leave it unset in production.
 
-## Inspect pool health
+## Inspect automatic usage and managed-pool health
 
-The dashboard shows account-store metadata and current state for each provider configured with `auth = "claude_oauth"` or `auth = "chatgpt_oauth"`. Claude rows include the 5-hour, shared 7-day, and `7d_oi` utilization observed from upstream responses, along with status and cooldown state. When upstream reported a reset time, each window cell also shows the time remaining until the window resets (e.g. `3d 4h`), with the absolute reset timestamp available on hover. Codex rows show the 5-hour and 7-day windows reported in `x-codex-*` response headers; unsupported windows are ignored and `7d_oi` stays `—` because Codex has no analog. Codex usage also feeds quota-aware account selection, exactly as Claude usage does (issue #195).
+The primary **Accounts and usage** table is automatic and keyed by recognizable masked identity rather than a store filename. Each row uses its provider's native signal:
+
+- **Claude** — 5-hour, weekly, and model-family quota from Anthropic's usage API; cached for 60 seconds.
+- **Codex** — response-derived windows captured from `x-codex-*` headers after GPT traffic flows through shunt. **Waiting for traffic** means this shunt process has not yet received those headers; it does not mean 0% used. Send one GPT request through this shunt to populate the row.
+- **Gemini** — every Code Assist model quota bucket returned by the Gemini CLI account. **Needs login** means the current provider-owned access token has expired. Read-only observation never uses the refresh token or writes the provider's credential file; run the provider client to renew its own login.
+- **Kimi** — weekly and 5-hour Kimi Code limits.
+- **Grok** — overall credits and per-product usage for the Grok CLI subscription.
+- **Cursor** — billing-cycle total, Auto + Composer, and named-model usage from a read-only Cursor.app session.
+
+The collapsed advanced section shows managed account-store metadata and current pool state for each provider configured with `auth = "claude_oauth"` or `auth = "chatgpt_oauth"`. Claude managed rows include the 5-hour, shared 7-day, and `7d_oi` utilization observed from upstream responses, along with status and cooldown state. When upstream reported a reset time, each window cell also shows the time remaining until the window resets (e.g. `3d 4h`), with the absolute reset timestamp available on hover. Codex managed rows show the windows reported in `x-codex-*`; unsupported windows stay `—`.
 
 The Claude account list exposes account name, credential kind (`setup_token` or `imported`), expiry, and UUID. The Codex list exposes account name, access-token expiry, and ChatGPT account ID. Neither endpoint returns token material. See [Anthropic Multi-Account](/guides/anthropic-multi-account/#selection-and-proactive-rotation) and [Codex Multi-Account](/guides/codex-multi-account/) for the respective selection behavior.
 

@@ -37,7 +37,15 @@ TTY to a browser form and surfaces the pool state that already lives in memory.
   in the operator's browser, which copies the full address-bar URL (or its
   `<code>#<state>` values) back to shunt. Importing an existing Claude Code or
   Codex credential file stays CLI-only because the source file lives on the host.
-- **Refresh rotation ownership.** A full-OAuth account is refreshed and written
+- **Usage observation and credential ownership are separate.** The primary
+  **Accounts and usage** view automatically discovers supported provider logins on
+  the host: Claude Code, Codex CLI, Gemini CLI, Kimi Code, Grok CLI, and
+  Cursor.app. It reads current access/session material only in memory and never
+  refreshes, copies, or writes the source; Cursor.app's SQLite state is opened
+  read-only. An expired source is reported as unavailable. Claude usage is
+  cached for 60 seconds; Codex remains response-derived; the other integrations
+  call their first-party read-only quota surfaces.
+- **Refresh rotation ownership.** A managed full-OAuth account is refreshed and written
   back by `ClaudeAuthStore`. Because the provider can rotate the refresh token,
   its store file must have one active process owner; copying or sharing it
   across running hosts can invalidate another process. Setup-token accounts
@@ -193,7 +201,8 @@ process-lifetime state:
 | `POST` | `/admin/logout` | Clear the session |
 | `GET` | `/admin/accounts` | JSON: Claude store metadata (name, kind, expiry, UUID — never the token) |
 | `GET` | `/admin/accounts/codex` | JSON: Codex store metadata (name, expiry, account ID — never the token) |
-| `GET` | `/admin/pool` | JSON: per-`claude_oauth`/`chatgpt_oauth`-provider pool state |
+| `GET` | `/admin/observed` | JSON: read-only observed Claude, Codex, Gemini, Kimi, Grok, and Cursor identity, state, and provider-native usage — never token material |
+| `GET` | `/admin/pool` | JSON: per-`claude_oauth`/`chatgpt_oauth` managed-pool state |
 | `POST` | `/admin/accounts/claude` | `{name, mode}` → start Claude provisioning (`oauth` or `setup_token`); omitted `mode` defaults to `setup_token`; returns `{authorize_url}` |
 | `POST` | `/admin/accounts/claude/{name}/complete` | `{code}` → finish; stores the Claude account |
 | `DELETE` | `/admin/accounts/claude/{name}` | Remove the Claude account's store file |
@@ -261,9 +270,26 @@ Like Claude, an empty-account `chatgpt_oauth` provider scans the Codex store and
 makes the new account live on its next request. Explicit-account providers need a
 name-only account entry and reload.
 
-## Phase 2 — pool dashboard
+## Phase 2 — observed usage and managed-pool health
 
-`AccountPool::snapshot(provider, &[AccountConfig], model)` returns a token-free,
+The dashboard is usage-first. `GET /admin/observed` discovers supported local
+credentials on each request but keeps every token/session in a private,
+non-serializable model. Claude Code checks its configured/default credential file,
+then macOS Keychain service `Claude Code-credentials`; Codex, Gemini, Kimi, and
+Grok read their CLI credential stores; Cursor opens Cursor.app's `state.vscdb`
+with `SQLITE_OPEN_READ_ONLY`. The endpoint masks account identity, labels
+ownership as `observed`, and never invokes a refresh/writeback store. Provider
+requests have a 15-second timeout. Claude reads `/api/oauth/usage`, with the
+token-free snapshot cached process-wide for 60 seconds. Gemini returns every
+Code Assist model bucket, Kimi returns weekly and 5-hour windows, Grok returns
+credit/product usage, and Cursor returns billing-cycle, Auto + Composer, and
+named-model usage. Codex remains `response-derived`: both translated Messages
+traffic and raw inbound Responses attach the default CLI account id to
+`x-codex-*` quota capture without importing the credential into the managed
+store. Before such traffic its row explicitly says it is waiting for traffic.
+
+Managed provisioning and store metadata remain available under a collapsed
+**Manage pool accounts (advanced)** section. `AccountPool::snapshot(provider, &[AccountConfig], model)` returns a token-free,
 serializable view per account: 5h/7d/7d_oi utilization + reset, unified status,
 cooldown-seconds-remaining, `near_quota`, and a derived `available` flag. It reads
 the same `entries` map `select_order` reads, clears only already-past quota

@@ -80,8 +80,21 @@ async fn forward_codex_passthrough_single(
     body: Bytes,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let credential = resolve_credential(&state.config, &route, &state.http_client).await?;
+    let observed_account = match &credential {
+        Credential::ChatGptOAuth { account_id, .. } => Some(AccountConfig {
+            name: "local-codex".to_string(),
+            uuid: Some(account_id.clone()),
+            ..Default::default()
+        }),
+        _ => None,
+    };
     let upstream =
         passthrough_send(&state, &route, credential, &passthrough_headers, &body).await?;
+    if let Some(account) = &observed_account {
+        state
+            .accounts
+            .note_codex_quota(&route.provider, account, upstream.headers());
+    }
     let status = upstream.status();
     Ok((status, relay_passthrough(upstream)))
 }

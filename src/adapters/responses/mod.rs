@@ -17,7 +17,7 @@ use serde_json::Value;
 
 use crate::{
     adapters::{Adapter, AdapterError, AdapterFuture},
-    auth::{self, resolve_credential},
+    auth::{self, resolve_credential, Credential},
     config::{AuthMode, CountTokens},
     model::responses::translate_request,
     routing::Route,
@@ -174,12 +174,24 @@ async fn forward(
     }
 
     let credential = resolve_credential(&state.config, &route, &state.http_client).await?;
+    // The default unpooled Codex CLI credential is still an observed account:
+    // attach its stable account id to quota capture so the read-only admin view
+    // can display x-codex-* response-derived usage without importing or copying
+    // the credential into shunt's managed account store.
+    let codex_quota_account = match &credential {
+        Credential::ChatGptOAuth { account_id, .. } => Some(crate::config::AccountConfig {
+            name: "local-codex".to_string(),
+            uuid: Some(account_id.clone()),
+            ..Default::default()
+        }),
+        _ => None,
+    };
     let forward_options = ForwardOptions {
         upstream_body,
         credential,
         auth,
         turn,
-        codex_quota_account: None,
+        codex_quota_account,
         estimate_input,
     };
     // Codex WebSocket v2 transport (issue #32), opt-in per provider and only for

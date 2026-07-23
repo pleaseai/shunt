@@ -32,6 +32,7 @@ use crate::{
     auth::{
         claude::{auth as claude_auth, login as claude_login, store as claude_store},
         inbound::{constant_time_eq, InboundAuth},
+        observation::{self, ObservedProvider},
     },
     config::AuthMode,
     error::ShuntError,
@@ -118,6 +119,7 @@ pub fn admin_router() -> Router<AppState> {
         .route("/admin/oidc/callback", get(oidc::callback))
         .route("/admin/logout", post(logout))
         .route("/admin/accounts", get(list_accounts))
+        .route("/admin/observed", get(observed_accounts))
         .route("/admin/pool", get(pool))
         .route("/admin/accounts/claude", post(add_account))
         .route(
@@ -495,6 +497,272 @@ async fn list_accounts(State(state): State<AppState>, headers: HeaderMap) -> Res
             internal("failed to list accounts")
         }
     }
+}
+
+async fn observed_accounts(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let state = state.refreshed();
+    if authenticate(&state, &headers).is_none() {
+        return unauthorized();
+    }
+
+    let discovered = match tokio::task::spawn_blocking(observation::discover).await {
+        Ok(discovered) => discovered,
+        Err(join_error) => {
+            tracing::error!(%join_error, "admin: observed credential discovery task panicked");
+            return internal("failed to discover local credentials");
+        }
+    };
+
+    let mut rows = Vec::new();
+    for observed in discovered {
+        let provider = observed.provider.as_str();
+        let source = observed.source.as_str();
+        if !observed.valid && observed.provider != ObservedProvider::Kimi {
+            rows.push(json!({
+                "provider": provider,
+                "identity": observed.identity,
+                "detail": observed.detail,
+                "source": source,
+                "ownership": "observed",
+                "signal": observed.provider.signal(),
+                "state": "expired",
+                "message": "Re-authenticate with the provider CLI; shunt never refreshes observed credentials."
+            }));
+            continue;
+        }
+
+        match observed.provider {
+            ObservedProvider::Claude => {
+                let cached = state
+                    .admin_stores
+                    .observed_usage
+                    .claude(&observed.access_token);
+                let usage = match cached {
+                    Some(usage) => Ok(usage),
+                    None => crate::auth::claude::usage::fetch_usage(
+                        &state.http_client,
+                        "https://api.anthropic.com",
+                        &observed.access_token,
+                    )
+                    .await
+                    .inspect(|usage| {
+                        state
+                            .admin_stores
+                            .observed_usage
+                            .store_claude(&observed.access_token, usage.clone())
+                    }),
+                };
+                match usage {
+                    Ok(usage) => rows.push(json!({
+                        "provider": provider,
+                        "identity": observed.identity,
+                        "detail": observed.detail,
+                        "source": source,
+                        "ownership": "observed",
+                        "signal": "quota",
+                        "state": "available",
+                        "utilization_5h": usage.five_hour.as_ref().map(|window| window.utilization),
+                        "reset_5h": usage.five_hour.as_ref().and_then(|window| window.resets_at),
+                        "utilization_7d": usage.seven_day.as_ref().map(|window| window.utilization),
+                        "reset_7d": usage.seven_day.as_ref().and_then(|window| window.resets_at),
+                        "utilization_7d_oi": usage.seven_day_oi.as_ref().map(|window| window.utilization),
+                        "reset_7d_oi": usage.seven_day_oi.as_ref().and_then(|window| window.resets_at)
+                    })),
+                    Err(error) => {
+                        tracing::debug!(%error, "admin: read-only Claude usage observation failed");
+                        rows.push(json!({
+                            "provider": provider,
+                            "identity": observed.identity,
+                            "detail": observed.detail,
+                            "source": source,
+                            "ownership": "observed",
+                            "signal": "quota",
+                            "state": "unavailable",
+                            "message": "Usage could not be read with the current Claude Code login."
+                        }));
+                    }
+                }
+            }
+            ObservedProvider::Codex => {
+                let account = crate::config::AccountConfig {
+                    name: "local-codex".to_string(),
+                    uuid: observed.account_id.clone(),
+                    ..Default::default()
+                };
+                let snapshot = state
+                    .config
+                    .providers
+                    .iter()
+                    .filter(|(_, config)| config.auth == AuthMode::ChatgptOauth)
+                    .filter_map(|(provider_name, _)| {
+                        state
+                            .accounts
+                            .snapshot(
+                                provider_name,
+                                std::slice::from_ref(&account),
+                                None,
+                                state.config.server.pool.as_ref(),
+                            )
+                            .into_iter()
+                            .next()
+                    })
+                    .find(|snapshot| snapshot.has_state);
+                let has_state = snapshot.as_ref().is_some_and(|snapshot| snapshot.has_state);
+                rows.push(json!({
+                    "provider": provider,
+                    "identity": observed.identity,
+                    "detail": observed.detail,
+                    "source": source,
+                    "ownership": "observed",
+                    "signal": "response-derived",
+                    "state": if has_state { "available" } else { "waiting-for-traffic" },
+                    "message": if has_state { None } else { Some("Usage appears after a GPT response carries x-codex-* quota headers.") },
+                    "utilization_5h": snapshot.as_ref().and_then(|snapshot| snapshot.utilization_5h),
+                    "reset_5h": snapshot.as_ref().and_then(|snapshot| snapshot.reset_5h),
+                    "utilization_7d": snapshot.as_ref().and_then(|snapshot| snapshot.utilization_7d),
+                    "reset_7d": snapshot.as_ref().and_then(|snapshot| snapshot.reset_7d),
+                    "utilization_7d_oi": snapshot.as_ref().and_then(|snapshot| snapshot.utilization_7d_oi),
+                    "reset_7d_oi": snapshot.as_ref().and_then(|snapshot| snapshot.reset_7d_oi)
+                }));
+            }
+            ObservedProvider::Gemini => {
+                match observation::fetch_gemini_quota(&state.http_client, &observed.access_token)
+                    .await
+                {
+                    Ok(snapshot) => rows.push(json!({
+                        "provider": provider,
+                        "identity": snapshot.account_label,
+                        "detail": snapshot.detail.or(Some(observed.identity)),
+                        "source": if snapshot.account_label.starts_with("Antigravity") { "Antigravity local service (read-only)" } else { source },
+                        "ownership": "observed",
+                        "signal": "quota",
+                        "state": "available",
+                        "quota_buckets": snapshot.buckets.into_iter().filter_map(|bucket| {
+                            let label = bucket.model_id?;
+                            Some(json!({
+                                "label": label.strip_prefix("gemini-").unwrap_or(&label).replace('-', " "),
+                                "remaining": bucket.remaining_fraction,
+                                "remaining_amount": bucket.remaining_amount,
+                                "reset_time": bucket.reset_time
+                            }))
+                        }).collect::<Vec<_>>()
+                    })),
+                    Err(error) => {
+                        tracing::debug!(%error, "admin: read-only Gemini quota observation failed");
+                        rows.push(json!({
+                            "provider": provider,
+                            "identity": observed.identity,
+                            "detail": observed.detail,
+                            "source": source,
+                            "ownership": "observed",
+                            "signal": "quota",
+                            "state": "unavailable",
+                            "message": "Gemini quota could not be read with the current Gemini CLI login."
+                        }));
+                    }
+                }
+            }
+            ObservedProvider::Kimi => {
+                let sidecar_base_url = state
+                    .config
+                    .providers
+                    .iter()
+                    .find(|(name, provider)| {
+                        name.eq_ignore_ascii_case("kimi") || provider.base_url.contains("/coding")
+                    })
+                    .map(|(_, provider)| provider.base_url.as_str());
+                match observation::fetch_kimi_quota(
+                    &state.http_client,
+                    &observed.access_token,
+                    sidecar_base_url,
+                )
+                .await
+                {
+                    Ok(buckets) => rows.push(json!({
+                        "provider": provider,
+                        "identity": "Kimi Code",
+                        "detail": observed.identity,
+                        "source": source,
+                        "ownership": "observed",
+                        "signal": "quota",
+                        "state": "available",
+                        "quota_buckets": buckets
+                    })),
+                    Err(error) => {
+                        tracing::debug!(%error, "admin: read-only Kimi quota observation failed");
+                        rows.push(json!({
+                            "provider": provider,
+                            "identity": "Kimi Code",
+                            "detail": observed.identity,
+                            "source": source,
+                            "ownership": "observed",
+                            "signal": "quota",
+                            "state": "unavailable",
+                            "message": "Kimi quota could not be read with the current Kimi Code login."
+                        }));
+                    }
+                }
+            }
+            ObservedProvider::Cursor => {
+                match observation::fetch_cursor_quota(&state.http_client).await {
+                    Ok(snapshot) => rows.push(json!({
+                        "provider": provider,
+                        "identity": snapshot.account_label,
+                        "detail": snapshot.detail.or(observed.detail),
+                        "source": "Cursor.app session (read-only)",
+                        "ownership": "observed",
+                        "signal": "quota",
+                        "state": "available",
+                        "quota_buckets": snapshot.buckets
+                    })),
+                    Err(error) => {
+                        tracing::debug!(%error, "admin: read-only Cursor quota observation failed");
+                        rows.push(json!({
+                            "provider": provider,
+                            "identity": observed.identity,
+                            "detail": observed.detail,
+                            "source": source,
+                            "ownership": "observed",
+                            "signal": "quota",
+                            "state": "unavailable",
+                            "message": "Cursor quota could not be read from the current Cursor.app login."
+                        }));
+                    }
+                }
+            }
+            ObservedProvider::Grok => {
+                match observation::fetch_grok_quota(&state.http_client, &observed.access_token)
+                    .await
+                {
+                    Ok(snapshot) => rows.push(json!({
+                        "provider": provider,
+                        "identity": snapshot.account_label,
+                        "detail": snapshot.detail.or(observed.detail),
+                        "source": source,
+                        "ownership": "observed",
+                        "signal": "quota",
+                        "state": "available",
+                        "quota_buckets": snapshot.buckets
+                    })),
+                    Err(error) => {
+                        tracing::debug!(%error, "admin: read-only Grok quota observation failed");
+                        rows.push(json!({
+                            "provider": provider,
+                            "identity": observed.identity,
+                            "detail": observed.detail,
+                            "source": source,
+                            "ownership": "observed",
+                            "signal": "quota",
+                            "state": "unavailable",
+                            "message": "Grok quota could not be read with the current Grok CLI login."
+                        }));
+                    }
+                }
+            }
+        }
+    }
+
+    json_secure(json!({ "accounts": rows }))
 }
 
 async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {

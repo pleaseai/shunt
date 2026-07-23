@@ -20,7 +20,8 @@ description: The endpoints shunt serves as a Claude Code LLM gateway.
 | `POST` | `/admin/logout` | Clear the browser session |
 | `GET` | `/admin/accounts` | Claude account-store metadata: name, kind, expiry, and UUID; never token material |
 | `GET` | `/admin/accounts/codex` | Codex account-store metadata: name, expiry, and ChatGPT account ID; never token material |
-| `GET` | `/admin/pool` | Per-`claude_oauth`/`chatgpt_oauth`-provider pool state; Codex rows include reported 5h/7d usage (`7d_oi` has no Codex analog) |
+| `GET` | `/admin/observed` | Read-only local Claude Code, Codex, Gemini, Kimi, Grok, and Cursor identity plus provider-native usage; never returns token material or refreshes source credentials |
+| `GET` | `/admin/pool` | Per-`claude_oauth`/`chatgpt_oauth`-provider managed-pool state; Codex rows include reported 5h/7d usage (`7d_oi` has no Codex analog) |
 | `POST` | `/admin/accounts/claude` | Start Claude browser provisioning with `{name, mode}` where `mode` is `oauth` or `setup_token` (omitted defaults to `setup_token`); returns `{authorize_url}` |
 | `POST` | `/admin/accounts/claude/{name}/complete` | Complete Claude provisioning with `{code}` containing `<code>#<state>`; stores the account and reports whether it is live |
 | `DELETE` | `/admin/accounts/claude/{name}` | Remove the named Claude account's store file |
@@ -55,7 +56,7 @@ The `/managed/settings` route exists only when [`[server.gateway]`](/reference/c
 
 `ETag` is the quoted checksum (`"sha256:<settings-hash>"`). Send it back in `If-None-Match` to receive `304 Not Modified` with an empty body when settings have not changed; comma-separated validator lists, weak validators, `*`, and legacy unquoted checksum values are accepted. No configured `policies` returns `404`; a policy that resolves to an empty document returns `200` with `settings: {}`.
 
-The `/admin*` routes exist only when [`[server.admin]`](/reference/configuration/#serveradmin-optional) is configured; without that table, none of them are registered.
+The `/admin*` routes exist only when [`[server.admin]`](/reference/configuration/#serveradmin-optional) is configured; without that table, none of them are registered. `GET /admin/observed` auto-discovers supported Claude Code, Codex CLI, Gemini CLI, Kimi Code, Grok CLI, and Cursor.app credentials on the gateway host. It never refreshes or writes those sources. Claude usage is cached for 60 seconds; Codex usage is response-derived and remains unavailable until traffic through this shunt returns `x-codex-*` headers; the other providers use their first-party read-only quota surfaces. Managed account CRUD and `/admin/pool` remain the separate shunt-owned credential lane.
 
 The `/backend-api/codex/responses`, `/responses`, `/v1/responses`, `/backend-api/codex/analytics-events/events`, and `/codex/analytics-events/events` routes exist only when [`[server.codex_endpoint]`](/reference/configuration/#servercodex_endpoint-optional) is configured; without that table, none of them are registered. The three Responses paths relay raw OpenAI Responses requests and responses, unlike the Anthropic-Messages-translating `/v1/messages` above. The two analytics paths use the same inbound-auth policy, never forward or retain the client payload, and return `200 {}` after authentication even for malformed or oversized bodies. Only sanitized event names are counted in `shunt.codex_client_events`; with no metric sink configured they are pure discard sinks. See the [inbound Codex endpoint guide](/guides/inbound-codex-endpoint/).
 

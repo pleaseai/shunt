@@ -14,6 +14,7 @@ use std::{
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::RngCore;
+use sha2::{Digest, Sha256};
 
 /// A fresh 256-bit URL-safe random identifier (session id or CSRF token).
 pub(crate) fn random_id() -> String {
@@ -27,6 +28,51 @@ pub(crate) fn random_id() -> String {
 /// indefinitely (the 256-bit `state` already makes guessing infeasible).
 const MAX_PENDING_ATTEMPTS: u32 = 5;
 const MAX_OIDC_STATES: usize = 4096;
+const OBSERVED_USAGE_TTL: Duration = Duration::from_secs(60);
+
+#[derive(Clone)]
+struct CachedObservedUsage {
+    observed_at: Instant,
+    token_hash: [u8; 32],
+    snapshot: crate::accounts::UsageSnapshot,
+}
+
+/// Token-free cache for read-only provider usage observation. Browser refreshes
+/// inside the TTL reuse the last snapshot instead of polling the provider again.
+pub struct ObservedUsageCache {
+    claude: Mutex<Option<CachedObservedUsage>>,
+}
+
+impl ObservedUsageCache {
+    fn new() -> Self {
+        Self {
+            claude: Mutex::new(None),
+        }
+    }
+
+    pub fn claude(&self, access_token: &str) -> Option<crate::accounts::UsageSnapshot> {
+        let token_hash: [u8; 32] = Sha256::digest(access_token.as_bytes()).into();
+        self.claude
+            .lock()
+            .expect("observed usage cache lock poisoned")
+            .as_ref()
+            .filter(|cached| {
+                cached.token_hash == token_hash && cached.observed_at.elapsed() < OBSERVED_USAGE_TTL
+            })
+            .map(|cached| cached.snapshot.clone())
+    }
+
+    pub fn store_claude(&self, access_token: &str, snapshot: crate::accounts::UsageSnapshot) {
+        *self
+            .claude
+            .lock()
+            .expect("observed usage cache lock poisoned") = Some(CachedObservedUsage {
+            observed_at: Instant::now(),
+            token_hash: Sha256::digest(access_token.as_bytes()).into(),
+            snapshot,
+        });
+    }
+}
 
 struct Session {
     csrf: String,
@@ -300,6 +346,7 @@ pub struct AdminStores {
     pub sessions: SessionStore,
     pub pending: PendingStore,
     pub oidc_states: OidcStateStore,
+    pub observed_usage: ObservedUsageCache,
     /// Guards the completion endpoint against code-guessing storms.
     pub complete_rate: RateLimiter,
     /// Guards the login endpoint against admin-token brute-force. Coarse and
@@ -314,6 +361,7 @@ impl AdminStores {
             sessions: SessionStore::new(),
             pending: PendingStore::new(),
             oidc_states: OidcStateStore::new(),
+            observed_usage: ObservedUsageCache::new(),
             complete_rate: RateLimiter::new(Duration::from_secs(60), 30),
             login_rate: RateLimiter::new(Duration::from_secs(60), 30),
         }
@@ -463,6 +511,22 @@ mod tests {
             now,
             Duration::from_secs(60),
         ));
+    }
+
+    #[test]
+    fn observed_usage_cache_is_scoped_to_access_token() {
+        let cache = ObservedUsageCache::new();
+        let snapshot = crate::accounts::UsageSnapshot {
+            five_hour: Some(crate::accounts::UsageWindow {
+                utilization: 0.25,
+                resets_at: None,
+            }),
+            ..Default::default()
+        };
+        cache.store_claude("account-a-token", snapshot.clone());
+
+        assert_eq!(cache.claude("account-a-token"), Some(snapshot));
+        assert_eq!(cache.claude("account-b-token"), None);
     }
 
     #[test]
