@@ -1,0 +1,21 @@
+docs/desktop-app.md
+  s_9cd5818dc79ed9::t_d642420c84af9e 202-203,205,207
+  s_9cd5818dc79ed9::t_ab44f5f54b9faa 24-27
+  s_9cd5818dc79ed9::t_30018cce6bbfa6 215-223,228-234,237-239
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "7e88d94931aae0f29ed20f2b3e0344ab36a234f5",
+  "prompts": {},
+  "sessions": {
+    "s_9cd5818dc79ed9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c603408f-2733-4b6d-a5ad-3f5e7a72696f",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
