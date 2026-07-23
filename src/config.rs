@@ -1350,6 +1350,13 @@ pub enum ProviderKind {
     Responses,
     /// Cursor ConnectRPC AgentService protocol.
     Cursor,
+    /// Google Gemini via the Code Assist backend — Anthropic Messages are
+    /// translated to Gemini `generateContent`/`streamGenerateContent`, wrapped
+    /// in the Code Assist `{model,project,request}` envelope. Auth reuses a
+    /// Google OAuth subscription token (`google_oauth`).
+    Gemini,
+    /// Local Antigravity CLI binary (`agy`) execution.
+    Antigravity,
 }
 
 /// How shunt authenticates to an upstream.
@@ -1370,6 +1377,14 @@ pub enum AuthMode {
     XaiOauth,
     /// Cursor OAuth acquired by `shunt login cursor`.
     CursorOauth,
+    /// Google OAuth subscription token (Gemini Code Assist / Google One AI Pro),
+    /// reused from the gemini CLI login (`~/.gemini/oauth_creds.json`). shunt
+    /// can refresh it when operator-supplied client credentials are present.
+    /// Only valid for
+    /// `kind = "gemini"`.
+    GoogleOauth,
+    /// No authentication header sent (e.g. local subprocess CLI adapters).
+    None,
 }
 
 /// The dialect of the OpenAI Responses API an upstream speaks. Some backends
@@ -1450,6 +1465,14 @@ pub fn host_is_anthropic(host: &str) -> bool {
 /// another origin.
 pub fn host_is_chatgpt(host: &str) -> bool {
     host == "chatgpt.com" || host.ends_with(".chatgpt.com")
+}
+
+/// Whether `host` belongs to the Google Code Assist backend
+/// (`cloudcode-pa.googleapis.com`). Used to reject a `google_oauth`
+/// provider pointed at a non-Code-Assist host, so shunt never
+/// leaks the reused Google subscription bearer off-origin.
+pub fn host_is_google_codeassist(host: &str) -> bool {
+    host == "cloudcode-pa.googleapis.com"
 }
 
 /// Whether `host` identifies the local machine.
@@ -1551,6 +1574,12 @@ pub enum ConfigError {
     CursorOauthNonCursorHost { provider: String, host: String },
     #[error("providers.{provider} uses auth = \"cursor_oauth\" but base_url is not https; refusing to send a subscription token over plaintext")]
     CursorOauthNotHttps { provider: String },
+    #[error("providers.{provider} uses auth = \"google_oauth\" but kind is not \"gemini\"; the anthropic adapter would forward the client's own credential instead of the Google token")]
+    GoogleOauthWrongKind { provider: String },
+    #[error("providers.{provider} uses auth = \"google_oauth\" but base_url host {host} is not a googleapis.com host; refusing to send a subscription token off-origin")]
+    GoogleOauthNonGoogleHost { provider: String, host: String },
+    #[error("providers.{provider} uses auth = \"google_oauth\" but base_url is not https; refusing to send a subscription token over plaintext")]
+    GoogleOauthNotHttps { provider: String },
     #[error("providers.{provider}.accounts requires auth = \"claude_oauth\" or \"chatgpt_oauth\"")]
     AccountsRequireOauthProvider { provider: String },
     #[error("providers.{provider} uses auth = \"claude_oauth\" but kind is not \"anthropic\"")]
@@ -1735,6 +1764,26 @@ impl ProviderConfig {
             retry: RetryConfig::default(),
         }
     }
+
+    /// A `Gemini`-kind provider on the Google Code Assist backend, reusing a
+    /// Google OAuth subscription token (`google_oauth`). Used for the built-in
+    /// `gemini` provider.
+    fn gemini(base_url: &str) -> Self {
+        Self {
+            kind: ProviderKind::Gemini,
+            base_url: base_url.to_string(),
+            auth: AuthMode::GoogleOauth,
+            api_key_env: None,
+            api_key_header: ApiKeyHeader::Bearer,
+            effort: None,
+            count_tokens: CountTokens::default(),
+            accounts: Vec::new(),
+            account_scope: Vec::new(),
+            websocket: false,
+            tool_search: false,
+            retry: RetryConfig::default(),
+        }
+    }
 }
 
 impl Default for Config {
@@ -1804,6 +1853,34 @@ impl Default for Config {
                     AuthMode::XaiOauth,
                     None,
                 ),
+            ),
+            (
+                // Google Gemini via the Code Assist backend, reusing the Google
+                // One AI Pro subscription token (google_oauth reads the gemini
+                // CLI login; optional refresh uses operator-supplied client
+                // credentials). Reached by routing model ids
+                // like gemini-3.1-pro-preview / gemini-3-flash-preview to it,
+                // exactly as the codex/grok subscription providers are routed.
+                "gemini".to_string(),
+                ProviderConfig::gemini("https://cloudcode-pa.googleapis.com"),
+            ),
+            (
+                // Local Antigravity CLI binary (`agy`) execution for Gemini models.
+                "antigravity".to_string(),
+                ProviderConfig {
+                    kind: ProviderKind::Antigravity,
+                    base_url: "http://localhost".to_string(),
+                    auth: AuthMode::None,
+                    api_key_env: None,
+                    api_key_header: ApiKeyHeader::Bearer,
+                    effort: None,
+                    count_tokens: CountTokens::default(),
+                    accounts: Vec::new(),
+                    account_scope: Vec::new(),
+                    websocket: false,
+                    tool_search: false,
+                    retry: RetryConfig::default(),
+                },
             ),
         ]);
         Self {
@@ -2164,6 +2241,35 @@ impl Config {
                         provider: name.clone(),
                         host: host.to_string(),
                     });
+                }
+            }
+            // A google_oauth provider injects the operator's reused Google
+            // subscription bearer (Gemini Code Assist), so — like the oauth
+            // guards above — its base_url must stay on a googleapis.com host over
+            // https (loopback allowed for local debugging proxies), never a
+            // gateway or plaintext endpoint that would receive the token. It must
+            // also be a `gemini`-kind provider so the Gemini adapter injects the
+            // token, rather than the anthropic adapter forwarding the client's
+            // own credential off-origin.
+            if provider.auth == AuthMode::GoogleOauth {
+                if provider.kind != ProviderKind::Gemini {
+                    return Err(ConfigError::GoogleOauthWrongKind {
+                        provider: name.clone(),
+                    });
+                }
+                let host = url.host_str().unwrap_or_default();
+                if !host_is_loopback(host) {
+                    if url.scheme() != "https" {
+                        return Err(ConfigError::GoogleOauthNotHttps {
+                            provider: name.clone(),
+                        });
+                    }
+                    if !host_is_google_codeassist(host) {
+                        return Err(ConfigError::GoogleOauthNonGoogleHost {
+                            provider: name.clone(),
+                            host: host.to_string(),
+                        });
+                    }
                 }
             }
             if !provider.accounts.is_empty()
@@ -4357,6 +4463,68 @@ id = "claude-sonnet-5"
         config.providers.get_mut("cursor").unwrap().base_url = "http://api2.cursor.sh".to_string();
         let error = config.validate().unwrap_err();
         assert!(matches!(error, ConfigError::CursorOauthNotHttps { .. }));
+        assert!(error.to_string().contains("plaintext"));
+    }
+
+    #[test]
+    fn default_seeds_builtin_gemini_provider() {
+        let config = Config::default();
+        let gemini = config.provider("gemini").unwrap();
+        assert_eq!(gemini.kind, ProviderKind::Gemini);
+        assert_eq!(gemini.base_url, "https://cloudcode-pa.googleapis.com");
+        assert_eq!(gemini.auth, AuthMode::GoogleOauth);
+        // A gemini provider routes through the Gemini adapter.
+        assert_eq!(
+            crate::routing::AdapterKind::from(gemini.kind),
+            crate::routing::AdapterKind::Gemini
+        );
+        // The built-in gemini provider (googleapis.com over https) validates.
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn google_oauth_requires_gemini_kind() {
+        let mut config = Config::default();
+        config.providers.get_mut("gemini").unwrap().kind = ProviderKind::Anthropic;
+        let error = config.validate().unwrap_err();
+        assert!(matches!(error, ConfigError::GoogleOauthWrongKind { .. }));
+    }
+
+    #[test]
+    fn google_oauth_rejects_non_google_host() {
+        // Pointing a google_oauth provider off-origin is refused (bearer-leak guard).
+        let mut config = Config::default();
+        config.providers.get_mut("gemini").unwrap().base_url =
+            "https://evil.example.com".to_string();
+        let error = config.validate().unwrap_err();
+        assert!(matches!(
+            error,
+            ConfigError::GoogleOauthNonGoogleHost { .. }
+        ));
+        assert!(error.to_string().contains("evil.example.com"));
+    }
+
+    #[test]
+    fn google_oauth_rejects_other_googleapis_subdomain() {
+        // Non-Code-Assist Google subdomains (e.g. storage) are refused to avoid bearer leakage.
+        let mut config = Config::default();
+        config.providers.get_mut("gemini").unwrap().base_url =
+            "https://storage.googleapis.com".to_string();
+        let error = config.validate().unwrap_err();
+        assert!(matches!(
+            error,
+            ConfigError::GoogleOauthNonGoogleHost { .. }
+        ));
+        assert!(error.to_string().contains("storage.googleapis.com"));
+    }
+
+    #[test]
+    fn google_oauth_requires_https_base_url() {
+        let mut config = Config::default();
+        config.providers.get_mut("gemini").unwrap().base_url =
+            "http://cloudcode-pa.googleapis.com".to_string();
+        let error = config.validate().unwrap_err();
+        assert!(matches!(error, ConfigError::GoogleOauthNotHttps { .. }));
         assert!(error.to_string().contains("plaintext"));
     }
 

@@ -331,6 +331,9 @@ fn websocket_headers(credential: Credential) -> Result<HeaderMap, AdapterError> 
         Credential::ClaudeOauth { access_token, .. } => {
             set("authorization", format!("Bearer {access_token}"))?
         }
+        Credential::GoogleOauth { access_token, .. } => {
+            set("authorization", format!("Bearer {access_token}"))?
+        }
         Credential::Passthrough => {}
     }
     Ok(headers)

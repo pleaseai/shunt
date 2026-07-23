@@ -398,7 +398,9 @@ async fn passthrough_send(
         Credential::ApiKey { value, .. } => {
             request = request.bearer_auth(value);
         }
-        Credential::XaiOauth { access_token } | Credential::ClaudeOauth { access_token, .. } => {
+        Credential::XaiOauth { access_token }
+        | Credential::ClaudeOauth { access_token, .. }
+        | Credential::GoogleOauth { access_token, .. } => {
             request = request.bearer_auth(access_token);
         }
         Credential::CursorOauth { .. } | Credential::Passthrough => {}

@@ -277,8 +277,7 @@ toward being a fleet gateway and warrant a conscious decision first.
   ChatGPT/Codex subscription accounts (as CLIProxyAPI's ecosystem does) is the part
   still missing. Ties to the observability gap.
 
-- **I. Native Gemini (and other) backends.** Only relevant if shunt broadens past the
-  Anthropic-Messages / OpenAI-Responses duality. Not currently in scope.
+- **I. Native Gemini backend — Implemented (Path B).** Reuses the Google One AI Pro / Code Assist subscription token (`google_oauth`) from the Gemini CLI credential file. Valid access tokens work directly; shunt-side refresh requires operator-supplied Google OAuth client credentials. Supports models like `gemini-3.1-pro-preview` and `gemini-3-flash-preview`.
 
 ## 7. One-line takeaway
 

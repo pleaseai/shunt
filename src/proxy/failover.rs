@@ -240,7 +240,13 @@ async fn count_tokens_response(
 ) -> Result<(StatusCode, axum::response::Response), ForwardError> {
     let provider = route.provider.clone();
     let upstream_model = route.upstream_model.clone();
-    let result = if matches!(route.adapter, AdapterKind::Responses | AdapterKind::Cursor) {
+    let result = if matches!(
+        route.adapter,
+        AdapterKind::Responses
+            | AdapterKind::Cursor
+            | AdapterKind::Gemini
+            | AdapterKind::Antigravity
+    ) {
         let mode = state
             .config
             .provider(&provider)
@@ -299,6 +305,16 @@ async fn dispatch(
         }
         AdapterKind::Cursor => {
             CursorAdapter
+                .forward(state, route, uri, headers, body)
+                .await
+        }
+        AdapterKind::Gemini => {
+            crate::adapters::gemini::GeminiAdapter
+                .forward(state, route, uri, headers, body)
+                .await
+        }
+        AdapterKind::Antigravity => {
+            crate::adapters::antigravity::AntigravityAdapter
                 .forward(state, route, uri, headers, body)
                 .await
         }

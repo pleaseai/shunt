@@ -11,6 +11,8 @@ pub enum AdapterKind {
     Anthropic,
     Responses,
     Cursor,
+    Gemini,
+    Antigravity,
 }
 
 impl From<ProviderKind> for AdapterKind {
@@ -19,6 +21,8 @@ impl From<ProviderKind> for AdapterKind {
             ProviderKind::Anthropic => AdapterKind::Anthropic,
             ProviderKind::Responses => AdapterKind::Responses,
             ProviderKind::Cursor => AdapterKind::Cursor,
+            ProviderKind::Gemini => AdapterKind::Gemini,
+            ProviderKind::Antigravity => AdapterKind::Antigravity,
         }
     }
 }
