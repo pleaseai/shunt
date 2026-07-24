@@ -70,9 +70,9 @@ error shape; full protocol/translation test coverage; `cargo fmt` + `clippy -D w
 
 ### TICKET-B2 — Response + SSE translation (Gemini → Anthropic events) · TODO · depends-on: B1 · wave 3
 **Problem:** the wrapped Gemini response/stream must become Anthropic Messages events.
-**Do:** `src/model/gemini.rs` — non-stream response → Anthropic message; SSE `data:` chunks → `content_block_delta`(text_delta), `functionCall`→`tool_use` blocks, `finishReason`→`message_delta.stop_reason`, `usageMetadata`→usage; thinking parts → thinking blocks; handle no-`[DONE]` stream end. Precedent: `src/model/responses.rs`.
+**Do:** `src/model/gemini.rs` — non-stream response → Anthropic message; SSE `data:` chunks → `content_block_delta`(text_delta), `functionCall`→`tool_use` blocks, `finishReason`→`message_delta.stop_reason`, `usageMetadata`→usage; thinking parts → thinking blocks; handle no-`[DONE]` stream end. Precedent: `src/model/responses.rs`. Gemini 3 `thoughtSignature` is gateway-private continuation state: encode a signed function-call part's exact opaque value in the corresponding Anthropic `tool_use.id`, then restore it to that `functionCall` when Claude Code returns the id in assistant history and `tool_result.tool_use_id`. This keeps tool inputs unmodified, works whether thinking is enabled or disabled, remains stateless across restarts, and naturally preserves first-call-only placement for parallel calls. For imported unsigned Gemini 3 function-call history, use Google's documented placeholder on the first call in that model content; do not add it to Gemini 2.5 history.
 **Files:** `src/model/gemini.rs`.
-**Done when:** golden tests turn captured SSE frames (see `logs/`) into the correct Anthropic event sequence for text, tool-call, and finish; non-stream path covered.
+**Done when:** golden tests turn captured SSE frames (see `logs/`) into the correct Anthropic event sequence for text, tool-call, and finish; non-stream path covered; sequential and parallel Gemini 3 tool turns replay their exact signatures and unsigned Gemini 2.5 history remains unchanged.
 
 ## Stream D — Adapter
 

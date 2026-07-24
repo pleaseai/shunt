@@ -13,7 +13,7 @@ use crate::{
     auth::{resolve_credential, Credential},
     config::AuthMode,
     model::gemini::{map_gemini_error, GeminiSseMachine},
-    model::gemini_request::{translate_request, wrap_code_assist_envelope},
+    model::gemini_request::{translate_request_for_model, wrap_code_assist_envelope},
     routing::Route,
     server::AppState,
 };
@@ -97,7 +97,7 @@ async fn forward(
 
     let is_streaming = json_body.get("stream").and_then(Value::as_bool) == Some(true);
 
-    let inner_req = translate_request(&json_body)?;
+    let inner_req = translate_request_for_model(&json_body, &route.upstream_model)?;
 
     let base_url = provider.base_url.trim_end_matches('/');
 

@@ -1,6 +1,8 @@
 use serde_json::json;
 use shunt::model::gemini::{map_gemini_error, translate_gemini_error_val, GeminiSseMachine};
-use shunt::model::gemini_request::{translate_request, wrap_code_assist_envelope};
+use shunt::model::gemini_request::{
+    translate_request, translate_request_for_model, wrap_code_assist_envelope,
+};
 
 #[test]
 fn test_translate_plain_user_message() {
@@ -140,6 +142,176 @@ fn test_tool_result_uses_original_function_name() {
         translated["contents"][2]["parts"][0]["functionResponse"]["name"],
         "get_weather"
     );
+}
+
+#[test]
+fn test_gemini_3_thought_signature_survives_tool_round_trip() {
+    let signature = "opaque-step-1-signature";
+    let mut machine = GeminiSseMachine::new("gemini-3.1-pro-preview");
+    let chunk = json!({
+        "candidates": [{
+            "content": {
+                "role": "model",
+                "parts": [{
+                    "functionCall": {
+                        "name": "default_api:Read",
+                        "args": { "file_path": "a.tex" }
+                    },
+                    "thoughtSignature": signature
+                }]
+            },
+            "finishReason": "STOP"
+        }]
+    });
+
+    let events = machine.process_chunk(&chunk);
+    assert_eq!(events[1].event, "content_block_start");
+    assert_eq!(events[1].data["content_block"]["type"], "tool_use");
+    assert_eq!(events[1].data["index"], 0);
+    assert!(events[1].data["content_block"]["id"]
+        .as_str()
+        .unwrap()
+        .starts_with("call_gemini_v1_"));
+    let assistant_content = machine.final_json()["content"].clone();
+    let tool_use_id = assistant_content
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|block| block["type"] == "tool_use")
+        .and_then(|block| block["id"].as_str())
+        .unwrap();
+    let request = json!({
+        "messages": [
+            { "role": "user", "content": "Read a.tex" },
+            { "role": "assistant", "content": assistant_content },
+            { "role": "user", "content": [{
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": "file contents"
+            }]}
+        ]
+    });
+
+    let translated = translate_request(&request).unwrap();
+    assert_eq!(
+        translated["contents"][1]["parts"][0]["thoughtSignature"],
+        signature
+    );
+}
+
+#[test]
+fn test_gemini_3_parallel_calls_keep_signature_on_first_call() {
+    let request = json!({
+        "messages": [{
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "call_gemini_v1_cGFyYWxsZWwtc2lnbmF0dXJl",
+                    "name": "read_file",
+                    "input": { "path": "a.tex" }
+                },
+                {
+                    "type": "tool_use",
+                    "id": "toolu_2",
+                    "name": "read_file",
+                    "input": { "path": "b.tex" }
+                }
+            ]
+        }]
+    });
+
+    let translated = translate_request_for_model(&request, "gemini-3.1-pro-preview").unwrap();
+    let parts = translated["contents"][0]["parts"].as_array().unwrap();
+    assert_eq!(parts[0]["thoughtSignature"], "parallel-signature");
+    assert!(parts[1].get("thoughtSignature").is_none());
+}
+
+#[test]
+fn test_gemini_3_sequential_steps_keep_distinct_signatures() {
+    let request = json!({
+        "messages": [
+            { "role": "user", "content": "Read both files" },
+            { "role": "assistant", "content": [
+                { "type": "tool_use", "id": "call_gemini_v1_c3RlcC0x", "name": "read_file", "input": { "path": "a.tex" } }
+            ]},
+            { "role": "user", "content": [
+                { "type": "tool_result", "tool_use_id": "call_gemini_v1_c3RlcC0x", "content": "a" }
+            ]},
+            { "role": "assistant", "content": [
+                { "type": "tool_use", "id": "call_gemini_v1_c3RlcC0y", "name": "read_file", "input": { "path": "b.tex" } }
+            ]}
+        ]
+    });
+
+    let translated = translate_request_for_model(&request, "gemini-3.1-pro-preview").unwrap();
+    assert_eq!(
+        translated["contents"][1]["parts"][0]["thoughtSignature"],
+        "step-1"
+    );
+    assert_eq!(
+        translated["contents"][3]["parts"][0]["thoughtSignature"],
+        "step-2"
+    );
+}
+
+#[test]
+fn test_unsigned_gemini_3_history_uses_documented_placeholder() {
+    let request = json!({
+        "messages": [{
+            "role": "assistant",
+            "content": [{
+                "type": "tool_use",
+                "id": "toolu_imported",
+                "name": "read_file",
+                "input": { "path": "a.tex" }
+            }]
+        }]
+    });
+
+    let translated = translate_request_for_model(&request, "gemini-3.1-pro-preview").unwrap();
+    assert_eq!(
+        translated["contents"][0]["parts"][0]["thoughtSignature"],
+        "context_engineering_is_the_way to_go"
+    );
+}
+
+#[test]
+fn test_foreign_tool_use_id_uses_gemini_3_placeholder() {
+    let request = json!({
+        "messages": [{
+            "role": "assistant",
+            "content": [
+                { "type": "tool_use", "id": "toolu_foreign", "name": "read_file", "input": {} }
+            ]
+        }]
+    });
+
+    let translated = translate_request_for_model(&request, "gemini-3.1-pro-preview").unwrap();
+    assert_eq!(
+        translated["contents"][0]["parts"][0]["thoughtSignature"],
+        "context_engineering_is_the_way to_go"
+    );
+}
+
+#[test]
+fn test_unsigned_gemini_2_5_history_stays_unsigned() {
+    let request = json!({
+        "messages": [{
+            "role": "assistant",
+            "content": [{
+                "type": "tool_use",
+                "id": "toolu_legacy",
+                "name": "read_file",
+                "input": { "path": "a.tex" }
+            }]
+        }]
+    });
+
+    let translated = translate_request_for_model(&request, "gemini-2.5-pro").unwrap();
+    assert!(translated["contents"][0]["parts"][0]
+        .get("thoughtSignature")
+        .is_none());
 }
 
 #[test]

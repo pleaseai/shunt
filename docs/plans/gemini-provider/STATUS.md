@@ -1,10 +1,16 @@
 # STATUS — Native Gemini provider (Path B)
 
-Last updated: 2026-07-22 (See `docs/notes/gemini-provider-capacity-and-models.md`)
+Last updated: 2026-07-25 (issue #237 Gemini 3 tool continuation fix)
 
 ## Stage
-Plan authored; S1 auth spike DONE (see `logs/2026-07-21_S1-auth-spike.md`). Backend, wire
-format, and the two target slugs live-verified.
+Provider implementation is open in #234. Issue #237 reproduced a Gemini 3 tool-continuation
+failure: response translation dropped `thoughtSignature`, so reconstructed `functionCall`
+history received HTTP 400. The fix is in progress on `fix/237-gemini-thought-signatures`:
+carry exact signatures in namespaced Anthropic `tool_use.id` values and restore them on the
+next Gemini request; use Google's documented placeholder only for imported unsigned Gemini 3
+history. Focused translation tests pass; full quality gates pass. A live Gemini 3.1 Pro response
+proved the provider returns a signature on its tool call, but provider 429s blocked the immediate
+continuation probe; retry after quota cooldown remains.
 
 **AUTH DECISION (2026-07-21, amended 2026-07-22): reuse the gemini-cli subscription token.**
 Hard constraint from user: must use the Google One AI Pro subscription at ZERO added cost.
@@ -21,8 +27,9 @@ API key rejected (adds per-token cost).
 - **Known fragility:** Google is sunsetting this client for individuals. Rerun the Gemini CLI
   login if the shared token expires and no refresh client credentials are configured.
 
-External advisory panel (codex/gemini/grok) was not run (agent_ctl blocked by local python hook);
-run `/plan review gemini-provider` if you want the cross-model attack before/while building.
+External root-cause review and final-diff review were run with Codex for #237. Codex confirmed
+the original signature-loss path, caught an intermediate carrier-association gap that was removed,
+and found no surviving defect in the final `tool_use.id` design.
 
 ## Base state (clean before tickets)
 - Repo: `shunt`. Currently on `feat/214-admin-live-activity` (UNRELATED). **Create `feat/NN-gemini-provider` off a clean `main`** + a tracking issue before TICKET-C1/A1/etc. (S1 is a scratch spike, no branch needed).
@@ -55,6 +62,7 @@ Critical path to first spawnable Gemini agent: S1 → C1 → A1/B1 → B2 → D1
 A2 (own login) was dropped; E1 (multi-account concurrency) is the remaining v2 hardening.
 
 ## Next action
-S1 + C1 done on branch `feat/gemini-provider`. A1 reads the shared Gemini CLI credential
-file and optionally refreshes with operator-supplied client credentials; B1/B2/D1/T1/X1 are
-implemented and verified. E1 (multi-account concurrency) remains future hardening.
+Retry the live two-tool Gemini 3 continuation after the provider quota cooldown. The deterministic
+round-trip suite, format, clippy, and all 1,189 workspace tests pass; the final diff's independent
+review found no surviving defect. After the live retry, update #237/#234 and commit the focused
+fix once the user approves the commit plan.

@@ -1,12 +1,17 @@
 //! Anthropic Messages -> Gemini generateContent request translation.
 
 use axum::response::IntoResponse;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 
 use crate::adapters::AdapterError;
 
 const MAX_SCHEMA_DEPTH: usize = 64;
+const GEMINI_3_MODEL_PREFIX: &str = "gemini-3";
+const GEMINI_TOOL_USE_ID_PREFIX: &str = "call_gemini_v1_";
+// Google documents this exact value for imported/custom Gemini 3 function-call history.
+const GEMINI_THOUGHT_SIGNATURE_PLACEHOLDER: &str = "context_engineering_is_the_way to_go";
 
 fn bad_request(message: impl Into<String>) -> AdapterError {
     AdapterError {
@@ -18,9 +23,15 @@ fn bad_request(message: impl Into<String>) -> AdapterError {
 
 /// Translate an Anthropic Messages request into a Gemini `generateContent` request body.
 ///
-/// Decoupled from the Code Assist envelope (`{model, project, request}`); callers
-/// targeting Code Assist can wrap the resulting JSON payload with [`wrap_code_assist_envelope`].
+/// Uses the request's model id for model-specific history validation. Adapters with
+/// an alias should call [`translate_request_for_model`] with the resolved upstream id.
 pub fn translate_request(request: &Value) -> Result<Value, AdapterError> {
+    let model = request.get("model").and_then(Value::as_str).unwrap_or("");
+    translate_request_for_model(request, model)
+}
+
+/// Translate a request using the resolved Gemini model id.
+pub fn translate_request_for_model(request: &Value, model: &str) -> Result<Value, AdapterError> {
     let mut out = Map::new();
 
     // 1. System instruction
@@ -29,7 +40,7 @@ pub fn translate_request(request: &Value) -> Result<Value, AdapterError> {
     }
 
     // 2. Contents (multi-turn history)
-    let contents = translate_messages(request)?;
+    let contents = translate_messages(request, model)?;
     out.insert("contents".to_string(), Value::Array(contents));
 
     // 3. Generation Config
@@ -90,7 +101,7 @@ fn translate_system_instruction(request: &Value) -> Option<Value> {
     }
 }
 
-fn translate_messages(request: &Value) -> Result<Vec<Value>, AdapterError> {
+fn translate_messages(request: &Value, model: &str) -> Result<Vec<Value>, AdapterError> {
     let Some(messages) = request.get("messages").and_then(Value::as_array) else {
         return Ok(Vec::new());
     };
@@ -106,6 +117,7 @@ fn translate_messages(request: &Value) -> Result<Vec<Value>, AdapterError> {
         };
 
         let mut parts = Vec::new();
+        let mut saw_function_call = false;
 
         if let Some(content) = message.get("content") {
             match content {
@@ -166,15 +178,26 @@ fn translate_messages(request: &Value) -> Result<Vec<Value>, AdapterError> {
                                 let input =
                                     block.get("input").cloned().unwrap_or_else(|| json!({}));
                                 if !name.is_empty() {
-                                    if let Some(id) = block.get("id").and_then(Value::as_str) {
+                                    let id = block.get("id").and_then(Value::as_str).unwrap_or("");
+                                    if !id.is_empty() {
                                         tool_names.insert(id.to_string(), name.to_string());
                                     }
-                                    parts.push(json!({
+                                    let signature = decode_tool_use_signature(id).or_else(|| {
+                                        (!saw_function_call
+                                            && model.starts_with(GEMINI_3_MODEL_PREFIX))
+                                        .then(|| GEMINI_THOUGHT_SIGNATURE_PLACEHOLDER.to_string())
+                                    });
+                                    let mut part = json!({
                                         "functionCall": {
                                             "name": name,
                                             "args": input
                                         }
-                                    }));
+                                    });
+                                    if let Some(signature) = signature {
+                                        part["thoughtSignature"] = Value::String(signature);
+                                    }
+                                    parts.push(part);
+                                    saw_function_call = true;
                                 }
                             }
                             "tool_result" => {
@@ -216,6 +239,14 @@ fn translate_messages(request: &Value) -> Result<Vec<Value>, AdapterError> {
     }
 
     Ok(contents)
+}
+
+fn decode_tool_use_signature(id: &str) -> Option<String> {
+    let encoded = id.strip_prefix(GEMINI_TOOL_USE_ID_PREFIX)?;
+    let bytes = URL_SAFE_NO_PAD.decode(encoded).ok()?;
+    String::from_utf8(bytes)
+        .ok()
+        .filter(|signature| !signature.is_empty())
 }
 
 fn extract_tool_result_content(block: &Value) -> Result<Value, AdapterError> {

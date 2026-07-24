@@ -2,9 +2,16 @@
 
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde_json::{json, Value};
 
 use crate::adapters::AdapterError;
+
+const GEMINI_TOOL_USE_ID_PREFIX: &str = "call_gemini_v1_";
+
+/// Pack Gemini's opaque function-call signature into the Anthropic tool-use join
+/// key. Claude Code returns this id unchanged in assistant history and in the
+/// matching `tool_result`, including when extended thinking is disabled.
 
 #[derive(Debug, Clone)]
 pub struct SseEvent {
@@ -225,7 +232,12 @@ impl GeminiSseMachine {
                 .unwrap_or("unknown_tool");
             let args = func_call.get("args").cloned().unwrap_or_else(|| json!({}));
 
-            let tool_use_id = format!("call_{:012x}", rand::random::<u64>());
+            let tool_use_id = part
+                .get("thoughtSignature")
+                .and_then(Value::as_str)
+                .filter(|signature| !signature.is_empty())
+                .map(encode_tool_use_id)
+                .unwrap_or_else(|| format!("call_{:012x}", rand::random::<u64>()));
             let idx = self.block_index;
 
             events.push(SseEvent {
@@ -439,6 +451,13 @@ impl GeminiSseMachine {
             }
         })
     }
+}
+
+fn encode_tool_use_id(signature: &str) -> String {
+    format!(
+        "{GEMINI_TOOL_USE_ID_PREFIX}{}",
+        URL_SAFE_NO_PAD.encode(signature)
+    )
 }
 
 /// Translate Gemini error JSON payload to Anthropic error envelope.
