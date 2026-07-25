@@ -15,6 +15,7 @@ pub mod session;
 mod codex;
 mod html;
 mod oidc;
+mod script;
 
 use std::{collections::HashSet, io, sync::Arc, time::Duration};
 
