@@ -259,53 +259,131 @@ function usageBar(parent, label, remaining, resetTime) {{
   track.appendChild(fill); item.appendChild(track); parent.appendChild(item);
 }}
 
+// Pool providers are config-named (`[providers.anthropic]`); observations are
+// vendor-named. Only the built-in kind is mapped — a provider table under any
+// other name simply renders as its own group rather than being mis-merged.
+const POOL_PROVIDER_ALIASES = {{ anthropic: "claude" }};
+
+// Fold managed pool accounts and read-only observations into one row set per
+// provider. Coalesced by account uuid: when a managed account holds the same
+// subscription as the local client login, that is ONE account seen through two
+// lenses, not two accounts. Listing it twice is precisely what made this table
+// unreadable with a pool configured.
+function accountGroups(observed, pool, accounts) {{
+  const uuidByName = {{}};
+  for (const a of ((accounts && accounts.accounts) || [])) if (a.uuid) uuidByName[a.name] = a.uuid;
+  const groups = new Map();
+  const groupFor = (provider) => {{ if (!groups.has(provider)) groups.set(provider, []); return groups.get(provider); }};
+  const byUuid = new Map();
+  for (const p of ((pool && pool.providers) || [])) {{
+    const provider = POOL_PROVIDER_ALIASES[p.provider] || p.provider;
+    for (const a of (p.accounts || [])) {{
+      const row = {{ provider: provider, label: a.name, detail: null, managed: a, observed: null,
+        state: a.disabled ? "disabled" : !a.has_state ? "unseen" : a.cooldown_secs_remaining ? "cooling" : a.near_quota ? "near-quota" : "available",
+        utilization_5h: a.utilization_5h, reset_5h: a.reset_5h,
+        utilization_7d: a.utilization_7d, reset_7d: a.reset_7d,
+        utilization_7d_oi: a.utilization_7d_oi, reset_7d_oi: a.reset_7d_oi }};
+      groupFor(provider).push(row);
+      const uuid = uuidByName[a.name];
+      if (uuid) byUuid.set(uuid, row);
+    }}
+  }}
+  for (const o of observed) {{
+    // A missing uuid means "identity unknown" and must never match.
+    const match = o.uuid ? byUuid.get(o.uuid) : null;
+    if (match) {{
+      match.observed = o; match.detail = o.detail;
+      // Prefer the client's windows: the pool only learns a window from a
+      // response header it has actually received, so it reports null for
+      // windows the client can already see.
+      for (const k of ["utilization_5h", "reset_5h", "utilization_7d", "reset_7d", "utilization_7d_oi", "reset_7d_oi"])
+        if (o[k] !== null && o[k] !== undefined) match[k] = o[k];
+      continue;
+    }}
+    groupFor(o.provider).push({{ provider: o.provider, label: o.identity || o.provider, detail: o.detail,
+      managed: null, observed: o, state: o.state,
+      utilization_5h: o.utilization_5h, reset_5h: o.reset_5h,
+      utilization_7d: o.utilization_7d, reset_7d: o.reset_7d,
+      utilization_7d_oi: o.utilization_7d_oi, reset_7d_oi: o.reset_7d_oi }});
+  }}
+  return groups;
+}}
+
+function rowStatusText(row) {{
+  const o = row.observed;
+  if (o) {{
+    if (o.state === "expired") return "Needs login";
+    if (o.state === "unavailable") return "Usage unavailable";
+    if (o.state === "waiting-for-traffic") return "Waiting for traffic";
+    if (o.signal === "integration-pending") return "Connected";
+  }}
+  if (row.state === "disabled") return "Disabled";
+  if (row.state === "cooling") return "Cooling";
+  if (row.state === "near-quota") return "Near quota";
+  if (row.state === "unseen") return "No traffic yet";
+  return "Live";
+}}
+
 async function loadObserved() {{
   const body = $("observed"); body.textContent = "";
   let data, res;
   try {{ res = await fetch("/admin/observed"); data = await res.json(); }}
   catch (e) {{ const r = body.insertRow(); const c = cell(r, "Failed to observe local accounts"); c.colSpan = 4; return; }}
   if (!res.ok) {{ const r = body.insertRow(); const c = cell(r, (data.error && data.error.message) || "Failed to observe local accounts"); c.colSpan = 4; return; }}
-  const list = (data && data.accounts) || [];
-  if (!list.length) {{ const r = body.insertRow(); const c = cell(r, "No supported local provider login found. Sign in with a provider CLI."); c.colSpan = 4; c.className = "muted"; return; }}
-  for (const a of list) {{
-    const r = body.insertRow();
-    providerCell(r, a.provider);
-    const identity = cell(r, a.identity || a.provider);
-    if (a.detail) {{ const detail = document.createElement("small"); detail.className = "account-detail"; detail.textContent = a.detail; identity.appendChild(detail); }}
-    identity.title = a.source + " · read-only";
-    const pending = a.signal === "integration-pending";
-    if (pending) r.className = "pending-row";
-    const statusText = a.state === "expired" ? "Needs login"
-      : a.state === "unavailable" ? "Usage unavailable"
-      : a.state === "waiting-for-traffic" ? "Waiting for traffic"
-      : pending ? "Connected"
-      : "Live";
-    const status = cell(r, statusText); status.className = "status"; status.dataset.state = a.state;
-    const statusNote = document.createElement("small"); statusNote.className = "status-note";
-    if (a.state === "waiting-for-traffic") statusNote.textContent = "Quota arrives in GPT response headers";
-    else if (a.state === "expired") statusNote.textContent = "The provider client owns refresh";
-    else if (a.state === "unavailable") statusNote.textContent = "Current login could not read quota";
-    if (statusNote.textContent) status.appendChild(statusNote);
-    if (a.message) status.title = a.message;
-    const usage = document.createElement("td"); usage.className = "usage-lines"; r.appendChild(usage);
-    const buckets = (a.quota_buckets || []).filter(b => b.remaining !== null && b.remaining !== undefined);
-    if (buckets.length) {{
-      for (const b of buckets) usageBar(usage, b.label, b.remaining, b.reset_time);
-      usage.title = buckets.map(b => b.label + ": " + Math.round((1 - b.remaining) * 1000) / 10 + "% used" + (b.reset_time ? ", resets " + new Date(b.reset_time).toLocaleString() : "")).join("\n");
-    }} else {{
-      const windows = [
-        ["5h", a.utilization_5h, a.reset_5h],
-        ["Week", a.utilization_7d, a.reset_7d],
-        ["Fable", a.utilization_7d_oi, a.reset_7d_oi]
-      ].filter(window => window[1] !== null && window[1] !== undefined);
-      for (const window of windows) usageBar(usage, window[0], 1 - window[1], window[2] ? new Date(window[2] * 1000).toISOString() : null);
-      if (!windows.length) {{ const empty = document.createElement("span"); empty.className = "usage-empty";
-        empty.textContent = a.state === "expired" ? "Sign in again with the provider client"
-          : a.state === "waiting-for-traffic" ? "Send one GPT request through this shunt"
-          : pending ? "Usage integration in progress"
-          : "No usage reported yet"; usage.appendChild(empty); }}
-    }}
+  // Managed pool state only enriches this view. If either call fails the table
+  // still renders the observations alone rather than rendering nothing.
+  let pool = null, accounts = null;
+  try {{
+    const [poolRes, accountsRes] = await Promise.all([fetch("/admin/pool"), fetch("/admin/accounts")]);
+    if (poolRes.ok) pool = await poolRes.json();
+    if (accountsRes.ok) accounts = await accountsRes.json();
+  }} catch (e) {{ /* observation-only render */ }}
+  const groups = accountGroups((data && data.accounts) || [], pool, accounts);
+  let rendered = 0;
+  for (const [provider, rows] of groups) {{
+    rows.forEach((row, index) => {{
+      rendered++;
+      const r = body.insertRow();
+      // The provider is named once per group; continuation rows keep the grid
+      // column so the account labels stay aligned under it.
+      if (index === 0) providerCell(r, provider);
+      else {{ const spacer = document.createElement("td"); spacer.className = "provider-continued"; r.appendChild(spacer); }}
+      const identity = cell(r, row.label);
+      if (row.detail) {{ const detail = document.createElement("small"); detail.className = "account-detail"; detail.textContent = row.detail; identity.appendChild(detail); }}
+      if (row.managed && row.observed) identity.title = "managed pool account · same subscription as the local " + providerLabel(provider) + " login";
+      else if (row.managed) identity.title = "managed pool account";
+      else if (row.observed) identity.title = row.observed.source + " · read-only";
+      const pending = !!(row.observed && row.observed.signal === "integration-pending");
+      if (pending) r.className = "pending-row";
+      const status = cell(r, rowStatusText(row)); status.className = "status"; status.dataset.state = row.state;
+      const statusNote = document.createElement("small"); statusNote.className = "status-note";
+      if (row.state === "waiting-for-traffic") statusNote.textContent = "Quota arrives in GPT response headers";
+      else if (row.state === "expired") statusNote.textContent = "The provider client owns refresh";
+      else if (row.state === "unavailable") statusNote.textContent = "Current login could not read quota";
+      else if (row.managed && row.managed.cooldown_secs_remaining) statusNote.textContent = "retries in " + untilShort(Math.floor(Date.now() / 1000) + row.managed.cooldown_secs_remaining);
+      if (statusNote.textContent) status.appendChild(statusNote);
+      if (row.observed && row.observed.message) status.title = row.observed.message;
+      const usage = document.createElement("td"); usage.className = "usage-lines"; r.appendChild(usage);
+      const buckets = ((row.observed && row.observed.quota_buckets) || []).filter(b => b.remaining !== null && b.remaining !== undefined);
+      if (buckets.length) {{
+        for (const b of buckets) usageBar(usage, b.label, b.remaining, b.reset_time);
+        usage.title = buckets.map(b => b.label + ": " + Math.round((1 - b.remaining) * 1000) / 10 + "% used" + (b.reset_time ? ", resets " + new Date(b.reset_time).toLocaleString() : "")).join("\n");
+      }} else {{
+        const windows = [
+          ["5h", row.utilization_5h, row.reset_5h],
+          ["Week", row.utilization_7d, row.reset_7d],
+          ["Fable", row.utilization_7d_oi, row.reset_7d_oi]
+        ].filter(window => window[1] !== null && window[1] !== undefined);
+        for (const window of windows) usageBar(usage, window[0], 1 - window[1], window[2] ? new Date(window[2] * 1000).toISOString() : null);
+        if (!windows.length) {{ const empty = document.createElement("span"); empty.className = "usage-empty";
+          empty.textContent = row.state === "expired" ? "Sign in again with the provider client"
+            : row.state === "waiting-for-traffic" ? "Send one GPT request through this shunt"
+            : pending ? "Usage integration in progress"
+            : "No usage reported yet"; usage.appendChild(empty); }}
+      }}
+    }});
   }}
+  if (!rendered) {{ const r = body.insertRow(); const c = cell(r, "No supported local provider login found. Sign in with a provider CLI."); c.colSpan = 4; c.className = "muted"; }}
 }}
 
 async function loadAccounts() {{

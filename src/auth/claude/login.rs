@@ -314,6 +314,34 @@ fn read_current_account_uuid(path: &Path) -> anyhow::Result<String> {
         .ok_or_else(|| anyhow::anyhow!("no oauthAccount.accountUuid in {}", path.display()))
 }
 
+/// The Claude account UUID for the credential local observation actually reads,
+/// or `None` when that cannot be established. Callers must treat `None` as
+/// "identity unknown", never as a match, so an unidentified observation is
+/// never coalesced onto a managed pool account.
+///
+/// The guard exists because the credential and the recorded identity come from
+/// decoupled places: both credential sources are profile-agnostic (the macOS
+/// Keychain uses one fixed service name; the file path is a hardcoded
+/// `$HOME/.claude/.credentials.json`), while `oauthAccount.accountUuid` lives in
+/// a config directory that `CLAUDE_CONFIG_DIR` relocates. With that variable
+/// set, the config names one account while the credential belongs to another —
+/// verified against a live pool, where it labelled an exhausted account's usage
+/// with a second account's uuid. Returning `None` there costs a merge; guessing
+/// costs a silently mis-attributed quota bar.
+pub(crate) fn current_account_uuid() -> Option<String> {
+    current_account_uuid_from(std::env::var_os("CLAUDE_CONFIG_DIR").as_deref())
+}
+
+/// Env-free half of [`current_account_uuid`], split for the same reason as
+/// [`claude_global_config_path_from`]: the guard is testable without mutating
+/// process-global environment state.
+fn current_account_uuid_from(config_dir: Option<&std::ffi::OsStr>) -> Option<String> {
+    if config_dir.is_some_and(|dir| !dir.is_empty()) {
+        return None;
+    }
+    read_current_account_uuid(&claude_global_config_path()).ok()
+}
+
 fn claude_global_config_path() -> PathBuf {
     let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|path| !path.is_empty());
     let home = std::env::var_os("HOME")
@@ -446,6 +474,20 @@ mod tests {
         assert!(oauth_expires_at_ms(Some(-10)) <= after);
         // A pathologically large lifetime saturates instead of overflowing.
         assert_eq!(oauth_expires_at_ms(Some(i64::MAX)), i64::MAX);
+    }
+
+    #[test]
+    fn current_account_uuid_declines_under_a_relocated_config_dir() {
+        // The credential sources are profile-agnostic (fixed Keychain service
+        // name, hardcoded `$HOME/.claude/.credentials.json`) while the recorded
+        // identity is not, so a relocated config dir can name a different
+        // account than the credential observation actually read. Identity
+        // unknown must stay `None`: a wrong uuid coalesces one account's usage
+        // onto another account's row in the admin surface.
+        assert_eq!(
+            current_account_uuid_from(Some(std::ffi::OsStr::new("/tmp/some-other-profile"))),
+            None
+        );
     }
 
     #[test]
