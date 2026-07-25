@@ -131,9 +131,14 @@ async function loadObserved() {
   // still renders the observations alone rather than rendering nothing.
   let pool = null, accounts = null;
   try {
-    const [poolRes, accountsRes] = await Promise.all([fetch("/admin/pool"), fetch("/admin/accounts")]);
-    if (poolRes.ok) pool = await poolRes.json();
-    if (accountsRes.ok) accounts = await accountsRes.json();
+    // Per-fetch catch, not one around Promise.all: a transient failure on one
+    // endpoint must not discard the other's result.
+    const [poolRes, accountsRes] = await Promise.all([
+      fetch("/admin/pool").catch(() => null),
+      fetch("/admin/accounts").catch(() => null)
+    ]);
+    if (poolRes && poolRes.ok) pool = await poolRes.json();
+    if (accountsRes && accountsRes.ok) accounts = await accountsRes.json();
   } catch (e) { /* observation-only render */ }
   const groups = accountGroups((data && data.accounts) || [], pool, accounts);
   let rendered = 0;

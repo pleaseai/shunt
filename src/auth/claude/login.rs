@@ -329,17 +329,24 @@ fn read_current_account_uuid(path: &Path) -> anyhow::Result<String> {
 /// with a second account's uuid. Returning `None` there costs a merge; guessing
 /// costs a silently mis-attributed quota bar.
 pub(crate) fn current_account_uuid() -> Option<String> {
-    current_account_uuid_from(std::env::var_os("CLAUDE_CONFIG_DIR").as_deref())
+    let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR");
+    let home = std::env::var_os("HOME")
+        .filter(|path| !path.is_empty())
+        .or_else(|| std::env::var_os("USERPROFILE").filter(|path| !path.is_empty()));
+    current_account_uuid_from(config_dir.as_deref(), home.as_deref())
 }
 
-/// Env-free half of [`current_account_uuid`], split for the same reason as
-/// [`claude_global_config_path_from`]: the guard is testable without mutating
-/// process-global environment state.
-fn current_account_uuid_from(config_dir: Option<&std::ffi::OsStr>) -> Option<String> {
+/// Env-free half of [`current_account_uuid`], taking both inputs for the same
+/// reason as [`claude_global_config_path_from`]: reading either one internally
+/// would leave the guard's test coupled to the ambient process environment.
+fn current_account_uuid_from(
+    config_dir: Option<&std::ffi::OsStr>,
+    home: Option<&std::ffi::OsStr>,
+) -> Option<String> {
     if config_dir.is_some_and(|dir| !dir.is_empty()) {
         return None;
     }
-    read_current_account_uuid(&claude_global_config_path()).ok()
+    read_current_account_uuid(&claude_global_config_path_from(config_dir, home)).ok()
 }
 
 fn claude_global_config_path() -> PathBuf {
@@ -485,7 +492,7 @@ mod tests {
         // unknown must stay `None`: a wrong uuid coalesces one account's usage
         // onto another account's row in the admin surface.
         assert_eq!(
-            current_account_uuid_from(Some(std::ffi::OsStr::new("/tmp/some-other-profile"))),
+            current_account_uuid_from(Some(std::ffi::OsStr::new("/tmp/some-other-profile")), None),
             None
         );
     }
