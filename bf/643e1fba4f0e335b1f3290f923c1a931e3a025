@@ -1,0 +1,19 @@
+src/proxy/failover.rs
+  s_a58eafdd3df8f0::t_1029278a06983a 257-260
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "bf643e1fba4f0e335b1f3290f923c1a931e3a025",
+  "prompts": {},
+  "sessions": {
+    "s_a58eafdd3df8f0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "604d7e82-27a0-4547-ad9c-0ba8da972a85",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
