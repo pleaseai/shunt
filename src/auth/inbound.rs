@@ -110,7 +110,7 @@ impl InboundAuth {
 /// scheme and surrounding whitespace. Returns `None` when the header is absent,
 /// unparseable, or uses a non-`Bearer` scheme. Shared by
 /// [`InboundAuth::authenticate_bearer`] and [`InboundAuth::authenticate_client`].
-fn bearer_token(headers: &HeaderMap) -> Option<&[u8]> {
+pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<&[u8]> {
     headers
         .get("authorization")
         .and_then(|value| value.to_str().ok())

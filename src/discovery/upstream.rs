@@ -5,11 +5,12 @@
 //! for an `x-api-key` caller, a Claude subscription OAuth bearer, and the
 //! reference apps gateway. A shared cache would therefore serve one caller's
 //! entitlement view to another, so this module deliberately holds **no state**
-//! — every request asks upstream with that request's own credential and gets
-//! that caller's own answer.
+//! — every request asks upstream with that request's own upstream credential and
+//! gets that caller's own answer. Credentials consumed by shunt's inbound auth
+//! gate are never relayed to the upstream.
 //!
-//! Every failure path is a silent `None`: discovery then falls back to the
-//! builtin snapshot rather than degrading the response.
+//! Failure paths return `None` and emit an operator-visible warning; discovery
+//! then falls back to the builtin snapshot rather than degrading the response.
 
 use std::time::Duration;
 
@@ -17,7 +18,12 @@ use axum::http::{HeaderMap, HeaderValue};
 use serde::Deserialize;
 
 use crate::{
-    auth::{resolve_claude_account, resolve_credential, Credential},
+    adapters::anthropic::strip_duplicate_oauth_api_key,
+    auth::{
+        self, claude,
+        inbound::{bearer_token, InboundAuth},
+        resolve_claude_account, resolve_credential, Credential,
+    },
     config::{ApiKeyHeader, AuthMode, Config, ProviderConfig, ProviderKind},
     routing::{AdapterKind, Route},
     server::AppState,
@@ -25,8 +31,9 @@ use crate::{
 
 use super::ModelEntry;
 
-/// Discovery is documented to answer well under 3 s, and this call sits in that
-/// budget, so it fails over to the builtin snapshot quickly.
+/// Overall budget for credential resolution and every upstream page request.
+/// Discovery is documented to answer well under 3 s, so the entire refresh
+/// fails over to the builtin snapshot after this deadline.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(2);
 /// The upstream page size maximum. The catalog is ~11 entries today, so this is
 /// a single request in practice; the page loop exists for correctness.
@@ -76,18 +83,55 @@ impl From<UpstreamModel> for ModelEntry {
     }
 }
 
+/// Authentication context already established by the discovery endpoint. It
+/// prevents a gateway credential consumed by shunt from being relayed upstream.
+#[derive(Clone, Copy, Default)]
+pub(super) struct InboundCredentialContext<'a> {
+    pub(super) static_auth: Option<&'a InboundAuth>,
+    pub(super) gateway_bearer_authenticated: bool,
+}
+
 /// Fetch the caller's own model list from the Anthropic upstream.
 ///
 /// Returns `None` — and the caller falls back to the builtin snapshot — when
 /// there is no Anthropic-kind upstream configured, when no credential can be
-/// resolved for it, or when the request fails, times out, or does not parse.
-pub(super) async fn fetch(state: &AppState, inbound: &HeaderMap) -> Option<Vec<ModelEntry>> {
+/// resolved for it, when the request fails, times out, or does not parse, or
+/// when pagination cannot establish that the returned catalog is complete.
+pub(super) async fn fetch(
+    state: &AppState,
+    inbound: &HeaderMap,
+    inbound_context: InboundCredentialContext<'_>,
+) -> Option<Vec<ModelEntry>> {
+    let provider_name = anthropic_provider(&state.config).map(|(name, _)| name.to_string());
+    match tokio::time::timeout(
+        FETCH_TIMEOUT,
+        fetch_within_deadline(state, inbound, inbound_context),
+    )
+    .await
+    {
+        Ok(models) => models,
+        Err(_) => {
+            tracing::warn!(
+                provider = provider_name.as_deref().unwrap_or("unknown"),
+                "upstream /v1/models discovery refresh exceeded overall deadline; using builtin catalog"
+            );
+            None
+        }
+    }
+}
+
+async fn fetch_within_deadline(
+    state: &AppState,
+    inbound: &HeaderMap,
+    inbound_context: InboundCredentialContext<'_>,
+) -> Option<Vec<ModelEntry>> {
     let (name, provider) = anthropic_provider(&state.config)?;
-    let headers = upstream_headers(state, name, provider, inbound).await?;
+    let headers = upstream_headers(state, name, provider, inbound, inbound_context).await?;
     let base = provider.base_url.trim_end_matches('/');
 
     let mut collected: Vec<ModelEntry> = Vec::new();
     let mut after_id: Option<String> = None;
+    let mut complete = false;
     for _ in 0..MAX_PAGES {
         let mut request = state
             .http_client
@@ -104,7 +148,7 @@ pub(super) async fn fetch(state: &AppState, inbound: &HeaderMap) -> Option<Vec<M
         let response = match request.send().await {
             Ok(response) if response.status().is_success() => response,
             Ok(response) => {
-                tracing::debug!(
+                tracing::warn!(
                     provider = %name,
                     status = %response.status(),
                     "upstream /v1/models rejected the discovery refresh; using builtin catalog"
@@ -112,7 +156,7 @@ pub(super) async fn fetch(state: &AppState, inbound: &HeaderMap) -> Option<Vec<M
                 return None;
             }
             Err(error) => {
-                tracing::debug!(
+                tracing::warn!(
                     provider = %name,
                     %error,
                     "upstream /v1/models unreachable; using builtin catalog"
@@ -124,7 +168,7 @@ pub(super) async fn fetch(state: &AppState, inbound: &HeaderMap) -> Option<Vec<M
         let page: UpstreamList = match response.json().await {
             Ok(page) => page,
             Err(error) => {
-                tracing::debug!(
+                tracing::warn!(
                     provider = %name,
                     %error,
                     "upstream /v1/models body did not parse; using builtin catalog"
@@ -137,12 +181,31 @@ pub(super) async fn fetch(state: &AppState, inbound: &HeaderMap) -> Option<Vec<M
         let has_more = page.has_more;
         collected.extend(page.data.into_iter().map(ModelEntry::from));
 
-        // A `has_more` with no cursor cannot be followed; stop with what we have
-        // rather than re-request the first page forever.
-        match (has_more, next) {
-            (true, Some(cursor)) => after_id = Some(cursor),
-            _ => break,
+        if !has_more {
+            complete = true;
+            break;
         }
+
+        // A `has_more` with no usable cursor cannot be followed; fail over to
+        // the builtin snapshot rather than presenting a partial list as complete.
+        let Some(cursor) = next.filter(|cursor| !cursor.trim().is_empty()) else {
+            tracing::warn!(
+                provider = %name,
+                models = collected.len(),
+                "upstream /v1/models reported more pages without a usable last_id; using builtin catalog"
+            );
+            return None;
+        };
+        after_id = Some(cursor);
+    }
+
+    if !complete {
+        tracing::warn!(
+            provider = %name,
+            models = collected.len(),
+            "upstream /v1/models exceeded pagination backstop; using builtin catalog"
+        );
+        return None;
     }
 
     if collected.is_empty() {
@@ -186,33 +249,45 @@ async fn upstream_headers(
     name: &str,
     provider: &ProviderConfig,
     inbound: &HeaderMap,
+    inbound_context: InboundCredentialContext<'_>,
 ) -> Option<HeaderMap> {
     let mut headers = HeaderMap::new();
     headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
 
     match provider.auth {
-        // Forward the caller's own credential, exactly as the Messages path
-        // does. This is what keeps the answer scoped to the caller.
+        // Forward only credentials meant for the upstream. Discovery requires
+        // gateway auth whenever configured, so first remove any value shunt's own
+        // auth gate consumed; inference passthrough routes do not have this step.
         AuthMode::Passthrough => {
-            let bearer = inbound.get("authorization").cloned();
-            let api_key = inbound.get("x-api-key").cloned();
+            let bearer = inbound.get("authorization").cloned().filter(|_| {
+                !inbound_context.gateway_bearer_authenticated
+                    && !bearer_token(inbound).is_some_and(|token| {
+                        inbound_context
+                            .static_auth
+                            .and_then(|auth| auth.authenticate_value(token))
+                            .is_some()
+                    })
+            });
+            let api_key = inbound.get("x-api-key").cloned().filter(|value| {
+                inbound_context
+                    .static_auth
+                    .and_then(|auth| auth.authenticate_value(value.as_bytes()))
+                    .is_none()
+            });
             if bearer.is_none() && api_key.is_none() {
+                tracing::warn!(
+                    provider = %name,
+                    "inbound gateway credential is not forwarded to passthrough upstream; using builtin catalog"
+                );
                 return None;
             }
-            // An `sk-ant-oat…` bearer authenticates only as a bearer; the copy
-            // Claude Code's apiKeyHelper puts in x-api-key would be rejected.
-            let oauth_bearer = bearer
-                .as_ref()
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.trim().split_once(' '))
-                .and_then(|(scheme, token)| scheme.eq_ignore_ascii_case("bearer").then_some(token))
-                .is_some_and(|token| token.trim().starts_with("sk-ant-oat"));
             if let Some(value) = bearer {
                 headers.insert("authorization", value);
             }
-            if let Some(value) = api_key.filter(|_| !oauth_bearer) {
+            if let Some(value) = api_key {
                 headers.insert("x-api-key", value);
             }
+            strip_duplicate_oauth_api_key(&mut headers);
         }
         AuthMode::ApiKey => {
             let route = probe_route(name);
@@ -231,13 +306,32 @@ async fn upstream_headers(
                 }
             }
         }
-        // Any configured account answers the catalog question, so take the first
-        // that resolves. Discovery is not an inference turn, so this walks the
-        // configured accounts directly rather than the pool: no selection,
-        // cooldown, or quota bookkeeping is disturbed.
+        // Resolve the same effective account set as inference, but walk it
+        // directly: discovery performs no pool selection, cooldown, or quota
+        // accounting, so the inference pool's state is not disturbed.
         AuthMode::ClaudeOauth => {
+            let accounts = match auth::shared::resolve_pool_accounts(
+                "Claude",
+                &provider.accounts,
+                &provider.account_scope,
+                crate::accounts::StoreFamily::Claude,
+                claude::store::default_accounts_dir(),
+                claude::store::scan_accounts,
+            )
+            .await
+            {
+                Ok(accounts) => accounts,
+                Err(error) => {
+                    tracing::warn!(
+                        provider = %name,
+                        %error,
+                        "upstream /v1/models failed to resolve Claude OAuth accounts; using builtin catalog"
+                    );
+                    return None;
+                }
+            };
             let mut token = None;
-            for account in &provider.accounts {
+            for account in accounts.iter().filter(|account| !account.disabled) {
                 if let Ok(Credential::ClaudeOauth { access_token, .. }) =
                     resolve_claude_account(account, &state.http_client).await
                 {
@@ -245,7 +339,15 @@ async fn upstream_headers(
                     break;
                 }
             }
-            headers.insert("authorization", bearer_value(&token?)?);
+            let Some(token) = token else {
+                tracing::warn!(
+                    provider = %name,
+                    accounts = accounts.iter().filter(|account| !account.disabled).count(),
+                    "no enabled Claude OAuth account resolved for /v1/models discovery; using builtin catalog"
+                );
+                return None;
+            };
+            headers.insert("authorization", bearer_value(&token)?);
             headers.insert(
                 "anthropic-beta",
                 HeaderValue::from_static("oauth-2025-04-20"),

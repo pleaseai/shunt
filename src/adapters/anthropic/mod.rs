@@ -818,7 +818,7 @@ fn outbound_headers(headers: &HeaderMap, credential: &Credential) -> HeaderMap {
 /// rejected as an invalid API key. When the forwarded bearer is an OAuth token
 /// (`sk-ant-oat…`), remove any `x-api-key` so a client that sends both — Claude
 /// Code's `apiKeyHelper` — still authenticates on passthrough.
-fn strip_duplicate_oauth_api_key(headers: &mut HeaderMap) {
+pub(crate) fn strip_duplicate_oauth_api_key(headers: &mut HeaderMap) {
     if bearer_is_subscription_oauth(headers) {
         headers.remove("x-api-key");
     }
@@ -829,7 +829,7 @@ fn strip_duplicate_oauth_api_key(headers: &mut HeaderMap) {
 /// (RFC 6750): match it without regard to case, and tolerate surrounding
 /// whitespace, so an OAuth token is recognized regardless of how the client
 /// spells the scheme.
-fn bearer_is_subscription_oauth(headers: &HeaderMap) -> bool {
+pub(crate) fn bearer_is_subscription_oauth(headers: &HeaderMap) -> bool {
     headers
         .get("authorization")
         .and_then(|value| value.to_str().ok())

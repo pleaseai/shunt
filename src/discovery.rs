@@ -209,7 +209,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     }
     if let Some(client) = static_client {
         tracing::info!(client = %client, "inbound client authenticated for GET /v1/models");
-    } else if let Some(identity) = gateway_identity {
+    } else if let Some(identity) = gateway_identity.as_ref() {
         tracing::info!(client = %identity.email, "gateway user authenticated for GET /v1/models");
     }
     let mut data: Vec<ModelEntry> = state
@@ -222,7 +222,16 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         // Ask the upstream for this caller's own catalog first; the builtin
         // table is the offline snapshot used when there is no Anthropic-kind
         // upstream, no credential to ask with, or the call fails.
-        match upstream::fetch(&state, &headers).await {
+        match upstream::fetch(
+            &state,
+            &headers,
+            upstream::InboundCredentialContext {
+                static_auth: state.inbound_auth.as_deref(),
+                gateway_bearer_authenticated: gateway_identity.is_some(),
+            },
+        )
+        .await
+        {
             Some(models) => {
                 for model in models {
                     if data.iter().all(|entry| entry.id != model.id) {
