@@ -112,8 +112,9 @@ anthropic = "claude-sonnet-5"
 ```
 
 The map key is the `[[upstreams]].name`, not the preset id. With
-`auto_include_builtin_models = true` (the default), `GET /v1/models` also advertises shunt's
-builtin Claude catalog — see [Model Discovery](/guides/model-discovery/).
+`auto_include_builtin_models = true` (the default), `GET /v1/models` first tries the live model
+list from the first Anthropic-kind upstream and falls back to shunt's builtin Claude catalog
+snapshot when that list is unavailable — see [Model Discovery](/guides/model-discovery/).
 
 ## Verify
 

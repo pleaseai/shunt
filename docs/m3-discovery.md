@@ -78,17 +78,26 @@ is the documented default. Discovery is only useful if shunt exposes a **Claude-
   `false` for a strictly curated response — that also disables the upstream call below. The
   appended models come from one of two sources, in order:
   1. **Live upstream list.** shunt issues `GET {base_url}/v1/models` against the first
-     Anthropic-kind upstream (`server.default_provider` first, then declaration order) using
-     *that request's own* credential — the caller's forwarded credential on `auth =
-     "passthrough"`, the configured key on `api_key`, the first resolvable account on
-     `claude_oauth`. The answer is therefore scoped to the caller. Entries relay `display_name`,
+     Anthropic-kind upstream (`server.default_provider` first, then declaration order). With
+     `auth = "passthrough"`, it forwards the caller's credential, so the answer is scoped to that
+     caller. If shunt consumed that credential as a `[server.auth]` client token or gateway-login
+     bearer, it does not replay it upstream; discovery logs why no upstream credential remains and
+     falls back to the snapshot. With `api_key`, shunt uses the configured key. With
+     `claude_oauth`, it uses the first resolvable, non-disabled account from the same effective
+     account set as inference, including store-scanned accounts in `account_scope` order. Discovery
+     performs no pool selection, cooldown, or quota accounting. Those two modes therefore return a
+     shared catalog scoped to a gateway-owned credential. Entries relay `display_name`,
      `created_at`, `max_input_tokens`, `max_tokens`, and `capabilities` verbatim. shunt caches
-     nothing: the upstream list is **credential-scoped** (see the builtin note below), so a
-     shared cache would serve one caller's entitlement view to another. The call is capped at
-     2 s and follows `has_more` pagination.
+     nothing; for `passthrough`, a shared cache could serve one caller's entitlement view to
+     another. The overall operation is capped at 2 s and follows `has_more` pagination up to five
+     pages. An incomplete list would silently supersede the snapshot and be emitted with
+     `has_more = false`, making truncation indistinguishable from a complete answer, so shunt
+     accepts only pagination that establishes the catalog is complete.
   2. **Builtin snapshot**, used when there is no Anthropic-kind upstream, no credential to ask
-     with, or the call fails, times out, or does not parse. Failures are silent at `debug` — the
-     response degrades to the snapshot rather than erroring.
+     with, or the call fails, times out, does not parse, returns an empty list, or produces an
+     incomplete or unfollowable paginated response. An upstream error, timeout, malformed response,
+     or incomplete pagination is logged at `warn`; discovery degrades to the snapshot rather than
+     erroring.
 
   Neither source needs a dedicated `[[routes]]` entry; those ids resolve through the normal
   routing rules, falling back to the default provider when no `[[routes]]` or
@@ -172,8 +181,9 @@ and `count_tokens_uses_tiktoken_by_default` in `tests/passthrough.rs`.
 - Upstream list fetch (`discovery::upstream`, wiremock): forwards the caller's credential and maps
   every field; makes no call at all when a passthrough upstream has no caller credential; drops the
   `x-api-key` duplicated alongside an `sk-ant-oat…` bearer; injects a configured `api_key`; follows
-  `has_more` pagination; and returns `None` — so discovery falls back to the builtin snapshot — on
-  an upstream error or an empty list. A successful fetch supersedes the snapshot
+  `has_more` pagination only while it can establish a complete result; and returns `None` — so
+  discovery falls back to the builtin snapshot — on an upstream error, an empty list, an
+  unfollowable cursor, or the five-page backstop. A successful fetch supersedes the snapshot
   (`live_upstream_list_supersedes_the_builtin_snapshot`).
 - Config validation: a map-less `[[models]]` id lacking a `[[routes]]` entry warns; a map-bearing
   entry hard-errors unless it names exactly one existing provider and has no explicit-route or
