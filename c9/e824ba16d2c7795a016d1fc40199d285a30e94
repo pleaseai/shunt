@@ -1,0 +1,89 @@
+site/src/content/docs/ja/guides/model-discovery.md
+  s_5d19f3e8b0ec20::t_5da75ff71a5dfc 6-10
+docs/gateway-protocol.md
+  s_5d19f3e8b0ec20::t_24e4aaa4a33493 277-280
+site/src/content/docs/zh-cn/guides/connect-claude-desktop.mdx
+  s_5d19f3e8b0ec20::t_2d2bca031b7326 78-79,81-88
+  s_5d19f3e8b0ec20::t_7325398e55ed22 74
+site/src/content/docs/ko/guides/model-discovery.md
+  s_5d19f3e8b0ec20::t_ba9ff67c647a57 6-10
+docs/m3-discovery.md
+  s_5d19f3e8b0ec20::t_68234c4de74cb4 43-44,48-53
+  s_5d19f3e8b0ec20::t_e18a417691dd0a 74-103
+  s_5d19f3e8b0ec20::t_8b0c8c69a7a73e 169-177
+README.md
+  s_5d19f3e8b0ec20::t_cb9a7197deaf7e 220
+site/src/content/docs/zh-cn/guides/model-discovery.md
+  s_5d19f3e8b0ec20::t_298385a841d2b0 6-10
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_5d19f3e8b0ec20::t_0a6c08cd7a2c58 12
+src/discovery.rs
+  s_5d19f3e8b0ec20::t_7fdb89224c553c 416-465,468-469
+  s_5d19f3e8b0ec20::t_f16bef83a1835f 11-12
+  s_5d19f3e8b0ec20::t_b566a50f863d83 243-246,250-251
+  s_5d19f3e8b0ec20::t_0ee071f241b600 222-238
+  s_5d19f3e8b0ec20::t_7bc8d5fb8e1b7d 137,142-145,157,166,169
+  s_5d19f3e8b0ec20::t_447b3c87ebf33b 334,348-358,361-362
+  s_5d19f3e8b0ec20::t_a286f2d89acc8e 307-308
+  s_5d19f3e8b0ec20::t_212271d95f66db 398-411
+  s_5d19f3e8b0ec20::t_a64fcea4339c10 13-112,115-117,122-123,126-128,136,138-141,154-156,158-165,167-168,414
+  s_5d19f3e8b0ec20::t_97edb7745637d1 412-413
+  s_5d19f3e8b0ec20::t_5320880250826f 415
+site/src/content/docs/reference/endpoints.md
+  s_5d19f3e8b0ec20::t_52914dc16db79e 12
+site/src/content/docs/ko/reference/endpoints.md
+  s_5d19f3e8b0ec20::t_763c33cedb55f3 12
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_5d19f3e8b0ec20::t_7e79548fb9915c 233-235
+site/src/content/docs/guides/model-discovery.md
+  s_5d19f3e8b0ec20::t_9fcfacfa9daa88 6-10
+site/src/content/docs/ja/reference/endpoints.md
+  s_5d19f3e8b0ec20::t_24b1136f485b6a 12
+src/discovery/upstream/tests.rs
+  s_5d19f3e8b0ec20::t_7d63543d7c3d96 1-247
+site/src/content/docs/ko/reference/configuration.md
+  s_5d19f3e8b0ec20::t_90a8e583daef8c 245-247
+site/src/content/docs/reference/configuration.md
+  s_5d19f3e8b0ec20::t_8816fbb454bd02 360-362
+site/src/content/docs/guides/connect-claude-desktop.mdx
+  s_5d19f3e8b0ec20::t_8dca00a28c0588 74
+  s_5d19f3e8b0ec20::t_ca6d820d4450a9 78-79,81-88
+site/src/content/docs/ko/guides/connect-claude-desktop.mdx
+  s_5d19f3e8b0ec20::t_5e8892cc3cea69 78-79,81-88
+  s_5d19f3e8b0ec20::t_e95237d7ae4f0c 74
+src/discovery/upstream.rs
+  s_5d19f3e8b0ec20::t_468ce88009d7af 1-21,23-207,209-271,273-279
+  s_5d19f3e8b0ec20::t_8bf84a37c23704 208
+  s_5d19f3e8b0ec20::t_42ab4fa607e683 272
+  s_5d19f3e8b0ec20::t_7d63543d7c3d96 280
+  s_5d19f3e8b0ec20::t_f6bcd22c968cc1 22
+site/src/content/docs/ja/guides/connect-claude-desktop.mdx
+  s_5d19f3e8b0ec20::t_d956558be64f79 74
+  s_5d19f3e8b0ec20::t_6a59739d72b143 78-79,81-88
+site/src/content/docs/ja/reference/configuration.md
+  s_29051fa1f26169::t_5b40e225391a1a 233-235
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "c9e824ba16d2c7795a016d1fc40199d285a30e94",
+  "prompts": {},
+  "sessions": {
+    "s_29051fa1f26169": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4947171e-9108-42d4-b59e-d5d81657f041",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_5d19f3e8b0ec20": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "adc6b83d-0373-4b93-87fa-24f1533ea0fb",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
