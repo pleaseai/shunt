@@ -129,15 +129,17 @@ async fn fetch_within_deadline(
     let headers = upstream_headers(state, name, provider, inbound, inbound_context).await?;
     let base = provider.base_url.trim_end_matches('/');
 
+    let url = format!("{base}/v1/models");
+    let limit = PAGE_LIMIT.to_string();
     let mut collected: Vec<ModelEntry> = Vec::new();
     let mut after_id: Option<String> = None;
     let mut complete = false;
     for _ in 0..MAX_PAGES {
         let mut request = state
             .http_client
-            .get(format!("{base}/v1/models"))
+            .get(&url)
             .timeout(FETCH_TIMEOUT)
-            .query(&[("limit", PAGE_LIMIT.to_string())]);
+            .query(&[("limit", &limit)]);
         if let Some(cursor) = after_id.as_deref() {
             request = request.query(&[("after_id", cursor)]);
         }
