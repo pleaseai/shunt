@@ -1,0 +1,31 @@
+src/adapters/responses/codex_ws.rs
+  s_f2240fde868c6c::t_ce394c129293ab 527
+  s_f2240fde868c6c::t_5feeef853bcbee 571-580,590,592,595
+  s_f2240fde868c6c::t_9207ee8b48d9d2 122-142
+  s_f2240fde868c6c::t_cd43c3f6f24680 1586-1692,1694-1698,1703-1747
+  s_f2240fde868c6c::t_b0aedf64e2cb39 36
+  s_f2240fde868c6c::t_f7babf576ff34e 523-526
+  s_f2240fde868c6c::t_e19ef035a26cee 80-89
+  s_f2240fde868c6c::t_d635b32229cc34 190-192
+  s_f2240fde868c6c::t_c63d7a63eba664 1693,1699-1702
+  s_f2240fde868c6c::t_38e8d94b8965a1 207
+  s_f2240fde868c6c::t_1c34b8bf7fa32b 222
+docs/m7-codex-websocket.md
+  s_f2240fde868c6c::t_9ec8e1e2729c80 138-141
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "f219f65d9ed09a31e0973b90c4e93fc86b914742",
+  "prompts": {},
+  "sessions": {
+    "s_f2240fde868c6c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d0f0e764-63cc-4ccc-addc-add728dbbe1f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
