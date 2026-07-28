@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.25.0](https://github.com/pleaseai/shunt/compare/v0.24.0...v0.25.0) (2026-07-28)
+
+
+### Features
+
+* **admin:** auto-link provider usage ([#236](https://github.com/pleaseai/shunt/issues/236)) ([e7f01f1](https://github.com/pleaseai/shunt/commit/e7f01f1cd7c5546839e9a4cd5a5caefec8195b23))
+* **gemini:** add Code Assist and Antigravity providers ([#234](https://github.com/pleaseai/shunt/issues/234)) ([93fe325](https://github.com/pleaseai/shunt/commit/93fe325fab57acfdca2d75904fd741225a8811da))
+
+
+### Bug Fixes
+
+* **gemini:** preserve thought signatures across tool turns ([#240](https://github.com/pleaseai/shunt/issues/240)) ([466d67c](https://github.com/pleaseai/shunt/commit/466d67ccb50f993aa2474285899ccce78ae870b6))
+
 ## [0.24.0](https://github.com/pleaseai/shunt/compare/v0.23.0...v0.24.0) (2026-07-22)
 
 
