@@ -221,7 +221,14 @@ async fn fetch_within_deadline(
     Some(collected)
 }
 
-/// The Anthropic-kind upstream to ask, preferring `server.default_provider`.
+/// The Anthropic-kind upstream to ask: `server.default_provider`, and only it.
+///
+/// Discovery may only advertise ids that inference can actually serve. An id
+/// matching no `[[routes]]`/`[[route_prefixes]]` entry falls back to
+/// `server.default_provider`, so asking some *other* Anthropic-kind upstream
+/// would advertise a catalog the provider those ids route to cannot serve.
+/// When the default provider is not Anthropic-kind, no upstream's live catalog
+/// is guaranteed routable, so discovery answers from the builtin snapshot.
 ///
 /// Gated on `kind` rather than an `anthropic.com` host check so an
 /// Anthropic-compatible gateway is asked about *its own* catalog. That is
@@ -229,18 +236,10 @@ async fn fetch_within_deadline(
 /// backend without the endpoint simply fails the fetch and falls back.
 fn anthropic_provider(config: &Config) -> Option<(&str, &ProviderConfig)> {
     let default = config.server.default_provider.as_str();
-    if let Some(provider) = config
+    config
         .provider(default)
         .filter(|provider| provider.kind == ProviderKind::Anthropic)
-    {
-        return Some((default, provider));
-    }
-    config.upstream_order.iter().find_map(|name| {
-        config
-            .provider(name)
-            .filter(|provider| provider.kind == ProviderKind::Anthropic)
-            .map(|provider| (name.as_str(), provider))
-    })
+        .map(|provider| (default, provider))
 }
 
 /// Build the outbound auth headers, mirroring what the Messages path sends for

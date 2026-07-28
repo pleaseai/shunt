@@ -508,7 +508,17 @@ fn non_anthropic_upstream_is_skipped() {
 }
 
 #[test]
-fn default_provider_wins_over_declaration_order() {
+fn non_anthropic_default_provider_skips_other_anthropic_upstreams() {
+    let mut config = crate::config::Config::default();
+    config.server.default_provider = "codex".to_string();
+
+    // Unmatched ids route to the default provider, so discovery must not
+    // advertise ids from a different Anthropic-kind upstream.
+    assert!(anthropic_provider(&config).is_none());
+}
+
+#[test]
+fn anthropic_default_provider_is_used() {
     let config = crate::config::Config::default();
     let (name, _) = anthropic_provider(&config).unwrap();
 
