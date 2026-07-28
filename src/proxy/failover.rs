@@ -254,7 +254,10 @@ async fn count_tokens_response(
             .unwrap_or(CountTokens::Estimate);
         Ok(match mode {
             CountTokens::Tiktoken => {
-                let input_tokens = count_tokens::count_input_tokens(&body);
+                let input_tokens =
+                    tokio::task::spawn_blocking(move || count_tokens::count_input_tokens(&body))
+                        .await
+                        .unwrap_or(0);
                 (
                     StatusCode::OK,
                     axum::Json(serde_json::json!({ "input_tokens": input_tokens })).into_response(),
