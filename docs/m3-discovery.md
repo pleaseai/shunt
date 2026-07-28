@@ -93,11 +93,11 @@ is the documented default. Discovery is only useful if shunt exposes a **Claude-
      pages. An incomplete list would silently supersede the snapshot and be emitted with
      `has_more = false`, making truncation indistinguishable from a complete answer, so shunt
      accepts only pagination that establishes the catalog is complete.
-  2. **Builtin snapshot**, used when there is no Anthropic-kind upstream, no credential to ask
-     with, or the call fails, times out, does not parse, returns an empty list, or produces an
-     incomplete or unfollowable paginated response. An upstream error, timeout, malformed response,
-     or incomplete pagination is logged at `warn`; discovery degrades to the snapshot rather than
-     erroring.
+  2. **Builtin snapshot**, used when `server.default_provider` is not Anthropic-kind, no credential
+     is available to ask with, or the call fails, times out, does not parse, returns an empty list,
+     or produces an incomplete or unfollowable paginated response. An upstream error, timeout,
+     malformed response, or incomplete pagination is logged at `warn`; discovery degrades to the
+     snapshot rather than erroring.
 
   Neither source needs a dedicated `[[routes]]` entry; those ids resolve through the normal
   routing rules, falling back to the default provider when no `[[routes]]` or
