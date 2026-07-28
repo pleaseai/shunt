@@ -1,0 +1,43 @@
+docs/gateway-protocol.md
+  s_42b07f3aae0e84::t_74d869c3b7130b 278-281
+site/src/content/docs/zh-cn/guides/model-discovery.md
+  s_42b07f3aae0e84::t_c9d628747d7d11 8
+site/src/content/docs/providers/anthropic.mdx
+  s_42b07f3aae0e84::t_1340f2ffaaf4dc 115-117
+site/src/content/docs/ja/reference/configuration.md
+  s_42b07f3aae0e84::t_c3ac061d91d3e8 235
+site/src/content/docs/guides/model-discovery.md
+  s_42b07f3aae0e84::t_c4dd01d7ecb1cc 8
+site/src/content/docs/reference/configuration.md
+  s_42b07f3aae0e84::t_32bcc4f20f767f 362
+docs/m3-discovery.md
+  s_42b07f3aae0e84::t_08943e6d5d5638 83-89,91-95,97-100
+  s_42b07f3aae0e84::t_bb06a94b0d751f 81-82
+  s_42b07f3aae0e84::t_60db0ef48340c1 184-186
+site/src/content/docs/ko/guides/model-discovery.md
+  s_42b07f3aae0e84::t_69e9ddd0656e5b 8
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_42b07f3aae0e84::t_3af2d2cca064a5 235
+README.md
+  s_42b07f3aae0e84::t_757c422ae6c3ba 220
+site/src/content/docs/ko/reference/configuration.md
+  s_42b07f3aae0e84::t_f40864f3f83f2a 247
+site/src/content/docs/ja/guides/model-discovery.md
+  s_42b07f3aae0e84::t_0aea5b90ddc4c3 8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "a1dddadb3234dc3d881dee7d686972ffadc9c91c",
+  "prompts": {},
+  "sessions": {
+    "s_42b07f3aae0e84": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b81123f0-02e6-430b-be19-71f5e9318623",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
