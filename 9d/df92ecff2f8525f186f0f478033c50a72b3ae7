@@ -1,0 +1,39 @@
+site/src/content/docs/guides/model-discovery.md
+  s_42b07f3aae0e84::t_744fbdebe59a27 8
+site/src/content/docs/ko/guides/model-discovery.md
+  s_42b07f3aae0e84::t_8137412f4fd54f 8
+site/src/content/docs/ko/reference/configuration.md
+  s_42b07f3aae0e84::t_623595e1054262 247
+site/src/content/docs/reference/configuration.md
+  s_42b07f3aae0e84::t_a13cde625ad75e 362
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_42b07f3aae0e84::t_78fc6a8218b38f 235
+site/src/content/docs/ja/guides/model-discovery.md
+  s_42b07f3aae0e84::t_6e928415ca42d3 8
+site/src/content/docs/providers/anthropic.mdx
+  s_42b07f3aae0e84::t_cda764e7fd4e7c 116-117
+README.md
+  s_42b07f3aae0e84::t_88e622cd8b4d63 220
+site/src/content/docs/zh-cn/guides/model-discovery.md
+  s_42b07f3aae0e84::t_82355f67626009 8
+site/src/content/docs/ja/reference/configuration.md
+  s_42b07f3aae0e84::t_dfe93d6c35ac88 235
+docs/m3-discovery.md
+  s_42b07f3aae0e84::t_584f0f60a66808 81
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "9ddf92ecff2f8525f186f0f478033c50a72b3ae7",
+  "prompts": {},
+  "sessions": {
+    "s_42b07f3aae0e84": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b81123f0-02e6-430b-be19-71f5e9318623",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
