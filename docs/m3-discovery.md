@@ -77,8 +77,8 @@ is the documented default. Discovery is only useful if shunt exposes a **Claude-
   models after `[[models]]`, deduplicating by exact id so the curated entry wins. Set it to
   `false` for a strictly curated response — that also disables the upstream call below. The
   appended models come from one of two sources, in order:
-  1. **Live upstream list.** shunt issues `GET {base_url}/v1/models` against the first
-     Anthropic-kind upstream (`server.default_provider` first, then declaration order). With
+  1. **Live upstream list.** shunt issues `GET {base_url}/v1/models` against
+     `server.default_provider` when that provider is Anthropic-kind. With
      `auth = "passthrough"`, it forwards the caller's credential, so the answer is scoped to that
      caller. If shunt consumed that credential as a `[server.auth]` client token or gateway-login
      bearer, it does not replay it upstream; discovery logs why no upstream credential remains and

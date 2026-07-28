@@ -5,7 +5,7 @@ description: 用 Claude 命名的别名自动填充 Claude Code 的 /model 选�
 
 发现(`GET /v1/models`)可以自动填充 Claude Code 的 `/model` 选择器。默认情况下,shunt 会先返回管理员维护的 `[[models]]` 条目,再追加它自行发现的模型。对于 id 完全相同的条目,会保留管理员维护的条目并去重。若只想公开维护的列表,请在顶层设置 `auto_include_builtin_models = false`。
 
-后半部分由 shunt 向第一个 Anthropic 类型的上游查询实际列表,并按其认证模式选择凭据。`auth = "passthrough"` 时使用调用方转发的凭据,因此每个调用方看到的都是该凭据有权使用的模型。`api_key` 时使用配置的密钥。`claude_oauth` 时使用推理路径所用的同一有效账户集合中第一个可解析且未禁用的账户。该集合包含从存储中扫描到的账户,并遵循 `account_scope` 顺序。发现不会进行账户池选择、冷却或配额记账。因此,后两种使用网关自有凭据的模式下,所有调用方共享由该凭据范围决定的目录。若没有 Anthropic 类型的上游、没有可用凭据,或调用失败、超时(上限 2 秒),则回退到内置 Claude 目录快照。shunt 不做缓存。
+后半部分仅在 `server.default_provider` 为 Anthropic 类型时,由 shunt 向该上游查询实际列表,并按其认证模式选择凭据。`auth = "passthrough"` 时使用调用方转发的凭据,因此每个调用方看到的都是该凭据有权使用的模型。`api_key` 时使用配置的密钥。`claude_oauth` 时使用推理路径所用的同一有效账户集合中第一个可解析且未禁用的账户。该集合包含从存储中扫描到的账户,并遵循 `account_scope` 顺序。发现不会进行账户池选择、冷却或配额记账。因此,后两种使用网关自有凭据的模式下,所有调用方共享由该凭据范围决定的目录。若 `server.default_provider` 不是 Anthropic 类型、没有可用凭据,或调用失败、超时(上限 2 秒),则回退到内置 Claude 目录快照。shunt 不做缓存。
 
 发现的模型不需要专门的 `[[routes]]` 条目;它们按常规路由规则解析,当 `[[routes]]` 与 `[[route_prefixes]]` 均未匹配时回退到 `server.default_provider`。
 
