@@ -101,19 +101,19 @@ reproducing attestation.**
 - Process-global `HashMap<pool_key, Arc<PoolEntry>>` keyed by
   `x-claude-code-session-id`, namespaced by the authenticated inbound client when
   `[server.auth]` is configured. A std mutex guards only map lookups/inserts (never
-  held across an await); a per-connection async turn lock serializes turns of one
-  session. On a multi-tenant deployment, enable inbound authentication whenever
-  `websocket = true`; without it, session IDs are client-provided and cannot isolate
-  different callers that choose the same value.
+  held across an await); each connection accepts at most one active turn, while a
+  concurrent turn uses a dedicated socket. On a multi-tenant deployment, enable
+  inbound authentication whenever `websocket = true`; without it, session IDs are
+  client-provided and cannot isolate different callers that choose the same value.
 - **Connection-owned reader (issue #93).** On connect the socket is split and a
   dedicated reader task takes sole ownership of the read half for the connection's
   whole lifetime. It answers upstream `Ping` frames with `Pong` even while the
   connection sits **idle** between turns, so the Codex backend never closes a
   pooled socket with `keepalive ping timeout`. A turn is dispatched to that reader
-  over a bounded command channel (the turn lock guarantees at most one outstanding
-  turn); the reader streams the turn's events, records continuation on a clean
-  completion, then returns to idle keepalive duty. The reader forwards a turn's
-  events over an **unbounded** channel, so downstream backpressure (a slow or
+  over a bounded command channel (the turn slot guarantees at most one outstanding
+  turn per connection); the reader streams the turn's events, records continuation
+  on a clean completion, then returns to idle keepalive duty. The reader forwards a
+  turn's events over an **unbounded** channel, so downstream backpressure (a slow or
   stalled client) never blocks the read loop and therefore never starves
   control-frame handling; the buffer is bounded in practice by one turn's output,
   after which the reader is idle again.
@@ -122,14 +122,20 @@ reproducing attestation.**
   the pool (TTL sweep, capacity eviction, or explicit invalidation) signals the
   reader to shut down and close the socket, so neither the task nor the connection
   leaks.
-- **Reuse gate.** On a pooled hit the caller acquires the turn lock, then verifies
-  the socket is still live: a remote close already observed by the reader is
-  rejected outright, and otherwise a `Ping` is sent and a **timely `Pong`** is
-  required (a half-open socket buffers the local write and would otherwise pass, so
-  a successful write alone is never treated as proof of remote liveness). If the
-  reader saw a close or no `Pong` returns within the probe window, the entry is
-  evicted and a fresh handshake runs before the turn's frame is ever sent — a stale
-  socket cannot leak partial output into a new turn.
+- **Reuse gate.** On a pooled hit the caller takes the turn slot without waiting. If
+  the slot is available, the caller verifies the socket is still live: a remote
+  close already observed by the reader is rejected outright, and otherwise a
+  `Ping` is sent and a **timely `Pong`** is required (a half-open socket buffers the
+  local write and would otherwise pass, so a successful write alone is never
+  treated as proof of remote liveness). If the reader saw a close or no `Pong`
+  returns within the probe window, the entry is evicted and a fresh handshake runs
+  before the turn's frame is ever sent — a stale socket cannot leak partial output
+  into a new turn.
+- **Concurrent turns (issue #248).** A busy turn slot does not make the new request
+  wait. The turn runs on a dedicated connection that is never pooled, carries no
+  continuation, and closes after its single turn. The session's pooled socket stays
+  in place with its continuation state, trading continuation reuse on the
+  concurrent turn for parallelism.
 - **Invalidation.** Any non-clean end (error/incomplete terminal, close, transport
   error, or a rejected `previous_response_id`) evicts the connection and clears its
   continuation state. A clean `response.completed` re-pools a fresh connection and

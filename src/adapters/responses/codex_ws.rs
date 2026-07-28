@@ -11,8 +11,11 @@
 //! can translate them exactly as it does the HTTP SSE stream.
 //!
 //! Connections are pooled per `x-claude-code-session-id`, so turns of one
-//! conversation reuse a live socket instead of re-handshaking. Each pooled
-//! socket is owned by a dedicated reader task that lives for the whole
+//! conversation reuse an idle live socket instead of re-handshaking. If that
+//! socket is already streaming a turn, the concurrent turn opens a dedicated
+//! one-shot connection rather than waiting; it deliberately carries no
+//! continuation, while the pooled socket keeps the session's continuation state.
+//! Each pooled socket is owned by a dedicated reader task that lives for the whole
 //! connection (issue #93): it answers upstream `Ping` frames with `Pong` even
 //! while the connection sits idle between turns, so the backend never closes it
 //! with `keepalive ping timeout`. A turn is dispatched to that reader over a
@@ -129,9 +132,11 @@ struct Connection {
     /// Write half, guarded so the reader (`Pong`), a turn (`response.create`),
     /// and a probe (`Ping`) can each write with a short critical section.
     sink: AsyncMutex<WsSink>,
-    /// Serializes turns: at most one `response.create` is in flight at a time.
-    /// The owning guard is handed to the reader for the turn and released when
-    /// the turn ends. Behind an [`Arc`] so `begin` can `lock_owned`.
+    /// Reserves this connection for at most one in-flight `response.create`.
+    /// `begin` takes the owning guard without waiting on pooled reuse; contention
+    /// sends the new turn over a dedicated connection instead. The guard is handed
+    /// to the reader and released when the turn ends. Behind an [`Arc`] so `begin`
+    /// can call `try_lock_owned`.
     turn_lock: Arc<AsyncMutex<()>>,
     /// Cleared once the reader observes a close/EOF/stream error, so a reuse
     /// probe rejects a known-dead socket without a round-trip.
@@ -189,7 +194,7 @@ impl Connection {
 
 /// A pooled connection keyed by session id in [`POOL`]. Thin wrapper whose
 /// `Drop` tells the reader to shut down: when the last reference goes (TTL sweep,
-/// capacity eviction, or `invalidate_pool_key`) the socket and its task are
+/// capacity eviction, or identity-checked invalidation) the socket and its task are
 /// released. The reader itself holds an [`Arc<Connection>`], not a `PoolEntry`,
 /// so removing an entry from the map is what triggers the shutdown.
 struct PoolEntry {
@@ -212,8 +217,9 @@ impl Drop for PoolEntry {
 }
 
 /// Process-global connection pool keyed by `x-claude-code-session-id`. A std
-/// mutex guards only map lookups/inserts (never held across an await); the
-/// per-connection reader task serializes turns on one session.
+/// mutex guards only map lookups/inserts (never held across an await); each
+/// connection accepts at most one active turn, while contention uses an unpooled
+/// connection.
 static POOL: LazyLock<Mutex<HashMap<String, Arc<PoolEntry>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static LAST_POOL_SWEEP: LazyLock<Mutex<Instant>> = LazyLock::new(|| Mutex::new(Instant::now()));
@@ -222,9 +228,18 @@ fn pool_get(key: &str) -> Option<Arc<PoolEntry>> {
     POOL.lock().unwrap().get(key).cloned()
 }
 
-/// Remove a session's pooled connection (called on staleness or any error).
-pub fn invalidate_pool_key(key: &str) {
-    POOL.lock().unwrap().remove(key);
+/// Remove `key`'s pooled connection, but only when the entry still points at
+/// `conn`. A connection that lost the pool slot (a cold-start race between two
+/// concurrent turns on one session, or an entry since replaced) must not evict
+/// the healthy socket that replaced it.
+fn invalidate_pool_entry(key: &str, conn: &Arc<Connection>) {
+    let mut guard = POOL.lock().unwrap();
+    if guard
+        .get(key)
+        .is_some_and(|entry| Arc::ptr_eq(&entry.conn, conn))
+    {
+        guard.remove(key);
+    }
 }
 
 fn pool_insert(key: String, entry: Arc<PoolEntry>) {
@@ -354,9 +369,10 @@ impl RecordPlan {
 /// A connection acquired and locked for one turn, before its frame is sent.
 /// Splitting acquire from send lets the caller inspect [`Turn::stored_continuation`]
 /// (only present on a reused connection) and decide the `previous_response_id`
-/// delta before committing the frame. The held turn slot serializes turns on the
-/// connection until [`Turn::stream`] hands it to the reader (or the `Turn` is
-/// dropped without streaming).
+/// delta before committing the frame. The held turn slot prevents another turn
+/// from sharing this connection until [`Turn::stream`] hands it to the reader (or
+/// the `Turn` is dropped without streaming); pooled contention opens a dedicated
+/// connection instead of waiting for the slot.
 pub struct Turn {
     conn: Arc<Connection>,
     /// Successful upgrade response headers when this turn opened a fresh socket.
@@ -442,7 +458,7 @@ impl Turn {
             // of re-probing the same dead one.
             if reused {
                 if let Some(key) = &pool_key {
-                    invalidate_pool_key(key);
+                    invalidate_pool_entry(key, &conn);
                 }
             }
             return Err(CodexWsError::transport("codex websocket reader is gone"));
@@ -465,52 +481,78 @@ impl Drop for Turn {
     }
 }
 
-/// Acquire a connection for `pool_key`, reusing a live pooled one (verified with a
-/// `Ping`/`Pong` liveness probe) or performing a fresh handshake. A stale pooled
-/// connection is evicted and replaced. A refused handshake (401/403/429) resolves
-/// to `Err` with the upstream status/body so the caller can re-shape it like the
-/// HTTP path.
+/// Acquire a connection for `pool_key`, reusing an idle live pooled one (verified
+/// with a `Ping`/`Pong` liveness probe) or performing a fresh handshake. If the
+/// pooled connection is busy, the turn opens a dedicated connection instead of
+/// waiting. A stale pooled connection is evicted and replaced. A refused handshake
+/// (401/403/429) resolves to `Err` with the upstream status/body so the caller can
+/// re-shape it like the HTTP path.
 pub async fn begin(
     ws_url: &str,
     headers: HeaderMap,
     pool_key: Option<&str>,
 ) -> Result<Turn, CodexWsError> {
+    let mut overflow = false;
     if let Some(key) = pool_key {
         if let Some(entry) = pool_get(key) {
             let conn = entry.conn.clone();
-            // Serialize turns on this connection; holding the slot also guarantees
-            // no turn is streaming while we probe. The connection-owned reader
-            // keeps reading (and answering pings) independently, so the probe's
-            // Ping/Pong round-trips underneath it.
-            let slot = conn.turn_lock.clone().lock_owned().await;
-            if conn.alive.load(Ordering::SeqCst) && probe_live(&conn).await {
-                *conn.last_used_at.lock().unwrap() = Instant::now();
-                return Ok(Turn {
-                    conn,
-                    handshake_headers: None,
-                    slot: Some(slot),
-                    reused: true,
-                    pool_key: Some(key.to_string()),
-                    streamed: false,
-                });
+            // Never wait behind a turn already streaming on the pooled connection.
+            // An idle connection can be probed and reused; contention falls through
+            // to a dedicated handshake so concurrent requests make progress.
+            match conn.turn_lock.clone().try_lock_owned() {
+                Ok(slot) => {
+                    if conn.alive.load(Ordering::SeqCst) && probe_live(&conn).await {
+                        *conn.last_used_at.lock().unwrap() = Instant::now();
+                        return Ok(Turn {
+                            conn,
+                            handshake_headers: None,
+                            slot: Some(slot),
+                            reused: true,
+                            pool_key: Some(key.to_string()),
+                            streamed: false,
+                        });
+                    }
+                    // Stale: the reader saw a close, or no Pong returned in time.
+                    // Evict and reconnect — the stored `previous_response_id` no
+                    // longer applies.
+                    drop(slot);
+                    drop(entry);
+                    invalidate_pool_entry(key, &conn);
+                }
+                Err(_) => {
+                    tracing::debug!(
+                        pool_key = key,
+                        "codex websocket pooled connection is busy; opening a dedicated connection for this turn"
+                    );
+                    overflow = true;
+                }
             }
-            // Stale: the reader saw a close, or no Pong returned in time. Evict and
-            // reconnect — the stored `previous_response_id` no longer applies.
-            drop(slot);
-            drop(entry);
-            invalidate_pool_key(key);
         }
     }
 
+    let connection_pool_key = if overflow {
+        // Keep an overflow socket entirely outside the session pool:
+        // 1. `run_turn` calls `pool_insert` only when `conn.pool_key` is `Some`, so
+        //    it cannot replace the healthy pooled entry or drop its continuation;
+        // 2. `evict()` is a no-op, so this socket's death cannot evict that entry;
+        // 3. `run_connection` exits after one turn when `conn.pool_key.is_none()`,
+        //    closing the socket so neither the connection nor reader task leaks.
+        // The turn deliberately carries no continuation (`reused` is false, so
+        // `stored_continuation()` returns `None`): contention trades continuation
+        // reuse for parallelism while the pooled socket keeps the session state.
+        None
+    } else {
+        pool_key.map(str::to_string)
+    };
     let (conn, handshake_headers) =
-        Connection::open(ws_url, headers, pool_key.map(str::to_string)).await?;
+        Connection::open(ws_url, headers, connection_pool_key.clone()).await?;
     let slot = conn.turn_lock.clone().lock_owned().await;
     Ok(Turn {
         conn,
         handshake_headers: Some(handshake_headers),
         slot: Some(slot),
         reused: false,
-        pool_key: pool_key.map(str::to_string),
+        pool_key: connection_pool_key,
         streamed: false,
     })
 }
@@ -542,9 +584,9 @@ async fn send_message(conn: &Connection, message: Message) -> Result<(), tungste
 
 /// Drop this connection's pooled entry (if any), so the next turn on the session
 /// opens a fresh socket. Called from the reader on any non-clean turn end.
-fn evict(conn: &Connection) {
+fn evict(conn: &Arc<Connection>) {
     if let Some(key) = &conn.pool_key {
-        invalidate_pool_key(key);
+        invalidate_pool_entry(key, conn);
     }
 }
 
@@ -720,9 +762,9 @@ async fn run_connection(
     // Catch-all eviction for every exit reason (shutdown, close/EOF/error while
     // idle, commands channel exhausted, send failure). The `TurnEnd::Dead` branches
     // in `run_turn` also evict, deliberately: they run *before* the turn slot is
-    // released above, so a concurrent `begin` waiting on `turn_lock` can never reuse
-    // a dying connection. `invalidate_pool_key` is idempotent, so the overlap on the
-    // Dead path is harmless.
+    // released above, so a concurrent `begin` can never reuse a dying connection.
+    // Identity-checked invalidation makes the overlap on the Dead path harmless and
+    // prevents an older connection from evicting a replacement under the same key.
     evict(&conn);
     // Dropping `source` closes the read half; best-effort close the write half so
     // the backend sees a clean shutdown.
@@ -1308,6 +1350,261 @@ mod tests {
 
         clear_pool_for_tests();
         server.abort();
+    }
+
+    /// Issue #248: a second turn already streaming on the pooled socket must not
+    /// serialize a concurrent request behind its turn slot. The concurrent turn
+    /// gets a dedicated one-shot connection, while the original socket remains the
+    /// session's pooled connection and retains subsequent reuse.
+    #[tokio::test]
+    async fn concurrent_turn_opens_a_dedicated_connection_instead_of_waiting() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use tokio::net::TcpListener;
+        use tokio::sync::oneshot;
+        use tokio::task::JoinSet;
+
+        let _pool_guard = POOL_TEST_LOCK.lock().await;
+        clear_pool_for_tests();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let frames_seen = Arc::new([AtomicUsize::new(0), AtomicUsize::new(0)]);
+        let server_accepted = accepted.clone();
+        let server_frames = frames_seen.clone();
+        let (release_turn2, hold_turn2) = oneshot::channel::<()>();
+        let (overflow_closed, observe_overflow_closed) = oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            let mut hold_turn2 = Some(hold_turn2);
+            let mut overflow_closed = Some(overflow_closed);
+            let mut handlers = JoinSet::new();
+            for connection_index in 0..2 {
+                let (socket, _) = listener.accept().await.unwrap();
+                server_accepted.fetch_add(1, Ordering::SeqCst);
+                let frames = server_frames.clone();
+                let turn2_gate = if connection_index == 0 {
+                    hold_turn2.take()
+                } else {
+                    None
+                };
+                let close_signal = if connection_index == 1 {
+                    overflow_closed.take()
+                } else {
+                    None
+                };
+                handlers.spawn(async move {
+                    let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+                    let mut turn2_gate = turn2_gate;
+                    while let Some(message) = ws.next().await {
+                        match message {
+                            Ok(Message::Text(frame)) => {
+                                let frame: Value = serde_json::from_str(&frame).unwrap();
+                                assert_eq!(frame["type"], "response.create");
+                                let turn_number = frames[connection_index]
+                                    .fetch_add(1, Ordering::SeqCst)
+                                    + 1;
+                                let response_id =
+                                    format!("resp_{connection_index}_{turn_number}");
+                                ws.send(Message::Text(format!(
+                                    r#"{{"type":"response.created","response":{{"id":"{response_id}"}}}}"#
+                                )))
+                                .await
+                                .unwrap();
+                                if connection_index == 0 && turn_number == 2 {
+                                    turn2_gate
+                                        .take()
+                                        .expect("turn 2 has a release gate")
+                                        .await
+                                        .expect("test releases turn 2");
+                                }
+                                ws.send(Message::Text(format!(
+                                    r#"{{"type":"response.completed","response":{{"id":"{response_id}"}}}}"#
+                                )))
+                                .await
+                                .unwrap();
+                            }
+                            Ok(Message::Ping(data)) => {
+                                ws.send(Message::Pong(data)).await.unwrap();
+                            }
+                            Ok(Message::Pong(_)) => {}
+                            Ok(Message::Close(_)) | Err(_) => break,
+                            Ok(other) => panic!("unexpected frame: {other:?}"),
+                        }
+                    }
+                    if let Some(close_signal) = close_signal {
+                        let _ = close_signal.send(());
+                    }
+                });
+            }
+            while let Some(result) = handlers.join_next().await {
+                result.unwrap();
+            }
+        });
+
+        let url = format!("ws://{addr}/codex/responses");
+        let frame = response_create_frame(serde_json::json!({"model": "m", "input": []}));
+
+        // Turn 1 establishes and pools connection 1.
+        let mut turn1 = open_simple(&url, HeaderMap::new(), &frame, Some("session-busy"))
+            .await
+            .expect("first turn connects");
+        drain(&mut turn1).await;
+        assert!(
+            pool_contains_for_tests("session-busy"),
+            "first turn pools connection 1"
+        );
+
+        // Turn 2 reuses connection 1. Consume only response.created; the mock holds
+        // response.completed so the reader retains the connection's turn slot.
+        let turn2 = begin(&url, HeaderMap::new(), Some("session-busy"))
+            .await
+            .expect("second turn reuses connection 1");
+        let mut turn2 = turn2
+            .stream(&frame, RecordPlan::none())
+            .await
+            .expect("second turn streams");
+        let first = turn2
+            .recv()
+            .await
+            .expect("turn 2 produces response.created")
+            .expect("turn 2 starts without a transport error");
+        assert_eq!(first.event.as_deref(), Some("response.created"));
+
+        // A concurrent begin must not wait for turn 2's terminal event. It opens
+        // connection 2 and carries no continuation because the socket is dedicated.
+        let overflow = tokio::time::timeout(
+            Duration::from_secs(5),
+            begin(&url, HeaderMap::new(), Some("session-busy")),
+        )
+        .await
+        .expect("a busy pooled connection must not serialize a concurrent turn")
+        .expect("overflow connection opens");
+        assert!(
+            overflow.stored_continuation().is_none(),
+            "the dedicated turn carries no continuation"
+        );
+        let mut overflow = overflow
+            .stream(&frame, RecordPlan::none())
+            .await
+            .expect("overflow turn streams");
+        assert!(
+            drain(&mut overflow).await > 0,
+            "overflow turn produces events on connection 2"
+        );
+        assert_eq!(
+            accepted.load(Ordering::SeqCst),
+            2,
+            "the busy pooled socket causes exactly one dedicated handshake"
+        );
+        tokio::time::timeout(Duration::from_secs(5), observe_overflow_closed)
+            .await
+            .expect("overflow socket closes after its single turn")
+            .expect("overflow handler reports socket close");
+
+        // Finish turn 2, then prove the dedicated connection did not replace the
+        // pooled entry: turn 4 reuses connection 1 rather than opening a third socket.
+        release_turn2.send(()).expect("release turn 2");
+        assert!(drain(&mut turn2).await > 0, "turn 2 reaches completion");
+        assert!(
+            pool_contains_for_tests("session-busy"),
+            "the original connection remains pooled after overflow"
+        );
+        let mut turn4 = open_simple(&url, HeaderMap::new(), &frame, Some("session-busy"))
+            .await
+            .expect("fourth turn reuses connection 1");
+        assert!(drain(&mut turn4).await > 0, "fourth turn produces events");
+        assert_eq!(
+            frames_seen[0].load(Ordering::SeqCst),
+            3,
+            "connection 1 serves turns 1, 2, and 4"
+        );
+        assert_eq!(
+            frames_seen[1].load(Ordering::SeqCst),
+            1,
+            "connection 2 serves only the overflow turn"
+        );
+        assert_eq!(
+            accepted.load(Ordering::SeqCst),
+            2,
+            "turn 4 does not open another socket"
+        );
+
+        clear_pool_for_tests();
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("server exits after the pooled socket is cleared")
+            .unwrap();
+    }
+
+    /// A connection that has been replaced under the same pool key must not evict
+    /// its replacement when its reader exits. This models the last-writer-wins end
+    /// of a cold-start race without changing `pool_insert` semantics.
+    #[tokio::test]
+    async fn replaced_connection_cannot_evict_current_pool_entry() {
+        use tokio::net::TcpListener;
+        use tokio::task::JoinSet;
+
+        let _pool_guard = POOL_TEST_LOCK.lock().await;
+        clear_pool_for_tests();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut handlers = JoinSet::new();
+            for _ in 0..2 {
+                let (socket, _) = listener.accept().await.unwrap();
+                handlers.spawn(async move {
+                    let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+                    while let Some(message) = ws.next().await {
+                        match message {
+                            Ok(Message::Ping(data)) => {
+                                ws.send(Message::Pong(data)).await.unwrap();
+                            }
+                            Ok(Message::Close(_)) | Err(_) => break,
+                            Ok(_) => {}
+                        }
+                    }
+                });
+            }
+            while let Some(result) = handlers.join_next().await {
+                result.unwrap();
+            }
+        });
+
+        let url = format!("ws://{addr}/codex/responses");
+        // Neither connection has completed a turn yet, so both handshakes model
+        // concurrent cold starts that observed no existing pool entry.
+        let first = begin(&url, HeaderMap::new(), Some("session-race"))
+            .await
+            .expect("first cold connection opens");
+        let second = begin(&url, HeaderMap::new(), Some("session-race"))
+            .await
+            .expect("second cold connection opens");
+        let first_conn = first.conn.clone();
+        let second_conn = second.conn.clone();
+
+        pool_insert(
+            "session-race".to_string(),
+            PoolEntry::new(first_conn.clone()),
+        );
+        pool_insert(
+            "session-race".to_string(),
+            PoolEntry::new(second_conn.clone()),
+        );
+        invalidate_pool_entry("session-race", &first_conn);
+
+        let current = pool_get("session-race").expect("replacement remains pooled");
+        assert!(
+            Arc::ptr_eq(&current.conn, &second_conn),
+            "an old connection cannot evict the socket that replaced it"
+        );
+
+        clear_pool_for_tests();
+        drop(first);
+        drop(second);
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("both cold-start sockets close during cleanup")
+            .unwrap();
     }
 
     /// A socket that closes before a terminal event must surface a transport error
