@@ -32,84 +32,33 @@ struct BuiltinModel {
     max_tokens: u64,
 }
 
-const BUILTIN_MODELS: &[BuiltinModel] = &[
-    BuiltinModel {
-        id: "claude-opus-5",
-        display_name: "Claude Opus 5",
-        created_at: "2026-07-24T00:00:00Z",
-        max_input_tokens: 1_000_000,
-        max_tokens: 128_000,
-    },
-    BuiltinModel {
-        id: "claude-sonnet-5",
-        display_name: "Claude Sonnet 5",
-        created_at: "2026-06-29T00:00:00Z",
-        max_input_tokens: 1_000_000,
-        max_tokens: 128_000,
-    },
-    BuiltinModel {
-        id: "claude-fable-5",
-        display_name: "Claude Fable 5",
-        created_at: "2026-06-07T00:00:00Z",
-        max_input_tokens: 1_000_000,
-        max_tokens: 128_000,
-    },
-    BuiltinModel {
-        id: "claude-opus-4-8",
-        display_name: "Claude Opus 4.8",
-        created_at: "2026-05-28T00:00:00Z",
-        max_input_tokens: 1_000_000,
-        max_tokens: 128_000,
-    },
-    BuiltinModel {
-        id: "claude-opus-4-7",
-        display_name: "Claude Opus 4.7",
-        created_at: "2026-04-14T00:00:00Z",
-        max_input_tokens: 1_000_000,
-        max_tokens: 128_000,
-    },
-    BuiltinModel {
-        id: "claude-sonnet-4-6",
-        display_name: "Claude Sonnet 4.6",
-        created_at: "2026-02-17T00:00:00Z",
-        max_input_tokens: 1_000_000,
-        max_tokens: 128_000,
-    },
-    BuiltinModel {
-        id: "claude-opus-4-6",
-        display_name: "Claude Opus 4.6",
-        created_at: "2026-02-04T00:00:00Z",
-        max_input_tokens: 1_000_000,
-        max_tokens: 128_000,
-    },
-    BuiltinModel {
-        id: "claude-opus-4-5-20251101",
-        display_name: "Claude Opus 4.5",
-        created_at: "2025-11-24T00:00:00Z",
-        max_input_tokens: 200_000,
-        max_tokens: 64_000,
-    },
-    BuiltinModel {
-        id: "claude-haiku-4-5-20251001",
-        display_name: "Claude Haiku 4.5",
-        created_at: "2025-10-15T00:00:00Z",
-        max_input_tokens: 200_000,
-        max_tokens: 64_000,
-    },
-    BuiltinModel {
-        id: "claude-sonnet-4-5-20250929",
-        display_name: "Claude Sonnet 4.5",
-        created_at: "2025-09-29T00:00:00Z",
-        max_input_tokens: 1_000_000,
-        max_tokens: 64_000,
-    },
-    BuiltinModel {
-        id: "claude-opus-4-1-20250805",
-        display_name: "Claude Opus 4.1",
-        created_at: "2025-08-05T00:00:00Z",
-        max_input_tokens: 200_000,
-        max_tokens: 32_000,
-    },
+/// Expands one row per model so the table reads as data rather than eleven
+/// repetitions of the same struct literal:
+/// `id => display_name, created_at, max_input_tokens, max_tokens;`
+macro_rules! builtin_models {
+    ($($id:literal => $display_name:literal, $created_at:literal, $max_input_tokens:literal, $max_tokens:literal;)*) => {
+        &[$(BuiltinModel {
+            id: $id,
+            display_name: $display_name,
+            created_at: $created_at,
+            max_input_tokens: $max_input_tokens,
+            max_tokens: $max_tokens,
+        },)*]
+    };
+}
+
+const BUILTIN_MODELS: &[BuiltinModel] = builtin_models![
+    "claude-opus-5" => "Claude Opus 5", "2026-07-24T00:00:00Z", 1_000_000, 128_000;
+    "claude-sonnet-5" => "Claude Sonnet 5", "2026-06-29T00:00:00Z", 1_000_000, 128_000;
+    "claude-fable-5" => "Claude Fable 5", "2026-06-07T00:00:00Z", 1_000_000, 128_000;
+    "claude-opus-4-8" => "Claude Opus 4.8", "2026-05-28T00:00:00Z", 1_000_000, 128_000;
+    "claude-opus-4-7" => "Claude Opus 4.7", "2026-04-14T00:00:00Z", 1_000_000, 128_000;
+    "claude-sonnet-4-6" => "Claude Sonnet 4.6", "2026-02-17T00:00:00Z", 1_000_000, 128_000;
+    "claude-opus-4-6" => "Claude Opus 4.6", "2026-02-04T00:00:00Z", 1_000_000, 128_000;
+    "claude-opus-4-5-20251101" => "Claude Opus 4.5", "2025-11-24T00:00:00Z", 200_000, 64_000;
+    "claude-haiku-4-5-20251001" => "Claude Haiku 4.5", "2025-10-15T00:00:00Z", 200_000, 64_000;
+    "claude-sonnet-4-5-20250929" => "Claude Sonnet 4.5", "2025-09-29T00:00:00Z", 1_000_000, 64_000;
+    "claude-opus-4-1-20250805" => "Claude Opus 4.1", "2025-08-05T00:00:00Z", 200_000, 32_000;
 ];
 
 /// Anthropic list envelope. shunt never paginates, so `has_more` is constant,
