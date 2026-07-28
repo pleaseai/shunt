@@ -1,0 +1,21 @@
+src/discovery/upstream/tests.rs
+  s_42b07f3aae0e84::t_542976ad410f31 511-521
+src/discovery/upstream.rs
+  s_42b07f3aae0e84::t_3d785dadb9d25a 224-231,239,242
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "200dd1ff8a80f9f6197c17852ab9accc5d9f887a",
+  "prompts": {},
+  "sessions": {
+    "s_42b07f3aae0e84": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b81123f0-02e6-430b-be19-71f5e9318623",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
