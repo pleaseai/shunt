@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.26.0](https://github.com/pleaseai/shunt/compare/v0.25.0...v0.26.0) (2026-07-28)
+
+
+### Features
+
+* **discovery:** fetch credential-scoped Anthropic models ([#244](https://github.com/pleaseai/shunt/issues/244)) ([014252d](https://github.com/pleaseai/shunt/commit/014252df7d1416f77bb88325d0e598a1e01bc42f))
+
+
+### Bug Fixes
+
+* **proxy:** move count_tokens tiktoken encoding off the async runtime ([#247](https://github.com/pleaseai/shunt/issues/247)) ([f4cd619](https://github.com/pleaseai/shunt/commit/f4cd6191421e02f726e8668ff940bea4366f87ff)), closes [#246](https://github.com/pleaseai/shunt/issues/246)
+
+
+### Performance Improvements
+
+* **ws:** open a dedicated socket instead of queueing concurrent turns ([#250](https://github.com/pleaseai/shunt/issues/250)) ([a469eab](https://github.com/pleaseai/shunt/commit/a469eab7a5fa9f2123065e1e53d3c85f2a0589df))
+
 ## [0.25.0](https://github.com/pleaseai/shunt/compare/v0.24.0...v0.25.0) (2026-07-28)
 
 
