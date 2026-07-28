@@ -130,7 +130,6 @@ async fn fetch_within_deadline(
     let base = provider.base_url.trim_end_matches('/');
 
     let url = format!("{base}/v1/models");
-    let limit = PAGE_LIMIT.to_string();
     let mut collected: Vec<ModelEntry> = Vec::new();
     let mut after_id: Option<String> = None;
     let mut complete = false;
@@ -139,7 +138,7 @@ async fn fetch_within_deadline(
             .http_client
             .get(&url)
             .timeout(FETCH_TIMEOUT)
-            .query(&[("limit", &limit)]);
+            .query(&[("limit", PAGE_LIMIT)]);
         if let Some(cursor) = after_id.as_deref() {
             request = request.query(&[("after_id", cursor)]);
         }
@@ -260,15 +259,20 @@ async fn upstream_headers(
         // gateway auth whenever configured, so first remove any value shunt's own
         // auth gate consumed; inference passthrough routes do not have this step.
         AuthMode::Passthrough => {
-            let bearer = inbound.get("authorization").cloned().filter(|_| {
-                !inbound_context.gateway_bearer_authenticated
-                    && !bearer_token(inbound).is_some_and(|token| {
-                        inbound_context
-                            .static_auth
-                            .and_then(|auth| auth.authenticate_value(token))
-                            .is_some()
-                    })
-            });
+            // A bearer shunt already consumed — gateway login, or a
+            // `[server.auth]` client token sent as `Authorization` — authenticates
+            // the caller against shunt, not the caller against the upstream.
+            let bearer_is_consumed = inbound_context.gateway_bearer_authenticated
+                || bearer_token(inbound).is_some_and(|token| {
+                    inbound_context
+                        .static_auth
+                        .and_then(|auth| auth.authenticate_value(token))
+                        .is_some()
+                });
+            let bearer = inbound
+                .get("authorization")
+                .cloned()
+                .filter(|_| !bearer_is_consumed);
             let api_key = inbound.get("x-api-key").cloned().filter(|value| {
                 inbound_context
                     .static_auth
