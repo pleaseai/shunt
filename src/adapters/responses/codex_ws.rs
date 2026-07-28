@@ -33,7 +33,7 @@
 //! continuation state is stored on the [`Connection`] rather than globally.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -77,6 +77,16 @@ const POOL_IDLE_TTL: Duration = Duration::from_secs(30 * 60);
 const POOL_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 /// Hard cap on pooled connections, a backstop against unbounded session churn.
 const MAX_POOL_ENTRIES: usize = 10_000;
+/// Ceiling on simultaneously live overflow connections — the dedicated sockets
+/// opened when a session's pooled connection is already streaming (issue #248).
+/// Overflow is bounded by in-flight requests rather than growing over time (an
+/// overflow socket serves one turn and closes), so this is a backstop against a
+/// same-session burst translating one-for-one into sockets, reader tasks, and
+/// upstream handshakes — not a throttle. A turn that cannot claim a slot is
+/// refused before any frame is sent, so it falls back to the HTTP transport,
+/// this module's documented safety net, instead of waiting.
+const MAX_OVERFLOW_CONNECTIONS: usize = 64;
+static LIVE_OVERFLOW_CONNECTIONS: AtomicUsize = AtomicUsize::new(0);
 
 /// Maximum number of turn events buffered between the WebSocket reader and the
 /// downstream response. This bounds memory for slow clients while leaving room
@@ -108,6 +118,27 @@ type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 type WsSink = SplitSink<WsStream, Message>;
 /// Read half of a split [`WsStream`], owned solely by the connection's reader task.
 type WsSource = SplitStream<WsStream>;
+
+/// RAII admission guard for a live dedicated overflow connection.
+struct OverflowSlot;
+
+impl OverflowSlot {
+    /// Claim one overflow slot, or `None` at the ceiling.
+    fn claim() -> Option<Self> {
+        LIVE_OVERFLOW_CONNECTIONS
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |live| {
+                (live < MAX_OVERFLOW_CONNECTIONS).then(|| live + 1)
+            })
+            .ok()
+            .map(|_| Self)
+    }
+}
+
+impl Drop for OverflowSlot {
+    fn drop(&mut self) {
+        LIVE_OVERFLOW_CONNECTIONS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 /// A turn dispatched to a connection's reader task: the frame to send, where to
 /// stream events, what to record for continuation, and the turn slot to release
@@ -156,6 +187,9 @@ struct Connection {
     last_used_at: Mutex<Instant>,
     /// The session key this connection is pooled under, if any.
     pool_key: Option<String>,
+    /// Held for an overflow connection's lifetime; releasing it on `Connection`
+    /// drop is what frees the overflow admission slot.
+    _overflow_slot: Option<OverflowSlot>,
     /// The `x-codex-turn-state` captured from the handshake, if present.
     handshake_turn_state: Option<String>,
     /// Quota headers from the connection's upgrade response. Reused turns do not
@@ -170,6 +204,7 @@ impl Connection {
         ws_url: &str,
         headers: HeaderMap,
         pool_key: Option<String>,
+        overflow_slot: Option<OverflowSlot>,
     ) -> Result<(Arc<Self>, HeaderMap), CodexWsError> {
         let (stream, handshake_turn_state, handshake_headers) = connect(ws_url, headers).await?;
         let (sink, source) = stream.split();
@@ -184,6 +219,7 @@ impl Connection {
             continuation: Mutex::new(None),
             last_used_at: Mutex::new(Instant::now()),
             pool_key,
+            _overflow_slot: overflow_slot,
             handshake_turn_state,
             handshake_headers: handshake_headers.clone(),
         });
@@ -484,9 +520,11 @@ impl Drop for Turn {
 /// Acquire a connection for `pool_key`, reusing an idle live pooled one (verified
 /// with a `Ping`/`Pong` liveness probe) or performing a fresh handshake. If the
 /// pooled connection is busy, the turn opens a dedicated connection instead of
-/// waiting. A stale pooled connection is evicted and replaced. A refused handshake
-/// (401/403/429) resolves to `Err` with the upstream status/body so the caller can
-/// re-shape it like the HTTP path.
+/// waiting. At most [`MAX_OVERFLOW_CONNECTIONS`] dedicated sockets may be live;
+/// excess contention is refused before a frame is sent so the caller transparently
+/// falls back to HTTP instead of queueing. A stale pooled connection is evicted and
+/// replaced. A refused handshake (401/403/429) resolves to `Err` with the upstream
+/// status/body so the caller can re-shape it like the HTTP path.
 pub async fn begin(
     ws_url: &str,
     headers: HeaderMap,
@@ -530,7 +568,16 @@ pub async fn begin(
         }
     }
 
-    let connection_pool_key = if overflow {
+    let (connection_pool_key, overflow_slot) = if overflow {
+        let overflow_slot = OverflowSlot::claim().ok_or_else(|| {
+            tracing::debug!(
+                max_overflow_connections = MAX_OVERFLOW_CONNECTIONS,
+                "codex websocket overflow connection ceiling reached; falling back to HTTP"
+            );
+            CodexWsError::transport(format!(
+                "codex websocket overflow connection ceiling reached ({MAX_OVERFLOW_CONNECTIONS}); falling back to HTTP"
+            ))
+        })?;
         // Keep an overflow socket entirely outside the session pool:
         // 1. `run_turn` calls `pool_insert` only when `conn.pool_key` is `Some`, so
         //    it cannot replace the healthy pooled entry or drop its continuation;
@@ -540,12 +587,12 @@ pub async fn begin(
         // The turn deliberately carries no continuation (`reused` is false, so
         // `stored_continuation()` returns `None`): contention trades continuation
         // reuse for parallelism while the pooled socket keeps the session state.
-        None
+        (None, Some(overflow_slot))
     } else {
-        pool_key.map(str::to_string)
+        (pool_key.map(str::to_string), None)
     };
     let (conn, handshake_headers) =
-        Connection::open(ws_url, headers, connection_pool_key.clone()).await?;
+        Connection::open(ws_url, headers, connection_pool_key.clone(), overflow_slot).await?;
     let slot = conn.turn_lock.clone().lock_owned().await;
     Ok(Turn {
         conn,
@@ -1533,6 +1580,168 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), server)
             .await
             .expect("server exits after the pooled socket is cleared")
+            .unwrap();
+    }
+
+    /// Issue #248: once all overflow slots are live, another concurrent turn must
+    /// fail before opening a socket instead of waiting. Releasing the slots restores
+    /// the dedicated path, proving the ceiling is admission rather than a sticky
+    /// failure state.
+    #[tokio::test]
+    async fn overflow_ceiling_refuses_promptly_then_recovers() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use tokio::net::TcpListener;
+        use tokio::sync::oneshot;
+        use tokio::task::JoinSet;
+
+        let _pool_guard = POOL_TEST_LOCK.lock().await;
+        clear_pool_for_tests();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let server_accepted = accepted.clone();
+        let (release_turn2, hold_turn2) = oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            let mut hold_turn2 = Some(hold_turn2);
+            let mut handlers = JoinSet::new();
+            for connection_index in 0..2 {
+                let (socket, _) = listener.accept().await.unwrap();
+                server_accepted.fetch_add(1, Ordering::SeqCst);
+                let turn2_gate = if connection_index == 0 {
+                    hold_turn2.take()
+                } else {
+                    None
+                };
+                handlers.spawn(async move {
+                    let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+                    let mut turn2_gate = turn2_gate;
+                    let mut frames_seen = 0;
+                    while let Some(message) = ws.next().await {
+                        match message {
+                            Ok(Message::Text(frame)) => {
+                                let frame: Value = serde_json::from_str(&frame).unwrap();
+                                assert_eq!(frame["type"], "response.create");
+                                frames_seen += 1;
+                                ws.send(Message::Text(format!(
+                                    r#"{{"type":"response.created","response":{{"id":"resp_{connection_index}_{frames_seen}"}}}}"#
+                                )))
+                                .await
+                                .unwrap();
+                                if connection_index == 0 && frames_seen == 2 {
+                                    turn2_gate
+                                        .take()
+                                        .expect("turn 2 has a release gate")
+                                        .await
+                                        .expect("test releases turn 2");
+                                }
+                                ws.send(Message::Text(format!(
+                                    r#"{{"type":"response.completed","response":{{"id":"resp_{connection_index}_{frames_seen}"}}}}"#
+                                )))
+                                .await
+                                .unwrap();
+                            }
+                            Ok(Message::Ping(data)) => {
+                                ws.send(Message::Pong(data)).await.unwrap();
+                            }
+                            Ok(Message::Pong(_)) => {}
+                            Ok(Message::Close(_)) | Err(_) => break,
+                            Ok(other) => panic!("unexpected frame: {other:?}"),
+                        }
+                    }
+                });
+            }
+            while let Some(result) = handlers.join_next().await {
+                result.unwrap();
+            }
+        });
+
+        let url = format!("ws://{addr}/codex/responses");
+        let frame = response_create_frame(serde_json::json!({"model": "m", "input": []}));
+
+        let mut turn1 = open_simple(
+            &url,
+            HeaderMap::new(),
+            &frame,
+            Some("session-overflow-ceiling"),
+        )
+        .await
+        .expect("first turn connects");
+        drain(&mut turn1).await;
+        let turn2 = begin(&url, HeaderMap::new(), Some("session-overflow-ceiling"))
+            .await
+            .expect("second turn reuses pooled connection");
+        let mut turn2 = turn2
+            .stream(&frame, RecordPlan::none())
+            .await
+            .expect("second turn streams");
+        let first = turn2
+            .recv()
+            .await
+            .expect("turn 2 produces response.created")
+            .expect("turn 2 starts without a transport error");
+        assert_eq!(first.event.as_deref(), Some("response.created"));
+
+        // Saturate defensively: an earlier test's overflow reader may still be
+        // releasing its final Arc even though that test has drained the event stream.
+        let mut slots = Vec::new();
+        while let Some(slot) = OverflowSlot::claim() {
+            slots.push(slot);
+        }
+        assert!(OverflowSlot::claim().is_none());
+        let accepts_before_refusal = accepted.load(Ordering::SeqCst);
+        let error = match tokio::time::timeout(
+            Duration::from_secs(5),
+            begin(&url, HeaderMap::new(), Some("session-overflow-ceiling")),
+        )
+        .await
+        .expect("overflow admission refuses promptly instead of waiting")
+        {
+            Err(error) => error,
+            Ok(_) => panic!("a saturated overflow ceiling must fall back to HTTP"),
+        };
+        assert!(
+            error
+                .message
+                .contains("overflow connection ceiling reached")
+                && error.message.contains("falling back to HTTP"),
+            "unexpected error: {}",
+            error.message
+        );
+        assert_eq!(
+            accepted.load(Ordering::SeqCst),
+            accepts_before_refusal,
+            "ceiling refusal does not open another socket"
+        );
+
+        drop(slots);
+        let overflow = tokio::time::timeout(
+            Duration::from_secs(5),
+            begin(&url, HeaderMap::new(), Some("session-overflow-ceiling")),
+        )
+        .await
+        .expect("released overflow slots restore prompt admission")
+        .expect("a dedicated connection opens after slots are released");
+        let mut overflow = overflow
+            .stream(&frame, RecordPlan::none())
+            .await
+            .expect("recovered overflow turn streams");
+        assert!(
+            drain(&mut overflow).await > 0,
+            "recovered overflow turn produces events"
+        );
+        assert_eq!(
+            accepted.load(Ordering::SeqCst),
+            accepts_before_refusal + 1,
+            "released admission opens exactly one dedicated socket"
+        );
+
+        release_turn2.send(()).expect("release turn 2");
+        assert!(drain(&mut turn2).await > 0, "turn 2 reaches completion");
+        clear_pool_for_tests();
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("server exits after overflow test cleanup")
             .unwrap();
     }
 
