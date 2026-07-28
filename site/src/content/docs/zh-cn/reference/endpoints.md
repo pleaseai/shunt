@@ -9,7 +9,7 @@ description: shunt 作为 Claude Code LLM 网关所提供的端点。
 | `GET` | `/` | 人类可读的落地页(版本 + 端点列表) |
 | `GET` | `/health` | 健康检查 —— `{"status":"ok","version":"x.y.z"}` |
 | `GET` | `/v1/models` | [模型发现](/zh-cn/guides/model-discovery/) —— 返回你的 `[[models]]` 条目 |
-| `GET` | `/routes` | shunt 原生路由发现 —— 逐字返回配置的 `[[routes]]` 表(model → provider/upstream_model/effort 映射,包括 claude 前缀的发现别名);区别于 `/v1/models`,后者提供更窄的 Anthropic 协议发现响应(仅 `id`/`display_name`) |
+| `GET` | `/routes` | shunt 原生路由发现 —— 逐字返回配置的 `[[routes]]` 表(model → provider/upstream_model/effort 映射,包括 claude 前缀的发现别名);区别于 `/v1/models`,后者提供更窄的 Anthropic 协议发现响应(`id`、`display_name` 以及上游模型元数据) |
 | `POST` | `/v1/messages` | 推理 —— 按请求的 `model` id 路由 |
 | `POST` | `/v1/messages/count_tokens` | [Token 计数](/zh-cn/guides/effort-and-context/#token-counting-count_tokens) |
 | `GET` | `/admin` | 管理仪表盘(HTML);未登录时重定向到 `/admin/login` |

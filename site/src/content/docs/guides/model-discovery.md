@@ -3,7 +3,11 @@ title: Model Discovery
 description: Populate Claude Code's /model picker automatically with Claude-named aliases.
 ---
 
-Discovery (`GET /v1/models`) can populate Claude Code's `/model` picker automatically. By default, shunt returns the admin-curated `[[models]]` entries first, followed by its builtin Claude model catalog mirroring the reference Claude apps gateway. Exact-id duplicates are removed in favor of the curated entry. Set the top-level `auto_include_builtin_models = false` to expose only the curated list. Builtin models need no dedicated `[[routes]]` entry — they resolve through your normal routing rules, falling back to `server.default_provider` when no `[[routes]]` or `[[route_prefixes]]` entry matches.
+Discovery (`GET /v1/models`) can populate Claude Code's `/model` picker automatically. By default, shunt returns the admin-curated `[[models]]` entries first, followed by the models it discovers on its own. Exact-id duplicates are removed in favor of the curated entry. Set the top-level `auto_include_builtin_models = false` to expose only the curated list.
+
+For that second half, shunt asks your Anthropic upstream for the live list: it issues `GET /v1/models` against the first Anthropic-kind upstream using **that request's own credential**, so each caller sees the models its own credential is entitled to. If there is no Anthropic-kind upstream, no credential to ask with, or the call fails or times out (2 s cap), shunt falls back to a builtin snapshot of the Claude catalog. Nothing is cached — the upstream list differs per credential, so a shared cache would hand one caller another's entitlement view.
+
+Discovered models need no dedicated `[[routes]]` entry — they resolve through your normal routing rules, falling back to `server.default_provider` when no `[[routes]]` or `[[route_prefixes]]` entry matches.
 
 Claude Code ignores any discovered id that doesn't begin with `claude`/`anthropic` ([protocol reference](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery)), so use a Claude-named alias when curating a non-Claude model such as `gpt-*`.
 

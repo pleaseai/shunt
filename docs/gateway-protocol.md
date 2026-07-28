@@ -274,9 +274,10 @@ One endpoint group from the Claude apps gateway superset remains a follow-up:
 - No SSE buffering.
 - Anthropic error-envelope shape on all paths.
 - `429` + `Retry-After`.
-- `/v1/models` returns the full reference list shape
-  `{"data":[{type,id,display_name}],"has_more","first_id","last_id"}` — envelope parity landed
-  in #213.
+- `/v1/models` returns the full Anthropic list shape
+  `{"data":[{type,id,display_name,created_at,max_input_tokens,max_tokens}],"has_more","first_id","last_id"}`
+  — envelope parity landed in #213; builtin entries carry the upstream metadata and the cursors
+  hold the first/last entry ids as the real API does.
 - Table-driven model-id remap, including body rewrite.
 - On the translated backends (Responses/Codex, xAI, Cursor), upstream
   `403`/`413`/`429`/`500`/`501`/`502`/`503`/`504`/`529` reach the client with their

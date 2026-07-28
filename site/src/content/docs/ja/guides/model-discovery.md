@@ -3,7 +3,11 @@ title: モデルディスカバリー
 description: Claude Code の /model ピッカーを Claude 命名のエイリアスで自動的に埋める。
 ---
 
-Discovery（`GET /v1/models`）は Claude Code の `/model` ピッカーを自動的に埋められます。デフォルトでは、shunt は管理者が選定した `[[models]]` エントリを先に返し、その後にリファレンス Claude apps gateway をミラーする組み込み Claude モデルカタログを追加します。同一 id は選定したエントリを優先して重複を除きます。選定したリストだけを公開するには、トップレベルで `auto_include_builtin_models = false` を設定してください。組み込みモデルは専用の `[[routes]]` エントリを必要としません。通常のルーティング規則で解決され、`[[routes]]` と `[[route_prefixes]]` のいずれにも一致しない場合は `server.default_provider` にフォールバックします。
+Discovery（`GET /v1/models`）は Claude Code の `/model` ピッカーを自動的に埋められます。デフォルトでは、shunt は管理者が選定した `[[models]]` エントリを先に返し、その後に shunt 自身が検出したモデルを追加します。同一 id は選定したエントリを優先して重複を除きます。選定したリストだけを公開するには、トップレベルで `auto_include_builtin_models = false` を設定してください。
+
+後半について、shunt は Anthropic アップストリームに実際の一覧を問い合わせます。最初の Anthropic 種別のアップストリームに `GET /v1/models` を発行しますが、その際は**そのリクエスト自身の認証情報**を使うため、呼び出し元ごとに自分の認証情報で利用できるモデルが返ります。Anthropic 種別のアップストリームがない、使える認証情報がない、あるいは呼び出しが失敗・タイムアウト（2 秒上限）した場合は、組み込みの Claude カタログのスナップショットにフォールバックします。キャッシュはしません — アップストリームの一覧は認証情報ごとに異なるため、共有キャッシュはある呼び出し元のエンタイトルメント情報を別の呼び出し元に渡してしまいます。
+
+検出されたモデルは専用の `[[routes]]` エントリを必要としません。通常のルーティング規則で解決され、`[[routes]]` と `[[route_prefixes]]` のいずれにも一致しない場合は `server.default_provider` にフォールバックします。
 
 Claude Code は discovery された id が `claude`/`anthropic` で始まらない場合、それを無視するため（[プロトコルリファレンス](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery)）、`gpt-*` などの非 Claude モデルには Claude 命名のエイリアスを使ってください。
 

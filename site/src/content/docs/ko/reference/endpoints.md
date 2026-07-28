@@ -9,7 +9,7 @@ description: shunt가 Claude Code LLM 게이트웨이로서 제공하는 엔드�
 | `GET` | `/` | 사람이 읽을 수 있는 랜딩(버전 + 엔드포인트 목록) |
 | `GET` | `/health` | 헬스체크 — `{"status":"ok","version":"x.y.z"}` |
 | `GET` | `/v1/models` | [모델 디스커버리](/ko/guides/model-discovery/) — `[[models]]` 항목을 반환 |
-| `GET` | `/routes` | shunt 네이티브 라우트 디스커버리 — 구성된 `[[routes]]` 테이블을 그대로 반환(model → provider/upstream_model/effort 매핑, claude 프리픽스 디스커버리 별칭 포함); 더 좁은 Anthropic 프로토콜 디스커버리 응답(`id`/`display_name`만)을 제공하는 `/v1/models`와 구별됨 |
+| `GET` | `/routes` | shunt 네이티브 라우트 디스커버리 — 구성된 `[[routes]]` 테이블을 그대로 반환(model → provider/upstream_model/effort 매핑, claude 프리픽스 디스커버리 별칭 포함); 더 좁은 Anthropic 프로토콜 디스커버리 응답(`id`, `display_name`, 업스트림 모델 메타데이터)을 제공하는 `/v1/models`와 구별됨 |
 | `POST` | `/v1/messages` | 추론 — 요청의 `model` id에 따라 라우팅 |
 | `POST` | `/v1/messages/count_tokens` | [토큰 카운팅](/ko/guides/effort-and-context/#token-counting-count_tokens) |
 | `GET` | `/admin` | 관리자 대시보드(HTML); 로그인하지 않았으면 `/admin/login`으로 리다이렉트 |

@@ -71,18 +71,21 @@ Claude Desktop 的**交互式登录**（`inferenceGatewayOidc`）会让应用通
 
 shunt 提供 `GET /v1/models`，因此 Claude Desktop 会在启动时自动发现并填充模型选择器。显示哪些模型由以下两项因素决定。
 
-**发现过滤器。** Claude Desktop 的自动发现只显示*可识别为 Claude* 的 id —— 即 tier 命名的 id（`claude-sonnet-*`、`claude-opus-*`、`claude-haiku-*`、`claude-fable-*`）。shunt 的内置目录与参考 Claude apps gateway 完全一致 —— 其中有九个 tier 命名的 id，因此 Claude Desktop 会显示全部模型：
+**发现过滤器。** Claude Desktop 的自动发现只显示*可识别为 Claude* 的 id —— 即 tier 命名的 id（`claude-sonnet-*`、`claude-opus-*`、`claude-haiku-*`、`claude-fable-*`）。shunt 的内置目录是 Anthropic API 与参考 Claude apps gateway 所提供列表的超集 —— 其中有十一个 tier 命名的 id，因此 Claude Desktop 会显示全部模型。这是回退用的快照;当 shunt 能够访问你的 Anthropic 上游时,会改为提供该调用方自己的实际列表(参见[模型发现](/zh-cn/guides/model-discovery/))。
 
 ```json
 // GET /v1/models — 内置目录（auto_include_builtin_models），全部采用 tier 命名
-// （每个条目还带有 "type": "model"）
+// （每个条目还带有 "type": "model"、"display_name"、"created_at"、
+//   "max_input_tokens" 和 "max_tokens"）
 { "data": [
-  { "id": "claude-opus-4-6" },   { "id": "claude-sonnet-4-5-20250929" },
-  { "id": "claude-haiku-4-5-20251001" }, { "id": "claude-fable-5" },
-  { "id": "claude-opus-4-8" },   { "id": "claude-opus-4-7" },
-  { "id": "claude-opus-4-1-20250805" },  { "id": "claude-sonnet-5" },
-  { "id": "claude-sonnet-4-6" }
-], "has_more": false, "first_id": null, "last_id": null }
+  { "id": "claude-opus-5" },     { "id": "claude-sonnet-5" },
+  { "id": "claude-fable-5" },    { "id": "claude-opus-4-8" },
+  { "id": "claude-opus-4-7" },   { "id": "claude-sonnet-4-6" },
+  { "id": "claude-opus-4-6" },   { "id": "claude-opus-4-5-20251101" },
+  { "id": "claude-haiku-4-5-20251001" }, { "id": "claude-sonnet-4-5-20250929" },
+  { "id": "claude-opus-4-1-20250805" }
+], "has_more": false,
+   "first_id": "claude-opus-5", "last_id": "claude-opus-4-1-20250805" }
 ```
 
 维护的 `claude-<slug>-via-<provider>` 别名（可用于 Claude Code 的模式）会**被 Claude Desktop 丢弃** —— 见[模型发现 → Claude Desktop 只识别 tier 命名的 id](/zh-cn/guides/model-discovery/#claude-desktop-只识别-tier-命名的-id)。

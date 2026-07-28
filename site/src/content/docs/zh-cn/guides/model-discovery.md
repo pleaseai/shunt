@@ -3,7 +3,11 @@ title: 模型发现
 description: 用 Claude 命名的别名自动填充 Claude Code 的 /model 选择器。
 ---
 
-发现(`GET /v1/models`)可以自动填充 Claude Code 的 `/model` 选择器。默认情况下,shunt 会先返回管理员维护的 `[[models]]` 条目,再追加与参考 Claude apps gateway 保持一致的内置 Claude 模型目录。对于 id 完全相同的条目,会保留管理员维护的条目并去重。若只想公开维护的列表,请在顶层设置 `auto_include_builtin_models = false`。内置模型不需要专门的 `[[routes]]` 条目;它们按常规路由规则解析,当 `[[routes]]` 与 `[[route_prefixes]]` 均未匹配时回退到 `server.default_provider`。
+发现(`GET /v1/models`)可以自动填充 Claude Code 的 `/model` 选择器。默认情况下,shunt 会先返回管理员维护的 `[[models]]` 条目,再追加它自行发现的模型。对于 id 完全相同的条目,会保留管理员维护的条目并去重。若只想公开维护的列表,请在顶层设置 `auto_include_builtin_models = false`。
+
+后半部分由 shunt 向 Anthropic 上游查询实际列表:它会对第一个 Anthropic 类型的上游发起 `GET /v1/models`,并使用**该请求自身的凭据**,因此每个调用方看到的都是自己凭据有权使用的模型。若没有 Anthropic 类型的上游、没有可用凭据,或调用失败、超时(上限 2 秒),则回退到内置 Claude 目录快照。shunt 不做缓存 —— 上游列表因凭据而异,共享缓存会把某个调用方的授权视图泄露给另一个调用方。
+
+发现的模型不需要专门的 `[[routes]]` 条目;它们按常规路由规则解析,当 `[[routes]]` 与 `[[route_prefixes]]` 均未匹配时回退到 `server.default_provider`。
 
 Claude Code 会忽略任何不以 `claude`/`anthropic` 开头的发现 id([协议参考](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery)),因此请为 `gpt-*` 等非 Claude 模型使用 Claude 命名别名。
 

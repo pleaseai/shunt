@@ -230,7 +230,9 @@ codex-fallback = "gpt-5.2"
 
 由 `GET /v1/models` 为 [模型发现](/zh-cn/guides/model-discovery/) 返回的条目。id 必须以 `claude` 或 `anthropic` 开头,否则 Claude Code 会忽略它们。
 
-顶层 `auto_include_builtin_models` 键默认为 `true`。启用后,shunt 会先返回管理员维护的 `[[models]]` 条目,再追加与参考 Claude apps gateway 保持一致的内置 Claude 模型目录。对于 id 完全相同的条目,会保留管理员维护的条目并去重。若只想公开 `[[models]]` 列表,请将其设为 `false`。内置模型不需要专门的 `[[routes]]` 条目;它们按常规路由规则解析,当 `[[routes]]` 与 `[[route_prefixes]]` 均未匹配时回退到 `server.default_provider`。
+顶层 `auto_include_builtin_models` 键默认为 `true`。启用后,shunt 会先返回管理员维护的 `[[models]]` 条目,再追加它自行发现的模型。对于 id 完全相同的条目,会保留管理员维护的条目并去重。若只想公开 `[[models]]` 列表,请将其设为 `false` —— 这也会一并关闭下述的上游调用。
+
+发现的模型在 shunt 能取到实际上游列表时来自该列表:它会对第一个 Anthropic 类型的上游(优先 `server.default_provider`,其次按声明顺序)发起 `GET /v1/models`,并使用该请求自身的凭据 —— `auth = "passthrough"` 时使用调用方转发的凭据,`api_key` 时使用配置的密钥,`claude_oauth` 时使用第一个可解析的账户。因此每个调用方看到的都是自己的列表,shunt 不做缓存。若没有 Anthropic 类型的上游、没有凭据,或调用失败、超时(上限 2 秒),则回退到内置 Claude 目录快照。无论哪种情况,这些 id 都不需要专门的 `[[routes]]` 条目;它们按常规路由规则解析,当 `[[routes]]` 与 `[[route_prefixes]]` 均未匹配时回退到 `server.default_provider`。
 
 在维护的条目中添加 `[models.upstream_model]`，即可通过同一声明公开 id、进行路由并转换为上游 id。对于精确 id 路由，建议使用此形式而不是 `[[routes]]`。使用有序 `[[upstreams]]` 时，映射可包含一个或多个 `upstream = "backend-id"` 键值对，并按 `[[upstreams]]` 声明顺序解析为故障转移链。旧式 `[providers.*]` 没有声明顺序，因此只能包含一个键值对。对于这个 id，该映射优先于 `[[routes]]`、`[[route_prefixes]]` 和 `server.default_provider`；每个上游的默认 `effort` 会应用到相应链条目。空映射、空或仅含空白字符的上游名称或后端 id、未知上游、同 id 的 `[[routes]]` 条目、以 `[1m]` 或 `[1M]` 结尾的带映射 id，以及至少有一项带映射的重复 `[[models]]` id 都会导致启动错误。client 会在匹配前移除 context-window hint，因此在带映射 id 中包含该 suffix 会使该条目无法命中。仅由不带映射条目组成的重复 id 保持原有行为。
 

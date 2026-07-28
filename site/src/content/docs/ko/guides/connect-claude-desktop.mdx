@@ -71,18 +71,21 @@ Claude Desktop의 **Interactive sign-in**(`inferenceGatewayOidc`)은 앱이 외�
 
 shunt는 `GET /v1/models`를 제공하므로 Claude Desktop은 시작할 때 모델 선택기를 자동으로 디스커버리합니다. 무엇이 나타나는지는 두 가지 요소가 결정합니다.
 
-**디스커버리 필터.** Claude Desktop의 자동 디스커버리는 *Claude로 인식할 수 있는* id, 즉 tier 이름 id(`claude-sonnet-*`, `claude-opus-*`, `claude-haiku-*`, `claude-fable-*`)만 표시합니다. shunt의 내장 카탈로그는 레퍼런스 Claude apps gateway를 정확히 미러링하며, 9개 id가 모두 tier 이름이므로 Claude Desktop에 전부 표시됩니다:
+**디스커버리 필터.** Claude Desktop의 자동 디스커버리는 *Claude로 인식할 수 있는* id, 즉 tier 이름 id(`claude-sonnet-*`, `claude-opus-*`, `claude-haiku-*`, `claude-fable-*`)만 표시합니다. shunt의 내장 카탈로그는 Anthropic API와 레퍼런스 Claude apps gateway가 제공하는 목록의 상위집합이며, 11개 id가 모두 tier 이름이므로 Claude Desktop에 전부 표시됩니다. 이것은 폴백 스냅샷입니다. shunt가 Anthropic 업스트림에 도달할 수 있으면 해당 호출자의 실제 목록을 대신 제공합니다([모델 디스커버리](/ko/guides/model-discovery/) 참고).
 
 ```json
 // GET /v1/models — 내장 카탈로그(auto_include_builtin_models), 모두 tier 이름 id
-// (각 항목에는 "type": "model"도 포함됨)
+// (각 항목에는 "type": "model", "display_name", "created_at",
+//  "max_input_tokens", "max_tokens"도 포함됨)
 { "data": [
-  { "id": "claude-opus-4-6" },   { "id": "claude-sonnet-4-5-20250929" },
-  { "id": "claude-haiku-4-5-20251001" }, { "id": "claude-fable-5" },
-  { "id": "claude-opus-4-8" },   { "id": "claude-opus-4-7" },
-  { "id": "claude-opus-4-1-20250805" },  { "id": "claude-sonnet-5" },
-  { "id": "claude-sonnet-4-6" }
-], "has_more": false, "first_id": null, "last_id": null }
+  { "id": "claude-opus-5" },     { "id": "claude-sonnet-5" },
+  { "id": "claude-fable-5" },    { "id": "claude-opus-4-8" },
+  { "id": "claude-opus-4-7" },   { "id": "claude-sonnet-4-6" },
+  { "id": "claude-opus-4-6" },   { "id": "claude-opus-4-5-20251101" },
+  { "id": "claude-haiku-4-5-20251001" }, { "id": "claude-sonnet-4-5-20250929" },
+  { "id": "claude-opus-4-1-20250805" }
+], "has_more": false,
+   "first_id": "claude-opus-5", "last_id": "claude-opus-4-1-20250805" }
 ```
 
 선별된 `claude-<slug>-via-<provider>` 별칭(Claude Code에서 동작하는 패턴)은 **Claude Desktop에서 버려집니다**. [모델 디스커버리 → Claude Desktop은 tier 이름 id만 인식합니다](/ko/guides/model-discovery/#claude-desktop은-tier-이름-id만-인식합니다)를 참고하세요.

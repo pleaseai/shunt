@@ -71,18 +71,21 @@ Claude Desktop's **Interactive sign-in** (`inferenceGatewayOidc`) has the app au
 
 shunt serves `GET /v1/models`, so Claude Desktop auto-discovers the picker at launch. Two things govern what appears.
 
-**Discovery filter.** Claude Desktop's auto-discovery shows only *recognizably Claude* ids — the tier-named ones (`claude-sonnet-*`, `claude-opus-*`, `claude-haiku-*`, `claude-fable-*`). shunt's builtin catalog mirrors the reference Claude apps gateway exactly — nine tier-named ids, so Claude Desktop shows every one:
+**Discovery filter.** Claude Desktop's auto-discovery shows only *recognizably Claude* ids — the tier-named ones (`claude-sonnet-*`, `claude-opus-*`, `claude-haiku-*`, `claude-fable-*`). shunt's builtin catalog is the superset of what the Anthropic API and the reference Claude apps gateway serve — eleven tier-named ids, so Claude Desktop shows every one. This is the fallback snapshot; when shunt can reach your Anthropic upstream it serves that caller's own live list instead (see [Model Discovery](/guides/model-discovery/)).
 
 ```json
 // GET /v1/models — builtin catalog (auto_include_builtin_models), all tier-named
-// (each entry also carries "type": "model")
+// (each entry also carries "type": "model", "display_name", "created_at",
+//  "max_input_tokens", and "max_tokens")
 { "data": [
-  { "id": "claude-opus-4-6" },   { "id": "claude-sonnet-4-5-20250929" },
-  { "id": "claude-haiku-4-5-20251001" }, { "id": "claude-fable-5" },
-  { "id": "claude-opus-4-8" },   { "id": "claude-opus-4-7" },
-  { "id": "claude-opus-4-1-20250805" },  { "id": "claude-sonnet-5" },
-  { "id": "claude-sonnet-4-6" }
-], "has_more": false, "first_id": null, "last_id": null }
+  { "id": "claude-opus-5" },     { "id": "claude-sonnet-5" },
+  { "id": "claude-fable-5" },    { "id": "claude-opus-4-8" },
+  { "id": "claude-opus-4-7" },   { "id": "claude-sonnet-4-6" },
+  { "id": "claude-opus-4-6" },   { "id": "claude-opus-4-5-20251101" },
+  { "id": "claude-haiku-4-5-20251001" }, { "id": "claude-sonnet-4-5-20250929" },
+  { "id": "claude-opus-4-1-20250805" }
+], "has_more": false,
+   "first_id": "claude-opus-5", "last_id": "claude-opus-4-1-20250805" }
 ```
 
 A curated `claude-<slug>-via-<provider>` alias (the pattern that works in Claude Code) is **dropped by Claude Desktop** — see [Model Discovery → Claude Desktop recognizes only tier-named ids](/guides/model-discovery/#claude-desktop-recognizes-only-tier-named-ids).

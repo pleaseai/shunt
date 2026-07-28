@@ -71,18 +71,21 @@ Claude Desktop の **Interactive sign-in**（`inferenceGatewayOidc`）では、�
 
 shunt は `GET /v1/models` を提供するため、Claude Desktop は起動時にピッカーを自動検出します。何が表示されるかは 2 つの要素で決まります。
 
-**Discovery フィルター。** Claude Desktop の自動 discovery に表示されるのは、*Claude と認識できる* id、つまり tier 名の id（`claude-sonnet-*`、`claude-opus-*`、`claude-haiku-*`、`claude-fable-*`）のみです。shunt の組み込みカタログはリファレンス Claude apps gateway を正確にミラーしています。9 つすべてが tier 名の id なので、Claude Desktop にはそのすべてが表示されます。
+**Discovery フィルター。** Claude Desktop の自動 discovery に表示されるのは、*Claude と認識できる* id、つまり tier 名の id（`claude-sonnet-*`、`claude-opus-*`、`claude-haiku-*`、`claude-fable-*`）のみです。shunt の組み込みカタログは Anthropic API とリファレンス Claude apps gateway が提供する一覧の上位集合です。11 個すべてが tier 名の id なので、Claude Desktop にはそのすべてが表示されます。これはフォールバック用のスナップショットで、shunt が Anthropic アップストリームに到達できる場合は、その呼び出し元自身の実際の一覧を返します（[モデルディスカバリー](/ja/guides/model-discovery/) を参照）。
 
 ```json
 // GET /v1/models — builtin catalog (auto_include_builtin_models), all tier-named
-// (each entry also carries "type": "model")
+// (each entry also carries "type": "model", "display_name", "created_at",
+//  "max_input_tokens", and "max_tokens")
 { "data": [
-  { "id": "claude-opus-4-6" },   { "id": "claude-sonnet-4-5-20250929" },
-  { "id": "claude-haiku-4-5-20251001" }, { "id": "claude-fable-5" },
-  { "id": "claude-opus-4-8" },   { "id": "claude-opus-4-7" },
-  { "id": "claude-opus-4-1-20250805" },  { "id": "claude-sonnet-5" },
-  { "id": "claude-sonnet-4-6" }
-], "has_more": false, "first_id": null, "last_id": null }
+  { "id": "claude-opus-5" },     { "id": "claude-sonnet-5" },
+  { "id": "claude-fable-5" },    { "id": "claude-opus-4-8" },
+  { "id": "claude-opus-4-7" },   { "id": "claude-sonnet-4-6" },
+  { "id": "claude-opus-4-6" },   { "id": "claude-opus-4-5-20251101" },
+  { "id": "claude-haiku-4-5-20251001" }, { "id": "claude-sonnet-4-5-20250929" },
+  { "id": "claude-opus-4-1-20250805" }
+], "has_more": false,
+   "first_id": "claude-opus-5", "last_id": "claude-opus-4-1-20250805" }
 ```
 
 選定した `claude-<slug>-via-<provider>` エイリアス（Claude Code で機能するパターン）は **Claude Desktop では破棄されます** — [モデルディスカバリー → Claude Desktop は tier 名の id のみを認識します](/ja/guides/model-discovery/#claude-desktop-は-tier-名の-id-のみを認識します)を参照してください。
