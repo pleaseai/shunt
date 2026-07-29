@@ -128,7 +128,13 @@ impl HttpBody for PermitBody {
         // this wrapper is eventually dropped. `Drop` still covers the paths that
         // never reach a terminal frame — client disconnect or a body abandoned
         // mid-stream.
-        if matches!(frame, Poll::Ready(None | Some(Err(_)))) {
+        //
+        // `is_end_stream()` is checked alongside the terminal arms because a
+        // consumer that trusts it stops polling after the last data frame and
+        // never observes `Poll::Ready(None)` — a full (non-streaming) body hits
+        // exactly this path. Per the `http-body` contract, end-of-stream means no
+        // further frames *including trailers*, so this cannot cut a trailer off.
+        if matches!(frame, Poll::Ready(None | Some(Err(_)))) || self.inner.is_end_stream() {
             self.permit.take();
         }
         frame
@@ -350,6 +356,60 @@ mod tests {
         assert_eq!(first.status(), StatusCode::NO_CONTENT);
         let third = send_post(&app, "/upload").await;
         assert_eq!(third.status(), StatusCode::NO_CONTENT);
+    }
+
+    /// A consumer that trusts `is_end_stream()` stops polling after the last
+    /// data frame and never sees `Poll::Ready(None)`. Releasing only on the
+    /// terminal arms would then defer the slot to `Drop` — which, as the comment
+    /// on `poll_frame` notes, can lag well past end-of-stream because hyper may
+    /// hold the body while finishing the connection. The body is deliberately
+    /// kept alive across the assertion so a pass cannot come from `Drop`.
+    #[tokio::test]
+    async fn permit_is_released_when_the_body_reports_end_without_a_final_poll() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let app = Router::new()
+            .route(
+                "/full",
+                post_route(move || {
+                    let call = calls.fetch_add(1, Ordering::Relaxed);
+                    async move {
+                        if call == 0 {
+                            Body::from("payload")
+                        } else {
+                            Body::empty()
+                        }
+                    }
+                }),
+            )
+            .layer(middleware::from_fn_with_state(
+                ConcurrencyLimit::new(1),
+                limit_requests,
+            ));
+
+        let first = send_post(&app, "/full").await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let (_parts, mut body) = first.into_parts();
+
+        let data = poll_fn(|cx| Pin::new(&mut body).poll_frame(cx))
+            .await
+            .expect("the body yields its single data frame")
+            .unwrap()
+            .into_data()
+            .expect("the first frame is data");
+        assert_eq!(data, "payload");
+        assert!(
+            body.is_end_stream(),
+            "a full body reports end-of-stream after its only data frame"
+        );
+
+        let second = send_post(&app, "/full").await;
+        assert_eq!(
+            second.status(),
+            StatusCode::OK,
+            "the slot must be free once the body reports end-of-stream"
+        );
+
+        drop(body);
     }
 
     #[tokio::test]
