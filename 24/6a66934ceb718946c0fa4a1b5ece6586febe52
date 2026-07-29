@@ -1,0 +1,19 @@
+src/concurrency.rs
+  s_77b1472242619e::t_982a1e94d41617 44-48
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "246a66934ceb718946c0fa4a1b5ece6586febe52",
+  "prompts": {},
+  "sessions": {
+    "s_77b1472242619e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1a7991f4-bbab-43ff-a9ab-0838846e324d",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
