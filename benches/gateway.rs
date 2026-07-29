@@ -1,6 +1,6 @@
 //! CodSpeed benchmarks for shunt's CPU-bound request-path hot spots.
 //!
-//! Two groups, both avoiding network/IO so the CPU-simulation instrument
+//! Three groups, all avoiding network/IO so the CPU-simulation instrument
 //! produces stable, hardware-agnostic measurements:
 //!
 //! - Pure, allocation-light helpers that run on every proxied request: local
@@ -10,6 +10,8 @@
 //!   streamed requests: Anthropic Messages → Responses request translation
 //!   (per request), Responses SSE parse + Anthropic-SSE state folding (per
 //!   event), and Cursor SSE framing (per token delta).
+//! - Cursor Connect gzip decompression over representative compressed response
+//!   frame sizes, including its output allocation and inflate work.
 
 use axum::http::{HeaderMap, HeaderName, HeaderValue};
 use flate2::{write::GzEncoder, Compression};
@@ -52,12 +54,16 @@ fn gzip_fixture(compressed_target: usize) -> Vec<u8> {
         chunk += 1;
     }
 
-    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-    encoder.write_all(&payload).expect("gzip fixture writes");
-    let compressed = encoder.finish().expect("gzip fixture finishes");
-    assert!(compressed.len() >= compressed_target);
-    assert!(compressed.len() <= compressed_target * 5 / 4);
-    compressed
+    loop {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&payload).expect("gzip fixture writes");
+        let compressed = encoder.finish().expect("gzip fixture finishes");
+        if compressed.len() <= compressed_target {
+            assert!(compressed.len() >= compressed_target * 3 / 4);
+            return compressed;
+        }
+        payload.truncate(payload.len() * 15 / 16);
+    }
 }
 
 /// Cursor Connect gzip frame decode over representative compressed frame sizes.
