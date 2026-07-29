@@ -1,0 +1,73 @@
+src/request.rs
+  s_21fe3836235aea::t_a0d530ae4ca257 45-46
+  s_21fe3836235aea::t_2f9a983f0d2ca0 1-44,47-77
+src/adapters/responses/context.rs
+  s_21fe3836235aea::t_b8ce8862cf2db1 72-73,76,96
+src/adapters/mod.rs
+  s_21fe3836235aea::t_0eddcbb7559d69 62
+  s_21fe3836235aea::t_6bca3ac7e9430a 8,69
+src/adapters/responses/websocket.rs
+  s_21fe3836235aea::t_0ab88c64bec69a 239-243,280
+  s_21fe3836235aea::t_35cfb875be1b4b 105,232
+benches/perf_issues.rs
+  s_21fe3836235aea::t_36751be6863156 216-230,255-268,325-329,331-348,350
+  s_21fe3836235aea::t_addc06e58a6349 330
+  s_21fe3836235aea::t_63133e00346fbc 349,351
+src/model/responses.rs
+  s_21fe3836235aea::t_35cfb875be1b4b 7-9
+src/proxy/failover.rs
+  s_21fe3836235aea::t_b8ce8862cf2db1 119-120
+  s_21fe3836235aea::t_2d7ea9f674866c 42-43,48-55,85,122,124-125,248,267-271,307
+tests/passthrough.rs
+  s_21fe3836235aea::t_71a230b66cfa50 42-49,213-231,238
+  s_21fe3836235aea::t_15f1e416adcafb 232-237,239
+src/routing.rs
+  s_21fe3836235aea::t_64bac6d6d96646 72
+  s_21fe3836235aea::t_d9d3da4d06db26 64-71,77-84
+src/adapters/cursor/mod.rs
+  s_21fe3836235aea::t_ec2f41af871ce5 93-94
+  s_21fe3836235aea::t_4448c895f5649b 38,58,68,70,92
+src/adapters/anthropic/mod.rs
+  s_21fe3836235aea::t_a0d530ae4ca257 743-745,748-753
+  s_21fe3836235aea::t_b4da6e11d54a23 45,58-59,109,159-160,216-218,690,694-697,702,704-706,709,711,713-739
+  s_21fe3836235aea::t_71a230b66cfa50 698-701
+  s_21fe3836235aea::t_addc06e58a6349 691-692
+  s_21fe3836235aea::t_6b698c7312c6b7 18,34,740-742,754-755,758-759
+src/adapters/responses/codex_continuation.rs
+  s_21fe3836235aea::t_36751be6863156 101
+  s_21fe3836235aea::t_0ab88c64bec69a 97-100,102-106,147,150-156
+src/adapters/responses/codex_ws.rs
+  s_21fe3836235aea::t_0ab88c64bec69a 392,400,950-959,2026
+src/adapters/antigravity/mod.rs
+  s_21fe3836235aea::t_d96583b410c4ef 16,31,34-35
+src/adapters/gemini/mod.rs
+  s_21fe3836235aea::t_677f6d58629a55 17,31,65,93,96
+src/adapters/responses/http.rs
+  s_21fe3836235aea::t_aa01a35aef9580 82
+src/adapters/responses/mod.rs
+  s_21fe3836235aea::t_9b0d4ab5a44da3 22-23,44,73,75,77-78,84-85,115,124-129
+src/adapters/responses/pool.rs
+  s_21fe3836235aea::t_5cff4f18835a29 153,155
+src/lib.rs
+  s_21fe3836235aea::t_969f39b2c196a6 24
+src/model/responses_request.rs
+  s_21fe3836235aea::t_129bb650d90254 115-129,132,137,145-146,149,173,180,193,199,214
+src/proxy.rs
+  s_21fe3836235aea::t_13ab765804521d 95-98
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "054b279419e902925258d46e1b27588659e22114",
+  "prompts": {},
+  "sessions": {
+    "s_21fe3836235aea": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f77bf217-df96-4e11-b9b7-04912043aa70",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
