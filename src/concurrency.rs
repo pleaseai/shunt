@@ -16,6 +16,14 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use crate::error::{into_openai_error_shape, ShuntError};
 
 const OVERLOADED_MESSAGE: &str = "too many requests are already in flight";
+/// Inbound Codex routes, which take the OpenAI Responses error envelope instead
+/// of the Anthropic one (AGENTS.md). This middleware runs above routing, so it
+/// cannot ask the router which handler would have matched and must carry its own
+/// copy of the path set. **Keep this in sync with the `codex_endpoint` routes
+/// registered in `server::build_router`** — a Codex route added there but not
+/// here would silently hand an OpenAI-protocol client an Anthropic-shaped 503,
+/// and no test would fail unless it is also added to the table-driven case in
+/// this module's tests.
 const CODEX_PATHS: [&str; 5] = [
     "/backend-api/codex/responses",
     "/responses",
@@ -39,7 +47,9 @@ impl ConcurrencyLimit {
 }
 
 /// Shed an over-limit request immediately, or hold its permit until the
-/// response body reaches end-of-stream or is dropped by a disconnected client.
+/// response body reaches a terminal frame (end-of-stream or an error) or the
+/// body is dropped — a client disconnecting is the common cause of the latter,
+/// but any owner dropping the body releases the permit just the same.
 pub(crate) async fn limit_requests(
     State(limit): State<ConcurrencyLimit>,
     request: Request,
@@ -167,13 +177,27 @@ mod tests {
 
     use super::{limit_requests, ConcurrencyLimit, PermitBody, CODEX_PATHS};
 
-    fn limited_router(path: &'static str, limit: usize) -> Router {
+    fn limited_router_with_calls(
+        path: &'static str,
+        limit: usize,
+        calls: Arc<AtomicUsize>,
+    ) -> Router {
         Router::new()
-            .route(path, post_route(|| async { StatusCode::NO_CONTENT }))
+            .route(
+                path,
+                post_route(move || {
+                    calls.fetch_add(1, Ordering::Relaxed);
+                    async { StatusCode::NO_CONTENT }
+                }),
+            )
             .layer(middleware::from_fn_with_state(
                 ConcurrencyLimit::new(limit),
                 limit_requests,
             ))
+    }
+
+    fn limited_router(path: &'static str, limit: usize) -> Router {
+        limited_router_with_calls(path, limit, Arc::new(AtomicUsize::new(0)))
     }
 
     async fn json_body(response: Response) -> Value {
@@ -190,7 +214,8 @@ mod tests {
 
     #[tokio::test]
     async fn over_limit_uses_anthropic_shape_and_retry_after() {
-        let response = limited_router("/v1/messages", 0)
+        let calls = Arc::new(AtomicUsize::new(0));
+        let response = limited_router_with_calls("/v1/messages", 0, calls.clone())
             .oneshot(Request::post("/v1/messages").body(Body::empty()).unwrap())
             .await
             .unwrap();
@@ -200,12 +225,17 @@ mod tests {
         let body = json_body(response).await;
         assert_eq!(body["type"], "error");
         assert_eq!(body["error"]["type"], "overloaded_error");
+        assert!(body["error"]["message"]
+            .as_str()
+            .is_some_and(|message| !message.is_empty()));
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]
     async fn every_codex_path_uses_openai_shape_but_other_paths_do_not() {
+        let calls = Arc::new(AtomicUsize::new(0));
         for path in CODEX_PATHS {
-            let response = limited_router(path, 0)
+            let response = limited_router_with_calls(path, 0, calls.clone())
                 .oneshot(Request::post(path).body(Body::empty()).unwrap())
                 .await
                 .unwrap();
@@ -215,11 +245,21 @@ mod tests {
             let body = json_body(response).await;
             assert!(body.get("type").is_none(), "{path}: {body}");
             assert_eq!(body["error"]["type"], "overloaded_error", "{path}");
-            assert!(body["error"]["code"].is_null(), "{path}: {body}");
+            assert!(
+                body["error"].get("code").is_some_and(Value::is_null),
+                "{path}: {body}"
+            );
+            assert!(
+                body["error"]["message"]
+                    .as_str()
+                    .is_some_and(|message| !message.is_empty()),
+                "{path}: {body}"
+            );
+            assert_eq!(calls.load(Ordering::Relaxed), 0, "{path}");
         }
 
         let path = "/v1/messages";
-        let response = limited_router(path, 0)
+        let response = limited_router_with_calls(path, 0, calls.clone())
             .oneshot(Request::post(path).body(Body::empty()).unwrap())
             .await
             .unwrap();
@@ -228,6 +268,10 @@ mod tests {
         let body = json_body(response).await;
         assert_eq!(body["type"], "error");
         assert_eq!(body["error"]["type"], "overloaded_error");
+        assert!(body["error"]["message"]
+            .as_str()
+            .is_some_and(|message| !message.is_empty()));
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]
@@ -439,6 +483,50 @@ mod tests {
             .unwrap();
         assert_eq!(second.status(), StatusCode::OK);
         drop(body);
+    }
+
+    #[tokio::test]
+    async fn permit_stays_held_after_data_until_mid_stream_body_is_dropped() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let app =
+            Router::new()
+                .route(
+                    "/stream",
+                    post_route(move || {
+                        let call = calls.fetch_add(1, Ordering::Relaxed);
+                        async move {
+                            if call == 0 {
+                                Body::from_stream(stream::once(async {
+                                    Ok::<_, Infallible>("chunk")
+                                }).chain(stream::pending()))
+                            } else {
+                                Body::empty()
+                            }
+                        }
+                    }),
+                )
+                .layer(middleware::from_fn_with_state(
+                    ConcurrencyLimit::new(1),
+                    limit_requests,
+                ));
+
+        let first = send_post(&app, "/stream").await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let (_parts, mut body) = first.into_parts();
+        let data = poll_fn(|cx| Pin::new(&mut body).poll_frame(cx))
+            .await
+            .expect("the stream yields a data frame")
+            .unwrap()
+            .into_data()
+            .expect("the first frame is data");
+        assert_eq!(data, "chunk");
+
+        let second = send_post(&app, "/stream").await;
+        assert_eq!(second.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        drop(body);
+        let third = send_post(&app, "/stream").await;
+        assert_eq!(third.status(), StatusCode::OK);
     }
 
     #[tokio::test]
