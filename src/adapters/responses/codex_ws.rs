@@ -437,8 +437,7 @@ impl Turn {
     /// The continuation state captured on this connection's previous turn.
     /// `None` for a fresh connection — `previous_response_id` is only valid on the
     /// connection that produced it. Shared, not cloned: the caller only reads the
-    /// value — the transcript to decide the delta, `turn_state` to echo on the next
-    /// request — so the history stays behind a refcount.
+    /// value, never mutates it, so the transcript stays behind a refcount.
     pub fn stored_continuation(&self) -> Option<Arc<StoredContinuation>> {
         if !self.reused {
             return None;
