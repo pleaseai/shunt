@@ -1,0 +1,106 @@
+src/server.rs
+  s_446cbaeb425076::t_b2c5df17b227fa 4,15,130-132,168-175,177-178,208-216,237-247,282,348-417
+  s_446cbaeb425076::t_f75c69c9971ad8 418
+.claude/agent-memory/review-review-pr-test-analyzer/MEMORY.md
+  s_446cbaeb425076::t_b2c5df17b227fa 16
+.claude/agent-memory/review-review-pr-test-analyzer/shunt-codex-ws-arc-continuation-coverage.md
+  s_446cbaeb425076::t_b2c5df17b227fa 1-12
+shunt.toml.example
+  s_446cbaeb425076::t_b2c5df17b227fa 9-10
+Cargo.toml
+  s_446cbaeb425076::t_b2c5df17b227fa 5,34-36,93
+README.md
+  s_446cbaeb425076::t_b2c5df17b227fa 77-82
+.claude/agent-memory/review-review-comment-analyzer/MEMORY.md
+  s_446cbaeb425076::t_b2c5df17b227fa 7-8
+src/metrics.rs
+  s_446cbaeb425076::t_b2c5df17b227fa 14-16,48,107-110,351-358
+  s_446cbaeb425076::t_9fbf8bf2603c0b 359-360
+.please/docs/review/rejected-findings.jsonl
+  s_446cbaeb425076::t_b2c5df17b227fa 59-61
+src/adapters/responses/codex_ws.rs
+  s_446cbaeb425076::t_b2c5df17b227fa 43,185-190,382-386,389-413,465-467,500,996,1175,1198,1202-1205,1207-1230,1278,1282-1283,1342-1343,1417-1418,1561-1562,1730-1731,1914-1915,1983-1984,2075-2076,2163-2164,2234-2235,2307-2308,2384-2385,2454-2455,2524-2525,2728-2729,2771-2772
+site/src/content/docs/zh-cn/reference/troubleshooting.md
+  s_446cbaeb425076::t_b2c5df17b227fa 25
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_446cbaeb425076::t_b2c5df17b227fa 14
+.release-please-manifest.json
+  s_446cbaeb425076::t_b2c5df17b227fa 2
+site/src/content/docs/ja/reference/configuration.md
+  s_446cbaeb425076::t_b2c5df17b227fa 14
+src/adapters/responses/websocket.rs
+  s_446cbaeb425076::t_b2c5df17b227fa 6-7,234-236,253-254,282
+site/src/content/docs/ko/reference/configuration.md
+  s_446cbaeb425076::t_b2c5df17b227fa 14
+site/src/content/docs/guides/shared-gateway.mdx
+  s_446cbaeb425076::t_b2c5df17b227fa 63-86
+site/src/content/docs/ko/reference/troubleshooting.md
+  s_446cbaeb425076::t_b2c5df17b227fa 25
+site/src/content/docs/reference/troubleshooting.md
+  s_446cbaeb425076::t_b2c5df17b227fa 25
+src/reload.rs
+  s_446cbaeb425076::t_b2c5df17b227fa 68-72,107-113,360-364,370-373,592-638
+  s_446cbaeb425076::t_bac38b3653379b 639
+site/src/content/docs/zh-cn/guides/shared-gateway.mdx
+  s_446cbaeb425076::t_b2c5df17b227fa 63-86
+src/codex_analytics.rs
+  s_446cbaeb425076::t_b2c5df17b227fa 32-43
+shunt.yaml.example
+  s_446cbaeb425076::t_b2c5df17b227fa 9
+.claude/agent-memory/review-review-comment-analyzer/codex-ws-continuation-quantifier-rot.md
+  s_446cbaeb425076::t_b2c5df17b227fa 1-11
+site/src/content/docs/ko/guides/opentelemetry.mdx
+  s_446cbaeb425076::t_b2c5df17b227fa 59
+src/codex_endpoint.rs
+  s_446cbaeb425076::t_b2c5df17b227fa 29-42
+src/config.rs
+  s_446cbaeb425076::t_b2c5df17b227fa 118-127,134-143,1768-1774,1959,2177-2188,2865-2917
+  s_446cbaeb425076::t_09266ac5b01440 2918
+src/lib.rs
+  s_446cbaeb425076::t_b2c5df17b227fa 9
+site/src/content/docs/reference/configuration.md
+  s_446cbaeb425076::t_b2c5df17b227fa 14
+site/src/content/docs/ja/guides/shared-gateway.mdx
+  s_446cbaeb425076::t_b2c5df17b227fa 63-86
+site/src/content/docs/ja/guides/opentelemetry.mdx
+  s_446cbaeb425076::t_b2c5df17b227fa 59
+site/src/content/docs/guides/opentelemetry.mdx
+  s_446cbaeb425076::t_b2c5df17b227fa 59
+docs/running.md
+  s_446cbaeb425076::t_b2c5df17b227fa 78,314-321
+site/src/content/docs/ko/guides/shared-gateway.mdx
+  s_446cbaeb425076::t_b2c5df17b227fa 63-86
+benches/perf_issues.rs
+  s_446cbaeb425076::t_b2c5df17b227fa 1,5-6,8-24,26,319-338,362,389,395-412
+  s_446cbaeb425076::t_df2094918f8c79 413
+src/concurrency.rs
+  s_446cbaeb425076::t_b2c5df17b227fa 1-741
+site/src/content/docs/zh-cn/guides/opentelemetry.mdx
+  s_446cbaeb425076::t_b2c5df17b227fa 59
+site/src/content/docs/ja/reference/troubleshooting.md
+  s_446cbaeb425076::t_b2c5df17b227fa 25
+docs/config-reload.md
+  s_446cbaeb425076::t_b2c5df17b227fa 47-49,52-53,56-62
+.claude/agent-memory/review-review-comment-analyzer/shunt-perf-benchmark-baseline-scope.md
+  s_446cbaeb425076::t_b2c5df17b227fa 1-13
+CHANGELOG.md
+  s_446cbaeb425076::t_b2c5df17b227fa 3-30
+Cargo.lock
+  s_446cbaeb425076::t_42be5093cb7316 2743,2757-2758
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "e46704e186f77e3b69f03193169813bd264a3eb8",
+  "prompts": {},
+  "sessions": {
+    "s_446cbaeb425076": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "295961a1-8c94-4530-8693-5613ab452cc0",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
