@@ -6,6 +6,7 @@
 server:
   bind: "127.0.0.1:3001"
   default_provider: anthropic
+  # max_concurrent_requests: 1024 # 0 disables
 
 providers:
   anthropic:

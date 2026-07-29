@@ -44,11 +44,13 @@ per-request latency.
 ## 4. Fields that require a restart
 
 Most settings apply on reload (routes, providers, models, `[server.auth]`,
-`sse_keepalive_seconds`). Two cannot be hot-applied; changing them is accepted
+`sse_keepalive_seconds`). Three cannot be hot-applied; changing them is accepted
 into the reloaded config but only takes effect after a restart, and shunt logs a
 `warn!` so the change is not mistaken for live:
 
 - **`server.bind`** — the listener is already bound at the old address.
+- **`server.max_concurrent_requests`** — the shared concurrency semaphore and
+  router layer are created once at startup.
 - **`[sentry]`** — the Sentry client is initialized once before the runtime
   starts and cannot be hot-swapped.
 

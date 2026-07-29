@@ -11,6 +11,7 @@ The keys below are shown in TOML, but a config file may also be written in YAML 
 | :-- | :-- | :-- |
 | `bind` | `127.0.0.1:3001` | Address shunt listens on |
 | `default_provider` | `anthropic` | Provider for any model with no matching route |
+| `max_concurrent_requests` | `1024` | Maximum inbound requests in flight through response-body completion. Excess requests are shed immediately with `503` and `Retry-After: 1`; `0` disables the limit. `/` and `/health` are exempt. A restart is required after changing this key |
 | `sse_keepalive_seconds` | `30` | Idle seconds before an SSE `ping` is injected; `0` disables ([details](/guides/shared-gateway/#sse-keepalive-pings)) |
 
 ## `[server.auth]` (optional)

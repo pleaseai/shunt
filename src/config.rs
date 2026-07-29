@@ -115,10 +115,19 @@ pub struct ServerConfig {
     /// `0` disables injection (M5).
     #[serde(default = "default_sse_keepalive_seconds")]
     pub sse_keepalive_seconds: u64,
+    /// Maximum inbound client requests in flight at once. `0` disables the
+    /// limit. Over-limit requests are shed with 503 rather than queued, so a
+    /// burst cannot grow resident memory without bound (issue #260).
+    #[serde(default = "default_max_concurrent_requests")]
+    pub max_concurrent_requests: usize,
 }
 
 fn default_sse_keepalive_seconds() -> u64 {
     30
+}
+
+fn default_max_concurrent_requests() -> usize {
+    1024
 }
 
 /// `[server.pool]` — quota-aware load-balancing tuning and optional usage-API
@@ -1929,6 +1938,7 @@ impl Default for Config {
                 oauth_usage: None,
                 pool: None,
                 sse_keepalive_seconds: default_sse_keepalive_seconds(),
+                max_concurrent_requests: default_max_concurrent_requests(),
             },
             providers,
             upstreams: Vec::new(),
@@ -2820,6 +2830,24 @@ mod tests {
 
     fn model_upstream(provider: &str, upstream_model: &str) -> BTreeMap<String, String> {
         BTreeMap::from([(provider.to_string(), upstream_model.to_string())])
+    }
+
+    #[test]
+    fn server_max_concurrent_requests_parses_and_defaults() {
+        let absent: super::ServerConfig =
+            serde_json::from_str(r#"{"bind":"127.0.0.1:3001","default_provider":"anthropic"}"#)
+                .unwrap();
+        assert_eq!(absent.max_concurrent_requests, 1024);
+
+        for configured in [0, 37] {
+            let server: super::ServerConfig = serde_json::from_value(serde_json::json!({
+                "bind": "127.0.0.1:3001",
+                "default_provider": "anthropic",
+                "max_concurrent_requests": configured,
+            }))
+            .unwrap();
+            assert_eq!(server.max_concurrent_requests, configured);
+        }
     }
 
     #[test]

@@ -75,6 +75,7 @@ cp shunt.yaml.example shunt.yaml  # YAML
 [server]
 bind = "127.0.0.1:3001"        # address shunt listens on
 default_provider = "anthropic" # provider for any model with no route (pass-through)
+max_concurrent_requests = 1024  # shed excess in-flight requests with 503; 0 disables
 
 # Each provider is a [providers.<name>] table (see §3.2 for every key).
 [providers.anthropic]
@@ -310,7 +311,14 @@ e.g. `RUST_LOG=shunt=debug cargo run -- run`.
 
 `GET /` and `GET /health` stay open even when `[server.auth]` is enabled (healthcheck tools
 usually cannot attach tokens) and expose nothing sensitive — only status, version, and the
-already-public endpoint list.
+already-public endpoint list. They also bypass `max_concurrent_requests`, so saturation never
+causes a load balancer to evict an instance that is still serving existing work.
+
+All other routes count against `server.max_concurrent_requests` (default `1024`). shunt sheds an
+excess request immediately with `503 overloaded_error` and `Retry-After: 1`; it never queues the
+request. A streaming response holds its slot until the response body finishes or the client
+disconnects. Set the value to `0` to retain unlimited concurrency. The limit is fixed at startup,
+so changing it through config reload requires a restart.
 
 **`count_tokens`:** for an **Anthropic-routed** model shunt passes the request through to the
 upstream's `count_tokens` endpoint (exact counts). For a **`responses`-routed** model (codex/OpenAI)

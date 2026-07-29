@@ -65,9 +65,10 @@ impl RuntimeState {
 /// error is returned for the caller to log — the gateway keeps running the last
 /// good config rather than going down or running open.
 ///
-/// Fields that cannot be hot-applied (`server.bind`, `[sentry]`) are compared
-/// against the live config and a `warn!` is logged when they change; the new
-/// values are accepted into the swapped config but only take effect on restart.
+/// Fields that cannot be hot-applied (`server.bind`,
+/// `server.max_concurrent_requests`, `[sentry]`) are compared against the live
+/// config and a `warn!` is logged when they change; the new values are accepted
+/// into the swapped config but only take effect on restart.
 pub fn reload(shared: &SharedState, path: Option<&std::path::Path>) -> Result<(), ConfigError> {
     // Load + validate the candidate before touching the live state.
     let new_config = Config::load(path)?;
@@ -100,6 +101,13 @@ fn warn_on_restart_only_changes(previous: &Config, next: &Config) {
             previous = %previous.server.bind,
             next = %next.server.bind,
             "server.bind changed but requires a restart to apply; the listener is already bound"
+        );
+    }
+    if previous.server.max_concurrent_requests != next.server.max_concurrent_requests {
+        tracing::warn!(
+            previous = previous.server.max_concurrent_requests,
+            next = next.server.max_concurrent_requests,
+            "server.max_concurrent_requests changed but requires a restart to apply; the concurrency gate is fixed at boot"
         );
     }
     // Whether the admin route tree is registered is decided once at boot from
@@ -569,6 +577,29 @@ mod tests {
         assert_eq!(shared.load().config.server.bind, "127.0.0.1:4002");
         // ...but the operator was warned it requires a restart to take effect.
         assert!(logs.contains("server.bind changed"));
+        assert!(logs.contains("requires a restart"));
+    }
+
+    #[test]
+    fn max_concurrent_requests_change_warns_and_reload_still_succeeds() {
+        let dir = temp_dir("max-concurrent-requests");
+        let _guard = TempDirGuard(dir.clone());
+        let path = dir.join("shunt.toml");
+
+        std::fs::write(&path, "[server]\nmax_concurrent_requests = 8\n").unwrap();
+        let shared = shared_from(Config::load(Some(&path)).unwrap());
+
+        std::fs::write(&path, "[server]\nmax_concurrent_requests = 16\n").unwrap();
+        let logs = capture_logs(|| {
+            reload(&shared, Some(&path)).expect("reload succeeds despite limit change");
+        });
+
+        assert_eq!(
+            shared.load().config.server.max_concurrent_requests,
+            16,
+            "the reloaded config keeps the requested value"
+        );
+        assert!(logs.contains("server.max_concurrent_requests changed"));
         assert!(logs.contains("requires a restart"));
     }
 

@@ -2754,6 +2754,7 @@ dependencies = [
  "futures-util",
  "hex",
  "hmac",
+ "http-body",
  "httpdate",
  "notify",
  "opentelemetry",

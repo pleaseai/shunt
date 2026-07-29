@@ -31,6 +31,9 @@ clap = { version = "4", features = ["derive"] }
 figment = { version = "0.10", features = ["toml", "yaml", "env"] }
 flate2 = "1"
 futures-util = "0.3"
+# The inbound concurrency limiter delegates `poll_frame` so streaming response
+# permits live through body completion without discarding HTTP trailers.
+http-body = "1"
 # Parse the HTTP-date form of `Retry-After` (RFC 7231); already in the tree via
 # reqwest/hyper, promoted to a direct dep for `accounts::retry_after`.
 httpdate = "1"
