@@ -1,13 +1,22 @@
-//! Focused measurements for performance issues #252 and #253.
+//! Focused measurements for performance issues #252, #253, and #265.
 //!
 //! `pre_parse_once_http_responses_cpu_front` and
 //! `pre_parse_once_codex_ws_reused_prepare_and_serialize` are deliberately frozen
-//! reproductions of the pre-refactor request paths. The
-//! `parse_once_http_responses_cpu_front` and
+//! reproductions of the request paths as they stood before the parse-once
+//! refactor (#261). The `parse_once_http_responses_cpu_front` and
 //! `parse_once_codex_ws_reused_prepare_and_serialize` benchmarks model the
-//! parse-once implementation. Do not update the frozen baselines to follow
-//! production: their stable old work is what keeps the before/after comparison
-//! meaningful.
+//! parse-once implementation.
+//!
+//! Those baselines are frozen at pre-#261 specifically, so they are not a
+//! before/after for any later change. The #265 borrow-vs-clone comparison is its
+//! own pair: `codex_ws_non_continuation_clone_and_serialize` reproduces the
+//! per-send deep clone `start_ws_turn` no longer performs, and
+//! `codex_ws_non_continuation_borrow_and_serialize` models the borrow-based frame
+//! envelope that replaced it.
+//!
+//! Do not update the frozen baselines — the two `pre_parse_once_*` benchmarks and
+//! `codex_ws_non_continuation_clone_and_serialize` — to follow production: their
+//! stable old work is what keeps the before/after comparison meaningful.
 
 use std::sync::Arc;
 
@@ -325,7 +334,7 @@ fn pre_parse_once_codex_ws_reused_prepare_and_serialize(bencher: divan::Bencher,
             }
         }
         let request_input = full_input.clone();
-        let frame = codex_ws::response_create_frame(frame_body);
+        let frame = codex_ws::response_create_frame(&frame_body);
         let payload = serde_json::to_string(&frame).unwrap();
         divan::black_box((payload, signature, request_input))
     });
@@ -352,9 +361,28 @@ fn parse_once_codex_ws_reused_prepare_and_serialize(bencher: divan::Bencher, siz
             }
         }
         let record = Arc::clone(&current);
-        let frame = codex_ws::response_create_frame(frame_body);
+        let frame = codex_ws::response_create_frame(&frame_body);
         let payload = serde_json::to_string(&frame).unwrap();
         divan::black_box((payload, record))
+    });
+}
+
+#[divan::bench(args = BODY_SIZES)]
+fn codex_ws_non_continuation_clone_and_serialize(bencher: divan::Bencher, size: usize) {
+    let (_, current) = continuation_fixture(size);
+    bencher.bench(|| {
+        let frame_body: Value = divan::black_box(&current).clone();
+        let frame = codex_ws::response_create_frame(&frame_body);
+        serde_json::to_string(&frame).unwrap()
+    });
+}
+
+#[divan::bench(args = BODY_SIZES)]
+fn codex_ws_non_continuation_borrow_and_serialize(bencher: divan::Bencher, size: usize) {
+    let (_, current) = continuation_fixture(size);
+    bencher.bench(|| {
+        let frame = codex_ws::response_create_frame(divan::black_box(&current));
+        serde_json::to_string(&frame).unwrap()
     });
 }
 
