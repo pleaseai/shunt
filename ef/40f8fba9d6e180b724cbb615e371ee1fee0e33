@@ -1,0 +1,42 @@
+src/adapters/responses/codex_ws.rs
+  s_dfa208a62d4992::t_252d1f4dc14379 378-382,385-400,402-409
+  s_dfa208a62d4992::t_6802e7f5a23366 495
+  s_dfa208a62d4992::t_0bf3599783e967 43
+  s_dfa208a62d4992::t_0fe090ba416fa8 1193,1197-1200,1202-1213,1215-1222
+  s_dfa208a62d4992::t_65b2086dcaf7cc 1214
+  s_dfa208a62d4992::t_3386b5e656f943 1270,1274-1275
+  s_e9bff362f1f3d0::t_425a04663e7a13 401,1170,1334-1335,1409-1410,1553-1554,1722-1723,1906-1907,1975-1976,2067-2068,2155-2156,2226-2227,2299-2300,2376-2377,2446-2447,2516-2517,2720-2721,2763-2764
+src/adapters/responses/websocket.rs
+  s_dfa208a62d4992::t_24dfed0ff797a6 6-7
+  s_dfa208a62d4992::t_b7a7de9e7ca984 282
+  s_dfa208a62d4992::t_51bf091889b581 234-236
+  s_dfa208a62d4992::t_36a42fa1e87abb 253-254
+benches/perf_issues.rs
+  s_dfa208a62d4992::t_489a22338296c1 365
+  s_dfa208a62d4992::t_ec69911e70672a 328,355
+  s_dfa208a62d4992::t_afd7fd11887f92 361-364,366-379
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "ef40f8fba9d6e180b724cbb615e371ee1fee0e33",
+  "prompts": {},
+  "sessions": {
+    "s_dfa208a62d4992": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b5f00ff6-9ce3-4f89-a902-f524239de513",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_e9bff362f1f3d0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "600bafe8-4ffe-4ef1-bd77-6d256b780253",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
