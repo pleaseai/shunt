@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.29.0](https://github.com/pleaseai/shunt/compare/v0.28.0...v0.29.0) (2026-07-29)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cursor:** move request protobuf framing off the async runtime ([#272](https://github.com/pleaseai/shunt/issues/272))
+
+### Performance Improvements
+
+* **cursor:** move request protobuf framing off the async runtime ([#272](https://github.com/pleaseai/shunt/issues/272)) ([1a1d8ee](https://github.com/pleaseai/shunt/commit/1a1d8ee8311b2de232ef647375aee502560a1c81))
+
 ## [0.28.0](https://github.com/pleaseai/shunt/compare/v0.27.0...v0.28.0) (2026-07-29)
 
 
