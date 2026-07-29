@@ -397,7 +397,7 @@ impl ReadState {
                 return;
             }
             let payload: Cow<'_, [u8]> = if frame.flags & FLAG_GZIP != 0 {
-                match decode_gzip_frame_async(frame.payload.clone()).await {
+                match decode_gzip_frame_async(frame.payload).await {
                     Ok(bytes) => Cow::Owned(bytes),
                     Err(error) => {
                         self.finished = true;
