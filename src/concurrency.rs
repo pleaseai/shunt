@@ -41,7 +41,11 @@ pub(crate) async fn limit_requests(
     next: Next,
 ) -> Response {
     let path = request.uri().path();
-    let permit = match limit.permits.clone().try_acquire_owned() {
+    // Move the `Arc` rather than cloning it: `try_acquire_owned` consumes an
+    // `Arc<Semaphore>`, and axum's `State` extractor already handed us an owned
+    // clone of the limiter, so cloning again would add a redundant refcount pair
+    // per request on the hot path.
+    let permit = match limit.permits.try_acquire_owned() {
         Ok(permit) => permit,
         Err(_) => {
             // `debug!` because a saturated gateway would emit this per request;
