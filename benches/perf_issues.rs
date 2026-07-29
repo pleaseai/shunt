@@ -302,11 +302,12 @@ fn codex_continuation_decide_hit(bencher: divan::Bencher, size: usize) {
     });
 }
 
-/// Retrieving a reused connection's continuation state, the first thing every
-/// pooled Codex turn does (issue #264). `pre_arc_stored_continuation_retrieve` is
-/// a frozen reproduction of the pre-refactor `Turn::stored_continuation`, which
-/// deep-cloned the whole transcript out of the connection mutex;
-/// `arc_stored_continuation_retrieve` models sharing it behind an `Arc`.
+/// Retrieving a reused connection's continuation state, which every
+/// continuation-enabled turn on a pooled socket does before it can pick a delta
+/// (issue #264). `pre_arc_stored_continuation_retrieve` is a frozen reproduction
+/// of the pre-refactor `Turn::stored_continuation`, which deep-cloned the whole
+/// transcript out of the connection mutex; `arc_stored_continuation_retrieve`
+/// models sharing it behind an `Arc`.
 #[divan::bench(args = BODY_SIZES)]
 fn pre_arc_stored_continuation_retrieve(bencher: divan::Bencher, size: usize) {
     let (stored, _) = continuation_fixture(size);

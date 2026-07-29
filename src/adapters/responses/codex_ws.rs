@@ -182,9 +182,9 @@ struct Connection {
     /// at most one outstanding turn).
     commands: mpsc::Sender<StartTurn>,
     /// Continuation captured from this connection's last completed turn. Behind an
-    /// [`Arc`] because its `transcript` grows with the conversation and every turn
-    /// reads it: sharing makes retrieval a refcount bump instead of a deep clone of
-    /// the whole history. Never mutated in place — a completed turn replaces the
+    /// [`Arc`] because its `transcript` grows with the conversation and every reused
+    /// turn reads it: sharing makes retrieval a refcount bump instead of a deep clone
+    /// of the whole history. Never mutated in place — a completed turn replaces the
     /// whole value.
     continuation: Mutex<Option<Arc<StoredContinuation>>>,
     /// Last time a turn used this connection; drives idle TTL eviction.

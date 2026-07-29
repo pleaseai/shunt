@@ -12,3 +12,4 @@
 - [shunt perf hot-path coverage](shunt-perf-hot-path-coverage.md) — PR #182 auth single-flight and quota behavior are covered; WS idle-timer reset/tie and BoundaryTracker len-0/3 cases are not.
 - [shunt client usage fable coverage](shunt-client-usage-fable-coverage.md) — PR #179 usage aggregate tests cover 5h/7d but omit populated fable (7d_oi) data, leaving that production mapping unguarded.
 - [shunt ordered-upstreams failover coverage](shunt-ordered-upstreams-failover-coverage.md) — PR #224 covers order/status/config/state well, but lacks an outer-chain post-2xx no-replay assertion; preset field matrix is partial.
+- [shunt Codex WS Arc continuation coverage](shunt-codex-ws-arc-continuation-coverage.md) — PR #270 ownership-only Arc refactor is compiler-enforced; existing reuse and overflow tests cover behavior, with no test changes.
