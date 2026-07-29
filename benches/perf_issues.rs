@@ -325,7 +325,7 @@ fn pre_parse_once_codex_ws_reused_prepare_and_serialize(bencher: divan::Bencher,
             }
         }
         let request_input = full_input.clone();
-        let frame = codex_ws::response_create_frame(frame_body);
+        let frame = codex_ws::response_create_frame(&frame_body);
         let payload = serde_json::to_string(&frame).unwrap();
         divan::black_box((payload, signature, request_input))
     });
@@ -352,9 +352,28 @@ fn parse_once_codex_ws_reused_prepare_and_serialize(bencher: divan::Bencher, siz
             }
         }
         let record = Arc::clone(&current);
-        let frame = codex_ws::response_create_frame(frame_body);
+        let frame = codex_ws::response_create_frame(&frame_body);
         let payload = serde_json::to_string(&frame).unwrap();
         divan::black_box((payload, record))
+    });
+}
+
+#[divan::bench(args = BODY_SIZES)]
+fn codex_ws_non_continuation_clone_and_serialize(bencher: divan::Bencher, size: usize) {
+    let (_, current) = continuation_fixture(size);
+    bencher.bench(|| {
+        let frame_body: Value = divan::black_box(&current).clone();
+        let frame = codex_ws::response_create_frame(&frame_body);
+        serde_json::to_string(&frame).unwrap()
+    });
+}
+
+#[divan::bench(args = BODY_SIZES)]
+fn codex_ws_non_continuation_borrow_and_serialize(bencher: divan::Bencher, size: usize) {
+    let (_, current) = continuation_fixture(size);
+    bencher.bench(|| {
+        let frame = codex_ws::response_create_frame(divan::black_box(&current));
+        serde_json::to_string(&frame).unwrap()
     });
 }
 
