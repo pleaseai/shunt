@@ -385,8 +385,10 @@ pub fn response_create_frame(mut body: Value) -> Value {
 }
 
 /// What to record as continuation state after a turn completes: the request's
-/// non-input signature and its full logical input, so the reader can assemble
-/// `input ++ output_items` for the next turn's prefix match.
+/// non-input signature and an optional shared translated request. The reader
+/// extracts its full logical `input` after the turn completes, then assembles
+/// `input ++ output_items` for the next turn's prefix match. Sharing the [`Arc`]
+/// replaces the old per-turn deep clone of the input array.
 pub struct RecordPlan {
     pub signature: String,
     pub request: Option<Arc<Value>>,

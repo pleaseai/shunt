@@ -4,7 +4,7 @@ use shunt::{
     config::ResponsesFlavor,
     model::responses::{
         anthropic_error_type, client_facing_status, map_error_value, parse_sse_events,
-        translate_request, AnthropicSseMachine,
+        translate_request, translate_request_value, AnthropicSseMachine,
     },
     routing::{AdapterKind, Route},
 };
@@ -29,6 +29,31 @@ fn translate(input: Value) -> Value {
         false,
     )
     .unwrap()
+}
+
+#[test]
+fn parsed_value_entry_point_matches_byte_wrapper_across_flavors() {
+    let request = json!({
+        "model": "gpt-5.2-codex",
+        "system": [{"type": "text", "text": "Be terse"}],
+        "messages": [{"role": "user", "content": "hello"}],
+        "max_tokens": 1000,
+        "tools": [{
+            "name": "run",
+            "description": "Run command",
+            "input_schema": {"type": "object", "properties": {"cmd": {"type": "string"}}}
+        }]
+    });
+    let body = serde_json::to_vec(&request).unwrap();
+    let route = route("gpt-5.2-codex");
+
+    for flavor in [ResponsesFlavor::OpenAi, ResponsesFlavor::Chatgpt] {
+        assert_eq!(
+            translate_request_value(&request, &route, flavor, false),
+            translate_request(&body, &route, flavor, false).unwrap(),
+            "parsed and byte entry points diverged for {flavor:?}"
+        );
+    }
 }
 
 #[test]

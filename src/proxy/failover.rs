@@ -113,11 +113,12 @@ pub(super) async fn forward(
         let model = route.model.clone();
         let upstream_model = route.upstream_model.clone();
         let attempt_started_at = Instant::now();
-        // Move the buffered body into the final attempt instead of cloning it: the
-        // common single-upstream chain then never copies the (up to 64 MB) body,
-        // and a multi-upstream chain only clones for the attempts that precede the
-        // last. The `Option` permits that final move while keeping earlier attempts
-        // able to share the parsed tree and clone only the raw byte buffer.
+        // Move the buffered body into the final attempt instead of cloning it. Within
+        // this failover loop, the common single-upstream chain transfers the body
+        // without copying its (up to 64 MB) raw buffer, and a multi-upstream chain
+        // only clones that buffer for attempts preceding the last. Those clones
+        // still share the parsed tree; an adapter may clone the body again downstream.
+        // The `Option` permits the final move while keeping the body available earlier.
         let attempt_body = if index + 1 < attempted_total {
             body.as_ref().expect("request body is present").clone()
         } else {
@@ -264,8 +265,15 @@ async fn count_tokens_response(
             .unwrap_or(CountTokens::Estimate);
         Ok(match mode {
             CountTokens::Tiktoken => {
+                // Count over the tree the inbound parse already produced instead of
+                // re-deserializing the same buffer on the blocking pool. Moving only
+                // the `Arc` also keeps the raw bytes out of the task: `spawn_blocking`
+                // cannot be cancelled, so a client that disconnects mid-request leaves
+                // this encode running to completion, and anything it captured stays
+                // resident (up to a 64 MB body) for that whole window.
+                let request = body.json_arc();
                 let input_tokens = tokio::task::spawn_blocking(move || {
-                    count_tokens::count_input_tokens(body.raw())
+                    count_tokens::count_input_tokens_value(&request)
                 })
                 .await
                 .unwrap_or(0);

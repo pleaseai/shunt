@@ -1,4 +1,13 @@
 //! Focused measurements for performance issues #252 and #253.
+//!
+//! `pre_parse_once_http_responses_cpu_front` and
+//! `pre_parse_once_codex_ws_reused_prepare_and_serialize` are deliberately frozen
+//! reproductions of the pre-refactor request paths. The
+//! `parse_once_http_responses_cpu_front` and
+//! `parse_once_codex_ws_reused_prepare_and_serialize` benchmarks model the
+//! parse-once implementation. Do not update the frozen baselines to follow
+//! production: their stable old work is what keeps the before/after comparison
+//! meaningful.
 
 use std::sync::Arc;
 
@@ -229,7 +238,7 @@ fn parse_once_http_front(body: &[u8], config: &Config, route: &Route) -> String 
 }
 
 #[divan::bench(args = BODY_SIZES)]
-fn current_http_responses_cpu_front(bencher: divan::Bencher, size: usize) {
+fn pre_parse_once_http_responses_cpu_front(bencher: divan::Bencher, size: usize) {
     let body = realistic_body(size);
     let route = route();
     let config = config();
@@ -294,7 +303,7 @@ fn codex_continuation_decide_hit(bencher: divan::Bencher, size: usize) {
 }
 
 #[divan::bench(args = BODY_SIZES)]
-fn codex_ws_reused_prepare_and_serialize(bencher: divan::Bencher, size: usize) {
+fn pre_parse_once_codex_ws_reused_prepare_and_serialize(bencher: divan::Bencher, size: usize) {
     let (stored, current) = continuation_fixture(size);
     bencher.bench(|| {
         let signature = codex_continuation::signature(divan::black_box(&current));

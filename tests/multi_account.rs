@@ -31,6 +31,32 @@ impl Match for BearerToken {
     }
 }
 
+struct AccountUuidBody {
+    expected: &'static str,
+    forbidden: &'static str,
+}
+
+impl Match for AccountUuidBody {
+    fn matches(&self, request: &Request) -> bool {
+        let Ok(outer) = serde_json::from_slice::<serde_json::Value>(&request.body) else {
+            return false;
+        };
+        let Some(user_id) = outer
+            .pointer("/metadata/user_id")
+            .and_then(serde_json::Value::as_str)
+        else {
+            return false;
+        };
+        let Ok(inner) = serde_json::from_str::<serde_json::Value>(user_id) else {
+            return false;
+        };
+        let account_uuid = inner
+            .get("account_uuid")
+            .and_then(serde_json::Value::as_str);
+        account_uuid == Some(self.expected) && account_uuid != Some(self.forbidden)
+    }
+}
+
 struct TestGateway {
     base_url: String,
     task: JoinHandle<()>,
@@ -165,6 +191,82 @@ async fn post_messages(gateway: &TestGateway, session_id: Option<&str>) -> reqwe
         request = request.header("x-claude-code-session-id", session_id);
     }
     request.send().await.unwrap()
+}
+
+async fn post_messages_with_account_uuid(
+    gateway: &TestGateway,
+    account_uuid: &str,
+) -> reqwest::Response {
+    let user_id = serde_json::json!({
+        "account_uuid": account_uuid,
+        "device": "cli"
+    })
+    .to_string();
+    reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .header("content-type", "application/json")
+        .json(&serde_json::json!({
+            "model": "pooled-model",
+            "max_tokens": 16,
+            "metadata": {"user_id": user_id},
+            "messages": [{"role": "user", "content": "hi"}]
+        }))
+        .send()
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn account_uuid_is_rewritten_for_each_account_during_rotation() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = ["fake-oauth-", "uuid-a"].concat();
+    let token_b = ["fake-oauth-", "uuid-b"].concat();
+    std::env::set_var("SHUNT_TEST_MULTI_UUID_A", &token_a);
+    std::env::set_var("SHUNT_TEST_MULTI_UUID_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_a.clone()))
+        .and(AccountUuidBody {
+            expected: "uuid-a",
+            forbidden: "inbound-uuid",
+        })
+        .respond_with(ResponseTemplate::new(500).set_body_string(r#"{"error":"rotate"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .and(AccountUuidBody {
+            expected: "uuid-b",
+            forbidden: "uuid-a",
+        })
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"b"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        account("account-a", "SHUNT_TEST_MULTI_UUID_A", "uuid-a"),
+        account("account-b", "SHUNT_TEST_MULTI_UUID_B", "uuid-b"),
+    ))
+    .await;
+
+    let response = post_messages_with_account_uuid(&gateway, "inbound-uuid").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+    upstream.verify().await;
+
+    std::env::remove_var("SHUNT_TEST_MULTI_UUID_A");
+    std::env::remove_var("SHUNT_TEST_MULTI_UUID_B");
 }
 
 #[tokio::test]

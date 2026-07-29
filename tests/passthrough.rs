@@ -238,6 +238,37 @@ async fn messages_preserves_matching_model_body_byte_for_byte() {
 }
 
 #[tokio::test]
+async fn messages_rejects_duplicate_top_level_model_fields() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&upstream)
+        .await;
+    let gateway = start_gateway(upstream.uri()).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .body(r#"{"model":"first","messages":[],"model":"second"}"#)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body: Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    assert_eq!(body["type"], "error");
+    assert_eq!(body["error"]["type"], "invalid_request_error");
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("duplicate field `model`"));
+    upstream.verify().await;
+}
+
+#[tokio::test]
 async fn messages_forwards_incoming_credentials_unchanged() {
     if !can_bind_loopback() {
         return;

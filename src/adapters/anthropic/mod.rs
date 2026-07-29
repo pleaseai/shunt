@@ -687,6 +687,16 @@ fn rate_limit_kind(headers: &HeaderMap, oauth_client: bool) -> &'static str {
     }
 }
 
+/// Rewrite the outbound request body's `model` to the routed `upstream_model`
+/// when they differ. The passthrough adapter forwards the client body verbatim,
+/// so without this two things leak to the provider: a `[1m]` context-window hint
+/// (which `routing::strip_context_window_hint` removes from the routing key but
+/// not from the body — and api.anthropic.com does not recognize a `[1m]`-suffixed
+/// model id), and an explicit `[[routes]]` `upstream_model` remap (otherwise
+/// ignored for an Anthropic-provider route). The common case — body model already
+/// equal to `upstream_model` — mutates nothing, so [`RequestBody`] refreshes no raw
+/// bytes and preserves byte-for-byte passthrough. A changed model mutates the
+/// parsed request in place and refreshes the raw bytes once.
 fn normalize_upstream_model_request(body: &mut RequestBody, upstream_model: &str) {
     if body.json().get("model").and_then(serde_json::Value::as_str) == Some(upstream_model) {
         return;
@@ -710,7 +720,35 @@ fn rewrite_account_uuid_request(body: &mut RequestBody, account_uuid: Option<&st
     let Some(account_uuid) = account_uuid else {
         return;
     };
+    // Do the whole rewrite read-only first, and enter `mutate` only to install the
+    // finished string. Two costs drive that split, both paid per pool candidate:
+    // `RequestBody::mutate` runs `Arc::make_mut` before the closure can report "no
+    // change", and the pool loop keeps `base_body` alive while cloning it per
+    // candidate — so the tree is always shared here and entering `mutate` at all
+    // costs a full deep clone of the request. Bailing out before it saves that clone
+    // for a body with nothing to rewrite. Preparing the value here rather than inside
+    // the closure also keeps `metadata.user_id` parsed exactly once: it is
+    // client-controlled and bounded only by the inbound body limit, so parsing it in
+    // both a pre-check and the closure would add a full parse of it per candidate.
+    let Some(rewritten_user_id) = body
+        .json()
+        .pointer("/metadata/user_id")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|user_id| serde_json::from_str::<serde_json::Value>(user_id).ok())
+        .and_then(|mut inner| {
+            // Only an `account_uuid` that is already present is rewritten; this never
+            // introduces one.
+            let existing = inner.as_object_mut()?.get_mut("account_uuid")?;
+            *existing = serde_json::Value::String(account_uuid.to_string());
+            serde_json::to_string(&inner).ok()
+        })
+    else {
+        return;
+    };
     body.mutate(|outer| {
+        // The pre-check above resolved this same path on the same tree, so the `else`
+        // is unreachable; returning `false` there would simply leave the body as the
+        // client sent it.
         let Some(user_id) = outer
             .get_mut("metadata")
             .and_then(serde_json::Value::as_object_mut)
@@ -718,23 +756,7 @@ fn rewrite_account_uuid_request(body: &mut RequestBody, account_uuid: Option<&st
         else {
             return false;
         };
-        let Some(user_id_string) = user_id.as_str() else {
-            return false;
-        };
-        let Ok(mut inner) = serde_json::from_str::<serde_json::Value>(user_id_string) else {
-            return false;
-        };
-        let Some(inner_account_uuid) = inner
-            .as_object_mut()
-            .and_then(|object| object.get_mut("account_uuid"))
-        else {
-            return false;
-        };
-        *inner_account_uuid = serde_json::Value::String(account_uuid.to_string());
-        let Ok(serialized_inner) = serde_json::to_string(&inner) else {
-            return false;
-        };
-        *user_id = serde_json::Value::String(serialized_inner);
+        *user_id = serde_json::Value::String(rewritten_user_id);
         true
     });
 }
@@ -1162,6 +1184,10 @@ mod tests {
         assert_eq!(inner["device"], "cli");
     }
 
+    /// Every shape the rewrite must decline. The bodies carry non-canonical spacing
+    /// on purpose: `RequestBody::mutate` re-serializes the whole request, so if any
+    /// of these wrongly entered it the output would come back canonicalized even
+    /// though nothing changed.
     #[test]
     fn rewrite_account_uuid_leaves_unusable_bodies_untouched() {
         for (body, uuid) in [
@@ -1171,9 +1197,63 @@ mod tests {
                 br#"{"metadata":{"user_id":"{\"account_uuid\":\"old\"}"}}"#.to_vec(),
                 None,
             ),
+            // `metadata` is not an object.
+            (br#"{ "metadata": "not-an-object" }"#.to_vec(), Some("new")),
+            (br#"{ "metadata": [1, 2] }"#.to_vec(), Some("new")),
+            (br#"{ "metadata": null }"#.to_vec(), Some("new")),
+            // `metadata.user_id` is not a string.
+            (
+                br#"{ "metadata": { "user_id": 42 } }"#.to_vec(),
+                Some("new"),
+            ),
+            (
+                br#"{ "metadata": { "user_id": {"account_uuid": "old"} } }"#.to_vec(),
+                Some("new"),
+            ),
+            // `metadata.user_id` is a string but not parseable JSON.
+            (
+                br#"{ "metadata": { "user_id": "not json" } }"#.to_vec(),
+                Some("new"),
+            ),
+            // The inner blob parses but is not an object.
+            (
+                br#"{ "metadata": { "user_id": "[1, 2]" } }"#.to_vec(),
+                Some("new"),
+            ),
+            // The inner object has no `account_uuid` to replace — one is never added.
+            (
+                br#"{ "metadata": { "user_id": "{\"device\":\"cli\"}" } }"#.to_vec(),
+                Some("new"),
+            ),
         ] {
             let original = body.clone();
-            assert_eq!(rewrite_account_uuid(body, uuid), original);
+            assert_eq!(
+                rewrite_account_uuid(body, uuid),
+                original,
+                "body was modified: {}",
+                String::from_utf8_lossy(&original)
+            );
+        }
+    }
+
+    /// A present `account_uuid` is replaced whatever its current JSON type, so the
+    /// early return must not mistake a null or numeric one for "nothing to rewrite".
+    #[test]
+    fn rewrite_account_uuid_replaces_a_non_string_inner_value() {
+        for existing in ["null", "42", r#"{"nested":true}"#] {
+            let inner = format!(r#"{{"account_uuid":{existing},"device":"cli"}}"#);
+            let body = serde_json::to_vec(&serde_json::json!({
+                "metadata": {"user_id": inner}
+            }))
+            .unwrap();
+
+            let out = rewrite_account_uuid(body, Some("selected"));
+
+            let outer: serde_json::Value = serde_json::from_slice(&out).unwrap();
+            let inner: serde_json::Value =
+                serde_json::from_str(outer["metadata"]["user_id"].as_str().unwrap()).unwrap();
+            assert_eq!(inner["account_uuid"], "selected", "existing was {existing}");
+            assert_eq!(inner["device"], "cli");
         }
     }
 

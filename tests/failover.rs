@@ -37,6 +37,14 @@ impl Match for HeaderAbsent {
     }
 }
 
+struct ExactBody(Vec<u8>);
+
+impl Match for ExactBody {
+    fn matches(&self, request: &Request) -> bool {
+        request.body == self.0
+    }
+}
+
 struct TestGateway {
     base_url: String,
     task: JoinHandle<()>,
@@ -229,6 +237,57 @@ async fn chain_order_stops_at_first_healthy_upstream() {
     assert_eq!(response.text().await.unwrap(), r#"{"winner":"first"}"#);
     first.verify().await;
     second.verify().await;
+}
+
+#[tokio::test]
+async fn failover_attempt_mutation_preserves_original_body_for_fallback() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let primary = MockServer::start().await;
+    let fallback = MockServer::start().await;
+    let original_body = br#"{  "max_tokens" : 16, "messages" : [ { "content" : "hi", "role" : "user" } ], "model" : "failover-model"  }"#.to_vec();
+    let primary_model = "primary-rewritten-model";
+    let mut primary_body: Value = serde_json::from_slice(&original_body).unwrap();
+    primary_body["model"] = Value::String(primary_model.to_string());
+    let primary_body = serde_json::to_vec(&primary_body).unwrap();
+
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(ExactBody(primary_body))
+        .respond_with(ResponseTemplate::new(500).set_body_string("advance"))
+        .expect(1)
+        .mount(&primary)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(ExactBody(original_body.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string("fallback"))
+        .expect(1)
+        .mount(&fallback)
+        .await;
+    let config = chain_config(
+        vec![
+            passthrough("primary", primary.uri()),
+            passthrough("fallback", fallback.uri()),
+        ],
+        &[("primary", primary_model), ("fallback", CLIENT_MODEL)],
+    );
+    let gateway = start_gateway(config).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .header("content-type", "application/json")
+        .body(original_body)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_gateway_headers(&response, "fallback", CLIENT_MODEL);
+    assert_eq!(response.text().await.unwrap(), "fallback");
+    primary.verify().await;
+    fallback.verify().await;
 }
 
 #[tokio::test]
