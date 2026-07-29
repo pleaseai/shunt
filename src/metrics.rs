@@ -11,8 +11,9 @@
 //!
 //! Request metrics cover request counts/header latency, streaming TTFT/outcomes
 //! and streaming token usage, Codex continuation decisions and sanitized client
-//! analytics event names, and retries. Pool metrics expose best-account quota
-//! utilization and account rotations.
+//! analytics event names, retries, and requests shed at the inbound concurrency
+//! limit. Pool metrics expose best-account quota utilization and account
+//! rotations.
 //!
 //! Attributes stay low-cardinality (provider/model/status/outcome/kind/window/
 //! reason, plus the sanitized, cardinality-capped `event` on
@@ -44,6 +45,7 @@ struct OtelInstruments {
     codex_client_events: Counter<u64>,
     upstream_retries: Counter<u64>,
     failover: Counter<u64>,
+    requests_shed: Counter<u64>,
     _pool_utilization: ObservableGauge<f64>,
     pool_rotations: Counter<u64>,
 }
@@ -101,6 +103,10 @@ fn otel_instruments() -> &'static OtelInstruments {
             failover: meter
                 .u64_counter("shunt.failover")
                 .with_description("Ordered upstream failover state transitions")
+                .build(),
+            requests_shed: meter
+                .u64_counter("shunt.requests_shed")
+                .with_description("Inbound requests rejected at the concurrency limit (issue #260)")
                 .build(),
             _pool_utilization: meter
                 .f64_observable_gauge("shunt.pool.quota_utilization")
@@ -340,6 +346,16 @@ pub fn record_failover(provider: &str, state: &'static str) {
         KeyValue::new("state", state),
     ];
     otel_instruments().failover.add(1, &attributes);
+}
+
+/// Record one inbound request shed at the `[server] max_concurrent_requests`
+/// limit (issue #260). A shed request never reaches a handler, so it is absent
+/// from [`record_proxied_request`] and from the per-request spans — without this
+/// counter a saturated gateway is invisible at the default `shunt=info` filter,
+/// since the rejection itself is logged only at `debug!`.
+pub fn record_request_shed() {
+    sentry::metrics::counter("shunt.requests_shed", 1).capture();
+    otel_instruments().requests_shed.add(1, &[]);
 }
 
 #[cfg(test)]

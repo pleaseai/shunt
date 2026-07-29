@@ -115,9 +115,14 @@ pub struct ServerConfig {
     /// `0` disables injection (M5).
     #[serde(default = "default_sse_keepalive_seconds")]
     pub sse_keepalive_seconds: u64,
-    /// Maximum inbound client requests in flight at once. `0` disables the
-    /// limit. Over-limit requests are shed with 503 rather than queued, so a
-    /// burst cannot grow resident memory without bound (issue #260).
+    /// Maximum inbound client requests in flight at once on the limited routes
+    /// (`/` and `/health` are merged outside the gate and always answer). `0`
+    /// disables the limit. Over-limit requests are shed with 503 rather than
+    /// queued, so the number of in-flight request states is finite where it
+    /// previously was not (issue #260). This bounds request *count*, not bytes:
+    /// each admitted request may still buffer a body up to
+    /// `MAX_REQUEST_BODY_BYTES`, and a permit is held for as long as the request
+    /// is in flight, so this is not on its own a resident-memory bound.
     #[serde(default = "default_max_concurrent_requests")]
     pub max_concurrent_requests: usize,
 }
@@ -129,6 +134,12 @@ fn default_sse_keepalive_seconds() -> u64 {
 fn default_max_concurrent_requests() -> usize {
     1024
 }
+
+/// Upper bound accepted for `[server] max_concurrent_requests`, mirroring
+/// `tokio::sync::Semaphore::MAX_PERMITS` (`usize::MAX >> 3`). Tokio's
+/// `Semaphore::new` asserts on this, so validating it here turns a boot-time
+/// panic into a `shunt check` failure.
+pub(crate) const MAX_CONCURRENT_REQUESTS_LIMIT: usize = usize::MAX >> 3;
 
 /// `[server.pool]` — quota-aware load-balancing tuning and optional usage-API
 /// reconciliation for Claude (Anthropic) account pools (issue #135). Quota
@@ -1755,6 +1766,13 @@ pub enum ConfigError {
         limit: u32,
     },
     #[error(
+        "server.max_concurrent_requests must be at most {limit}, got {max_concurrent_requests}"
+    )]
+    InvalidMaxConcurrentRequests {
+        max_concurrent_requests: usize,
+        limit: usize,
+    },
+    #[error(
         "providers.{provider}.retry.multiplier must be a finite value >= 1.0, got {multiplier}"
     )]
     InvalidRetryMultiplier { provider: String, multiplier: f64 },
@@ -2156,6 +2174,18 @@ impl Config {
     pub fn validate(mut self) -> Result<Self, ConfigError> {
         self.normalize_upstreams()?;
         self.server.bind_addr()?;
+        // `tokio::sync::Semaphore::new` panics above `MAX_PERMITS`, so an
+        // out-of-range limit would pass `shunt check` and then abort at boot
+        // inside `build_router`. The bound is `usize::MAX >> 3`, which is
+        // platform-dependent (~5.4e8 on a 32-bit target), so reject it here
+        // rather than let it differ by build target. `0` stays the documented
+        // way to disable the limit entirely.
+        if self.server.max_concurrent_requests > MAX_CONCURRENT_REQUESTS_LIMIT {
+            return Err(ConfigError::InvalidMaxConcurrentRequests {
+                max_concurrent_requests: self.server.max_concurrent_requests,
+                limit: MAX_CONCURRENT_REQUESTS_LIMIT,
+            });
+        }
         // Fail closed at boot: [server.auth] without resolvable tokens is an
         // error, not an open gateway.
         if let Some(auth) = &self.server.auth {
@@ -2848,6 +2878,42 @@ mod tests {
             .unwrap();
             assert_eq!(server.max_concurrent_requests, configured);
         }
+    }
+
+    #[test]
+    fn validate_rejects_max_concurrent_requests_above_semaphore_limit() {
+        use super::MAX_CONCURRENT_REQUESTS_LIMIT;
+
+        // The limit must track tokio's own bound: `Semaphore::new` asserts on
+        // it, so a value validate() accepts must never panic the constructor.
+        assert_eq!(
+            MAX_CONCURRENT_REQUESTS_LIMIT,
+            tokio::sync::Semaphore::MAX_PERMITS,
+            "validation bound drifted from tokio::sync::Semaphore::MAX_PERMITS"
+        );
+
+        let mut config = Config::default();
+        config.server.max_concurrent_requests = MAX_CONCURRENT_REQUESTS_LIMIT + 1;
+        let error = config
+            .validate()
+            .expect_err("an out-of-range limit must be rejected at config time");
+        assert!(
+            matches!(
+                error,
+                ConfigError::InvalidMaxConcurrentRequests { limit, .. }
+                    if limit == MAX_CONCURRENT_REQUESTS_LIMIT
+            ),
+            "unexpected error: {error}"
+        );
+
+        // The boundary itself is accepted, and constructing the semaphore at
+        // that value does not panic — which is the behavior the guard protects.
+        let mut config = Config::default();
+        config.server.max_concurrent_requests = MAX_CONCURRENT_REQUESTS_LIMIT;
+        config
+            .validate()
+            .expect("the boundary value itself is valid");
+        let _ = tokio::sync::Semaphore::new(MAX_CONCURRENT_REQUESTS_LIMIT);
     }
 
     #[test]

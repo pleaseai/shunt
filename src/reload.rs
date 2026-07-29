@@ -66,9 +66,10 @@ impl RuntimeState {
 /// good config rather than going down or running open.
 ///
 /// Fields that cannot be hot-applied (`server.bind`,
-/// `server.max_concurrent_requests`, `[sentry]`) are compared against the live
-/// config and a `warn!` is logged when they change; the new values are accepted
-/// into the swapped config but only take effect on restart.
+/// `server.max_concurrent_requests`, `[sentry]`, `[otel]`, and enabling or
+/// disabling the optional `[server.*]` route trees) are compared against the
+/// live config and a `warn!` is logged when they change; the new values are
+/// accepted into the swapped config but only take effect on restart.
 pub fn reload(shared: &SharedState, path: Option<&std::path::Path>) -> Result<(), ConfigError> {
     // Load + validate the candidate before touching the live state.
     let new_config = Config::load(path)?;

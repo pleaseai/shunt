@@ -60,3 +60,27 @@ sse_keepalive_seconds = 30   # default; 0 disables
 ```
 
 Pings are injected only between complete SSE events (never inside a half-sent frame), only on `text/event-stream` responses, and stop with the upstream stream. Behind a tunnel with no idle timeout (WireGuard/Tailscale) the pings are harmless; disable with `0` if you want byte-identical relaying.
+
+## Inbound concurrency limit
+
+A shared gateway serves many clients at once, so shunt caps how many inbound requests may be in flight:
+
+```toml
+[server]
+max_concurrent_requests = 1024   # default; 0 disables the limit
+```
+
+Over the cap, shunt **sheds immediately** with `503` and `Retry-After: 1` rather than queueing — a queued request still holds its buffered body in memory, which is the growth the cap exists to prevent. A streaming response holds its slot until the response body ends or the client disconnects, so long-running streams count against the limit for their whole lifetime, not just while the response headers are being produced.
+
+`GET /` and `GET /health` are exempt, so a saturated gateway still answers liveness probes and a load balancer will not evict an instance that is busy serving real work.
+
+The default is high enough that a personal or small-team gateway never reaches it. Raise it for a busy shared deployment, or set `0` to restore unlimited concurrency. The limit is fixed at startup: changing it is accepted by [config reload](/reference/configuration/) but takes effect only after a restart.
+
+If clients report `503` with an `overloaded_error` body, the gateway is at its cap — raise `max_concurrent_requests`, or check for stuck long-lived streams holding slots. Shed requests increment the `shunt.requests_shed` counter, and the rejection itself is logged at `debug!`.
+
+The cap counts **requests, not bytes**, and a permit is held for as long as a request is in flight. Two consequences worth planning for on an internet-facing deployment:
+
+- Each admitted request may buffer a body of up to 64 MiB, so the byte budget scales with the cap. Lower `max_concurrent_requests` if the host cannot absorb that product.
+- A client that trickles a request body, or a stalled upstream stream, holds its slot for as long as it lasts; shunt applies no inbound request timeout. Terminate slow clients at an edge proxy if the gateway is exposed.
+
+Neither is new to this limit — the cap makes the ceiling finite where it previously was not — but it means `max_concurrent_requests` alone is not a memory bound.

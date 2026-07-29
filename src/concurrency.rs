@@ -49,7 +49,12 @@ pub(crate) async fn limit_requests(
     let permit = match limit.permits.clone().try_acquire_owned() {
         Ok(permit) => permit,
         Err(_) => {
+            // `debug!` because a saturated gateway would emit this per request;
+            // the counter is what makes saturation visible at the default
+            // `shunt=info` filter, since a shed request never reaches a handler
+            // and so never lands in `record_proxied_request` or a request span.
             tracing::debug!(path, "shedding request at inbound concurrency limit");
+            crate::metrics::record_request_shed();
             return overloaded_response(is_codex_path(path)).await;
         }
     };
@@ -90,6 +95,12 @@ struct PermitBody {
 
 impl PermitBody {
     fn new(inner: Body, permit: OwnedSemaphorePermit) -> Self {
+        // Once `is_end_stream()` is true, `poll_frame` is contractually going to
+        // yield `None`, so there is nothing left to wait for. Holding the permit
+        // would keep a bodyless or already-complete response (a 204, an empty
+        // error envelope) occupying a slot until whoever owns the wrapper
+        // happens to drop it. Release it now instead — this is a semantic fast
+        // path, not a micro-optimization.
         let permit = (!inner.is_end_stream()).then_some(permit);
         Self { inner, permit }
     }
@@ -104,6 +115,12 @@ impl HttpBody for PermitBody {
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
         let frame = Pin::new(&mut self.inner).poll_frame(cx);
+        // Releasing here rather than relying on `Drop` is load-bearing: a fully
+        // consumed body can stay alive well after end-of-stream (hyper may hold
+        // it while finishing the connection), and capacity should return to the
+        // pool when the response actually finishes, not whenever this wrapper is
+        // eventually dropped. `Drop` still covers the paths that never reach
+        // EOS — client disconnect, or a body abandoned mid-stream.
         if matches!(frame, Poll::Ready(None)) {
             self.permit.take();
         }

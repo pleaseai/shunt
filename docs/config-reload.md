@@ -44,15 +44,22 @@ per-request latency.
 ## 4. Fields that require a restart
 
 Most settings apply on reload (routes, providers, models, `[server.auth]`,
-`sse_keepalive_seconds`). Three cannot be hot-applied; changing them is accepted
-into the reloaded config but only takes effect after a restart, and shunt logs a
-`warn!` so the change is not mistaken for live:
+`sse_keepalive_seconds`). The rest cannot be hot-applied; changing them is
+accepted into the reloaded config but only takes effect after a restart, and
+shunt logs a `warn!` so the change is not mistaken for live:
 
 - **`server.bind`** — the listener is already bound at the old address.
 - **`server.max_concurrent_requests`** — the shared concurrency semaphore and
   router layer are created once at startup.
 - **`[sentry]`** — the Sentry client is initialized once before the runtime
   starts and cannot be hot-swapped.
+- **`[otel]`** — the OpenTelemetry exporters are likewise initialized once at
+  startup.
+- **Enabling or disabling `[server.admin]`, `[server.gateway]`,
+  `[server.codex_endpoint]`, `[server.usage]`, or `[server.oauth_usage]`** —
+  whether these route trees are registered is decided once at boot. Edits
+  *within* an already-enabled table (tokens, headers, target provider) do
+  hot-apply; only adding or removing the table needs a restart.
 
 ## 5. What reload does not do
 
