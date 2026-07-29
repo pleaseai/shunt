@@ -1,4 +1,4 @@
-//! Focused measurements for performance issues #252 and #253.
+//! Focused measurements for performance issues #252, #253, and #264.
 //!
 //! `pre_parse_once_http_responses_cpu_front` and
 //! `pre_parse_once_codex_ws_reused_prepare_and_serialize` are deliberately frozen
@@ -9,7 +9,7 @@
 //! production: their stable old work is what keeps the before/after comparison
 //! meaningful.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use axum::http::{HeaderMap, HeaderValue};
 use serde_json::{json, Value};
@@ -300,6 +300,25 @@ fn codex_continuation_decide_hit(bencher: divan::Bencher, size: usize) {
     bencher.bench(|| {
         codex_continuation::decide(divan::black_box(&stored), divan::black_box(&current)).unwrap()
     });
+}
+
+/// Retrieving a reused connection's continuation state, the first thing every
+/// pooled Codex turn does (issue #264). `pre_arc_stored_continuation_retrieve` is
+/// a frozen reproduction of the pre-refactor `Turn::stored_continuation`, which
+/// deep-cloned the whole transcript out of the connection mutex;
+/// `arc_stored_continuation_retrieve` models sharing it behind an `Arc`.
+#[divan::bench(args = BODY_SIZES)]
+fn pre_arc_stored_continuation_retrieve(bencher: divan::Bencher, size: usize) {
+    let (stored, _) = continuation_fixture(size);
+    let slot = Mutex::new(Some(stored));
+    bencher.bench(|| divan::black_box(slot.lock().unwrap().clone()));
+}
+
+#[divan::bench(args = BODY_SIZES)]
+fn arc_stored_continuation_retrieve(bencher: divan::Bencher, size: usize) {
+    let (stored, _) = continuation_fixture(size);
+    let slot = Mutex::new(Some(Arc::new(stored)));
+    bencher.bench(|| divan::black_box(slot.lock().unwrap().clone()));
 }
 
 #[divan::bench(args = BODY_SIZES)]

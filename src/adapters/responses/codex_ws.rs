@@ -181,8 +181,12 @@ struct Connection {
     /// Turn dispatch channel to the reader (bounded at 1: `turn_lock` guarantees
     /// at most one outstanding turn).
     commands: mpsc::Sender<StartTurn>,
-    /// Continuation captured from this connection's last completed turn.
-    continuation: Mutex<Option<StoredContinuation>>,
+    /// Continuation captured from this connection's last completed turn. Behind an
+    /// [`Arc`] because its `transcript` grows with the conversation and every turn
+    /// reads it: sharing makes retrieval a refcount bump instead of a deep clone of
+    /// the whole history. Never mutated in place — a completed turn replaces the
+    /// whole value.
+    continuation: Mutex<Option<Arc<StoredContinuation>>>,
     /// Last time a turn used this connection; drives idle TTL eviction.
     last_used_at: Mutex<Instant>,
     /// The session key this connection is pooled under, if any.
@@ -432,8 +436,9 @@ pub struct Turn {
 impl Turn {
     /// The continuation state captured on this connection's previous turn.
     /// `None` for a fresh connection — `previous_response_id` is only valid on the
-    /// connection that produced it.
-    pub fn stored_continuation(&self) -> Option<StoredContinuation> {
+    /// connection that produced it. Shared, not cloned: the caller only reads it to
+    /// decide the delta, so the transcript stays behind a refcount.
+    pub fn stored_continuation(&self) -> Option<Arc<StoredContinuation>> {
         if !self.reused {
             return None;
         }
@@ -962,7 +967,7 @@ async fn run_turn(
                                 turn_state: turn_state
                                     .or_else(|| conn.handshake_turn_state.clone()),
                             };
-                            *conn.continuation.lock().unwrap() = Some(stored);
+                            *conn.continuation.lock().unwrap() = Some(Arc::new(stored));
                         }
                         *conn.last_used_at.lock().unwrap() = Instant::now();
                         if !*pooled {
