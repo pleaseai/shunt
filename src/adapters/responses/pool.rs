@@ -144,7 +144,15 @@ pub(super) async fn forward_chatgpt_oauth(
         }
 
         let body = http_body
-            .get_or_insert_with(|| bytes::Bytes::from(upstream_body.to_string()))
+            .get_or_insert_with(|| {
+                // `to_vec` serializes straight into the byte buffer `Bytes` takes
+                // ownership of, skipping the `fmt` machinery and UTF-8 round-trip
+                // `Value::to_string()` pays for. Serializing a `Value` cannot fail,
+                // so the fallback is unreachable — it just keeps the old path.
+                serde_json::to_vec(&upstream_body)
+                    .map(bytes::Bytes::from)
+                    .unwrap_or_else(|_| bytes::Bytes::from(upstream_body.to_string()))
+            })
             .clone();
         let upstream = match http_send(
             &state,
