@@ -907,7 +907,15 @@ fn decode_protobuf_list_at(buf: &[u8], depth: usize) -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
+
     use super::*;
+
+    fn offload_observer() -> std::sync::MutexGuard<'static, ()> {
+        crate::adapters::cursor::connect::OFFLOAD_OBSERVER
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
 
     fn text_params<'a>(prompt: &'a str, model: &'a str, cwd: &'a str) -> AgentRunParams<'a> {
         AgentRunParams {
@@ -1311,6 +1319,7 @@ mod tests {
 
     #[tokio::test]
     async fn event_stream_decodes_gzipped_text() {
+        let _observer = offload_observer();
         // A small compressed frame stays on the inline decode arm.
         let payload = field_ld(1, &field_ld(1, &field_str(1, "compressed")));
         let mut frames = gzip_frame(&payload).to_vec();
@@ -1331,6 +1340,7 @@ mod tests {
 
     #[tokio::test]
     async fn event_stream_decodes_above_threshold_gzipped_text() {
+        let _observer = offload_observer();
         // A threshold-crossing compressed frame uses the spawn_blocking arm.
         let mut state = 0x4d59_5df4_d0f3_3173u64;
         let text: String = (0..crate::adapters::cursor::connect::INLINE_GZIP_FRAME_BYTES * 2)
@@ -1366,6 +1376,7 @@ mod tests {
 
     #[tokio::test]
     async fn event_stream_rejects_invalid_gzip() {
+        let _observer = offload_observer();
         let frame = crate::adapters::cursor::connect::encode_connect_frame(b"not-gzip", FLAG_GZIP);
 
         let events: Vec<_> = turn_from_frames(frame.to_vec())
