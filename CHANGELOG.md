@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.27.0](https://github.com/pleaseai/shunt/compare/v0.26.1...v0.27.0) (2026-07-29)
+
+
+### ⚠ BREAKING CHANGES
+
+* **proxy:** `adapters::Adapter` is now `pub(crate)`. `Adapter::forward` takes the crate-private `RequestBody` instead of `Vec<u8>`, which forces the trait itself to be crate-private. External crates can no longer name or implement it. Practical impact is nil — adapter dispatch is static and in-crate, with no `dyn Adapter` and no public registration hook, so an external implementation could never have been invoked.
+
+### Performance Improvements
+
+* **proxy:** parse the inbound request body once across the hot path ([#261](https://github.com/pleaseai/shunt/issues/261)) ([ca37b70](https://github.com/pleaseai/shunt/commit/ca37b704aa8cfb511880853312f65b8161ee2c75))
+
 ## [0.26.1](https://github.com/pleaseai/shunt/compare/v0.26.0...v0.26.1) (2026-07-29)
 
 
