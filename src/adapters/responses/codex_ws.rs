@@ -1211,7 +1211,10 @@ mod tests {
         let value: Value = serde_json::from_str(&serialized).unwrap();
 
         assert_eq!(value["type"], "response.create");
-        assert_eq!(serialized.matches(r#""type""#).count(), 1);
+        // Match the key form (`"type":`), not a bare `"type"`: a body whose *value*
+        // is the string "type" would otherwise inflate the count and fail here for
+        // a reason unrelated to the duplicate-key regression this guards.
+        assert_eq!(serialized.matches(r#""type":"#).count(), 1);
     }
 
     #[test]
