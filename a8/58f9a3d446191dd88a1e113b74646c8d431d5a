@@ -1,0 +1,29 @@
+.claude/agent-memory/review-review-pr-test-analyzer/MEMORY.md
+  s_e9bff362f1f3d0::t_1b6ad968df3aa6 15
+.claude/agent-memory/review-review-pr-test-analyzer/shunt-codex-ws-arc-continuation-coverage.md
+  s_e9bff362f1f3d0::t_f284c350881142 1-12
+.claude/agent-memory/review-review-comment-analyzer/codex-ws-continuation-quantifier-rot.md
+  s_e9bff362f1f3d0::t_a90cd12b92cffe 1-11
+.claude/agent-memory/review-review-comment-analyzer/MEMORY.md
+  s_e9bff362f1f3d0::t_7ac7ad79f291b6 7
+benches/perf_issues.rs
+  s_e9bff362f1f3d0::t_45a84cf5e75116 305-310
+src/adapters/responses/codex_ws.rs
+  s_e9bff362f1f3d0::t_763b28b8f2f0ac 185-187
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "a858f9a3d446191dd88a1e113b74646c8d431d5a",
+  "prompts": {},
+  "sessions": {
+    "s_e9bff362f1f3d0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "600bafe8-4ffe-4ef1-bd77-6d256b780253",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
