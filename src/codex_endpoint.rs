@@ -26,6 +26,20 @@ use crate::{
     server::AppState,
 };
 
+/// Inbound Responses routes this handler serves, registered by
+/// [`crate::server::build_router`] when `[server.codex_endpoint]` is set.
+///
+/// This is the single source of truth for the path set: the router registers
+/// exactly these, and `concurrency::is_codex_path` classifies against them so a
+/// gateway-owned error on any of them uses the OpenAI Responses envelope rather
+/// than the Anthropic one (AGENTS.md). Adding a path here registers it and gives
+/// it the right error shape together — they cannot drift apart.
+pub(crate) const PATHS: [&str; 3] = [
+    "/backend-api/codex/responses",
+    "/responses",
+    "/v1/responses",
+];
+
 /// Same inbound body cap as the Anthropic Messages path (`proxy::post`).
 const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024 * 1024;
 

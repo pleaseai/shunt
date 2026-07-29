@@ -16,21 +16,6 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use crate::error::{into_openai_error_shape, ShuntError};
 
 const OVERLOADED_MESSAGE: &str = "too many requests are already in flight";
-/// Inbound Codex routes, which take the OpenAI Responses error envelope instead
-/// of the Anthropic one (AGENTS.md). This middleware runs above routing, so it
-/// cannot ask the router which handler would have matched and must carry its own
-/// copy of the path set. **Keep this in sync with the `codex_endpoint` routes
-/// registered in `server::build_router`** — a Codex route added there but not
-/// here would silently hand an OpenAI-protocol client an Anthropic-shaped 503,
-/// and no test would fail unless it is also added to the table-driven case in
-/// this module's tests.
-const CODEX_PATHS: [&str; 5] = [
-    "/backend-api/codex/responses",
-    "/responses",
-    "/v1/responses",
-    "/backend-api/codex/analytics-events/events",
-    "/codex/analytics-events/events",
-];
 
 /// Process-lifetime admission gate shared by every limited route.
 #[derive(Clone, Debug)]
@@ -74,8 +59,15 @@ pub(crate) async fn limit_requests(
         .map(|body| Body::new(PermitBody::new(body, permit)))
 }
 
+/// Whether a gateway-owned error on this path must use the OpenAI Responses
+/// envelope instead of the Anthropic one (AGENTS.md).
+///
+/// This middleware runs above routing, so it cannot ask the router which handler
+/// would have matched and must classify by path. It reads the same constants the
+/// router registers from, so a Codex route cannot be added without also getting
+/// the correct error shape.
 fn is_codex_path(path: &str) -> bool {
-    CODEX_PATHS.contains(&path)
+    crate::codex_endpoint::PATHS.contains(&path) || crate::codex_analytics::PATHS.contains(&path)
 }
 
 async fn overloaded_response(codex_shape: bool) -> Response {
@@ -168,14 +160,14 @@ mod tests {
         routing::post as post_route,
         Router,
     };
-    use futures_util::stream;
+    use futures_util::{stream, StreamExt};
     use http_body::Frame;
     use http_body_util::StreamBody;
     use serde_json::Value;
     use tokio::sync::oneshot;
     use tower::ServiceExt;
 
-    use super::{limit_requests, ConcurrencyLimit, PermitBody, CODEX_PATHS};
+    use super::{limit_requests, ConcurrencyLimit, PermitBody};
 
     fn limited_router_with_calls(
         path: &'static str,
@@ -234,7 +226,12 @@ mod tests {
     #[tokio::test]
     async fn every_codex_path_uses_openai_shape_but_other_paths_do_not() {
         let calls = Arc::new(AtomicUsize::new(0));
-        for path in CODEX_PATHS {
+        // Walk the same constants `server::build_router` registers from, so this
+        // covers every real Codex route rather than a copy that could drift.
+        for path in crate::codex_endpoint::PATHS
+            .into_iter()
+            .chain(crate::codex_analytics::PATHS)
+        {
             let response = limited_router_with_calls(path, 0, calls.clone())
                 .oneshot(Request::post(path).body(Body::empty()).unwrap())
                 .await
@@ -488,27 +485,27 @@ mod tests {
     #[tokio::test]
     async fn permit_stays_held_after_data_until_mid_stream_body_is_dropped() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let app =
-            Router::new()
-                .route(
-                    "/stream",
-                    post_route(move || {
-                        let call = calls.fetch_add(1, Ordering::Relaxed);
-                        async move {
-                            if call == 0 {
-                                Body::from_stream(stream::once(async {
-                                    Ok::<_, Infallible>("chunk")
-                                }).chain(stream::pending()))
-                            } else {
-                                Body::empty()
-                            }
+        let app = Router::new()
+            .route(
+                "/stream",
+                post_route(move || {
+                    let call = calls.fetch_add(1, Ordering::Relaxed);
+                    async move {
+                        if call == 0 {
+                            Body::from_stream(
+                                stream::once(async { Ok::<_, Infallible>("chunk") })
+                                    .chain(stream::pending()),
+                            )
+                        } else {
+                            Body::empty()
                         }
-                    }),
-                )
-                .layer(middleware::from_fn_with_state(
-                    ConcurrencyLimit::new(1),
-                    limit_requests,
-                ));
+                    }
+                }),
+            )
+            .layer(middleware::from_fn_with_state(
+                ConcurrencyLimit::new(1),
+                limit_requests,
+            ));
 
         let first = send_post(&app, "/stream").await;
         assert_eq!(first.status(), StatusCode::OK);

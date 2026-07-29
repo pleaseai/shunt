@@ -205,18 +205,15 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     // discarded locally after recording sanitized counters. Both are gated by
     // `[server.auth]` like the other injected-credential routes.
     if codex_endpoint_enabled {
-        router = router
-            .route("/backend-api/codex/responses", post(codex_endpoint::post))
-            .route("/responses", post(codex_endpoint::post))
-            .route("/v1/responses", post(codex_endpoint::post))
-            .route(
-                "/backend-api/codex/analytics-events/events",
-                post(codex_analytics::post),
-            )
-            .route(
-                "/codex/analytics-events/events",
-                post(codex_analytics::post),
-            );
+        // Register from the same constants `concurrency::is_codex_path`
+        // classifies against, so a route cannot be added here without also
+        // getting the OpenAI-shaped gateway errors its clients expect.
+        for path in codex_endpoint::PATHS {
+            router = router.route(path, post(codex_endpoint::post));
+        }
+        for path in codex_analytics::PATHS {
+            router = router.route(path, post(codex_analytics::post));
+        }
     }
 
     // Opt-in client-facing usage endpoint (`GET /usage`): registered only when
@@ -364,11 +361,20 @@ mod tests {
             !first.body().is_end_stream(),
             "/protocol must keep its response body alive for the overlap assertion"
         );
-        let second = router
-            .oneshot(Request::get("/protocol").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        assert_eq!(second.status(), StatusCode::OK);
+        let mut responses = vec![first];
+        // Exceed the documented default so this cannot pass if `0` is silently
+        // replaced with that finite fallback instead of omitting the layer.
+        for _ in 0..=1024 {
+            let response = router
+                .clone()
+                .oneshot(Request::get("/protocol").body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert!(!response.body().is_end_stream());
+            responses.push(response);
+        }
+        drop(responses);
     }
 
     #[tokio::test]
