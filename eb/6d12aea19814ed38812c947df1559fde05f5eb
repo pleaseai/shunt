@@ -1,0 +1,21 @@
+.claude/agent-memory/review-review-comment-analyzer/shunt-perf-benchmark-baseline-scope.md
+  s_dfa208a62d4992::t_4572629e249648 1-13
+.claude/agent-memory/review-review-comment-analyzer/MEMORY.md
+  s_dfa208a62d4992::t_023fe036a72fe0 7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "eb6d12aea19814ed38812c947df1559fde05f5eb",
+  "prompts": {},
+  "sessions": {
+    "s_dfa208a62d4992": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b5f00ff6-9ce3-4f89-a902-f524239de513",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
