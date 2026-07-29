@@ -129,12 +129,21 @@ impl HttpBody for PermitBody {
         // never reach a terminal frame — client disconnect or a body abandoned
         // mid-stream.
         //
-        // `is_end_stream()` is checked alongside the terminal arms because a
-        // consumer that trusts it stops polling after the last data frame and
-        // never observes `Poll::Ready(None)` — a full (non-streaming) body hits
-        // exactly this path. Per the `http-body` contract, end-of-stream means no
-        // further frames *including trailers*, so this cannot cut a trailer off.
-        if matches!(frame, Poll::Ready(None | Some(Err(_)))) || self.inner.is_end_stream() {
+        // `is_end_stream()` is consulted only on a successful ready frame,
+        // because a consumer that trusts it stops polling after the last data
+        // frame and never observes `Poll::Ready(None)` — a full (non-streaming)
+        // body hits exactly this path. Scoping it matters: a buffering wrapper
+        // can report end-of-stream for its *inner* body while still owing frames
+        // of its own, and releasing on a `Poll::Pending` that merely happens to
+        // coincide with that would hand the slot away mid-stream. Per the
+        // `http-body` contract end-of-stream also means no further trailers, so
+        // this cannot cut a trailer off.
+        let ended = match &frame {
+            Poll::Ready(None) | Poll::Ready(Some(Err(_))) => true,
+            Poll::Ready(Some(Ok(_))) => self.inner.is_end_stream(),
+            Poll::Pending => false,
+        };
+        if ended {
             self.permit.take();
         }
         frame
@@ -280,6 +289,58 @@ mod tests {
             .as_str()
             .is_some_and(|message| !message.is_empty()));
         assert_eq!(calls.load(Ordering::Relaxed), 0);
+    }
+
+    /// Reports end-of-stream only *after* it has been polled, while never
+    /// yielding a frame. A buffering wrapper delegating `is_end_stream()` to a
+    /// drained inner body looks like this. Constructed not-yet-ended so it
+    /// survives the `PermitBody::new` short-circuit and reaches `poll_frame`.
+    #[derive(Default)]
+    struct EndsWhilePending {
+        polled: bool,
+    }
+
+    impl HttpBody for EndsWhilePending {
+        type Data = Bytes;
+        type Error = axum::Error;
+
+        fn poll_frame(
+            mut self: Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+            self.polled = true;
+            Poll::Pending
+        }
+
+        fn is_end_stream(&self) -> bool {
+            self.polled
+        }
+    }
+
+    /// A `Poll::Pending` must never release the slot, even when the inner body
+    /// simultaneously claims end-of-stream. Otherwise the permit is handed away
+    /// while the response still owes frames — the mid-stream over-admission this
+    /// limit exists to prevent.
+    #[tokio::test]
+    async fn pending_frame_never_releases_even_when_inner_reports_end() {
+        let limit = ConcurrencyLimit::new(1);
+        let permit = limit.permits.clone().try_acquire_owned().unwrap();
+        let mut body = PermitBody::new(Body::new(EndsWhilePending::default()), permit);
+        assert_eq!(limit.permits.available_permits(), 0);
+
+        let polled = poll_fn(|cx| Poll::Ready(Pin::new(&mut body).poll_frame(cx))).await;
+        assert!(polled.is_pending(), "the body yields no frame");
+        assert!(
+            body.is_end_stream(),
+            "and now claims end-of-stream, which must not by itself free the slot"
+        );
+
+        assert_eq!(
+            limit.permits.available_permits(),
+            0,
+            "the permit must still be held while the body is pending"
+        );
+        drop(body);
     }
 
     #[tokio::test]
