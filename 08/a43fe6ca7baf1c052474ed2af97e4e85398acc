@@ -1,0 +1,21 @@
+.claude/agent-memory/review-review-pr-test-analyzer/MEMORY.md
+  s_446cbaeb425076::t_f718b1c8851911 15
+.claude/agent-memory/review-review-pr-test-analyzer/shunt-cursor-request-offload-coverage.md
+  s_446cbaeb425076::t_cbbacff57be651 1-14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "08a43fe6ca7baf1c052474ed2af97e4e85398acc",
+  "prompts": {},
+  "sessions": {
+    "s_446cbaeb425076": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "295961a1-8c94-4530-8693-5613ab452cc0",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
