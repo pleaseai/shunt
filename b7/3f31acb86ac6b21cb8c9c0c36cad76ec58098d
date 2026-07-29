@@ -1,0 +1,68 @@
+src/adapters/cursor/mod.rs
+  s_446cbaeb425076::t_734538038846d7 227-233,235
+  s_446cbaeb425076::t_57b0981fecea31 517,519
+  s_446cbaeb425076::t_9119308a6d65d5 787
+  s_446cbaeb425076::t_448757b050e1d5 877-878
+  s_446cbaeb425076::t_2fe2870c773577 160-163,167,172-174
+  s_446cbaeb425076::t_9f1f1c5d2f2ca9 119,123-125,127
+  s_446cbaeb425076::t_f989e5725eed74 147-148,151-152
+  s_446cbaeb425076::t_b13d3525bd0aca 223
+  s_446cbaeb425076::t_0eab689f375fad 819-866,868-876,879-885,889-891
+  s_446cbaeb425076::t_70b30742073ede 810
+  s_446cbaeb425076::t_9596d511c7cdcc 214,216,219
+  s_446cbaeb425076::t_8ca84d83e68479 226,802-804,867,886-888
+  s_446cbaeb425076::t_86a1761196ecbb 207,210
+  s_446cbaeb425076::t_087794ff123ccd 149-150
+  s_446cbaeb425076::t_b9cb5c4c09ab27 894-895
+  s_446cbaeb425076::t_98660447dc6f8b 224,236-244
+  s_446cbaeb425076::t_d2677c12d60787 783-784
+  s_77b1472242619e::t_5e2f4f7600d6f8 225
+src/adapters/cursor/offload.rs
+  s_446cbaeb425076::t_05b7f0ee46e7fe 239-240,248-251
+  s_446cbaeb425076::t_f66f0b529cd2bb 244-247
+  s_446cbaeb425076::t_148978ec7e89e1 202-209,211
+  s_446cbaeb425076::t_a05ffc4ea2e54b 214,226
+  s_446cbaeb425076::t_da5c6d776f7eb3 1,3-11,13-16,18-22,24-41,45-48,53,64-80,119,187
+  s_446cbaeb425076::t_3cb8724c6be7a9 123-125,127-129,132-142,144-154,156-161,163-164,166-181
+  s_446cbaeb425076::t_57cf5dfde73478 192-201,210,212-213,215-225,227-238,241-243,252
+.please/docs/review/rejected-findings.jsonl
+  s_446cbaeb425076::t_658ce7aacfc12a 56-57
+src/adapters/cursor/agent.rs
+  s_446cbaeb425076::t_39dcd0b553f3a2 995-999,1006-1009,1015-1016,1018-1019
+  s_446cbaeb425076::t_0223cb737aa901 570-582
+  s_446cbaeb425076::t_e6f3faba74a92f 123
+  s_446cbaeb425076::t_99f1ff36c01af5 160-163,167
+  s_446cbaeb425076::t_9044dd41b0a14d 946
+benches/gateway.rs
+  s_446cbaeb425076::t_83b2bcb8fa3128 149-170,172-173
+  s_446cbaeb425076::t_8ca84d83e68479 171
+  s_446cbaeb425076::t_f103691028f1fc 13-15
+  s_446cbaeb425076::t_c3171b4d2096a2 28
+src/adapters/cursor/connect.rs
+  s_446cbaeb425076::t_7305e29fe8166a 729
+  s_446cbaeb425076::t_ac6ae7e5196c2d 199
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "b73f31acb86ac6b21cb8c9c0c36cad76ec58098d",
+  "prompts": {},
+  "sessions": {
+    "s_446cbaeb425076": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "295961a1-8c94-4530-8693-5613ab452cc0",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_77b1472242619e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1a7991f4-bbab-43ff-a9ab-0838846e324d",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
