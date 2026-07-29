@@ -447,6 +447,95 @@ async fn refresh_retry_non_success_rotates_to_next_account() {
     fs::remove_dir_all(&accounts_dir).ok();
 }
 
+/// Issue #251: the initial account attempt, its 401 refresh retry, and the
+/// next-account attempt must all receive the byte-identical translated body.
+#[tokio::test]
+async fn refresh_retry_and_rotation_reuse_the_identical_serialized_body() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = REFRESH_ENV_LOCK.lock().await;
+    let stale = chatgpt_token(FAR_FUTURE_EXP, "acct-body-a");
+    let fresh = chatgpt_token(FAR_FUTURE_EXP + 1, "acct-body-a");
+    let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-body-b");
+    std::env::set_var("SHUNT_TEST_CODEX_BODY_B", &token_b);
+
+    let accounts_dir = unique_temp_dir("identical-body");
+    write_store_account(&accounts_dir, "account-a", &stale, "refresh-token-a");
+    std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &accounts_dir);
+
+    let auth = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+            r#"{{"access_token":"{fresh}","refresh_token":"refresh-token-a-2"}}"#
+        )))
+        .expect(1)
+        .mount(&auth)
+        .await;
+    std::env::set_var("SHUNT_CODEX_TOKEN_URL", format!("{}/token", auth.uri()));
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(stale.clone()))
+        .respond_with(ResponseTemplate::new(401).set_body_string(r#"{"error":"expired token"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(fresh.clone()))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("retry-after", "0")
+                .set_body_string(r#"{"error":"account a throttled"}"#),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(sse_body("account b served")))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        store_account("account-a"),
+        account("account-b", "SHUNT_TEST_CODEX_BODY_B"),
+    ))
+    .await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+    let response_body = response.text().await.unwrap();
+    assert!(response_body.contains("account b served"));
+    upstream.verify().await;
+    auth.verify().await;
+
+    let requests = upstream.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 3);
+    let body = requests[0].body.as_slice();
+    assert!(!body.is_empty());
+    assert_eq!(requests[1].body.as_slice(), body);
+    assert_eq!(requests[2].body.as_slice(), body);
+    let translated: Value = serde_json::from_slice(body).unwrap();
+    assert_eq!(translated["model"], "pooled-codex-model");
+    assert_eq!(translated["input"][0]["content"][0]["text"], "hi");
+
+    std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
+    std::env::remove_var("SHUNT_TEST_CODEX_BODY_B");
+    fs::remove_dir_all(&accounts_dir).ok();
+}
+
 #[tokio::test]
 async fn refresh_retry_still_unauthorized_cools_down_and_rotates() {
     // Refresh succeeds but the refreshed token is still rejected with 401: the
