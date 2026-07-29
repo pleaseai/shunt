@@ -12,8 +12,11 @@
 //!   event), and Cursor SSE framing (per token delta).
 
 use axum::http::{HeaderMap, HeaderName, HeaderValue};
+use flate2::{write::GzEncoder, Compression};
 use serde_json::json;
+use std::io::Write;
 
+use shunt::adapters::cursor::connect::decode_gzip_frame as decode_gzip_frame_sync;
 use shunt::adapters::cursor::sse::CursorSseFramer;
 use shunt::config::{Config, ResponsesFlavor, RouteConfig, RoutePrefixConfig};
 use shunt::model::{responses, responses_request};
@@ -22,6 +25,48 @@ use shunt::{count_tokens, headers, routing};
 
 fn main() {
     divan::main();
+}
+
+/// Build compressible protobuf-like data at about a 4:1 decompressed-to-gzip
+/// ratio. Each record is a length-delimited UTF-8 field with realistic repeated
+/// framing text and deterministic per-chunk content.
+fn gzip_fixture(compressed_target: usize) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(compressed_target * 4);
+    let mut state = 0x4d59_5df4_d0f3_3173u64;
+    let mut chunk = 0usize;
+    while payload.len() < compressed_target * 4 {
+        let mut suffix = [0u8; 40];
+        for byte in &mut suffix {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            *byte = b'a' + (state % 26) as u8;
+        }
+        let text = format!(
+            "Cursor agent response chunk {chunk}: reasoning and answer text for coding session {}. ",
+            std::str::from_utf8(&suffix).expect("ASCII suffix")
+        );
+        payload.push(0x0a); // protobuf field 1, wire type 2
+        payload.push(text.len() as u8);
+        payload.extend_from_slice(text.as_bytes());
+        chunk += 1;
+    }
+
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(&payload).expect("gzip fixture writes");
+    let compressed = encoder.finish().expect("gzip fixture finishes");
+    assert!(compressed.len() >= compressed_target);
+    assert!(compressed.len() <= compressed_target * 5 / 4);
+    compressed
+}
+
+/// Cursor Connect gzip frame decode over representative compressed frame sizes.
+/// The fixture is protobuf-shaped UTF-8 data with a realistic compression ratio,
+/// rather than an artificially compressible repeated byte.
+#[divan::bench(args = [1024, 4096, 16384, 65536])]
+fn decode_gzip_frame(bencher: divan::Bencher, compressed_target: usize) {
+    let compressed = gzip_fixture(compressed_target);
+    bencher.bench(|| decode_gzip_frame_sync(divan::black_box(&compressed)).unwrap());
 }
 
 /// A representative Anthropic Messages request body: a system prompt, a handful

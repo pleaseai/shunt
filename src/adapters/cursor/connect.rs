@@ -117,6 +117,26 @@ impl ConnectFrameDecoder {
 /// decompression so a malicious "zip bomb" payload cannot exhaust memory.
 const MAX_DECOMPRESSED_FRAME_BYTES: u64 = 64 * 1024 * 1024;
 
+/// Largest compressed gzip frame decoded inline on a Tokio worker.
+///
+/// The retained `gateway::decode_gzip_frame` bench measured 4 KiB at 26.23 µs
+/// and 16 KiB at 118.5 µs median; a one-off native calibration measured the
+/// `spawn_blocking` round trip at 12.01 µs. 4 KiB is therefore the largest
+/// measured power-of-two size within Tokio's 100 µs blocking budget and
+/// comfortably above the scheduling overhead.
+pub const INLINE_GZIP_FRAME_BYTES: usize = 4 * 1024;
+
+/// Decode a gzip frame inline when small, or on Tokio's blocking pool when the
+/// compressed payload exceeds [`INLINE_GZIP_FRAME_BYTES`].
+pub async fn decode_gzip_frame_async(payload: Bytes) -> Result<Vec<u8>, std::io::Error> {
+    if payload.len() <= INLINE_GZIP_FRAME_BYTES {
+        return decode_gzip_frame(&payload);
+    }
+    tokio::task::spawn_blocking(move || decode_gzip_frame(&payload))
+        .await
+        .map_err(std::io::Error::other)?
+}
+
 /// Decode gzipped payload bytes. The caller decides when to call this based
 /// on frame flags & FLAG_GZIP.
 ///
@@ -237,6 +257,29 @@ impl std::error::Error for ConnectError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+
+    fn gzip(payload: &[u8]) -> Bytes {
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder.write_all(payload).unwrap();
+        Bytes::from(encoder.finish().unwrap())
+    }
+
+    fn incompressible_bytes(len: usize) -> Vec<u8> {
+        let mut state = 0x4d59_5df4_d0f3_3173u64;
+        (0..len)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state as u8
+            })
+            .collect()
+    }
+
+    fn oversized_gzip_payload() -> Bytes {
+        gzip(&vec![b'a'; (MAX_DECOMPRESSED_FRAME_BYTES as usize) + 1024])
+    }
 
     #[test]
     fn parses_context_overflow_as_bad_request() {
@@ -469,15 +512,7 @@ mod tests {
 
     #[test]
     fn gzip_frame_decompress() {
-        let payload = b"hello gzip";
-        let mut compressed = Vec::new();
-        {
-            use std::io::Write;
-            let mut encoder =
-                flate2::write::GzEncoder::new(&mut compressed, flate2::Compression::fast());
-            encoder.write_all(payload).unwrap();
-            encoder.finish().unwrap();
-        }
+        let compressed = gzip(b"hello gzip");
 
         let frame = encode_connect_frame(&compressed, FLAG_GZIP);
         let mut decoder = ConnectFrameDecoder::new();
@@ -505,17 +540,53 @@ mod tests {
     fn gzip_frame_rejects_oversized_payload() {
         // A payload that decompresses beyond the cap must error rather than
         // silently truncate.
-        let oversized = vec![b'a'; (MAX_DECOMPRESSED_FRAME_BYTES as usize) + 1024];
-        let mut compressed = Vec::new();
-        {
-            use std::io::Write;
-            let mut encoder =
-                flate2::write::GzEncoder::new(&mut compressed, flate2::Compression::fast());
-            encoder.write_all(&oversized).unwrap();
-            encoder.finish().unwrap();
-        }
-
+        let compressed = oversized_gzip_payload();
         let err = decode_gzip_frame(&compressed).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[tokio::test]
+    async fn async_gzip_below_threshold_matches_sync_decode() {
+        let expected = b"small gzip response frame";
+        let compressed = gzip(expected);
+        assert!(compressed.len() <= INLINE_GZIP_FRAME_BYTES);
+
+        let sync = decode_gzip_frame(&compressed).unwrap();
+        let asynchronous = decode_gzip_frame_async(compressed).await.unwrap();
+        assert_eq!(asynchronous, sync);
+        assert_eq!(asynchronous, expected);
+    }
+
+    #[tokio::test]
+    async fn async_gzip_above_threshold_matches_sync_decode() {
+        let expected = incompressible_bytes(INLINE_GZIP_FRAME_BYTES * 2);
+        let compressed = gzip(&expected);
+        assert!(compressed.len() > INLINE_GZIP_FRAME_BYTES);
+
+        let sync = decode_gzip_frame(&compressed).unwrap();
+        let asynchronous = decode_gzip_frame_async(compressed).await.unwrap();
+        assert_eq!(asynchronous, sync);
+        assert_eq!(asynchronous, expected);
+    }
+
+    #[tokio::test]
+    async fn async_gzip_rejects_oversized_payload() {
+        let compressed = oversized_gzip_payload();
+        assert!(compressed.len() > INLINE_GZIP_FRAME_BYTES);
+
+        let err = decode_gzip_frame_async(compressed).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[tokio::test]
+    async fn async_gzip_rejects_corruption_on_both_paths() {
+        let inline = Bytes::from_static(b"not-gzip");
+        assert!(inline.len() <= INLINE_GZIP_FRAME_BYTES);
+        assert!(decode_gzip_frame_async(inline).await.is_err());
+
+        let mut blocking = gzip(&incompressible_bytes(INLINE_GZIP_FRAME_BYTES * 2));
+        blocking.truncate(blocking.len() - 1);
+        assert!(blocking.len() > INLINE_GZIP_FRAME_BYTES);
+        assert!(decode_gzip_frame_async(blocking).await.is_err());
     }
 }

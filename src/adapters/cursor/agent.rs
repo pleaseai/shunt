@@ -29,6 +29,7 @@
 //! native MCP tool calls, and inline image context are all mapped to this wire
 //! format; Cursor's own agentic file/shell tools are not exposed.
 
+use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -41,7 +42,8 @@ use tokio::time::{interval_at, Instant};
 
 use crate::adapters::cursor::client::CursorError;
 use crate::adapters::cursor::connect::{
-    decode_gzip_frame, parse_connect_error, ConnectError, ConnectFrameDecoder, FLAG_END, FLAG_GZIP,
+    decode_gzip_frame_async, parse_connect_error, ConnectError, ConnectFrameDecoder, FLAG_END,
+    FLAG_GZIP,
 };
 use crate::adapters::cursor::response::CursorStreamEvent;
 
@@ -300,7 +302,7 @@ impl CursorAgentTurn {
                     FIRST_BYTE_TIMEOUT
                 };
                 match tokio::time::timeout(budget, state.bytes.next()).await {
-                    Ok(Some(Ok(chunk))) => state.ingest(&chunk),
+                    Ok(Some(Ok(chunk))) => state.ingest(&chunk).await,
                     Ok(Some(Err(error))) => {
                         state.finished = true;
                         state
@@ -369,7 +371,7 @@ struct ReadState {
 
 impl ReadState {
     /// Decode Connect frames from a response chunk into pending events.
-    fn ingest(&mut self, chunk: &[u8]) {
+    async fn ingest(&mut self, chunk: &[u8]) {
         let frames = match self.decoder.push(chunk) {
             Ok(frames) => frames,
             Err(error) => {
@@ -394,13 +396,9 @@ impl ReadState {
                 }
                 return;
             }
-            let decompressed;
-            let payload = if frame.flags & FLAG_GZIP != 0 {
-                match decode_gzip_frame(&frame.payload) {
-                    Ok(bytes) => {
-                        decompressed = bytes;
-                        &decompressed[..]
-                    }
+            let payload: Cow<'_, [u8]> = if frame.flags & FLAG_GZIP != 0 {
+                match decode_gzip_frame_async(frame.payload.clone()).await {
+                    Ok(bytes) => Cow::Owned(bytes),
                     Err(error) => {
                         self.finished = true;
                         self.pending
@@ -409,20 +407,20 @@ impl ReadState {
                     }
                 }
             } else {
-                &frame.payload[..]
+                Cow::Borrowed(&frame.payload[..])
             };
             // A native MCP tool call ends the assistant turn: the model now waits
             // for an exec-result on the stream. The stateless bridge surfaces the
             // call as a tool_use pause and re-runs with the result in history, so
             // finish the turn here rather than sending an exec-result back.
-            if let Some((name, input_json)) = extract_tool_call(payload) {
+            if let Some((name, input_json)) = extract_tool_call(&payload) {
                 self.got_text = true;
                 self.finished = true;
                 self.pending
                     .push_back(Ok(CursorStreamEvent::ToolCall { name, input_json }));
                 return;
             }
-            if let Some(text) = extract_reasoning_text(payload) {
+            if let Some(text) = extract_reasoning_text(&payload) {
                 // Reasoning is upstream output too: once it arrives, switch from
                 // the first-byte budget to the idle budget so a reasoning-only
                 // turn that goes quiet isn't held for the full first-byte window.
@@ -430,7 +428,7 @@ impl ReadState {
                 self.pending
                     .push_back(Ok(CursorStreamEvent::ThinkingDelta { text }));
             }
-            if let Some(text) = extract_answer_text(payload) {
+            if let Some(text) = extract_answer_text(&payload) {
                 self.got_text = true;
                 self.pending
                     .push_back(Ok(CursorStreamEvent::TextDelta { text }));
@@ -1174,6 +1172,14 @@ mod tests {
         crate::adapters::cursor::connect::encode_connect_frame(b"{}", FLAG_END)
     }
 
+    fn gzip_frame(payload: &[u8]) -> Bytes {
+        use std::io::Write;
+
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder.write_all(payload).unwrap();
+        crate::adapters::cursor::connect::encode_connect_frame(encoder.finish().unwrap(), FLAG_GZIP)
+    }
+
     fn tool_call_frame(name: &str, args: &[(&str, serde_json::Value)]) -> Bytes {
         let mut mcp_args = field_str(5, name);
         for (key, value) in args {
@@ -1305,16 +1311,9 @@ mod tests {
 
     #[tokio::test]
     async fn event_stream_decodes_gzipped_text() {
-        use std::io::Write;
-
+        // A small compressed frame stays on the inline decode arm.
         let payload = field_ld(1, &field_ld(1, &field_str(1, "compressed")));
-        let mut compressed = Vec::new();
-        let mut encoder =
-            flate2::write::GzEncoder::new(&mut compressed, flate2::Compression::fast());
-        encoder.write_all(&payload).unwrap();
-        encoder.finish().unwrap();
-        let mut frames =
-            crate::adapters::cursor::connect::encode_connect_frame(compressed, FLAG_GZIP).to_vec();
+        let mut frames = gzip_frame(&payload).to_vec();
         frames.extend_from_slice(&success_end_frame());
 
         let events: Vec<_> = turn_from_frames(frames)
@@ -1326,6 +1325,41 @@ mod tests {
         assert!(matches!(
             &events[0],
             Ok(CursorStreamEvent::TextDelta { text }) if text == "compressed"
+        ));
+        assert!(matches!(&events[1], Ok(CursorStreamEvent::End)));
+    }
+
+    #[tokio::test]
+    async fn event_stream_decodes_above_threshold_gzipped_text() {
+        // A threshold-crossing compressed frame uses the spawn_blocking arm.
+        let mut state = 0x4d59_5df4_d0f3_3173u64;
+        let text: String = (0..crate::adapters::cursor::connect::INLINE_GZIP_FRAME_BYTES * 2)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                char::from(b'a' + (state % 26) as u8)
+            })
+            .collect();
+        let payload = field_ld(1, &field_ld(1, &field_str(1, &text)));
+        let frame = gzip_frame(&payload);
+        let compressed_len = u32::from_be_bytes([frame[1], frame[2], frame[3], frame[4]]) as usize;
+        assert!(
+            compressed_len > crate::adapters::cursor::connect::INLINE_GZIP_FRAME_BYTES,
+            "fixture must exercise spawn_blocking"
+        );
+        let mut frames = frame.to_vec();
+        frames.extend_from_slice(&success_end_frame());
+
+        let events: Vec<_> = turn_from_frames(frames)
+            .await
+            .into_event_stream()
+            .collect()
+            .await;
+
+        assert!(matches!(
+            &events[0],
+            Ok(CursorStreamEvent::TextDelta { text: actual }) if actual == &text
         ));
         assert!(matches!(&events[1], Ok(CursorStreamEvent::End)));
     }
