@@ -65,9 +65,11 @@ impl RuntimeState {
 /// error is returned for the caller to log — the gateway keeps running the last
 /// good config rather than going down or running open.
 ///
-/// Fields that cannot be hot-applied (`server.bind`, `[sentry]`) are compared
-/// against the live config and a `warn!` is logged when they change; the new
-/// values are accepted into the swapped config but only take effect on restart.
+/// Fields that cannot be hot-applied (`server.bind`,
+/// `server.max_concurrent_requests`, `[sentry]`, `[otel]`, and enabling or
+/// disabling the optional `[server.*]` route trees) are compared against the
+/// live config and a `warn!` is logged when they change; the new values are
+/// accepted into the swapped config but only take effect on restart.
 pub fn reload(shared: &SharedState, path: Option<&std::path::Path>) -> Result<(), ConfigError> {
     // Load + validate the candidate before touching the live state.
     let new_config = Config::load(path)?;
@@ -100,6 +102,13 @@ fn warn_on_restart_only_changes(previous: &Config, next: &Config) {
             previous = %previous.server.bind,
             next = %next.server.bind,
             "server.bind changed but requires a restart to apply; the listener is already bound"
+        );
+    }
+    if previous.server.max_concurrent_requests != next.server.max_concurrent_requests {
+        tracing::warn!(
+            previous = previous.server.max_concurrent_requests,
+            next = next.server.max_concurrent_requests,
+            "server.max_concurrent_requests changed but requires a restart to apply; the concurrency gate is fixed at boot"
         );
     }
     // Whether the admin route tree is registered is decided once at boot from
@@ -348,12 +357,20 @@ mod tests {
     use std::sync::Arc;
 
     use arc_swap::ArcSwap;
+    use axum::{
+        body::{Body, HttpBody},
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
 
     use super::{
         event_touches_path, reload, sentry_changed, spawn_reload_watchers, RuntimeState,
         SharedState,
     };
-    use crate::config::{Config, SentryConfig};
+    use crate::{
+        config::{Config, SentryConfig},
+        server::build_router,
+    };
 
     /// Unique temp dir per test so concurrent `cargo test` runs never collide.
     fn temp_dir(tag: &str) -> std::path::PathBuf {
@@ -570,6 +587,54 @@ mod tests {
         // ...but the operator was warned it requires a restart to take effect.
         assert!(logs.contains("server.bind changed"));
         assert!(logs.contains("requires a restart"));
+    }
+
+    #[tokio::test]
+    async fn max_concurrent_requests_change_warns_but_running_gate_stays_boot_fixed() {
+        let dir = temp_dir("max-concurrent-requests");
+        let _guard = TempDirGuard(dir.clone());
+        let path = dir.join("shunt.toml");
+
+        std::fs::write(&path, "[server]\nmax_concurrent_requests = 1\n").unwrap();
+        let config = Config::load(Some(&path)).unwrap();
+        let (router, shared, _state) = build_router(config).unwrap();
+
+        let first = router
+            .clone()
+            .oneshot(Request::get("/protocol").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        assert!(
+            !first.body().is_end_stream(),
+            "/protocol must keep its response body alive to hold the boot-time permit"
+        );
+
+        std::fs::write(&path, "[server]\nmax_concurrent_requests = 2\n").unwrap();
+        let logs = capture_logs(|| {
+            reload(&shared, Some(&path)).expect("reload succeeds despite limit change");
+        });
+
+        assert_eq!(
+            shared.load().config.server.max_concurrent_requests,
+            2,
+            "the reloaded config keeps the requested value"
+        );
+        assert!(logs.contains("server.max_concurrent_requests changed"));
+        assert!(logs.contains("requires a restart"));
+
+        let second = router
+            .clone()
+            .oneshot(Request::get("/protocol").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(second.status(), StatusCode::SERVICE_UNAVAILABLE);
+        drop(first);
+        let third = router
+            .oneshot(Request::get("/protocol").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(third.status(), StatusCode::OK);
     }
 
     #[test]

@@ -3,6 +3,8 @@
 //! append-only extension, and peek the first event so a pre-first-token failure
 //! can transparently fall back to HTTP.
 
+use std::borrow::Cow;
+
 use axum::{
     http::{HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
@@ -229,7 +231,9 @@ async fn start_ws_turn(
             .note_codex_quota(ctx.provider, account, headers);
     }
 
-    let mut frame_body = ctx.upstream_body.as_ref().clone();
+    // Non-continuation turns never edit the translated body, so they avoid paying
+    // for a full copy.
+    let mut frame_body = Cow::Borrowed(ctx.upstream_body.as_ref());
     let mut used_continuation = false;
     if allow_continuation {
         // Only a reused connection carries stored continuation state; a fresh
@@ -246,7 +250,8 @@ async fn start_ws_turn(
                         .turn_state
                         .as_deref()
                         .or_else(|| turn.handshake_turn_state());
-                    let delta_items = apply_continuation(&mut frame_body, &decision, turn_state);
+                    let delta_items =
+                        apply_continuation(frame_body.to_mut(), &decision, turn_state);
                     used_continuation = true;
                     tracing::debug!(
                         delta_items,
@@ -274,7 +279,7 @@ async fn start_ws_turn(
         }
     }
 
-    let frame = codex_ws::response_create_frame(frame_body);
+    let frame = codex_ws::response_create_frame(frame_body.as_ref());
     let record = codex_ws::RecordPlan {
         signature: ctx.signature.clone(),
         request: Some(std::sync::Arc::clone(&ctx.upstream_body)),

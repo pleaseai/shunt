@@ -2740,7 +2740,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "shunt-gateway"
-version = "0.26.1"
+version = "0.28.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -2754,6 +2754,8 @@ dependencies = [
  "futures-util",
  "hex",
  "hmac",
+ "http-body",
+ "http-body-util",
  "httpdate",
  "notify",
  "opentelemetry",

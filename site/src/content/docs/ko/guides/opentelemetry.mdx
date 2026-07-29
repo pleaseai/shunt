@@ -56,6 +56,7 @@ authorization = "Bearer <token>"
 | `shunt.codex_client_events` | 카운터 | `event` | 정제된 이벤트 이름별 Codex CLI 분석 이벤트. payload와 속성은 폐기됨. |
 | `shunt.upstream_retries` | 카운터 | `provider`, `reason` | 제한된 일시적 업스트림 재시도. |
 | `shunt.failover` | 카운터 | `provider`, `state` | 순서 있는 업스트림 페일오버 전환: `attempted`, `advanced`, `exhausted`. |
+| `shunt.requests_shed` | 카운터 | — | `max_concurrent_requests` 상한에서 거부된 인바운드 요청. 거부 자체는 `debug!`로만 로깅되므로, 게이트웨이 포화 상태를 드러내는 것은 이 카운터입니다. |
 | `shunt.pool.quota_utilization` | 게이지 | `provider`, `window` | `5h`, `7d`, `7d_oi`별 활성 상태이고 관측됐으며 만료되지 않은 quota 값 중 최소 사용률. |
 | `shunt.pool.rotations` | 카운터 | `provider`, `reason` | 계정에서 이동한 횟수와 pool이 소진된 요청 수. |
 

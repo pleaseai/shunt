@@ -56,6 +56,7 @@ authorization = "Bearer <token>"
 | `shunt.codex_client_events` | カウンター | `event` | サニタイズ済みイベント名ごとの Codex CLI analytics イベント。payload とプロパティは破棄される。 |
 | `shunt.upstream_retries` | カウンター | `provider`, `reason` | 回数制限付きの一時的な upstream retry。 |
 | `shunt.failover` | カウンター | `provider`, `state` | 順序付きアップストリームのフェイルオーバー遷移: `attempted`, `advanced`, `exhausted`。 |
+| `shunt.requests_shed` | カウンター | — | `max_concurrent_requests` の上限で拒否されたインバウンドリクエスト。拒否自体は `debug!` でのみログ出力されるため、ゲートウェイの飽和を可視化するのはこのカウンターです。 |
 | `shunt.pool.quota_utilization` | ゲージ | `provider`, `window` | `5h`, `7d`, `7d_oi` ごとに、有効で観測済みかつ期限切れでない quota 値の最小 utilization。 |
 | `shunt.pool.rotations` | カウンター | `provider`, `reason` | アカウントからの切り替えと pool exhaustion の回数。 |
 

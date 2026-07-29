@@ -6,6 +6,8 @@
 [server]
 bind = "127.0.0.1:3001"        # address shunt listens on (ANTHROPIC_BASE_URL points here)
 default_provider = "anthropic" # provider for any model with no route -> pass-through to Anthropic
+# max_concurrent_requests = 1024 # (default) inbound requests held through response-body
+                                 # completion; excess is shed with 503; 0 disables
 # sse_keepalive_seconds = 30   # (default) inject an SSE `ping` after this much upstream
                                # silence so middlebox idle timers (Cloudflare 100s -> 524)
                                # never kill a quiet stream; 0 disables (docs/running.md §5.10)

@@ -29,6 +29,18 @@ use serde_json::Value;
 
 use crate::{error::ShuntError, server::AppState};
 
+/// Inbound analytics sink routes this handler serves, registered by
+/// [`crate::server::build_router`] when `[server.codex_endpoint]` is set.
+///
+/// Single source of truth for the path set, like [`crate::codex_endpoint::PATHS`]:
+/// the router registers exactly these, and `concurrency::is_codex_path`
+/// classifies against them so a gateway-owned error uses the OpenAI Responses
+/// envelope these OpenAI-protocol clients parse (AGENTS.md).
+pub(crate) const PATHS: [&str; 2] = [
+    "/backend-api/codex/analytics-events/events",
+    "/codex/analytics-events/events",
+];
+
 // Analytics batches run to a few tens of KiB; cap well above that but far below
 // a size that could exhaust memory if a client streams a large body (OWASP
 // A05 — resource limits). An over-cap body degrades to a `read_error` count and

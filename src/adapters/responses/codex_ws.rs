@@ -40,6 +40,7 @@ use std::time::{Duration, Instant};
 use axum::http::{HeaderMap, StatusCode};
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
+use serde::ser::SerializeMap;
 use serde_json::Value;
 use tokio::sync::{mpsc, Mutex as AsyncMutex, Notify, OwnedMutexGuard};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -181,8 +182,12 @@ struct Connection {
     /// Turn dispatch channel to the reader (bounded at 1: `turn_lock` guarantees
     /// at most one outstanding turn).
     commands: mpsc::Sender<StartTurn>,
-    /// Continuation captured from this connection's last completed turn.
-    continuation: Mutex<Option<StoredContinuation>>,
+    /// Continuation captured from this connection's last completed turn. Behind an
+    /// [`Arc`] because its `transcript` grows with the conversation and every
+    /// continuation-enabled turn on a reused connection reads it: sharing makes
+    /// retrieval a refcount bump instead of a deep clone of the whole history.
+    /// Never mutated in place — a completed turn replaces the whole value.
+    continuation: Mutex<Option<Arc<StoredContinuation>>>,
     /// Last time a turn used this connection; drives idle TTL eviction.
     last_used_at: Mutex<Instant>,
     /// The session key this connection is pooled under, if any.
@@ -374,14 +379,39 @@ pub fn to_websocket_url(url: &str) -> Result<String, CodexWsError> {
     }
 }
 
+/// A borrow-based `response.create` envelope around a translated Responses body.
+pub struct ResponseCreateFrame<'a> {
+    body: &'a Value,
+}
+
 /// Build the `response.create` frame from a translated Responses request body.
 /// The websocket envelope is the same request JSON tagged with
-/// `"type": "response.create"` (see `ResponsesWsRequest` in openai/codex).
-pub fn response_create_frame(mut body: Value) -> Value {
-    if let Some(object) = body.as_object_mut() {
-        object.insert("type".to_string(), Value::String("response.create".into()));
+/// `"type": "response.create"` (see `ResponsesWsRequest` in openai/codex). The
+/// envelope writes the tag first instead of preserving the old map's sorted key
+/// order; JSON object key order is not significant.
+pub fn response_create_frame(body: &Value) -> ResponseCreateFrame<'_> {
+    ResponseCreateFrame { body }
+}
+
+impl serde::Serialize for ResponseCreateFrame<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let Some(object) = self.body.as_object() else {
+            return self.body.serialize(serializer);
+        };
+        let mut map = serializer.serialize_map(Some(
+            object.len() + usize::from(!object.contains_key("type")),
+        ))?;
+        map.serialize_entry("type", "response.create")?;
+        for (key, value) in object {
+            if key != "type" {
+                map.serialize_entry(key, value)?;
+            }
+        }
+        map.end()
     }
-    body
 }
 
 /// What to record as continuation state after a turn completes: the request's
@@ -432,8 +462,9 @@ pub struct Turn {
 impl Turn {
     /// The continuation state captured on this connection's previous turn.
     /// `None` for a fresh connection — `previous_response_id` is only valid on the
-    /// connection that produced it.
-    pub fn stored_continuation(&self) -> Option<StoredContinuation> {
+    /// connection that produced it. Shared, not cloned: the caller only reads the
+    /// value, never mutates it, so the transcript stays behind a refcount.
+    pub fn stored_continuation(&self) -> Option<Arc<StoredContinuation>> {
         if !self.reused {
             return None;
         }
@@ -466,7 +497,7 @@ impl Turn {
     /// idle keepalive duty (or evicts it on any failure).
     pub async fn stream(
         mut self,
-        frame: &Value,
+        frame: &ResponseCreateFrame<'_>,
         record: RecordPlan,
     ) -> Result<CodexWsEvents, CodexWsError> {
         let payload = serde_json::to_string(frame).map_err(|error| {
@@ -962,7 +993,7 @@ async fn run_turn(
                                 turn_state: turn_state
                                     .or_else(|| conn.handshake_turn_state.clone()),
                             };
-                            *conn.continuation.lock().unwrap() = Some(stored);
+                            *conn.continuation.lock().unwrap() = Some(Arc::new(stored));
                         }
                         *conn.last_used_at.lock().unwrap() = Instant::now();
                         if !*pooled {
@@ -1141,7 +1172,7 @@ mod tests {
     async fn open_simple(
         url: &str,
         headers: HeaderMap,
-        frame: &Value,
+        frame: &ResponseCreateFrame<'_>,
         pool_key: Option<&str>,
     ) -> Result<CodexWsEvents, CodexWsError> {
         let turn = begin(url, headers, pool_key).await?;
@@ -1164,15 +1195,39 @@ mod tests {
 
     #[test]
     fn frame_carries_response_create_type() {
-        let frame = response_create_frame(serde_json::json!({
+        let body = serde_json::json!({
             "model": "gpt-5.2-codex",
             "input": [],
             "stream": true
-        }));
-        assert_eq!(frame["type"], "response.create");
+        });
+        let frame = response_create_frame(&body);
+        let serialized = serde_json::to_value(&frame).unwrap();
+        assert_eq!(serialized["type"], "response.create");
         // Existing fields are preserved alongside the tag.
-        assert_eq!(frame["model"], "gpt-5.2-codex");
-        assert_eq!(frame["stream"], true);
+        assert_eq!(serialized["model"], "gpt-5.2-codex");
+        assert_eq!(serialized["stream"], true);
+    }
+
+    #[test]
+    fn frame_replaces_pre_existing_type_without_a_duplicate_key() {
+        let body = serde_json::json!({"type": "request.body", "model": "m"});
+        let frame = response_create_frame(&body);
+        let serialized = serde_json::to_string(&frame).unwrap();
+        let value: Value = serde_json::from_str(&serialized).unwrap();
+
+        assert_eq!(value["type"], "response.create");
+        // Match the key form (`"type":`), not a bare `"type"`: a body whose *value*
+        // is the string "type" would otherwise inflate the count and fail here for
+        // a reason unrelated to the duplicate-key regression this guards.
+        assert_eq!(serialized.matches(r#""type":"#).count(), 1);
+    }
+
+    #[test]
+    fn frame_passes_non_object_body_through_unchanged() {
+        let body = serde_json::json!(["input", 1, true]);
+        let frame = response_create_frame(&body);
+
+        assert_eq!(serde_json::to_value(&frame).unwrap(), body);
     }
 
     #[test]
@@ -1220,11 +1275,12 @@ mod tests {
             ws.send(Message::Close(None)).await.unwrap();
         });
 
-        let frame = response_create_frame(serde_json::json!({
+        let body = serde_json::json!({
             "model": "gpt-5.2-codex",
             "input": [],
             "stream": true,
-        }));
+        });
+        let frame = response_create_frame(&body);
         let mut events = open_simple(
             &format!("ws://{addr}/codex/responses"),
             HeaderMap::new(),
@@ -1283,7 +1339,8 @@ mod tests {
                 .unwrap();
         });
 
-        let frame = response_create_frame(serde_json::json!({"model": "m", "input": []}));
+        let body = serde_json::json!({"model": "m", "input": []});
+        let frame = response_create_frame(&body);
         let error = open_simple(
             &format!("ws://{addr}/codex/responses"),
             HeaderMap::new(),
@@ -1357,7 +1414,8 @@ mod tests {
         });
 
         let url = format!("ws://{addr}/codex/responses");
-        let frame = response_create_frame(serde_json::json!({"model": "m", "input": []}));
+        let body = serde_json::json!({"model": "m", "input": []});
+        let frame = response_create_frame(&body);
 
         // Turn 1: fresh connection exposes the successful handshake headers,
         // then drains to completion and enters the pool.
@@ -1500,7 +1558,8 @@ mod tests {
         });
 
         let url = format!("ws://{addr}/codex/responses");
-        let frame = response_create_frame(serde_json::json!({"model": "m", "input": []}));
+        let body = serde_json::json!({"model": "m", "input": []});
+        let frame = response_create_frame(&body);
 
         // Turn 1 establishes and pools connection 1.
         let mut turn1 = open_simple(&url, HeaderMap::new(), &frame, Some("session-busy"))
@@ -1668,7 +1727,8 @@ mod tests {
         });
 
         let url = format!("ws://{addr}/codex/responses");
-        let frame = response_create_frame(serde_json::json!({"model": "m", "input": []}));
+        let body = serde_json::json!({"model": "m", "input": []});
+        let frame = response_create_frame(&body);
 
         let mut turn1 = open_simple(
             &url,
@@ -1851,7 +1911,8 @@ mod tests {
             ws.send(Message::Close(None)).await.unwrap();
         });
 
-        let frame = response_create_frame(serde_json::json!({"model": "m", "input": []}));
+        let body = serde_json::json!({"model": "m", "input": []});
+        let frame = response_create_frame(&body);
         let mut events = open_simple(
             &format!("ws://{addr}/codex/responses"),
             HeaderMap::new(),
@@ -1919,7 +1980,8 @@ mod tests {
             let _ = hold_server.await;
         });
 
-        let frame = response_create_frame(serde_json::json!({"model": "m", "input": []}));
+        let body = serde_json::json!({"model": "m", "input": []});
+        let frame = response_create_frame(&body);
         let mut events = open_simple(
             &format!("ws://{addr}/codex/responses"),
             HeaderMap::new(),
@@ -2010,7 +2072,8 @@ mod tests {
         });
 
         let url = format!("ws://{addr}/codex/responses");
-        let frame = response_create_frame(serde_json::json!({"model": "m", "input": []}));
+        let body = serde_json::json!({"model": "m", "input": []});
+        let frame = response_create_frame(&body);
         let user_hi = serde_json::json!({
             "type": "message", "role": "user",
             "content": [{"type": "input_text", "text": "hi"}]
@@ -2097,7 +2160,8 @@ mod tests {
         });
 
         let url = format!("ws://{addr}/codex/responses");
-        let frame = response_create_frame(serde_json::json!({"model": "m", "input": []}));
+        let body = serde_json::json!({"model": "m", "input": []});
+        let frame = response_create_frame(&body);
 
         // Turn 1: complete + pool.
         let mut turn1 = open_simple(&url, HeaderMap::new(), &frame, Some("sess-miss"))
@@ -2167,7 +2231,8 @@ mod tests {
         });
 
         let url = format!("ws://{addr}/codex/responses");
-        let frame = response_create_frame(serde_json::json!({"model": "m", "input": []}));
+        let body = serde_json::json!({"model": "m", "input": []});
+        let frame = response_create_frame(&body);
         let mut turn1 = open_simple(&url, HeaderMap::new(), &frame, Some("idle-ka"))
             .await
             .expect("first turn connects");
@@ -2239,7 +2304,8 @@ mod tests {
         });
 
         let url = format!("ws://{addr}/codex/responses");
-        let frame = response_create_frame(serde_json::json!({"model": "m", "input": []}));
+        let body = serde_json::json!({"model": "m", "input": []});
+        let frame = response_create_frame(&body);
 
         // Turn 1 completes (pooling its connection), then the backend closes it.
         let mut turn1 = open_simple(&url, HeaderMap::new(), &frame, Some("stale-1"))
@@ -2315,7 +2381,8 @@ mod tests {
         });
 
         let url = format!("ws://{addr}/codex/responses");
-        let frame = response_create_frame(serde_json::json!({"model": "m", "input": []}));
+        let body = serde_json::json!({"model": "m", "input": []});
+        let frame = response_create_frame(&body);
         let events = open_simple(&url, HeaderMap::new(), &frame, None)
             .await
             .expect("websocket should connect");
@@ -2384,7 +2451,8 @@ mod tests {
         });
 
         let url = format!("ws://{addr}/codex/responses");
-        let frame = response_create_frame(serde_json::json!({"model": "m", "input": []}));
+        let body = serde_json::json!({"model": "m", "input": []});
+        let frame = response_create_frame(&body);
         // Acquire the stream but deliberately delay consuming it so events queue.
         let mut events = open_simple(&url, HeaderMap::new(), &frame, None)
             .await
@@ -2453,7 +2521,8 @@ mod tests {
         });
 
         let url = format!("ws://{addr}/codex/responses");
-        let frame = response_create_frame(serde_json::json!({"model": "m", "input": []}));
+        let body = serde_json::json!({"model": "m", "input": []});
+        let frame = response_create_frame(&body);
         let mut events = open_simple(&url, HeaderMap::new(), &frame, None)
             .await
             .expect("websocket should connect");
@@ -2656,7 +2725,8 @@ mod tests {
         });
 
         let url = format!("ws://{addr}/codex/responses");
-        let frame = response_create_frame(serde_json::json!({"model": "m", "input": []}));
+        let body = serde_json::json!({"model": "m", "input": []});
+        let frame = response_create_frame(&body);
         let mut events = open_simple(&url, HeaderMap::new(), &frame, None)
             .await
             .expect("websocket should connect");
@@ -2698,7 +2768,8 @@ mod tests {
         });
 
         let url = format!("ws://{addr}/codex/responses");
-        let frame = response_create_frame(serde_json::json!({"model": "m", "input": []}));
+        let body = serde_json::json!({"model": "m", "input": []});
+        let frame = response_create_frame(&body);
         let mut events = open_simple(&url, HeaderMap::new(), &frame, None)
             .await
             .expect("websocket should connect");

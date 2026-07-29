@@ -22,5 +22,6 @@ description: 常见的 shunt 错误及其修复方法。
 | Cloudflare 后流断掉(524) | 把 [`sse_keepalive_seconds`](/zh-cn/guides/shared-gateway/#sse-keepalive-ping) 保持在默认值(30)而非 `0`。 |
 | 共享网关上映射模型返回 401 | 客户端 token 缺失/无效 —— 设置 `ANTHROPIC_AUTH_TOKEN=<token>`(以 `Authorization: Bearer` 被接受,仅池化网关)或 `ANTHROPIC_CUSTOM_HEADERS="x-shunt-token: <token>"`(混有透传模型时必需);见 [共享网关](/zh-cn/guides/shared-gateway/#入站客户端-token)。 |
 | Anthropic 适配器模型返回 429 | 检查网关日志中的 `rate_limit_kind`。`quota`(带有 `retry-after` / `anthropic-ratelimit-*` 头部)是真实的速率限制 —— 请退避或减少并行负载。`client-shape-rejection`(OAuth 请求、两种头部都没有、body 只有 `"Error"`)表示 api.anthropic.com 拒绝了一个不像 Claude Code 的订阅 OAuth 请求 —— 非 Claude Code 客户端必须使用 API 密钥而不是 OAuth token;此类错误集中出现时,还可能使 Claude Code 的 auto 模式分类器失效(“model temporarily unavailable”)。`no-ratelimit-headers`(非 OAuth 凭据)是缺少速率限制元数据的提供方 429 —— 按 `quota` 处理。 |
+| 共享网关上返回 `503 overloaded_error` | 网关已达入站并发上限,直接拒绝了该请求而不是排队(body 消息为 `too many requests are already in flight`,并带 `Retry-After: 1`)。这是 shunt 自己的准入控制,不是上游 503 —— 上游 503 会带着提供方自己的消息原样中继。请在指定延迟后重试、减少并行负载,或调高 [`max_concurrent_requests`](/zh-cn/guides/shared-gateway/#入站并发上限) 并重启(该上限在启动时固定)。 |
 
 完整的网关故障排查表见 [将 Claude Code 连接到 LLM 网关](https://code.claude.com/docs/en/llm-gateway-connect#troubleshoot-gateway-errors)。

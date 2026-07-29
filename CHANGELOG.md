@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.28.0](https://github.com/pleaseai/shunt/compare/v0.27.0...v0.28.0) (2026-07-29)
+
+
+### ⚠ BREAKING CHANGES
+
+* **codex-ws:** share stored continuation via Arc instead of deep-cloning the transcript per turn ([#270](https://github.com/pleaseai/shunt/issues/270))
+
+### Bug Fixes
+
+* **server:** bound inbound request concurrency ([#271](https://github.com/pleaseai/shunt/issues/271)) ([916e238](https://github.com/pleaseai/shunt/commit/916e2382c4f127293afcf31a074d74249b4eca6c))
+
+
+### Performance Improvements
+
+* **codex-ws:** borrow the translated body when building the ws frame ([#273](https://github.com/pleaseai/shunt/issues/273)) ([fdc22cd](https://github.com/pleaseai/shunt/commit/fdc22cdf6fab7979b3048728463e671394e49331))
+* **codex-ws:** share stored continuation via Arc instead of deep-cloning the transcript per turn ([#270](https://github.com/pleaseai/shunt/issues/270)) ([b84a3bd](https://github.com/pleaseai/shunt/commit/b84a3bde258e9501c2534e7f4d02a7bc0311702f))
+
+## [0.27.0](https://github.com/pleaseai/shunt/compare/v0.26.1...v0.27.0) (2026-07-29)
+
+
+### ⚠ BREAKING CHANGES
+
+* **proxy:** `adapters::Adapter` is now `pub(crate)`. `Adapter::forward` takes the crate-private `RequestBody` instead of `Vec<u8>`, which forces the trait itself to be crate-private. External crates can no longer name or implement it. Practical impact is nil — adapter dispatch is static and in-crate, with no `dyn Adapter` and no public registration hook, so an external implementation could never have been invoked.
+
+### Performance Improvements
+
+* **proxy:** parse the inbound request body once across the hot path ([#261](https://github.com/pleaseai/shunt/issues/261)) ([ca37b70](https://github.com/pleaseai/shunt/commit/ca37b704aa8cfb511880853312f65b8161ee2c75))
+
 ## [0.26.1](https://github.com/pleaseai/shunt/compare/v0.26.0...v0.26.1) (2026-07-29)
 
 

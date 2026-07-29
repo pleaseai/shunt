@@ -74,6 +74,12 @@ shunt add upstream https://provider.example/docs --print | claude
 
 The command is offline and read-only: it prints guidance but never edits files, installs anything, or accesses the network. Use `shunt add provider <absolute-url>` when contributing support for a genuinely new provider protocol.
 
+A shared deployment bounds in-flight inbound requests with `[server] max_concurrent_requests`
+(default `1024`). Excess requests are shed immediately with `503` and `Retry-After: 1`, while
+streaming requests keep their slot until the response body ends or the client disconnects. Set the
+value to `0` to disable the limit; `/` and `/health` always remain available for liveness probes.
+See the [configuration reference](https://shunt-docs.pages.dev/reference/configuration/#server).
+
 ## Providers
 
 A provider is either an ordered `[[upstreams]]` entry or a legacy `[providers.<name>]` TOML table (under YAML, an entry in the corresponding sequence or mapping). Two adapter kinds cover most upstreams: `kind = "anthropic"` (the upstream speaks Anthropic Messages; passed through, optionally with a different key) and `kind = "responses"` (the upstream speaks the OpenAI Responses API; shunt translates Anthropic Messages ⇄ Responses, streaming included). A third native kind, `kind = "cursor"`, bridges Cursor's ConnectRPC/protobuf AgentService so a Cursor subscription is reachable through the same Anthropic-Messages interface.

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use axum::{
+    middleware,
     routing::{get, post},
     Json, Router,
 };
@@ -11,6 +12,7 @@ use crate::{
     admin::{self, AdminAuth, AdminStores},
     auth::inbound::InboundAuth,
     codex_analytics, codex_endpoint,
+    concurrency::{limit_requests, ConcurrencyLimit},
     config::{Config, ConfigError},
     discovery,
     gateway::{self, GatewayAuth, GatewayStores},
@@ -125,6 +127,9 @@ fn boot_is_loopback(config: &Config) -> bool {
 /// that hot-swap the same store and background tasks (the usage poller) that
 /// share the same [`AccountPool`] the request handlers use.
 pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), ConfigError> {
+    // The inbound concurrency gate is fixed at boot because its semaphore is
+    // installed as a router layer. Reloaded values take effect after restart.
+    let max_concurrent_requests = config.server.max_concurrent_requests;
     // Whether the admin surface exists is decided once here, from the initial
     // config: a reload cannot add or drop routes (it only re-resolves tokens).
     let admin_enabled = config.server.admin.is_some();
@@ -160,14 +165,17 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
         boot_is_loopback,
     );
 
-    // `/` and `/health` stay unauthenticated even when `[server.auth]` is
-    // configured (healthcheck tools rarely carry tokens); they must never
-    // expose config, credentials, or upstream details — only version, status,
-    // and the already-public endpoint list. Discovery handlers enforce their
-    // own endpoint-specific auth policy against the same refreshed state.
-    let mut router = Router::new()
+    // `/` and `/health` stay unauthenticated and outside the inbound concurrency
+    // gate: healthcheck tools rarely carry tokens, and shedding liveness probes
+    // under load could make a load balancer evict an instance that is still
+    // serving work. They expose no config, credentials, or upstream details —
+    // only version, status, and the already-public endpoint list. Discovery
+    // handlers enforce their own endpoint-specific auth policy against the same
+    // refreshed state.
+    let liveness_router = Router::new()
         .route("/", get(root_index))
-        .route("/health", get(health))
+        .route("/health", get(health));
+    let mut router = Router::new()
         .route("/protocol", get(protocol::get))
         .route("/v1/models", get(discovery::get))
         .route("/routes", get(routes::get))
@@ -197,18 +205,15 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     // discarded locally after recording sanitized counters. Both are gated by
     // `[server.auth]` like the other injected-credential routes.
     if codex_endpoint_enabled {
-        router = router
-            .route("/backend-api/codex/responses", post(codex_endpoint::post))
-            .route("/responses", post(codex_endpoint::post))
-            .route("/v1/responses", post(codex_endpoint::post))
-            .route(
-                "/backend-api/codex/analytics-events/events",
-                post(codex_analytics::post),
-            )
-            .route(
-                "/codex/analytics-events/events",
-                post(codex_analytics::post),
-            );
+        // Register from the same constants `concurrency::is_codex_path`
+        // classifies against, so a route cannot be added here without also
+        // getting the OpenAI-shaped gateway errors its clients expect.
+        for path in codex_endpoint::PATHS {
+            router = router.route(path, post(codex_endpoint::post));
+        }
+        for path in codex_analytics::PATHS {
+            router = router.route(path, post(codex_analytics::post));
+        }
     }
 
     // Opt-in client-facing usage endpoint (`GET /usage`): registered only when
@@ -228,6 +233,17 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     if oauth_usage_enabled {
         router = router.route("/api/oauth/usage", get(oauth_usage::get));
     }
+
+    // Shed above the boot-time limit instead of queueing, and keep each permit
+    // attached to the response body so a live SSE stream remains in flight. A
+    // zero value preserves the previous unlimited behavior without a layer.
+    if max_concurrent_requests > 0 {
+        router = router.layer(middleware::from_fn_with_state(
+            ConcurrencyLimit::new(max_concurrent_requests),
+            limit_requests,
+        ));
+    }
+    router = router.merge(liveness_router);
 
     // Clone the state into the router; the returned clone shares the same
     // `AccountPool`/`SharedState` Arcs, so a background poller populating quota
@@ -263,7 +279,7 @@ async fn health() -> Json<HealthResponse> {
 #[cfg(test)]
 mod tests {
     use axum::{
-        body::Body,
+        body::{Body, HttpBody},
         http::{Request, StatusCode},
     };
     use tower::ServiceExt;
@@ -327,6 +343,77 @@ mod tests {
         let response = router.oneshot(request).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn zero_max_concurrent_requests_keeps_requests_unlimited() {
+        let mut config = Config::default();
+        config.server.max_concurrent_requests = 0;
+        let (router, _shared, _state) = build_router(config).unwrap();
+
+        let first = router
+            .clone()
+            .oneshot(Request::get("/protocol").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        assert!(
+            !first.body().is_end_stream(),
+            "/protocol must keep its response body alive for the overlap assertion"
+        );
+        let mut responses = vec![first];
+        // Exceed the documented default so this cannot pass if `0` is silently
+        // replaced with that finite fallback instead of omitting the layer.
+        for _ in 0..=1024 {
+            let response = router
+                .clone()
+                .oneshot(Request::get("/protocol").body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert!(!response.body().is_end_stream());
+            responses.push(response);
+        }
+        drop(responses);
+    }
+
+    #[tokio::test]
+    async fn health_bypasses_saturated_concurrency_limit() {
+        let mut config = Config::default();
+        config.server.max_concurrent_requests = 1;
+        let (router, _shared, _state) = build_router(config).unwrap();
+
+        let first = Request::builder()
+            .uri("/protocol")
+            .body(Body::empty())
+            .unwrap();
+        let first = router.clone().oneshot(first).await.unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        assert!(
+            !first.body().is_end_stream(),
+            "/protocol must keep its response body alive to saturate the limiter"
+        );
+
+        let limited = Request::builder()
+            .uri("/protocol")
+            .body(Body::empty())
+            .unwrap();
+        let response = router.clone().oneshot(limited).await.unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let health = Request::builder()
+            .uri("/health")
+            .body(Body::empty())
+            .unwrap();
+        let response = router.clone().oneshot(health).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let root = Request::builder().uri("/").body(Body::empty()).unwrap();
+        let response = router.oneshot(root).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        // `first` still owns the only permit; keeping it alive to here is what
+        // makes the assertions above run against a saturated limiter.
+        drop(first);
     }
 
     #[tokio::test]
