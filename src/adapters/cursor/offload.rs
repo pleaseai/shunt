@@ -129,16 +129,22 @@ mod tests {
         assert!(slots > 0);
         MAX_IN_FLIGHT.store(0, Ordering::SeqCst);
 
-        let barrier = std::sync::Arc::new(std::sync::Barrier::new(slots + 1));
+        // Gate each admitted closure on its own channel rather than a shared
+        // `Barrier`. If an assertion below panics, unwinding drops the senders,
+        // every `recv()` returns `Err`, and the closures exit. A barrier would
+        // instead park these unabortable tasks forever, turning a legible test
+        // failure into a runtime-shutdown hang.
         let (entered_tx, mut entered_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut release_txs = Vec::with_capacity(slots);
         let tasks: Vec<_> = (0..slots)
             .map(|_| {
-                let barrier = barrier.clone();
+                let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+                release_txs.push(release_tx);
                 let entered_tx = entered_tx.clone();
                 tokio::spawn(spawn_bounded_request_prep(move || {
                     let _in_flight = InFlight::enter();
                     entered_tx.send(()).expect("test should receive entry");
-                    barrier.wait();
+                    let _ = release_rx.recv();
                 }))
             })
             .collect();
@@ -171,7 +177,7 @@ mod tests {
             "queued task must not enter before a permit returns"
         );
 
-        barrier.wait();
+        drop(release_txs);
         for task in tasks {
             task.await
                 .expect("caller task should complete")
@@ -179,6 +185,86 @@ mod tests {
         }
         extra.await.expect("queued task should complete");
         assert_eq!(extra_entered_rx.recv().await, Some(()));
+    }
+
+    #[tokio::test]
+    async fn gzip_and_request_prep_admit_independently() {
+        let _observer = offload_observer();
+        let gzip = gzip_slots();
+        let request_prep = request_prep_slots();
+        let gzip_capacity = gzip.available_permits();
+        let request_prep_capacity = request_prep.available_permits();
+        assert!(gzip_capacity > 0);
+        assert!(request_prep_capacity > 0);
+        let timeout_after = std::time::Duration::from_secs(5);
+
+        let held_request_prep = tokio::time::timeout(
+            timeout_after,
+            request_prep.acquire_many(request_prep_capacity as u32),
+        )
+        .await
+        .expect("request-preparation permits should be available")
+        .expect("request-preparation semaphore should remain open");
+        assert_eq!(request_prep.available_permits(), 0);
+
+        // A channel gates the unabortable blocking closure without risking a
+        // runtime-shutdown hang if an assertion panics and drops the sender.
+        let (gzip_entered_tx, gzip_entered_rx) = tokio::sync::oneshot::channel::<()>();
+        let (gzip_release_tx, gzip_release_rx) = std::sync::mpsc::channel::<()>();
+        let gzip_task = tokio::spawn(spawn_bounded_gzip(move || {
+            let _ = gzip_entered_tx.send(());
+            let _ = gzip_release_rx.recv();
+        }));
+        tokio::time::timeout(timeout_after, gzip_entered_rx)
+            .await
+            .expect("gzip work should enter while request preparation is saturated")
+            .expect("gzip entry sender should stay open");
+        assert_eq!(request_prep.available_permits(), 0);
+        assert_eq!(gzip.available_permits(), gzip_capacity - 1);
+        gzip_release_tx
+            .send(())
+            .expect("gzip closure should still be waiting");
+        tokio::time::timeout(timeout_after, gzip_task)
+            .await
+            .expect("gzip caller should complete after release")
+            .expect("gzip caller task should complete")
+            .expect("gzip bounded task should complete");
+        drop(held_request_prep);
+        assert_eq!(request_prep.available_permits(), request_prep_capacity);
+        assert_eq!(gzip.available_permits(), gzip_capacity);
+
+        let held_gzip =
+            tokio::time::timeout(timeout_after, gzip.acquire_many(gzip_capacity as u32))
+                .await
+                .expect("gzip permits should be available")
+                .expect("gzip semaphore should remain open");
+        assert_eq!(gzip.available_permits(), 0);
+
+        let (request_prep_entered_tx, request_prep_entered_rx) =
+            tokio::sync::oneshot::channel::<()>();
+        let (request_prep_release_tx, request_prep_release_rx) = std::sync::mpsc::channel::<()>();
+        let request_prep_task = tokio::spawn(spawn_bounded_request_prep(move || {
+            let _ = request_prep_entered_tx.send(());
+            let _ = request_prep_release_rx.recv();
+        }));
+        tokio::time::timeout(timeout_after, request_prep_entered_rx)
+            .await
+            .expect("request-preparation work should enter while gzip is saturated")
+            .expect("request-preparation entry sender should stay open");
+        assert_eq!(gzip.available_permits(), 0);
+        assert_eq!(request_prep.available_permits(), request_prep_capacity - 1);
+        request_prep_release_tx
+            .send(())
+            .expect("request-preparation closure should still be waiting");
+        tokio::time::timeout(timeout_after, request_prep_task)
+            .await
+            .expect("request-preparation caller should complete after release")
+            .expect("request-preparation caller task should complete")
+            .expect("request-preparation bounded task should complete");
+        drop(held_gzip);
+
+        assert_eq!(gzip.available_permits(), gzip_capacity);
+        assert_eq!(request_prep.available_permits(), request_prep_capacity);
     }
 
     #[tokio::test]

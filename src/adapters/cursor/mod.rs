@@ -780,6 +780,12 @@ mod tests {
         }
     }
 
+    fn reset_request_prep_path() {
+        *LAST_REQUEST_PREP_PATH
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = None;
+    }
+
     fn request_prep_path() -> RequestPrepPath {
         LAST_REQUEST_PREP_PATH
             .lock()
@@ -805,6 +811,7 @@ mod tests {
         ] {
             let selected = selected_image(decoded_bytes);
             let expected = decode_selected_images(vec![selected.clone()]);
+            reset_request_prep_path();
             let actual = decode_selected_images_async(vec![selected]).await.unwrap();
 
             assert_eq!(request_prep_path(), expected_path);
@@ -828,6 +835,7 @@ mod tests {
             selected_image(under_each),
             selected_image(under_each),
         ];
+        reset_request_prep_path();
         let decoded = decode_selected_images_async(under).await.unwrap();
         assert_eq!(decoded.len(), 3);
         assert_eq!(request_prep_path(), RequestPrepPath::ImageInline);
@@ -838,6 +846,7 @@ mod tests {
             selected_image(over_each),
             selected_image(over_each),
         ];
+        reset_request_prep_path();
         let decoded = decode_selected_images_async(over).await.unwrap();
         assert_eq!(decoded.len(), 3);
         assert_eq!(request_prep_path(), RequestPrepPath::ImageOffloaded);
@@ -857,6 +866,7 @@ mod tests {
             tools: Vec::new(),
         };
 
+        reset_request_prep_path();
         let frames = build_run_frames_async(params).await.unwrap();
 
         assert_eq!(request_prep_path(), RequestPrepPath::FramingOffloaded);
