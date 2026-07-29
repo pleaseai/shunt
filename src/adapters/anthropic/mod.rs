@@ -15,6 +15,7 @@ use crate::{
     config::{ApiKeyHeader, AuthMode},
     error::UpstreamError,
     headers, keepalive,
+    request::RequestBody,
     routing::Route,
     server::AppState,
 };
@@ -30,7 +31,7 @@ impl Adapter for AnthropicAdapter {
         route: Route,
         uri: &'a Uri,
         headers: &'a HeaderMap,
-        body: Vec<u8>,
+        body: RequestBody,
     ) -> AdapterFuture<'a> {
         Box::pin(async move { forward(state, route, uri, headers, body).await })
     }
@@ -41,7 +42,7 @@ async fn forward(
     route: Route,
     uri: &Uri,
     headers: &HeaderMap,
-    body: Vec<u8>,
+    mut body: RequestBody,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let provider = state
         .config
@@ -54,7 +55,8 @@ async fn forward(
     let credential = resolve_credential(&state.config, &route, &state.http_client).await?;
     let request_headers = outbound_headers(headers, &credential);
     let oauth_client = bearer_is_subscription_oauth(&request_headers);
-    let body = normalize_upstream_model(body, &route.upstream_model);
+    normalize_upstream_model_request(&mut body, &route.upstream_model);
+    let body = body.into_raw();
     // Bounded transient retry (issue #48) for this single-credential path. Kept
     // off `count_tokens`, which passes through here for Anthropic-kind providers
     // — a token count is cheap for the client to re-issue and never worth a
@@ -104,7 +106,7 @@ async fn forward_claude_oauth(
     route: Route,
     uri: &Uri,
     headers: &HeaderMap,
-    body: Vec<u8>,
+    mut body: RequestBody,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let provider = state
         .config
@@ -154,7 +156,8 @@ async fn forward_claude_oauth(
         state.config.server.pool.as_ref(),
     );
     let url = upstream_url(&state, &route, uri);
-    let base_body = normalize_upstream_model(body, &route.upstream_model);
+    normalize_upstream_model_request(&mut body, &route.upstream_model);
+    let base_body = body;
     let ramp_initial = state.config.storm_ramp_initial();
     let candidates = order.len();
     let mut last_response = None;
@@ -210,7 +213,9 @@ async fn forward_claude_oauth(
             Credential::ClaudeOauth { account_uuid, .. } => account_uuid.as_deref(),
             _ => None,
         };
-        let request_body = rewrite_account_uuid(base_body.clone(), account_uuid);
+        let mut request_body = base_body.clone();
+        rewrite_account_uuid_request(&mut request_body, account_uuid);
+        let request_body = request_body.into_raw();
         let request_headers = outbound_headers(headers, &credential);
 
         let upstream = match post_upstream(
@@ -682,73 +687,76 @@ fn rate_limit_kind(headers: &HeaderMap, oauth_client: bool) -> &'static str {
     }
 }
 
-/// Rewrite the outbound request body's `model` to the routed `upstream_model`
-/// when they differ. The passthrough adapter forwards the client body verbatim,
-/// so without this two things leak to the provider: a `[1m]` context-window hint
-/// (which `routing::strip_context_window_hint` removes from the routing key but
-/// not from the body — and api.anthropic.com does not recognize a `[1m]`-suffixed
-/// model id), and an explicit `[[routes]]` `upstream_model` remap (otherwise
-/// ignored for an Anthropic-provider route). The common case — body model already
-/// equal to `upstream_model` — re-serializes nothing and forwards the original
-/// bytes untouched, preserving byte-for-byte passthrough.
-fn normalize_upstream_model(body: Vec<u8>, upstream_model: &str) -> Vec<u8> {
-    #[derive(serde::Deserialize)]
-    struct ModelView {
-        model: String,
+fn normalize_upstream_model_request(body: &mut RequestBody, upstream_model: &str) {
+    if body.json().get("model").and_then(serde_json::Value::as_str) == Some(upstream_model) {
+        return;
     }
-
-    // Cheap guard: peek only the `model` field. A body that isn't JSON, has no
-    // `model`, or whose model already matches is forwarded unchanged.
-    match serde_json::from_slice::<ModelView>(&body) {
-        Ok(view) if view.model != upstream_model => {
-            let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&body) else {
-                return body;
-            };
-            let Some(object) = value.as_object_mut() else {
-                return body;
-            };
-            object.insert(
-                "model".to_string(),
-                serde_json::Value::String(upstream_model.to_string()),
-            );
-            serde_json::to_vec(&value).unwrap_or(body)
+    body.mutate(|request| {
+        let Some(model) = request.get_mut("model") else {
+            return false;
+        };
+        let Some(current_model) = model.as_str() else {
+            return false;
+        };
+        if current_model == upstream_model {
+            return false;
         }
-        _ => body,
-    }
+        *model = serde_json::Value::String(upstream_model.to_string());
+        true
+    });
 }
 
-fn rewrite_account_uuid(body: Vec<u8>, account_uuid: Option<&str>) -> Vec<u8> {
+fn rewrite_account_uuid_request(body: &mut RequestBody, account_uuid: Option<&str>) {
     let Some(account_uuid) = account_uuid else {
+        return;
+    };
+    body.mutate(|outer| {
+        let Some(user_id) = outer
+            .get_mut("metadata")
+            .and_then(serde_json::Value::as_object_mut)
+            .and_then(|metadata| metadata.get_mut("user_id"))
+        else {
+            return false;
+        };
+        let Some(user_id_string) = user_id.as_str() else {
+            return false;
+        };
+        let Ok(mut inner) = serde_json::from_str::<serde_json::Value>(user_id_string) else {
+            return false;
+        };
+        let Some(inner_account_uuid) = inner
+            .as_object_mut()
+            .and_then(|object| object.get_mut("account_uuid"))
+        else {
+            return false;
+        };
+        *inner_account_uuid = serde_json::Value::String(account_uuid.to_string());
+        let Ok(serialized_inner) = serde_json::to_string(&inner) else {
+            return false;
+        };
+        *user_id = serde_json::Value::String(serialized_inner);
+        true
+    });
+}
+
+/// Test wrapper for the raw-byte contract at the adapter boundary.
+#[cfg(test)]
+fn normalize_upstream_model(body: Vec<u8>, upstream_model: &str) -> Vec<u8> {
+    let Ok(mut request) = RequestBody::parse(body.clone()) else {
         return body;
     };
-    let Ok(mut outer) = serde_json::from_slice::<serde_json::Value>(&body) else {
+    normalize_upstream_model_request(&mut request, upstream_model);
+    request.into_raw()
+}
+
+/// Test wrapper for the raw-byte contract at the adapter boundary.
+#[cfg(test)]
+fn rewrite_account_uuid(body: Vec<u8>, account_uuid: Option<&str>) -> Vec<u8> {
+    let Ok(mut request) = RequestBody::parse(body.clone()) else {
         return body;
     };
-    let Some(user_id) = outer
-        .get_mut("metadata")
-        .and_then(serde_json::Value::as_object_mut)
-        .and_then(|metadata| metadata.get_mut("user_id"))
-    else {
-        return body;
-    };
-    let Some(user_id_string) = user_id.as_str() else {
-        return body;
-    };
-    let Ok(mut inner) = serde_json::from_str::<serde_json::Value>(user_id_string) else {
-        return body;
-    };
-    let Some(inner_object) = inner.as_object_mut() else {
-        return body;
-    };
-    let Some(inner_account_uuid) = inner_object.get_mut("account_uuid") else {
-        return body;
-    };
-    *inner_account_uuid = serde_json::Value::String(account_uuid.to_string());
-    let Ok(serialized_inner) = serde_json::to_string(&inner) else {
-        return body;
-    };
-    *user_id = serde_json::Value::String(serialized_inner);
-    serde_json::to_vec(&outer).unwrap_or(body)
+    rewrite_account_uuid_request(&mut request, account_uuid);
+    request.into_raw()
 }
 
 /// Build the headers sent upstream. For a passthrough provider (api.anthropic.com)

@@ -79,7 +79,7 @@ pub(super) async fn forward_http(
     // layer retry on top. This single-credential path retries only before any
     // response body is handed to the streaming/JSON relay.
     let policy = provider_retry_policy(state, route);
-    let body = bytes::Bytes::from(upstream_body.to_string());
+    let body = bytes::Bytes::from(upstream_body.as_ref().to_string());
     let upstream = crate::retry::send_with_retry_with_safety(
         policy,
         &route.provider,

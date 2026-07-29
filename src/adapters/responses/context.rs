@@ -69,12 +69,11 @@ impl TurnOptions {
 /// The request-derived fields the single-account transports (`forward_http` and
 /// `forward_websocket`) need beyond `state`/`route` and their own connection key
 /// (`forward_http` also takes `session_id`, `forward_websocket` also takes
-/// `pool_key`). Cloned once in `forward` so a pre-first-event websocket failure
-/// can fall back to HTTP with the same body/credential — the same fields the
-/// previous per-argument clones copied.
+/// `pool_key`). Cheaply cloned once in `forward` so a pre-first-event websocket
+/// failure can fall back to HTTP with the same shared translated body and credential.
 #[derive(Debug, Clone)]
 pub(super) struct ForwardOptions {
-    pub upstream_body: Value,
+    pub upstream_body: Arc<Value>,
     pub credential: Credential,
     pub auth: AuthMode,
     pub turn: TurnOptions,
@@ -94,7 +93,7 @@ pub(super) struct ForwardOptions {
 pub(super) struct PoolForward {
     pub pool_key: Option<String>,
     pub session_id: Option<String>,
-    pub upstream_body: Value,
+    pub upstream_body: Arc<Value>,
     pub accounts_config: Vec<AccountConfig>,
     pub turn: TurnOptions,
 }

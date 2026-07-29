@@ -13,6 +13,7 @@ use std::path::PathBuf;
 
 use crate::{
     adapters::{Adapter, AdapterError, AdapterFuture},
+    request::RequestBody,
     routing::Route,
     server::AppState,
 };
@@ -27,16 +28,11 @@ impl Adapter for AntigravityAdapter {
         route: Route,
         _uri: &'a Uri,
         _headers: &'a HeaderMap,
-        body: Vec<u8>,
+        body: RequestBody,
     ) -> AdapterFuture<'a> {
         Box::pin(async move {
-            let request: Value = serde_json::from_slice(&body).map_err(|err| AdapterError {
-                message: format!("invalid JSON in request: {err}"),
-                response: Box::new(StatusCode::BAD_REQUEST.into_response()),
-                failure: None,
-            })?;
-
-            let prompt = extract_antigravity_prompt(&request);
+            let request = body.json();
+            let prompt = extract_antigravity_prompt(request);
             let is_streaming = request
                 .get("stream")
                 .and_then(Value::as_bool)

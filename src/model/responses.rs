@@ -4,7 +4,9 @@ use axum::http::StatusCode;
 use serde_json::{json, Value};
 
 use crate::model::responses_request::TOOL_SEARCH_NAME;
-pub use crate::model::responses_request::{encode_reasoning_signature, translate_request};
+pub use crate::model::responses_request::{
+    encode_reasoning_signature, translate_request, translate_request_value,
+};
 
 #[derive(Debug, Clone)]
 pub struct ResponseEvent {

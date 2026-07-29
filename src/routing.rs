@@ -61,15 +61,25 @@ pub(crate) fn resolve_request_chain(
     config: &Config,
     body: &[u8],
 ) -> Result<(Vec<Route>, String), ShuntError> {
-    let view: RoutingView = serde_json::from_slice(body).map_err(|error| {
-        ShuntError::new(
-            StatusCode::BAD_REQUEST,
-            "invalid_request_error",
-            format!("request body must include a JSON model field: {error}"),
-        )
-    })?;
+    let request = serde_json::from_slice(body).map_err(invalid_routing_request)?;
+    resolve_request_chain_value(config, &request)
+}
+
+pub(crate) fn resolve_request_chain_value(
+    config: &Config,
+    request: &serde_json::Value,
+) -> Result<(Vec<Route>, String), ShuntError> {
+    let view = RoutingView::deserialize(request).map_err(invalid_routing_request)?;
     let routes = resolve_model_chain(config, &view.model);
     Ok((routes, view.model))
+}
+
+pub(crate) fn invalid_routing_request(error: serde_json::Error) -> ShuntError {
+    ShuntError::new(
+        StatusCode::BAD_REQUEST,
+        "invalid_request_error",
+        format!("request body must include a JSON model field: {error}"),
+    )
 }
 
 /// Claude Code appends a `[1m]` suffix to a model id as a *client-side* hint that

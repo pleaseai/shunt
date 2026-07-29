@@ -35,6 +35,7 @@ use crate::{
     adapters::{Adapter, AdapterError, AdapterFuture},
     auth::{resolve_credential, Credential},
     error::ShuntError,
+    request::RequestBody,
     routing::Route,
     server::AppState,
 };
@@ -54,7 +55,7 @@ impl Adapter for CursorAdapter {
         route: Route,
         _uri: &'a Uri,
         headers: &'a HeaderMap,
-        body: Vec<u8>,
+        body: RequestBody,
     ) -> AdapterFuture<'a> {
         let _ = headers;
         Box::pin(async move { forward(state, route, body).await })
@@ -64,15 +65,9 @@ impl Adapter for CursorAdapter {
 async fn forward(
     state: AppState,
     route: Route,
-    body: Vec<u8>,
+    body: RequestBody,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
-    let request: Value = serde_json::from_slice(&body).map_err(|error| {
-        own_error(
-            StatusCode::BAD_REQUEST,
-            "invalid_request_error",
-            format!("invalid JSON request: {error}"),
-        )
-    })?;
+    let request = body.json();
     let model = route.upstream_model.as_str();
     let resolved = model::resolve_cursor_model(model).map_err(|error| {
         own_error(
@@ -94,9 +89,9 @@ async fn forward(
             ))
         }
     };
-    let prompt = request::render_cursor_prompt(&request);
-    let images = decode_cursor_images(&request);
-    let tools = extract_cursor_tools(&request);
+    let prompt = request::render_cursor_prompt(request);
+    let images = decode_cursor_images(request);
+    let tools = extract_cursor_tools(request);
     let want_stream = request
         .get("stream")
         .and_then(Value::as_bool)

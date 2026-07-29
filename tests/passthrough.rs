@@ -39,6 +39,14 @@ impl Match for HeaderAbsent {
     }
 }
 
+struct ExactBody(Vec<u8>);
+
+impl Match for ExactBody {
+    fn matches(&self, request: &Request) -> bool {
+        request.body == self.0
+    }
+}
+
 struct TestGateway {
     base_url: String,
     task: JoinHandle<()>,
@@ -194,6 +202,33 @@ async fn messages_forwards_anthropic_headers_verbatim_and_preserves_query() {
         .header("anthropic-beta", "tools-2025-01-01,custom=value")
         .header("anthropic-version", "2023-06-01")
         .body(r#"{"model":"claude-opus-4-1"}"#)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    upstream.verify().await;
+}
+
+#[tokio::test]
+async fn messages_preserves_matching_model_body_byte_for_byte() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let body = br#"{ "messages": [], "model": "claude-sonnet-4-5", "max_tokens": 1 }"#.to_vec();
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(ExactBody(body.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let gateway = start_gateway(upstream.uri()).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .body(body)
         .send()
         .await
         .unwrap();

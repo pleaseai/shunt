@@ -53,11 +53,6 @@ pub(super) async fn forward_websocket(
         credential,
         auth,
         signature: codex_continuation::signature(&upstream_body),
-        full_input: upstream_body
-            .get("input")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default(),
         upstream_body,
     };
     tracing::debug!(provider = %route.provider, ws_url = %ctx.ws_url, pool_key = pool_key.unwrap_or(""), "opening codex websocket");
@@ -107,8 +102,7 @@ struct WsTurnContext<'a> {
     credential: Credential,
     auth: AuthMode,
     signature: String,
-    full_input: Vec<Value>,
-    upstream_body: Value,
+    upstream_body: std::sync::Arc<Value>,
 }
 
 /// The first event, peeked off the stream before the websocket response is
@@ -235,14 +229,18 @@ async fn start_ws_turn(
             .note_codex_quota(ctx.provider, account, headers);
     }
 
-    let mut frame_body = ctx.upstream_body.clone();
+    let mut frame_body = ctx.upstream_body.as_ref().clone();
     let mut used_continuation = false;
     if allow_continuation {
         // Only a reused connection carries stored continuation state; a fresh
         // connection has no chance to continue and is not counted, so the hit/
         // fallback series stay directly comparable (issue #45).
         if let Some(stored) = turn.stored_continuation() {
-            match codex_continuation::decide(&stored, &ctx.upstream_body) {
+            match codex_continuation::decide_with_signature(
+                &stored,
+                ctx.upstream_body.as_ref(),
+                &ctx.signature,
+            ) {
                 Some(decision) => {
                     let turn_state = stored
                         .turn_state
@@ -279,7 +277,7 @@ async fn start_ws_turn(
     let frame = codex_ws::response_create_frame(frame_body);
     let record = codex_ws::RecordPlan {
         signature: ctx.signature.clone(),
-        request_input: ctx.full_input.clone(),
+        request: Some(std::sync::Arc::clone(&ctx.upstream_body)),
     };
     let events = turn
         .stream(&frame, record)

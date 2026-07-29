@@ -14,6 +14,7 @@ use crate::{
     config::AuthMode,
     model::gemini::{map_gemini_error, GeminiSseMachine},
     model::gemini_request::{translate_request_for_model, wrap_code_assist_envelope},
+    request::RequestBody,
     routing::Route,
     server::AppState,
 };
@@ -27,7 +28,7 @@ impl Adapter for GeminiAdapter {
         route: Route,
         uri: &'a Uri,
         headers: &'a HeaderMap,
-        body: Vec<u8>,
+        body: RequestBody,
     ) -> AdapterFuture<'a> {
         Box::pin(async move { forward(state, route, uri, headers, body).await })
     }
@@ -61,7 +62,7 @@ async fn forward(
     route: Route,
     _uri: &Uri,
     _headers: &HeaderMap,
-    body: Vec<u8>,
+    body: RequestBody,
 ) -> Result<(StatusCode, Response<Body>), AdapterError> {
     let provider = state
         .config
@@ -89,15 +90,10 @@ async fn forward(
         }
     };
 
-    let json_body: Value = serde_json::from_slice(&body).map_err(|error| AdapterError {
-        message: format!("invalid JSON in Anthropic request body: {error}"),
-        response: Box::new(StatusCode::BAD_REQUEST.into_response()),
-        failure: None,
-    })?;
-
+    let json_body = body.json();
     let is_streaming = json_body.get("stream").and_then(Value::as_bool) == Some(true);
 
-    let inner_req = translate_request_for_model(&json_body, &route.upstream_model)?;
+    let inner_req = translate_request_for_model(json_body, &route.upstream_model)?;
 
     let base_url = provider.base_url.trim_end_matches('/');
 

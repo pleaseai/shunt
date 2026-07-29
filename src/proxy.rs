@@ -92,17 +92,10 @@ pub(crate) fn is_count_tokens(uri: &Uri) -> bool {
     uri.path().ends_with("/count_tokens")
 }
 
-fn normalize_request_body(body: Vec<u8>) -> Vec<u8> {
-    let Ok(mut request) = serde_json::from_slice::<Value>(&body) else {
-        return body;
-    };
-    // Re-serialize only when a block was actually dropped. The common case (no
-    // empty text block) keeps the original bytes and skips the encode entirely.
-    if normalize_empty_text_blocks(&mut request) {
-        serde_json::to_vec(&request).unwrap_or(body)
-    } else {
-        body
-    }
+fn normalize_request_body(body: &mut crate::request::RequestBody) {
+    // Refresh the raw passthrough bytes only when a block was actually dropped.
+    // The common case keeps the client's exact bytes and the already-parsed tree.
+    body.mutate(normalize_empty_text_blocks);
 }
 
 pub(crate) fn normalize_empty_text_blocks(request: &mut Value) -> bool {

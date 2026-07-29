@@ -94,7 +94,16 @@ pub struct Decision {
 /// suffix. Returns `None` — meaning "send the full input" — on any mismatch, a
 /// shrunk input, or an empty delta.
 pub fn decide(stored: &StoredContinuation, current_body: &Value) -> Option<Decision> {
-    if signature(current_body) != stored.signature {
+    let current_signature = signature(current_body);
+    decide_with_signature(stored, current_body, &current_signature)
+}
+
+pub fn decide_with_signature(
+    stored: &StoredContinuation,
+    current_body: &Value,
+    current_signature: &str,
+) -> Option<Decision> {
+    if current_signature != stored.signature {
         return None;
     }
     let input = current_body.get("input").and_then(Value::as_array)?;
@@ -135,12 +144,16 @@ pub fn signature(body: &Value) -> String {
     let Some(object) = body.as_object() else {
         return String::new();
     };
-    let filtered: Map<String, Value> = object
+    let mut entries = object
         .iter()
         .filter(|(key, _)| key.as_str() != "input")
-        .map(|(key, value)| (key.clone(), value.clone()))
-        .collect();
-    stable_string(&Value::Object(filtered))
+        .collect::<Vec<_>>();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+    let inner = entries
+        .into_iter()
+        .map(|(key, value)| format!("{}:{}", encode_str(key), stable_string(value)))
+        .collect::<Vec<_>>();
+    format!("{{{}}}", inner.join(","))
 }
 
 /// Deterministic JSON string with object keys sorted recursively, so the

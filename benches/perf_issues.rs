@@ -213,6 +213,21 @@ fn responses_translate_and_serialize_once(bencher: divan::Bencher, size: usize) 
     });
 }
 
+fn parse_once_http_front(body: &[u8], config: &Config, route: &Route) -> String {
+    let request = normalize_like_proxy(body);
+    let model = request.get("model").and_then(Value::as_str).unwrap();
+    let resolved = routing::resolve_model(config, model);
+    divan::black_box(resolved);
+    let stream = request
+        .get("stream")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let thinking = request.pointer("/thinking/type").and_then(Value::as_str) == Some("enabled");
+    divan::black_box((stream, thinking));
+    responses_request::translate_request_value(&request, route, ResponsesFlavor::Chatgpt, false)
+        .to_string()
+}
+
 #[divan::bench(args = BODY_SIZES)]
 fn current_http_responses_cpu_front(bencher: divan::Bencher, size: usize) {
     let body = realistic_body(size);
@@ -234,6 +249,20 @@ fn current_http_responses_cpu_front(bencher: divan::Bencher, size: usize) {
         )
         .unwrap();
         translated.to_string()
+    });
+}
+
+#[divan::bench(args = BODY_SIZES)]
+fn parse_once_http_responses_cpu_front(bencher: divan::Bencher, size: usize) {
+    let body = realistic_body(size);
+    let route = route();
+    let config = config();
+    bencher.bench(|| {
+        parse_once_http_front(
+            divan::black_box(&body),
+            divan::black_box(&config),
+            divan::black_box(&route),
+        )
     });
 }
 
@@ -290,6 +319,33 @@ fn codex_ws_reused_prepare_and_serialize(bencher: divan::Bencher, size: usize) {
         let frame = codex_ws::response_create_frame(frame_body);
         let payload = serde_json::to_string(&frame).unwrap();
         divan::black_box((payload, signature, request_input))
+    });
+}
+
+#[divan::bench(args = BODY_SIZES)]
+fn parse_once_codex_ws_reused_prepare_and_serialize(bencher: divan::Bencher, size: usize) {
+    let (stored, current) = continuation_fixture(size);
+    let current = Arc::new(current);
+    bencher.bench(|| {
+        let signature = codex_continuation::signature(&current);
+        let mut frame_body = current.as_ref().clone();
+        if let Some(decision) = codex_continuation::decide_with_signature(
+            divan::black_box(&stored),
+            divan::black_box(&current),
+            divan::black_box(&signature),
+        ) {
+            if let Some(object) = frame_body.as_object_mut() {
+                object.insert("input".to_string(), json!(decision.input_delta));
+                object.insert(
+                    "previous_response_id".to_string(),
+                    json!(decision.previous_response_id),
+                );
+            }
+        }
+        let record = Arc::clone(&current);
+        let frame = codex_ws::response_create_frame(frame_body);
+        let payload = serde_json::to_string(&frame).unwrap();
+        divan::black_box((payload, record))
     });
 }
 

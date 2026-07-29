@@ -21,6 +21,7 @@ pub mod oauth_usage;
 pub mod protocol;
 pub mod proxy;
 pub mod reload;
+pub(crate) mod request;
 pub mod retry;
 pub mod routes;
 pub mod routing;

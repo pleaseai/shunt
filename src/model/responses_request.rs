@@ -112,15 +112,29 @@ pub fn translate_request(
     tool_search_native: bool,
 ) -> Result<Value, serde_json::Error> {
     let request: Value = serde_json::from_slice(body)?;
-    let tool_search = ToolSearchContext::from_request(&request, tool_search_native);
+    Ok(translate_request_value(
+        &request,
+        route,
+        flavor,
+        tool_search_native,
+    ))
+}
+
+pub fn translate_request_value(
+    request: &Value,
+    route: &Route,
+    flavor: ResponsesFlavor,
+    tool_search_native: bool,
+) -> Value {
+    let tool_search = ToolSearchContext::from_request(request, tool_search_native);
     let mut out = Map::new();
     out.insert("model".to_string(), json!(route.upstream_model));
-    if let Some(instructions) = instructions(&request) {
+    if let Some(instructions) = instructions(request) {
         out.insert("instructions".to_string(), json!(instructions));
     }
     out.insert(
         "input".to_string(),
-        Value::Array(input_items(&request, &tool_search)),
+        Value::Array(input_items(request, &tool_search)),
     );
     // Only emit tools/tool_choice when at least one tool survives translation.
     // The hosted web-search tool is dropped on flavors that reject it (xAI), and
@@ -128,11 +142,11 @@ pub fn translate_request(
     // tool reveal); if the set is now empty, an empty `tools: []` array is rejected
     // by OpenAI-compatible backends ("expected an array with at least one
     // element"), while a `tool_choice` with no tools is meaningless.
-    if let Some(tools) = tools(&request, flavor, &tool_search)
-        .filter(|t| t.as_array().is_some_and(|a| !a.is_empty()))
+    if let Some(tools) =
+        tools(request, flavor, &tool_search).filter(|t| t.as_array().is_some_and(|a| !a.is_empty()))
     {
         out.insert("tools".to_string(), tools);
-        if let Some(tool_choice) = tool_choice(&request, flavor, &tool_search) {
+        if let Some(tool_choice) = tool_choice(request, flavor, &tool_search) {
             out.insert("tool_choice".to_string(), tool_choice);
         }
     }
@@ -156,14 +170,14 @@ pub fn translate_request(
             if route.effort.is_some() || client_effort {
                 out.insert(
                     "reasoning".to_string(),
-                    json!({"effort": effort(&request, route)}),
+                    json!({"effort": effort(request, route)}),
                 );
             }
         }
         _ => {
             out.insert(
                 "reasoning".to_string(),
-                json!({"effort": effort(&request, route), "summary": "auto"}),
+                json!({"effort": effort(request, route), "summary": "auto"}),
             );
         }
     }
@@ -176,13 +190,13 @@ pub fn translate_request(
     // for the encrypted reasoning blob and echo it back next turn (see input_items).
     // Only when the client enabled extended thinking, which is what lets Claude Code
     // round-trip the thinking blocks that carry the blob (see model/responses.rs).
-    if thinking_enabled(&request) {
+    if thinking_enabled(request) {
         out.insert(
             "include".to_string(),
             json!(["reasoning.encrypted_content"]),
         );
     }
-    if let Some(cache_key) = prompt_cache_key(&request) {
+    if let Some(cache_key) = prompt_cache_key(request) {
         out.insert("prompt_cache_key".to_string(), json!(cache_key));
     }
     // Anthropic `max_tokens` caps output; the Responses equivalent is
@@ -197,7 +211,7 @@ pub fn translate_request(
     }
     out.insert("store".to_string(), json!(false));
     out.insert("stream".to_string(), json!(true));
-    Ok(Value::Object(out))
+    Value::Object(out)
 }
 
 /// A stable per-conversation key so the Responses backend routes every turn of a

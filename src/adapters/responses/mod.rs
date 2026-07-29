@@ -19,7 +19,8 @@ use crate::{
     adapters::{Adapter, AdapterError, AdapterFuture},
     auth::{self, resolve_credential, Credential},
     config::{AuthMode, CountTokens},
-    model::responses::translate_request,
+    model::responses::translate_request_value,
+    request::RequestBody,
     routing::Route,
     server::AppState,
 };
@@ -40,7 +41,7 @@ impl Adapter for ResponsesAdapter {
         route: Route,
         _uri: &'a Uri,
         headers: &'a HeaderMap,
-        body: Vec<u8>,
+        body: RequestBody,
     ) -> AdapterFuture<'a> {
         // The session id keys the websocket connection pool (issue #32) so turns
         // of one Claude Code conversation reuse a live connection. Keep an owned
@@ -69,19 +70,19 @@ async fn forward(
     route: Route,
     pool_key: Option<String>,
     session_id: Option<String>,
-    body: Vec<u8>,
+    body: RequestBody,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
-    let request_json = serde_json::from_slice::<Value>(&body).ok();
+    let request_json = body.json();
     let client_wants_stream = request_json
-        .as_ref()
-        .and_then(|value| value.get("stream").and_then(Value::as_bool))
+        .get("stream")
+        .and_then(Value::as_bool)
         .unwrap_or(false);
     // Gates reasoning round-tripping (see model/responses.rs): surface thinking
     // blocks only when the client asked for extended thinking, since that is what
     // makes Claude Code echo them back on the next turn.
     let thinking_enabled = request_json
-        .as_ref()
-        .and_then(|value| value.pointer("/thinking/type").and_then(Value::as_str))
+        .pointer("/thinking/type")
+        .and_then(Value::as_str)
         == Some("enabled");
     let flavor = state.config.responses_flavor(&route.provider);
     // Native client-executed tool_search (issue #82) is opt-in per provider and
@@ -111,7 +112,7 @@ async fn forward(
                 .unwrap_or(CountTokens::Estimate),
             CountTokens::Tiktoken
         ) {
-        request_json.map(Arc::new)
+        Some(body.json_arc())
     } else {
         None
     };
@@ -120,8 +121,12 @@ async fn forward(
         thinking_enabled,
         tool_search_native,
     };
-    let upstream_body = translate_request(&body, &route, flavor, tool_search_native)
-        .map_err(|error| own_error(error.to_string()))?;
+    let upstream_body = Arc::new(translate_request_value(
+        request_json,
+        &route,
+        flavor,
+        tool_search_native,
+    ));
     tracing::debug!(
         provider = %route.provider,
         upstream_model = %route.upstream_model,

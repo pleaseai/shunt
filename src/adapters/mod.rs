@@ -5,7 +5,7 @@ use axum::{
     response::Response,
 };
 
-use crate::{routing::Route, server::AppState};
+use crate::{request::RequestBody, routing::Route, server::AppState};
 
 pub mod anthropic;
 pub mod antigravity;
@@ -59,14 +59,14 @@ pub struct AdapterError {
     pub failure: Option<AdapterFailure>,
 }
 
-pub trait Adapter {
+pub(crate) trait Adapter {
     fn forward<'a>(
         &'a self,
         state: AppState,
         route: Route,
         uri: &'a Uri,
         headers: &'a HeaderMap,
-        body: Vec<u8>,
+        body: RequestBody,
     ) -> AdapterFuture<'a>;
 }
 

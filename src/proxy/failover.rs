@@ -39,11 +39,19 @@ pub(super) async fn forward(
                 response: UpstreamError::from_message(message).into_response(),
             }
         })?;
-    let mut body = normalize_request_body(body.to_vec());
-    let (mut routes, requested_model) = routing::resolve_request_chain(&state.config, &body)
+    let mut body = crate::request::RequestBody::parse(body.to_vec())
+        .map_err(routing::invalid_routing_request)
         .map_err(|error| ForwardError {
             message: "failed to route request".to_string(),
             response: error.into_response(),
+        })?;
+    normalize_request_body(&mut body);
+    let (mut routes, requested_model) =
+        routing::resolve_request_chain_value(&state.config, body.json()).map_err(|error| {
+            ForwardError {
+                message: "failed to route request".to_string(),
+                response: error.into_response(),
+            }
         })?;
     if is_count_tokens(uri) {
         // count_tokens answers from the first chain element only, so gate and
@@ -74,6 +82,7 @@ pub(super) async fn forward(
     }
 
     let attempted_total = routes.len();
+    let mut body = Some(body);
     let last_route = routes
         .last()
         .expect("route chains are non-empty after resolution")
@@ -107,12 +116,13 @@ pub(super) async fn forward(
         // Move the buffered body into the final attempt instead of cloning it: the
         // common single-upstream chain then never copies the (up to 64 MB) body,
         // and a multi-upstream chain only clones for the attempts that precede the
-        // last. `mem::take` (not a bare move) keeps the borrow checker happy inside
-        // the loop; `body` is unused after the loop.
+        // last. The `Option` permits that final move while keeping earlier attempts
+        // able to share the parsed tree and clone only the raw byte buffer.
         let attempt_body = if index + 1 < attempted_total {
-            body.clone()
+            body.as_ref().expect("request body is present").clone()
         } else {
-            std::mem::take(&mut body)
+            body.take()
+                .expect("request body is present for final attempt")
         };
         let result = dispatch(state.clone(), route, uri, &attempt_headers, attempt_body).await;
 
@@ -235,7 +245,7 @@ async fn count_tokens_response(
     uri: &Uri,
     base_headers: &HeaderMap,
     inbound: &InboundContext,
-    body: Vec<u8>,
+    body: crate::request::RequestBody,
     requested_model: &str,
 ) -> Result<(StatusCode, axum::response::Response), ForwardError> {
     let provider = route.provider.clone();
@@ -254,10 +264,11 @@ async fn count_tokens_response(
             .unwrap_or(CountTokens::Estimate);
         Ok(match mode {
             CountTokens::Tiktoken => {
-                let input_tokens =
-                    tokio::task::spawn_blocking(move || count_tokens::count_input_tokens(&body))
-                        .await
-                        .unwrap_or(0);
+                let input_tokens = tokio::task::spawn_blocking(move || {
+                    count_tokens::count_input_tokens(body.raw())
+                })
+                .await
+                .unwrap_or(0);
                 (
                     StatusCode::OK,
                     axum::Json(serde_json::json!({ "input_tokens": input_tokens })).into_response(),
@@ -293,7 +304,7 @@ async fn dispatch(
     route: routing::Route,
     uri: &Uri,
     headers: &HeaderMap,
-    body: Vec<u8>,
+    body: crate::request::RequestBody,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     match route.adapter {
         AdapterKind::Anthropic => {

@@ -150,9 +150,9 @@ pub(super) async fn forward_chatgpt_oauth(
             // ownership of, skipping the `fmt` machinery and UTF-8 round-trip
             // `Value::to_string()` pays for. Serializing a `Value` cannot fail,
             // so the fallback is unreachable — it just keeps the old path.
-            serde_json::to_vec(&upstream_body)
+            serde_json::to_vec(upstream_body.as_ref())
                 .map(bytes::Bytes::from)
-                .unwrap_or_else(|_| bytes::Bytes::from(upstream_body.to_string()))
+                .unwrap_or_else(|_| bytes::Bytes::from(upstream_body.as_ref().to_string()))
         });
         let upstream = match http_send(
             &state,
