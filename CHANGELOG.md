@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.28.0](https://github.com/pleaseai/shunt/compare/v0.27.0...v0.28.0) (2026-07-29)
+
+
+### ⚠ BREAKING CHANGES
+
+* **codex-ws:** share stored continuation via Arc instead of deep-cloning the transcript per turn ([#270](https://github.com/pleaseai/shunt/issues/270))
+
+### Bug Fixes
+
+* **server:** bound inbound request concurrency ([#271](https://github.com/pleaseai/shunt/issues/271)) ([916e238](https://github.com/pleaseai/shunt/commit/916e2382c4f127293afcf31a074d74249b4eca6c))
+
+
+### Performance Improvements
+
+* **codex-ws:** borrow the translated body when building the ws frame ([#273](https://github.com/pleaseai/shunt/issues/273)) ([fdc22cd](https://github.com/pleaseai/shunt/commit/fdc22cdf6fab7979b3048728463e671394e49331))
+* **codex-ws:** share stored continuation via Arc instead of deep-cloning the transcript per turn ([#270](https://github.com/pleaseai/shunt/issues/270)) ([b84a3bd](https://github.com/pleaseai/shunt/commit/b84a3bde258e9501c2534e7f4d02a7bc0311702f))
+
 ## [0.27.0](https://github.com/pleaseai/shunt/compare/v0.26.1...v0.27.0) (2026-07-29)
 
 
