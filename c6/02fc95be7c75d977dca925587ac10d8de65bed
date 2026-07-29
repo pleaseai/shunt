@@ -1,0 +1,87 @@
+site/src/content/docs/reference/configuration.md
+  s_77b1472242619e::t_810e06eafd1261 14
+docs/config-reload.md
+  s_77b1472242619e::t_fa4cd8da348a32 47,52-53
+src/server.rs
+  s_77b1472242619e::t_07ed83fd02e23e 130-132
+  s_77b1472242619e::t_72e87c76b407f4 351-370
+  s_77b1472242619e::t_6bf2e07dc27a32 168-175,177-178
+  s_77b1472242619e::t_6995993485a225 240-250
+  s_77b1472242619e::t_98667a9bb7cf8f 373,376-382,384
+  s_77b1472242619e::t_959705ee8b600a 371-372,374-375,383,385-395,397-398
+  s_77b1472242619e::t_d830e75e9a9864 15
+  s_77b1472242619e::t_cdb66b4d086380 4
+  s_77b1472242619e::t_30ec40064da40f 396
+docs/running.md
+  s_77b1472242619e::t_9899a303185e7e 78
+  s_77b1472242619e::t_182a4d93c4a6e8 314-321
+src/concurrency.rs
+  s_77b1472242619e::t_725ad518c59e45 34
+  s_77b1472242619e::t_9761646c962027 190-227
+  s_77b1472242619e::t_234cd7f9032ad0 267-271
+  s_77b1472242619e::t_7a0a59edb0eca6 29
+  s_77b1472242619e::t_7b15778b68cc51 140
+  s_77b1472242619e::t_89b27a315207ab 9
+  s_77b1472242619e::t_2913fd7c173232 106-110
+  s_77b1472242619e::t_ad8f7b78be480c 44
+  s_77b1472242619e::t_92605099cae951 236,245
+  s_77b1472242619e::t_56058240e53103 124-130
+  s_77b1472242619e::t_0f25afbb25d71d 229,235,237-241,244
+  s_77b1472242619e::t_73283511f6ad25 88,93-94
+  s_77b1472242619e::t_4dc32e76dd287d 43
+  s_77b1472242619e::t_ed4ecd60bef29c 1-8,10-28,30-33,35-42,45-87,89-92,95-105,111-123,131-139,141-189,228,230-234,246-266,272-273
+  s_7f03b00693ff58::t_52c0e59582e91e 242-243
+Cargo.toml
+  s_77b1472242619e::t_76bb6981c0eb9b 36
+  s_77b1472242619e::t_e9be3fac13a6d7 34-35
+README.md
+  s_77b1472242619e::t_6316fcb2d7114c 77-82
+shunt.toml.example
+  s_77b1472242619e::t_0133b1cdbde3c3 9-10
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_77b1472242619e::t_80602a897a444b 14
+site/src/content/docs/ja/reference/configuration.md
+  s_77b1472242619e::t_644d0c8ef923c2 14
+src/config.rs
+  s_77b1472242619e::t_6d012e9b73be59 1941
+  s_77b1472242619e::t_2144ef64a65b56 2836-2837,2839-2852
+  s_77b1472242619e::t_9d229e41a3aad2 118-122,129-130
+  s_77b1472242619e::t_8cda1bd4ae63b9 131-132,2835,2838
+src/lib.rs
+  s_77b1472242619e::t_3c7601608307ce 9
+site/src/content/docs/ko/reference/configuration.md
+  s_77b1472242619e::t_cfa88ff513424b 14
+shunt.yaml.example
+  s_77b1472242619e::t_02dff8e0017e96 9
+src/reload.rs
+  s_77b1472242619e::t_e74a4d8559b89c 68-71
+  s_77b1472242619e::t_548e86659c645b 106-112
+  s_77b1472242619e::t_55c9c79eb7f3b5 584-605
+  s_77b1472242619e::t_b786e699d8c25d 583
+Cargo.lock
+  s_77b1472242619e::t_511ffa6e5d6023 2757
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "c602fc95be7c75d977dca925587ac10d8de65bed",
+  "prompts": {},
+  "sessions": {
+    "s_77b1472242619e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1a7991f4-bbab-43ff-a9ab-0838846e324d",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_7f03b00693ff58": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "88e9f44f-f367-4387-bf11-a34dbb71a74b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
