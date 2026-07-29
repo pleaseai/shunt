@@ -49,6 +49,10 @@ fn gzip_fixture(compressed_target: usize) -> Vec<u8> {
             std::str::from_utf8(&suffix).expect("ASCII suffix")
         );
         payload.push(0x0a); // protobuf field 1, wire type 2
+        assert!(
+            text.len() <= 127,
+            "fixture text must fit a single-byte varint length"
+        );
         payload.push(text.len() as u8);
         payload.extend_from_slice(text.as_bytes());
         chunk += 1;

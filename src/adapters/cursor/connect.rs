@@ -182,7 +182,9 @@ fn decode_gzip_frame_within(
 ) -> Result<Option<Vec<u8>>, std::io::Error> {
     use std::io::Read;
     let decoder = flate2::read::GzDecoder::new(payload);
-    let mut out = Vec::new();
+    // Size the buffer from the compressed length at a realistic ratio, capped by
+    // the budget, so a typical frame decodes without repeated growth.
+    let mut out = Vec::with_capacity(std::cmp::min(payload.len() * 4, budget + 1));
     decoder.take(budget as u64 + 1).read_to_end(&mut out)?;
     Ok((out.len() <= budget).then_some(out))
 }
