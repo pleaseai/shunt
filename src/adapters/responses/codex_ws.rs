@@ -182,10 +182,10 @@ struct Connection {
     /// at most one outstanding turn).
     commands: mpsc::Sender<StartTurn>,
     /// Continuation captured from this connection's last completed turn. Behind an
-    /// [`Arc`] because its `transcript` grows with the conversation and every reused
-    /// turn reads it: sharing makes retrieval a refcount bump instead of a deep clone
-    /// of the whole history. Never mutated in place — a completed turn replaces the
-    /// whole value.
+    /// [`Arc`] because its `transcript` grows with the conversation and every
+    /// continuation-enabled turn on a reused connection reads it: sharing makes
+    /// retrieval a refcount bump instead of a deep clone of the whole history.
+    /// Never mutated in place — a completed turn replaces the whole value.
     continuation: Mutex<Option<Arc<StoredContinuation>>>,
     /// Last time a turn used this connection; drives idle TTL eviction.
     last_used_at: Mutex<Instant>,
@@ -436,8 +436,9 @@ pub struct Turn {
 impl Turn {
     /// The continuation state captured on this connection's previous turn.
     /// `None` for a fresh connection — `previous_response_id` is only valid on the
-    /// connection that produced it. Shared, not cloned: the caller only reads it to
-    /// decide the delta, so the transcript stays behind a refcount.
+    /// connection that produced it. Shared, not cloned: the caller only reads the
+    /// value — the transcript to decide the delta, `turn_state` to echo on the next
+    /// request — so the history stays behind a refcount.
     pub fn stored_continuation(&self) -> Option<Arc<StoredContinuation>> {
         if !self.reused {
             return None;
