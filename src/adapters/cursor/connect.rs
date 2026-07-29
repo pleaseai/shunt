@@ -701,6 +701,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn gzip_decode_proceeds_while_request_prep_is_saturated() {
+        let _observer = offload_observer();
+        let gzip_slots = crate::adapters::cursor::offload::gzip_slots();
+        let request_prep_slots = crate::adapters::cursor::offload::request_prep_slots();
+        let gzip_capacity = gzip_slots.available_permits();
+        let request_prep_capacity = request_prep_slots.available_permits();
+        assert!(gzip_capacity > 0);
+        assert!(request_prep_capacity > 0);
+
+        let held_request_prep = request_prep_slots
+            .acquire_many(request_prep_capacity as u32)
+            .await
+            .expect("request-preparation semaphore should remain open");
+        assert_eq!(request_prep_slots.available_permits(), 0);
+
+        let expected = incompressible_bytes(INLINE_GZIP_FRAME_BYTES * 2);
+        let compressed = gzip(&expected);
+        assert!(compressed.len() > INLINE_GZIP_FRAME_BYTES);
+        let decoded = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            decode_gzip_frame_async(compressed),
+        )
+        .await
+        .expect("gzip decode should proceed while request preparation is saturated")
+        .expect("gzip payload should decode");
+        assert_eq!(decoded, expected);
+
+        drop(held_request_prep);
+        assert_eq!(gzip_slots.available_permits(), gzip_capacity);
+        assert_eq!(
+            request_prep_slots.available_permits(),
+            request_prep_capacity
+        );
+    }
+
+    #[tokio::test]
     async fn async_gzip_rejects_oversized_payload() {
         let _observer = offload_observer();
         let compressed = oversized_gzip_payload();

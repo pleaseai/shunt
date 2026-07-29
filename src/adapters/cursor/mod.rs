@@ -881,6 +881,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn request_prep_proceeds_while_gzip_is_saturated() {
+        let _observer = offload::OFFLOAD_OBSERVER
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let gzip_slots = offload::gzip_slots();
+        let request_prep_slots = offload::request_prep_slots();
+        let gzip_capacity = gzip_slots.available_permits();
+        let request_prep_capacity = request_prep_slots.available_permits();
+        assert!(gzip_capacity > 0);
+        assert!(request_prep_capacity > 0);
+
+        let held_gzip = gzip_slots
+            .acquire_many(gzip_capacity as u32)
+            .await
+            .expect("gzip semaphore should remain open");
+        assert_eq!(gzip_slots.available_permits(), 0);
+
+        let params = agent::AgentRunParams {
+            prompt: "TEXT_MARKER".into(),
+            model_id: "MODEL_MARKER".into(),
+            cwd: "/tmp".into(),
+            mode: 1,
+            images: Vec::new(),
+            tools: Vec::new(),
+        };
+        reset_request_prep_path();
+        let frames = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            build_run_frames_async(params),
+        )
+        .await
+        .expect("request framing should proceed while gzip is saturated")
+        .expect("request frames should build");
+        assert_eq!(request_prep_path(), RequestPrepPath::FramingOffloaded);
+        assert_eq!(frames.len(), 12);
+        assert!(String::from_utf8_lossy(&frames[0]).contains("TEXT_MARKER"));
+        assert!(String::from_utf8_lossy(&frames[0]).contains("MODEL_MARKER"));
+        assert_eq!(
+            u32::from_be_bytes([frames[0][1], frames[0][2], frames[0][3], frames[0][4]]) as usize
+                + 5,
+            frames[0].len()
+        );
+
+        let selected = selected_image(INLINE_IMAGE_DECODE_BYTES);
+        reset_request_prep_path();
+        let images = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            decode_selected_images_async(vec![selected]),
+        )
+        .await
+        .expect("image decode should proceed while gzip is saturated")
+        .expect("selected image should decode");
+        assert_eq!(request_prep_path(), RequestPrepPath::ImageOffloaded);
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].data.len(), INLINE_IMAGE_DECODE_BYTES);
+
+        drop(held_gzip);
+        assert_eq!(gzip_slots.available_permits(), gzip_capacity);
+        assert_eq!(
+            request_prep_slots.available_permits(),
+            request_prep_capacity
+        );
+    }
+
+    #[tokio::test]
     async fn request_prep_failures_map_to_local_anthropic_500() {
         for context in ["cursor request framing", "cursor image decode"] {
             let error = request_prep_error(context, std::io::Error::other("join failed"));
