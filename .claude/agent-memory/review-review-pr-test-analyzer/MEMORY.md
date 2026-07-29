@@ -12,4 +12,4 @@
 - [shunt perf hot-path coverage](shunt-perf-hot-path-coverage.md) — PR #182 auth single-flight and quota behavior are covered; WS idle-timer reset/tie and BoundaryTracker len-0/3 cases are not.
 - [shunt client usage fable coverage](shunt-client-usage-fable-coverage.md) — PR #179 usage aggregate tests cover 5h/7d but omit populated fable (7d_oi) data, leaving that production mapping unguarded.
 - [shunt ordered-upstreams failover coverage](shunt-ordered-upstreams-failover-coverage.md) — PR #224 covers order/status/config/state well, but lacks an outer-chain post-2xx no-replay assertion; preset field matrix is partial.
-- [shunt Cursor request offload coverage](shunt-cursor-request-offload-coverage.md) — PR #272 isolation and threshold math are sound; production wiring/error/mixed-work gaps remain.
+- [shunt Cursor request offload coverage](shunt-cursor-request-offload-coverage.md) — PR #272 threshold math sound; 8af7ec4 added a mutation-proven class-isolation test and removed the Barrier hang path; the two remaining gaps need a production test seam and were deliberately accepted.
