@@ -1,0 +1,25 @@
+src/concurrency.rs
+  s_77b1472242619e::t_cb4dbe007e2594 62-68,70,163,170,229-234,488-500,502-508
+src/codex_endpoint.rs
+  s_77b1472242619e::t_7b55d00e525dc7 29-42
+src/server.rs
+  s_77b1472242619e::t_1af97e9992e49e 208-216,364-377
+src/codex_analytics.rs
+  s_77b1472242619e::t_c9bf57f6c003e9 32-43
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "691bd00a7087a0c9c22c5d79669a3cc33e079a88",
+  "prompts": {},
+  "sessions": {
+    "s_77b1472242619e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1a7991f4-bbab-43ff-a9ab-0838846e324d",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
