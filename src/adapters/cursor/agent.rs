@@ -120,7 +120,7 @@ pub struct CursorAgentClient {
 
 /// An inline image attached to the current user message. `data` is the raw
 /// (already base64-decoded) image bytes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct AgentImage {
     pub data: Vec<u8>,
     pub uuid: String,
@@ -157,32 +157,16 @@ impl CursorAgentClient {
         }
     }
 
-    /// Open a single agent turn: frame the owned request on the bounded blocking
-    /// pool, start the paced body sender, and return once response headers arrive.
-    /// The returned turn keeps the request stream open (with heartbeats) until it
-    /// is read to completion or dropped.
-    ///
-    /// Framing is unconditionally offloaded because it is once per request, before
-    /// the sender task and `.send().await`, so the roughly 12 µs blocking-pool
-    /// round trip is not repeated on the streaming path. No cheap input measure
-    /// bounds the work: measurements ranged from 13.3 µs for 4 KiB text to
-    /// 423.9 µs with 16 tools, whose schema protobuf encoding alone grew from
-    /// 25.9 µs for one tool to 395.4 µs for 16. Even the cheapest case is comparable
-    /// to scheduling overhead, leaving no meaningful inline win. The round-trip
-    /// calibration remains reproducible with the ignored
-    /// `connect::tests::measure_spawn_blocking_round_trip` test.
+    /// Open a single agent turn: send the pre-built frames as a paced request
+    /// stream and return once response headers arrive. The returned turn keeps the
+    /// request stream open (with heartbeats) until it is read to completion or
+    /// dropped.
     pub async fn open_turn(
         &self,
         token: &str,
-        params: AgentRunParams,
+        frames: Vec<Bytes>,
     ) -> Result<CursorAgentTurn, CursorError> {
         let request_id = uuid::Uuid::new_v4().to_string();
-        let frames =
-            crate::adapters::cursor::offload::spawn_bounded(move || build_run_frames(&params))
-                .await
-                .map_err(|error| {
-                    CursorError::internal(format!("cursor request framing: {error}"))
-                })?;
 
         // The request body is fed by a paced sender task so the server sees the
         // marker frames arrive over time (single-shot half-close yields
@@ -583,6 +567,19 @@ fn encode_selected_context(images: &[AgentImage]) -> Vec<u8> {
 }
 
 /// Build the ordered Connect frames for a single agent turn.
+///
+/// Framing is unconditionally offloaded at the call site. The measured blocking-
+/// pool round trip is 10.2 µs (1,000 samples, release profile), while a 4 KiB
+/// text-only turn frames in about 9.9 µs, so that small case pays roughly its own
+/// cost again in scheduling. This is accepted because Claude Code Cursor turns
+/// always carry tools, where framing takes about 336 µs and dwarfs the round trip;
+/// the absolute cost is about 10 µs on a path that then makes a network round trip;
+/// and no size predicate can soundly bound the non-linear cost of encoding tool
+/// schemas. The calibration is reproducible with the ignored
+/// `connect::tests::measure_spawn_blocking_round_trip` test.
+///
+/// Exposed for the benchmark target only, not a stability commitment.
+#[doc(hidden)]
 pub fn build_run_frames(params: &AgentRunParams) -> Vec<Bytes> {
     let AgentRunParams {
         prompt,
@@ -946,7 +943,7 @@ mod tests {
     }
 
     async fn build_run_frames_offloaded(params: AgentRunParams) -> Vec<Bytes> {
-        crate::adapters::cursor::offload::spawn_bounded(move || build_run_frames(&params))
+        crate::adapters::cursor::build_run_frames_async(params)
             .await
             .expect("framing offload should complete")
     }
@@ -995,20 +992,31 @@ mod tests {
                 }],
                 tools: vec![AgentTool {
                     name: "TOOL_NAME_MARKER".into(),
-                    description: "tool description".into(),
-                    input_schema: serde_json::json!({"type": "object"}),
+                    description: "TOOL_DESCRIPTION_MARKER".into(),
+                    input_schema: serde_json::json!({
+                        "type": "object",
+                        "properties": {"SCHEMA_PROPERTY_MARKER": {"type": "string"}}
+                    }),
                 }],
             }
         }
 
         let sync = build_run_frames(&params());
         let offloaded = build_run_frames_offloaded(params()).await;
+        // Every request field that rides in frame 0 is asserted, not just the
+        // identifiers: the image bytes (`SelectedImage` f8) and the tool schema
+        // could be dropped without changing frame count or `frames[1..]`, so
+        // omitting them here would let an empty image reach Cursor unnoticed.
         let markers = [
             "IMAGE_PROMPT_MARKER",
             "MODEL_MARKER",
             "IMAGE_UUID_MARKER",
             "IMAGE_PATH_MARKER.png",
+            "IMAGE_DATA_MARKER",
+            "image/png",
             "TOOL_NAME_MARKER",
+            "TOOL_DESCRIPTION_MARKER",
+            "SCHEMA_PROPERTY_MARKER",
         ];
         assert_eq!(sync.len(), offloaded.len());
         assert_frame_parts(&sync, &markers);

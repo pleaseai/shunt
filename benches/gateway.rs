@@ -10,8 +10,9 @@
 //!   streamed requests: Anthropic Messages → Responses request translation
 //!   (per request), Responses SSE parse + Anthropic-SSE state folding (per
 //!   event), and Cursor SSE framing (per token delta).
-//! - Cursor request protobuf framing and inline image base64 decoding over the
-//!   representative request shapes used to set blocking-offload policy.
+//! - Cursor request protobuf framing, image extraction + inline base64 decoding,
+//!   and decode-only work over the representative request shapes used to set
+//!   blocking-offload policy.
 //! - Cursor Connect gzip decompression over representative compressed response
 //!   frame sizes, including its output allocation and inflate work.
 
@@ -24,7 +25,7 @@ use std::io::Write;
 use shunt::adapters::cursor::agent::{build_run_frames, AgentRunParams, AgentTool};
 use shunt::adapters::cursor::connect::decode_gzip_frame as decode_gzip_frame_sync;
 use shunt::adapters::cursor::decode_selected_images;
-use shunt::adapters::cursor::request::CursorSelectedImage;
+use shunt::adapters::cursor::request::{cursor_selected_images, CursorSelectedImage};
 use shunt::adapters::cursor::sse::CursorSseFramer;
 use shunt::config::{Config, ResponsesFlavor, RouteConfig, RoutePrefixConfig};
 use shunt::model::{responses, responses_request};
@@ -143,6 +144,31 @@ fn cursor_image_fixture(decoded_bytes: usize) -> CursorSelectedImage {
         path: "claude-image-1.png".to_string(),
         mime_type: "image/png".to_string(),
     }
+}
+
+fn cursor_image_request(decoded_bytes: usize) -> serde_json::Value {
+    let data = base64::engine::general_purpose::STANDARD.encode(vec![0x5a; decoded_bytes]);
+    json!({
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": data
+                }
+            }]
+        }]
+    })
+}
+
+/// Extract selected images from JSON and decode their cloned base64 strings: the
+/// complete synchronous pipeline whose cost determines the inline threshold.
+#[divan::bench(args = [32768, 65536, 131072, 262144])]
+fn cursor_extract_and_decode_images(bencher: divan::Bencher, decoded_bytes: usize) {
+    let request = cursor_image_request(decoded_bytes);
+    bencher.bench(|| decode_selected_images(cursor_selected_images(divan::black_box(&request))));
 }
 
 /// Decode one request image at sizes bracketing the inline/offload threshold.

@@ -196,7 +196,7 @@ pub(crate) async fn decode_gzip_frame_async(payload: Bytes) -> Result<Vec<u8>, s
         // it avoids letting compressed size masquerade as an output-work bound.
     }
 
-    crate::adapters::cursor::offload::spawn_bounded(move || {
+    crate::adapters::cursor::offload::spawn_bounded_gzip(move || {
         #[cfg(test)]
         let _in_flight = InFlightDecode::enter();
         #[cfg(test)]
@@ -726,7 +726,7 @@ mod tests {
     #[tokio::test]
     async fn async_gzip_offloads_never_exceed_slot_limit() {
         let _observer = offload_observer();
-        let slots = crate::adapters::cursor::offload::cpu_slots().available_permits();
+        let slots = crate::adapters::cursor::offload::gzip_slots().available_permits();
         MAX_IN_FLIGHT_DECODES.store(0, std::sync::atomic::Ordering::SeqCst);
         let compressed = gzip(&incompressible_bytes(INLINE_GZIP_FRAME_BYTES * 16));
         assert!(compressed.len() > INLINE_GZIP_FRAME_BYTES);
