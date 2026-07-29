@@ -1,0 +1,19 @@
+src/adapters/cursor/agent.rs
+  s_df582596bd7fdb::t_cc498345092750 400
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "3fb3267d01996c756977812ed53fbf900c7074a2",
+  "prompts": {},
+  "sessions": {
+    "s_df582596bd7fdb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cde9d9e6-d114-4cfc-a6fc-710149b2f289",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
