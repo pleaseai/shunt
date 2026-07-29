@@ -1,0 +1,136 @@
+---
+title: モデルエイリアスと 1M コンテキスト
+description: Claude Code のベース URL が api.anthropic.com ではなく shunt を指す場合に、opus、sonnet、fable、および [1m] サフィックスがどのように解決されるか。
+---
+
+Claude Code は短いエイリアス（`opus`、`sonnet`、`haiku`、`fable`、`opusplan`）を、リクエストが shunt に到達する**前にクライアント側で**解決します。解決に使うテーブルは CLI バイナリに組み込まれており、そのうち 2 つの分岐はセッションの*接続方法*によって決まります。`ANTHROPIC_BASE_URL` を shunt に向けると両方の分岐が変わるため、同じ `/model opus` でも `api.anthropic.com` に接続した場合とは異なるモデルが選択されることがあります。
+
+shunt はこの選択に影響を与えられません。shunt がリクエストを確認する時点では、すでに選択が完了しているためです。ただし、その結果をリマップすることはできます — [意図した tier を復元する](#意図した-tier-を復元する)を参照してください。
+
+## 2 つのゲート
+
+このページで説明する違いは、すべて次の 2 つに起因します。
+
+| ゲート | 確認内容 | shunt 経由での値 |
+| :-- | :-- | :-- |
+| デプロイメント種別 | セッションがゲートウェイ認証情報を保持している場合は `gateway`、それ以外は `firstParty` | [gateway login](/ja/guides/gateway-login/) では `gateway`、単純な `ANTHROPIC_BASE_URL` では `firstParty` |
+| 「本当にファーストパーティか？」 | `ANTHROPIC_BASE_URL` が未設定、**または**ホストが正確に `api.anthropic.com` | 常に false — shunt は別のホスト |
+
+2 番目のゲートは厳密なホスト一致です。`api.anthropic.com` 以外の base URL はすべてこのゲートを通過できません。パススルー認証情報を使って Anthropic へ直接プロキシする shunt インスタンスも同様です。
+
+## エイリアスの解決
+
+`opus` と `sonnet` にはデプロイメントごとのオーバーライドがあります。`fable` と `haiku` にはないため、どこでも同じように解決されます。
+
+| エイリアス | `api.anthropic.com` | `ANTHROPIC_BASE_URL` 経由の shunt | [gateway login](/ja/guides/gateway-login/) 経由の shunt |
+| :-- | :-- | :-- | :-- |
+| `opus` | `claude-opus-5` | `claude-opus-5` | **`claude-opus-4-7`** |
+| `sonnet` | `claude-sonnet-5` | `claude-sonnet-5` | **`claude-sonnet-4-6`** |
+| `fable` | `claude-fable-5` | `claude-fable-5` | `claude-fable-5` |
+| `haiku` | `claude-haiku-4-5` | `claude-haiku-4-5` | `claude-haiku-4-5` |
+
+意外なのは gateway の列です。gateway セッションでは `opus` が 2 リリース前、`sonnet` が 1 リリース前に固定されます。確認したリリース（2.1.217～2.1.220）ではこの固定値は変わっておらず、変わったのは*もう一方*の列です。Claude Code 2.1.219 では gateway 以外の `opus` のデフォルトが Opus 4.8 から Opus 5 に移行しました。そのため、4.8 対 4.7 だった差が 5 対 4.7 に広がり、固定値が目立つようになりました。
+
+Anthropic は[サードパーティプロバイダー向けの同等の表](https://code.claude.com/docs/en/model-config#model-aliases)（Bedrock、Vertex、Foundry）を公開していますが、gateway の行は記載していないため、この違いは見落としやすくなっています。
+
+<Aside type="tip" title="tier を明示的に固定する">
+
+`ANTHROPIC_DEFAULT_OPUS_MODEL` と `ANTHROPIC_DEFAULT_SONNET_MODEL` はエイリアステーブルより先に読み込まれるため、すべてのデプロイメントで固定値をオーバーライドします。
+
+```bash
+export ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-5
+export ANTHROPIC_DEFAULT_SONNET_MODEL=claude-sonnet-5
+```
+
+完全なモデル名（`/model claude-opus-5`）を選択する方法もあります。リマップされるのは短いエイリアスだけです。
+
+</Aside>
+
+## `[1m]` は shunt に到達しない
+
+このサフィックスはクライアント側のヒントであり、モデル id の一部ではありません。Claude Code は送信前にサフィックスを取り除き、代わりに beta ヘッダーでリクエストを表現します。
+
+```http
+POST /v1/messages?beta=true
+{"model": "claude-opus-5", ...}
+anthropic-beta: claude-code-20250219,context-1m-2025-08-07,...
+```
+
+したがって、shunt が通信上で `claude-opus-5[1m]` を受け取ることはありません。受け取るのは `claude-opus-5` と `context-1m-2025-08-07` です。（shunt はルートマッチングと `availableModels` の適用前に末尾の `[1m]`／`[1M]` も取り除くため、手書きのクライアントからヒントが実際に届いても正しくルーティングされます。）
+
+## 1M コンテキストは自動的に適用されない
+
+Claude Code は次の順序でコンテキストウィンドウを決定します。明示的な `[1m]`、`context-1m` beta ヘッダー、そして**このデプロイメントでモデルがネイティブに 1M かどうか**です。最後の確認には `api.anthropic.com` のホストゲートを通過する必要があります。他の base URL の背後では通過できないため、ネイティブ 1M モデルもデフォルトの 200K にフォールバックします。
+
+| 選択 | `api.anthropic.com` | shunt の背後 |
+| :-- | :-- | :-- |
+| `opus` | 1M（ネイティブ） | **200K** |
+| `opus[1m]` | 1M | 1M |
+| `fable` | 1M（ネイティブ） | **200K** |
+| `fable[1m]` | 1M（冗長なためサフィックスを除去） | 1M |
+
+Anthropic も同じ制約を明記しています。*「`ANTHROPIC_BASE_URL` がゲートウェイを指している場合、Claude Code は 1M 対応を確認できない」*（[extended context](https://code.claude.com/docs/en/model-config#extended-context)）。
+
+shunt の背後では、**常にサフィックスを付ける**のが実用的なルールです。`/model opus[1m]`、`/model fable[1m]` のように指定するか、固定値に組み込んでください。
+
+```bash
+export ANTHROPIC_DEFAULT_OPUS_MODEL='claude-opus-5[1m]'
+```
+
+次の 2 点も知っておくと役立ちます。
+
+- 確認したどのリリース（2.1.217～2.1.220）でも、短いエイリアスが `[1m]` を自動適用したことは**ありません**。アップグレード後に 1M が表示されなくなった場合、原因はエイリアス処理の変更ではなく、上記のウィンドウ確認です。
+- `claude-fable-5` のカタログエントリには `[1m]` バリアントがありません。ネイティブに 1M であり、それ以外のバリアントは存在しません。`api.anthropic.com` に接続している場合、入力した `fable[1m]` は暗黙的に `fable` へ短縮されます。shunt の背後では、完全なウィンドウを利用する唯一の方法であるため、サフィックスが維持されます。
+
+ここでは `CLAUDE_CODE_MAX_CONTEXT_TOKENS` を回避策として使えません。[Effort とコンテキスト](/ja/guides/effort-and-context/#マッピングされたモデルのコンテキスト--使用量表示)で説明しているように、この設定は `claude-` で始まらない id にのみ適用されます。
+
+## Fable がピッカーから消える
+
+Fable は同じホスト確認によってゲートされています。デプロイメントが `firstParty` であり、base URL が `api.anthropic.com` ではない場合、Claude Code は `/model` からすべての Fable エントリを除外し、設定済みの `claude-fable-5` も存在しないものとして報告します。この状態で `settings.json` に `"model": "claude-fable-5[1m]"` を指定すると、暗黙的に Opus へフォールバックします。
+
+gateway login セッションは対象外であり、Fable を引き続き選択できます。base URL 経由で Fable を使う方法は、ほかに 2 つあります。
+
+```bash
+# Bypasses the availability check entirely
+export ANTHROPIC_DEFAULT_FABLE_MODEL=claude-fable-5
+```
+
+明示的な `--model fable`／`/model fable` でも解決されます。可用性ゲートが制御するのはピッカーと保存されたデフォルトであり、id の直接解決ではないためです。この挙動は 2.1.217～2.1.220 のすべてで変わっていません。
+
+## 意図した tier を復元する
+
+shunt はクライアントの選択を変更できませんが、通過するモデルを書き換えることはできます。ユーザーが gateway login を利用しており、`opus`／`sonnet` エイリアスを現在の tier に割り当てたい場合は、固定された id をリマップします。
+
+```toml
+[[routes]]
+model = "claude-opus-4-7"        # what a gateway session sends for `opus`
+provider = "anthropic"
+upstream_model = "claude-opus-5" # what you want it to actually run
+
+[[routes]]
+model = "claude-sonnet-4-6"
+provider = "anthropic"
+upstream_model = "claude-sonnet-5"
+```
+
+<Aside type="caution">
+
+この方法では `/model` の id が実態と異なります。ピッカーには Opus 4.7 と表示されますが、リクエストは Opus 5 で実行されます。クライアントを管理できる場合は、クライアント側の [`ANTHROPIC_DEFAULT_OPUS_MODEL` による固定](#エイリアスの解決)を優先してください。ルートのリマップは、ユーザーを再設定できない共有ゲートウェイなど、クライアントを管理できない場合にのみ使用します。どちらの方法でも、どの設定が有効なのかをユーザーに知らせてください。
+
+</Aside>
+
+選定した [`[[models]]`](/ja/guides/model-discovery/#discovery-とルーティングを統合する) エントリは影響を受けません。discovery された id はピッカーからそのまま選択され、エイリアステーブルを通過しません。
+
+## バージョン履歴
+
+インストール済みの各 CLI バイナリからエイリアステーブルを抽出し、その結果をリクエストキャプチャと照合して確認しました。
+
+| | 2.1.217 | 2.1.218 | 2.1.219 | 2.1.220 |
+| :-- | :-- | :-- | :-- | :-- |
+| `opus`（non-gateway） | `claude-opus-4-8` | `claude-opus-4-8` | `claude-opus-5` | `claude-opus-5` |
+| `opus`（gateway） | `claude-opus-4-7` | `claude-opus-4-7` | `claude-opus-4-7` | `claude-opus-4-7` |
+| `sonnet`（gateway） | `claude-sonnet-4-6` | `claude-sonnet-4-6` | `claude-sonnet-4-6` | `claude-sonnet-4-6` |
+| カタログ内の `claude-opus-5` | — | — | ✅ | ✅ |
+| 1M / Fable のホストゲート | 同じ | 同じ | 同じ | 同じ |
+
+Opus 5 には Claude Code 2.1.219 以降が必要です。2.1.217～2.1.218 では、どのデプロイメントでも `opus` エイリアスから Opus 5 を利用できません。

@@ -71,6 +71,8 @@ Live-verified boundary for `gpt-5.6-sol` (real window 372k): 365k input tokens a
 
 The other client-side lever is the `[1m]` model-id suffix, which forces a 1M window — only use it when the upstream really has that window. (shunt strips a trailing `[1m]` before route matching and forwarding, so the hint stays purely client-side and the provider never sees it.)
 
+For **Claude** models the suffix is not optional behind shunt: Claude Code only treats a natively-1M model as 1M when the base URL is `api.anthropic.com`, so `opus` and `fable` fall back to 200K here unless you write `opus[1m]` / `fable[1m]`. See [Model Aliases & 1M Context](/guides/model-aliases/#1m-context-is-not-applied-automatically).
+
 | Field | Mapped (`responses`) model | Claude passthrough |
 | :-- | :-- | :-- |
 | Context tokens used | ✅ accurate (forwarded by shunt) | ✅ accurate |

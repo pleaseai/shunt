@@ -1,0 +1,136 @@
+---
+title: Model Aliases & 1M Context
+description: How Claude Code resolves opus, sonnet, and fable — and the [1m] suffix — when its base URL points at shunt instead of api.anthropic.com.
+---
+
+Claude Code resolves the short aliases (`opus`, `sonnet`, `haiku`, `fable`, `opusplan`) **client-side**, before any request reaches shunt. The table it resolves against is compiled into the CLI binary, and two of its branches key off *how* the session is connected. Point `ANTHROPIC_BASE_URL` at shunt and both branches change — so the same `/model opus` can select a different model than it does against `api.anthropic.com`.
+
+shunt cannot influence this: the choice is already made by the time it sees the request. What shunt *can* do is remap the result — see [Recover the intended tiers](#recover-the-intended-tiers).
+
+## The two gates
+
+Every difference on this page traces back to these:
+
+| Gate | What it checks | Value behind shunt |
+| :-- | :-- | :-- |
+| Deployment kind | `gateway` when the session holds a gateway credential, otherwise `firstParty` | `gateway` with [gateway login](/guides/gateway-login/); `firstParty` with a plain `ANTHROPIC_BASE_URL` |
+| "Is this really first-party?" | `ANTHROPIC_BASE_URL` unset, **or** its host is exactly `api.anthropic.com` | Always false — shunt is a different host |
+
+The second gate is a strict host match. Any base URL that isn't `api.anthropic.com` fails it, including a shunt instance that proxies straight through to Anthropic with a passthrough credential.
+
+## Alias resolution
+
+`opus` and `sonnet` carry per-deployment overrides. `fable` and `haiku` do not, so they resolve the same way everywhere.
+
+| Alias | `api.anthropic.com` | shunt via `ANTHROPIC_BASE_URL` | shunt via [gateway login](/guides/gateway-login/) |
+| :-- | :-- | :-- | :-- |
+| `opus` | `claude-opus-5` | `claude-opus-5` | **`claude-opus-4-7`** |
+| `sonnet` | `claude-sonnet-5` | `claude-sonnet-5` | **`claude-sonnet-4-6`** |
+| `fable` | `claude-fable-5` | `claude-fable-5` | `claude-fable-5` |
+| `haiku` | `claude-haiku-4-5` | `claude-haiku-4-5` | `claude-haiku-4-5` |
+
+The gateway column is the surprising one: a gateway session pins `opus` two releases behind and `sonnet` one behind. Those pins have not moved across the releases checked (2.1.217–2.1.220) — what changed is the *other* column. Claude Code 2.1.219 moved the non-gateway `opus` default from Opus 4.8 to Opus 5, which widened a 4.8-vs-4.7 gap into a 5-vs-4.7 gap and made the pin visible.
+
+Anthropic documents the equivalent table [for third-party providers](https://code.claude.com/docs/en/model-config#model-aliases) (Bedrock, Vertex, Foundry) but does not list a gateway row, so this divergence is easy to miss.
+
+<Aside type="tip" title="Pin the tier explicitly">
+
+`ANTHROPIC_DEFAULT_OPUS_MODEL` and `ANTHROPIC_DEFAULT_SONNET_MODEL` are read before the alias table, so they override the pin on every deployment:
+
+```bash
+export ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-5
+export ANTHROPIC_DEFAULT_SONNET_MODEL=claude-sonnet-5
+```
+
+Selecting the full model name (`/model claude-opus-5`) works too — only the bare aliases are remapped.
+
+</Aside>
+
+## `[1m]` never reaches shunt
+
+The suffix is a client-side hint, not part of the model id. Claude Code strips it before sending and expresses the request as a beta header instead:
+
+```http
+POST /v1/messages?beta=true
+{"model": "claude-opus-5", ...}
+anthropic-beta: claude-code-20250219,context-1m-2025-08-07,...
+```
+
+So shunt never sees `claude-opus-5[1m]` on the wire — it sees `claude-opus-5` plus `context-1m-2025-08-07`. (shunt also strips a trailing `[1m]`/`[1M]` before route matching and `availableModels` enforcement, so a hint that *does* arrive — from a hand-written client — still routes correctly.)
+
+## 1M context is not applied automatically
+
+Claude Code sizes the context window in this order: an explicit `[1m]`, then the `context-1m` beta header, then **whether the model is natively 1M *on this deployment*** — and that last check requires the `api.anthropic.com` host gate. Behind any other base URL it fails, so natively-1M models fall back to the 200K default.
+
+| Selection | `api.anthropic.com` | Behind shunt |
+| :-- | :-- | :-- |
+| `opus` | 1M (native) | **200K** |
+| `opus[1m]` | 1M | 1M |
+| `fable` | 1M (native) | **200K** |
+| `fable[1m]` | 1M (suffix dropped as redundant) | 1M |
+
+Anthropic states the same constraint: *"when `ANTHROPIC_BASE_URL` points at a gateway, Claude Code can't verify 1M support"* ([extended context](https://code.claude.com/docs/en/model-config#extended-context)).
+
+The practical rule behind shunt is to **always write the suffix** — `/model opus[1m]`, `/model fable[1m]` — or bake it into the pin:
+
+```bash
+export ANTHROPIC_DEFAULT_OPUS_MODEL='claude-opus-5[1m]'
+```
+
+Two details worth knowing:
+
+- A bare alias has **never** auto-applied `[1m]` on any release checked (2.1.217–2.1.220). If 1M stopped appearing after an upgrade, the cause is the window check above, not a change in alias handling.
+- `claude-fable-5` has no `[1m]` variant in its catalog entry — it is natively 1M and nothing else. Against `api.anthropic.com` a typed `fable[1m]` is silently reduced to `fable`; behind shunt the suffix is kept, because it is the only way to reach the full window.
+
+`CLAUDE_CODE_MAX_CONTEXT_TOKENS` is not an escape hatch here — it applies only to ids that do **not** start with `claude-`, as covered in [Effort & Context](/guides/effort-and-context/#context--usage-display-for-mapped-models).
+
+## Fable disappears from the picker
+
+Fable is gated on the same host check: when the deployment is `firstParty` *and* the base URL isn't `api.anthropic.com`, Claude Code filters every Fable entry out of `/model` and reports a configured `claude-fable-5` as absent. A `"model": "claude-fable-5[1m]"` in `settings.json` then silently falls back to Opus.
+
+Gateway-login sessions are exempt — Fable stays selectable there. Two other ways to reach it on the base-URL path:
+
+```bash
+# Bypasses the availability check entirely
+export ANTHROPIC_DEFAULT_FABLE_MODEL=claude-fable-5
+```
+
+An explicit `--model fable` / `/model fable` also resolves, because the availability gate governs the picker and the saved default rather than direct id resolution. This is unchanged across 2.1.217–2.1.220.
+
+## Recover the intended tiers
+
+shunt can't change what the client picks, but it can rewrite the model on the way through. If your users are on gateway login and you want the `opus`/`sonnet` aliases to land on the current tiers, remap the pinned ids:
+
+```toml
+[[routes]]
+model = "claude-opus-4-7"        # what a gateway session sends for `opus`
+provider = "anthropic"
+upstream_model = "claude-opus-5" # what you want it to actually run
+
+[[routes]]
+model = "claude-sonnet-4-6"
+provider = "anthropic"
+upstream_model = "claude-sonnet-5"
+```
+
+<Aside type="caution">
+
+This makes the id in `/model` a lie: the picker says Opus 4.7 while the request runs Opus 5. Prefer the client-side [`ANTHROPIC_DEFAULT_OPUS_MODEL` pin](#alias-resolution) when you control the clients, and reach for the route remap only when you don't — a shared gateway whose users you can't reconfigure. Either way, tell your users which one is in force.
+
+</Aside>
+
+Curated [`[[models]]`](/guides/model-discovery/#unify-discovery-and-routing) entries are unaffected: a discovered id is selected verbatim from the picker and never passes through the alias table.
+
+## Version history
+
+Verified by extracting the alias table from each installed CLI binary and confirming the result against a request capture.
+
+| | 2.1.217 | 2.1.218 | 2.1.219 | 2.1.220 |
+| :-- | :-- | :-- | :-- | :-- |
+| `opus` (non-gateway) | `claude-opus-4-8` | `claude-opus-4-8` | `claude-opus-5` | `claude-opus-5` |
+| `opus` (gateway) | `claude-opus-4-7` | `claude-opus-4-7` | `claude-opus-4-7` | `claude-opus-4-7` |
+| `sonnet` (gateway) | `claude-sonnet-4-6` | `claude-sonnet-4-6` | `claude-sonnet-4-6` | `claude-sonnet-4-6` |
+| `claude-opus-5` in catalog | — | — | ✅ | ✅ |
+| Host gate on 1M / Fable | same | same | same | same |
+
+Opus 5 requires Claude Code 2.1.219 or later; on 2.1.217–2.1.218 the `opus` alias cannot reach it at all, on any deployment.

@@ -1,0 +1,136 @@
+---
+title: 模型别名与 1M 上下文
+description: 当 Claude Code 的 base URL 指向 shunt 而不是 api.anthropic.com 时,它如何解析 opus、sonnet 和 fable,以及 [1m] 后缀。
+---
+
+Claude Code 会在任何请求抵达 shunt **之前**,在客户端解析简短别名(`opus`、`sonnet`、`haiku`、`fable`、`opusplan`)。用于解析的表被编译进 CLI 二进制文件,其中两个分支取决于会话的*连接方式*。将 `ANTHROPIC_BASE_URL` 指向 shunt 后,这两个分支都会改变 —— 因此同一个 `/model opus` 可能会选择不同于连接 `api.anthropic.com` 时的模型。
+
+shunt 无法影响这一点:当它看到请求时,选择已经完成。shunt *能做的*是重映射结果 —— 见[恢复预期层级](#恢复预期层级)。
+
+## 两个门控
+
+本页的所有差异都源于以下两个门控:
+
+| 门控 | 检查内容 | shunt 后的值 |
+| :-- | :-- | :-- |
+| 部署类型 | 会话持有网关凭据时为 `gateway`,否则为 `firstParty` | 使用[网关登录](/zh-cn/guides/gateway-login/)时为 `gateway`;仅设置 `ANTHROPIC_BASE_URL` 时为 `firstParty` |
+| “这真的是第一方吗?” | `ANTHROPIC_BASE_URL` 未设置,**或**其 host 恰好是 `api.anthropic.com` | 始终为 false —— shunt 使用不同的 host |
+
+第二个门控会严格匹配 host。任何不是 `api.anthropic.com` 的 base URL 都无法通过,包括使用透传凭据直接代理到 Anthropic 的 shunt 实例。
+
+## 别名解析
+
+`opus` 和 `sonnet` 带有每种部署专用的覆盖。`fable` 和 `haiku` 没有,因此它们在任何位置的解析方式都相同。
+
+| 别名 | `api.anthropic.com` | 通过 `ANTHROPIC_BASE_URL` 使用 shunt | 通过[网关登录](/zh-cn/guides/gateway-login/)使用 shunt |
+| :-- | :-- | :-- | :-- |
+| `opus` | `claude-opus-5` | `claude-opus-5` | **`claude-opus-4-7`** |
+| `sonnet` | `claude-sonnet-5` | `claude-sonnet-5` | **`claude-sonnet-4-6`** |
+| `fable` | `claude-fable-5` | `claude-fable-5` | `claude-fable-5` |
+| `haiku` | `claude-haiku-4-5` | `claude-haiku-4-5` | `claude-haiku-4-5` |
+
+网关列最出人意料:网关会话将 `opus` 钉在落后两个版本的模型上,将 `sonnet` 钉在落后一个版本的模型上。在检查的版本(2.1.217–2.1.220)中,这些固定值从未改变 —— 变化的是*另一*列。Claude Code 2.1.219 将非网关 `opus` 的默认值从 Opus 4.8 移到 Opus 5,把 4.8 与 4.7 的差距扩大为 5 与 4.7 的差距,使该固定值变得明显。
+
+Anthropic 记录了[第三方提供方的等效表](https://code.claude.com/docs/en/model-config#model-aliases)(Bedrock、Vertex、Foundry),但没有列出网关行,因此很容易忽略这一差异。
+
+<Aside type="tip" title="明确钉住层级">
+
+`ANTHROPIC_DEFAULT_OPUS_MODEL` 和 `ANTHROPIC_DEFAULT_SONNET_MODEL` 会在别名表之前读取,因此它们会在每种部署上覆盖固定值:
+
+```bash
+export ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-5
+export ANTHROPIC_DEFAULT_SONNET_MODEL=claude-sonnet-5
+```
+
+选择完整模型名称(`/model claude-opus-5`)也有效 —— 只有裸别名会被重映射。
+
+</Aside>
+
+## `[1m]` 永远不会抵达 shunt
+
+该后缀是客户端提示,不是模型 id 的一部分。Claude Code 会在发送前移除它,并改用 beta 头部表达请求:
+
+```http
+POST /v1/messages?beta=true
+{"model": "claude-opus-5", ...}
+anthropic-beta: claude-code-20250219,context-1m-2025-08-07,...
+```
+
+因此 shunt 永远不会在线上看到 `claude-opus-5[1m]` —— 它看到的是 `claude-opus-5` 加上 `context-1m-2025-08-07`。(shunt 还会在路由匹配和 `availableModels` 强制检查之前移除尾部的 `[1m]`/`[1M]`,因此即使提示确实从手写客户端抵达,仍然可以正确路由。)
+
+## 1M 上下文不会自动应用
+
+Claude Code 按以下顺序确定上下文窗口大小:显式 `[1m]`,然后是 `context-1m` beta 头部,再检查**模型在此部署上是否原生支持 1M** —— 最后一项检查要求通过 `api.anthropic.com` host 门控。在任何其他 base URL 后都无法通过,因此原生 1M 模型会回退到 200K 默认值。
+
+| 选择 | `api.anthropic.com` | shunt 后 |
+| :-- | :-- | :-- |
+| `opus` | 1M(原生) | **200K** |
+| `opus[1m]` | 1M | 1M |
+| `fable` | 1M(原生) | **200K** |
+| `fable[1m]` | 1M(后缀因多余而被丢弃) | 1M |
+
+Anthropic 也说明了同一限制:*“当 `ANTHROPIC_BASE_URL` 指向网关时,Claude Code 无法验证 1M 支持”*([扩展上下文](https://code.claude.com/docs/en/model-config#extended-context))。
+
+shunt 后的实用规则是**始终写出后缀** —— `/model opus[1m]`、`/model fable[1m]` —— 或将其加入固定值:
+
+```bash
+export ANTHROPIC_DEFAULT_OPUS_MODEL='claude-opus-5[1m]'
+```
+
+有两个细节值得了解:
+
+- 在检查的所有版本(2.1.217–2.1.220)中,裸别名都**从未**自动应用 `[1m]`。如果升级后不再出现 1M,原因是上述窗口检查,而不是别名处理发生了变化。
+- `claude-fable-5` 的目录条目没有 `[1m]` 变体 —— 它原生支持 1M,仅此一种。连接 `api.anthropic.com` 时,输入的 `fable[1m]` 会静默缩减为 `fable`;在 shunt 后则会保留后缀,因为这是使用完整窗口的唯一方式。
+
+`CLAUDE_CODE_MAX_CONTEXT_TOKENS` 在这里不是绕过方法 —— 它只适用于**不**以 `claude-` 开头的 id,详见[力度与上下文](/zh-cn/guides/effort-and-context/#映射模型的上下文--用量显示)。
+
+## Fable 从选择器中消失
+
+Fable 受同一个 host 检查门控:当部署为 `firstParty` 且 base URL 不是 `api.anthropic.com` 时,Claude Code 会从 `/model` 中过滤掉每个 Fable 条目,并报告配置的 `claude-fable-5` 不存在。此时,`settings.json` 中的一个 `"model": "claude-fable-5[1m]"` 会静默回退到 Opus。
+
+网关登录会话不受影响 —— Fable 在其中仍可选择。在 base URL 路径上还有两种方式可以使用它:
+
+```bash
+# Bypasses the availability check entirely
+export ANTHROPIC_DEFAULT_FABLE_MODEL=claude-fable-5
+```
+
+显式 `--model fable` / `/model fable` 也能解析,因为可用性门控只控制选择器和保存的默认值,不控制直接 id 解析。这一点在 2.1.217–2.1.220 中没有改变。
+
+## 恢复预期层级
+
+shunt 无法改变客户端的选择,但可以在请求经过时重写模型。如果用户使用网关登录,而你希望 `opus`/`sonnet` 别名落到当前层级,请重映射被钉住的 id:
+
+```toml
+[[routes]]
+model = "claude-opus-4-7"        # what a gateway session sends for `opus`
+provider = "anthropic"
+upstream_model = "claude-opus-5" # what you want it to actually run
+
+[[routes]]
+model = "claude-sonnet-4-6"
+provider = "anthropic"
+upstream_model = "claude-sonnet-5"
+```
+
+<Aside type="caution">
+
+这会使 `/model` 中的 id 与实际不符:选择器显示 Opus 4.7,请求却运行 Opus 5。当你能控制客户端时,优先使用客户端的 [`ANTHROPIC_DEFAULT_OPUS_MODEL` 固定值](#别名解析);只有在无法控制客户端时 —— 例如用户无法重新配置的共享网关 —— 才使用路由重映射。无论采用哪种方式,都要告诉用户当前使用了哪一种。
+
+</Aside>
+
+维护的 [`[[models]]`](/zh-cn/guides/model-discovery/#统一发现与路由) 条目不受影响:发现的 id 会从选择器中原样选中,从不经过别名表。
+
+## 版本历史
+
+通过从每个已安装的 CLI 二进制文件中提取别名表,并对照请求捕获确认结果来验证。
+
+| | 2.1.217 | 2.1.218 | 2.1.219 | 2.1.220 |
+| :-- | :-- | :-- | :-- | :-- |
+| `opus`(非网关) | `claude-opus-4-8` | `claude-opus-4-8` | `claude-opus-5` | `claude-opus-5` |
+| `opus`(网关) | `claude-opus-4-7` | `claude-opus-4-7` | `claude-opus-4-7` | `claude-opus-4-7` |
+| `sonnet`(网关) | `claude-sonnet-4-6` | `claude-sonnet-4-6` | `claude-sonnet-4-6` | `claude-sonnet-4-6` |
+| 目录中的 `claude-opus-5` | — | — | ✅ | ✅ |
+| 1M / Fable 的 host 门控 | 相同 | 相同 | 相同 | 相同 |
+
+Opus 5 要求 Claude Code 2.1.219 或更高版本;在 2.1.217–2.1.218 上,任何部署中的 `opus` 别名都无法使用它。

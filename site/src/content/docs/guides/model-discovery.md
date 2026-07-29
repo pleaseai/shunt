@@ -9,6 +9,8 @@ For that second half, shunt asks `server.default_provider` for the live list whe
 
 Discovered models need no dedicated `[[routes]]` entry — they resolve through your normal routing rules, falling back to `server.default_provider` when no `[[routes]]` or `[[route_prefixes]]` entry matches.
 
+A discovered id is also selected verbatim, so it bypasses Claude Code's built-in alias table entirely. That table is what remaps the bare `opus`/`sonnet` aliases behind a gateway session — see [Model Aliases & 1M Context](/guides/model-aliases/).
+
 Claude Code ignores any discovered id that doesn't begin with `claude`/`anthropic` ([protocol reference](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery)), so use a Claude-named alias when curating a non-Claude model such as `gpt-*`.
 
 ## Unify discovery and routing

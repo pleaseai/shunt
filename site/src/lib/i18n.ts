@@ -66,6 +66,7 @@ export const NAVIGATION: NavigationGroup[] = [
       { label: "Connect Claude Desktop", translations: { ko: "Claude Desktop 연결", ja: "Claude Desktop の接続", "zh-cn": "连接 Claude Desktop" }, slug: "guides/connect-claude-desktop" },
       { label: "Connect the Codex CLI", translations: { ko: "Codex CLI 연결", ja: "Codex CLI の接続", "zh-cn": "连接 Codex CLI" }, slug: "guides/connect-codex-cli" },
       { label: "Model Discovery", translations: { ko: "모델 디스커버리", ja: "モデルディスカバリー", "zh-cn": "模型发现" }, slug: "guides/model-discovery" },
+      { label: "Model Aliases & 1M Context", translations: { ko: "모델 별칭과 1M 컨텍스트", ja: "モデルエイリアスと 1M コンテキスト", "zh-cn": "模型别名与 1M 上下文" }, slug: "guides/model-aliases" },
       { label: "Effort & Context", translations: { ko: "Effort와 컨텍스트", ja: "Effort とコンテキスト", "zh-cn": "推理强度与上下文" }, slug: "guides/effort-and-context" },
       { label: "Sharing a Gateway", translations: { ko: "게이트웨이 공유", ja: "ゲートウェイの共有", "zh-cn": "共享网关" }, slug: "guides/shared-gateway" },
       { label: "OpenTelemetry", translations: { ko: "OpenTelemetry", ja: "OpenTelemetry", "zh-cn": "OpenTelemetry" }, slug: "guides/opentelemetry" },
