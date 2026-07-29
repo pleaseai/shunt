@@ -1,6 +1,6 @@
 //! CodSpeed benchmarks for shunt's CPU-bound request-path hot spots.
 //!
-//! Three groups, all avoiding network/IO so the CPU-simulation instrument
+//! Four groups, all avoiding network/IO so the CPU-simulation instrument
 //! produces stable, hardware-agnostic measurements:
 //!
 //! - Pure, allocation-light helpers that run on every proxied request: local
@@ -10,15 +10,21 @@
 //!   streamed requests: Anthropic Messages → Responses request translation
 //!   (per request), Responses SSE parse + Anthropic-SSE state folding (per
 //!   event), and Cursor SSE framing (per token delta).
+//! - Cursor request protobuf framing and inline image base64 decoding over the
+//!   representative request shapes used to set blocking-offload policy.
 //! - Cursor Connect gzip decompression over representative compressed response
 //!   frame sizes, including its output allocation and inflate work.
 
 use axum::http::{HeaderMap, HeaderName, HeaderValue};
+use base64::Engine;
 use flate2::{write::GzEncoder, Compression};
 use serde_json::json;
 use std::io::Write;
 
+use shunt::adapters::cursor::agent::{build_run_frames, AgentRunParams, AgentTool};
 use shunt::adapters::cursor::connect::decode_gzip_frame as decode_gzip_frame_sync;
+use shunt::adapters::cursor::decode_selected_images;
+use shunt::adapters::cursor::request::CursorSelectedImage;
 use shunt::adapters::cursor::sse::CursorSseFramer;
 use shunt::config::{Config, ResponsesFlavor, RouteConfig, RoutePrefixConfig};
 use shunt::model::{responses, responses_request};
@@ -77,6 +83,77 @@ fn gzip_fixture(compressed_target: usize) -> Vec<u8> {
 fn decode_gzip_frame(bencher: divan::Bencher, compressed_target: usize) {
     let compressed = gzip_fixture(compressed_target);
     bencher.bench(|| decode_gzip_frame_sync(divan::black_box(&compressed)).unwrap());
+}
+
+fn cursor_tools(count: usize) -> Vec<AgentTool> {
+    let description =
+        "Read a workspace resource and return structured metadata for the coding agent.";
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "file_path": {"type": "string", "description": "Absolute path to inspect."},
+            "line_start": {"type": "integer", "minimum": 1},
+            "line_count": {"type": "integer", "minimum": 1, "maximum": 2000},
+            "options": {
+                "type": "object",
+                "description": "Optional controls for reading the selected resource.",
+                "properties": {
+                    "include_hidden": {"type": "boolean"},
+                    "format": {"type": "string", "enum": ["text", "json", "summary"]}
+                },
+                "additionalProperties": false
+            },
+            "encoding": {"type": "string", "default": "utf-8"}
+        },
+        "required": ["file_path"],
+        "additionalProperties": false
+    });
+    (0..count)
+        .map(|index| AgentTool {
+            name: format!("workspace_tool_{index}"),
+            description: description.to_string(),
+            input_schema: schema.clone(),
+        })
+        .collect()
+}
+
+fn cursor_run_params(prompt_bytes: usize, tool_count: usize) -> AgentRunParams {
+    AgentRunParams {
+        prompt: "p".repeat(prompt_bytes),
+        model_id: "claude-sonnet-4-5".to_string(),
+        cwd: "/workspace/project".to_string(),
+        mode: 1,
+        images: Vec::new(),
+        tools: cursor_tools(tool_count),
+    }
+}
+
+/// Build the complete ordered Cursor Connect request frames for representative
+/// prompt/tool shapes. Sixteen schemas total about 8.5 KiB of source JSON.
+#[divan::bench(args = [(4096, 0), (4096, 16), (65536, 16)])]
+fn cursor_build_run_frames(bencher: divan::Bencher, shape: (usize, usize)) {
+    let params = cursor_run_params(shape.0, shape.1);
+    bencher.bench(|| build_run_frames(divan::black_box(&params)));
+}
+
+fn cursor_image_fixture(decoded_bytes: usize) -> CursorSelectedImage {
+    CursorSelectedImage {
+        data: base64::engine::general_purpose::STANDARD.encode(vec![0x5a; decoded_bytes]),
+        uuid: "bench-image".to_string(),
+        path: "claude-image-1.png".to_string(),
+        mime_type: "image/png".to_string(),
+    }
+}
+
+/// Decode one request image at sizes bracketing the inline/offload threshold.
+/// This is the real synchronous decode helper; async scheduling is intentionally
+/// excluded because CodSpeed executes the benchmark under Valgrind.
+#[divan::bench(args = [32768, 65536, 131072, 262144])]
+fn cursor_decode_images(bencher: divan::Bencher, decoded_bytes: usize) {
+    let image = cursor_image_fixture(decoded_bytes);
+    bencher
+        .with_inputs(|| vec![image.clone()])
+        .bench_values(|images| decode_selected_images(divan::black_box(images)));
 }
 
 /// A representative Anthropic Messages request body: a system prompt, a handful
