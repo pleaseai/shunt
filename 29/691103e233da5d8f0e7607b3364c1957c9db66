@@ -1,0 +1,73 @@
+tests/failover.rs
+  s_4ebc5b829a9aa4::t_81db1543fedb22 274
+  s_4ebc5b829a9aa4::t_0fbb36c664aa8a 40-47
+  s_4ebc5b829a9aa4::t_61b8a2b2b04953 243-273,275-292
+  s_4ebc5b829a9aa4::t_5944a148bd668f 242
+tests/passthrough.rs
+  s_4ebc5b829a9aa4::t_2a86ab8e55fbf4 241-270
+  s_4ebc5b829a9aa4::t_356804c83bf3d5 240
+src/request.rs
+  s_4ebc5b829a9aa4::t_2d0cf5009fdbb8 91-100,102-103,106-120
+  s_4ebc5b829a9aa4::t_bada3e7cfbc948 26-90,101,104-105,121-123,125-130,140-142
+  s_4ebc5b829a9aa4::t_8ef71a0eae68ea 9,11-19
+  s_4ebc5b829a9aa4::t_9eb418e84cd80e 161-172
+  s_4ebc5b829a9aa4::t_20628067f8f064 191-192,199-200
+  s_4ebc5b829a9aa4::t_6db768d82e9dfa 131-138
+  s_4ebc5b829a9aa4::t_d98ea5cf97eca3 185-186
+  s_4ebc5b829a9aa4::t_a551e058dfbb8d 227-230
+  s_4ebc5b829a9aa4::t_52c172e6df6cee 1,3-7
+  s_4ebc5b829a9aa4::t_b0f54b99173cfe 212-226,231-244
+  s_4ebc5b829a9aa4::t_1aa62a2bc16c72 252-253
+  s_4ebc5b829a9aa4::t_f8ff6b00fcd14f 190,193-198,201-211
+  s_4ebc5b829a9aa4::t_236e61470daf3e 189,265-313
+src/adapters/responses/codex_continuation.rs
+  s_4ebc5b829a9aa4::t_2f8ccfee893834 103
+  s_4ebc5b829a9aa4::t_99a072398c245a 104
+  s_4ebc5b829a9aa4::t_3bb1b0a48b80ec 105-109
+  s_4ebc5b829a9aa4::t_6909d5988d4721 542-622
+  s_4ebc5b829a9aa4::t_5ccabfab349cb7 101-102
+tests/multi_account.rs
+  s_4ebc5b829a9aa4::t_5d2fc938f0bce0 34-59,217,223,270
+  s_4ebc5b829a9aa4::t_760aa08d2322c9 196-216,218-222,224-269,271
+src/adapters/anthropic/mod.rs
+  s_4ebc5b829a9aa4::t_dc456ee3d1f679 690-699
+  s_4ebc5b829a9aa4::t_2deb02c7a046db 723-724,727-733,738-745,747,749-751,759
+  s_4ebc5b829a9aa4::t_6fca62c09aefa3 725-726,734-737,746
+  s_4ebc5b829a9aa4::t_c818ebb06913f3 1205-1208
+  s_4ebc5b829a9aa4::t_bb6cb62e48d6cc 1187-1190,1200-1204,1209-1227,1230-1256
+src/adapters/responses/codex_ws.rs
+  s_4ebc5b829a9aa4::t_010cc423db3d03 388-391
+benches/perf_issues.rs
+  s_4ebc5b829a9aa4::t_930ef5547820db 2-4
+  s_4ebc5b829a9aa4::t_32b2bf7b8f9f85 241
+  s_4ebc5b829a9aa4::t_185f6e01bafa1c 306
+  s_4ebc5b829a9aa4::t_74cd8c6f0e5eba 5-10
+src/proxy/failover.rs
+  s_4ebc5b829a9aa4::t_3d4870c4eaa22f 116-121
+  s_4ebc5b829a9aa4::t_28961f738e6788 268-274,276
+src/routing.rs
+  s_4ebc5b829a9aa4::t_c2792cef54a216 476,478-480,482-483
+  s_4ebc5b829a9aa4::t_4f3a9fa071f9e8 64-67,75-78,80
+  s_4ebc5b829a9aa4::t_976159f5491ade 477,481
+  s_4ebc5b829a9aa4::t_ff7cd7591c4617 475
+tests/responses_translate.rs
+  s_4ebc5b829a9aa4::t_2366fe481e86d9 35-58
+  s_4ebc5b829a9aa4::t_b05d0460322a15 7
+  s_4ebc5b829a9aa4::t_9822c8db3f2e60 34
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "29691103e233da5d8f0e7607b3364c1957c9db66",
+  "prompts": {},
+  "sessions": {
+    "s_4ebc5b829a9aa4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f6eb487a-848a-4ac2-9fe6-8e85ad430854",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
