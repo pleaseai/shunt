@@ -1,0 +1,19 @@
+src/adapters/responses/pool.rs
+  s_01edab2d585333::t_26f8eae0e01765 147-155
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "1ff212f6058e8e495cbb7a7b33c5c83ba99de6c6",
+  "prompts": {},
+  "sessions": {
+    "s_01edab2d585333": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4bcfe9cd-c6f2-4e1e-9265-8544aa73ccd8",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
