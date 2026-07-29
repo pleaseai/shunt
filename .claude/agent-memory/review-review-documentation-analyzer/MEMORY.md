@@ -11,3 +11,4 @@
 - [PR #142 OAuth login docs review](shunt_pr142_oauth_login_docs_review.md) — --mode oauth/import/setup-token CLI + admin mode toggle across 8 docs × 4 locales, zero findings; method for verifying --mode-style CLI additions against clap enums fast.
 - [Provider pages review traps](shunt_provider_pages_review.md) — PR #230: standalone non-Anthropic [[upstreams]] needs default_provider; check doesn't require exported key value.
 - [Config reload doc review traps](shunt_config_reload_doc_review_traps.md) — separate reload-time env auth, request-time env credentials, dynamic store scans, and boot-fixed surfaces.
+- [PR #272 Cursor offload docs review](shunt_pr272_cursor_offload_doc_review.md) — performance-only Cursor changes can still drift the ordered-failover spec when new local CPU-task errors inherit BeforeHeaders classification.
