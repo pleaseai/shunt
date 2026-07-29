@@ -1,0 +1,19 @@
+src/adapters/responses/codex_ws.rs
+  s_dfa208a62d4992::t_aeb3f192015cf9 1214-1217
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "16afcc3bb3b1e3c6d5d0fe0ed8f0946ccd9e86ae",
+  "prompts": {},
+  "sessions": {
+    "s_dfa208a62d4992": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b5f00ff6-9ce3-4f89-a902-f524239de513",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
