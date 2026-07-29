@@ -56,6 +56,7 @@ Each signal toggles independently via `traces` / `metrics` / `logs`.
 | `shunt.codex_client_events` | Counter | `event` | Codex CLI analytics events by sanitized event name; payloads and properties are discarded. |
 | `shunt.upstream_retries` | Counter | `provider`, `reason` | Bounded transient upstream retries. |
 | `shunt.failover` | Counter | `provider`, `state` | Ordered-upstream failover transitions: `attempted`, `advanced`, or `exhausted`. |
+| `shunt.requests_shed` | Counter | — | Inbound requests rejected at the `max_concurrent_requests` limit. The rejection itself is logged only at `debug!`, so this counter is what makes a saturated gateway visible. |
 | `shunt.pool.quota_utilization` | Gauge | `provider`, `window` | Minimum utilization across enabled, observed, non-expired quota values for `5h`, `7d`, or `7d_oi`. |
 | `shunt.pool.rotations` | Counter | `provider`, `reason` | Moves off an account and requests that exhaust the pool. |
 

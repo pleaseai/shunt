@@ -149,6 +149,7 @@ mod tests {
             atomic::{AtomicUsize, Ordering},
             Arc,
         },
+        task::Poll,
     };
 
     use axum::{
@@ -482,10 +483,12 @@ mod tests {
         drop(body);
     }
 
-    #[tokio::test]
-    async fn permit_stays_held_after_data_until_mid_stream_body_is_dropped() {
+    /// Router whose first response yields one data frame and then stalls
+    /// forever; every later call answers with an empty body. Models the stalled
+    /// upstream stream that the limit exists to keep counted.
+    fn stalling_stream_router() -> Router {
         let calls = Arc::new(AtomicUsize::new(0));
-        let app = Router::new()
+        Router::new()
             .route(
                 "/stream",
                 post_route(move || {
@@ -505,18 +508,28 @@ mod tests {
             .layer(middleware::from_fn_with_state(
                 ConcurrencyLimit::new(1),
                 limit_requests,
-            ));
+            ))
+    }
 
-        let first = send_post(&app, "/stream").await;
-        assert_eq!(first.status(), StatusCode::OK);
-        let (_parts, mut body) = first.into_parts();
-        let data = poll_fn(|cx| Pin::new(&mut body).poll_frame(cx))
+    /// Drive `body` to its first data frame and assert it carries `chunk`.
+    async fn expect_first_chunk(body: &mut Body) {
+        let data = poll_fn(|cx| Pin::new(&mut *body).poll_frame(cx))
             .await
             .expect("the stream yields a data frame")
             .unwrap()
             .into_data()
             .expect("the first frame is data");
         assert_eq!(data, "chunk");
+    }
+
+    #[tokio::test]
+    async fn permit_stays_held_after_data_until_mid_stream_body_is_dropped() {
+        let app = stalling_stream_router();
+
+        let first = send_post(&app, "/stream").await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let (_parts, mut body) = first.into_parts();
+        expect_first_chunk(&mut body).await;
 
         let second = send_post(&app, "/stream").await;
         assert_eq!(second.status(), StatusCode::SERVICE_UNAVAILABLE);
@@ -524,6 +537,34 @@ mod tests {
         drop(body);
         let third = send_post(&app, "/stream").await;
         assert_eq!(third.status(), StatusCode::OK);
+    }
+
+    /// A stream that has produced data but is still in progress must keep its
+    /// slot. Without this, only the terminal arms of `poll_frame` are observed:
+    /// a regression that also released on `Poll::Pending` passes every other
+    /// test here, and any temporarily stalled SSE stream would silently stop
+    /// counting against the cap — the exact quantity this limit bounds.
+    #[tokio::test]
+    async fn permit_is_retained_while_an_in_progress_stream_polls_pending() {
+        let app = stalling_stream_router();
+
+        let first = send_post(&app, "/stream").await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let (_parts, mut body) = first.into_parts();
+        expect_first_chunk(&mut body).await;
+
+        // Observe `Poll::Pending` without suspending: wrapping the inner poll in
+        // `Poll::Ready` makes the `await` resolve to the inner state itself.
+        // Awaiting `poll_frame` directly would hang forever instead of failing —
+        // `stream::pending` never wakes the task.
+        let polled = poll_fn(|cx| Poll::Ready(Pin::new(&mut body).poll_frame(cx))).await;
+        assert!(
+            polled.is_pending(),
+            "the chained stream must still be in progress"
+        );
+
+        let second = send_post(&app, "/stream").await;
+        assert_eq!(second.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]
