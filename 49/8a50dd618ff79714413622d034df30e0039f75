@@ -1,0 +1,39 @@
+src/adapters/cursor/connect.rs
+  s_df582596bd7fdb::t_b513dd7f3fbedf 142-145
+  s_df582596bd7fdb::t_0976131b2ecd00 656
+  s_df582596bd7fdb::t_b5d45a4a691050 122,125
+  s_df582596bd7fdb::t_b717f5c048ff32 120,126-134,140-141,146-162,184-195,197-201,203-204,209,211
+  s_df582596bd7fdb::t_7d6033f7593574 212-219
+  s_df582596bd7fdb::t_e3a816a8b16a19 669
+  s_df582596bd7fdb::t_f352a9f1a649ec 205-206,208
+  s_df582596bd7fdb::t_7f0e4a8439e170 637-655,657-662,664-665,672-673
+  s_df582596bd7fdb::t_62bb692ee5af1b 345-349
+  s_df582596bd7fdb::t_0d38a42314c7b7 164-183
+  s_df582596bd7fdb::t_43cb5f6cefd3a5 123-124
+  s_df582596bd7fdb::t_2226f03e98d4c9 163
+  s_df582596bd7fdb::t_e0af062504d403 367-370
+  s_df582596bd7fdb::t_e414111d0bf03e 135-136
+  s_df582596bd7fdb::t_a54e2c31cf9f0d 663,666-668,670-671
+  s_df582596bd7fdb::t_37c9f29e1fadab 137-139
+  s_df582596bd7fdb::t_ef81ffd7d6df0e 718-737
+  s_df582596bd7fdb::t_c21aab2fcedd5c 207
+benches/gateway.rs
+  s_df582596bd7fdb::t_5051051078ac21 57-66
+  s_df582596bd7fdb::t_e28069b6f5d64c 3,13-14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "498a50dd618ff79714413622d034df30e0039f75",
+  "prompts": {},
+  "sessions": {
+    "s_df582596bd7fdb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cde9d9e6-d114-4cfc-a6fc-710149b2f289",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
