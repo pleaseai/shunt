@@ -4,7 +4,8 @@
     ".": {
       "release-type": "rust",
       "package-name": "shunt-gateway",
-      "include-component-in-tag": false
+      "include-component-in-tag": false,
+      "bump-minor-pre-major": true
     }
   }
 }
