@@ -118,10 +118,11 @@ impl HttpBody for PermitBody {
         // Releasing here rather than relying on `Drop` is load-bearing: a fully
         // consumed body can stay alive well after end-of-stream (hyper may hold
         // it while finishing the connection), and capacity should return to the
-        // pool when the response actually finishes, not whenever this wrapper is
-        // eventually dropped. `Drop` still covers the paths that never reach
-        // EOS — client disconnect, or a body abandoned mid-stream.
-        if matches!(frame, Poll::Ready(None)) {
+        // pool when the response finishes or terminates with an error, not when
+        // this wrapper is eventually dropped. `Drop` still covers the paths that
+        // never reach a terminal frame — client disconnect or a body abandoned
+        // mid-stream.
+        if matches!(frame, Poll::Ready(None | Some(Err(_)))) {
             self.permit.take();
         }
         frame
@@ -149,22 +150,26 @@ mod tests {
     };
 
     use axum::{
-        body::{to_bytes, Body, HttpBody},
-        http::{header::RETRY_AFTER, Request, StatusCode},
+        body::{to_bytes, Body, Bytes, HttpBody},
+        extract::Request,
+        http::{header::RETRY_AFTER, HeaderMap, HeaderValue, StatusCode},
         middleware,
         response::Response,
-        routing::post,
+        routing::post as post_route,
         Router,
     };
     use futures_util::stream;
+    use http_body::Frame;
+    use http_body_util::StreamBody;
     use serde_json::Value;
+    use tokio::sync::oneshot;
     use tower::ServiceExt;
 
-    use super::{limit_requests, ConcurrencyLimit};
+    use super::{limit_requests, ConcurrencyLimit, PermitBody, CODEX_PATHS};
 
     fn limited_router(path: &'static str, limit: usize) -> Router {
         Router::new()
-            .route(path, post(|| async { StatusCode::NO_CONTENT }))
+            .route(path, post_route(|| async { StatusCode::NO_CONTENT }))
             .layer(middleware::from_fn_with_state(
                 ConcurrencyLimit::new(limit),
                 limit_requests,
@@ -174,6 +179,13 @@ mod tests {
     async fn json_body(response: Response) -> Value {
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    async fn send_post(app: &Router, path: &'static str) -> Response {
+        app.clone()
+            .oneshot(Request::post(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap()
     }
 
     #[tokio::test]
@@ -191,18 +203,153 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn over_limit_codex_path_uses_openai_shape() {
-        let response = limited_router("/v1/responses", 0)
-            .oneshot(Request::post("/v1/responses").body(Body::empty()).unwrap())
+    async fn every_codex_path_uses_openai_shape_but_other_paths_do_not() {
+        for path in CODEX_PATHS {
+            let response = limited_router(path, 0)
+                .oneshot(Request::post(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{path}");
+            assert_eq!(response.headers()[RETRY_AFTER], "1", "{path}");
+            let body = json_body(response).await;
+            assert!(body.get("type").is_none(), "{path}: {body}");
+            assert_eq!(body["error"]["type"], "overloaded_error", "{path}");
+            assert!(body["error"]["code"].is_null(), "{path}: {body}");
+        }
+
+        let path = "/v1/messages";
+        let response = limited_router(path, 0)
+            .oneshot(Request::post(path).body(Body::empty()).unwrap())
             .await
             .unwrap();
-
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(response.headers()[RETRY_AFTER], "1");
         let body = json_body(response).await;
-        assert!(body.get("type").is_none());
+        assert_eq!(body["type"], "error");
         assert_eq!(body["error"]["type"], "overloaded_error");
-        assert!(body["error"]["code"].is_null());
+    }
+
+    #[tokio::test]
+    async fn trailers_survive_the_permit_body_wrapper() {
+        let limit = ConcurrencyLimit::new(1);
+        let permit = limit.permits.clone().try_acquire_owned().unwrap();
+        let mut trailers = HeaderMap::new();
+        trailers.insert("x-stream-checksum", HeaderValue::from_static("verified"));
+        let frames = stream::iter([
+            Ok::<_, Infallible>(Frame::data(Bytes::from_static(b"chunk"))),
+            Ok(Frame::trailers(trailers)),
+        ]);
+        let mut body = PermitBody::new(Body::new(StreamBody::new(frames)), permit);
+
+        let data = poll_fn(|cx| Pin::new(&mut body).poll_frame(cx))
+            .await
+            .expect("data frame")
+            .unwrap()
+            .into_data()
+            .expect("first frame is data");
+        assert_eq!(data, "chunk");
+        let trailers = poll_fn(|cx| Pin::new(&mut body).poll_frame(cx))
+            .await
+            .expect("trailer frame")
+            .unwrap()
+            .into_trailers()
+            .expect("second frame is trailers");
+        assert_eq!(trailers["x-stream-checksum"], "verified");
+    }
+
+    #[tokio::test]
+    async fn permit_is_held_while_the_request_body_is_read() {
+        let (body_tx, body_rx) = oneshot::channel::<Result<&'static str, Infallible>>();
+        let (reading_tx, reading_rx) = oneshot::channel();
+        let reading_tx = Arc::new(std::sync::Mutex::new(Some(reading_tx)));
+        let app = Router::new()
+            .route(
+                "/upload",
+                post_route(move |request: Request<Body>| {
+                    let reading_tx = reading_tx.clone();
+                    async move {
+                        if let Some(reading_tx) = reading_tx.lock().unwrap().take() {
+                            let _ = reading_tx.send(());
+                        }
+                        to_bytes(request.into_body(), usize::MAX).await.unwrap();
+                        StatusCode::NO_CONTENT
+                    }
+                }),
+            )
+            .layer(middleware::from_fn_with_state(
+                ConcurrencyLimit::new(1),
+                limit_requests,
+            ));
+
+        let first_app = app.clone();
+        let first = tokio::spawn(async move {
+            first_app
+                .oneshot(
+                    Request::post("/upload")
+                        .body(Body::from_stream(stream::once(async move {
+                            body_rx.await.expect("request body sender stays alive")
+                        })))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        });
+        reading_rx.await.expect("handler starts reading body");
+
+        let second = send_post(&app, "/upload").await;
+        assert_eq!(second.status(), StatusCode::SERVICE_UNAVAILABLE);
+        body_tx.send(Ok("complete")).unwrap();
+        let first = first.await.unwrap();
+        assert_eq!(first.status(), StatusCode::NO_CONTENT);
+        let third = send_post(&app, "/upload").await;
+        assert_eq!(third.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn limits_greater_than_one_admit_exactly_that_many_requests() {
+        let app = Router::new()
+            .route(
+                "/stream",
+                post_route(|| async {
+                    Body::from_stream(stream::pending::<Result<&'static [u8], Infallible>>())
+                }),
+            )
+            .layer(middleware::from_fn_with_state(
+                ConcurrencyLimit::new(3),
+                limit_requests,
+            ));
+
+        let first = send_post(&app, "/stream").await;
+        let second = send_post(&app, "/stream").await;
+        let third = send_post(&app, "/stream").await;
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(second.status(), StatusCode::OK);
+        assert_eq!(third.status(), StatusCode::OK);
+        assert_eq!(
+            send_post(&app, "/stream").await.status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+
+        drop(second);
+        let replacement = send_post(&app, "/stream").await;
+        assert_eq!(replacement.status(), StatusCode::OK);
+        assert_eq!(
+            send_post(&app, "/stream").await.status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        drop((first, third, replacement));
+    }
+
+    #[tokio::test]
+    async fn already_ended_body_releases_the_permit_immediately() {
+        let app = limited_router("/empty", 1);
+
+        let first = send_post(&app, "/empty").await;
+        assert_eq!(first.status(), StatusCode::NO_CONTENT);
+        let second = send_post(&app, "/empty").await;
+        assert_eq!(second.status(), StatusCode::NO_CONTENT);
+        drop((first, second));
     }
 
     #[tokio::test]
@@ -211,7 +358,7 @@ mod tests {
         let app = Router::new()
             .route(
                 "/stream",
-                post(move || {
+                post_route(move || {
                     let call = calls.fetch_add(1, Ordering::Relaxed);
                     async move {
                         if call == 0 {
@@ -252,13 +399,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn permit_is_released_when_stream_ends_with_error_without_response_drop() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let app = Router::new()
+            .route(
+                "/stream",
+                post_route(move || {
+                    let call = calls.fetch_add(1, Ordering::Relaxed);
+                    async move {
+                        if call == 0 {
+                            Body::from_stream(stream::iter([Err::<&'static str, _>(
+                                std::io::Error::other("stream failed"),
+                            )]))
+                        } else {
+                            Body::empty()
+                        }
+                    }
+                }),
+            )
+            .layer(middleware::from_fn_with_state(
+                ConcurrencyLimit::new(1),
+                limit_requests,
+            ));
+
+        let first = app
+            .clone()
+            .oneshot(Request::post("/stream").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let (_parts, mut body) = first.into_parts();
+        let frame = poll_fn(|cx| Pin::new(&mut body).poll_frame(cx))
+            .await
+            .expect("the stream yields one frame");
+        assert!(frame.is_err());
+
+        let second = app
+            .oneshot(Request::post("/stream").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(second.status(), StatusCode::OK);
+        drop(body);
+    }
+
+    #[tokio::test]
     async fn permit_lives_until_streaming_body_is_dropped() {
         let calls = Arc::new(AtomicUsize::new(0));
         let app =
             Router::new()
                 .route(
                     "/stream",
-                    post(move || {
+                    post_route(move || {
                         let call = calls.fetch_add(1, Ordering::Relaxed);
                         async move {
                             if call == 0 {

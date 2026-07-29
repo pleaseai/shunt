@@ -90,6 +90,7 @@ url = "2.5.8"
 [dev-dependencies]
 divan = { version = "5.0.1", package = "codspeed-divan-compat" }
 hex = "0.4"
+http-body-util = "0.1"
 tokio = { version = "1", features = ["full", "test-util"] }
 tower = { version = "0.5", default-features = false, features = ["util"] }
 wiremock = "0.6"

@@ -282,7 +282,7 @@ async fn health() -> Json<HealthResponse> {
 #[cfg(test)]
 mod tests {
     use axum::{
-        body::Body,
+        body::{Body, HttpBody},
         http::{Request, StatusCode},
     };
     use tower::ServiceExt;
@@ -360,6 +360,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(first.status(), StatusCode::OK);
+        assert!(
+            !first.body().is_end_stream(),
+            "/protocol must keep its response body alive for the overlap assertion"
+        );
         let second = router
             .oneshot(Request::get("/protocol").body(Body::empty()).unwrap())
             .await
@@ -379,6 +383,10 @@ mod tests {
             .unwrap();
         let first = router.clone().oneshot(first).await.unwrap();
         assert_eq!(first.status(), StatusCode::OK);
+        assert!(
+            !first.body().is_end_stream(),
+            "/protocol must keep its response body alive to saturate the limiter"
+        );
 
         let limited = Request::builder()
             .uri("/protocol")
@@ -391,7 +399,11 @@ mod tests {
             .uri("/health")
             .body(Body::empty())
             .unwrap();
-        let response = router.oneshot(health).await.unwrap();
+        let response = router.clone().oneshot(health).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let root = Request::builder().uri("/").body(Body::empty()).unwrap();
+        let response = router.oneshot(root).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         // `first` still owns the only permit; keeping it alive to here is what
         // makes the assertions above run against a saturated limiter.
