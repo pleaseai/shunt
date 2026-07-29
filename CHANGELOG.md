@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.26.1](https://github.com/pleaseai/shunt/compare/v0.26.0...v0.26.1) (2026-07-29)
+
+
+### Performance Improvements
+
+* **cursor:** decompress gzip response frames off the async runtime ([#256](https://github.com/pleaseai/shunt/issues/256)) ([c36c619](https://github.com/pleaseai/shunt/commit/c36c619442e1cf56ba7ebc71e8161dcea61c7ac7))
+* **responses:** serialize translated request once ([#257](https://github.com/pleaseai/shunt/issues/257)) ([2c3bd73](https://github.com/pleaseai/shunt/commit/2c3bd73bf239a8f0e693624f5cdef0f1c5a73eed))
+
 ## [0.26.0](https://github.com/pleaseai/shunt/compare/v0.25.0...v0.26.0) (2026-07-28)
 
 
