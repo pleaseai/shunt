@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.32.0](https://github.com/pleaseai/shunt/compare/v0.31.0...v0.32.0) (2026-07-30)
+
+
+### Features
+
+* add Homebrew services integration (brew services) ([#288](https://github.com/pleaseai/shunt/issues/288)) ([b08fd35](https://github.com/pleaseai/shunt/commit/b08fd35ba7930278cc02b9a4c3781b0b4017ea01))
+* **tool-search:** default to the native tool_search protocol on known OpenAI/Codex hosts ([#289](https://github.com/pleaseai/shunt/issues/289)) ([318aa41](https://github.com/pleaseai/shunt/commit/318aa413eb2326a4797790887f86423989abc8fc)), closes [#286](https://github.com/pleaseai/shunt/issues/286)
+
+
+### Performance Improvements
+
+* **codex:** adopt zstd request compression on the Responses path ([#291](https://github.com/pleaseai/shunt/issues/291)) ([abda381](https://github.com/pleaseai/shunt/commit/abda381692f2d17b2f7b88b7fd6bf8c976615652))
+
 ## [0.31.0](https://github.com/pleaseai/shunt/compare/v0.30.0...v0.31.0) (2026-07-30)
 
 
