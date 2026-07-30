@@ -164,6 +164,23 @@ fn distinguishes_upstream_cut_and_client_disconnect() {
 }
 
 #[test]
+fn upstream_truncated_marker_forces_upstream_cut_even_with_a_terminal_event() {
+    // `adapters::responses::http::stream_response` emits this marker frame
+    // right before a synthesized completion whenever `machine.finish()` only
+    // produced output because the upstream connection was cut before a real
+    // terminal event. Even though the synthesized `message_stop` that
+    // follows sets `terminal_seen`, the marker must still win the
+    // classification.
+    let mut observer = state(Protocol::Anthropic);
+    observer.push_bytes(super::UPSTREAM_TRUNCATED_MARKER);
+    observer.push_bytes(b"\n\n");
+    observer.push_bytes(b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n");
+
+    assert_eq!(observer.outcome(true), Outcome::UpstreamCut);
+    assert_eq!(observer.outcome(false), Outcome::UpstreamCut);
+}
+
+#[test]
 fn parses_responses_completion_usage_and_done() {
     let mut observer = state(Protocol::Responses);
     observer.push_bytes(
@@ -359,12 +376,7 @@ struct FinishWiring {
 /// Runs one wiring case: wrap an SSE response with the given `status`
 /// carrying `sse`, drive its body per `drive`, and assert the span field and
 /// the Sentry capture match `expected`.
-fn assert_finish_wiring(
-    status: StatusCode,
-    sse: &'static [u8],
-    drive: Drive,
-    expected: FinishWiring,
-) {
+fn assert_finish_wiring(status: StatusCode, sse: &[u8], drive: Drive, expected: FinishWiring) {
     let captured = CapturingLayer::default();
     let subscriber = tracing_subscriber::registry().with(captured.clone());
 
@@ -381,7 +393,7 @@ fn assert_finish_wiring(
             // behavior for any non-5xx status (including the non-2xx case
             // exercised below, e.g. 400).
             span.record("otel.status_code", "ok");
-            let chunk = Ok::<_, Infallible>(Bytes::from_static(sse));
+            let chunk = Ok::<_, Infallible>(Bytes::copy_from_slice(sse));
             let body = match drive {
                 Drive::ToEnd => Body::from_stream(stream::iter(vec![chunk])),
                 Drive::DropAfterFirstChunk => {
@@ -465,6 +477,33 @@ fn finish_records_otel_error_and_emits_a_sentry_event_for_an_upstream_cut() {
     assert_finish_wiring(
         StatusCode::OK,
         b"event: content_block_delta\ndata: {}\n\n",
+        Drive::ToEnd,
+        FinishWiring {
+            span_status: "error",
+            event: Some((
+                sentry::Level::Warning,
+                "upstream SSE stream was cut before a terminal event",
+            )),
+        },
+    );
+}
+
+#[test]
+fn finish_reports_an_upstream_cut_for_a_marked_synthetic_completion() {
+    // Reproduces exactly what `adapters::responses::http::stream_response`
+    // puts on the wire for a Responses-backend stream that was cut before a
+    // real terminal event: the marker frame, then the synthesized
+    // `message_delta` + `message_stop` completion `AnthropicSseMachine::finish`
+    // builds. Despite that well-formed terminal, the marker must still route
+    // this into the same UpstreamCut Sentry/span path as an unmarked cut.
+    let sse = [
+        super::UPSTREAM_TRUNCATED_MARKER,
+        b"\n\nevent: message_delta\ndata: {}\n\nevent: message_stop\ndata: {}\n\n",
+    ]
+    .concat();
+    assert_finish_wiring(
+        StatusCode::OK,
+        &sse,
         Drive::ToEnd,
         FinishWiring {
             span_status: "error",

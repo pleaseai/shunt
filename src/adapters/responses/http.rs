@@ -170,7 +170,23 @@ pub(super) fn stream_response(
                     if data.is_empty() {
                         return None;
                     }
-                    return Some((Ok(Bytes::from(data)), (bytes, parser, machine, finished)));
+                    // `machine.finish()` only produced output here because
+                    // the upstream connection ended before a real
+                    // terminal/error event (see `AnthropicSseMachine::finish`):
+                    // prefix the synthesized completion with an SSE comment
+                    // marker so `stream_metrics::observe_response` can still
+                    // classify this as an upstream cut instead of a normal
+                    // completion. Real clients ignore `:`-prefixed comment
+                    // lines per the WHATWG EventSource spec, so the
+                    // client-visible stream stays exactly as well-formed as
+                    // before.
+                    let mut marked = Vec::with_capacity(
+                        crate::stream_metrics::UPSTREAM_TRUNCATED_MARKER.len() + 2 + data.len(),
+                    );
+                    marked.extend_from_slice(crate::stream_metrics::UPSTREAM_TRUNCATED_MARKER);
+                    marked.extend_from_slice(b"\n\n");
+                    marked.extend_from_slice(data.as_bytes());
+                    return Some((Ok(Bytes::from(marked)), (bytes, parser, machine, finished)));
                 }
             }
         }
@@ -353,6 +369,82 @@ mod tests {
         let body = response_body_json(response).await;
         assert_eq!(body["type"], "message");
         assert_eq!(body["content"][0]["text"], "hello");
+    }
+
+    /// The streaming path prefixes a synthesized completion with
+    /// `stream_metrics::UPSTREAM_TRUNCATED_MARKER` when the upstream
+    /// connection ends before a real terminal event, so the observer can
+    /// still classify the stream as an upstream cut instead of a normal
+    /// completion (see that constant's doc comment for the full rationale).
+    #[tokio::test]
+    async fn stream_response_marks_a_synthesized_completion_from_a_truncated_upstream() {
+        let sse = concat!(
+            "event: response.created\n",
+            "data: {\"response\":{\"id\":\"resp_1\"}}\n\n",
+            "event: response.output_item.added\n",
+            "data: {\"item\":{\"type\":\"message\"}}\n\n",
+            "event: response.output_text.delta\n",
+            "data: {\"delta\":\"partial\"}\n\n",
+        );
+        let upstream = upstream_response(200, sse).await;
+        let response = stream_response(
+            upstream,
+            relay_opts(),
+            0,
+            std::time::Duration::from_secs(30),
+        );
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("streamed body should be readable");
+        let body = std::str::from_utf8(&bytes).expect("body is utf8");
+        let marker = std::str::from_utf8(crate::stream_metrics::UPSTREAM_TRUNCATED_MARKER).unwrap();
+
+        // The marker sits immediately before the synthesized completion
+        // `AnthropicSseMachine::finish` builds once the mock body ends
+        // without a `response.completed` — not at the very start of the
+        // stream, since the real `content_block_delta` already flowed.
+        let expected_synthetic_completion = format!("{marker}\n\nevent: content_block_stop");
+        assert!(
+            body.contains(&expected_synthetic_completion),
+            "truncated stream must carry the marker right before the synthesized completion, got: {body}"
+        );
+        assert!(body.contains("event: message_stop"));
+    }
+
+    /// A clean turn that reaches `response.completed` must not carry the
+    /// truncation marker — it exists only for the EOF-before-terminal path.
+    #[tokio::test]
+    async fn stream_response_does_not_mark_a_genuine_completion() {
+        let sse = concat!(
+            "event: response.created\n",
+            "data: {\"response\":{\"id\":\"resp_1\"}}\n\n",
+            "event: response.output_item.added\n",
+            "data: {\"item\":{\"type\":\"message\"}}\n\n",
+            "event: response.output_text.delta\n",
+            "data: {\"delta\":\"hello\"}\n\n",
+            "event: response.output_text.done\n",
+            "data: {}\n\n",
+            "event: response.completed\n",
+            "data: {\"response\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n",
+        );
+        let upstream = upstream_response(200, sse).await;
+        let response = stream_response(
+            upstream,
+            relay_opts(),
+            0,
+            std::time::Duration::from_secs(30),
+        );
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("streamed body should be readable");
+        let body = std::str::from_utf8(&bytes).expect("body is utf8");
+        let marker = std::str::from_utf8(crate::stream_metrics::UPSTREAM_TRUNCATED_MARKER).unwrap();
+
+        assert!(
+            !body.contains(marker),
+            "clean completion must not carry the marker, got: {body}"
+        );
+        assert!(body.contains("event: message_stop"));
     }
 
     /// A multi-byte code point split across two transport chunks must survive

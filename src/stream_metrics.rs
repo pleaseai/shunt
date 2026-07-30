@@ -21,6 +21,18 @@ use serde_json::Value;
 
 const MAX_EVENT_BYTES: usize = 256 * 1024;
 
+/// Injected by `adapters::responses::http::stream_response` as a standalone
+/// SSE comment frame immediately before a synthesized completion, whenever
+/// `AnthropicSseMachine::finish` only produced output because the upstream
+/// connection ended before a real terminal/error event was seen (that
+/// adapter is the only caller of `finish()` on the streaming path). SSE
+/// comment lines (`:`-prefixed) are ignored by every conforming client per
+/// the WHATWG EventSource spec, so real clients never see this — only this
+/// observer's own frame parser does, letting `outcome` classify the result
+/// as `UpstreamCut` instead of `Completed` despite the well-formed
+/// `message_stop` that follows it.
+pub(crate) const UPSTREAM_TRUNCATED_MARKER: &[u8] = b":shunt-upstream-truncated";
+
 /// Client-facing SSE protocol used to interpret terminal and usage events.
 #[derive(Clone, Copy, Debug)]
 pub enum Protocol {
@@ -95,6 +107,10 @@ struct ObserverState {
     skip_tail_len: usize,
     terminal_seen: bool,
     error_seen: bool,
+    /// Set once the [`UPSTREAM_TRUNCATED_MARKER`] frame is observed; forces
+    /// `outcome` to classify the stream as `UpstreamCut` even though the
+    /// synthesized completion that follows also sets `terminal_seen`.
+    truncated_seen: bool,
     tokens: TokenUsage,
     finished: bool,
 }
@@ -122,6 +138,7 @@ impl ObserverState {
             skip_tail_len: 0,
             terminal_seen: false,
             error_seen: false,
+            truncated_seen: false,
             tokens: TokenUsage::default(),
             finished: false,
         }
@@ -165,6 +182,7 @@ impl ObserverState {
             let observation = observe_frame(self.protocol, &self.buffer[..boundary]);
             self.terminal_seen |= observation.terminal;
             self.error_seen |= observation.error;
+            self.truncated_seen |= observation.truncated;
             merge_tokens(&mut self.tokens, observation.tokens);
             self.buffer.drain(..end);
         }
@@ -202,6 +220,13 @@ impl ObserverState {
     fn outcome(&self, natural_end: bool) -> Outcome {
         if self.error_seen {
             Outcome::ErrorEvent
+        } else if self.truncated_seen {
+            // Checked ahead of `terminal_seen`: the adapter-synthesized
+            // completion that follows the marker also sets `terminal_seen`,
+            // but the marker's presence means this "terminal" event was
+            // manufactured to keep the client stream well-formed after a
+            // real upstream cut, not a genuine backend completion.
+            Outcome::UpstreamCut
         } else if self.terminal_seen {
             Outcome::Completed
         } else if natural_end {
@@ -250,10 +275,19 @@ impl ObserverState {
 struct FrameObservation {
     terminal: bool,
     error: bool,
+    /// Set only for the [`UPSTREAM_TRUNCATED_MARKER`] comment frame.
+    truncated: bool,
     tokens: TokenUsage,
 }
 
 fn observe_frame(protocol: Protocol, frame: &[u8]) -> FrameObservation {
+    if frame == UPSTREAM_TRUNCATED_MARKER {
+        return FrameObservation {
+            truncated: true,
+            ..Default::default()
+        };
+    }
+
     let (event, data) = event_and_data(frame);
     if event == Some(b"ping") || data == Some(b"{\"type\": \"ping\"}") {
         return FrameObservation::default();
