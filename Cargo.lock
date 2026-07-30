@@ -2757,6 +2757,7 @@ dependencies = [
  "http-body",
  "http-body-util",
  "httpdate",
+ "libc",
  "notify",
  "opentelemetry",
  "opentelemetry-appender-tracing",

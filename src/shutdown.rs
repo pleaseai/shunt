@@ -221,4 +221,56 @@ mod tests {
         );
         watcher.abort();
     }
+
+    /// Drives `shutdown_signal` against a real, process-delivered SIGTERM
+    /// instead of the mock futures the tests above use, covering the actual
+    /// `SignalListener::sigterm` registration + delivery path (the ~31
+    /// previously-uncovered lines this test was added to close).
+    ///
+    /// SAFETY: exactly ONE signal is raised below, and this is the ONLY test
+    /// in this binary allowed to raise SIGTERM or otherwise exercise a real
+    /// `tokio::signal::unix::signal` listener for it. Tokio's signal registry
+    /// (`tokio::signal::unix::registry::globals`) is a single process-wide
+    /// `OnceLock`, shared by every `#[tokio::test]` runtime in this binary
+    /// (each test gets its own `tokio::Runtime`, but they all register with
+    /// the same global signal dispatcher) — a second SIGTERM-raising test
+    /// running concurrently would race this one's watcher via that shared
+    /// state. If you need another real-signal test, serialize it against this
+    /// one rather than adding a second independent raise.
+    ///
+    /// Re SIGTERM firing this test's own second listener (the one
+    /// `shutdown_signal` arms via `arm_force_exit` after the first trigger):
+    /// it can't. `sigterm` is the SAME `Signal`/`watch::Receiver` object
+    /// reused for both waits (see `shutdown_signal`'s doc comment), and per
+    /// tokio's `watch::Receiver::changed()` semantics (vendored tokio 1.52.3,
+    /// `src/signal/mod.rs:67-88`: `RxFuture::recv` awaits `rx.changed()`,
+    /// then immediately re-arms `make_future(rx)` for the *next* change), a
+    /// receiver only resolves once per sender version bump. The first
+    /// `.recv()` inside `select_shutdown_trigger` consumes this raise and
+    /// advances that receiver's cursor; the second `.recv()` inside the
+    /// force-exit watcher can only resolve on a genuinely new signal, which
+    /// this test never sends. This is the "reuse the same object" design
+    /// that avoids the eager-independent-listener misfire a fresh second
+    /// subscription would risk.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_signal_completes_on_a_real_sigterm() {
+        use std::time::Duration;
+
+        let waiter = tokio::spawn(shutdown_signal());
+        // Let `shutdown_signal` run its synchronous prefix (registering both
+        // `SignalListener`s) and reach its first await point before raising,
+        // so the signal is guaranteed to land on a live, already-subscribed
+        // receiver rather than racing the subscription.
+        tokio::task::yield_now().await;
+
+        unsafe {
+            libc::raise(libc::SIGTERM);
+        }
+
+        tokio::time::timeout(Duration::from_secs(5), waiter)
+            .await
+            .expect("shutdown_signal returns before the test deadline")
+            .expect("shutdown_signal task join");
+    }
 }
