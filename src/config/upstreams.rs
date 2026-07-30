@@ -25,8 +25,14 @@ pub struct UpstreamConfig {
     pub count_tokens: CountTokens,
     #[serde(default)]
     pub websocket: bool,
-    #[serde(default)]
-    pub tool_search: bool,
+    /// See [`ProviderConfig::tool_search`] for semantics; unset ("auto") by
+    /// default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_search: Option<bool>,
+    /// zstd-compress Responses request bodies for this upstream (issue #285).
+    /// On by default; only effective on the ChatGPT/Codex flavor.
+    #[serde(default = "super::default_true")]
+    pub request_compression: bool,
     #[serde(default)]
     pub retry: RetryConfig,
 }
@@ -194,6 +200,7 @@ pub(super) fn normalize(
             account_scope: Vec::new(),
             websocket: upstream.websocket,
             tool_search: upstream.tool_search,
+            request_compression: upstream.request_compression,
             retry: upstream.retry,
         };
         if let Some(auth) = upstream.auth.clone() {

@@ -301,6 +301,37 @@ cargo run -- run --config ./shunt.toml
 On start it logs `shunt listening` with the bound address. Set log verbosity with `RUST_LOG`,
 e.g. `RUST_LOG=shunt=debug cargo run -- run`.
 
+### Run as a background service (Homebrew)
+
+Installed via Homebrew, shunt can run under `brew services` instead of a foreground terminal:
+
+```bash
+brew services start shunt    # launches `shunt run` in the background
+brew services restart shunt  # e.g. after a binary upgrade
+brew services stop shunt     # sends SIGTERM; shunt drains in-flight requests, then exits
+brew services info shunt
+```
+
+`SIGTERM` and ctrl-c both start the same drain, and that drain has no deadline — an open SSE
+stream keeps the process alive for as long as its client keeps reading. Send a **second** signal
+(another ctrl-c, or `kill` again) to skip the drain and exit immediately with the conventional
+128+signal exit status: 143 for a second `SIGTERM`, 130 for a second ctrl-c/`SIGINT`.
+
+Logs go to `$(brew --prefix)/var/log/shunt.log` (stdout and stderr combined). Config discovery
+works the same as any other invocation (see [§3 Configure](#3-configure)): a service has no
+meaningful working directory, so the search starts at `$XDG_CONFIG_HOME/shunt` (or
+`~/.config/shunt`) — an existing config there still wins over the Homebrew prefix. Absent one,
+the effective candidate is `$HOMEBREW_PREFIX/etc/shunt.toml` (`$(brew --prefix)/etc/shunt.toml`,
+or `.yaml`/`.yml`). Run `shunt init --root "$(brew --prefix)/etc"` to create a starter file
+there, or place your own wherever should win — check the boot log to see which file the service
+actually loaded.
+
+Editing the file the service actually loaded does **not** require `brew services restart` — the
+running process picks up the change automatically via [config hot-reload](config-reload.md)
+(file-watch, or send `SIGHUP` yourself). Only the handful of fields listed under [§4 Fields that
+require a restart](config-reload.md#4-fields-that-require-a-restart) need an actual `brew services
+restart`.
+
 ### Endpoints served
 
 | Method | Path                          | Purpose                                             |

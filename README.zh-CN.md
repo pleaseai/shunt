@@ -30,6 +30,16 @@ cargo install --git https://github.com/pleaseai/shunt
 
 新版本通过 Homebrew 和每个 [GitHub release](https://github.com/pleaseai/shunt/releases) 附带的预构建二进制文件(macOS/Linux,arm64/x64)分发。crates.io 软件包将停留在最后发布的版本。预构建二进制和从源码构建的说明见 [安装](https://shunt-docs.pages.dev/getting-started/installation/)。
 
+### 作为服务运行 (macOS/Homebrew)
+
+```bash
+brew services start shunt
+```
+
+日志会写入 `$(brew --prefix)/var/log/shunt.log`。`brew services stop` 会发送 `SIGTERM`,
+shunt 会先处理完正在进行的请求再退出;之后修改配置文件不需要重启 ——
+会自动[热重载](docs/config-reload.md)。详见 [作为服务运行](docs/running.md#run-as-a-background-service-homebrew)。
+
 ## 快速开始
 
 ```toml

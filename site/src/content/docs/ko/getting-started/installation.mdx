@@ -19,6 +19,19 @@ description: Homebrew, Git 저장소의 Cargo, 사전 빌드 바이너리 또는
 brew install pleaseai/tap/shunt
 ```
 
+### 백그라운드 서비스로 실행하기
+
+```bash
+brew services start shunt
+```
+
+로그는 `$(brew --prefix)/var/log/shunt.log`에 출력됩니다. `brew services stop`은 `SIGTERM`을 보내고
+shunt는 처리 중인 요청을 모두 마친 뒤 종료합니다. 설정을 변경해도 재시작이 필요 없습니다 — shunt가
+자동으로 [핫 리로드](https://github.com/pleaseai/shunt/blob/main/docs/config-reload.md)합니다. 설정
+탐색 경로 등 자세한 내용은 [Running as a
+service](https://github.com/pleaseai/shunt/blob/main/docs/running.md#run-as-a-background-service-homebrew)를
+참고하세요.
+
 ## Cargo (Git 저장소)
 
 소스 저장소에서 직접 설치합니다. 바이너리 이름은 여전히 `shunt`입니다:

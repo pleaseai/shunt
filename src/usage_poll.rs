@@ -387,7 +387,8 @@ mod tests {
                 accounts: vec![account.clone()],
                 account_scope: Vec::new(),
                 websocket: false,
-                tool_search: false,
+                tool_search: None,
+                request_compression: true,
                 retry: Default::default(),
             },
         );
@@ -444,7 +445,8 @@ mod tests {
                     accounts: vec![account.clone()],
                     account_scope: Vec::new(),
                     websocket: false,
-                    tool_search: false,
+                    tool_search: None,
+                    request_compression: true,
                     retry: Default::default(),
                 },
             );
@@ -509,7 +511,8 @@ mod tests {
             accounts: vec![account],
             account_scope: Vec::new(),
             websocket: false,
-            tool_search: false,
+            tool_search: None,
+            request_compression: true,
             retry: Default::default(),
         };
         let mut config = Config::default();

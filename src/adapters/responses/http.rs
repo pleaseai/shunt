@@ -18,6 +18,7 @@ use crate::{
     server::AppState,
 };
 
+use super::body::{prepare_body, PreparedBody};
 use super::context::{ForwardOptions, RelayOptions};
 use super::error::{backend_error_response, mapped_upstream_error, own_error, transport_error};
 use super::request::request_builder;
@@ -33,10 +34,9 @@ pub(super) async fn http_send(
     route: &Route,
     credential: Credential,
     session_id: Option<&str>,
-    body: bytes::Bytes,
+    body: PreparedBody,
 ) -> Result<reqwest::Response, reqwest::Error> {
-    request_builder(state, route, credential, session_id)
-        .body(body)
+    body.attach(request_builder(state, route, credential, session_id))
         .send()
         .await
 }
@@ -79,7 +79,7 @@ pub(super) async fn forward_http(
     // layer retry on top. This single-credential path retries only before any
     // response body is handed to the streaming/JSON relay.
     let policy = provider_retry_policy(state, route);
-    let body = bytes::Bytes::from(upstream_body.as_ref().to_string());
+    let body = prepare_body(state, route, upstream_body.as_ref()).await;
     let upstream = crate::retry::send_with_retry_with_safety(
         policy,
         &route.provider,

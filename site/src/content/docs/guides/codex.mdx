@@ -48,6 +48,8 @@ and translates the streamed reply back. Three things make it "Codex" rather than
 
 The dialect is keyed on `auth = "chatgpt_oauth"`, not the provider name.
 
+Request bodies on this flavor are zstd-compressed (`content-encoding: zstd`), matching what the Codex CLI itself sends to the same backend. A long agentic turn re-sends its whole history every request, so this cuts the uploaded bytes substantially — most on the largest turns. It is on by default and applies only to the ChatGPT/Codex flavor; set [`request_compression = false`](/reference/configuration/#providersname-legacy) on the provider to send plain JSON.
+
 When Codex accounts are pooled, successful backend responses also populate the admin **Pool health** dashboard from the reported `x-codex-*` rate-limit windows. A roughly 5-hour window appears in **5h**, a roughly 7-day window appears in **7d**, and unsupported daily/monthly windows are ignored. Codex has no `7d_oi` analog. The recorded windows also feed quota-aware pool selection — see [Codex multi-account](/guides/codex-multi-account/).
 
 ## 1. Log in
@@ -367,7 +369,7 @@ of handing it back as an unfulfilled tool call.
 
 Claude Code's **tool search** — deferring MCP / LSP tool schemas and revealing them on demand via a
 `ToolSearch` tool, so the model's context isn't spent on tools it never calls — works through the
-Codex path, but it is **off by default** behind shunt. Opt in:
+Codex path. Enable it client-side:
 
 ```bash
 export ENABLE_TOOL_SEARCH=true
@@ -378,45 +380,69 @@ host — shunt isn't one — so without this flag every tool's full schema is se
 and the feature is inert (it still works, it just reclaims nothing). The client's own contract is to
 set `ENABLE_TOOL_SEARCH=true` **if your proxy forwards `tool_reference` blocks** — shunt does.
 
-With it on, Claude Code lists the deferrable tools by **name** in the prompt but withholds their
-schemas. shunt keeps those not-yet-loaded tools out of the upstream tool set until the model loads
-one via `ToolSearch`; the resulting `tool_reference` then reveals that tool's full schema on demand.
-That reclaims the context window the deferred schemas would otherwise occupy from the first turn —
-the whole point of tool search.
+With it on, shunt maps tool search onto the OpenAI Responses API's own **native, client-executed
+`tool_search`** protocol for upstreams already known to implement it, and keeps the #43 text shim
+everywhere else: Claude Code's `ToolSearch` tool becomes a `tool_search` (`execution: "client"`)
+tool, its `tool_use` becomes a `tool_search_call`, and the `tool_reference` result becomes a
+`tool_search_output` item carrying the loaded tools' full schemas as structured JSON, appended at
+the tail of `input`. That matters because the alternative — folding a revealed tool's schema back
+into the request's `tools` array — invalidates the cached prompt prefix on every reveal: `tools` is
+part of that cacheable prefix, shunt re-derives it from client history each turn, and a growing
+array forces the backend to re-process the conversation from the tool boundary onward. The native
+protocol's append-only `input` history keeps `tools` untouched, so the cached prefix survives each
+reveal.
 
-- No `shunt.toml` change is needed — it's purely a Claude Code environment variable.
-- Applies to the `codex` (ChatGPT) and `openai` (stock Responses) providers.
+- No `shunt.toml` change is needed for the default (native) behavior on the built-in `codex` and
+  `openai` providers — it's purely a Claude Code environment variable at the `ENABLE_TOOL_SEARCH`
+  level.
+- Applies to any `kind = "responses"` provider; whether a given one gets the native protocol or the
+  shim by default depends on the upstream host — see [Native protocol](#native-protocol) below.
 - Non-deferred tools (and the hosted `web_search` tool above) are always forwarded; only deferrable
   tools are progressively revealed.
 
-### Native protocol (opt-in)
+### Native protocol
 
-The shim above works by rendering `tool_reference` as schema text — it reclaims nothing from the
-upstream context, it just defers *when* the full schemas are sent. As an **opt-in alternative**
-(issue #82), shunt can instead map tool search onto the OpenAI Responses API's own **native,
-client-executed `tool_search`** protocol: Claude Code's `ToolSearch` tool becomes a `tool_search`
-(`execution: "client"`) tool, its `tool_use` becomes a `tool_search_call`, and the `tool_reference`
-result becomes a `tool_search_output` item carrying the loaded tools' full schemas as structured
-JSON — preserving real tool-loading semantics and cache behavior instead of folding schema into
-text. Turn it on per provider:
-
-```toml
-[providers.codex]
-tool_search = true
-```
-
-Requirements — unsupported combinations silently keep the #43 shim, never error:
+Requirements — unsupported combinations silently fall back to the #43 text shim, never error. The
+shim still withholds each not-yet-revealed deferred tool from `tools`, but once Claude Code reveals
+one, the shim renders its full schema as `tool_reference` text *and* re-adds the tool to `tools` so
+the model can call it — sending the schema twice from then on and paying the cache-invalidation cost
+described above on every reveal:
 
 - The upstream must be a stock OpenAI or ChatGPT/Codex-flavored Responses backend. xAI/Grok routes
   always keep the shim.
 - The routed model must be **gpt-5.4 or later** (`gpt-5.4`, `gpt-5.5`, or the `gpt-5.6` family).
-  Earlier slugs (`gpt-5.2` and below) fall back to the shim even with `tool_search = true` set.
+  Earlier slugs (`gpt-5.2` and below) keep the shim regardless of `tool_search`.
 - `ENABLE_TOOL_SEARCH=true` is still required on the Claude Code side — this flag only changes
   *how* shunt translates that feature upstream, not whether Claude Code defers tools at all.
 
-`tool_search` defaults to `false`: the native shapes are gated behind this flag until a live probe
-confirms a given backend accepts them, so it's an explicit per-provider opt-in rather than shunt
-switching every Codex/OpenAI route automatically.
+`tool_search` under `[providers.<name>]` is a three-state setting. Left unset (the default,
+"auto"), it resolves to native only for a host already verified to implement `tool_search` items —
+the ChatGPT/Codex backend (the built-in `codex` provider) and `api.openai.com` (the built-in
+`openai` provider) — and to the text shim for every other OpenAI-compatible endpoint, including a
+custom `kind = "responses"` provider pointed at LiteLLM, vLLM, OpenRouter, or a self-hosted proxy:
+most third-party Responses backends don't implement `tool_search` items, so auto-enabling native
+there would fail the turn instead of degrading gracefully. The native shapes were live-probe
+verified against the ChatGPT/Codex backend on gpt-5.6 (2026-07-13,
+[pleaseai/shunt#86](https://github.com/pleaseai/shunt/pull/86)), and `tool_search` is documented
+on the public OpenAI Responses API for gpt-5.4+ models.
+
+Set `tool_search = true` to opt a custom endpoint into the native path once you've confirmed it
+implements `tool_search` items — still subject to the flavor and model requirements above:
+
+```toml
+[providers.my-litellm]
+kind = "responses"
+base_url = "https://litellm.internal/v1"
+tool_search = true
+```
+
+Set `tool_search = false` to force the text shim on a provider that would otherwise default to (or
+was opted into) the native path:
+
+```toml
+[providers.codex]
+tool_search = false
+```
 
 ## Troubleshooting
 
@@ -430,6 +456,6 @@ switching every Codex/OpenAI route automatically.
 | Context bar over-reports / compacts early | Set `CLAUDE_CODE_MAX_CONTEXT_TOKENS`; a discovery alias can't take it — use a non-`claude-` id. |
 | Web search returns nothing on a Grok route | xAI/Grok's Responses API doesn't support web search; shunt drops the tool. Use a `codex` or `openai` route. |
 | Tool search does nothing / all tool schemas sent every turn | Set `ENABLE_TOOL_SEARCH=true` — Claude Code disables tool search by default behind a non-Anthropic base URL. shunt forwards `tool_reference` blocks and reveals deferred schemas on demand. |
-| Want tool search to reclaim context instead of just deferring it | Set `tool_search = true` under `[providers.codex]` for the native protocol — requires a stock OpenAI/ChatGPT-Codex flavor and a gpt-5.4+ model; see [Tool search → Native protocol](#native-protocol-opt-in) above. |
+| Tool search reclaims no context (still paying the shim's cache-invalidation cost) | Check the flavor/model gates — native `tool_search` needs a stock OpenAI/ChatGPT-Codex flavor and a gpt-5.4+ model; unsupported combinations silently fall back to the shim. If both gates pass and you're on a custom OpenAI-compatible endpoint (LiteLLM, vLLM, OpenRouter, self-hosted), it isn't auto-enabled — set `tool_search = true` once you've confirmed it implements `tool_search` items. On a known host (`codex`/`openai`), confirm you haven't set `tool_search = false`; see [Tool search → Native protocol](#native-protocol) above. |
 
 See the full [Troubleshooting](/reference/troubleshooting/) reference for more.

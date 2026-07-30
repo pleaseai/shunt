@@ -7,7 +7,7 @@ name = "shunt-gateway"
 # unpublishable (issue #292). Remove this restriction with the pins once upstream
 # snapview/tungstenite-rs#426 ships in a crates.io release.
 publish = false
-version = "0.31.0"
+version = "0.32.0"
 edition = "2021"
 description = "Claude Code LLM gateway — an Anthropic Messages proxy that routes models to OpenAI/Codex and Anthropic-compatible backends"
 license = "MIT OR Apache-2.0"
@@ -99,11 +99,17 @@ tracing-opentelemetry = "0.33"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1", features = ["v4"] }
 url = "2.5.8"
+# zstd request compression on the Codex/ChatGPT Responses path (issue #285),
+# mirroring the Codex CLI's own `Content-Encoding: zstd` request bodies. Only the
+# streaming encoder/decoder is needed, so the dictionary-builder and legacy-format
+# default features stay off.
+zstd = { version = "0.13", default-features = false }
 
 [dev-dependencies]
 divan = { version = "5.0.1", package = "codspeed-divan-compat" }
 hex = "0.4"
 http-body-util = "0.1"
+libc = "0.2"
 sentry = { version = "0.48.4", default-features = false, features = ["test"] }
 tokio = { version = "1", features = ["full", "test-util"] }
 tower = { version = "0.5", default-features = false, features = ["util"] }

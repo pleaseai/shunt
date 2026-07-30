@@ -43,7 +43,7 @@ shunt는 **스펙을 준수하는 Claude Code LLM 게이트웨이**입니다: Cl
 | ChatGPT/Codex **구독**(OAuth) 백엔드 | ● | ●⁴ | ● | 드묾 | ○ |
 | Codex **WebSocket** Responses 전송 | ● | ● | ● | ○ | ○ |
 | **변환 경로에서의** 업로드 트리밍(`previous_response_id` continuation) | ● | ● | ○ (패스스루만) | ○ | ○ |
-| tool-search / `defer_loading` / `tool_reference` 처리 | ◐ (심: 동작하지만 컨텍스트 절약 없음; 네이티브 옵트인⁸) | ○⁵ | ◐ (업스트림) / ● (포크) | ○ | ○ |
+| tool-search / `defer_loading` / `tool_reference` 처리 | ◐ (알려진 호스트 — ChatGPT/Codex, `api.openai.com` — 에서 gpt-5.4+ 네이티브가 기본값⁸; 그 외는 심, 옵트인 가능) | ○⁵ | ◐ (업스트림) / ● (포크) | ○ | ○ |
 | Claude Code `thinking`으로의 reasoning 왕복 | ● (암호화) | ◐ (Kimi/Grok; **Codex는 버림**) | ◐ | ○ | ◐ |
 | 멀티 계정 로드 밸런싱 / 페일오버 | ◐⁷ | ○ | ● | 일부 | ● |
 | 백엔드 폭 | 프로바이더 4개¹ | 구독 4개⁶ | 백엔드 11개² | 다양 | 100–1600+ |
@@ -57,10 +57,10 @@ shunt는 **스펙을 준수하는 Claude Code LLM 게이트웨이**입니다: Cl
 ² CLIProxyAPI: aistudio, antigravity, claude, codex, codex-ws, gemini, gemini-vertex, kimi, openai-compat, xai, xai-ws.
 ³ raine/ccp는 shunt처럼 `ANTHROPIC_MODEL`로 모델 단위 라우팅을 하지만 **Anthropic 패스스루 어댑터가 없습니다** — 알 수 없는 model id는 400을 반환하므로, 지정한 모델만 우회하면서 메인 세션을 Claude에 유지할 수 없습니다.
 ⁴ raine/ccp는 **자체** ChatGPT OAuth(PKCE 브라우저 + 디바이스 코드 로그인)를 구현합니다; shunt는 Codex CLI 로그인(`~/.codex/auth.json`)을 재사용하며 자체 PKCE 플로우는 미해결 TODO입니다(`src/auth/mod.rs:18-19`).
-⁵ **raine/ccp 소스를 읽어 확인함**(`fe80a6b`, 2026-07-11): tool-search 처리가 존재하지 않습니다(`defer_loading` / `tool_reference` / `tool_search` / `advanced-tool-use`에 대한 매치 0건). 도구는 `{name, description, parameters}`로 화이트리스트 재구성되므로(`src/providers/codex/translate/request.rs:476-494`) `defer_loading:true`는 조용히 버려집니다 — 400은 아니지만 컨텍스트 절약도 없음; ToolSearch 결과의 `tool_reference` 블록은 shunt의 깔끔한 `"Loaded tool: X"` 대신 `[unsupported content block omitted: tool_reference]`로 렌더링됩니다(`request.rs:836-842`). 그래서 ○(shunt의 ◐ 대비): raine/ccp에 대해 `ENABLE_TOOL_SEARCH`를 강제로 켜면 디스커버리 루프 결과가 플레이스홀더로 격하됩니다. 기본적으로는 Claude Code 자체 게이트가 퍼스트파티가 아닌 base URL 뒤에서 tool search를 꺼 두므로 이 문제는 잠재된 채로 남습니다.
+⁵ **raine/ccp 소스를 읽어 확인함**(`fe80a6b`, 2026-07-11): tool-search 처리가 존재하지 않습니다(`defer_loading` / `tool_reference` / `tool_search` / `advanced-tool-use`에 대한 매치 0건). 도구는 `{name, description, parameters}`로 화이트리스트 재구성되므로(`src/providers/codex/translate/request.rs:476-494`) `defer_loading:true`는 조용히 버려집니다 — 400은 아니지만 컨텍스트 절약도 없음; ToolSearch 결과의 `tool_reference` 블록은, 알려진 참조에 대해 shunt가 렌더링하는 전체 스키마(`src/model/responses_request.rs:623-643`) 대신 `[unsupported content block omitted: tool_reference]`로 렌더링됩니다(`request.rs:836-842`) — shunt의 `"Loaded tool: X"`는 인식되지 않은 참조에 대한 폴백일 뿐입니다. 그래서 ○(shunt의 ◐ 대비): raine/ccp에 대해 `ENABLE_TOOL_SEARCH`를 강제로 켜면 디스커버리 루프 결과가 플레이스홀더로 격하됩니다. 기본적으로는 Claude Code 자체 게이트가 퍼스트파티가 아닌 base URL 뒤에서 tool search를 꺼 두므로 이 문제는 잠재된 채로 남습니다.
 ⁶ raine/ccp 구독 백엔드: Codex(ChatGPT Plus/Pro), Kimi(kimi.com), Grok(grok.com), Cursor Agent — 모두 구독 OAuth 경유.
 ⁷ shunt는 Anthropic `claude_oauth`와 ChatGPT/Codex `chatgpt_oauth` 모두에 대해 명시적 계정을 풀링합니다: 세션 스티키 선택, 프로바이더별 라운드 로빈, 계정별 5h/7d 쿼터 헤더(각각 `anthropic-ratelimit-unified-*`와 `x-codex-*`)에 기반한 모델 인지 선제 로테이션, 쿨다운, 401 후 강제 갱신, 그리고 429와 5xx 응답에 대한 반응형 페일오버. 계정별 사용량은 옵트인 관리자 대시보드에 표시됩니다.
-⁸ **[#82]**는 옵트인 프로바이더별 `tool_search` 플래그(`src/config.rs:250-261,1041-1049`)를 추가해, Claude Code의 tool search를 스키마를 텍스트로 접어 넣는 대신 OpenAI Responses API 자체의 네이티브 클라이언트 실행 `tool_search` 프로토콜로 매핑합니다 — `ToolSearch` → `tool_search`, 그 `tool_use` → `tool_search_call`, `tool_reference` → 로드된 도구들의 전체 스키마를 구조화 JSON으로 담는 `tool_search_output` 아이템(`src/model/responses_request.rs`). 기본은 꺼짐: 스톡 OpenAI 또는 ChatGPT/Codex Responses 플레이버가 gpt-5.4+ 모델로 라우팅될 때만 적용되며, 특정 백엔드가 shunt가 방출하는 형태를 수용하는지 라이브 프로브로 확인될 때까지 플래그 뒤에 게이팅됩니다. xAI/Grok 라우트와 gpt-5.2 이하 모델은 플래그와 무관하게 #43 심을 유지합니다.
+⁸ **[#82]**는 프로바이더별 `tool_search` 플래그(`src/config.rs:1136-1154,2811-2850`)를 추가해 Claude Code의 도구 검색을 스키마를 텍스트로 접어 넣는 대신 OpenAI Responses API 자체의 네이티브 클라이언트 실행 `tool_search` 프로토콜에 매핑합니다 — `ToolSearch` → `tool_search`, 그 `tool_use` → `tool_search_call`, `tool_reference` → 로드된 도구들의 전체 스키마를 구조화된 JSON으로 담는 `tool_search_output` 항목(`src/model/responses_request.rs`). **기본값은 auto이며 알려진 호스트로 좁혀짐(issue #289)**: shim은 드러날 때마다 캐시된 프롬프트 프리픽스를 무효화합니다(드러난 도구를 매번 `tools` 배열에 다시 더해야 하는데, shunt는 이 배열을 매 턴 클라이언트 히스토리로부터 다시 도출하기 때문입니다) — 그래서 미설정("auto") 기본값은 이미 `tool_search` 항목 지원이 검증된 호스트 — ChatGPT/Codex 백엔드와 `api.openai.com` — 가 gpt-5.4+ 모델로 라우팅되는 경우에만 네이티브 append-only `input` 경로를 취하고, LiteLLM·vLLM·OpenRouter·자체 호스팅 프록시를 포함한 그 외 모든 OpenAI 호환 엔드포인트는 운영자가 프로토콜 지원을 확인한 뒤 `tool_search = true`를 설정하지 않는 한 shim을 유지합니다 — 대부분의 서드파티 Responses 백엔드는 이를 구현하지 않아 부드러운 폴백 대신 턴 자체가 실패하기 때문입니다. 네이티브 형태는 2026-07-13에 gpt-5.6에서 ChatGPT/Codex 백엔드를 대상으로 라이브 프로브로 검증되었습니다([#86]); `tool_search`는 gpt-5.4+ 모델에 대해 공개 OpenAI Responses API 문서에도 실려 있습니다. xAI/Grok 라우트와 gpt-5.2 이하 모델은 무관하게 #43 shim을 유지합니다 — 조용히, 오류 없이. 네이티브 경로를 쓰게 될 프로바이더에서 shim을 강제하려면 `tool_search = false`로 설정하세요.
 
 > "raine/ccp" = [raine/claude-code-proxy](https://github.com/raine/claude-code-proxy).
 
@@ -91,7 +91,7 @@ shunt의 미션 적합도 순으로 정렬. **범위 안** 항목은 고충실�
 
 ### 범위 안
 
-- **A. tool-search 컨텍스트 절약 (추적 중: [#43]).** shunt는 `tool_reference`를 이름만 있는 `"Loaded tool: X"` 텍스트로 렌더링하고 *모든* 지연 도구 스키마를 선불로 전달합니다(`src/model/responses_request.rs:393-403,475-508`) — 루프는 동작하지만 기본적으로 컨텍스트를 전혀 회수하지 못합니다. 서버 측 에뮬레이션(지연+미로드 도구 필터링, `tool_reference`에 전체 스키마 주입)을 이식하세요 — 참조 구현: CLIProxyAPI PR #1892(`Adamcf123/CLIProxyAPI@main`). **[#82]로 부분 해결**: 옵트인 프로바이더별 `tool_search = true` 플래그가 이제 텍스트 심 대신 tool search를 Responses API의 네이티브 클라이언트 실행 `tool_search` 프로토콜로 매핑합니다(스톡 OpenAI 또는 ChatGPT/Codex 프로바이더가 gpt-5.4+ 모델로 라우팅될 때; 위 각주 8 참조). 백엔드 수용에 대한 라이브 프로브 전까지 기본은 꺼짐이므로, 운영자가 옵트인하기 전에는 심(그리고 xAI/Grok과 구형 모델의 제로 절약 격차)이 기준선으로 남습니다.
+- **A. tool-search 컨텍스트 절약 (추적 중: [#43]).** **[#82]/[#286]으로 대부분 해결, [#289]로 범위 조정**: 프로바이더별 `tool_search` 플래그는 기본값("auto")에서 이미 지원이 확인된 호스트 — ChatGPT/Codex 백엔드와 `api.openai.com` — 가 gpt-5.4+ 모델로 라우팅될 때만 도구 검색을 텍스트 shim 대신 Responses API의 네이티브 클라이언트 실행 `tool_search` 프로토콜에 매핑합니다(위 각주 8 참고); 그 외 OpenAI 호환 엔드포인트는 명시적인 `tool_search = true` 옵트인이 필요합니다. 남은 격차는 자격을 갖추지 못한 계열/모델/호스트입니다: xAI/Grok 라우트, gpt-5.2 이하 모델, 그리고 아직 옵트인하지 않은 커스텀 OpenAI 호환 엔드포인트는 모두 여전히 shim으로 폴백하는데, 이 shim은 아직 로드되지 않은 지연 도구를 `tools` 배열에서 제외합니다(`src/model/responses_request.rs:791-797`) — 그래서 끝내 드러나지 않는 도구에 대해서는 실제로 컨텍스트를 회수합니다 — 다만 Claude Code가 도구 하나를 드러내면 shim은 그 전체 스키마를 `tool_reference` 텍스트로 렌더링하는 동시에(`:623-643`) 그 도구를 `tools`에 다시 추가하므로, 노출 때마다 스키마가 다시 전송되고 그 지점부터 캐시된 프롬프트 프리픽스가 무효화됩니다. Responses API는 모델이 `tools`에서 보이는 도구만 호출하게 하므로, 네이티브 프로토콜 없이는 이 이중 전송을 피할 수 없습니다 — 이 잔여 격차는 xAI/Grok과 구형 OpenAI 모델이 업스트림에서 자체적으로 `tool_search`에 준하는 지원을 얻거나, 더 많은 커스텀 엔드포인트가 검증되어 옵트인해야만 닫힙니다.
 
 - **B. Codex WS: continuation 정규화 라이브 프로브 (추적 중: [#45]).** Reasoning/`function_call` 정규화는 3개 소스에 대해 스키마 검증됐지만 아직 라이브 프로브되지 않았습니다(`docs/m7-codex-websocket.md:250-270`). 계산에 없던 필드는 조용히 안전한 전체 입력 폴백으로 떨어집니다 — 정확성은 안전하지만 *잠재적으로 놓치는 최적화*입니다. 프로브 패스가 continuation이 마땅한 만큼 자주 발동하는지 확인해 줄 것입니다.
 
@@ -113,13 +113,15 @@ shunt의 미션 적합도 순으로 정렬. **범위 안** 항목은 고충실�
 
 ## 7. 한 줄 요약
 
-shunt는 스펙트럼의 **고충실도, Claude Code 네이티브** 끝단입니다. 가장 가까운 피어는 **raine/claude-code-proxy**로 같은 클래스(Rust, 구독 OAuth, `model` 단위 라우팅, Codex WS + `previous_response_id` continuation)이며, 이에 대한 shunt의 우위는 더 깊은 continuation 정규화, Codex reasoning 충실도(raine은 버림), Anthropic 패스스루 경로(메인 세션을 Claude에 유지), xAI OAuth입니다; raine의 우위는 내장 모니터 TUI, 퍼스트파티 ChatGPT OAuth 로그인, Kimi/Cursor 폭입니다. **CLIProxyAPI** 대비 shunt는 변환 경로 업로드 트리밍에서 이기고(CLIProxyAPI의 WS는 패스스루), 대부분의 플릿 기능(광범위한 멀티 계정 LB, 완전한 관리 API, 플러그인, 백엔드 폭)은 설계상 내줍니다. 이제 모델 인지 선제 쿼터 스케줄링과 반응형 페일오버를 모두 갖춘 좁은 Anthropic OAuth 및 ChatGPT/Codex 계정 풀을 제공하며; 계정 간 의도적 fill-first 정렬이 남은 풀링 격차입니다. 범위 안에서 가장 가치 있는 작업은 tool-search 컨텍스트 절약 완성([#43]) — Codex/OpenAI의 옵트인 네이티브 `tool_search` 경로([#82])로 일부 해결됨. Codex WS 전송의 첫 이벤트 이전 HTTP 폴백 격차는 이후 해소되었습니다([#46]); continuation 정규화 라이브 프로브([#45])는 아직 열려 있습니다.
+shunt는 스펙트럼의 **고충실도, Claude Code 네이티브** 끝단입니다. 가장 가까운 피어는 **raine/claude-code-proxy**로 같은 클래스(Rust, 구독 OAuth, `model` 단위 라우팅, Codex WS + `previous_response_id` continuation)이며, 이에 대한 shunt의 우위는 더 깊은 continuation 정규화, Codex reasoning 충실도(raine은 버림), Anthropic 패스스루 경로(메인 세션을 Claude에 유지), xAI OAuth입니다; raine의 우위는 내장 모니터 TUI, 퍼스트파티 ChatGPT OAuth 로그인, Kimi/Cursor 폭입니다. **CLIProxyAPI** 대비 shunt는 변환 경로 업로드 트리밍에서 이기고(CLIProxyAPI의 WS는 패스스루), 대부분의 플릿 기능(광범위한 멀티 계정 LB, 완전한 관리 API, 플러그인, 백엔드 폭)은 설계상 내줍니다. 이제 모델 인지 선제 쿼터 스케줄링과 반응형 페일오버를 모두 갖춘 좁은 Anthropic OAuth 및 ChatGPT/Codex 계정 풀을 제공하며; 계정 간 의도적 fill-first 정렬이 남은 풀링 격차입니다. 범위 안에서 가장 가치 있는 작업은 tool-search 컨텍스트 절약 완성([#43]) — 알려진 호스트(ChatGPT/Codex 백엔드와 `api.openai.com`)에서 기본으로 자동 활성화되는 네이티브 `tool_search` 경로([#82], [#286], [#289])로 대부분 해결됨; 남은 격차는 xAI/Grok 라우트, gpt-5.2 이하 모델, 옵트인하지 않은 커스텀 엔드포인트로, 이들은 여전히 shim의 노출당 캐시 무효화 비용을 치릅니다(위 A 항목). Codex WS 전송의 첫 이벤트 이전 HTTP 폴백 격차는 이후 해소되었습니다([#46]); continuation 정규화 라이브 프로브([#45])는 아직 열려 있습니다.
 
 [#43]: https://github.com/pleaseai/shunt/issues/43
 [#82]: https://github.com/pleaseai/shunt/issues/82
+[#286]: https://github.com/pleaseai/shunt/issues/286
 [#45]: https://github.com/pleaseai/shunt/issues/45
 [#46]: https://github.com/pleaseai/shunt/issues/46
 [#47]: https://github.com/pleaseai/shunt/issues/47
 [#48]: https://github.com/pleaseai/shunt/issues/48
 [#49]: https://github.com/pleaseai/shunt/issues/49
 [#93]: https://github.com/pleaseai/shunt/issues/93
+[#86]: https://github.com/pleaseai/shunt/pull/86

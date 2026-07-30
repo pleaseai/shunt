@@ -15,6 +15,7 @@
 ## Project Structure
 
 - `main.rs`: CLI entry point and process lifecycle.
+- `shutdown.rs`: graceful-shutdown signal handling (SIGTERM/ctrl-c drain, force-exit escape hatch).
 - `server.rs`: Axum router and shared state.
 - `proxy.rs`: request buffering, route resolution, adapter dispatch.
 - `config.rs`: configuration schema, defaults, loading, validation.

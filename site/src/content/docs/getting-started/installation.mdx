@@ -19,6 +19,19 @@ description: Install shunt via Homebrew, Cargo from git, prebuilt binaries, or f
 brew install pleaseai/tap/shunt
 ```
 
+### Run as a background service
+
+```bash
+brew services start shunt
+```
+
+Logs go to `$(brew --prefix)/var/log/shunt.log`. `brew services stop` sends `SIGTERM`, and shunt
+drains in-flight requests before exiting. Config changes don't need a restart — shunt
+[hot-reloads](https://github.com/pleaseai/shunt/blob/main/docs/config-reload.md) the file
+automatically. See [Running as a
+service](https://github.com/pleaseai/shunt/blob/main/docs/running.md#run-as-a-background-service-homebrew)
+for config discovery paths and more detail.
+
 ## Cargo (from git)
 
 Install directly from the source repository; the binary is still named `shunt`:

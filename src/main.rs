@@ -14,6 +14,8 @@ use tracing_subscriber::{
     layer::SubscriberExt, reload, util::SubscriberInitExt, EnvFilter, Registry,
 };
 
+mod shutdown;
+
 /// Handle to the subscriber's reloadable OTel layer slot, set once by
 /// [`init_tracing`]. Stored globally so [`run`] can inject the OTel bridges
 /// after config load without threading it through unrelated call sites.
@@ -481,6 +483,12 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
         listener,
         router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
+    // Stops accepting new connections on the first shutdown trigger but lets
+    // in-flight ones (including open SSE streams) finish before this call
+    // returns, so `run` returns Ok and drops the sentry/telemetry guards
+    // normally (flushing buffered events on exit) rather than the process
+    // being hard-killed mid-request.
+    .with_graceful_shutdown(shutdown::shutdown_signal())
     .await?;
     Ok(())
 }
@@ -1016,5 +1024,84 @@ mod tests {
             .expect_err("occupied address must fail")
             .to_string()
             .contains("failed to bind"));
+    }
+
+    /// Exercises the exact axum API `serve` wires `shutdown::shutdown_signal` into
+    /// (`with_graceful_shutdown`), against a minimal router rather than the
+    /// full gateway: proves a request already in flight when the shutdown
+    /// trigger fires still completes, and that `serve` only returns `Ok`
+    /// after it does — the behavior `run` relies on to drop the
+    /// sentry/telemetry guards normally instead of the process being killed
+    /// mid-request.
+    #[tokio::test]
+    async fn graceful_shutdown_drains_in_flight_request_before_returning() {
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        use tokio::sync::{oneshot, Notify};
+
+        // Lets the test park the handler mid-request (after it starts, before
+        // it returns) so shutdown can be triggered while it is genuinely
+        // in-flight, without relying on real wall-clock timing.
+        let started = Arc::new(Notify::new());
+        let finish = Arc::new(Notify::new());
+        let app = axum::Router::new().route(
+            "/slow",
+            axum::routing::get({
+                let started = started.clone();
+                let finish = finish.clone();
+                move || {
+                    let started = started.clone();
+                    let finish = finish.clone();
+                    async move {
+                        started.notify_one();
+                        finish.notified().await;
+                        "done"
+                    }
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("read bound address");
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        let request = tokio::spawn(async move {
+            reqwest::Client::new()
+                .get(format!("http://{addr}/slow"))
+                .send()
+                .await
+        });
+        // Wait until the handler is actually parked mid-request before
+        // triggering shutdown, so the drain is proven, not assumed.
+        started.notified().await;
+
+        shutdown_tx
+            .send(())
+            .expect("shutdown receiver still open while server task is alive");
+        finish.notify_one();
+
+        let response = tokio::time::timeout(Duration::from_secs(5), request)
+            .await
+            .expect("in-flight request resolves before the test deadline")
+            .expect("request task join")
+            .expect("in-flight request completes despite concurrent shutdown");
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("serve returns before the test deadline")
+            .expect("serve task join")
+            .expect("graceful shutdown returns Ok once drained");
     }
 }

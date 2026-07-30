@@ -1,6 +1,7 @@
 pub mod codex_continuation;
 pub mod codex_ws;
 
+mod body;
 mod context;
 mod error;
 mod http;
@@ -85,11 +86,20 @@ async fn forward(
         .and_then(Value::as_str)
         == Some("enabled");
     let flavor = state.config.responses_flavor(&route.provider);
-    // Native client-executed tool_search (issue #82) is opt-in per provider and
-    // gated on flavor + model; otherwise the #43 progressive-reveal shim is used.
+    // Native client-executed tool_search (issue #82) is used when the
+    // provider/flavor/model gates pass — auto-on for a known-good host
+    // (stock OpenAI or the ChatGPT/Codex backend), explicit `tool_search`
+    // otherwise decides (issue #289); the #43 progressive-reveal shim is
+    // used everywhere else.
     let tool_search_native = state
         .config
         .native_tool_search(&route.provider, &route.upstream_model);
+    tracing::debug!(
+        provider = %route.provider,
+        upstream_model = %route.upstream_model,
+        tool_search_native,
+        "resolved tool_search protocol"
+    );
     // Seed message_start's usage.input_tokens with a local tiktoken estimate of
     // the (already-parsed) request so Claude Code's per-subagent progress
     // tracker — which reads that first snapshot and never re-reads the merged
