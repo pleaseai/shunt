@@ -1,0 +1,19 @@
+shunt.toml.example
+  s_b8a1dd03369365::t_78b187edd454a3 59,61-65
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "b3e8ef3b1606ab810317a3e50fc3e79f7613ef43",
+  "prompts": {},
+  "sessions": {
+    "s_b8a1dd03369365": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b8add262-7e53-46d2-8dbf-82e70e87690d",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
