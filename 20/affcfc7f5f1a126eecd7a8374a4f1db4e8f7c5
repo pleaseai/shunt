@@ -1,0 +1,22 @@
+src/observability.rs
+  s_b8a1dd03369365::t_feee2ad3928812 370-392
+  s_b8a1dd03369365::t_8f9f44caa5c72b 57,60-66,73
+site/src/content/docs/guides/opentelemetry.mdx
+  s_b8a1dd03369365::t_3b870f93d28de2 40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "20affcfc7f5f1a126eecd7a8374a4f1db4e8f7c5",
+  "prompts": {},
+  "sessions": {
+    "s_b8a1dd03369365": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b8add262-7e53-46d2-8dbf-82e70e87690d",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
