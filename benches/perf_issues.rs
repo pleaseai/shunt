@@ -129,6 +129,7 @@ fn route() -> Route {
         model: "claude-sonnet-4-5-via-codex".to_string(),
         upstream_model: "gpt-5.6-sol".to_string(),
         effort: Some("high".to_string()),
+        service_tier: None,
     }
 }
 
@@ -139,6 +140,7 @@ fn config() -> Config {
             provider: "codex".to_string(),
             upstream_model: Some("gpt-5.6-sol".to_string()),
             effort: Some("high".to_string()),
+            service_tier: None,
         }],
         ..Config::default()
     }

@@ -1,6 +1,6 @@
 ---
 title: ChatGPT / Codex
-description: Route Claude Code inference to your ChatGPT/Codex subscription by reusing ~/.codex/auth.json — auth, model slugs, effort, and context window.
+description: Route Claude Code inference to your ChatGPT/Codex subscription by reusing ~/.codex/auth.json — auth, model slugs, effort, fast mode, and context window.
 ---
 
 The **`codex`** provider routes a mapped model's inference to your **ChatGPT / Codex
@@ -305,6 +305,24 @@ Otherwise Claude Code omits the effort field and shunt falls back to `medium`. A
 
 Full precedence and the effort table: [Effort & Context](/guides/effort-and-context/#reasoning-effort).
 
+## Fast mode
+
+Codex CLI's `/fast` toggle isn't a model or effort change — it sends the Responses API top-level
+field `service_tier: "priority"`, branded "Fast" (1.5x speed, increased usage). shunt exposes the
+same knob as a config key, at both provider and route level, exactly parallel to `effort`:
+
+```toml
+[[routes]]
+model = "gpt-5.6-sol"
+provider = "codex"
+# service_tier = "priority"   # optional: opt in to Codex's "Fast" mode
+```
+
+Accepted values: `fast` (legacy alias, normalized to `priority`), `priority`, `flex`, or `default`
+(a client-only sentinel meaning "unset" — never sent on the wire). It's off by default and sent
+only when explicitly configured; a route-level value wins over the provider-level default, same as
+`effort`. Full key reference: [Configuration](/reference/configuration/#providersname).
+
 ## 6. Context window
 
 Claude Code sizes its context bar at a fixed **200k** for mapped ids. `gpt-5.6-sol`'s real window
@@ -331,6 +349,7 @@ default_provider = "anthropic"
 
 [providers.codex]
 effort = "high"     # optional: pin high effort for all Codex traffic
+# service_tier = "fast"   # optional: opt in to Codex's "Fast" mode
 
 [[routes]]
 model = "gpt-5.6-sol"

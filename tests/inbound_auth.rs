@@ -55,6 +55,7 @@ fn test_config(upstream_base_url: &str, api_key_env: &'static str) -> Config {
             api_key_env: Some(api_key_env.to_string()),
             api_key_header: ApiKeyHeader::Bearer,
             effort: None,
+            service_tier: None,
             count_tokens: CountTokens::default(),
             websocket: false,
             tool_search: None,
@@ -69,6 +70,7 @@ fn test_config(upstream_base_url: &str, api_key_env: &'static str) -> Config {
         provider: "mapped".to_string(),
         upstream_model: None,
         effort: None,
+        service_tier: None,
     });
     config
 }

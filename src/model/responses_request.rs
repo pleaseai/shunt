@@ -186,6 +186,16 @@ pub fn translate_request_value(
     if !matches!(flavor, ResponsesFlavor::Xai | ResponsesFlavor::Grok) {
         out.insert("text".to_string(), json!({"verbosity": "medium"}));
     }
+    // `service_tier` is Codex CLI's "Fast" mode opt-in (1.5x speed, increased
+    // usage) -- a top-level sibling of `reasoning`, sent only when explicitly
+    // configured on the route/provider (never derived). xAI 400s on it, and
+    // the Grok CLI flavor inherits xAI's request-shaping rules (see
+    // docs/m6-xai-provider.md), so both are withheld even when configured.
+    if !matches!(flavor, ResponsesFlavor::Xai | ResponsesFlavor::Grok) {
+        if let Some(service_tier) = &route.service_tier {
+            out.insert("service_tier".to_string(), json!(service_tier));
+        }
+    }
     // With store:false the Responses backend forgets each turn's reasoning, so ask
     // for the encrypted reasoning blob and echo it back next turn (see input_items).
     // Only when the client enabled extended thinking, which is what lets Claude Code
@@ -942,6 +952,7 @@ mod tests {
             model: "gpt-5.5".to_string(),
             upstream_model: "gpt-5.5".to_string(),
             effort: None,
+            service_tier: None,
         }
     }
 

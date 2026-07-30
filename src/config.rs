@@ -1113,6 +1113,14 @@ pub struct ProviderConfig {
     /// Optional default reasoning effort for `kind = "responses"` providers.
     #[serde(default)]
     pub effort: Option<String>,
+    /// Optional default Responses `service_tier` for `kind = "responses"`
+    /// providers -- Codex CLI's "Fast" mode (1.5x speed, increased usage).
+    /// Accepts `fast` (legacy alias, normalized to `priority`), `priority`,
+    /// `flex`, or `default` (a client-only sentinel meaning "unset"; never
+    /// sent on the wire). Normalized and validated at config load -- see
+    /// `Config::normalize_service_tiers`. Off by default (opt-in).
+    #[serde(default)]
+    pub service_tier: Option<String>,
     /// How `POST /v1/messages/count_tokens` is answered for this provider.
     #[serde(default)]
     pub count_tokens: CountTokens,
@@ -1589,6 +1597,9 @@ pub struct RouteConfig {
     pub provider: String,
     pub upstream_model: Option<String>,
     pub effort: Option<String>,
+    /// See [`ProviderConfig::service_tier`]; a route-level value wins over
+    /// the provider-level default.
+    pub service_tier: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1708,6 +1719,10 @@ pub enum ConfigError {
     OauthUsageSelfPollLoop { provider: String },
     #[error("route for model {model} references unknown provider: {provider}")]
     UnknownRouteProvider { model: String, provider: String },
+    #[error("providers.{provider}.service_tier must be one of fast, priority, flex, default; got \"{value}\"")]
+    InvalidProviderServiceTier { provider: String, value: String },
+    #[error("route for model {model} service_tier must be one of fast, priority, flex, default; got \"{value}\"")]
+    InvalidRouteServiceTier { model: String, value: String },
     #[error("models entry {model} upstream_model references unknown provider: {provider}")]
     UnknownModelProvider { model: String, provider: String },
     #[error("models entry {model} upstream_model must name exactly one provider (got {count}) when using legacy [providers.*]; rewrite as ordered upstreams:\n{rewrite}")]
@@ -1830,6 +1845,7 @@ impl ProviderConfig {
             api_key_env: None,
             api_key_header: ApiKeyHeader::Bearer,
             effort: None,
+            service_tier: None,
             count_tokens: CountTokens::default(),
             accounts: Vec::new(),
             account_scope: Vec::new(),
@@ -1851,6 +1867,7 @@ impl ProviderConfig {
             api_key_env: api_key_env.map(str::to_string),
             api_key_header: ApiKeyHeader::Bearer,
             effort: None,
+            service_tier: None,
             count_tokens: CountTokens::default(),
             accounts: Vec::new(),
             account_scope: Vec::new(),
@@ -1872,6 +1889,7 @@ impl ProviderConfig {
             api_key_env: None,
             api_key_header: ApiKeyHeader::Bearer,
             effort: None,
+            service_tier: None,
             count_tokens: CountTokens::default(),
             accounts: Vec::new(),
             account_scope: Vec::new(),
@@ -1915,6 +1933,7 @@ impl Default for Config {
                     api_key_env: None,
                     api_key_header: ApiKeyHeader::Bearer,
                     effort: None,
+                    service_tier: None,
                     count_tokens: CountTokens::default(),
                     accounts: Vec::new(),
                     account_scope: Vec::new(),
@@ -1972,6 +1991,7 @@ impl Default for Config {
                     api_key_env: None,
                     api_key_header: ApiKeyHeader::Bearer,
                     effort: None,
+                    service_tier: None,
                     count_tokens: CountTokens::default(),
                     accounts: Vec::new(),
                     account_scope: Vec::new(),
@@ -2063,6 +2083,18 @@ impl ConfigFormat {
             }
             _ => ConfigFormat::Toml,
         }
+    }
+}
+
+/// Normalizes a raw `service_tier` config value to its Responses wire form.
+/// `Some(Some(_))` is a concrete wire value, `Some(None)` is the `default`
+/// sentinel (unset, never sent), and `None` means the input was invalid.
+fn normalize_service_tier_value(value: &str) -> Option<Option<String>> {
+    match value {
+        "fast" | "priority" => Some(Some("priority".to_string())),
+        "flex" => Some(Some("flex".to_string())),
+        "default" => Some(None),
+        _ => None,
     }
 }
 
@@ -2176,6 +2208,38 @@ impl Config {
         Ok(())
     }
 
+    /// Validates and normalizes every configured `service_tier` (provider-level
+    /// and route-level) to its Responses wire form, in place, fail-closed:
+    /// `fast` is a legacy alias normalized to `priority`; `default` is a
+    /// client-only sentinel normalized to `None` (never sent on the wire); any
+    /// other value is rejected. Mirrors the shape of `normalize_upstreams`, but
+    /// unconditionally revisits every entry rather than switching on a
+    /// declaration-form flag, since `service_tier` is orthogonal to which of
+    /// `[[upstreams]]`/`[providers.*]` populated `self.providers`.
+    fn normalize_service_tiers(&mut self) -> Result<(), ConfigError> {
+        for (name, provider) in self.providers.iter_mut() {
+            if let Some(raw) = provider.service_tier.take() {
+                provider.service_tier = normalize_service_tier_value(&raw).ok_or_else(|| {
+                    ConfigError::InvalidProviderServiceTier {
+                        provider: name.clone(),
+                        value: raw.clone(),
+                    }
+                })?;
+            }
+        }
+        for route in self.routes.iter_mut() {
+            if let Some(raw) = route.service_tier.take() {
+                route.service_tier = normalize_service_tier_value(&raw).ok_or_else(|| {
+                    ConfigError::InvalidRouteServiceTier {
+                        model: route.model.clone(),
+                        value: raw.clone(),
+                    }
+                })?;
+            }
+        }
+        Ok(())
+    }
+
     fn apply_ordered_provider_env(&mut self, env: Env) -> Result<(), ConfigError> {
         if !self.upstreams_ordered {
             return Ok(());
@@ -2211,6 +2275,9 @@ impl Config {
 
     pub fn validate(mut self) -> Result<Self, ConfigError> {
         self.normalize_upstreams()?;
+        // Runs after `normalize_upstreams` so it sees `self.providers` merged
+        // from either declaration form ([[upstreams]] or [providers.*]).
+        self.normalize_service_tiers()?;
         self.server.bind_addr()?;
         // `tokio::sync::Semaphore::new` panics above `MAX_PERMITS`, so an
         // out-of-range limit would pass `shunt check` and then abort at boot
@@ -3391,6 +3458,61 @@ mod tests {
     }
 
     #[test]
+    fn service_tier_fast_alias_normalizes_to_priority() {
+        let mut config = Config::default();
+        config.providers.get_mut("anthropic").unwrap().service_tier = Some("fast".to_string());
+        let config = config.validate().unwrap();
+        assert_eq!(
+            config
+                .providers
+                .get("anthropic")
+                .unwrap()
+                .service_tier
+                .as_deref(),
+            Some("priority")
+        );
+    }
+
+    #[test]
+    fn service_tier_default_sentinel_normalizes_to_unset() {
+        // "default" is a client-only sentinel and must never reach the wire:
+        // validation clears it back to None rather than passing it through.
+        let mut config = Config::default();
+        config.providers.get_mut("anthropic").unwrap().service_tier = Some("default".to_string());
+        let config = config.validate().unwrap();
+        assert_eq!(
+            config.providers.get("anthropic").unwrap().service_tier,
+            None
+        );
+    }
+
+    #[test]
+    fn service_tier_rejects_invalid_provider_value() {
+        let mut config = Config::default();
+        config.providers.get_mut("anthropic").unwrap().service_tier = Some("turbo".to_string());
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::InvalidProviderServiceTier { .. }
+        ));
+    }
+
+    #[test]
+    fn service_tier_rejects_invalid_route_value() {
+        let mut config = Config::default();
+        config.routes.push(super::RouteConfig {
+            model: "gpt-special".to_string(),
+            provider: "anthropic".to_string(),
+            upstream_model: None,
+            effort: None,
+            service_tier: Some("turbo".to_string()),
+        });
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::InvalidRouteServiceTier { .. }
+        ));
+    }
+
+    #[test]
     fn pool_config_and_account_thresholds_parse_from_toml() {
         let pool: PoolConfig = figment::Figment::from(figment::providers::Toml::string(
             "default_threshold = 0.85\nburn_rate_avoidance = true\nramp_initial_concurrency = 4",
@@ -4353,6 +4475,7 @@ id = "claude-sonnet-5"
                 provider: "codex".to_string(),
                 upstream_model: Some("gpt-5.2".to_string()),
                 effort: None,
+                service_tier: None,
             }],
             ..Config::default()
         };

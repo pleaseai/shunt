@@ -235,12 +235,14 @@ fn sample_config() -> Config {
                 provider: "anthropic".to_string(),
                 upstream_model: None,
                 effort: None,
+                service_tier: None,
             },
             RouteConfig {
                 model: "claude-sonnet-4-5-via-codex".to_string(),
                 provider: "codex".to_string(),
                 upstream_model: Some("gpt-5.6-sol".to_string()),
                 effort: Some("high".to_string()),
+                service_tier: None,
             },
         ],
         route_prefixes: vec![RoutePrefixConfig {
@@ -323,6 +325,7 @@ fn translate_request(bencher: divan::Bencher) {
         model: "claude-sonnet-4-5-via-codex".to_string(),
         upstream_model: "gpt-5.6-sol".to_string(),
         effort: None,
+        service_tier: None,
     };
     bencher.bench(|| {
         responses_request::translate_request(

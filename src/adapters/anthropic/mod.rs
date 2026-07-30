@@ -937,6 +937,7 @@ mod tests {
             model: "claude-test".to_string(),
             upstream_model: "claude-test".to_string(),
             effort: None,
+            service_tier: None,
         }
     }
 

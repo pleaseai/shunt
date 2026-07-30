@@ -1435,6 +1435,7 @@ async fn gateway_jwt_is_accepted_on_mapped_messages() {
         provider: "openai".into(),
         upstream_model: None,
         effort: None,
+        service_tier: None,
     }];
     let (router, _, _) = build_router(config).unwrap();
     let identity = Identity {
@@ -1867,6 +1868,7 @@ async fn empty_available_models_denies_all_gateway_inference_routes() {
         provider: "openai".to_string(),
         upstream_model: None,
         effort: None,
+        service_tier: None,
     }];
     config.server.gateway.as_mut().unwrap().policies =
         Some(vec![policy(None, toml::toml! { availableModels = [] })]);
@@ -1921,6 +1923,7 @@ async fn available_models_policy_denies_or_allows_gateway_requests() {
             provider: "openai".to_string(),
             upstream_model: Some("upstream-allowed".to_string()),
             effort: None,
+            service_tier: None,
         })
         .collect();
     config.server.gateway.as_mut().unwrap().policies = Some(vec![policy(
@@ -1997,6 +2000,7 @@ async fn gateway_policy_without_available_models_is_unrestricted() {
         provider: "openai".to_string(),
         upstream_model: None,
         effort: None,
+        service_tier: None,
     }];
     config.server.gateway.as_mut().unwrap().policies =
         Some(vec![policy(None, toml::toml! { env = { TEST = "1" } })]);

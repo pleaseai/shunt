@@ -327,6 +327,7 @@ async fn forward(
         model: model.clone(),
         upstream_model: model.clone(),
         effort: None,
+        service_tier: None,
     };
 
     // Namespace the account-pool sticky key with the authenticated client so that,

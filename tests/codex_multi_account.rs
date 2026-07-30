@@ -176,6 +176,7 @@ fn test_config(upstream_base_url: &str, first: AccountConfig, second: AccountCon
         provider: "codex".to_string(),
         upstream_model: None,
         effort: None,
+        service_tier: None,
     });
     config
 }
@@ -1432,6 +1433,7 @@ async fn storm_control_last_candidate_is_always_admitted() {
         provider: "codex".to_string(),
         upstream_model: None,
         effort: None,
+        service_tier: None,
     });
     config.server.pool = Some(shunt::config::PoolConfig {
         ramp_initial_concurrency: Some(1),

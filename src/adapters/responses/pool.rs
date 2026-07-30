@@ -724,6 +724,7 @@ mod tests {
             model: "test-model".to_string(),
             upstream_model: "test-model".to_string(),
             effort: None,
+            service_tier: None,
         };
         let state = AppState::new(Config::default(), reqwest::Client::new()).unwrap();
 

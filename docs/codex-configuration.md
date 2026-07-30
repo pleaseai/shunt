@@ -17,14 +17,15 @@ This page consolidates every Codex-specific knob. For the broader gateway workfl
 - [6. Routing a model to Codex](#6-routing-a-model-to-codex)
 - [7. Selecting the model in Claude Code](#7-selecting-the-model-in-claude-code)
 - [8. Reasoning effort](#8-reasoning-effort)
-- [9. Context window & usage display](#9-context-window--usage-display)
-- [10. `count_tokens` behavior](#10-count_tokens-behavior)
-- [11. Attribution header](#11-attribution-header)
-- [12. Multi-account pooling](#12-multi-account-pooling)
-- [13. Security](#13-security)
-- [14. Troubleshooting](#14-troubleshooting)
-- [15. End-to-end example](#15-end-to-end-example)
-- [16. Inbound Codex endpoint (point the Codex CLI at shunt)](#16-inbound-codex-endpoint-point-the-codex-cli-at-shunt)
+- [9. Fast mode (`service_tier`)](#9-fast-mode-service_tier)
+- [10. Context window & usage display](#10-context-window--usage-display)
+- [11. `count_tokens` behavior](#11-count_tokens-behavior)
+- [12. Attribution header](#12-attribution-header)
+- [13. Multi-account pooling](#13-multi-account-pooling)
+- [14. Security](#14-security)
+- [15. Troubleshooting](#15-troubleshooting)
+- [16. End-to-end example](#16-end-to-end-example)
+- [17. Inbound Codex endpoint (point the Codex CLI at shunt)](#17-inbound-codex-endpoint-point-the-codex-cli-at-shunt)
 
 ---
 
@@ -76,7 +77,7 @@ base_url = "https://chatgpt.com/backend-api"  # shunt appends /codex/responses
 auth = "chatgpt_oauth"                   # read + auto-refresh ~/.codex/auth.json
 # api_key_header = "bearer"              # unused for chatgpt_oauth (bearer is implicit)
 # effort = "high"                        # optional default reasoning effort (see §8)
-# count_tokens = "tiktoken"              # default; "estimate" opts out (see §10)
+# count_tokens = "tiktoken"              # default; "estimate" opts out (see §11)
 # request_compression = true             # default; false sends uncompressed bodies (see §4.5)
 ```
 
@@ -84,7 +85,7 @@ A partial `[providers.codex]` table overrides **only** the keys it sets — the 
 fill the rest. Practical uses:
 
 - **Pin a default effort** for everything routed to Codex: `effort = "high"`.
-- **Opt out of local token counting**: `count_tokens = "estimate"` (see §10).
+- **Opt out of local token counting**: `count_tokens = "estimate"` (see §11).
 - **Point at a different backend host** (rare): change `base_url`. shunt still appends
   `/codex/responses` and still sends the ChatGPT OAuth headers, so the host must be the ChatGPT
   Codex backend.
@@ -286,7 +287,7 @@ overlap** — the split is on the `claude-`/`anthropic-` prefix:
 | :-- | :-- | :-- |
 | `/v1/models` discovery → `/model` picker | ✅ auto-listed ("From gateway"), many models | ❌ dropped by Claude Code |
 | `ANTHROPIC_CUSTOM_MODEL_OPTION` | ❌ not honored | ✅ adds to picker (**one id only**) |
-| `CLAUDE_CODE_MAX_CONTEXT_TOKENS` window (§9) | ❌ ignored → 200k default | ✅ applies → real window |
+| `CLAUDE_CODE_MAX_CONTEXT_TOKENS` window (§10) | ❌ ignored → 200k default | ✅ applies → real window |
 
 ### 7.1 Primary path — `ANTHROPIC_CUSTOM_MODEL_OPTION`
 
@@ -297,7 +298,7 @@ export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
 Adds a picker entry whose id skips validation; that id is exactly what shunt routes on, so it
 must resolve through a matching `[models.upstream_model]` entry, `[[routes]]`, or
 `[[route_prefixes]]` rule. This is the recommended path — it's the only one that also lets you set
-an accurate context window (§9).
+an accurate context window (§10).
 
 ### 7.2 Discovery alias — a `claude-`-named alias rewritten to a Codex slug
 
@@ -357,7 +358,7 @@ export CLAUDE_CODE_SUBAGENT_MODEL="gpt-5.6-sol"
 
 Either way the id must resolve through a matching `[models.upstream_model]` entry, `[[routes]]`, or
 `[[route_prefixes]]` rule (§6) and, being non-`claude-`, obeys
-`CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` (§8) and `CLAUDE_CODE_MAX_CONTEXT_TOKENS` (§9) — the context
+`CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` (§8) and `CLAUDE_CODE_MAX_CONTEXT_TOKENS` (§10) — the context
 window follows the id automatically, so one global value sizes the mapped subagent while the Claude
 main keeps its own.
 
@@ -412,7 +413,7 @@ export ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION="ChatGPT/Codex Luna via shunt (
 
 Things to get right:
 
-- **These ids don't start with `claude-`**, so `CLAUDE_CODE_MAX_CONTEXT_TOKENS` (§9) applies and
+- **These ids don't start with `claude-`**, so `CLAUDE_CODE_MAX_CONTEXT_TOKENS` (§10) applies and
   `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` is needed for effort (§8). Handily, `gpt-5.6-sol` and
   `gpt-5.6-luna` are **both 372k**, so one global `CLAUDE_CODE_MAX_CONTEXT_TOKENS=372000` fits both
   tiers.
@@ -468,7 +469,41 @@ of the Claude Code slider; drop it to let the client control effort per-turn.
 
 ---
 
-## 9. Context window & usage display
+## 9. Fast mode (`service_tier`)
+
+Codex CLI's `/fast` toggle sends the Responses API top-level field `service_tier: "priority"` — a
+sibling of `reasoning`, not a model or effort change. It is branded "Fast" (1.5x speed, increased
+usage). shunt exposes the same knob as a config key, at both provider and route level, exactly
+parallel to `effort` (§8):
+
+```toml
+[providers.codex]
+# service_tier = "fast"             # optional: opt in to Codex's "Fast" mode (see below)
+```
+
+```toml
+[[routes]]
+model = "gpt-5.6-sol"
+provider = "codex"
+# service_tier = "priority"         # optional: pin service_tier for this route
+```
+
+**Accepted values**: `fast` (legacy alias, normalized to `priority`), `priority`, `flex`, or
+`default` (a client-only sentinel meaning "unset" — it is never sent on the wire). Any other value
+fails config validation at load time. A route-level value wins over the provider-level default,
+mirroring `effort`'s precedence.
+
+**Off by default** — shunt never derives `service_tier` from the request, the model id, or any
+other signal; it is sent only when explicitly configured. gpt-5.6-sol/terra/luna all advertise
+`service_tier: "priority"` support.
+
+**xAI/Grok exception:** the field is withheld for the `xai` and `grok` provider flavors even when
+configured — xAI's Responses API 400s on `service_tier`, and the Grok CLI flavor inherits xAI's
+request-shaping rules (§6 of [`m6-xai-provider.md`](m6-xai-provider.md)).
+
+---
+
+## 10. Context window & usage display
 
 Claude Code computes the context indicator **locally**: `usage` tokens ÷ the model's window size.
 
@@ -507,12 +542,12 @@ if the upstream genuinely has a 1M window, or it under-reports.
 | :-- | :-- | :-- |
 | Context tokens used | ✅ accurate (forwarded by shunt) | ✅ accurate |
 | Context window (denominator) | ⚠️ 200k default; set `CLAUDE_CODE_MAX_CONTEXT_TOKENS` | ✅ exact |
-| `count_tokens` (pre-flight) | ⚠️ local tiktoken or client `char/4` (§10) | ✅ exact (upstream) |
+| `count_tokens` (pre-flight) | ⚠️ local tiktoken or client `char/4` (§11) | ✅ exact (upstream) |
 | `rate_limits` (5h / weekly) | ❌ needs Anthropic headers | ✅ shown |
 
 ---
 
-## 10. `count_tokens` behavior
+## 11. `count_tokens` behavior
 
 The Responses API has no server-side token-count endpoint, so shunt answers Claude Code's
 pre-flight `POST /v1/messages/count_tokens` itself. Controlled by `count_tokens` under
@@ -533,7 +568,7 @@ Code's `char/4` fallback and needs no network round-trip. See `src/count_tokens.
 
 ---
 
-## 11. Attribution header
+## 12. Attribution header
 
 Claude Code prepends an attribution line to the system prompt
 (`x-anthropic-billing-header: cc_version=…`). Anthropic strips it; a Codex backend receives it as
@@ -548,7 +583,7 @@ tracking), which is fine when routing to Codex.
 
 ---
 
-## 12. Multi-account pooling
+## 13. Multi-account pooling
 
 Everything above describes a single `chatgpt_oauth` credential (`~/.codex/auth.json`). The
 `codex` provider (or any `chatgpt_oauth` provider) can instead pool several ChatGPT accounts with
@@ -572,7 +607,7 @@ cooldown/failover rules, and how this differs from the Anthropic (`claude_oauth`
 
 ---
 
-## 13. Security
+## 14. Security
 
 - **Tokens are never logged.** shunt logs only non-secret facts (auth mode, account-id presence,
   expiry, refresh success/failure).
@@ -586,7 +621,7 @@ cooldown/failover rules, and how this differs from the Anthropic (`claude_oauth`
 
 ---
 
-## 14. Troubleshooting
+## 15. Troubleshooting
 
 | Symptom | Likely cause / fix |
 | :-- | :-- |
@@ -595,7 +630,7 @@ cooldown/failover rules, and how this differs from the Anthropic (`claude_oauth`
 | `400 … not supported when using Codex with a ChatGPT account` | You used a `gpt-*-codex` slug. Use an entitled non-`-codex` slug (§5). |
 | `Model not found <slug>` | Client-version gating or an unentitled slug — not a code error. Confirm the slug via `models.json`; shunt already sends the pinned CLI headers (§4.4). |
 | Effort slider seems ignored on a `gpt-*` id | Set `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` (§8), or a `route`/`provider` `effort` override is winning. |
-| Context bar over-reports / compacts early | Set `CLAUDE_CODE_MAX_CONTEXT_TOKENS` to the real window (§9). A discovery alias can't take it — use a non-`claude-` id. |
+| Context bar over-reports / compacts early | Set `CLAUDE_CODE_MAX_CONTEXT_TOKENS` to the real window (§10). A discovery alias can't take it — use a non-`claude-` id. |
 | `prompt is too long` churn mid-session | `CLAUDE_CODE_MAX_CONTEXT_TOKENS` is set larger than the real window. Lower it to the smallest mapped window. |
 | `gpt-*` model never appears in `/model` | Discovery drops non-`claude-` ids. Use `ANTHROPIC_CUSTOM_MODEL_OPTION` (§7.1) or a `claude-`-named discovery alias (§7.2). |
 
@@ -603,7 +638,7 @@ Validate config before running: `cargo run -- check` (or `./target/release/shunt
 
 ---
 
-## 15. End-to-end example
+## 16. End-to-end example
 
 `shunt.toml`:
 
@@ -615,6 +650,7 @@ default_provider = "anthropic"
 # codex is built in; this table only pins a default effort and keeps local counting.
 [providers.codex]
 effort = "high"
+# service_tier = "fast"       # optional: opt in to Codex's "Fast" mode (see §9)
 # count_tokens = "tiktoken"   # default
 
 [[routes]]
@@ -643,7 +679,7 @@ unchanged; only the mapped model's inference is answered by your ChatGPT/Codex s
 
 ---
 
-## 16. Inbound Codex endpoint (point the Codex CLI at shunt)
+## 17. Inbound Codex endpoint (point the Codex CLI at shunt)
 
 Everything above routes **Claude Code** to a Codex/ChatGPT backend. shunt can also run the
 opposite direction: an opt-in **inbound** OpenAI Responses endpoint that lets the **Codex CLI**
@@ -652,7 +688,7 @@ pool. Unlike every path above, the request is **not** translated to or from Anth
 it is a raw Responses-to-Responses passthrough. Full behavior spec:
 [`m11-inbound-codex-endpoint.md`](m11-inbound-codex-endpoint.md).
 
-### 16.1 Enable it
+### 17.1 Enable it
 
 ```toml
 [server.codex_endpoint]
@@ -664,7 +700,7 @@ Absent ⇒ none of the routes exist. Present ⇒ shunt registers three routes at
 provider's account pool. Config validation rejects an unknown provider or one not using `auth =
 "chatgpt_oauth"` at startup.
 
-### 16.2 Point the Codex CLI at shunt
+### 17.2 Point the Codex CLI at shunt
 
 Two `~/.codex/config.toml` shapes work, depending on which base URL the CLI appends `/responses`
 to:
@@ -711,9 +747,9 @@ env_key = "SHUNT_TOKEN"                            # option A on a custom provid
 The Codex CLI's own local `~/.codex/auth.json` login is irrelevant once pointed at shunt this
 way — the account comes from shunt's pool, not the CLI.
 
-### 16.3 Account provisioning
+### 17.3 Account provisioning
 
-Reuses the same pool as §12 — the target provider's `[[accounts]]` (or the auto-discovered account
+Reuses the same pool as §13 — the target provider's `[[accounts]]` (or the auto-discovered account
 store). Import a Codex CLI login the same way:
 
 ```bash
@@ -726,7 +762,7 @@ back to the single default `~/.codex/auth.json` credential (no pooling, no failo
 of the box for a single account. (The handler first scans the account store and pools any
 auto-discovered accounts, so imported store logins still get pooling.)
 
-### 16.4 What's different from the outbound path
+### 17.4 What's different from the outbound path
 
 - No model-based routing — every inbound request goes to the one configured provider, regardless
   of the `model` field in the body.
@@ -738,7 +774,7 @@ auto-discovered accounts, so imported store logins still get pooling.)
   the `x-shunt-token` header). So the client's real `version` — not shunt's pinned one — drives the
   backend's `minimal_client_version` gating (§5).
 - On pool exhaustion, the last upstream response is relayed **verbatim** rather than re-shaped
-  into an Anthropic-style error — the opposite of §12's outbound Codex pool, which re-shapes the
+  into an Anthropic-style error — the opposite of §13's outbound Codex pool, which re-shapes the
   last response into an Anthropic error envelope (`build_upstream_error`).
 - HTTP/SSE only, even if the target provider has `websocket = true`.
 

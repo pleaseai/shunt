@@ -16,6 +16,7 @@ fn route(model: &str) -> Route {
         model: model.to_string(),
         upstream_model: model.to_string(),
         effort: None,
+        service_tier: None,
     }
 }
 
@@ -728,6 +729,39 @@ fn maps_thinking_and_route_override_to_effort() {
     assert_eq!(override_effort["reasoning"]["effort"], "xhigh");
 }
 
+#[test]
+fn service_tier_is_absent_by_default() {
+    // No behavior change when the key is absent: a plain route with no
+    // configured service_tier never emits the field.
+    let out = translate(json!({
+        "model": "gpt-5.2-codex",
+        "messages": [{"role": "user", "content": "hi"}]
+    }));
+    assert!(out.get("service_tier").is_none());
+}
+
+#[test]
+fn emits_configured_service_tier_on_the_wire() {
+    // Codex CLI's "Fast" mode: an explicitly configured route/provider
+    // service_tier is forwarded verbatim as a top-level sibling of `reasoning`.
+    let mut route = route("gpt-5.6-sol");
+    route.service_tier = Some("priority".to_string());
+    let body = serde_json::to_vec(&json!({"model": "gpt-5.6-sol", "messages": []})).unwrap();
+    let out = translate_request(&body, &route, ResponsesFlavor::OpenAi, false).unwrap();
+    assert_eq!(out["service_tier"], json!("priority"));
+}
+
+#[test]
+fn emits_configured_service_tier_on_chatgpt_flavor() {
+    // The Codex/ChatGPT backend is the flavor gpt-5.6-* Fast mode actually
+    // targets, so it gets its own assertion rather than relying on OpenAi alone.
+    let mut route = route("gpt-5.6-sol");
+    route.service_tier = Some("flex".to_string());
+    let body = serde_json::to_vec(&json!({"model": "gpt-5.6-sol", "messages": []})).unwrap();
+    let out = translate_request(&body, &route, ResponsesFlavor::Chatgpt, false).unwrap();
+    assert_eq!(out["service_tier"], json!("flex"));
+}
+
 fn xai_route(model: &str) -> Route {
     Route {
         provider: "xai".to_string(),
@@ -735,6 +769,7 @@ fn xai_route(model: &str) -> Route {
         model: model.to_string(),
         upstream_model: model.to_string(),
         effort: None,
+        service_tier: None,
     }
 }
 
@@ -765,6 +800,42 @@ fn xai_omits_reasoning_and_text_without_configured_effort() {
     assert_eq!(actual["stream"], json!(true));
     // xAI is not the ChatGPT backend, so the output cap is still forwarded.
     assert_eq!(actual["max_output_tokens"], json!(256));
+    assert!(actual.get("service_tier").is_none());
+}
+
+#[test]
+fn xai_never_emits_service_tier_even_when_configured() {
+    // xAI's Responses API 400s on `service_tier`, so it is withheld even when
+    // explicitly configured on the route (never just when absent).
+    let mut route = xai_route("grok-4.3");
+    route.service_tier = Some("priority".to_string());
+    let body = serde_json::to_vec(&json!({
+        "model": "grok-4.3",
+        "messages": [{"role": "user", "content": "hi"}]
+    }))
+    .unwrap();
+
+    let actual = translate_request(&body, &route, ResponsesFlavor::Xai, false).unwrap();
+
+    assert!(actual.get("service_tier").is_none());
+}
+
+#[test]
+fn grok_never_emits_service_tier_even_when_configured() {
+    // The Grok CLI flavor inherits xAI's request-shaping rules (see
+    // docs/m6-xai-provider.md), including the service_tier rejection -- it is
+    // withheld even when explicitly configured on the route.
+    let mut route = xai_route("grok-4.5");
+    route.provider = "grok".to_string();
+    route.service_tier = Some("priority".to_string());
+    let body = serde_json::to_vec(&json!({
+        "model": "grok-4.5",
+        "messages": [{"role": "user", "content": "hi"}]
+    }))
+    .unwrap();
+
+    let actual = translate_request(&body, &route, ResponsesFlavor::Grok, false).unwrap();
+
     assert!(actual.get("service_tier").is_none());
 }
 

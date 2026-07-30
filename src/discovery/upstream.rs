@@ -380,6 +380,7 @@ fn probe_route(provider: &str) -> Route {
         model: String::new(),
         upstream_model: String::new(),
         effort: None,
+        service_tier: None,
     }
 }
 

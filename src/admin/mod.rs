@@ -1448,6 +1448,7 @@ mod tests {
                 api_key_env: None,
                 api_key_header: Default::default(),
                 effort: None,
+                service_tier: None,
                 count_tokens: Default::default(),
                 accounts,
                 account_scope,

@@ -279,6 +279,7 @@ async fn responses_path_does_not_retry_transient_status() {
         provider: "openai".to_string(),
         upstream_model: None,
         effort: None,
+        service_tier: None,
     });
     let gateway = start_gateway_with(config).await;
 

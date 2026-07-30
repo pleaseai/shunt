@@ -34,6 +34,7 @@ pub struct Route {
     pub model: String,
     pub upstream_model: String,
     pub effort: Option<String>,
+    pub service_tier: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -121,14 +122,21 @@ pub fn resolve_model_chain(config: &Config, model: &str) -> Vec<Route> {
                     .then(|| upstream_models.iter().next())
                     .flatten()
                 {
-                    return vec![route_for(config, provider, model, upstream_model, None)];
+                    return vec![route_for(
+                        config,
+                        provider,
+                        model,
+                        upstream_model,
+                        None,
+                        None,
+                    )];
                 }
                 let routes = config
                     .upstream_order
                     .iter()
                     .filter_map(|provider| {
                         upstream_models.get(provider).map(|upstream_model| {
-                            route_for(config, provider, model, upstream_model, None)
+                            route_for(config, provider, model, upstream_model, None, None)
                         })
                     })
                     .collect::<Vec<_>>();
@@ -146,12 +154,13 @@ pub fn resolve_model_chain(config: &Config, model: &str) -> Vec<Route> {
                 model,
                 route.upstream_model.as_deref().unwrap_or(model),
                 route.effort.clone(),
+                route.service_tier.clone(),
             )];
         }
     }
     for route in &config.route_prefixes {
         if model.starts_with(&route.prefix) {
-            return vec![route_for(config, &route.provider, model, model, None)];
+            return vec![route_for(config, &route.provider, model, model, None, None)];
         }
     }
     vec![route_for(
@@ -159,6 +168,7 @@ pub fn resolve_model_chain(config: &Config, model: &str) -> Vec<Route> {
         &config.server.default_provider,
         model,
         model,
+        None,
         None,
     )]
 }
@@ -169,6 +179,7 @@ fn route_for(
     model: &str,
     upstream_model: &str,
     effort: Option<String>,
+    service_tier: Option<String>,
 ) -> Route {
     // The provider's declared kind picks the adapter; unknown names (only
     // reachable via a validated default) fall back to the Anthropic passthrough.
@@ -177,12 +188,15 @@ fn route_for(
         .map(|p| AdapterKind::from(p.kind))
         .unwrap_or(AdapterKind::Anthropic);
     let effort = effort.or_else(|| provider_config.and_then(|p| p.effort.clone()));
+    let service_tier =
+        service_tier.or_else(|| provider_config.and_then(|p| p.service_tier.clone()));
     Route {
         provider: provider.to_string(),
         adapter,
         model: model.to_string(),
         upstream_model: upstream_model.to_string(),
         effort,
+        service_tier,
     }
 }
 
@@ -250,6 +264,7 @@ mod tests {
                 provider: "openai".to_string(),
                 upstream_model: Some("gpt-exact-route".to_string()),
                 effort: None,
+                service_tier: None,
             }],
             ..Config::default()
         };
@@ -305,6 +320,19 @@ mod tests {
     }
 
     #[test]
+    fn model_upstream_map_uses_provider_service_tier() {
+        let mut config = Config {
+            models: vec![mapped_model("claude-opus-4-8", "codex", "gpt-5.2")],
+            ..Config::default()
+        };
+        config.providers.get_mut("codex").unwrap().service_tier = Some("priority".to_string());
+
+        let route = resolve_model(&config, "claude-opus-4-8");
+
+        assert_eq!(route.service_tier.as_deref(), Some("priority"));
+    }
+
+    #[test]
     fn model_without_upstream_map_keeps_existing_routing_precedence() {
         let config = Config {
             models: vec![ModelConfig {
@@ -317,6 +345,7 @@ mod tests {
                 provider: "codex".to_string(),
                 upstream_model: Some("gpt-route".to_string()),
                 effort: None,
+                service_tier: None,
             }],
             route_prefixes: vec![RoutePrefixConfig {
                 prefix: "claude-".to_string(),
@@ -360,6 +389,7 @@ mod tests {
                 provider: "codex".to_string(),
                 upstream_model: Some("gpt-5.6-sol".to_string()),
                 effort: None,
+                service_tier: None,
             }],
             ..Config::default()
         };
@@ -399,6 +429,7 @@ mod tests {
                 provider: "openai".to_string(),
                 upstream_model: Some("gpt-upstream".to_string()),
                 effort: Some("high".to_string()),
+                service_tier: None,
             }],
             route_prefixes: vec![RoutePrefixConfig {
                 prefix: "gpt-".to_string(),
@@ -412,6 +443,59 @@ mod tests {
         assert_eq!(route.adapter, AdapterKind::Responses);
         assert_eq!(route.upstream_model, "gpt-upstream");
         assert_eq!(route.effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn route_level_service_tier_wins_over_provider_level() {
+        let mut config = Config {
+            routes: vec![RouteConfig {
+                model: "gpt-special".to_string(),
+                provider: "openai".to_string(),
+                upstream_model: Some("gpt-upstream".to_string()),
+                effort: None,
+                service_tier: Some("priority".to_string()),
+            }],
+            ..Config::default()
+        };
+        config.providers.get_mut("openai").unwrap().service_tier = Some("flex".to_string());
+
+        let route = resolve_model(&config, "gpt-special");
+
+        assert_eq!(route.service_tier.as_deref(), Some("priority"));
+    }
+
+    #[test]
+    fn service_tier_falls_back_to_provider_when_route_unset() {
+        let mut config = Config {
+            routes: vec![RouteConfig {
+                model: "gpt-special".to_string(),
+                provider: "openai".to_string(),
+                upstream_model: Some("gpt-upstream".to_string()),
+                effort: None,
+                service_tier: None,
+            }],
+            ..Config::default()
+        };
+        config.providers.get_mut("openai").unwrap().service_tier = Some("flex".to_string());
+
+        let route = resolve_model(&config, "gpt-special");
+
+        assert_eq!(route.service_tier.as_deref(), Some("flex"));
+    }
+
+    #[test]
+    fn service_tier_is_absent_by_default() {
+        let config = Config {
+            route_prefixes: vec![RoutePrefixConfig {
+                prefix: "gpt-".to_string(),
+                provider: "openai".to_string(),
+            }],
+            ..Config::default()
+        };
+
+        let route = resolve_model(&config, "gpt-plain");
+
+        assert_eq!(route.service_tier, None);
     }
 
     #[test]
@@ -453,6 +537,7 @@ mod tests {
                 provider: "codex".into(),
                 upstream_model: Some("gpt-exact".into()),
                 effort: Some("high".into()),
+                service_tier: None,
             }],
             route_prefixes: vec![RoutePrefixConfig {
                 prefix: "gpt-".into(),

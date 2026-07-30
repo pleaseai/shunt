@@ -16,6 +16,8 @@ pub struct RouteEntry {
     pub upstream_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
 }
 
 /// Shunt-native endpoint exposing the configured `[[routes]]` table verbatim,
@@ -34,6 +36,7 @@ pub async fn get(State(state): State<AppState>) -> Json<RoutesResponse> {
             provider: route.provider.clone(),
             upstream_model: route.upstream_model.clone(),
             effort: route.effort.clone(),
+            service_tier: route.service_tier.clone(),
         })
         .collect();
     tracing::info!(routes = data.len(), "served GET /routes discovery");
@@ -61,12 +64,14 @@ mod tests {
                     provider: "codex".to_string(),
                     upstream_model: Some("gpt-5.6-luna".to_string()),
                     effort: Some("high".to_string()),
+                    service_tier: Some("priority".to_string()),
                 },
                 RouteConfig {
                     model: "gpt-5.2".to_string(),
                     provider: "openai".to_string(),
                     upstream_model: None,
                     effort: None,
+                    service_tier: None,
                 },
             ],
             ..crate::config::Config::default()
@@ -80,7 +85,7 @@ mod tests {
             body,
             json!({
                 "data": [
-                    {"model": "gpt-5.6-luna", "provider": "codex", "upstream_model": "gpt-5.6-luna", "effort": "high"},
+                    {"model": "gpt-5.6-luna", "provider": "codex", "upstream_model": "gpt-5.6-luna", "effort": "high", "service_tier": "priority"},
                     {"model": "gpt-5.2", "provider": "openai"}
                 ]
             })

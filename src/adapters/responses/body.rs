@@ -107,13 +107,18 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     /// A translated request body large enough to be worth compressing (a real
-    /// turn's instructions and history are far larger still).
+    /// turn's instructions and history are far larger still). Includes
+    /// `service_tier` so every test below that round-trips this fixture through
+    /// `prepare_body` also proves the field survives serialize/compress/transport
+    /// untouched -- the same body preparation the WS path (`websocket.rs`) reuses
+    /// via `RequestContext::upstream_body`, so this covers that path too.
     pub(super) fn upstream_body() -> Value {
         serde_json::json!({
             "model": "gpt-5.2-codex",
             "instructions": "be brief".repeat(200),
             "input": [{"role": "user", "content": "hello"}],
             "stream": true,
+            "service_tier": "priority",
         })
     }
 
@@ -124,6 +129,7 @@ mod tests {
             model: "gpt-5.2-codex".to_string(),
             upstream_model: "gpt-5.2-codex".to_string(),
             effort: None,
+            service_tier: None,
         }
     }
 

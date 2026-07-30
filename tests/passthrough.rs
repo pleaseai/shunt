@@ -819,6 +819,7 @@ fn discovery_alias_config(upstream_base_url: String) -> Config {
         provider: "anthropic".to_string(),
         upstream_model: Some("go-kimi-k2.7-code".to_string()),
         effort: None,
+        service_tier: None,
     });
     config
 }

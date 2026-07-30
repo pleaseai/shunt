@@ -21,6 +21,9 @@ pub struct UpstreamConfig {
     pub auth: Option<UpstreamAuth>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// See [`ProviderConfig::service_tier`]; Codex CLI's "Fast" mode opt-in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
     #[serde(default)]
     pub count_tokens: CountTokens,
     #[serde(default)]
@@ -195,6 +198,7 @@ pub(super) fn normalize(
             api_key_env: preset.and_then(|preset| preset.api_key_env.map(str::to_string)),
             api_key_header: ApiKeyHeader::default(),
             effort: upstream.effort.clone(),
+            service_tier: upstream.service_tier.clone(),
             count_tokens: upstream.count_tokens,
             accounts: Vec::new(),
             account_scope: Vec::new(),

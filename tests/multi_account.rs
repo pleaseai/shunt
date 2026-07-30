@@ -134,6 +134,7 @@ fn test_config_accounts(upstream_base_url: &str, accounts: Vec<AccountConfig>) -
         provider: "anthropic".to_string(),
         upstream_model: None,
         effort: None,
+        service_tier: None,
     });
     config
 }

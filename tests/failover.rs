@@ -90,6 +90,7 @@ fn upstream(
         base_url: Some(base_url),
         auth: Some(auth),
         effort: None,
+        service_tier: None,
         count_tokens: CountTokens::Tiktoken,
         websocket: false,
         tool_search: None,

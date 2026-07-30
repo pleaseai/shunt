@@ -142,6 +142,7 @@ mod tests {
             model: "gpt-5.2-codex".to_string(),
             upstream_model: "gpt-5.2-codex".to_string(),
             effort: None,
+            service_tier: None,
         }
     }
 
@@ -261,6 +262,7 @@ mod tests {
             model: "grok-4.3".to_string(),
             upstream_model: "grok-4.3".to_string(),
             effort: None,
+            service_tier: None,
         }
     }
 
@@ -271,6 +273,7 @@ mod tests {
             model: "grok-4.5".to_string(),
             upstream_model: "grok-4.5".to_string(),
             effort: None,
+            service_tier: None,
         }
     }
 
