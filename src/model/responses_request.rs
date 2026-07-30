@@ -183,9 +183,7 @@ pub fn translate_request_value(
     }
     // `text.verbosity` is a gpt-family knob; xAI's Responses API rejects the
     // `text` object, and Hermes never sends it there, so skip it for xai.
-    if !matches!(flavor, ResponsesFlavor::Xai | ResponsesFlavor::Grok) {
-        out.insert("text".to_string(), json!({"verbosity": "medium"}));
-    }
+    //
     // `service_tier` is Codex CLI's "Fast" mode opt-in (faster responses,
     // increased usage) -- a top-level sibling of `reasoning`, sent only
     // when explicitly configured on the route/provider (never derived).
@@ -197,6 +195,7 @@ pub fn translate_request_value(
     // so a route can override an inherited provider-level tier -- this is the
     // one place it is stripped; the literal string must never reach the wire.
     if !matches!(flavor, ResponsesFlavor::Xai | ResponsesFlavor::Grok) {
+        out.insert("text".to_string(), json!({"verbosity": "medium"}));
         if let Some(service_tier) = &route.service_tier {
             if service_tier != "default" {
                 out.insert("service_tier".to_string(), json!(service_tier));

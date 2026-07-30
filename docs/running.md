@@ -94,6 +94,7 @@ kind = "responses"
 base_url = "https://chatgpt.com/backend-api"
 auth = "chatgpt_oauth"         # reuses ~/.codex/auth.json
 # effort = "high"
+# service_tier = "priority"    # Codex CLI's "Fast" mode; also accepts "fast" (alias), "flex"
 
 # --- Routing: how a request's `model` id picks a provider ---
 
@@ -209,6 +210,7 @@ a brand-new table adds a provider. Every provider takes these keys:
 | `api_key_env` | env var name | Where the key is read from, when `auth = "api_key"`. |
 | `api_key_header` | `bearer` (default) \| `x_api_key` | Header the injected key is sent in. |
 | `effort` | `low`…`max` | Optional default reasoning effort (`responses` providers). |
+| `service_tier` | `fast`, `priority`, `flex`, `default` | Optional Codex CLI "Fast" mode opt-in (`responses` providers); `fast` normalizes to the `priority` wire value, `default` is a client-only sentinel that is never sent. Off by default. See [codex-configuration.md §9](codex-configuration.md#9-fast-mode). |
 | `count_tokens` | `tiktoken` (default) \| `estimate` | For `responses` and `cursor` providers: `tiktoken` computes a local count (o200k_base) and returns `{"input_tokens": N}`; `estimate` returns `501 not_supported` so the client falls back on its own. See §4. |
 
 Most third-party "use Claude Code with X" gateways are **Anthropic-Messages-compatible**: they are
