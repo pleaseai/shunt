@@ -1,0 +1,169 @@
+.claude/agent-memory/review-review-code-reviewer/MEMORY.md
+  s_d7914a6a537eca::t_d4390e6f49521d 11
+.claude/agent-memory/review-review-code-reviewer/shunt-zstd-decode-fuse-commit-98543a7.md
+  s_d7914a6a537eca::t_a13766489eef5c 1-48
+.claude/agent-memory/review-review-documentation-analyzer/MEMORY.md
+  s_d7914a6a537eca::t_727ca4486344e9 15
+.claude/agent-memory/review-review-documentation-analyzer/shunt_pr289_tool_search_default_review.md
+  s_d7914a6a537eca::t_e01568ab61d37f 1-20
+.claude/agent-memory/review-review-performance-analyzer/MEMORY.md
+  s_d7914a6a537eca::t_8021116bdb8eb1 1-3
+.claude/agent-memory/review-review-performance-analyzer/perf-inline-offload-thresholds.md
+  s_d7914a6a537eca::t_027aac50078097 1-36
+.claude/agent-memory/review-review-security-reviewer/MEMORY.md
+  s_d7914a6a537eca::t_541c01d0e6cb5b 17
+.claude/agent-memory/review-review-security-reviewer/project_pr291-zstd-decompression-security.md
+  s_d7914a6a537eca::t_fa8143c8fc9770 1-52
+.claude/agent-memory/review-review-silent-failure-hunter/MEMORY.md
+  s_d7914a6a537eca::t_c7490831ba6567 10
+.claude/agent-memory/review-review-silent-failure-hunter/pr291-zstd-compression-failopen.md
+  s_d7914a6a537eca::t_5293f26f1ef725 1-51
+.github/workflows/release.yml
+  s_d7914a6a537eca::t_a06dddb3c413d2 213-235
+.please/docs/review/rejected-findings.jsonl
+  s_d7914a6a537eca::t_ac1556b7a5dd5c 62-72
+.release-please-manifest.json
+  s_d7914a6a537eca::t_5cd1deab6af220 2
+CHANGELOG.md
+  s_d7914a6a537eca::t_7f626d26934f68 3-15
+Cargo.lock
+  s_d7914a6a537eca::t_6b83c6dcc5659f 2732,2749,2781,4002-4029
+Cargo.toml
+  s_d7914a6a537eca::t_752a33eb5af0c1 10,102-106,112
+README.ja.md
+  s_d7914a6a537eca::t_39ab2c3297b9fe 33-42
+README.ko.md
+  s_d7914a6a537eca::t_83255d709ec198 33-42
+README.md
+  s_d7914a6a537eca::t_8e9c06eb56aa94 34-44,238
+README.zh-CN.md
+  s_d7914a6a537eca::t_f73811361edeb7 33-42
+docs/codex-configuration.md
+  s_d7914a6a537eca::t_03b2ae61f915ca 80,180,186-218
+docs/comparison.md
+  s_d7914a6a537eca::t_a80441eb647dd7 50,79-83,98-120,222-241,324-331,335,342
+docs/m11-inbound-codex-endpoint.md
+  s_d7914a6a537eca::t_f3c118f09359ac 89-98
+docs/running.md
+  s_d7914a6a537eca::t_11b33abd631e1a 304-334
+packaging/homebrew/shunt.rb
+  s_d7914a6a537eca::t_150518d4151ea6 46-68
+shunt.toml.example
+  s_d7914a6a537eca::t_ea97eac32f74b2 144
+site/src/content/docs/getting-started/comparison.mdx
+  s_d7914a6a537eca::t_269fc1de0f60bc 46,60,63,94,116,120,127
+site/src/content/docs/getting-started/installation.mdx
+  s_d7914a6a537eca::t_9d59aaec42b57f 22-34
+site/src/content/docs/guides/codex.mdx
+  s_d7914a6a537eca::t_4183e58ae89c66 51-52,372,383-399,403,405-409,414,418-445,459
+site/src/content/docs/guides/inbound-codex-endpoint.md
+  s_d7914a6a537eca::t_a4943e2b18339f 104
+site/src/content/docs/ja/getting-started/comparison.mdx
+  s_d7914a6a537eca::t_0d99e0fbfcbe89 46,60,63,94,116,120,127
+site/src/content/docs/ja/getting-started/installation.mdx
+  s_d7914a6a537eca::t_0e6515ec18ac04 22-34
+site/src/content/docs/ja/guides/codex.mdx
+  s_d7914a6a537eca::t_dbab02353c3556 318-319,331-347,351,353-357,362,367-394,408
+site/src/content/docs/ja/reference/cli.mdx
+  s_d7914a6a537eca::t_29571909580f50 19-20
+site/src/content/docs/ja/reference/configuration.md
+  s_d7914a6a537eca::t_26454c27bebef3 152,205
+site/src/content/docs/ja/reference/troubleshooting.md
+  s_d7914a6a537eca::t_2e097b34d207be 20
+site/src/content/docs/ko/getting-started/comparison.mdx
+  s_d7914a6a537eca::t_cda68001403ebb 46,60,63,94,116,120,127
+site/src/content/docs/ko/getting-started/installation.mdx
+  s_d7914a6a537eca::t_2cab96eaa466c6 22-34
+site/src/content/docs/ko/guides/codex.mdx
+  s_d7914a6a537eca::t_df887137e8c9f0 302-303,315-330,334,336-340,345,347-361,363-376,390
+site/src/content/docs/ko/reference/cli.mdx
+  s_d7914a6a537eca::t_c2a4c1eba5387f 19-20
+site/src/content/docs/ko/reference/configuration.md
+  s_d7914a6a537eca::t_ff37fd668c8dc7 163,217
+site/src/content/docs/ko/reference/troubleshooting.md
+  s_d7914a6a537eca::t_69c62e1e86061e 20
+site/src/content/docs/providers/openai.mdx
+  s_d7914a6a537eca::t_500253547efa21 99-105
+site/src/content/docs/reference/cli.mdx
+  s_d7914a6a537eca::t_915bcca1a45323 19-20
+site/src/content/docs/reference/configuration.md
+  s_d7914a6a537eca::t_0ff50b0f3f2531 219,274-275
+site/src/content/docs/reference/troubleshooting.md
+  s_d7914a6a537eca::t_793e749d0fba89 20
+site/src/content/docs/zh-cn/getting-started/comparison.mdx
+  s_d7914a6a537eca::t_9dc50dcdf01e09 46,60,63,94,116,120,127
+site/src/content/docs/zh-cn/getting-started/installation.mdx
+  s_d7914a6a537eca::t_616d2f8880a364 22-33
+site/src/content/docs/zh-cn/guides/codex.mdx
+  s_d7914a6a537eca::t_479699157168f1 364,375-387,390,392-395,399,403-426,440
+site/src/content/docs/zh-cn/reference/cli.mdx
+  s_d7914a6a537eca::t_9c32ff33da31b8 19-20
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_d7914a6a537eca::t_9da6089e9a5783 152,205
+site/src/content/docs/zh-cn/reference/troubleshooting.md
+  s_d7914a6a537eca::t_a2d670f01e2dcc 20
+src/AGENTS.md
+  s_d7914a6a537eca::t_770da1951cda17 18
+src/adapters/cursor/offload.rs
+  s_d7914a6a537eca::t_14c23f82e73df7 1-4,6
+src/adapters/responses/body.rs
+  s_d7914a6a537eca::t_8d5939e0f87e3c 1-278
+src/adapters/responses/http.rs
+  s_d7914a6a537eca::t_7e1f7b1a4c7387 21,37,39,82
+src/adapters/responses/mod.rs
+  s_d7914a6a537eca::t_59fc209edb76ce 4,89-93,97-102
+src/adapters/responses/pool.rs
+  s_d7914a6a537eca::t_e4c989d55281cf 18,79-84,160-171
+src/admin/mod.rs
+  s_d7914a6a537eca::t_77b248be234fab 1455-1456
+src/codex_endpoint.rs
+  s_d7914a6a537eca::t_8c4f5036852aa1 14,24,50-52,55-149,319,370-553,569
+src/codex_endpoint/tests.rs
+  s_d7914a6a537eca::t_bbd4e318da02c8 1-191
+src/compression.rs
+  s_d7914a6a537eca::t_75c3c8e10e3fc9 1-340
+src/compression/tests.rs
+  s_d7914a6a537eca::t_9959e00c32cf3b 1-444
+src/config.rs
+  s_d7914a6a537eca::t_82fbe69b530e80 1139-1165,1532-1546,1837-1838,1858-1859,1879-1880,1922-1923,1979-1980,2797-2810,2844-2856,2858-2879,2910-2926,2943,4817-4822,4835-4837,4843-4853,4942-4968,5197-5199,5275-5277,5322-5471,5504-5506
+src/config/upstreams.rs
+  s_d7914a6a537eca::t_5e97af10c64901 28-35,203
+src/config/upstreams/tests.rs
+  s_d7914a6a537eca::t_264220a994fb16 7,45-57,139-141,301-337,344-346,361-380,387-389,403-405
+src/lib.rs
+  s_d7914a6a537eca::t_342d8c820eedbd 9,24
+src/main.rs
+  s_d7914a6a537eca::t_fc5bb835a2af56 17-18,486-491,1028-1106
+src/offload.rs
+  s_d7914a6a537eca::t_88c3b8e89efb3e 1-39
+src/shutdown.rs
+  s_d7914a6a537eca::t_b7afabe819c280 1-299
+src/usage_poll.rs
+  s_d7914a6a537eca::t_abe3350bd5cdae 390-391,448-449,514-515
+tests/codex_multi_account.rs
+  s_d7914a6a537eca::t_16780972e86f1b 253-260,265-271,574-692
+tests/failover.rs
+  s_d7914a6a537eca::t_30afe90f9aa63f 95-96
+tests/inbound_auth.rs
+  s_d7914a6a537eca::t_18009e659bd91c 60-61
+tests/inbound_codex_endpoint.rs
+  s_d7914a6a537eca::t_30d054f855ca20 30,402-451
+tests/responses_translate.rs
+  s_d7914a6a537eca::t_fb08c5a9a1885a 1730-1735,1873-1968
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "9aa31d284097ae578d08b06e4267def3e8fe3ddb",
+  "prompts": {},
+  "sessions": {
+    "s_d7914a6a537eca": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "92f7121a-2e7f-44b3-8e67-12f882067d09",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
