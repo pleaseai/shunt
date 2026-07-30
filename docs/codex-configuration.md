@@ -201,15 +201,20 @@ opt-out:
 | `request_compression = false` on the provider | uncompressed |
 | body under 1 KiB | uncompressed — the frame overhead can exceed the saving, and the backend takes either form |
 
-The body is prepared **once per turn**, before the bounded-retry and account-rotation loops, so a
-retry, an account rotation, or a 401 refresh-retry reuses the same bytes instead of re-serializing
-and re-compressing them (`prepare_body` in `src/adapters/responses/http.rs`; same discipline as the
-serialize-once fix in issue #251). Compression past 64 KiB runs on Tokio's blocking pool under
-bounded admission rather than on the async executor. A compression failure is **not** fatal: it is
-logged and the uncompressed body is sent, which the backend accepts.
+The body is prepared **once per turn** (`prepare_body` in `src/adapters/responses/body.rs`; same
+discipline as the serialize-once fix in issue #251), so a retry, an account rotation, or a 401
+refresh-retry reuses the same bytes instead of re-serializing and re-compressing them. The
+single-credential path prepares it once, up front, before its bounded-retry loop; the account-pool
+path has no fixed point before its rotation loop, so it prepares the body lazily on first dispatch
+and memoizes it for every later attempt. Compression always runs on Tokio's blocking pool under
+bounded admission rather than on the async executor: a fresh zstd level-3 encoder costs ~90 µs to
+build regardless of body size, so even a 1 KiB body would consume Tokio's whole ~100 µs
+blocking-work budget inline, while offloading adds only ~40 µs of latency once per turn (measured —
+see `compress_request_body`). A compression failure is **not** fatal: it is logged and the
+uncompressed body is sent, which the backend accepts.
 
-The websocket transport (§ `m7-codex-websocket.md`) is unaffected — it negotiates
-permessage-deflate instead.
+The websocket transport (§ `m7-codex-websocket.md`) is unaffected: it sends uncompressed frames, so
+request compression does not apply there.
 
 ---
 

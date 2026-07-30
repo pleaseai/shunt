@@ -47,9 +47,12 @@ const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024 * 1024;
 /// Minimal view of the inbound Responses body: the `model` is read only for
 /// metrics/logging labels — the body itself forwards upstream byte-for-byte, so
 /// a missing or malformed model never blocks the request (the upstream rejects it).
+/// `model` is deserialized as a raw [`serde_json::Value`] rather than
+/// `Option<String>` so [`parse_model`] can tell "field absent" apart from
+/// "field present but not a string" instead of both silently becoming `None`.
 #[derive(Debug, Deserialize)]
 struct ModelView {
-    model: Option<String>,
+    model: Option<serde_json::Value>,
 }
 
 /// Handler for the inbound Responses routes (`/backend-api/codex/responses`,
@@ -285,9 +288,18 @@ const UNKNOWN_MODEL: &str = "unknown";
 /// and span for the request `unknown`. So decode a zstd body for the label, and
 /// log (rather than swallow) anything that still leaves the model unreadable.
 ///
-/// The decode budget is the same cap this endpoint already accepts for an
-/// uncompressed body, so a compressed body cannot make shunt buffer more than an
-/// uncompressed one would.
+/// [`MAX_REQUEST_BODY_BYTES`] is passed as `decode_zstd_within`'s `cap`, the same
+/// absolute limit this endpoint already applies to the arrival buffer — so the
+/// arrival buffer and the decoded copy can be transiently resident together, at
+/// worst two buffers each up to that cap (not one, as compressing surely shrinks
+/// the wire size). What actually bounds the *decode work itself* for a small,
+/// hostile body is `compression::MAX_DECODE_RATIO`, not this cap: it ties worst-case
+/// decoded size to a multiple of what the peer actually uploaded (issue #291).
+/// A small absolute cap here instead would be unsound for the opposite reason —
+/// `serde_json::from_slice` needs a *complete* document, so any truncation-style
+/// cap below a real turn's size would silently relabel every large legitimate
+/// turn `unknown`, regressing issue #285's fix. The ratio bound is what makes
+/// keeping the large absolute cap here safe.
 async fn model_label(headers: &HeaderMap, body: &Bytes) -> String {
     let decoded = match crate::compression::body_encoding(headers) {
         BodyEncoding::Identity => None,
@@ -297,15 +309,16 @@ async fn model_label(headers: &HeaderMap, body: &Bytes) -> String {
                 Ok(Some(decoded)) => Some(decoded),
                 Ok(None) => {
                     tracing::warn!(
-                        body_bytes = body.len(),
+                        wire_bytes = body.len(),
                         limit = MAX_REQUEST_BODY_BYTES,
-                        "inbound codex body decodes past the request size limit; model label unavailable"
+                        "inbound codex body decodes past the request size limit or the \
+                         compressed-to-decoded ratio bound; model label unavailable"
                     );
                     return UNKNOWN_MODEL.to_string();
                 }
                 Err(error) => {
                     tracing::warn!(
-                        body_bytes = body.len(),
+                        wire_bytes = body.len(),
                         error = %error,
                         "failed to decode zstd inbound codex body; model label unavailable"
                     );
@@ -313,27 +326,91 @@ async fn model_label(headers: &HeaderMap, body: &Bytes) -> String {
                 }
             }
         }
+        // A coding shunt does not decode (anything other than zstd/identity) is
+        // not fatal to the label: fall through and attempt a best-effort plain
+        // parse below, same as `Identity`. Returning `unknown` unconditionally
+        // here would let a client suppress its own model label by sending a
+        // bogus `content-encoding` header on an otherwise-plain body.
         BodyEncoding::Other => {
             tracing::warn!(
                 content_encoding = ?headers.get(axum::http::header::CONTENT_ENCODING),
-                "inbound codex body uses an unsupported content-encoding; model label unavailable"
+                "inbound codex body uses an unsupported content-encoding; \
+                 attempting a best-effort plain-JSON parse for the model label"
             );
-            return UNKNOWN_MODEL.to_string();
+            None
         }
     };
-    parse_model(decoded.as_deref().unwrap_or(body)).unwrap_or_else(|| {
-        tracing::warn!(
-            body_bytes = body.len(),
-            "inbound codex body has no readable `model`; labeling metrics and logs `unknown`"
-        );
-        UNKNOWN_MODEL.to_string()
-    })
+    let parsed_body = decoded.as_deref().unwrap_or(body);
+    match parse_model(parsed_body) {
+        ParsedModel::Model(model) => model,
+        ParsedModel::Malformed(error) => {
+            tracing::warn!(
+                decoded_bytes = parsed_body.len(),
+                wire_bytes = body.len(),
+                error = %error,
+                "inbound codex body is not valid JSON; labeling metrics and logs `unknown`"
+            );
+            UNKNOWN_MODEL.to_string()
+        }
+        ParsedModel::Missing => {
+            tracing::warn!(
+                decoded_bytes = parsed_body.len(),
+                wire_bytes = body.len(),
+                "inbound codex body has no `model` field; labeling metrics and logs `unknown`"
+            );
+            UNKNOWN_MODEL.to_string()
+        }
+        ParsedModel::NotAString(value) => {
+            tracing::warn!(
+                decoded_bytes = parsed_body.len(),
+                wire_bytes = body.len(),
+                model_type = json_type_name(&value),
+                "inbound codex body's `model` field is not a string; labeling metrics and logs `unknown`"
+            );
+            UNKNOWN_MODEL.to_string()
+        }
+    }
 }
 
-fn parse_model(body: &[u8]) -> Option<String> {
-    serde_json::from_slice::<ModelView>(body)
-        .ok()
-        .and_then(|view| view.model)
+/// The distinguishable outcomes of reading `model` out of a decoded body, so
+/// [`model_label`] can log *why* the label is unavailable instead of folding
+/// malformed JSON, a missing field, and a wrong-typed field into one silent
+/// `None` (as a bare `.ok().and_then(..)` chain over `Option<String>` would).
+enum ParsedModel {
+    Model(String),
+    /// The body is not valid JSON at all.
+    Malformed(serde_json::Error),
+    /// Valid JSON with no `model` field (or an explicit `null`).
+    Missing,
+    /// Valid JSON with a `model` field that is not a string.
+    NotAString(serde_json::Value),
+}
+
+fn parse_model(body: &[u8]) -> ParsedModel {
+    match serde_json::from_slice::<ModelView>(body) {
+        Ok(ModelView {
+            model: Some(serde_json::Value::String(model)),
+        }) => ParsedModel::Model(model),
+        Ok(ModelView {
+            model: None | Some(serde_json::Value::Null),
+        }) => ParsedModel::Missing,
+        Ok(ModelView { model: Some(other) }) => ParsedModel::NotAString(other),
+        Err(error) => ParsedModel::Malformed(error),
+    }
+}
+
+/// A short name for a JSON value's type, for the `NotAString` log line — cheaper
+/// than debug-formatting the value itself and avoids echoing arbitrary client
+/// input into logs.
+fn json_type_name(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
 }
 
 /// Namespace the account-pool sticky key with the authenticated inbound client so
@@ -377,6 +454,16 @@ mod tests {
         headers
     }
 
+    /// Real gzip-compressed bytes, so a fixture claiming `content-encoding: gzip`
+    /// is genuinely unparseable as plain JSON rather than happening to be valid
+    /// JSON that a naive fallback would accidentally read anyway.
+    fn gzip_compress(body: &[u8]) -> Bytes {
+        use std::io::Write;
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(body).expect("gzip encode should succeed");
+        Bytes::from(encoder.finish().expect("gzip encode should succeed"))
+    }
+
     #[tokio::test]
     async fn reads_the_model_from_an_uncompressed_body() {
         assert_eq!(
@@ -407,20 +494,55 @@ mod tests {
         assert_eq!(model_label(&zstd_headers(), &body).await, UNKNOWN_MODEL);
     }
 
-    /// A content coding shunt does not decode is not mistaken for plain JSON.
+    /// A content coding shunt does not decode falls through to a best-effort
+    /// plain parse (B5): since this fixture's bytes are genuinely
+    /// gzip-compressed (not valid JSON), the parse still fails and the label
+    /// still degrades to `unknown` — but for the real reason, not because
+    /// `Other` was rejected unconditionally. An unconditional rejection would
+    /// let a client suppress its own model label by sending a bogus
+    /// `content-encoding` header on an otherwise-plain, parseable body.
     #[tokio::test]
     async fn falls_back_to_unknown_for_an_unsupported_content_encoding() {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_ENCODING, "gzip".parse().unwrap());
+        let body = gzip_compress(request_body("gpt-5.2-codex").as_ref());
+        assert_eq!(model_label(&headers, &body).await, UNKNOWN_MODEL);
+    }
+
+    /// A body claiming an unsupported content-encoding, but that is in fact
+    /// plain, parseable JSON, still yields its `model` — proving the fallback
+    /// added for B5 actually reads through rather than only changing the log
+    /// line.
+    #[tokio::test]
+    async fn reads_the_model_despite_an_unsupported_content_encoding_label() {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_ENCODING, "gzip".parse().unwrap());
         assert_eq!(
             model_label(&headers, &request_body("gpt-5.2-codex")).await,
-            UNKNOWN_MODEL
+            "gpt-5.2-codex"
         );
     }
 
     #[tokio::test]
     async fn falls_back_to_unknown_without_a_model_field() {
         let body = Bytes::from_static(b"{\"input\":[]}");
+        assert_eq!(model_label(&HeaderMap::new(), &body).await, UNKNOWN_MODEL);
+    }
+
+    /// A `model` field present but not a string (B1) degrades to `unknown` just
+    /// like a missing field, rather than panicking or silently stringifying it.
+    #[tokio::test]
+    async fn falls_back_to_unknown_when_the_model_field_is_not_a_string() {
+        let body = Bytes::from_static(b"{\"model\":42,\"input\":[]}");
+        assert_eq!(model_label(&HeaderMap::new(), &body).await, UNKNOWN_MODEL);
+    }
+
+    /// Malformed JSON (not merely an unreadable `model`) degrades to `unknown`
+    /// (B1) rather than propagating a parse error to the caller — the body still
+    /// forwards verbatim regardless.
+    #[tokio::test]
+    async fn falls_back_to_unknown_for_malformed_json() {
+        let body = Bytes::from_static(b"not json at all");
         assert_eq!(model_label(&HeaderMap::new(), &body).await, UNKNOWN_MODEL);
     }
 

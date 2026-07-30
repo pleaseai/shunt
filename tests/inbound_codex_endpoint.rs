@@ -27,7 +27,7 @@ use shunt::{
 };
 use tokio::task::JoinHandle;
 use wiremock::{
-    matchers::{body_string, header, method, path},
+    matchers::{body_bytes, body_string, header, method, path},
     Match, Mock, MockServer, Request, ResponseTemplate,
 };
 
@@ -397,6 +397,56 @@ async fn forwards_body_verbatim_and_injects_pool_credential() {
     upstream.verify().await;
 
     std::env::remove_var("SHUNT_TEST_INBOUND_A");
+}
+
+#[tokio::test]
+async fn forwards_a_zstd_compressed_body_verbatim() {
+    // A Codex CLI client that already zstd-compressed its own request body (the
+    // same shape `prepare_body` produces on the outbound Responses path) must
+    // reach the upstream untouched: same `content-encoding: zstd` header, same
+    // compressed bytes. This endpoint only decodes an in-memory copy to read
+    // `model` for metrics/logs — see docs/guides/inbound-codex-endpoint.md.
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-zstd");
+    std::env::set_var("SHUNT_TEST_INBOUND_ZSTD", &token_a);
+
+    let compressed_body =
+        zstd::stream::encode_all(INBOUND_BODY.as_bytes(), 3).expect("body should compress");
+    let upstream_body =
+        r#"{"id":"resp_zstd","object":"response","status":"completed","output":[]}"#;
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(token_a.clone()))
+        .and(header("content-encoding", "zstd"))
+        .and(body_bytes(compressed_body.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(upstream_body, "application/json"))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        vec![account("account-zstd", "SHUNT_TEST_INBOUND_ZSTD")],
+    ))
+    .await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/backend-api/codex/responses", gateway.base_url))
+        .header("content-type", "application/json")
+        .header("content-encoding", "zstd")
+        .body(compressed_body)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.text().await.unwrap(), upstream_body);
+    upstream.verify().await;
+
+    std::env::remove_var("SHUNT_TEST_INBOUND_ZSTD");
 }
 
 #[tokio::test]

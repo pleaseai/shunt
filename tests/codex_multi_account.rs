@@ -250,11 +250,25 @@ fn message_start_input_tokens(sse: &str) -> u64 {
 }
 
 async fn post_messages(gateway: &TestGateway, session_id: Option<&str>) -> reqwest::Response {
+    post_messages_with_content(gateway, session_id, "hi").await
+}
+
+async fn post_messages_with_content(
+    gateway: &TestGateway,
+    session_id: Option<&str>,
+    content: &str,
+) -> reqwest::Response {
     let mut request = reqwest::Client::new()
         .post(format!("{}/v1/messages", gateway.base_url))
         .header("content-type", "application/json")
         .body(
-            r#"{"model":"pooled-codex-model","max_tokens":16,"stream":false,"messages":[{"role":"user","content":"hi"}]}"#,
+            serde_json::json!({
+                "model": "pooled-codex-model",
+                "max_tokens": 16,
+                "stream": false,
+                "messages": [{"role": "user", "content": content}]
+            })
+            .to_string(),
         );
     if let Some(session_id) = session_id {
         request = request.header("x-claude-code-session-id", session_id);
@@ -554,6 +568,125 @@ async fn refresh_retry_and_rotation_reuse_the_identical_serialized_body() {
     std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
     std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
     std::env::remove_var("SHUNT_TEST_CODEX_BODY_B");
+    fs::remove_dir_all(&accounts_dir).ok();
+}
+
+/// Issue #285's compressed sibling to `refresh_retry_and_rotation_reuse_the_
+/// identical_serialized_body` above: once the serialized body clears the 1 KiB
+/// compression floor, the initial account attempt, its 401 refresh retry, and
+/// the next-account attempt must all carry `content-encoding: zstd` and reuse
+/// the identical compressed bytes — `prepare_body`'s memoization must hold
+/// whether or not compression ran.
+#[tokio::test]
+async fn refresh_retry_and_rotation_reuse_the_identical_compressed_body() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = REFRESH_ENV_LOCK.lock().await;
+    let stale = chatgpt_token(FAR_FUTURE_EXP, "acct-zbody-a");
+    let fresh = chatgpt_token(FAR_FUTURE_EXP + 1, "acct-zbody-a");
+    let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-zbody-b");
+    std::env::set_var("SHUNT_TEST_CODEX_ZBODY_B", &token_b);
+
+    let accounts_dir = unique_temp_dir("identical-zstd-body");
+    write_store_account(&accounts_dir, "account-a", &stale, "refresh-token-a");
+    std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &accounts_dir);
+
+    let auth = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+            r#"{{"access_token":"{fresh}","refresh_token":"refresh-token-a-2"}}"#
+        )))
+        .expect(1)
+        .mount(&auth)
+        .await;
+    std::env::set_var("SHUNT_CODEX_TOKEN_URL", format!("{}/token", auth.uri()));
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(stale.clone()))
+        .respond_with(ResponseTemplate::new(401).set_body_string(r#"{"error":"expired token"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(fresh.clone()))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("retry-after", "0")
+                .set_body_string(r#"{"error":"account a throttled"}"#),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(sse_body("account b served")))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        store_account("account-a"),
+        account("account-b", "SHUNT_TEST_CODEX_ZBODY_B"),
+    ))
+    .await;
+
+    // A long conversational turn: comfortably over the 1 KiB compression floor
+    // once wrapped in the Responses request shape, and repetitive enough that
+    // zstd actually shrinks it (proving the header is not sent unconditionally).
+    let large_content = "the quick brown fox reviews a diff and updates the schema; ".repeat(40);
+    assert!(large_content.len() > 1024);
+
+    let response = post_messages_with_content(&gateway, None, &large_content).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+    let response_body = response.text().await.unwrap();
+    assert!(response_body.contains("account b served"));
+    upstream.verify().await;
+    auth.verify().await;
+
+    let requests = upstream.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 3);
+    for request in &requests {
+        assert_eq!(
+            request
+                .headers
+                .get("content-encoding")
+                .and_then(|value| value.to_str().ok()),
+            Some("zstd"),
+            "every attempt must announce the compressed body it actually sent"
+        );
+    }
+    let body = requests[0].body.as_slice();
+    assert!(!body.is_empty());
+    assert_eq!(
+        requests[1].body.as_slice(),
+        body,
+        "the refresh retry must reuse the identical compressed bytes"
+    );
+    assert_eq!(
+        requests[2].body.as_slice(),
+        body,
+        "the rotated account must reuse the identical compressed bytes"
+    );
+
+    let decoded = zstd::stream::decode_all(body).expect("upstream body must be valid zstd");
+    let translated: Value = serde_json::from_slice(&decoded).unwrap();
+    assert_eq!(translated["model"], "pooled-codex-model");
+    assert_eq!(translated["input"][0]["content"][0]["text"], large_content);
+
+    std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR");
+    std::env::remove_var("SHUNT_CODEX_TOKEN_URL");
+    std::env::remove_var("SHUNT_TEST_CODEX_ZBODY_B");
     fs::remove_dir_all(&accounts_dir).ok();
 }
 

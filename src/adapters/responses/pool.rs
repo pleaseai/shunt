@@ -159,13 +159,16 @@ pub(super) async fn forward_chatgpt_oauth(
 
         // Prepared once per turn and reused by every later attempt: cloning it
         // is a refcount bump, whereas re-preparing would re-serialize and
-        // re-compress the same body on each rotation.
-        let body = match http_body {
-            Some(ref prepared) => prepared.clone(),
-            None => http_body
-                .insert(prepare_body(&state, &route, upstream_body.as_ref()).await)
-                .clone(),
-        };
+        // re-compress the same body on each rotation. Borrow rather than clone
+        // here — `get_or_insert_with` cannot be used directly since preparing
+        // the body is `async`, but populating `http_body` first and then
+        // borrowing it keeps the happy path (already-prepared) to the single
+        // refcount bump each `http_send` call below already pays, instead of
+        // one bump here plus another at each call site.
+        if http_body.is_none() {
+            http_body = Some(prepare_body(&state, &route, upstream_body.as_ref()).await);
+        }
+        let body = http_body.as_ref().expect("just populated above");
         // Spawned once, right before the first HTTP send, so the CPU-bound
         // tiktoken encode overlaps this attempt's connect/RTT instead of
         // delaying it (same overlap discipline as forward_http/forward_websocket).

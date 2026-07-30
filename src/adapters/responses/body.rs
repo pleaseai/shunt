@@ -43,11 +43,18 @@ impl PreparedBody {
 /// long agentic turn re-uploads its whole history every request, and JSON of that
 /// shape compresses several times over, so the saving grows with the conversation.
 ///
-/// Called at most once per turn, before the bounded-retry and account-rotation
-/// loops, so neither a retry nor a rotation repeats the work (the same
-/// serialize-once discipline as issue #251). A compression failure is not fatal:
-/// the uncompressed body is always acceptable to the backend, so it is logged and
-/// sent as-is rather than failing the turn.
+/// Called at most once per turn, so neither a retry nor a rotation repeats the
+/// work (the same serialize-once discipline as issue #251) — but the two callers
+/// reach that guarantee differently. The single-credential path
+/// ([`super::http::forward_http`]) has no rotation loop of its own, so it calls
+/// this once, up front, before the bounded-retry loop. The account-pool path
+/// ([`super::pool`]) rotates across credentials, so it cannot prepare the body
+/// before the loop starts (the loop is what decides whether preparation is even
+/// needed); instead it calls this lazily, on the first HTTP dispatch inside the
+/// rotation loop, and memoizes the result in an `Option<PreparedBody>` so later
+/// attempts reuse it instead of re-serializing and re-compressing. A compression
+/// failure is not fatal: the uncompressed body is always acceptable to the
+/// backend, so it is logged and sent as-is rather than failing the turn.
 pub(super) async fn prepare_body(
     state: &AppState,
     route: &Route,

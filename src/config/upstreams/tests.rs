@@ -43,6 +43,19 @@ fn auth_string_and_map_shorthand_normalize_identically() {
 }
 
 #[test]
+fn request_compression_defaults_true_and_can_be_disabled() {
+    let default = parse("name = \"a\"\nprovider = \"codex\"");
+    assert!(default.request_compression);
+    let (providers, _) = normalize(&[default]).unwrap();
+    assert!(providers["a"].request_compression);
+
+    let disabled = parse("name = \"a\"\nprovider = \"codex\"\nrequest_compression = false");
+    assert!(!disabled.request_compression);
+    let (providers, _) = normalize(&[disabled]).unwrap();
+    assert!(!providers["a"].request_compression);
+}
+
+#[test]
 fn api_key_map_absorbs_env_and_header() {
     let upstream = parse(
         "name = \"custom\"\nkind = \"responses\"\nbase_url = \"https://api.example\"\nauth = { mode = \"api_key\", env = \"CUSTOM_KEY\", header = \"x_api_key\" }",

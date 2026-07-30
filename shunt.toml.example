@@ -141,6 +141,7 @@ api_key_env = "OPENAI_API_KEY" # env var shunt reads the key from
 kind = "responses"
 base_url = "https://chatgpt.com/backend-api"
 auth = "chatgpt_oauth"         # reads + auto-refreshes ~/.codex/auth.json
+# request_compression = true  # default; false sends uncompressed request bodies (issue #285)
 # effort = "high"              # low|medium|high|xhigh; gpt-5.6 slugs also accept "max"
 # count_tokens = "tiktoken"    # default: local o200k_base count for count_tokens.
                                # "estimate" opts out (404 -> client estimates).
