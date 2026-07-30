@@ -54,20 +54,23 @@ pub(crate) fn record_requested_model(model: &str) {
 }
 
 /// Record the resolved upstream/provider and the upstream HTTP status on the
-/// current span, and mark the span as errored for a 4xx/5xx response — both via
+/// current span, and mark the span as errored for a 5xx response — both via
 /// the `otel.status_code` convention (picked up by `tracing-opentelemetry` for
 /// OTLP export) and, directly, Sentry's own span/transaction status (see the
-/// module docs for why that needs a separate call). Call once the final
-/// upstream status for the request is known; never buffers a streamed
-/// response to learn it, since the status is available at response-header
-/// time.
+/// module docs for why that needs a separate call). A 4xx leaves
+/// `otel.status_code` as `"ok"`: per OTel semantic conventions for HTTP server
+/// spans, client errors are not span-level errors — only 5xx and
+/// transport-level failures are (Sentry's own `SpanStatus` mapping below is a
+/// separate convention and is unaffected). Call once the final upstream
+/// status for the request is known; never buffers a streamed response to
+/// learn it, since the status is available at response-header time.
 pub(crate) fn record_span_outcome(provider: &str, status: StatusCode) {
     let span = tracing::Span::current();
     span.record("shunt.provider", provider);
     span.record("http.response.status_code", status.as_u16());
     span.record(
         "otel.status_code",
-        if status.is_client_error() || status.is_server_error() {
+        if status.is_server_error() {
             "error"
         } else {
             "ok"
@@ -358,6 +361,29 @@ mod tests {
             );
             let _entered = span.enter();
             record_span_outcome("anthropic", StatusCode::OK);
+        });
+
+        let map = captured.0.lock().unwrap();
+        assert_eq!(map.get("otel.status_code").map(String::as_str), Some("ok"));
+    }
+
+    #[test]
+    fn records_ok_otel_status_for_a_4xx_client_error() {
+        // OTel semantic conventions for HTTP server spans mark a span `error`
+        // only for 5xx/transport failures — a 4xx is a client error and must
+        // leave `otel.status_code` as `"ok"` (unlike Sentry's own SpanStatus
+        // mapping, which does distinguish 4xx bands; see `sentry_span_status`).
+        let captured = CapturingLayer::default();
+        let subscriber = tracing_subscriber::registry().with(captured.clone());
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!(
+                "test_request_4xx",
+                shunt.provider = tracing::field::Empty,
+                otel.status_code = tracing::field::Empty
+            );
+            let _entered = span.enter();
+            record_span_outcome("anthropic", StatusCode::TOO_MANY_REQUESTS);
         });
 
         let map = captured.0.lock().unwrap();
