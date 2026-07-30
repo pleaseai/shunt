@@ -56,10 +56,13 @@ default_provider = "anthropic" # provider for any model with no route -> pass-th
 #                                    best-effort cache, re-derived from upstream
 
 # --- Optional: Sentry error reporting to YOUR OWN Sentry project (docs/running.md §3.1).
-# Off unless you set a DSN. Reports gateway-owned diagnostics only — fatal
+# Off unless you set a DSN. Reports gateway-owned diagnostics — fatal
 # gateway startup/serve errors, panics, and error-level log events (warn/info as
-# breadcrumbs, message only: log field values are stripped); request/response
-# bodies, headers, and credentials are never sent. SHUNT_SENTRY__DSN=""
+# breadcrumbs, message only: log field values are stripped) — plus, unconditionally
+# once a DSN is set, an error/warning event whenever an upstream provider itself
+# returns a failure: error for a 5xx response, warning for 429/529 (rate
+# limit/overload), tagged with model, provider, and upstream_status only;
+# request/response bodies, headers, and credentials are never sent. SHUNT_SENTRY__DSN=""
 # disables again.
 # [sentry]
 # dsn = "https://<key>@<org>.ingest.sentry.io/<project>"
