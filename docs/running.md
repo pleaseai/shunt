@@ -311,7 +311,8 @@ brew services info shunt
 
 `SIGTERM` and ctrl-c both start the same drain, and that drain has no deadline — an open SSE
 stream keeps the process alive for as long as its client keeps reading. Send a **second** signal
-(another ctrl-c, or `kill` again) to skip the drain and exit immediately with status 130.
+(another ctrl-c, or `kill` again) to skip the drain and exit immediately with the conventional
+128+signal exit status: 143 for a second `SIGTERM`, 130 for a second ctrl-c/`SIGINT`.
 
 Logs go to `$(brew --prefix)/var/log/shunt.log` (stdout and stderr combined). Config discovery
 works the same as any other invocation (see [§3 Configure](#3-configure)), but a service has no

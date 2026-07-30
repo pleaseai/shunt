@@ -51,17 +51,19 @@ where
     })
 }
 
-/// Ends the process without waiting for the drain, using the 128+SIGINT status
-/// shells expect from an interrupted program. This skips the normal return
-/// through `run` (main.rs), so the sentry/telemetry guards never flush: an
-/// operator signalling twice is asking to stop now, and buffered diagnostics
-/// are the cheaper thing to lose.
+/// Ends the process without waiting for the drain, using the conventional
+/// 128+signal shell exit status (143 for SIGTERM, 130 for SIGINT/ctrl-c).
+/// This skips the normal return through `run` (main.rs), so the
+/// sentry/telemetry guards never flush: an operator signalling twice is
+/// asking to stop now, and buffered diagnostics are the cheaper thing to
+/// lose.
 fn force_exit(signal: &'static str) -> ! {
     tracing::warn!(
         signal,
         "second shutdown signal received; exiting immediately without draining"
     );
-    std::process::exit(130);
+    let code = if signal == "SIGTERM" { 143 } else { 130 };
+    std::process::exit(code);
 }
 
 /// Resolves to a label naming whichever of `terminate`/`interrupt` completes
