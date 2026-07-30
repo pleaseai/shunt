@@ -1,0 +1,32 @@
+src/codex_endpoint.rs
+  s_c1dfe1d8f70a41::t_ebf1a03ea6fba9 512,516
+  s_c1dfe1d8f70a41::t_0088128b708ba2 534-536,542,544-546,548-549
+  s_c1dfe1d8f70a41::t_33bf62975ed578 50-52,55-149
+src/codex_endpoint/tests.rs
+  s_c1dfe1d8f70a41::t_80a6a48c548bd2 109-152
+src/compression.rs
+  s_c1dfe1d8f70a41::t_bd746df40d2182 263-264,267-279
+  s_c1dfe1d8f70a41::t_3f0f59e8a06702 322-328
+src/compression/tests.rs
+  s_c1dfe1d8f70a41::t_92cb45837899ea 164-172,176-177
+  s_c1dfe1d8f70a41::t_9405e7f8f0d885 173-175,178-180
+  s_c1dfe1d8f70a41::t_fb8fdd8e79772e 207-231,233-259,261-290
+  s_c1dfe1d8f70a41::t_81d29c916eef82 232
+  s_c1dfe1d8f70a41::t_761f85ccb9702e 260
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "1128f7af904b30154d0ab132a81abc3fd77dc009",
+  "prompts": {},
+  "sessions": {
+    "s_c1dfe1d8f70a41": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "884acc0e-ca22-4820-9260-1fb41a8800be",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
