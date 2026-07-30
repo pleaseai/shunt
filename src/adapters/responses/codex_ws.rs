@@ -665,7 +665,7 @@ async fn probe_live(conn: &Connection) -> bool {
     notified.as_mut().enable();
     {
         let mut sink = conn.sink.lock().await;
-        if sink.send(Message::Ping(Vec::new().into())).await.is_err() {
+        if sink.send(Message::Ping(Default::default())).await.is_err() {
             return false;
         }
     }
