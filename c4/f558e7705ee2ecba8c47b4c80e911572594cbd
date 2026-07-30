@@ -1,0 +1,31 @@
+src/admin/script.rs
+  s_e672047dc3c98b::t_e0bce8ff2f160c 307,316,343,352
+docs/m9-admin-surface.md
+  s_e672047dc3c98b::t_a1dc304924d793 305-322
+src/admin/html.rs
+  s_e672047dc3c98b::t_7588b680b3b34e 287-295,307-308
+  s_e672047dc3c98b::t_55201cc06796ed 296,299-302,305-306
+  s_e672047dc3c98b::t_0fe464762f7bd9 297-298,303-304
+src/auth/claude/login.rs
+  s_e672047dc3c98b::t_f54211b1676717 325-333,336,340-344,347-348,352,355-357
+  s_e672047dc3c98b::t_727ee1e05f2d03 506-526
+src/admin/mod.rs
+  s_e672047dc3c98b::t_bf8474761a95f9 535-540
+  s_e672047dc3c98b::t_59050338939f7d 1528-1558
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "c4f558e7705ee2ecba8c47b4c80e911572594cbd",
+  "prompts": {},
+  "sessions": {
+    "s_e672047dc3c98b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "714a0b35-277b-450a-a183-ac760661c50d",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
