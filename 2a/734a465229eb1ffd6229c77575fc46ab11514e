@@ -1,0 +1,23 @@
+README.ja.md
+  s_e4acb84525265b::t_41694ab41c7bf9 43
+.please/docs/review/rejected-findings.jsonl
+  s_e4acb84525265b::t_08fd698470182c 62-72
+README.zh-CN.md
+  s_e4acb84525265b::t_41694ab41c7bf9 43
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "2a734a465229eb1ffd6229c77575fc46ab11514e",
+  "prompts": {},
+  "sessions": {
+    "s_e4acb84525265b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "15936aaa-9756-4f87-8300-acf6d7cb4268",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
