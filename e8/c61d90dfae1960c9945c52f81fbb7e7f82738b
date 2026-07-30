@@ -1,0 +1,19 @@
+src/shutdown.rs
+  s_e4acb84525265b::t_30b25d1eb9fee4 290-291
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "e8c61d90dfae1960c9945c52f81fbb7e7f82738b",
+  "prompts": {},
+  "sessions": {
+    "s_e4acb84525265b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "15936aaa-9756-4f87-8300-acf6d7cb4268",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
