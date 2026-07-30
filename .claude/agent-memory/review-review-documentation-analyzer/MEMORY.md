@@ -12,3 +12,4 @@
 - [Provider pages review traps](shunt_provider_pages_review.md) — PR #230: standalone non-Anthropic [[upstreams]] needs default_provider; check doesn't require exported key value.
 - [Config reload doc review traps](shunt_config_reload_doc_review_traps.md) — separate reload-time env auth, request-time env credentials, dynamic store scans, and boot-fixed surfaces.
 - [PR #272 Cursor offload docs review](shunt_pr272_cursor_offload_doc_review.md) — performance-only Cursor changes can still drift the ordered-failover spec when new local CPU-task errors inherit BeforeHeaders classification.
+- [PR #289 tool_search default review](shunt_pr289_tool_search_default_review.md) — clean default-flip doc update across 4 locales; my "live-probe verified 2026-07-13 is unsupported" finding was a FALSE POSITIVE (the probe is in merged PR #86) — check the *implementing* PR's body for empirical evidence, not just the issue's Verification section.
