@@ -1,0 +1,106 @@
+site/src/content/docs/guides/codex.mdx
+  s_94efc58dd34c7d::t_c961118eb206a9 457
+  s_94efc58dd34c7d::t_2590faac9c0556 382-397,416-422,425-438
+tests/failover.rs
+  s_94efc58dd34c7d::t_a9409758cd652d 95
+site/src/content/docs/ja/reference/configuration.md
+  s_94efc58dd34c7d::t_6641de7e808f9b 205
+src/config/upstreams/tests.rs
+  s_94efc58dd34c7d::t_0ed08ba7f65fb6 7,126-128,331-333,357-359,374-376,390-392
+site/src/content/docs/ko/reference/configuration.md
+  s_94efc58dd34c7d::t_98ccc916c8432b 217
+site/src/content/docs/reference/troubleshooting.md
+  s_94efc58dd34c7d::t_bab455cf1efe73 20
+tests/inbound_auth.rs
+  s_94efc58dd34c7d::t_a9409758cd652d 60
+src/adapters/responses/mod.rs
+  s_94efc58dd34c7d::t_d5fd6fd7f9a488 88-92
+src/admin/mod.rs
+  s_94efc58dd34c7d::t_3584db12a2a2ae 1439
+site/src/content/docs/zh-cn/reference/troubleshooting.md
+  s_94efc58dd34c7d::t_1ed0480e5f2716 20
+docs/comparison.md
+  s_94efc58dd34c7d::t_ee52f769b06c4e 98-120
+  s_94efc58dd34c7d::t_309a2c93af079c 222-241
+  s_94efc58dd34c7d::t_7fc13881bc5aa0 50
+  s_94efc58dd34c7d::t_c6bd7f5d998e90 324-329
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_94efc58dd34c7d::t_a99b081c0959e3 205
+site/src/content/docs/ja/guides/codex.mdx
+  s_94efc58dd34c7d::t_724a2562c9e5db 367-369
+  s_94efc58dd34c7d::t_2c5ac78929b18b 388
+  s_94efc58dd34c7d::t_0d0626f38580f9 331-335,344-347
+  s_94efc58dd34c7d::t_479b8bc4943c28 343
+  s_94efc58dd34c7d::t_bc260c3c2e71a6 408
+  s_94efc58dd34c7d::t_0f31a68361c7d8 370-387,389
+site/src/content/docs/ko/reference/troubleshooting.md
+  s_94efc58dd34c7d::t_d7aee97fc57d48 20
+site/src/content/docs/zh-cn/guides/codex.mdx
+  s_94efc58dd34c7d::t_0bf1fa9205da7a 375-387
+  s_94efc58dd34c7d::t_285eede9d6451a 403-421
+  s_94efc58dd34c7d::t_446816ccd37254 440
+site/src/content/docs/reference/configuration.md
+  s_94efc58dd34c7d::t_8f1acbc49f2942 274
+site/src/content/docs/ko/getting-started/comparison.mdx
+  s_94efc58dd34c7d::t_8381320a503e35 63
+  s_94efc58dd34c7d::t_8f89b8247c0658 46
+  s_94efc58dd34c7d::t_c81b82c640a685 94
+  s_94efc58dd34c7d::t_64c3454a8aff5f 116
+site/src/content/docs/ko/guides/codex.mdx
+  s_94efc58dd34c7d::t_ab16a7768e0093 390
+  s_94efc58dd34c7d::t_2948f87bf8edb6 315-317,326-330,350-371
+src/config/upstreams.rs
+  s_94efc58dd34c7d::t_7e72fe5172f91b 28-31
+site/src/content/docs/zh-cn/getting-started/comparison.mdx
+  s_94efc58dd34c7d::t_3d6a8e5267ebe7 46
+  s_94efc58dd34c7d::t_c355c35d3f40b5 63
+  s_94efc58dd34c7d::t_71af6dac683ec6 116
+  s_94efc58dd34c7d::t_05822f86b2093a 94
+site/src/content/docs/ja/reference/troubleshooting.md
+  s_94efc58dd34c7d::t_bd7d6bbbb2b517 20
+tests/responses_translate.rs
+  s_94efc58dd34c7d::t_bf65260990ef2a 1732-1733
+site/src/content/docs/ja/getting-started/comparison.mdx
+  s_94efc58dd34c7d::t_aef5eae878d3e1 63
+  s_94efc58dd34c7d::t_65fcf0a85b65ee 46
+  s_94efc58dd34c7d::t_4df75f722a048c 94
+  s_94efc58dd34c7d::t_a8fc1a2f880d5b 116
+README.md
+  s_94efc58dd34c7d::t_dd22b059148eff 229
+src/usage_poll.rs
+  s_94efc58dd34c7d::t_3584db12a2a2ae 390,447,512
+src/config.rs
+  s_94efc58dd34c7d::t_217b53b9e5cf3d 2813-2826,2828-2849
+  s_94efc58dd34c7d::t_7d007e594cbdbb 1521-1535
+  s_94efc58dd34c7d::t_f2ddfea8b89759 1138-1154
+  s_94efc58dd34c7d::t_06f7705ecf97e8 5140-5142,5218-5220,5273-5275,5310-5312,5346-5348,5382-5384,5447-5449
+  s_94efc58dd34c7d::t_724119544e34e8 5265-5270,5272,5300-5309,5313-5345,5349-5374
+  s_94efc58dd34c7d::t_1c6c8b9065008f 4806-4807,4817-4818
+  s_94efc58dd34c7d::t_165ac9cdcedaaa 4789-4792
+  s_94efc58dd34c7d::t_2ea5aadd01bcbd 2880-2896
+  s_94efc58dd34c7d::t_b52ce59c963365 2913
+  s_94efc58dd34c7d::t_28aa8f5039e508 1826,1846,1866,1908,1964
+site/src/content/docs/providers/openai.mdx
+  s_94efc58dd34c7d::t_dfb663a5a95d4f 100-105
+site/src/content/docs/getting-started/comparison.mdx
+  s_94efc58dd34c7d::t_2de8e8f156149d 63
+  s_94efc58dd34c7d::t_90ed7ecc4a033d 116
+  s_94efc58dd34c7d::t_3f5dbcf1ba1036 46
+  s_94efc58dd34c7d::t_5776cc0745d948 94
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "aa18e45fe1e0318ec93c6033c6ae317dd15361ec",
+  "prompts": {},
+  "sessions": {
+    "s_94efc58dd34c7d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b693190c-9cbd-46c8-8816-40e1ece350b5",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
