@@ -496,12 +496,51 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
 /// `axum::serve(...).with_graceful_shutdown(...)` in [`serve`] so
 /// `brew services stop shunt` — which launchd stops with SIGTERM — drains
 /// in-flight requests instead of dropping them.
+///
+/// The drain has no deadline (an open SSE stream holds the process for as long
+/// as its client keeps reading) and tokio leaves both handlers installed once
+/// the first signal fires, so a second signal would otherwise be swallowed.
+/// Before returning, this arms a watcher that turns the next signal into an
+/// immediate exit, preserving the operator's usual "press ctrl-c again"
+/// escape hatch.
 async fn shutdown_signal() {
     let signal = select_shutdown_trigger(wait_for_sigterm(), wait_for_ctrl_c()).await;
     tracing::info!(
         signal,
         "shutdown signal received; draining in-flight requests"
     );
+    arm_force_exit(
+        select_shutdown_trigger(wait_for_sigterm(), wait_for_ctrl_c()),
+        |signal| force_exit(signal),
+    );
+}
+
+/// Runs `on_signal` on a detached task once `next_signal` resolves. Split out
+/// from [`shutdown_signal`] with the reaction injected so tests can prove the
+/// watcher is armed and fires without the process actually exiting; only
+/// [`force_exit`] itself — a single `std::process::exit` call — stays untested.
+fn arm_force_exit<S, F>(next_signal: S, on_signal: F) -> tokio::task::JoinHandle<()>
+where
+    S: Future<Output = &'static str> + Send + 'static,
+    F: FnOnce(&'static str) + Send + 'static,
+{
+    tokio::spawn(async move {
+        let signal = next_signal.await;
+        on_signal(signal);
+    })
+}
+
+/// Ends the process without waiting for the drain, using the 128+SIGINT status
+/// shells expect from an interrupted program. This skips the normal return
+/// through [`run`], so the sentry/telemetry guards never flush: an operator
+/// signalling twice is asking to stop now, and buffered diagnostics are the
+/// cheaper thing to lose.
+fn force_exit(signal: &'static str) -> ! {
+    tracing::warn!(
+        signal,
+        "second shutdown signal received; exiting immediately without draining"
+    );
+    std::process::exit(130);
 }
 
 /// Resolves to a label naming whichever of `terminate`/`interrupt` completes
@@ -519,9 +558,10 @@ async fn select_shutdown_trigger(
 
 /// Resolves on SIGTERM. Unix-only signal, so non-unix targets pend forever
 /// here and rely on [`wait_for_ctrl_c`] alone. A handler-install failure (rare;
-/// e.g. exhausted signal slots) degrades the same way — logged, then pending —
-/// rather than aborting startup, mirroring the SIGHUP setup in
-/// `reload::spawn_sighup_task`.
+/// e.g. exhausted signal slots) is logged and then pends rather than aborting
+/// startup, mirroring the SIGHUP setup in `reload::spawn_sighup_task`; the
+/// signal keeps its default disposition, so it kills the process outright
+/// instead of draining.
 async fn wait_for_sigterm() {
     #[cfg(unix)]
     {
@@ -534,7 +574,7 @@ async fn wait_for_sigterm() {
             Err(error) => {
                 tracing::warn!(
                     %error,
-                    "failed to install SIGTERM handler; only ctrl-c triggers graceful shutdown"
+                    "failed to install SIGTERM handler; SIGTERM will terminate the process immediately without draining"
                 );
                 std::future::pending::<()>().await;
             }
@@ -546,12 +586,13 @@ async fn wait_for_sigterm() {
 
 /// Resolves on ctrl-c (SIGINT on Unix, `CTRL_C_EVENT` on Windows). A
 /// handler-install failure degrades like [`wait_for_sigterm`]'s: log and pend,
-/// so the other trigger still works instead of refusing to start.
+/// so the other trigger still works instead of refusing to start — but ctrl-c
+/// itself then terminates the process outright instead of draining.
 async fn wait_for_ctrl_c() {
     if let Err(error) = tokio::signal::ctrl_c().await {
         tracing::warn!(
             %error,
-            "failed to install ctrl-c handler; only SIGTERM triggers graceful shutdown"
+            "failed to install ctrl-c handler; ctrl-c will terminate the process immediately without draining"
         );
         std::future::pending::<()>().await;
     }
@@ -1109,6 +1150,7 @@ mod tests {
     #[tokio::test]
     async fn graceful_shutdown_drains_in_flight_request_before_returning() {
         use std::sync::Arc;
+        use std::time::Duration;
 
         use tokio::sync::{oneshot, Notify};
 
@@ -1163,15 +1205,57 @@ mod tests {
             .expect("shutdown receiver still open while server task is alive");
         finish.notify_one();
 
-        let response = request
+        let response = tokio::time::timeout(Duration::from_secs(5), request)
             .await
+            .expect("in-flight request resolves before the test deadline")
             .expect("request task join")
             .expect("in-flight request completes despite concurrent shutdown");
         assert_eq!(response.status(), reqwest::StatusCode::OK);
 
-        server
+        tokio::time::timeout(Duration::from_secs(5), server)
             .await
+            .expect("serve returns before the test deadline")
             .expect("serve task join")
             .expect("graceful shutdown returns Ok once drained");
+    }
+
+    /// A second signal must bypass the drain: `shutdown_signal` arms this
+    /// watcher after the first trigger, and firing it is what would call
+    /// `std::process::exit`. The reaction is injected here so the assertion
+    /// runs in-process.
+    #[tokio::test]
+    async fn arm_force_exit_reacts_to_the_next_signal() {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        arm_force_exit(async { "SIGTERM" }, move |signal| {
+            let _ = tx.send(signal);
+        })
+        .await
+        .expect("force-exit watcher task join");
+
+        assert_eq!(
+            rx.await.expect("watcher reports the signal it saw"),
+            "SIGTERM"
+        );
+    }
+
+    /// The escape hatch must not short-circuit the drain the first signal
+    /// started: with no further signal, the watcher stays parked.
+    #[tokio::test]
+    async fn arm_force_exit_stays_parked_until_a_second_signal_arrives() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let fired = Arc::new(AtomicBool::new(false));
+        let watcher = arm_force_exit(std::future::pending::<&'static str>(), {
+            let fired = fired.clone();
+            move |_| fired.store(true, Ordering::SeqCst)
+        });
+        tokio::task::yield_now().await;
+
+        assert!(
+            !fired.load(Ordering::SeqCst),
+            "watcher must wait for a second signal rather than exiting mid-drain"
+        );
+        watcher.abort();
     }
 }
