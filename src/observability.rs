@@ -168,7 +168,7 @@ mod tests {
     use tracing_subscriber::Layer;
 
     use super::{
-        record_requested_model, record_span_outcome, sentry_span_status,
+        capture_upstream_outcome, record_requested_model, record_span_outcome, sentry_span_status,
         should_capture_upstream_status,
     };
 
@@ -259,6 +259,12 @@ mod tests {
         assert_eq!(
             sentry_span_status(StatusCode::from_u16(599).unwrap()),
             sentry::protocol::SpanStatus::InternalError
+        );
+        // Outside every named band (600 is a valid `StatusCode` but matches
+        // none of the 2xx/4xx/5xx arms above): falls through to the default.
+        assert_eq!(
+            sentry_span_status(StatusCode::from_u16(600).unwrap()),
+            sentry::protocol::SpanStatus::UnknownError
         );
     }
 
@@ -356,5 +362,83 @@ mod tests {
 
         let map = captured.0.lock().unwrap();
         assert_eq!(map.get("otel.status_code").map(String::as_str), Some("ok"));
+    }
+
+    // `capture_upstream_outcome` is the only caller of `should_capture_upstream_status`
+    // that actually reaches Sentry; the tests above only exercise the pure decision
+    // function. These use `sentry::test::with_captured_events` — a real (test) Sentry
+    // client bound to a scoped Hub for the closure's duration — to verify the event
+    // capture path itself is wired up: the right event count, level, message, and
+    // (importantly, since this is the no-PII guarantee) tag set actually get sent.
+
+    #[test]
+    fn capture_upstream_outcome_emits_error_event_for_5xx() {
+        let events = sentry::test::with_captured_events(|| {
+            capture_upstream_outcome(
+                "anthropic",
+                "claude-opus-5",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        });
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].level, sentry::Level::Error);
+        assert_eq!(
+            events[0].message.as_deref(),
+            Some("upstream returned an error response")
+        );
+    }
+
+    #[test]
+    fn capture_upstream_outcome_emits_warning_event_for_429_and_529() {
+        let events = sentry::test::with_captured_events(|| {
+            capture_upstream_outcome("anthropic", "claude-opus-5", StatusCode::TOO_MANY_REQUESTS);
+            capture_upstream_outcome(
+                "anthropic",
+                "claude-opus-5",
+                StatusCode::from_u16(529).unwrap(),
+            );
+        });
+
+        assert_eq!(events.len(), 2);
+        for event in &events {
+            assert_eq!(event.level, sentry::Level::Warning);
+            assert_eq!(
+                event.message.as_deref(),
+                Some("upstream returned a quota/overload response")
+            );
+        }
+    }
+
+    #[test]
+    fn capture_upstream_outcome_emits_no_event_for_success_or_ordinary_4xx() {
+        let events = sentry::test::with_captured_events(|| {
+            capture_upstream_outcome("anthropic", "claude-opus-5", StatusCode::OK);
+            capture_upstream_outcome("anthropic", "claude-opus-5", StatusCode::BAD_REQUEST);
+            capture_upstream_outcome("anthropic", "claude-opus-5", StatusCode::NOT_FOUND);
+        });
+
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn capture_upstream_outcome_event_carries_exactly_model_provider_and_status_tags() {
+        let events = sentry::test::with_captured_events(|| {
+            capture_upstream_outcome(
+                "anthropic",
+                "claude-opus-5",
+                StatusCode::SERVICE_UNAVAILABLE,
+            );
+        });
+
+        assert_eq!(events.len(), 1);
+        let tags = &events[0].tags;
+        // Exactly these three keys — nothing else (no body, header, or credential
+        // ever gets attached to this event; this is the no-PII guarantee, locked
+        // down structurally rather than by spot-checking a couple of fields).
+        assert_eq!(tags.len(), 3, "unexpected tags: {tags:?}");
+        assert_eq!(tags.get("model").map(String::as_str), Some("claude-opus-5"));
+        assert_eq!(tags.get("provider").map(String::as_str), Some("anthropic"));
+        assert_eq!(tags.get("upstream_status").map(String::as_str), Some("503"));
     }
 }

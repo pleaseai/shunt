@@ -466,6 +466,122 @@ async fn all_transport_failures_synthesize_anthropic_502_with_last_metadata() {
     );
 }
 
+// The unit tests in `src/observability.rs` exercise `capture_upstream_outcome`
+// directly, in isolation. Nothing there proves the five call sites wired into
+// `forward()`'s real control flow (src/proxy/failover.rs) actually run when a
+// request goes through the live router — deleting one of those call sites
+// would not fail any existing test. This drives the exhausted-chain 502 path
+// above (`all_transport_failures_synthesize_anthropic_502_with_last_metadata`)
+// through the real gateway and asserts the resulting Sentry event, proving
+// that specific `finish(&last_route.provider, StatusCode::BAD_GATEWAY)` call
+// site (the exhausted-chain synthesized-502 case) is live.
+//
+// `sentry::test::with_captured_events` is not usable here because it wraps a
+// synchronous closure and this test must `.await` a real HTTP round trip
+// through a spawned server task.
+//
+// This must NOT bind a client via `sentry::Hub::current().bind_client(...)`.
+// `sentry-core` pins a single process-wide `PROCESS_HUB` to whichever OS
+// thread first touches Sentry anywhere in the whole test binary; every
+// *other* thread's first-ever touch clones that hub's state via
+// `Hub::new_from_top`. If this test's own thread happened to be
+// `PROCESS_HUB`'s thread, `bind_client` on `Hub::current()` would mutate
+// that shared, process-lifetime state directly, and any concurrently
+// running test (this file's suite runs in parallel by default) whose
+// thread hasn't touched Sentry yet would silently inherit — and thus leak
+// events into — this test's client. This is not hypothetical: it
+// previously reproduced as spurious extra events (`events.len() == 4`
+// instead of `1`) under a full, parallel `cargo test` run.
+//
+// Instead, build a brand-new, standalone `Hub` that never touches
+// `PROCESS_HUB`, and swap it onto *this OS thread* with `HubSwitchGuard`
+// (`sentry_core::hub_impl::SwitchGuard`, re-exported as `sentry::HubSwitchGuard`)
+// rather than mutating any hub's client field. `#[tokio::test]` defaults to a
+// `current_thread` runtime, so this test body, `start_gateway`'s spawned
+// `axum::serve` task, and every task `axum`/`hyper` spawn per connection all
+// poll on this one OS thread; since Sentry's hub is looked up via a
+// *thread-local* (`sentry_core::hub_impl::THREAD_HUB`), swapping it here makes
+// `Hub::current()` — and hence `capture_upstream_outcome`'s
+// `sentry::capture_message` call, however many task-spawn layers deep it
+// fires — resolve to our private hub for as long as the guard is held.
+// Restoring the guard's previous value on drop (rather than ever writing into
+// `PROCESS_HUB`'s shared state) is what makes this safe under a parallel test
+// run: no other thread's hub is ever touched.
+#[tokio::test]
+async fn exhausted_chain_502_reaches_the_real_gateway_and_emits_a_sentry_event() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let transport = sentry::test::TestTransport::new();
+    // `ClientOptions::default()` enables metrics and logs, which makes the
+    // `Client` spawn its own background `Batcher` flush thread(s) (see
+    // `sentry-core`'s `client/batcher.rs`); this test only exercises event
+    // capture, not metrics/logs, and the batcher machinery is otherwise
+    // unrelated overhead that risks colliding with `sentry-core`'s own
+    // documented background-thread/hub-initialization hazards (see
+    // https://github.com/getsentry/sentry-rust/issues/237). Disable both so
+    // this `Client` never spins up a batcher thread at all.
+    let options = sentry::ClientOptions::new()
+        .dsn("https://public@sentry.invalid/1")
+        .transport(transport.clone())
+        .enable_metrics(false)
+        .enable_logs(false);
+    let client = Arc::new(sentry::Client::from(options));
+    let hub = Arc::new(sentry::Hub::new(
+        Some(client.clone()),
+        Arc::new(sentry::Scope::default()),
+    ));
+    let hub_guard = sentry::HubSwitchGuard::new(hub.clone());
+
+    let first = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let first_url = format!("http://{}", first.local_addr().unwrap());
+    drop(first);
+    let second = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let second_url = format!("http://{}", second.local_addr().unwrap());
+    drop(second);
+    let config = chain_config(
+        vec![
+            passthrough("first", first_url),
+            passthrough("second", second_url),
+        ],
+        &[("first", "model-a"), ("second", "model-b")],
+    );
+    let gateway = start_gateway(config).await;
+
+    let response = post(&gateway).await;
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+
+    let events = transport.fetch_and_clear_events();
+    // Restore this thread's previous hub before tearing anything down: the
+    // guard must not outlive the scope it was meant to isolate, and dropping
+    // it here (rather than relying on end-of-function drop order) keeps the
+    // isolation window as tight as the code that actually needs it.
+    drop(hub_guard);
+    drop(gateway);
+    drop(hub);
+    drop(client);
+
+    assert_eq!(
+        events.len(),
+        1,
+        "expected exactly one upstream-failure event, got {events:?}"
+    );
+    let event = &events[0];
+    assert_eq!(event.level, sentry::Level::Error);
+    assert_eq!(
+        event.tags.get("provider").map(String::as_str),
+        Some("second")
+    );
+    assert_eq!(
+        event.tags.get("upstream_status").map(String::as_str),
+        Some("502")
+    );
+    assert_eq!(
+        event.tags.get("model").map(String::as_str),
+        Some(CLIENT_MODEL)
+    );
+}
+
 #[tokio::test]
 async fn responses_raw_404_advances_despite_client_facing_502_mapping() {
     if !can_bind_loopback() {

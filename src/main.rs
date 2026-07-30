@@ -495,11 +495,14 @@ fn check(config_path: Option<PathBuf>) -> anyhow::Result<()> {
 
 /// Opt-in Sentry error reporting: a client exists only when the operator
 /// configured a non-empty `[sentry] dsn`, and it reports gateway-owned
-/// diagnostics only — fatal startup/serve errors, panics, and `error!` events,
-/// never request/response bodies, headers, or credentials. Performance tracing
-/// is a further opt-in via `[sentry] traces_sample_rate`; the span filter
-/// installed by [`init_tracing`] admits spans only after this pins an enabled
-/// policy.
+/// diagnostics — fatal startup/serve errors, panics, and `error!` events —
+/// plus, unconditionally once a client is bound, an upstream-failure event
+/// (`error` for a 5xx response, `warning` for 429/529 quota/overload) tagged
+/// only with `model`, `provider`, and `upstream_status` (see
+/// `observability::capture_upstream_outcome`). Never request/response
+/// bodies, headers, or credentials. Performance tracing is a further opt-in
+/// via `[sentry] traces_sample_rate`; the span filter installed by
+/// [`init_tracing`] admits spans only after this pins an enabled policy.
 fn init_sentry(config: Option<&SentryConfig>) -> Option<sentry::ClientInitGuard> {
     let config = config.filter(|sentry| sentry.enabled())?;
     let traces = config.traces_sample_rate > 0.0;
