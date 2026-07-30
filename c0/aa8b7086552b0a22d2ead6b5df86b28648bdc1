@@ -1,0 +1,95 @@
+benches/gateway.rs
+  s_1a9b1bc59ddad0::t_d564a3da142d72 238,245,328
+benches/perf_issues.rs
+  s_1a9b1bc59ddad0::t_ecbc3083dcf666 132,143
+docs/codex-configuration.md
+  s_1a9b1bc59ddad0::t_82218307a10c68 472-505
+  s_1a9b1bc59ddad0::t_d9e06136c0d149 653
+  s_1a9b1bc59ddad0::t_170bd14ac11480 20-28,506,550,571,586,610,624,641,682
+  s_1a9b1bc59ddad0::t_b2aa50c8096212 80,88,290,301,361,416,545,633,752,777
+  s_1a9b1bc59ddad0::t_4d54b877b2054b 691,703,750,765
+site/src/content/docs/guides/codex.mdx
+  s_1a9b1bc59ddad0::t_1863120384413e 324
+  s_1a9b1bc59ddad0::t_c2690ff37050eb 352
+  s_1a9b1bc59ddad0::t_fb35b1866e8c8c 308-323,325
+  s_1a9b1bc59ddad0::t_e9c34b1bbcd12d 3
+tests/passthrough.rs
+  s_1a9b1bc59ddad0::t_2ae0bdec4db0ad 822
+src/usage_poll.rs
+  s_1a9b1bc59ddad0::t_e73f053b5cf2aa 386,445,512
+tests/inbound_auth.rs
+  s_1a9b1bc59ddad0::t_3ddddfba150315 58,73
+src/adapters/responses/request.rs
+  s_1a9b1bc59ddad0::t_e73f053b5cf2aa 145,265,276
+src/admin/mod.rs
+  s_1a9b1bc59ddad0::t_e73f053b5cf2aa 1451
+site/src/content/docs/reference/configuration.md
+  s_1a9b1bc59ddad0::t_26cf57bb0c3411 219,272,349
+src/routes.rs
+  s_1a9b1bc59ddad0::t_4e645c0be64254 19-20,39,67,74,88
+src/routing.rs
+  s_1a9b1bc59ddad0::t_a995fab9e78d9d 37,125-132,139,157,163,172,182,191-192,199
+  s_1a9b1bc59ddad0::t_5cb230fee48987 323-334
+  s_1a9b1bc59ddad0::t_384f8dc0cd5262 267,348,392,432,540
+  s_1a9b1bc59ddad0::t_365a841982aee1 322,448-500
+tests/codex_websocket_fallback.rs
+  s_1a9b1bc59ddad0::t_2ae0bdec4db0ad 180,257,310
+src/config.rs
+  s_1a9b1bc59ddad0::t_fc32610d8bb3a1 1722-1725
+  s_1a9b1bc59ddad0::t_ed63a67d3708d4 3460-3465,3472-3480,3482-3491,3493-3501,3503-3514
+  s_1a9b1bc59ddad0::t_7ae9243cebadd8 1600-1602
+  s_1a9b1bc59ddad0::t_b922df106afe35 3502
+  s_1a9b1bc59ddad0::t_2ab2e5817e5e93 2278-2280
+  s_1a9b1bc59ddad0::t_5ff28ab41f2474 2222-2227,3466-3471,3481,3492
+  s_1a9b1bc59ddad0::t_d44cda8e9a191a 2211-2221,2228-2242
+  s_1a9b1bc59ddad0::t_87eb1d0d812939 2089-2100
+  s_1a9b1bc59ddad0::t_e73f053b5cf2aa 1848,1870,1892,1936,1994,4478
+  s_1a9b1bc59ddad0::t_b611c7331df1e5 1116-1123
+src/adapters/anthropic/mod.rs
+  s_1a9b1bc59ddad0::t_e73f053b5cf2aa 940
+src/adapters/responses/pool.rs
+  s_1a9b1bc59ddad0::t_e73f053b5cf2aa 727
+src/discovery/upstream.rs
+  s_1a9b1bc59ddad0::t_e73f053b5cf2aa 383
+src/config/upstreams.rs
+  s_1a9b1bc59ddad0::t_b9317051dfbff4 24-26,201
+tests/retry.rs
+  s_1a9b1bc59ddad0::t_3ddddfba150315 282
+src/codex_endpoint.rs
+  s_1a9b1bc59ddad0::t_e73f053b5cf2aa 330
+src/model/responses_request.rs
+  s_1a9b1bc59ddad0::t_5f8cdc2b70e0a9 191-194
+  s_1a9b1bc59ddad0::t_c1752c285558c6 189-190,195-198
+  s_1a9b1bc59ddad0::t_e73f053b5cf2aa 955
+tests/codex_multi_account.rs
+  s_1a9b1bc59ddad0::t_2ae0bdec4db0ad 179,1436
+tests/multi_account.rs
+  s_1a9b1bc59ddad0::t_2ae0bdec4db0ad 137
+src/adapters/responses/body.rs
+  s_1a9b1bc59ddad0::t_350f4d9e1af6d8 110-114,121
+  s_1a9b1bc59ddad0::t_e73f053b5cf2aa 132
+tests/responses_translate.rs
+  s_1a9b1bc59ddad0::t_cc3cac9a917d63 732-764
+  s_1a9b1bc59ddad0::t_4c1ec312df6afb 19,772
+  s_1a9b1bc59ddad0::t_59b0c90b6adaa6 806-841
+tests/failover.rs
+  s_1a9b1bc59ddad0::t_e36b3e1b412cd9 93
+src/gateway/tests.rs
+  s_1a9b1bc59ddad0::t_e73f053b5cf2aa 1438,1871,1926,2003
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "c0aa8b7086552b0a22d2ead6b5df86b28648bdc1",
+  "prompts": {},
+  "sessions": {
+    "s_1a9b1bc59ddad0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f72f2f30-a069-4d22-94cd-21d4d1a46af7",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
