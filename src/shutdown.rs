@@ -287,7 +287,8 @@ mod tests {
             .expect("shutdown_signal_inner reports readiness before this raises SIGTERM");
 
         unsafe {
-            libc::raise(libc::SIGTERM);
+            let raised = libc::raise(libc::SIGTERM);
+            assert_eq!(raised, 0, "libc::raise(SIGTERM) failed");
         }
 
         tokio::time::timeout(Duration::from_secs(5), waiter)
