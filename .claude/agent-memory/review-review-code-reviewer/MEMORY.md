@@ -8,3 +8,4 @@
 - [codex-subagent msgstart-input review](shunt-codex-subagent-msgstart-input-review.md) — PR #112: branch-diff gotcha; zero-sentinel bug and unconditional-compute/double-parse nit both FIXED as of d1eda88.
 - [issue #48 retry/backoff (PR #122)](shunt-issue48-retry-backoff-pr122.md) — retry.rs pre-stream/OAuth-exclusion invariants, per-adapter count_tokens exclusion shape, and CONFLICTING-mergeable-does-not-mean-broken-code gotcha.
 - [issue #135 burn-rate pool (PR #136)](shunt-issue135-burn-rate-pool-pr136.md) — accounts.rs threshold/headroom math traced clean; admin/pool Codex-exclusion doc-drift + all-disabled empty-order error-message findings.
+- [zstd decode fuse (commit 98543a7)](shunt-zstd-decode-fuse-commit-98543a7.md) — decode_zstd_and_parse fusion + log-egress fix verified sound (1353/0/2 reproduced); authors' doc comments often pre-empt review findings, check first.
