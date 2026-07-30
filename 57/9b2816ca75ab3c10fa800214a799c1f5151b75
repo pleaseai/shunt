@@ -1,0 +1,113 @@
+README.md
+  s_94efc58dd34c7d::t_e66d0efded493a 229
+docs/comparison.md
+  s_94efc58dd34c7d::t_ec42ba0a6a85ac 318
+  s_94efc58dd34c7d::t_4f715c0c09991a 79-83
+  s_94efc58dd34c7d::t_92ec3ea9e3f9f0 98,103-111
+  s_94efc58dd34c7d::t_b843988005faf7 50
+  s_94efc58dd34c7d::t_6a3f7c2bc3a079 213-227
+  s_94efc58dd34c7d::t_cc66831e6880d9 310-311
+  s_94efc58dd34c7d::t_e8fd8d71d4cd19 312-314
+site/src/content/docs/ko/guides/codex.mdx
+  s_94efc58dd34c7d::t_5a864dec9d7c20 369
+  s_94efc58dd34c7d::t_b31bc643f6f08a 302-303,315-326,331,342,344-350,352-355
+  s_94efc58dd34c7d::t_31d32537439845 333-337
+site/src/content/docs/zh-cn/guides/codex.mdx
+  s_94efc58dd34c7d::t_58e42c37f7cd96 364,375-381,383,387,396,400-408
+  s_94efc58dd34c7d::t_d8085f19427e35 389-392
+  s_94efc58dd34c7d::t_f69c9f6633020e 422
+site/src/content/docs/zh-cn/getting-started/comparison.mdx
+  s_94efc58dd34c7d::t_66eac9376baff6 63
+  s_94efc58dd34c7d::t_e37efd455b56a7 94
+  s_94efc58dd34c7d::t_93697db88d4bc8 116
+  s_94efc58dd34c7d::t_7e7f6f6731bf45 60
+  s_94efc58dd34c7d::t_06579772e00d14 120
+  s_94efc58dd34c7d::t_f939011933ff08 46
+src/config.rs
+  s_94efc58dd34c7d::t_ecbc9743e16d12 4727-4729,4742-4743,4749-4757
+  s_94efc58dd34c7d::t_065f00553e35b1 4758,5195-5264
+  s_94efc58dd34c7d::t_b3f9ab153440e7 1136-1148
+  s_94efc58dd34c7d::t_849b3c51035f74 1806,1826,1846
+  s_94efc58dd34c7d::t_3ea7ed03879245 1888
+  s_94efc58dd34c7d::t_9a570b1e208e75 1944
+  s_94efc58dd34c7d::t_a6787d43fbda42 2793-2798
+  s_b8a1dd03369365::t_e6f68a6b02c3fb 4759
+site/src/content/docs/reference/configuration.md
+  s_94efc58dd34c7d::t_9f4fb0f2c8f5d5 274
+site/src/content/docs/providers/openai.mdx
+  s_94efc58dd34c7d::t_ef567c6f4a2d0e 99-102
+tests/responses_translate.rs
+  s_94efc58dd34c7d::t_154f00976137b9 1870-1964
+  s_b8a1dd03369365::t_bbbcaa7791a6d3 1869
+site/src/content/docs/ja/getting-started/comparison.mdx
+  s_94efc58dd34c7d::t_8a8c836a01df66 60
+  s_94efc58dd34c7d::t_e142af09c1ac8b 46
+  s_94efc58dd34c7d::t_460cfac1c2517a 63
+  s_94efc58dd34c7d::t_6e726b66ad1188 116
+  s_94efc58dd34c7d::t_95aaefa2f05e47 94
+  s_94efc58dd34c7d::t_dad6131bb6d0c0 120
+src/config/upstreams/tests.rs
+  s_94efc58dd34c7d::t_7e52ed41b8a13b 288-324
+site/src/content/docs/ja/guides/codex.mdx
+  s_94efc58dd34c7d::t_acb2f64fc8de43 350-354
+  s_94efc58dd34c7d::t_85160e11fb48d3 386
+  s_94efc58dd34c7d::t_8b00fd1f6859c0 318-319,331-343,348,359,364-372
+site/src/content/docs/getting-started/comparison.mdx
+  s_94efc58dd34c7d::t_4328140dc3f7a0 60
+  s_94efc58dd34c7d::t_1b449ecb8ef54f 63
+  s_94efc58dd34c7d::t_ce543fe0b1ed36 46
+  s_94efc58dd34c7d::t_523848a7dc31b2 116
+  s_94efc58dd34c7d::t_47f7788e2836d7 94
+  s_94efc58dd34c7d::t_0bf1a34a1d9f4c 120
+site/src/content/docs/guides/codex.mdx
+  s_94efc58dd34c7d::t_5c5fe42f9211ef 370,381-393,398,409,413-421
+  s_94efc58dd34c7d::t_fa0c1a95cd6440 400-404
+  s_94efc58dd34c7d::t_fd0436f21a55d2 435
+site/src/content/docs/ja/reference/configuration.md
+  s_94efc58dd34c7d::t_61028a708fd049 205
+src/config/upstreams.rs
+  s_94efc58dd34c7d::t_c94b4480bb7419 28-29
+site/src/content/docs/ko/reference/configuration.md
+  s_94efc58dd34c7d::t_729aafe5dccac0 217
+site/src/content/docs/zh-cn/reference/troubleshooting.md
+  s_94efc58dd34c7d::t_0a4bf2e4d68b90 20
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_94efc58dd34c7d::t_d4cd4f2fd21d80 205
+site/src/content/docs/reference/troubleshooting.md
+  s_94efc58dd34c7d::t_07180dc05a4a26 20
+site/src/content/docs/ja/reference/troubleshooting.md
+  s_94efc58dd34c7d::t_09c26780f0196b 20
+site/src/content/docs/ko/reference/troubleshooting.md
+  s_94efc58dd34c7d::t_11590b8ce5f0bc 20
+site/src/content/docs/ko/getting-started/comparison.mdx
+  s_94efc58dd34c7d::t_0823cf1a0dab8a 63
+  s_94efc58dd34c7d::t_42dec7a00be8b8 94
+  s_94efc58dd34c7d::t_a44818689f450c 60
+  s_94efc58dd34c7d::t_6eda88f6a596a0 116
+  s_94efc58dd34c7d::t_796467fcde7759 120
+  s_94efc58dd34c7d::t_b1446194d8ca19 46
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "579b2816ca75ab3c10fa800214a799c1f5151b75",
+  "prompts": {},
+  "sessions": {
+    "s_94efc58dd34c7d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b693190c-9cbd-46c8-8816-40e1ece350b5",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_b8a1dd03369365": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b8add262-7e53-46d2-8dbf-82e70e87690d",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
