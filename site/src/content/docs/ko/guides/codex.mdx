@@ -299,8 +299,8 @@ Code가 호스티드 `web_search_20250305` 도구를 보내고, shunt는 이를 
 ## 도구 검색
 
 Claude Code의 **도구 검색** — MCP / LSP 도구 스키마를 미뤄 두었다가 `ToolSearch` 도구로 필요할 때만
-드러내어, 호출하지 않을 도구에 컨텍스트를 쓰지 않게 하는 기능 — 도 Codex 경로에서 동작하지만 shunt 뒤에서는
-**기본적으로 꺼져 있습니다**. 활성화하려면:
+드러내어, 호출하지 않을 도구에 컨텍스트를 쓰지 않게 하는 기능 — 은 Codex 경로에서 동작합니다. 클라이언트
+쪽에서 활성화하세요:
 
 ```bash
 export ENABLE_TOOL_SEARCH=true
@@ -312,43 +312,47 @@ Claude Code는 base URL이 퍼스트파티 Anthropic 호스트가 아니면 낙�
 `tool_reference` 블록을 전달한다면** `ENABLE_TOOL_SEARCH=true`를 설정하라는 것이며, shunt는 이를
 전달합니다.
 
-활성화하면 Claude Code는 미룰 수 있는 도구를 프롬프트에 **이름**만 나열하고 스키마는 보류합니다. shunt는
-아직 로드되지 않은 이 도구들을 모델이 `ToolSearch`로 로드하기 전까지 업스트림 도구 집합에서 제외하며, 그
-결과 생성된 `tool_reference`가 해당 도구의 전체 스키마를 필요할 때 드러냅니다. 이로써 미뤄 둔 스키마가 첫
-턴부터 차지했을 컨텍스트 윈도우를 되찾습니다 — 도구 검색의 핵심 목적입니다.
+이 플래그를 켜면 shunt는 기본적으로 도구 검색을 OpenAI Responses API 자체의 **네이티브 클라이언트 실행
+`tool_search`** 프로토콜에 매핑합니다: Claude Code의 `ToolSearch` 도구는 `tool_search`(`execution:
+"client"`) 도구가 되고, 그 `tool_use`는 `tool_search_call`이 되며, `tool_reference` 결과는 로드된
+도구들의 전체 스키마를 구조화된 JSON으로 담아 `input` 끝에 덧붙는 `tool_search_output` 항목이 됩니다.
+이 차이가 중요한 이유는, 대안 방식 — 드러난 도구의 스키마를 요청의 `tools` 배열에 다시 접어 넣는 방식 —
+이 드러날 때마다 캐시된 프롬프트 프리픽스를 무효화하기 때문입니다: `tools`는 그 캐시 가능한 프리픽스의
+일부이고 shunt는 매 턴 클라이언트 히스토리로부터 이를 다시 도출하므로, 배열이 커질수록 백엔드가 도구
+경계 이후의 대화를 처음부터 다시 처리하게 됩니다. 네이티브 프로토콜은 append-only인 `input` 히스토리를
+사용해 `tools`를 건드리지 않으므로, 드러날 때마다 캐시 프리픽스가 그대로 유지됩니다.
 
-- `shunt.toml` 변경은 필요 없습니다 — 순수하게 Claude Code 환경 변수입니다.
+- 기본 동작을 쓰는 데는 `shunt.toml` 변경이 필요 없습니다 — 순수하게 `ENABLE_TOOL_SEARCH` 수준의
+  Claude Code 환경 변수입니다.
 - `codex`(ChatGPT) 및 `openai`(스톡 Responses) 프로바이더에 적용됩니다.
 - 미루지 않는 도구(및 위의 호스티드 `web_search` 도구)는 항상 전달됩니다. 점진적으로 드러나는 것은 미룰 수
   있는 도구뿐입니다.
 
-### 옵트인 네이티브 프로토콜
+### 네이티브 프로토콜
 
-위의 shim은 `tool_reference`를 스키마 텍스트로 렌더링하는 방식으로 동작합니다 — 업스트림 컨텍스트에서
-아무것도 회수하지 않고, 전체 스키마를 보내는 *시점*만 미룰 뿐입니다. **옵트인 대안**(issue #82)으로,
-shunt는 대신 도구 검색을 OpenAI Responses API 자체의 **네이티브 클라이언트 실행 `tool_search`**
-프로토콜로 매핑할 수 있습니다: Claude Code의 `ToolSearch` 도구는 `tool_search`(`execution: "client"`)
-도구가 되고, 그 `tool_use`는 `tool_search_call`이 되며, `tool_reference` 결과는 로드된 도구의 전체
-스키마를 구조화된 JSON으로 담는 `tool_search_output` 항목이 됩니다 — 스키마를 텍스트로 접어 넣는 대신
-실제 도구 로딩 시맨틱과 캐시 동작을 보존합니다. 프로바이더별로 활성화하세요:
-
-```toml
-[providers.codex]
-tool_search = true
-```
-
-요구 사항 — 지원되지 않는 조합은 오류 없이 조용히 #43 shim을 유지합니다:
+요구 사항 — 지원되지 않는 조합은 오류 없이 조용히 #43 텍스트 shim으로 폴백합니다. 이 shim은 아직
+드러나지 않은 지연 도구는 여전히 `tools`에서 제외하지만, Claude Code가 도구 하나를 드러내면 그 전체
+스키마를 `tool_reference` 텍스트로 렌더링하는 동시에 그 도구를 `tools`에 다시 추가해 모델이 호출할 수
+있게 합니다 — 그 시점부터 스키마가 두 번 전송되고, 매 노출마다 위에서 설명한 캐시 무효화 비용을
+치릅니다:
 
 - 업스트림은 스톡 OpenAI 또는 ChatGPT/Codex 계열 Responses 백엔드여야 합니다. xAI / Grok 라우트는
   항상 shim을 유지합니다.
 - 라우팅되는 모델은 **gpt-5.4 이상**(`gpt-5.4`, `gpt-5.5`, 또는 `gpt-5.6` 패밀리)이어야 합니다.
-  이전 슬러그(`gpt-5.2` 이하)는 `tool_search = true`를 설정해도 shim으로 폴백합니다.
+  이전 슬러그(`gpt-5.2` 이하)는 `tool_search`와 무관하게 shim을 유지합니다.
 - Claude Code 쪽에서는 여전히 `ENABLE_TOOL_SEARCH=true`가 필요합니다 — 이 플래그는 shunt가 그 기능을
-  업스트림으로 *어떻게* 변환하는지만 바꿀 뿐, Claude Code가 애초에 도구를 지연시키는지는 바꾸지 않습니다.
+  업스트림으로 *어떻게* 변환하는지만 바꿀 뿐, Claude Code가 애초에 도구를 지연시키는지 여부는 바꾸지
+  않습니다.
 
-`tool_search`는 기본적으로 `false`입니다: 네이티브 형태는 특정 백엔드가 이를 받아들이는지 라이브
-프로브로 확인할 때까지 이 플래그 뒤에 게이팅되어 있으므로, shunt가 모든 Codex/OpenAI 라우트를 자동으로
-전환하는 것이 아니라 프로바이더별 명시적 옵트인입니다.
+`tool_search`는 `[providers.<name>]` 아래에서 기본적으로 `true`입니다. 네이티브 형태는 2026-07-13에
+gpt-5.6에서 ChatGPT/Codex 백엔드를 대상으로 라이브 프로브로 검증되었으며, `tool_search`는 gpt-5.4+
+모델에 대해 공개 OpenAI Responses API 문서에도 실려 있습니다. 네이티브 경로를 지원하는 프로바이더에서
+텍스트 shim으로 되돌리려면 `tool_search = false`로 설정하세요:
+
+```toml
+[providers.codex]
+tool_search = false
+```
 
 ## 문제 해결
 
@@ -362,6 +366,6 @@ tool_search = true
 | 컨텍스트 바가 과다 보고 / 조기 압축 | `CLAUDE_CODE_MAX_CONTEXT_TOKENS`를 설정하세요. 디스커버리 별칭은 이를 받을 수 없습니다 — 비-`claude-` id를 사용하세요. |
 | Grok 라우트에서 웹 검색 결과가 비어 있음 | xAI/Grok의 Responses API는 웹 검색을 지원하지 않아 shunt가 도구를 제거합니다. 웹 검색에는 `codex` 또는 `openai` 라우트를 사용하세요. |
 | 도구 검색이 동작하지 않음 / 매 턴 모든 도구 스키마가 전송됨 | `ENABLE_TOOL_SEARCH=true`를 설정하세요 — Claude Code는 퍼스트파티가 아닌 base URL 뒤에서 도구 검색을 기본적으로 비활성화합니다. shunt는 `tool_reference` 블록을 전달하며 미뤄 둔 스키마를 필요할 때 드러냅니다. |
-| 도구 검색이 지연만 할 뿐 컨텍스트를 실제로 회수하지 않음 | 네이티브 프로토콜을 위해 `[providers.codex]`에 `tool_search = true`를 설정하세요 — 스톡 OpenAI/ChatGPT-Codex 계열과 gpt-5.4 이상 모델이 필요합니다. 위의 [도구 검색 → 옵트인 네이티브 프로토콜](#옵트인-네이티브-프로토콜)을 참고하세요. |
+| 도구 검색이 지연만 할 뿐 컨텍스트를 실제로 회수하지 않음(여전히 shim의 캐시 무효화 비용을 지불 중) | 계열/모델 게이트를 확인하세요 — 네이티브 `tool_search`는 스톡 OpenAI/ChatGPT-Codex 계열과 gpt-5.4 이상 모델이 필요하며, 지원되지 않는 조합은 조용히 shim으로 폴백합니다. 두 게이트를 모두 통과했다면 `tool_search = false`를 설정하지 않았는지 확인하세요 — 위의 [도구 검색 → 네이티브 프로토콜](#네이티브-프로토콜)을 참고하세요. |
 
 더 많은 내용은 전체 [문제 해결](/ko/reference/troubleshooting/) 레퍼런스를 참고하세요.

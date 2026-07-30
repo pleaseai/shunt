@@ -1133,17 +1133,19 @@ pub struct ProviderConfig {
     /// error event). Off by default — HTTP stays the default transport.
     #[serde(default)]
     pub websocket: bool,
-    /// Opt in to the OpenAI Responses native client-executed `tool_search`
-    /// protocol for Claude Code's tool search (issue #82). Off by default: when
-    /// off, shunt keeps the #43 text-based progressive-reveal compatibility shim
-    /// (ToolSearch forwarded as a plain function, `tool_reference` revealed as
-    /// schema text). When on — and the upstream flavor and model support it (see
-    /// [`Config::native_tool_search`]) — shunt maps Claude Code's `ToolSearch` to
-    /// the native `tool_search`/`tool_search_call`/`tool_search_output` items so
-    /// tool-loading semantics and cache behavior are preserved. Gated behind this
-    /// flag until a live probe confirms a given backend accepts the shapes shunt
-    /// emits; unsupported flavors/models fall back to the shim regardless.
-    #[serde(default)]
+    /// Use the OpenAI Responses native client-executed `tool_search` protocol
+    /// for Claude Code's tool search (issue #82) instead of the #43 text-based
+    /// progressive-reveal shim. On by default: the shim must add each revealed
+    /// deferred tool to the `tools` array, which is part of the cacheable
+    /// prompt prefix, so every reveal invalidates the cached prefix and forces
+    /// a full re-process; native keeps deferred tools out of `tools` and
+    /// appends a `tool_search_output` item instead, leaving the prefix stable
+    /// (issue #286). Only honored where the upstream flavor and model support
+    /// it (see [`Config::native_tool_search`]) — stock OpenAI and ChatGPT-Codex
+    /// on gpt-5.4+ take the native path; xAI/Grok and older models keep the
+    /// shim regardless. Set `tool_search = false` to force the shim back on
+    /// for a provider that does support it.
+    #[serde(default = "default_true")]
     pub tool_search: bool,
     /// Bounded upstream retry/backoff for transient failures (issue #48).
     /// Applies to this provider's single-credential upstream calls (the
@@ -1801,7 +1803,7 @@ impl ProviderConfig {
             accounts: Vec::new(),
             account_scope: Vec::new(),
             websocket: false,
-            tool_search: false,
+            tool_search: true,
             retry: RetryConfig::default(),
         }
     }
@@ -1821,7 +1823,7 @@ impl ProviderConfig {
             accounts: Vec::new(),
             account_scope: Vec::new(),
             websocket: false,
-            tool_search: false,
+            tool_search: true,
             retry: RetryConfig::default(),
         }
     }
@@ -1841,7 +1843,7 @@ impl ProviderConfig {
             accounts: Vec::new(),
             account_scope: Vec::new(),
             websocket: false,
-            tool_search: false,
+            tool_search: true,
             retry: RetryConfig::default(),
         }
     }
@@ -1883,7 +1885,7 @@ impl Default for Config {
                     accounts: Vec::new(),
                     account_scope: Vec::new(),
                     websocket: false,
-                    tool_search: false,
+                    tool_search: true,
                     retry: RetryConfig::default(),
                 },
             ),
@@ -1939,7 +1941,7 @@ impl Default for Config {
                     accounts: Vec::new(),
                     account_scope: Vec::new(),
                     websocket: false,
-                    tool_search: false,
+                    tool_search: true,
                     retry: RetryConfig::default(),
                 },
             ),
@@ -2788,11 +2790,12 @@ impl Config {
 
     /// Whether `provider`'s Responses translation should use the native
     /// client-executed `tool_search` protocol (issue #82) for a request routed
-    /// to `model`, rather than the #43 text-based progressive-reveal shim.
-    /// Requires all three: the provider opted in (`tool_search = true`), the
-    /// upstream speaks a flavor known to accept it (stock OpenAI or the
-    /// ChatGPT/Codex backend — xAI/Grok keep the shim), and the model advertises
-    /// support (see [`model_supports_tool_search`]).
+    /// to `model`, rather than the #43 text-based progressive-reveal shim. On
+    /// by default (issue #286); requires both: the upstream speaks a flavor
+    /// known to accept it (stock OpenAI or the ChatGPT/Codex backend — xAI/Grok
+    /// keep the shim), and the model advertises support (see
+    /// [`model_supports_tool_search`]). Set `tool_search = false` on the
+    /// provider to opt back out to the shim.
     pub fn native_tool_search(&self, provider: &str, model: &str) -> bool {
         self.provider(provider)
             .is_some_and(|config| config.tool_search)
@@ -4721,16 +4724,9 @@ id = "claude-sonnet-5"
     }
 
     #[test]
-    fn native_tool_search_requires_opt_in_flavor_and_model() {
-        let mut config = Config::default();
-        // Off by default, even for a supported flavor + model.
-        assert!(!config.native_tool_search("codex", "gpt-5.6-sol"));
-
-        config.providers.get_mut("codex").unwrap().tool_search = true;
-        config.providers.get_mut("openai").unwrap().tool_search = true;
-        config.providers.get_mut("xai").unwrap().tool_search = true;
-
-        // Opted in + supported flavor (Chatgpt / OpenAi) + supported model.
+    fn native_tool_search_defaults_on_and_gates_on_flavor_and_model() {
+        let config = Config::default();
+        // On by default for a supported flavor + model — no flag needs setting.
         assert!(config.native_tool_search("codex", "gpt-5.6-sol"));
         assert!(config.native_tool_search("openai", "gpt-5.4"));
         // A trailing non-digit still counts as the documented minor.
@@ -4743,10 +4739,22 @@ id = "claude-sonnet-5"
 
         // Unsupported model keeps the #43 shim (gpt-5.2 and below).
         assert!(!config.native_tool_search("codex", "gpt-5.2-codex"));
-        // Unsupported flavor keeps the shim (xAI), even opted in.
+        // Unsupported flavor keeps the shim (xAI), even though `tool_search`
+        // defaults to on — the flavor gate blocks it regardless.
         assert!(!config.native_tool_search("xai", "gpt-5.6-sol"));
         // Unknown provider is never native.
         assert!(!config.native_tool_search("nope", "gpt-5.6-sol"));
+    }
+
+    #[test]
+    fn native_tool_search_false_forces_shim_opt_out() {
+        let mut config = Config::default();
+        // Explicit opt-out reaches even a supported flavor + model.
+        config.providers.get_mut("codex").unwrap().tool_search = false;
+        config.providers.get_mut("openai").unwrap().tool_search = false;
+
+        assert!(!config.native_tool_search("codex", "gpt-5.6-sol"));
+        assert!(!config.native_tool_search("openai", "gpt-5.4"));
     }
 
     #[test]
@@ -5180,6 +5188,76 @@ provider = "kimi"
         assert_eq!(codex.base_url, "https://chatgpt.com/backend-api");
         assert_eq!(codex.auth, AuthMode::ChatgptOauth);
         assert_eq!(codex.effort.as_deref(), Some("high"));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // Default-propagation coverage for issue #286: `Config::load` seeds figment
+    // with `Serialized::defaults(Self::default())`, so a mismatch between the
+    // serde `#[serde(default = "default_true")]` on `ProviderConfig::tool_search`
+    // and a stray literal in `Config::default()` would only surface here, not
+    // in a unit test that builds `ProviderConfig`/`Config` directly in Rust.
+    #[test]
+    fn legacy_provider_tool_search_defaults_on() {
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-tool-search-default-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shunt.toml");
+        std::fs::write(
+            &path,
+            r#"
+[providers.custom]
+kind = "responses"
+base_url = "https://api.custom-openai.example/v1"
+auth = "api_key"
+api_key_env = "CUSTOM_API_KEY"
+"#,
+        )
+        .unwrap();
+
+        let config = Config::load(Some(&path)).unwrap();
+
+        // No `tool_search` key declared for a brand-new, user-declared
+        // provider — native tool search must still come up on for a
+        // supported model.
+        assert!(config.native_tool_search("custom", "gpt-5.6-sol"));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn legacy_provider_tool_search_false_opts_out() {
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-tool-search-opt-out-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shunt.toml");
+        std::fs::write(
+            &path,
+            r#"
+[providers.custom]
+kind = "responses"
+base_url = "https://api.custom-openai.example/v1"
+auth = "api_key"
+api_key_env = "CUSTOM_API_KEY"
+tool_search = false
+"#,
+        )
+        .unwrap();
+
+        let config = Config::load(Some(&path)).unwrap();
+
+        // Explicit opt-out reaches a user-declared provider too.
+        assert!(!config.native_tool_search("custom", "gpt-5.6-sol"));
 
         let _ = std::fs::remove_dir_all(dir);
     }

@@ -47,7 +47,7 @@ Legend: ● full · ◐ partial / workaround · ○ none · — n/a by design
 | ChatGPT/Codex **subscription** (OAuth) backend | ● | ●⁴ | ● | rare | ○ |
 | Codex **WebSocket** Responses transport | ● | ● | ● | ○ | ○ |
 | Upload trimming (`previous_response_id` continuation) **on the translation path** | ● | ● | ○ (passthrough only) | ○ | ○ |
-| tool-search / `defer_loading` / `tool_reference` handling | ◐ (shim: works, no ctx savings; native opt-in⁸) | ○⁵ | ◐ (upstream) / ● (fork) | ○ | ○ |
+| tool-search / `defer_loading` / `tool_reference` handling | ◐ (native by default on stock OpenAI/Codex, gpt-5.4+⁸; shim elsewhere) | ○⁵ | ◐ (upstream) / ● (fork) | ○ | ○ |
 | Reasoning round-trip to Claude Code `thinking` | ● (encrypted) | ◐ (Kimi/Grok; **Codex dropped**) | ◐ | ○ | ◐ |
 | Multi-account load balancing / failover | ◐⁷ | ○ | ● | some | ● |
 | Backend breadth | 6 providers¹ | 4 subs⁶ | 11 backends² | varies | 100–1600+ |
@@ -76,9 +76,11 @@ handling exists (zero matches for `defer_loading` / `tool_reference` / `tool_sea
 (`src/providers/codex/translate/request.rs:476-494`), so `defer_loading:true` is
 silently dropped — no 400, but no context saved; a `tool_reference` block in a
 ToolSearch result renders as `[unsupported content block omitted: tool_reference]`
-(`request.rs:836-842`) rather than shunt's clean `"Loaded tool: X"`. Hence ○ (vs
-shunt's ◐): force-enabling `ENABLE_TOOL_SEARCH` against raine/ccp degrades the
-discovery-loop result to a placeholder. By default Claude Code's own gate keeps tool
+(`request.rs:836-842`) rather than the full schema shunt renders for a known
+reference (`src/model/responses_request.rs:623-643`) — shunt's `"Loaded tool: X"`
+is only the fallback for an unrecognized reference. Hence ○ (vs shunt's ◐):
+force-enabling `ENABLE_TOOL_SEARCH` against raine/ccp degrades the discovery-loop
+result to a placeholder. By default Claude Code's own gate keeps tool
 search off behind a non-first-party base URL, so this stays latent.
 ⁶ raine/ccp subscription backends: Codex (ChatGPT Plus/Pro), Kimi (kimi.com), Grok
 (grok.com), Cursor Agent — all via subscription OAuth.
@@ -93,15 +95,20 @@ issue #195 — session-sticky/round-robin selection, cooldowns, forced refresh a
 rotation and burn-rate-aware ordering fed by the backend's `x-codex-*` 5h/7d
 windows. This is quota-aware scheduling and quota visibility, not per-request
 token usage or cost accounting.
-⁸ **[#82]** adds an opt-in, per-provider `tool_search` flag (`src/config.rs:326-337,1198-1211`)
+⁸ **[#82]** adds a per-provider `tool_search` flag (`src/config.rs:1136-1149,2792-2805`)
 that maps Claude Code's tool search onto the OpenAI Responses API's own native,
 client-executed `tool_search` protocol — `ToolSearch` → `tool_search`, its `tool_use` →
 `tool_search_call`, and `tool_reference` → a `tool_search_output` item carrying the loaded
 tools' full schemas as structured JSON (`src/model/responses_request.rs`) — instead of folding
-schema into text. Off by default: it only applies for a stock OpenAI or ChatGPT/Codex Responses
-flavor routing to a gpt-5.4+ model, and is gated behind the flag until a live probe confirms a
-given backend accepts the shapes shunt emits. xAI/Grok routes and gpt-5.2-and-below models keep
-the #43 shim regardless of the flag.
+schema into text. **On by default (issue #286)**: the shim invalidates the cached prompt
+prefix on every reveal (it must add each revealed tool back into the `tools` array, which
+shunt re-derives from client history each turn), so the native, append-only-`input` path is
+now the default wherever it applies — a stock OpenAI or ChatGPT/Codex Responses flavor
+routing to a gpt-5.4+ model. The native shapes were live-probe verified against the
+ChatGPT/Codex backend on gpt-5.6 (2026-07-13); `tool_search` is documented on the public
+OpenAI Responses API for gpt-5.4+ models. xAI/Grok routes and gpt-5.2-and-below models keep
+the #43 shim regardless — silently, never an error. Set `tool_search = false` to opt back
+into the shim on a provider that does support the native path.
 
 ⁹ **[#77]** adds an opt-in `[server.admin]` browser surface, registered only when the
 `[server.admin]` table is present (`src/server.rs:117-118`, `src/admin/mod.rs:87-103`). It
@@ -203,17 +210,21 @@ toward being a fleet gateway and warrant a conscious decision first.
 
 ### In-scope
 
-- **A. tool-search context savings (already tracked: [#43]).** shunt renders
-  `tool_reference` as name-only `"Loaded tool: X"` text and forwards *all* deferred
-  tool schemas upfront (`src/model/responses_request.rs:393-403,475-508`) — the loop
-  works but reclaims zero context by default. Port the server-side emulation (filter
-  deferred+unloaded tools, inject full schema on `tool_reference`) — reference implementation:
-  CLIProxyAPI PR #1892 (`Adamcf123/CLIProxyAPI@main`). **Partially addressed by [#82]**:
-  an opt-in `tool_search = true` per-provider flag now maps tool search onto the Responses
-  API's native, client-executed `tool_search` protocol instead of the text shim, for a stock
-  OpenAI or ChatGPT/Codex provider routing to a gpt-5.4+ model (see footnote 8 above). It's
-  off by default pending a live probe of backend acceptance, so the shim (and the zero-savings
-  gap for xAI/Grok and older models) remains the baseline until operators opt in.
+- **A. tool-search context savings (already tracked: [#43]).** **Largely addressed
+  by [#82]/[#286]**: a per-provider `tool_search` flag, on by default, now maps tool
+  search onto the Responses API's native, client-executed `tool_search` protocol
+  instead of the text shim, for a stock OpenAI or ChatGPT/Codex provider routing to
+  a gpt-5.4+ model (see footnote 8 above). The remaining gap is the flavors/models
+  that don't qualify: xAI/Grok routes and gpt-5.2-and-below models still fall back
+  to the shim, which withholds an unloaded deferred tool from the `tools` array
+  (`src/model/responses_request.rs:791-797`) — so it does reclaim context for tools
+  never revealed — but once Claude Code reveals a tool, the shim both renders its
+  full schema as `tool_reference` text (`:623-643`) *and* re-adds the tool to
+  `tools`, so each reveal re-sends the schema and invalidates the cached prompt
+  prefix from that point on. The Responses API only lets the model call a tool it
+  can see in `tools`, so this double-send is unavoidable without the native protocol
+  — the residual gap closes only as xAI/Grok and older OpenAI models gain their own
+  `tool_search`-equivalent support upstream.
 
 - **B. Codex WS: live-probe the continuation normalization (already tracked: [#45]).** **Done (2026-07-13).**
   Reasoning/`function_call` normalization was schema-validated against 3 sources; a live probe over the
@@ -296,13 +307,15 @@ ChatGPT/Codex pool with the same proactive-plus-reactive machinery fed by the
 backend's `x-codex-*` rate-limit headers (issue #195); deliberate fill-first
 ordering across accounts is the remaining gap (§6, items G–H).
 The highest-value in-scope work is finishing the tool-search
-context savings ([#43]) — now partly addressed by an opt-in native `tool_search` path on
-Codex/OpenAI ([#82]). The Codex WS transport's pre-first-event HTTP fallback gap
-has since been closed ([#46]); its continuation-normalization live-probe ([#45])
-remains open.
+context savings ([#43]) — largely addressed by the now-default native `tool_search` path
+on Codex/OpenAI ([#82], [#286]); the residual gap is xAI/Grok routes and gpt-5.2-and-below
+models, which still pay the shim's per-reveal cache-invalidation cost (item A above).
+The Codex WS transport's pre-first-event HTTP fallback gap has since been closed
+([#46]); its continuation-normalization live-probe ([#45]) remains open.
 
 [#43]: https://github.com/pleaseai/shunt/issues/43
 [#82]: https://github.com/pleaseai/shunt/issues/82
+[#286]: https://github.com/pleaseai/shunt/issues/286
 [#45]: https://github.com/pleaseai/shunt/issues/45
 [#46]: https://github.com/pleaseai/shunt/issues/46
 [#47]: https://github.com/pleaseai/shunt/issues/47

@@ -285,6 +285,43 @@ first = "gpt-openai"
     assert_eq!(config.models[0].upstream_model.as_ref().unwrap().len(), 2);
 }
 
+// Default-propagation coverage for issue #286: an `[[upstreams]]` entry goes
+// through `normalize` (see `super::normalize`), which builds a fresh
+// `ProviderConfig` from `UpstreamConfig::tool_search` rather than starting
+// from `Config::default()` — a separate code path from `[providers.*]`, so it
+// needs its own default/opt-out coverage.
+#[test]
+fn upstream_preset_tool_search_defaults_on() {
+    let file = TempConfig::new(
+        r#"
+[server]
+default_provider = "codex-upstream"
+[[upstreams]]
+name = "codex-upstream"
+provider = "codex"
+"#,
+    );
+    let config = load(&file).unwrap();
+    // No `tool_search` key declared on the upstream entry.
+    assert!(config.native_tool_search("codex-upstream", "gpt-5.6-sol"));
+}
+
+#[test]
+fn upstream_preset_tool_search_false_opts_out() {
+    let file = TempConfig::new(
+        r#"
+[server]
+default_provider = "codex-upstream"
+[[upstreams]]
+name = "codex-upstream"
+provider = "codex"
+tool_search = false
+"#,
+    );
+    let config = load(&file).unwrap();
+    assert!(!config.native_tool_search("codex-upstream", "gpt-5.6-sol"));
+}
+
 #[test]
 fn ordered_provider_env_override_addresses_declared_name() {
     let file = TempConfig::new(

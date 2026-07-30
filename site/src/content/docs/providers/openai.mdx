@@ -96,10 +96,10 @@ The Responses translation supports a per-provider or per-route reasoning-effort 
 working. Both are shared with the other Responses providers and documented in
 [Effort & Context](/guides/effort-and-context/).
 
-**Tool search.** With Claude Code's `ENABLE_TOOL_SEARCH=true`, shunt emulates deferred tool
-discovery on the Responses path via a text shim; setting `tool_search = true` on the provider
-upgrades it to the Responses API's native client-executed `tool_search` protocol on GPT-5.4+
-models. See [Tool search](/guides/codex/#tool-search).
+**Tool search.** With Claude Code's `ENABLE_TOOL_SEARCH=true`, shunt maps deferred tool discovery on
+the Responses path onto the native client-executed `tool_search` protocol by default, on GPT-5.4+
+models; set `tool_search = false` on the provider to fall back to the text shim instead. See [Tool
+search](/guides/codex/#tool-search).
 
 ## Verify
 
