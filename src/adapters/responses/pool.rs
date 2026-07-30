@@ -15,9 +15,10 @@ use crate::{
     server::AppState,
 };
 
+use super::body::{prepare_body, PreparedBody};
 use super::context::{ForwardOptions, PoolForward, RelayOptions};
 use super::error::{mapped_upstream_error, own_error, transport_error};
-use super::http::{http_send, json_response, prepare_body, stream_response, PreparedBody};
+use super::http::{http_send, json_response, stream_response};
 use super::websocket::forward_websocket;
 
 /// Drive a Responses turn over the Codex/ChatGPT OAuth account pool (M10),
