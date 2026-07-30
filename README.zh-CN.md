@@ -32,6 +32,17 @@ cargo install shunt-gateway
 
 预构建二进制文件(macOS/Linux,arm64/x64)附于每个 [GitHub release](https://github.com/pleaseai/shunt/releases)。预构建二进制和从源码构建的说明见 [安装](https://shunt-docs.pages.dev/getting-started/installation/)。
 
+### 作为服务运行 (macOS/Homebrew)
+
+```bash
+brew services start shunt
+```
+
+日志会写入 `$(brew --prefix)/var/log/shunt.log`。`brew services stop` 会发送 `SIGTERM`,
+shunt 会先处理完正在进行的请求再退出;之后修改配置文件不需要重启 ——
+会自动[热重载](docs/config-reload.md)。详见 [Running as a
+service](docs/running.md#run-as-a-background-service-homebrew)。
+
 ## 快速开始
 
 ```toml

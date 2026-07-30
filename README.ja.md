@@ -32,6 +32,17 @@ cargo install shunt-gateway
 
 ビルド済みバイナリ（macOS/Linux、arm64/x64）は各 [GitHub リリース](https://github.com/pleaseai/shunt/releases)に添付されています。ビルド済みバイナリおよびソースからのインストール手順は [Installation](https://shunt-docs.pages.dev/getting-started/installation/) を参照してください。
 
+### サービスとして実行する (macOS/Homebrew)
+
+```bash
+brew services start shunt
+```
+
+ログは `$(brew --prefix)/var/log/shunt.log` に出力されます。`brew services stop` は `SIGTERM` を送信し、
+shunt は処理中のリクエストを完了させてから終了します。その後に設定ファイルを編集しても再起動は不要です —
+自動的に[ホットリロード](docs/config-reload.md)されます。詳細: [Running as a
+service](docs/running.md#run-as-a-background-service-homebrew)。
+
 ## クイックスタート
 
 ```toml

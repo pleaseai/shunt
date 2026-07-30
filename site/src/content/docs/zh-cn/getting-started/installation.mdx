@@ -19,6 +19,18 @@ description: 通过 Homebrew、cargo、预构建二进制文件或从源码安�
 brew install pleaseai/tap/shunt
 ```
 
+### 作为后台服务运行
+
+```bash
+brew services start shunt
+```
+
+日志会写入 `$(brew --prefix)/var/log/shunt.log`。`brew services stop` 会发送 `SIGTERM`,
+shunt 会先耗尽正在处理的请求再退出。修改配置文件后不需要重启 —— shunt 会自动
+[热重载](https://github.com/pleaseai/shunt/blob/main/docs/config-reload.md)该文件。
+更多细节(如配置查找路径)参见 [Running as a
+service](https://github.com/pleaseai/shunt/blob/main/docs/running.md#run-as-a-background-service-homebrew)。
+
 ## Cargo
 
 crate 以 `shunt-gateway` 名称发布(二进制文件仍是 `shunt`):

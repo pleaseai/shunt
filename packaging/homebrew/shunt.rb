@@ -43,6 +43,26 @@ class Shunt < Formula
     end
   end
 
+  service do
+    run [opt_bin/"shunt", "run"]
+    keep_alive true
+    log_path var/"log/shunt.log"
+    error_log_path var/"log/shunt.log"
+    environment_variables PATH: std_service_path_env
+  end
+
+  def caveats
+    <<~EOS
+      shunt looks for a config file at "#{etc}/shunt.toml" (or .yaml/.yml) when run as
+      a service. Run `shunt init --root #{etc}` to create one, or place your own there.
+
+      Manage the background service with:
+        brew services start shunt
+        brew services stop shunt   # sends SIGTERM; shunt drains in-flight requests
+      Logs: #{var}/log/shunt.log
+    EOS
+  end
+
   test do
     assert_match "shunt", shell_output("#{bin}/shunt --help")
   end

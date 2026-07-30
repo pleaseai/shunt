@@ -33,6 +33,17 @@ cargo install shunt-gateway
 
 Prebuilt binaries (macOS/Linux, arm64/x64) are attached to each [GitHub release](https://github.com/pleaseai/shunt/releases). See [Installation](https://shunt-docs.pages.dev/getting-started/installation/) for prebuilt-binary and from-source instructions.
 
+### Run as a service (macOS/Homebrew)
+
+```bash
+brew services start shunt
+```
+
+Logs go to `$(brew --prefix)/var/log/shunt.log`. `brew services stop` sends `SIGTERM`, and shunt
+drains in-flight requests before exiting; editing the config file afterwards doesn't need a
+restart — it [hot-reloads](docs/config-reload.md) automatically. Details: [Running as a
+service](docs/running.md#run-as-a-background-service-homebrew).
+
 ## Quickstart
 
 ```toml
