@@ -498,19 +498,28 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
 /// in-flight requests instead of dropping them.
 ///
 /// The drain has no deadline (an open SSE stream holds the process for as long
-/// as its client keeps reading) and tokio leaves both handlers installed once
-/// the first signal fires, so a second signal would otherwise be swallowed.
-/// Before returning, this arms a watcher that turns the next signal into an
-/// immediate exit, preserving the operator's usual "press ctrl-c again"
-/// escape hatch.
+/// as its client keeps reading), so before returning this arms a watcher that
+/// turns a second signal into an immediate exit, preserving the operator's
+/// usual "press ctrl-c again" escape hatch. The [`SignalListener`]s are
+/// created once, here, and reused for both waits by moving them into the
+/// watcher: tokio delivers each signal through a process-wide channel with no
+/// queue, so a signal landing between the first wait's receiver being dropped
+/// and a fresh one subscribing for the second wait has no live receiver and
+/// is silently discarded, not buffered for the next subscriber. Reusing one
+/// listener keeps the subscription continuously live and consumes signals
+/// sequentially, so this closes that gap without double-counting the signal
+/// that ends the first wait.
 async fn shutdown_signal() {
-    let signal = select_shutdown_trigger(wait_for_sigterm(), wait_for_ctrl_c()).await;
+    let mut sigterm = SignalListener::sigterm();
+    let mut ctrl_c = SignalListener::ctrl_c();
+
+    let signal = select_shutdown_trigger(sigterm.recv(), ctrl_c.recv()).await;
     tracing::info!(
         signal,
         "shutdown signal received; draining in-flight requests"
     );
     arm_force_exit(
-        select_shutdown_trigger(wait_for_sigterm(), wait_for_ctrl_c()),
+        async move { select_shutdown_trigger(sigterm.recv(), ctrl_c.recv()).await },
         |signal| force_exit(signal),
     );
 }
@@ -556,45 +565,92 @@ async fn select_shutdown_trigger(
     }
 }
 
-/// Resolves on SIGTERM. Unix-only signal, so non-unix targets pend forever
-/// here and rely on [`wait_for_ctrl_c`] alone. A handler-install failure (rare;
-/// e.g. exhausted signal slots) is logged and then pends rather than aborting
-/// startup, mirroring the SIGHUP setup in `reload::spawn_sighup_task`; the
-/// signal keeps its default disposition, so it kills the process outright
-/// instead of draining.
-async fn wait_for_sigterm() {
+/// A signal listener whose `recv` can be awaited more than once, so
+/// [`shutdown_signal`] can reuse a single subscription across its initial
+/// wait and the force-exit watcher it arms afterward instead of recreating
+/// one per wait. See that function's doc comment for why the reuse matters:
+/// recreating the subscription opens a window where an arriving signal has
+/// no live receiver and is dropped.
+///
+/// `tokio::signal::ctrl_c()` isn't used here for the ctrl-c case because it
+/// drops its internal listener after one `recv`, making it one-shot; the
+/// lower-level `signal`/`windows::ctrl_c` constructors return a listener that
+/// keeps working across repeated `recv` calls.
+enum SignalListener {
     #[cfg(unix)]
-    {
-        use tokio::signal::unix::{signal, SignalKind};
-
-        match signal(SignalKind::terminate()) {
-            Ok(mut signal) => {
-                signal.recv().await;
-            }
-            Err(error) => {
-                tracing::warn!(
-                    %error,
-                    "failed to install SIGTERM handler; SIGTERM will terminate the process immediately without draining"
-                );
-                std::future::pending::<()>().await;
-            }
-        }
-    }
-    #[cfg(not(unix))]
-    std::future::pending::<()>().await;
+    Unix(tokio::signal::unix::Signal),
+    #[cfg(windows)]
+    Windows(tokio::signal::windows::CtrlC),
+    /// Handler install failed, or (for SIGTERM) the target isn't Unix: pends
+    /// forever, matching the previous per-wait fallback.
+    Pending,
 }
 
-/// Resolves on ctrl-c (SIGINT on Unix, `CTRL_C_EVENT` on Windows). A
-/// handler-install failure degrades like [`wait_for_sigterm`]'s: log and pend,
-/// so the other trigger still works instead of refusing to start — but ctrl-c
-/// itself then terminates the process outright instead of draining.
-async fn wait_for_ctrl_c() {
-    if let Err(error) = tokio::signal::ctrl_c().await {
-        tracing::warn!(
-            %error,
-            "failed to install ctrl-c handler; ctrl-c will terminate the process immediately without draining"
-        );
-        std::future::pending::<()>().await;
+impl SignalListener {
+    /// SIGTERM. Unix-only signal, so non-unix targets pend forever here and
+    /// rely on [`Self::ctrl_c`] alone. A handler-install failure (rare; e.g.
+    /// exhausted signal slots) is logged and then pends rather than aborting
+    /// startup, mirroring the SIGHUP setup in `reload::spawn_sighup_task`;
+    /// the signal keeps its default disposition, so it kills the process
+    /// outright instead of draining.
+    fn sigterm() -> Self {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+
+            match signal(SignalKind::terminate()) {
+                Ok(signal) => return Self::Unix(signal),
+                Err(error) => tracing::warn!(
+                    %error,
+                    "failed to install SIGTERM handler; SIGTERM will terminate the process immediately without draining"
+                ),
+            }
+        }
+        Self::Pending
+    }
+
+    /// ctrl-c (SIGINT on Unix, `CTRL_C_EVENT` on Windows). A handler-install
+    /// failure degrades like [`Self::sigterm`]'s: log and pend, so the other
+    /// trigger still works instead of refusing to start — but ctrl-c itself
+    /// then terminates the process outright instead of draining.
+    fn ctrl_c() -> Self {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+
+            match signal(SignalKind::interrupt()) {
+                Ok(signal) => return Self::Unix(signal),
+                Err(error) => tracing::warn!(
+                    %error,
+                    "failed to install ctrl-c handler; ctrl-c will terminate the process immediately without draining"
+                ),
+            }
+        }
+        #[cfg(windows)]
+        {
+            match tokio::signal::windows::ctrl_c() {
+                Ok(ctrl_c) => return Self::Windows(ctrl_c),
+                Err(error) => tracing::warn!(
+                    %error,
+                    "failed to install ctrl-c handler; ctrl-c will terminate the process immediately without draining"
+                ),
+            }
+        }
+        Self::Pending
+    }
+
+    async fn recv(&mut self) {
+        match self {
+            #[cfg(unix)]
+            Self::Unix(signal) => {
+                signal.recv().await;
+            }
+            #[cfg(windows)]
+            Self::Windows(ctrl_c) => {
+                ctrl_c.recv().await;
+            }
+            Self::Pending => std::future::pending::<()>().await,
+        }
     }
 }
 
