@@ -2258,7 +2258,10 @@ impl Config {
     /// provider must not start failing.
     fn warn_service_tier_withheld_for_flavor(&self) {
         for (name, provider) in &self.providers {
-            if provider.service_tier.is_some()
+            if provider
+                .service_tier
+                .as_deref()
+                .is_some_and(|v| v != "default")
                 && matches!(
                     self.responses_flavor(name),
                     ResponsesFlavor::Xai | ResponsesFlavor::Grok
@@ -2272,7 +2275,10 @@ impl Config {
             }
         }
         for route in &self.routes {
-            if route.service_tier.is_some()
+            if route
+                .service_tier
+                .as_deref()
+                .is_some_and(|v| v != "default")
                 && matches!(
                     self.responses_flavor(&route.provider),
                     ResponsesFlavor::Xai | ResponsesFlavor::Grok
@@ -4782,6 +4788,30 @@ id = "claude-sonnet-5"
         });
         let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
 
+        assert!(!logs.contains("service_tier is configured but withheld"));
+    }
+
+    #[test]
+    fn validate_does_not_warn_when_service_tier_is_default_sentinel_for_xai_flavor() {
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let writer_output = Arc::clone(&output);
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || BufferWriter {
+                buffer: Arc::clone(&writer_output),
+            })
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        let mut config = Config::default();
+        config.providers.get_mut("xai").unwrap().service_tier = Some("default".to_string());
+
+        let config = tracing::subscriber::with_default(subscriber, || config.validate().unwrap());
+        assert_eq!(config.responses_flavor("xai"), ResponsesFlavor::Xai);
+        let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+
+        // "default" is a client-only sentinel stripped unconditionally at wire
+        // emission on every flavor, so it is never actually withheld -- warning
+        // here would be misleading.
         assert!(!logs.contains("service_tier is configured but withheld"));
     }
 

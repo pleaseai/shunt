@@ -122,13 +122,20 @@ struct TempConfig(std::path::PathBuf);
 
 impl TempConfig {
     fn new(raw: &str) -> Self {
+        // pid+nanos alone can collide: tests running concurrently on the same
+        // core can observe the same SystemTime::now() tick, and the filename
+        // is otherwise identical. A per-process monotonic counter makes each
+        // call unique regardless of timer resolution.
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "shunt-upstreams-test-{}-{}.toml",
+            "shunt-upstreams-test-{}-{}-{}.toml",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            seq
         ));
         std::fs::write(&path, raw).unwrap();
         Self(path)
