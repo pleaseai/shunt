@@ -8,9 +8,13 @@
 //!
 //! * outbound — [`compress_request_body`] prepares the body shunt sends upstream
 //!   on the ChatGPT/Codex flavor (see `Config::responses_request_compression`).
-//! * inbound — [`decode_zstd_within`] decodes a compressed body the Codex CLI
-//!   sent to `[server.codex_endpoint]`, so the `model` metrics/log label can be
-//!   read from it. The passthrough still forwards the original bytes verbatim.
+//! * inbound — [`decode_zstd_and_parse`] decodes a compressed body the Codex CLI
+//!   sent to `[server.codex_endpoint]` and extracts a caller-defined label from
+//!   it in the same bounded blocking work, so neither the decoded body nor a
+//!   parse over it ever crosses back to the async executor on its own. The
+//!   passthrough still forwards the original bytes verbatim.
+//!   [`decode_zstd_within`] is the same decode without the fused parse — kept
+//!   for the outbound round-trip tests, which just need the decoded bytes back.
 //!
 //! Compression is CPU-bound at every size, so [`compress_request_body`] always
 //! runs it on Tokio's blocking pool under bounded admission rather than on the
@@ -37,6 +41,18 @@ use bytes::Bytes;
 /// gzip-level ratios at several hundred MB/s.
 const ZSTD_LEVEL: i32 = 3;
 
+/// Typical zstd-3 expansion ratio for Responses-request JSON: a live probe on
+/// this path measured 2988 -> 251 bytes, ~12x (the same measurement
+/// [`MAX_DECODE_RATIO`]'s headroom is judged against). This is not itself a
+/// safety bound — [`MAX_DECODE_RATIO`] is — it only keeps
+/// [`INLINE_ZSTD_INPUT_BYTES`] honest against [`INLINE_ZSTD_OUTPUT_BYTES`] (see
+/// the assertion below) so the two constants cannot silently drift back out of
+/// alignment the way they did before this fix (issue #291 follow-up: a 4 KiB
+/// pre-filter against a 32 KiB output cap meant every compressed body between
+/// ~2.7 and 4 KiB was admitted to the inline probe only to fail it, burning
+/// ~80 µs on the async worker before redoing the whole decode off-thread).
+const TYPICAL_ZSTD_RATIO: usize = 12;
+
 /// Compressed-size pre-filter for the body a **decode** may attempt inline
 /// (mirrors `adapters::cursor::connect::INLINE_GZIP_FRAME_BYTES`). Unlike
 /// compression, a compressed body's size does not bound its decoded size — see
@@ -44,7 +60,19 @@ const ZSTD_LEVEL: i32 = 3;
 /// a cheap early-out so an obviously large frame skips straight to the bounded
 /// probe's allocation. [`INLINE_ZSTD_OUTPUT_BYTES`] is the bound that actually
 /// keeps inline work small.
-pub(crate) const INLINE_ZSTD_INPUT_BYTES: usize = 4 * 1024;
+///
+/// Derived from [`INLINE_ZSTD_OUTPUT_BYTES`] and [`TYPICAL_ZSTD_RATIO`] rather
+/// than chosen independently: at the ratio, 2 KiB decodes to ~24 KiB, leaving
+/// margin inside the 32 KiB output cap, so a body admitted here has a
+/// realistic chance of actually fitting the inline probe instead of being
+/// doomed to fall through it. Kept as a plain literal for readability; the
+/// assertion below enforces the relationship at compile time.
+pub(crate) const INLINE_ZSTD_INPUT_BYTES: usize = 2 * 1024;
+
+const _: () = assert!(
+    INLINE_ZSTD_INPUT_BYTES * TYPICAL_ZSTD_RATIO <= INLINE_ZSTD_OUTPUT_BYTES,
+    "INLINE_ZSTD_INPUT_BYTES must stay small enough that a typical-ratio decode fits INLINE_ZSTD_OUTPUT_BYTES"
+);
 
 /// Maximum complete **decoded** output [`decode_zstd_within`] will accept
 /// inline; the bounded probe reads one byte past this to detect a larger body
@@ -60,10 +88,10 @@ pub(crate) const INLINE_ZSTD_OUTPUT_BYTES: usize = 32 * 1024;
 /// decode cap alone still lets a small compressed body cost an arbitrarily
 /// large multiple of its own size to decode (issue #291: 64 MiB of zeros
 /// compresses to ~2 KiB, a ~32,000x ratio). Real zstd-3 Responses JSON lands
-/// around 10x in practice (a live probe on this path measured 2988 -> 251
-/// bytes, ~12x); 64x is generous headroom for a legitimately redundant agentic
-/// history while still bounding worst-case decode work to a multiple of what
-/// the peer actually uploaded, rather than an absolute size unrelated to it.
+/// around [`TYPICAL_ZSTD_RATIO`] in practice; 64x is generous headroom for a
+/// legitimately redundant agentic history while still bounding worst-case
+/// decode work to a multiple of what the peer actually uploaded, rather than
+/// an absolute size unrelated to it.
 pub(crate) const MAX_DECODE_RATIO: usize = 64;
 
 /// Bodies smaller than this are sent uncompressed: at a few hundred bytes the
@@ -134,21 +162,43 @@ pub(crate) fn body_encoding(headers: &HeaderMap) -> BodyEncoding {
 /// [`MIN_COMPRESS_BYTES`] and is better sent as-is.
 ///
 /// Compression always runs on the blocking pool, at every size — there is no
-/// inline fast path. `zstd::stream::encode_all` builds a fresh level-3 encoder
-/// per call (a ~2 MiB window plus hash tables), and that setup dominates any
-/// body small enough to be an inline candidate. Measured medians from
-/// `measure_inline_zstd_budgets` (`cargo test --release -- --ignored --nocapture
-/// measure_inline_zstd_budgets`) on representative Responses-request JSON: 1 KiB
-/// ~94 µs, 2 KiB ~94 µs, 4 KiB ~99 µs, 8 KiB ~109 µs, 16 KiB ~138 µs, 32 KiB
-/// ~158 µs, 64 KiB ~233 µs, 128 KiB ~397 µs. 128x the bytes costs only ~4x the
-/// time — roughly 90 µs fixed plus ~2.4 µs/KiB (~420 MB/s marginal).
+/// inline fast path. The fixed cost below is a property of the one-shot
+/// `zstd::stream::encode_all` API this function uses, **not of zstd itself**:
+/// `encode_all` builds a fresh level-3 encoder (a ~2 MiB window plus hash
+/// tables) on every call, and that setup dominates any body small enough to be
+/// an inline candidate. `zstd::bulk::Compressor` reuses its context across
+/// calls instead, and measured (`measure_inline_zstd_budgets`, same harness,
+/// same sizes) at 1 KiB ~5.8 µs, 2 KiB ~7.8 µs, 4 KiB ~11.9 µs, 8 KiB
+/// ~20.4 µs, 16 KiB ~41.5 µs, 32 KiB ~69.3 µs, 64 KiB ~128.3 µs, 128 KiB
+/// ~227.9 µs — the ~90 µs fixed floor below is almost entirely context setup:
+/// a reused context brings the 1 KiB case down to ~6 µs, over an order of
+/// magnitude less. That was measured and **deliberately not adopted**, on
+/// cost/benefit rather than feasibility: admission here is already capped at
+/// 2–16 concurrent slots by [`compress_slots`], so a pooled context would need
+/// ~16 of them at most, which is affordable. The reason to skip it is that this
+/// runs *once per turn* against a multi-second LLM turn, so saving ~80 µs of
+/// blocking-pool CPU is immaterial end to end, and `Compressor` is not `Sync` —
+/// adopting it means introducing thread-local or pooled mutable state to save
+/// microseconds. Worth revisiting only if compression ever moves onto a
+/// per-chunk path, where the fixed cost would be paid repeatedly. The
+/// measurement is recorded here to correct the framing below: the fixed cost
+/// belongs to the one-shot API, not to zstd itself.
+///
+/// Measured medians from `measure_inline_zstd_budgets` (one-shot `encode_all`,
+/// `cargo test --release -- --ignored --nocapture measure_inline_zstd_budgets`)
+/// on representative Responses-request JSON: 1 KiB ~86.8 µs, 2 KiB ~86.0 µs,
+/// 4 KiB ~93.1 µs, 8 KiB ~115.1 µs, 16 KiB ~128.7 µs, 32 KiB ~190.9 µs, 64 KiB
+/// ~230.2 µs, 128 KiB ~428.5 µs. 128x the bytes costs only ~5x the time —
+/// roughly 85 µs fixed plus ~2.7 µs/KiB (~370 MB/s marginal).
 ///
 /// So the smallest body compressed at all ([`MIN_COMPRESS_BYTES`], 1 KiB) already
-/// costs ~94 µs, essentially all of Tokio's ~100 µs blocking-work budget: no
-/// threshold exists that would keep an inline compression inside it. Offloading
-/// costs ~40 µs of added latency (`measure_spawn_blocking_round_trip`) and blocks
-/// no worker at all, so it wins at every eligible size. It happens once per turn
-/// — the prepared body is reused across retries and rotations — so that latency
+/// costs ~87 µs, essentially all of Tokio's ~100 µs blocking-work budget: no
+/// threshold exists that would keep an inline compression inside it — the fixed
+/// cost alone (~85 µs) is already at the line, independent of size and
+/// independent of which compression API produces it. Offloading costs ~40 µs of
+/// added latency (`measure_spawn_blocking_round_trip`) and blocks no worker at
+/// all, so it wins at every eligible size. It happens once per turn — the
+/// prepared body is reused across retries and rotations — so that latency
 /// is immaterial.
 pub(crate) async fn compress_request_body(body: Bytes) -> std::io::Result<Option<Bytes>> {
     if body.len() < MIN_COMPRESS_BYTES {
@@ -166,12 +216,52 @@ pub(crate) async fn compress_request_body(body: Bytes) -> std::io::Result<Option
 ///
 /// Small, cheaply-probed bodies decode inline on the async executor; anything
 /// else is offloaded to the blocking pool (see [`INLINE_ZSTD_INPUT_BYTES`] and
-/// [`INLINE_ZSTD_OUTPUT_BYTES`]).
+/// [`INLINE_ZSTD_OUTPUT_BYTES`]). A thin wrapper over [`decode_zstd_and_parse`]
+/// with an identity extractor — kept as its own function because the outbound
+/// round-trip tests just want the decoded [`Bytes`] back, with nothing to
+/// parse out of them.
+///
+/// `#[cfg(test)]`: production code parses inbound bodies (`codex_endpoint`'s
+/// `model_label`), so it calls [`decode_zstd_and_parse`] directly rather than
+/// decoding here and parsing separately — this wrapper's only remaining
+/// callers are the round-trip tests in this module and in
+/// `adapters::responses::body`.
+#[cfg(test)]
 pub(crate) async fn decode_zstd_within(body: Bytes, cap: usize) -> std::io::Result<Option<Bytes>> {
+    decode_zstd_and_parse(body, cap, |decoded| decoded).await
+}
+
+/// Decode a zstd body and, without ever handing the decoded [`Bytes`] back to
+/// the caller, apply `extract` to it in the same execution context the decode
+/// itself ran in — inline if the decode was cheap enough to run inline,
+/// inside the same offloaded blocking task otherwise. Same admission,
+/// pre-filter, and budget rules as [`decode_zstd_within`] (which this
+/// implements).
+///
+/// This exists because handing the decoded bytes back to an async caller for
+/// it to parse separately defeats the point of bounding and offloading the
+/// decode: [`MAX_DECODE_RATIO`] lets a ~1 MiB compressed upload buy up to a
+/// 64 MiB decode budget, and a `serde_json::from_slice` over a document that
+/// size is itself blocking-pool-worthy work (already milliseconds, far past
+/// Tokio's ~100 µs budget) — running it on the async executor after the
+/// offloaded decode returns would block a worker exactly the way offloading
+/// the decode was meant to prevent (issue #291 follow-up). `extract` is
+/// expected to reduce the decoded body to something small (e.g. a label
+/// string); its result is what crosses back to the async side, not the bytes
+/// it was computed from.
+pub(crate) async fn decode_zstd_and_parse<T, F>(
+    body: Bytes,
+    cap: usize,
+    extract: F,
+) -> std::io::Result<Option<T>>
+where
+    F: FnOnce(Bytes) -> T + Send + 'static,
+    T: Send + 'static,
+{
     let budget = cap.min(body.len().saturating_mul(MAX_DECODE_RATIO));
     if body.len() <= INLINE_ZSTD_INPUT_BYTES {
         if let Some(out) = decode_within(&body, INLINE_ZSTD_OUTPUT_BYTES.min(budget))? {
-            return Ok(Some(out));
+            return Ok(Some(extract(out)));
         }
         // The inline probe only rules out a body that fits
         // `INLINE_ZSTD_OUTPUT_BYTES`; it does not tell us whether the body is
@@ -181,12 +271,27 @@ pub(crate) async fn decode_zstd_within(body: Bytes, cap: usize) -> std::io::Resu
         // real `budget` either way — `Ok(None)` from *that* call is the
         // authoritative "over budget" answer.
     }
-    crate::offload::spawn_bounded(decode_slots(), move || decode_within(&body, budget)).await?
+    crate::offload::spawn_bounded(decode_slots(), move || {
+        decode_within(&body, budget).map(|maybe| maybe.map(extract))
+    })
+    .await?
 }
 
 fn compress(body: &[u8]) -> std::io::Result<Bytes> {
     zstd::stream::encode_all(body, ZSTD_LEVEL).map(Bytes::from)
 }
+
+/// Capacity hint for [`decode_within`]'s output buffer: a typical *zstd* ratio
+/// on this JSON, not the ~4x gzip ratio this was originally copied from
+/// (`adapters::cursor::connect::decode_gzip_frame_within`). zstd-3 on
+/// Responses-request JSON runs closer to [`TYPICAL_ZSTD_RATIO`] (~12x); the
+/// smaller gzip-tuned multiplier under-allocated and forced `Vec` to
+/// reallocate (and copy) partway through most real decodes. Deliberately a
+/// little under `TYPICAL_ZSTD_RATIO` rather than equal to it: this is only a
+/// sizing hint (an under-estimate just costs one extra reallocation, not
+/// correctness), so there is no reason to tie it to the same constant the
+/// inline pre-filter's safety-relevant assertion depends on.
+const DECODE_CAPACITY_RATIO: usize = 10;
 
 /// Decode `body`, giving up with `Ok(None)` rather than allocating past
 /// `budget`. The decoder reads one byte beyond the budget so an over-budget
@@ -197,10 +302,14 @@ fn compress(body: &[u8]) -> std::io::Result<Bytes> {
 fn decode_within(body: &[u8], budget: usize) -> std::io::Result<Option<Bytes>> {
     use std::io::Read;
 
-    // Size the buffer from a realistic ratio, capped by the budget, so a
-    // typical body decodes without repeated reallocation (mirrors
-    // `adapters::cursor::connect::decode_gzip_frame_within`).
-    let mut out = Vec::with_capacity(std::cmp::min(body.len().saturating_mul(4), budget + 1));
+    // Size the buffer from a realistic *zstd* ratio, capped by the budget, so
+    // a typical body decodes without repeated reallocation. The multiplier
+    // mirrors the shape of `adapters::cursor::connect::decode_gzip_frame_within`
+    // but not its value — see [`DECODE_CAPACITY_RATIO`].
+    let mut out = Vec::with_capacity(std::cmp::min(
+        body.len().saturating_mul(DECODE_CAPACITY_RATIO),
+        budget + 1,
+    ));
     zstd::stream::read::Decoder::new(body)?
         .take(budget as u64 + 1)
         .read_to_end(&mut out)?;
@@ -208,321 +317,4 @@ fn decode_within(body: &[u8], budget: usize) -> std::io::Result<Option<Bytes>> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn header_map(encoding: &str) -> HeaderMap {
-        let mut headers = HeaderMap::new();
-        headers.insert(CONTENT_ENCODING, encoding.parse().unwrap());
-        headers
-    }
-
-    /// A JSON-shaped body of at least `len` bytes: repeated keys and structure
-    /// like a real Responses request, but varied message content (an
-    /// xorshift64-driven word picker, not the same string over and over) so
-    /// the compression ratio stays in a realistic range rather than the
-    /// extreme, near-best-case ratio identical repeated content gets — a body
-    /// that compresses unrealistically well would itself trip
-    /// [`MAX_DECODE_RATIO`] and make these round-trip tests indistinguishable
-    /// from the decompression-bomb fixture in `rejects_a_decompression_bomb`.
-    fn json_body(len: usize) -> Bytes {
-        const WORDS: [&str; 24] = [
-            "the",
-            "quick",
-            "brown",
-            "fox",
-            "jumps",
-            "over",
-            "lazy",
-            "dog",
-            "function",
-            "apply_patch",
-            "review",
-            "error",
-            "handling",
-            "path",
-            "repository",
-            "diff",
-            "unified",
-            "schema",
-            "parameter",
-            "object",
-            "required",
-            "description",
-            "session",
-            "rotation",
-        ];
-        let mut state = 0x9e37_79b9_7f4a_7c15u64;
-        let mut next_word = move || {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            WORDS[(state as usize) % WORDS.len()]
-        };
-
-        let mut body = String::from("{\"model\":\"gpt-5.2-codex\",\"input\":[");
-        while body.len() < len {
-            body.push_str("{\"role\":\"user\",\"content\":\"");
-            for _ in 0..12 {
-                body.push_str(next_word());
-                body.push(' ');
-            }
-            body.push_str("\"},");
-        }
-        body.push_str("{\"role\":\"user\",\"content\":\"end\"}]}");
-        Bytes::from(body)
-    }
-
-    #[test]
-    fn classifies_content_encoding() {
-        assert_eq!(body_encoding(&HeaderMap::new()), BodyEncoding::Identity);
-        assert_eq!(
-            body_encoding(&header_map("identity")),
-            BodyEncoding::Identity
-        );
-        assert_eq!(body_encoding(&header_map("zstd")), BodyEncoding::Zstd);
-        // Case-insensitive and whitespace-tolerant, per RFC 9110 content codings.
-        assert_eq!(body_encoding(&header_map(" ZSTD ")), BodyEncoding::Zstd);
-        assert_eq!(body_encoding(&header_map("gzip")), BodyEncoding::Other);
-        // A stacked list is deliberately not decoded.
-        assert_eq!(
-            body_encoding(&header_map("gzip, zstd")),
-            BodyEncoding::Other
-        );
-    }
-
-    /// A realistic body compresses and round-trips, and the compressed form is
-    /// materially smaller — the whole point of the feature.
-    #[tokio::test]
-    async fn compresses_and_round_trips_a_small_body() {
-        let body = json_body(3 * 1024);
-        let compressed = compress_request_body(body.clone())
-            .await
-            .expect("compression should succeed")
-            .expect("a body this size should be compressed");
-        assert!(
-            compressed.len() * 4 < body.len(),
-            "expected a large win on JSON, got {} -> {}",
-            body.len(),
-            compressed.len()
-        );
-
-        let decoded = decode_zstd_within(compressed, body.len())
-            .await
-            .expect("decode should succeed")
-            .expect("decoded body should fit the budget");
-        assert_eq!(decoded, body);
-    }
-
-    /// A body far larger than any inbound decode would attempt inline still
-    /// round-trips identically through the blocking-pool compression path.
-    #[tokio::test]
-    async fn compresses_a_large_body() {
-        let body = json_body(64 * 1024);
-        let compressed = compress_request_body(body.clone())
-            .await
-            .expect("compression should succeed")
-            .expect("a body this size should be compressed");
-        let decoded = decode_zstd_within(compressed, body.len())
-            .await
-            .expect("decode should succeed")
-            .expect("decoded body should fit the budget");
-        assert_eq!(decoded, body);
-    }
-
-    /// The offloaded *decode* path is keyed on the compressed input size, so it
-    /// needs a compressed frame that stays past [`INLINE_ZSTD_INPUT_BYTES`] —
-    /// an incompressible body reliably does, since zstd cannot shrink it.
-    #[tokio::test]
-    async fn decodes_an_offloaded_body() {
-        // xorshift64 output: enough entropy that zstd cannot shrink it, unlike a
-        // low-period arithmetic sequence (mirrors the Cursor gzip fixtures).
-        let mut state = 0x4d59_5df4_d0f3_3173u64;
-        let body: Bytes = (0..INLINE_ZSTD_INPUT_BYTES * 2)
-            .map(|_| {
-                state ^= state << 13;
-                state ^= state >> 7;
-                state ^= state << 17;
-                state as u8
-            })
-            .collect::<Vec<u8>>()
-            .into();
-        let compressed = compress(&body).expect("compression should succeed");
-        assert!(
-            compressed.len() > INLINE_ZSTD_INPUT_BYTES,
-            "the fixture must stay large after compression to reach the offloaded path"
-        );
-
-        let decoded = decode_zstd_within(compressed, body.len())
-            .await
-            .expect("decode should succeed")
-            .expect("decoded body should fit the budget");
-        assert_eq!(decoded, body);
-    }
-
-    /// Below `MIN_COMPRESS_BYTES` the body is left alone rather than framed for
-    /// no gain.
-    #[tokio::test]
-    async fn leaves_a_tiny_body_uncompressed() {
-        let body = Bytes::from_static(b"{\"model\":\"gpt-5.2-codex\"}");
-        assert!(body.len() < MIN_COMPRESS_BYTES);
-        assert!(compress_request_body(body)
-            .await
-            .expect("the gate should not fail")
-            .is_none());
-    }
-
-    /// A body that decodes past the budget is reported as over-budget rather than
-    /// truncated to `budget` bytes (which would parse as invalid JSON) or
-    /// allowed to allocate without bound.
-    #[tokio::test]
-    async fn refuses_a_body_that_decodes_past_the_budget() {
-        let body = json_body(64 * 1024);
-        let compressed = compress_request_body(body.clone())
-            .await
-            .unwrap()
-            .expect("body should compress");
-        assert!(compressed.len() < body.len());
-
-        assert!(decode_zstd_within(compressed.clone(), body.len() - 1)
-            .await
-            .expect("an over-budget body is not an error")
-            .is_none());
-        // Exactly at the budget it is still returned whole.
-        assert_eq!(
-            decode_zstd_within(compressed, body.len())
-                .await
-                .unwrap()
-                .expect("a body exactly at the budget fits"),
-            body
-        );
-    }
-
-    /// Garbage that claims to be zstd surfaces as an error rather than as an
-    /// empty or partial body.
-    #[tokio::test]
-    async fn reports_an_error_for_a_body_that_is_not_zstd() {
-        let error = decode_zstd_within(Bytes::from_static(b"{\"model\":\"x\"}"), 1024)
-            .await
-            .expect_err("undecodable input should be an error");
-        assert!(!error.to_string().is_empty());
-    }
-
-    /// Regression test for issue #291: 8 MiB of zeros compresses to a few KiB
-    /// (an extreme ratio no real Responses body reaches), so even with a huge
-    /// absolute `cap` the decode must be rejected by [`MAX_DECODE_RATIO`] alone
-    /// — otherwise a tiny compressed body could force shunt to allocate and
-    /// decode tens of megabytes with no admission control.
-    #[tokio::test]
-    async fn rejects_a_decompression_bomb_via_the_ratio_bound() {
-        let bomb = vec![0u8; 8 * 1024 * 1024];
-        let compressed = compress(&bomb).expect("zero-filled input should compress");
-        assert!(
-            compressed.len() * MAX_DECODE_RATIO < bomb.len(),
-            "fixture must actually exceed the ratio bound to exercise it, got {} -> {}",
-            bomb.len(),
-            compressed.len()
-        );
-
-        let decoded = decode_zstd_within(compressed, MAX_REQUEST_BODY_BYTES_FOR_TEST)
-            .await
-            .expect("a ratio-bomb is rejected, not an I/O error");
-        assert!(
-            decoded.is_none(),
-            "a body decoding to {}x its compressed size must be rejected even though \
-             the absolute cap alone would allow it",
-            MAX_DECODE_RATIO
-        );
-    }
-
-    /// A legitimate body at a realistic compression ratio still decodes under
-    /// the same large absolute cap a real endpoint passes — the ratio bound
-    /// added for issue #291 must not regress ordinary large turns.
-    #[tokio::test]
-    async fn decodes_a_legitimate_body_at_a_realistic_ratio_under_the_same_cap() {
-        let body = json_body(256 * 1024);
-        let compressed = compress_request_body(body.clone())
-            .await
-            .expect("compression should succeed")
-            .expect("a body this size should be compressed");
-        assert!(
-            compressed.len() * MAX_DECODE_RATIO > body.len(),
-            "fixture must stay within a realistic ratio for this to be a meaningful check"
-        );
-
-        let decoded = decode_zstd_within(compressed, MAX_REQUEST_BODY_BYTES_FOR_TEST)
-            .await
-            .expect("decode should succeed")
-            .expect("a realistic-ratio body must not be rejected by the ratio bound");
-        assert_eq!(decoded, body);
-    }
-
-    /// Same cap `codex_endpoint::MAX_REQUEST_BODY_BYTES` passes in production,
-    /// duplicated here so these tests do not depend on that module.
-    const MAX_REQUEST_BODY_BYTES_FOR_TEST: usize = 64 * 1024 * 1024;
-
-    /// Retained measurement, not run in CI: prints median timings for
-    /// compression and decode at several sizes of representative
-    /// Responses-request JSON. The compression figures are what establish that no
-    /// inline compression threshold is worth having (see
-    /// [`compress_request_body`]); the decode figures size
-    /// [`INLINE_ZSTD_OUTPUT_BYTES`] against Tokio's ~100 µs blocking-work budget
-    /// (mirrors `adapters::cursor::connect::measure_spawn_blocking_round_trip`).
-    /// Run with:
-    /// `cargo test --release -- --ignored --nocapture measure_inline_zstd_budgets`
-    #[ignore]
-    #[test]
-    fn measure_inline_zstd_budgets() {
-        use std::time::{Duration, Instant};
-
-        const ITERATIONS: usize = 1000;
-        const WARMUP_ITERATIONS: usize = 50;
-
-        fn median(mut samples: Vec<Duration>) -> Duration {
-            samples.sort();
-            samples[samples.len() / 2]
-        }
-
-        println!("-- compress (representative JSON) --");
-        for size_kib in [1, 2, 4, 8, 16, 32, 64, 128] {
-            let body = json_body(size_kib * 1024);
-            for _ in 0..WARMUP_ITERATIONS {
-                let _ = compress(&body).expect("compression should succeed");
-            }
-            let mut samples = Vec::with_capacity(ITERATIONS);
-            for _ in 0..ITERATIONS {
-                let start = Instant::now();
-                let _ = compress(&body).expect("compression should succeed");
-                samples.push(start.elapsed());
-            }
-            println!(
-                "compress {size_kib:>4} KiB input: median {:?}",
-                median(samples)
-            );
-        }
-
-        println!("-- decode_within (decoded output size) --");
-        for size_kib in [8, 16, 32, 64] {
-            let body = json_body(size_kib * 1024);
-            let compressed = compress(&body).expect("compression should succeed");
-            for _ in 0..WARMUP_ITERATIONS {
-                let _ = decode_within(&compressed, body.len())
-                    .expect("decode should succeed")
-                    .expect("decoded body should fit the budget");
-            }
-            let mut samples = Vec::with_capacity(ITERATIONS);
-            for _ in 0..ITERATIONS {
-                let start = Instant::now();
-                let out = decode_within(&compressed, body.len())
-                    .expect("decode should succeed")
-                    .expect("decoded body should fit the budget");
-                assert_eq!(out.len(), body.len());
-                samples.push(start.elapsed());
-            }
-            println!(
-                "decode {size_kib:>4} KiB output: median {:?}",
-                median(samples)
-            );
-        }
-    }
-}
+mod tests;
