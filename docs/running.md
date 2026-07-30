@@ -318,15 +318,19 @@ stream keeps the process alive for as long as its client keeps reading. Send a *
 128+signal exit status: 143 for a second `SIGTERM`, 130 for a second ctrl-c/`SIGINT`.
 
 Logs go to `$(brew --prefix)/var/log/shunt.log` (stdout and stderr combined). Config discovery
-works the same as any other invocation (see [§3 Configure](#3-configure)), but a service has no
-meaningful working directory, so in practice the effective candidate is
-`$HOMEBREW_PREFIX/etc/shunt.toml` (`$(brew --prefix)/etc/shunt.toml`, or `.yaml`/`.yml`). Run
-`shunt init --root "$(brew --prefix)/etc"` to create a starter file there, or place your own.
+works the same as any other invocation (see [§3 Configure](#3-configure)): a service has no
+meaningful working directory, so the search starts at `$XDG_CONFIG_HOME/shunt` (or
+`~/.config/shunt`) — an existing config there still wins over the Homebrew prefix. Absent one,
+the effective candidate is `$HOMEBREW_PREFIX/etc/shunt.toml` (`$(brew --prefix)/etc/shunt.toml`,
+or `.yaml`/`.yml`). Run `shunt init --root "$(brew --prefix)/etc"` to create a starter file
+there, or place your own wherever should win — check the boot log to see which file the service
+actually loaded.
 
-Editing that file afterwards does **not** require `brew services restart` — the running process
-picks up the change automatically via [config hot-reload](config-reload.md) (file-watch, or send
-`SIGHUP` yourself). Only the handful of fields listed under [§4 Fields that require a
-restart](config-reload.md#4-fields-that-require-a-restart) need an actual `brew services restart`.
+Editing the file the service actually loaded does **not** require `brew services restart` — the
+running process picks up the change automatically via [config hot-reload](config-reload.md)
+(file-watch, or send `SIGHUP` yourself). Only the handful of fields listed under [§4 Fields that
+require a restart](config-reload.md#4-fields-that-require-a-restart) need an actual `brew services
+restart`.
 
 ### Endpoints served
 
