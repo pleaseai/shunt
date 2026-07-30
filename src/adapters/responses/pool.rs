@@ -217,8 +217,7 @@ pub(super) async fn forward_chatgpt_oauth(
                     .accounts
                     .mark_healthy(&route.provider, account, status.is_success());
                 if status.is_success() {
-                    let input_tokens_estimate =
-                        take_estimate(&mut estimate_handle, turn.client_wants_stream).await;
+                    let input_tokens_estimate = take_estimate(&mut estimate_handle).await;
                     let response = relay_success(
                         &state,
                         upstream,
@@ -292,8 +291,7 @@ pub(super) async fn forward_chatgpt_oauth(
                         let retry_status = retry.status();
                         if retry_status.is_success() {
                             state.accounts.mark_healthy(&route.provider, account, true);
-                            let input_tokens_estimate =
-                                take_estimate(&mut estimate_handle, turn.client_wants_stream).await;
+                            let input_tokens_estimate = take_estimate(&mut estimate_handle).await;
                             let response = relay_success(
                                 &state,
                                 retry,
@@ -364,16 +362,10 @@ async fn relay_success(
 /// refresh retry) that must consume the same handle without awaiting it
 /// twice — `JoinHandle` is not `Clone`, so `.take()` leaves a torn-down `None`
 /// behind for whichever arm does not run. Non-streaming turns never seed
-/// `message_start`, so `client_wants_stream == false` always yields `0`
-/// without polling the handle (it is `None` in that case anyway, since
-/// `forward`'s gate only produces `estimate_input` for streaming turns).
-async fn take_estimate(
-    estimate_handle: &mut Option<tokio::task::JoinHandle<u64>>,
-    client_wants_stream: bool,
-) -> u64 {
-    if !client_wants_stream {
-        return 0;
-    }
+/// `message_start`, so `estimate_handle` is always `None` here already
+/// (`forward`'s gate only produces `estimate_input`, and thus a spawned
+/// handle, for streaming turns), which naturally yields `0` below.
+async fn take_estimate(estimate_handle: &mut Option<tokio::task::JoinHandle<u64>>) -> u64 {
     match estimate_handle.take() {
         Some(handle) => handle.await.unwrap_or(0),
         None => 0,
