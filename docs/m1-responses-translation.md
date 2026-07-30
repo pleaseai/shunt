@@ -114,12 +114,13 @@ Upstream Responses events to handle (names as emitted by the Codex backend / Res
 | `response.function_call_arguments.delta` | `delta` (JSON fragment) | `content_block_delta {index, delta:{type:"input_json_delta", partial_json:delta}}`. |
 | `response.function_call_arguments.done` / `response.output_item.done` | full `arguments` | `content_block_stop {index}`; advance index. |
 | `response.reasoning_summary_text.delta` (optional) | `delta` | either a `thinking` block delta (if we surface thinking) or drop. MVP: drop. |
-| `response.completed` / `response.done` | full `response` + `usage`, `stop_reason` | `message_delta {delta:{stop_reason, stop_sequence:null}, usage:{output_tokens,...}}` then `message_stop`. `stop_reason` = `tool_use` if any function_call emitted, else `end_turn`. |
+| `response.completed` / `response.done` / `response.incomplete` | full `response` + `usage`, `stop_reason` | `message_delta {delta:{stop_reason, stop_sequence:null}, usage:{output_tokens,...}}` then `message_stop`. `stop_reason` = `tool_use` if any function_call emitted, else `end_turn`. `response.incomplete` (a clean, if truncated, terminal — mirrors the WebSocket transport's terminal set, `m7-codex-websocket.md` §4) is treated identically to `completed`/`done`, so a stream that ends right after it does **not** trigger the Robustness fallback below. |
 | `error` / `response.failed` | error object | translate to an Anthropic error (§8); terminate the stream. |
 
 Robustness: unknown event types are ignored. If the stream ends without a terminal
-`completed`, fall back to closing any open block, emit `message_delta` (`end_turn`) +
-`message_stop` from accumulated text (insightflo's fallback shape).
+event (`completed` / `done` / `incomplete`), fall back to closing any open block, emit
+`message_delta` (`end_turn`) + `message_stop` from accumulated text (insightflo's fallback
+shape).
 
 Non-streaming client: run the same machine but collect blocks instead of emitting; return
 `transformCodexToAnthropic`-equivalent JSON: `{id,type:"message",role:"assistant",model:<original>,content,stop_reason,stop_sequence:null,usage}`.
