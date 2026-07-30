@@ -1,0 +1,23 @@
+docs/upstreams-failover.md
+  s_1a9b1bc59ddad0::t_137f97e0f12a56 26
+src/model/responses_request.rs
+  s_1a9b1bc59ddad0::t_78c2fd3d0b377a 186,198
+docs/running.md
+  s_1a9b1bc59ddad0::t_5e6094fd38182a 97,213
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "9264222b0bb7a8fbc4b7167821bc3c68227d51fe",
+  "prompts": {},
+  "sessions": {
+    "s_1a9b1bc59ddad0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f72f2f30-a069-4d22-94cd-21d4d1a46af7",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
