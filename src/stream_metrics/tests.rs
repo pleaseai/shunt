@@ -297,8 +297,34 @@ async fn dropping_body_mid_stream_exercises_client_disconnect_path() {
 // for the whole synchronous call — both are thread-local / dynamic-scoped,
 // so nesting an `.await` inside would require a second, real executor.
 
-#[test]
-fn finish_records_otel_error_and_emits_a_sentry_event_for_a_mid_stream_error_event() {
+/// How the wrapped body is driven — the only axis, besides the SSE bytes and
+/// the expectation, on which the `finish` wiring cases differ.
+#[derive(Clone, Copy)]
+enum Drive {
+    /// Forward the mock stream to its end, so `finish` sees a natural end.
+    ToEnd,
+    /// Read the first chunk, then drop the body while the upstream is still
+    /// open (`stream::pending()` never resolves) — the client-disconnect path,
+    /// exercised via `ObservedStream`'s `Drop` impl calling `finish(false)`.
+    DropAfterFirstChunk,
+}
+
+/// What `ObserverState::finish` must have wired up once the stream is over.
+struct FinishWiring {
+    /// The `otel.status_code` the request span carries afterwards. Every case
+    /// starts from `"ok"`, mirroring what `record_span_outcome` recorded at
+    /// response-header time for the `200` that opened the stream: a mid-stream
+    /// failure has to overwrite it, anything else has to leave it untouched.
+    span_status: &'static str,
+    /// The single Sentry event `record_stream_failure` emits, or `None` when
+    /// the outcome is not a failure and nothing at all may be captured.
+    event: Option<(sentry::Level, &'static str)>,
+}
+
+/// Runs one wiring case: wrap an SSE response carrying `sse`, drive its body
+/// per `drive`, and assert the span field and the Sentry capture match
+/// `expected`.
+fn assert_finish_wiring(sse: &'static [u8], drive: Drive, expected: FinishWiring) {
     let captured = CapturingLayer::default();
     let subscriber = tracing_subscriber::registry().with(captured.clone());
 
@@ -312,15 +338,16 @@ fn finish_records_otel_error_and_emits_a_sentry_event_for_a_mid_stream_error_eve
             // Mirrors what `record_span_outcome` already recorded at
             // response-header time for the 200 that opened this stream.
             span.record("otel.status_code", "ok");
-            let chunks = vec![Ok::<_, Infallible>(Bytes::from_static(
-                b"event: error
-data: {}
-
-",
-            ))];
+            let chunk = Ok::<_, Infallible>(Bytes::from_static(sse));
+            let body = match drive {
+                Drive::ToEnd => Body::from_stream(stream::iter(vec![chunk])),
+                Drive::DropAfterFirstChunk => {
+                    Body::from_stream(stream::once(async { chunk }).chain(stream::pending()))
+                }
+            };
             let response = Response::builder()
                 .header(CONTENT_TYPE, "text/event-stream")
-                .body(Body::from_stream(stream::iter(chunks)))
+                .body(body)
                 .unwrap();
             let wrapped = observe_response(
                 response,
@@ -331,191 +358,102 @@ data: {}
             );
             drop(entered);
 
-            to_bytes(wrapped.into_body(), usize::MAX)
-                .now_or_never()
-                .expect("mock stream resolves without a real pending state")
-                .unwrap();
+            match drive {
+                Drive::ToEnd => {
+                    to_bytes(wrapped.into_body(), usize::MAX)
+                        .now_or_never()
+                        .expect("mock stream resolves without a real pending state")
+                        .unwrap();
+                }
+                Drive::DropAfterFirstChunk => {
+                    let mut body_stream = wrapped.into_body().into_data_stream();
+                    body_stream
+                        .next()
+                        .now_or_never()
+                        .expect("first chunk is ready without a real pending state")
+                        .unwrap()
+                        .unwrap();
+                    drop(body_stream);
+                }
+            }
         })
     });
 
     let fields = captured.0.lock().unwrap();
     assert_eq!(
         fields.get("otel.status_code").map(String::as_str),
-        Some("error"),
-        "a mid-stream error event must overwrite the header-time \"ok\""
+        Some(expected.span_status),
+        "finish must leave otel.status_code as {:?}, which header time recorded as \"ok\"",
+        expected.span_status
     );
     drop(fields);
 
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0].level, sentry::Level::Error);
-    assert_eq!(
-        events[0].message.as_deref(),
-        Some("upstream SSE stream sent an error event mid-stream")
+    match expected.event {
+        Some((level, message)) => {
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].level, level);
+            assert_eq!(events[0].message.as_deref(), Some(message));
+        }
+        None => assert!(events.is_empty()),
+    }
+}
+
+#[test]
+fn finish_records_otel_error_and_emits_a_sentry_event_for_a_mid_stream_error_event() {
+    assert_finish_wiring(
+        b"event: error\ndata: {}\n\n",
+        Drive::ToEnd,
+        FinishWiring {
+            span_status: "error",
+            event: Some((
+                sentry::Level::Error,
+                "upstream SSE stream sent an error event mid-stream",
+            )),
+        },
     );
 }
 
 #[test]
 fn finish_records_otel_error_and_emits_a_sentry_event_for_an_upstream_cut() {
-    let captured = CapturingLayer::default();
-    let subscriber = tracing_subscriber::registry().with(captured.clone());
-
-    let events = tracing::subscriber::with_default(subscriber, || {
-        sentry::test::with_captured_events(|| {
-            let span = tracing::info_span!(
-                "test_stream_request",
-                otel.status_code = tracing::field::Empty
-            );
-            let entered = span.enter();
-            span.record("otel.status_code", "ok");
-            // A content delta with no terminal/error event, then the upstream
-            // simply ends the stream (`natural_end = true`) — `UpstreamCut`.
-            let chunks = vec![Ok::<_, Infallible>(Bytes::from_static(
-                b"event: content_block_delta
-data: {}
-
-",
-            ))];
-            let response = Response::builder()
-                .header(CONTENT_TYPE, "text/event-stream")
-                .body(Body::from_stream(stream::iter(chunks)))
-                .unwrap();
-            let wrapped = observe_response(
-                response,
-                Protocol::Anthropic,
-                "provider".to_string(),
-                "model".to_string(),
-                Instant::now(),
-            );
-            drop(entered);
-
-            to_bytes(wrapped.into_body(), usize::MAX)
-                .now_or_never()
-                .expect("mock stream resolves without a real pending state")
-                .unwrap();
-        })
-    });
-
-    let fields = captured.0.lock().unwrap();
-    assert_eq!(
-        fields.get("otel.status_code").map(String::as_str),
-        Some("error")
-    );
-    drop(fields);
-
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0].level, sentry::Level::Warning);
-    assert_eq!(
-        events[0].message.as_deref(),
-        Some("upstream SSE stream was cut before a terminal event")
+    // A content delta with no terminal/error event, then the upstream simply
+    // ends the stream (`natural_end = true`) — `UpstreamCut`.
+    assert_finish_wiring(
+        b"event: content_block_delta\ndata: {}\n\n",
+        Drive::ToEnd,
+        FinishWiring {
+            span_status: "error",
+            event: Some((
+                sentry::Level::Warning,
+                "upstream SSE stream was cut before a terminal event",
+            )),
+        },
     );
 }
 
 #[test]
 fn finish_does_not_touch_the_span_or_emit_an_event_for_a_normal_completion() {
-    let captured = CapturingLayer::default();
-    let subscriber = tracing_subscriber::registry().with(captured.clone());
-
-    let events = tracing::subscriber::with_default(subscriber, || {
-        sentry::test::with_captured_events(|| {
-            let span = tracing::info_span!(
-                "test_stream_request",
-                otel.status_code = tracing::field::Empty
-            );
-            let entered = span.enter();
-            span.record("otel.status_code", "ok");
-            let chunks = vec![Ok::<_, Infallible>(Bytes::from_static(
-                b"event: message_stop
-data: {}
-
-",
-            ))];
-            let response = Response::builder()
-                .header(CONTENT_TYPE, "text/event-stream")
-                .body(Body::from_stream(stream::iter(chunks)))
-                .unwrap();
-            let wrapped = observe_response(
-                response,
-                Protocol::Anthropic,
-                "provider".to_string(),
-                "model".to_string(),
-                Instant::now(),
-            );
-            drop(entered);
-
-            to_bytes(wrapped.into_body(), usize::MAX)
-                .now_or_never()
-                .expect("mock stream resolves without a real pending state")
-                .unwrap();
-        })
-    });
-
-    let fields = captured.0.lock().unwrap();
-    // Untouched since header time: `record_stream_failure` never ran, so the
+    // Untouched since header time: `record_stream_failure` never runs, so the
     // field still holds whatever the (simulated) header-time call recorded.
-    assert_eq!(
-        fields.get("otel.status_code").map(String::as_str),
-        Some("ok")
+    assert_finish_wiring(
+        b"event: message_stop\ndata: {}\n\n",
+        Drive::ToEnd,
+        FinishWiring {
+            span_status: "ok",
+            event: None,
+        },
     );
-    drop(fields);
-
-    assert!(events.is_empty());
 }
 
 #[test]
 fn finish_does_not_touch_the_span_or_emit_an_event_for_a_client_disconnect() {
-    let captured = CapturingLayer::default();
-    let subscriber = tracing_subscriber::registry().with(captured.clone());
-
-    let events = tracing::subscriber::with_default(subscriber, || {
-        sentry::test::with_captured_events(|| {
-            let span = tracing::info_span!(
-                "test_stream_request",
-                otel.status_code = tracing::field::Empty
-            );
-            let entered = span.enter();
-            span.record("otel.status_code", "ok");
-            let first = Ok::<_, Infallible>(Bytes::from_static(
-                b"event: content_block_delta
-data: {}
-
-",
-            ));
-            let upstream = stream::once(async { first }).chain(stream::pending());
-            let response = Response::builder()
-                .header(CONTENT_TYPE, "text/event-stream")
-                .body(Body::from_stream(upstream))
-                .unwrap();
-            let wrapped = observe_response(
-                response,
-                Protocol::Anthropic,
-                "provider".to_string(),
-                "model".to_string(),
-                Instant::now(),
-            );
-            drop(entered);
-
-            let mut body_stream = wrapped.into_body().into_data_stream();
-            body_stream
-                .next()
-                .now_or_never()
-                .expect("first chunk is ready without a real pending state")
-                .unwrap()
-                .unwrap();
-            // Dropped before the upstream ever ends (`stream::pending()` never
-            // resolves) — this is the client-disconnect path, exercised via
-            // `ObservedStream`'s `Drop` impl calling `finish(false)`.
-            drop(body_stream);
-        })
-    });
-
-    let fields = captured.0.lock().unwrap();
-    assert_eq!(
-        fields.get("otel.status_code").map(String::as_str),
-        Some("ok")
+    assert_finish_wiring(
+        b"event: content_block_delta\ndata: {}\n\n",
+        Drive::DropAfterFirstChunk,
+        FinishWiring {
+            span_status: "ok",
+            event: None,
+        },
     );
-    drop(fields);
-
-    assert!(events.is_empty());
 }
 
 #[tokio::test]
