@@ -302,18 +302,24 @@ with the observation's windows preferred because the pool only learns a window
 from a response header it has actually received.
 
 Coalescing is deliberately conservative: identity resolves to `None` whenever
-`CLAUDE_CONFIG_DIR` is set, and an unidentified observation never matches. Both
-Claude credential sources are profile-agnostic (the fixed Keychain service name
-above; a hardcoded `$HOME/.claude/.credentials.json`) while
-`oauthAccount.accountUuid` is read from a config directory that variable
-relocates, so with a profile selected the recorded identity can name a different
-account than the credential that was actually read — observed against a live
-two-account pool, where it labelled an exhausted account's usage with the other
-account's uuid. Declining to merge costs a combined row; guessing costs a
-silently mis-attributed quota bar. Closing that gap needs a token-scoped
-identity source, which does not exist today: `/api/oauth/usage` is the only
-Claude endpoint read here, and `shuntAccountUuid` is captured only at
-login/import time.
+`CLAUDE_CONFIG_DIR` or `CLAUDE_CREDENTIALS` is set, and an unidentified
+observation never matches. Both Claude credential sources are profile-agnostic
+(the fixed Keychain service name above; a hardcoded
+`$HOME/.claude/.credentials.json`, unless `CLAUDE_CREDENTIALS` relocates it)
+while `oauthAccount.accountUuid` is read from a config directory that
+`CLAUDE_CONFIG_DIR` relocates, so with either variable set the recorded
+identity can name a different account than the credential that was actually
+read — observed against a live two-account pool, where it labelled an
+exhausted account's usage with the other account's uuid. Declining to merge
+costs a combined row; guessing costs a silently mis-attributed quota bar.
+Closing that gap needs a token-scoped identity source, which does not exist
+today: `/api/oauth/usage` is the only Claude endpoint read here, and
+`shuntAccountUuid` is captured only at login/import time.
+
+The known `uuid` is still attached even when the local token has expired: the
+account id is read independently of token validity, so an expired observation
+keeps matching its managed row (and inherits that row's "Needs login"
+override) instead of rendering as an unrelated duplicate.
 
 Managed provisioning and store metadata remain available under a collapsed
 **Manage pool accounts (advanced)** section. `AccountPool::snapshot(provider, &[AccountConfig], model)` returns a token-free,

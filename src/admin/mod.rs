@@ -532,6 +532,12 @@ async fn build_observed_row(state: Arc<AppState>, observed: ObservedCredential) 
             "provider": provider,
             "identity": observed.identity,
             "detail": observed.detail,
+            // Discovery (e.g. `discover_claude`) can populate `account_id`
+            // independently of token validity, and the dashboard's coalescing
+            // needs it here too: without a `uuid`, an expired observation can
+            // never match its managed row, so it renders as a duplicate
+            // instead of overriding that row's status to "expired".
+            "uuid": observed.account_id,
             "source": source,
             "ownership": "observed",
             "signal": observed.provider.signal(),
@@ -1517,6 +1523,37 @@ mod tests {
             snapshot[0].has_state,
             "a scoped store identity must preserve shared health when inline accounts also exist"
         );
+    }
+
+    #[tokio::test]
+    async fn expired_observation_still_carries_its_known_uuid() {
+        // `discover_claude` sets `account_id` unconditionally, before the
+        // validity check, specifically so an expired local login can still be
+        // recognised as the same account as a managed pool row. If the
+        // invalid-token branch below dropped `uuid`, that recognition would be
+        // impossible and the dashboard would render the expired login as a
+        // second, unrelated account instead of overriding the managed row's
+        // status.
+        let state = state_with_explicit_provider(
+            "anthropic",
+            AuthMode::ClaudeOauth,
+            Vec::new(),
+            Vec::new(),
+        );
+        let observed = ObservedCredential {
+            provider: ObservedProvider::Claude,
+            identity: "user@example.com".to_string(),
+            detail: None,
+            source: observation::ObservedSource::File,
+            valid: false,
+            access_token: String::new(),
+            account_id: Some("acct-uuid-expired".to_string()),
+        };
+
+        let row = build_observed_row(Arc::new(state), observed).await;
+
+        assert_eq!(row["state"], "expired");
+        assert_eq!(row["uuid"], "acct-uuid-expired");
     }
 
     #[test]

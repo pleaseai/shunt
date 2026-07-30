@@ -304,7 +304,7 @@ $("complete").onclick = async () => {
     if (!res.ok) { showMsg("addmsg", (data.error && data.error.message) || "Failed to complete", false); return; }
     showMsg("addmsg", data.message || "Account stored", true);
     $("step2").style.display = "none"; $("name").value = ""; $("code").value = "";
-    loadAccounts(); loadPool();
+    loadObserved(); loadAccounts(); loadPool();
   } catch (e) { showMsg("addmsg", "Request failed", false); }
 };
 
@@ -313,7 +313,7 @@ async function removeAccount(name) {
   try {
     const res = await fetch("/admin/accounts/claude/" + encodeURIComponent(name), { method: "DELETE", headers: H });
     if (!res.ok) { const data = await res.json().catch(() => ({})); showMsg("addmsg", (data.error && data.error.message) || "Failed to remove", false); return; }
-    loadAccounts(); loadPool();
+    loadObserved(); loadAccounts(); loadPool();
   } catch (e) { showMsg("addmsg", "Request failed", false); }
 }
 
@@ -340,7 +340,7 @@ $("complete-codex").onclick = async () => {
     if (!res.ok) { showMsg("codex-addmsg", (data.error && data.error.message) || "Failed to complete Codex login", false); return; }
     showMsg("codex-addmsg", data.message || "Codex account stored", true);
     $("codex-step2").style.display = "none"; $("codex-name").value = ""; $("codex-code").value = "";
-    loadCodexAccounts(); loadPool();
+    loadObserved(); loadCodexAccounts(); loadPool();
   } catch (e) { showMsg("codex-addmsg", "Request failed", false); }
 };
 
@@ -349,7 +349,7 @@ async function removeCodexAccount(name) {
   try {
     const res = await fetch("/admin/accounts/codex/" + encodeURIComponent(name), { method: "DELETE", headers: H });
     if (!res.ok) { const data = await res.json().catch(() => ({})); showMsg("codex-addmsg", (data.error && data.error.message) || "Failed to remove Codex account", false); return; }
-    loadCodexAccounts(); loadPool();
+    loadObserved(); loadCodexAccounts(); loadPool();
   } catch (e) { showMsg("codex-addmsg", "Request failed", false); }
 }
 

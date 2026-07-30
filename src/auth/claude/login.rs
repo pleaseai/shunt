@@ -322,28 +322,39 @@ fn read_current_account_uuid(path: &Path) -> anyhow::Result<String> {
 /// The guard exists because the credential and the recorded identity come from
 /// decoupled places: both credential sources are profile-agnostic (the macOS
 /// Keychain uses one fixed service name; the file path is a hardcoded
-/// `$HOME/.claude/.credentials.json`), while `oauthAccount.accountUuid` lives in
-/// a config directory that `CLAUDE_CONFIG_DIR` relocates. With that variable
-/// set, the config names one account while the credential belongs to another —
-/// verified against a live pool, where it labelled an exhausted account's usage
-/// with a second account's uuid. Returning `None` there costs a merge; guessing
-/// costs a silently mis-attributed quota bar.
+/// `$HOME/.claude/.credentials.json`, unless relocated by `CLAUDE_CREDENTIALS`),
+/// while `oauthAccount.accountUuid` lives in a config directory that
+/// `CLAUDE_CONFIG_DIR` relocates. With either variable set, the global config
+/// can name one account while the credential belongs to another — verified
+/// against a live pool for `CLAUDE_CONFIG_DIR`, where it labelled an exhausted
+/// account's usage with a second account's uuid; `CLAUDE_CREDENTIALS` opens the
+/// same gap by pointing the credential elsewhere while the identity file stays
+/// the untouched default. Returning `None` there costs a merge; guessing costs
+/// a silently mis-attributed quota bar.
 pub(crate) fn current_account_uuid() -> Option<String> {
     let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR");
+    let credentials_override = std::env::var_os("CLAUDE_CREDENTIALS");
     let home = std::env::var_os("HOME")
         .filter(|path| !path.is_empty())
         .or_else(|| std::env::var_os("USERPROFILE").filter(|path| !path.is_empty()));
-    current_account_uuid_from(config_dir.as_deref(), home.as_deref())
+    current_account_uuid_from(
+        config_dir.as_deref(),
+        credentials_override.as_deref(),
+        home.as_deref(),
+    )
 }
 
-/// Env-free half of [`current_account_uuid`], taking both inputs for the same
-/// reason as [`claude_global_config_path_from`]: reading either one internally
+/// Env-free half of [`current_account_uuid`], taking all inputs for the same
+/// reason as [`claude_global_config_path_from`]: reading them internally
 /// would leave the guard's test coupled to the ambient process environment.
 fn current_account_uuid_from(
     config_dir: Option<&std::ffi::OsStr>,
+    credentials_override: Option<&std::ffi::OsStr>,
     home: Option<&std::ffi::OsStr>,
 ) -> Option<String> {
-    if config_dir.is_some_and(|dir| !dir.is_empty()) {
+    if config_dir.is_some_and(|dir| !dir.is_empty())
+        || credentials_override.is_some_and(|path| !path.is_empty())
+    {
         return None;
     }
     read_current_account_uuid(&claude_global_config_path_from(config_dir, home)).ok()
@@ -492,7 +503,27 @@ mod tests {
         // unknown must stay `None`: a wrong uuid coalesces one account's usage
         // onto another account's row in the admin surface.
         assert_eq!(
-            current_account_uuid_from(Some(std::ffi::OsStr::new("/tmp/some-other-profile")), None),
+            current_account_uuid_from(
+                Some(std::ffi::OsStr::new("/tmp/some-other-profile")),
+                None,
+                None
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn current_account_uuid_declines_under_a_relocated_credentials_file() {
+        // `CLAUDE_CREDENTIALS` relocates the credential file independently of
+        // `CLAUDE_CONFIG_DIR`, so it opens the identical gap: the credential
+        // being observed can belong to a different account than the one named
+        // in the untouched default global config. Same guard, same reason.
+        assert_eq!(
+            current_account_uuid_from(
+                None,
+                Some(std::ffi::OsStr::new("/tmp/some-other-account.json")),
+                None
+            ),
             None
         );
     }

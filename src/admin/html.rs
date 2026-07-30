@@ -284,4 +284,26 @@ mod tests {
         assert!(!page.contains("status.dataset.state = row.state;"));
         assert!(page.contains(r#"empty.textContent = state === "expired""#));
     }
+
+    #[test]
+    fn account_mutations_refresh_the_grouped_observed_table_too() {
+        // The advanced account/pool tables (loadAccounts/loadCodexAccounts/
+        // loadPool) are populated separately from the top-level grouped
+        // table, which loadObserved() alone fills in. Every success path
+        // that adds or removes an account must refresh loadObserved() too,
+        // or the grouped table goes stale until the next full page load.
+        let page = dashboard_page("csrf");
+        assert_eq!(
+            page.matches("loadObserved(); loadAccounts(); loadPool();")
+                .count(),
+            2,
+            "expected both Claude add/remove success paths to refresh the grouped table"
+        );
+        assert_eq!(
+            page.matches("loadObserved(); loadCodexAccounts(); loadPool();")
+                .count(),
+            2,
+            "expected both Codex add/remove success paths to refresh the grouped table"
+        );
+    }
 }
