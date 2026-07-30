@@ -1,11 +1,20 @@
-use std::{convert::Infallible, time::Instant};
+use std::{
+    collections::HashMap,
+    convert::Infallible,
+    sync::{Arc, Mutex},
+    time::Instant,
+};
 
 use axum::{
     body::{to_bytes, Body, Bytes},
     http::{header::CONTENT_TYPE, Response},
 };
-use futures_util::{stream, StreamExt};
+use futures_util::{future::FutureExt, stream, StreamExt};
 use serde_json::json;
+use tracing_subscriber::{
+    layer::{Context as LayerContext, SubscriberExt},
+    Layer,
+};
 
 use super::{observe_response, ObserverState, Outcome, Protocol, MAX_EVENT_BYTES};
 
@@ -15,7 +24,46 @@ fn state(protocol: Protocol) -> ObserverState {
         "provider".to_string(),
         "model".to_string(),
         Instant::now(),
+        tracing::Span::none(),
     )
+}
+
+/// A `Visit` that stringifies every recorded field into a shared map — the
+/// same pattern `observability::tests` uses to assert on `Span::record`
+/// calls independent of any particular exporter. Duplicated here rather than
+/// shared: `observability`'s copy is private to its own `#[cfg(test)]`
+/// module.
+struct CapturingVisitor<'a>(&'a mut HashMap<String, String>);
+
+impl tracing::field::Visit for CapturingVisitor<'_> {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        self.0
+            .insert(field.name().to_string(), format!("{value:?}"));
+    }
+
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        self.0.insert(field.name().to_string(), value.to_string());
+    }
+}
+
+/// A minimal `Layer` that records every `Span::record(...)` call into a
+/// shared map, so a test can assert `ObserverState::finish` actually reached
+/// `crate::observability::record_stream_failure`'s `span.record(...)` call
+/// through the real `observe_response` → stream-poll → `finish` path, not
+/// just by calling the function directly.
+#[derive(Clone, Default)]
+struct CapturingLayer(Arc<Mutex<HashMap<String, String>>>);
+
+impl<S: tracing::Subscriber> Layer<S> for CapturingLayer {
+    fn on_record(
+        &self,
+        _id: &tracing::span::Id,
+        values: &tracing::span::Record<'_>,
+        _ctx: LayerContext<'_, S>,
+    ) {
+        let mut map = self.0.lock().expect("capturing layer mutex poisoned");
+        values.record(&mut CapturingVisitor(&mut map));
+    }
 }
 
 fn anth_event(name: &str, data: serde_json::Value) -> String {
@@ -233,6 +281,241 @@ async fn dropping_body_mid_stream_exercises_client_disconnect_path() {
         Bytes::from_static(b"event: content_block_delta\ndata: {}\n\n")
     );
     drop(body_stream);
+}
+
+// `ObserverState::finish` is the only caller of
+// `crate::observability::record_stream_failure` (see `finish` and
+// `Outcome::as_stream_failure`); these tests exercise it through the real
+// `observe_response` → stream-poll → `finish` path (not by calling the
+// observability function directly — that is covered in
+// `observability::tests`) to prove the wiring itself: the hook fires for
+// `ErrorEvent`/`UpstreamCut` and not for `Completed`/`ClientDisconnect`. Each
+// test uses a plain `#[test]` (not `#[tokio::test]`) and drains the mock body
+// with `.now_or_never()`: none of these mock streams ever produce a genuine
+// `Poll::Pending`, so a single poll always resolves them, which keeps the
+// capturing tracing subscriber and the captured-Sentry-events hub in scope
+// for the whole synchronous call — both are thread-local / dynamic-scoped,
+// so nesting an `.await` inside would require a second, real executor.
+
+#[test]
+fn finish_records_otel_error_and_emits_a_sentry_event_for_a_mid_stream_error_event() {
+    let captured = CapturingLayer::default();
+    let subscriber = tracing_subscriber::registry().with(captured.clone());
+
+    let events = tracing::subscriber::with_default(subscriber, || {
+        sentry::test::with_captured_events(|| {
+            let span = tracing::info_span!(
+                "test_stream_request",
+                otel.status_code = tracing::field::Empty
+            );
+            let entered = span.enter();
+            // Mirrors what `record_span_outcome` already recorded at
+            // response-header time for the 200 that opened this stream.
+            span.record("otel.status_code", "ok");
+            let chunks = vec![Ok::<_, Infallible>(Bytes::from_static(
+                b"event: error
+data: {}
+
+",
+            ))];
+            let response = Response::builder()
+                .header(CONTENT_TYPE, "text/event-stream")
+                .body(Body::from_stream(stream::iter(chunks)))
+                .unwrap();
+            let wrapped = observe_response(
+                response,
+                Protocol::Anthropic,
+                "provider".to_string(),
+                "model".to_string(),
+                Instant::now(),
+            );
+            drop(entered);
+
+            to_bytes(wrapped.into_body(), usize::MAX)
+                .now_or_never()
+                .expect("mock stream resolves without a real pending state")
+                .unwrap();
+        })
+    });
+
+    let fields = captured.0.lock().unwrap();
+    assert_eq!(
+        fields.get("otel.status_code").map(String::as_str),
+        Some("error"),
+        "a mid-stream error event must overwrite the header-time \"ok\""
+    );
+    drop(fields);
+
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].level, sentry::Level::Error);
+    assert_eq!(
+        events[0].message.as_deref(),
+        Some("upstream SSE stream sent an error event mid-stream")
+    );
+}
+
+#[test]
+fn finish_records_otel_error_and_emits_a_sentry_event_for_an_upstream_cut() {
+    let captured = CapturingLayer::default();
+    let subscriber = tracing_subscriber::registry().with(captured.clone());
+
+    let events = tracing::subscriber::with_default(subscriber, || {
+        sentry::test::with_captured_events(|| {
+            let span = tracing::info_span!(
+                "test_stream_request",
+                otel.status_code = tracing::field::Empty
+            );
+            let entered = span.enter();
+            span.record("otel.status_code", "ok");
+            // A content delta with no terminal/error event, then the upstream
+            // simply ends the stream (`natural_end = true`) — `UpstreamCut`.
+            let chunks = vec![Ok::<_, Infallible>(Bytes::from_static(
+                b"event: content_block_delta
+data: {}
+
+",
+            ))];
+            let response = Response::builder()
+                .header(CONTENT_TYPE, "text/event-stream")
+                .body(Body::from_stream(stream::iter(chunks)))
+                .unwrap();
+            let wrapped = observe_response(
+                response,
+                Protocol::Anthropic,
+                "provider".to_string(),
+                "model".to_string(),
+                Instant::now(),
+            );
+            drop(entered);
+
+            to_bytes(wrapped.into_body(), usize::MAX)
+                .now_or_never()
+                .expect("mock stream resolves without a real pending state")
+                .unwrap();
+        })
+    });
+
+    let fields = captured.0.lock().unwrap();
+    assert_eq!(
+        fields.get("otel.status_code").map(String::as_str),
+        Some("error")
+    );
+    drop(fields);
+
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].level, sentry::Level::Warning);
+    assert_eq!(
+        events[0].message.as_deref(),
+        Some("upstream SSE stream was cut before a terminal event")
+    );
+}
+
+#[test]
+fn finish_does_not_touch_the_span_or_emit_an_event_for_a_normal_completion() {
+    let captured = CapturingLayer::default();
+    let subscriber = tracing_subscriber::registry().with(captured.clone());
+
+    let events = tracing::subscriber::with_default(subscriber, || {
+        sentry::test::with_captured_events(|| {
+            let span = tracing::info_span!(
+                "test_stream_request",
+                otel.status_code = tracing::field::Empty
+            );
+            let entered = span.enter();
+            span.record("otel.status_code", "ok");
+            let chunks = vec![Ok::<_, Infallible>(Bytes::from_static(
+                b"event: message_stop
+data: {}
+
+",
+            ))];
+            let response = Response::builder()
+                .header(CONTENT_TYPE, "text/event-stream")
+                .body(Body::from_stream(stream::iter(chunks)))
+                .unwrap();
+            let wrapped = observe_response(
+                response,
+                Protocol::Anthropic,
+                "provider".to_string(),
+                "model".to_string(),
+                Instant::now(),
+            );
+            drop(entered);
+
+            to_bytes(wrapped.into_body(), usize::MAX)
+                .now_or_never()
+                .expect("mock stream resolves without a real pending state")
+                .unwrap();
+        })
+    });
+
+    let fields = captured.0.lock().unwrap();
+    // Untouched since header time: `record_stream_failure` never ran, so the
+    // field still holds whatever the (simulated) header-time call recorded.
+    assert_eq!(
+        fields.get("otel.status_code").map(String::as_str),
+        Some("ok")
+    );
+    drop(fields);
+
+    assert!(events.is_empty());
+}
+
+#[test]
+fn finish_does_not_touch_the_span_or_emit_an_event_for_a_client_disconnect() {
+    let captured = CapturingLayer::default();
+    let subscriber = tracing_subscriber::registry().with(captured.clone());
+
+    let events = tracing::subscriber::with_default(subscriber, || {
+        sentry::test::with_captured_events(|| {
+            let span = tracing::info_span!(
+                "test_stream_request",
+                otel.status_code = tracing::field::Empty
+            );
+            let entered = span.enter();
+            span.record("otel.status_code", "ok");
+            let first = Ok::<_, Infallible>(Bytes::from_static(
+                b"event: content_block_delta
+data: {}
+
+",
+            ));
+            let upstream = stream::once(async { first }).chain(stream::pending());
+            let response = Response::builder()
+                .header(CONTENT_TYPE, "text/event-stream")
+                .body(Body::from_stream(upstream))
+                .unwrap();
+            let wrapped = observe_response(
+                response,
+                Protocol::Anthropic,
+                "provider".to_string(),
+                "model".to_string(),
+                Instant::now(),
+            );
+            drop(entered);
+
+            let mut body_stream = wrapped.into_body().into_data_stream();
+            body_stream
+                .next()
+                .now_or_never()
+                .expect("first chunk is ready without a real pending state")
+                .unwrap()
+                .unwrap();
+            // Dropped before the upstream ever ends (`stream::pending()` never
+            // resolves) — this is the client-disconnect path, exercised via
+            // `ObservedStream`'s `Drop` impl calling `finish(false)`.
+            drop(body_stream);
+        })
+    });
+
+    let fields = captured.0.lock().unwrap();
+    assert_eq!(
+        fields.get("otel.status_code").map(String::as_str),
+        Some("ok")
+    );
+    drop(fields);
+
+    assert!(events.is_empty());
 }
 
 #[tokio::test]

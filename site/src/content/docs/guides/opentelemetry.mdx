@@ -37,7 +37,7 @@ Setting `endpoint = ""` (e.g. `SHUNT_OTEL__ENDPOINT=""`) disables export again w
 
 | Signal | What's exported | Notes |
 | :-- | :-- | :-- |
-| **Traces** | The per-request `proxy_request` span (and `codex_endpoint_request` on the inbound Codex endpoint), tagged with `gen_ai.request.model`, `shunt.provider`, `http.response.status_code`, and `otel.status_code` (`error` on 5xx) | Head-based sampling via `sample_ratio`. Low-cardinality; no request/response bodies, headers, or credentials. |
+| **Traces** | The per-request `proxy_request` span (and `codex_endpoint_request` on the inbound Codex endpoint), tagged with `gen_ai.request.model`, `shunt.provider`, `http.response.status_code`, and `otel.status_code` (`error` on a 5xx response, or on a streaming request that fails mid-stream after a `200` header — an `event: error` frame or a connection cut before a terminal event, issue #287) | Head-based sampling via `sample_ratio`. Low-cardinality; no request/response bodies, headers, or credentials. |
 | **Metrics** | The low-cardinality series listed below | The same series shunt sends to Sentry when `[sentry] metrics = true`. |
 | **Logs** | shunt's `tracing` log events, bridged to OTLP | The stderr logs are unaffected. |
 

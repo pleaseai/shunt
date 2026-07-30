@@ -45,6 +45,19 @@ impl Outcome {
             Self::ClientDisconnect => "client_disconnect",
         }
     }
+
+    /// The [`crate::observability::StreamFailureKind`] counterpart to this
+    /// outcome, for [`crate::observability::record_stream_failure`] — `None`
+    /// for `Completed`/`ClientDisconnect`, which are not upstream failures (a
+    /// natural end and a client hangup are not root-causeable events; see
+    /// `ObserverState::finish`).
+    fn as_stream_failure(self) -> Option<crate::observability::StreamFailureKind> {
+        match self {
+            Self::ErrorEvent => Some(crate::observability::StreamFailureKind::ErrorEvent),
+            Self::UpstreamCut => Some(crate::observability::StreamFailureKind::UpstreamCut),
+            Self::Completed | Self::ClientDisconnect => None,
+        }
+    }
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -60,6 +73,13 @@ struct ObserverState {
     provider: String,
     model: String,
     started_at: Instant,
+    // Held for the lifetime of the stream so a mid-stream failure can still
+    // record onto the request's own span (`crate::observability::record_stream_failure`)
+    // — cloning a `tracing::Span` bumps its ref count, deferring `on_close`
+    // (and the OTel/Sentry export it triggers) until this state is dropped.
+    // See `crate::observability`'s module docs for why this is the only
+    // reliable way to reach the span from here.
+    span: tracing::Span,
     first_chunk_seen: bool,
     buffer: Vec<u8>,
     skipping_oversized: bool,
@@ -72,12 +92,19 @@ struct ObserverState {
 }
 
 impl ObserverState {
-    fn new(protocol: Protocol, provider: String, model: String, started_at: Instant) -> Self {
+    fn new(
+        protocol: Protocol,
+        provider: String,
+        model: String,
+        started_at: Instant,
+        span: tracing::Span,
+    ) -> Self {
         Self {
             protocol,
             provider,
             model,
             started_at,
+            span,
             first_chunk_seen: false,
             buffer: Vec::with_capacity(4096),
             skipping_oversized: false,
@@ -179,11 +206,16 @@ impl ObserverState {
             return;
         }
         self.finished = true;
-        crate::metrics::record_stream_outcome(
-            &self.provider,
-            &self.model,
-            self.outcome(natural_end).as_str(),
-        );
+        let outcome = self.outcome(natural_end);
+        crate::metrics::record_stream_outcome(&self.provider, &self.model, outcome.as_str());
+        if let Some(failure) = outcome.as_stream_failure() {
+            crate::observability::record_stream_failure(
+                &self.span,
+                &self.provider,
+                &self.model,
+                failure,
+            );
+        }
         for (kind, count) in [
             ("input", self.tokens.input),
             ("output", self.tokens.output),
@@ -338,10 +370,16 @@ pub fn observe_response(
     if !is_sse(&response) {
         return response;
     }
+    // Captured here, synchronously inside the caller's `.instrument(span)`
+    // future (`proxy::post` / `codex_endpoint::post`), so this resolves to
+    // the request's own span — by the time the stream is actually polled,
+    // that future has already returned and `tracing::Span::current()` would
+    // no longer find it. See `crate::observability`'s module docs.
+    let span = tracing::Span::current();
     let (parts, body) = response.into_parts();
     let observed = ObservedStream {
         upstream: body.into_data_stream().boxed(),
-        state: ObserverState::new(protocol, provider, model, started_at),
+        state: ObserverState::new(protocol, provider, model, started_at, span),
     };
     Response::from_parts(parts, Body::from_stream(observed))
 }

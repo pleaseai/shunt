@@ -125,12 +125,16 @@ provider = "openai"
 # warn/info as breadcrumbs — plus, unconditionally once a DSN is set, an
 # error/warning event whenever an upstream provider itself returns a failure:
 # error for a 5xx response, warning for 429/529 (rate limit/overload), each
-# tagged with model, provider, and upstream_status only. Request/response
-# bodies, headers, credentials, and the host name are never sent: breadcrumbs
-# keep only the log message (field values are stripped), and tracing spans
-# attach only when you opt into tracing via traces_sample_rate below. An empty
-# DSN (e.g. SHUNT_SENTRY__DSN="") disables reporting again; an invalid DSN or
-# an out-of-range traces_sample_rate is a startup error.
+# tagged with model, provider, and upstream_status only. A streaming request
+# that answers 200 and then fails mid-stream (an `event: error` frame, or the
+# connection cut before a terminal event) also reports: error for the former,
+# warning for the latter, tagged with model, provider, and outcome only
+# (issue #287). Request/response bodies, headers, credentials, and the host
+# name are never sent: breadcrumbs keep only the log message (field values are
+# stripped), and tracing spans attach only when you opt into tracing via
+# traces_sample_rate below. An empty DSN (e.g. SHUNT_SENTRY__DSN="") disables
+# reporting again; an invalid DSN or an out-of-range traces_sample_rate is a
+# startup error.
 # [sentry]
 # dsn = "https://<key>@<org>.ingest.sentry.io/<project>"
 # environment = "home-lab"   # optional environment tag on events

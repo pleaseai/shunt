@@ -1,11 +1,20 @@
-//! Per-request span tagging and upstream-failure signal for Sentry (#281).
+//! Per-request span tagging and upstream-failure signal for Sentry (#281, #287).
 //!
-//! Goal: an upstream failure (5xx, or 429/529 quota/overload) is root-causeable
-//! from Sentry alone — which model, which provider, what status — without
-//! cross-referencing local logs.
+//! Goal: an upstream failure is root-causeable from Sentry alone — which
+//! model, which provider, what happened — without cross-referencing local
+//! logs. That covers two distinct kinds of failure:
 //!
-//! Two independent mechanisms, because they reach Sentry through different
-//! paths:
+//! - One known at response-header time: 5xx, or 429/529 quota/overload.
+//! - One discovered only mid-stream, after the upstream already answered
+//!   `200` and started an SSE stream: an `event: error` frame, or the
+//!   connection cut before a terminal event (#287). Without this, such a
+//!   request is recorded as a plain success forever — `stream_metrics`
+//!   already detects it (`ObserverState::finish`, for the
+//!   `shunt_stream_outcome_total` metric) but, before #287, never told
+//!   `observability` about it.
+//!
+//! Three mechanisms, because they reach Sentry through different paths and,
+//! for the mid-stream case, at a different point in the request lifecycle:
 //!
 //! - **Span tagging** ([`record_requested_model`], [`record_span_outcome`]):
 //!   fills in `tracing::field::Empty` fields declared on the `proxy_request` /
@@ -19,7 +28,8 @@
 //!   `otel.status_code` — so it is set directly via
 //!   `sentry::configure_scope(..).get_span()` in [`mark_sentry_span_status`].
 //!   This is a no-op whenever no Sentry span is active (client absent, or span
-//!   export disabled), so it costs nothing beyond the existing opt-in.
+//!   export disabled), so it costs nothing beyond the existing opt-in. This
+//!   only ever runs at response-header time, once, from the handler.
 //! - **Event capture** ([`capture_upstream_outcome`]): a Sentry error/warning
 //!   *event* for 5xx and 429/529 responses, built with `sentry::capture_message`
 //!   directly rather than a `tracing::error!`/`warn!` macro. Sentry events are
@@ -29,12 +39,40 @@
 //!   `EventFilter` (WARN → breadcrumb, not an event) to be overridden. Calling
 //!   the Sentry API directly avoids depending on that filter and keeps this
 //!   change from touching `main.rs`'s subscriber wiring.
+//! - **Mid-stream failure** ([`record_stream_failure`]): the same two ideas —
+//!   span field + Sentry event — applied from *inside the response body's
+//!   stream poll*, well after the handler that created the span has already
+//!   returned. This split is why it cannot simply call
+//!   [`record_span_outcome`]/[`mark_sentry_span_status`] again: by the time a
+//!   streamed body is being polled, `sentry-tracing`'s `on_exit` has already
+//!   popped the `HubSwitchGuard` that made the request's Sentry span reachable
+//!   via `sentry::configure_scope(..).get_span()` — that accessor now returns
+//!   `None` (or some unrelated span), and there is no public API to reach a
+//!   *specific*, no-longer-current tracing span's Sentry span/transaction
+//!   handle. So Sentry's own span-status enum genuinely cannot be set for a
+//!   mid-stream failure; this is a real, structural limitation of
+//!   `sentry-tracing` 0.48, not a shortcut taken here. What *does* still work:
+//!   `crate::stream_metrics::ObserverState` holds a cloned `tracing::Span`
+//!   handle for the request span from the moment the stream is wrapped
+//!   (`stream_metrics::observe_response`) until the stream itself finishes —
+//!   tracing spans are ref-counted, so this clone defers the span's `on_close`
+//!   (and, transitively, `sentry_span.finish()` and the OTel bridge's export)
+//!   until then. Re-recording `otel.status_code` on that held clone therefore
+//!   still reaches every layer's `on_record` while the span is open, including
+//!   `sentry-tracing`'s, which mirrors recorded fields onto the still-open
+//!   Sentry span's `data` (not its `status` enum, but still visible/searchable
+//!   there) — so the OTel export and Sentry's span `data` both correctly end
+//!   up `error` for a stream that opened `ok`. The event capture, unlike the
+//!   span-status call, was never scope-dependent (it sets its own tags via
+//!   `sentry::with_scope` rather than reading ambient state) and works
+//!   identically here.
 //!
-//! Both mechanisms carry only the requested model id, resolved provider name,
-//! and the numeric upstream status — never request/response bodies, headers,
-//! or credentials. The model id is client-supplied free text (the inbound
-//! Codex endpoint in particular forwards its request body verbatim and only
-//! reads `model` for this label, see `codex_endpoint.rs`), so it is
+//! All three carry only the requested model id, resolved provider name, and
+//! (for the header-time and mid-stream paths respectively) the numeric
+//! upstream status or the stream outcome — never request/response bodies,
+//! headers, or credentials. The model id is client-supplied free text (the
+//! inbound Codex endpoint in particular forwards its request body verbatim and
+//! only reads `model` for this label, see `codex_endpoint.rs`), so it is
 //! length-bounded and stripped of control characters before export by
 //! [`sanitize_model_tag`] — otherwise an oversized or control-character-laden
 //! value would reach a Sentry tag/span field unchanged.
@@ -230,6 +268,88 @@ pub(crate) fn capture_upstream_outcome(provider: &str, model: &str, status: Stat
     );
 }
 
+/// The two `stream_metrics::Outcome` variants that represent an upstream
+/// *failure* discovered mid-stream — the only ones [`record_stream_failure`]
+/// is ever called for (`stream_metrics::Outcome::Completed` and
+/// `::ClientDisconnect` are not failures of the upstream: a natural end and a
+/// client hangup are not root-causeable events). The label strings mirror
+/// (without importing — `stream_metrics::Outcome` is private to that module)
+/// the ones already used for the `shunt_stream_outcome_total` metric, so a
+/// `stream_outcome="error_event"` in Prometheus and an `outcome=error_event`
+/// tag on a Sentry event refer to the same thing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StreamFailureKind {
+    /// The upstream sent an `event: error` SSE frame before any terminal
+    /// event — an operational failure the upstream itself reported.
+    ErrorEvent,
+    /// The connection was cut (by the upstream, or a network intermediary)
+    /// before a terminal event or an error event ever arrived.
+    UpstreamCut,
+}
+
+impl StreamFailureKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ErrorEvent => "error_event",
+            Self::UpstreamCut => "upstream_cut",
+        }
+    }
+}
+
+/// Mid-stream counterpart to [`record_span_outcome`] + [`capture_upstream_outcome`]:
+/// an upstream that answered `200` and only failed *after* headers were
+/// already sent — an `event: error` SSE frame, or the connection cut before a
+/// terminal event — never reaches either of those, since both run at
+/// response-header time and by definition see only the `200`
+/// (`crate::stream_metrics::ObserverState::finish` is the sole caller, gated
+/// to exactly the two [`StreamFailureKind`] variants, #287).
+///
+/// `span` must be the request's own span (`proxy_request` /
+/// `codex_endpoint_request`), captured via `tracing::Span::current()` while
+/// still inside the `.instrument(span)` future
+/// (`stream_metrics::observe_response`) and held until the stream finishes —
+/// see the module docs for why recording on it still works, and why that is
+/// *not* true for Sentry's own span-status enum (only the standalone event
+/// below reaches that reliably).
+pub(crate) fn record_stream_failure(
+    span: &tracing::Span,
+    provider: &str,
+    model: &str,
+    outcome: StreamFailureKind,
+) {
+    // Overwrites whatever `record_span_outcome` already recorded at
+    // response-header time (`"ok"`, since a stream failure by definition
+    // starts with a `200`) — `tracing` permits re-recording a declared field,
+    // and every layer that mirrors it (the OTel bridge, `sentry-tracing`'s
+    // span-data mirror) takes the latest value observed before the span
+    // closes, which this is: `ObserverState` holds the only extra clone of
+    // `span`, `finish` runs at most once (`self.finished` guard), and that
+    // clone is not dropped until after this call returns.
+    span.record("otel.status_code", "error");
+
+    let (level, message) = match outcome {
+        StreamFailureKind::ErrorEvent => (
+            Level::Error,
+            "upstream SSE stream sent an error event mid-stream",
+        ),
+        StreamFailureKind::UpstreamCut => (
+            Level::Warning,
+            "upstream SSE stream was cut before a terminal event",
+        ),
+    };
+    let model = sanitize_model_tag(model);
+    sentry::with_scope(
+        |scope| {
+            scope.set_tag("model", model.as_ref());
+            scope.set_tag("provider", provider);
+            scope.set_tag("outcome", outcome.as_str());
+        },
+        || {
+            sentry::capture_message(message, level);
+        },
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -240,8 +360,9 @@ mod tests {
     use tracing_subscriber::Layer;
 
     use super::{
-        capture_upstream_outcome, record_requested_model, record_span_outcome, sanitize_model_tag,
-        sentry_span_status, should_capture_upstream_status, MAX_MODEL_TAG_LEN,
+        capture_upstream_outcome, record_requested_model, record_span_outcome,
+        record_stream_failure, sanitize_model_tag, sentry_span_status,
+        should_capture_upstream_status, StreamFailureKind, MAX_MODEL_TAG_LEN,
     };
 
     #[test]
@@ -609,6 +730,133 @@ mod tests {
         let oversized_model = format!("{}-with-a-trailing-newline\n", "m".repeat(200));
         let events = sentry::test::with_captured_events(|| {
             capture_upstream_outcome("anthropic", &oversized_model, StatusCode::BAD_GATEWAY);
+        });
+
+        assert_eq!(events.len(), 1);
+        let tag = events[0]
+            .tags
+            .get("model")
+            .expect("model tag must be present");
+        assert_eq!(tag.chars().count(), MAX_MODEL_TAG_LEN);
+        assert!(!tag.contains('\n'), "control characters must be stripped");
+    }
+
+    // `record_stream_failure` is the mid-stream counterpart to
+    // `record_span_outcome` + `capture_upstream_outcome` (see the module
+    // docs for why it is a separate function rather than reusing those). The
+    // wiring that only calls it for the right `stream_metrics::Outcome`
+    // variants is exercised in `stream_metrics::tests`; these tests cover the
+    // function itself in isolation, mirroring the two blocks above.
+
+    #[test]
+    fn record_stream_failure_overwrites_an_already_recorded_otel_status_code() {
+        // A mid-stream failure always follows a `200`, which
+        // `record_span_outcome` already recorded as `otel.status_code = "ok"`
+        // at response-header time — this proves the second, later call
+        // actually overwrites that value rather than being silently ignored
+        // as a duplicate.
+        let captured = CapturingLayer::default();
+        let subscriber = tracing_subscriber::registry().with(captured.clone());
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!(
+                "test_stream_request",
+                otel.status_code = tracing::field::Empty
+            );
+            let _entered = span.enter();
+            span.record("otel.status_code", "ok");
+            record_stream_failure(
+                &span,
+                "anthropic",
+                "claude-opus-5",
+                StreamFailureKind::ErrorEvent,
+            );
+        });
+
+        let map = captured.0.lock().unwrap();
+        assert_eq!(
+            map.get("otel.status_code").map(String::as_str),
+            Some("error")
+        );
+    }
+
+    #[test]
+    fn record_stream_failure_emits_an_error_event_for_an_error_event_outcome() {
+        let span = tracing::Span::none();
+        let events = sentry::test::with_captured_events(|| {
+            record_stream_failure(
+                &span,
+                "anthropic",
+                "claude-opus-5",
+                StreamFailureKind::ErrorEvent,
+            );
+        });
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].level, sentry::Level::Error);
+        assert_eq!(
+            events[0].message.as_deref(),
+            Some("upstream SSE stream sent an error event mid-stream")
+        );
+    }
+
+    #[test]
+    fn record_stream_failure_emits_a_warning_event_for_an_upstream_cut_outcome() {
+        let span = tracing::Span::none();
+        let events = sentry::test::with_captured_events(|| {
+            record_stream_failure(
+                &span,
+                "anthropic",
+                "claude-opus-5",
+                StreamFailureKind::UpstreamCut,
+            );
+        });
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].level, sentry::Level::Warning);
+        assert_eq!(
+            events[0].message.as_deref(),
+            Some("upstream SSE stream was cut before a terminal event")
+        );
+    }
+
+    #[test]
+    fn record_stream_failure_event_carries_exactly_model_provider_and_outcome_tags() {
+        let span = tracing::Span::none();
+        let events = sentry::test::with_captured_events(|| {
+            record_stream_failure(
+                &span,
+                "anthropic",
+                "claude-opus-5",
+                StreamFailureKind::UpstreamCut,
+            );
+        });
+
+        assert_eq!(events.len(), 1);
+        let tags = &events[0].tags;
+        // Exactly these three keys — nothing else (no body, header, or credential
+        // ever gets attached to this event; this is the no-PII guarantee, locked
+        // down structurally rather than by spot-checking a couple of fields).
+        assert_eq!(tags.len(), 3, "unexpected tags: {tags:?}");
+        assert_eq!(tags.get("model").map(String::as_str), Some("claude-opus-5"));
+        assert_eq!(tags.get("provider").map(String::as_str), Some("anthropic"));
+        assert_eq!(
+            tags.get("outcome").map(String::as_str),
+            Some("upstream_cut")
+        );
+    }
+
+    #[test]
+    fn record_stream_failure_sanitizes_an_oversized_client_supplied_model_tag() {
+        let span = tracing::Span::none();
+        let oversized_model = format!("{}-with-a-trailing-newline\n", "m".repeat(200));
+        let events = sentry::test::with_captured_events(|| {
+            record_stream_failure(
+                &span,
+                "anthropic",
+                &oversized_model,
+                StreamFailureKind::ErrorEvent,
+            );
         });
 
         assert_eq!(events.len(), 1);
