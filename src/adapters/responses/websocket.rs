@@ -220,7 +220,7 @@ async fn start_ws_turn(
     allow_continuation: bool,
 ) -> Result<(CodexWsEvents, bool), AdapterError> {
     let headers = websocket_headers(ctx.credential.clone())?;
-    let turn = codex_ws::begin(&ctx.ws_url, headers, ctx.pool_key)
+    let turn = codex_ws::begin(&ctx.ws_url, headers, ctx.pool_key, ctx.provider)
         .await
         .map_err(|error| ws_connect_error(error, ctx.auth))?;
     // Fresh connections carry live handshake headers; reused connections reuse the

@@ -558,10 +558,17 @@ impl Drop for Turn {
 /// falls back to HTTP instead of queueing. A stale pooled connection is evicted and
 /// replaced. A refused handshake (401/403/429) resolves to `Err` with the upstream
 /// status/body so the caller can re-shape it like the HTTP path.
+///
+/// Both overflow admission outcomes are recorded as `shunt.codex_ws_overflow`
+/// (issue #248's deferred follow-up metric, tagged with `provider`): opening a
+/// dedicated socket, and refusal at the ceiling. Neither the pooled-reuse nor
+/// fresh-handshake paths above touch the counter, so it costs nothing beyond
+/// what the overflow branch already pays.
 pub async fn begin(
     ws_url: &str,
     headers: HeaderMap,
     pool_key: Option<&str>,
+    provider: &str,
 ) -> Result<Turn, CodexWsError> {
     let mut overflow = false;
     if let Some(key) = pool_key {
@@ -607,10 +614,18 @@ pub async fn begin(
                 max_overflow_connections = MAX_OVERFLOW_CONNECTIONS,
                 "codex websocket overflow connection ceiling reached; falling back to HTTP"
             );
+            crate::metrics::record_codex_ws_overflow(
+                provider,
+                crate::metrics::CodexWsOverflowOutcome::Refused,
+            );
             CodexWsError::transport(format!(
                 "codex websocket overflow connection ceiling reached ({MAX_OVERFLOW_CONNECTIONS}); falling back to HTTP"
             ))
         })?;
+        crate::metrics::record_codex_ws_overflow(
+            provider,
+            crate::metrics::CodexWsOverflowOutcome::Opened,
+        );
         // Keep an overflow socket entirely outside the session pool:
         // 1. `run_turn` calls `pool_insert` only when `conn.pool_key` is `Some`, so
         //    it cannot replace the healthy pooled entry or drop its continuation;
@@ -1175,7 +1190,7 @@ mod tests {
         frame: &ResponseCreateFrame<'_>,
         pool_key: Option<&str>,
     ) -> Result<CodexWsEvents, CodexWsError> {
-        let turn = begin(url, headers, pool_key).await?;
+        let turn = begin(url, headers, pool_key, "codex").await?;
         turn.stream(frame, RecordPlan::none()).await
     }
 
@@ -1419,7 +1434,7 @@ mod tests {
 
         // Turn 1: fresh connection exposes the successful handshake headers,
         // then drains to completion and enters the pool.
-        let turn1 = begin(&url, HeaderMap::new(), Some("session-1"))
+        let turn1 = begin(&url, HeaderMap::new(), Some("session-1"), "codex")
             .await
             .expect("first turn connects");
         let handshake = turn1
@@ -1442,7 +1457,7 @@ mod tests {
 
         // Turn 2: reuses the pooled socket (the mock only accepts once) and
         // reports no fresh handshake headers.
-        let turn2 = begin(&url, HeaderMap::new(), Some("session-1"))
+        let turn2 = begin(&url, HeaderMap::new(), Some("session-1"), "codex")
             .await
             .expect("second turn reuses connection");
         assert!(
@@ -1471,7 +1486,9 @@ mod tests {
     /// Issue #248: a second turn already streaming on the pooled socket must not
     /// serialize a concurrent request behind its turn slot. The concurrent turn
     /// gets a dedicated one-shot connection, while the original socket remains the
-    /// session's pooled connection and retains subsequent reuse.
+    /// session's pooled connection and retains subsequent reuse. Also proves the
+    /// deferred follow-up metric: `shunt.codex_ws_overflow{outcome="opened"}`
+    /// increments exactly once for the dedicated connection.
     #[tokio::test]
     async fn concurrent_turn_opens_a_dedicated_connection_instead_of_waiting() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1573,9 +1590,15 @@ mod tests {
 
         // Turn 2 reuses connection 1. Consume only response.created; the mock holds
         // response.completed so the reader retains the connection's turn slot.
-        let turn2 = begin(&url, HeaderMap::new(), Some("session-busy"))
-            .await
-            .expect("second turn reuses connection 1");
+        let overflow_test_provider = "codex-overflow-open-test";
+        let turn2 = begin(
+            &url,
+            HeaderMap::new(),
+            Some("session-busy"),
+            overflow_test_provider,
+        )
+        .await
+        .expect("second turn reuses connection 1");
         let mut turn2 = turn2
             .stream(&frame, RecordPlan::none())
             .await
@@ -1589,13 +1612,32 @@ mod tests {
 
         // A concurrent begin must not wait for turn 2's terminal event. It opens
         // connection 2 and carries no continuation because the socket is dedicated.
+        // Issue #248's deferred follow-up: this admission must also be counted as
+        // `shunt.codex_ws_overflow{outcome="opened"}`.
+        let opened_before = crate::metrics::codex_ws_overflow_count_for_tests(
+            overflow_test_provider,
+            crate::metrics::CodexWsOverflowOutcome::Opened,
+        );
         let overflow = tokio::time::timeout(
             Duration::from_secs(5),
-            begin(&url, HeaderMap::new(), Some("session-busy")),
+            begin(
+                &url,
+                HeaderMap::new(),
+                Some("session-busy"),
+                overflow_test_provider,
+            ),
         )
         .await
         .expect("a busy pooled connection must not serialize a concurrent turn")
         .expect("overflow connection opens");
+        assert_eq!(
+            crate::metrics::codex_ws_overflow_count_for_tests(
+                overflow_test_provider,
+                crate::metrics::CodexWsOverflowOutcome::Opened
+            ),
+            opened_before + 1,
+            "opening a dedicated overflow socket increments the opened counter"
+        );
         assert!(
             overflow.stored_continuation().is_none(),
             "the dedicated turn carries no continuation"
@@ -1656,7 +1698,9 @@ mod tests {
     /// Issue #248: once all overflow slots are live, another concurrent turn must
     /// fail before opening a socket instead of waiting. Releasing the slots restores
     /// the dedicated path, proving the ceiling is admission rather than a sticky
-    /// failure state.
+    /// failure state. Also proves the deferred follow-up metric: the refusal
+    /// increments `shunt.codex_ws_overflow{outcome="refused"}` and the recovered
+    /// admission increments `outcome="opened"`, not the other way around.
     #[tokio::test]
     async fn overflow_ceiling_refuses_promptly_then_recovers() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1739,9 +1783,15 @@ mod tests {
         .await
         .expect("first turn connects");
         drain(&mut turn1).await;
-        let turn2 = begin(&url, HeaderMap::new(), Some("session-overflow-ceiling"))
-            .await
-            .expect("second turn reuses pooled connection");
+        let overflow_test_provider = "codex-overflow-ceiling-test";
+        let turn2 = begin(
+            &url,
+            HeaderMap::new(),
+            Some("session-overflow-ceiling"),
+            overflow_test_provider,
+        )
+        .await
+        .expect("second turn reuses pooled connection");
         let mut turn2 = turn2
             .stream(&frame, RecordPlan::none())
             .await
@@ -1761,9 +1811,20 @@ mod tests {
         }
         assert!(OverflowSlot::claim().is_none());
         let accepts_before_refusal = accepted.load(Ordering::SeqCst);
+        // Issue #248's deferred follow-up: a ceiling refusal must be counted as
+        // `shunt.codex_ws_overflow{outcome="refused"}` before any frame is sent.
+        let refused_before = crate::metrics::codex_ws_overflow_count_for_tests(
+            overflow_test_provider,
+            crate::metrics::CodexWsOverflowOutcome::Refused,
+        );
         let error = match tokio::time::timeout(
             Duration::from_secs(5),
-            begin(&url, HeaderMap::new(), Some("session-overflow-ceiling")),
+            begin(
+                &url,
+                HeaderMap::new(),
+                Some("session-overflow-ceiling"),
+                overflow_test_provider,
+            ),
         )
         .await
         .expect("overflow admission refuses promptly instead of waiting")
@@ -1784,11 +1845,28 @@ mod tests {
             accepts_before_refusal,
             "ceiling refusal does not open another socket"
         );
+        assert_eq!(
+            crate::metrics::codex_ws_overflow_count_for_tests(
+                overflow_test_provider,
+                crate::metrics::CodexWsOverflowOutcome::Refused
+            ),
+            refused_before + 1,
+            "ceiling refusal increments the refused counter"
+        );
 
         drop(slots);
+        let opened_before = crate::metrics::codex_ws_overflow_count_for_tests(
+            overflow_test_provider,
+            crate::metrics::CodexWsOverflowOutcome::Opened,
+        );
         let overflow = tokio::time::timeout(
             Duration::from_secs(5),
-            begin(&url, HeaderMap::new(), Some("session-overflow-ceiling")),
+            begin(
+                &url,
+                HeaderMap::new(),
+                Some("session-overflow-ceiling"),
+                overflow_test_provider,
+            ),
         )
         .await
         .expect("released overflow slots restore prompt admission")
@@ -1805,6 +1883,14 @@ mod tests {
             accepted.load(Ordering::SeqCst),
             accepts_before_refusal + 1,
             "released admission opens exactly one dedicated socket"
+        );
+        assert_eq!(
+            crate::metrics::codex_ws_overflow_count_for_tests(
+                overflow_test_provider,
+                crate::metrics::CodexWsOverflowOutcome::Opened
+            ),
+            opened_before + 1,
+            "the recovered admission increments the opened counter, not the refused one"
         );
 
         release_turn2.send(()).expect("release turn 2");
@@ -1853,10 +1939,10 @@ mod tests {
         let url = format!("ws://{addr}/codex/responses");
         // Neither connection has completed a turn yet, so both handshakes model
         // concurrent cold starts that observed no existing pool entry.
-        let first = begin(&url, HeaderMap::new(), Some("session-race"))
+        let first = begin(&url, HeaderMap::new(), Some("session-race"), "codex")
             .await
             .expect("first cold connection opens");
-        let second = begin(&url, HeaderMap::new(), Some("session-race"))
+        let second = begin(&url, HeaderMap::new(), Some("session-race"), "codex")
             .await
             .expect("second cold connection opens");
         let first_conn = first.conn.clone();
@@ -2080,7 +2166,7 @@ mod tests {
         });
 
         // Turn 1: record continuation from a real completion.
-        let turn1 = begin(&url, HeaderMap::new(), Some("sess-cont"))
+        let turn1 = begin(&url, HeaderMap::new(), Some("sess-cont"), "codex")
             .await
             .expect("first turn connects");
         let mut events = turn1
@@ -2096,7 +2182,7 @@ mod tests {
         drain(&mut events).await;
 
         // Turn 2: the reused connection exposes the stored continuation.
-        let turn2 = begin(&url, HeaderMap::new(), Some("sess-cont"))
+        let turn2 = begin(&url, HeaderMap::new(), Some("sess-cont"), "codex")
             .await
             .expect("second turn reuses connection");
         let stored = turn2
@@ -2557,7 +2643,7 @@ mod tests {
         });
 
         let url = format!("ws://{addr}/codex/responses");
-        let turn = begin(&url, HeaderMap::new(), None)
+        let turn = begin(&url, HeaderMap::new(), None, "codex")
             .await
             .expect("handshake connects");
         drop(turn); // abandon the turn without streaming

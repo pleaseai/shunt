@@ -53,6 +53,7 @@ authorization = "Bearer <token>"
 | `shunt.stream_outcome` | カウンター | `provider`, `model`, `outcome` | SSE の最終結果を 1 件記録: `completed`, `error_event`, `upstream_cut`, `client_disconnect`。 |
 | `shunt.tokens` | カウンター | `provider`, `model`, `kind` | 最後に報告されたストリーミング token usage (`input`, `output`, `cache_read`, `cache_creation`)。非ストリーミングは記録しない。 |
 | `shunt.codex_continuation` | カウンター | `provider`, `outcome` | Codex WebSocket continuation の hit または fallback。 |
+| `shunt.codex_ws_overflow` | カウンター | `provider`, `outcome` | 並行 turn が専用 overflow 接続を開いた場合は `opened`、接続上限で拒否された場合は `refused`（issue #248）。 |
 | `shunt.codex_client_events` | カウンター | `event` | サニタイズ済みイベント名ごとの Codex CLI analytics イベント。payload とプロパティは破棄される。 |
 | `shunt.upstream_retries` | カウンター | `provider`, `reason` | 回数制限付きの一時的な upstream retry。 |
 | `shunt.failover` | カウンター | `provider`, `state` | 順序付きアップストリームのフェイルオーバー遷移: `attempted`, `advanced`, `exhausted`。 |

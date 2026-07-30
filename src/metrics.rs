@@ -10,10 +10,10 @@
 //!   provider, so with `[otel]` absent the instruments are inert.
 //!
 //! Request metrics cover request counts/header latency, streaming TTFT/outcomes
-//! and streaming token usage, Codex continuation decisions and sanitized client
-//! analytics event names, retries, and requests shed at the inbound concurrency
-//! limit. Pool metrics expose best-account quota utilization and account
-//! rotations.
+//! and streaming token usage, Codex continuation decisions, Codex WebSocket
+//! dedicated-overflow admission outcomes, and sanitized client analytics event
+//! names, retries, and requests shed at the inbound concurrency limit. Pool
+//! metrics expose best-account quota utilization and account rotations.
 //!
 //! Attributes stay low-cardinality (provider/model/status/outcome/kind/window/
 //! reason, plus the sanitized, cardinality-capped `event` on
@@ -48,6 +48,7 @@ struct OtelInstruments {
     requests_shed: Counter<u64>,
     _pool_utilization: ObservableGauge<f64>,
     pool_rotations: Counter<u64>,
+    codex_ws_overflow: Counter<u64>,
 }
 
 type PoolUtilizationValues = HashMap<(String, &'static str), Option<f64>>;
@@ -132,6 +133,12 @@ fn otel_instruments() -> &'static OtelInstruments {
             pool_rotations: meter
                 .u64_counter("shunt.pool.rotations")
                 .with_description("Account-pool rotations by low-cardinality reason")
+                .build(),
+            codex_ws_overflow: meter
+                .u64_counter("shunt.codex_ws_overflow")
+                .with_description(
+                    "Codex WebSocket dedicated overflow connections (opened vs refused at the ceiling, issue #248)",
+                )
                 .build(),
         }
     })
@@ -358,6 +365,82 @@ pub fn record_request_shed() {
     otel_instruments().requests_shed.add(1, &[]);
 }
 
+/// The outcome of a Codex WebSocket dedicated-overflow admission decision
+/// (issue #248): a concurrent turn found the session's pooled connection
+/// already streaming and either opened a one-shot dedicated socket, or was
+/// refused because the overflow ceiling (`MAX_OVERFLOW_CONNECTIONS` in
+/// `crate::adapters::responses::codex_ws`) was already saturated.
+#[derive(Clone, Copy, Debug)]
+pub enum CodexWsOverflowOutcome {
+    /// The pooled connection was busy; a dedicated overflow socket was opened
+    /// for this turn. It carries no `previous_response_id` continuation, so a
+    /// rising count on a session that expects one shared connection answers
+    /// issue #248's open question: concurrent Claude Code agents are sharing
+    /// one `x-claude-code-session-id` and colliding on the same pooled turn.
+    Opened,
+    /// The overflow ceiling was already saturated; admission was refused
+    /// before any frame was sent and the caller falls back to HTTP.
+    Refused,
+}
+
+impl CodexWsOverflowOutcome {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Opened => "opened",
+            Self::Refused => "refused",
+        }
+    }
+}
+
+/// Record one Codex WebSocket dedicated-overflow admission decision: a
+/// `shunt.codex_ws_overflow` count tagged with the provider and `outcome`
+/// (`opened` or `refused`). Emitted to Sentry and OpenTelemetry; each sink is
+/// inert unless configured. See [`CodexWsOverflowOutcome`].
+pub fn record_codex_ws_overflow(provider: &str, outcome: CodexWsOverflowOutcome) {
+    let provider = provider.to_owned();
+    let outcome_str = outcome.as_str();
+    sentry::metrics::counter("shunt.codex_ws_overflow", 1)
+        .attribute("provider", provider.clone())
+        .attribute("outcome", outcome_str.to_owned())
+        .capture();
+
+    let attributes = [
+        KeyValue::new("provider", provider.clone()),
+        KeyValue::new("outcome", outcome_str),
+    ];
+    otel_instruments().codex_ws_overflow.add(1, &attributes);
+
+    #[cfg(test)]
+    {
+        *test_overflow_counts()
+            .lock()
+            .expect("test overflow counter lock poisoned")
+            .entry((provider, outcome_str))
+            .or_insert(0) += 1;
+    }
+}
+
+/// Test-only observation point for [`record_codex_ws_overflow`]: neither sink
+/// (Sentry, OpenTelemetry) is introspectable without a live collector, so
+/// callers that need to prove the counter actually increments (rather than
+/// merely not panicking) read this instead. Keyed by provider so tests using
+/// distinct provider strings do not interfere with each other's counts even
+/// when `cargo test` runs them in parallel within one process.
+#[cfg(test)]
+pub fn codex_ws_overflow_count_for_tests(provider: &str, outcome: CodexWsOverflowOutcome) -> u64 {
+    *test_overflow_counts()
+        .lock()
+        .expect("test overflow counter lock poisoned")
+        .get(&(provider.to_string(), outcome.as_str()))
+        .unwrap_or(&0)
+}
+
+#[cfg(test)]
+fn test_overflow_counts() -> &'static Mutex<HashMap<(String, &'static str), u64>> {
+    static COUNTS: OnceLock<Mutex<HashMap<(String, &'static str), u64>>> = OnceLock::new();
+    COUNTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -419,5 +502,39 @@ mod tests {
         super::record_failover("anthropic", "attempted");
         super::record_failover("openai", "advanced");
         super::record_failover("openai", "exhausted");
+    }
+
+    /// The Codex WebSocket overflow counter honors the same opt-in no-op
+    /// contract, and — unlike the other counters here — the increment is also
+    /// independently observable through the test-only accessor, proving the
+    /// counter actually counts rather than merely not panicking.
+    #[test]
+    fn record_codex_ws_overflow_is_noop_without_sinks_and_counts_for_tests() {
+        use super::{
+            codex_ws_overflow_count_for_tests, record_codex_ws_overflow, CodexWsOverflowOutcome,
+        };
+
+        let provider = "codex-metrics-unit-test";
+        assert_eq!(
+            codex_ws_overflow_count_for_tests(provider, CodexWsOverflowOutcome::Opened),
+            0
+        );
+        assert_eq!(
+            codex_ws_overflow_count_for_tests(provider, CodexWsOverflowOutcome::Refused),
+            0
+        );
+
+        record_codex_ws_overflow(provider, CodexWsOverflowOutcome::Opened);
+        record_codex_ws_overflow(provider, CodexWsOverflowOutcome::Opened);
+        record_codex_ws_overflow(provider, CodexWsOverflowOutcome::Refused);
+
+        assert_eq!(
+            codex_ws_overflow_count_for_tests(provider, CodexWsOverflowOutcome::Opened),
+            2
+        );
+        assert_eq!(
+            codex_ws_overflow_count_for_tests(provider, CodexWsOverflowOutcome::Refused),
+            1
+        );
     }
 }

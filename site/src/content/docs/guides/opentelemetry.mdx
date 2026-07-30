@@ -53,6 +53,7 @@ Each signal toggles independently via `traces` / `metrics` / `logs`.
 | `shunt.stream_outcome` | Counter | `provider`, `model`, `outcome` | One final SSE result: `completed`, `error_event`, `upstream_cut`, or `client_disconnect`. |
 | `shunt.tokens` | Counter | `provider`, `model`, `kind` | Last reported streaming token usage (`input`, `output`, `cache_read`, `cache_creation`). Non-streaming usage is not recorded. |
 | `shunt.codex_continuation` | Counter | `provider`, `outcome` | Codex WebSocket continuation hit or fallback. |
+| `shunt.codex_ws_overflow` | Counter | `provider`, `outcome` | Codex WebSocket dedicated overflow connection `opened` or ceiling-`refused` for a concurrent turn (issue #248). |
 | `shunt.codex_client_events` | Counter | `event` | Codex CLI analytics events by sanitized event name; payloads and properties are discarded. |
 | `shunt.upstream_retries` | Counter | `provider`, `reason` | Bounded transient upstream retries. |
 | `shunt.failover` | Counter | `provider`, `state` | Ordered-upstream failover transitions: `attempted`, `advanced`, or `exhausted`. |

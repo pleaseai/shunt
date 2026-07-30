@@ -138,7 +138,10 @@ reproducing attestation.**
   concurrent turn for parallelism. At most 64 overflow connections may be live at
   once; excess turns are refused before any frame is sent and transparently spill
   over to HTTP, preserving the transport's "never worse than plain HTTP" safety net
-  without restoring a turn queue.
+  without restoring a turn queue. A `shunt.codex_ws_overflow` counter (`opened` vs
+  `refused`, per provider) records each admission decision, giving operators a way
+  to see whether concurrent Claude Code agents actually share one
+  `x-claude-code-session-id` pool key and how often that costs continuation reuse.
 - **Invalidation.** Any non-clean end (error/incomplete terminal, close, transport
   error, or a rejected `previous_response_id`) evicts the connection and clears its
   continuation state. A clean `response.completed` re-pools a fresh connection and
