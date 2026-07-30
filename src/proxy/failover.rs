@@ -53,6 +53,16 @@ pub(super) async fn forward(
                 response: error.into_response(),
             }
         })?;
+    crate::observability::record_requested_model(&requested_model);
+    // Records the request's final outcome exactly once, at whichever terminal
+    // return point below is taken — the intermediate per-attempt failover
+    // advances already have their own `tracing::warn!` + metrics and are not
+    // re-recorded here (#281 asks only for the request's ultimate outcome, to
+    // keep the span/event signal one-per-request rather than one-per-attempt).
+    let finish = |provider: &str, status: StatusCode| {
+        crate::observability::record_span_outcome(provider, status);
+        crate::observability::capture_upstream_outcome(provider, &requested_model, status);
+    };
     if is_count_tokens(uri) {
         // count_tokens answers from the first chain element only, so gate and
         // dispatch against just that element: a later credential-injecting
@@ -144,6 +154,7 @@ pub(super) async fn forward(
             Ok((status, mut response)) => {
                 stamp_gateway_headers(&mut response, &provider, &requested_model, &upstream_model);
                 if !is_advance_status(status) {
+                    finish(&provider, status);
                     return Ok(observe_response(
                         status, response, provider, model, started_at,
                     ));
@@ -197,6 +208,7 @@ pub(super) async fn forward(
                         );
                     }
                     _ => {
+                        finish(&provider, response.status());
                         return Err(ForwardError {
                             message,
                             response: *response,
@@ -214,17 +226,24 @@ pub(super) async fn forward(
     crate::metrics::record_failover(&last_route.provider, "exhausted");
     if let Some(failure) = remembered {
         return match failure.response {
-            FinalResponse::Relayed(response) => Ok(observe_response(
-                response.status(),
-                response,
-                failure.provider,
-                failure.model,
-                started_at,
-            )),
-            FinalResponse::MappedError { message, response } => Err(ForwardError {
-                message,
-                response: *response,
-            }),
+            FinalResponse::Relayed(response) => {
+                let status = response.status();
+                finish(&failure.provider, status);
+                Ok(observe_response(
+                    status,
+                    response,
+                    failure.provider,
+                    failure.model,
+                    started_at,
+                ))
+            }
+            FinalResponse::MappedError { message, response } => {
+                finish(&failure.provider, response.status());
+                Err(ForwardError {
+                    message,
+                    response: *response,
+                })
+            }
         };
     }
 
@@ -237,6 +256,7 @@ pub(super) async fn forward(
         &requested_model,
         &last_route.upstream_model,
     );
+    finish(&last_route.provider, StatusCode::BAD_GATEWAY);
     Err(ForwardError { message, response })
 }
 
@@ -294,11 +314,16 @@ async fn count_tokens_response(
     match result {
         Ok((status, mut response)) => {
             stamp_gateway_headers(&mut response, &provider, requested_model, &upstream_model);
+            crate::observability::record_span_outcome(&provider, status);
+            crate::observability::capture_upstream_outcome(&provider, requested_model, status);
             Ok((status, response))
         }
         Err(error) => {
             let mut response = *error.response;
             stamp_gateway_headers(&mut response, &provider, requested_model, &upstream_model);
+            let status = response.status();
+            crate::observability::record_span_outcome(&provider, status);
+            crate::observability::capture_upstream_outcome(&provider, requested_model, status);
             Err(ForwardError {
                 message: error.message,
                 response,

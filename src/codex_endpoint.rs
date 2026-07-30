@@ -80,11 +80,18 @@ pub async fn post(
     } else {
         session_id.as_deref().unwrap_or("")
     };
+    // See `proxy::post`'s equivalent span for why these start empty: the model
+    // and outcome are only known inside `forward`, once the body is parsed and
+    // the upstream has responded (`crate::observability`, #281).
     let span = tracing::info_span!(
         "codex_endpoint_request",
         method = %method,
         path = %path,
-        session_id = span_session_id
+        session_id = span_session_id,
+        gen_ai.request.model = tracing::field::Empty,
+        shunt.provider = tracing::field::Empty,
+        http.response.status_code = tracing::field::Empty,
+        otel.status_code = tracing::field::Empty
     );
 
     async move {
@@ -215,6 +222,7 @@ async fn forward(
         .ok()
         .and_then(|view| view.model)
         .unwrap_or_else(|| "unknown".to_string());
+    crate::observability::record_requested_model(&model);
     // The body-`model` does not pick a provider (the endpoint is pinned to one
     // `chatgpt_oauth` provider). `request_builder` only reads `route.provider`,
     // so `model`/`upstream_model` are labels, not routing inputs.
@@ -238,14 +246,16 @@ async fn forward(
     // Codex CLI's own request headers verbatim (swapping only the credential); the
     // shunt client-token header is stripped inside `forward_codex_inbound`.
     let result = responses::forward_codex_inbound(state, route, pool_key, headers, body).await;
-    let status = match &result {
-        Ok((status, _)) => status.as_u16(),
-        Err(error) => error.response.status().as_u16(),
+    let status_code = match &result {
+        Ok((status, _)) => *status,
+        Err(error) => error.response.status(),
     };
+    crate::observability::record_span_outcome(&provider, status_code);
+    crate::observability::capture_upstream_outcome(&provider, &model, status_code);
     crate::metrics::record_proxied_request(
         &provider,
         &model,
-        status,
+        status_code.as_u16(),
         started_at.elapsed().as_secs_f64() * 1000.0,
     );
     result
