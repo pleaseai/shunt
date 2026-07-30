@@ -261,13 +261,15 @@ mod tests {
     }
 
     #[test]
-    fn claude_uuid_coalescing_is_scoped_to_the_claude_provider() {
+    fn claude_uuid_coalescing_is_scoped_to_the_claude_oauth_auth_kind() {
         // uuidByName is built from the Claude account store (/admin/accounts).
-        // A pool account from another provider must never be looked up in it,
-        // or a same-named non-Claude account could steal the uuid mapping and
-        // coalesce a later Claude observation into the wrong provider's row.
+        // Gating on the pool account's auth kind (not its provider table's
+        // display name) means a chatgpt_oauth provider named "claude" is
+        // never matched against it, and a claude_oauth provider under any
+        // custom name still is.
         let page = dashboard_page("csrf");
-        assert!(page.contains(r#"provider === "claude" ? uuidByName[a.name] : null"#));
+        assert!(page.contains(r#"p.auth === "claude_oauth" ? uuidByName[a.name] : null"#));
+        assert!(!page.contains(r#"provider === "claude" ? uuidByName[a.name]"#));
     }
 
     #[test]

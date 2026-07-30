@@ -82,11 +82,13 @@ function accountGroups(observed, pool, accounts) {
         utilization_7d_oi: a.utilization_7d_oi, reset_7d_oi: a.reset_7d_oi };
       groupFor(provider).push(row);
       // uuidByName is sourced from the Claude account store only (see
-      // /admin/accounts), so only claude-provider pool accounts may be
-      // matched against it -- otherwise a same-named account from another
-      // provider could steal the uuid mapping and coalesce a later Claude
-      // observation into the wrong provider's row.
-      const uuid = provider === "claude" ? uuidByName[a.name] : null;
+      // /admin/accounts), so only claude_oauth accounts may be matched
+      // against it. Gate on the account's actual auth kind (p.auth), not the
+      // provider's display name/group key: a provider table can be named
+      // anything, so a chatgpt_oauth provider named "claude" would otherwise
+      // still get Claude uuids applied, and a claude_oauth provider under a
+      // custom name would otherwise never get them.
+      const uuid = p.auth === "claude_oauth" ? uuidByName[a.name] : null;
       if (uuid) byUuid.set(uuid, row);
     }
   }

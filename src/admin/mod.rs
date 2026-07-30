@@ -866,7 +866,14 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
             state
                 .accounts
                 .snapshot(name, &resolved, None, state.config.server.pool.as_ref());
-        providers.push(json!({ "provider": name, "accounts": snapshots }));
+        // `auth` carries the account's actual auth kind (claude_oauth /
+        // chatgpt_oauth), distinct from `provider`, which is the operator's
+        // config-table name and therefore free-form. The dashboard needs the
+        // former to decide whether Claude-store uuid coalescing applies to
+        // an account -- a provider named "claude" is not necessarily a
+        // claude_oauth provider, and a claude_oauth provider need not be
+        // named "claude".
+        providers.push(json!({ "provider": name, "auth": provider.auth, "accounts": snapshots }));
     }
     json_secure(json!({ "providers": providers }))
 }
