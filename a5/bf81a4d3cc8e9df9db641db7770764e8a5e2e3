@@ -1,0 +1,53 @@
+site/src/content/docs/zh-cn/guides/opentelemetry.mdx
+  s_ddcf8b4e4df1ee::t_632f3ff305c677 56
+site/src/content/docs/ja/guides/opentelemetry.mdx
+  s_ddcf8b4e4df1ee::t_9cf66a6c39f2e8 56
+src/adapters/responses/codex_ws.rs
+  s_ddcf8b4e4df1ee::t_cf410cae87bf20 1593-1601,1615-1620,1623-1628,1633-1640
+  s_ddcf8b4e4df1ee::t_5f3c49b61c84dd 561-566,571
+  s_ddcf8b4e4df1ee::t_79c85132ef5425 1489-1491
+  s_ddcf8b4e4df1ee::t_8d65ed31b235b5 1460
+  s_ddcf8b4e4df1ee::t_5110e68f34848c 617-620,625-628
+  s_ddcf8b4e4df1ee::t_aa6b9e8041d5dd 1942,1945
+  s_ddcf8b4e4df1ee::t_406e67e7a6c041 2169
+  s_ddcf8b4e4df1ee::t_c978995f4b6803 2185
+  s_ddcf8b4e4df1ee::t_69f4defdc5e7b7 1437
+  s_ddcf8b4e4df1ee::t_cd330318ec76ca 2646
+  s_ddcf8b4e4df1ee::t_6d6824fd62ee6b 1193
+  s_ddcf8b4e4df1ee::t_22cd4fb701868c 1701-1703
+  s_ddcf8b4e4df1ee::t_ec14001d2fd177 1786-1794,1814-1819,1822-1827,1848-1855,1858-1861,1864-1869,1887-1894
+src/adapters/responses/websocket.rs
+  s_ddcf8b4e4df1ee::t_38e1dbb83c5190 223
+docs/running.md
+  s_ddcf8b4e4df1ee::t_8bbe78b4bf6f47 185
+docs/m7-codex-websocket.md
+  s_ddcf8b4e4df1ee::t_00ab0ac1cb52ce 141-144
+site/src/content/docs/guides/opentelemetry.mdx
+  s_ddcf8b4e4df1ee::t_dfea4efadc638b 56
+site/src/content/docs/ko/guides/opentelemetry.mdx
+  s_ddcf8b4e4df1ee::t_66fdd8c6ca1869 56
+src/metrics.rs
+  s_ddcf8b4e4df1ee::t_e6c3ff3d40e81e 13-16
+  s_ddcf8b4e4df1ee::t_a6bfe9961d0f04 51
+  s_ddcf8b4e4df1ee::t_f8303598774083 506-512,516-539
+  s_ddcf8b4e4df1ee::t_56784d9cc13465 513-515
+  s_ddcf8b4e4df1ee::t_b254fe68340f77 137-142
+  s_ddcf8b4e4df1ee::t_9dbee149b87db6 368-370,373-443
+  s_ddcf8b4e4df1ee::t_a51e79aebe049a 371-372
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "a5bf81a4d3cc8e9df9db641db7770764e8a5e2e3",
+  "prompts": {},
+  "sessions": {
+    "s_ddcf8b4e4df1ee": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6ca13e28-2d2c-4649-83d2-28ac0a62f7c6",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
