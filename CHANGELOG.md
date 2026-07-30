@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.30.0](https://github.com/pleaseai/shunt/compare/v0.29.0...v0.30.0) (2026-07-30)
+
+
+### Features
+
+* **metrics:** add shunt.codex_ws_overflow counter for the Codex WS overflow path ([#283](https://github.com/pleaseai/shunt/issues/283)) ([b5b7ec4](https://github.com/pleaseai/shunt/commit/b5b7ec45147ba17c3b5d9c61af4336c8cda3adad))
+
+
+### Bug Fixes
+
+* **codex:** seed input-token estimate on the account-pool path ([#279](https://github.com/pleaseai/shunt/issues/279)) ([c9fad4c](https://github.com/pleaseai/shunt/commit/c9fad4c2cb0c64a74cbe5bb86aceb5f04d0a9d20))
+
 ## [0.29.0](https://github.com/pleaseai/shunt/compare/v0.28.0...v0.29.0) (2026-07-29)
 
 
