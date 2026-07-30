@@ -538,3 +538,20 @@ async fn non_sse_body_is_left_untouched() {
         "{}"
     );
 }
+
+#[test]
+fn stream_failure_labels_match_outcome_labels() {
+    // The Sentry `outcome` tag and the metrics `stream_outcome` label are
+    // produced by two independent `as_str` functions; they must agree or the
+    // two surfaces stop joining.
+    for outcome in [
+        Outcome::Completed,
+        Outcome::ErrorEvent,
+        Outcome::UpstreamCut,
+        Outcome::ClientDisconnect,
+    ] {
+        if let Some(kind) = outcome.as_stream_failure() {
+            assert_eq!(outcome.as_str(), kind.as_str());
+        }
+    }
+}

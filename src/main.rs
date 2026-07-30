@@ -499,7 +499,11 @@ fn check(config_path: Option<PathBuf>) -> anyhow::Result<()> {
 /// plus, unconditionally once a client is bound, an upstream-failure event
 /// (`error` for a 5xx response, `warning` for 429/529 quota/overload) tagged
 /// only with `model`, `provider`, and `upstream_status` (see
-/// `observability::capture_upstream_outcome`). Never request/response
+/// `observability::capture_upstream_outcome`), and a mid-stream failure event
+/// for a streaming request that answered `200` and then failed (`error` for an
+/// `event: error` frame, `warning` for the connection cut before a terminal
+/// event) tagged only with `model`, `provider`, and `outcome` (see
+/// `observability::record_stream_failure`). Never request/response
 /// bodies, headers, or credentials. Performance tracing is a further opt-in
 /// via `[sentry] traces_sample_rate`; the span filter installed by
 /// [`init_tracing`] admits spans only after this pins an enabled policy.

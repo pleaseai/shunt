@@ -288,7 +288,13 @@ pub(crate) enum StreamFailureKind {
 }
 
 impl StreamFailureKind {
-    fn as_str(self) -> &'static str {
+    /// The Sentry `outcome` tag for this failure. Must stay identical to
+    /// `stream_metrics::Outcome::as_str` for the corresponding outcome, so
+    /// the tag joins against the `outcome` attribute of the
+    /// `shunt.stream_outcome` metric; the test
+    /// `stream_metrics::tests::stream_failure_labels_match_outcome_labels`
+    /// pins that.
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::ErrorEvent => "error_event",
             Self::UpstreamCut => "upstream_cut",
