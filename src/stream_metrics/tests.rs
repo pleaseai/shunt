@@ -7,7 +7,7 @@ use std::{
 
 use axum::{
     body::{to_bytes, Body, Bytes},
-    http::{header::CONTENT_TYPE, Response},
+    http::{header::CONTENT_TYPE, Response, StatusCode},
 };
 use futures_util::{future::FutureExt, stream, StreamExt};
 use serde_json::json;
@@ -21,6 +21,7 @@ use super::{observe_response, ObserverState, Outcome, Protocol, MAX_EVENT_BYTES}
 fn state(protocol: Protocol) -> ObserverState {
     ObserverState::new(
         protocol,
+        StatusCode::OK,
         "provider".to_string(),
         "model".to_string(),
         Instant::now(),
@@ -196,6 +197,40 @@ fn responses_failure_is_an_error_event() {
 }
 
 #[test]
+fn responses_error_event_is_an_error_event() {
+    // `AnthropicSseMachine::apply` (src/model/responses.rs) treats `"error"`
+    // and `"response.failed"` identically — both terminate the backend
+    // stream with an error, so the observer must too.
+    let mut observer = state(Protocol::Responses);
+    observer.push_bytes(b"event: error\ndata: {\"type\":\"error\"}\n\n");
+    assert_eq!(observer.outcome(true), Outcome::ErrorEvent);
+}
+
+#[test]
+fn responses_done_event_is_terminal_and_carries_usage() {
+    // `AnthropicSseMachine::apply` treats `"response.completed"` and
+    // `"response.done"` identically (see also
+    // docs/m1-responses-translation.md) — both carry the full `response` +
+    // `usage` and end the stream normally.
+    let mut observer = state(Protocol::Responses);
+    observer.push_bytes(
+        format!(
+            "event: response.done\ndata: {}\n\n",
+            json!({"type": "response.done", "response": {"usage": {
+                "input_tokens": 30,
+                "output_tokens": 12,
+                "input_tokens_details": {"cached_tokens": 7}
+            }}})
+        )
+        .as_bytes(),
+    );
+    assert_eq!(observer.tokens.input, Some(30));
+    assert_eq!(observer.tokens.output, Some(12));
+    assert_eq!(observer.tokens.cache_read, Some(7));
+    assert_eq!(observer.outcome(true), Outcome::Completed);
+}
+
+#[test]
 fn ping_and_content_deltas_are_ignored() {
     let mut observer = state(Protocol::Anthropic);
     observer.push_bytes(b"event: ping\ndata: {\"type\": \"ping\"}\n\n");
@@ -321,10 +356,15 @@ struct FinishWiring {
     event: Option<(sentry::Level, &'static str)>,
 }
 
-/// Runs one wiring case: wrap an SSE response carrying `sse`, drive its body
-/// per `drive`, and assert the span field and the Sentry capture match
-/// `expected`.
-fn assert_finish_wiring(sse: &'static [u8], drive: Drive, expected: FinishWiring) {
+/// Runs one wiring case: wrap an SSE response with the given `status`
+/// carrying `sse`, drive its body per `drive`, and assert the span field and
+/// the Sentry capture match `expected`.
+fn assert_finish_wiring(
+    status: StatusCode,
+    sse: &'static [u8],
+    drive: Drive,
+    expected: FinishWiring,
+) {
     let captured = CapturingLayer::default();
     let subscriber = tracing_subscriber::registry().with(captured.clone());
 
@@ -336,7 +376,10 @@ fn assert_finish_wiring(sse: &'static [u8], drive: Drive, expected: FinishWiring
             );
             let entered = span.enter();
             // Mirrors what `record_span_outcome` already recorded at
-            // response-header time for the 200 that opened this stream.
+            // response-header time for the status that opened this stream —
+            // `"ok"` for every case here, matching real `record_span_outcome`
+            // behavior for any non-5xx status (including the non-2xx case
+            // exercised below, e.g. 400).
             span.record("otel.status_code", "ok");
             let chunk = Ok::<_, Infallible>(Bytes::from_static(sse));
             let body = match drive {
@@ -346,6 +389,7 @@ fn assert_finish_wiring(sse: &'static [u8], drive: Drive, expected: FinishWiring
                 }
             };
             let response = Response::builder()
+                .status(status)
                 .header(CONTENT_TYPE, "text/event-stream")
                 .body(body)
                 .unwrap();
@@ -401,6 +445,7 @@ fn assert_finish_wiring(sse: &'static [u8], drive: Drive, expected: FinishWiring
 #[test]
 fn finish_records_otel_error_and_emits_a_sentry_event_for_a_mid_stream_error_event() {
     assert_finish_wiring(
+        StatusCode::OK,
         b"event: error\ndata: {}\n\n",
         Drive::ToEnd,
         FinishWiring {
@@ -418,6 +463,7 @@ fn finish_records_otel_error_and_emits_a_sentry_event_for_an_upstream_cut() {
     // A content delta with no terminal/error event, then the upstream simply
     // ends the stream (`natural_end = true`) — `UpstreamCut`.
     assert_finish_wiring(
+        StatusCode::OK,
         b"event: content_block_delta\ndata: {}\n\n",
         Drive::ToEnd,
         FinishWiring {
@@ -435,6 +481,7 @@ fn finish_does_not_touch_the_span_or_emit_an_event_for_a_normal_completion() {
     // Untouched since header time: `record_stream_failure` never runs, so the
     // field still holds whatever the (simulated) header-time call recorded.
     assert_finish_wiring(
+        StatusCode::OK,
         b"event: message_stop\ndata: {}\n\n",
         Drive::ToEnd,
         FinishWiring {
@@ -447,8 +494,27 @@ fn finish_does_not_touch_the_span_or_emit_an_event_for_a_normal_completion() {
 #[test]
 fn finish_does_not_touch_the_span_or_emit_an_event_for_a_client_disconnect() {
     assert_finish_wiring(
+        StatusCode::OK,
         b"event: content_block_delta\ndata: {}\n\n",
         Drive::DropAfterFirstChunk,
+        FinishWiring {
+            span_status: "ok",
+            event: None,
+        },
+    );
+}
+
+#[test]
+fn finish_does_not_report_a_stream_failure_for_a_non_2xx_response() {
+    // A non-2xx SSE response is already recorded/captured at header time
+    // (`record_span_outcome` / `capture_upstream_outcome`); reporting a
+    // mid-stream failure on top of it would double-report the same failure.
+    // Content that would otherwise read as `UpstreamCut` must not touch the
+    // span or emit a Sentry event when the response never opened `200`.
+    assert_finish_wiring(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        b"event: content_block_delta\ndata: {}\n\n",
+        Drive::ToEnd,
         FinishWiring {
             span_status: "ok",
             event: None,

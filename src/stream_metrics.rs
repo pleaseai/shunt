@@ -14,7 +14,7 @@ use std::{
 
 use axum::{
     body::{Body, Bytes},
-    http::{header::CONTENT_TYPE, Response},
+    http::{header::CONTENT_TYPE, Response, StatusCode},
 };
 use futures_util::{Stream, StreamExt};
 use serde_json::Value;
@@ -73,6 +73,14 @@ struct ObserverState {
     provider: String,
     model: String,
     started_at: Instant,
+    // The upstream response status the stream opened with. `finish` gates
+    // `record_stream_failure` on this being 2xx: a non-2xx SSE response was
+    // already recorded/captured at header time
+    // (`observability::record_span_outcome` / `capture_upstream_outcome`), so
+    // a mid-stream failure event on top of it would double-report the same
+    // failure and contradicts the "answered 200 then failed" scope this
+    // module documents (see the module docs).
+    status: StatusCode,
     // Held for the lifetime of the stream so a mid-stream failure can still
     // record onto the request's own span (`crate::observability::record_stream_failure`)
     // — cloning a `tracing::Span` bumps its ref count, deferring `on_close`
@@ -94,6 +102,7 @@ struct ObserverState {
 impl ObserverState {
     fn new(
         protocol: Protocol,
+        status: StatusCode,
         provider: String,
         model: String,
         started_at: Instant,
@@ -104,6 +113,7 @@ impl ObserverState {
             provider,
             model,
             started_at,
+            status,
             span,
             first_chunk_seen: false,
             buffer: Vec::with_capacity(4096),
@@ -208,13 +218,20 @@ impl ObserverState {
         self.finished = true;
         let outcome = self.outcome(natural_end);
         crate::metrics::record_stream_outcome(&self.provider, &self.model, outcome.as_str());
-        if let Some(failure) = outcome.as_stream_failure() {
-            crate::observability::record_stream_failure(
-                &self.span,
-                &self.provider,
-                &self.model,
-                failure,
-            );
+        // Only a stream that actually opened `200` can have "failed mid-stream"
+        // in the sense this reports: a non-2xx response was already recorded
+        // at header time (`record_span_outcome` / `capture_upstream_outcome`),
+        // so reporting again here would double the Sentry signal for the same
+        // upstream failure (see the `status` field doc comment).
+        if self.status.is_success() {
+            if let Some(failure) = outcome.as_stream_failure() {
+                crate::observability::record_stream_failure(
+                    &self.span,
+                    &self.provider,
+                    &self.model,
+                    failure,
+                );
+            }
         }
         for (kind, count) in [
             ("input", self.tokens.input),
@@ -289,13 +306,19 @@ fn observe_responses(event: Option<&[u8]>, data: Option<&[u8]>) -> FrameObservat
             ..Default::default()
         };
     }
-    if event == Some(b"response.failed") {
+    // Mirrors the Responses translator's own error handling
+    // (`model::responses::AnthropicSseMachine::apply`, `"error" | "response.failed"`):
+    // both event names terminate the backend stream with an error.
+    if matches!(event, Some(b"error") | Some(b"response.failed")) {
         return FrameObservation {
             error: true,
             ..Default::default()
         };
     }
-    if event != Some(b"response.completed") {
+    // Mirrors the translator's terminal handling (`"response.completed" |
+    // "response.done"`, see also `docs/m1-responses-translation.md`): both
+    // names carry the full `response` + `usage` and end the stream normally.
+    if !matches!(event, Some(b"response.completed") | Some(b"response.done")) {
         return FrameObservation::default();
     }
     let mut tokens = TokenUsage::default();
@@ -370,6 +393,7 @@ pub fn observe_response(
     if !is_sse(&response) {
         return response;
     }
+    let status = response.status();
     // Captured here, synchronously inside the caller's `.instrument(span)`
     // future (`proxy::post` / `codex_endpoint::post`), so this resolves to
     // the request's own span — by the time the stream is actually polled,
@@ -379,7 +403,7 @@ pub fn observe_response(
     let (parts, body) = response.into_parts();
     let observed = ObservedStream {
         upstream: body.into_data_stream().boxed(),
-        state: ObserverState::new(protocol, provider, model, started_at, span),
+        state: ObserverState::new(protocol, status, provider, model, started_at, span),
     };
     Response::from_parts(parts, Body::from_stream(observed))
 }
