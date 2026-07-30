@@ -81,7 +81,12 @@ function accountGroups(observed, pool, accounts) {
         utilization_7d: a.utilization_7d, reset_7d: a.reset_7d,
         utilization_7d_oi: a.utilization_7d_oi, reset_7d_oi: a.reset_7d_oi };
       groupFor(provider).push(row);
-      const uuid = uuidByName[a.name];
+      // uuidByName is sourced from the Claude account store only (see
+      // /admin/accounts), so only claude-provider pool accounts may be
+      // matched against it -- otherwise a same-named account from another
+      // provider could steal the uuid mapping and coalesce a later Claude
+      // observation into the wrong provider's row.
+      const uuid = provider === "claude" ? uuidByName[a.name] : null;
       if (uuid) byUuid.set(uuid, row);
     }
   }
@@ -106,18 +111,31 @@ function accountGroups(observed, pool, accounts) {
   return groups;
 }
 
-function rowStatusText(row) {
+// Coalescing lets an observed row override a managed row's displayed status
+// (e.g. the client sees "expired" quota the pool has not detected yet). The
+// label, the `data-state` used for styling, and the remediation note must all
+// read this same effective state -- otherwise they can disagree, e.g. a
+// "Needs login" label next to a green "available" dot with no login hint.
+function effectiveState(row) {
   const o = row.observed;
   if (o) {
-    if (o.state === "expired") return "Needs login";
-    if (o.state === "unavailable") return "Usage unavailable";
-    if (o.state === "waiting-for-traffic") return "Waiting for traffic";
-    if (o.signal === "integration-pending") return "Connected";
+    if (o.state === "expired") return "expired";
+    if (o.state === "unavailable") return "unavailable";
+    if (o.state === "waiting-for-traffic") return "waiting-for-traffic";
+    if (o.signal === "integration-pending") return "connected";
   }
-  if (row.state === "disabled") return "Disabled";
-  if (row.state === "cooling") return "Cooling";
-  if (row.state === "near-quota") return "Near quota";
-  if (row.state === "unseen") return "No traffic yet";
+  return row.state;
+}
+
+function rowStatusText(state) {
+  if (state === "expired") return "Needs login";
+  if (state === "unavailable") return "Usage unavailable";
+  if (state === "waiting-for-traffic") return "Waiting for traffic";
+  if (state === "connected") return "Connected";
+  if (state === "disabled") return "Disabled";
+  if (state === "cooling") return "Cooling";
+  if (state === "near-quota") return "Near quota";
+  if (state === "unseen") return "No traffic yet";
   return "Live";
 }
 
@@ -155,13 +173,14 @@ async function loadObserved() {
       if (row.managed && row.observed) identity.title = "managed pool account · same subscription as the local " + providerLabel(provider) + " login";
       else if (row.managed) identity.title = "managed pool account";
       else if (row.observed) identity.title = row.observed.source + " · read-only";
-      const pending = !!(row.observed && row.observed.signal === "integration-pending");
+      const state = effectiveState(row);
+      const pending = state === "connected";
       if (pending) r.className = "pending-row";
-      const status = cell(r, rowStatusText(row)); status.className = "status"; status.dataset.state = row.state;
+      const status = cell(r, rowStatusText(state)); status.className = "status"; status.dataset.state = state;
       const statusNote = document.createElement("small"); statusNote.className = "status-note";
-      if (row.state === "waiting-for-traffic") statusNote.textContent = "Quota arrives in GPT response headers";
-      else if (row.state === "expired") statusNote.textContent = "The provider client owns refresh";
-      else if (row.state === "unavailable") statusNote.textContent = "Current login could not read quota";
+      if (state === "waiting-for-traffic") statusNote.textContent = "Quota arrives in GPT response headers";
+      else if (state === "expired") statusNote.textContent = "The provider client owns refresh";
+      else if (state === "unavailable") statusNote.textContent = "Current login could not read quota";
       else if (row.managed && row.managed.cooldown_secs_remaining) statusNote.textContent = "retries in " + untilShort(Math.floor(Date.now() / 1000) + row.managed.cooldown_secs_remaining);
       if (statusNote.textContent) status.appendChild(statusNote);
       if (row.observed && row.observed.message) status.title = row.observed.message;
@@ -178,8 +197,8 @@ async function loadObserved() {
         ].filter(window => window[1] !== null && window[1] !== undefined);
         for (const window of windows) usageBar(usage, window[0], 1 - window[1], window[2] ? new Date(window[2] * 1000).toISOString() : null);
         if (!windows.length) { const empty = document.createElement("span"); empty.className = "usage-empty";
-          empty.textContent = row.state === "expired" ? "Sign in again with the provider client"
-            : row.state === "waiting-for-traffic" ? "Send one GPT request through this shunt"
+          empty.textContent = state === "expired" ? "Sign in again with the provider client"
+            : state === "waiting-for-traffic" ? "Send one GPT request through this shunt"
             : pending ? "Usage integration in progress"
             : "No usage reported yet"; usage.appendChild(empty); }
       }

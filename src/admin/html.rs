@@ -259,4 +259,27 @@ mod tests {
         assert!(!page.contains("<th>Resets</th>"));
         assert!(page.contains("No supported local provider login found"));
     }
+
+    #[test]
+    fn claude_uuid_coalescing_is_scoped_to_the_claude_provider() {
+        // uuidByName is built from the Claude account store (/admin/accounts).
+        // A pool account from another provider must never be looked up in it,
+        // or a same-named non-Claude account could steal the uuid mapping and
+        // coalesce a later Claude observation into the wrong provider's row.
+        let page = dashboard_page("csrf");
+        assert!(page.contains(r#"provider === "claude" ? uuidByName[a.name] : null"#));
+    }
+
+    #[test]
+    fn coalesced_row_label_style_and_remediation_share_one_effective_state() {
+        // Label text, the `data-state` used for CSS styling, and the
+        // remediation note must all derive from the same effective state so
+        // an observed override (e.g. "expired") can't show a contradictory
+        // style or note computed from the un-overridden managed state.
+        let page = dashboard_page("csrf");
+        assert!(page.contains("function effectiveState(row)"));
+        assert!(page.contains("status.dataset.state = state;"));
+        assert!(!page.contains("status.dataset.state = row.state;"));
+        assert!(page.contains(r#"empty.textContent = state === "expired""#));
+    }
 }
