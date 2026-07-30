@@ -1,11 +1,9 @@
 # shunt
 
-[![Crates.io](https://img.shields.io/crates/v/shunt-gateway.svg)](https://crates.io/crates/shunt-gateway)
 [![CI](https://github.com/pleaseai/shunt/actions/workflows/ci.yml/badge.svg)](https://github.com/pleaseai/shunt/actions/workflows/ci.yml)
-[![Socket Badge](https://socket.dev/api/badge/cargo/package/shunt-gateway)](https://socket.dev/cargo/package/shunt-gateway)
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=pleaseai_shunt&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=pleaseai_shunt)
 [![codecov](https://codecov.io/gh/pleaseai/shunt/graph/badge.svg)](https://codecov.io/gh/pleaseai/shunt)
-[![License](https://img.shields.io/crates/l/shunt-gateway.svg)](#license)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
 [English](README.md) · **한국어** · [日本語](README.ja.md) · [简体中文](README.zh-CN.md)
 
@@ -26,11 +24,11 @@
 # Homebrew (macOS / Linux)
 brew install pleaseai/tap/shunt
 
-# Cargo — 크레이트는 `shunt-gateway`이며, 바이너리는 여전히 `shunt`입니다
-cargo install shunt-gateway
+# Cargo — 소스 저장소에서 직접 설치
+cargo install --git https://github.com/pleaseai/shunt
 ```
 
-사전 빌드된 바이너리(macOS/Linux, arm64/x64)는 각 [GitHub 릴리스](https://github.com/pleaseai/shunt/releases)에 첨부되어 있습니다. 사전 빌드 바이너리 및 소스 빌드 안내는 [설치](https://shunt-docs.pages.dev/getting-started/installation/)를 참고하세요.
+새 버전은 Homebrew와 각 [GitHub 릴리스](https://github.com/pleaseai/shunt/releases)에 첨부된 사전 빌드 바이너리(macOS/Linux, arm64/x64)로 배포됩니다. crates.io 패키지는 마지막으로 게시된 버전에서 중단됩니다. 사전 빌드 바이너리 및 소스 빌드 안내는 [설치](https://shunt-docs.pages.dev/getting-started/installation/)를 참고하세요.
 
 ## 빠른 시작
 

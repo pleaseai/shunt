@@ -83,8 +83,10 @@ reproducing attestation.**
   streams normally. The crates.io releases of `tungstenite` checked through 0.30
   expose no `deflate` feature, so `Cargo.toml` rev-pins the
   `openai-oss-forks` forks via `[patch.crates-io]`; the exact revisions match the
-  pins in the current public `openai/codex` source. See issue #292 for the spike,
-  live-probe evidence, and any measured byte savings.
+  pins in the current public `openai/codex` source. Homebrew and GitHub release
+  binaries are built from this patched source tree, as are Cargo installs from the
+  Git repository, so those distributions include deflate support. See issue #292
+  for the spike, live-probe evidence, and any measured byte savings.
 - **Request frame.** The translated Responses request JSON with
   `{"type":"response.create"}` inserted ([`response_create_frame`]). Optional
   fields: `previous_response_id` (continuation), `client_metadata`

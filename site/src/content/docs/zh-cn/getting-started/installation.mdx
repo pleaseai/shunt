@@ -1,6 +1,6 @@
 ---
 title: 安装
-description: 通过 Homebrew、cargo、预构建二进制文件或从源码安装 shunt。
+description: 通过 Homebrew、Git 仓库中的 Cargo、预构建二进制文件或从源码安装 shunt。
 ---
 
 
@@ -19,13 +19,15 @@ description: 通过 Homebrew、cargo、预构建二进制文件或从源码安�
 brew install pleaseai/tap/shunt
 ```
 
-## Cargo
+## Cargo（Git 仓库）
 
-crate 以 `shunt-gateway` 名称发布(二进制文件仍是 `shunt`):
+直接从源码仓库安装。二进制文件名仍为 `shunt`:
 
 ```bash
-cargo install shunt-gateway
+cargo install --git https://github.com/pleaseai/shunt
 ```
+
+新版本通过 Homebrew 和 GitHub release 二进制文件分发。crates.io 软件包将停留在最后发布的版本。
 
 ## 预构建二进制文件
 

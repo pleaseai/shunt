@@ -1,12 +1,10 @@
 # shunt
 
-[![Crates.io](https://img.shields.io/crates/v/shunt-gateway.svg)](https://crates.io/crates/shunt-gateway)
 [![CI](https://github.com/pleaseai/shunt/actions/workflows/ci.yml/badge.svg)](https://github.com/pleaseai/shunt/actions/workflows/ci.yml)
 [![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/pleaseai/shunt?utm_source=badge)
-[![Socket Badge](https://socket.dev/api/badge/cargo/package/shunt-gateway)](https://socket.dev/cargo/package/shunt-gateway)
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=pleaseai_shunt&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=pleaseai_shunt)
 [![codecov](https://codecov.io/gh/pleaseai/shunt/graph/badge.svg)](https://codecov.io/gh/pleaseai/shunt)
-[![License](https://img.shields.io/crates/l/shunt-gateway.svg)](#license)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
 **English** · [한국어](README.ko.md) · [日本語](README.ja.md) · [简体中文](README.zh-CN.md)
 
@@ -27,11 +25,11 @@ It ships with **OpenAI**, **ChatGPT/Codex** (reuse your subscription via `codex 
 # Homebrew (macOS / Linux)
 brew install pleaseai/tap/shunt
 
-# Cargo — the crate is `shunt-gateway`; the binary is still `shunt`
-cargo install shunt-gateway
+# Cargo, directly from the source repository
+cargo install --git https://github.com/pleaseai/shunt
 ```
 
-Prebuilt binaries (macOS/Linux, arm64/x64) are attached to each [GitHub release](https://github.com/pleaseai/shunt/releases). See [Installation](https://shunt-docs.pages.dev/getting-started/installation/) for prebuilt-binary and from-source instructions.
+New versions are distributed through Homebrew and prebuilt binaries (macOS/Linux, arm64/x64) attached to each [GitHub release](https://github.com/pleaseai/shunt/releases); the crates.io package stops at the last version published there. See [Installation](https://shunt-docs.pages.dev/getting-started/installation/) for prebuilt-binary and from-source instructions.
 
 ## Quickstart
 

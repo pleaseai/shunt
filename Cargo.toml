@@ -2,6 +2,11 @@
 # crates.io package name; the library and binary keep the short name `shunt`
 # (the bare `shunt` crate name is taken by an unrelated project).
 name = "shunt-gateway"
+# Cargo omits `[patch.crates-io]` from packaged manifests, and dependents cannot
+# inherit a patch, so the permessage-deflate fork pins make this configuration
+# unpublishable (issue #292). Remove this restriction with the pins once upstream
+# snapview/tungstenite-rs#426 ships in a crates.io release.
+publish = false
 version = "0.31.0"
 edition = "2021"
 description = "Claude Code LLM gateway — an Anthropic Messages proxy that routes models to OpenAI/Codex and Anthropic-compatible backends"

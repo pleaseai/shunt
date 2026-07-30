@@ -1,6 +1,6 @@
 ---
 title: Installation
-description: Install shunt via Homebrew, cargo, prebuilt binaries, or from source.
+description: Install shunt via Homebrew, Cargo from git, prebuilt binaries, or from source.
 ---
 
 
@@ -19,13 +19,15 @@ description: Install shunt via Homebrew, cargo, prebuilt binaries, or from sourc
 brew install pleaseai/tap/shunt
 ```
 
-## Cargo
+## Cargo (from git)
 
-The crate is published as `shunt-gateway` (the binary is still `shunt`):
+Install directly from the source repository; the binary is still named `shunt`:
 
 ```bash
-cargo install shunt-gateway
+cargo install --git https://github.com/pleaseai/shunt
 ```
+
+New versions are distributed through Homebrew and GitHub release binaries. The crates.io package stops at the last version published there.
 
 ## Prebuilt binaries
 

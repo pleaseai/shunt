@@ -1,11 +1,9 @@
 # shunt
 
-[![Crates.io](https://img.shields.io/crates/v/shunt-gateway.svg)](https://crates.io/crates/shunt-gateway)
 [![CI](https://github.com/pleaseai/shunt/actions/workflows/ci.yml/badge.svg)](https://github.com/pleaseai/shunt/actions/workflows/ci.yml)
-[![Socket Badge](https://socket.dev/api/badge/cargo/package/shunt-gateway)](https://socket.dev/cargo/package/shunt-gateway)
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=pleaseai_shunt&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=pleaseai_shunt)
 [![codecov](https://codecov.io/gh/pleaseai/shunt/graph/badge.svg)](https://codecov.io/gh/pleaseai/shunt)
-[![License](https://img.shields.io/crates/l/shunt-gateway.svg)](#license)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
 [English](README.md) · [한국어](README.ko.md) · **日本語** · [简体中文](README.zh-CN.md)
 
@@ -26,11 +24,11 @@
 # Homebrew (macOS / Linux)
 brew install pleaseai/tap/shunt
 
-# Cargo — the crate is `shunt-gateway`; the binary is still `shunt`
-cargo install shunt-gateway
+# Cargo — ソースリポジトリから直接インストール
+cargo install --git https://github.com/pleaseai/shunt
 ```
 
-ビルド済みバイナリ（macOS/Linux、arm64/x64）は各 [GitHub リリース](https://github.com/pleaseai/shunt/releases)に添付されています。ビルド済みバイナリおよびソースからのインストール手順は [Installation](https://shunt-docs.pages.dev/getting-started/installation/) を参照してください。
+新しいバージョンは Homebrew と、各 [GitHub リリース](https://github.com/pleaseai/shunt/releases)に添付されるビルド済みバイナリ（macOS/Linux、arm64/x64）で配布されます。crates.io パッケージは、最後に公開されたバージョンで更新を停止します。ビルド済みバイナリおよびソースからのインストール手順は [Installation](https://shunt-docs.pages.dev/getting-started/installation/) を参照してください。
 
 ## クイックスタート
 

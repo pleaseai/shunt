@@ -1,11 +1,9 @@
 # shunt
 
-[![Crates.io](https://img.shields.io/crates/v/shunt-gateway.svg)](https://crates.io/crates/shunt-gateway)
 [![CI](https://github.com/pleaseai/shunt/actions/workflows/ci.yml/badge.svg)](https://github.com/pleaseai/shunt/actions/workflows/ci.yml)
-[![Socket Badge](https://socket.dev/api/badge/cargo/package/shunt-gateway)](https://socket.dev/cargo/package/shunt-gateway)
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=pleaseai_shunt&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=pleaseai_shunt)
 [![codecov](https://codecov.io/gh/pleaseai/shunt/graph/badge.svg)](https://codecov.io/gh/pleaseai/shunt)
-[![License](https://img.shields.io/crates/l/shunt-gateway.svg)](#license)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
 [English](README.md) · [한국어](README.ko.md) · [日本語](README.ja.md) · **简体中文**
 
@@ -26,11 +24,11 @@
 # Homebrew (macOS / Linux)
 brew install pleaseai/tap/shunt
 
-# Cargo —— crate 名为 `shunt-gateway`;二进制文件仍是 `shunt`
-cargo install shunt-gateway
+# Cargo —— 直接从源码仓库安装
+cargo install --git https://github.com/pleaseai/shunt
 ```
 
-预构建二进制文件(macOS/Linux,arm64/x64)附于每个 [GitHub release](https://github.com/pleaseai/shunt/releases)。预构建二进制和从源码构建的说明见 [安装](https://shunt-docs.pages.dev/getting-started/installation/)。
+新版本通过 Homebrew 和每个 [GitHub release](https://github.com/pleaseai/shunt/releases) 附带的预构建二进制文件(macOS/Linux,arm64/x64)分发。crates.io 软件包将停留在最后发布的版本。预构建二进制和从源码构建的说明见 [安装](https://shunt-docs.pages.dev/getting-started/installation/)。
 
 ## 快速开始
 

@@ -1,6 +1,6 @@
 ---
 title: 설치
-description: Homebrew, cargo, 사전 빌드 바이너리 또는 소스로 shunt 설치하기.
+description: Homebrew, Git 저장소의 Cargo, 사전 빌드 바이너리 또는 소스로 shunt 설치하기.
 ---
 
 
@@ -19,13 +19,15 @@ description: Homebrew, cargo, 사전 빌드 바이너리 또는 소스로 shunt 
 brew install pleaseai/tap/shunt
 ```
 
-## Cargo
+## Cargo (Git 저장소)
 
-크레이트는 `shunt-gateway`로 게시됩니다(바이너리는 여전히 `shunt`입니다):
+소스 저장소에서 직접 설치합니다. 바이너리 이름은 여전히 `shunt`입니다:
 
 ```bash
-cargo install shunt-gateway
+cargo install --git https://github.com/pleaseai/shunt
 ```
+
+새 버전은 Homebrew와 GitHub 릴리스 바이너리로 배포됩니다. crates.io 패키지는 마지막으로 게시된 버전에서 중단됩니다.
 
 ## 사전 빌드 바이너리
 
