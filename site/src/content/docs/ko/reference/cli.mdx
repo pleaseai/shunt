@@ -16,6 +16,8 @@ shunt run --config /path/to/shunt.toml
 
 `--config` 없이 shunt는 `./shunt.toml` → `~/.config/shunt/shunt.toml` → `$HOMEBREW_PREFIX/etc/shunt.toml` 순서로 검색합니다; `--config`를 사용하면 파일이 없는 것은 오류입니다. [구성](/ko/guides/configuration/)을 참고하세요.
 
+Homebrew로 설치했다면 백그라운드 서비스로 실행할 수도 있습니다: `brew services start shunt`. 자세한 내용은 [설치](/ko/getting-started/installation/#백그라운드-서비스로-실행하기)를 참고하세요.
+
 ## `shunt check`
 
 해석된 구성을 검증하고 종료합니다(`shunt --check`도 동작):

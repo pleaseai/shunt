@@ -4,7 +4,7 @@ use figment::{
 };
 
 use super::{normalize, UpstreamConfig};
-use crate::config::{ApiKeyHeader, AuthMode, ConfigError, ProviderKind};
+use crate::config::{ApiKeyHeader, AuthMode, ConfigError, ProviderKind, CONFIG_ENV_LOCK};
 
 fn parse(raw: &str) -> UpstreamConfig {
     Figment::from(Toml::string(raw)).extract().unwrap()
@@ -118,8 +118,6 @@ fn account_and_accounts_are_mutually_exclusive() {
     ));
 }
 
-static CONFIG_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 struct TempConfig(std::path::PathBuf);
 
 impl TempConfig {
@@ -138,7 +136,9 @@ impl TempConfig {
 }
 
 fn load(file: &TempConfig) -> Result<crate::config::Config, ConfigError> {
-    let _guard = CONFIG_ENV_LOCK.lock().unwrap();
+    let _guard = CONFIG_ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     crate::config::Config::load(Some(&file.0))
 }
 
@@ -298,13 +298,52 @@ first = "gpt-openai"
     assert_eq!(config.models[0].upstream_model.as_ref().unwrap().len(), 2);
 }
 
+// Default-propagation coverage for issue #286: an `[[upstreams]]` entry goes
+// through `normalize` (see `super::normalize`), which builds a fresh
+// `ProviderConfig` from `UpstreamConfig::tool_search` rather than starting
+// from `Config::default()` — a separate code path from `[providers.*]`, so it
+// needs its own default/opt-out coverage.
+#[test]
+fn upstream_preset_tool_search_defaults_on() {
+    let file = TempConfig::new(
+        r#"
+[server]
+default_provider = "codex-upstream"
+[[upstreams]]
+name = "codex-upstream"
+provider = "codex"
+"#,
+    );
+    let config = load(&file).unwrap();
+    // No `tool_search` key declared on the upstream entry.
+    assert!(config.native_tool_search("codex-upstream", "gpt-5.6-sol"));
+}
+
+#[test]
+fn upstream_preset_tool_search_false_opts_out() {
+    let file = TempConfig::new(
+        r#"
+[server]
+default_provider = "codex-upstream"
+[[upstreams]]
+name = "codex-upstream"
+provider = "codex"
+tool_search = false
+"#,
+    );
+    let config = load(&file).unwrap();
+    assert!(!config.native_tool_search("codex-upstream", "gpt-5.6-sol"));
+}
+
 #[test]
 fn ordered_provider_env_override_addresses_declared_name() {
     let file = TempConfig::new(
         "[server]\ndefault_provider = \"primary\"\n[[upstreams]]\nname = \"primary\"\nprovider = \"openai\"",
     );
     let env = "SHUNT_PROVIDERS__PRIMARY__EFFORT";
-    let _guard = CONFIG_ENV_LOCK.lock().unwrap();
+    let _guard = CONFIG_ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     std::env::set_var(env, "high");
     let result = crate::config::Config::load(Some(&file.0));
     std::env::remove_var(env);
@@ -320,12 +359,34 @@ fn ordered_provider_env_override_addresses_declared_name() {
 }
 
 #[test]
+fn ordered_provider_env_override_forces_tool_search_shim() {
+    // The documented rollback path for issue #286 (native tool_search
+    // defaulting on): SHUNT_PROVIDERS__<NAME>__TOOL_SEARCH=false must reach
+    // `native_tool_search` and force the #43 shim without editing config.toml.
+    let file = TempConfig::new(
+        "[server]\ndefault_provider = \"toolsearchprobe\"\n[[upstreams]]\nname = \"toolsearchprobe\"\nprovider = \"openai\"",
+    );
+    let env = "SHUNT_PROVIDERS__TOOLSEARCHPROBE__TOOL_SEARCH";
+    let _guard = CONFIG_ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    std::env::set_var(env, "false");
+    let result = crate::config::Config::load(Some(&file.0));
+    std::env::remove_var(env);
+    assert!(!result
+        .unwrap()
+        .native_tool_search("toolsearchprobe", "gpt-5.6-sol"));
+}
+
+#[test]
 fn ordered_provider_env_override_cannot_declare_a_name() {
     let file = TempConfig::new(
         "[server]\ndefault_provider = \"primary\"\n[[upstreams]]\nname = \"primary\"\nprovider = \"openai\"",
     );
     let env = "SHUNT_PROVIDERS__MISSING__EFFORT";
-    let _guard = CONFIG_ENV_LOCK.lock().unwrap();
+    let _guard = CONFIG_ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     std::env::set_var(env, "high");
     let result = crate::config::Config::load(Some(&file.0));
     std::env::remove_var(env);
@@ -339,7 +400,9 @@ fn ordered_provider_env_override_cannot_declare_a_name() {
 fn legacy_provider_env_override_behavior_is_unchanged() {
     let file = TempConfig::new("[server]\ndefault_provider = \"environmental\"");
     let env = "SHUNT_PROVIDERS__ENVIRONMENTAL";
-    let _guard = CONFIG_ENV_LOCK.lock().unwrap();
+    let _guard = CONFIG_ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     std::env::set_var(
         env,
         "{kind=\"anthropic\",base_url=\"https://api.example\",auth=\"passthrough\"}",

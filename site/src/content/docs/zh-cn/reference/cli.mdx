@@ -16,6 +16,8 @@ shunt run --config /path/to/shunt.toml
 
 不带 `--config` 时,shunt 依次搜索 `./shunt.toml` → `~/.config/shunt/shunt.toml` → `$HOMEBREW_PREFIX/etc/shunt.toml`;带 `--config` 时,文件缺失即报错。见 [配置](/zh-cn/guides/configuration/)。
 
+通过 Homebrew 安装时,也可以作为后台服务运行: `brew services start shunt`。详见 [安装](/zh-cn/getting-started/installation/#作为后台服务运行)。
+
 ## `shunt check`
 
 校验解析后的配置并退出(`shunt --check` 也可以):

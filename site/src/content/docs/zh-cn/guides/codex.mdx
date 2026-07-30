@@ -361,8 +361,7 @@ Claude Code 内置的 **网页搜索** 无需额外设置即可通过 Codex 路�
 ## 工具搜索
 
 Claude Code 的 **工具搜索** —— 延迟 MCP / LSP 工具的 schema,仅在需要时通过 `ToolSearch` 工具揭示,
-从而不让模型把上下文花在从不调用的工具上 —— 同样可以通过 Codex 路径工作,但在 shunt 背后 **默认关闭**。
-启用方式:
+从而不让模型把上下文花在从不调用的工具上 —— 可以通过 Codex 路径工作。在客户端启用它:
 
 ```bash
 export ENABLE_TOOL_SEARCH=true
@@ -373,38 +372,58 @@ export ENABLE_TOOL_SEARCH=true
 节省)。客户端自身的约定是:**如果你的代理会转发 `tool_reference` 块**,就设置
 `ENABLE_TOOL_SEARCH=true` —— shunt 正是这样做的。
 
-启用后,Claude Code 只在提示中列出可延迟工具的 **名称**,而保留其 schema。shunt 会把这些尚未加载的工具
-排除在上游工具集之外,直到模型通过 `ToolSearch` 加载某个工具;随之产生的 `tool_reference` 便按需揭示该
-工具的完整 schema。这样就收回了被延迟的 schema 从第一轮起占用的上下文窗口 —— 这正是工具搜索的意义所在。
+启用后,shunt 只对已确认支持该协议的上游,把工具搜索映射到 OpenAI Responses API 自身的**原生、客户端执行
+的 `tool_search`** 协议,其余所有情况都保留 #43 文本 shim:Claude Code 的 `ToolSearch` 工具变为
+`tool_search`(`execution: "client"`)工具,其 `tool_use` 变为 `tool_search_call`,而 `tool_reference`
+结果变为一个 `tool_search_output` 条目,以结构化 JSON 携带已加载工具的完整 schema,附加在 `input` 的
+末尾。这一点很重要,因为另一种做法 —— 把被揭示工具的 schema 折回请求的 `tools` 数组 —— 会在每次揭示时
+使缓存的提示前缀失效:`tools` 正是这个可缓存前缀的一部分,shunt 每一轮都会依据客户端历史重新推导它,数组
+一旦增长,就会迫使后端从工具边界开始重新处理整段对话。原生协议只以追加方式扩展 `input` 历史,`tools`
+保持不变,因此缓存前缀在每次揭示后都能存活。
 
-- 无需改动 `shunt.toml` —— 它纯粹是一个 Claude Code 环境变量。
-- 适用于 `codex`(ChatGPT)与 `openai`(标准 Responses)提供方。
+- 使用 `codex` 与 `openai` 内置提供方的默认(原生)行为无需改动 `shunt.toml` —— `ENABLE_TOOL_SEARCH`
+  这一层纯粹是 Claude Code 的环境变量。
+- 适用于所有 `kind = "responses"` 的提供方;某个提供方默认走原生还是走 shim,取决于其上游主机 —— 见下文
+  [原生协议](#原生协议)。
 - 不延迟的工具(以及上文的托管 `web_search` 工具)始终会被转发;仅可延迟的工具才会被渐进揭示。
 
-### 可选开启的原生协议
+### 原生协议
 
-上面的 shim 通过把 `tool_reference` 渲染为 schema 文本来工作 —— 它不会从上游上下文中收回任何东西,只是
-推迟了完整 schema *何时* 被发送。作为一个**可选开启的替代方案**(issue #82),shunt 可以改为把工具搜索
-映射到 OpenAI Responses API 自身的**原生、客户端执行的 `tool_search`**协议:Claude Code 的 `ToolSearch`
-工具变为 `tool_search`(`execution: "client"`)工具,其 `tool_use` 变为 `tool_search_call`,而
-`tool_reference` 结果变为一个 `tool_search_output` 条目,以结构化 JSON 携带已加载工具的完整 schema ——
-从而保留真实的工具加载语义和缓存行为,而不是把 schema 折叠进文本。按提供方启用:
-
-```toml
-[providers.codex]
-tool_search = true
-```
-
-要求 —— 不受支持的组合会静默保留 #43 的 shim,不会报错:
+要求 —— 不受支持的组合会静默回退到 #43 文本 shim,不会报错。该 shim 仍会把每个尚未揭示的延迟工具排除在
+`tools` 数组之外,但一旦 Claude Code 揭示了某个工具,shim 就会把它的完整 schema 渲染为 `tool_reference`
+文本,*并且*把该工具重新加入 `tools` 数组以便模型能够调用它 —— 此后该 schema 会被发送两次,并且每次揭示
+都要承担上文所述的缓存失效代价:
 
 - 上游必须是标准 OpenAI 或 ChatGPT/Codex 风格的 Responses 后端。xAI / Grok 路由始终保留 shim。
 - 路由到的模型必须是 **gpt-5.4 及以上**(`gpt-5.4`、`gpt-5.5`,或 `gpt-5.6` 系列)。更早的 slug
-  (`gpt-5.2` 及以下)即便设置了 `tool_search = true` 也会回退到 shim。
+  (`gpt-5.2` 及以下)无论 `tool_search` 如何设置都会保留 shim。
 - Claude Code 一侧仍然需要 `ENABLE_TOOL_SEARCH=true` —— 这个标志只改变 shunt *如何* 把该功能转译到
   上游,不改变 Claude Code 是否延迟工具本身。
 
-`tool_search` 默认是 `false`:原生形状被这个标志门控,直到有一次实时探测确认某个后端确实接受它们为止,
-因此这是按提供方显式的可选开启,而不是 shunt 自动切换所有 Codex/OpenAI 路由。
+`tool_search` 在 `[providers.<name>]` 下是一个三态设置。未设置(默认,"auto")时,只对已验证支持
+`tool_search` 条目的宿主 —— ChatGPT/Codex 后端(内置 `codex` 提供方)和 `api.openai.com`(内置 `openai`
+提供方)—— 解析为原生协议,而对其他所有 OpenAI 兼容端点(包括指向 LiteLLM、vLLM、OpenRouter 或自托管代理
+的自定义 `kind = "responses"` 提供方)解析为文本 shim:大多数第三方 Responses 后端并未实现 `tool_search`
+条目,若在那里自动启用原生协议,轮次本身会直接失败,而不是优雅降级。这些原生形状已针对 ChatGPT/Codex 后端
+在 gpt-5.6 上做过实时探测验证(2026-07-13,
+[pleaseai/shunt#86](https://github.com/pleaseai/shunt/pull/86)),而且 `tool_search` 已被记录在公开的
+OpenAI Responses API 文档中,适用于 gpt-5.4+ 模型。
+
+要把已确认实现该协议的自定义端点加入原生路径,设置 `tool_search = true` —— 上述风格/模型要求仍然适用:
+
+```toml
+[providers.my-litellm]
+kind = "responses"
+base_url = "https://litellm.internal/v1"
+tool_search = true
+```
+
+若某个默认(或经过 opt-in)会走原生路径的提供方需要强制使用文本 shim,设置 `tool_search = false`:
+
+```toml
+[providers.codex]
+tool_search = false
+```
 
 ## 故障排查
 
@@ -418,6 +437,6 @@ tool_search = true
 | 上下文栏读数过高 / 过早压缩 | 设置 `CLAUDE_CODE_MAX_CONTEXT_TOKENS`;发现别名无法接收它 —— 请用一个非 `claude-` id。 |
 | Grok 路由上网页搜索无结果 | xAI/Grok 的 Responses API 不支持网页搜索,shunt 会丢弃该工具。网页搜索请使用 `codex` 或 `openai` 路由。 |
 | 工具搜索无效 / 每轮都发送全部工具 schema | 设置 `ENABLE_TOOL_SEARCH=true` —— Claude Code 在非第一方 base URL 背后默认禁用工具搜索。shunt 会转发 `tool_reference` 块并按需揭示延迟的 schema。 |
-| 想让工具搜索真正收回上下文,而不只是推迟发送时机 | 为原生协议在 `[providers.codex]` 下设置 `tool_search = true` —— 需要标准 OpenAI/ChatGPT-Codex 风格,且模型为 gpt-5.4 及以上;见上文 [工具搜索 → 可选开启的原生协议](#可选开启的原生协议)。 |
+| 工具搜索不收回上下文(仍在为 shim 的缓存失效代价买单) | 检查风格/模型门控 —— 原生 `tool_search` 需要标准 OpenAI/ChatGPT-Codex 风格和 gpt-5.4+ 模型;不受支持的组合会静默回退到 shim。若两项门控都满足,但你用的是自定义 OpenAI 兼容端点(LiteLLM、vLLM、OpenRouter、自托管),它不会自动启用 —— 确认该端点实现了 `tool_search` 条目后设置 `tool_search = true`。若是已知宿主(`codex`/`openai`),确认你没有把 `tool_search` 设为 `false`;见上文 [工具搜索 → 原生协议](#原生协议)。 |
 
 更多内容见完整的 [故障排查](/zh-cn/reference/troubleshooting/) 参考。

@@ -872,12 +872,21 @@ fn grok_quota_snapshot(
 
 fn discover_claude() -> Option<ObservedCredential> {
     let path = crate::auth::claude::auth::default_credentials_path();
-    if let Some(value) = read_json(&path) {
-        return parse_claude(&value, ObservedSource::File, SystemTime::now());
-    }
-    read_claude_keychain()
-        .as_ref()
-        .and_then(|value| parse_claude(value, ObservedSource::Keychain, SystemTime::now()))
+    let mut observed = if let Some(value) = read_json(&path) {
+        parse_claude(&value, ObservedSource::File, SystemTime::now())
+    } else {
+        read_claude_keychain()
+            .as_ref()
+            .and_then(|value| parse_claude(value, ObservedSource::Keychain, SystemTime::now()))
+    }?;
+    // The credential blob carries no account id, so `parse_claude` cannot supply
+    // one and stays a pure function of its input. Claude Code records the id in
+    // its global config; attach it here, at the already environment-dependent
+    // discovery site. The admin surface needs it to recognise that this local
+    // login and a managed pool account are the same subscription rather than
+    // listing one subscription as two accounts.
+    observed.account_id = crate::auth::claude::login::current_account_uuid();
+    Some(observed)
 }
 
 fn discover_codex() -> Option<ObservedCredential> {

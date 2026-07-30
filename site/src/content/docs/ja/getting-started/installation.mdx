@@ -19,6 +19,19 @@ description: Homebrew、cargo、ビルド済みバイナリ、またはソース
 brew install pleaseai/tap/shunt
 ```
 
+### バックグラウンドサービスとして実行する
+
+```bash
+brew services start shunt
+```
+
+ログは `$(brew --prefix)/var/log/shunt.log` に出力されます。`brew services stop` は `SIGTERM`
+を送信し、shunt は実行中のリクエストを完了させてから終了します。設定ファイルを変更しても再起動は不要です
+— shunt が自動的に[ホットリロード](https://github.com/pleaseai/shunt/blob/main/docs/config-reload.md)します。
+詳細（設定探索パスなど）は [Running as a
+service](https://github.com/pleaseai/shunt/blob/main/docs/running.md#run-as-a-background-service-homebrew)
+を参照してください。
+
 ## Cargo
 
 クレートは `shunt-gateway` として公開されています（バイナリは引き続き `shunt`）。

@@ -96,10 +96,13 @@ The Responses translation supports a per-provider or per-route reasoning-effort 
 working. Both are shared with the other Responses providers and documented in
 [Effort & Context](/guides/effort-and-context/).
 
-**Tool search.** With Claude Code's `ENABLE_TOOL_SEARCH=true`, shunt emulates deferred tool
-discovery on the Responses path via a text shim; setting `tool_search = true` on the provider
-upgrades it to the Responses API's native client-executed `tool_search` protocol on GPT-5.4+
-models. See [Tool search](/guides/codex/#tool-search).
+**Tool search.** With Claude Code's `ENABLE_TOOL_SEARCH=true`, shunt maps deferred tool discovery on
+the Responses path onto the native client-executed `tool_search` protocol on GPT-5.4+ models. This
+provider targets `api.openai.com`, one of the two hosts the unset ("auto") default already trusts
+to implement `tool_search` items — alongside the ChatGPT/Codex backend — so it gets native for free;
+a custom OpenAI-compatible endpoint (LiteLLM, vLLM, OpenRouter, self-hosted) isn't auto-enabled the
+same way and needs `tool_search = true` to opt in. Set `tool_search = false` here to force the text
+shim instead. See [Tool search](/guides/codex/#tool-search).
 
 ## Verify
 

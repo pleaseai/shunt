@@ -543,6 +543,67 @@ async fn admin_pool_repeats_shared_physical_state_per_upstream() {
 }
 
 #[tokio::test]
+async fn admin_pool_reports_auth_kind_independent_of_provider_name() {
+    // Regression test: the dashboard's Claude-uuid coalescing must key on the
+    // account's actual auth kind, not the provider table's free-form name.
+    // Prove the two are decoupled at the source: a provider literally named
+    // "claude" can be chatgpt_oauth, and a claude_oauth provider can live
+    // under any other name.
+    if !can_bind_loopback() {
+        return;
+    }
+    std::env::set_var("SHUNT_TEST_ADMIN_AUTH_KIND", "ops:auth-kind-secret");
+    let mut config = admin_config("SHUNT_TEST_ADMIN_AUTH_KIND");
+    // Base each provider on the stock template that already matches its auth
+    // kind's `ProviderKind`/host validation (claude_oauth -> anthropic host,
+    // chatgpt_oauth -> chatgpt.com), then move it under a name that
+    // deliberately does NOT match its auth kind.
+    let claude_oauth_template = config.providers["anthropic"].clone();
+    let chatgpt_oauth_template = config.providers["codex"].clone();
+
+    let mut misnamed_chatgpt = chatgpt_oauth_template;
+    misnamed_chatgpt.accounts = Vec::new();
+    config
+        .providers
+        .insert("claude".to_string(), misnamed_chatgpt);
+
+    let mut custom_named_claude = claude_oauth_template;
+    custom_named_claude.accounts = Vec::new();
+    config
+        .providers
+        .insert("enterprise-claude".to_string(), custom_named_claude);
+
+    config.providers.remove("anthropic");
+    config.providers.remove("codex");
+    config.server.default_provider = "claude".to_string();
+    let gateway = start(config).await;
+
+    let response = reqwest::Client::new()
+        .get(format!("{}/admin/pool", gateway.base_url))
+        .header("x-shunt-admin-token", "auth-kind-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = response.json().await.unwrap();
+    let providers = body["providers"].as_array().unwrap();
+
+    let claude_named = providers
+        .iter()
+        .find(|provider| provider["provider"] == "claude")
+        .expect("provider named claude is present");
+    assert_eq!(claude_named["auth"], "chatgpt_oauth");
+
+    let custom_named = providers
+        .iter()
+        .find(|provider| provider["provider"] == "enterprise-claude")
+        .expect("claude_oauth provider under a custom name is present");
+    assert_eq!(custom_named["auth"], "claude_oauth");
+
+    std::env::remove_var("SHUNT_TEST_ADMIN_AUTH_KIND");
+}
+
+#[tokio::test]
 async fn admin_api_requires_authentication() {
     if !can_bind_loopback() {
         return;

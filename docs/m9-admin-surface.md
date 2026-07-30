@@ -280,13 +280,54 @@ Grok read their CLI credential stores; Cursor opens Cursor.app's `state.vscdb`
 with `SQLITE_OPEN_READ_ONLY`. The endpoint masks account identity, labels
 ownership as `observed`, and never invokes a refresh/writeback store. Provider
 requests have a 15-second timeout. Claude reads `/api/oauth/usage`, with the
-token-free snapshot cached process-wide for 60 seconds. Gemini returns every
+token-free snapshot cached process-wide for 60 seconds. The Claude row is the
+one exception to the identity masking above: it carries the account `uuid` so
+the table can tell an observation and a managed pool account holding the same
+subscription apart from two genuinely different accounts. The value is already
+returned unmasked by `GET /admin/accounts` to the same authenticated caller, so
+this adds no disclosure the admin surface did not already make. Gemini returns every
 Code Assist model bucket, Kimi returns weekly and 5-hour windows, Grok returns
 credit/product usage, and Cursor returns billing-cycle, Auto + Composer, and
 named-model usage. Codex remains `response-derived`: both translated Messages
 traffic and raw inbound Responses attach the default CLI account id to
 `x-codex-*` quota capture without importing the credential into the managed
 store. Before such traffic its row explicitly says it is waiting for traffic.
+
+The usage table groups by provider: the provider is named once and its accounts
+nest beneath it, folding managed pool accounts in alongside the read-only
+observations rather than stranding them in the advanced section. An observation
+and a managed account are coalesced into one row when their account `uuid`
+matches — one subscription is one row, labelled with the managed account name,
+with the observation's windows preferred because the pool only learns a window
+from a response header it has actually received.
+
+Coalescing is deliberately conservative: identity resolves to `None` whenever
+`CLAUDE_CONFIG_DIR` or `CLAUDE_CREDENTIALS` is set, and an unidentified
+observation never matches. Both Claude credential sources are profile-agnostic
+(the fixed Keychain service name above; a hardcoded
+`$HOME/.claude/.credentials.json`, unless `CLAUDE_CREDENTIALS` relocates it)
+while `oauthAccount.accountUuid` is read from a config directory that
+`CLAUDE_CONFIG_DIR` relocates, so with either variable set the recorded
+identity can name a different account than the credential that was actually
+read — observed against a live two-account pool, where it labelled an
+exhausted account's usage with the other account's uuid. Declining to merge
+costs a combined row; guessing costs a silently mis-attributed quota bar.
+Closing that gap needs a token-scoped identity source, which does not exist
+today: `/api/oauth/usage` is the only Claude endpoint read here, and
+`shuntAccountUuid` is captured only at login/import time.
+
+The known `uuid` is still attached even when the local token has expired: the
+account id is read independently of token validity, so an expired observation
+keeps matching its managed row instead of rendering as an unrelated duplicate.
+
+Which state the coalesced row then displays follows a precedence, not a
+blanket override: a managed operational state (`disabled`/`cooling`/
+`near-quota`) is an actionable gateway-side fact and wins over a stale local
+observation error, so a cooling account still shows its cooldown remediation
+even though the client's last local check happened to see an expired token.
+An observed error (`expired`/`unavailable`) still surfaces over a merely idle
+managed state (`available`/`unseen`), which is the "Needs login" case this
+matching was built for.
 
 Managed provisioning and store metadata remain available under a collapsed
 **Manage pool accounts (advanced)** section. `AccountPool::snapshot(provider, &[AccountConfig], model)` returns a token-free,

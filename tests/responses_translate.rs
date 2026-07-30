@@ -1727,8 +1727,12 @@ fn reasoning_id_falls_back_to_done_event_when_added_missing() {
 // `tool_search_native = true` path; every shim test above runs it `false`.
 // ---------------------------------------------------------------------------
 
-/// Translate with the native tool_search path enabled (the opt-in provider flag
-/// on, a supported flavor + model). The shim tests use [`translate`] (native off).
+/// Translate with the native tool_search path enabled. This passes `native =
+/// true` straight to [`translate_request`] and does not read
+/// `ProviderConfig::tool_search` (that flag's unset default now auto-resolves
+/// production traffic to native only for a known-good host — see
+/// [`Config::native_tool_search`]). The shim tests use [`translate`] (native
+/// off).
 fn native_translate(input: Value) -> Value {
     let body = serde_json::to_vec(&input).unwrap();
     translate_request(&body, &route("gpt-5.6-sol"), ResponsesFlavor::Chatgpt, true).unwrap()
@@ -1862,6 +1866,102 @@ fn native_tool_result_becomes_tool_search_output_with_ordered_schemas() {
             "execution": "client",
             "description": "Search",
             "parameters": {"type": "object", "properties": {}, "additionalProperties": true}
+        }])
+    );
+}
+
+#[test]
+fn tool_reveal_grows_shim_tools_but_leaves_native_tools_stable() {
+    // Issue #286: the #43 shim adds each revealed deferred tool to the `tools`
+    // array, which is part of the cacheable prompt prefix, so every reveal
+    // invalidates the cached prefix and forces a full re-process. The native
+    // tool_search path (#82) withholds deferred tools from `tools` at all
+    // times and instead delivers a revealed tool's full schema in an appended
+    // `tool_search_output` item, so the prefix — and `tools` itself — stays
+    // stable across a reveal. This test pins that mechanic directly by
+    // comparing a pre-reveal and a post-reveal request on both paths.
+    let tools = json!([
+        {"name": "ToolSearch", "description": "Search", "input_schema": {"type": "object", "properties": {}}},
+        {
+            "name": "find_issue",
+            "description": "Find an issue",
+            "input_schema": {
+                "type": "object",
+                "properties": {"number": {"type": "integer"}},
+                "required": ["number"]
+            },
+            "defer_loading": true
+        }
+    ]);
+    let pre_reveal_messages: Value = json!([]);
+    let post_reveal_messages = json!([
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "call_ts", "name": "ToolSearch", "input": {"query": "find_issue"}}
+        ]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "call_ts", "content": [
+                {"type": "tool_reference", "tool_name": "find_issue"}
+            ]}
+        ]}
+    ]);
+
+    // Shim (native = false, gpt-5.2 model): the reveal grows the `tools`
+    // array — the documented cache cost, asserted explicitly rather than
+    // treated as a bug.
+    let shim_pre = translate(json!({
+        "model": "gpt-5.2-codex", "messages": pre_reveal_messages, "tools": tools
+    }));
+    let shim_post = translate(json!({
+        "model": "gpt-5.2-codex", "messages": post_reveal_messages, "tools": tools
+    }));
+    let shim_tool_names = |value: &Value| -> Vec<String> {
+        value["tools"]
+            .as_array()
+            .map(|tools| {
+                tools
+                    .iter()
+                    .map(|tool| tool["name"].as_str().unwrap().to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    assert!(!shim_tool_names(&shim_pre).contains(&"find_issue".to_string()));
+    assert!(shim_tool_names(&shim_post).contains(&"find_issue".to_string()));
+    assert_ne!(shim_pre["tools"], shim_post["tools"]);
+
+    // Native (native = true, gpt-5.6 model + Chatgpt flavor): `tools` is
+    // identical before and after the reveal.
+    let native_pre = native_translate(json!({
+        "model": "gpt-5.6-sol", "messages": pre_reveal_messages, "tools": tools
+    }));
+    let native_post = native_translate(json!({
+        "model": "gpt-5.6-sol", "messages": post_reveal_messages, "tools": tools
+    }));
+    assert_eq!(native_pre["tools"], native_post["tools"]);
+    assert!(!native_pre["tools"].to_string().contains("find_issue"));
+    assert!(!native_post["tools"].to_string().contains("find_issue"));
+
+    // The revealed tool's full schema instead appears in the post-reveal
+    // input's appended tool_search_output item.
+    let output_item = native_post["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["type"] == "tool_search_output")
+        .expect("post-reveal input should contain a tool_search_output item");
+    assert_eq!(
+        output_item["tools"],
+        json!([{
+            "type": "function",
+            "name": "find_issue",
+            "description": "Find an issue",
+            "defer_loading": true,
+            "parameters": {
+                "type": "object",
+                "properties": {"number": {"type": "integer"}},
+                "required": ["number"],
+                "additionalProperties": true
+            }
         }])
     );
 }
