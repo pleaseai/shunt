@@ -48,7 +48,7 @@ class Shunt < Formula
     keep_alive true
     log_path var/"log/shunt.log"
     error_log_path var/"log/shunt.log"
-    environment_variables PATH: std_service_path_env, HOMEBREW_PREFIX: HOMEBREW_PREFIX
+    environment_variables PATH: std_service_path_env, HOMEBREW_PREFIX: HOMEBREW_PREFIX.to_s
   end
 
   def caveats
