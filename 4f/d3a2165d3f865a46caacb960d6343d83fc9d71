@@ -1,0 +1,21 @@
+.github/workflows/release.yml
+  s_e4acb84525265b::t_3d090d5861e337 247
+packaging/homebrew/shunt.rb
+  s_e4acb84525265b::t_3d090d5861e337 51
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "4fd3a2165d3f865a46caacb960d6343d83fc9d71",
+  "prompts": {},
+  "sessions": {
+    "s_e4acb84525265b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "15936aaa-9756-4f87-8300-acf6d7cb4268",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
