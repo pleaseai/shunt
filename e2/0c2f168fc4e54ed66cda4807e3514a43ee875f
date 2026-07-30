@@ -1,0 +1,36 @@
+src/stream_metrics/tests.rs
+  s_58aafcbf5eab71::t_f46164ab0ba57b 1-6,12,14-17,27,31-66
+  s_58aafcbf5eab71::t_f3e5cd5a5175e6 455-458,512-515
+  s_58aafcbf5eab71::t_766273af4b6a22 67,286-454,459-511,516-520
+  s_58aafcbf5eab71::t_7eeea2b87f2128 68
+docs/running.md
+  s_58aafcbf5eab71::t_e6595aafdbccff 128-137
+site/src/content/docs/guides/opentelemetry.mdx
+  s_58aafcbf5eab71::t_3141e62a6059e3 40
+site/src/content/docs/reference/configuration.md
+  s_58aafcbf5eab71::t_fff20e83fd01f2 384
+src/observability.rs
+  s_58aafcbf5eab71::t_f0eaf13cb8e92b 1,3-5,7-17,31-32,42-68,70-75
+  s_58aafcbf5eab71::t_b47a9fd7e3cd7c 363,743-761,766-776,781-842,847-860,862,869
+  s_58aafcbf5eab71::t_f3e5cd5a5175e6 364-365,762-765,777-780,843-846
+  s_58aafcbf5eab71::t_7da5492ec1bce9 271-352
+  s_58aafcbf5eab71::t_cbef0240789c1d 861,863-868
+src/stream_metrics.rs
+  s_58aafcbf5eab71::t_fc53c1cc3481b8 48-60,76-82,95-101,107,209-218,373-378,382
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "e20c2f168fc4e54ed66cda4807e3514a43ee875f",
+  "prompts": {},
+  "sessions": {
+    "s_58aafcbf5eab71": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3dd23507-05e1-4bea-991a-d7e6b3300171",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
