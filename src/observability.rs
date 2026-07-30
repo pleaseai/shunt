@@ -70,7 +70,14 @@ const MAX_MODEL_TAG_LEN: usize = 128;
 /// sanitized value is empty (missing/blank model, or a value that is nothing
 /// but control characters). Pure so it is unit-testable in isolation.
 fn sanitize_model_tag(model: &str) -> Cow<'_, str> {
-    let needs_stripping = model.chars().any(char::is_control);
+    // Only the first `MAX_MODEL_TAG_LEN` raw characters can ever change the
+    // output: if none of them is a control character, the collect-and-take
+    // branch below would keep exactly those characters unfiltered anyway
+    // (the first `MAX_MODEL_TAG_LEN` chars all pass the filter, so `take`
+    // stops right there without looking further), which is the same result
+    // as the plain-truncate branch. So a control character beyond this
+    // window can never affect the output, and detection can stop there too.
+    let needs_stripping = model.chars().take(MAX_MODEL_TAG_LEN).any(char::is_control);
     let cleaned: Cow<'_, str> = if needs_stripping {
         // `Iterator::take` short-circuits the underlying `chars()` iterator
         // once `MAX_MODEL_TAG_LEN` non-control characters have been produced,
@@ -273,6 +280,17 @@ mod tests {
     #[test]
     fn sanitize_model_tag_falls_back_to_invalid_when_only_control_characters() {
         assert_eq!(sanitize_model_tag("\n\t\r\u{7}"), "invalid");
+    }
+
+    #[test]
+    fn sanitize_model_tag_ignores_a_control_character_beyond_the_truncation_window() {
+        // The control-character scan is bounded to the first
+        // `MAX_MODEL_TAG_LEN` characters. A control character placed well
+        // beyond that window must not change the output at all: the clean
+        // prefix is already exactly what a plain truncation would produce.
+        let clean_prefix = "a".repeat(MAX_MODEL_TAG_LEN);
+        let with_late_control_char = format!("{clean_prefix}\u{7}{}", "b".repeat(1024));
+        assert_eq!(sanitize_model_tag(&with_late_control_char), clean_prefix);
     }
 
     #[test]
