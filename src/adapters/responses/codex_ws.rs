@@ -710,7 +710,8 @@ fn ensure_crypto_provider() {
 /// `websocket_config()` in `openai/codex`'s `responses_websocket.rs`. The server
 /// decides whether to negotiate it; the client side never assumes compression is
 /// in effect. Compression uses the fork's [`DeflateConfig::default()`] values:
-/// the full supported LZ77 window and context takeover in both directions.
+/// flate2's default level 6, the full supported 15-bit LZ77 window, and context
+/// takeover in both directions.
 ///
 /// Keep the 4 KiB read allocation used by tungstenite 0.24. The fork constructs
 /// each socket with `BytesMut::with_capacity(read_buffer_size)`, so its 128 KiB
