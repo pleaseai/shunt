@@ -314,6 +314,61 @@ fn read_current_account_uuid(path: &Path) -> anyhow::Result<String> {
         .ok_or_else(|| anyhow::anyhow!("no oauthAccount.accountUuid in {}", path.display()))
 }
 
+/// The Claude account UUID for the credential local observation actually reads,
+/// or `None` when that cannot be established. Callers must treat `None` as
+/// "identity unknown", never as a match, so an unidentified observation is
+/// never coalesced onto a managed pool account.
+///
+/// The guard exists because the credential and the recorded identity come from
+/// decoupled places: both credential sources are profile-agnostic (the macOS
+/// Keychain uses one fixed service name; the file path is a hardcoded
+/// `$HOME/.claude/.credentials.json`, unless relocated by `CLAUDE_CREDENTIALS`),
+/// while `oauthAccount.accountUuid` lives in a config directory that
+/// `CLAUDE_CONFIG_DIR` relocates. With either variable set, the global config
+/// can name one account while the credential belongs to another — verified
+/// against a live pool for `CLAUDE_CONFIG_DIR`, where it labelled an exhausted
+/// account's usage with a second account's uuid; `CLAUDE_CREDENTIALS` opens the
+/// same gap by pointing the credential elsewhere while the identity file stays
+/// the untouched default. Returning `None` there costs a merge; guessing costs
+/// a silently mis-attributed quota bar.
+pub(crate) fn current_account_uuid() -> Option<String> {
+    // `CLAUDE_CONFIG_DIR` and `CLAUDE_CREDENTIALS` are passed through
+    // unfiltered on purpose: `current_account_uuid_from` filters an
+    // empty-but-set `CLAUDE_CONFIG_DIR` itself (matching
+    // `claude_global_config_path`'s fallback to `$HOME/.claude`), and an
+    // empty `CLAUDE_CREDENTIALS` is left as-is to mirror
+    // `default_credentials_path`, which does not filter it either.
+    let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR");
+    let credentials_override = std::env::var_os("CLAUDE_CREDENTIALS");
+    let home = std::env::var_os("HOME")
+        .filter(|path| !path.is_empty())
+        .or_else(|| std::env::var_os("USERPROFILE").filter(|path| !path.is_empty()));
+    current_account_uuid_from(
+        config_dir.as_deref(),
+        credentials_override.as_deref(),
+        home.as_deref(),
+    )
+}
+
+/// Env-free half of [`current_account_uuid`], taking all inputs for the same
+/// reason as [`claude_global_config_path_from`]: reading them internally
+/// would leave the guard's test coupled to the ambient process environment.
+fn current_account_uuid_from(
+    config_dir: Option<&std::ffi::OsStr>,
+    credentials_override: Option<&std::ffi::OsStr>,
+    home: Option<&std::ffi::OsStr>,
+) -> Option<String> {
+    // Filtered once, here, because `config_dir` feeds both the decline check
+    // below and the path handed to `claude_global_config_path_from`. An
+    // empty-but-set value must resolve identically to unset in both places,
+    // matching `claude_global_config_path`'s own filtering of the same env var.
+    let config_dir = config_dir.filter(|dir| !dir.is_empty());
+    if config_dir.is_some() || credentials_override.is_some_and(|path| !path.is_empty()) {
+        return None;
+    }
+    read_current_account_uuid(&claude_global_config_path_from(config_dir, home)).ok()
+}
+
 fn claude_global_config_path() -> PathBuf {
     let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|path| !path.is_empty());
     let home = std::env::var_os("HOME")
@@ -446,6 +501,74 @@ mod tests {
         assert!(oauth_expires_at_ms(Some(-10)) <= after);
         // A pathologically large lifetime saturates instead of overflowing.
         assert_eq!(oauth_expires_at_ms(Some(i64::MAX)), i64::MAX);
+    }
+
+    #[test]
+    fn current_account_uuid_declines_under_a_relocated_config_dir() {
+        // The credential sources are profile-agnostic (fixed Keychain service
+        // name, hardcoded `$HOME/.claude/.credentials.json`) while the recorded
+        // identity is not, so a relocated config dir can name a different
+        // account than the credential observation actually read. Identity
+        // unknown must stay `None`: a wrong uuid coalesces one account's usage
+        // onto another account's row in the admin surface.
+        assert_eq!(
+            current_account_uuid_from(
+                Some(std::ffi::OsStr::new("/tmp/some-other-profile")),
+                None,
+                None
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn current_account_uuid_declines_under_a_relocated_credentials_file() {
+        // `CLAUDE_CREDENTIALS` relocates the credential file independently of
+        // `CLAUDE_CONFIG_DIR`, so it opens the identical gap: the credential
+        // being observed can belong to a different account than the one named
+        // in the untouched default global config. Same guard, same reason.
+        assert_eq!(
+            current_account_uuid_from(
+                None,
+                Some(std::ffi::OsStr::new("/tmp/some-other-account.json")),
+                None
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn current_account_uuid_treats_an_empty_config_dir_as_unset() {
+        // An empty-but-set `CLAUDE_CONFIG_DIR` (e.g. inherited as "" from a
+        // parent shell) must resolve identically to an unset one: falling
+        // back to `$HOME/.claude`, not a relative path rooted at the
+        // process's current directory. Before this fix, `Some("")` passed
+        // the decline check (empty is not "relocated") but was then handed
+        // unfiltered to `claude_global_config_path_from`, which built a
+        // wrong path instead of falling back to `home`.
+        let home = std::env::temp_dir().join(format!(
+            "shunt-account-uuid-empty-config-dir-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(
+            home.join(".claude.json"),
+            r#"{"oauthAccount":{"accountUuid":"home-acc-456"}}"#,
+        )
+        .unwrap();
+
+        let empty =
+            current_account_uuid_from(Some(std::ffi::OsStr::new("")), None, Some(home.as_os_str()));
+        let unset = current_account_uuid_from(None, None, Some(home.as_os_str()));
+
+        assert_eq!(empty, Some("home-acc-456".to_string()));
+        assert_eq!(empty, unset);
+
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

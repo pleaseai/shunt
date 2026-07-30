@@ -20,7 +20,7 @@ description: The endpoints shunt serves as a Claude Code LLM gateway.
 | `POST` | `/admin/logout` | Clear the browser session |
 | `GET` | `/admin/accounts` | Claude account-store metadata: name, kind, expiry, and UUID; never token material |
 | `GET` | `/admin/accounts/codex` | Codex account-store metadata: name, expiry, and ChatGPT account ID; never token material |
-| `GET` | `/admin/observed` | Read-only local Claude Code, Codex, Gemini, Kimi, Grok, and Cursor identity plus provider-native usage; never returns token material or refreshes source credentials |
+| `GET` | `/admin/observed` | Read-only local Claude Code, Codex, Gemini, Kimi, Grok, and Cursor identity plus provider-native usage; never returns token material or refreshes source credentials. The Claude row also carries the account `uuid` (null when it cannot be established) so the dashboard can tell an observation and a managed pool account holding the same subscription apart from two different accounts |
 | `GET` | `/admin/pool` | Per-`claude_oauth`/`chatgpt_oauth`-provider managed-pool state; Codex rows include reported 5h/7d usage (`7d_oi` has no Codex analog) |
 | `POST` | `/admin/accounts/claude` | Start Claude browser provisioning with `{name, mode}` where `mode` is `oauth` or `setup_token` (omitted defaults to `setup_token`); returns `{authorize_url}` |
 | `POST` | `/admin/accounts/claude/{name}/complete` | Complete Claude provisioning with `{code}` containing `<code>#<state>`; stores the account and reports whether it is live |

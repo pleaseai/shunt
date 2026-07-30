@@ -46,11 +46,21 @@ pub async fn post(
     } else {
         session_id.as_deref().unwrap_or("")
     };
+    // The GenAI/provider/status fields start empty and are filled in once known
+    // (deep inside `failover::forward`, via `tracing::Span::current()`), rather
+    // than being set here — the model is resolved from the body and the status
+    // from the upstream response, both well after this span is created. See
+    // `crate::observability` for why (root-causing an upstream failure from
+    // Sentry alone, #281).
     let span = tracing::info_span!(
         "proxy_request",
         method = %method,
         path = %path,
-        session_id = span_session_id
+        session_id = span_session_id,
+        gen_ai.request.model = tracing::field::Empty,
+        shunt.provider = tracing::field::Empty,
+        http.response.status_code = tracing::field::Empty,
+        otel.status_code = tracing::field::Empty
     );
 
     async move {

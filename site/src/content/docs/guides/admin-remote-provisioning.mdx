@@ -7,7 +7,7 @@ shunt can expose an admin-authenticated **Accounts and usage** view. It automati
 
 Observation is strictly read-only. shunt reads current access/session material only in memory and never refreshes, copies, or writes the source credential. Cursor.app's SQLite state is opened read-only. An expired source is shown as unavailable and must be renewed with its provider client. The table reports each provider's native signal: Claude's 5-hour/weekly/model-family windows, response-derived GPT/Codex windows, all Gemini Code Assist model buckets, Kimi's weekly and 5-hour limits, Grok credit/product usage, and Cursor billing-cycle/Auto + Composer/named-model usage.
 
-Managed account provisioning is a separate advanced action. Expanding **Manage pool accounts** lets you create shunt-owned Claude or Codex credentials for load-balancing. These managed copies live in `~/.shunt/accounts/` and shunt owns their refresh/writeback; they are not required merely to view local usage.
+Managed account provisioning is a separate advanced action. Expanding **Manage pool accounts** lets you create shunt-owned Claude or Codex credentials for load-balancing. These managed copies live in `~/.shunt/accounts/` and shunt owns their refresh/writeback; they are not required merely to view local usage. Their usage is surfaced in the main table above — only provisioning and raw store metadata live behind the advanced section.
 
 ## Enable the admin surface
 
@@ -90,7 +90,11 @@ name = "codex-backup"
 
 ## Inspect automatic usage and managed-pool health
 
-The primary **Accounts and usage** table is automatic and keyed by recognizable masked identity rather than a store filename. Each row uses its provider's native signal:
+The primary **Accounts and usage** table is automatic and grouped by provider: the provider is named once and its accounts nest beneath it. Observed logins are keyed by recognizable masked identity rather than a store filename; managed pool accounts appear alongside them under the same provider, keyed by account name. Where an observed login and a managed account hold the **same** subscription they are coalesced into a single row — one subscription is one row, labelled with the managed account name — so a pool does not make one subscription look like two.
+
+Coalescing is conservative and can decline. When `CLAUDE_CONFIG_DIR` selects a Claude profile, shunt cannot prove which account the observed credential belongs to (the credential sources are profile-agnostic while the recorded account id is not), so it leaves the rows separate instead of risking one account's usage being shown against another's name.
+
+Each row uses its provider's native signal:
 
 - **Claude** — 5-hour, weekly, and model-family quota from Anthropic's usage API; cached for 60 seconds.
 - **Codex** — response-derived windows captured from `x-codex-*` headers after GPT traffic flows through shunt. **Waiting for traffic** means this shunt process has not yet received those headers; it does not mean 0% used. Send one GPT request through this shunt to populate the row.

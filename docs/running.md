@@ -120,14 +120,17 @@ provider = "openai"
 # codex = "gpt-5.2"       # exactly one configured provider is supported
 
 # Optional: error reporting to your own Sentry project. Off unless a DSN is
-# set; nothing is ever sent by default. Only gateway-owned diagnostics are
-# reported — fatal gateway startup/serve errors, panics, and error-level log
-# events, with warn/info as breadcrumbs. Request/response bodies, headers,
-# credentials, and the host name are never sent: breadcrumbs keep only the log
-# message (field values are stripped), and tracing spans attach only when you
-# opt into tracing via traces_sample_rate below. An empty DSN (e.g.
-# SHUNT_SENTRY__DSN="") disables reporting again; an invalid DSN or an
-# out-of-range traces_sample_rate is a startup error.
+# set; nothing is ever sent by default. Reports gateway-owned diagnostics —
+# fatal gateway startup/serve errors, panics, and error-level log events, with
+# warn/info as breadcrumbs — plus, unconditionally once a DSN is set, an
+# error/warning event whenever an upstream provider itself returns a failure:
+# error for a 5xx response, warning for 429/529 (rate limit/overload), each
+# tagged with model, provider, and upstream_status only. Request/response
+# bodies, headers, credentials, and the host name are never sent: breadcrumbs
+# keep only the log message (field values are stripped), and tracing spans
+# attach only when you opt into tracing via traces_sample_rate below. An empty
+# DSN (e.g. SHUNT_SENTRY__DSN="") disables reporting again; an invalid DSN or
+# an out-of-range traces_sample_rate is a startup error.
 # [sentry]
 # dsn = "https://<key>@<org>.ingest.sentry.io/<project>"
 # environment = "home-lab"   # optional environment tag on events
