@@ -1,0 +1,40 @@
+src/routes.rs
+  s_1a9b1bc59ddad0::t_fe6754712babee 19-27,120-160
+  s_1a9b1bc59ddad0::t_2dda4d6126e082 161
+src/config.rs
+  s_1a9b1bc59ddad0::t_0f357109a08b9b 2090-2097,2099-2101
+  s_1a9b1bc59ddad0::t_3dd279810fb475 2238,2243
+  s_1a9b1bc59ddad0::t_e2b060731d3fbc 3483-3489,3500
+  s_1a9b1bc59ddad0::t_41be32b5c545ce 2227-2233,3494-3499
+docs/codex-configuration.md
+  s_1a9b1bc59ddad0::t_5621e72f46f404 492-497
+  s_1a9b1bc59ddad0::t_ed946daac682bb 498-500
+src/routing.rs
+  s_1a9b1bc59ddad0::t_f314c65dfd37f2 501-548
+docs/m6-xai-provider.md
+  s_1a9b1bc59ddad0::t_1f375520c33f87 143
+site/src/content/docs/guides/codex.mdx
+  s_1a9b1bc59ddad0::t_33b46a2f94081d 322-326
+tests/responses_translate.rs
+  s_1a9b1bc59ddad0::t_7760b82f5d84a9 765-780
+src/model/responses_request.rs
+  s_1a9b1bc59ddad0::t_20c5a6af47029a 194-197,200-202
+site/src/content/docs/reference/configuration.md
+  s_1a9b1bc59ddad0::t_c007affb091156 272,349
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "7f02920760cc56cebfbfaaad83df1c3096a27b36",
+  "prompts": {},
+  "sessions": {
+    "s_1a9b1bc59ddad0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f72f2f30-a069-4d22-94cd-21d4d1a46af7",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
