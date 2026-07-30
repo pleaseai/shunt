@@ -260,10 +260,23 @@ where
 {
     let budget = cap.min(body.len().saturating_mul(MAX_DECODE_RATIO));
     if body.len() <= INLINE_ZSTD_INPUT_BYTES {
-        if let Some(out) = decode_within(&body, INLINE_ZSTD_OUTPUT_BYTES.min(budget))? {
+        let inline_limit = INLINE_ZSTD_OUTPUT_BYTES.min(budget);
+        if let Some(out) = decode_within(&body, inline_limit)? {
             return Ok(Some(extract(out)));
         }
-        // The inline probe only rules out a body that fits
+        if inline_limit == budget {
+            // The probe ran against the real `budget`, so its `None` is
+            // already the authoritative "over budget" answer. Offloading
+            // would re-run `decode_within` with an identical budget and
+            // reach the same `None`, paying a second full decode plus a
+            // `decode_slots` permit for it. Reachable whenever
+            // `budget <= INLINE_ZSTD_OUTPUT_BYTES` — with a large `cap`,
+            // a body of at most `INLINE_ZSTD_OUTPUT_BYTES / MAX_DECODE_RATIO`
+            // bytes — which is exactly the small ratio-bomb shape, so the
+            // hostile path is the one that stops paying twice.
+            return Ok(None);
+        }
+        // Otherwise the inline probe only rules out a body that fits
         // `INLINE_ZSTD_OUTPUT_BYTES`; it does not tell us whether the body is
         // over `budget` (genuinely too big) or merely over the inline
         // allowance (fits `budget`, but too much decode work to do inline).
@@ -306,6 +319,13 @@ fn decode_within(body: &[u8], budget: usize) -> std::io::Result<Option<Bytes>> {
     // a typical body decodes without repeated reallocation. The multiplier
     // mirrors the shape of `adapters::cursor::connect::decode_gzip_frame_within`
     // but not its value — see [`DECODE_CAPACITY_RATIO`].
+    //
+    // Deliberately not sized from the frame header's declared content size:
+    // `zstd::stream::encode_all` (what `compress` uses, and the streaming shape
+    // a client encoder uses too) does not pledge a source size, so
+    // `get_frame_content_size` reports `None` for these frames and a
+    // header-derived hint would be inert. It is also client-controlled, so it
+    // could only ever be allowed to shrink this reservation, never grow it.
     let mut out = Vec::with_capacity(std::cmp::min(
         body.len().saturating_mul(DECODE_CAPACITY_RATIO),
         budget + 1,

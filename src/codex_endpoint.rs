@@ -47,12 +47,106 @@ const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024 * 1024;
 /// Minimal view of the inbound Responses body: the `model` is read only for
 /// metrics/logging labels — the body itself forwards upstream byte-for-byte, so
 /// a missing or malformed model never blocks the request (the upstream rejects it).
-/// `model` is deserialized as a raw [`serde_json::Value`] rather than
-/// `Option<String>` so [`parse_model`] can tell "field absent" apart from
-/// "field present but not a string" instead of both silently becoming `None`.
+/// `model` is deserialized as a [`ModelField`] rather than `Option<String>` so
+/// [`parse_model`] can tell "field absent" apart from "field present but not a
+/// string" instead of both silently becoming `None`.
 #[derive(Debug, Deserialize)]
 struct ModelView {
-    model: Option<serde_json::Value>,
+    model: Option<ModelField>,
+}
+
+/// What the inbound body's `model` field turned out to be, classified *without*
+/// materializing it.
+///
+/// Deliberately not `serde_json::Value`: only a string is ever used, and every
+/// other shape is used solely to name the type in a log line. Deserializing into
+/// a `Value` would make serde allocate and retain the field's entire contents
+/// first — so a client sending `"model": [ ...megabytes... ]` would turn this
+/// best-effort labels-only parse into a large client-controlled heap allocation,
+/// on top of the arrival buffer and (on the zstd path) the decoded copy that are
+/// already resident (issue #291 follow-up). The non-string arms below drain their
+/// contents through [`IgnoredAny`], which walks the input without building it.
+#[derive(Debug)]
+enum ModelField {
+    Str(String),
+    /// A JSON type name (`"array"`, `"object"`, ...) — never any client content.
+    Other(&'static str),
+}
+
+impl<'de> Deserialize<'de> for ModelField {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(ModelFieldVisitor)
+    }
+}
+
+struct ModelFieldVisitor;
+
+impl<'de> serde::de::Visitor<'de> for ModelFieldVisitor {
+    type Value = ModelField;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("a JSON value")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+        Ok(ModelField::Str(value.to_string()))
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+        Ok(ModelField::Str(value))
+    }
+
+    fn visit_bool<E>(self, _: bool) -> Result<Self::Value, E> {
+        Ok(ModelField::Other("boolean"))
+    }
+
+    fn visit_i64<E>(self, _: i64) -> Result<Self::Value, E> {
+        Ok(ModelField::Other("number"))
+    }
+
+    fn visit_u64<E>(self, _: u64) -> Result<Self::Value, E> {
+        Ok(ModelField::Other("number"))
+    }
+
+    fn visit_i128<E>(self, _: i128) -> Result<Self::Value, E> {
+        Ok(ModelField::Other("number"))
+    }
+
+    fn visit_u128<E>(self, _: u128) -> Result<Self::Value, E> {
+        Ok(ModelField::Other("number"))
+    }
+
+    fn visit_f64<E>(self, _: f64) -> Result<Self::Value, E> {
+        Ok(ModelField::Other("number"))
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(ModelField::Other("null"))
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::SeqAccess<'de>,
+    {
+        // Drain rather than collect: the elements are never read, and building
+        // them is the allocation this type exists to avoid.
+        while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+        Ok(ModelField::Other("array"))
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::MapAccess<'de>,
+    {
+        while map
+            .next_entry::<serde::de::IgnoredAny, serde::de::IgnoredAny>()?
+            .is_some()
+        {}
+        Ok(ModelField::Other("object"))
+    }
 }
 
 /// Handler for the inbound Responses routes (`/backend-api/codex/responses`,
@@ -415,11 +509,11 @@ fn label_from_parsed(parsed: ParsedModel, decoded_bytes: usize, wire_bytes: usiz
             );
             UNKNOWN_MODEL.to_string()
         }
-        ParsedModel::NotAString(value) => {
+        ParsedModel::NotAString(model_type) => {
             tracing::warn!(
                 decoded_bytes,
                 wire_bytes,
-                model_type = json_type_name(&value),
+                model_type,
                 "inbound codex body's `model` field is not a string; labeling metrics and logs `unknown`"
             );
             UNKNOWN_MODEL.to_string()
@@ -437,34 +531,23 @@ enum ParsedModel {
     Malformed(serde_json::Error),
     /// Valid JSON with no `model` field (or an explicit `null`).
     Missing,
-    /// Valid JSON with a `model` field that is not a string.
-    NotAString(serde_json::Value),
+    /// Valid JSON with a `model` field that is not a string. Carries only the
+    /// JSON type name, never the client-controlled value — see [`ModelField`].
+    NotAString(&'static str),
 }
 
 fn parse_model(body: &[u8]) -> ParsedModel {
     match serde_json::from_slice::<ModelView>(body) {
         Ok(ModelView {
-            model: Some(serde_json::Value::String(model)),
+            model: Some(ModelField::Str(model)),
         }) => ParsedModel::Model(model),
+        // `Option`'s deserializer maps an explicit `null` to `None` before
+        // `ModelFieldVisitor` runs, so absent and `null` arrive here alike.
+        Ok(ModelView { model: None }) => ParsedModel::Missing,
         Ok(ModelView {
-            model: None | Some(serde_json::Value::Null),
-        }) => ParsedModel::Missing,
-        Ok(ModelView { model: Some(other) }) => ParsedModel::NotAString(other),
+            model: Some(ModelField::Other(model_type)),
+        }) => ParsedModel::NotAString(model_type),
         Err(error) => ParsedModel::Malformed(error),
-    }
-}
-
-/// A short name for a JSON value's type, for the `NotAString` log line — cheaper
-/// than debug-formatting the value itself and avoids echoing arbitrary client
-/// input into logs.
-fn json_type_name(value: &serde_json::Value) -> &'static str {
-    match value {
-        serde_json::Value::Null => "null",
-        serde_json::Value::Bool(_) => "boolean",
-        serde_json::Value::Number(_) => "number",
-        serde_json::Value::String(_) => "string",
-        serde_json::Value::Array(_) => "array",
-        serde_json::Value::Object(_) => "object",
     }
 }
 

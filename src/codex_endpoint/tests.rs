@@ -106,6 +106,50 @@ async fn falls_back_to_unknown_when_the_model_field_is_not_a_string() {
     assert_eq!(model_label(&HeaderMap::new(), &body).await, UNKNOWN_MODEL);
 }
 
+/// Every non-string shape is classified without materializing it, so each
+/// still degrades to `unknown` — including the container types, whose contents
+/// `ModelField` drains through `IgnoredAny` instead of building.
+#[tokio::test]
+async fn falls_back_to_unknown_for_every_non_string_model_shape() {
+    for body in [
+        &b"{\"model\":42,\"input\":[]}"[..],
+        &b"{\"model\":1.5,\"input\":[]}"[..],
+        &b"{\"model\":true,\"input\":[]}"[..],
+        &b"{\"model\":[1,2,3],\"input\":[]}"[..],
+        &b"{\"model\":{\"nested\":{\"deep\":[1,2]}},\"input\":[]}"[..],
+        &b"{\"model\":null,\"input\":[]}"[..],
+    ] {
+        assert_eq!(
+            model_label(&HeaderMap::new(), &Bytes::from_static(body)).await,
+            UNKNOWN_MODEL,
+            "non-string model {} must degrade to `unknown`",
+            String::from_utf8_lossy(body)
+        );
+    }
+}
+
+/// A large array in `model` is drained, not built: the label still comes back
+/// `unknown` and the request is never blocked by it. Guards the `visit_seq`
+/// arm against a regression to `serde_json::Value`, which would allocate and
+/// retain the whole client-controlled value for a field only ever used to name
+/// a type in a log line.
+#[tokio::test]
+async fn a_large_non_string_model_is_drained_rather_than_materialized() {
+    let mut body = Vec::from(&b"{\"model\":["[..]);
+    for index in 0..100_000 {
+        if index > 0 {
+            body.push(b',');
+        }
+        body.extend_from_slice(b"\"filler\"");
+    }
+    body.extend_from_slice(b"],\"input\":[]}");
+
+    assert_eq!(
+        model_label(&HeaderMap::new(), &Bytes::from(body)).await,
+        UNKNOWN_MODEL
+    );
+}
+
 /// Malformed JSON (not merely an unreadable `model`) degrades to `unknown`
 /// (B1) rather than propagating a parse error to the caller — the body still
 /// forwards verbatim regardless.

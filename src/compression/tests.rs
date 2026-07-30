@@ -161,6 +161,23 @@ async fn leaves_a_tiny_body_uncompressed() {
         .is_none());
 }
 
+/// Pins the dependency behaviour [`decode_within`]'s sizing comment relies on:
+/// `zstd::stream::encode_all` does not pledge a source size, so the frame
+/// header carries no declared content size and a header-derived capacity hint
+/// (or an early over-budget refusal) would be inert for these frames. If a
+/// future zstd release starts pledging it, this fails and the decision to size
+/// purely from [`DECODE_CAPACITY_RATIO`] is worth revisiting.
+#[test]
+fn streaming_encoded_frames_carry_no_declared_content_size() {
+    let compressed = compress(&json_body(64 * 1024)).expect("body should compress");
+    assert_eq!(
+        zstd::zstd_safe::get_frame_content_size(&compressed)
+            .expect("a well-formed frame has a readable header"),
+        None,
+        "encode_all is expected not to pledge a source size"
+    );
+}
+
 /// A body that decodes past the budget is reported as over-budget rather than
 /// truncated to `budget` bytes (which would parse as invalid JSON) or
 /// allowed to allocate without bound.
@@ -183,6 +200,90 @@ async fn refuses_a_body_that_decodes_past_the_budget() {
             .await
             .unwrap()
             .expect("a body exactly at the budget fits"),
+        body
+    );
+}
+
+/// When the inline probe already ran against the *real* budget — i.e. `cap`
+/// (or the ratio bound) put `budget` at or under [`INLINE_ZSTD_OUTPUT_BYTES`]
+/// — its `None` is authoritative and must be returned directly rather than
+/// re-running an identical `decode_within` on the blocking pool. The
+/// observable contract is the same `Ok(None)`; this pins the boundary
+/// arithmetic that decides the branch, so a change to
+/// [`INLINE_ZSTD_OUTPUT_BYTES`] or the budget formula that silently reopens
+/// the redundant second decode fails here.
+#[tokio::test]
+async fn an_inline_probe_at_the_full_budget_answers_without_offloading() {
+    let body = json_body(8 * 1024);
+    let compressed = compress_request_body(body.clone())
+        .await
+        .unwrap()
+        .expect("body should compress");
+    assert!(
+        compressed.len() <= INLINE_ZSTD_INPUT_BYTES,
+        "fixture must enter the inline branch, got {} compressed bytes",
+        compressed.len()
+    );
+
+    // A `cap` this small is what forces `budget == INLINE_ZSTD_OUTPUT_BYTES
+    // .min(budget)`, the condition the early return keys on.
+    let cap = 1024;
+    assert!(
+        cap <= INLINE_ZSTD_OUTPUT_BYTES && cap <= compressed.len().saturating_mul(MAX_DECODE_RATIO),
+        "cap must be what pins the budget for this to exercise the early return"
+    );
+    assert!(
+        body.len() > cap,
+        "fixture must actually exceed the budget so the probe returns None"
+    );
+
+    assert!(
+        decode_zstd_within(compressed, cap)
+            .await
+            .expect("an over-budget body is not an error")
+            .is_none(),
+        "a body over a budget the inline probe already applied must be rejected"
+    );
+}
+
+/// The early return above must not swallow the case it does not cover: a
+/// small compressed body whose decoded output passes the *inline allowance*
+/// but still fits the ratio-derived budget has to fall through to the
+/// offloaded decode and come back whole. Without the `inline_limit == budget`
+/// guard on that return, this body would be wrongly reported over-budget.
+#[tokio::test]
+async fn a_body_over_the_inline_allowance_but_within_budget_still_decodes() {
+    // Blended fixture: realistic JSON (~12x) plus a highly compressible run,
+    // tuned so the frame stays inside `INLINE_ZSTD_INPUT_BYTES` while the
+    // decoded output lands past `INLINE_ZSTD_OUTPUT_BYTES` — the window where
+    // `inline_limit < budget`.
+    let mut blended = Vec::from(&json_body(8 * 1024)[..]);
+    blended.resize(48 * 1024, b' ');
+    let body = Bytes::from(blended);
+    let compressed = compress(&body).expect("body should compress");
+
+    assert!(
+        compressed.len() <= INLINE_ZSTD_INPUT_BYTES,
+        "fixture must enter the inline branch, got {} compressed bytes",
+        compressed.len()
+    );
+    assert!(
+        body.len() > INLINE_ZSTD_OUTPUT_BYTES,
+        "fixture must exceed the inline allowance so the probe cannot answer"
+    );
+    assert!(
+        body.len() <= compressed.len().saturating_mul(MAX_DECODE_RATIO),
+        "fixture must stay inside the ratio bound, or it is a bomb rather than \
+         a fall-through case: {} -> {}",
+        compressed.len(),
+        body.len()
+    );
+
+    assert_eq!(
+        decode_zstd_within(compressed, MAX_REQUEST_BODY_BYTES_FOR_TEST)
+            .await
+            .expect("a within-budget body is not an error")
+            .expect("a body over the inline allowance but within budget must decode"),
         body
     );
 }
