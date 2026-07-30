@@ -2459,7 +2459,9 @@ mod tests {
                     .unwrap();
             }
             // Now idle in the pool: send a keepalive Ping and require a Pong back.
-            ws.send(Message::Ping(b"ka".to_vec().into())).await.unwrap();
+            ws.send(Message::Ping(bytes::Bytes::from_static(b"ka")))
+                .await
+                .unwrap();
             loop {
                 match ws.next().await {
                     Some(Ok(Message::Pong(data))) => {
