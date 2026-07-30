@@ -1729,8 +1729,8 @@ fn reasoning_id_falls_back_to_done_event_when_added_missing() {
 
 /// Translate with the native tool_search path enabled. This passes `native =
 /// true` straight to [`translate_request`] and does not read
-/// `ProviderConfig::tool_search` (that flag now defaults to `true` in
-/// production, with `tool_search = false` as the opt-out — see
+/// `ProviderConfig::tool_search` (that flag's unset default now auto-resolves
+/// production traffic to native only for a known-good host — see
 /// [`Config::native_tool_search`]). The shim tests use [`translate`] (native
 /// off).
 fn native_translate(input: Value) -> Value {

@@ -43,7 +43,7 @@ shunt 是一个**符合规范的 Claude Code LLM 网关**:它实现 Claude Code 
 | ChatGPT/Codex **订阅**(OAuth)后端 | ● | ●⁴ | ● | 少见 | ○ |
 | Codex **WebSocket** Responses 传输 | ● | ● | ● | ○ | ○ |
 | **转换路径上的**上传裁剪(`previous_response_id` 续传) | ● | ● | ○(仅透传) | ○ | ○ |
-| tool-search / `defer_loading` / `tool_reference` 处理 | ◐(标准 OpenAI/Codex 上 gpt-5.4+ 默认原生⁸;其他情况仍为垫片) | ○⁵ | ◐(上游)/ ●(分叉) | ○ | ○ |
+| tool-search / `defer_loading` / `tool_reference` 处理 | ◐(在已知宿主 —— ChatGPT/Codex、`api.openai.com` —— 上 gpt-5.4+ 默认原生⁸;其他情况仍为垫片,可选择性开启) | ○⁵ | ◐(上游)/ ●(分叉) | ○ | ○ |
 | reasoning 往返到 Claude Code `thinking` | ●(加密) | ◐(Kimi/Grok;**Codex 被丢弃**) | ◐ | ○ | ◐ |
 | 多账户负载均衡 / 故障转移 | ◐⁷ | ○ | ● | 部分 | ● |
 | 后端广度 | 4 个提供方¹ | 4 个订阅⁶ | 11 个后端² | 不一 | 100–1600+ |
@@ -60,7 +60,7 @@ shunt 是一个**符合规范的 Claude Code LLM 网关**:它实现 Claude Code 
 ⁵ **通过阅读 raine/ccp 源码确认**(`fe80a6b`,2026-07-11):不存在任何 tool-search 处理(`defer_loading` / `tool_reference` / `tool_search` / `advanced-tool-use` 零匹配)。工具被按白名单重建为 `{name, description, parameters}`(`src/providers/codex/translate/request.rs:476-494`),所以 `defer_loading:true` 被静默丢弃 —— 不会 400,但也不省上下文;ToolSearch 结果中的 `tool_reference` 块渲染为 `[unsupported content block omitted: tool_reference]`(`request.rs:836-842`),而不是 shunt 对已识别的工具引用渲染的完整 schema(`src/model/responses_request.rs:623-643`)—— `"Loaded tool: X"` 只是 shunt 在引用未被识别时才会用到的兜底文案。因此是 ○(相对 shunt 的 ◐):对 raine/ccp 强行开启 `ENABLE_TOOL_SEARCH` 会把发现循环的结果劣化成占位符。默认情况下 Claude Code 自己的门控会在非第一方 base URL 后面关闭 tool search,所以这个问题保持潜伏。
 ⁶ raine/ccp 订阅后端:Codex(ChatGPT Plus/Pro)、Kimi(kimi.com)、Grok(grok.com)、Cursor Agent —— 全部经由订阅 OAuth。
 ⁷ shunt 为 Anthropic `claude_oauth` 和 ChatGPT/Codex `chatgpt_oauth` 两者池化显式账户:会话粘性选择、按提供方轮询、基于每账户 5h/7d 配额头部(分别是 `anthropic-ratelimit-unified-*` 和 `x-codex-*`)的感知模型主动轮换、冷却、401 后强制刷新,以及对 429 和 5xx 响应的被动故障转移。每账户用量出现在可选启用的管理后台仪表盘中。
-⁸ **[#82]** 增加了一个按提供方的 `tool_search` 标志(`src/config.rs:1136-1149,2792-2805`),把 Claude Code 的工具搜索映射到 OpenAI Responses API 自己的原生、客户端执行的 `tool_search` 协议 —— `ToolSearch` → `tool_search`,其 `tool_use` → `tool_search_call`,`tool_reference` → 一个以结构化 JSON 携带已加载工具完整 schema 的 `tool_search_output` 项(`src/model/responses_request.rs`) —— 而不是把 schema 折叠进文本。**默认开启(issue #286)**:垫片会在每次揭示时都使缓存的提示前缀失效(它必须把每个被揭示的工具重新加回 `tools` 数组,而 shunt 每一轮都会依据客户端历史重新推导这个数组),因此原生的、只追加 `input` 的路径现在在其适用之处 —— 路由到 gpt-5.4+ 模型的标准 OpenAI 或 ChatGPT/Codex Responses 风格 —— 成为默认行为。这些原生形状已针对 ChatGPT/Codex 后端在 gpt-5.6 上做过实时探测验证(2026-07-13, [#86]);`tool_search` 已被记录在公开的 OpenAI Responses API 文档中,适用于 gpt-5.4+ 模型。xAI/Grok 路由和 gpt-5.2 及以下的模型无论如何都保留 #43 垫片 —— 静默地,绝不报错。设置 `tool_search = false` 可在支持原生路径的提供方上改回垫片。
+⁸ **[#82]** 增加了一个按提供方的 `tool_search` 标志(`src/config.rs:1136-1154,2811-2850`),把 Claude Code 的工具搜索映射到 OpenAI Responses API 自己的原生、客户端执行的 `tool_search` 协议 —— `ToolSearch` → `tool_search`,其 `tool_use` → `tool_search_call`,`tool_reference` → 一个以结构化 JSON 携带已加载工具完整 schema 的 `tool_search_output` 项(`src/model/responses_request.rs`) —— 而不是把 schema 折叠进文本。**默认是 auto,并收窄到已知宿主(issue #289)**:垫片会在每次揭示时都使缓存的提示前缀失效(它必须把每个被揭示的工具重新加回 `tools` 数组,而 shunt 每一轮都会依据客户端历史重新推导这个数组),因此未设置("auto")的默认值只会在已验证支持 `tool_search` 条目的宿主 —— ChatGPT/Codex 后端和 `api.openai.com` —— 路由到 gpt-5.4+ 模型时才走原生的、只追加 `input` 的路径;其他所有 OpenAI 兼容端点(包括 LiteLLM、vLLM、OpenRouter、自托管代理)都会保留垫片,除非运营者在确认其实现了该协议后设置 `tool_search = true` —— 因为大多数第三方 Responses 后端并未实现它,若强行启用会导致该轮直接失败,而不是优雅降级。这些原生形状已针对 ChatGPT/Codex 后端在 gpt-5.6 上做过实时探测验证(2026-07-13, [#86]);`tool_search` 已被记录在公开的 OpenAI Responses API 文档中,适用于 gpt-5.4+ 模型。xAI/Grok 路由和 gpt-5.2 及以下的模型无论如何都保留 #43 垫片 —— 静默地,绝不报错。若某个原本会走原生路径的提供方需要强制使用垫片,设置 `tool_search = false`。
 
 > "raine/ccp" = [raine/claude-code-proxy](https://github.com/raine/claude-code-proxy)。
 
@@ -91,7 +91,7 @@ shunt 是一个**符合规范的 Claude Code LLM 网关**:它实现 Claude Code 
 
 ### 范围内
 
-- **A. tool-search 上下文节省(已跟踪:[#43])。** **已基本由 [#82]/[#286] 解决**:一个默认开启的按提供方 `tool_search` 标志,现在为路由到 gpt-5.4+ 模型的标准 OpenAI 或 ChatGPT/Codex 提供方,把工具搜索映射到 Responses API 原生、客户端执行的 `tool_search` 协议,而不是文本垫片(见上文脚注 8)。剩余的缺口是不满足条件的风格/模型:xAI/Grok 路由和 gpt-5.2 及以下的模型仍会回退到 shim —— 它会把每个尚未加载的延迟工具排除在 `tools` 数组之外(`src/model/responses_request.rs:791-797`),所以对那些从未被揭示的工具,它确实收回了上下文 —— 但一旦 Claude Code 揭示了某个工具,shim 就会把它的完整 schema 同时渲染为 `tool_reference` 文本(`:623-643`)*并且*把该工具重新加入 `tools` 数组,于是每次揭示都会重新发送一遍 schema,并使此后的缓存提示前缀失效。Responses API 只允许模型调用它在 `tools` 中能看到的工具,因此在不使用原生协议的情况下,这种双重发送无法避免 —— 这个残余缺口只有等 xAI/Grok 以及更旧的 OpenAI 模型在上游各自获得等效的 `tool_search` 支持后才会消失。
+- **A. tool-search 上下文节省(已跟踪:[#43])。** **已基本由 [#82]/[#286] 解决,由 [#289] 收窄范围**:按提供方的 `tool_search` 标志在默认("auto")下,只有当已知支持该协议的宿主 —— ChatGPT/Codex 后端和 `api.openai.com` —— 路由到 gpt-5.4+ 模型时,才会把工具搜索映射到 Responses API 原生、客户端执行的 `tool_search` 协议,而不是文本垫片(见上文脚注 8);其他 OpenAI 兼容端点需要显式设置 `tool_search = true` 才能启用。剩余的缺口是不满足条件的风格/模型/宿主:xAI/Grok 路由、gpt-5.2 及以下的模型,以及尚未开启该选项的自定义 OpenAI 兼容端点,都仍会回退到 shim —— 它会把每个尚未加载的延迟工具排除在 `tools` 数组之外(`src/model/responses_request.rs:791-797`),所以对那些从未被揭示的工具,它确实收回了上下文 —— 但一旦 Claude Code 揭示了某个工具,shim 就会把它的完整 schema 同时渲染为 `tool_reference` 文本(`:623-643`)*并且*把该工具重新加入 `tools` 数组,于是每次揭示都会重新发送一遍 schema,并使此后的缓存提示前缀失效。Responses API 只允许模型调用它在 `tools` 中能看到的工具,因此在不使用原生协议的情况下,这种双重发送无法避免 —— 这个残余缺口只有等 xAI/Grok 以及更旧的 OpenAI 模型在上游各自获得等效的 `tool_search` 支持,或者更多自定义端点通过验证并开启后才会消失。
 
 - **B. Codex WS:实时探测续传规范化(已跟踪:[#45])。** Reasoning/`function_call` 规范化已对照 3 个来源做过 schema 校验,但尚未实时探测(`docs/m7-codex-websocket.md:250-270`)。任何未纳入的字段都会静默落入安全的全量输入回退 —— 正确性无虞,但是*潜在错过的优化*。一轮探测能确认续传是否按应有的频率触发。
 
@@ -113,7 +113,7 @@ shunt 是一个**符合规范的 Claude Code LLM 网关**:它实现 Claude Code 
 
 ## 7. 一句话总结
 
-shunt 处于光谱中**高保真、Claude Code 原生**的一端。它最近的同类是 **raine/claude-code-proxy** —— 同一类(Rust、订阅 OAuth、按 `model` 路由、Codex WS + `previous_response_id` 续传) —— 相对它,shunt 的优势是更深的续传规范化、Codex reasoning 保真度(raine 丢弃它)、Anthropic 透传路径(把主会话留在 Claude)以及 xAI OAuth;raine 的优势是内置监控 TUI、第一方 ChatGPT OAuth 登录和 Kimi/Cursor 的广度。相对 **CLIProxyAPI**,shunt 在转换路径的上传裁剪上占优(CLIProxyAPI 的 WS 是透传),并按设计舍弃了大部分机群功能(广泛的多账户负载均衡、完整的管理 API、插件、后端广度)。它现在提供窄的 Anthropic OAuth 和 ChatGPT/Codex 账户池,两者都带感知模型的主动配额调度加被动故障转移;跨账户的刻意 fill-first 排序是剩下的池化缺口。范围内价值最高的工作是完成 tool-search 上下文节省([#43]) —— 已基本由 Codex/OpenAI 上现已默认开启的原生 `tool_search` 路径([#82]、[#286])解决;残余缺口是 xAI/Grok 路由和 gpt-5.2 及以下的模型,它们仍在为 shim 的按次揭示缓存失效代价买单(见上文 A 项)。此后 Codex WS 传输的首个事件之前 HTTP 回退缺口已被填补([#46]);续传规范化实时探测([#45])仍未完成。
+shunt 处于光谱中**高保真、Claude Code 原生**的一端。它最近的同类是 **raine/claude-code-proxy** —— 同一类(Rust、订阅 OAuth、按 `model` 路由、Codex WS + `previous_response_id` 续传) —— 相对它,shunt 的优势是更深的续传规范化、Codex reasoning 保真度(raine 丢弃它)、Anthropic 透传路径(把主会话留在 Claude)以及 xAI OAuth;raine 的优势是内置监控 TUI、第一方 ChatGPT OAuth 登录和 Kimi/Cursor 的广度。相对 **CLIProxyAPI**,shunt 在转换路径的上传裁剪上占优(CLIProxyAPI 的 WS 是透传),并按设计舍弃了大部分机群功能(广泛的多账户负载均衡、完整的管理 API、插件、后端广度)。它现在提供窄的 Anthropic OAuth 和 ChatGPT/Codex 账户池,两者都带感知模型的主动配额调度加被动故障转移;跨账户的刻意 fill-first 排序是剩下的池化缺口。范围内价值最高的工作是完成 tool-search 上下文节省([#43]) —— 已基本由在已知宿主(ChatGPT/Codex 后端和 `api.openai.com`)上默认自动启用的原生 `tool_search` 路径([#82]、[#286]、[#289])解决;残余缺口是 xAI/Grok 路由、gpt-5.2 及以下的模型,以及尚未开启该选项的自定义端点,它们仍在为 shim 的按次揭示缓存失效代价买单(见上文 A 项)。此后 Codex WS 传输的首个事件之前 HTTP 回退缺口已被填补([#46]);续传规范化实时探测([#45])仍未完成。
 
 [#43]: https://github.com/pleaseai/shunt/issues/43
 [#82]: https://github.com/pleaseai/shunt/issues/82

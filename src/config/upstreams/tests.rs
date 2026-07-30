@@ -4,7 +4,7 @@ use figment::{
 };
 
 use super::{normalize, UpstreamConfig};
-use crate::config::{ApiKeyHeader, AuthMode, ConfigError, ProviderKind};
+use crate::config::{ApiKeyHeader, AuthMode, ConfigError, ProviderKind, CONFIG_ENV_LOCK};
 
 fn parse(raw: &str) -> UpstreamConfig {
     Figment::from(Toml::string(raw)).extract().unwrap()
@@ -105,8 +105,6 @@ fn account_and_accounts_are_mutually_exclusive() {
     ));
 }
 
-static CONFIG_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 struct TempConfig(std::path::PathBuf);
 
 impl TempConfig {
@@ -125,7 +123,9 @@ impl TempConfig {
 }
 
 fn load(file: &TempConfig) -> Result<crate::config::Config, ConfigError> {
-    let _guard = CONFIG_ENV_LOCK.lock().unwrap();
+    let _guard = CONFIG_ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     crate::config::Config::load(Some(&file.0))
 }
 
@@ -328,7 +328,9 @@ fn ordered_provider_env_override_addresses_declared_name() {
         "[server]\ndefault_provider = \"primary\"\n[[upstreams]]\nname = \"primary\"\nprovider = \"openai\"",
     );
     let env = "SHUNT_PROVIDERS__PRIMARY__EFFORT";
-    let _guard = CONFIG_ENV_LOCK.lock().unwrap();
+    let _guard = CONFIG_ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     std::env::set_var(env, "high");
     let result = crate::config::Config::load(Some(&file.0));
     std::env::remove_var(env);
@@ -352,7 +354,9 @@ fn ordered_provider_env_override_forces_tool_search_shim() {
         "[server]\ndefault_provider = \"toolsearchprobe\"\n[[upstreams]]\nname = \"toolsearchprobe\"\nprovider = \"openai\"",
     );
     let env = "SHUNT_PROVIDERS__TOOLSEARCHPROBE__TOOL_SEARCH";
-    let _guard = CONFIG_ENV_LOCK.lock().unwrap();
+    let _guard = CONFIG_ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     std::env::set_var(env, "false");
     let result = crate::config::Config::load(Some(&file.0));
     std::env::remove_var(env);
@@ -367,7 +371,9 @@ fn ordered_provider_env_override_cannot_declare_a_name() {
         "[server]\ndefault_provider = \"primary\"\n[[upstreams]]\nname = \"primary\"\nprovider = \"openai\"",
     );
     let env = "SHUNT_PROVIDERS__MISSING__EFFORT";
-    let _guard = CONFIG_ENV_LOCK.lock().unwrap();
+    let _guard = CONFIG_ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     std::env::set_var(env, "high");
     let result = crate::config::Config::load(Some(&file.0));
     std::env::remove_var(env);
@@ -381,7 +387,9 @@ fn ordered_provider_env_override_cannot_declare_a_name() {
 fn legacy_provider_env_override_behavior_is_unchanged() {
     let file = TempConfig::new("[server]\ndefault_provider = \"environmental\"");
     let env = "SHUNT_PROVIDERS__ENVIRONMENTAL";
-    let _guard = CONFIG_ENV_LOCK.lock().unwrap();
+    let _guard = CONFIG_ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     std::env::set_var(
         env,
         "{kind=\"anthropic\",base_url=\"https://api.example\",auth=\"passthrough\"}",

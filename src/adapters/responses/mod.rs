@@ -85,9 +85,11 @@ async fn forward(
         .and_then(Value::as_str)
         == Some("enabled");
     let flavor = state.config.responses_flavor(&route.provider);
-    // Native client-executed tool_search (issue #82) is on by default per
-    // provider (`tool_search = false` opts out) and gated on flavor + model;
-    // otherwise the #43 progressive-reveal shim is used.
+    // Native client-executed tool_search (issue #82) is used when the
+    // provider/flavor/model gates pass — auto-on for a known-good host
+    // (stock OpenAI or the ChatGPT/Codex backend), explicit `tool_search`
+    // otherwise decides (issue #289); the #43 progressive-reveal shim is
+    // used everywhere else.
     let tool_search_native = state
         .config
         .native_tool_search(&route.provider, &route.upstream_model);

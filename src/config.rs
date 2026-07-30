@@ -1135,18 +1135,23 @@ pub struct ProviderConfig {
     pub websocket: bool,
     /// Use the OpenAI Responses native client-executed `tool_search` protocol
     /// for Claude Code's tool search (issue #82) instead of the #43 text-based
-    /// progressive-reveal shim. On by default: the shim must add each revealed
-    /// deferred tool to the `tools` array, which is part of the cacheable
-    /// prompt prefix, so every reveal invalidates the cached prefix and forces
-    /// a full re-process; native keeps deferred tools out of `tools` and
-    /// appends a `tool_search_output` item instead, leaving the prefix stable
-    /// (issue #286). Only honored where the upstream flavor and model support
-    /// it (see [`Config::native_tool_search`]) — stock OpenAI and ChatGPT-Codex
-    /// on gpt-5.4+ take the native path; xAI/Grok and older models keep the
-    /// shim regardless. Set `tool_search = false` to force the shim back on
-    /// for a provider that does support it.
-    #[serde(default = "default_true")]
-    pub tool_search: bool,
+    /// progressive-reveal shim. The shim must add each revealed deferred tool
+    /// to the `tools` array, which is part of the cacheable prompt prefix, so
+    /// every reveal invalidates the cached prefix and forces a full
+    /// re-process; native keeps deferred tools out of `tools` and appends a
+    /// `tool_search_output` item instead, leaving the prefix stable (issue
+    /// #286). Three states: `Some(true)` forces native, `Some(false)` forces
+    /// the shim, and the unset default (`None`, "auto") takes the native path
+    /// only for a host known to implement the protocol — stock OpenAI
+    /// (`api.openai.com`) and the ChatGPT/Codex backend. Any other
+    /// OpenAI-compatible endpoint (LiteLLM, vLLM, OpenRouter, a self-hosted
+    /// proxy, ...) keeps the shim unless it opts in explicitly, since most
+    /// third-party Responses backends don't implement `tool_search` items and
+    /// would otherwise fail the turn instead of falling back (issue #289).
+    /// Still gated on flavor and model either way — see
+    /// [`Config::native_tool_search`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_search: Option<bool>,
     /// Bounded upstream retry/backoff for transient failures (issue #48).
     /// Applies to this provider's single-credential upstream calls (the
     /// `passthrough`/`api_key` Anthropic path, the single-credential Responses
@@ -1513,6 +1518,21 @@ pub fn host_is_anthropic(host: &str) -> bool {
     host == "anthropic.com" || host.ends_with(".anthropic.com")
 }
 
+/// Whether `host` is the stock OpenAI Responses API host, exactly
+/// (`api.openai.com`, no subdomains). Used by [`Config::native_tool_search`]
+/// to decide whether an "auto" (unset `tool_search`) provider may default to
+/// the native protocol. Unlike `host_is_xai`/`host_is_cursor`/
+/// `host_is_anthropic`, which widen to any subdomain to avoid leaking a
+/// subscription bearer off one operator's origin, this check is narrowed to
+/// the single documented Responses endpoint on purpose: other `openai.com`
+/// subdomains (e.g. `chat.openai.com`, `platform.openai.com`) are different
+/// products with no guarantee they implement `tool_search` items the same
+/// way, so trusting the whole domain would risk silently promoting an
+/// unverified host to the native wire shape.
+fn host_is_openai(host: &str) -> bool {
+    host == "api.openai.com"
+}
+
 /// Whether `host` belongs to the ChatGPT/Codex backend (`chatgpt.com` or any
 /// subdomain). Used to reject a `chatgpt_oauth` provider pointed at a
 /// non-ChatGPT host, so shunt never leaks a Codex subscription bearer to
@@ -1803,7 +1823,7 @@ impl ProviderConfig {
             accounts: Vec::new(),
             account_scope: Vec::new(),
             websocket: false,
-            tool_search: true,
+            tool_search: None,
             retry: RetryConfig::default(),
         }
     }
@@ -1823,7 +1843,7 @@ impl ProviderConfig {
             accounts: Vec::new(),
             account_scope: Vec::new(),
             websocket: false,
-            tool_search: true,
+            tool_search: None,
             retry: RetryConfig::default(),
         }
     }
@@ -1843,7 +1863,7 @@ impl ProviderConfig {
             accounts: Vec::new(),
             account_scope: Vec::new(),
             websocket: false,
-            tool_search: true,
+            tool_search: None,
             retry: RetryConfig::default(),
         }
     }
@@ -1885,7 +1905,7 @@ impl Default for Config {
                     accounts: Vec::new(),
                     account_scope: Vec::new(),
                     websocket: false,
-                    tool_search: true,
+                    tool_search: None,
                     retry: RetryConfig::default(),
                 },
             ),
@@ -1941,7 +1961,7 @@ impl Default for Config {
                     accounts: Vec::new(),
                     account_scope: Vec::new(),
                     websocket: false,
-                    tool_search: true,
+                    tool_search: None,
                     retry: RetryConfig::default(),
                 },
             ),
@@ -2790,20 +2810,43 @@ impl Config {
 
     /// Whether `provider`'s Responses translation should use the native
     /// client-executed `tool_search` protocol (issue #82) for a request routed
-    /// to `model`, rather than the #43 text-based progressive-reveal shim. On
-    /// by default (issue #286); requires all three: the provider's
-    /// `tool_search` flag is on (defaults to `true`; set it to `false` to opt
-    /// back out to the shim), the upstream speaks a flavor known to accept it
-    /// (stock OpenAI or the ChatGPT/Codex backend — xAI/Grok keep the shim),
-    /// and the model advertises support (see [`model_supports_tool_search`]).
+    /// to `model`, rather than the #43 text-based progressive-reveal shim.
+    /// Requires the upstream flavor to be one known to accept it (stock
+    /// OpenAI or the ChatGPT/Codex backend — xAI/Grok always keep the shim)
+    /// and the model to advertise support (see [`model_supports_tool_search`]).
+    /// Within that gate, `ProviderConfig::tool_search` decides the rest:
+    /// `Some(explicit)` is honored as-is (an explicit `true` can force native
+    /// even off a known-good host; an explicit `false` always forces the
+    /// shim); the unset default (`None`, "auto") takes the native path only
+    /// when the upstream is a host already verified to implement it — the
+    /// ChatGPT/Codex backend (`AuthMode::ChatgptOauth`) or a `base_url` host
+    /// of exactly `api.openai.com`. A user-declared provider on any other
+    /// OpenAI-compatible host (LiteLLM, vLLM, OpenRouter, a self-hosted
+    /// proxy, ...) therefore keeps the shim unless it opts in with
+    /// `tool_search = true` (issue #289).
     pub fn native_tool_search(&self, provider: &str, model: &str) -> bool {
-        self.provider(provider)
-            .is_some_and(|config| config.tool_search)
-            && matches!(
-                self.responses_flavor(provider),
-                ResponsesFlavor::OpenAi | ResponsesFlavor::Chatgpt
-            )
-            && model_supports_tool_search(model)
+        let Some(config) = self.provider(provider) else {
+            return false;
+        };
+        if !matches!(
+            self.responses_flavor(provider),
+            ResponsesFlavor::OpenAi | ResponsesFlavor::Chatgpt
+        ) {
+            return false;
+        }
+        if !model_supports_tool_search(model) {
+            return false;
+        }
+        match config.tool_search {
+            Some(explicit) => explicit,
+            None => {
+                config.auth == AuthMode::ChatgptOauth
+                    || reqwest::Url::parse(&config.base_url)
+                        .ok()
+                        .and_then(|url| url.host_str().map(host_is_openai))
+                        .unwrap_or(false)
+            }
+        }
     }
 
     pub fn provider_base_url(
@@ -2834,6 +2877,23 @@ impl ServerConfig {
     }
 }
 
+/// Serializes every test that reads or writes the process environment against
+/// every test that calls [`Config::load`]. The environment is process-global, so
+/// a `SHUNT_*` var set inside one test's window is visible to a `Config::load`
+/// running concurrently in another module: a leaked
+/// `SHUNT_PROVIDERS__<NAME>__<FIELD>` makes figment synthesize a partial provider
+/// table for a name the victim's config never declared, failing it with an
+/// unrelated `MissingField("kind")`.
+///
+/// Acquisitions must tolerate poisoning (`unwrap_or_else(PoisonError::into_inner)`):
+/// with ~11 tests sharing this guard, a panic in any one of them would
+/// otherwise poison the mutex and cascade-fail every other holder with a
+/// confusing `PoisonError` instead of the one real failure. The lock guards no
+/// invariant that a panic could corrupt — it only orders env access — so
+/// recovering the guard is correct.
+#[cfg(test)]
+pub(crate) static CONFIG_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -2850,7 +2910,7 @@ mod tests {
         ConfigError, ConfigFormat, GatewayConfig, GatewayOidcConfig, GatewayPolicyConfig,
         GatewayPolicyMatch, GatewayTelemetryConfig, GatewayTelemetryDestination, InboundAuthConfig,
         ModelConfig, OauthUsageConfig, OidcProviderConfig, PoolConfig, ProviderKind,
-        ResponsesFlavor, RetryConfig, UsageEndpointConfig,
+        ResponsesFlavor, RetryConfig, UsageEndpointConfig, CONFIG_ENV_LOCK,
     };
 
     fn model_config(id: &str, upstream_model: Option<BTreeMap<String, String>>) -> ModelConfig {
@@ -4726,7 +4786,10 @@ id = "claude-sonnet-5"
     #[test]
     fn native_tool_search_defaults_on_and_gates_on_flavor_and_model() {
         let config = Config::default();
-        // On by default for a supported flavor + model — no flag needs setting.
+        // Auto (`tool_search` unset) resolves to native for these two built-in
+        // providers because both are known-good hosts — codex is the
+        // ChatGPT/Codex backend and openai targets api.openai.com — so no flag
+        // needs setting for a supported flavor + model.
         assert!(config.native_tool_search("codex", "gpt-5.6-sol"));
         assert!(config.native_tool_search("openai", "gpt-5.4"));
         // A trailing non-digit still counts as the documented minor.
@@ -4740,7 +4803,8 @@ id = "claude-sonnet-5"
         // Unsupported model keeps the #43 shim (gpt-5.2 and below).
         assert!(!config.native_tool_search("codex", "gpt-5.2-codex"));
         // Unsupported flavor keeps the shim (xAI), even though `tool_search`
-        // defaults to on — the flavor gate blocks it regardless.
+        // auto-resolves to on for a known host — the flavor gate blocks it
+        // regardless.
         assert!(!config.native_tool_search("xai", "gpt-5.6-sol"));
         // Unknown provider is never native.
         assert!(!config.native_tool_search("nope", "gpt-5.6-sol"));
@@ -4750,8 +4814,8 @@ id = "claude-sonnet-5"
     fn native_tool_search_false_forces_shim_opt_out() {
         let mut config = Config::default();
         // Explicit opt-out reaches even a supported flavor + model.
-        config.providers.get_mut("codex").unwrap().tool_search = false;
-        config.providers.get_mut("openai").unwrap().tool_search = false;
+        config.providers.get_mut("codex").unwrap().tool_search = Some(false);
+        config.providers.get_mut("openai").unwrap().tool_search = Some(false);
 
         assert!(!config.native_tool_search("codex", "gpt-5.6-sol"));
         assert!(!config.native_tool_search("openai", "gpt-5.4"));
@@ -5073,6 +5137,9 @@ id = "claude-sonnet-5"
 
     #[test]
     fn load_errors_when_explicit_config_path_is_missing() {
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let path = std::path::Path::new("./no-such-shunt-config.toml");
         let error = Config::load(Some(path)).unwrap_err();
         assert!(matches!(error, ConfigError::MissingConfigFile(_)));
@@ -5148,6 +5215,9 @@ id = "claude-sonnet-5"
 
     #[test]
     fn toml_adds_a_provider_and_merges_builtin_overrides() {
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = std::env::temp_dir().join(format!(
             "shunt-config-test-{}",
             std::time::SystemTime::now()
@@ -5192,13 +5262,17 @@ provider = "kimi"
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    // Default-propagation coverage for issue #286: `Config::load` seeds figment
-    // with `Serialized::defaults(Self::default())`, so a mismatch between the
-    // serde `#[serde(default = "default_true")]` on `ProviderConfig::tool_search`
-    // and a stray literal in `Config::default()` would only surface here, not
-    // in a unit test that builds `ProviderConfig`/`Config` directly in Rust.
+    // Default-propagation coverage for issue #286/#289: `Config::load` seeds
+    // figment with `Serialized::defaults(Self::default())`, so a mismatch
+    // between the serde `#[serde(default)]` on `ProviderConfig::tool_search`
+    // (an unset `Option<bool>`, "auto") and a stray literal in
+    // `Config::default()` would only surface here, not in a unit test that
+    // builds `ProviderConfig`/`Config` directly in Rust.
     #[test]
-    fn legacy_provider_tool_search_defaults_on() {
+    fn legacy_provider_custom_host_tool_search_defaults_to_shim() {
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = std::env::temp_dir().join(format!(
             "shunt-config-test-tool-search-default-{}",
             std::time::SystemTime::now()
@@ -5223,8 +5297,81 @@ api_key_env = "CUSTOM_API_KEY"
         let config = Config::load(Some(&path)).unwrap();
 
         // No `tool_search` key declared for a brand-new, user-declared
-        // provider — native tool search must still come up on for a
-        // supported model.
+        // provider on a host shunt has never verified — auto must keep the
+        // #43 shim rather than silently trusting an unknown Responses
+        // backend to implement `tool_search` items (issue #289).
+        assert!(!config.native_tool_search("custom", "gpt-5.6-sol"));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn legacy_provider_custom_host_tool_search_true_opts_into_native() {
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-tool-search-custom-opt-in-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shunt.toml");
+        std::fs::write(
+            &path,
+            r#"
+[providers.custom]
+kind = "responses"
+base_url = "https://api.custom-openai.example/v1"
+auth = "api_key"
+api_key_env = "CUSTOM_API_KEY"
+tool_search = true
+"#,
+        )
+        .unwrap();
+
+        let config = Config::load(Some(&path)).unwrap();
+
+        // Explicit opt-in reaches a non-known host too — the operator has
+        // verified their own backend implements `tool_search` items.
+        assert!(config.native_tool_search("custom", "gpt-5.6-sol"));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn legacy_provider_on_known_openai_host_defaults_on() {
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-tool-search-known-host-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shunt.toml");
+        std::fs::write(
+            &path,
+            r#"
+[providers.custom]
+kind = "responses"
+base_url = "https://api.openai.com/v1"
+auth = "api_key"
+api_key_env = "CUSTOM_API_KEY"
+"#,
+        )
+        .unwrap();
+
+        let config = Config::load(Some(&path)).unwrap();
+
+        // A user-declared provider name still auto-resolves to native as
+        // long as its `base_url` host is exactly `api.openai.com` — the rule
+        // reads the host, not the provider name.
         assert!(config.native_tool_search("custom", "gpt-5.6-sol"));
 
         let _ = std::fs::remove_dir_all(dir);
@@ -5232,6 +5379,9 @@ api_key_env = "CUSTOM_API_KEY"
 
     #[test]
     fn legacy_provider_tool_search_false_opts_out() {
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = std::env::temp_dir().join(format!(
             "shunt-config-test-tool-search-opt-out-{}",
             std::time::SystemTime::now()
@@ -5294,6 +5444,9 @@ tool_search = false
 
     #[test]
     fn yaml_adds_a_provider_and_merges_builtin_overrides() {
+        let _env_guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = std::env::temp_dir().join(format!(
             "shunt-config-yaml-test-{}-{}",
             std::process::id(),

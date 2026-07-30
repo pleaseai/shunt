@@ -312,8 +312,9 @@ Claude Code는 base URL이 퍼스트파티 Anthropic 호스트가 아니면 낙�
 `tool_reference` 블록을 전달한다면** `ENABLE_TOOL_SEARCH=true`를 설정하라는 것이며, shunt는 이를
 전달합니다.
 
-이 플래그를 켜면 shunt는 기본적으로 도구 검색을 OpenAI Responses API 자체의 **네이티브 클라이언트 실행
-`tool_search`** 프로토콜에 매핑합니다: Claude Code의 `ToolSearch` 도구는 `tool_search`(`execution:
+이 플래그를 켜면 shunt는 이미 지원이 검증된 업스트림에 한해 도구 검색을 OpenAI Responses API 자체의
+**네이티브 클라이언트 실행 `tool_search`** 프로토콜에 매핑하고, 그 외의 모든 곳에서는 #43 텍스트 shim을
+유지합니다: Claude Code의 `ToolSearch` 도구는 `tool_search`(`execution:
 "client"`) 도구가 되고, 그 `tool_use`는 `tool_search_call`이 되며, `tool_reference` 결과는 로드된
 도구들의 전체 스키마를 구조화된 JSON으로 담아 `input` 끝에 덧붙는 `tool_search_output` 항목이 됩니다.
 이 차이가 중요한 이유는, 대안 방식 — 드러난 도구의 스키마를 요청의 `tools` 배열에 다시 접어 넣는 방식 —
@@ -322,9 +323,11 @@ Claude Code는 base URL이 퍼스트파티 Anthropic 호스트가 아니면 낙�
 경계 이후의 대화를 처음부터 다시 처리하게 됩니다. 네이티브 프로토콜은 append-only인 `input` 히스토리를
 사용해 `tools`를 건드리지 않으므로, 드러날 때마다 캐시 프리픽스가 그대로 유지됩니다.
 
-- 기본 동작을 쓰는 데는 `shunt.toml` 변경이 필요 없습니다 — 순수하게 `ENABLE_TOOL_SEARCH` 수준의
-  Claude Code 환경 변수입니다.
-- `codex`(ChatGPT) 및 `openai`(스톡 Responses) 프로바이더에 적용됩니다.
+- `codex`와 `openai` 내장 프로바이더의 기본(네이티브) 동작을 쓰는 데는 `shunt.toml` 변경이 필요 없습니다
+  — 순수하게 `ENABLE_TOOL_SEARCH` 수준의 Claude Code 환경 변수입니다.
+- `kind = "responses"` 프로바이더 전반에 적용됩니다. 다만 어떤 프로바이더가 기본으로 네이티브를 쓰는지,
+  아니면 shim을 쓰는지는 업스트림 호스트에 달려 있습니다 — 아래 [네이티브 프로토콜](#네이티브-프로토콜)을
+  참고하세요.
 - 미루지 않는 도구(및 위의 호스티드 `web_search` 도구)는 항상 전달됩니다. 점진적으로 드러나는 것은 미룰 수
   있는 도구뿐입니다.
 
@@ -344,11 +347,28 @@ Claude Code는 base URL이 퍼스트파티 Anthropic 호스트가 아니면 낙�
   업스트림으로 *어떻게* 변환하는지만 바꿀 뿐, Claude Code가 애초에 도구를 지연시키는지 여부는 바꾸지
   않습니다.
 
-`tool_search`는 `[providers.<name>]` 아래에서 기본적으로 `true`입니다. 네이티브 형태는 2026-07-13에
-gpt-5.6에서 ChatGPT/Codex 백엔드를 대상으로 라이브 프로브로 검증되었으며
-([pleaseai/shunt#86](https://github.com/pleaseai/shunt/pull/86)), `tool_search`는 gpt-5.4+
-모델에 대해 공개 OpenAI Responses API 문서에도 실려 있습니다. 네이티브 경로를 지원하는 프로바이더에서
-텍스트 shim으로 되돌리려면 `tool_search = false`로 설정하세요:
+`tool_search`는 `[providers.<name>]` 아래에서 세 가지 상태를 갖는 설정입니다. 미설정(기본값,
+"auto") 상태에서는 이미 프로토콜 지원이 검증된 호스트 — ChatGPT/Codex 백엔드(내장 `codex` 프로바이더)와
+`api.openai.com`(내장 `openai` 프로바이더) — 에서만 네이티브로 해석되고, LiteLLM·vLLM·OpenRouter·자체
+호스팅 프록시를 가리키는 커스텀 `kind = "responses"` 프로바이더를 포함한 그 외 모든 OpenAI 호환
+엔드포인트에서는 텍스트 shim으로 해석됩니다: 대부분의 서드파티 Responses 백엔드는 `tool_search` 항목을
+구현하지 않으므로, 그런 곳에서 네이티브를 자동으로 켜면 부드럽게 폴백하는 대신 턴 자체가 실패할 수
+있습니다. 네이티브 형태는 2026-07-13에 gpt-5.6에서 ChatGPT/Codex 백엔드를 대상으로 라이브 프로브로
+검증되었으며([pleaseai/shunt#86](https://github.com/pleaseai/shunt/pull/86)), `tool_search`는
+gpt-5.4+ 모델에 대해 공개 OpenAI Responses API 문서에도 실려 있습니다.
+
+프로토콜을 구현하는 것을 확인한 커스텀 엔드포인트를 네이티브 경로에 옵트인하려면 `tool_search = true`로
+설정하세요 — 위의 계열·모델 요구 사항은 여전히 적용됩니다:
+
+```toml
+[providers.my-litellm]
+kind = "responses"
+base_url = "https://litellm.internal/v1"
+tool_search = true
+```
+
+기본적으로(또는 옵트인으로) 네이티브 경로를 쓰게 될 프로바이더에서 텍스트 shim을 강제하려면
+`tool_search = false`로 설정하세요:
 
 ```toml
 [providers.codex]
@@ -367,6 +387,6 @@ tool_search = false
 | 컨텍스트 바가 과다 보고 / 조기 압축 | `CLAUDE_CODE_MAX_CONTEXT_TOKENS`를 설정하세요. 디스커버리 별칭은 이를 받을 수 없습니다 — 비-`claude-` id를 사용하세요. |
 | Grok 라우트에서 웹 검색 결과가 비어 있음 | xAI/Grok의 Responses API는 웹 검색을 지원하지 않아 shunt가 도구를 제거합니다. 웹 검색에는 `codex` 또는 `openai` 라우트를 사용하세요. |
 | 도구 검색이 동작하지 않음 / 매 턴 모든 도구 스키마가 전송됨 | `ENABLE_TOOL_SEARCH=true`를 설정하세요 — Claude Code는 퍼스트파티가 아닌 base URL 뒤에서 도구 검색을 기본적으로 비활성화합니다. shunt는 `tool_reference` 블록을 전달하며 미뤄 둔 스키마를 필요할 때 드러냅니다. |
-| 도구 검색이 지연만 할 뿐 컨텍스트를 실제로 회수하지 않음(여전히 shim의 캐시 무효화 비용을 지불 중) | 계열/모델 게이트를 확인하세요 — 네이티브 `tool_search`는 스톡 OpenAI/ChatGPT-Codex 계열과 gpt-5.4 이상 모델이 필요하며, 지원되지 않는 조합은 조용히 shim으로 폴백합니다. 두 게이트를 모두 통과했다면 `tool_search = false`를 설정하지 않았는지 확인하세요 — 위의 [도구 검색 → 네이티브 프로토콜](#네이티브-프로토콜)을 참고하세요. |
+| 도구 검색이 지연만 할 뿐 컨텍스트를 실제로 회수하지 않음(여전히 shim의 캐시 무효화 비용을 지불 중) | 계열/모델 게이트를 확인하세요 — 네이티브 `tool_search`는 스톡 OpenAI/ChatGPT-Codex 계열과 gpt-5.4 이상 모델이 필요하며, 지원되지 않는 조합은 조용히 shim으로 폴백합니다. 두 게이트를 모두 통과했는데도 커스텀 OpenAI 호환 엔드포인트(LiteLLM, vLLM, OpenRouter, 자체 호스팅)를 쓰고 있다면 자동으로 켜지지 않습니다 — 프로토콜 지원을 확인한 뒤 `tool_search = true`를 설정하세요. 알려진 호스트(`codex`/`openai`)라면 `tool_search = false`를 설정하지 않았는지 확인하세요 — 위의 [도구 검색 → 네이티브 프로토콜](#네이티브-프로토콜)을 참고하세요. |
 
 더 많은 내용은 전체 [문제 해결](/ko/reference/troubleshooting/) 레퍼런스를 참고하세요.

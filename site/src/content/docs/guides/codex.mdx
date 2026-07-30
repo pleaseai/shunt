@@ -379,19 +379,22 @@ and the feature is inert (it still works, it just reclaims nothing). The client'
 set `ENABLE_TOOL_SEARCH=true` **if your proxy forwards `tool_reference` blocks** — shunt does.
 
 With it on, shunt maps tool search onto the OpenAI Responses API's own **native, client-executed
-`tool_search`** protocol by default: Claude Code's `ToolSearch` tool becomes a `tool_search`
-(`execution: "client"`) tool, its `tool_use` becomes a `tool_search_call`, and the `tool_reference`
-result becomes a `tool_search_output` item carrying the loaded tools' full schemas as structured
-JSON, appended at the tail of `input`. That matters because the alternative — folding a revealed
-tool's schema back into the request's `tools` array — invalidates the cached prompt prefix on every
-reveal: `tools` is part of that cacheable prefix, shunt re-derives it from client history each turn,
-and a growing array forces the backend to re-process the conversation from the tool boundary
-onward. The native protocol's append-only `input` history keeps `tools` untouched, so the cached
-prefix survives each reveal.
+`tool_search`** protocol for upstreams already known to implement it, and keeps the #43 text shim
+everywhere else: Claude Code's `ToolSearch` tool becomes a `tool_search` (`execution: "client"`)
+tool, its `tool_use` becomes a `tool_search_call`, and the `tool_reference` result becomes a
+`tool_search_output` item carrying the loaded tools' full schemas as structured JSON, appended at
+the tail of `input`. That matters because the alternative — folding a revealed tool's schema back
+into the request's `tools` array — invalidates the cached prompt prefix on every reveal: `tools` is
+part of that cacheable prefix, shunt re-derives it from client history each turn, and a growing
+array forces the backend to re-process the conversation from the tool boundary onward. The native
+protocol's append-only `input` history keeps `tools` untouched, so the cached prefix survives each
+reveal.
 
-- No `shunt.toml` change is needed for the default behavior — it's purely a Claude Code environment
-  variable at the `ENABLE_TOOL_SEARCH` level.
-- Applies to the `codex` (ChatGPT) and `openai` (stock Responses) providers.
+- No `shunt.toml` change is needed for the default (native) behavior on the built-in `codex` and
+  `openai` providers — it's purely a Claude Code environment variable at the `ENABLE_TOOL_SEARCH`
+  level.
+- Applies to any `kind = "responses"` provider; whether a given one gets the native protocol or the
+  shim by default depends on the upstream host — see [Native protocol](#native-protocol) below.
 - Non-deferred tools (and the hosted `web_search` tool above) are always forwarded; only deferrable
   tools are progressively revealed.
 
@@ -410,11 +413,29 @@ described above on every reveal:
 - `ENABLE_TOOL_SEARCH=true` is still required on the Claude Code side — this flag only changes
   *how* shunt translates that feature upstream, not whether Claude Code defers tools at all.
 
-`tool_search` defaults to `true` under `[providers.<name>]`. The native shapes were live-probe
+`tool_search` under `[providers.<name>]` is a three-state setting. Left unset (the default,
+"auto"), it resolves to native only for a host already verified to implement `tool_search` items —
+the ChatGPT/Codex backend (the built-in `codex` provider) and `api.openai.com` (the built-in
+`openai` provider) — and to the text shim for every other OpenAI-compatible endpoint, including a
+custom `kind = "responses"` provider pointed at LiteLLM, vLLM, OpenRouter, or a self-hosted proxy:
+most third-party Responses backends don't implement `tool_search` items, so auto-enabling native
+there would fail the turn instead of degrading gracefully. The native shapes were live-probe
 verified against the ChatGPT/Codex backend on gpt-5.6 (2026-07-13,
 [pleaseai/shunt#86](https://github.com/pleaseai/shunt/pull/86)), and `tool_search` is documented
-on the public OpenAI Responses API for gpt-5.4+ models. Set `tool_search = false` to opt back into
-the text shim for a provider that does support the native path:
+on the public OpenAI Responses API for gpt-5.4+ models.
+
+Set `tool_search = true` to opt a custom endpoint into the native path once you've confirmed it
+implements `tool_search` items — still subject to the flavor and model requirements above:
+
+```toml
+[providers.my-litellm]
+kind = "responses"
+base_url = "https://litellm.internal/v1"
+tool_search = true
+```
+
+Set `tool_search = false` to force the text shim on a provider that would otherwise default to (or
+was opted into) the native path:
 
 ```toml
 [providers.codex]
@@ -433,6 +454,6 @@ tool_search = false
 | Context bar over-reports / compacts early | Set `CLAUDE_CODE_MAX_CONTEXT_TOKENS`; a discovery alias can't take it — use a non-`claude-` id. |
 | Web search returns nothing on a Grok route | xAI/Grok's Responses API doesn't support web search; shunt drops the tool. Use a `codex` or `openai` route. |
 | Tool search does nothing / all tool schemas sent every turn | Set `ENABLE_TOOL_SEARCH=true` — Claude Code disables tool search by default behind a non-Anthropic base URL. shunt forwards `tool_reference` blocks and reveals deferred schemas on demand. |
-| Tool search reclaims no context (still paying the shim's cache-invalidation cost) | Check the flavor/model gates — native `tool_search` needs a stock OpenAI/ChatGPT-Codex flavor and a gpt-5.4+ model; unsupported combinations silently fall back to the shim. If both gates pass, confirm you haven't set `tool_search = false`; see [Tool search → Native protocol](#native-protocol) above. |
+| Tool search reclaims no context (still paying the shim's cache-invalidation cost) | Check the flavor/model gates — native `tool_search` needs a stock OpenAI/ChatGPT-Codex flavor and a gpt-5.4+ model; unsupported combinations silently fall back to the shim. If both gates pass and you're on a custom OpenAI-compatible endpoint (LiteLLM, vLLM, OpenRouter, self-hosted), it isn't auto-enabled — set `tool_search = true` once you've confirmed it implements `tool_search` items. On a known host (`codex`/`openai`), confirm you haven't set `tool_search = false`; see [Tool search → Native protocol](#native-protocol) above. |
 
 See the full [Troubleshooting](/reference/troubleshooting/) reference for more.

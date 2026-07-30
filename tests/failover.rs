@@ -92,7 +92,7 @@ fn upstream(
         effort: None,
         count_tokens: CountTokens::Tiktoken,
         websocket: false,
-        tool_search: false,
+        tool_search: None,
         retry: disabled_retry(),
     }
 }
