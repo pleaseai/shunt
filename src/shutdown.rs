@@ -22,8 +22,24 @@ use std::future::Future;
 /// sequentially, so this closes that gap without double-counting the signal
 /// that ends the first wait.
 pub(crate) async fn shutdown_signal() {
+    shutdown_signal_inner(None).await;
+}
+
+/// Does the actual work of [`shutdown_signal`], with an optional readiness
+/// signal for tests: `SignalListener` registration below is synchronous (no
+/// `.await` before it), so sending on `ready` there — rather than waiting for
+/// the first `select!` poll — already reflects "both listeners are live."
+/// The `shutdown_signal_completes_on_a_real_sigterm` test awaits the paired
+/// receiver instead of guessing at scheduler timing (e.g. via
+/// `yield_now()`), so it can't raise its signal before a listener exists to
+/// receive it. Named apart from [`shutdown_signal`] to avoid reading as the
+/// unrelated `run` in `main.rs`.
+async fn shutdown_signal_inner(ready: Option<tokio::sync::oneshot::Sender<()>>) {
     let mut sigterm = SignalListener::sigterm();
     let mut ctrl_c = SignalListener::ctrl_c();
+    if let Some(ready) = ready {
+        let _ = ready.send(());
+    }
 
     let signal = select_shutdown_trigger(sigterm.recv(), ctrl_c.recv()).await;
     tracing::info!(
@@ -259,12 +275,16 @@ mod tests {
     async fn shutdown_signal_completes_on_a_real_sigterm() {
         use std::time::Duration;
 
-        let waiter = tokio::spawn(shutdown_signal());
-        // Let `shutdown_signal` run its synchronous prefix (registering both
-        // `SignalListener`s) and reach its first await point before raising,
-        // so the signal is guaranteed to land on a live, already-subscribed
-        // receiver rather than racing the subscription.
-        tokio::task::yield_now().await;
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let waiter = tokio::spawn(shutdown_signal_inner(Some(ready_tx)));
+        // Wait on the readiness channel `shutdown_signal_inner` sends on right after
+        // registering both `SignalListener`s, rather than assuming a
+        // `yield_now()` scheduler tick reaches that point first — a channel
+        // wakes this await deterministically on send regardless of task
+        // scheduling order, so the signal below can't race the subscription.
+        ready_rx
+            .await
+            .expect("run reports readiness before this raises SIGTERM");
 
         unsafe {
             libc::raise(libc::SIGTERM);
