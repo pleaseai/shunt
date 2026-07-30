@@ -401,7 +401,7 @@ pub fn record_codex_ws_overflow(provider: &str, outcome: CodexWsOverflowOutcome)
     let outcome_str = outcome.as_str();
     sentry::metrics::counter("shunt.codex_ws_overflow", 1)
         .attribute("provider", provider.clone())
-        .attribute("outcome", outcome_str.to_owned())
+        .attribute("outcome", outcome_str)
         .capture();
 
     let attributes = [
