@@ -1,0 +1,58 @@
+site/src/content/docs/ja/getting-started/comparison.mdx
+  s_94efc58dd34c7d::t_e53f5c47fa9af0 127
+  s_94efc58dd34c7d::t_e5dd7ef9ba87a9 63
+site/src/content/docs/guides/codex.mdx
+  s_94efc58dd34c7d::t_c872b0f69be114 414-415
+site/src/content/docs/ja/guides/codex.mdx
+  s_94efc58dd34c7d::t_30b58dd66cc305 365-366
+site/src/content/docs/zh-cn/guides/codex.mdx
+  s_94efc58dd34c7d::t_5f6a93f606b3e5 401
+site/src/content/docs/getting-started/comparison.mdx
+  s_94efc58dd34c7d::t_5303c6db76dd9a 127
+  s_94efc58dd34c7d::t_cf1181fcbb7983 63
+site/src/content/docs/ko/getting-started/comparison.mdx
+  s_94efc58dd34c7d::t_22113f852d2742 127
+  s_94efc58dd34c7d::t_7a894b9e5095df 63
+site/src/content/docs/zh-cn/getting-started/comparison.mdx
+  s_94efc58dd34c7d::t_5c4065a3c6e33c 63
+  s_94efc58dd34c7d::t_41378319ceee87 127
+site/src/content/docs/ko/guides/codex.mdx
+  s_94efc58dd34c7d::t_f461225a276121 348-349
+docs/comparison.md
+  s_94efc58dd34c7d::t_36f69746ecfd52 108
+  s_94efc58dd34c7d::t_c5cecf24895a32 325
+tests/responses_translate.rs
+  s_94efc58dd34c7d::t_27e1964b436039 1730-1735
+src/config.rs
+  s_94efc58dd34c7d::t_ce666ab663739c 2794-2798
+src/config/upstreams/tests.rs
+  s_94efc58dd34c7d::t_5402862068136f 347-363
+  s_b8a1dd03369365::t_3ada78ecc5e99b 346
+src/adapters/responses/mod.rs
+  s_94efc58dd34c7d::t_97beaa6265a909 94-99
+  s_94efc58dd34c7d::t_9f68f7bc491828 88-90
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "d0beab374ad1f93fe29ef30c526a8be456938062",
+  "prompts": {},
+  "sessions": {
+    "s_94efc58dd34c7d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b693190c-9cbd-46c8-8816-40e1ece350b5",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_b8a1dd03369365": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b8add262-7e53-46d2-8dbf-82e70e87690d",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
