@@ -110,6 +110,7 @@ default_provider = "anthropic" # provider for any model with no route -> pass-th
 #   api_key_env    = "ENV_NAME"                   (when auth = "api_key")
 #   api_key_header = "bearer" | "x_api_key"       (default bearer)
 #   effort         = "low|medium|high|xhigh|max"  (optional; responses providers)
+#   service_tier   = "fast|priority|flex|default" (optional; responses providers, see docs/codex-configuration.md §9)
 #   [providers.<name>.retry]                      (optional; bounded transient retry, see below)
 # The three below are built-in defaults; you only need the keys you change.
 
@@ -143,6 +144,7 @@ base_url = "https://chatgpt.com/backend-api"
 auth = "chatgpt_oauth"         # reads + auto-refreshes ~/.codex/auth.json
 # request_compression = true  # default; false sends uncompressed request bodies (issue #285)
 # effort = "high"              # low|medium|high|xhigh; gpt-5.6 slugs also accept "max"
+# service_tier = "fast"        # optional: opt in to Codex's "Fast" mode (docs/codex-configuration.md §9)
 # count_tokens = "tiktoken"    # default: local o200k_base count for count_tokens.
                                # "estimate" opts out (404 -> client estimates).
 # websocket = true             # EXPERIMENTAL (issue #32): reach the Codex backend
@@ -239,12 +241,13 @@ auth = "chatgpt_oauth"         # reads + auto-refreshes ~/.codex/auth.json
 # --- Routing: a request's `model` id picks the provider ---
 # Precedence: exact [[routes]] match -> [[route_prefixes]] -> server.default_provider.
 
-# Example A — route to the OpenAI API. `upstream_model`/`effort` are optional overrides.
+# Example A — route to the OpenAI API. `upstream_model`/`effort`/`service_tier` are optional overrides.
 [[routes]]
 model = "gpt-5.2"
 provider = "openai"
 # upstream_model = "gpt-5.2"
 # effort = "high"
+# service_tier = "priority"    # optional: pin service_tier for this route
 
 # Example B — route to your ChatGPT subscription via Codex.
 # The ChatGPT-account backend REJECTS gpt-*-codex slugs; it only accepts the
