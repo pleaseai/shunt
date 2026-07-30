@@ -32,7 +32,12 @@
 //!
 //! Both mechanisms carry only the requested model id, resolved provider name,
 //! and the numeric upstream status — never request/response bodies, headers,
-//! or credentials.
+//! or credentials. The model id is client-supplied free text (the inbound
+//! Codex endpoint in particular forwards its request body verbatim and only
+//! reads `model` for this label, see `codex_endpoint.rs`), so it is
+//! length-bounded and stripped of control characters before export by
+//! [`sanitize_model_tag`] — otherwise an oversized or control-character-laden
+//! value would reach a Sentry tag/span field unchanged.
 //!
 //! A config flag to gate this tagging was considered and deferred: the existing
 //! `[sentry] traces_sample_rate` / `[otel] traces` opt-ins already gate span
@@ -40,17 +45,57 @@
 //! new privacy surface), so a second flag would add configuration surface
 //! without a corresponding new risk to guard.
 
+use std::borrow::Cow;
+
 use axum::http::StatusCode;
 use sentry::protocol::SpanStatus;
 use sentry::Level;
+
+/// Upper bound (in `char`s) on the model id exported to a span field or
+/// Sentry tag, enforced by [`sanitize_model_tag`]. Well under Sentry's
+/// 200-character tag-value limit, generous for any real model id, and small
+/// enough to keep tag cardinality/payload size bounded for a client-supplied
+/// value.
+const MAX_MODEL_TAG_LEN: usize = 128;
+
+/// Sanitize a client-supplied model id before it is attached to a span field
+/// or Sentry tag: strip control/non-printable characters, then truncate to
+/// [`MAX_MODEL_TAG_LEN`] characters. The model id reaching this module is
+/// unvalidated free text — most notably the inbound Codex endpoint's
+/// `ModelView`, which parses it with no format constraint since the request
+/// body forwards upstream byte-for-byte (`codex_endpoint.rs`) — so without
+/// this an oversized or control-character-laden value would reach telemetry
+/// unchanged, weakening the "no request content" guarantee for this one field
+/// and inflating tag cardinality/size. Falls back to `"invalid"` when the
+/// sanitized value is empty (missing/blank model, or a value that is nothing
+/// but control characters). Pure so it is unit-testable in isolation.
+fn sanitize_model_tag(model: &str) -> Cow<'_, str> {
+    let needs_stripping = model.chars().any(char::is_control);
+    let cleaned: Cow<'_, str> = if needs_stripping {
+        Cow::Owned(model.chars().filter(|c| !c.is_control()).collect())
+    } else {
+        Cow::Borrowed(model)
+    };
+    let truncated: Cow<'_, str> = if cleaned.chars().count() > MAX_MODEL_TAG_LEN {
+        Cow::Owned(cleaned.chars().take(MAX_MODEL_TAG_LEN).collect())
+    } else {
+        cleaned
+    };
+    if truncated.is_empty() {
+        Cow::Borrowed("invalid")
+    } else {
+        truncated
+    }
+}
 
 /// Record the requested model on the current span's `gen_ai.request.model`
 /// field (OTel GenAI semantic convention: `gen_ai.request.model`). The field
 /// must be declared as `tracing::field::Empty` on the span at creation time
 /// (see `proxy::post` / `codex_endpoint::post`) for this to have any effect —
-/// recording an undeclared field is silently ignored by `tracing`.
+/// recording an undeclared field is silently ignored by `tracing`. `model` is
+/// sanitized via [`sanitize_model_tag`] before export.
 pub(crate) fn record_requested_model(model: &str) {
-    tracing::Span::current().record("gen_ai.request.model", model);
+    tracing::Span::current().record("gen_ai.request.model", sanitize_model_tag(model).as_ref());
 }
 
 /// Record the resolved upstream/provider and the upstream HTTP status on the
@@ -133,13 +178,15 @@ pub(crate) fn should_capture_upstream_status(status: StatusCode) -> Option<Level
 
 /// Emit a Sentry error/warning event for a 5xx or 429/529 upstream response,
 /// tagged with the model, provider, and numeric status for triage — no
-/// request/response body, header, or credential ever reaches this event. Runs
-/// unconditionally whenever a Sentry client is bound (event capture does not
-/// depend on `[sentry] traces_sample_rate`, unlike span export); a no-op with
-/// no client configured. Uses `sentry::capture_message` directly rather than a
-/// `tracing::error!`/`warn!` macro so this does not depend on overriding the
-/// `sentry` tracing layer's default `EventFilter` (which otherwise downgrades
-/// `WARN` to a breadcrumb, not an event) — see the module docs.
+/// request/response body, header, or credential ever reaches this event
+/// (`model` is sanitized via [`sanitize_model_tag`] before it becomes a tag).
+/// Runs unconditionally whenever a Sentry client is bound (event capture does
+/// not depend on `[sentry] traces_sample_rate`, unlike span export); a no-op
+/// with no client configured. Uses `sentry::capture_message` directly rather
+/// than a `tracing::error!`/`warn!` macro so this does not depend on
+/// overriding the `sentry` tracing layer's default `EventFilter` (which
+/// otherwise downgrades `WARN` to a breadcrumb, not an event) — see the
+/// module docs.
 pub(crate) fn capture_upstream_outcome(provider: &str, model: &str, status: StatusCode) {
     let Some(level) = should_capture_upstream_status(status) else {
         return;
@@ -149,9 +196,10 @@ pub(crate) fn capture_upstream_outcome(provider: &str, model: &str, status: Stat
         _ => "upstream returned a quota/overload response",
     };
     let status_code = status.as_u16();
+    let model = sanitize_model_tag(model);
     sentry::with_scope(
         |scope| {
-            scope.set_tag("model", model);
+            scope.set_tag("model", model.as_ref());
             scope.set_tag("provider", provider);
             scope.set_tag("upstream_status", status_code);
         },
@@ -171,9 +219,47 @@ mod tests {
     use tracing_subscriber::Layer;
 
     use super::{
-        capture_upstream_outcome, record_requested_model, record_span_outcome, sentry_span_status,
-        should_capture_upstream_status,
+        capture_upstream_outcome, record_requested_model, record_span_outcome, sanitize_model_tag,
+        sentry_span_status, should_capture_upstream_status, MAX_MODEL_TAG_LEN,
     };
+
+    #[test]
+    fn sanitize_model_tag_passes_through_an_ordinary_model_id() {
+        assert_eq!(sanitize_model_tag("claude-opus-5"), "claude-opus-5");
+    }
+
+    #[test]
+    fn sanitize_model_tag_keeps_a_value_exactly_at_the_limit() {
+        let exactly_at_limit = "a".repeat(MAX_MODEL_TAG_LEN);
+        assert_eq!(sanitize_model_tag(&exactly_at_limit), exactly_at_limit);
+    }
+
+    #[test]
+    fn sanitize_model_tag_truncates_a_value_over_the_limit() {
+        let over_limit = "a".repeat(MAX_MODEL_TAG_LEN + 1);
+        let sanitized = sanitize_model_tag(&over_limit);
+        assert_eq!(sanitized.chars().count(), MAX_MODEL_TAG_LEN);
+        assert_eq!(sanitized, "a".repeat(MAX_MODEL_TAG_LEN));
+    }
+
+    #[test]
+    fn sanitize_model_tag_strips_control_characters() {
+        // Embedded control bytes (e.g. from a client trying to smuggle a
+        // newline/escape sequence into a Sentry tag or span field) are
+        // dropped, not merely truncated away.
+        let with_control_chars = "claude\n-\topus\r-5\u{7}";
+        assert_eq!(sanitize_model_tag(with_control_chars), "claude-opus-5");
+    }
+
+    #[test]
+    fn sanitize_model_tag_falls_back_to_invalid_when_empty() {
+        assert_eq!(sanitize_model_tag(""), "invalid");
+    }
+
+    #[test]
+    fn sanitize_model_tag_falls_back_to_invalid_when_only_control_characters() {
+        assert_eq!(sanitize_model_tag("\n\t\r\u{7}"), "invalid");
+    }
 
     #[test]
     fn should_capture_upstream_status_covers_all_bands() {
@@ -466,5 +552,26 @@ mod tests {
         assert_eq!(tags.get("model").map(String::as_str), Some("claude-opus-5"));
         assert_eq!(tags.get("provider").map(String::as_str), Some("anthropic"));
         assert_eq!(tags.get("upstream_status").map(String::as_str), Some("503"));
+    }
+
+    #[test]
+    fn capture_upstream_outcome_sanitizes_an_oversized_client_supplied_model_tag() {
+        // A client-supplied `model` (e.g. the inbound Codex endpoint's
+        // unvalidated request-body field) must not reach the Sentry tag
+        // unbounded — this proves the sanitization from `sanitize_model_tag`
+        // is actually wired into the event-capture call site, not just the
+        // pure helper.
+        let oversized_model = format!("{}-with-a-trailing-newline\n", "m".repeat(200));
+        let events = sentry::test::with_captured_events(|| {
+            capture_upstream_outcome("anthropic", &oversized_model, StatusCode::BAD_GATEWAY);
+        });
+
+        assert_eq!(events.len(), 1);
+        let tag = events[0]
+            .tags
+            .get("model")
+            .expect("model tag must be present");
+        assert_eq!(tag.chars().count(), MAX_MODEL_TAG_LEN);
+        assert!(!tag.contains('\n'), "control characters must be stripped");
     }
 }
