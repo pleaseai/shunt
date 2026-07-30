@@ -1,0 +1,67 @@
+Cargo.toml
+  s_e4acb84525265b::t_8996cb2fb8d942 95
+docs/m9-admin-surface.md
+  s_e4acb84525265b::t_cb6de71d7b1366 283-288,296-331
+docs/running.md
+  s_e4acb84525265b::t_b7b75ec96cbf74 123-133
+shunt.toml.example
+  s_e4acb84525265b::t_461ecf62a5ed83 59,61-65
+site/src/content/docs/guides/admin-remote-provisioning.mdx
+  s_e4acb84525265b::t_c842b14d3f2cc5 10,93-97
+site/src/content/docs/guides/opentelemetry.mdx
+  s_e4acb84525265b::t_eacb5592fa66c7 40
+site/src/content/docs/ja/reference/configuration.md
+  s_e4acb84525265b::t_f05db393ce9a16 257
+site/src/content/docs/ko/reference/configuration.md
+  s_e4acb84525265b::t_33cdeb8ecde80f 269
+site/src/content/docs/reference/configuration.md
+  s_e4acb84525265b::t_4c9dadabddbf99 384
+site/src/content/docs/reference/endpoints.md
+  s_e4acb84525265b::t_f1b4d1c637a69d 23
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_e4acb84525265b::t_df739c6aaae9d3 257
+src/admin/html.rs
+  s_e4acb84525265b::t_d7d872286ba3ed 144,214,262-338
+src/admin/mod.rs
+  s_e4acb84525265b::t_9e68eb0d5be09c 18,535-540,595,613,875-882,1528-1558
+src/admin/script.rs
+  s_e4acb84525265b::t_e54637c2a9c95a 1-363
+src/auth/claude/login.rs
+  s_e4acb84525265b::t_7d972d10e08150 317-371,506-573
+src/auth/observation.rs
+  s_e4acb84525265b::t_93c0a5a6cc4482 875-889
+src/codex_endpoint.rs
+  s_e4acb84525265b::t_d70561ea63f8e2 83-85,90-94,225,249-251,253-254,258
+src/config.rs
+  s_e4acb84525265b::t_61a0bf93ed90fc 986-993
+src/lib.rs
+  s_e4acb84525265b::t_f81bb5a24bab83 22
+src/main.rs
+  s_e4acb84525265b::t_0829be51e21285 506-513
+src/observability.rs
+  s_e4acb84525265b::t_fc64ea75e8f7f9 1-622
+src/proxy.rs
+  s_e4acb84525265b::t_7ce8968b4e98ac 49-54,59-63
+src/proxy/failover.rs
+  s_e4acb84525265b::t_5e370258890e02 56-65,157,211,229-246,259,317-318,324-326
+tests/admin_surface.rs
+  s_e4acb84525265b::t_fbecd3a1d4201a 545-605
+tests/failover.rs
+  s_e4acb84525265b::t_cbcef685846b2c 469-584
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "60f0a6973d5fa57a2aa3ce9808bd19f20931a036",
+  "prompts": {},
+  "sessions": {
+    "s_e4acb84525265b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "15936aaa-9756-4f87-8300-acf6d7cb4268",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
