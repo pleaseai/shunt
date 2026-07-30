@@ -404,20 +404,20 @@ pub fn record_codex_ws_overflow(provider: &str, outcome: CodexWsOverflowOutcome)
         .attribute("outcome", outcome_str)
         .capture();
 
-    let attributes = [
-        KeyValue::new("provider", provider.clone()),
-        KeyValue::new("outcome", outcome_str),
-    ];
-    otel_instruments().codex_ws_overflow.add(1, &attributes);
-
     #[cfg(test)]
     {
         *test_overflow_counts()
             .lock()
             .expect("test overflow counter lock poisoned")
-            .entry((provider, outcome_str))
+            .entry((provider.clone(), outcome_str))
             .or_insert(0) += 1;
     }
+
+    let attributes = [
+        KeyValue::new("provider", provider),
+        KeyValue::new("outcome", outcome_str),
+    ];
+    otel_instruments().codex_ws_overflow.add(1, &attributes);
 }
 
 /// Test-only observation point for [`record_codex_ws_overflow`]: neither sink
