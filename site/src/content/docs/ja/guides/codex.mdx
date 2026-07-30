@@ -362,7 +362,8 @@ shunt はそれに該当しません。したがってこのフラグがない�
   変えません。
 
 `tool_search` は `[providers.<name>]` の下でデフォルト `true` です。ネイティブな形状は ChatGPT/Codex
-バックエンド(gpt-5.6、2026-07-13)に対してライブプローブで検証済みであり、`tool_search` は公開 OpenAI
+バックエンド(gpt-5.6、2026-07-13、[pleaseai/shunt#86](https://github.com/pleaseai/shunt/pull/86))
+に対してライブプローブで検証済みであり、`tool_search` は公開 OpenAI
 Responses API の gpt-5.4+ モデル向けドキュメントにも記載されています。ネイティブパスに対応しているプロバ
 イダーでテキストシムへ戻したい場合は `tool_search = false` を設定します:
 

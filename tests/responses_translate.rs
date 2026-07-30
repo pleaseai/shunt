@@ -1727,8 +1727,12 @@ fn reasoning_id_falls_back_to_done_event_when_added_missing() {
 // `tool_search_native = true` path; every shim test above runs it `false`.
 // ---------------------------------------------------------------------------
 
-/// Translate with the native tool_search path enabled (the opt-in provider flag
-/// on, a supported flavor + model). The shim tests use [`translate`] (native off).
+/// Translate with the native tool_search path enabled. This passes `native =
+/// true` straight to [`translate_request`] and does not read
+/// `ProviderConfig::tool_search` (that flag now defaults to `true` in
+/// production, with `tool_search = false` as the opt-out — see
+/// [`Config::native_tool_search`]). The shim tests use [`translate`] (native
+/// off).
 fn native_translate(input: Value) -> Value {
     let body = serde_json::to_vec(&input).unwrap();
     translate_request(&body, &route("gpt-5.6-sol"), ResponsesFlavor::Chatgpt, true).unwrap()

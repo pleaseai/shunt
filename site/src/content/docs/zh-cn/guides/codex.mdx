@@ -398,7 +398,7 @@ schema 折回请求的 `tools` 数组 —— 会在每次揭示时使缓存的�
   上游,不改变 Claude Code 是否延迟工具本身。
 
 `tool_search` 在 `[providers.<name>]` 下默认是 `true`。这些原生形状已针对 ChatGPT/Codex 后端在
-gpt-5.6 上做过实时探测验证(2026-07-13),而且 `tool_search` 已被记录在公开的 OpenAI Responses API
+gpt-5.6 上做过实时探测验证(2026-07-13,[pleaseai/shunt#86](https://github.com/pleaseai/shunt/pull/86)),而且 `tool_search` 已被记录在公开的 OpenAI Responses API
 文档中,适用于 gpt-5.4+ 模型。如果某个确实支持原生路径的提供方想改回文本 shim,设置
 `tool_search = false`:
 

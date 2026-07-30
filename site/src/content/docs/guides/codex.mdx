@@ -411,7 +411,8 @@ described above on every reveal:
   *how* shunt translates that feature upstream, not whether Claude Code defers tools at all.
 
 `tool_search` defaults to `true` under `[providers.<name>]`. The native shapes were live-probe
-verified against the ChatGPT/Codex backend on gpt-5.6 (2026-07-13), and `tool_search` is documented
+verified against the ChatGPT/Codex backend on gpt-5.6 (2026-07-13,
+[pleaseai/shunt#86](https://github.com/pleaseai/shunt/pull/86)), and `tool_search` is documented
 on the public OpenAI Responses API for gpt-5.4+ models. Set `tool_search = false` to opt back into
 the text shim for a provider that does support the native path:
 

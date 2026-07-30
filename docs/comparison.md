@@ -105,7 +105,7 @@ prefix on every reveal (it must add each revealed tool back into the `tools` arr
 shunt re-derives from client history each turn), so the native, append-only-`input` path is
 now the default wherever it applies — a stock OpenAI or ChatGPT/Codex Responses flavor
 routing to a gpt-5.4+ model. The native shapes were live-probe verified against the
-ChatGPT/Codex backend on gpt-5.6 (2026-07-13); `tool_search` is documented on the public
+ChatGPT/Codex backend on gpt-5.6 (2026-07-13, [#86]); `tool_search` is documented on the public
 OpenAI Responses API for gpt-5.4+ models. xAI/Grok routes and gpt-5.2-and-below models keep
 the #43 shim regardless — silently, never an error. Set `tool_search = false` to opt back
 into the shim on a provider that does support the native path.
@@ -322,3 +322,4 @@ The Codex WS transport's pre-first-event HTTP fallback gap has since been closed
 [#48]: https://github.com/pleaseai/shunt/issues/48
 [#77]: https://github.com/pleaseai/shunt/issues/77
 [#93]: https://github.com/pleaseai/shunt/issues/93
+[#86]: https://github.com/pleaseai/shunt/pull/86

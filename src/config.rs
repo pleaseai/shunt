@@ -2791,11 +2791,11 @@ impl Config {
     /// Whether `provider`'s Responses translation should use the native
     /// client-executed `tool_search` protocol (issue #82) for a request routed
     /// to `model`, rather than the #43 text-based progressive-reveal shim. On
-    /// by default (issue #286); requires both: the upstream speaks a flavor
-    /// known to accept it (stock OpenAI or the ChatGPT/Codex backend — xAI/Grok
-    /// keep the shim), and the model advertises support (see
-    /// [`model_supports_tool_search`]). Set `tool_search = false` on the
-    /// provider to opt back out to the shim.
+    /// by default (issue #286); requires all three: the provider's
+    /// `tool_search` flag is on (defaults to `true`; set it to `false` to opt
+    /// back out to the shim), the upstream speaks a flavor known to accept it
+    /// (stock OpenAI or the ChatGPT/Codex backend — xAI/Grok keep the shim),
+    /// and the model advertises support (see [`model_supports_tool_search`]).
     pub fn native_tool_search(&self, provider: &str, model: &str) -> bool {
         self.provider(provider)
             .is_some_and(|config| config.tool_search)

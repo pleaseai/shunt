@@ -344,6 +344,24 @@ fn ordered_provider_env_override_addresses_declared_name() {
 }
 
 #[test]
+fn ordered_provider_env_override_forces_tool_search_shim() {
+    // The documented rollback path for issue #286 (native tool_search
+    // defaulting on): SHUNT_PROVIDERS__<NAME>__TOOL_SEARCH=false must reach
+    // `native_tool_search` and force the #43 shim without editing config.toml.
+    let file = TempConfig::new(
+        "[server]\ndefault_provider = \"toolsearchprobe\"\n[[upstreams]]\nname = \"toolsearchprobe\"\nprovider = \"openai\"",
+    );
+    let env = "SHUNT_PROVIDERS__TOOLSEARCHPROBE__TOOL_SEARCH";
+    let _guard = CONFIG_ENV_LOCK.lock().unwrap();
+    std::env::set_var(env, "false");
+    let result = crate::config::Config::load(Some(&file.0));
+    std::env::remove_var(env);
+    assert!(!result
+        .unwrap()
+        .native_tool_search("toolsearchprobe", "gpt-5.6-sol"));
+}
+
+#[test]
 fn ordered_provider_env_override_cannot_declare_a_name() {
     let file = TempConfig::new(
         "[server]\ndefault_provider = \"primary\"\n[[upstreams]]\nname = \"primary\"\nprovider = \"openai\"",

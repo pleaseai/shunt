@@ -345,7 +345,8 @@ Claude Code는 base URL이 퍼스트파티 Anthropic 호스트가 아니면 낙�
   않습니다.
 
 `tool_search`는 `[providers.<name>]` 아래에서 기본적으로 `true`입니다. 네이티브 형태는 2026-07-13에
-gpt-5.6에서 ChatGPT/Codex 백엔드를 대상으로 라이브 프로브로 검증되었으며, `tool_search`는 gpt-5.4+
+gpt-5.6에서 ChatGPT/Codex 백엔드를 대상으로 라이브 프로브로 검증되었으며
+([pleaseai/shunt#86](https://github.com/pleaseai/shunt/pull/86)), `tool_search`는 gpt-5.4+
 모델에 대해 공개 OpenAI Responses API 문서에도 실려 있습니다. 네이티브 경로를 지원하는 프로바이더에서
 텍스트 shim으로 되돌리려면 `tool_search = false`로 설정하세요:
 
