@@ -53,8 +53,11 @@ class Shunt < Formula
 
   def caveats
     <<~EOS
-      shunt looks for a config file at "#{etc}/shunt.toml" (or .yaml/.yml) when run as
-      a service. Run `shunt init --root #{etc}` to create one, or place your own there.
+      shunt discovers its config file in order: the current directory, then
+      $XDG_CONFIG_HOME/shunt (or ~/.config/shunt), then "#{etc}" (any of
+      shunt.toml/.yaml/.yml) — an existing user config takes precedence over
+      "#{etc}/shunt.toml". Run `shunt init --root #{etc}` to create one there,
+      or place your own wherever should win.
 
       Manage the background service with:
         brew services start shunt
