@@ -71,24 +71,30 @@ const MAX_MODEL_TAG_LEN: usize = 128;
 /// but control characters). Pure so it is unit-testable in isolation.
 fn sanitize_model_tag(model: &str) -> Cow<'_, str> {
     let needs_stripping = model.chars().any(char::is_control);
-    let mut cleaned: Cow<'_, str> = if needs_stripping {
-        Cow::Owned(model.chars().filter(|c| !c.is_control()).collect())
+    let cleaned: Cow<'_, str> = if needs_stripping {
+        // `Iterator::take` short-circuits the underlying `chars()` iterator
+        // once `MAX_MODEL_TAG_LEN` non-control characters have been produced,
+        // so this never allocates more than the truncation limit — even for a
+        // pathological multi-KB/MB client-supplied string with a control
+        // character near the start. Collecting the *entire* filtered string
+        // first (and truncating after) would allocate proportional to the
+        // full input instead.
+        Cow::Owned(
+            model
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(MAX_MODEL_TAG_LEN)
+                .collect(),
+        )
+    } else if let Some((byte_idx, _)) = model.char_indices().nth(MAX_MODEL_TAG_LEN) {
+        // No control characters to strip, so the original slice can be
+        // truncated in place — `nth` also short-circuits, so this only
+        // walks the first `MAX_MODEL_TAG_LEN` characters, not the whole
+        // string.
+        Cow::Borrowed(&model[..byte_idx])
     } else {
         Cow::Borrowed(model)
     };
-    // Truncate in place rather than always collecting into a fresh `String`:
-    // slice the byte range for a `Borrowed` value, or `String::truncate` an
-    // already-`Owned` one — either way this is at most the one allocation
-    // `needs_stripping` already paid for, never a second one just to shorten.
-    if let Some((byte_idx, _)) = cleaned.char_indices().nth(MAX_MODEL_TAG_LEN) {
-        cleaned = match cleaned {
-            Cow::Borrowed(s) => Cow::Borrowed(&s[..byte_idx]),
-            Cow::Owned(mut s) => {
-                s.truncate(byte_idx);
-                Cow::Owned(s)
-            }
-        };
-    }
     if cleaned.is_empty() {
         Cow::Borrowed("invalid")
     } else {
@@ -267,6 +273,19 @@ mod tests {
     #[test]
     fn sanitize_model_tag_falls_back_to_invalid_when_only_control_characters() {
         assert_eq!(sanitize_model_tag("\n\t\r\u{7}"), "invalid");
+    }
+
+    #[test]
+    fn sanitize_model_tag_bounds_a_pathological_multi_kb_input_with_a_control_character() {
+        // A control character forces the strip-then-collect path; without a
+        // `take(MAX_MODEL_TAG_LEN)` bound during collection, this would
+        // allocate a `String` proportional to the entire multi-KB input
+        // before truncating it back down. Assert the result is still capped
+        // at the limit, regardless of how large the raw input is.
+        let pathological = format!("\u{7}{}", "a".repeat(64 * 1024));
+        let sanitized = sanitize_model_tag(&pathological);
+        assert_eq!(sanitized.chars().count(), MAX_MODEL_TAG_LEN);
+        assert_eq!(sanitized, "a".repeat(MAX_MODEL_TAG_LEN));
     }
 
     #[test]
