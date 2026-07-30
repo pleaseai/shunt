@@ -7,4 +7,5 @@
 - [PR #122 retry observability gap](pr122-retry-observability-gap.md) — issue #48 src/retry.rs: ExceedsBudget warn verified present; but exhausted-retries give-up logs nothing, and forward_http's own_error() still hardcodes a generic message the PR fixed elsewhere.
 - [Issue #113 status threading](issue113-responses-status-threading.md) — backend-error-event fix (89e022b) + iteration-2 status.status() threading at 4 non-streaming call sites in responses/mod.rs, both verified correct 2026-07-14.
 - [PR #144 Codex admin error handling](pr144-codex-admin-error-handling.md) — exchange/persistence paths log and surface correctly; metadata structural omissions + rejected token-URL override silently fall back.
+- [PR #291 zstd compression fail-open](pr291-zstd-compression-failopen.md) — decode offload keyed on compressed input but budget is decoded (64 KiB in → 64 MiB inline); parse_model still `.ok()`; fail-open lacks a counter.
 - [PR #272 Cursor offload errors](pr272-cursor-offload-errors.md) — b73f31a verified: framing/image prep failures are local detailed 500s, logged with cause, and never advance failover; offload admission/join errors propagate.
