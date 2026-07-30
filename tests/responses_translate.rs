@@ -980,6 +980,73 @@ fn streaming_state_machine_emits_incremental_anthropic_events() {
     assert!(emitted.contains("\"output_tokens\":9"));
 }
 
+#[test]
+fn response_incomplete_ends_the_turn_like_a_normal_completion() {
+    // `response.incomplete` is a clean (if truncated) terminal, not a
+    // transport cut — issue #300 / PR #295 discussion_r3685776686. Unlike
+    // `truncated_stream_falls_back_to_input_token_estimate` (no terminal
+    // event at all), this stream DOES end on a terminal event, so it must
+    // behave like `response.completed`: emit its own message_delta +
+    // message_stop, mark the machine `stopped`, and leave `finish()` with
+    // nothing left to flush (which in turn keeps `http.rs`'s EOF branch from
+    // injecting `UPSTREAM_TRUNCATED_MARKER` for this stream).
+    let fixture = concat!(
+        "event: response.created
+",
+        "data: {\"response\":{\"id\":\"resp_1\"}}
+
+",
+        "event: response.output_item.added
+",
+        "data: {\"item\":{\"type\":\"message\"}}
+
+",
+        "event: response.output_text.delta
+",
+        "data: {\"delta\":\"hi\"}
+
+",
+        "event: response.output_text.done
+",
+        "data: {}
+
+",
+        "event: response.incomplete
+",
+        "data: {\"response\":{\"usage\":{\"input_tokens\":30,\"output_tokens\":12}}}
+
+",
+    );
+    let mut machine = AnthropicSseMachine::new("gpt-5.2-codex", false, false);
+    let emitted = parse_sse_events(fixture)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
+
+    assert_eq!(
+        event_names(&emitted),
+        vec![
+            "message_start",
+            "ping",
+            "content_block_start",
+            "content_block_delta",
+            "content_block_stop",
+            "message_delta",
+            "message_stop"
+        ]
+    );
+    assert!(emitted.contains("\"stop_reason\":\"end_turn\""));
+    let delta_usage = event_usage(&emitted, "message_delta");
+    assert_eq!(delta_usage["input_tokens"], json!(30));
+    assert_eq!(delta_usage["output_tokens"], json!(12));
+
+    // The stream ending right here (no further bytes) must not produce a
+    // second, synthetic completion — `finish()` sees `stopped` already set
+    // and flushes nothing, so `http.rs`'s cut-before-terminal fallback never
+    // triggers.
+    assert_eq!(machine.finish(), Vec::<String>::new());
+}
+
 /// Extract the `usage` object of the first SSE event of `event_type` in an
 /// emitted Anthropic stream. Order-independent, unlike a substring match:
 /// `message_start` nests usage under `message`, `message_delta` at the top.

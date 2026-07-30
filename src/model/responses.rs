@@ -161,7 +161,19 @@ impl AnthropicSseMachine {
             "response.function_call_arguments.delta" => self.arguments_delta(&event.data),
             "response.function_call_arguments.done" => self.close_current(BlockKind::Tool),
             "response.output_item.done" => self.output_item_done(&event.data),
-            "response.completed" | "response.done" => self.complete(&event.data),
+            // `response.incomplete` is a clean (if truncated) terminal, not a
+            // transport cut — mirrors the WebSocket transport's terminal set
+            // (`adapters::responses::codex_ws::TERMINAL_EVENTS`, also
+            // docs/m7-codex-websocket.md) and `stream_metrics::observe_responses`'s
+            // own terminal match. Routing it through the same `complete` path as
+            // `response.completed`/`response.done` sets `stopped`, so a stream
+            // that ends right after this event no longer hits `finish`'s
+            // cut-before-terminal fallback (`http.rs`'s `UPSTREAM_TRUNCATED_MARKER`
+            // injection) — and it keeps the existing `tool_use`/`end_turn`
+            // stop_reason convention rather than introducing a new one.
+            "response.completed" | "response.done" | "response.incomplete" => {
+                self.complete(&event.data)
+            }
             "error" | "response.failed" => {
                 self.stopped = true;
                 let value = map_error_value(&event.data, StatusCode::BAD_GATEWAY);
