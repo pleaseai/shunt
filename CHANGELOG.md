@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.31.0](https://github.com/pleaseai/shunt/compare/v0.30.0...v0.31.0) (2026-07-30)
+
+
+### Features
+
+* **admin:** group the accounts and usage table by provider ([#242](https://github.com/pleaseai/shunt/issues/242)) ([1ff8e5a](https://github.com/pleaseai/shunt/commit/1ff8e5acd372044657547777f3c3812c27704d7c))
+* **observability:** tag proxy spans with model and upstream status ([#281](https://github.com/pleaseai/shunt/issues/281)) ([#284](https://github.com/pleaseai/shunt/issues/284)) ([58bff3b](https://github.com/pleaseai/shunt/commit/58bff3b23870b5c86e5c5383ef90949e01032bdc))
+
 ## [0.30.0](https://github.com/pleaseai/shunt/compare/v0.29.0...v0.30.0) (2026-07-30)
 
 
