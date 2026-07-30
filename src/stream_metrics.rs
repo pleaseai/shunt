@@ -352,7 +352,17 @@ fn observe_responses(event: Option<&[u8]>, data: Option<&[u8]>) -> FrameObservat
     // Mirrors the translator's terminal handling (`"response.completed" |
     // "response.done"`, see also `docs/m1-responses-translation.md`): both
     // names carry the full `response` + `usage` and end the stream normally.
-    if !matches!(event, Some(b"response.completed") | Some(b"response.done")) {
+    // `response.incomplete` is terminal too, matching the terminal set the
+    // WebSocket transport already uses
+    // (`adapters::responses::codex_ws::TERMINAL_EVENTS`,
+    // `docs/m7-codex-websocket.md`): the backend explicitly concluded the
+    // stream, just with truncated content, not a transport cut — classifying
+    // it as `UpstreamCut` would misreport a genuine (if incomplete) response
+    // as a mid-stream failure.
+    if !matches!(
+        event,
+        Some(b"response.completed") | Some(b"response.done") | Some(b"response.incomplete")
+    ) {
         return FrameObservation::default();
     }
     let mut tokens = TokenUsage::default();

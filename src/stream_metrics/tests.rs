@@ -248,6 +248,34 @@ fn responses_done_event_is_terminal_and_carries_usage() {
 }
 
 #[test]
+fn responses_incomplete_event_is_terminal_and_carries_usage() {
+    // The WebSocket transport's terminal set
+    // (`adapters::responses::codex_ws::TERMINAL_EVENTS`, also
+    // docs/m7-codex-websocket.md) treats `"response.incomplete"` as a clean
+    // (if truncated) end of the stream, not a transport cut — the observer
+    // must classify it as `Completed`, not `UpstreamCut`.
+    let mut observer = state(Protocol::Responses);
+    observer.push_bytes(
+        format!(
+            "event: response.incomplete
+data: {}
+
+",
+            json!({"type": "response.incomplete", "response": {"usage": {
+                "input_tokens": 30,
+                "output_tokens": 12,
+                "input_tokens_details": {"cached_tokens": 7}
+            }}})
+        )
+        .as_bytes(),
+    );
+    assert_eq!(observer.tokens.input, Some(30));
+    assert_eq!(observer.tokens.output, Some(12));
+    assert_eq!(observer.tokens.cache_read, Some(7));
+    assert_eq!(observer.outcome(true), Outcome::Completed);
+}
+
+#[test]
 fn ping_and_content_deltas_are_ignored() {
     let mut observer = state(Protocol::Anthropic);
     observer.push_bytes(b"event: ping\ndata: {\"type\": \"ping\"}\n\n");
@@ -373,10 +401,16 @@ struct FinishWiring {
     event: Option<(sentry::Level, &'static str)>,
 }
 
-/// Runs one wiring case: wrap an SSE response with the given `status`
-/// carrying `sse`, drive its body per `drive`, and assert the span field and
-/// the Sentry capture match `expected`.
-fn assert_finish_wiring(status: StatusCode, sse: &[u8], drive: Drive, expected: FinishWiring) {
+/// Runs one wiring case: wrap an SSE response with the given `protocol` and
+/// `status` carrying `sse`, drive its body per `drive`, and assert the span
+/// field and the Sentry capture match `expected`.
+fn assert_finish_wiring(
+    protocol: Protocol,
+    status: StatusCode,
+    sse: &[u8],
+    drive: Drive,
+    expected: FinishWiring,
+) {
     let captured = CapturingLayer::default();
     let subscriber = tracing_subscriber::registry().with(captured.clone());
 
@@ -407,7 +441,7 @@ fn assert_finish_wiring(status: StatusCode, sse: &[u8], drive: Drive, expected: 
                 .unwrap();
             let wrapped = observe_response(
                 response,
-                Protocol::Anthropic,
+                protocol,
                 "provider".to_string(),
                 "model".to_string(),
                 Instant::now(),
@@ -457,6 +491,7 @@ fn assert_finish_wiring(status: StatusCode, sse: &[u8], drive: Drive, expected: 
 #[test]
 fn finish_records_otel_error_and_emits_a_sentry_event_for_a_mid_stream_error_event() {
     assert_finish_wiring(
+        Protocol::Anthropic,
         StatusCode::OK,
         b"event: error\ndata: {}\n\n",
         Drive::ToEnd,
@@ -475,6 +510,7 @@ fn finish_records_otel_error_and_emits_a_sentry_event_for_an_upstream_cut() {
     // A content delta with no terminal/error event, then the upstream simply
     // ends the stream (`natural_end = true`) — `UpstreamCut`.
     assert_finish_wiring(
+        Protocol::Anthropic,
         StatusCode::OK,
         b"event: content_block_delta\ndata: {}\n\n",
         Drive::ToEnd,
@@ -502,6 +538,7 @@ fn finish_reports_an_upstream_cut_for_a_marked_synthetic_completion() {
     ]
     .concat();
     assert_finish_wiring(
+        Protocol::Anthropic,
         StatusCode::OK,
         &sse,
         Drive::ToEnd,
@@ -520,6 +557,7 @@ fn finish_does_not_touch_the_span_or_emit_an_event_for_a_normal_completion() {
     // Untouched since header time: `record_stream_failure` never runs, so the
     // field still holds whatever the (simulated) header-time call recorded.
     assert_finish_wiring(
+        Protocol::Anthropic,
         StatusCode::OK,
         b"event: message_stop\ndata: {}\n\n",
         Drive::ToEnd,
@@ -533,6 +571,7 @@ fn finish_does_not_touch_the_span_or_emit_an_event_for_a_normal_completion() {
 #[test]
 fn finish_does_not_touch_the_span_or_emit_an_event_for_a_client_disconnect() {
     assert_finish_wiring(
+        Protocol::Anthropic,
         StatusCode::OK,
         b"event: content_block_delta\ndata: {}\n\n",
         Drive::DropAfterFirstChunk,
@@ -551,8 +590,27 @@ fn finish_does_not_report_a_stream_failure_for_a_non_2xx_response() {
     // Content that would otherwise read as `UpstreamCut` must not touch the
     // span or emit a Sentry event when the response never opened `200`.
     assert_finish_wiring(
+        Protocol::Anthropic,
         StatusCode::INTERNAL_SERVER_ERROR,
         b"event: content_block_delta\ndata: {}\n\n",
+        Drive::ToEnd,
+        FinishWiring {
+            span_status: "ok",
+            event: None,
+        },
+    );
+}
+
+#[test]
+fn finish_does_not_touch_the_span_or_emit_an_event_for_an_incomplete_responses_completion() {
+    // A raw Responses-protocol relay (the inbound Codex endpoint) that ends
+    // with `response.incomplete` concluded cleanly, just with truncated
+    // content — it must not read as an `UpstreamCut` and must not emit the
+    // "cut before a terminal event" Sentry warning.
+    assert_finish_wiring(
+        Protocol::Responses,
+        StatusCode::OK,
+        b"event: response.incomplete\ndata: {}\n\n",
         Drive::ToEnd,
         FinishWiring {
             span_status: "ok",
