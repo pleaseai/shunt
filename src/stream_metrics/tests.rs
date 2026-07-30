@@ -180,13 +180,16 @@ fn upstream_truncated_marker_forces_upstream_cut_even_with_a_terminal_event() {
     assert_eq!(observer.outcome(false), Outcome::UpstreamCut);
 }
 
-#[test]
-fn parses_responses_completion_usage_and_done() {
+/// Pushes a `response.*` SSE frame named `event` carrying `usage` through a
+/// fresh `Protocol::Responses` observer and asserts token extraction plus a
+/// `Completed` outcome — the shared shape of every clean Responses terminal
+/// (`response.completed`, `response.done`, `response.incomplete`).
+fn assert_terminal_with_usage(event: &str) {
     let mut observer = state(Protocol::Responses);
     observer.push_bytes(
         format!(
-            "event: response.completed\ndata: {}\n\n",
-            json!({"type": "response.completed", "response": {"usage": {
+            "event: {event}\ndata: {}\n\n",
+            json!({"type": event, "response": {"usage": {
                 "input_tokens": 30,
                 "output_tokens": 12,
                 "input_tokens_details": {"cached_tokens": 7}
@@ -200,6 +203,11 @@ fn parses_responses_completion_usage_and_done() {
     assert_eq!(observer.tokens.cache_read, Some(7));
     assert_eq!(observer.tokens.cache_creation, None);
     assert_eq!(observer.outcome(true), Outcome::Completed);
+}
+
+#[test]
+fn parses_responses_completion_usage_and_done() {
+    assert_terminal_with_usage("response.completed");
 
     let mut done = state(Protocol::Responses);
     done.push_bytes(b"data: [DONE]\n\n");
@@ -229,22 +237,7 @@ fn responses_done_event_is_terminal_and_carries_usage() {
     // `"response.done"` identically (see also
     // docs/m1-responses-translation.md) — both carry the full `response` +
     // `usage` and end the stream normally.
-    let mut observer = state(Protocol::Responses);
-    observer.push_bytes(
-        format!(
-            "event: response.done\ndata: {}\n\n",
-            json!({"type": "response.done", "response": {"usage": {
-                "input_tokens": 30,
-                "output_tokens": 12,
-                "input_tokens_details": {"cached_tokens": 7}
-            }}})
-        )
-        .as_bytes(),
-    );
-    assert_eq!(observer.tokens.input, Some(30));
-    assert_eq!(observer.tokens.output, Some(12));
-    assert_eq!(observer.tokens.cache_read, Some(7));
-    assert_eq!(observer.outcome(true), Outcome::Completed);
+    assert_terminal_with_usage("response.done");
 }
 
 #[test]
@@ -254,25 +247,7 @@ fn responses_incomplete_event_is_terminal_and_carries_usage() {
     // docs/m7-codex-websocket.md) treats `"response.incomplete"` as a clean
     // (if truncated) end of the stream, not a transport cut — the observer
     // must classify it as `Completed`, not `UpstreamCut`.
-    let mut observer = state(Protocol::Responses);
-    observer.push_bytes(
-        format!(
-            "event: response.incomplete
-data: {}
-
-",
-            json!({"type": "response.incomplete", "response": {"usage": {
-                "input_tokens": 30,
-                "output_tokens": 12,
-                "input_tokens_details": {"cached_tokens": 7}
-            }}})
-        )
-        .as_bytes(),
-    );
-    assert_eq!(observer.tokens.input, Some(30));
-    assert_eq!(observer.tokens.output, Some(12));
-    assert_eq!(observer.tokens.cache_read, Some(7));
-    assert_eq!(observer.outcome(true), Outcome::Completed);
+    assert_terminal_with_usage("response.incomplete");
 }
 
 #[test]
