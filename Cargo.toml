@@ -79,8 +79,16 @@ tokio = { version = "1", features = ["full"] }
 toml = "0.8"
 # Codex Responses WebSocket v2 transport (issue #32). rustls + bundled webpki
 # roots keeps TLS self-contained and consistent with reqwest's rustls-tls, with
-# no OpenSSL/native-tls system dependency.
-tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+# no OpenSSL/native-tls system dependency. Pinned to the openai-oss-forks forks
+# below (issue #292) for permessage-deflate (RFC 7692) support: no crates.io
+# release of tungstenite has ever shipped a `deflate` feature, so the fork is the
+# only source for it. The fork is maintained by OpenAI and is the same one used
+# by the Codex CLI in production.
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+# Direct dep so the `deflate` feature (permessage-deflate, RFC 7692) is enabled
+# through the `[patch.crates-io]` fork below; tokio-tungstenite re-exports
+# tungstenite but does not forward feature selection to it.
+tungstenite = { version = "0.27", default-features = false, features = ["deflate"] }
 tracing = "0.1"
 tracing-opentelemetry = "0.33"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
@@ -103,3 +111,14 @@ harness = false
 [[bench]]
 name = "perf_issues"
 harness = false
+
+# openai-oss-forks pins for permessage-deflate (RFC 7692) on the outbound Codex
+# WebSocket (issue #292). Pinned to an exact rev, not a branch, per our usual
+# posture for git dependencies: upgrades are a deliberate, reviewed rev bump, not
+# something that moves under us on an unrelated `cargo update`. Revisit these
+# pins once permessage-deflate support lands in upstream tungstenite
+# (snapview/tungstenite-rs#426) and ships in a crates.io release, at which point
+# this patch and the direct `tungstenite` dependency above can be dropped.
+[patch.crates-io]
+tokio-tungstenite = { git = "https://github.com/openai-oss-forks/tokio-tungstenite", rev = "0e5b2d73aa18dd9f0a50ee9ff199d5aef7594186" }
+tungstenite = { git = "https://github.com/openai-oss-forks/tungstenite-rs", rev = "4fffad30fe373adbdcffab9545e9e9bf4f2fc19f" }

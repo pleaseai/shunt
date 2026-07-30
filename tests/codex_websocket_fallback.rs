@@ -23,6 +23,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 use wiremock::{
     matchers::{method, path},
@@ -379,7 +380,9 @@ async fn request_is_websocket(socket: &TcpStream) -> bool {
 /// frame (so the drop is deterministic), optionally stream a first event, then
 /// drop the socket — a truncation before any terminal event.
 async fn serve_ws(socket: TcpStream, drop: WsDrop) {
-    let Ok(mut ws) = tokio_tungstenite::accept_async(socket).await else {
+    let Ok(mut ws) =
+        tokio_tungstenite::accept_async_with_config(socket, Some(WebSocketConfig::default())).await
+    else {
         return;
     };
     let _ = ws.next().await; // the client's response.create frame
@@ -392,7 +395,7 @@ async fn serve_ws(socket: TcpStream, drop: WsDrop) {
             // Surface a send failure loudly rather than swallowing it: a dropped
             // event would silently break the "partial over websocket" assertions
             // and make the AfterFirstEvent tests non-deterministic.
-            ws.send(Message::Text(event.to_string()))
+            ws.send(Message::Text(event.to_string().into()))
                 .await
                 .expect("mock upstream should stream the event before dropping");
         }

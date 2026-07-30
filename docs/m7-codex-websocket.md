@@ -76,6 +76,14 @@ reproducing attestation.**
   swapped for the WebSocket protocol value
   `responses_websockets=2026-02-06` ([`WEBSOCKET_BETA_PROTOCOL`]). Hop-by-hop
   headers are dropped; `into_client_request` fills the mandatory upgrade headers.
+- **Compression (issue #292).** Every handshake offers `permessage-deflate`
+  (RFC 7692) via [`ws_config`]; the backend decides whether to negotiate it, and
+  the connection proceeds uncompressed if it does not. crates.io has never
+  shipped a `tungstenite`/`tokio-tungstenite` release with deflate support, so
+  `Cargo.toml` rev-pins both to the OpenAI-maintained `openai-oss-forks` forks
+  (the same forks the Codex CLI uses in production) via `[patch.crates-io]`.
+  See issue #292 for the spike and live-probe evidence and any measured byte
+  savings.
 - **Request frame.** The translated Responses request JSON with
   `{"type":"response.create"}` inserted ([`response_create_frame`]). Optional
   fields: `previous_response_id` (continuation), `client_metadata`

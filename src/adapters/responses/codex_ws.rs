@@ -44,6 +44,8 @@ use serde::ser::SerializeMap;
 use serde_json::Value;
 use tokio::sync::{mpsc, Mutex as AsyncMutex, Notify, OwnedMutexGuard};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::extensions::compression::deflate::DeflateConfig;
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::{self, Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
@@ -516,7 +518,7 @@ impl Turn {
         let pool_key = self.pool_key.take();
         let (tx, rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
         let command = StartTurn {
-            frame: Message::Text(payload),
+            frame: Message::Text(payload.into()),
             events: tx,
             record,
             slot,
@@ -663,7 +665,7 @@ async fn probe_live(conn: &Connection) -> bool {
     notified.as_mut().enable();
     {
         let mut sink = conn.sink.lock().await;
-        if sink.send(Message::Ping(Vec::new())).await.is_err() {
+        if sink.send(Message::Ping(Vec::new().into())).await.is_err() {
             return false;
         }
     }
@@ -703,6 +705,19 @@ fn ensure_crypto_provider() {
     });
 }
 
+/// Offer `permessage-deflate` (RFC 7692) on the outbound handshake — mirrors
+/// `websocket_config()` in `openai/codex`'s `responses_websocket.rs`. The server
+/// decides whether to negotiate it; the client side never assumes compression is
+/// in effect. Left at the fork's crate defaults (flate2 level 6, 15-bit LZ77
+/// window both directions, context takeover enabled) rather than tuned — issue
+/// #292 tracks measuring the actual byte savings before considering a different
+/// configuration.
+fn ws_config() -> WebSocketConfig {
+    let mut config = WebSocketConfig::default();
+    config.extensions.permessage_deflate = Some(DeflateConfig::default());
+    config
+}
+
 /// Perform the websocket handshake, mapping a refused upgrade to a status-bearing
 /// [`CodexWsError`] and capturing the successful response's headers. Reused or
 /// prewarmed connections do not perform another handshake, so consumers only get
@@ -720,7 +735,7 @@ async fn connect(
     // and beta-protocol headers on top.
     request.headers_mut().extend(headers);
 
-    let connect = tokio_tungstenite::connect_async(request);
+    let connect = tokio_tungstenite::connect_async_with_config(request, Some(ws_config()), false);
     match tokio::time::timeout(CONNECT_TIMEOUT, connect).await {
         Ok(Ok((stream, response))) => {
             let response_headers = response.into_parts().0.headers;
@@ -1258,9 +1273,18 @@ mod tests {
         assert!(parse_event("not json").is_none());
     }
 
+    #[test]
+    fn ws_config_offers_permessage_deflate() {
+        assert!(ws_config().extensions.permessage_deflate.is_some());
+    }
+
     /// End-to-end over a real (loopback, plaintext) websocket: the transport must
     /// send a `response.create` frame and stream the backend's Responses events
-    /// back in order, ending at the terminal event.
+    /// back in order, ending at the terminal event. The mock server here uses
+    /// `WebSocketConfig::default()` (no `permessage_deflate` configured), so this
+    /// also covers the graceful-decline path: the client offers the extension via
+    /// [`ws_config`], the server does not negotiate it, and the turn still streams
+    /// correctly uncompressed.
     #[tokio::test]
     async fn streams_response_events_end_to_end() {
         use tokio::net::TcpListener;
@@ -1271,7 +1295,12 @@ mod tests {
         // minimal Responses event sequence and close.
         let server = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.unwrap();
-            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async_with_config(
+                socket,
+                Some(WebSocketConfig::default()),
+            )
+            .await
+            .unwrap();
             let Some(Ok(Message::Text(frame))) = ws.next().await else {
                 panic!("expected a text frame from the client");
             };
@@ -1285,7 +1314,9 @@ mod tests {
                 r#"{"type":"response.output_text.done"}"#,
                 r#"{"type":"response.completed","response":{"usage":{"input_tokens":5,"output_tokens":2}}}"#,
             ] {
-                ws.send(Message::Text(event.to_string())).await.unwrap();
+                ws.send(Message::Text(event.to_string().into()))
+                    .await
+                    .unwrap();
             }
             ws.send(Message::Close(None)).await.unwrap();
         });
@@ -1331,6 +1362,59 @@ mod tests {
         assert!(sse.contains("message_start"), "sse: {sse}");
         assert!(sse.contains(r#""text":"hello""#), "sse: {sse}");
         assert!(sse.contains("message_stop"), "sse: {sse}");
+    }
+
+    /// When the mock server also enables `permessage-deflate`, the production
+    /// `connect()` path (the one `begin`/`open_simple` use) negotiates it: the
+    /// handshake response carries the extension in `Sec-WebSocket-Extensions`,
+    /// and a message still round-trips correctly over the now-compressed
+    /// connection. Complements `streams_response_events_end_to_end`, whose mock
+    /// server leaves deflate unconfigured and so covers the declined-negotiation
+    /// path instead.
+    #[tokio::test]
+    async fn connect_negotiates_permessage_deflate_when_server_offers_it() {
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut config = WebSocketConfig::default();
+            config.extensions.permessage_deflate = Some(DeflateConfig::default());
+            let mut ws = tokio_tungstenite::accept_async_with_config(socket, Some(config))
+                .await
+                .unwrap();
+            ws.send(Message::Text("hello".to_string().into()))
+                .await
+                .unwrap();
+            let Some(Ok(Message::Text(echoed))) = ws.next().await else {
+                panic!("expected an echoed text frame");
+            };
+            assert_eq!(echoed.as_str(), "hello");
+            ws.send(Message::Close(None)).await.unwrap();
+        });
+
+        let (mut stream, _turn_state, response_headers) =
+            connect(&format!("ws://{addr}/codex/responses"), HeaderMap::new())
+                .await
+                .expect("handshake should succeed");
+
+        let negotiated = response_headers
+            .get("sec-websocket-extensions")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default();
+        assert!(
+            negotiated.contains("permessage-deflate"),
+            "expected permessage-deflate to be negotiated, got {negotiated:?}"
+        );
+
+        let Some(Ok(Message::Text(greeting))) = stream.next().await else {
+            panic!("expected a text frame from the mock server");
+        };
+        assert_eq!(greeting.as_str(), "hello");
+        stream.send(Message::Text(greeting)).await.unwrap();
+
+        server.await.unwrap();
     }
 
     /// A refused upgrade must surface the HTTP status and `retry-after` so the
@@ -1401,9 +1485,13 @@ mod tests {
         let server_frames = frames_seen.clone();
         let server = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.unwrap();
-            let mut ws = tokio_tungstenite::accept_hdr_async(socket, quota_handshake)
-                .await
-                .unwrap();
+            let mut ws = tokio_tungstenite::accept_hdr_async_with_config(
+                socket,
+                quota_handshake,
+                Some(WebSocketConfig::default()),
+            )
+            .await
+            .unwrap();
             // One connection, many turns: respond to each response.create frame
             // with a complete event sequence; answer the reuse liveness Ping.
             while let Some(message) = ws.next().await {
@@ -1417,7 +1505,9 @@ mod tests {
                             r#"{"type":"response.output_text.delta","delta":"hi"}"#,
                             r#"{"type":"response.completed","response":{}}"#,
                         ] {
-                            ws.send(Message::Text(event.to_string())).await.unwrap();
+                            ws.send(Message::Text(event.to_string().into()))
+                                .await
+                                .unwrap();
                         }
                     }
                     Message::Ping(data) => ws.send(Message::Pong(data)).await.unwrap(),
@@ -1526,7 +1616,7 @@ mod tests {
                     None
                 };
                 handlers.spawn(async move {
-                    let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+                    let mut ws = tokio_tungstenite::accept_async_with_config(socket, Some(WebSocketConfig::default())).await.unwrap();
                     let mut turn2_gate = turn2_gate;
                     while let Some(message) = ws.next().await {
                         match message {
@@ -1538,9 +1628,12 @@ mod tests {
                                     + 1;
                                 let response_id =
                                     format!("resp_{connection_index}_{turn_number}");
-                                ws.send(Message::Text(format!(
-                                    r#"{{"type":"response.created","response":{{"id":"{response_id}"}}}}"#
-                                )))
+                                ws.send(Message::Text(
+                                    format!(
+                                        r#"{{"type":"response.created","response":{{"id":"{response_id}"}}}}"#
+                                    )
+                                    .into(),
+                                ))
                                 .await
                                 .unwrap();
                                 if connection_index == 0 && turn_number == 2 {
@@ -1550,9 +1643,12 @@ mod tests {
                                         .await
                                         .expect("test releases turn 2");
                                 }
-                                ws.send(Message::Text(format!(
-                                    r#"{{"type":"response.completed","response":{{"id":"{response_id}"}}}}"#
-                                )))
+                                ws.send(Message::Text(
+                                    format!(
+                                        r#"{{"type":"response.completed","response":{{"id":"{response_id}"}}}}"#
+                                    )
+                                    .into(),
+                                ))
                                 .await
                                 .unwrap();
                             }
@@ -1728,7 +1824,7 @@ mod tests {
                     None
                 };
                 handlers.spawn(async move {
-                    let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+                    let mut ws = tokio_tungstenite::accept_async_with_config(socket, Some(WebSocketConfig::default())).await.unwrap();
                     let mut turn2_gate = turn2_gate;
                     let mut frames_seen = 0;
                     while let Some(message) = ws.next().await {
@@ -1737,9 +1833,12 @@ mod tests {
                                 let frame: Value = serde_json::from_str(&frame).unwrap();
                                 assert_eq!(frame["type"], "response.create");
                                 frames_seen += 1;
-                                ws.send(Message::Text(format!(
-                                    r#"{{"type":"response.created","response":{{"id":"resp_{connection_index}_{frames_seen}"}}}}"#
-                                )))
+                                ws.send(Message::Text(
+                                    format!(
+                                        r#"{{"type":"response.created","response":{{"id":"resp_{connection_index}_{frames_seen}"}}}}"#
+                                    )
+                                    .into(),
+                                ))
                                 .await
                                 .unwrap();
                                 if connection_index == 0 && frames_seen == 2 {
@@ -1749,9 +1848,12 @@ mod tests {
                                         .await
                                         .expect("test releases turn 2");
                                 }
-                                ws.send(Message::Text(format!(
-                                    r#"{{"type":"response.completed","response":{{"id":"resp_{connection_index}_{frames_seen}"}}}}"#
-                                )))
+                                ws.send(Message::Text(
+                                    format!(
+                                        r#"{{"type":"response.completed","response":{{"id":"resp_{connection_index}_{frames_seen}"}}}}"#
+                                    )
+                                    .into(),
+                                ))
                                 .await
                                 .unwrap();
                             }
@@ -1919,7 +2021,12 @@ mod tests {
             for _ in 0..2 {
                 let (socket, _) = listener.accept().await.unwrap();
                 handlers.spawn(async move {
-                    let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+                    let mut ws = tokio_tungstenite::accept_async_with_config(
+                        socket,
+                        Some(WebSocketConfig::default()),
+                    )
+                    .await
+                    .unwrap();
                     while let Some(message) = ws.next().await {
                         match message {
                             Ok(Message::Ping(data)) => {
@@ -1984,13 +2091,20 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.unwrap();
-            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async_with_config(
+                socket,
+                Some(WebSocketConfig::default()),
+            )
+            .await
+            .unwrap();
             let Some(Ok(Message::Text(_))) = ws.next().await else {
                 panic!("expected a client frame");
             };
             // One non-terminal event, then close WITHOUT a terminal event.
             ws.send(Message::Text(
-                r#"{"type":"response.created","response":{"id":"resp_1"}}"#.to_string(),
+                r#"{"type":"response.created","response":{"id":"resp_1"}}"#
+                    .to_string()
+                    .into(),
             ))
             .await
             .unwrap();
@@ -2053,12 +2167,19 @@ mod tests {
         let (release_server, hold_server) = oneshot::channel::<()>();
         let server = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.unwrap();
-            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async_with_config(
+                socket,
+                Some(WebSocketConfig::default()),
+            )
+            .await
+            .unwrap();
             let Some(Ok(Message::Text(_))) = ws.next().await else {
                 panic!("expected a client frame");
             };
             ws.send(Message::Text(
-                r#"{"type":"response.created","response":{"id":"resp_1"}}"#.to_string(),
+                r#"{"type":"response.created","response":{"id":"resp_1"}}"#
+                    .to_string()
+                    .into(),
             ))
             .await
             .unwrap();
@@ -2137,7 +2258,12 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.unwrap();
-            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async_with_config(
+                socket,
+                Some(WebSocketConfig::default()),
+            )
+            .await
+            .unwrap();
             while let Some(message) = ws.next().await {
                 match message.unwrap() {
                     Message::Text(_) => {
@@ -2146,7 +2272,9 @@ mod tests {
                             r#"{"type":"response.output_item.done","item":{"type":"message","role":"assistant","id":"msg_1","phase":"final_answer","status":"completed","content":[{"type":"output_text","text":"hello","annotations":[],"logprobs":[]}]}}"#,
                             r#"{"type":"response.completed","response":{"id":"resp_cont_1"}}"#,
                         ] {
-                            ws.send(Message::Text(event.to_string())).await.unwrap();
+                            ws.send(Message::Text(event.to_string().into()))
+                                .await
+                                .unwrap();
                         }
                     }
                     Message::Ping(data) => ws.send(Message::Pong(data)).await.unwrap(),
@@ -2217,7 +2345,12 @@ mod tests {
         let server_frames = frames.clone();
         let server = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.unwrap();
-            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async_with_config(
+                socket,
+                Some(WebSocketConfig::default()),
+            )
+            .await
+            .unwrap();
             while let Some(message) = ws.next().await {
                 match message.unwrap() {
                     Message::Text(_) => {
@@ -2234,7 +2367,9 @@ mod tests {
                             ]
                         };
                         for event in events {
-                            ws.send(Message::Text(event.to_string())).await.unwrap();
+                            ws.send(Message::Text(event.to_string().into()))
+                                .await
+                                .unwrap();
                         }
                     }
                     Message::Ping(data) => ws.send(Message::Pong(data)).await.unwrap(),
@@ -2291,7 +2426,12 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.unwrap();
-            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async_with_config(
+                socket,
+                Some(WebSocketConfig::default()),
+            )
+            .await
+            .unwrap();
             // Turn 1: complete so the connection is pooled and goes idle.
             let Some(Ok(Message::Text(_))) = ws.next().await else {
                 panic!("expected a client frame");
@@ -2300,14 +2440,16 @@ mod tests {
                 r#"{"type":"response.created","response":{"id":"resp_1"}}"#,
                 r#"{"type":"response.completed","response":{"id":"resp_1"}}"#,
             ] {
-                ws.send(Message::Text(event.to_string())).await.unwrap();
+                ws.send(Message::Text(event.to_string().into()))
+                    .await
+                    .unwrap();
             }
             // Now idle in the pool: send a keepalive Ping and require a Pong back.
-            ws.send(Message::Ping(b"ka".to_vec())).await.unwrap();
+            ws.send(Message::Ping(b"ka".to_vec().into())).await.unwrap();
             loop {
                 match ws.next().await {
                     Some(Ok(Message::Pong(data))) => {
-                        assert_eq!(data, b"ka");
+                        assert_eq!(data.as_ref(), b"ka");
                         break;
                     }
                     Some(Ok(_)) => continue,
@@ -2355,7 +2497,12 @@ mod tests {
             // pool (as the backend does on keepalive ping timeout).
             let (socket, _) = listener.accept().await.unwrap();
             server_accepts.fetch_add(1, Ordering::SeqCst);
-            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async_with_config(
+                socket,
+                Some(WebSocketConfig::default()),
+            )
+            .await
+            .unwrap();
             let Some(Ok(Message::Text(_))) = ws.next().await else {
                 panic!("expected a client frame");
             };
@@ -2363,7 +2510,9 @@ mod tests {
                 r#"{"type":"response.created","response":{"id":"resp_1"}}"#,
                 r#"{"type":"response.completed","response":{"id":"resp_1"}}"#,
             ] {
-                ws.send(Message::Text(event.to_string())).await.unwrap();
+                ws.send(Message::Text(event.to_string().into()))
+                    .await
+                    .unwrap();
             }
             ws.send(Message::Close(None)).await.unwrap();
             drop(ws);
@@ -2371,7 +2520,12 @@ mod tests {
             // Connection 2: turn 2 must open a fresh handshake here; complete it.
             let (socket, _) = listener.accept().await.unwrap();
             server_accepts.fetch_add(1, Ordering::SeqCst);
-            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async_with_config(
+                socket,
+                Some(WebSocketConfig::default()),
+            )
+            .await
+            .unwrap();
             while let Some(message) = ws.next().await {
                 match message.unwrap() {
                     Message::Text(_) => {
@@ -2379,7 +2533,9 @@ mod tests {
                             r#"{"type":"response.created","response":{"id":"resp_2"}}"#,
                             r#"{"type":"response.completed","response":{"id":"resp_2"}}"#,
                         ] {
-                            ws.send(Message::Text(event.to_string())).await.unwrap();
+                            ws.send(Message::Text(event.to_string().into()))
+                                .await
+                                .unwrap();
                         }
                         break;
                     }
@@ -2447,13 +2603,20 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.unwrap();
-            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async_with_config(
+                socket,
+                Some(WebSocketConfig::default()),
+            )
+            .await
+            .unwrap();
             let Some(Ok(Message::Text(_))) = ws.next().await else {
                 panic!("expected a client frame");
             };
             for _ in 0..EVENT_CHANNEL_CAPACITY + 1 {
                 ws.send(Message::Text(
-                    r#"{"type":"response.output_text.delta","delta":"x"}"#.to_string(),
+                    r#"{"type":"response.output_text.delta","delta":"x"}"#
+                        .to_string()
+                        .into(),
                 ))
                 .await
                 .unwrap();
@@ -2501,26 +2664,33 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.unwrap();
-            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async_with_config(
+                socket,
+                Some(WebSocketConfig::default()),
+            )
+            .await
+            .unwrap();
             let Some(Ok(Message::Text(_))) = ws.next().await else {
                 panic!("expected a client frame");
             };
             // Overflow both bounded buffers before Ping. The reader must keep
             // polling control frames while downstream capacity remains unavailable.
             for index in 0..EVENT_CHANNEL_CAPACITY + DEFERRED_FRAME_CAPACITY {
-                ws.send(Message::Text(format!(
-                    r#"{{"type":"response.output_text.delta","delta":"{index}"}}"#
-                )))
+                ws.send(Message::Text(
+                    format!(r#"{{"type":"response.output_text.delta","delta":"{index}"}}"#).into(),
+                ))
                 .await
                 .unwrap();
             }
             // A control Ping in the middle of the unconsumed stream must still be
             // answered by the reader.
-            ws.send(Message::Ping(b"mid".to_vec())).await.unwrap();
+            ws.send(Message::Ping(b"mid".to_vec().into()))
+                .await
+                .unwrap();
             let mut saw_pong = false;
             while let Some(message) = ws.next().await {
                 if let Ok(Message::Pong(data)) = message {
-                    assert_eq!(data, b"mid");
+                    assert_eq!(data.as_ref(), b"mid");
                     saw_pong = true;
                     break;
                 }
@@ -2530,7 +2700,9 @@ mod tests {
                 "reader answered the Ping despite downstream backpressure"
             );
             ws.send(Message::Text(
-                r#"{"type":"response.completed","response":{"id":"resp_1"}}"#.to_string(),
+                r#"{"type":"response.completed","response":{"id":"resp_1"}}"#
+                    .to_string()
+                    .into(),
             ))
             .await
             .unwrap();
@@ -2587,7 +2759,12 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.unwrap();
-            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async_with_config(
+                socket,
+                Some(WebSocketConfig::default()),
+            )
+            .await
+            .unwrap();
             let Some(Ok(Message::Text(_))) = ws.next().await else {
                 panic!("expected a client frame");
             };
@@ -2595,7 +2772,9 @@ mod tests {
                 r#"{"type":"response.created","response":{"id":"resp_1"}}"#,
                 r#"{"type":"response.completed","response":{"id":"resp_1"}}"#,
             ] {
-                ws.send(Message::Text(event.to_string())).await.unwrap();
+                ws.send(Message::Text(event.to_string().into()))
+                    .await
+                    .unwrap();
             }
             // Read to the close/EOF the reader performs after the single turn ends.
             loop {
@@ -2631,7 +2810,12 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.unwrap();
-            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async_with_config(
+                socket,
+                Some(WebSocketConfig::default()),
+            )
+            .await
+            .unwrap();
             // The client never sends a response.create frame; dropping the Turn must
             // still close the socket. A leaked reader would keep it open and hang.
             loop {
@@ -2665,7 +2849,7 @@ mod tests {
         let lock = Arc::new(AsyncMutex::new(()));
         cmd_tx
             .send(StartTurn {
-                frame: Message::Text("{}".to_string()),
+                frame: Message::Text("{}".to_string().into()),
                 events: ev_tx,
                 record: RecordPlan::none(),
                 slot: lock.clone().lock_owned().await,
@@ -2691,7 +2875,7 @@ mod tests {
         assert!(
             cmd_tx
                 .send(StartTurn {
-                    frame: Message::Text("{}".to_string()),
+                    frame: Message::Text("{}".to_string().into()),
                     events: ev_tx2,
                     record: RecordPlan::none(),
                     slot: lock.lock_owned().await,
@@ -2802,11 +2986,18 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.unwrap();
-            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async_with_config(
+                socket,
+                Some(WebSocketConfig::default()),
+            )
+            .await
+            .unwrap();
             let Some(Ok(Message::Text(_))) = ws.next().await else {
                 panic!("expected a client frame");
             };
-            ws.send(Message::Binary(vec![0, 1, 2])).await.unwrap();
+            ws.send(Message::Binary(vec![0, 1, 2].into()))
+                .await
+                .unwrap();
             let _ = ws.next().await; // observe the reader's close on exit
         });
 
@@ -2845,7 +3036,12 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.unwrap();
-            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async_with_config(
+                socket,
+                Some(WebSocketConfig::default()),
+            )
+            .await
+            .unwrap();
             let Some(Ok(Message::Text(_))) = ws.next().await else {
                 panic!("expected a client frame");
             };
