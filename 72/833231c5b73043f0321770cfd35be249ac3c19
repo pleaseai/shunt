@@ -1,0 +1,51 @@
+.github/workflows/release.yml
+  s_e4acb84525265b::t_14a0fab156996c 242-260
+  s_e4acb84525265b::t_485f5b0c7b1045 261
+README.zh-CN.md
+  s_e4acb84525265b::t_7c5aa19fa49ba0 35-45
+site/src/content/docs/ko/getting-started/installation.mdx
+  s_e4acb84525265b::t_ba50048f31d400 22-34
+site/src/content/docs/ko/reference/cli.mdx
+  s_e4acb84525265b::t_4d9322508e269b 20
+  s_e4acb84525265b::t_26213d585fe8c8 19
+packaging/homebrew/shunt.rb
+  s_e4acb84525265b::t_4e82b2e5cd75f4 46-65
+site/src/content/docs/getting-started/installation.mdx
+  s_e4acb84525265b::t_ff19c5a222c376 22-29,32-34
+  s_e4acb84525265b::t_8ab255649f250b 30-31
+README.md
+  s_e4acb84525265b::t_2b475c5ac13c32 36-46
+docs/running.md
+  s_e4acb84525265b::t_4f94bc9ff8d625 301-320,322
+  s_e4acb84525265b::t_42e347e3f4f0e5 321
+site/src/content/docs/ja/reference/cli.mdx
+  s_e4acb84525265b::t_f103916fbfe069 19-20
+README.ko.md
+  s_e4acb84525265b::t_7c5aa19fa49ba0 35-44
+site/src/content/docs/ja/getting-started/installation.mdx
+  s_e4acb84525265b::t_73ee5b48504c74 22-34
+site/src/content/docs/zh-cn/getting-started/installation.mdx
+  s_e4acb84525265b::t_9664946d889901 22-33
+site/src/content/docs/reference/cli.mdx
+  s_e4acb84525265b::t_03a8438d86f66f 19-20
+README.ja.md
+  s_e4acb84525265b::t_7c5aa19fa49ba0 35-45
+site/src/content/docs/zh-cn/reference/cli.mdx
+  s_e4acb84525265b::t_ac741f19172c36 19-20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "72833231c5b73043f0321770cfd35be249ac3c19",
+  "prompts": {},
+  "sessions": {
+    "s_e4acb84525265b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "15936aaa-9756-4f87-8300-acf6d7cb4268",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
