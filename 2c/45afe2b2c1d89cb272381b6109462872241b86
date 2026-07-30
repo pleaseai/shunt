@@ -1,0 +1,21 @@
+site/src/content/docs/guides/configuration.mdx
+  s_1a9b1bc59ddad0::t_ea7d9d01775698 43,53,109
+shunt.toml.example
+  s_1a9b1bc59ddad0::t_b00b7bd44a0993 113,147,244,250
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "2c45afe2b2c1d89cb272381b6109462872241b86",
+  "prompts": {},
+  "sessions": {
+    "s_1a9b1bc59ddad0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f72f2f30-a069-4d22-94cd-21d4d1a46af7",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
