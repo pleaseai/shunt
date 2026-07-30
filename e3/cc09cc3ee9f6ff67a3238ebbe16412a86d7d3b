@@ -1,0 +1,19 @@
+src/metrics.rs
+  s_ddcf8b4e4df1ee::t_055da2a36dee7d 412,415-420
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "e3cc09cc3ee9f6ff67a3238ebbe16412a86d7d3b",
+  "prompts": {},
+  "sessions": {
+    "s_ddcf8b4e4df1ee": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6ca13e28-2d2c-4649-83d2-28ac0a62f7c6",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
