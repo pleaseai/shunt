@@ -284,7 +284,7 @@ mod tests {
         // scheduling order, so the signal below can't race the subscription.
         ready_rx
             .await
-            .expect("run reports readiness before this raises SIGTERM");
+            .expect("shutdown_signal_inner reports readiness before this raises SIGTERM");
 
         unsafe {
             libc::raise(libc::SIGTERM);
