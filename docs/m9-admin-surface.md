@@ -318,8 +318,16 @@ today: `/api/oauth/usage` is the only Claude endpoint read here, and
 
 The known `uuid` is still attached even when the local token has expired: the
 account id is read independently of token validity, so an expired observation
-keeps matching its managed row (and inherits that row's "Needs login"
-override) instead of rendering as an unrelated duplicate.
+keeps matching its managed row instead of rendering as an unrelated duplicate.
+
+Which state the coalesced row then displays follows a precedence, not a
+blanket override: a managed operational state (`disabled`/`cooling`/
+`near-quota`) is an actionable gateway-side fact and wins over a stale local
+observation error, so a cooling account still shows its cooldown remediation
+even though the client's last local check happened to see an expired token.
+An observed error (`expired`/`unavailable`) still surfaces over a merely idle
+managed state (`available`/`unseen`), which is the "Needs login" case this
+matching was built for.
 
 Managed provisioning and store metadata remain available under a collapsed
 **Manage pool accounts (advanced)** section. `AccountPool::snapshot(provider, &[AccountConfig], model)` returns a token-free,

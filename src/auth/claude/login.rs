@@ -332,6 +332,12 @@ fn read_current_account_uuid(path: &Path) -> anyhow::Result<String> {
 /// the untouched default. Returning `None` there costs a merge; guessing costs
 /// a silently mis-attributed quota bar.
 pub(crate) fn current_account_uuid() -> Option<String> {
+    // `CLAUDE_CONFIG_DIR` and `CLAUDE_CREDENTIALS` are passed through
+    // unfiltered on purpose: `current_account_uuid_from` filters an
+    // empty-but-set `CLAUDE_CONFIG_DIR` itself (matching
+    // `claude_global_config_path`'s fallback to `$HOME/.claude`), and an
+    // empty `CLAUDE_CREDENTIALS` is left as-is to mirror
+    // `default_credentials_path`, which does not filter it either.
     let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR");
     let credentials_override = std::env::var_os("CLAUDE_CREDENTIALS");
     let home = std::env::var_os("HOME")
@@ -352,9 +358,12 @@ fn current_account_uuid_from(
     credentials_override: Option<&std::ffi::OsStr>,
     home: Option<&std::ffi::OsStr>,
 ) -> Option<String> {
-    if config_dir.is_some_and(|dir| !dir.is_empty())
-        || credentials_override.is_some_and(|path| !path.is_empty())
-    {
+    // Filtered once, here, because `config_dir` feeds both the decline check
+    // below and the path handed to `claude_global_config_path_from`. An
+    // empty-but-set value must resolve identically to unset in both places,
+    // matching `claude_global_config_path`'s own filtering of the same env var.
+    let config_dir = config_dir.filter(|dir| !dir.is_empty());
+    if config_dir.is_some() || credentials_override.is_some_and(|path| !path.is_empty()) {
         return None;
     }
     read_current_account_uuid(&claude_global_config_path_from(config_dir, home)).ok()
@@ -526,6 +535,40 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn current_account_uuid_treats_an_empty_config_dir_as_unset() {
+        // An empty-but-set `CLAUDE_CONFIG_DIR` (e.g. inherited as "" from a
+        // parent shell) must resolve identically to an unset one: falling
+        // back to `$HOME/.claude`, not a relative path rooted at the
+        // process's current directory. Before this fix, `Some("")` passed
+        // the decline check (empty is not "relocated") but was then handed
+        // unfiltered to `claude_global_config_path_from`, which built a
+        // wrong path instead of falling back to `home`.
+        let home = std::env::temp_dir().join(format!(
+            "shunt-account-uuid-empty-config-dir-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(
+            home.join(".claude.json"),
+            r#"{"oauthAccount":{"accountUuid":"home-acc-456"}}"#,
+        )
+        .unwrap();
+
+        let empty =
+            current_account_uuid_from(Some(std::ffi::OsStr::new("")), None, Some(home.as_os_str()));
+        let unset = current_account_uuid_from(None, None, Some(home.as_os_str()));
+
+        assert_eq!(empty, Some("home-acc-456".to_string()));
+        assert_eq!(empty, unset);
+
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

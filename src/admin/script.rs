@@ -119,6 +119,13 @@ function accountGroups(observed, pool, accounts) {
 // read this same effective state -- otherwise they can disagree, e.g. a
 // "Needs login" label next to a green "available" dot with no login hint.
 function effectiveState(row) {
+  // Managed pool operational states are actionable gateway-side facts (the
+  // pool disabled the account, is cooling it down, or sees it near quota) and
+  // must win over a stale local observation error: an account the pool has
+  // already benched should not read "Needs login" -- with no cooldown
+  // remediation -- just because the last local check happened to see an
+  // expired token.
+  if (row.state === "disabled" || row.state === "cooling" || row.state === "near-quota") return row.state;
   const o = row.observed;
   if (o) {
     if (o.state === "expired") return "expired";

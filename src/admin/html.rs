@@ -286,6 +286,36 @@ mod tests {
     }
 
     #[test]
+    fn managed_operational_states_outrank_a_stale_observed_error() {
+        // A coalesced row's managed pool state (disabled/cooling/near-quota)
+        // is an actionable gateway-side fact and must not be masked by a
+        // stale local observation error: a cooling account whose last local
+        // check happened to see an expired token must still surface as
+        // "cooling" (with its cooldown remediation), not "Needs login" with
+        // no such hint. Guard against the precedence check being introduced
+        // after -- or dropped from ahead of -- the observed-state checks it
+        // must outrank.
+        let page = dashboard_page("csrf");
+        let start = page
+            .find("function effectiveState(row)")
+            .expect("effectiveState function must exist");
+        let body = &page[start..start + 800];
+        let guard = body
+            .find(r#"row.state === "disabled" || row.state === "cooling" || row.state === "near-quota""#)
+            .expect("managed operational states must be checked before observed error states");
+        let observed_expired = body
+            .find(r#"o.state === "expired""#)
+            .expect("observed expired check must still exist");
+        assert!(
+            guard < observed_expired,
+            "the managed-operational-state guard must run before the observed error checks it outranks"
+        );
+        assert!(body[guard..].starts_with(
+            r#"row.state === "disabled" || row.state === "cooling" || row.state === "near-quota") return row.state;"#
+        ));
+    }
+
+    #[test]
     fn account_mutations_refresh_the_grouped_observed_table_too() {
         // The advanced account/pool tables (loadAccounts/loadCodexAccounts/
         // loadPool) are populated separately from the top-level grouped
