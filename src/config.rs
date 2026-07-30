@@ -983,11 +983,14 @@ pub struct UsageEndpointConfig {}
 pub struct OauthUsageConfig {}
 
 /// `[sentry]` — opt-in error reporting to the operator's own Sentry project.
-/// Only gateway-owned diagnostics are reported (fatal startup/serve errors,
-/// panics, and `error!` log events, with `warn!`/`info!` as breadcrumbs);
-/// request/response bodies, headers, and credentials never are. Metrics and
-/// performance tracing are each a further, separate opt-in (`metrics` /
-/// `traces_sample_rate`).
+/// Reports gateway-owned diagnostics (fatal startup/serve errors, panics, and
+/// `error!` log events, with `warn!`/`info!` as breadcrumbs) plus,
+/// unconditionally once a client is bound, an event whenever an upstream
+/// provider itself returns a failure: `error` for a 5xx response, `warning`
+/// for 429/529 (rate limit/overload), each tagged only with `model`,
+/// `provider`, and `upstream_status`; request/response bodies, headers, and
+/// credentials never are. Metrics and performance tracing are each a
+/// further, separate opt-in (`metrics` / `traces_sample_rate`).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SentryConfig {
     /// DSN of the operator's Sentry project. An empty string disables

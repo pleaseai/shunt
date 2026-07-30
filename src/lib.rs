@@ -20,6 +20,7 @@ pub mod keepalive;
 pub mod metrics;
 pub mod model;
 pub mod oauth_usage;
+pub(crate) mod observability;
 pub(crate) mod offload;
 pub mod protocol;
 pub mod proxy;

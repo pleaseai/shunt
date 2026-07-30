@@ -382,7 +382,7 @@ codex = "gpt-5.2"
 
 ## `[sentry]` (optional)
 
-Opt-in error reporting to your own Sentry project. Off unless `dsn` is set; independent of `[otel]`. Reports gateway-owned diagnostics only — fatal gateway startup/serve errors, panics, and `error`-level log events (`warn`/`info` as breadcrumbs, message only); request/response bodies, headers, and credentials are never sent. Metrics and tracing are each a further, separate opt-in.
+Opt-in error reporting to your own Sentry project. Off unless `dsn` is set; independent of `[otel]`. Reports gateway-owned diagnostics — fatal gateway startup/serve errors, panics, and `error`-level log events (`warn`/`info` as breadcrumbs, message only) — plus, unconditionally once `dsn` is set, an error/warning event whenever an upstream provider itself returns a failure: `error` for a 5xx response, `warning` for 429/529 (rate limit/overload), each tagged with `model`, `provider`, and `upstream_status` only. Request/response bodies, headers, and credentials are never sent. Metrics and tracing are each a further, separate opt-in.
 
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
