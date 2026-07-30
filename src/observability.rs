@@ -71,20 +71,28 @@ const MAX_MODEL_TAG_LEN: usize = 128;
 /// but control characters). Pure so it is unit-testable in isolation.
 fn sanitize_model_tag(model: &str) -> Cow<'_, str> {
     let needs_stripping = model.chars().any(char::is_control);
-    let cleaned: Cow<'_, str> = if needs_stripping {
+    let mut cleaned: Cow<'_, str> = if needs_stripping {
         Cow::Owned(model.chars().filter(|c| !c.is_control()).collect())
     } else {
         Cow::Borrowed(model)
     };
-    let truncated: Cow<'_, str> = if cleaned.chars().count() > MAX_MODEL_TAG_LEN {
-        Cow::Owned(cleaned.chars().take(MAX_MODEL_TAG_LEN).collect())
-    } else {
-        cleaned
-    };
-    if truncated.is_empty() {
+    // Truncate in place rather than always collecting into a fresh `String`:
+    // slice the byte range for a `Borrowed` value, or `String::truncate` an
+    // already-`Owned` one — either way this is at most the one allocation
+    // `needs_stripping` already paid for, never a second one just to shorten.
+    if let Some((byte_idx, _)) = cleaned.char_indices().nth(MAX_MODEL_TAG_LEN) {
+        cleaned = match cleaned {
+            Cow::Borrowed(s) => Cow::Borrowed(&s[..byte_idx]),
+            Cow::Owned(mut s) => {
+                s.truncate(byte_idx);
+                Cow::Owned(s)
+            }
+        };
+    }
+    if cleaned.is_empty() {
         Cow::Borrowed("invalid")
     } else {
-        truncated
+        cleaned
     }
 }
 
