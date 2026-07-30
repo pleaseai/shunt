@@ -1,0 +1,40 @@
+src/main.rs
+  s_b8a1dd03369365::t_5629fed5cb23fa 498-505
+Cargo.toml
+  s_b8a1dd03369365::t_3dec8e4c634f27 94
+tests/failover.rs
+  s_b8a1dd03369365::t_b77b780e89caf3 516-523,526-528
+  s_b8a1dd03369365::t_231fc1be2b781d 481-496,530-533,560-561
+  s_b8a1dd03369365::t_fcfa022ff12707 497-509,534,549,555-559
+  s_b8a1dd03369365::t_c59189b7d13f8f 529,562
+  s_b8a1dd03369365::t_76be7f79251c0d 469-480,510-515,524-525,535-548,550-554,563-584
+site/src/content/docs/ko/reference/configuration.md
+  s_b8a1dd03369365::t_db7623cbda83af 269
+site/src/content/docs/ja/reference/configuration.md
+  s_b8a1dd03369365::t_fc5b891d5b598d 257
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_b8a1dd03369365::t_2b7e64fbcb87b9 257
+site/src/content/docs/reference/configuration.md
+  s_b8a1dd03369365::t_8660b61a1bac5b 384
+src/observability.rs
+  s_b8a1dd03369365::t_9cf1e03bb5d7f8 171
+  s_b8a1dd03369365::t_237cc341201217 263-268
+  s_b8a1dd03369365::t_3f291aa22394bd 441-442
+  s_b8a1dd03369365::t_225c968faf9673 366-440,443
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "9acbbeb0e338e477e83eedc973d4a81abdc3e6ff",
+  "prompts": {},
+  "sessions": {
+    "s_b8a1dd03369365": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b8add262-7e53-46d2-8dbf-82e70e87690d",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
