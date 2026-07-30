@@ -42,6 +42,7 @@ pub(super) async fn forward_chatgpt_oauth(
         upstream_body,
         accounts_config,
         turn,
+        estimate_input,
     } = forward;
     // An all-`disabled` pool yields an empty order; surface it as a distinct
     // config error rather than the generic "all accounts failed" below.
@@ -79,6 +80,16 @@ pub(super) async fn forward_chatgpt_oauth(
     // a cheap refcount clone. Keep this lazy so a successful websocket turn never
     // pays to serialize an HTTP body it does not send (issue #251).
     let mut http_body: Option<bytes::Bytes> = None;
+    // Mirrors `http_body` above: the tiktoken estimate of the (unchanging)
+    // translated request is spawned onto the blocking pool at most once per
+    // turn and reused across every account attempt and the refresh retry,
+    // rather than re-encoded per rotation. Spawned only for HTTP dispatch —
+    // each websocket attempt gets its own `estimate_input` clone and does its
+    // own internal spawn_blocking in `forward_websocket`, exactly like the
+    // single-account path; a websocket attempt that then falls back to HTTP
+    // pays a second, rare, off-executor encode, which mirrors the accepted
+    // single-account fallback cost documented in `forward_websocket`.
+    let mut estimate_handle: Option<tokio::task::JoinHandle<u64>> = None;
 
     for (position, index) in order.into_iter().enumerate() {
         let account = &accounts_config[index];
@@ -113,9 +124,10 @@ pub(super) async fn forward_chatgpt_oauth(
                     auth,
                     turn,
                     codex_quota_account: Some(account.clone()),
-                    // Pool path does not pre-compute a message_start input estimate
-                    // yet (see relay_success) — follow-up to thread it through here.
-                    estimate_input: None,
+                    // Each account attempt gets its own cheap Arc clone;
+                    // forward_websocket spawns its own blocking encode from it,
+                    // identical to the single-account path (see ForwardOptions).
+                    estimate_input: estimate_input.clone(),
                 },
             )
             .await
@@ -154,6 +166,16 @@ pub(super) async fn forward_chatgpt_oauth(
                 .map(bytes::Bytes::from)
                 .unwrap_or_else(|_| bytes::Bytes::from(upstream_body.as_ref().to_string()))
         });
+        // Spawned once, right before the first HTTP send, so the CPU-bound
+        // tiktoken encode overlaps this attempt's connect/RTT instead of
+        // delaying it (same overlap discipline as forward_http/forward_websocket).
+        if estimate_handle.is_none() {
+            if let Some(request) = estimate_input.clone() {
+                estimate_handle = Some(tokio::task::spawn_blocking(move || {
+                    crate::count_tokens::count_input_tokens_value(&request)
+                }));
+            }
+        }
         let upstream = match http_send(
             &state,
             &route,
@@ -195,11 +217,14 @@ pub(super) async fn forward_chatgpt_oauth(
                     .accounts
                     .mark_healthy(&route.provider, account, status.is_success());
                 if status.is_success() {
+                    let input_tokens_estimate =
+                        take_estimate(&mut estimate_handle, turn.client_wants_stream).await;
                     let response = relay_success(
                         &state,
                         upstream,
                         turn.client_wants_stream,
                         turn.relay(&route),
+                        input_tokens_estimate,
                     )
                     .await?;
                     let response = crate::adapters::with_admission(
@@ -267,11 +292,14 @@ pub(super) async fn forward_chatgpt_oauth(
                         let retry_status = retry.status();
                         if retry_status.is_success() {
                             state.accounts.mark_healthy(&route.provider, account, true);
+                            let input_tokens_estimate =
+                                take_estimate(&mut estimate_handle, turn.client_wants_stream).await;
                             let response = relay_success(
                                 &state,
                                 retry,
                                 turn.client_wants_stream,
                                 turn.relay(&route),
+                                input_tokens_estimate,
                             )
                             .await?;
                             let response = crate::adapters::with_admission(
@@ -315,17 +343,40 @@ async fn relay_success(
     upstream: reqwest::Response,
     client_wants_stream: bool,
     relay: RelayOptions,
+    input_tokens_estimate: u64,
 ) -> Result<axum::response::Response, AdapterError> {
     if client_wants_stream {
         let keepalive = Duration::from_secs(state.config.server.sse_keepalive_seconds);
-        // The pool path does not (yet) pre-compute a tiktoken input estimate to
-        // seed message_start (#112 threads it only through the single-account
-        // forward_http / forward_websocket paths), so pass 0 = "no estimate"
-        // here — identical to those paths when the provider opts out of local
-        // counting. Extending the estimate to pooled codex turns is a follow-up.
-        Ok(stream_response(upstream, relay, 0, keepalive))
+        Ok(stream_response(
+            upstream,
+            relay,
+            input_tokens_estimate,
+            keepalive,
+        ))
     } else {
         json_response(upstream, relay).await
+    }
+}
+
+/// Await the lazily-spawned HTTP-path tiktoken estimate handle exactly once,
+/// mirroring `forward_http`'s inline `match estimate_handle { .. }`. Factored
+/// out because the pool loop has two success arms (first attempt and
+/// refresh retry) that must consume the same handle without awaiting it
+/// twice — `JoinHandle` is not `Clone`, so `.take()` leaves a torn-down `None`
+/// behind for whichever arm does not run. Non-streaming turns never seed
+/// `message_start`, so `client_wants_stream == false` always yields `0`
+/// without polling the handle (it is `None` in that case anyway, since
+/// `forward`'s gate only produces `estimate_input` for streaming turns).
+async fn take_estimate(
+    estimate_handle: &mut Option<tokio::task::JoinHandle<u64>>,
+    client_wants_stream: bool,
+) -> u64 {
+    if !client_wants_stream {
+        return 0;
+    }
+    match estimate_handle.take() {
+        Some(handle) => handle.await.unwrap_or(0),
+        None => 0,
     }
 }
 

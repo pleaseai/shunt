@@ -228,6 +228,27 @@ fn session_id_for_account(index: usize, account_count: usize) -> String {
         .expect("a session id should map to the requested account")
 }
 
+/// Find `message_start`'s `usage.input_tokens` in a gateway SSE response body,
+/// mirroring the identically-named helper in `tests/codex_websocket_fallback.rs`
+/// (integration test binaries do not share code across files, so this is
+/// intentionally duplicated rather than imported).
+fn message_start_input_tokens(sse: &str) -> u64 {
+    for line in sse.lines() {
+        let Some(data) = line.strip_prefix("data: ") else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(data) else {
+            continue;
+        };
+        if value["type"] == "message_start" {
+            return value["message"]["usage"]["input_tokens"]
+                .as_u64()
+                .expect("message_start usage.input_tokens must be an integer");
+        }
+    }
+    panic!("no message_start event found in gateway SSE:\n{sse}");
+}
+
 async fn post_messages(gateway: &TestGateway, session_id: Option<&str>) -> reqwest::Response {
     let mut request = reqwest::Client::new()
         .post(format!("{}/v1/messages", gateway.base_url))
@@ -949,10 +970,147 @@ async fn websocket_enabled_pool_falls_back_to_http_and_streams() {
         body.contains("ws pool streamed"),
         "the streamed body should carry the upstream's translated text; got: {body}"
     );
+    // Regression for the account-pool path silently dropping the message_start
+    // tiktoken estimate (#112 only threaded it through the single-account
+    // forward_http/forward_websocket paths, not forward_chatgpt_oauth): after a
+    // pre-stream websocket failure falls back to HTTP for this SAME account,
+    // message_start must still carry a nonzero estimate.
+    assert!(
+        message_start_input_tokens(&body) > 0,
+        "message_start must carry the tiktoken estimate on the pool ws->http fallback path; got:\n{body}"
+    );
     upstream.verify().await;
 
     std::env::remove_var("SHUNT_TEST_CODEX_WSPOOL_A");
     std::env::remove_var("SHUNT_TEST_CODEX_WSPOOL_B");
+}
+
+#[tokio::test]
+async fn pool_http_dispatch_seeds_message_start_input_token_estimate() {
+    // Regression for the account-pool path bypassing the message_start
+    // tiktoken estimate #112 added (see `relay_success` in
+    // `src/adapters/responses/pool.rs`, which used to hardcode `0`): a
+    // streaming turn relayed through the plain HTTP pool dispatch (no
+    // websocket involved) must seed a nonzero `usage.input_tokens` in
+    // `message_start`, exactly like the single-account
+    // `forward_http`/`forward_websocket` paths already do (see
+    // `tests/passthrough.rs::message_start_seeds_tiktoken_estimate_for_streaming_responses_model`).
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-estimate-a");
+    let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-estimate-b");
+    std::env::set_var("SHUNT_TEST_CODEX_ESTIMATE_A", &token_a);
+    std::env::set_var("SHUNT_TEST_CODEX_ESTIMATE_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(sse_body("pool http streamed")))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        account("account-a", "SHUNT_TEST_CODEX_ESTIMATE_A"),
+        account("account-b", "SHUNT_TEST_CODEX_ESTIMATE_B"),
+    ))
+    .await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .header("content-type", "application/json")
+        .body(
+            r#"{"model":"pooled-codex-model","max_tokens":16,"stream":true,"messages":[{"role":"user","content":"hi"}]}"#,
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-a"
+    );
+    let body = response.text().await.unwrap();
+    assert!(
+        message_start_input_tokens(&body) > 0,
+        "message_start must carry the tiktoken estimate on the pool HTTP dispatch path; got:\n{body}"
+    );
+    upstream.verify().await;
+
+    std::env::remove_var("SHUNT_TEST_CODEX_ESTIMATE_A");
+    std::env::remove_var("SHUNT_TEST_CODEX_ESTIMATE_B");
+}
+
+#[tokio::test]
+async fn pool_rotation_still_seeds_input_token_estimate_after_401() {
+    // Same regression as `pool_http_dispatch_seeds_message_start_input_token_estimate`,
+    // but exercising the lazily-spawned estimate handle across an account
+    // rotation (pool.rs's `estimate_handle`, mirroring the existing `http_body`
+    // lazy-serialize-once pattern): account-a's 401 rotates to account-b
+    // without a refresh (a `token_env` account has nothing to refresh), and
+    // the SAME shared estimate handle spawned before account-a's request must
+    // still be the one consumed when account-b's retry succeeds.
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-estimate-rot-a");
+    let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-estimate-rot-b");
+    std::env::set_var("SHUNT_TEST_CODEX_ESTIMATE_ROT_A", &token_a);
+    std::env::set_var("SHUNT_TEST_CODEX_ESTIMATE_ROT_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(
+            ResponseTemplate::new(401).set_body_string(r#"{"error":"account a token revoked"}"#),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(sse_body("account b streamed")))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        account("account-a", "SHUNT_TEST_CODEX_ESTIMATE_ROT_A"),
+        account("account-b", "SHUNT_TEST_CODEX_ESTIMATE_ROT_B"),
+    ))
+    .await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .header("content-type", "application/json")
+        .body(
+            r#"{"model":"pooled-codex-model","max_tokens":16,"stream":true,"messages":[{"role":"user","content":"hi"}]}"#,
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+    let body = response.text().await.unwrap();
+    assert!(
+        message_start_input_tokens(&body) > 0,
+        "message_start must carry the tiktoken estimate after a pool account rotation; got:\n{body}"
+    );
+    upstream.verify().await;
+
+    std::env::remove_var("SHUNT_TEST_CODEX_ESTIMATE_ROT_A");
+    std::env::remove_var("SHUNT_TEST_CODEX_ESTIMATE_ROT_B");
 }
 
 #[tokio::test]

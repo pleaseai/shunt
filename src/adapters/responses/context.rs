@@ -82,13 +82,16 @@ pub(super) struct ForwardOptions {
     pub codex_quota_account: Option<AccountConfig>,
     /// The parsed request to seed `message_start`'s `usage.input_tokens` with a
     /// local tiktoken estimate, or `None` on non-streaming / non-tiktoken turns.
-    /// Single-account only; the account-pool path does not thread it yet.
+    /// Mirrored on the account-pool path by [`PoolForward::estimate_input`].
     pub estimate_input: Option<Arc<Value>>,
 }
 
 /// Everything `forward_chatgpt_oauth` needs beyond `state`/`route`. The account
-/// pool resolves a credential per account (rather than carrying one) and does not
-/// pre-compute an input estimate, so its shape differs from [`ForwardOptions`].
+/// pool resolves a credential per account (rather than carrying one), so its
+/// shape differs from [`ForwardOptions`] there — but it shares the same
+/// `estimate_input`: `forward` computes it once, gated identically for every
+/// auth mode (`client_wants_stream && CountTokens::Tiktoken`), before branching
+/// into the pool vs. single-account dispatch.
 #[derive(Debug)]
 pub(super) struct PoolForward {
     pub pool_key: Option<String>,
@@ -96,4 +99,10 @@ pub(super) struct PoolForward {
     pub upstream_body: Arc<Value>,
     pub accounts_config: Vec<AccountConfig>,
     pub turn: TurnOptions,
+    /// The parsed request to seed `message_start`'s `usage.input_tokens` with a
+    /// local tiktoken estimate, or `None` on non-streaming / non-tiktoken turns.
+    /// Mirrors [`ForwardOptions::estimate_input`]; shared across every account
+    /// attempt in the pool loop (the translated body does not change per
+    /// account), never re-encoded per rotation.
+    pub estimate_input: Option<Arc<Value>>,
 }

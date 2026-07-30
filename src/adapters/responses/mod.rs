@@ -169,6 +169,7 @@ async fn forward(
                     upstream_body,
                     accounts_config: accounts,
                     turn,
+                    estimate_input,
                 },
             )
             .await;
