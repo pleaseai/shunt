@@ -319,9 +319,11 @@ provider = "codex"
 ```
 
 Accepted values: `fast` (legacy alias, normalized to `priority`), `priority`, `flex`, or `default`
-(a client-only sentinel meaning "unset" — never sent on the wire). It's off by default and sent
-only when explicitly configured; a route-level value wins over the provider-level default, same as
-`effort`. Full key reference: [Configuration](/reference/configuration/#providersname).
+(a client-only sentinel — it's never sent on the wire). It's off by default and sent only when
+explicitly configured; a route-level value wins over the provider-level default, same as `effort` —
+including a route explicitly set to `default`, which opts that route **out** of a provider-level
+`priority`/`flex` tier instead of inheriting it. Full key reference:
+[Configuration](/reference/configuration/#providersname).
 
 ## 6. Context window
 

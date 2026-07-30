@@ -191,9 +191,15 @@ pub fn translate_request_value(
     // configured on the route/provider (never derived). xAI 400s on it, and
     // the Grok CLI flavor inherits xAI's request-shaping rules (see
     // docs/m6-xai-provider.md), so both are withheld even when configured.
+    // `"default"` is a client-only sentinel preserved through config
+    // validation and route resolution (see config::normalize_service_tier_value)
+    // so a route can override an inherited provider-level tier -- this is the
+    // one place it is stripped; the literal string must never reach the wire.
     if !matches!(flavor, ResponsesFlavor::Xai | ResponsesFlavor::Grok) {
         if let Some(service_tier) = &route.service_tier {
-            out.insert("service_tier".to_string(), json!(service_tier));
+            if service_tier != "default" {
+                out.insert("service_tier".to_string(), json!(service_tier));
+            }
         }
     }
     // With store:false the Responses backend forgets each turn's reasoning, so ask

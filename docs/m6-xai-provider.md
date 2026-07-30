@@ -140,7 +140,7 @@ unentitled API client. The API-key `xai` path sends the bearer only. Neither sen
 | Field | OpenAI | ChatGPT/Codex | **xAI** |
 | :-- | :-- | :-- | :-- |
 | `store` | `false` | `false` | `false` |
-| `service_tier` | never sent | never sent | never sent (xAI 400s on it) |
+| `service_tier` | sent when configured (see codex-configuration.md §9) | sent when configured (see codex-configuration.md §9) | never sent (xAI 400s on it) |
 | `reasoning` | always `{effort, summary:auto}` | always `{effort, summary:auto}` | **only when effort explicitly chosen** (route/provider config or per-request `output_config.effort`), and `{effort}` **without** `summary` |
 | `text.verbosity` | sent | sent | **omitted** (xAI rejects the `text` object) |
 | `max_output_tokens` | sent | dropped | sent |

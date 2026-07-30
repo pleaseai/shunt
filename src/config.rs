@@ -2087,13 +2087,18 @@ impl ConfigFormat {
 }
 
 /// Normalizes a raw `service_tier` config value to its Responses wire form.
-/// `Some(Some(_))` is a concrete wire value, `Some(None)` is the `default`
-/// sentinel (unset, never sent), and `None` means the input was invalid.
-fn normalize_service_tier_value(value: &str) -> Option<Option<String>> {
+/// `default` is preserved as its own sentinel string rather than collapsed to
+/// `None`: `None` also means "not configured", and collapsing the two made an
+/// explicit route-level `default` indistinguishable from an unset route, so
+/// it silently inherited the provider-level tier instead of overriding it
+/// (issue #301). The sentinel is stripped only at the wire-emission site
+/// (`model/responses_request.rs`), which never sends the literal string
+/// `"default"`. `None` here means the input was invalid.
+fn normalize_service_tier_value(value: &str) -> Option<String> {
     match value {
-        "fast" | "priority" => Some(Some("priority".to_string())),
-        "flex" => Some(Some("flex".to_string())),
-        "default" => Some(None),
+        "fast" | "priority" => Some("priority".to_string()),
+        "flex" => Some("flex".to_string()),
+        "default" => Some("default".to_string()),
         _ => None,
     }
 }
@@ -2219,22 +2224,23 @@ impl Config {
     fn normalize_service_tiers(&mut self) -> Result<(), ConfigError> {
         for (name, provider) in self.providers.iter_mut() {
             if let Some(raw) = provider.service_tier.take() {
-                provider.service_tier = normalize_service_tier_value(&raw).ok_or_else(|| {
-                    ConfigError::InvalidProviderServiceTier {
-                        provider: name.clone(),
-                        value: raw.clone(),
-                    }
-                })?;
+                provider.service_tier =
+                    Some(normalize_service_tier_value(&raw).ok_or_else(|| {
+                        ConfigError::InvalidProviderServiceTier {
+                            provider: name.clone(),
+                            value: raw.clone(),
+                        }
+                    })?);
             }
         }
         for route in self.routes.iter_mut() {
             if let Some(raw) = route.service_tier.take() {
-                route.service_tier = normalize_service_tier_value(&raw).ok_or_else(|| {
+                route.service_tier = Some(normalize_service_tier_value(&raw).ok_or_else(|| {
                     ConfigError::InvalidRouteServiceTier {
                         model: route.model.clone(),
                         value: raw.clone(),
                     }
-                })?;
+                })?);
             }
         }
         Ok(())
@@ -3474,15 +3480,24 @@ mod tests {
     }
 
     #[test]
-    fn service_tier_default_sentinel_normalizes_to_unset() {
-        // "default" is a client-only sentinel and must never reach the wire:
-        // validation clears it back to None rather than passing it through.
+    fn service_tier_default_sentinel_is_preserved() {
+        // "default" is a client-only sentinel that must never reach the wire,
+        // but validation preserves it as Some("default") rather than clearing
+        // it to None -- collapsing the two made an explicit route-level
+        // "default" indistinguishable from an unset route, so it silently
+        // inherited the provider-level tier instead of overriding it
+        // (issue #301). The wire-emission site strips the sentinel instead.
         let mut config = Config::default();
         config.providers.get_mut("anthropic").unwrap().service_tier = Some("default".to_string());
         let config = config.validate().unwrap();
         assert_eq!(
-            config.providers.get("anthropic").unwrap().service_tier,
-            None
+            config
+                .providers
+                .get("anthropic")
+                .unwrap()
+                .service_tier
+                .as_deref(),
+            Some("default")
         );
     }
 

@@ -489,9 +489,15 @@ provider = "codex"
 ```
 
 **Accepted values**: `fast` (legacy alias, normalized to `priority`), `priority`, `flex`, or
-`default` (a client-only sentinel meaning "unset" — it is never sent on the wire). Any other value
-fails config validation at load time. A route-level value wins over the provider-level default,
-mirroring `effort`'s precedence.
+`default` (a client-only sentinel — it is never sent on the wire). Any other value fails config
+validation at load time. A route-level value wins over the provider-level default, mirroring
+`effort`'s precedence: setting a route to `service_tier = "default"` explicitly opts that route
+**out** of a provider-level `priority`/`flex` tier, since config validation preserves `default` as
+its own sentinel rather than collapsing it to "unset" (which would make it indistinguishable from a
+route that never configured `service_tier` at all, and let the provider tier leak through). The
+sentinel is stripped only at the point the request is built, so `GET /routes`
+([`docs/running.md`](running.md)) can still show an explicit `service_tier = "default"` override
+verbatim, distinguishing it from a route that never configured `service_tier`.
 
 **Off by default** — shunt never derives `service_tier` from the request, the model id, or any
 other signal; it is sent only when explicitly configured. gpt-5.6-sol/terra/luna all advertise

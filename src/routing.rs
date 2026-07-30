@@ -499,6 +499,54 @@ mod tests {
     }
 
     #[test]
+    fn route_level_default_sentinel_is_not_overridden_by_provider_tier() {
+        // The documented route-over-provider override lets a route disable an
+        // inherited provider-level Fast/Flex tier by setting service_tier =
+        // "default". Option::or_else only falls back on None, so the
+        // normalized sentinel Some("default") must survive here untouched --
+        // regression test for issue #301, where collapsing "default" to None
+        // during config validation made it indistinguishable from unset and
+        // the provider tier leaked through. The wire-emission filter
+        // (model/responses_request.rs) is what turns the sentinel into
+        // "send nothing".
+        let mut config = Config {
+            routes: vec![RouteConfig {
+                model: "gpt-special".to_string(),
+                provider: "openai".to_string(),
+                upstream_model: Some("gpt-upstream".to_string()),
+                effort: None,
+                service_tier: Some("default".to_string()),
+            }],
+            ..Config::default()
+        };
+        config.providers.get_mut("openai").unwrap().service_tier = Some("priority".to_string());
+
+        let route = resolve_model(&config, "gpt-special");
+
+        assert_eq!(route.service_tier.as_deref(), Some("default"));
+    }
+
+    #[test]
+    fn provider_level_default_sentinel_is_inherited_by_unset_route() {
+        // A provider-only "default" still flows through the same
+        // Option::or_else fallback as any other provider tier -- it resolves
+        // to Some("default") rather than None, so downstream wire-emission
+        // (not this resolution step) is what turns it into "send nothing".
+        let mut config = Config {
+            route_prefixes: vec![RoutePrefixConfig {
+                prefix: "gpt-".to_string(),
+                provider: "openai".to_string(),
+            }],
+            ..Config::default()
+        };
+        config.providers.get_mut("openai").unwrap().service_tier = Some("default".to_string());
+
+        let route = resolve_model(&config, "gpt-plain");
+
+        assert_eq!(route.service_tier.as_deref(), Some("default"));
+    }
+
+    #[test]
     fn ordered_model_chain_uses_declaration_order_and_per_upstream_defaults() {
         let mut config = Config {
             upstreams_ordered: true,

@@ -16,6 +16,15 @@ pub struct RouteEntry {
     pub upstream_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// Verbatim from `RouteConfig.service_tier` (the normalized config
+    /// value, not the resolved-with-provider-fallback one from
+    /// `routing::route_for`). An explicit `"default"` override now serializes
+    /// as `"service_tier": "default"` rather than being omitted like an
+    /// unset route -- config validation preserves the sentinel instead of
+    /// collapsing it to `None` (see config::normalize_service_tier_value), so
+    /// this discovery response can distinguish "explicitly disabled" from
+    /// "never configured". That is intentional and informative, not a leak:
+    /// the sentinel is still stripped before any upstream request.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<String>,
 }
@@ -107,5 +116,47 @@ mod tests {
     fn router_includes_get_routes_route() {
         let (_router, _shared, _state) =
             server::build_router(crate::config::Config::default()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn explicit_default_service_tier_is_distinguishable_from_unset() {
+        // Regression test for issue #301: an explicit route-level
+        // service_tier = "default" override must serialize distinctly from a
+        // route that never configured service_tier at all, so operators can
+        // tell "explicitly disabled" from "never configured" via discovery.
+        let config = crate::config::Config {
+            routes: vec![
+                RouteConfig {
+                    model: "gpt-5.6-sol".to_string(),
+                    provider: "codex".to_string(),
+                    upstream_model: None,
+                    effort: None,
+                    service_tier: Some("default".to_string()),
+                },
+                RouteConfig {
+                    model: "gpt-5.2".to_string(),
+                    provider: "openai".to_string(),
+                    upstream_model: None,
+                    effort: None,
+                    service_tier: None,
+                },
+            ],
+            ..crate::config::Config::default()
+        };
+        let config = config.validate().unwrap();
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+
+        let response = get(State(state)).await;
+        let body = serde_json::to_value(response.0).unwrap();
+
+        assert_eq!(
+            body,
+            json!({
+                "data": [
+                    {"model": "gpt-5.6-sol", "provider": "codex", "service_tier": "default"},
+                    {"model": "gpt-5.2", "provider": "openai"}
+                ]
+            })
+        );
     }
 }

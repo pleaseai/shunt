@@ -762,6 +762,22 @@ fn emits_configured_service_tier_on_chatgpt_flavor() {
     assert_eq!(out["service_tier"], json!("flex"));
 }
 
+#[test]
+fn route_service_tier_default_sentinel_never_reaches_the_wire() {
+    // "default" is preserved through config validation and route resolution
+    // as an explicit sentinel (see config::normalize_service_tier_value) so a
+    // route can override an inherited provider-level tier -- but it must
+    // still never be forwarded on the wire. This is the wire-side half of
+    // the issue #301 regression (see routing.rs's
+    // route_level_default_sentinel_is_not_overridden_by_provider_tier for the
+    // resolution-side half).
+    let mut route = route("gpt-5.6-sol");
+    route.service_tier = Some("default".to_string());
+    let body = serde_json::to_vec(&json!({"model": "gpt-5.6-sol", "messages": []})).unwrap();
+    let out = translate_request(&body, &route, ResponsesFlavor::OpenAi, false).unwrap();
+    assert!(out.get("service_tier").is_none());
+}
+
 fn xai_route(model: &str) -> Route {
     Route {
         provider: "xai".to_string(),
