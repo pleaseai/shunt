@@ -58,6 +58,33 @@ upstream_model = "gemini-3.6-flash"
 
 The Antigravity path runs one CLI subprocess per request. Its current streaming response is emitted only after `agy` finishes, and token usage is estimated rather than reported by Google. The configured upstream slug proves which model shunt asks `agy` to run; it does not independently attest Google's internal serving identity.
 
+#### Reasoning effort
+
+`agy` takes a `--effort` flag, and the accepted values differ per model. shunt sends a default when a route configures none:
+
+| `upstream_model` | Accepted efforts | shunt's default |
+| --- | --- | --- |
+| `gemini-3.1-pro` | `low`, `high` | `high` |
+| `gemini-3.6-flash` | `low`, `medium`, `high` | `medium` |
+| `gemini-3.5-flash` | `low`, `medium`, `high` | `medium` |
+| `gemini-3-flash` | `low`, `medium`, `high` | `medium` |
+
+`gemini-3.1-pro` is the exception: it exposes a two-position slider and **rejects `medium`**, failing the whole invocation. Note that `agy`'s own flag parser accepts `low|medium|high` for every model and defers the real check to the model, so a parser-level probe will not reveal this.
+
+Set an effort explicitly per route:
+
+```toml
+[[routes]]
+model = "claude-gemini-3.1-pro-via-antigravity"
+provider = "antigravity"
+upstream_model = "gemini-3.1-pro"
+effort = "low"
+```
+
+Configuring an effort the model does not accept returns `400 invalid_request_error` naming the valid values, rather than forwarding a request `agy` will reject. A model absent from the table above sends no `--effort` flag unless a route sets one, deferring to `agy`'s own default.
+
+Values verified against Antigravity CLI 1.1.8.
+
 ### The codex provider (ChatGPT subscription)
 
 Log in once with the Codex CLI; shunt reads and auto-refreshes `~/.codex/auth.json`:

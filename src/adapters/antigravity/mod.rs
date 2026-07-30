@@ -13,10 +13,115 @@ use std::path::PathBuf;
 
 use crate::{
     adapters::{Adapter, AdapterError, AdapterFuture},
+    error::ShuntError,
     request::RequestBody,
     routing::Route,
     server::AppState,
 };
+
+/// `--effort` values the Antigravity CLI accepts per model, with the default to
+/// send when the route configures none: `(model, supported, default)`.
+///
+/// `agy` validates `--effort` in two stages. Its flag parser accepts
+/// `low|medium|high` for every model, and only then does the model reject a
+/// value it does not offer — `gemini-3.1-pro` exposes a two-position slider
+/// (`low`/`high`) and fails the whole invocation on `medium`, which the CLI
+/// reports as `gemini-3.1-pro has no "medium" effort`. Probing the flag parser
+/// therefore does not reveal the real per-model set; each row below was
+/// verified by invoking the model itself against Antigravity CLI 1.1.8.
+///
+/// Table-driven so a new model is one row rather than another branch
+/// (AGENTS.md: prefer table-driven config additions over hardcoded provider
+/// logic). A model absent from this table is left to `agy`'s own default.
+const ANTIGRAVITY_EFFORTS: &[(&str, &[&str], &str)] = &[
+    ("gemini-3.1-pro", &["low", "high"], "high"),
+    ("gemini-3.6-flash", &["low", "medium", "high"], "medium"),
+    ("gemini-3.5-flash", &["low", "medium", "high"], "medium"),
+    ("gemini-3-flash", &["low", "medium", "high"], "medium"),
+];
+
+/// Resolve the `--effort` argument for a route.
+///
+/// `Ok(None)` means send no `--effort` flag at all. An unknown model with no
+/// configured effort lands there deliberately: guessing a value the model may
+/// not accept is what made every `gemini-3.1-pro` request fail, so an
+/// unrecognised model defers to `agy` instead of to us.
+///
+/// `Err` carries an operator-facing message for a configured effort the model
+/// does not offer. Catching it here turns what `agy` would report as an opaque
+/// upstream failure into a 400 that names the valid values.
+fn resolve_effort(model: &str, configured: Option<&str>) -> Result<Option<String>, String> {
+    let known = ANTIGRAVITY_EFFORTS
+        .iter()
+        .find(|(candidate, _, _)| *candidate == model);
+    match (known, configured) {
+        (Some((_, supported, _)), Some(effort)) if !supported.contains(&effort) => Err(format!(
+            "model {model} does not support effort \"{effort}\" (supported: {})",
+            supported.join(", ")
+        )),
+        (_, Some(effort)) => Ok(Some(effort.to_string())),
+        (Some((_, _, default)), None) => Ok(Some((*default).to_string())),
+        (None, None) => Ok(None),
+    }
+}
+
+/// Shape a missing `agy` binary as an Anthropic-form error.
+///
+/// Worth naming the search path explicitly: a service manager commonly runs
+/// shunt under a restricted `PATH`. Homebrew's `brew services` unit sets
+/// `PATH=/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin`,
+/// which excludes `~/.local/bin` — the default install location for `agy` — so
+/// a provider that works in a shell returns 503 under the service with no
+/// indication why. `AGY_BIN` is the fix, and the message has to say so.
+fn agy_not_found() -> AdapterError {
+    let message = "Antigravity CLI (agy) not found on PATH, in ~/.gemini/antigravity-cli/bin, or at $AGY_BIN. \
+         Install agy, or set AGY_BIN to its absolute path — a service manager \
+         (for example `brew services`) may run shunt with a PATH that excludes it."
+        .to_string();
+    AdapterError {
+        response: Box::new(
+            ShuntError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "api_error",
+                message.clone(),
+            )
+            .into_response(),
+        ),
+        message,
+        failure: None,
+    }
+}
+
+/// Cap on the upstream detail echoed back to the client, in bytes.
+const AGY_STDERR_LIMIT: usize = 2000;
+
+/// Shape a failed `agy` invocation as an Anthropic-form error carrying the
+/// CLI's own diagnosis.
+///
+/// The previous code built this message and then paired it with a bare
+/// `StatusCode::BAD_GATEWAY`, so the client received a 502 with an empty body
+/// while the actual cause — often a precise, actionable line like
+/// `gemini-3.1-pro has no "medium" effort` — was discarded at the wire.
+/// AGENTS.md requires gateway-owned errors in the Anthropic error shape.
+fn agy_failure(detail: &str) -> AdapterError {
+    let detail = detail.trim();
+    let mut detail = detail
+        .char_indices()
+        .take_while(|(index, _)| *index < AGY_STDERR_LIMIT)
+        .map(|(_, character)| character)
+        .collect::<String>();
+    if detail.is_empty() {
+        detail.push_str("no output");
+    }
+    let message = format!("Antigravity CLI (agy) failed: {detail}");
+    AdapterError {
+        response: Box::new(
+            ShuntError::new(StatusCode::BAD_GATEWAY, "api_error", message.clone()).into_response(),
+        ),
+        message,
+        failure: None,
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AntigravityAdapter;
@@ -38,35 +143,42 @@ impl Adapter for AntigravityAdapter {
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
 
-            let agy_bin = find_agy_binary().ok_or_else(|| AdapterError {
-                message: "Antigravity CLI (agy) binary not found. Please install agy or set AGY_BIN environment variable.".to_string(),
-                response: Box::new(StatusCode::SERVICE_UNAVAILABLE.into_response()),
-                failure: None,
-            })?;
+            let agy_bin = find_agy_binary().ok_or_else(agy_not_found)?;
 
             let mut cmd = tokio::process::Command::new(&agy_bin);
             cmd.arg("-p").arg(&prompt);
             cmd.arg("--model").arg(&route.upstream_model);
 
-            // Add effort for 3.x models or explicitly set effort
-            if route.upstream_model.contains("3.") || route.effort.is_some() {
-                let effort = route.effort.as_deref().unwrap_or("medium");
-                cmd.arg("--effort").arg(effort);
+            // Effort is resolved from a per-model table rather than guessed:
+            // the models disagree on which values they accept, and sending an
+            // unsupported one fails the whole invocation.
+            match resolve_effort(&route.upstream_model, route.effort.as_deref()) {
+                Ok(Some(effort)) => {
+                    cmd.arg("--effort").arg(effort);
+                }
+                Ok(None) => {}
+                Err(message) => {
+                    return Err(AdapterError {
+                        response: Box::new(
+                            ShuntError::new(
+                                StatusCode::BAD_REQUEST,
+                                "invalid_request_error",
+                                message.clone(),
+                            )
+                            .into_response(),
+                        ),
+                        message,
+                        failure: None,
+                    });
+                }
             }
 
-            let output = cmd.output().await.map_err(|err| AdapterError {
-                message: format!("failed to execute agy CLI: {err}"),
-                response: Box::new(StatusCode::BAD_GATEWAY.into_response()),
-                failure: None,
+            let output = cmd.output().await.map_err(|err| {
+                agy_failure(&format!("could not execute {}: {err}", agy_bin.display()))
             })?;
 
             if !output.status.success() {
-                let err_msg = String::from_utf8_lossy(&output.stderr);
-                return Err(AdapterError {
-                    message: format!("agy CLI execution failed: {err_msg}"),
-                    response: Box::new(StatusCode::BAD_GATEWAY.into_response()),
-                    failure: None,
-                });
+                return Err(agy_failure(&String::from_utf8_lossy(&output.stderr)));
             }
 
             let stdout_text = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -274,3 +386,6 @@ pub fn format_antigravity_sse(model: &str, text: &str) -> String {
 
     out
 }
+
+#[cfg(test)]
+mod tests;
