@@ -308,8 +308,9 @@ Full precedence and the effort table: [Effort & Context](/guides/effort-and-cont
 ## Fast mode
 
 Codex CLI's `/fast` toggle isn't a model or effort change — it sends the Responses API top-level
-field `service_tier: "priority"`, branded "Fast" (1.5x speed, increased usage). shunt exposes the
-same knob as a config key, at both provider and route level, exactly parallel to `effort`:
+field `service_tier: "priority"`, branded "Fast" (faster responses at increased usage). shunt
+exposes the same knob as a config key, at both provider and route level, exactly parallel to
+`effort`:
 
 ```toml
 [[routes]]

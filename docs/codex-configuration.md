@@ -472,9 +472,9 @@ of the Claude Code slider; drop it to let the client control effort per-turn.
 ## 9. Fast mode (`service_tier`)
 
 Codex CLI's `/fast` toggle sends the Responses API top-level field `service_tier: "priority"` — a
-sibling of `reasoning`, not a model or effort change. It is branded "Fast" (1.5x speed, increased
-usage). shunt exposes the same knob as a config key, at both provider and route level, exactly
-parallel to `effort` (§8):
+sibling of `reasoning`, not a model or effort change. It is branded "Fast" (faster responses at
+increased usage). shunt exposes the same knob as a config key, at both provider and route level,
+exactly parallel to `effort` (§8):
 
 ```toml
 [providers.codex]
@@ -500,8 +500,10 @@ sentinel is stripped only at the point the request is built, so `GET /routes`
 verbatim, distinguishing it from a route that never configured `service_tier`.
 
 **Off by default** — shunt never derives `service_tier` from the request, the model id, or any
-other signal; it is sent only when explicitly configured. gpt-5.6-sol/terra/luna all advertise
-`service_tier: "priority"` support.
+other signal; it is sent only when explicitly configured. shunt does not gate `service_tier` on
+model capability: it forwards whatever value is configured, and the upstream rejects any value the
+target model doesn't support. As of the current Codex model catalog, gpt-5.6-sol/terra/luna all
+advertise `service_tier: "priority"` support.
 
 **xAI/Grok exception:** the field is withheld for the `xai` and `grok` provider flavors even when
 configured — xAI's Responses API 400s on `service_tier`, and the Grok CLI flavor inherits xAI's

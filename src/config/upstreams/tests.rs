@@ -187,6 +187,51 @@ primary = "gpt-5.6-sol"
 }
 
 #[test]
+fn service_tier_normalizes_through_ordered_upstream_declaration() {
+    // [[upstreams]] form: `service_tier = "fast"` on a declared upstream must
+    // come out normalized to the wire value "priority" after Config::load's
+    // end-to-end validate() pass, exactly as the legacy [providers.*] form
+    // does (see service_tier_normalizes_through_legacy_provider_declaration).
+    let file = TempConfig::new(
+        r#"
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic"
+service_tier = "fast"
+"#,
+    );
+
+    let config = load(&file).unwrap();
+    assert_eq!(
+        config
+            .provider("anthropic")
+            .unwrap()
+            .service_tier
+            .as_deref(),
+        Some("priority")
+    );
+}
+
+#[test]
+fn service_tier_normalizes_through_legacy_provider_declaration() {
+    // Legacy [providers.*] form: same normalization as the [[upstreams]]
+    // form above, reached through the merge-onto-builtin-provider path
+    // instead of upstreams::normalize.
+    let file = TempConfig::new(
+        r#"
+[providers.codex]
+service_tier = "fast"
+"#,
+    );
+
+    let config = load(&file).unwrap();
+    assert_eq!(
+        config.provider("codex").unwrap().service_tier.as_deref(),
+        Some("priority")
+    );
+}
+
+#[test]
 fn load_rejects_unknown_preset_and_lists_available_presets() {
     let file = TempConfig::new(
         r#"

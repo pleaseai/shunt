@@ -186,11 +186,12 @@ pub fn translate_request_value(
     if !matches!(flavor, ResponsesFlavor::Xai | ResponsesFlavor::Grok) {
         out.insert("text".to_string(), json!({"verbosity": "medium"}));
     }
-    // `service_tier` is Codex CLI's "Fast" mode opt-in (1.5x speed, increased
-    // usage) -- a top-level sibling of `reasoning`, sent only when explicitly
-    // configured on the route/provider (never derived). xAI 400s on it, and
-    // the Grok CLI flavor inherits xAI's request-shaping rules (see
-    // docs/m6-xai-provider.md), so both are withheld even when configured.
+    // `service_tier` is Codex CLI's "Fast" mode opt-in (faster responses,
+    // increased usage) -- a top-level sibling of `reasoning`, sent only
+    // when explicitly configured on the route/provider (never derived).
+    // xAI 400s on it, and the Grok CLI flavor inherits xAI's
+    // request-shaping rules (see docs/m6-xai-provider.md), so both are
+    // withheld even when configured.
     // `"default"` is a client-only sentinel preserved through config
     // validation and route resolution (see config::normalize_service_tier_value)
     // so a route can override an inherited provider-level tier -- this is the

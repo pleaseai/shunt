@@ -259,7 +259,7 @@ A loopback `base_url` may stay plain `http://` (shunt allows loopback over plain
 shunt this way — shunt supplies the account from its own pool, not the CLI's local
 `~/.codex/auth.json`. Provision pool accounts the same way as the outbound path:
 `shunt login codex --name <name>` (see
-[`codex-configuration.md` §12](codex-configuration.md#12-multi-account-pooling)).
+[`codex-configuration.md` §13](codex-configuration.md#13-multi-account-pooling)).
 
 ## Out of scope / follow-up
 

@@ -763,6 +763,20 @@ fn emits_configured_service_tier_on_chatgpt_flavor() {
 }
 
 #[test]
+fn emits_both_effort_and_service_tier_when_both_are_configured() {
+    // effort and service_tier are independent knobs (reasoning.effort vs. the
+    // top-level service_tier sibling) -- a route configuring both must emit
+    // both in the same translated body, not just whichever is checked last.
+    let mut route = route("gpt-5.6-sol");
+    route.effort = Some("xhigh".to_string());
+    route.service_tier = Some("priority".to_string());
+    let body = serde_json::to_vec(&json!({"model": "gpt-5.6-sol", "messages": []})).unwrap();
+    let out = translate_request(&body, &route, ResponsesFlavor::OpenAi, false).unwrap();
+    assert_eq!(out["reasoning"]["effort"], json!("xhigh"));
+    assert_eq!(out["service_tier"], json!("priority"));
+}
+
+#[test]
 fn route_service_tier_default_sentinel_never_reaches_the_wire() {
     // "default" is preserved through config validation and route resolution
     // as an explicit sentinel (see config::normalize_service_tier_value) so a
