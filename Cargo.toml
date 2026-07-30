@@ -43,8 +43,8 @@ notify = "8.2.0"
 # over reqwest's *blocking* client so the SDK's dedicated-thread batch span/log
 # processors and periodic metric reader run fully independent of the axum
 # serving runtime — no tokio handle threading, and telemetry init stays
-# synchronous like `init_sentry`. reqwest-rustls-webpki-roots reuses reqwest's
-# ring-backed rustls with bundled roots, matching the tokio-tungstenite TLS.
+# synchronous like `init_sentry`. reqwest-rustls-webpki-roots uses rustls with
+# bundled roots; tokio-tungstenite is likewise configured with rustls/webpki roots.
 opentelemetry = "0.32"
 opentelemetry_sdk = "0.32"
 opentelemetry-otlp = { version = "0.32", default-features = false, features = ["trace", "metrics", "logs", "http-proto", "reqwest-blocking-client", "reqwest-rustls-webpki-roots"] }
@@ -80,14 +80,14 @@ toml = "0.8"
 # Codex Responses WebSocket v2 transport (issue #32). rustls + bundled webpki
 # roots keeps TLS self-contained and consistent with reqwest's rustls-tls, with
 # no OpenSSL/native-tls system dependency. Pinned to the openai-oss-forks forks
-# below (issue #292) for permessage-deflate (RFC 7692) support: no crates.io
-# release of tungstenite has ever shipped a `deflate` feature, so the fork is the
-# only source for it. The fork is maintained by OpenAI and is the same one used
-# by the Codex CLI in production.
+# below (issue #292) for permessage-deflate (RFC 7692) support: the crates.io
+# releases of tungstenite checked through 0.30 expose no `deflate` feature. These
+# exact fork revisions match the pins in the current public `openai/codex` source.
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
-# Direct dep so the `deflate` feature (permessage-deflate, RFC 7692) is enabled
-# through the `[patch.crates-io]` fork below; tokio-tungstenite re-exports
-# tungstenite but does not forward feature selection to it.
+# Direct tungstenite 0.27 dep so the `deflate` feature (permessage-deflate,
+# RFC 7692) is enabled through the `[patch.crates-io]` fork below. The
+# tokio-tungstenite 0.28 fork re-exports tungstenite, but its feature table has no
+# `deflate` feature to forward.
 tungstenite = { version = "0.27", default-features = false, features = ["deflate"] }
 tracing = "0.1"
 tracing-opentelemetry = "0.33"

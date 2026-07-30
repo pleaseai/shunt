@@ -691,9 +691,10 @@ fn evict(conn: &Arc<Connection>) {
 /// handshake. Feature unification compiles two providers into the binary —
 /// aws-lc-rs (via sentry's reqwest `rustls` feature) and ring (via reqwest's own
 /// `rustls-tls` feature) — so rustls 0.23 refuses to auto-select one, and
-/// `tokio_tungstenite::connect_async` — which pulls tokio-rustls with no provider
-/// feature of its own — panics without an installed default. Doing it here rather
-/// than only in `main` covers the library target: integration tests and external
+/// `tokio_tungstenite::connect_async_with_config` — which pulls tokio-rustls
+/// with no provider feature of its own — panics without an installed default.
+/// Doing it here rather than only in `main` covers the library target: integration
+/// tests and external
 /// consumers reach this path without running `main`. `Once` keeps it idempotent
 /// and race-free across concurrent first turns; pin aws-lc-rs to match reqwest/sentry.
 fn ensure_crypto_provider() {
@@ -708,12 +709,20 @@ fn ensure_crypto_provider() {
 /// Offer `permessage-deflate` (RFC 7692) on the outbound handshake — mirrors
 /// `websocket_config()` in `openai/codex`'s `responses_websocket.rs`. The server
 /// decides whether to negotiate it; the client side never assumes compression is
-/// in effect. Left at the fork's crate defaults (flate2 level 6, 15-bit LZ77
-/// window both directions, context takeover enabled) rather than tuned — issue
-/// #292 tracks measuring the actual byte savings before considering a different
-/// configuration.
+/// in effect. Compression uses the fork's [`DeflateConfig::default()`] values:
+/// the full supported LZ77 window and context takeover in both directions.
+///
+/// Keep the 4 KiB read allocation used by tungstenite 0.24. The fork constructs
+/// each socket with `BytesMut::with_capacity(read_buffer_size)`, so its 128 KiB
+/// default is eager and is multiplied by this module's [`MAX_POOL_ENTRIES`] cap.
+///
+/// Inbound deflate expansion is limited by the fork's 64 MiB decoded-message
+/// default. The fork exposes window and context-takeover controls but no
+/// compressed-to-decoded ratio cap; issue #292 tracks calibration against real
+/// Codex event sizes before replacing that compatibility default.
 fn ws_config() -> WebSocketConfig {
     let mut config = WebSocketConfig::default();
+    config.read_buffer_size = 4 * 1024;
     config.extensions.permessage_deflate = Some(DeflateConfig::default());
     config
 }
@@ -1274,8 +1283,12 @@ mod tests {
     }
 
     #[test]
-    fn ws_config_offers_permessage_deflate() {
-        assert!(ws_config().extensions.permessage_deflate.is_some());
+    fn ws_config_offers_permessage_deflate_with_bounded_buffers() {
+        let config = ws_config();
+
+        assert!(config.extensions.permessage_deflate.is_some());
+        assert_eq!(config.read_buffer_size, 4 * 1024);
+        assert_eq!(config.max_message_size, Some(64 << 20));
     }
 
     /// End-to-end over a real (loopback, plaintext) websocket: the transport must
@@ -1284,7 +1297,7 @@ mod tests {
     /// `WebSocketConfig::default()` (no `permessage_deflate` configured), so this
     /// also covers the graceful-decline path: the client offers the extension via
     /// [`ws_config`], the server does not negotiate it, and the turn still streams
-    /// correctly uncompressed.
+    /// normally after the declined offer.
     #[tokio::test]
     async fn streams_response_events_end_to_end() {
         use tokio::net::TcpListener;
