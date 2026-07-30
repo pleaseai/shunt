@@ -28,3 +28,24 @@ turn silently stops compressing).
 **How to apply:** when reviewing later changes to `src/compression.rs`, `body.rs`, or `codex_endpoint.rs`,
 re-check the offload/budget asymmetry and whether new `Ok(None)` "skip" arms are distinguishable at call sites.
 Related: [[pr125-codex-passthrough-endpoint]], [[pr272-cursor-offload-errors]].
+
+## Iteration 2 (163d50e) — verified clean
+All iteration-1 findings (decode offload keyed on compressed size vs decoded budget;
+`parse_model` using `.ok()`; fail-open with no counter) were fixed correctly:
+- `decode_zstd_within` now probes inline against `min(INLINE_ZSTD_OUTPUT_BYTES, budget)`,
+  and on `Ok(None)` from the probe falls through to an offloaded re-decode against the
+  real `budget` — that second call's `Ok(None)` is the authoritative over-budget answer.
+  Malformed zstd still propagates as `Err` via the inline branch's `?` (verified: it does
+  NOT get masked as `Ok(None)`).
+- `ParsedModel` enum (Model/Malformed/Missing/NotAString) replaces `.ok()`; all four
+  variants reachable and each logged via `tracing::warn!` before degrading to "unknown".
+- `prepare_body` borrow-not-clone in pool.rs confirmed: exactly one call site each in
+  pool.rs (lazy, memoized in `Option<PreparedBody>`) and http.rs (upfront); doc comment
+  matches code exactly.
+- No stale `INLINE_ZSTD_COMPRESS_BYTES` refs left anywhere.
+- New tests (inbound_codex_endpoint::forwards_a_zstd_compressed_body_verbatim,
+  codex_multi_account::refresh_retry_and_rotation_reuse_the_identical_compressed_body,
+  config/upstreams/tests.rs::request_compression_defaults_true_and_can_be_disabled) are
+  non-vacuous and pass; env-var isolation uses REFRESH_ENV_LOCK + unique temp dirs, no
+  collision with sibling tests.
+Verdict: 0 findings, build+clippy+targeted tests all green.
