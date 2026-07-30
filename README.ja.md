@@ -40,8 +40,7 @@ brew services start shunt
 
 ログは `$(brew --prefix)/var/log/shunt.log` に出力されます。`brew services stop` は `SIGTERM` を送信し、
 shunt は処理中のリクエストを完了させてから終了します。その後に設定ファイルを編集しても再起動は不要です —
-自動的に[ホットリロード](docs/config-reload.md)されます。詳細: [Running as a
-service](docs/running.md#run-as-a-background-service-homebrew)。
+自動的に[ホットリロード](docs/config-reload.md)されます。詳細: [サービスとして実行](docs/running.md#run-as-a-background-service-homebrew)。
 
 ## クイックスタート
 
