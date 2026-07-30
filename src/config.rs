@@ -2095,11 +2095,11 @@ impl ConfigFormat {
 /// (issue #301). The sentinel is stripped only at the wire-emission site
 /// (`model/responses_request.rs`), which never sends the literal string
 /// `"default"`. `None` here means the input was invalid.
-fn normalize_service_tier_value(value: &str) -> Option<String> {
+fn normalize_service_tier_value(value: &str) -> Option<&'static str> {
     match value {
-        "fast" | "priority" => Some("priority".to_string()),
-        "flex" => Some("flex".to_string()),
-        "default" => Some("default".to_string()),
+        "fast" | "priority" => Some("priority"),
+        "flex" => Some("flex"),
+        "default" => Some("default"),
         _ => None,
     }
 }
@@ -2227,23 +2227,26 @@ impl Config {
     fn normalize_service_tiers(&mut self) -> Result<(), ConfigError> {
         for (name, provider) in self.providers.iter_mut() {
             if let Some(raw) = provider.service_tier.take() {
-                provider.service_tier =
-                    Some(normalize_service_tier_value(&raw).ok_or_else(|| {
-                        ConfigError::InvalidProviderServiceTier {
+                provider.service_tier = Some(
+                    normalize_service_tier_value(&raw)
+                        .ok_or_else(|| ConfigError::InvalidProviderServiceTier {
                             provider: name.clone(),
                             value: raw.clone(),
-                        }
-                    })?);
+                        })?
+                        .to_string(),
+                );
             }
         }
         for route in self.routes.iter_mut() {
             if let Some(raw) = route.service_tier.take() {
-                route.service_tier = Some(normalize_service_tier_value(&raw).ok_or_else(|| {
-                    ConfigError::InvalidRouteServiceTier {
-                        model: route.model.clone(),
-                        value: raw.clone(),
-                    }
-                })?);
+                route.service_tier = Some(
+                    normalize_service_tier_value(&raw)
+                        .ok_or_else(|| ConfigError::InvalidRouteServiceTier {
+                            model: route.model.clone(),
+                            value: raw.clone(),
+                        })?
+                        .to_string(),
+                );
             }
         }
         Ok(())
