@@ -17,7 +17,7 @@ use crate::{
 
 use super::context::{ForwardOptions, PoolForward, RelayOptions};
 use super::error::{mapped_upstream_error, own_error, transport_error};
-use super::http::{http_send, json_response, stream_response};
+use super::http::{http_send, json_response, prepare_body, stream_response, PreparedBody};
 use super::websocket::forward_websocket;
 
 /// Drive a Responses turn over the Codex/ChatGPT OAuth account pool (M10),
@@ -75,11 +75,12 @@ pub(super) async fn forward_chatgpt_oauth(
     let ramp_initial = state.config.storm_ramp_initial();
     let candidates = order.len();
     let mut last_response: Option<reqwest::Response> = None;
-    // The translated request is immutable across account attempts, so serialize it
-    // at most once per turn and give each attempt (including a 401 refresh retry)
-    // a cheap refcount clone. Keep this lazy so a successful websocket turn never
-    // pays to serialize an HTTP body it does not send (issue #251).
-    let mut http_body: Option<bytes::Bytes> = None;
+    // The translated request is immutable across account attempts, so serialize
+    // (and, on the ChatGPT backend, zstd-compress — issue #285) it at most once
+    // per turn and give each attempt (including a 401 refresh retry) a cheap
+    // refcount clone. Keep this lazy so a successful websocket turn never pays to
+    // prepare an HTTP body it does not send (issue #251).
+    let mut http_body: Option<PreparedBody> = None;
     // Mirrors `http_body` above: the tiktoken estimate of the (unchanging)
     // translated request is spawned onto the blocking pool at most once per
     // turn and reused across every account attempt and the refresh retry,
@@ -155,17 +156,15 @@ pub(super) async fn forward_chatgpt_oauth(
             }
         }
 
-        // Borrow rather than clone here: the happy path then pays a single
-        // refcount bump at the `http_send` call below instead of two.
-        let body = http_body.get_or_insert_with(|| {
-            // `to_vec` serializes straight into the byte buffer `Bytes` takes
-            // ownership of, skipping the `fmt` machinery and UTF-8 round-trip
-            // `Value::to_string()` pays for. Serializing a `Value` cannot fail,
-            // so the fallback is unreachable — it just keeps the old path.
-            serde_json::to_vec(upstream_body.as_ref())
-                .map(bytes::Bytes::from)
-                .unwrap_or_else(|_| bytes::Bytes::from(upstream_body.as_ref().to_string()))
-        });
+        // Prepared once per turn and reused by every later attempt: cloning it
+        // is a refcount bump, whereas re-preparing would re-serialize and
+        // re-compress the same body on each rotation.
+        let body = match http_body {
+            Some(ref prepared) => prepared.clone(),
+            None => http_body
+                .insert(prepare_body(&state, &route, upstream_body.as_ref()).await)
+                .clone(),
+        };
         // Spawned once, right before the first HTTP send, so the CPU-bound
         // tiktoken encode overlaps this attempt's connect/RTT instead of
         // delaying it (same overlap discipline as forward_http/forward_websocket).

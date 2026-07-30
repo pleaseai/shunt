@@ -86,6 +86,11 @@ tracing-opentelemetry = "0.33"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1", features = ["v4"] }
 url = "2.5.8"
+# zstd request compression on the Codex/ChatGPT Responses path (issue #285),
+# mirroring the Codex CLI's own `Content-Encoding: zstd` request bodies. Only the
+# streaming encoder/decoder is needed, so the dictionary-builder and legacy-format
+# default features stay off.
+zstd = { version = "0.13", default-features = false }
 
 [dev-dependencies]
 divan = { version = "5.0.1", package = "codspeed-divan-compat" }

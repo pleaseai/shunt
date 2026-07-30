@@ -388,6 +388,7 @@ mod tests {
                 account_scope: Vec::new(),
                 websocket: false,
                 tool_search: false,
+                request_compression: true,
                 retry: Default::default(),
             },
         );
@@ -445,6 +446,7 @@ mod tests {
                     account_scope: Vec::new(),
                     websocket: false,
                     tool_search: false,
+                    request_compression: true,
                     retry: Default::default(),
                 },
             );
@@ -510,6 +512,7 @@ mod tests {
             account_scope: Vec::new(),
             websocket: false,
             tool_search: false,
+            request_compression: true,
             retry: Default::default(),
         };
         let mut config = Config::default();

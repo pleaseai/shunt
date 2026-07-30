@@ -1437,6 +1437,7 @@ mod tests {
                 account_scope,
                 websocket: false,
                 tool_search: false,
+                request_compression: true,
                 retry: Default::default(),
             },
         );

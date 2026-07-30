@@ -1145,6 +1145,14 @@ pub struct ProviderConfig {
     /// emits; unsupported flavors/models fall back to the shim regardless.
     #[serde(default)]
     pub tool_search: bool,
+    /// zstd-compress this provider's Responses request bodies (issue #285),
+    /// mirroring what the Codex CLI itself sends to the ChatGPT backend
+    /// (`Content-Encoding: zstd`, level 3). On by default, but only effective on
+    /// the ChatGPT/Codex flavor — see [`Config::responses_request_compression`]
+    /// for the gate. Set `false` to send uncompressed bodies (e.g. through a
+    /// middlebox that mishandles a compressed request body).
+    #[serde(default = "default_true")]
+    pub request_compression: bool,
     /// Bounded upstream retry/backoff for transient failures (issue #48).
     /// Applies to this provider's single-credential upstream calls (the
     /// `passthrough`/`api_key` Anthropic path, the single-credential Responses
@@ -1802,6 +1810,7 @@ impl ProviderConfig {
             account_scope: Vec::new(),
             websocket: false,
             tool_search: false,
+            request_compression: true,
             retry: RetryConfig::default(),
         }
     }
@@ -1822,6 +1831,7 @@ impl ProviderConfig {
             account_scope: Vec::new(),
             websocket: false,
             tool_search: false,
+            request_compression: true,
             retry: RetryConfig::default(),
         }
     }
@@ -1842,6 +1852,7 @@ impl ProviderConfig {
             account_scope: Vec::new(),
             websocket: false,
             tool_search: false,
+            request_compression: true,
             retry: RetryConfig::default(),
         }
     }
@@ -1884,6 +1895,7 @@ impl Default for Config {
                     account_scope: Vec::new(),
                     websocket: false,
                     tool_search: false,
+                    request_compression: true,
                     retry: RetryConfig::default(),
                 },
             ),
@@ -1940,6 +1952,7 @@ impl Default for Config {
                     account_scope: Vec::new(),
                     websocket: false,
                     tool_search: false,
+                    request_compression: true,
                     retry: RetryConfig::default(),
                 },
             ),
@@ -2754,6 +2767,20 @@ impl Config {
         self.provider(provider)
             .map(|config| config.websocket && config.auth == AuthMode::ChatgptOauth)
             .unwrap_or(false)
+    }
+
+    /// Whether to zstd-compress `provider`'s Responses **request** bodies
+    /// (issue #285). Requires the provider's `request_compression` flag (on by
+    /// default) and the ChatGPT/Codex flavor, mirroring the two gates codex
+    /// itself applies (`responses_request_compression`: `is_openai()` — the
+    /// ChatGPT backend — plus `uses_codex_backend()` — ChatGPT OAuth rather than
+    /// an API key). The flag is inert on every other flavor: no stock
+    /// OpenAI-compatible, xAI, or Grok upstream has been verified to accept a
+    /// compressed request body, and one that rejects it fails the whole turn.
+    pub fn responses_request_compression(&self, provider: &str) -> bool {
+        self.provider(provider)
+            .is_some_and(|config| config.request_compression)
+            && self.responses_flavor(provider) == ResponsesFlavor::Chatgpt
     }
 
     /// Which Responses dialect a provider speaks, so translation can gate the
@@ -4835,6 +4862,33 @@ id = "claude-sonnet-5"
         provider.base_url = "https://evil.example.com/v1".to_string();
         let error = config.validate().unwrap_err();
         assert!(matches!(error, ConfigError::XaiOauthNonXaiHost { .. }));
+    }
+
+    /// zstd request compression is on by default, but only on the ChatGPT/Codex
+    /// flavor — the only backend verified to accept a compressed request body
+    /// (issue #285).
+    #[test]
+    fn request_compression_gated_on_flag_and_chatgpt_flavor() {
+        let config = Config::default();
+        assert!(config.responses_request_compression("codex"));
+
+        // Stock OpenAI, xAI, and the Grok CLI proxy stay uncompressed even though
+        // the flag defaults on.
+        assert!(!config.responses_request_compression("openai"));
+        assert!(!config.responses_request_compression("xai"));
+        assert!(!config.responses_request_compression("grok"));
+
+        // Unknown provider ⇒ false.
+        assert!(!config.responses_request_compression("nope"));
+
+        // Per-provider opt-out.
+        let mut config = Config::default();
+        config
+            .providers
+            .get_mut("codex")
+            .unwrap()
+            .request_compression = false;
+        assert!(!config.responses_request_compression("codex"));
     }
 
     #[test]

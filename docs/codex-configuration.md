@@ -77,6 +77,7 @@ auth = "chatgpt_oauth"                   # read + auto-refresh ~/.codex/auth.jso
 # api_key_header = "bearer"              # unused for chatgpt_oauth (bearer is implicit)
 # effort = "high"                        # optional default reasoning effort (see §8)
 # count_tokens = "tiktoken"              # default; "estimate" opts out (see §10)
+# request_compression = true             # default; false sends uncompressed bodies (see §4.5)
 ```
 
 A partial `[providers.codex]` table overrides **only** the keys it sets — the built-in defaults
@@ -176,10 +177,39 @@ For a Codex request shunt sends the Codex-CLI identity so client-version gating 
 | `version` | `0.144.4` (`CODEX_CLIENT_VERSION`) |
 | `OpenAI-Beta` | `responses=experimental` |
 | `content-type` | `application/json` |
+| `content-encoding` | `zstd` — only when the request body was compressed (see §4.5) |
 
 The `user-agent` / `version` are **pinned to openai/codex rust-v0.144.4**. If a future slug
 demands a newer client, bump `CODEX_USER_AGENT` / `CODEX_CLIENT_VERSION` in
 `src/adapters/responses/request.rs`.
+
+### 4.5 Request-body compression
+
+On the ChatGPT/Codex flavor shunt zstd-compresses the Responses **request** body at level 3 and
+announces it with `content-encoding: zstd` — the same wire shape the Codex CLI itself sends
+(`codex-rs/http-client/src/request.rs`; issue #285). A long agentic turn re-uploads its whole
+history on every request, so this is where the bytes are: the win grows with the conversation.
+
+Gating mirrors codex's own two conditions (`responses_request_compression`: the ChatGPT backend
+plus ChatGPT OAuth rather than an API key) as a single flavor check, and adds a per-provider
+opt-out:
+
+| Condition | Effect |
+| :-- | :-- |
+| `Chatgpt` flavor (`auth = "chatgpt_oauth"`) | compressed |
+| any other flavor (stock OpenAI, xAI, Grok) | uncompressed — none is verified to accept a compressed request body, and one that rejects it would fail the whole turn |
+| `request_compression = false` on the provider | uncompressed |
+| body under 1 KiB | uncompressed — the frame overhead can exceed the saving, and the backend takes either form |
+
+The body is prepared **once per turn**, before the bounded-retry and account-rotation loops, so a
+retry, an account rotation, or a 401 refresh-retry reuses the same bytes instead of re-serializing
+and re-compressing them (`prepare_body` in `src/adapters/responses/http.rs`; same discipline as the
+serialize-once fix in issue #251). Compression past 64 KiB runs on Tokio's blocking pool under
+bounded admission rather than on the async executor. A compression failure is **not** fatal: it is
+logged and the uncompressed body is sent, which the backend accepts.
+
+The websocket transport (§ `m7-codex-websocket.md`) is unaffected — it negotiates
+permessage-deflate instead.
 
 ---
 

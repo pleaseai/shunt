@@ -1,12 +1,9 @@
-//! Bounded admission for Cursor's blocking CPU work.
+//! Bounded admission for Cursor's blocking CPU work. The generic
+//! semaphore/spawn machinery is shared with the other blocking-work classes in
+//! [`crate::offload`]; this module owns only Cursor's two slot pools and their
+//! isolation rationale.
 
-/// Construct a CPU-sized semaphore for one Cursor blocking-work class.
-fn cpu_sized_semaphore() -> tokio::sync::Semaphore {
-    let n = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4);
-    tokio::sync::Semaphore::new(n.clamp(2, 16))
-}
+use crate::offload::{cpu_sized_semaphore, spawn_bounded};
 
 /// Admission slots for response-path gzip decompression.
 ///
@@ -39,26 +36,6 @@ pub(crate) fn gzip_slots() -> &'static tokio::sync::Semaphore {
 pub(crate) fn request_prep_slots() -> &'static tokio::sync::Semaphore {
     static SLOTS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
     SLOTS.get_or_init(cpu_sized_semaphore)
-}
-
-/// Run one CPU task on Tokio's blocking pool after asynchronous bounded admission.
-async fn spawn_bounded<F, T>(
-    slots: &'static tokio::sync::Semaphore,
-    task: F,
-) -> Result<T, std::io::Error>
-where
-    F: FnOnce() -> T + Send + 'static,
-    T: Send + 'static,
-{
-    let permit = slots.acquire().await.map_err(std::io::Error::other)?;
-    tokio::task::spawn_blocking(move || {
-        // A blocking task cannot be aborted. Keep admission tied to the task's
-        // lifetime even if the awaiting future is cancelled.
-        let _permit = permit;
-        task()
-    })
-    .await
-    .map_err(std::io::Error::other)
 }
 
 pub(crate) async fn spawn_bounded_gzip<F, T>(task: F) -> Result<T, std::io::Error>

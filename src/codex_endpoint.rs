@@ -11,7 +11,7 @@
 use std::time::Instant;
 
 use axum::{
-    body::{to_bytes, Body},
+    body::{to_bytes, Body, Bytes},
     extract::{OriginalUri, State},
     http::{HeaderMap, Method, StatusCode},
     response::IntoResponse,
@@ -21,6 +21,7 @@ use tracing::Instrument;
 
 use crate::{
     adapters::{responses, AdapterError},
+    compression::BodyEncoding,
     error::{ShuntError, UpstreamError},
     routing::{AdapterKind, Route},
     server::AppState,
@@ -211,10 +212,7 @@ async fn forward(
         })?;
 
     // Read the model for metrics/logging only; the body forwards verbatim.
-    let model = serde_json::from_slice::<ModelView>(&body)
-        .ok()
-        .and_then(|view| view.model)
-        .unwrap_or_else(|| "unknown".to_string());
+    let model = model_label(&headers, &body).await;
     // The body-`model` does not pick a provider (the endpoint is pinned to one
     // `chatgpt_oauth` provider). `request_builder` only reads `route.provider`,
     // so `model`/`upstream_model` are labels, not routing inputs.
@@ -262,6 +260,72 @@ async fn forward(
         .map_err(ForwardError::from)
 }
 
+/// The label used when the request's model cannot be read (see [`model_label`]).
+const UNKNOWN_MODEL: &str = "unknown";
+
+/// Read the `model` for metrics/logging labels only — the body itself forwards
+/// upstream byte-for-byte, so a body this cannot read never blocks the request
+/// (the upstream rejects it).
+///
+/// Current Codex releases zstd-compress the Responses request body whenever both
+/// of their gates pass, which includes the documented `chatgpt_base_url` client
+/// shape pointed at this endpoint (issue #285). The compressed bytes relay
+/// upstream fine — `content-encoding` is forwarded verbatim — but a plain
+/// `from_slice` on them fails, which would silently label every metric, log line,
+/// and span for the request `unknown`. So decode a zstd body for the label, and
+/// log (rather than swallow) anything that still leaves the model unreadable.
+///
+/// The decode budget is the same cap this endpoint already accepts for an
+/// uncompressed body, so a compressed body cannot make shunt buffer more than an
+/// uncompressed one would.
+async fn model_label(headers: &HeaderMap, body: &Bytes) -> String {
+    let decoded = match crate::compression::body_encoding(headers) {
+        BodyEncoding::Identity => None,
+        BodyEncoding::Zstd => {
+            match crate::compression::decode_zstd_within(body.clone(), MAX_REQUEST_BODY_BYTES).await
+            {
+                Ok(Some(decoded)) => Some(decoded),
+                Ok(None) => {
+                    tracing::warn!(
+                        body_bytes = body.len(),
+                        limit = MAX_REQUEST_BODY_BYTES,
+                        "inbound codex body decodes past the request size limit; model label unavailable"
+                    );
+                    return UNKNOWN_MODEL.to_string();
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        body_bytes = body.len(),
+                        error = %error,
+                        "failed to decode zstd inbound codex body; model label unavailable"
+                    );
+                    return UNKNOWN_MODEL.to_string();
+                }
+            }
+        }
+        BodyEncoding::Other => {
+            tracing::warn!(
+                content_encoding = ?headers.get(axum::http::header::CONTENT_ENCODING),
+                "inbound codex body uses an unsupported content-encoding; model label unavailable"
+            );
+            return UNKNOWN_MODEL.to_string();
+        }
+    };
+    parse_model(decoded.as_deref().unwrap_or(body)).unwrap_or_else(|| {
+        tracing::warn!(
+            body_bytes = body.len(),
+            "inbound codex body has no readable `model`; labeling metrics and logs `unknown`"
+        );
+        UNKNOWN_MODEL.to_string()
+    })
+}
+
+fn parse_model(body: &[u8]) -> Option<String> {
+    serde_json::from_slice::<ModelView>(body)
+        .ok()
+        .and_then(|view| view.model)
+}
+
 /// Namespace the account-pool sticky key with the authenticated inbound client so
 /// that, in a multi-tenant deployment, one client cannot pin another client's Codex
 /// session onto a chosen pool account by replaying its `session-id` header. Mirrors
@@ -278,7 +342,77 @@ fn pool_sticky_key(client: Option<&str>, session_id: Option<String>) -> Option<S
 
 #[cfg(test)]
 mod tests {
-    use super::pool_sticky_key;
+    use super::{model_label, pool_sticky_key, UNKNOWN_MODEL};
+    use axum::{
+        body::Bytes,
+        http::{header::CONTENT_ENCODING, HeaderMap},
+    };
+
+    /// A body big enough that `compress_request_body` does not skip it, shaped
+    /// like the real inbound Responses request (`model` first, then the turn).
+    fn request_body(model: &str) -> Bytes {
+        let filler = "conversation history ".repeat(200);
+        Bytes::from(
+            serde_json::json!({
+                "model": model,
+                "input": [{"role": "user", "content": filler}],
+            })
+            .to_string(),
+        )
+    }
+
+    fn zstd_headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_ENCODING, "zstd".parse().unwrap());
+        headers
+    }
+
+    #[tokio::test]
+    async fn reads_the_model_from_an_uncompressed_body() {
+        assert_eq!(
+            model_label(&HeaderMap::new(), &request_body("gpt-5.2-codex")).await,
+            "gpt-5.2-codex"
+        );
+    }
+
+    /// Current Codex releases zstd-compress the request body on the
+    /// `chatgpt_base_url` client shape (issue #285). Before decoding, the label
+    /// parse failed silently and every metric/log/span for the request was
+    /// labeled `unknown`.
+    #[tokio::test]
+    async fn reads_the_model_from_a_zstd_body() {
+        let body = crate::compression::compress_request_body(request_body("gpt-5.2-codex"))
+            .await
+            .expect("compression should succeed")
+            .expect("the fixture should be large enough to compress");
+
+        assert_eq!(model_label(&zstd_headers(), &body).await, "gpt-5.2-codex");
+    }
+
+    /// A body that claims `zstd` but cannot be decoded degrades to the `unknown`
+    /// label — the request itself still relays verbatim.
+    #[tokio::test]
+    async fn falls_back_to_unknown_for_an_undecodable_zstd_body() {
+        let body = request_body("gpt-5.2-codex");
+        assert_eq!(model_label(&zstd_headers(), &body).await, UNKNOWN_MODEL);
+    }
+
+    /// A content coding shunt does not decode is not mistaken for plain JSON.
+    #[tokio::test]
+    async fn falls_back_to_unknown_for_an_unsupported_content_encoding() {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_ENCODING, "gzip".parse().unwrap());
+        assert_eq!(
+            model_label(&headers, &request_body("gpt-5.2-codex")).await,
+            UNKNOWN_MODEL
+        );
+    }
+
+    #[tokio::test]
+    async fn falls_back_to_unknown_without_a_model_field() {
+        let body = Bytes::from_static(b"{\"input\":[]}");
+        assert_eq!(model_label(&HeaderMap::new(), &body).await, UNKNOWN_MODEL);
+    }
 
     #[test]
     fn prefixes_the_authenticated_client() {

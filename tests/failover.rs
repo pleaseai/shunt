@@ -93,6 +93,7 @@ fn upstream(
         count_tokens: CountTokens::Tiktoken,
         websocket: false,
         tool_search: false,
+        request_compression: true,
         retry: disabled_retry(),
     }
 }

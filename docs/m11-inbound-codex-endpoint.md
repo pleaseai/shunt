@@ -86,6 +86,16 @@ a request naming a model the account pool's ChatGPT subscription isn't entitled 
 the way it would talking to the real ChatGPT backend directly (see
 [`codex-configuration.md` §5](codex-configuration.md#5-model-slugs)).
 
+Reading that label has to account for compression. Current Codex releases zstd-compress the
+Responses request body whenever they talk to the ChatGPT backend, which is true of the
+`chatgpt_base_url` client shape pointed at this endpoint (issue #285). The compressed bytes relay
+upstream unchanged — `content-encoding` is not stripped — but they are not JSON, so the label parse
+decodes an in-memory copy first (bounded by the same 64 MiB cap the endpoint already applies to an
+uncompressed body). If the body still cannot be read — an undecodable frame, an over-cap expansion,
+or a content coding shunt does not decode — the request relays normally and only the label degrades
+to `unknown`, with a `warn` naming the reason. It is never silently swallowed: an unexplained
+`model="unknown"` on every metric, log line, and span was the original symptom.
+
 ## Raw passthrough
 
 The inbound Responses body is forwarded upstream **byte-for-byte** — no `translate_request`, no
