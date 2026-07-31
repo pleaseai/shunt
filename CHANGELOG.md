@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.33.0](https://github.com/pleaseai/shunt/compare/v0.32.0...v0.33.0) (2026-07-31)
+
+
+### Features
+
+* **codex:** add service_tier config for Codex fast mode ([#301](https://github.com/pleaseai/shunt/issues/301)) ([631c64f](https://github.com/pleaseai/shunt/commit/631c64f798af2686f48c10c22bc20328dd5140c7))
+* **observability:** surface mid-stream SSE failures in spans and Sentry ([#287](https://github.com/pleaseai/shunt/issues/287)) ([#295](https://github.com/pleaseai/shunt/issues/295)) ([ce97640](https://github.com/pleaseai/shunt/commit/ce9764026b02bf01020c88aa991b4a81bc2a3def))
+
+
+### Performance Improvements
+
+* **codex-ws:** enable permessage-deflate on the Codex WebSocket transport ([#297](https://github.com/pleaseai/shunt/issues/297)) ([1ea3d5d](https://github.com/pleaseai/shunt/commit/1ea3d5d4256d87fc0c1b0181b9a471a85ecb427b))
+
 ## [0.32.0](https://github.com/pleaseai/shunt/compare/v0.31.0...v0.32.0) (2026-07-30)
 
 
