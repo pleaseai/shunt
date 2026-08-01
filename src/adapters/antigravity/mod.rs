@@ -1,7 +1,22 @@
 //! Antigravity CLI adapter (`agy`).
 //!
-//! Translates incoming Anthropic Messages requests into `agy` CLI invocations (`agy -p "<prompt>"`),
-//! allowing Gemini models to execute via Google's Antigravity gRPC backend with full capacity.
+//! `agy` is not a text-completion endpoint — it is a full agent with its own
+//! tool set (file edits, shell, search, browser) and its own loop. This adapter
+//! therefore runs it in agentic print mode and translates its
+//! `--output-format stream-json` events back into Anthropic Messages SSE, so a
+//! Gemini-routed turn can actually do work rather than only describe it.
+//!
+//! Consequences worth knowing before routing traffic here:
+//!
+//! - Tools are `agy`'s, not the caller's. `tools` supplied on the Messages
+//!   request are not forwarded, and no `tool_use` block is ever returned; the
+//!   CLI resolves its own tool calls internally and returns finished work.
+//! - It runs with `--dangerously-skip-permissions`, because a print-mode run
+//!   has no interactive channel to approve a permission prompt on. The
+//!   workspace it may touch is bounded by [`resolve_workspace`].
+
+pub mod models;
+pub mod stream;
 
 use axum::{
     body::Body,
@@ -9,7 +24,11 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::{convert::Infallible, path::PathBuf, process::Stdio};
+use tokio::{
+    io::{AsyncBufReadExt, BufReader},
+    process::Command,
+};
 
 use crate::{
     adapters::{Adapter, AdapterError, AdapterFuture},
@@ -18,13 +37,24 @@ use crate::{
     server::AppState,
 };
 
+use self::stream::{AgyEnd, Translator};
+
+/// Wall-clock cap handed to `agy --print-timeout`.
+///
+/// The CLI's own default is 5 minutes, which truncates genuine multi-step
+/// agent runs and surfaces to the caller as a turn that delivered nothing.
+const PRINT_TIMEOUT: &str = "30m";
+
+/// Environment override for the directory `agy` is allowed to work in.
+const WORKSPACE_ENV: &str = "SHUNT_AGY_WORKSPACE";
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AntigravityAdapter;
 
 impl Adapter for AntigravityAdapter {
     fn forward<'a>(
         &'a self,
-        _state: AppState,
+        state: AppState,
         route: Route,
         _uri: &'a Uri,
         _headers: &'a HeaderMap,
@@ -44,58 +74,197 @@ impl Adapter for AntigravityAdapter {
                 failure: None,
             })?;
 
-            let mut cmd = tokio::process::Command::new(&agy_bin);
+            let workspace = resolve_workspace(request);
+            let matrix = models::effort_matrix(&agy_bin).await;
+            let effort =
+                models::resolve_effort(matrix, &route.upstream_model, route.effort.as_deref());
+
+            let mut cmd = Command::new(&agy_bin);
             cmd.arg("-p").arg(&prompt);
             cmd.arg("--model").arg(&route.upstream_model);
-
-            // Add effort for 3.x models or explicitly set effort
-            if route.upstream_model.contains("3.") || route.effort.is_some() {
-                let effort = route.effort.as_deref().unwrap_or("medium");
+            if let Some(effort) = effort {
                 cmd.arg("--effort").arg(effort);
             }
+            cmd.arg("--output-format").arg("stream-json");
+            // Print mode cannot service an interactive approval prompt.
+            cmd.arg("--dangerously-skip-permissions");
+            cmd.arg("--print-timeout").arg(PRINT_TIMEOUT);
+            cmd.arg("--add-dir").arg(&workspace);
+            // Without this the agent inherits the gateway process's directory
+            // and operates on whatever tree shunt happened to be started in.
+            cmd.current_dir(&workspace);
+            cmd.stdin(Stdio::null());
+            cmd.stdout(Stdio::piped());
+            cmd.stderr(Stdio::piped());
 
-            let output = cmd.output().await.map_err(|err| AdapterError {
+            let mut child = cmd.spawn().map_err(|err| AdapterError {
                 message: format!("failed to execute agy CLI: {err}"),
                 response: Box::new(StatusCode::BAD_GATEWAY.into_response()),
                 failure: None,
             })?;
 
-            if !output.status.success() {
-                let err_msg = String::from_utf8_lossy(&output.stderr);
-                return Err(AdapterError {
-                    message: format!("agy CLI execution failed: {err_msg}"),
-                    response: Box::new(StatusCode::BAD_GATEWAY.into_response()),
-                    failure: None,
-                });
-            }
+            let stdout = child.stdout.take().ok_or_else(|| AdapterError {
+                message: "agy CLI produced no stdout pipe".to_string(),
+                response: Box::new(StatusCode::BAD_GATEWAY.into_response()),
+                failure: None,
+            })?;
 
-            let stdout_text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let message_id = format!("msg_agy_{:016x}", rand::random::<u64>());
+            let mut translator = Translator::new(&route.model, message_id);
+            let mut lines = BufReader::new(stdout).lines();
 
             if is_streaming {
-                let sse_text = format_antigravity_sse(&route.model, &stdout_text);
+                let stream_state = (lines, translator, child, false);
+                let sse_stream = futures_util::stream::unfold(
+                    stream_state,
+                    |(mut lines, mut translator, mut child, mut finished)| async move {
+                        if finished {
+                            return None;
+                        }
+                        loop {
+                            match lines.next_line().await {
+                                Ok(Some(line)) => {
+                                    let chunk = translator.on_line(&line);
+                                    if chunk.is_empty() {
+                                        continue;
+                                    }
+                                    return Some((
+                                        Ok::<_, Infallible>(axum::body::Bytes::from(chunk)),
+                                        (lines, translator, child, finished),
+                                    ));
+                                }
+                                // EOF or a broken pipe both mean the run is
+                                // over; close the message either way so the
+                                // client never hangs on an unterminated stream.
+                                _ => {
+                                    finished = true;
+                                    let mut tail = String::new();
+                                    let failure = match translator.end() {
+                                        Some(AgyEnd::Failed(message)) => Some(message.clone()),
+                                        _ => None,
+                                    };
+                                    if let Some(message) = failure {
+                                        let message = format!("\n\n[agy error] {message}");
+                                        tail.push_str(&translator.on_text(&message));
+                                    }
+                                    tail.push_str(&translator.finish());
+                                    let _ = child.wait().await;
+                                    return Some((
+                                        Ok::<_, Infallible>(axum::body::Bytes::from(tail)),
+                                        (lines, translator, child, finished),
+                                    ));
+                                }
+                            }
+                        }
+                    },
+                );
+
                 let response = Response::builder()
                     .status(StatusCode::OK)
                     .header("Content-Type", "text/event-stream; charset=utf-8")
                     .header("Cache-Control", "no-cache")
-                    .body(Body::from(sse_text))
+                    // `agy` can be silent for tens of seconds before its first
+                    // event while the CLI boots and the model takes its first
+                    // turn. The shared keepalive covers that gap; the ping
+                    // frames the translator emits per tool step then report
+                    // genuine progress on top of it.
+                    .body(Body::from_stream(crate::keepalive::with_pings(
+                        sse_stream,
+                        std::time::Duration::from_secs(state.config.server.sse_keepalive_seconds),
+                    )))
                     .map_err(|err| AdapterError {
                         message: format!("failed to build SSE response: {err}"),
                         response: Box::new(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
                         failure: None,
                     })?;
-                Ok((StatusCode::OK, response))
-            } else {
-                let json_val = format_antigravity_json(&route.model, &stdout_text);
-                let mut headers = HeaderMap::new();
-                headers.insert(
-                    "content-type",
-                    axum::http::HeaderValue::from_static("application/json"),
-                );
-                let response = (StatusCode::OK, headers, axum::Json(json_val)).into_response();
-                Ok((StatusCode::OK, response))
+                return Ok((StatusCode::OK, response));
             }
+
+            while let Ok(Some(line)) = lines.next_line().await {
+                let _ = translator.on_line(&line);
+            }
+            let status = child.wait().await;
+
+            if let Some(AgyEnd::Failed(message)) = translator.end() {
+                return Err(AdapterError {
+                    message: format!("agy CLI execution failed: {message}"),
+                    response: Box::new(StatusCode::BAD_GATEWAY.into_response()),
+                    failure: None,
+                });
+            }
+            // No terminal `result` event means the CLI died before finishing.
+            if translator.end().is_none() {
+                let code = status.ok().and_then(|s| s.code()).unwrap_or(-1);
+                return Err(AdapterError {
+                    message: format!("agy CLI exited without a result (status {code})"),
+                    response: Box::new(StatusCode::BAD_GATEWAY.into_response()),
+                    failure: None,
+                });
+            }
+
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                "content-type",
+                axum::http::HeaderValue::from_static("application/json"),
+            );
+            let response =
+                (StatusCode::OK, headers, axum::Json(translator.to_message())).into_response();
+            Ok((StatusCode::OK, response))
         })
     }
+}
+
+/// Directory `agy` is launched in and granted via `--add-dir`.
+///
+/// Resolution order, first hit wins:
+/// 1. `SHUNT_AGY_WORKSPACE`, for deployments that pin the workspace explicitly.
+/// 2. A `working directory: <path>` line in the request's system prompt. Agent
+///    harnesses state the caller's cwd there, and it is the only signal the
+///    Messages protocol carries about where the caller actually is.
+/// 3. The gateway's own directory, matching prior behaviour.
+///
+/// Candidates that are not existing directories are skipped, so a stale or
+/// malformed hint degrades to the fallback instead of failing the run.
+pub fn resolve_workspace(request: &Value) -> PathBuf {
+    if let Some(dir) = std::env::var_os(WORKSPACE_ENV)
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir())
+    {
+        return dir;
+    }
+    if let Some(dir) = system_prompt_text(request)
+        .as_deref()
+        .and_then(parse_working_directory)
+        .filter(|path| path.is_dir())
+    {
+        return dir;
+    }
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+fn system_prompt_text(request: &Value) -> Option<String> {
+    let system = request.get("system")?;
+    if let Some(text) = system.as_str() {
+        return Some(text.to_string());
+    }
+    let blocks = system.as_array()?;
+    let joined = blocks
+        .iter()
+        .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+        .filter_map(|block| block.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!joined.is_empty()).then_some(joined)
+}
+
+fn parse_working_directory(system: &str) -> Option<PathBuf> {
+    const NEEDLE: &str = "working directory:";
+    system.lines().find_map(|line| {
+        let lowered = line.to_ascii_lowercase();
+        let start = lowered.find(NEEDLE)? + NEEDLE.len();
+        let value = line[start..].trim().trim_matches('`');
+        (!value.is_empty()).then(|| PathBuf::from(value))
+    })
 }
 
 pub fn extract_antigravity_prompt(request: &Value) -> String {
@@ -193,84 +362,4 @@ fn find_agy_binary_uncached() -> Option<PathBuf> {
     }
 
     None
-}
-
-pub fn format_antigravity_json(model: &str, text: &str) -> Value {
-    let msg_id = format!("msg_agy_{:016x}", rand::random::<u64>());
-    json!({
-        "id": msg_id,
-        "type": "message",
-        "role": "assistant",
-        "content": [
-            {
-                "type": "text",
-                "text": text
-            }
-        ],
-        "model": model,
-        "stop_reason": "end_turn",
-        "stop_sequence": null,
-        "usage": {
-            "input_tokens": 1,
-            "output_tokens": text.len() / 4
-        }
-    })
-}
-
-pub fn format_antigravity_sse(model: &str, text: &str) -> String {
-    let msg_id = format!("msg_agy_{:016x}", rand::random::<u64>());
-    let mut out = String::new();
-
-    let msg_start = json!({
-        "type": "message_start",
-        "message": {
-            "id": msg_id,
-            "type": "message",
-            "role": "assistant",
-            "content": [],
-            "model": model,
-            "stop_reason": null,
-            "stop_sequence": null,
-            "usage": { "input_tokens": 1, "output_tokens": 0 }
-        }
-    });
-    out.push_str(&format!("event: message_start\ndata: {}\n\n", msg_start));
-
-    let block_start = json!({
-        "type": "content_block_start",
-        "index": 0,
-        "content_block": { "type": "text", "text": "" }
-    });
-    out.push_str(&format!(
-        "event: content_block_start\ndata: {}\n\n",
-        block_start
-    ));
-
-    let delta = json!({
-        "type": "content_block_delta",
-        "index": 0,
-        "delta": { "type": "text_delta", "text": text }
-    });
-    out.push_str(&format!("event: content_block_delta\ndata: {}\n\n", delta));
-
-    let block_stop = json!({
-        "type": "content_block_stop",
-        "index": 0
-    });
-    out.push_str(&format!(
-        "event: content_block_stop\ndata: {}\n\n",
-        block_stop
-    ));
-
-    let msg_delta = json!({
-        "type": "message_delta",
-        "delta": { "stop_reason": "end_turn", "stop_sequence": null },
-        "usage": { "output_tokens": text.len() / 4 }
-    });
-    out.push_str(&format!("event: message_delta\ndata: {}\n\n", msg_delta));
-
-    let msg_stop = json!({ "type": "message_stop" });
-    out.push_str(&format!("event: message_stop\ndata: {}\n\n", msg_stop));
-
-    out
 }

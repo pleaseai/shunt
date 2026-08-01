@@ -56,7 +56,29 @@ provider = "antigravity"
 upstream_model = "gemini-3.6-flash"
 ```
 
-The Antigravity path runs one CLI subprocess per request. Its current streaming response is emitted only after `agy` finishes, and token usage is estimated rather than reported by Google. The configured upstream slug proves which model shunt asks `agy` to run; it does not independently attest Google's internal serving identity.
+The Antigravity path runs one CLI subprocess per request in agentic mode. `agy` is a
+full agent with its own tools, so it resolves its own tool calls and returns finished
+work — file edits included. Three consequences follow:
+
+- **Tools are `agy`'s, not the caller's.** A `tools` array on the Messages request is
+  not forwarded, and the response never contains a `tool_use` block. Clients that need
+  to drive the tool loop themselves should use the `gemini` provider instead.
+- **It runs with `--dangerously-skip-permissions`,** because a non-interactive run has
+  no channel to approve a permission prompt. The directory it may touch is resolved
+  from `SHUNT_AGY_WORKSPACE`, else a `Working directory:` line in the request's system
+  prompt, else the gateway's own working directory. Set `SHUNT_AGY_WORKSPACE` to pin it.
+- **Progress is streamed as it happens.** Assistant text is forwarded incrementally and
+  tool steps become SSE `ping` frames, so a long agent turn keeps producing bytes
+  instead of going silent until it finishes. Token usage is Google's reported count,
+  not an estimate.
+
+shunt discovers the valid model/effort pairs from `agy models` on the first Antigravity
+turn and clamps an unsupported `effort` to the nearest supported level, preferring the
+stronger one — `gemini-3.1-pro` accepts only `low` and `high`, so a route asking for
+`medium` runs at `high` rather than failing.
+
+The configured upstream slug proves which model shunt asks `agy` to run; it does not
+independently attest Google's internal serving identity.
 
 ### The codex provider (ChatGPT subscription)
 
