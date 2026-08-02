@@ -328,3 +328,17 @@ fn test_workspace_ignores_prompt_path_when_no_roots_configured() {
     assert_ne!(resolved, dir);
     assert!(resolved.is_dir());
 }
+
+#[test]
+fn test_stderr_truncation_never_splits_a_utf8_character() {
+    use shunt::adapters::antigravity::truncate;
+
+    // A multi-byte character straddling the limit must be dropped whole, not
+    // sliced into invalid UTF-8 (which would panic on a naive byte slice).
+    let text = "é".repeat(2000);
+    let cut = truncate(&text, 2001);
+    assert!(cut.len() <= 2001);
+    assert!(cut.chars().all(|c| c == 'é'));
+    // Short input is returned intact.
+    assert_eq!(truncate("short", 2000), "short");
+}

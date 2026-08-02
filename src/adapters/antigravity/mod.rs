@@ -395,11 +395,20 @@ fn adapter_error(status: StatusCode, message: String) -> AdapterError {
     }
 }
 
-fn truncate(text: &str, limit: usize) -> String {
-    text.char_indices()
-        .take_while(|(index, _)| *index < limit)
-        .map(|(_, character)| character)
-        .collect()
+/// Truncate to at most `limit` bytes, without splitting a UTF-8 character.
+///
+/// Slices at the nearest char boundary rather than rebuilding the string one
+/// `char` at a time, which allocated per character for a value that is usually
+/// returned whole.
+pub fn truncate(text: &str, limit: usize) -> String {
+    if text.len() <= limit {
+        return text.to_string();
+    }
+    let end = (0..=limit)
+        .rev()
+        .find(|index| text.is_char_boundary(*index))
+        .unwrap_or(0);
+    text[..end].to_string()
 }
 
 /// Directory `agy` is launched in and granted via `--add-dir`.
