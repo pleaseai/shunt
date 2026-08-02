@@ -24,7 +24,7 @@ use std::{
     time::Duration,
 };
 
-use tokio::sync::OnceCell;
+use tokio::sync::Mutex;
 
 /// Cap on the one-off `agy models` discovery call. Generous because the CLI
 /// is markedly slower as a gateway subprocess (~20s) than from a shell (~2s),
@@ -40,7 +40,86 @@ const DEFAULT_EFFORT: &str = "medium";
 
 pub type EffortMatrix = BTreeMap<String, BTreeSet<String>>;
 
-static MATRIX: OnceCell<EffortMatrix> = OnceCell::const_new();
+/// Last successful discovery. Only successes are stored: caching a failure
+/// would disable effort validation for the lifetime of the process because one
+/// `agy models` call happened to time out.
+static MATRIX: Mutex<Option<EffortMatrix>> = Mutex::const_new(None);
+
+/// Model/effort capabilities, discovered from `agy models` and cached.
+///
+/// Returns an empty matrix when discovery has never succeeded, which
+/// [`resolve_effort`] treats as "not authoritative" — configured values pass
+/// through and `agy` validates them itself. The next turn retries.
+pub async fn effort_matrix(agy_bin: &Path) -> EffortMatrix {
+    let mut cached = MATRIX.lock().await;
+    if let Some(matrix) = cached.as_ref() {
+        return matrix.clone();
+    }
+    match discover(agy_bin).await {
+        Some(matrix) => {
+            *cached = Some(matrix.clone());
+            matrix
+        }
+        None => EffortMatrix::new(),
+    }
+}
+
+/// Run `agy models` once, returning `None` when it cannot be trusted.
+async fn discover(agy_bin: &Path) -> Option<EffortMatrix> {
+    let mut command = tokio::process::Command::new(agy_bin);
+    command.arg("models");
+    // `agy` blocks indefinitely if it inherits a live stdin, which as a
+    // gateway subprocess would wedge the request that triggered discovery —
+    // no response, no headers, no keepalive.
+    command.stdin(Stdio::null());
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+    // Belt and braces: discovery must never be able to stall a turn.
+    command.kill_on_drop(true);
+
+    let started = std::time::Instant::now();
+    let output = tokio::time::timeout(DISCOVERY_TIMEOUT, command.output()).await;
+    let elapsed_ms = started.elapsed().as_millis();
+    match output {
+        Ok(Ok(out)) if out.status.success() => {
+            let matrix = parse_models(&String::from_utf8_lossy(&out.stdout));
+            tracing::debug!(
+                models = matrix.len(),
+                elapsed_ms,
+                "discovered agy model efforts"
+            );
+            Some(matrix)
+        }
+        Ok(Ok(out)) => {
+            tracing::warn!(
+                status = ?out.status.code(),
+                stderr = %String::from_utf8_lossy(&out.stderr).trim(),
+                "`agy models` failed; effort values pass through unvalidated this turn"
+            );
+            None
+        }
+        Ok(Err(err)) => {
+            tracing::warn!(%err, "could not run `agy models`; effort passed through");
+            None
+        }
+        Err(_) => {
+            tracing::warn!(
+                timeout_s = DISCOVERY_TIMEOUT.as_secs(),
+                "`agy models` timed out; effort passed through"
+            );
+            None
+        }
+    }
+}
+
+/// Populate the cache off the request path.
+///
+/// Discovery costs ~20s as a gateway subprocess, and the first Antigravity
+/// request should not pay it. Failure is silent here — the request path
+/// retries and reports properly.
+pub async fn warm(agy_bin: &Path) {
+    let _ = effort_matrix(agy_bin).await;
+}
 
 /// Parse `agy models` output into model → supported efforts.
 pub fn parse_models(output: &str) -> EffortMatrix {
@@ -68,62 +147,6 @@ pub fn parse_models(output: &str) -> EffortMatrix {
         }
     }
     matrix
-}
-
-/// Discover and cache the matrix by invoking `agy models` once per process.
-///
-/// A failed, timed-out or unparseable invocation caches an empty matrix rather
-/// than retrying: [`resolve_effort`] then passes the requested effort through
-/// untouched and the CLI reports any invalid pair authoritatively.
-pub async fn effort_matrix(agy_bin: &Path) -> &'static EffortMatrix {
-    MATRIX
-        .get_or_init(|| async {
-            let mut command = tokio::process::Command::new(agy_bin);
-            command.arg("models");
-            // `agy` blocks indefinitely if it inherits a live stdin, which as a
-            // gateway subprocess would wedge the request that triggered
-            // discovery — no response, no headers, no keepalive.
-            command.stdin(Stdio::null());
-            command.stdout(Stdio::piped());
-            command.stderr(Stdio::piped());
-            // Belt and braces: discovery must never be able to stall a turn.
-            command.kill_on_drop(true);
-
-            let started = std::time::Instant::now();
-            let output = tokio::time::timeout(DISCOVERY_TIMEOUT, command.output()).await;
-            let elapsed_ms = started.elapsed().as_millis();
-            match output {
-                Ok(Ok(out)) if out.status.success() => {
-                    let matrix = parse_models(&String::from_utf8_lossy(&out.stdout));
-                    tracing::debug!(
-                        models = matrix.len(),
-                        elapsed_ms,
-                        "discovered agy model efforts"
-                    );
-                    matrix
-                }
-                Ok(Ok(out)) => {
-                    tracing::warn!(
-                        status = ?out.status.code(),
-                        stderr = %String::from_utf8_lossy(&out.stderr).trim(),
-                        "`agy models` failed; effort values will be passed through unvalidated"
-                    );
-                    EffortMatrix::new()
-                }
-                Ok(Err(err)) => {
-                    tracing::warn!(%err, "could not run `agy models`; effort passed through");
-                    EffortMatrix::new()
-                }
-                Err(_) => {
-                    tracing::warn!(
-                        timeout_s = DISCOVERY_TIMEOUT.as_secs(),
-                        "`agy models` timed out; effort passed through"
-                    );
-                    EffortMatrix::new()
-                }
-            }
-        })
-        .await
 }
 
 /// Outcome of resolving a route's `--effort` against a model's capabilities.

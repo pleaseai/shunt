@@ -115,6 +115,15 @@ jail. With `sandbox = false`, an agent that starts in an allowed root can still 
 path named elsewhere in the prompt. Keep the sandbox on unless you have a specific
 reason, and do not expose this provider on a non-loopback bind to untrusted clients.
 
+shunt refuses to start when `sandbox = false` is combined with a non-loopback `bind`:
+that pairing hands local shell access to anyone who can post a Messages request, and
+authentication alone does not make it safe. Either keep the sandbox on or bind to
+loopback.
+
+The model/effort matrix is discovered in the background at startup, so no request pays
+for it. Until it lands, or if `agy models` fails, configured values are passed through
+and `agy` validates them itself — a failed discovery is retried rather than cached.
+
 The configured upstream slug proves which model shunt asks `agy` to run; it does not
 independently attest Google's internal serving identity.
 

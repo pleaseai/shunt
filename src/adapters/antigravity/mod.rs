@@ -102,7 +102,7 @@ impl Adapter for AntigravityAdapter {
 
             let matrix = models::effort_matrix(&agy_bin).await;
             let effort = match models::resolve_effort(
-                matrix,
+                &matrix,
                 &route.upstream_model,
                 route.effort.as_deref(),
             ) {
