@@ -206,6 +206,8 @@ pub(super) fn normalize(
             tool_search: upstream.tool_search,
             request_compression: upstream.request_compression,
             retry: upstream.retry,
+            workspace_roots: Vec::new(),
+            sandbox: true,
         };
         if let Some(auth) = upstream.auth.clone() {
             auth.absorb(&upstream.name, &mut provider)?;

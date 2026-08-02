@@ -1456,6 +1456,8 @@ mod tests {
                 tool_search: None,
                 request_compression: true,
                 retry: Default::default(),
+                workspace_roots: Vec::new(),
+                sandbox: true,
             },
         );
         let config = crate::config::Config {

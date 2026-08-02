@@ -1181,6 +1181,36 @@ pub struct ProviderConfig {
     /// default with conservative settings — set `max_retries = 0` to disable.
     #[serde(default)]
     pub retry: RetryConfig,
+    /// Directories the Antigravity CLI may be pointed at by request content
+    /// (`kind = "antigravity"` only).
+    ///
+    /// `agy` runs with `--dangerously-skip-permissions`, so whatever directory
+    /// it starts in is a directory an unattended agent can read, write, and run
+    /// shell commands in. The adapter can take that directory from a
+    /// `Working directory:` line in the request's system prompt, which is
+    /// client-controlled text — and system prompts routinely quote fetched
+    /// documents and tool output, so it is prompt-injectable.
+    ///
+    /// This list is the trust boundary. A prompt-derived path is canonicalized
+    /// (resolving symlinks and `..`) and used only if it lands inside one of
+    /// these roots; anything else is refused rather than silently downgraded.
+    /// Empty (the default) means no prompt-derived path is ever honored, and
+    /// only `SHUNT_AGY_WORKSPACE` or the gateway's own directory is used.
+    #[serde(default)]
+    pub workspace_roots: Vec<String>,
+    /// Run the Antigravity CLI with `--sandbox` (`kind = "antigravity"` only).
+    ///
+    /// On by default. Without it, `--dangerously-skip-permissions` leaves an
+    /// unattended agent with shell access and no workspace boundary: refusing a
+    /// directory in [`workspace_roots`](Self::workspace_roots) only changes
+    /// where the agent *starts*, and a path named in the prompt can still be
+    /// reached from there. `--sandbox` is what actually keeps reads and writes
+    /// inside the workspace.
+    ///
+    /// Set `false` only where the agent genuinely needs unrestricted terminal
+    /// access and the caller is trusted.
+    #[serde(default = "default_true")]
+    pub sandbox: bool,
 }
 
 /// Per-provider bounded retry/backoff for transient upstream failures (issue
@@ -1854,6 +1884,8 @@ impl ProviderConfig {
             tool_search: None,
             request_compression: true,
             retry: RetryConfig::default(),
+            workspace_roots: Vec::new(),
+            sandbox: true,
         }
     }
 
@@ -1876,6 +1908,8 @@ impl ProviderConfig {
             tool_search: None,
             request_compression: true,
             retry: RetryConfig::default(),
+            workspace_roots: Vec::new(),
+            sandbox: true,
         }
     }
 
@@ -1898,6 +1932,8 @@ impl ProviderConfig {
             tool_search: None,
             request_compression: true,
             retry: RetryConfig::default(),
+            workspace_roots: Vec::new(),
+            sandbox: true,
         }
     }
 }
@@ -1942,6 +1978,8 @@ impl Default for Config {
                     tool_search: None,
                     request_compression: true,
                     retry: RetryConfig::default(),
+                    workspace_roots: Vec::new(),
+                    sandbox: true,
                 },
             ),
             (
@@ -2000,6 +2038,8 @@ impl Default for Config {
                     tool_search: None,
                     request_compression: true,
                     retry: RetryConfig::default(),
+                    workspace_roots: Vec::new(),
+                    sandbox: true,
                 },
             ),
         ]);

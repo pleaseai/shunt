@@ -242,6 +242,39 @@ impl Translator {
         }
     }
 
+    /// Close the SSE message after a failed run.
+    ///
+    /// The headers are long committed by the time a mid-stream failure is
+    /// known, so the failure has to be reported inside the stream. Anthropic's
+    /// SSE protocol carries an `error` event for exactly this; emitting a plain
+    /// `message_stop` instead would present a crash as a normal end of turn.
+    pub fn finish_with_error(&mut self) -> String {
+        let mut out = String::new();
+        if self.block_open {
+            self.block_open = false;
+            out.push_str(&sse(
+                "content_block_stop",
+                &json!({ "type": "content_block_stop", "index": 0 }),
+            ));
+        }
+        out.push_str(&sse(
+            "error",
+            &json!({
+                "type": "error",
+                "error": { "type": "api_error", "message": self.error_message() },
+            }),
+        ));
+        out.push_str(&sse("message_stop", &json!({ "type": "message_stop" })));
+        out
+    }
+
+    fn error_message(&self) -> String {
+        match &self.end {
+            Some(AgyEnd::Failed(message)) => message.clone(),
+            _ => "the Antigravity CLI stopped without reporting a result".to_string(),
+        }
+    }
+
     /// Close the SSE message. Safe to call regardless of how the run ended.
     pub fn finish(&mut self) -> String {
         let mut out = String::new();

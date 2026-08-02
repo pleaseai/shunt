@@ -63,6 +63,8 @@ fn test_config(upstream_base_url: &str, api_key_env: &'static str) -> Config {
             accounts: Vec::new(),
             account_scope: Vec::new(),
             retry: shunt::config::RetryConfig::default(),
+            workspace_roots: Vec::new(),
+            sandbox: true,
         },
     );
     config.routes.push(RouteConfig {

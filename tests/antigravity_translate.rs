@@ -1,7 +1,7 @@
 use serde_json::json;
 use shunt::adapters::antigravity::{
     extract_antigravity_prompt, find_agy_binary,
-    models::{parse_models, resolve_effort},
+    models::{parse_models, resolve_effort, EffortChoice},
     resolve_workspace,
     stream::{AgyEnd, Translator},
 };
@@ -70,38 +70,69 @@ fn test_parse_models_builds_effort_matrix() {
 }
 
 #[test]
-fn test_resolve_effort_clamps_unsupported_level_upward() {
+fn test_explicit_unsupported_effort_is_reported_not_clamped() {
     let matrix = parse_models(AGY_MODELS);
 
-    // The regression that made every gemini-3.1-pro run invalid.
-    assert_eq!(
-        resolve_effort(&matrix, "gemini-3.1-pro", Some("medium")),
-        Some("high".to_string()),
-        "medium is unsupported and must clamp to the nearest level, preferring the stronger"
-    );
-    // Default (no route effort) goes through the same clamp.
-    assert_eq!(
-        resolve_effort(&matrix, "gemini-3.1-pro", None),
-        Some("high".to_string())
-    );
-    // Supported levels pass through untouched.
+    // An operator who wrote `effort = "medium"` gets told it is unavailable.
+    // Silently running `high` instead would change cost, latency and quota
+    // while leaving the config file claiming otherwise.
+    match resolve_effort(&matrix, "gemini-3.1-pro", Some("medium")) {
+        EffortChoice::Unsupported {
+            model,
+            requested,
+            supported,
+        } => {
+            assert_eq!(model, "gemini-3.1-pro");
+            assert_eq!(requested, "medium");
+            assert_eq!(supported, vec!["high".to_string(), "low".to_string()]);
+        }
+        other => panic!("expected Unsupported, got {other:?}"),
+    }
+
+    // A supported explicit value passes through untouched.
     assert_eq!(
         resolve_effort(&matrix, "gemini-3.1-pro", Some("low")),
-        Some("low".to_string())
+        EffortChoice::Use("low".to_string())
+    );
+}
+
+#[test]
+fn test_gateway_default_effort_is_clamped_not_rejected() {
+    let matrix = parse_models(AGY_MODELS);
+
+    // No configured effort: the default is shunt's own choice, so clamping it
+    // is the gateway doing its job rather than overriding operator intent.
+    assert_eq!(
+        resolve_effort(&matrix, "gemini-3.1-pro", None),
+        EffortChoice::Use("high".to_string()),
+        "medium is unavailable, so the default clamps to the nearest, preferring stronger"
     );
     assert_eq!(
-        resolve_effort(&matrix, "gemini-3.6-flash", Some("medium")),
-        Some("medium".to_string())
+        resolve_effort(&matrix, "gemini-3.6-flash", None),
+        EffortChoice::Use("medium".to_string())
+    );
+}
+
+#[test]
+fn test_unknown_model_defers_to_the_cli() {
+    let matrix = parse_models(AGY_MODELS);
+
+    // Nothing here is authoritative for a model we have not seen, so pass a
+    // configured value through and let agy validate it.
+    assert_eq!(
+        resolve_effort(&matrix, "gemini-9-future", Some("medium")),
+        EffortChoice::Use("medium".to_string())
+    );
+    // With no configured value, omit the flag: agy's own rejection enumerates
+    // the valid levels, which beats guessing one.
+    assert_eq!(
+        resolve_effort(&matrix, "gemini-9-future", None),
+        EffortChoice::Omit
     );
     // A model that takes no --effort flag gets none.
     assert_eq!(
         resolve_effort(&matrix, "claude-sonnet-4-6", Some("high")),
-        None
-    );
-    // Unknown models defer to the CLI's own validation.
-    assert_eq!(
-        resolve_effort(&matrix, "gemini-9-future", Some("medium")),
-        Some("medium".to_string())
+        EffortChoice::Omit
     );
 }
 
@@ -186,6 +217,25 @@ fn test_translator_tolerates_garbage_lines() {
 }
 
 #[test]
+fn test_premature_eof_is_not_reported_as_success() {
+    let mut t = Translator::new("gemini", "msg_test");
+    // Text streamed, then the CLI died before emitting its terminal `result`.
+    t.on_line(
+        r#"{"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"working on it"}}"#,
+    );
+    assert_eq!(t.end(), None, "no result event was seen");
+
+    let out = t.finish_with_error();
+
+    // Headers are already committed, so the failure has to travel in-stream.
+    // Closing with a bare message_stop would present a crash as a normal turn.
+    assert!(out.contains("event: error"), "must emit an SSE error event");
+    assert!(out.contains("api_error"));
+    assert!(!out.contains("end_turn"), "must not claim a clean end_turn");
+    assert!(out.contains("event: message_stop"));
+}
+
+#[test]
 fn test_translator_non_streaming_message_shape() {
     let mut t = Translator::new("claude-gemini-3.1-pro-via-antigravity", "msg_test");
     t.on_line(
@@ -200,41 +250,81 @@ fn test_translator_non_streaming_message_shape() {
     assert_eq!(msg["usage"]["output_tokens"], 3);
 }
 
-#[test]
-fn test_resolve_workspace_prefers_system_prompt_directory() {
-    let dir = std::env::temp_dir().join(format!("shunt-agy-ws-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-
-    let req = json!({
+/// Build a request whose system prompt names `dir` as the working directory,
+/// the way an agent harness states the caller's cwd.
+fn request_naming(dir: &std::path::Path) -> serde_json::Value {
+    json!({
         "system": format!(
             "You are an agent.\n<env>\nWorking directory: {}\nPlatform: darwin\n</env>",
             dir.display()
         ),
         "messages": [{ "role": "user", "content": "hi" }]
-    });
+    })
+}
 
-    let resolved = resolve_workspace(&req);
-    std::fs::remove_dir_all(&dir).ok();
+#[test]
+fn test_workspace_accepts_prompt_path_inside_a_configured_root() {
+    let root = std::env::temp_dir().join(format!("shunt-agy-root-{}", std::process::id()));
+    let project = root.join("project");
+    std::fs::create_dir_all(&project).unwrap();
 
-    // Compare canonically: temp dirs are symlinked on macOS.
-    assert_eq!(
-        resolved.file_name(),
-        dir.file_name(),
-        "the caller's cwd must win over the gateway's own directory"
+    let roots = vec![root.display().to_string()];
+    let resolved = resolve_workspace(&request_naming(&project), &roots).unwrap();
+
+    let expected = project.canonicalize().unwrap();
+    std::fs::remove_dir_all(&root).ok();
+    assert_eq!(resolved, expected);
+}
+
+#[test]
+fn test_workspace_refuses_prompt_path_outside_every_root() {
+    let root = std::env::temp_dir().join(format!("shunt-agy-in-{}", std::process::id()));
+    let outside = std::env::temp_dir().join(format!("shunt-agy-out-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+
+    let roots = vec![root.display().to_string()];
+    let resolved = resolve_workspace(&request_naming(&outside), &roots).unwrap();
+
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&outside).ok();
+    // Falls back to the gateway's own directory rather than honouring a path
+    // the operator never authorised.
+    assert_ne!(resolved, outside);
+    assert!(resolved.is_dir());
+}
+
+#[test]
+fn test_workspace_refuses_traversal_out_of_a_root() {
+    let base = std::env::temp_dir().join(format!("shunt-agy-trav-{}", std::process::id()));
+    let root = base.join("allowed");
+    let secret = base.join("secret");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&secret).unwrap();
+
+    // Textually prefixed by the root, but canonicalizes outside it.
+    let escape = root.join("..").join("secret");
+    let roots = vec![root.display().to_string()];
+    let resolved = resolve_workspace(&request_naming(&escape), &roots).unwrap();
+
+    std::fs::remove_dir_all(&base).ok();
+    assert!(
+        !resolved.ends_with("secret"),
+        "`..` must not escape an allowed root; got {}",
+        resolved.display()
     );
 }
 
 #[test]
-fn test_resolve_workspace_ignores_nonexistent_hint() {
-    let req = json!({
-        "system": "Working directory: /definitely/not/a/real/path/12345",
-        "messages": [{ "role": "user", "content": "hi" }]
-    });
+fn test_workspace_ignores_prompt_path_when_no_roots_configured() {
+    let dir = std::env::temp_dir().join(format!("shunt-agy-noroot-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
 
-    let resolved = resolve_workspace(&req);
-    assert_ne!(
-        resolved,
-        std::path::PathBuf::from("/definitely/not/a/real/path/12345")
-    );
-    assert!(resolved.is_dir(), "must fall back to a usable directory");
+    // The safe default: without an explicit allowlist, client-controlled text
+    // never chooses where a permission-skipping agent runs.
+    let resolved = resolve_workspace(&request_naming(&dir), &[]).unwrap();
+
+    std::fs::remove_dir_all(&dir).ok();
+    assert_ne!(resolved, dir);
+    assert!(resolved.is_dir());
 }

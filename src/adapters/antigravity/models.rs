@@ -126,27 +126,73 @@ pub async fn effort_matrix(agy_bin: &Path) -> &'static EffortMatrix {
         .await
 }
 
-/// Pick the `--effort` value to pass for `model`, or `None` to omit the flag.
+/// Outcome of resolving a route's `--effort` against a model's capabilities.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EffortChoice {
+    /// Pass this value as `--effort`.
+    Use(String),
+    /// Send no `--effort` flag and let `agy` speak for itself.
+    Omit,
+    /// The operator explicitly configured a value this model does not offer.
+    Unsupported {
+        model: String,
+        requested: String,
+        supported: Vec<String>,
+    },
+}
+
+/// Decide the `--effort` argument for a route.
 ///
-/// When the requested level is unsupported it is clamped to the nearest
-/// supported one, breaking ties upward: a route asking for `medium` on a model
-/// offering only `low`/`high` gets `high`, preserving the caller's intent that
-/// this is a reasoning-tier request rather than quietly downgrading it.
+/// The distinction that matters is *provenance*, not the value:
 ///
-/// An unknown model yields the requested effort unchanged — better to let the
-/// CLI report an authoritative error than to guess on its behalf.
+/// - An **explicitly configured** effort is operator intent. If the model does
+///   not offer it, say so ([`EffortChoice::Unsupported`]) rather than quietly
+///   substituting a neighbour — silently running `high` for a configured
+///   `medium` changes cost, latency and quota while leaving the config file
+///   claiming otherwise.
+/// - An effort **shunt itself defaulted to** is not operator intent, so
+///   clamping it to the nearest supported level is the gateway doing its job.
+///   Erroring on our own default would be absurd. Ties break toward the
+///   stronger level, preserving the "reasoning tier" reading of the request.
+///
+/// When the model is unknown — discovery failed, or `agy` gained a model we
+/// have not seen — nothing here is authoritative, so defer to the CLI: pass a
+/// configured value through, and omit the flag when there is none. `agy`
+/// rejects a missing or invalid `--effort` with a message that enumerates the
+/// valid levels, which is a better answer than a guess.
 pub fn resolve_effort(
     matrix: &EffortMatrix,
     model: &str,
-    requested: Option<&str>,
-) -> Option<String> {
+    configured: Option<&str>,
+) -> EffortChoice {
     let Some(supported) = matrix.get(model) else {
-        return requested.map(str::to_string);
+        return match configured {
+            Some(effort) => EffortChoice::Use(effort.to_string()),
+            None => EffortChoice::Omit,
+        };
     };
     if supported.is_empty() {
-        return None;
+        return EffortChoice::Omit;
     }
-    let requested = requested.unwrap_or(DEFAULT_EFFORT);
+    if let Some(effort) = configured {
+        return if supported.contains(effort) {
+            EffortChoice::Use(effort.to_string())
+        } else {
+            EffortChoice::Unsupported {
+                model: model.to_string(),
+                requested: effort.to_string(),
+                supported: supported.iter().cloned().collect(),
+            }
+        };
+    }
+    match clamp(supported, DEFAULT_EFFORT) {
+        Some(effort) => EffortChoice::Use(effort),
+        None => EffortChoice::Omit,
+    }
+}
+
+/// Nearest supported level to `requested`, preferring the stronger on a tie.
+fn clamp(supported: &BTreeSet<String>, requested: &str) -> Option<String> {
     if supported.contains(requested) {
         return Some(requested.to_string());
     }
@@ -155,10 +201,6 @@ pub fn resolve_effort(
         .iter()
         .enumerate()
         .filter(|(_, level)| supported.contains(**level))
-        .min_by_key(|(index, _)| {
-            let distance = index.abs_diff(target);
-            // Equal distance prefers the stronger level.
-            (distance, usize::from(*index < target))
-        })
+        .min_by_key(|(index, _)| (index.abs_diff(target), usize::from(*index < target)))
         .map(|(_, level)| (*level).to_string())
 }
