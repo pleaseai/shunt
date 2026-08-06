@@ -44,17 +44,19 @@ const IDLE_WINDOWS: u32 = 2;
 /// payload of the next event the key emits, so it outlives an ordinary idle
 /// key by a wide margin — but not forever, or a key that never returns would
 /// hold a table slot for the life of the process. Once even this elapses the
-/// entry is reclaimed and its debt moves to [`OVERFLOW_KEY`] (see
-/// [`EventThrottle::carry_debt_to_overflow`]), so the count is still reported
-/// rather than silently dropped.
+/// entry is reclaimed and what it owed is forfeited into
+/// [`EventThrottle::forfeited`], to be carried by the next event admitted for
+/// *any* key, so the count is still reported rather than silently dropped.
 const DEBT_IDLE_WINDOWS: u32 = 60;
 
 /// Whether one event may be sent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ThrottleDecision {
-    /// Send it. `suppressed` is how many events for the same key were dropped
-    /// since the last one that was sent — zero unless a window just rolled
-    /// over after hitting the cap.
+    /// Send it. `suppressed` is how many events were dropped since the last
+    /// one that was sent: this key's own count, non-zero only when a window
+    /// just rolled over after hitting the cap, plus anything forfeited by a
+    /// key reclaimed before it could report its own (see
+    /// [`DEBT_IDLE_WINDOWS`]).
     Emit { suppressed: u64 },
     /// Drop it; the cap for this key's current window is already spent.
     Suppress,
@@ -76,6 +78,10 @@ pub(super) struct EventThrottle {
     max_per_window: u32,
     max_keys: usize,
     windows: HashMap<String, Window>,
+    /// Suppressed counts owed by keys that lapsed before reporting them. Not
+    /// attributable to any live key, so the next event admitted for whichever
+    /// key comes first carries them (see [`DEBT_IDLE_WINDOWS`]).
+    forfeited: u64,
 }
 
 impl EventThrottle {
@@ -85,19 +91,24 @@ impl EventThrottle {
             max_per_window,
             max_keys,
             windows: HashMap::new(),
+            forfeited: 0,
         }
     }
 
     /// Decide whether the event identified by `key` may be sent at `now`.
     pub(super) fn admit(&mut self, key: &str, now: Instant) -> ThrottleDecision {
         self.reclaim_idle(now);
-        let key = if self.windows.contains_key(key) || self.windows.len() < self.max_keys {
+        // The shared bucket is not one of the `max_keys` tracked slots, or a
+        // table that overflowed once would carry a permanently reduced
+        // capacity and never hand a reclaimed slot to a new key.
+        let tracked = self.windows.len() - usize::from(self.windows.contains_key(OVERFLOW_KEY));
+        let key = if self.windows.contains_key(key) || tracked < self.max_keys {
             key
         } else {
             OVERFLOW_KEY
         };
 
-        match self.windows.get_mut(key) {
+        let decision = match self.windows.get_mut(key) {
             Some(window) if now.saturating_duration_since(window.started_at) < self.window => {
                 if window.emitted < self.max_per_window {
                     window.emitted += 1;
@@ -126,6 +137,16 @@ impl EventThrottle {
                 );
                 ThrottleDecision::Emit { suppressed: 0 }
             }
+        };
+
+        match decision {
+            // Anything a lapsed key never got to report rides out on the first
+            // event actually admitted after it was forfeited; a suppressed
+            // event carries nothing, so the debt stays pending.
+            ThrottleDecision::Emit { suppressed } => ThrottleDecision::Emit {
+                suppressed: suppressed.saturating_add(std::mem::take(&mut self.forfeited)),
+            },
+            ThrottleDecision::Suppress => ThrottleDecision::Suppress,
         }
     }
 
@@ -144,29 +165,7 @@ impl EventThrottle {
             forfeited = forfeited.saturating_add(window.suppressed);
             false
         });
-        if forfeited > 0 {
-            self.carry_debt_to_overflow(forfeited, now);
-        }
-    }
-
-    /// Move a reclaimed key's unreported suppressions into the shared overflow
-    /// window so they are still reported somewhere. The bucket's current
-    /// window is closed out (its start is backdated by one full window) so the
-    /// debt lands on the very next event that bucket admits rather than
-    /// waiting out a window the caller cannot see. That hands the bucket a
-    /// fresh budget, which is acceptable: reaching here costs
-    /// [`DEBT_IDLE_WINDOWS`] windows of silence from the key that owed it.
-    fn carry_debt_to_overflow(&mut self, suppressed: u64, now: Instant) {
-        let window = self
-            .windows
-            .entry(OVERFLOW_KEY.to_owned())
-            .or_insert(Window {
-                started_at: now,
-                emitted: 0,
-                suppressed: 0,
-            });
-        window.suppressed = window.suppressed.saturating_add(suppressed);
-        window.started_at = now.checked_sub(self.window).unwrap_or(window.started_at);
+        self.forfeited = self.forfeited.saturating_add(forfeited);
     }
 }
 
@@ -355,10 +354,10 @@ mod tests {
     }
 
     #[test]
-    fn a_key_owing_a_suppressed_count_is_eventually_reclaimed_into_the_overflow_bucket() {
+    fn a_key_owing_a_suppressed_count_gives_its_debt_up_when_it_is_reclaimed() {
         // The debt exemption is generous but bounded: a key that never comes
         // back must not hold a table slot for the life of the process. What it
-        // owes moves to the shared bucket rather than disappearing.
+        // owes is handed to the next event admitted rather than disappearing.
         let mut throttle = EventThrottle::new(WINDOW, 1, MAX_KEYS);
         let start = Instant::now();
 
@@ -385,26 +384,20 @@ mod tests {
         let long_gone = within_horizon + WINDOW * DEBT_IDLE_WINDOWS;
         assert_eq!(
             throttle.admit("unrelated", long_gone),
-            ThrottleDecision::Emit { suppressed: 0 }
+            ThrottleDecision::Emit { suppressed: 3 },
+            "the forfeited count is reported, not silently dropped"
         );
         assert!(
             !throttle.windows.contains_key("owing"),
             "the lapsed key must not hold its slot forever"
         );
-        assert_eq!(
-            throttle
-                .windows
-                .get(OVERFLOW_KEY)
-                .map(|window| window.suppressed),
-            Some(3),
-            "its unreported count moves to the overflow bucket, not to nowhere"
-        );
     }
 
     #[test]
-    fn a_forfeited_debt_resurfaces_on_the_overflow_buckets_next_admitted_event() {
+    fn a_forfeited_debt_resurfaces_on_the_next_admitted_event() {
         // Same reclamation, observed from the outside: the count reappears on
-        // the next event the overflow bucket lets through.
+        // the next event any key gets through — which key carries it is not
+        // load-bearing, the count is an aggregate signal.
         let mut throttle = EventThrottle::new(WINDOW, 1, 1);
         let start = Instant::now();
 
@@ -413,11 +406,67 @@ mod tests {
         throttle.admit("owing", start);
 
         let long_gone = start + WINDOW * (DEBT_IDLE_WINDOWS + 1);
-        // The table is full of nothing but the overflow bucket now, so this
-        // distinct key folds into it and collects the forfeited count.
+        // Reclaiming `owing` frees the one tracked slot, so this distinct key
+        // takes it — and collects the forfeited count on the way in.
         assert_eq!(
             throttle.admit("some-other-key", long_gone),
             ThrottleDecision::Emit { suppressed: 2 }
+        );
+    }
+
+    #[test]
+    fn a_slot_freed_by_reclamation_goes_to_a_new_key_even_once_the_bucket_exists() {
+        let mut throttle = EventThrottle::new(WINDOW, MAX_PER_WINDOW, 2);
+        let start = Instant::now();
+
+        throttle.admit("a", start);
+        throttle.admit("b", start);
+        // Overflow the table, overshooting the shared bucket's cap so it owes
+        // a count and survives ordinary idle reclamation.
+        for _ in 0..MAX_PER_WINDOW + 1 {
+            throttle.admit(&format!("overflow-{}", next_id()), start);
+        }
+        assert!(throttle.windows.contains_key(OVERFLOW_KEY));
+
+        // Restart `b`'s window so it stays live; `a` goes quiet for good.
+        throttle.admit("b", start + WINDOW + WINDOW / 2);
+
+        // `a` has now been idle long enough to be reclaimed and `b` has not,
+        // so one of the two tracked slots is free next to the bucket. Counting
+        // the bucket as a tracked key would make the table look full here and
+        // fold `fresh` into it — collecting the count the bucket owes on the
+        // way in — instead of giving it a window of its own.
+        let later = start + WINDOW * 3;
+        assert_eq!(
+            throttle.admit("fresh", later),
+            ThrottleDecision::Emit { suppressed: 0 }
+        );
+        assert!(throttle.windows.contains_key("fresh"));
+        assert!(throttle.windows.contains_key("b"));
+        assert!(throttle.windows.contains_key(OVERFLOW_KEY));
+    }
+
+    #[test]
+    fn a_forfeited_debt_survives_a_suppress_and_lands_on_the_next_emit() {
+        let mut throttle = EventThrottle::new(WINDOW, 1, MAX_KEYS);
+        let start = Instant::now();
+
+        throttle.admit("owing", start);
+        for _ in 0..3 {
+            assert_eq!(throttle.admit("owing", start), ThrottleDecision::Suppress);
+        }
+
+        // `carrier` opens a window that is still current when `owing` lapses,
+        // so the very call that forfeits the debt is itself suppressed.
+        let lapse = start + WINDOW * DEBT_IDLE_WINDOWS;
+        throttle.admit("carrier", lapse - WINDOW / 2);
+        assert_eq!(throttle.admit("carrier", lapse), ThrottleDecision::Suppress);
+        assert!(!throttle.windows.contains_key("owing"));
+
+        assert_eq!(
+            throttle.admit("fresh", lapse),
+            ThrottleDecision::Emit { suppressed: 3 },
+            "the debt is held until an event is actually admitted"
         );
     }
 
