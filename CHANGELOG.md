@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.33.1](https://github.com/pleaseai/shunt/compare/v0.33.0...v0.33.1) (2026-08-06)
+
+
+### Bug Fixes
+
+* **observability:** distinguish SSE cut kinds and attach stream context ([#310](https://github.com/pleaseai/shunt/issues/310)) ([#311](https://github.com/pleaseai/shunt/issues/311)) ([a1f16dc](https://github.com/pleaseai/shunt/commit/a1f16dcc4a2da6e1d2a2ac300d2bbf0917863cb7))
+
 ## [0.33.0](https://github.com/pleaseai/shunt/compare/v0.32.0...v0.33.0) (2026-07-31)
 
 
