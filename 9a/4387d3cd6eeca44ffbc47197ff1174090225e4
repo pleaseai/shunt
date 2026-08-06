@@ -1,0 +1,22 @@
+src/observability/throttle.rs
+  s_4d7b1160badd99::t_f57d014e603aa8 173-191
+  s_4d7b1160badd99::t_8b271a701dd522 110-112
+  s_4d7b1160badd99::t_f0afc5ee43c33a 447-452,454,458-463,473-506
+  s_4d7b1160badd99::t_94e37dd5ca740f 192,507-508
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "9a4387d3cd6eeca44ffbc47197ff1174090225e4",
+  "prompts": {},
+  "sessions": {
+    "s_4d7b1160badd99": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5035311f-fc19-410e-8314-8c67b6d0d99f",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
