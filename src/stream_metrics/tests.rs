@@ -16,7 +16,10 @@ use tracing_subscriber::{
     Layer,
 };
 
-use super::{observe_response, ObserverState, Outcome, Protocol, MAX_EVENT_BYTES};
+use super::{
+    error_chain, observe_response, ObserverState, Outcome, Protocol, MAX_EVENT_BYTES,
+    MAX_LAST_EVENT_BYTES,
+};
 
 fn state(protocol: Protocol) -> ObserverState {
     ObserverState::new(
@@ -360,8 +363,12 @@ enum Drive {
     ToEnd,
     /// Read the first chunk, then drop the body while the upstream is still
     /// open (`stream::pending()` never resolves) — the client-disconnect path,
-    /// exercised via `ObservedStream`'s `Drop` impl calling `finish(false)`.
+    /// exercised via `ObservedStream`'s `Drop` impl.
     DropAfterFirstChunk,
+    /// Forward the first chunk, then fail the upstream body read — the
+    /// `Poll::Ready(Some(Err(_)))` path, which classifies as an `UpstreamCut`
+    /// with `cut_kind = transport_error` (#310).
+    ErrorToEnd,
 }
 
 /// What `ObserverState::finish` must have wired up once the stream is over.
@@ -374,6 +381,9 @@ struct FinishWiring {
     /// The single Sentry event `record_stream_failure` emits, or `None` when
     /// the outcome is not a failure and nothing at all may be captured.
     event: Option<(sentry::Level, &'static str)>,
+    /// The `cut_kind` tag that event must carry, or `None` when it must carry
+    /// none at all (an `event: error` frame is not a cut).
+    cut_kind: Option<&'static str>,
 }
 
 /// Runs one wiring case: wrap an SSE response with the given `protocol` and
@@ -388,6 +398,10 @@ fn assert_finish_wiring(
 ) {
     let captured = CapturingLayer::default();
     let subscriber = tracing_subscriber::registry().with(captured.clone());
+    // The Sentry event is rate-limited against a process-global window table,
+    // so without a per-thread override this test's event count would depend on
+    // what sibling tests emitted for the same key.
+    let _throttle = crate::observability::throttle::test_support::scoped();
 
     let events = tracing::subscriber::with_default(subscriber, || {
         sentry::test::with_captured_events(|| {
@@ -402,17 +416,10 @@ fn assert_finish_wiring(
             // behavior for any non-5xx status (including the non-2xx case
             // exercised below, e.g. 400).
             span.record("otel.status_code", "ok");
-            let chunk = Ok::<_, Infallible>(Bytes::copy_from_slice(sse));
-            let body = match drive {
-                Drive::ToEnd => Body::from_stream(stream::iter(vec![chunk])),
-                Drive::DropAfterFirstChunk => {
-                    Body::from_stream(stream::once(async { chunk }).chain(stream::pending()))
-                }
-            };
             let response = Response::builder()
                 .status(status)
                 .header(CONTENT_TYPE, "text/event-stream")
-                .body(body)
+                .body(mock_body(sse, drive))
                 .unwrap();
             let wrapped = observe_response(
                 response,
@@ -422,25 +429,7 @@ fn assert_finish_wiring(
                 Instant::now(),
             );
             drop(entered);
-
-            match drive {
-                Drive::ToEnd => {
-                    to_bytes(wrapped.into_body(), usize::MAX)
-                        .now_or_never()
-                        .expect("mock stream resolves without a real pending state")
-                        .unwrap();
-                }
-                Drive::DropAfterFirstChunk => {
-                    let mut body_stream = wrapped.into_body().into_data_stream();
-                    body_stream
-                        .next()
-                        .now_or_never()
-                        .expect("first chunk is ready without a real pending state")
-                        .unwrap()
-                        .unwrap();
-                    drop(body_stream);
-                }
-            }
+            drain(wrapped.into_body(), drive);
         })
     });
 
@@ -458,8 +447,62 @@ fn assert_finish_wiring(
             assert_eq!(events.len(), 1);
             assert_eq!(events[0].level, level);
             assert_eq!(events[0].message.as_deref(), Some(message));
+            assert_eq!(
+                events[0].tags.get("cut_kind").map(String::as_str),
+                expected.cut_kind
+            );
         }
         None => assert!(events.is_empty()),
+    }
+}
+
+/// A mock SSE body carrying `sse`, ending the way `drive` asks for.
+fn mock_body(sse: &[u8], drive: Drive) -> Body {
+    let chunk = Bytes::copy_from_slice(sse);
+    match drive {
+        Drive::ToEnd => Body::from_stream(stream::iter(vec![Ok::<_, Infallible>(chunk)])),
+        Drive::DropAfterFirstChunk => Body::from_stream(
+            stream::once(async { Ok::<_, Infallible>(chunk) }).chain(stream::pending()),
+        ),
+        Drive::ErrorToEnd => Body::from_stream(stream::iter(vec![
+            Ok(chunk),
+            Err(std::io::Error::other(UPSTREAM_READ_ERROR)),
+        ])),
+    }
+}
+
+/// The message the `Drive::ErrorToEnd` mock fails with, asserted on where the
+/// upstream error's text has to survive into the Sentry event.
+const UPSTREAM_READ_ERROR: &str = "connection reset by peer";
+
+/// Drive a wrapped body to whatever end `drive` describes, discarding the
+/// bytes — every mock here resolves without a genuine `Poll::Pending`, so a
+/// single poll pass suffices and the surrounding thread-local test scopes stay
+/// in place.
+fn drain(body: Body, drive: Drive) {
+    match drive {
+        Drive::ToEnd => {
+            to_bytes(body, usize::MAX)
+                .now_or_never()
+                .expect("mock stream resolves without a real pending state")
+                .unwrap();
+        }
+        Drive::ErrorToEnd => {
+            let result = to_bytes(body, usize::MAX)
+                .now_or_never()
+                .expect("mock stream resolves without a real pending state");
+            assert!(result.is_err(), "the mock upstream must fail the body read");
+        }
+        Drive::DropAfterFirstChunk => {
+            let mut body_stream = body.into_data_stream();
+            body_stream
+                .next()
+                .now_or_never()
+                .expect("first chunk is ready without a real pending state")
+                .unwrap()
+                .unwrap();
+            drop(body_stream);
+        }
     }
 }
 
@@ -476,6 +519,8 @@ fn finish_records_otel_error_and_emits_a_sentry_event_for_a_mid_stream_error_eve
                 sentry::Level::Error,
                 "upstream SSE stream sent an error event mid-stream",
             )),
+            // An `event: error` frame is not a cut, so no `cut_kind` at all.
+            cut_kind: None,
         },
     );
 }
@@ -483,7 +528,7 @@ fn finish_records_otel_error_and_emits_a_sentry_event_for_a_mid_stream_error_eve
 #[test]
 fn finish_records_otel_error_and_emits_a_sentry_event_for_an_upstream_cut() {
     // A content delta with no terminal/error event, then the upstream simply
-    // ends the stream (`natural_end = true`) — `UpstreamCut`.
+    // ends the stream — `UpstreamCut`, with a clean EOF as the cut kind.
     assert_finish_wiring(
         Protocol::Anthropic,
         StatusCode::OK,
@@ -495,6 +540,7 @@ fn finish_records_otel_error_and_emits_a_sentry_event_for_an_upstream_cut() {
                 sentry::Level::Warning,
                 "upstream SSE stream was cut before a terminal event",
             )),
+            cut_kind: Some("eof"),
         },
     );
 }
@@ -523,6 +569,7 @@ fn finish_reports_an_upstream_cut_for_a_marked_synthetic_completion() {
                 sentry::Level::Warning,
                 "upstream SSE stream was cut before a terminal event",
             )),
+            cut_kind: Some("marker"),
         },
     );
 }
@@ -539,6 +586,7 @@ fn finish_does_not_touch_the_span_or_emit_an_event_for_a_normal_completion() {
         FinishWiring {
             span_status: "ok",
             event: None,
+            cut_kind: None,
         },
     );
 }
@@ -553,6 +601,7 @@ fn finish_does_not_touch_the_span_or_emit_an_event_for_a_client_disconnect() {
         FinishWiring {
             span_status: "ok",
             event: None,
+            cut_kind: None,
         },
     );
 }
@@ -572,6 +621,7 @@ fn finish_does_not_report_a_stream_failure_for_a_non_2xx_response() {
         FinishWiring {
             span_status: "ok",
             event: None,
+            cut_kind: None,
         },
     );
 }
@@ -590,6 +640,7 @@ fn finish_does_not_touch_the_span_or_emit_an_event_for_an_incomplete_responses_c
         FinishWiring {
             span_status: "ok",
             event: None,
+            cut_kind: None,
         },
     );
 }
@@ -613,6 +664,183 @@ async fn non_sse_body_is_left_untouched() {
         to_bytes(response.into_body(), usize::MAX).await.unwrap(),
         "{}"
     );
+}
+
+#[test]
+fn finish_reports_a_transport_error_cut_with_the_upstream_error_attached() {
+    // The `Poll::Ready(Some(Err(_)))` branch: before #310 the error was
+    // forwarded to the client and then discarded, so a failed body read and a
+    // clean end with no terminal event produced byte-identical Sentry events.
+    assert_finish_wiring(
+        Protocol::Anthropic,
+        StatusCode::OK,
+        b"event: content_block_delta\ndata: {}\n\n",
+        Drive::ErrorToEnd,
+        FinishWiring {
+            span_status: "error",
+            event: Some((
+                sentry::Level::Warning,
+                "upstream SSE stream was cut before a terminal event",
+            )),
+            cut_kind: Some("transport_error"),
+        },
+    );
+}
+
+#[test]
+fn a_failed_body_read_carries_its_message_and_the_observer_counters_into_the_event() {
+    let _throttle = crate::observability::throttle::test_support::scoped();
+    let sse = b"event: message_start\ndata: {}\n\nevent: ping\ndata: {\"type\": \"ping\"}\n\nevent: content_block_delta\ndata: {}\n\n";
+
+    let events = sentry::test::with_captured_events(|| {
+        let response = Response::builder()
+            .header(CONTENT_TYPE, "text/event-stream")
+            .body(mock_body(sse, Drive::ErrorToEnd))
+            .unwrap();
+        let wrapped = observe_response(
+            response,
+            Protocol::Anthropic,
+            "provider".to_string(),
+            "model".to_string(),
+            Instant::now(),
+        );
+        drain(wrapped.into_body(), Drive::ErrorToEnd);
+    });
+
+    assert_eq!(events.len(), 1);
+    let extra = &events[0].extra;
+    assert_eq!(
+        extra.get("bytes_forwarded"),
+        Some(&(sse.len() as u64).into()),
+        "every byte handed to the client is counted"
+    );
+    assert_eq!(
+        extra.get("sse_events"),
+        Some(&3u64.into()),
+        "all three complete frames are counted, the keepalive included"
+    );
+    assert_eq!(
+        extra.get("last_event_type"),
+        Some(&"content_block_delta".into()),
+        "the keepalive must not become the reported last event type"
+    );
+    assert!(
+        extra.contains_key("elapsed_ms"),
+        "elapsed is always known: {extra:?}"
+    );
+    assert!(
+        extra.contains_key("ttft_ms"),
+        "a chunk was forwarded, so TTFT is known: {extra:?}"
+    );
+    let error = extra
+        .get("upstream_error")
+        .and_then(|value| value.as_str())
+        .expect("upstream_error extra must be present");
+    assert!(
+        error.contains(UPSTREAM_READ_ERROR),
+        "the body read error must survive into the event: {error:?}"
+    );
+}
+
+#[test]
+fn a_cut_before_any_body_chunk_reports_zero_counters_and_no_ttft() {
+    let _throttle = crate::observability::throttle::test_support::scoped();
+
+    let events = sentry::test::with_captured_events(|| {
+        let response = Response::builder()
+            .header(CONTENT_TYPE, "text/event-stream")
+            .body(Body::from_stream(stream::iter(Vec::<
+                Result<Bytes, Infallible>,
+            >::new())))
+            .unwrap();
+        let wrapped = observe_response(
+            response,
+            Protocol::Anthropic,
+            "provider".to_string(),
+            "model".to_string(),
+            Instant::now(),
+        );
+        drain(wrapped.into_body(), Drive::ToEnd);
+    });
+
+    assert_eq!(events.len(), 1);
+    let extra = &events[0].extra;
+    assert_eq!(extra.get("sse_events"), Some(&0u64.into()));
+    assert_eq!(extra.get("bytes_forwarded"), Some(&0u64.into()));
+    assert!(
+        !extra.contains_key("ttft_ms"),
+        "no chunk ever arrived, so there is no TTFT to report"
+    );
+    assert!(
+        !extra.contains_key("last_event_type"),
+        "no frame was parsed, so there is no last event type"
+    );
+    assert_eq!(
+        events[0].tags.get("cut_kind").map(String::as_str),
+        Some("eof")
+    );
+}
+
+#[test]
+fn an_oversized_event_name_is_bounded_by_the_inline_buffer() {
+    // The name comes from upstream, so it is copied into a fixed-size buffer
+    // rather than an allocation that grows with it.
+    let mut observer = state(Protocol::Anthropic);
+    let oversized = "e".repeat(4096);
+    observer.push_bytes(format!("event: {oversized}\ndata: {{}}\n\n").as_bytes());
+
+    assert_eq!(observer.last_event_len, MAX_LAST_EVENT_BYTES);
+    assert_eq!(
+        &observer.last_event[..observer.last_event_len],
+        "e".repeat(MAX_LAST_EVENT_BYTES).as_bytes()
+    );
+}
+
+#[test]
+fn an_event_split_across_chunks_still_counts_once_and_records_its_name() {
+    let mut observer = state(Protocol::Anthropic);
+    let event = anth_event("message_delta", json!({"usage": {"output_tokens": 1}}));
+    for bytes in event.as_bytes().chunks(5) {
+        observer.push_bytes(bytes);
+    }
+
+    assert_eq!(observer.sse_events, 1);
+    assert_eq!(
+        &observer.last_event[..observer.last_event_len],
+        b"message_delta"
+    );
+}
+
+#[test]
+fn error_chain_renders_the_error_and_its_sources() {
+    // `axum::Error` boxes the body error, and each layer's `Display` need not
+    // repeat its cause — walking `source()` is what keeps the diagnosis.
+    #[derive(Debug)]
+    struct Outer(std::io::Error);
+
+    impl std::fmt::Display for Outer {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("error reading a body from connection")
+        }
+    }
+
+    impl std::error::Error for Outer {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(&self.0)
+        }
+    }
+
+    let error = axum::Error::new(Outer(std::io::Error::other("connection reset by peer")));
+    assert_eq!(
+        error_chain(&error),
+        "error reading a body from connection: connection reset by peer"
+    );
+}
+
+#[test]
+fn error_chain_renders_an_error_without_a_source() {
+    let error = axum::Error::new(std::io::Error::other("broken pipe"));
+    assert_eq!(error_chain(&error), "broken pipe");
 }
 
 #[test]

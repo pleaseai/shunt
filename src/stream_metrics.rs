@@ -21,6 +21,16 @@ use serde_json::Value;
 
 const MAX_EVENT_BYTES: usize = 256 * 1024;
 
+/// Bytes of an SSE `event:` name kept for the "last observed event type"
+/// diagnostic (#310). Upstream-controlled text, so it lives in a fixed-size
+/// inline buffer: the observer's footprint cannot grow with it, and the
+/// streaming path never allocates to record it.
+const MAX_LAST_EVENT_BYTES: usize = 64;
+
+/// `source()` links [`error_chain`] walks after an upstream body error's own
+/// message.
+const MAX_ERROR_SOURCES: usize = 4;
+
 /// Injected by `adapters::responses::http::stream_response` as a standalone
 /// SSE comment frame immediately before a synthesized completion, whenever
 /// `AnthropicSseMachine::finish` only produced output because the upstream
@@ -38,6 +48,56 @@ pub(crate) const UPSTREAM_TRUNCATED_MARKER: &[u8] = b":shunt-upstream-truncated"
 pub enum Protocol {
     Anthropic,
     Responses,
+}
+
+/// How the observed stream ended, as seen by [`ObservedStream`]'s poll and
+/// drop paths. Distinguishing the first two is the point of #310: a clean end
+/// with no terminal event and a failed body read both classify as
+/// [`Outcome::UpstreamCut`], but they are different faults, and only the
+/// second has an error message worth reporting.
+#[derive(Debug)]
+enum StreamEnd {
+    /// The upstream body ended (`Poll::Ready(None)`).
+    Eof,
+    /// Reading the upstream body failed (`Poll::Ready(Some(Err(_)))`); carries
+    /// the error rendered by [`error_chain`].
+    TransportError(String),
+    /// The wrapper was dropped while the upstream was still open — the client
+    /// hung up.
+    ClientDrop,
+}
+
+impl StreamEnd {
+    /// Whether the upstream, rather than the client, ended the stream. Both
+    /// [`Self::Eof`] and [`Self::TransportError`] are "natural" in this sense:
+    /// the observer stopped because the upstream side stopped.
+    fn natural(&self) -> bool {
+        !matches!(self, Self::ClientDrop)
+    }
+}
+
+/// Render an upstream body error as one line: its own `Display`, then up to
+/// [`MAX_ERROR_SOURCES`] `source()` messages joined by `": "`. Each layer's
+/// own `Display` need not repeat its cause, so the chain is where the
+/// diagnosis usually is. A cause whose message the line already ends with is
+/// skipped, since a transparent wrapper — `axum::Error` around a body error is
+/// exactly one — reports its source's message as its own.
+/// `crate::observability` strips control characters and caps the length before
+/// any of this reaches Sentry.
+fn error_chain(error: &axum::Error) -> String {
+    use std::fmt::Write;
+
+    let mut rendered = error.to_string();
+    let mut source = std::error::Error::source(error);
+    for _ in 0..MAX_ERROR_SOURCES {
+        let Some(cause) = source else { break };
+        let text = cause.to_string();
+        if !rendered.ends_with(&text) {
+            let _ = write!(rendered, ": {text}");
+        }
+        source = cause.source();
+    }
+    rendered
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,6 +171,21 @@ struct ObserverState {
     /// `outcome` to classify the stream as `UpstreamCut` even though the
     /// synthesized completion that follows also sets `terminal_seen`.
     truncated_seen: bool,
+    /// Complete SSE frames parsed so far, and body bytes forwarded so far —
+    /// reported as Sentry event context when the stream fails (#310).
+    /// `sse_events` counts every complete frame, keepalives and comment frames
+    /// included; a single event larger than [`MAX_EVENT_BYTES`] is skipped
+    /// past without being parsed, so it is not counted.
+    sse_events: u64,
+    bytes_forwarded: u64,
+    /// The `event:` name of the last non-keepalive frame parsed, in a
+    /// fixed-size inline buffer (see [`MAX_LAST_EVENT_BYTES`]).
+    /// `last_event_len == 0` means none was seen.
+    last_event: [u8; MAX_LAST_EVENT_BYTES],
+    last_event_len: usize,
+    /// Milliseconds from `started_at` to the first body chunk, recorded
+    /// alongside the `shunt.ttft` histogram.
+    ttft_ms: Option<u64>,
     tokens: TokenUsage,
     finished: bool,
 }
@@ -139,6 +214,11 @@ impl ObserverState {
             terminal_seen: false,
             error_seen: false,
             truncated_seen: false,
+            sse_events: 0,
+            bytes_forwarded: 0,
+            last_event: [0; MAX_LAST_EVENT_BYTES],
+            last_event_len: 0,
+            ttft_ms: None,
             tokens: TokenUsage::default(),
             finished: false,
         }
@@ -147,12 +227,11 @@ impl ObserverState {
     fn observe_chunk(&mut self, chunk: &[u8]) {
         if !self.first_chunk_seen {
             self.first_chunk_seen = true;
-            crate::metrics::record_ttft(
-                &self.provider,
-                &self.model,
-                self.started_at.elapsed().as_secs_f64() * 1000.0,
-            );
+            let ttft = self.started_at.elapsed();
+            crate::metrics::record_ttft(&self.provider, &self.model, ttft.as_secs_f64() * 1000.0);
+            self.ttft_ms = Some(millis(ttft));
         }
+        self.bytes_forwarded = self.bytes_forwarded.saturating_add(chunk.len() as u64);
         self.push_bytes(chunk);
     }
 
@@ -179,10 +258,18 @@ impl ObserverState {
     fn parse_complete_frames(&mut self) {
         while let Some((boundary, delimiter_len)) = find_boundary(&self.buffer) {
             let end = boundary + delimiter_len;
-            let observation = observe_frame(self.protocol, &self.buffer[..boundary]);
+            let (observation, event) = observe_frame(self.protocol, &self.buffer[..boundary]);
+            // Copied out before anything else touches `self`: `event` borrows
+            // the buffer this loop is about to drain.
+            let last_event = event.map(inline_event_name);
+            self.sse_events = self.sse_events.saturating_add(1);
             self.terminal_seen |= observation.terminal;
             self.error_seen |= observation.error;
             self.truncated_seen |= observation.truncated;
+            if let Some((name, len)) = last_event {
+                self.last_event = name;
+                self.last_event_len = len;
+            }
             merge_tokens(&mut self.tokens, observation.tokens);
             self.buffer.drain(..end);
         }
@@ -236,12 +323,57 @@ impl ObserverState {
         }
     }
 
-    fn finish(&mut self, natural_end: bool) {
+    /// Which flavor of cut this was, for the `cut_kind` Sentry tag. Only
+    /// meaningful once [`Self::outcome`] has already classified the stream as
+    /// [`Outcome::UpstreamCut`].
+    ///
+    /// The marker takes precedence for the same reason it does in `outcome`:
+    /// when the adapter injected it, it had already detected the real cut and
+    /// manufactured the terminal event that followed, so however *this*
+    /// observer's copy of the stream ended is not the interesting fact.
+    fn cut_kind(&self, end: &StreamEnd) -> crate::observability::CutKind {
+        use crate::observability::CutKind;
+        if self.truncated_seen {
+            CutKind::Marker
+        } else if matches!(end, StreamEnd::TransportError(_)) {
+            CutKind::TransportError
+        } else {
+            CutKind::Eof
+        }
+    }
+
+    /// Snapshot of what the observer saw, for the Sentry event (#310). Built
+    /// on the failure path only, so a healthy stream never pays for it.
+    fn failure_context(
+        &self,
+        failure: crate::observability::StreamFailureKind,
+        end: &StreamEnd,
+    ) -> crate::observability::StreamFailureContext {
+        use crate::observability::{StreamFailureContext, StreamFailureKind};
+        StreamFailureContext {
+            cut_kind: matches!(failure, StreamFailureKind::UpstreamCut).then(|| self.cut_kind(end)),
+            upstream_error: match end {
+                StreamEnd::TransportError(error) => Some(error.clone()),
+                StreamEnd::Eof | StreamEnd::ClientDrop => None,
+            },
+            sse_events: self.sse_events,
+            bytes_forwarded: self.bytes_forwarded,
+            last_event_type: (self.last_event_len > 0).then(|| {
+                // Lossy because the inline buffer truncates at a byte, not a
+                // `char`, boundary.
+                String::from_utf8_lossy(&self.last_event[..self.last_event_len]).into_owned()
+            }),
+            elapsed_ms: millis(self.started_at.elapsed()),
+            ttft_ms: self.ttft_ms,
+        }
+    }
+
+    fn finish(&mut self, end: StreamEnd) {
         if self.finished {
             return;
         }
         self.finished = true;
-        let outcome = self.outcome(natural_end);
+        let outcome = self.outcome(end.natural());
         crate::metrics::record_stream_outcome(&self.provider, &self.model, outcome.as_str());
         // Only a stream that actually opened `200` can have "failed mid-stream"
         // in the sense this reports: a non-2xx response was already recorded
@@ -255,6 +387,7 @@ impl ObserverState {
                     &self.provider,
                     &self.model,
                     failure,
+                    &self.failure_context(failure, &end),
                 );
             }
         }
@@ -280,23 +413,46 @@ struct FrameObservation {
     tokens: TokenUsage,
 }
 
-fn observe_frame(protocol: Protocol, frame: &[u8]) -> FrameObservation {
+/// Observe one complete SSE frame. The second element is the frame's `event:`
+/// name, for the "last observed event type" diagnostic (#310) — `None` for a
+/// keepalive or the truncation marker, so the reported type stays on the last
+/// content-bearing frame rather than drifting onto a ping.
+fn observe_frame(protocol: Protocol, frame: &[u8]) -> (FrameObservation, Option<&[u8]>) {
     if frame == UPSTREAM_TRUNCATED_MARKER {
-        return FrameObservation {
-            truncated: true,
-            ..Default::default()
-        };
+        return (
+            FrameObservation {
+                truncated: true,
+                ..Default::default()
+            },
+            None,
+        );
     }
 
     let (event, data) = event_and_data(frame);
     if event == Some(b"ping") || data == Some(b"{\"type\": \"ping\"}") {
-        return FrameObservation::default();
+        return (FrameObservation::default(), None);
     }
 
-    match protocol {
+    let observation = match protocol {
         Protocol::Anthropic => observe_anthropic(event, data),
         Protocol::Responses => observe_responses(event, data),
-    }
+    };
+    (observation, event)
+}
+
+/// Copy an SSE event name into a fixed-size buffer, dropping anything past
+/// [`MAX_LAST_EVENT_BYTES`]. Returns the buffer and how much of it is used.
+fn inline_event_name(event: &[u8]) -> ([u8; MAX_LAST_EVENT_BYTES], usize) {
+    let len = event.len().min(MAX_LAST_EVENT_BYTES);
+    let mut name = [0; MAX_LAST_EVENT_BYTES];
+    name[..len].copy_from_slice(&event[..len]);
+    (name, len)
+}
+
+/// Whole milliseconds, saturating rather than wrapping for an
+/// implausibly long-lived stream.
+fn millis(elapsed: std::time::Duration) -> u64 {
+    u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
 }
 
 fn observe_anthropic(event: Option<&[u8]>, data: Option<&[u8]>) -> FrameObservation {
@@ -407,11 +563,16 @@ impl Stream for ObservedStream {
                 Poll::Ready(Some(Ok(chunk)))
             }
             Poll::Ready(Some(Err(error))) => {
-                self.state.finish(true);
+                // The error is forwarded to the client unchanged; its message
+                // is also recorded, since a failed body read and a clean end
+                // with no terminal event are indistinguishable downstream
+                // (#310).
+                self.state
+                    .finish(StreamEnd::TransportError(error_chain(&error)));
                 Poll::Ready(Some(Err(error)))
             }
             Poll::Ready(None) => {
-                self.state.finish(true);
+                self.state.finish(StreamEnd::Eof);
                 Poll::Ready(None)
             }
             Poll::Pending => Poll::Pending,
@@ -421,7 +582,7 @@ impl Stream for ObservedStream {
 
 impl Drop for ObservedStream {
     fn drop(&mut self) {
-        self.state.finish(false);
+        self.state.finish(StreamEnd::ClientDrop);
     }
 }
 

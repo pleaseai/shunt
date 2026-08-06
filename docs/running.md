@@ -129,13 +129,18 @@ provider = "openai"
 # tagged with model, provider, and upstream_status only. A streaming request
 # that answers 200 and then fails mid-stream (an `event: error` frame, or the
 # connection cut before a terminal event) also reports: error for the former,
-# warning for the latter, tagged with model, provider, and outcome only
-# (issue #287). Request/response bodies, headers, credentials, and the host
-# name are never sent: breadcrumbs keep only the log message (field values are
-# stripped), and tracing spans attach only when you opt into tracing via
-# traces_sample_rate below. An empty DSN (e.g. SHUNT_SENTRY__DSN="") disables
-# reporting again; an invalid DSN or an out-of-range traces_sample_rate is a
-# startup error.
+# warning for the latter, tagged with model, provider, and outcome
+# (issue #287). A cut also carries a cut_kind tag (eof, transport_error, or
+# marker) plus diagnostic context — SSE events and bytes forwarded, the last
+# event type, elapsed/TTFT in ms, and the upstream error message for a
+# transport_error (issue #310). Mid-stream events are rate-limited in-process
+# so a retrying client cannot flood the project; the shunt.stream_outcome
+# metric below is never throttled. Request/response bodies, headers,
+# credentials, and the host name are never sent: breadcrumbs keep only the log
+# message (field values are stripped), and tracing spans attach only when you
+# opt into tracing via traces_sample_rate below. An empty DSN (e.g.
+# SHUNT_SENTRY__DSN="") disables reporting again; an invalid DSN or an
+# out-of-range traces_sample_rate is a startup error.
 # [sentry]
 # dsn = "https://<key>@<org>.ingest.sentry.io/<project>"
 # environment = "home-lab"   # optional environment tag on events

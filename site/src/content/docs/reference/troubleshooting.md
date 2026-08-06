@@ -5,6 +5,7 @@ description: Common shunt errors and how to fix them.
 
 | Symptom | Cause / Fix |
 | :-- | :-- |
+| Sentry: `upstream SSE stream was cut before a terminal event` | A streaming response ended without a terminal event. Read the event's `cut_kind` tag: `transport_error` means the body read failed (`upstream_error` has the message), `eof` means the upstream closed cleanly mid-message, `marker` means shunt detected the cut and synthesized a completion for the client. The `sse_events`/`bytes_forwarded`/`last_event_type` extras say how far the response got. |
 | `ChatGPT auth not found; run codex login` | shunt can't read `~/.codex/auth.json`. Run `codex login`. |
 | `authentication_error` on a mapped model | Expired/absent provider credential — re-run `codex login`, or export `OPENAI_API_KEY`. shunt surfaces the backend's real `detail` message. |
 | `400 … model is not supported when using Codex with a ChatGPT account` | You used a `-codex` slug (or one your account isn't entitled to). Use an entitled slug from [models.json](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json) (e.g. `gpt-5.6-sol`, `gpt-5.5`) or set `upstream_model`. |
