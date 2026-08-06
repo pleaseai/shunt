@@ -107,6 +107,9 @@ impl EventThrottle {
         } else {
             OVERFLOW_KEY
         };
+        if key != OVERFLOW_KEY {
+            self.drain_finished_overflow_window(now);
+        }
 
         let decision = match self.windows.get_mut(key) {
             Some(window) if now.saturating_duration_since(window.started_at) < self.window => {
@@ -166,6 +169,26 @@ impl EventThrottle {
             false
         });
         self.forfeited = self.forfeited.saturating_add(forfeited);
+    }
+
+    /// Hand the shared bucket's finished window to the pending count when an
+    /// event is about to bypass the bucket. The bucket reports what it dropped
+    /// on the next event it admits, but a key holding a tracked slot never
+    /// reaches it — so after a burst that overflows and then subsides, the
+    /// count would otherwise wait for the next burst or for the bucket to
+    /// lapse [`DEBT_IDLE_WINDOWS`] later. Only a window that has already
+    /// elapsed is taken: a current one is still counting, exactly as it is for
+    /// any other key.
+    fn drain_finished_overflow_window(&mut self, now: Instant) {
+        let Some(window) = self.windows.get_mut(OVERFLOW_KEY) else {
+            return;
+        };
+        if window.suppressed == 0 || now.saturating_duration_since(window.started_at) < self.window
+        {
+            return;
+        }
+        let suppressed = std::mem::take(&mut window.suppressed);
+        self.forfeited = self.forfeited.saturating_add(suppressed);
     }
 }
 
@@ -421,22 +444,23 @@ mod tests {
 
         throttle.admit("a", start);
         throttle.admit("b", start);
-        // Overflow the table, overshooting the shared bucket's cap so it owes
-        // a count and survives ordinary idle reclamation.
+
+        // Restart `b`'s window so it stays live; `a` goes quiet for good. Then
+        // load the shared bucket while the table is still full, overshooting
+        // its cap so it owes a count.
+        let load = start + WINDOW + WINDOW / 2;
+        throttle.admit("b", load);
         for _ in 0..MAX_PER_WINDOW + 1 {
-            throttle.admit(&format!("overflow-{}", next_id()), start);
+            throttle.admit(&format!("overflow-{}", next_id()), load);
         }
         assert!(throttle.windows.contains_key(OVERFLOW_KEY));
 
-        // Restart `b`'s window so it stays live; `a` goes quiet for good.
-        throttle.admit("b", start + WINDOW + WINDOW / 2);
-
-        // `a` has now been idle long enough to be reclaimed and `b` has not,
-        // so one of the two tracked slots is free next to the bucket. Counting
-        // the bucket as a tracked key would make the table look full here and
-        // fold `fresh` into it — collecting the count the bucket owes on the
-        // way in — instead of giving it a window of its own.
-        let later = start + WINDOW * 3;
+        // `a` has now been idle long enough to be reclaimed and `b` has not, so
+        // one of the two tracked slots is free next to the bucket. Counting the
+        // bucket as a tracked key would make the table look full here and send
+        // `fresh` into the bucket, whose current window is already at its cap —
+        // a `Suppress` rather than a window of its own.
+        let later = start + WINDOW * 2;
         assert_eq!(
             throttle.admit("fresh", later),
             ThrottleDecision::Emit { suppressed: 0 }
@@ -444,6 +468,42 @@ mod tests {
         assert!(throttle.windows.contains_key("fresh"));
         assert!(throttle.windows.contains_key("b"));
         assert!(throttle.windows.contains_key(OVERFLOW_KEY));
+    }
+
+    #[test]
+    fn the_buckets_finished_window_is_reported_when_a_tracked_key_bypasses_it() {
+        // Nothing routes through the bucket once a tracked slot is free, so its
+        // finished window has to be handed over or the count waits for the next
+        // burst — or for the bucket to lapse an hour later.
+        let mut throttle = EventThrottle::new(WINDOW, 1, 2);
+        let start = Instant::now();
+
+        throttle.admit("a", start);
+        throttle.admit("b", start);
+        // The table is full, so these fold into the bucket and overshoot it.
+        throttle.admit("overflow-one", start);
+        for _ in 0..2 {
+            assert_eq!(
+                throttle.admit(&format!("overflow-{}", next_id()), start),
+                ThrottleDecision::Suppress
+            );
+        }
+
+        // A tracked key emits once the bucket's window has elapsed. It never
+        // touches the bucket, so it carries what the bucket dropped.
+        let next_window = start + WINDOW + WINDOW / 2;
+        assert_eq!(
+            throttle.admit("b", next_window),
+            ThrottleDecision::Emit { suppressed: 2 }
+        );
+        assert_eq!(
+            throttle
+                .windows
+                .get(OVERFLOW_KEY)
+                .map(|window| window.suppressed),
+            Some(0),
+            "the bucket must not report the same count again"
+        );
     }
 
     #[test]
