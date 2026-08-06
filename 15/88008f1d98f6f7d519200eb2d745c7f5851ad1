@@ -1,0 +1,23 @@
+.claude/agent-memory/review-review-cubic-reviewer/cubic-empty-review-clean-tree.md
+  s_10c288b56ea3cc::t_a9348ea7802dbc 1-23
+.claude/agent-memory/review-review-cubic-reviewer/MEMORY.md
+  s_10c288b56ea3cc::t_e15765cad6375b 1-4
+.claude/agent-memory/review-review-cubic-reviewer/shunt-sentry-error-display-url-leak.md
+  s_10c288b56ea3cc::t_eb1d52400ff800 1-28
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "1588008f1d98f6f7d519200eb2d745c7f5851ad1",
+  "prompts": {},
+  "sessions": {
+    "s_10c288b56ea3cc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b849d938-ba68-4f47-b3d3-a334ccadbe43",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
