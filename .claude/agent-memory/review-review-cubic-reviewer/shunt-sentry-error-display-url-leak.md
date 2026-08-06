@@ -1,28 +1,31 @@
 ---
 name: shunt-sentry-error-display-url-leak
-description: reqwest::Error Display embeds the request URL (host, query, sometimes creds) — any place that forwards an error's to_string()/source() chain to Sentry as free text can leak it despite control-char/length sanitizers
+description: reqwest::Error Display appends `for url (...)` only when the error carries a URL — request-phase errors do, body/decode errors from bytes_stream() do not, so check the error kind before assuming an exported error chain leaks the host
 metadata:
   type: project
 ---
 
-#310 (`src/stream_metrics.rs::error_chain`, called from `ObservedStream::poll_next` around
-line 571) renders a body-read `axum::Error`'s `Display` plus up to
-`MAX_ERROR_SOURCES` `source()` messages into one string, which
-`src/observability.rs::record_stream_failure` exports as the Sentry `upstream_error` extra
-after only `sanitize_tag` (control-char strip + length cap — no URL/host redaction).
+`reqwest::Error`'s `Display` writes `" for url ({url})"` only when its inner `url` field is
+`Some` (`reqwest-0.13.4/src/error.rs:279`). That field is populated by `.with_url(...)`, which
+the request path applies (`async_impl/client.rs:3100`), so a request-phase error's
+`to_string()` does carry the full upstream URL — host, path, and query.
 
-**Why it matters:** `reqwest::Error`'s `Display` includes `for url (...)`, so a transport
-error's message chain can carry the full upstream request URL — host, path, query params,
-and in some misconfigurations query-string credentials. `docs/running.md:139` explicitly
-documents "credentials, and the host name are never sent" for Sentry mid-stream events, so
-this is a doc/behavior contradiction, not just a style nit. Confirmed live in cubic review
-(`P1`, run via `cubic review -j -b origin/main`, commit `2d67f01`) and by reading
-`sanitize_tag` in `src/observability.rs` (only strips control chars + truncates).
+**Why it matters:** wherever an error chain is exported as free text (Sentry extras, OTEL log
+bodies, breadcrumbs), `sanitize_tag` in `src/observability.rs` only strips control characters
+and truncates — it performs no URL or host redaction. An error that does carry a URL would
+therefore reach Sentry with the host intact, against the "credentials, and the host name are
+never sent" guarantee in `docs/running.md:139`.
 
-**How to apply:** any future observability code that stringifies an upstream `reqwest`/`axum`
-error chain for export (Sentry extras, OTEL log bodies, breadcrumbs) needs URL/host
-redaction, not just the existing `sanitize_tag` control-char/length sanitizer, to actually
-satisfy the "no host name" guarantee in `docs/running.md`. Left unfixed pending a maintainer
-decision — redacting a URL substring is a design choice (strip whole `for url (...)` clause?
-keep scheme+path, drop host/query?) rather than a mechanical fix, so this agent flagged it
-instead of auto-patching.
+**This does not apply to the #310 mid-stream path.** `src/stream_metrics.rs::error_chain`
+renders a body-read error from `Response::bytes_stream()`, which reqwest builds through
+`error::decode` — `Error::new(Kind::Decode, ...)` leaves `url: None`
+(`reqwest-0.13.4/src/error.rs:41,331`), so there is no `for url (...)` clause to leak.
+`record_stream_failure_event_carries_exactly_the_expected_extras` already asserts the exported
+`upstream_error` contains no `://` (`src/observability.rs:1258`). An earlier revision of this
+note asserted a confirmed doc/behavior contradiction on this path; that was wrong, and cubic
+corrected it on PR #311.
+
+**How to apply:** before concluding that an exported error chain does or does not leak a host,
+check which reqwest error kind produced it — request, connect, and timeout errors carry a URL;
+body and decode errors raised after a successful response do not. Redaction beyond
+`sanitize_tag` is worth adding to any new export path that can surface request-phase errors.
