@@ -37,10 +37,17 @@ const MAX_KEYS: usize = 256;
 const OVERFLOW_KEY: &str = "other";
 
 /// How long an idle key is kept before it is reclaimed, as a multiple of
-/// [`WINDOW`]. A key that still owes a suppressed count is exempt: that count
-/// is the payload of the next event it emits, so reclaiming it would lose the
-/// only record that anything was suppressed.
+/// [`WINDOW`].
 const IDLE_WINDOWS: u32 = 2;
+
+/// The same, for a key that still owes a suppressed count. That count is the
+/// payload of the next event the key emits, so it outlives an ordinary idle
+/// key by a wide margin — but not forever, or a key that never returns would
+/// hold a table slot for the life of the process. Once even this elapses the
+/// entry is reclaimed and its debt moves to [`OVERFLOW_KEY`] (see
+/// [`EventThrottle::carry_debt_to_overflow`]), so the count is still reported
+/// rather than silently dropped.
+const DEBT_IDLE_WINDOWS: u32 = 60;
 
 /// Whether one event may be sent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -124,9 +131,42 @@ impl EventThrottle {
 
     fn reclaim_idle(&mut self, now: Instant) {
         let idle_after = self.window * IDLE_WINDOWS;
+        let debt_idle_after = self.window * DEBT_IDLE_WINDOWS;
+        let mut forfeited: u64 = 0;
         self.windows.retain(|_, window| {
-            window.suppressed > 0 || now.duration_since(window.started_at) < idle_after
+            let idle_for = now.duration_since(window.started_at);
+            if window.suppressed == 0 {
+                return idle_for < idle_after;
+            }
+            if idle_for < debt_idle_after {
+                return true;
+            }
+            forfeited = forfeited.saturating_add(window.suppressed);
+            false
         });
+        if forfeited > 0 {
+            self.carry_debt_to_overflow(forfeited, now);
+        }
+    }
+
+    /// Move a reclaimed key's unreported suppressions into the shared overflow
+    /// window so they are still reported somewhere. The bucket's current
+    /// window is closed out (its start is backdated by one full window) so the
+    /// debt lands on the very next event that bucket admits rather than
+    /// waiting out a window the caller cannot see. That hands the bucket a
+    /// fresh budget, which is acceptable: reaching here costs
+    /// [`DEBT_IDLE_WINDOWS`] windows of silence from the key that owed it.
+    fn carry_debt_to_overflow(&mut self, suppressed: u64, now: Instant) {
+        let window = self
+            .windows
+            .entry(OVERFLOW_KEY.to_owned())
+            .or_insert(Window {
+                started_at: now,
+                emitted: 0,
+                suppressed: 0,
+            });
+        window.suppressed = window.suppressed.saturating_add(suppressed);
+        window.started_at = now.checked_sub(self.window).unwrap_or(window.started_at);
     }
 }
 
@@ -197,7 +237,10 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use super::{EventThrottle, ThrottleDecision, MAX_KEYS, MAX_PER_WINDOW, OVERFLOW_KEY, WINDOW};
+    use super::{
+        EventThrottle, ThrottleDecision, DEBT_IDLE_WINDOWS, MAX_KEYS, MAX_PER_WINDOW, OVERFLOW_KEY,
+        WINDOW,
+    };
 
     fn throttle() -> EventThrottle {
         EventThrottle::new(WINDOW, MAX_PER_WINDOW, MAX_KEYS)
@@ -309,6 +352,73 @@ mod tests {
     fn next_id() -> u64 {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         NEXT.fetch_add(1, Ordering::Relaxed)
+    }
+
+    #[test]
+    fn a_key_owing_a_suppressed_count_is_eventually_reclaimed_into_the_overflow_bucket() {
+        // The debt exemption is generous but bounded: a key that never comes
+        // back must not hold a table slot for the life of the process. What it
+        // owes moves to the shared bucket rather than disappearing.
+        let mut throttle = EventThrottle::new(WINDOW, 1, MAX_KEYS);
+        let start = Instant::now();
+
+        throttle.admit("owing", start);
+        for _ in 0..4 {
+            assert_eq!(throttle.admit("owing", start), ThrottleDecision::Suppress);
+        }
+
+        // Just inside the horizon the key is still there and hands over its
+        // debt directly.
+        let within_horizon = start + WINDOW * (DEBT_IDLE_WINDOWS - 1);
+        assert_eq!(
+            throttle.admit("owing", within_horizon),
+            ThrottleDecision::Emit { suppressed: 4 }
+        );
+        for _ in 0..3 {
+            assert_eq!(
+                throttle.admit("owing", within_horizon),
+                ThrottleDecision::Suppress
+            );
+        }
+
+        // Now let it lapse past the horizon with those three uncollected.
+        let long_gone = within_horizon + WINDOW * DEBT_IDLE_WINDOWS;
+        assert_eq!(
+            throttle.admit("unrelated", long_gone),
+            ThrottleDecision::Emit { suppressed: 0 }
+        );
+        assert!(
+            !throttle.windows.contains_key("owing"),
+            "the lapsed key must not hold its slot forever"
+        );
+        assert_eq!(
+            throttle
+                .windows
+                .get(OVERFLOW_KEY)
+                .map(|window| window.suppressed),
+            Some(3),
+            "its unreported count moves to the overflow bucket, not to nowhere"
+        );
+    }
+
+    #[test]
+    fn a_forfeited_debt_resurfaces_on_the_overflow_buckets_next_admitted_event() {
+        // Same reclamation, observed from the outside: the count reappears on
+        // the next event the overflow bucket lets through.
+        let mut throttle = EventThrottle::new(WINDOW, 1, 1);
+        let start = Instant::now();
+
+        throttle.admit("owing", start);
+        throttle.admit("owing", start);
+        throttle.admit("owing", start);
+
+        let long_gone = start + WINDOW * (DEBT_IDLE_WINDOWS + 1);
+        // The table is full of nothing but the overflow bucket now, so this
+        // distinct key folds into it and collects the forfeited count.
+        assert_eq!(
+            throttle.admit("some-other-key", long_gone),
+            ThrottleDecision::Emit { suppressed: 2 }
+        );
     }
 
     #[test]
