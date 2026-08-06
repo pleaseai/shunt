@@ -1,0 +1,19 @@
+.claude/agent-memory/review-review-cubic-reviewer/shunt-sentry-error-display-url-leak.md
+  s_10c288b56ea3cc::t_af05f2099b659c 3,8-11,13-17,19-31
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "4fc05fec6c3992bc2d7e12f5acadefd63c4c3563",
+  "prompts": {},
+  "sessions": {
+    "s_10c288b56ea3cc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b849d938-ba68-4f47-b3d3-a334ccadbe43",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
