@@ -414,9 +414,12 @@ struct FrameObservation {
 }
 
 /// Observe one complete SSE frame. The second element is the frame's `event:`
-/// name, for the "last observed event type" diagnostic (#310) — `None` for a
-/// keepalive or the truncation marker, so the reported type stays on the last
-/// content-bearing frame rather than drifting onto a ping.
+/// name, for the "last observed event type" diagnostic (#310). It is `None`
+/// for any frame that has no `event:` line at all — the truncation marker
+/// (a comment frame) and the Responses `data: [DONE]` terminal among them —
+/// and deliberately `None` for a keepalive, so the reported type stays on the
+/// last content-bearing frame rather than drifting onto a ping. A `None` here
+/// leaves the previously recorded name in place.
 fn observe_frame(protocol: Protocol, frame: &[u8]) -> (FrameObservation, Option<&[u8]>) {
     if frame == UPSTREAM_TRUNCATED_MARKER {
         return (
