@@ -493,4 +493,68 @@ mod tests {
             "a reclaimed key would have lost its suppressed count"
         );
     }
+
+    #[test]
+    fn a_keys_own_rollover_count_and_forfeited_debt_combine_on_one_emit() {
+        // The two sources of a suppressed count are independent and add up:
+        // reporting only one of them would lose the other.
+        let mut throttle = EventThrottle::new(WINDOW, 1, MAX_KEYS);
+        let start = Instant::now();
+
+        // `owing` runs up a count of 2 and then never comes back.
+        throttle.admit("owing", start);
+        for _ in 0..2 {
+            assert_eq!(throttle.admit("owing", start), ThrottleDecision::Suppress);
+        }
+
+        // `carrier` runs up a count of 3 of its own, one window short of the
+        // horizon so `owing` is still holding its slot.
+        let late = start + WINDOW * (DEBT_IDLE_WINDOWS - 1);
+        throttle.admit("carrier", late);
+        for _ in 0..3 {
+            assert_eq!(throttle.admit("carrier", late), ThrottleDecision::Suppress);
+        }
+
+        // One window on, `owing` lapses and forfeits its 2 in the same call
+        // that rolls `carrier`'s window over on its own 3.
+        let lapse = start + WINDOW * DEBT_IDLE_WINDOWS;
+        assert_eq!(
+            throttle.admit("carrier", lapse),
+            ThrottleDecision::Emit { suppressed: 5 },
+            "the key's own rollover count and the forfeited debt both count"
+        );
+        assert!(!throttle.windows.contains_key("owing"));
+
+        // Neither source is reported twice. `carrier`'s cap is one per window,
+        // so the next event it may emit is a window later.
+        assert_eq!(
+            throttle.admit("carrier", lapse + WINDOW),
+            ThrottleDecision::Emit { suppressed: 0 }
+        );
+    }
+
+    #[test]
+    fn debts_forfeited_in_one_reclaim_pass_are_summed() {
+        let mut throttle = EventThrottle::new(WINDOW, 1, MAX_KEYS);
+        let start = Instant::now();
+
+        // Two keys owing 2 and 3, lapsing together so a single reclaim pass
+        // has to add them rather than keep only the last one it saw.
+        throttle.admit("owing-a", start);
+        for _ in 0..2 {
+            assert_eq!(throttle.admit("owing-a", start), ThrottleDecision::Suppress);
+        }
+        throttle.admit("owing-b", start);
+        for _ in 0..3 {
+            assert_eq!(throttle.admit("owing-b", start), ThrottleDecision::Suppress);
+        }
+
+        let lapse = start + WINDOW * DEBT_IDLE_WINDOWS;
+        assert_eq!(
+            throttle.admit("fresh", lapse),
+            ThrottleDecision::Emit { suppressed: 5 }
+        );
+        assert!(!throttle.windows.contains_key("owing-a"));
+        assert!(!throttle.windows.contains_key("owing-b"));
+    }
 }
