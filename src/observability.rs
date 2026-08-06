@@ -76,10 +76,11 @@
 //! length-bounded and stripped of control characters before export by
 //! [`sanitize_model_tag`] — otherwise an oversized or control-character-laden
 //! value would reach a Sentry tag/span field unchanged. The mid-stream event
-//! additionally carries the observer's own counters and, when the body read
-//! itself failed, the upstream error's message (#310); those are
-//! upstream-controlled rather than client-controlled, and go through the same
-//! length/control-character sanitizer.
+//! additionally carries the observer's own counters, the last observed SSE
+//! event type, and — when the body read itself failed — the upstream error's
+//! message (#310). The counters are plain integers the gateway computed, so
+//! there is nothing in them to sanitize; the event type and the error message
+//! are upstream text and do go through [`sanitize_tag`], at their own limits.
 //!
 //! A config flag to gate this tagging was considered and deferred: the existing
 //! `[sentry] traces_sample_rate` / `[otel] traces` opt-ins already gate span
@@ -393,9 +394,11 @@ pub(crate) struct StreamFailureContext {
 /// distinct event would actually be triaged along. The sanitized model is
 /// already length-capped, and the table itself is size-capped
 /// (`throttle::MAX_KEYS`), so a client-chosen model id cannot grow it without
-/// bound (#296). `\u{1f}` (unit separator) is a safe delimiter because
-/// [`sanitize_tag`] strips control characters from every component that could
-/// contain one.
+/// bound (#296). `\u{1f}` (unit separator) is a safe delimiter: `model` is the
+/// only component that can carry arbitrary text, and [`sanitize_tag`] has
+/// already stripped its control characters. `outcome` and `cut_kind` are
+/// `&'static str`s from a closed set, and `provider` comes from the operator's
+/// own config.
 fn stream_failure_throttle_key(
     provider: &str,
     model: &str,
@@ -1202,6 +1205,60 @@ mod tests {
         // Absent rather than null when there was nothing to report.
         assert!(!extra.contains_key("upstream_error"));
         assert!(!extra.contains_key("suppressed_count"));
+    }
+
+    #[test]
+    fn record_stream_failure_event_carries_exactly_the_expected_extras() {
+        // The structural counterpart to the tag lockdown above. `docs/running.md`
+        // promises request/response bodies, headers, credentials, and the host
+        // name are never sent; pinning the exact key set is what keeps a future
+        // extra from quietly breaking that, rather than spot-checking a few
+        // fields and hoping.
+        let _throttle = throttle::test_support::scoped();
+        let span = tracing::Span::none();
+        let events = sentry::test::with_captured_events(|| {
+            record_stream_failure(
+                &span,
+                "anthropic",
+                "claude-opus-5",
+                StreamFailureKind::UpstreamCut,
+                &StreamFailureContext {
+                    cut_kind: Some(CutKind::TransportError),
+                    upstream_error: Some("error reading a body: connection reset".to_string()),
+                    sse_events: 3,
+                    bytes_forwarded: 128,
+                    last_event_type: Some("content_block_delta".to_string()),
+                    elapsed_ms: 900,
+                    ttft_ms: Some(120),
+                },
+            );
+        });
+
+        assert_eq!(events.len(), 1);
+        let mut keys: Vec<&str> = events[0].extra.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "bytes_forwarded",
+                "elapsed_ms",
+                "last_event_type",
+                "sse_events",
+                "ttft_ms",
+                "upstream_error",
+            ],
+            "unexpected extras: {:?}",
+            events[0].extra
+        );
+        let upstream_error = events[0]
+            .extra
+            .get("upstream_error")
+            .and_then(|value| value.as_str())
+            .expect("upstream_error extra must be present");
+        assert!(
+            !upstream_error.contains("://"),
+            "an upstream URL would put a host name in the event: {upstream_error:?}"
+        );
     }
 
     #[test]

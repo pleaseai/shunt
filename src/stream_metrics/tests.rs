@@ -667,6 +667,36 @@ async fn non_sse_body_is_left_untouched() {
 }
 
 #[test]
+fn a_marked_cut_stays_a_marker_even_when_the_body_read_also_fails() {
+    // `ObserverState::cut_kind` ranks the marker above the transport error for
+    // the same reason `outcome` ranks it above `terminal_seen`: once
+    // `adapters::responses::http::stream_response` injected it, the adapter had
+    // already detected the real cut and manufactured the completion that
+    // followed, so however this observer's own copy of the stream ended is not
+    // the interesting fact. This is the only test holding that cross-file
+    // invariant in place.
+    let sse = [
+        super::UPSTREAM_TRUNCATED_MARKER,
+        b"\n\nevent: message_stop\ndata: {}\n\n",
+    ]
+    .concat();
+    assert_finish_wiring(
+        Protocol::Anthropic,
+        StatusCode::OK,
+        &sse,
+        Drive::ErrorToEnd,
+        FinishWiring {
+            span_status: "error",
+            event: Some((
+                sentry::Level::Warning,
+                "upstream SSE stream was cut before a terminal event",
+            )),
+            cut_kind: Some("marker"),
+        },
+    );
+}
+
+#[test]
 fn finish_reports_a_transport_error_cut_with_the_upstream_error_attached() {
     // The `Poll::Ready(Some(Err(_)))` branch: before #310 the error was
     // forwarded to the client and then discarded, so a failed body read and a
