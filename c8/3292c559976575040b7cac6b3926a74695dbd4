@@ -1,0 +1,25 @@
+src/stream_metrics.rs
+  s_10c288b56ea3cc::t_179ebeda401407 417-422
+.please/docs/review/rejected-findings.jsonl
+  s_10c288b56ea3cc::t_fb5aa510b7b36e 73
+site/src/content/docs/reference/troubleshooting.md
+  s_10c288b56ea3cc::t_a42cc8d3a5b8f6 8
+site/src/content/docs/reference/configuration.md
+  s_10c288b56ea3cc::t_a42cc8d3a5b8f6 387
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "c83292c559976575040b7cac6b3926a74695dbd4",
+  "prompts": {},
+  "sessions": {
+    "s_10c288b56ea3cc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b849d938-ba68-4f47-b3d3-a334ccadbe43",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
