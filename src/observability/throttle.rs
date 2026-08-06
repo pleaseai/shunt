@@ -98,7 +98,7 @@ impl EventThrottle {
         };
 
         match self.windows.get_mut(key) {
-            Some(window) if now.duration_since(window.started_at) < self.window => {
+            Some(window) if now.saturating_duration_since(window.started_at) < self.window => {
                 if window.emitted < self.max_per_window {
                     window.emitted += 1;
                     ThrottleDecision::Emit { suppressed: 0 }
@@ -134,7 +134,7 @@ impl EventThrottle {
         let debt_idle_after = self.window * DEBT_IDLE_WINDOWS;
         let mut forfeited: u64 = 0;
         self.windows.retain(|_, window| {
-            let idle_for = now.duration_since(window.started_at);
+            let idle_for = now.saturating_duration_since(window.started_at);
             if window.suppressed == 0 {
                 return idle_for < idle_after;
             }

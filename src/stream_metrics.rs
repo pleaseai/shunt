@@ -79,9 +79,10 @@ impl StreamEnd {
 /// Render an upstream body error as one line: its own `Display`, then up to
 /// [`MAX_ERROR_SOURCES`] `source()` messages joined by `": "`. Each layer's
 /// own `Display` need not repeat its cause, so the chain is where the
-/// diagnosis usually is. A cause whose message the line already ends with is
-/// skipped, since a transparent wrapper — `axum::Error` around a body error is
-/// exactly one — reports its source's message as its own.
+/// diagnosis usually is. A cause the line already ends with as a whole
+/// `": "`-separated segment is skipped, since a transparent wrapper —
+/// `axum::Error` around a body error is exactly one — reports its source's
+/// message as its own.
 /// `crate::observability` strips control characters and caps the length before
 /// any of this reaches Sentry.
 fn error_chain(error: &axum::Error) -> String {
@@ -92,7 +93,12 @@ fn error_chain(error: &axum::Error) -> String {
     for _ in 0..MAX_ERROR_SOURCES {
         let Some(cause) = source else { break };
         let text = cause.to_string();
-        if !rendered.ends_with(&text) {
+        // A bare `ends_with` would also swallow a cause that merely happens to
+        // be a suffix of the outer message, so require a segment boundary.
+        let already_rendered = rendered.ends_with(&text)
+            && (rendered.len() == text.len()
+                || rendered[..rendered.len() - text.len()].ends_with(": "));
+        if !already_rendered {
             let _ = write!(rendered, ": {text}");
         }
         source = cause.source();

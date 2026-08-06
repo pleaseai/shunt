@@ -874,6 +874,30 @@ fn error_chain_renders_an_error_without_a_source() {
 }
 
 #[test]
+fn error_chain_keeps_a_cause_that_is_only_a_suffix_of_its_parent() {
+    // The wrapper-dedup check must fire on a whole `": "`-separated segment:
+    // a cause whose message merely tails the outer one is a distinct layer and
+    // has to survive.
+    #[derive(Debug)]
+    struct Outer(std::io::Error);
+
+    impl std::fmt::Display for Outer {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("unknown model_id")
+        }
+    }
+
+    impl std::error::Error for Outer {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(&self.0)
+        }
+    }
+
+    let error = axum::Error::new(Outer(std::io::Error::other("id")));
+    assert_eq!(error_chain(&error), "unknown model_id: id");
+}
+
+#[test]
 fn stream_failure_labels_match_outcome_labels() {
     // The Sentry `outcome` tag and the metrics `stream_outcome` label are
     // produced by two independent `as_str` functions; they must agree or the
