@@ -1,0 +1,19 @@
+site/src/content/docs/reference/troubleshooting.md
+  s_79ca5bc71d21c8::t_16139a26040855 18
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "a7494953c2fec4d4dac8fc555b64dfa24f5aa253",
+  "prompts": {},
+  "sessions": {
+    "s_79ca5bc71d21c8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "804a3cef-5e46-41dd-901c-da18eb4db04e",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
