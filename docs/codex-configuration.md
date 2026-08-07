@@ -358,7 +358,7 @@ export CLAUDE_CODE_SUBAGENT_MODEL="gpt-5.6-sol"
 
 Either way the id must resolve through a matching `[models.upstream_model]` entry, `[[routes]]`, or
 `[[route_prefixes]]` rule (§6) and, being non-`claude-`, obeys
-`CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` (§8) and `CLAUDE_CODE_MAX_CONTEXT_TOKENS` (§10) — the context
+`CLAUDE_CODE_MAX_CONTEXT_TOKENS` (§10) — the context
 window follows the id automatically, so one global value sizes the mapped subagent while the Claude
 main keeps its own.
 
@@ -413,13 +413,13 @@ export ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION="ChatGPT/Codex Luna via shunt (
 
 Things to get right:
 
-- **These ids don't start with `claude-`**, so `CLAUDE_CODE_MAX_CONTEXT_TOKENS` (§10) applies and
-  `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` is needed for effort (§8). Handily, `gpt-5.6-sol` and
+- **These ids don't start with `claude-`**, so `CLAUDE_CODE_MAX_CONTEXT_TOKENS` (§10) applies.
+  They already send effort without a flag (§8). Handily, `gpt-5.6-sol` and
   `gpt-5.6-luna` are **both 372k**, so one global `CLAUDE_CODE_MAX_CONTEXT_TOKENS=372000` fits both
   tiers.
 - **The `_SUPPORTED_CAPABILITIES` companion is documented for third-party providers (Bedrock, etc.),
-  not confirmed for gateways** — on shunt, stick with `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` to enable
-  the effort dial.
+  not confirmed for gateways** — it isn't needed for the effort dial on shunt, since these ids
+  already send effort (§8).
 - **The haiku tier is Claude Code's background "small-fast" model** (`ANTHROPIC_SMALL_FAST_MODEL`,
   now deprecated in favor of this alias) — used for cheap, frequent work like conversation
   summaries, titles, and quick classification. Routing it to a full reasoning model like Luna is
@@ -446,14 +446,14 @@ Claude Code's effort level (`/effort`, the `/model` slider, `--effort`, or
 `src/model/responses_request.rs`), because `models.json` `supported_reasoning_levels` caps
 `gpt-5.5`/`5.4`/`5.2` at `xhigh` while the gpt-5.6 family accepts `max`.
 
-> **Required for custom gateway ids.** For an id Claude Code doesn't recognize as effort-capable
-> (like `gpt-5.6-sol`), Claude Code **omits** `output_config.effort` unless you set:
+> **Custom gateway ids carry effort on their own.** Verified on the wire against Claude Code v2.1.224: an id like `gpt-5.6-sol` already sends
+> `output_config.effort` with `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT` unset, and setting it to `1`
+> produces a byte-identical request. The flag applies to non-first-party providers (Bedrock, Vertex,
+> Foundry, gateway login).
 >
-> ```bash
-> export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1
-> ```
->
-> Without it, shunt never sees a client effort and falls back to `medium`.
+> What does lose effort: ids on the client's legacy deny list (`claude-sonnet-4-5`,
+> `claude-haiku-4-5`) send no `output_config.effort` at all, no environment variable overrides that,
+> and shunt falls back to `medium`.
 
 **Precedence in shunt** (`effort()`, `src/model/responses_request.rs`):
 
@@ -636,7 +636,7 @@ cooldown/failover rules, and how this differs from the Anthropic (`claude_oauth`
 | `ChatGPT auth tokens missing` / `refresh token missing` | Auth file is in `ApiKey` mode or truncated — that path is the `openai` provider, not `codex`. Re-`codex login` with a ChatGPT account. |
 | `400 … not supported when using Codex with a ChatGPT account` | You used a `gpt-*-codex` slug. Use an entitled non-`-codex` slug (§5). |
 | `Model not found <slug>` | Client-version gating or an unentitled slug — not a code error. Confirm the slug via `models.json`; shunt already sends the pinned CLI headers (§4.4). |
-| Effort slider seems ignored on a `gpt-*` id | Set `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` (§8), or a `route`/`provider` `effort` override is winning. |
+| Effort slider seems ignored on a `gpt-*` id | A `route`/`provider` `effort` override is winning, or no effort level is set. `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT` is not the fix — these ids already send effort (§8). |
 | Context bar over-reports / compacts early | Set `CLAUDE_CODE_MAX_CONTEXT_TOKENS` to the real window (§10). A discovery alias can't take it — use a non-`claude-` id. |
 | `prompt is too long` churn mid-session | `CLAUDE_CODE_MAX_CONTEXT_TOKENS` is set larger than the real window. Lower it to the smallest mapped window. |
 | `gpt-*` model never appears in `/model` | Discovery drops non-`claude-` ids. Use `ANTHROPIC_CUSTOM_MODEL_OPTION` (§7.1) or a `claude-`-named discovery alias (§7.2). |
@@ -677,7 +677,6 @@ codex login
 # In the Claude Code environment
 export ANTHROPIC_BASE_URL=http://127.0.0.1:3001
 export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"   # add gpt-5.6-sol to the picker
-export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1            # let the effort slider reach Codex
 export CLAUDE_CODE_MAX_CONTEXT_TOKENS=372000         # gpt-5.6-sol's real window
 ```
 

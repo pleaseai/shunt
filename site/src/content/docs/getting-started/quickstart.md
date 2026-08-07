@@ -50,7 +50,6 @@ shunt run
 ```bash
 export ANTHROPIC_BASE_URL=http://127.0.0.1:3001
 export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
-export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1   # so /effort maps to reasoning.effort
 claude
 ```
 

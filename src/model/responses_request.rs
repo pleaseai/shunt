@@ -331,10 +331,10 @@ fn input_items(request: &Value, context: &ToolSearchContext) -> Vec<Value> {
     out
 }
 
-/// Claude Code sends `output_config.effort` (low|medium|high|xhigh|max) when
-/// the model advertises effort support or `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1`
-/// is set (needed for custom gateway ids like gpt-5.6-sol). Map it to the
-/// Responses `reasoning.effort`.
+/// Claude Code sends `output_config.effort` (low|medium|high|xhigh|max) for
+/// most model ids, including custom gateway ids like gpt-5.6-sol; ids on its
+/// legacy effort deny list send no effort at all. Map it to the Responses
+/// `reasoning.effort`.
 ///
 /// Which levels the ChatGPT/Codex backend accepts is per-model, listed in
 /// openai/codex `codex-rs/models-manager/models.json` (`supported_reasoning_levels`):

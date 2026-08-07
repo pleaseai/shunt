@@ -205,8 +205,7 @@ onto one slug, set `export CLAUDE_CODE_SUBAGENT_MODEL="gpt-5.6-sol"`.
 
 Either way the slug needs explicit routing through a matching `[models.upstream_model]` entry,
 `[[routes]]`, or `[[route_prefixes]]` rule and, being non-`claude-`, obeys
-`CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` and `CLAUDE_CODE_MAX_CONTEXT_TOKENS` — the window follows the id
-automatically.
+`CLAUDE_CODE_MAX_CONTEXT_TOKENS` — the window follows the id automatically.
 
 
 
@@ -264,11 +263,11 @@ runs `gpt-5.6-luna` — the resolved id is exactly what shunt routes on, so no
 
 <Aside type="note" title="Getting it right">
 
-- The resolved ids don't start with `claude-`, so set `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` for the
-  effort dial. `gpt-5.6-sol` and `gpt-5.6-luna` are **both 372k**, so one global
+- `gpt-5.6-sol` and `gpt-5.6-luna` are **both 372k**, so one global
   `CLAUDE_CODE_MAX_CONTEXT_TOKENS=372000` fits both tiers.
 - The `_SUPPORTED_CAPABILITIES` companion is documented for third-party providers (Bedrock, …), not
-  confirmed for gateways — on shunt use `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` for effort.
+  confirmed for gateways. It isn't needed for the effort dial on shunt — these ids already send
+  effort.
 - The **haiku tier is the background "small-fast" model** (summaries, titles, quick classification).
   Routing it to a reasoning model is fine, but it spends ChatGPT quota on that frequent traffic and
   can be slower — pick your cheapest entitled slug there if that matters.
@@ -288,16 +287,16 @@ support `max` (only the **gpt-5.6** family does).
 
 
 
-<Aside type="note" title="Required for custom ids">
+<Aside type="note" title="Which ids carry effort">
 
-For an id Claude Code doesn't recognize as effort-capable (like `gpt-5.6-sol`) you must set:
+A custom gateway id like `gpt-5.6-sol` sends effort on its own — no flag needed. Verified on the wire against Claude Code v2.1.224: the request
+already carries `output_config.effort` with `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT` unset, and setting it
+to `1` produces a byte-identical request.
 
-```bash
-export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1
-```
-
-Otherwise Claude Code omits the effort field and shunt falls back to `medium`. A config
-`route.effort` / `[providers.codex].effort` override wins over the client value.
+Effort is lost a different way: ids on the client's legacy effort deny list (`claude-sonnet-4-5`,
+`claude-haiku-4-5`) send no effort at all, with the flag set or unset, and shunt falls back to
+`medium`. Don't remap onto those ids if you need the dial. A config `route.effort` /
+`[providers.codex].effort` override wins over the client value.
 
 </Aside>
 
@@ -367,7 +366,6 @@ codex login                                          # one-time
 
 export ANTHROPIC_BASE_URL=http://127.0.0.1:3001
 export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"   # add to /model picker
-export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1            # let the effort slider reach Codex
 export CLAUDE_CODE_MAX_CONTEXT_TOKENS=372000         # gpt-5.6-sol's real window
 ```
 

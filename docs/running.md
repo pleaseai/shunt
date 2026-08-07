@@ -739,13 +739,14 @@ Which reasoning levels a Codex slug accepts is listed per-model in openai/codex'
 `ultra`, which Claude Code never sends), while `gpt-5.5`/`5.4`/`5.2` cap at `xhigh`. shunt folds
 `max → xhigh` only for slugs that don't support it.
 
-**For a custom gateway id like `gpt-5.6-sol` you must set `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1`** —
-otherwise Claude Code omits `output_config.effort` for model ids it doesn't recognize as
-effort-capable, and shunt falls back to `medium`.
+**A custom gateway id like `gpt-5.6-sol` carries effort on its own.** Verified on the wire against Claude Code v2.1.224: the request already
+includes `output_config.effort` with `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT` unset, and setting it to `1`
+produces a byte-identical request. The flag applies to non-first-party providers (Bedrock, Vertex,
+Foundry, gateway login), not to a plain `ANTHROPIC_BASE_URL` setup.
 
-```bash
-export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1
-```
+Effort is instead lost on ids the client normalizes onto its legacy effort deny list
+(`claude-sonnet-4-5`, `claude-haiku-4-5`): those send no `output_config.effort` at all, no
+environment variable overrides it, and shunt falls back to `medium`.
 
 Precedence in shunt: a config `route.effort` / `[providers.*].effort` override wins first;
 otherwise the request's `output_config.effort` is honored; otherwise `thinking.enabled → high`,
@@ -960,6 +961,5 @@ codex login                    # Codex/ChatGPT provider
 # 5. Point Claude Code at it and select a mapped model
 export ANTHROPIC_BASE_URL=http://127.0.0.1:3001
 export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
-export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1   # so /effort maps to reasoning.effort (§5.6)
 claude                         # then /model -> pick gpt-5.6-sol
 ```
