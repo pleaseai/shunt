@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.33.2](https://github.com/pleaseai/shunt/compare/v0.33.1...v0.33.2) (2026-08-07)
+
+
+### Bug Fixes
+
+* **observability:** reconcile overflow-bucket capacity with debt resurfacing ([#314](https://github.com/pleaseai/shunt/issues/314)) ([9676539](https://github.com/pleaseai/shunt/commit/9676539e985ebf8c371332af1f7cc88e5d4c1ff9))
+
 ## [0.33.1](https://github.com/pleaseai/shunt/compare/v0.33.0...v0.33.1) (2026-08-06)
 
 
