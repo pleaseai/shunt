@@ -1,0 +1,21 @@
+site/src/content/docs/ko/guides/codex-multi-account.mdx
+  s_9dba24056fd1d7::t_b35a6728adbffd 96
+site/src/content/docs/ja/guides/codex-multi-account.mdx
+  s_9dba24056fd1d7::t_b35a6728adbffd 96
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "ff3c8301fe7b05f085d2e722c1ce26685f0b5e7b",
+  "prompts": {},
+  "sessions": {
+    "s_9dba24056fd1d7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ab190862-e7c9-418e-b669-d8b5732dbb7e",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
