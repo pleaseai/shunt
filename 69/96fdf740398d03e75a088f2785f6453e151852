@@ -1,0 +1,43 @@
+site/src/content/docs/ja/guides/codex-multi-account.mdx
+  s_52b509920c4e09::t_9a63b408e4b33a 1-179
+site/src/content/docs/ja/guides/connect-codex-cli.mdx
+  s_52b509920c4e09::t_51fa39d6147ca5 1-280
+site/src/content/docs/ja/guides/gateway-login.mdx
+  s_52b509920c4e09::t_5f828b5865fcf1 1-170
+site/src/content/docs/ja/guides/inbound-codex-endpoint.md
+  s_52b509920c4e09::t_0aeb23a3d5a1da 1-114
+site/src/content/docs/ko/guides/codex-multi-account.mdx
+  s_52b509920c4e09::t_fff2a6305964f5 1-179
+site/src/content/docs/ko/guides/connect-codex-cli.mdx
+  s_52b509920c4e09::t_0abd40ec5d8957 1-291
+site/src/content/docs/ko/guides/gateway-login.mdx
+  s_52b509920c4e09::t_dec1d6762b591c 1-174
+site/src/content/docs/ko/guides/inbound-codex-endpoint.md
+  s_52b509920c4e09::t_0520aca267fddb 1-114
+site/src/content/docs/zh-cn/guides/codex-multi-account.mdx
+  s_52b509920c4e09::t_ef0834be37747f 1-179
+site/src/content/docs/zh-cn/guides/connect-codex-cli.mdx
+  s_52b509920c4e09::t_7dc98d5dda569b 1-273
+site/src/content/docs/zh-cn/guides/gateway-login.mdx
+  s_52b509920c4e09::t_faefec9fd016e9 1-149
+site/src/content/docs/zh-cn/guides/inbound-codex-endpoint.md
+  s_52b509920c4e09::t_9ac2a009b7afaf 1-114
+site/src/lib/i18n.ts
+  s_52b509920c4e09::t_afa85e942133da 61-62,64
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "6996fdf740398d03e75a088f2785f6453e151852",
+  "prompts": {},
+  "sessions": {
+    "s_52b509920c4e09": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "20004cfe-d4c4-4e51-8565-aac15698c7d9",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
