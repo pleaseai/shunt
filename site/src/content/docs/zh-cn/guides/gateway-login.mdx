@@ -117,7 +117,7 @@ match = {} # catch-all
 deny = ["WebFetch"]
 ```
 
-所有兜底(catch-all)条目按顺序合并。随后第一个匹配 email 的条目再合并到其之上。对象递归合并,允许列表类数组直接替换,而键名中包含 `deny` 的数组取并集且不产生重复项。配置了策略时总是返回 `200`;当没有用户专属或兜底设置适用时,若启用了遥测,响应只包含注入的遥测 `env`,否则为 `{}`。省略 `policies` 时返回 `404`,以便 Claude Code 区分“没有托管策略”这一情形。响应包含稳定的按用户 `uuid`、设置的 `checksum`,以及一个包含该 checksum 的 RFC 引号形式 `ETag`;内容未变化时 `If-None-Match` 返回 `304`,并且同样接受 weak、逗号列表、通配符以及旧式未加引号的 validator。
+所有兜底(catch-all)条目按顺序合并。随后第一个匹配 email 的条目再合并到其之上。对象递归合并,允许列表(allow-list)数组直接替换,而键名中包含 `deny` 的数组取并集且不产生重复项。配置了策略时总是返回 `200`;当没有用户专属或兜底设置适用时,若启用了遥测,响应只包含注入的遥测 `env`,否则为 `{}`。省略 `policies` 时返回 `404`,以便 Claude Code 区分“没有托管策略”这一情形。响应包含稳定的按用户 `uuid`、设置的 `checksum`,以及一个包含该 checksum 的 RFC 引号形式 `ETag`;内容未变化时 `If-None-Match` 返回 `304`,并且同样接受 weak、逗号列表、通配符以及旧式未加引号的 validator。
 
 当 `availableModels` 解析为字符串数组时,shunt 还会在 `/v1/messages` 和 `/v1/messages/count_tokens` 上对该网关用户强制执行它。比较之前,它会从客户端请求的模型中剥掉一个末尾的 Claude Code 上下文窗口提示(`[1m]` 或 `[1M]`),因此 `allowed[1m]` 能匹配 `allowed` 条目。被拒绝的模型会得到 `400 invalid_request_error`,且不会联系上游。
 
