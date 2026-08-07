@@ -1,0 +1,25 @@
+site/src/content/docs/guides/connect-claude-code.mdx
+  s_79ca5bc71d21c8::t_1760cebaed6487 40-46,170
+site/src/content/docs/reference/client-environment.md
+  s_79ca5bc71d21c8::t_a24ec304fc4473 1-127
+site/src/content/docs/reference/troubleshooting.md
+  s_79ca5bc71d21c8::t_fae4f831e83815 18
+site/src/lib/i18n.ts
+  s_79ca5bc71d21c8::t_11d1db6248ab0c 82
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "0808254d041ed4a6ed5f764f48b6d9c17592bc38",
+  "prompts": {},
+  "sessions": {
+    "s_79ca5bc71d21c8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "804a3cef-5e46-41dd-901c-da18eb4db04e",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
