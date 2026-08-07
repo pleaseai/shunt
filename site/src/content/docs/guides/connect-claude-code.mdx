@@ -37,13 +37,6 @@ The credential Claude Code sends to shunt plays two roles: it authenticates **Cl
 
 A dummy value like `sk-dummy` satisfies the discovery gate but breaks passthrough — it is forwarded to Anthropic and returns 401.
 
-There is a fourth axis the table above doesn't show: **prompt-cache TTL**. In Claude Code v2.1.224,
-setting `ANTHROPIC_AUTH_TOKEN`, an API key, or an `apiKeyHelper` disables the automatic 1-hour cache
-TTL that subscription users otherwise get, leaving the session on the 5-minute TTL. Discovery and
-the 1-hour TTL therefore pull in opposite directions — see
-[Client Environment Variables](/reference/client-environment/#choose-the-credential-first) for the
-trade-off and the `ENABLE_PROMPT_CACHING_1H` workaround.
-
 
 
 <Aside type="note" title="On a shared gateway">
@@ -167,7 +160,7 @@ curl -s -X POST "$ANTHROPIC_BASE_URL/v1/messages" \
   -d '{"model":"gpt-5.6-sol","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}'
 ```
 
-Then start `claude`, run `/status`, and check the **Anthropic base URL** line shows your gateway. See also [Effort & Context](/guides/effort-and-context/) for reasoning-effort and context-window tuning, and [Client Environment Variables](/reference/client-environment/) for the full set of client-side toggles worth setting behind a gateway.
+Then start `claude`, run `/status`, and check the **Anthropic base URL** line shows your gateway. See also [Effort & Context](/guides/effort-and-context/) for reasoning-effort and context-window tuning, and [Client Environment Variables](/reference/client-environment/) for the environment variables that change behind a gateway.
 
 ### Verify a named subagent end to end
 
