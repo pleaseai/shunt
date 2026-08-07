@@ -1,0 +1,280 @@
+---
+title: Codex CLI の接続
+description: OpenAI の Codex CLI を shunt へ向け、ChatGPT/Codex OAuth アカウントプールで負荷分散する。
+---
+
+他の接続ガイドはすべて **Claude Code** をバックエンドへルーティングします。このページは逆方向です。OpenAI の
+**Codex CLI** を shunt へ向け、shunt が ChatGPT/Codex OAuth
+アカウントのプールで負荷分散します。shunt は Codex CLI の OpenAI Responses トラフィックを**そのまま**中継します —
+Anthropic への変換はありません。そのため CLI は、`chatgpt.com` へ直接話すのと同じワイヤプロトコルで shunt と話します。
+
+これは [インバウンド Codex エンドポイント](/ja/guides/inbound-codex-endpoint/)の実践編です。あちらのページが挙動の仕様
+（フェイルオーバーの表、枯渇時のセマンティクス、リロードのルール）で、以下の手順はエンドツーエンドの接続ウォークスルーです。ここで引用している
+Codex CLI の設定キーは、OpenAI の[設定リファレンス](https://learn.chatgpt.com/docs/config-file/config-reference)と
+[認証](https://learn.chatgpt.com/docs/auth)のドキュメントに基づいています。
+
+## 1. shunt でエンドポイントを有効にする
+
+インバウンドエンドポイントは**オプトイン**です。テーブルを追加し、`chatgpt_oauth` プロバイダーへ向けます
+（デフォルトのプロバイダー名は `codex` です）。
+
+```toml
+# shunt config.toml
+[server.codex_endpoint]
+provider = "codex"        # must be a chatgpt_oauth provider; "codex" is the built-in default
+```
+
+`codex` は組み込みの `chatgpt_oauth` プロバイダーなので、エンドポイントを有効にするために `[providers.codex]`
+ブロックは不要です。別名のプロバイダーへ向けるには、`[providers.<name>]` テーブルとして宣言し
+（[設定リファレンス](/ja/reference/configuration/#providersnameレガシー)を参照）、上記の `provider = "<name>"` を設定します。
+
+```bash
+shunt check                # validates the endpoint's provider exists + is chatgpt_oauth
+shunt run
+```
+
+`[server.codex_endpoint]` がない場合、いずれのルートも登録されず、shunt のデフォルトの HTTP
+サーフェスは変わりません。存在する場合、起動時の検証は未知の `provider` や `auth` が `chatgpt_oauth`
+でないプロバイダーを**拒否**します — このエンドポイントはオペレーターの Codex ベアラーを注入するため、`chatgpt_oauth`
+プロバイダーだけが要件を満たします。すべてのキーについては
+[設定リファレンス](/ja/reference/configuration/)を参照してください。
+
+## 2. Codex CLI を shunt へ向ける
+
+Codex CLI は、使用する base URL が何であれ `/responses` を末尾に付けます（Codex は OpenAI Responses
+のワイヤプロトコルを話します — `wire_api = "responses"` が唯一サポートされる値です）。そのため shunt は 3
+つのルートを登録し、以下のどのクライアント形状もそのいずれかに着地します。
+
+| Codex CLI の `~/.codex/config.toml` | 到達する shunt のルート |
+| :-- | :-- |
+| カスタムプロバイダー `base_url = ".../v1"` | `POST /v1/responses` |
+| `openai_base_url = ".../v1"` | `POST /v1/responses` |
+| `chatgpt_base_url = ".../backend-api/codex"` | `POST /backend-api/codex/responses` |
+
+**推奨 — カスタムモデルプロバイダー。** `requires_openai_auth = false` にすると CLI から見て未認証になるため、ローカルの
+`codex login` は**まったく不要**で（アカウントは shunt が供給します）、shunt トークンの提示方法もどちらの形式でも動作します（ステップ 3）。
+
+```toml
+# ~/.codex/config.toml
+model_provider = "shunt"          # select it as the active provider
+model = "gpt-5.6-sol"             # an entitled slug — see step 5
+
+[model_providers.shunt]
+name = "shunt"
+base_url = "http://127.0.0.1:3001/v1"
+wire_api = "responses"            # the only supported value; also the default
+requires_openai_auth = false      # shunt handles auth; the CLI needs no ChatGPT/API login here
+```
+
+**より簡単 — base URL を上書きする**（プロバイダーブロックなし）:
+
+```toml
+# ~/.codex/config.toml — pick one
+openai_base_url  = "http://127.0.0.1:3001/v1"                 # + OPENAI_API_KEY = your shunt token
+chatgpt_base_url = "http://127.0.0.1:3001/backend-api/codex"  # loopback only (ChatGPT login mode)
+```
+
+`openai_base_url` + `OPENAI_API_KEY=<shunt-token>` は LiteLLM/llmgateway の作法です — CLI はトークンを
+`Authorization: Bearer` として送り、shunt はそれを受け付けます（ステップ 3）。したがってこの形状は
+**`[server.auth]` があっても**動作します。`chatgpt_base_url` は CLI を ChatGPT ログインモードのままにし、*自身の*
+ChatGPT トークンを送るため、shunt はそれをクライアントトークンとして受け付けられません — ゲートされていない（ループバックの）
+shunt でのみ使ってください。どちらも CLI を自身の OpenAI/ChatGPT 認証モードで動かすため、いずれもローカルの
+`codex login` が必要です。上記のカスタムプロバイダーなら、それすら不要になります。
+
+
+
+<Aside type="caution" title="base URL は OPENAI_BASE_URL 環境変数ではなく config.toml に設定する">
+
+`openai_base_url` は `~/.codex/config.toml`（ユーザーレベル）に置いてください。`OPENAI_BASE_URL`
+**環境変数**は、Codex CLI の Responses **WebSocket** トランスポートをリダイレクトしません —
+CLI は `wss://api.openai.com/v1/responses` を開き続けて shunt を完全にバイパスし、shunt
+トークンを OpenAI へ直接提示するため `Incorrect API key` で失敗します。HTTP と WebSocket
+の両方の経路をリダイレクトできるのは設定キーだけです。（`chatgpt_base_url`、`model_provider`、
+`experimental_realtime_ws_base_url` も同様です。これらはユーザーレベルの `~/.codex/config.toml`
+のキーで、CLI はプロジェクトローカルの `.codex/config.toml` では無視し、環境変数の等価物もありません。）
+`openai_base_url` を使っても CLI はまず WebSocket を*試みます*が、shunt に `wss`
+ルートはないため、CLI は自力で HTTP へフォールバックします。上記のカスタム `model_provider`
+なら、その往復すら避けられます — `supports_websockets` はデフォルトでオフなので、直接 HTTP へ向かいます。
+
+</Aside>
+
+
+
+CLI 自身のローカルな `~/.codex/auth.json` のログインは、**どのアカウントが応答するかとは無関係**です —
+すべてのリクエストは shunt のプールからアカウントを引きます。ループバックの `base_url` は素の `http://`
+のままで構いません。リモートには `https://` を使ってください。shunt プロバイダーには
+`supports_websockets = true` を設定**しないで**ください — このエンドポイントは HTTP/SSE 専用です（後述）。
+
+
+
+<Aside type="tip" title="プロファイルで隔離する">
+
+shunt のブロックをプロファイルファイル `~/.codex/shunt.config.toml` に置き、`codex --profile shunt`
+で実行すれば、普段の Codex 設定に手を触れずに済みます。プロファイルファイルは同じトップレベルキーを使い、ベースの設定と異なる値だけを書けば十分です。
+
+</Aside>
+
+
+
+## 3. shunt クライアントトークンを提示する（`[server.auth]` 設定時）
+
+shunt に [`[server.auth]`](/ja/guides/shared-gateway/) が設定されている場合 — ループバックを超えるものには推奨です —
+shunt のクライアントトークンを **2 通り**のいずれかで提示します。shunt はどちらも受け付けます。
+
+**A. OpenAI 形式の Bearer キーとして** — LiteLLM/llmgateway の作法です。shunt トークンを API
+キーとして設定すると、CLI はそれを `Authorization: Bearer <shunt-token>` として送ります。
+
+```toml
+# ~/.codex/config.toml — built-in openai provider (no provider block needed).
+# Set the base URL here, NOT via the OPENAI_BASE_URL env var (see the caution in step 2).
+openai_base_url = "http://127.0.0.1:3001/v1"
+```
+
+```bash
+# then present only the token via env — the CLI sends it as Authorization: Bearer
+export OPENAI_API_KEY="<shunt-token>"
+```
+
+```toml
+# or a custom provider — env_key becomes the Bearer
+[model_providers.shunt]
+base_url = "http://127.0.0.1:3001/v1"
+wire_api = "responses"
+env_key = "SHUNT_TOKEN"      # reads $SHUNT_TOKEN, sent as Authorization: Bearer
+```
+
+**B. `x-shunt-token` ヘッダーとして**（あるいは `[server.auth].header` が指定する名前で）。ヘッダーを付けられるのはカスタムプロバイダーだけです。`env_http_headers`
+でシークレットを `config.toml` の外に保ってください。
+
+```toml
+[model_providers.shunt]
+name = "shunt"
+base_url = "http://127.0.0.1:3001/v1"
+wire_api = "responses"
+requires_openai_auth = false
+env_http_headers = { "x-shunt-token" = "SHUNT_TOKEN" }   # reads $SHUNT_TOKEN
+```
+
+```bash
+export SHUNT_TOKEN="<token>"
+```
+
+（あるいは `http_headers = { "x-shunt-token" = "<token>" }` とハードコードします。）いずれの場合もトークンは
+`[server.auth]` のリストと照合され、欠落や誤りがあれば `401 authentication_error` を返します。`[server.auth]`
+がまったくない場合、エンドポイントはそこへ到達できる誰にでも開かれています — ループバックなら問題ありませんが、共有ゲートウェイでは不可です。クライアントのベアラー/ヘッダーは
+shunt への認証に**のみ**使われ、取り除かれて Codex バックエンドへ転送されることはありません。
+
+
+
+<Aside type="note" title="あなたの認証情報はバックエンドに届かない — ただし identity ヘッダーは届く">
+
+提示した `Authorization: Bearer` / `x-shunt-token` は shunt への認証に**のみ**使われ（ステップ 3）、その後**取り除かれます** —
+それも、いかなるクライアント認証情報も上流へ転送されません。shunt が差し替えるのは、プールアカウントの
+`Authorization` ベアラーと `chatgpt-account-id` だけです。CLI が送るそれ以外のものは**そのまま**転送されるため、CLI
+**自身**の `version` がバックエンドへ届き（shunt が固定した値ではありません）、`minimal_client_version`
+によるモデルのゲーティング（ステップ 5）は `chatgpt.com` に対するのとまったく同じように振る舞います。
+
+</Aside>
+
+
+
+## 4. shunt でアカウントプールをプロビジョニングする
+
+このエンドポイントは [Codex マルチアカウント](/ja/guides/codex-multi-account/#プールを設定する)のプールをそのまま再利用します — アカウントは
+CLI 側ではなく **shunt** のホストでプロビジョニングしてください。
+
+```bash
+codex login                       # sign in to a ChatGPT account (browser flow)
+shunt login codex --name main     # capture it into shunt's store
+# Each additional pool account needs its own login + capture (a separate ChatGPT
+# account): `codex login` then `shunt login codex --name backup`, and so on.
+```
+
+```toml
+# shunt config.toml
+[[providers.codex.accounts]]
+name = "main"
+
+[[providers.codex.accounts]]
+name = "backup"     # each declared name must be provisioned above; an unprovisioned
+                    # account is skipped on failover (its credential fails to resolve)
+```
+
+選択は**セッションスティッキー**です。Codex CLI 自身の `session-id` リクエストヘッダーがアカウントのキーになるため、1
+つの会話は健全なかぎり 1 つのアカウントに留まり、その後フェイルオーバーします（429 → ローテーション、401 →
+リフレッシュ + リトライ、5xx → クールダウン + ローテーション）。プール経由の成功レスポンスには
+`x-shunt-account: <name>` ヘッダーが付きます。[`[server.auth]`](/ja/reference/configuration/)
+を有効にした共有ゲートウェイでは、スティッキーキーが認証済みクライアントごとにスコープされるため、たまたま同じ
+`session-id` を送る別々のクライアントは別々のスティッキーキーを使います — クライアント間でのスティッキーキーの衝突を防ぐためです。（キーは別個ですが、別個の
+2 つのキーが同じアカウントにハッシュされることはあり得ます。）
+
+`[[providers.codex.accounts]]` が**まったく**設定されておらず、ストアも空の場合、エンドポイントはデフォルトの
+`~/.codex/auth.json` 認証情報 1 つへフォールバックします — プールもフェイルオーバーもありません。そのため
+`[server.codex_endpoint]` を設定した時点で、Codex ログイン 1 つで動作します。
+
+
+
+<Aside type="note" title="ヘッドレスでのプロビジョニング">
+
+`shunt login codex` は**ファイルベース**の `~/.codex/auth.json` を取り込むため、shunt のホストでは
+`cli_auth_credentials_store = "file"`（デフォルト）を `keyring` ではなくそのまま使ってください。ブラウザーのないサーバーでは、Codex
+のデバイスコードフロー（`codex login --device-auth`）でアカウントをサインインさせるか、ラップトップで
+`codex login` を完了して `~/.codex/auth.json` を shunt のホストへコピーしてください —
+[Login on headless devices](https://learn.chatgpt.com/docs/auth#login-on-headless-devices) を参照。
+
+</Aside>
+
+
+
+## 5. entitle されたモデルを選ぶ
+
+
+
+<Aside type="caution" title="`-codex` サフィックスのスラッグは拒否される">
+
+インバウンドのボディの `model` は上流へ**そのまま**転送され、ChatGPT アカウントのバックエンドはアカウントが**現在
+entitle されている**スラッグしか受け付けません — `gpt-*-codex` スラッグ（例 `gpt-5.2-codex`）は `400` で**拒否**されます。Codex CLI
+のデフォルトが `-codex` モデルになっている場合は、entitle されたスラッグへ上書きしてください。例えば
+`~/.codex/config.toml` に次のように書きます。
+
+```toml
+model = "gpt-5.6-sol"   # entitled slug, not a *-codex one
+```
+
+現在 entitle されているスラッグは `gpt-5.6-sol` / `-terra` / `-luna` と `gpt-5.5` / `gpt-5.4` /
+`gpt-5.4-mini` / `gpt-5.2` です — 古いアカウントでは以前のものにしか entitle されていない場合があります。信頼できる一覧は
+[ChatGPT / Codex → モデルを `codex` へルーティングする](/ja/guides/codex/#3-モデルを-codex-へルーティングする)
+を参照してください。サブスクリプションが持たないモデルを指定したリクエストは、`chatgpt.com`
+へ直接話した場合とまったく同じように失敗します。
+
+</Aside>
+
+
+
+## 6. 検証する
+
+3 つのルートのいずれかに対する生の Responses リクエストは、そのまま中継され、（プールされている場合は）
+`x-shunt-account` ヘッダーを返すはずです。
+
+```bash
+curl -N -i -X POST http://127.0.0.1:3001/v1/responses \
+  -H "content-type: application/json" \
+  -H "x-shunt-token: <token>" \
+  -d '{"model":"gpt-5.6-sol","input":"say hi","stream":true}'
+```
+
+- `content-type: text/event-stream` と `x-shunt-account:` ヘッダーを伴う `200` ⇒ プールがリクエストを処理し、SSE がそのまま中継されています。
+- `401 authentication_error` ⇒ `x-shunt-token` が欠落しているか無効です（ステップ 3）。
+- モデル名を挙げた `400` ⇒ そのアカウントがそのスラッグに entitle されていません（ステップ 5）。
+
+続いて実際の Codex CLI で 1 ターン走らせてみてください — base URL 以外に CLI
+側のコード変更なしで、プールを往復します。`/v1/messages` 経路との違いは
+[インバウンド Codex エンドポイント](/ja/guides/inbound-codex-endpoint/)を、登録されるルートは
+[HTTP エンドポイント](/ja/reference/endpoints/)を参照してください。
+
+## HTTP/SSE のみ
+
+対象のプロバイダーが `websocket = true` であっても、このエンドポイントは常に HTTP トランスポートを使います。そのため
+Codex CLI の shunt プロバイダーでは `supports_websockets` をオフ（デフォルト）のままにしてください。実験的な
+[Codex WebSocket v2 トランスポート](https://github.com/pleaseai/shunt/blob/main/docs/m11-inbound-codex-endpoint.md)
+はこのエンドポイントのスコープ外で、フォローアップとして追跡されています。

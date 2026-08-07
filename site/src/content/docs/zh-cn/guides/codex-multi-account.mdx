@@ -1,0 +1,179 @@
+---
+title: Codex 多账户
+description: 将 ChatGPT/Codex 订阅 OAuth 账户组成池,以会话粘性、感知配额的主动选择和被动故障转移运行。
+---
+
+shunt 可以在一个 `chatgpt_oauth` 提供方背后把多个 ChatGPT 订阅 OAuth 凭据组成池 —— 既可以是内置的 `codex` 提供方,也可以是任何使用该认证模式的 `responses` 提供方。当 Claude Code 提供 `x-claude-code-session-id` 时请求具有会话粘性;不带该头部的请求使用按提供方的轮询。与 [Anthropic 账户池](/zh-cn/guides/anthropic-multi-account/)一样,选择是**感知配额**的:shunt 记录后端的 `x-codex-*` 5 小时/7 天用量窗口,并在粘性账户接近其配额时主动轮换掉它,而基于冷却的被动故障转移仍是安全兜底。
+
+
+
+<Aside type="caution" title="订阅条款">
+
+仅在你的账户条款允许的范围内使用订阅凭据。shunt 是非官方客户端,不会改变 OpenAI 的账户或订阅政策。
+
+</Aside>
+
+
+
+## 配置账户池
+
+先用 Codex CLI 登录 —— shunt 从不自己执行 ChatGPT 登录,只导入 `codex login` 已经写好的凭据:
+
+```bash
+codex login
+```
+
+然后设置 `auth = "chatgpt_oauth"` 并添加显式的账户条目:
+
+```toml
+[providers.codex]
+kind = "responses"
+base_url = "https://chatgpt.com/backend-api"
+auth = "chatgpt_oauth"
+
+# A second Codex CLI login, imported under a distinct name.
+[[providers.codex.accounts]]
+name = "primary"
+credentials = "~/.shunt/accounts/codex/primary.json"
+
+# A raw ChatGPT access token supplied out of band. Used verbatim; not refreshed.
+[[providers.codex.accounts]]
+name = "backup"
+token_env = "CODEX_BACKUP_ACCESS_TOKEN"
+```
+
+```bash
+export CODEX_BACKUP_ACCESS_TOKEN='<a valid ChatGPT access token>'
+shunt check
+shunt run
+```
+
+把一次 Codex CLI 登录导入 shunt 自己的存储来保存账户:
+
+```bash
+shunt login codex --name primary
+```
+
+然后使用只带名字的条目:
+
+```toml
+[[providers.codex.accounts]]
+name = "primary"
+
+[[providers.codex.accounts]]
+name = "backup"
+```
+
+存储文件位于 `~/.shunt/accounts/codex/<name>.json`;设置 `SHUNT_CODEX_ACCOUNTS_DIR` 可覆盖该目录。如果配置的 `accounts` 列表为空,shunt 会扫描存储目录,按文件名顺序使用所有有效的 JSON 账户文件。存储文件是私有的(Unix 上为 `0600`,目录为 `0700`),并原样保存 Codex CLI 自己的 `auth.json` 形态 —— 与 Claude 存储不同,这里没有外层包装对象。
+
+`shunt login codex` 没有 `--long-lived` 标志 —— Codex 没有 setup-token 这一概念,因此每个由存储管理的账户,都是从已有的 `codex login` 导入的可刷新 OAuth 登录。
+
+## 账户字段
+
+| 字段 | 必填 | 含义 |
+| :-- | :-- | :-- |
+| `name` | 是 | 只含小写字母、数字和连字符的唯一标签。若没有其他来源字段,则解析同名的 shunt 存储文件。 |
+| `credentials` | 可用来源之一 | Codex CLI `auth.json` 形态的文件。shunt 在临近过期时刷新,并将刷新后的 token 原子性地写回,与 `~/.codex/auth.json` 本身的处理方式相同。 |
+| `token_env` | 可用来源之一 | 包含原始 ChatGPT access token 的环境变量。按原样使用;401 之后无法刷新。 |
+| `uuid` | 否 | 用于合并别名的稳定上游身份。仅有名称的条目(通过存储扫描解析)会在选择发生前自动填入该值,因此存储扫描得到的别名无需任何配置改动即可合并。通过 `credentials` 或 `token_env` 配置的条目,其账户 id 只在选择之后才解析,并且绝不写入 `uuid`,因此这类条目的身份在设置了 `uuid` 时为该值,否则为其 `name`;只要该身份与另一别名显式的 `uuid` 或名称回退身份相等,就会与之合并 —— 为清晰、有意的合并,请在两个条目上设置匹配且非空的 `uuid`(当 `uuid` 与 `name` 意外交叉碰撞时,shunt 也会发出警告)。它不会被写入 Codex 请求体。 |
+| `priority` | 否 | 可用账户之间的选择优先级;数值越低越优先,默认 `100`。在 Codex 路径上生效。 |
+| `disabled` | 否 | `true` 把该账户完全移出选择,同时保留在配置中。在 Codex 路径上生效。 |
+
+不要在同一个账户上同时设置 `credentials` 和 `token_env`。
+
+## 账户 id 解析
+
+Codex 没有可配置的显式 `uuid` 字段。作为替代,shunt 对每个账户会:
+
+1. 优先使用存储的 `tokens.account_id`;
+2. 否则解码 `access_token` JWT 并读取 `chatgpt_account_id` claim;以及
+3. 在任何一次刷新之后,**仅**根据新 access token 的 JWT claim 重新计算该 id(刷新响应中没有独立的 account-id 字段)。
+
+如果两个来源都得不到 id,该账户解析失败,并按下文当作凭据解析失败处理。只有存储扫描(`accounts` 列表为空)会在选择之前把解析出的 id 写入内存中账户的 `uuid` 字段 —— 通过 `credentials`/`token_env` 配置的账户,其 id 按请求解析,绝不回写到 `uuid`。存储*扫描*本身按存储目录的 mtime 缓存,因此稳态下的发现只执行一次目录 `stat`,不读取任何凭据文件;而解析所选账户的实际凭据时,仍会按需按请求读取其凭据文件,以检查或刷新过期时间。
+
+
+
+<Aside type="note" title="同一个真实账户的重复名称">
+
+如果两个存储文件或配置条目具有相同的 `account_id`,shunt 会把它们算作**同一个账户**。它们共享冷却、健康状态和刷新锁,故障转移会跳过重复的别名,而不是对同一个 ChatGPT 账户重试。粘性哈希和轮询基于不同的身份运作。代表账户是 `priority` 最低的已启用别名,其次是第一个条目;只有它的 token 会被尝试,并且 shunt 会记录一条重复身份警告(配置条目在每次成功加载配置时记录一次,包括重新加载;存储发现的碰撞按每个不同的碰撞集合记录一次,而不是每次请求都记录)。因此,失效的代表账户不会被一个有效的非代表别名救回。
+
+通过管理 Web 界面删除存储管理的账户时,只有在确认没有其他存储别名仍解析为同一身份后,才会清除该身份共享的进程内健康状态;扫描失败时会保留健康状态,而不是贸然猜测。这是 admin 存储删除的语义 —— 从 TOML 配置中移除别名,或直接删除其凭据文件,都不会经过此清理流程。
+
+</Aside>
+
+
+
+## 选择与冷却
+
+- 带 `x-claude-code-session-id` 时:一个稳定的哈希选出粘性账户,机制与 Anthropic 账户池相同。
+- 不带该头部时:每个提供方有自己的轮询计数器。
+- 成功的响应会记录 `x-codex-primary-*` 与 `x-codex-secondary-*` 头部中的用量。shunt 按 `window-minutes` 映射每一组:约 300 分钟归入 5h,约 10080 分钟归入 7d,其他窗口被忽略。Codex 没有 `7d_oi` 的对应项。
+- 记录的用量会参与选择,与 [Anthropic 账户池](/zh-cn/guides/anthropic-multi-account/)完全一致:达到或超过其阈值(内置的 `0.98`,或 [`[server.pool]`](/zh-cn/reference/configuration/#serverpool可选)/按账户的软阈值)的粘性账户会主动让位给余量最大的账户,`burn_rate_avoidance` 以及优先级/余量排序同样适用。`x-codex-rate-limit-reached-type` 的值仅被记录用于展示。
+- 设置了 `[server.pool] ramp_initial_concurrency` 时,一个 slow-start 准入门控会保护刚刚选中的账户,使其在故障转移之后不被瞬间冲垮;参见 [`[server.pool]`](/zh-cn/reference/configuration/#serverpool可选)。
+- 成功的响应会清除该账户的冷却。
+
+| 触发条件 | 冷却 |
+| :-- | :-- |
+| 凭据解析失败(account id/tokens 无法解析) | 5 分钟 |
+| 传输/连接失败 | 30 秒 |
+| 上游返回 5xx | 30 秒 |
+| 上游返回 429 | 按数值 `retry-after`,钳制到 1–3600 秒,默认 60 秒 |
+| `token_env` 账户返回 401 | 5 分钟 |
+| `credentials`/存储账户返回 401,且刷新失败或重试仍为 401 | 5 分钟 |
+
+## 故障转移规则
+
+| 响应 | 行为 |
+| :-- | :-- |
+| 2xx | 中继并标记为健康。 |
+| 429 | **总是**冷却并轮换。可选的 Codex 拒绝信号只被记录用于展示,不会改变故障转移的分类,因此每个 429 都被视为该账户配额耗尽。 |
+| 使用 `credentials`/存储时的 401 | 强制刷新,对同一账户重试一次;若刷新失败,或重试仍是 401,则冷却 5 分钟并轮换。 |
+| 使用 `token_env` 时的 401 | 无法刷新:冷却 5 分钟并轮换。 |
+| 5xx 或传输失败 | 冷却 30 秒并轮换。 |
+| 凭据解析失败 | 冷却 5 分钟并轮换。 |
+| 其他状态(例如 `400`) | 直接中继,不做故障转移;并把该账户标记为健康。 |
+
+分类发生在响应体开始流式传输之前,因此流中途的失败绝不会被重放。如果池在收到至少一个上游响应之后耗尽了尝试,shunt 会基于最后那个响应构造并中继一个**经过转换**的 Anthropic 风格错误信封 —— 状态码(例如 `429`)保留,但响应体被重新塑形,而不是逐字中继。这与 Anthropic 账户池正好相反,后者会逐字节中继最后一个上游响应。如果所有账户都在收到任何上游响应之前失败,普通的 Anthropic Messages 路由(`/v1/messages`)会返回一个网关自身的 `502 api_error`,内容为 `all upstreams failed (N attempted)`。单独的 `[server.codex_endpoint]` 入站路径不受影响,并保留 `all Codex OAuth accounts failed before receiving an upstream response`。
+
+## 请求与响应的改动
+
+对所选账户,shunt 发送与单账户路径相同的 Codex CLI 身份头部,其值取自该账户的凭据:
+
+```http
+authorization: Bearer <selected account's access token>
+chatgpt-account-id: <selected account's account id>
+originator: codex_cli_rs
+OpenAI-Beta: responses=experimental
+```
+
+经过池的响应会标识账户:
+
+```http
+x-shunt-account: backup
+```
+
+在共享网关上请使用中性的账户名 —— 该头部会把配置的标签暴露给收到响应的每个已授权客户端。池耗尽后那次经过转换的错误中继会省略 `x-shunt-account`。
+
+### WebSocket 传输
+
+如果提供方还设置了 `websocket = true`(参见 [ChatGPT / Codex](/zh-cn/guides/codex/)),连接缓存的 key 会按账户加前缀,这样两个账户绝不会共用一个 socket 或它的 `previous_response_id` 续接状态。在任何 token 流出**之前**发生的 WebSocket 失败会在**同一个**账户上回退到 HTTP(而不是池轮换);只有 HTTP 路径的失败才会触发上面的故障转移。一次全新的 WebSocket 升级会记录其握手中的限流头部;被复用/预热的连接不会再次握手,因此它们的仪表板用量要等到建立新连接时才刷新。
+
+## 安全约束
+
+`chatgpt_oauth` 仅在以下条件下被接受:
+
+- `base_url` 使用 HTTPS;且
+- 其主机是 `chatgpt.com` 或其子域。
+
+与 `xai_oauth` 一样,**`chatgpt_oauth` 要求 `kind = "responses"`** —— 这是 Codex 后端的 kind,与 `openai` 和 `xai` 共用。这是一道 bearer 泄漏防护:只有 Responses 适配器会注入 Codex bearer,因此一个不匹配的 `kind = "anthropic"` 提供方会被路由到 Anthropic 适配器,转而把客户端自己的凭据发往源外的 `chatgpt.com`。这些启动检查防止 OAuth bearer 被发送到源之外或以明文传输。HTTPS 与主机检查在**回环主机上放宽**(`localhost`、`127.0.0.1`、`[::1]` 等):回环的 `base_url` 可以使用纯 HTTP 和任意主机,这样本地调试代理或 mock 能接收流量。非回环主机始终要求 HTTPS + `chatgpt.com`。在共享部署上,还应配置 [`[server.auth]`](/zh-cn/guides/shared-gateway/),因为 `chatgpt_oauth` 花费的是网关自有的凭据。
+
+## 不受影响:单账户路径
+
+没有配置 `accounts` 的 `chatgpt_oauth` 提供方(默认的 `codex` 提供方)行为与以前完全一致:它直接读取并刷新 `~/.codex/auth.json`(或 `$CODEX_AUTH_FILE`),没有冷却,也没有 `x-shunt-account` 头部。
+
+## 后续待办
+
+- **带外用量对账:** Anthropic 账户池可以轮询权威的用量 API(`usage_refresh_seconds`);Codex 没有对应接口,因此它的配额状态只能从响应头部刷新。
+- **管理 Web 预配:** 可选启用的[管理界面](/zh-cn/guides/admin-remote-provisioning/)可以在浏览器中运行 ChatGPT OAuth、存储一个可刷新的 Codex 账户、在共享的池表格中展示它,并显示上报的 5h/7d 用量(`7d_oi` 始终为空,因为 Codex 没有对应项)。
+
+账户池的完整内部机制见 [M10 行为规范](https://github.com/pleaseai/shunt/blob/main/docs/m10-codex-multi-account.md),单账户设置、模型路由以及力度/上下文配置见 [ChatGPT / Codex 指南](/zh-cn/guides/codex/)。

@@ -1,0 +1,179 @@
+---
+title: Codex 멀티 계정
+description: ChatGPT/Codex 구독 OAuth 계정을 하나의 풀로 묶어 세션 스티키·쿼터 인지 선제 선택과 반응형 페일오버로 운용합니다.
+---
+
+shunt는 `chatgpt_oauth` 프로바이더 뒤에서 여러 ChatGPT 구독 OAuth 자격 증명을 풀로 묶을 수 있습니다 — 내장 `codex` 프로바이더, 또는 그 인증 모드를 쓰는 모든 `responses` 프로바이더가 대상입니다. Claude Code가 `x-claude-code-session-id`를 보내면 요청은 세션에 고정(session-sticky)되고, 이 헤더가 없는 요청은 프로바이더별 라운드 로빈을 사용합니다. [Anthropic 계정 풀](/ko/guides/anthropic-multi-account/)과 마찬가지로 선택은 **쿼터 인지** 방식입니다: shunt는 백엔드의 `x-codex-*` 5시간/7일 사용량 창을 기록해 스티키 계정이 쿼터에 근접하면 선제적으로 로테이션하며, 쿨다운 기반 반응형 페일오버가 안전판으로 유지됩니다.
+
+
+
+<Aside type="caution" title="구독 약관">
+
+구독 자격 증명은 계정 약관이 허용하는 범위에서만 사용하세요. shunt는 비공식 클라이언트이며 OpenAI의 계정·구독 정책을 바꾸지 않습니다.
+
+</Aside>
+
+
+
+## 풀 구성
+
+먼저 Codex CLI로 로그인하세요 — shunt는 자체 ChatGPT 로그인을 절대 수행하지 않고, `codex login`이 이미 기록한 자격 증명을 가져오기만 합니다:
+
+```bash
+codex login
+```
+
+그다음 `auth = "chatgpt_oauth"`를 설정하고 명시적인 계정 항목을 추가합니다:
+
+```toml
+[providers.codex]
+kind = "responses"
+base_url = "https://chatgpt.com/backend-api"
+auth = "chatgpt_oauth"
+
+# 두 번째 Codex CLI 로그인을 다른 이름으로 가져온 것.
+[[providers.codex.accounts]]
+name = "primary"
+credentials = "~/.shunt/accounts/codex/primary.json"
+
+# 별도 경로로 공급된 원시 ChatGPT 액세스 토큰. 그대로 사용되며 갱신되지 않습니다.
+[[providers.codex.accounts]]
+name = "backup"
+token_env = "CODEX_BACKUP_ACCESS_TOKEN"
+```
+
+```bash
+export CODEX_BACKUP_ACCESS_TOKEN='<a valid ChatGPT access token>'
+shunt check
+shunt run
+```
+
+Codex CLI 로그인을 shunt 자체 스토어로 가져와 계정을 저장하세요:
+
+```bash
+shunt login codex --name primary
+```
+
+그다음 이름만 있는 항목을 사용합니다:
+
+```toml
+[[providers.codex.accounts]]
+name = "primary"
+
+[[providers.codex.accounts]]
+name = "backup"
+```
+
+스토어 파일은 `~/.shunt/accounts/codex/<name>.json`에 저장되며, `SHUNT_CODEX_ACCOUNTS_DIR`로 디렉터리를 재정의할 수 있습니다. 구성된 `accounts` 목록이 비어 있으면 shunt는 스토어를 스캔해 유효한 JSON 계정 파일 전부를 파일명 순서로 사용합니다. 스토어 파일은 비공개이며(Unix에서 `0600`, 디렉터리는 `0700`), Codex CLI 자체의 `auth.json` 형태를 그대로 담습니다 — Claude 스토어와 달리 감싸는 객체가 없습니다.
+
+`shunt login codex`에는 `--long-lived` 플래그가 없습니다 — Codex에는 setup token 개념이 없으므로, 스토어가 관리하는 모든 계정은 기존 `codex login`에서 가져온 갱신 가능한 OAuth 로그인입니다.
+
+## 계정 필드
+
+| 필드 | 필수 | 의미 |
+| :-- | :-- | :-- |
+| `name` | 예 | 소문자, 숫자, 하이픈만 포함하는 고유 레이블. 다른 소스 필드가 없으면 이름이 일치하는 shunt 스토어 파일을 사용합니다. |
+| `credentials` | 사용 가능한 소스 중 하나 | Codex CLI `auth.json` 형태의 파일. shunt는 만료가 가까워지면 갱신하고, `~/.codex/auth.json` 자체와 동일하게 갱신된 토큰을 원자적으로 다시 써 넣습니다. |
+| `token_env` | 사용 가능한 소스 중 하나 | 원시 ChatGPT 액세스 토큰이 들어 있는 환경 변수. 값은 그대로 사용되며 401 이후 갱신할 수 없습니다. |
+| `uuid` | 아니요 | 별칭을 통합하는 데 쓰이는 안정적인 업스트림 아이덴티티. 이름만 있는 항목(스토어 스캔으로 해석됨)은 선택이 실행되기 전에 자동으로 채워지므로, 스토어에서 스캔된 별칭은 설정 변경 없이 통합됩니다. `credentials` 또는 `token_env`로 구성된 항목의 계정 id는 선택 이후에만 해석되며 절대 `uuid`를 채우지 않습니다. 따라서 그런 항목의 아이덴티티는 `uuid`가 설정되어 있으면 그 값, 없으면 `name`이며, 그 아이덴티티가 다른 별칭의 명시적 `uuid` 또는 이름 폴백 아이덴티티와 일치할 때마다 통합됩니다 — 명확하고 의도적인 통합을 위해서는 두 항목 모두에 일치하는 비어 있지 않은 `uuid`를 설정하세요(shunt는 우연한 `uuid`/`name` 교차 충돌에 대해서도 경고합니다). 이 값은 Codex 요청 본문에 기록되지 않습니다. |
+| `priority` | 아니요 | 사용 가능한 계정 중의 선택 우선순위; 낮을수록 우선되며 기본값은 `100`입니다. Codex 경로에서 적용됩니다. |
+| `disabled` | 아니요 | `true`이면 구성에는 남긴 채 계정을 선택 대상에서 완전히 제외합니다. Codex 경로에서 적용됩니다. |
+
+한 계정에 `credentials`와 `token_env`를 동시에 설정하지 마세요.
+
+## 계정 id 해석
+
+Codex에는 구성할 수 있는 명시적 `uuid` 필드가 없습니다. 대신 shunt는 각 계정에 대해:
+
+1. 저장된 `tokens.account_id`를 우선 사용하고;
+2. 없으면 `access_token` JWT를 디코딩해 `chatgpt_account_id` claim을 읽으며;
+3. 갱신이 일어난 뒤에는 **오직** 새 액세스 토큰의 JWT claim에서만 id를 다시 계산합니다(갱신 응답에는 별도의 account-id 필드가 없습니다).
+
+두 소스 중 어디에서도 id를 얻지 못하면 그 계정은 해석에 실패하며, 아래의 자격 증명 해석 실패로 취급됩니다. 해석된 이 id를 선택에 앞서 인메모리 계정의 `uuid` 필드에 기록하는 것은 스토어 스캔(`accounts` 목록이 비어 있는 경우)뿐입니다 — `credentials`/`token_env`로 구성된 계정의 id는 요청마다 해석되며 `uuid`로 되먹임되지 않습니다. 스토어 *스캔* 자체는 스토어 디렉터리의 mtime으로 캐시되므로, 정상 상태의 디스커버리는 디렉터리 `stat` 한 번만 수행하고 자격 증명 파일은 읽지 않습니다. 선택된 계정의 실제 자격 증명을 해석할 때는 만료 확인·갱신을 위해 요청마다 필요한 만큼 그 자격 증명 파일을 읽습니다.
+
+
+
+<Aside type="note" title="Duplicate names for one real account">
+
+두 스토어 파일이나 구성된 항목이 동일한 `account_id`를 가지면 shunt는 이들을 **하나의 계정**으로 셉니다. 이들은 쿨다운, 헬스, 리프레시 락을 공유하며, 페일오버는 같은 ChatGPT 계정을 재시도하는 대신 중복된 별칭을 건너뜁니다. 스티키 해싱과 라운드 로빈은 서로 다른 아이덴티티 단위로 동작합니다. 대표는 `priority`가 가장 낮은 활성화된 별칭이며, 그다음은 첫 번째 항목입니다. 오직 그 대표의 토큰만 시도되며, shunt는 중복 아이덴티티 경고를 로그에 남깁니다(구성된 항목의 중복은 리로드를 포함해 설정을 성공적으로 로드할 때마다 한 번, 스토어에서 발견된 충돌은 서로 다른 충돌 집합마다 한 번 — 요청마다는 아닙니다). 따라서 대표가 유효하지 않을 때 유효한 비대표 별칭이 이를 구제해 주지는 않습니다.
+
+admin web 화면을 통해 스토어 관리 계정을 삭제하면, 동일한 아이덴티티로 해석되는 다른 스토어 별칭이 남아 있지 않은 것이 확인된 경우에만 그 아이덴티티의 공유 인프로세스 헬스가 초기화됩니다. 스캔이 실패하면 추측하는 대신 헬스를 보존합니다. 이는 admin 스토어 삭제 시맨틱이며, TOML 설정에서 별칭을 제거하거나 credential 파일을 직접 삭제하는 것은 이 정리 과정을 거치지 않습니다.
+
+</Aside>
+
+
+
+## 선택과 쿨다운
+
+- `x-claude-code-session-id`가 있으면: 안정적인 해시가 스티키 계정을 고릅니다. Anthropic 풀과 동일한 메커니즘입니다.
+- 헤더가 없으면: 프로바이더마다 자체 라운드 로빈 카운터를 사용합니다.
+- 성공한 응답은 `x-codex-primary-*`와 `x-codex-secondary-*` 헤더에서 사용량을 기록합니다. shunt는 각 그룹을 `window-minutes` 기준으로 매핑합니다: 약 300분은 5h로, 약 10080분은 7d로 나타나며 그 외 창은 무시됩니다. Codex에는 `7d_oi`에 대응하는 창이 없습니다.
+- 기록된 사용량은 [Anthropic 풀](/ko/guides/anthropic-multi-account/)에서와 정확히 동일하게 선택에 반영됩니다: 임계값(내장 `0.98`, 또는 [`[server.pool]`](/ko/reference/configuration/#serverpool-선택)/계정별 소프트 임계값)에 도달했거나 이를 넘긴 스티키 계정은 여유가 가장 큰 계정에 선제적으로 자리를 넘기며, `burn_rate_avoidance`와 priority/여유 기준 정렬이 적용됩니다. `x-codex-rate-limit-reached-type` 값은 표시용으로만 기록됩니다.
+- `[server.pool] ramp_initial_concurrency`가 설정되어 있으면 슬로 스타트 admission 게이트가 페일오버 직후 방금 선택된 계정에 트래픽이 몰리는 것을 막습니다. [`[server.pool]`](/ko/reference/configuration/#serverpool-선택)을 참고하세요.
+- 성공 응답은 그 계정의 쿨다운을 해제합니다.
+
+| 트리거 | 쿨다운 |
+| :-- | :-- |
+| 자격 증명 해석 실패(계정 id/토큰을 해석할 수 없음) | 5분 |
+| 전송/연결 실패 | 30초 |
+| 5xx 업스트림 응답 | 30초 |
+| 429 업스트림 응답 | 숫자 `retry-after`, 1–3600초로 클램프, 기본 60초 |
+| `token_env` 계정에서의 401 | 5분 |
+| `credentials`/스토어 계정에서의 401 — 갱신 실패 또는 재시도도 401 | 5분 |
+
+## 페일오버 규칙
+
+| 응답 | 동작 |
+| :-- | :-- |
+| 2xx | 릴레이하고 정상으로 표시합니다. |
+| 429 | **항상** 쿨다운 후 로테이션합니다. 선택적인 Codex 거부 신호는 표시용으로 기록될 뿐 페일오버 분류를 바꾸지 않으므로, 모든 429는 그 계정의 소진으로 취급됩니다. |
+| `credentials`/스토어에서의 401 | 강제 갱신 후 같은 계정을 한 번 재시도합니다. 갱신에 실패하거나 재시도도 401이면 5분 쿨다운 후 로테이션합니다. |
+| `token_env`에서의 401 | 갱신 불가: 5분 쿨다운 후 로테이션합니다. |
+| 5xx 또는 전송 실패 | 30초 쿨다운 후 로테이션합니다. |
+| 자격 증명 해석 실패 | 5분 쿨다운 후 로테이션합니다. |
+| 그 외 status(예: `400`) | 페일오버 없이 릴레이하고 계정을 정상으로 표시합니다. |
+
+분류는 응답 본문이 스트리밍되기 전에 일어나므로, 스트림 중간의 실패는 절대 재전송되지 않습니다. 풀이 업스트림 응답을 최소 한 번 받은 뒤 시도를 소진하면, shunt는 그 마지막 응답으로 만든 **변환된** Anthropic 형식의 오류 봉투를 릴레이합니다 — status(예: `429`)는 보존되지만 본문은 그대로 릴레이되지 않고 다시 만들어집니다. 이는 마지막 업스트림 응답을 바이트 단위로 그대로 릴레이하는 Anthropic 풀과 정반대입니다. 어떤 업스트림 응답도 받기 전에 모든 계정이 실패하면, 일반 Anthropic Messages 라우트(`/v1/messages`)는 게이트웨이 소유의 `502 api_error`를 `all upstreams failed (N attempted)`와 함께 반환합니다. 별도의 `[server.codex_endpoint]` 인바운드 경로는 영향을 받지 않으며 `all Codex OAuth accounts failed before receiving an upstream response`를 유지합니다.
+
+## 요청과 응답 변경
+
+선택된 계정에 대해 shunt는 단일 계정 경로와 동일한 Codex CLI 신원 헤더를 그 계정의 자격 증명으로 채워 보냅니다:
+
+```http
+authorization: Bearer <selected account's access token>
+chatgpt-account-id: <selected account's account id>
+originator: codex_cli_rs
+OpenAI-Beta: responses=experimental
+```
+
+풀링된 응답은 계정을 식별합니다:
+
+```http
+x-shunt-account: backup
+```
+
+공유 게이트웨이에서는 중립적인 계정 이름을 사용하세요 — 이 헤더는 응답을 받는 모든 인가된 클라이언트에게 구성된 레이블을 노출합니다. 풀 소진 후의 마지막 변환 오류 릴레이에서는 `x-shunt-account`가 생략됩니다.
+
+### WebSocket 전송
+
+프로바이더가 `websocket = true`도 설정했다면([ChatGPT / Codex](/ko/guides/codex/) 참고), 풀링된 연결 캐시 키에 계정별 프리픽스가 붙으므로 두 계정이 소켓이나 그 `previous_response_id` 연속 상태를 공유하는 일은 없습니다. 토큰이 하나라도 스트리밍되기 **전에** 발생한 WebSocket 실패는 **같은** 계정에서 HTTP로 폴백합니다(풀 로테이션이 아닙니다). 위의 페일오버는 HTTP 경로의 실패에서만 발동합니다. 새 WebSocket 업그레이드는 그 핸드셰이크의 rate limit 헤더를 기록합니다. 재사용되거나 prewarm된 연결은 다시 핸드셰이크하지 않으므로, 대시보드 사용량은 새 연결이 맺어질 때 갱신됩니다.
+
+## 보안 제약
+
+`chatgpt_oauth`는 다음 조건에서만 허용됩니다:
+
+- `base_url`이 HTTPS를 사용하고;
+- 호스트가 `chatgpt.com`이거나 그 서브도메인일 때.
+
+`xai_oauth`와 마찬가지로 **`chatgpt_oauth`에는 `kind = "responses"`가 필요합니다** — `openai`, `xai`와 공유하는 Codex 백엔드의 kind입니다. 이는 bearer 유출 방지 장치입니다: Codex bearer를 주입하는 것은 Responses 어댑터뿐이므로, `kind = "anthropic"`으로 잘못 지정된 프로바이더는 Anthropic 어댑터로 라우팅되어 클라이언트 자신의 자격 증명을 `chatgpt.com`이라는 다른 오리진으로 전달하게 됩니다. 이 시작 검사는 OAuth bearer가 다른 오리진으로, 또는 평문으로 전송되는 것을 막습니다. HTTPS와 호스트 검사는 **루프백 호스트에서는 완화**됩니다(`localhost`, `127.0.0.1`, `[::1]` 등): 루프백 `base_url`은 평문 HTTP와 임의의 호스트를 쓸 수 있어 로컬 디버깅 프록시나 목(mock)이 트래픽을 받을 수 있습니다. 루프백이 아닌 호스트에는 항상 HTTPS + `chatgpt.com`이 요구됩니다. 공유 배포에서는 `chatgpt_oauth`가 게이트웨이 소유 자격 증명을 소비하므로 [`[server.auth]`](/ko/guides/shared-gateway/)도 함께 구성하세요.
+
+## 영향 없음: 단일 계정 경로
+
+`accounts`가 구성되지 않은 `chatgpt_oauth` 프로바이더(기본 `codex` 프로바이더)는 이전과 정확히 동일하게 동작합니다: `~/.codex/auth.json`(또는 `$CODEX_AUTH_FILE`)을 직접 읽고 갱신하며, 쿨다운도 `x-shunt-account` 헤더도 없습니다.
+
+## 남은 후속 작업
+
+- **아웃오브밴드 사용량 재보정:** Anthropic 풀은 권위 있는 사용량 API(`usage_refresh_seconds`)를 폴링할 수 있지만 Codex에는 대응물이 없으므로, 쿼터 상태는 응답 헤더로만 갱신됩니다.
+- **관리자 웹 프로비저닝:** 옵트인 [관리자 화면](/ko/guides/admin-remote-provisioning/)은 브라우저에서 ChatGPT OAuth를 실행해 갱신 가능한 Codex 계정을 저장하고, 공유 풀 테이블에 표시하며, 보고된 5h/7d 사용량을 보여줄 수 있습니다(Codex에는 대응물이 없어 `7d_oi`는 비어 있습니다).
+
+계정 풀 내부 동작 전체는 [M10 동작 명세](https://github.com/pleaseai/shunt/blob/main/docs/m10-codex-multi-account.md)를, 단일 계정 설정·모델 라우팅·effort/컨텍스트 구성은 [ChatGPT / Codex 가이드](/ko/guides/codex/)를 참고하세요.

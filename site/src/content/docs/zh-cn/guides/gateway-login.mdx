@@ -1,0 +1,149 @@
+---
+title: 网关登录
+description: 让 Claude Code 通过 OAuth 设备流程、本地批准用户,或 Google 等 OIDC 提供方登录 shunt。
+---
+
+网关登录为每个 Claude Code 用户提供各自会轮换的 OAuth 会话,而不是分发同一个共享的客户端 token。它是可选启用的:没有 `[server.gateway]` 时,任何 OAuth 或设备批准路由都不存在。
+
+
+
+<Aside type="caution" title="仅在受管的多用户访问场景下选择它">
+
+网关登录会话带有 Claude apps 网关的功能取舍:WebSearch 被禁用,仅限第一方的 beta 头部和一小时 cache-TTL beta 会被省略,而且登录需要浏览器。对于个人或单用户的部署,请继续使用 [`ANTHROPIC_BASE_URL`](/zh-cn/guides/connect-claude-code/) 以及可选的 [`[server.auth]`](/zh-cn/guides/shared-gateway/)。
+
+</Aside>
+
+
+
+## 1. 配置登录界面
+
+创建一个至少 32 字节的签名密钥,以及一份逗号分隔的 `email:secret` 批准用户列表。两者都放在 shunt 的环境变量里,而不是 `shunt.toml` 中:
+
+```bash
+export SHUNT_GATEWAY_JWT_SECRET="$(openssl rand -base64 48)"
+export SHUNT_GATEWAY_USERS='alice@example.com:<unique-secret>,bob@example.com:<unique-secret>'
+```
+
+添加 Claude Code 和用户浏览器可以触达的公开 URL:
+
+```toml
+[server.gateway]
+public_url = "https://gateway.example.com"
+jwt_secret_env = "SHUNT_GATEWAY_JWT_SECRET" # default
+users_env = "SHUNT_GATEWAY_USERS"            # default
+token_ttl_seconds = 3600                      # default
+trust_forwarded_for = false                   # default
+# state_path = "~/.shunt/gateway-sessions.json"  # default; "" = memory-only sessions
+```
+
+如果 `public_url` 不是一个纯 HTTPS origin(只有回环地址允许 `http`)、`token_ttl_seconds` 为零、签名密钥短于 32 字节,或者既没有配置有效的用户列表也没有配置有效的外部 IdP,启动会安全失败(fail closed)。静态用户的 secret 中可以包含 `:`,因为只有第一个冒号用于分隔 email 与其 secret。
+
+### 改用 Google OIDC
+
+在 Google Cloud 中创建一个 OAuth web client,并使用这个完全一致的授权重定向 URI:
+
+```text
+https://gateway.example.com/device/callback
+```
+
+把它的 secret 放进网关的环境变量,然后配置 issuer 和一份必填的允许列表:
+
+```bash
+export SHUNT_GATEWAY_OIDC_SECRET='<google-client-secret>'
+```
+
+```toml
+[server.gateway.oidc]
+issuer = "https://accounts.google.com"
+client_id = "<google-client-id>"
+client_secret_env = "SHUNT_GATEWAY_OIDC_SECRET" # default
+allowed_domains = ["example.com"]
+# allowed_emails = ["contractor@outside.example"]
+```
+
+Google 使用默认的 `openid email profile` scope。shunt 要求 Google UserInfo 返回 `email_verified = true`,然后仅当完整 email 或域名(不区分大小写)与允许列表匹配时才放行该用户。
+
+对于 GitHub、SAML 或其他不暴露 shunt 所需标准 OIDC 界面的提供方,请在其前面放一个诸如 [Dex](https://dexidp.io/docs/connectors/) 的 OIDC 身份提供方,并在此处配置 Dex 的 issuer。直接对接特定提供方的 OAuth2 集成不在范围内。
+
+`allowed_domains` 或 `allowed_emails` 至少需要一个非空条目;缺少它时 shunt 拒绝启动。配置了 `[server.gateway.oidc]` 后,`users_env` 变为可选。保留 `SHUNT_GATEWAY_USERS` 会同时显示 SSO 和密码登录,取消设置则只显示提供方按钮。
+
+所有非回环部署都请使用 HTTPS。默认情况下,`/device` 忽略 `X-Forwarded-For` 与 `X-Real-IP`,并按 socket 对端限流。如果 shunt 只能通过一个可信的反向代理触达,可以设置 `trust_forwarded_for = true`,并把该代理配置为先移除客户端提供的转发头部,再写入它自己可信的客户端地址。绝不要在直接暴露的网关上启用这个选项。
+
+## 2. 下发 Claude Code 托管登录设置
+
+在每台开发者机器上设置这些[托管设置](https://code.claude.com/docs/en/settings):
+
+```json
+{
+  "forceLoginMethod": "gateway",
+  "forceLoginGatewayUrl": "https://gateway.example.com"
+}
+```
+
+托管设置的位置因平台而异:
+
+- macOS:`/Library/Application Support/ClaudeCode/managed-settings.json`
+- Linux 与 Windows (WSL):`/etc/claude-code/managed-settings.json`
+- Windows 原生:`C:\Program Files\ClaudeCode\managed-settings.json`
+
+该 URL 必须与 `public_url` 相同。Claude Code 从 shunt 的发现文档中读取 OAuth 端点路径。签发的 bearer 门控 `/v1/models`,以及那些所选提供方会注入服务端凭据的推理请求;透传提供方保持开放。
+
+## 3. 登录
+
+启动 Claude Code 并运行 `/login`。CLI 会显示一个设备码,并打开网关的 `/device` 页面。在该页面上:
+
+1. 确认显示的设备码。
+2. 选择 SSO 按钮(Google 为 **Sign in with Google**,其他提供方为 **Sign in with SSO**),然后完成提供方登录。如果同时配置了静态用户,输入 email 与 secret 并选择 **Approve device** 的方式依然可用。
+3. 出现成功页面后返回 Claude Code。
+
+预填设备码绝不会自动批准它。密码批准的 POST 受同源保护。而外部 callback 则用一次性、十分钟有效的 OAuth state 与 PKCE 绑定这次跨站重定向;提供方的错误绝不会被回显到页面上。
+
+## 托管设置与模型策略
+
+登录之后,shunt 通过需认证的 `GET /managed/settings` 提供该用户解析后的策略。配置有序的 `[[server.gateway.policies]]` 条目:
+
+```toml
+[[server.gateway.policies]]
+[server.gateway.policies.match]
+emails = ["alice@example.com"]
+[server.gateway.policies.cli]
+availableModels = ["claude-opus-4-8"]
+[server.gateway.policies.cli.env]
+DISABLE_UPDATES = "1"
+
+[[server.gateway.policies]]
+match = {} # catch-all
+[server.gateway.policies.cli.permissions]
+deny = ["WebFetch"]
+```
+
+所有兜底(catch-all)条目按顺序合并。随后第一个匹配 email 的条目再合并到其之上。对象递归合并,允许列表类数组直接替换,而键名中包含 `deny` 的数组取并集且不产生重复项。配置了策略时总是返回 `200`;当没有用户专属或兜底设置适用时,若启用了遥测,响应只包含注入的遥测 `env`,否则为 `{}`。省略 `policies` 时返回 `404`,以便 Claude Code 区分“没有托管策略”这一情形。响应包含稳定的按用户 `uuid`、设置的 `checksum`,以及一个包含该 checksum 的 RFC 引号形式 `ETag`;内容未变化时 `If-None-Match` 返回 `304`,并且同样接受 weak、逗号列表、通配符以及旧式未加引号的 validator。
+
+当 `availableModels` 解析为字符串数组时,shunt 还会在 `/v1/messages` 和 `/v1/messages/count_tokens` 上对该网关用户强制执行它。比较之前,它会从客户端请求的模型中剥掉一个末尾的 Claude Code 上下文窗口提示(`[1m]` 或 `[1M]`),因此 `allowed[1m]` 能匹配 `allowed` 条目。被拒绝的模型会得到 `400 invalid_request_error`,且不会联系上游。
+
+非空的遥测目标列表会下发六个标准的 Claude Code OTLP 环境变量值。策略中的 `env` 键覆盖注入的默认值:
+
+```toml
+[server.gateway.telemetry]
+[[server.gateway.telemetry.forward_to]]
+url = "https://collector.example.com"
+# headers = { "x-api-key" = "..." }
+```
+
+目前这项配置只门控托管环境变量的下发。需认证的 OTLP 接收/中继路由将在 M-C(#189)中单独提供。
+
+## 会话行为
+
+access token 是 HS256 JWT,默认有效期一小时。Claude Code 会静默刷新它们。每次刷新都会轮换不透明的 refresh token;在 30 天、每族 64 条 tombstone 的范围内重放一个保留的旧 token,会使该轮换族中当前有效的 token 失效,并让 Claude Code 重新登录。
+
+设备授权与尝试计数器存放在内存中。refresh token 会话在配置热重载后依然存在,并按下文所述默认持久化。签名密钥、用户列表和 OIDC 配置的变更会热生效。过期的授权与闲置的限流条目会被伺机清除;设备授权与限流身份各自上限为 4,096 条。已使用的 refresh token tombstone 保留 30 天,每族上限 64 条;而 30 天未刷新的活动会话会过期。添加或移除 `[server.gateway]` 表本身需要重启,因为路由注册在启动时即已固定。
+
+refresh 会话默认能在 shunt 重启后存活:shunt 在每次授权或轮换后,把 refresh token 存储写入 `state_path`(默认 `~/.shunt/gateway-sessions.json`,原子写入,仅属主权限(Unix 上为 0600)),并在启动时恢复,因此用户可以继续刷新,而不必重跑浏览器流程。refresh token 以 SHA-256 哈希形式存储 —— 该文件从不包含可用的凭据,只有 token 哈希和已登录的身份。文件缺失或损坏时只会退回到仅内存的行为,无法解析出 home 目录的环境也一样。设置 `state_path = ""` 可获得仅内存会话,此时重启会清除 refresh 会话,用户在其 access JWT 过期后需要重新登录。无论哪种方式,设备授权都只存在于内存中(登录途中重启只损失那一次尝试),而且这个状态文件不能在并发运行的多个 shunt 进程之间共享。
+
+请注意,refresh 授权使用会话中存储的身份来签发 token,不会重新检查静态用户列表或外部 IdP 允许列表,因此从任一批准来源中移除一个用户并不会终止其已有会话。要立即撤销某个用户,还需删除状态文件(或设置 `state_path = ""`)并重启。
+
+同时配置 [`[server.auth]`](/zh-cn/guides/shared-gateway/) 与 `[server.gateway]` 时,两者可以组合:有效的静态客户端 token 或有效的网关 bearer 都能获得访问权限。这支持分阶段迁移而不破坏现有客户端。
+
+## 后续计划
+
+托管策略、`ETag` 缓存、遥测环境变量下发以及服务端模型允许列表的强制执行已在上文描述。需认证的入站 OTLP 遥测仍是单独的 M-C 后续工作。

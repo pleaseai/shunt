@@ -1,0 +1,170 @@
+---
+title: ゲートウェイログイン
+description: OAuth デバイスフロー、ローカルの承認ユーザー、または Google などの OIDC プロバイダーで、Claude Code を shunt へサインインさせる。
+---
+
+ゲートウェイログインは、共有クライアントトークンを 1 つ配布する代わりに、Claude Code のユーザーごとにローテーションする独自の OAuth セッションを与えます。これはオプトインのサーフェスです。`[server.gateway]` がなければ、OAuth ルートもデバイス承認ルートも存在しません。
+
+
+
+<Aside type="caution" title="管理された複数ユーザー向けアクセスにのみ選ぶ">
+
+ゲートウェイログインのセッションには、Claude apps ゲートウェイ機能のトレードオフがあります。WebSearch は無効になり、ファーストパーティ専用のベータヘッダーと 1 時間の cache-TTL ベータは省かれ、サインインにはブラウザーが必要です。個人用または単一ユーザーのセットアップでは、代わりに [`ANTHROPIC_BASE_URL`](/ja/guides/connect-claude-code/) とオプションの [`[server.auth]`](/ja/guides/shared-gateway/) を引き続き使ってください。
+
+</Aside>
+
+
+
+## 1. ログインサーフェスを設定する
+
+32 バイト以上の署名シークレットと、カンマ区切りの `email:secret` 形式の承認ユーザーリストを作成します。どちらも `shunt.toml` ではなく shunt の環境変数に置いてください。
+
+```bash
+export SHUNT_GATEWAY_JWT_SECRET="$(openssl rand -base64 48)"
+export SHUNT_GATEWAY_USERS='alice@example.com:<unique-secret>,bob@example.com:<unique-secret>'
+```
+
+Claude Code とユーザーのブラウザーから到達できる公開 URL を追加します。
+
+```toml
+[server.gateway]
+public_url = "https://gateway.example.com"
+jwt_secret_env = "SHUNT_GATEWAY_JWT_SECRET" # default
+users_env = "SHUNT_GATEWAY_USERS"            # default
+token_ttl_seconds = 3600                      # default
+trust_forwarded_for = false                   # default
+# state_path = "~/.shunt/gateway-sessions.json"  # default; "" = memory-only sessions
+```
+
+`public_url` が素の HTTPS オリジンでない場合（`http` はループバックでのみ許可されます）、`token_ttl_seconds` が 0 の場合、署名シークレットが 32 バイト未満の場合、あるいは有効なユーザーリストと有効な外部 IdP のどちらも設定されていない場合、起動はフェイルクローズします。静的ユーザーのシークレットには `:` を含められます — 最初のコロンだけがメールアドレスとシークレットを区切るためです。
+
+### 代わりに Google OIDC を使う
+
+Google Cloud で OAuth ウェブクライアントを作成し、承認済みリダイレクト URI に次を正確に設定します。
+
+```text
+https://gateway.example.com/device/callback
+```
+
+そのシークレットをゲートウェイの環境変数に置き、issuer と必須の許可リストを設定します。
+
+```bash
+export SHUNT_GATEWAY_OIDC_SECRET='<google-client-secret>'
+```
+
+```toml
+[server.gateway.oidc]
+issuer = "https://accounts.google.com"
+client_id = "<google-client-id>"
+client_secret_env = "SHUNT_GATEWAY_OIDC_SECRET" # default
+allowed_domains = ["example.com"]
+# allowed_emails = ["contractor@outside.example"]
+```
+
+Google はデフォルトの `openid email profile` スコープを使います。shunt は Google の UserInfo が `email_verified = true` を返すことを要求し、そのうえで大文字小文字を区別しない完全なメールアドレスまたはドメインが許可リストに一致する場合にのみ、そのユーザーを受け入れます。
+
+GitHub、SAML、その他 shunt が期待する標準の OIDC
+サーフェスを公開しないプロバイダーの場合は、[Dex](https://dexidp.io/docs/connectors/) のような OIDC
+アイデンティティプロバイダーを前段に置き、その Dex の issuer をここに設定してください。プロバイダー固有の
+OAuth2 を直接統合することはスコープ外です。
+
+空でない `allowed_domains` または `allowed_emails` のエントリが少なくとも 1 つ必要です。それがないと
+shunt は起動を拒否します。`[server.gateway.oidc]` を設定すると `users_env`
+は任意になります。`SHUNT_GATEWAY_USERS` を設定したままにすると SSO
+とパスワードの両方のサインインが表示され、未設定にするとプロバイダーのボタンだけが表示されます。
+
+ループバック以外のすべてのデプロイでは HTTPS を使ってください。デフォルトでは `/device` は `X-Forwarded-For` と `X-Real-IP` を無視し、ソケットのピアに対してレート制限をかけます。shunt へ信頼できるリバースプロキシ経由でのみ到達できる場合は、`trust_forwarded_for = true` を設定し、そのプロキシがクライアント由来の forwarding ヘッダーを削除してから自身の信頼できるクライアントアドレスを設定するよう構成してください。直接公開されたゲートウェイでは、このオプションを決して有効にしないでください。
+
+## 2. 管理された Claude Code のログイン設定を配布する
+
+各開発者マシンに次の[管理設定](https://code.claude.com/docs/en/settings)を設定します。
+
+```json
+{
+  "forceLoginMethod": "gateway",
+  "forceLoginGatewayUrl": "https://gateway.example.com"
+}
+```
+
+管理設定の場所はプラットフォームによって異なります。
+
+- macOS: `/Library/Application Support/ClaudeCode/managed-settings.json`
+- Linux と Windows (WSL): `/etc/claude-code/managed-settings.json`
+- Windows ネイティブ: `C:\Program Files\ClaudeCode\managed-settings.json`
+
+この URL は `public_url` と一致していなければなりません。Claude Code は OAuth エンドポイントのパスを shunt の discovery ドキュメントから読み取ります。発行されたベアラーは、`/v1/models` と、選択されたプロバイダーがサーバー側の認証情報を注入する推論リクエストをゲートします。パススループロバイダーは開いたままです。
+
+## 3. サインインする
+
+Claude Code を起動して `/login` を実行します。CLI がデバイスコードを表示し、ゲートウェイの `/device` ページを開きます。そのページで:
+
+1. 表示されたデバイスコードを確認します。
+2. SSO ボタン（Google なら **Sign in with Google**、その他のプロバイダーなら **Sign in with SSO**）を選び、プロバイダーのログインを完了します。静的ユーザーも設定されている場合は、メールアドレスとシークレットを入力して **Approve device** を選ぶ方法も引き続き利用できます。
+3. 成功ページが表示されたら Claude Code に戻ります。
+
+コードが事前入力されていても、それによって自動承認されることはありません。パスワード承認の POST は same-origin で保護されます。外部コールバックは代わりに、使い捨てで 10 分間有効な OAuth state と PKCE によってクロスサイトのリダイレクトを束縛します。プロバイダーのエラーがページへそのまま出力されることはありません。
+
+## 管理設定とモデルポリシー
+
+サインイン後、shunt は認証済みの `GET /managed/settings`
+から、そのユーザーに解決されたポリシーを返します。順序付きの `[[server.gateway.policies]]` エントリを設定します。
+
+```toml
+[[server.gateway.policies]]
+[server.gateway.policies.match]
+emails = ["alice@example.com"]
+[server.gateway.policies.cli]
+availableModels = ["claude-opus-4-8"]
+[server.gateway.policies.cli.env]
+DISABLE_UPDATES = "1"
+
+[[server.gateway.policies]]
+match = {} # catch-all
+[server.gateway.policies.cli.permissions]
+deny = ["WebFetch"]
+```
+
+すべての catch-all エントリが順にマージされます。その上に、メールアドレス固有の最初の一致がマージされます。オブジェクトは再帰的にマージされ、allow-list
+の配列は置き換えられ、キーに `deny` を含む配列は重複なしで和集合になります。ポリシーが設定されていれば常に
+`200` を返します。ユーザー固有の設定も catch-all
+の設定も適用されない場合、レスポンスにはテレメトリーが有効なら注入されたテレメトリーの `env` だけが含まれ、そうでなければ
+`{}` になります。`policies` を省略すると `404` を返すため、Claude Code は「管理ポリシーなし」を区別できます。レスポンスには、安定したユーザーごとの
+`uuid`、設定の `checksum`、そしてその checksum を含む RFC 準拠のクォート付き `ETag`
+が含まれます。`If-None-Match` は変更がなければ `304`
+を返し、weak、カンマ区切りリスト、ワイルドカード、レガシーなクォートなしの validator も受け付けます。
+
+`availableModels` が文字列の配列に解決される場合、shunt はそのゲートウェイユーザーに対して
+`/v1/messages` と `/v1/messages/count_tokens` でもそれを強制します。比較の前に、クライアントが要求したモデルから末尾の
+Claude Code のコンテキストウィンドウヒント（`[1m]` または `[1M]`）を 1 つ取り除くため、`allowed[1m]` は
+`allowed` エントリに一致します。拒否されたモデルは、アップストリームに問い合わせることなく
+`400 invalid_request_error` を受け取ります。
+
+テレメトリーの宛先リストが空でない場合、Claude Code の標準的な 6 つの OTLP
+環境変数値が配布されます。ポリシーの `env` キーは、注入されたデフォルトを上書きします。
+
+```toml
+[server.gateway.telemetry]
+[[server.gateway.telemetry.forward_to]]
+url = "https://collector.example.com"
+# headers = { "x-api-key" = "..." }
+```
+
+現時点でこの設定は、管理された環境変数の配布をゲートします。認証済みの OTLP
+の受信/中継ルートは、M-C（#189）として別途提供されます。
+
+## セッションの挙動
+
+アクセストークンは HS256 の JWT で、デフォルトの寿命は 1 時間です。Claude Code はそれを暗黙にリフレッシュします。リフレッシュのたびに不透明な refresh token がローテーションされます。保持していた古いトークンを、30 日・64 tombstone の範囲内で再生すると、そのローテーションファミリーのアクティブなトークンが無効化され、Claude Code は再度サインインすることになります。
+
+デバイスグラントと試行カウンターはメモリ上にあります。refresh token のセッションは設定のホットリロードをまたいで維持され、後述のとおりデフォルトで永続化されます。署名シークレット、ユーザーリスト、OIDC 設定の変更はホット適用されます。期限切れのグラントとアイドルなレート制限エントリは日和見的に削除され、デバイスグラントとレート制限のアイデンティティはそれぞれ 4,096 エントリが上限です。使用済みの refresh token の tombstone は 30 日間保持され、ファミリーごとに 64 件が上限です。また、30 日間リフレッシュされなかったアクティブなセッションは期限切れになります。ルート登録は起動時に固定されるため、`[server.gateway]` テーブル自体の追加・削除には再起動が必要です。
+
+refresh セッションはデフォルトで shunt の再起動をまたいで維持されます。shunt はグラントまたはローテーションのたびに refresh token のストアを `state_path`（デフォルトは `~/.shunt/gateway-sessions.json`。アトミックに、所有者のみのパーミッション（Unix では 0600）で書き込まれます）へ保存し、起動時に復元します。そのためユーザーはブラウザーフローをやり直すことなく、リフレッシュを続けられます。refresh token は SHA-256 ハッシュとして保存されます — このファイルに使用可能な認証情報が含まれることはなく、トークンのハッシュとサインイン済みのアイデンティティだけが入ります。ファイルが存在しない、または破損している場合は、メモリのみの挙動にフォールバックするだけです。ホームディレクトリを解決できない環境でも同様です。メモリのみのセッションにするには `state_path = ""` を設定します。この場合、再起動で refresh セッションはクリアされ、アクセス JWT の期限が切れた時点でユーザーは再度サインインします。デバイスグラントはいずれの場合もメモリのみです（ログイン途中の再起動で失われるのは、その試行だけです）。また、state ファイルを同時に稼働する複数の shunt プロセスで共有してはいけません。
+
+なお、refresh グラントはセッションとともに保存されたアイデンティティからトークンを発行し、静的ユーザーリストや外部 IdP の許可リストを再チェックしません。そのため、どちらの承認ソースからユーザーを削除しても、既存のセッションは終了しません。ユーザーを直ちにデプロビジョニングするには、state ファイルも削除（または `state_path = ""` を設定）したうえで再起動してください。
+
+[`[server.auth]`](/ja/guides/shared-gateway/) と `[server.gateway]` の両方が設定されている場合、両者は組み合わさります。有効な静的クライアントトークンか、有効なゲートウェイのベアラーのいずれかでアクセスが許可されます。これにより、既存のクライアントを壊すことなく段階的に移行できます。
+
+## この先の予定
+
+管理ポリシー、`ETag` キャッシュ、テレメトリー環境変数の配布、サーバー側でのモデル許可リストの強制については上記のとおりです。認証済みのインバウンド
+OTLP テレメトリーは、引き続き M-C の別途フォローアップです。

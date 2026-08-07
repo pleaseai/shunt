@@ -58,10 +58,10 @@ export const NAVIGATION: NavigationGroup[] = [
     items: [
       { label: "Configuration", translations: { ko: "설정", ja: "設定", "zh-cn": "配置" }, slug: "guides/configuration" },
       { label: "Anthropic Multi-Account", translations: { ko: "Anthropic 멀티 계정", ja: "Anthropic マルチアカウント", "zh-cn": "Anthropic 多账户" }, slug: "guides/anthropic-multi-account" },
-      { label: "Codex Multi-Account", slug: "guides/codex-multi-account" },
-      { label: "Inbound Codex Endpoint", slug: "guides/inbound-codex-endpoint" },
+      { label: "Codex Multi-Account", translations: { ko: "Codex 멀티 계정", ja: "Codex マルチアカウント", "zh-cn": "Codex 多账户" }, slug: "guides/codex-multi-account" },
+      { label: "Inbound Codex Endpoint", translations: { ko: "인바운드 Codex 엔드포인트", ja: "インバウンド Codex エンドポイント", "zh-cn": "入站 Codex 端点" }, slug: "guides/inbound-codex-endpoint" },
       { label: "Admin & Remote Provisioning", translations: { ko: "관리자 & 원격 프로비저닝", ja: "管理とリモートプロビジョニング", "zh-cn": "管理与远程预配" }, slug: "guides/admin-remote-provisioning" },
-      { label: "Gateway Login", slug: "guides/gateway-login" },
+      { label: "Gateway Login", translations: { ko: "게이트웨이 로그인", ja: "ゲートウェイログイン", "zh-cn": "网关登录" }, slug: "guides/gateway-login" },
       { label: "Connect Claude Code", translations: { ko: "Claude Code 연결", ja: "Claude Code の接続", "zh-cn": "连接 Claude Code" }, slug: "guides/connect-claude-code" },
       { label: "Connect Claude Desktop", translations: { ko: "Claude Desktop 연결", ja: "Claude Desktop の接続", "zh-cn": "连接 Claude Desktop" }, slug: "guides/connect-claude-desktop" },
       { label: "Connect the Codex CLI", translations: { ko: "Codex CLI 연결", ja: "Codex CLI の接続", "zh-cn": "连接 Codex CLI" }, slug: "guides/connect-codex-cli" },

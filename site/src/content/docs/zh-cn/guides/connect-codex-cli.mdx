@@ -1,0 +1,273 @@
+---
+title: 连接 Codex CLI
+description: 把 OpenAI Codex CLI 指向 shunt,让它在 ChatGPT/Codex OAuth 账户池上做负载均衡。
+---
+
+其他所有连接指南都是把 **Claude Code** 路由到某个后端。这一篇的方向正好相反:把 OpenAI 的
+**Codex CLI** 指向 shunt,让 shunt 在一个 ChatGPT/Codex OAuth 账户池上为它做负载均衡。shunt 会
+**逐字**中继 Codex CLI 的 OpenAI Responses 流量 —— 没有任何 Anthropic 转换 —— 因此该 CLI 与 shunt
+之间说的,和它直连 `chatgpt.com` 时说的是同一套线上协议。
+
+这是[入站 Codex 端点](/zh-cn/guides/inbound-codex-endpoint/)的实际用法;那一页是行为规范(故障转移表、
+耗尽语义、重载规则),下面的步骤则是端到端的连接演练。这里引用的 Codex CLI 配置键来自 OpenAI 的
+[配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)与
+[认证](https://learn.chatgpt.com/docs/auth)文档。
+
+## 1. 在 shunt 上启用该端点
+
+入站端点是**可选启用**的。添加该表并把它指向一个 `chatgpt_oauth` 提供方(默认的提供方名是
+`codex`):
+
+```toml
+# shunt config.toml
+[server.codex_endpoint]
+provider = "codex"        # must be a chatgpt_oauth provider; "codex" is the built-in default
+```
+
+`codex` 是内置的 `chatgpt_oauth` 提供方,因此启用该端点不需要任何 `[providers.codex]` 块。若要指向
+一个名字不同的提供方,请把它声明为 `[providers.<name>]` 表(见[配置参考](/zh-cn/reference/configuration/#providersname旧式)),
+并在上面设置 `provider = "<name>"`。
+
+```bash
+shunt check                # validates the endpoint's provider exists + is chatgpt_oauth
+shunt run
+```
+
+`[server.codex_endpoint]` 不存在时,这些路由一个都不会注册,shunt 默认的 HTTP 暴露面保持不变。存在
+时,启动校验会**拒绝**未知的 `provider`,或其 `auth` 不是 `chatgpt_oauth` 的提供方 —— 该端点注入的是
+运营者的 Codex bearer,因此只有 `chatgpt_oauth` 提供方符合条件。每个键见[配置参考](/zh-cn/reference/configuration/)。
+
+## 2. 把 Codex CLI 指向 shunt
+
+Codex CLI 会把 `/responses` 追加到它使用的任何 base URL 之后(Codex 说的是 OpenAI Responses 线上
+协议 —— `wire_api = "responses"` 是它唯一支持的取值),因此 shunt 注册了三条路由,下面任何一种客户端
+形态都会落到其中之一:
+
+| Codex CLI `~/.codex/config.toml` | 命中的 shunt 路由 |
+| :-- | :-- |
+| 自定义提供方 `base_url = ".../v1"` | `POST /v1/responses` |
+| `openai_base_url = ".../v1"` | `POST /v1/responses` |
+| `chatgpt_base_url = ".../backend-api/codex"` | `POST /backend-api/codex/responses` |
+
+**推荐 —— 自定义模型提供方。**配合 `requires_openai_auth = false`,从 CLI 的视角看它是免认证的,因此
+**完全不需要本地的 `codex login`** —— 账户由 shunt 提供 —— 而且两种呈递 shunt token 的方式(步骤 3)
+它都支持:
+
+```toml
+# ~/.codex/config.toml
+model_provider = "shunt"          # select it as the active provider
+model = "gpt-5.6-sol"             # an entitled slug — see step 5
+
+[model_providers.shunt]
+name = "shunt"
+base_url = "http://127.0.0.1:3001/v1"
+wire_api = "responses"            # the only supported value; also the default
+requires_openai_auth = false      # shunt handles auth; the CLI needs no ChatGPT/API login here
+```
+
+**更简单 —— 覆盖一个 base URL**(不需要提供方块):
+
+```toml
+# ~/.codex/config.toml — pick one
+openai_base_url  = "http://127.0.0.1:3001/v1"                 # + OPENAI_API_KEY = your shunt token
+chatgpt_base_url = "http://127.0.0.1:3001/backend-api/codex"  # loopback only (ChatGPT login mode)
+```
+
+`openai_base_url` + `OPENAI_API_KEY=<shunt-token>` 是 LiteLLM/llmgateway 的惯用法 —— CLI 会把该
+token 以 `Authorization: Bearer` 发送,shunt 接受这种方式(步骤 3),所以这种形态**即使配置了
+`[server.auth]` 也能工作**。`chatgpt_base_url` 会让 CLI 停留在 ChatGPT 登录模式并发送它*自己的*
+ChatGPT token,而 shunt 无法把它当作客户端 token 接受 —— 因此**只应在未设门控的(回环)shunt 上**使用。
+这两种方式都让 CLI 运行在它自己的 OpenAI/ChatGPT 认证模式下,因此都需要本地的 `codex login`;上面的
+自定义提供方连这一步都省了。
+
+
+
+<Aside type="caution" title="在 config.toml 中设置 base URL,而不是通过 OPENAI_BASE_URL 环境变量">
+
+请把 `openai_base_url` 写进 `~/.codex/config.toml`(用户级)。`OPENAI_BASE_URL`
+**环境变量**无法重定向 Codex CLI 的 Responses **WebSocket** 传输 —— CLI 会继续打开
+`wss://api.openai.com/v1/responses`,完全绕开 shunt,并因为把你的 shunt token 直接呈递给 OpenAI 而以
+`Incorrect API key` 失败。只有配置键才会同时重定向 HTTP 与 WebSocket 两条路径。(`chatgpt_base_url`、
+`model_provider` 和 `experimental_realtime_ws_base_url` 同理:它们都是用户级 `~/.codex/config.toml`
+的键 —— CLI 会忽略项目本地 `.codex/config.toml` 中的它们,而且没有等效的环境变量。)使用
+`openai_base_url` 时,CLI 仍会先*尝试* WebSocket;shunt 没有 `wss` 路由,因此 CLI 会自行回退到 HTTP。
+上面的自定义 `model_provider` 连这一次往返都省了 —— `supports_websockets` 默认关闭,所以它直接走 HTTP。
+
+</Aside>
+
+
+
+CLI 自己本地的 `~/.codex/auth.json` 登录**与哪个账户来应答无关** —— 每个请求都从 shunt 的池中取用一个
+账户。回环的 `base_url` 可以保持纯 `http://`;远程场景请使用 `https://`。**不要**在 shunt 提供方上设置
+`supports_websockets = true` —— 这个端点只走 HTTP/SSE(见下文)。
+
+
+
+<Aside type="tip" title="用 profile 隔离它">
+
+把 shunt 的配置块放进 profile 文件 `~/.codex/shunt.config.toml` 并运行 `codex --profile shunt`,就能让
+你原有的 Codex 配置保持不变。profile 文件使用相同的顶层键,并且只需要写下与基础配置不同的值。
+
+</Aside>
+
+
+
+## 3. 提供 shunt 客户端 token(当配置了 `[server.auth]` 时)
+
+如果 shunt 配置了 [`[server.auth]`](/zh-cn/guides/shared-gateway/) —— 回环之外的场景都推荐配置 ——
+请用**两种**方式之一提供 shunt 客户端 token;shunt 两种都接受。
+
+**A. 作为 OpenAI 风格的 Bearer key** —— LiteLLM/llmgateway 的惯用法。把 shunt token 设为 API key,CLI
+会以 `Authorization: Bearer <shunt-token>` 发送它:
+
+```toml
+# ~/.codex/config.toml — built-in openai provider (no provider block needed).
+# Set the base URL here, NOT via the OPENAI_BASE_URL env var (see the caution in step 2).
+openai_base_url = "http://127.0.0.1:3001/v1"
+```
+
+```bash
+# then present only the token via env — the CLI sends it as Authorization: Bearer
+export OPENAI_API_KEY="<shunt-token>"
+```
+
+```toml
+# or a custom provider — env_key becomes the Bearer
+[model_providers.shunt]
+base_url = "http://127.0.0.1:3001/v1"
+wire_api = "responses"
+env_key = "SHUNT_TOKEN"      # reads $SHUNT_TOKEN, sent as Authorization: Bearer
+```
+
+**B. 作为 `x-shunt-token` 头部**(或 `[server.auth].header` 所指定的任何名字)。只有自定义提供方才能附加
+头部;用 `env_http_headers` 把密钥留在 `config.toml` 之外:
+
+```toml
+[model_providers.shunt]
+name = "shunt"
+base_url = "http://127.0.0.1:3001/v1"
+wire_api = "responses"
+requires_openai_auth = false
+env_http_headers = { "x-shunt-token" = "SHUNT_TOKEN" }   # reads $SHUNT_TOKEN
+```
+
+```bash
+export SHUNT_TOKEN="<token>"
+```
+
+(或者硬编码 `http_headers = { "x-shunt-token" = "<token>" }`。)无论哪种方式,该 token 都会与
+`[server.auth]` 的列表比对;缺失或错误的 token 返回 `401 authentication_error`。完全不配置
+`[server.auth]` 时,该端点对任何能触达它的人开放 —— 回环场景没问题,共享网关则不行。客户端的
+bearer/头部**仅**用于向 shunt 认证 —— 它会被剥除,绝不会转发给 Codex 后端。
+
+
+
+<Aside type="note" title="你的凭据不会到达后端 —— 但你的身份头部会">
+
+你所提供的 `Authorization: Bearer` / `x-shunt-token` **仅**用于向 shunt 认证(步骤 3),之后即被
+**剥除** —— 它和任何客户端凭据都不会转发到上游。shunt 只换入池中账户的 `Authorization` bearer 与
+`chatgpt-account-id`。CLI 发送的其他一切都会被**逐字**转发,因此你的 CLI **自己的** `version` 会到达
+后端(而不是 shunt 固定的某个值),`minimal_client_version` 的模型门控(步骤 5)表现也与直连
+`chatgpt.com` 时完全一致。
+
+</Aside>
+
+
+
+## 4. 在 shunt 上预配账户池
+
+该端点原封不动地复用 [Codex 多账户](/zh-cn/guides/codex-multi-account/#配置账户池)的账户池 —— 请在
+**shunt** 所在主机上预配账户,而不是 CLI 那一侧:
+
+```bash
+codex login                       # sign in to a ChatGPT account (browser flow)
+shunt login codex --name main     # capture it into shunt's store
+# Each additional pool account needs its own login + capture (a separate ChatGPT
+# account): `codex login` then `shunt login codex --name backup`, and so on.
+```
+
+```toml
+# shunt config.toml
+[[providers.codex.accounts]]
+name = "main"
+
+[[providers.codex.accounts]]
+name = "backup"     # each declared name must be provisioned above; an unprovisioned
+                    # account is skipped on failover (its credential fails to resolve)
+```
+
+选择是**会话粘性**的:Codex CLI 自己的 `session-id` 请求头部决定账户的 key,因此一段对话只要账户保持
+健康就一直留在同一个账户上,随后才会故障转移(429 → 轮换,401 → 刷新并重试,5xx → 冷却并轮换)。成功
+的池化响应会带上 `x-shunt-account: <name>` 头部。在启用了 [`[server.auth]`](/zh-cn/reference/configuration/)
+的共享网关上,粘性 key 按已认证的客户端隔离,因此恰好发送相同 `session-id` 的不同客户端会使用不同的
+粘性 key —— 从而避免跨客户端的粘性 key 碰撞。(这些 key 是不同的;两个不同的 key 仍可能哈希到同一个
+账户。)
+
+在**没有**配置 `[[providers.codex.accounts]]` 且存储为空时,该端点会回退到单个默认的
+`~/.codex/auth.json` 凭据 —— 没有池,也没有故障转移 —— 因此只要设置了 `[server.codex_endpoint]`,一个
+Codex 登录就能立刻工作。
+
+
+
+<Aside type="note" title="无头环境下的预配">
+
+`shunt login codex` 捕获的是**基于文件**的 `~/.codex/auth.json`,因此在 shunt 主机上请保持
+`cli_auth_credentials_store = "file"`(默认值),而不是 `keyring`。在没有浏览器的服务器上,请用 Codex
+的设备码流程(`codex login --device-auth`)登录该账户,或者在笔记本上完成 `codex login` 再把
+`~/.codex/auth.json` 复制到 shunt 主机 —— 参见
+[在无头设备上登录](https://learn.chatgpt.com/docs/auth#login-on-headless-devices)。
+
+</Aside>
+
+
+
+## 5. 选择一个有权限的模型
+
+
+
+<Aside type="caution" title="带 codex 后缀的 slug 会被拒绝">
+
+入站请求体中的 `model` 会被**逐字**转发到上游,而 ChatGPT 账户后端只接受你的账户**当前有权限**使用的
+slug —— 它会以 `400` **拒绝** `gpt-*-codex` 这类 slug(例如 `gpt-5.2-codex`)。如果你的 Codex CLI 默认
+使用某个 `-codex` 模型,请把它覆盖为一个有权限的 slug,例如写在 `~/.codex/config.toml` 中:
+
+```toml
+model = "gpt-5.6-sol"   # entitled slug, not a *-codex one
+```
+
+当前有权限的 slug 是 `gpt-5.6-sol` / `-terra` / `-luna` 以及 `gpt-5.5` / `gpt-5.4` /
+`gpt-5.4-mini` / `gpt-5.2` —— 较早的账户可能只有靠前的那些。权威列表见
+[ChatGPT / Codex → 将一个模型路由到 `codex`](/zh-cn/guides/codex/#3-将一个模型路由到-codex)。请求一个你的
+订阅所不具备的模型时,失败方式与直连 `chatgpt.com` 完全一致。
+
+</Aside>
+
+
+
+## 6. 验证
+
+针对这三条路由中的任意一条发起一个原始 Responses 请求,应当被逐字中继,并(在池化时)返回一个
+`x-shunt-account` 头部:
+
+```bash
+curl -N -i -X POST http://127.0.0.1:3001/v1/responses \
+  -H "content-type: application/json" \
+  -H "x-shunt-token: <token>" \
+  -d '{"model":"gpt-5.6-sol","input":"say hi","stream":true}'
+```
+
+- 返回 `200`,带 `content-type: text/event-stream` 和 `x-shunt-account:` 头部 ⇒ 池已服务该请求,且 SSE
+  被原样中继。
+- 返回 `401 authentication_error` ⇒ `x-shunt-token` 缺失或无效(步骤 3)。
+- 返回指明模型的 `400` ⇒ 该账户对这个 slug 没有权限(步骤 5)。
+
+然后用真正的 Codex CLI 跑一轮 —— 除了 base URL 之外,CLI 侧不需要任何代码改动就能经由账户池往返。关于
+这条路径与 `/v1/messages` 路径的差异,见[入站 Codex 端点](/zh-cn/guides/inbound-codex-endpoint/);已注册的
+路由见 [HTTP 端点](/zh-cn/reference/endpoints/)。
+
+## 仅 HTTP/SSE
+
+即使目标提供方设置了 `websocket = true`,这个端点也始终使用 HTTP 传输,因此请在 Codex CLI 的 shunt
+提供方上保持 `supports_websockets` 关闭(其默认值)。实验性的
+[Codex WebSocket v2 传输](https://github.com/pleaseai/shunt/blob/main/docs/m11-inbound-codex-endpoint.md)
+不在这个端点的范围内,已作为后续工作跟踪。
