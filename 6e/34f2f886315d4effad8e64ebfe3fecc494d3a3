@@ -1,0 +1,19 @@
+site/src/content/docs/ja/guides/gateway-login.mdx
+  s_9dba24056fd1d7::t_6fb95fd510b989 127
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "6e34f2f886315d4effad8e64ebfe3fecc494d3a3",
+  "prompts": {},
+  "sessions": {
+    "s_9dba24056fd1d7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ab190862-e7c9-418e-b669-d8b5732dbb7e",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
