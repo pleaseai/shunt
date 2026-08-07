@@ -23,7 +23,7 @@ A custom gateway id like `gpt-5.6-sol` carries effort on its own. Verified on th
 Effort is lost a different way. Ids the client normalizes onto its legacy effort deny list — `claude-sonnet-4-5` and `claude-haiku-4-5` — send no `output_config.effort` at all, with the flag set or unset, and no environment variable overrides that. shunt then falls back to `medium`. If a mapped model needs effort control, don't give it one of those ids.
 
 ```bash
-export CLAUDE_EFFORT=high   # sets the value; the id decides whether it is sent
+export CLAUDE_CODE_EFFORT_LEVEL=high   # sets the value; the id decides whether it is sent
 ```
 
 </Aside>
