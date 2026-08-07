@@ -1,0 +1,19 @@
+site/src/content/docs/ja/guides/connect-codex-cli.mdx
+  s_9dba24056fd1d7::t_2b5067bb5a12b1 233
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "e67c6a57c1a8463f6d4ef4a362163a3ec8ede484",
+  "prompts": {},
+  "sessions": {
+    "s_9dba24056fd1d7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ab190862-e7c9-418e-b669-d8b5732dbb7e",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
