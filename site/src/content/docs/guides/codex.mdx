@@ -474,7 +474,7 @@ tool_search = false
 | `ChatGPT auth tokens missing` | Auth file is in `ApiKey` mode — that's the `openai` provider. Re-`codex login` with a ChatGPT account. |
 | `400 … not supported when using Codex with a ChatGPT account` | You used a `gpt-*-codex` slug. Use an entitled non-`-codex` slug. |
 | `Model not found <slug>` | Client-version gating or an unentitled slug — confirm via `models.json`. |
-| Effort slider ignored on a `gpt-*` id | Set `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1`, or a route/provider `effort` override is winning. |
+| Effort slider ignored on a `gpt-*` id | A route/provider `effort` override is winning, or no effort level is set. Verified against v2.1.224: a `gpt-*` id already sends `output_config.effort` without `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT`, so that flag is not the fix. |
 | Context bar over-reports / compacts early | Set `CLAUDE_CODE_MAX_CONTEXT_TOKENS`; a discovery alias can't take it — use a non-`claude-` id. |
 | Web search returns nothing on a Grok route | xAI/Grok's Responses API doesn't support web search; shunt drops the tool. Use a `codex` or `openai` route. |
 | Tool search does nothing / all tool schemas sent every turn | Set `ENABLE_TOOL_SEARCH=true` — Claude Code disables tool search by default behind a non-Anthropic base URL. shunt forwards `tool_reference` blocks and reveals deferred schemas on demand. |
