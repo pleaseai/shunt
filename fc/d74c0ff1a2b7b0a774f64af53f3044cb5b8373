@@ -1,0 +1,19 @@
+site/src/content/docs/reference/client-environment.md
+  s_79ca5bc71d21c8::t_c38545bdc8b64d 28
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "fcd74c0ff1a2b7b0a774f64af53f3044cb5b8373",
+  "prompts": {},
+  "sessions": {
+    "s_79ca5bc71d21c8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "804a3cef-5e46-41dd-901c-da18eb4db04e",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
