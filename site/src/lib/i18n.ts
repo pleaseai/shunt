@@ -79,6 +79,7 @@ export const NAVIGATION: NavigationGroup[] = [
       { label: "CLI", translations: { ko: "CLI", ja: "CLI", "zh-cn": "CLI" }, slug: "reference/cli" },
       { label: "Configuration Reference", translations: { ko: "설정 레퍼런스", ja: "設定リファレンス", "zh-cn": "配置参考" }, slug: "reference/configuration" },
       { label: "HTTP Endpoints", translations: { ko: "HTTP 엔드포인트", ja: "HTTP エンドポイント", "zh-cn": "HTTP 端点" }, slug: "reference/endpoints" },
+      { label: "Client Environment Variables", translations: { ko: "클라이언트 환경 변수", ja: "クライアント環境変数", "zh-cn": "客户端环境变量" }, slug: "reference/client-environment" },
       { label: "Troubleshooting", translations: { ko: "문제 해결", ja: "トラブルシューティング", "zh-cn": "故障排查" }, slug: "reference/troubleshooting" },
     ],
   },
