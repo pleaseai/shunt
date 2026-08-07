@@ -1,0 +1,25 @@
+site/src/content/docs/guides/codex.mdx
+  s_79ca5bc71d21c8::t_51d72dccb24634 477
+site/src/content/docs/guides/effort-and-context.mdx
+  s_79ca5bc71d21c8::t_d199dd9df99c6c 19,21-23,26
+site/src/content/docs/reference/client-environment.md
+  s_79ca5bc71d21c8::t_95e1f31748fb0d 25
+site/src/content/docs/reference/troubleshooting.md
+  s_79ca5bc71d21c8::t_bd4b3f63599070 20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "62c2dbf60c60a853b409b9e854d575552a8c756f",
+  "prompts": {},
+  "sessions": {
+    "s_79ca5bc71d21c8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "804a3cef-5e46-41dd-901c-da18eb4db04e",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
