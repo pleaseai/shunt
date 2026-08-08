@@ -273,7 +273,7 @@ Issues and PRs are welcome. See [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`AGENT
 
 Pull requests to `shunt` are reviewed by two AI code reviewers, both free for open source:
 
-- [Greptile](https://www.greptile.com/) — free for non-commercial MIT/Apache projects under its OSS program.
+- [Greptile](https://www.greptile.com/?utm_source=oss_badge&utm_medium=readme&utm_campaign=greptile_for_open_source) — free for non-commercial MIT/Apache projects under its OSS program.
 - [cubic](https://cubic.dev/) — free for public repositories.
 
 ## License

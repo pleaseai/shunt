@@ -234,7 +234,7 @@ Issue と PR を歓迎します。ビルド／テストコマンドと規約に�
 
 `shunt` へのプルリクエストは 2 つの AI コードレビュアーによってレビューされ、いずれもオープンソースでは無料です。
 
-- [Greptile](https://www.greptile.com/) — OSS プログラムのもと、非商用の MIT/Apache プロジェクトで無料。
+- [Greptile](https://www.greptile.com/?utm_source=oss_badge&utm_medium=readme&utm_campaign=greptile_for_open_source) — OSS プログラムのもと、非商用の MIT/Apache プロジェクトで無料。
 - [cubic](https://cubic.dev/) — 公開リポジトリで無料。
 
 ## ライセンス

@@ -234,7 +234,7 @@ Claude Code 在 `ANTHROPIC_BASE_URL` 后暴露了一个**一等公民的网关�
 
 `shunt` 的拉取请求由两个 AI 代码评审工具审查，两者对开源项目均免费：
 
-- [Greptile](https://www.greptile.com/) — 依据其 OSS 计划，对非商业 MIT/Apache 项目免费。
+- [Greptile](https://www.greptile.com/?utm_source=oss_badge&utm_medium=readme&utm_campaign=greptile_for_open_source) — 依据其 OSS 计划，对非商业 MIT/Apache 项目免费。
 - [cubic](https://cubic.dev/) — 对公开仓库免费。
 
 ## 许可证

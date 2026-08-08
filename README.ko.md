@@ -234,7 +234,7 @@ Claude Code는 `ANTHROPIC_BASE_URL` 뒤에 **1급 게이트웨이 계약**을 �
 
 `shunt`의 풀 리퀘스트는 두 개의 AI 코드 리뷰어 도구가 검토하며, 둘 다 오픈소스 프로젝트에 무료로 제공됩니다.
 
-- [Greptile](https://www.greptile.com/) — OSS 프로그램에 따라 비상업적 MIT/Apache 프로젝트에 무료.
+- [Greptile](https://www.greptile.com/?utm_source=oss_badge&utm_medium=readme&utm_campaign=greptile_for_open_source) — OSS 프로그램에 따라 비상업적 MIT/Apache 프로젝트에 무료.
 - [cubic](https://cubic.dev/) — 공개 저장소에 무료.
 
 ## 라이선스
