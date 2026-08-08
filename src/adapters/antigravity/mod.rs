@@ -283,8 +283,9 @@ impl Adapter for AntigravityAdapter {
             // Stdout EOF does not imply the child exited: it may have closed
             // the pipe and kept running, and an unbounded wait would hang the
             // response behind a permission-skipping agent. Give it a short
-            // grace period to exit on its own — the status is wanted here, so
-            // killing outright would discard it — then kill if it overstays.
+            // grace period to exit on its own — a normally-exiting child then
+            // reports its own status, which the failure path below uses —
+            // then kill if it overstays.
             let status = match tokio::time::timeout(EXIT_GRACE, child.wait()).await {
                 Ok(status) => status,
                 Err(_) => {
@@ -293,17 +294,24 @@ impl Adapter for AntigravityAdapter {
                 }
             };
 
-            if let Some(message) =
-                terminal_failure(translator.end(), false, &stderr_log).or_else(|| {
-                    translator.end().is_none().then(|| {
-                        let code = status.ok().and_then(|s| s.code()).unwrap_or(-1);
-                        format!(
-                            "the CLI exited without a result (status {code}); {}",
-                            stderr_text(&stderr_log)
-                        )
-                    })
-                })
-            {
+            // Not `terminal_failure` here: its `None` arm reports "stopped
+            // without reporting a result" with no exit status, and because it
+            // never returns `None` for a missing result, chaining `.or_else`
+            // onto it left the status message unreachable. On this path the
+            // process has been reaped, so the status is available and is the
+            // only signal left about *why* nothing came back — report it.
+            let failure = match translator.end() {
+                Some(AgyEnd::Success) => None,
+                Some(AgyEnd::Failed(message)) => Some(message.clone()),
+                None => {
+                    let code = status.ok().and_then(|status| status.code()).unwrap_or(-1);
+                    Some(format!(
+                        "the CLI exited without a result (status {code}); {}",
+                        stderr_text(&stderr_log)
+                    ))
+                }
+            };
+            if let Some(message) = failure {
                 return Err(agy_failure(&message));
             }
 
