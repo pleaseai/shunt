@@ -20,6 +20,7 @@ use crate::{
     server::AppState,
 };
 
+mod auto_mode_classifier;
 mod model_rewrite;
 
 pub struct AnthropicAdapter;
@@ -55,6 +56,11 @@ async fn forward(
     let credential = resolve_credential(&state.config, &route, &state.http_client).await?;
     let request_headers = outbound_headers(headers, &credential);
     let oauth_client = bearer_is_subscription_oauth(&request_headers);
+    // Only a subscription-OAuth bearer faces the client-shape gate; an API-key
+    // Anthropic-compatible provider keeps byte-for-byte passthrough.
+    if oauth_client {
+        auto_mode_classifier::restore_claude_code_identity(&mut body);
+    }
     normalize_upstream_model_request(&mut body, &route.upstream_model);
     let body = body.into_raw();
     // Bounded transient retry (issue #48) for this single-credential path. Kept
@@ -157,6 +163,9 @@ async fn forward_claude_oauth(
         state.config.server.pool.as_ref(),
     );
     let url = upstream_url(&state, &route, uri);
+    // Every account on this path authenticates with a subscription-OAuth bearer,
+    // so the client-shape gate applies to all of them — no per-candidate check.
+    auto_mode_classifier::restore_claude_code_identity(&mut body);
     normalize_upstream_model_request(&mut body, &route.upstream_model);
     let base_body = body;
     let ramp_initial = state.config.storm_ramp_initial();
