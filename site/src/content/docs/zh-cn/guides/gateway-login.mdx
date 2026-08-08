@@ -121,16 +121,25 @@ deny = ["WebFetch"]
 
 当 `availableModels` 解析为字符串数组时,shunt 还会在 `/v1/messages` 和 `/v1/messages/count_tokens` 上对该网关用户强制执行它。比较之前,它会从客户端请求的模型中剥掉一个末尾的 Claude Code 上下文窗口提示(`[1m]` 或 `[1M]`),因此 `allowed[1m]` 能匹配 `allowed` 条目。被拒绝的模型会得到 `400 invalid_request_error`,且不会联系上游。
 
-非空的遥测目标列表会下发六个标准的 Claude Code OTLP 环境变量值。策略中的 `env` 键覆盖注入的默认值:
+至少 opt-in 一个 signal 的遥测目标列表会同时做两件事。它通过托管设置下发遥测启用标志和五个 `OTEL_*` 环境变量值(每个 signal 的 exporter 在有目标 opt-in 该 signal 时为 `otlp`,否则为 `none`;`OTEL_EXPORTER_OTLP_ENDPOINT` 设为你的 `public_url`),把每个托管客户端的 exporter 指向网关。它还为客户端随后 POST 的入站路由启用 verbatim 中继:`POST /v1/metrics`、`POST /v1/logs` 和 `POST /v1/traces` —— 只要启用了 `[server.gateway]` 就会注册,在有目标 opt-in 之前接收后丢弃。策略中的 `env` 键仍覆盖注入的默认值:
 
 ```toml
 [server.gateway.telemetry]
 [[server.gateway.telemetry.forward_to]]
 url = "https://collector.example.com"
+# metrics = true   # 默认
+# logs = false     # 默认
+# traces = false   # 默认
 # headers = { "x-api-key" = "..." }
 ```
 
-目前这项配置只门控托管环境变量的下发。需认证的 OTLP 接收/中继路由将在 M-C(#189)中单独提供。
+`url` 是与 `OTEL_EXPORTER_OTLP_ENDPOINT` 同形的 **base** OTLP 端点。shunt 会去掉末尾的 `/` 并追加 signal 路径,因此上面的目标会收到 `https://collector.example.com/v1/metrics`。查询字符串、fragment 或 URL 中嵌入的 `user:password` 会在启动时被拒绝。
+
+每个目标按 signal opt-in。metrics 默认开启;logs 和 traces 默认关闭 —— Claude Code 的 log record 和 span 可能携带 command line、prompt 和文件路径,把它们发送到主机之外应当是一个明确的选择。在应当接收它们的目标上设置 `logs = true` 或 `traces = true`。
+
+入站路由要求与 `/managed/settings` 相同的网关 bearer;静态 `[server.auth]` token 无法通过认证。载荷 **verbatim** 中继 —— 原样转发请求字节,保留入站的 `content-type` 与 `content-encoding`,并在其上应用目标配置的 headers(配置的键会替换转发值,而不是重复该 header)。客户端的 `Authorization` 头永远不会转发给 collector,中继也不跟随重定向。
+
+响应始终是立即的 `200`:中继作为分离任务运行,缓慢或不可达的 collector 不会成为客户端可见的延迟;没有任何目标 opt-in 的 signal 会被接收后丢弃而不是拒绝。超过 32 MiB 入站上限的 body 返回 `413`。同时在途的中继最多 64 个,超出的载荷不会排队,而是携带警告直接丢弃。
 
 ## 会话行为
 
@@ -146,4 +155,4 @@ refresh 会话默认能在 shunt 重启后存活:shunt 在每次授权或轮换�
 
 ## 后续计划
 
-托管策略、`ETag` 缓存、遥测环境变量下发以及服务端模型允许列表的强制执行已在上文描述。需认证的入站 OTLP 遥测仍是单独的 M-C 后续工作。
+托管策略、`ETag` 缓存、遥测环境变量下发、需认证的入站 OTLP 遥测接收与中继,以及服务端模型允许列表的强制执行已在上文描述。

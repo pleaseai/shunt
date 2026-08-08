@@ -139,18 +139,26 @@ Claude Code のコンテキストウィンドウヒント（`[1m]` または `[1
 `allowed` エントリに一致します。拒否されたモデルは、アップストリームに問い合わせることなく
 `400 invalid_request_error` を受け取ります。
 
-テレメトリーの宛先リストが空でない場合、Claude Code の標準的な 6 つの OTLP
-環境変数値が配布されます。ポリシーの `env` キーは、注入されたデフォルトを上書きします。
+いずれかの signal を opt-in したテレメトリーの宛先リストは、2 つのことを同時に行います。管理された設定を通じてテレメトリーの有効化フラグと 5 つの `OTEL_*`
+環境変数値を配布し（各 signal の exporter は、その signal を opt-in した宛先があれば `otlp`、なければ `none`。`OTEL_EXPORTER_OTLP_ENDPOINT` は `public_url`）、すべての管理されたクライアントの exporter をゲートウェイに向けます。さらに、クライアントがその後 POST する受信ルート `POST /v1/metrics`・`POST /v1/logs`・`POST /v1/traces` の verbatim 中継を有効にします。これらのルートは `[server.gateway]` が有効なら常に登録され、宛先が opt-in するまでは受理して破棄します。ポリシーの `env` キーは、注入されたデフォルトを上書きします。
 
 ```toml
 [server.gateway.telemetry]
 [[server.gateway.telemetry.forward_to]]
 url = "https://collector.example.com"
+# metrics = true   # デフォルト
+# logs = false     # デフォルト
+# traces = false   # デフォルト
 # headers = { "x-api-key" = "..." }
 ```
 
-現時点でこの設定は、管理された環境変数の配布をゲートします。認証済みの OTLP
-の受信/中継ルートは、M-C（#189）として別途提供されます。
+`url` は `OTEL_EXPORTER_OTLP_ENDPOINT` と同じ形の **base** OTLP エンドポイントです。shunt は末尾の `/` を取り除いて signal のパスを付加するため、上の宛先は `https://collector.example.com/v1/metrics` を受け取ります。クエリ文字列、フラグメント、埋め込みの `user:password` は起動時に拒否されます。
+
+宛先は signal ごとに opt-in します。metrics はデフォルトで on、logs と traces はデフォルトで off です。Claude Code の log record と span にはコマンドライン、プロンプト、ファイルパスが含まれ得るため、ホスト外へ送るのは明示的な選択であるべきだからです。受け取るべき宛先に `logs = true` や `traces = true` を設定してください。
+
+受信ルートは `/managed/settings` と同じゲートウェイのベアラーを要求し、静的な `[server.auth]` トークンでは認証できません。ペイロードは **verbatim** に中継されます — 受信したリクエストのバイト列そのままで、受信時の `content-type` と `content-encoding` を保持し、宛先に設定された headers をその上に適用します（設定されたキーは転送値を置き換え、ヘッダーを重複させません）。クライアントの `Authorization` ヘッダーがコレクターへ転送されることはなく、中継はリダイレクトに従いません。
+
+レスポンスは常に即座の `200` です。中継はデタッチされたタスクとして実行されるため、遅い・到達不能なコレクターがクライアントに見える遅延になることはなく、どの宛先も opt-in していない signal は拒否ではなく受理後に破棄されます。32 MiB の受信上限を超えるボディは `413` を返します。同時に実行される中継は最大 64 で、それを超えたペイロードはキューされず、警告とともに破棄されます。
 
 ## セッションの挙動
 
@@ -166,5 +174,5 @@ refresh セッションはデフォルトで shunt の再起動をまたいで�
 
 ## この先の予定
 
-管理ポリシー、`ETag` キャッシュ、テレメトリー環境変数の配布、サーバー側でのモデル許可リストの強制については上記のとおりです。認証済みのインバウンド
-OTLP テレメトリーは、引き続き M-C の別途フォローアップです。
+管理ポリシー、`ETag` キャッシュ、テレメトリー環境変数の配布、認証済みのインバウンド
+OTLP テレメトリーの受信と中継、サーバー側でのモデル許可リストの強制については上記のとおりです。

@@ -144,9 +144,11 @@ the upstream.
 
 ## Telemetry ingest
 
-A non-empty telemetry destination list does two things at once. It pushes the
-telemetry enable flag plus five `OTEL_*` environment values through managed
-settings — including `OTEL_EXPORTER_OTLP_ENDPOINT`, set to your `public_url` —
+A telemetry destination list with at least one opted-in signal does two things
+at once. It pushes the telemetry enable flag plus five `OTEL_*` environment
+values through managed settings — each signal's exporter set to `otlp` when
+some destination opts in to it and `none` otherwise, and
+`OTEL_EXPORTER_OTLP_ENDPOINT` set to your `public_url` —
 which points every managed client's exporter at the gateway. And it turns on
 verbatim relay for the inbound routes those clients then post to:
 `POST /v1/metrics`, `POST /v1/logs`, and `POST /v1/traces` — registered

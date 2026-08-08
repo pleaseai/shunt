@@ -142,18 +142,48 @@ Claude Code가 "관리형 정책 없음"을 구분할 수 있습니다. 응답�
 `[1M]`) 하나를 뒤에서 제거하므로 `allowed[1m]`은 `allowed` 항목과 일치합니다.
 거부된 모델은 업스트림에 연결하지 않고 `400 invalid_request_error`를 받습니다.
 
-비어 있지 않은 텔레메트리 목적지 목록은 표준 Claude Code OTLP 환경 값 여섯 개를
-푸시합니다. 정책 `env` 키는 주입된 기본값을 오버라이드합니다:
+signal을 하나 이상 opt-in한 텔레메트리 목적지 목록은 두 가지 일을 동시에 합니다.
+관리형 설정을 통해 텔레메트리 활성화 플래그와 `OTEL_*` 환경 값 다섯 개를
+푸시하고(각 signal의 exporter는 해당 signal을 opt-in한 목적지가 있으면 `otlp`,
+없으면 `none`, `OTEL_EXPORTER_OTLP_ENDPOINT`는 `public_url`), 모든 관리형
+클라이언트의 exporter를 게이트웨이로 향하게 합니다. 그리고 클라이언트가 이후
+POST하는 인바운드 라우트 `POST /v1/metrics`·`POST /v1/logs`·`POST /v1/traces`의
+verbatim relay를 켭니다. 이 라우트들은 `[server.gateway]`가 활성화돼 있으면 항상
+등록되며, 목적지가 opt-in하기 전까지는 수신 후 폐기합니다. 정책 `env` 키는
+주입된 기본값을 오버라이드합니다:
 
 ```toml
 [server.gateway.telemetry]
 [[server.gateway.telemetry.forward_to]]
 url = "https://collector.example.com"
+# metrics = true   # 기본값
+# logs = false     # 기본값
+# traces = false   # 기본값
 # headers = { "x-api-key" = "..." }
 ```
 
-이 구성은 현재 관리형 환경 푸시를 게이팅합니다. 인증된 OTLP
-ingest/relay 라우트는 M-C(#189)에서 별도로 제공됩니다.
+`url`은 `OTEL_EXPORTER_OTLP_ENDPOINT`와 같은 형태의 **base** OTLP 엔드포인트입니다.
+shunt가 끝의 `/`를 제거하고 signal 경로를 덧붙이므로 위 목적지는
+`https://collector.example.com/v1/metrics`를 받습니다. 쿼리 문자열, 프래그먼트,
+URL에 포함된 `user:password`는 시작 시 거부됩니다.
+
+목적지는 signal별로 opt-in합니다. metrics는 기본 on, logs와 traces는 기본
+off입니다 — Claude Code의 log record와 span에는 command line, 프롬프트, 파일
+경로가 담길 수 있어 호스트 밖으로 보내는 것은 명시적 선택이어야 하기 때문입니다.
+받아야 할 목적지에 `logs = true`나 `traces = true`를 설정하세요.
+
+인바운드 라우트는 `/managed/settings`와 같은 게이트웨이 bearer를 요구하며, 정적
+`[server.auth]` 토큰으로는 인증되지 않습니다. 페이로드는 **verbatim**으로 relay됩니다
+— 수신한 요청 바이트 그대로, 인바운드 `content-type`과 `content-encoding`을 유지한
+채 목적지에 구성된 headers를 그 위에 적용합니다(구성된 키는 전달값을 대체하며
+헤더를 중복시키지 않습니다). 클라이언트의 `Authorization` 헤더는 컬렉터로 전달되지
+않고, relay는 리다이렉트를 따르지 않습니다.
+
+응답은 항상 즉시 `200`입니다. relay는 분리된(detached) 태스크로 실행되므로 느리거나
+접근 불가한 컬렉터가 클라이언트에 보이는 지연이 되지 않으며, 어떤 목적지도 opt-in하지
+않은 signal은 거부가 아니라 수신 후 폐기됩니다. 32 MiB 인바운드 상한을 넘는 바디는
+`413`을 받습니다. 동시에 실행되는 relay는 최대 64개이고, 이를 넘는 페이로드는 큐에
+쌓이지 않고 경고와 함께 버려집니다.
 
 ## 세션 동작
 
@@ -169,6 +199,5 @@ Refresh grant는 세션에 저장된 아이덴티티로 토큰을 발급하며 �
 
 ## 다음 단계
 
-관리형 정책, `ETag` 캐싱, 텔레메트리 환경 푸시, 서버 측 모델 allow-list
-적용은 위에서 설명했습니다. 인증된 인바운드 OTLP 텔레메트리는 별도의
-M-C 후속 작업으로 남아 있습니다.
+관리형 정책, `ETag` 캐싱, 텔레메트리 환경 푸시, 인증된 인바운드 OTLP 텔레메트리
+ingest/relay, 서버 측 모델 allow-list 적용은 위에서 설명했습니다.
