@@ -715,6 +715,24 @@ fn validate_gateway_telemetry_destination(
             ),
         });
     }
+    // Headers are validated here, at boot and on every reload, so a typo in a
+    // collector's auth header fails `shunt check` instead of being dropped at
+    // relay time — where it would silently exclude that header for the life of
+    // the process after a single warning.
+    for (name, value) in destination.headers.iter().flatten() {
+        let part = if reqwest::header::HeaderName::try_from(name.as_str()).is_err() {
+            "name"
+        } else if reqwest::header::HeaderValue::try_from(value.as_str()).is_err() {
+            "value"
+        } else {
+            continue;
+        };
+        return Err(ConfigError::InvalidGatewayTelemetryHeader {
+            index,
+            name: name.clone(),
+            part,
+        });
+    }
     Ok(())
 }
 
@@ -1834,6 +1852,17 @@ pub enum ConfigError {
     InvalidGatewayPolicyEnv { index: usize },
     #[error("[server.gateway.telemetry].forward_to[{index}].url is invalid: {message}")]
     InvalidGatewayTelemetryUrl { index: usize, message: String },
+    /// The header value is deliberately not echoed — it is typically a
+    /// collector API key.
+    #[error(
+        "[server.gateway.telemetry].forward_to[{index}].headers has an invalid entry `{name}`: \
+         header {part} is not valid HTTP"
+    )]
+    InvalidGatewayTelemetryHeader {
+        index: usize,
+        name: String,
+        part: &'static str,
+    },
     #[error("[server.auth] is set but {env} is unset or empty; refusing to run open")]
     MissingClientTokens { env: String },
     #[error("invalid client tokens in {env}: {message}")]
@@ -5605,6 +5634,62 @@ id = "claude-sonnet-5"
                 "{url} must be accepted"
             );
         }
+    }
+
+    /// An invalid header must fail startup rather than be dropped at relay
+    /// time — it is usually the collector's auth key, and a runtime skip would
+    /// exclude it silently for the life of the process.
+    #[test]
+    fn gateway_telemetry_rejects_invalid_header_names_and_values() {
+        let destination = |name: &str, value: &str| GatewayTelemetryConfig {
+            forward_to: vec![GatewayTelemetryDestination {
+                url: "https://collector.example".to_string(),
+                headers: Some(
+                    [(name.to_string(), value.to_string())]
+                        .into_iter()
+                        .collect(),
+                ),
+                metrics: true,
+                logs: false,
+                traces: false,
+            }],
+        };
+
+        // A space is legal in TOML but not in an HTTP header name.
+        let bad_name = destination("x collector key", "value");
+        assert!(matches!(
+            super::validate_gateway_telemetry(Some(&bad_name)),
+            Err(ConfigError::InvalidGatewayTelemetryHeader {
+                index: 0,
+                part: "name",
+                ..
+            })
+        ));
+
+        // A newline in the value would otherwise be a header-injection vector.
+        let bad_value = destination("x-collector-key", "line\nbreak");
+        assert!(matches!(
+            super::validate_gateway_telemetry(Some(&bad_value)),
+            Err(ConfigError::InvalidGatewayTelemetryHeader {
+                index: 0,
+                part: "value",
+                ..
+            })
+        ));
+
+        // The error must not leak the value, which is typically a secret.
+        let rendered = super::validate_gateway_telemetry(Some(&destination(
+            "x-collector-key",
+            "super\u{0}secret",
+        )))
+        .unwrap_err()
+        .to_string();
+        assert!(rendered.contains("x-collector-key"), "{rendered}");
+        assert!(!rendered.contains("secret"), "{rendered}");
+
+        // A well-formed header is still accepted.
+        let good = destination("x-collector-key", "collector-secret");
+        assert!(super::validate_gateway_telemetry(Some(&good)).is_ok());
     }
 
     #[test]

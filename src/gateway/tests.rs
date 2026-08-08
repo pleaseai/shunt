@@ -2,6 +2,7 @@ use axum::{
     body::{to_bytes, Body},
     extract::ConnectInfo,
     http::{header, Request, StatusCode},
+    response::{IntoResponse, Response},
     Router,
 };
 use serde_json::{json, Value};
@@ -2034,6 +2035,36 @@ fn app_state_can_resolve_gateway_snapshot() {
     assert!(state.gateway_auth.is_some());
 }
 
+/// Wait until every relay task has ended, by taking all of the relay permits:
+/// a permit is released only when its task finishes, so once all are held no
+/// further delivery can arrive and a sink's contents are final. Makes an
+/// "it never arrived" assertion sound without depending on arrival order.
+async fn drain_after_relays_finish(state: &AppState) {
+    let all = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        state
+            .gateway_stores
+            .telemetry_relay_permits
+            .clone()
+            .acquire_many_owned(
+                u32::try_from(crate::gateway::telemetry_ingest::MAX_INFLIGHT_RELAYS).unwrap(),
+            ),
+    )
+    .await
+    .expect("relay tasks never finished")
+    .expect("relay semaphore is never closed");
+    drop(all);
+}
+
+/// Everything a sink received, as paths, draining the channel.
+fn drain_paths(sink: &mut TelemetrySink) -> Vec<String> {
+    let mut paths = Vec::new();
+    while let Ok(relay) = sink.received.try_recv() {
+        paths.push(relay.path);
+    }
+    paths
+}
+
 /// One request the mock OTLP sink received, captured verbatim.
 struct RelayedTelemetry {
     path: String,
@@ -2079,16 +2110,27 @@ impl TelemetrySink {
             .expect("relay did not reach the sink")
             .expect("sink channel closed")
     }
+}
 
-    /// Assert nothing (further) was relayed here, without waiting. Sound only
-    /// once every relay the test does expect has been awaited: `ingest` spawns
-    /// a request's relays before returning its `200`, so a relay wrongly
-    /// spawned by an earlier request was already dispatched by the time a later
-    /// request's relay has completed a full round trip.
-    fn assert_nothing_further(&mut self) {
-        if let Ok(relay) = self.received.try_recv() {
-            panic!("unexpected relay of {} to this sink", relay.path);
-        }
+fn relayed_from(
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> RelayedTelemetry {
+    let header = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(ToOwned::to_owned)
+    };
+    RelayedTelemetry {
+        path: uri.path().to_string(),
+        content_type: header("content-type"),
+        content_encoding: header("content-encoding"),
+        collector_key: header("x-collector-key"),
+        authorization: header("authorization"),
+        headers,
+        body: body.to_vec(),
     }
 }
 
@@ -2100,22 +2142,104 @@ async fn capture_telemetry(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> StatusCode {
-    let header = |name: &str| {
-        headers
-            .get(name)
-            .and_then(|value| value.to_str().ok())
-            .map(ToOwned::to_owned)
-    };
-    let _ = sender.send(RelayedTelemetry {
-        path: uri.path().to_string(),
-        content_type: header("content-type"),
-        content_encoding: header("content-encoding"),
-        collector_key: header("x-collector-key"),
-        authorization: header("authorization"),
-        headers,
-        body: body.to_vec(),
-    });
+    let _ = sender.send(relayed_from(uri, headers, body));
     StatusCode::OK
+}
+
+/// State for a sink that records the request, then parks until released, so
+/// the relay task stays inside `send().await` holding its permit.
+type HeldSinkState = (
+    tokio::sync::mpsc::UnboundedSender<RelayedTelemetry>,
+    tokio::sync::watch::Receiver<bool>,
+);
+
+async fn capture_and_hold_telemetry(
+    axum::extract::State((sender, mut release)): axum::extract::State<HeldSinkState>,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> StatusCode {
+    let _ = sender.send(relayed_from(uri, headers, body));
+    loop {
+        if *release.borrow() {
+            break;
+        }
+        if release.changed().await.is_err() {
+            break;
+        }
+    }
+    StatusCode::OK
+}
+
+/// A sink whose responses stay open until [`Self::release`] is called.
+struct HeldTelemetrySink {
+    base_url: String,
+    received: tokio::sync::mpsc::UnboundedReceiver<RelayedTelemetry>,
+    release: tokio::sync::watch::Sender<bool>,
+}
+
+impl HeldTelemetrySink {
+    async fn next(&mut self) -> RelayedTelemetry {
+        tokio::time::timeout(std::time::Duration::from_secs(5), self.received.recv())
+            .await
+            .expect("relay did not reach the held sink")
+            .expect("sink channel closed")
+    }
+
+    /// Let every parked response complete, freeing the relays' permits.
+    fn release(&self) {
+        self.release.send(true).expect("held sink still running");
+    }
+}
+
+async fn held_telemetry_sink() -> HeldTelemetrySink {
+    let (sender, received) = tokio::sync::mpsc::unbounded_channel();
+    let (release, release_rx) = tokio::sync::watch::channel(false);
+    let app = Router::new()
+        .fallback(capture_and_hold_telemetry)
+        .with_state((sender, release_rx));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    HeldTelemetrySink {
+        base_url,
+        received,
+        release,
+    }
+}
+
+/// State for a sink that answers `307` toward another base URL.
+type RedirectSinkState = (tokio::sync::mpsc::UnboundedSender<RelayedTelemetry>, String);
+
+async fn redirect_telemetry(
+    axum::extract::State((sender, location_base)): axum::extract::State<RedirectSinkState>,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let location = format!("{}{}", location_base, uri.path());
+    let _ = sender.send(relayed_from(uri, headers, body));
+    (
+        StatusCode::TEMPORARY_REDIRECT,
+        [(header::LOCATION, location)],
+    )
+        .into_response()
+}
+
+/// A sink that answers every request with `307` pointing at `location_base`.
+async fn redirecting_telemetry_sink(location_base: &str) -> TelemetrySink {
+    let (sender, received) = tokio::sync::mpsc::unbounded_channel();
+    let app = Router::new()
+        .fallback(redirect_telemetry)
+        .with_state((sender, location_base.to_string()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    TelemetrySink { base_url, received }
 }
 
 async fn telemetry_sink() -> TelemetrySink {
@@ -2390,7 +2514,7 @@ async fn telemetry_ingest_routes_only_opted_in_signals() {
     config.server.gateway.as_mut().unwrap().telemetry = Some(GatewayTelemetryConfig {
         forward_to: vec![metrics_destination, logs_destination, traces_destination],
     });
-    let (router, _, _) = build_router(config).unwrap();
+    let (router, _, state) = build_router(config).unwrap();
     let bearer = gateway_bearer("dev@example.com");
 
     // Logs first, so any wrongly-spawned logs relay is dispatched before the
@@ -2409,15 +2533,15 @@ async fn telemetry_ingest_routes_only_opted_in_signals() {
         assert_eq!(status, StatusCode::OK, "{path} accepted");
     }
 
-    assert_eq!(metrics_sink.next().await.path, "/v1/metrics");
-    assert_eq!(traces_sink.next().await.path, "/v1/traces");
-    // Both awaited relays completed a full round trip, so a logs relay — which
-    // would have been spawned before either of them — would already be here.
-    logs_sink.assert_nothing_further();
-    // The metrics destination has `logs = false`, so it saw metrics only.
-    metrics_sink.assert_nothing_further();
-    // The traces destination opted out of metrics, so it saw traces only.
-    traces_sink.assert_nothing_further();
+    // Holding every permit means every spawned relay has finished, so each
+    // sink's deliveries are final and the absence checks below do not depend on
+    // arrival order.
+    drain_after_relays_finish(&state).await;
+
+    assert_eq!(drain_paths(&mut metrics_sink), vec!["/v1/metrics"]);
+    assert_eq!(drain_paths(&mut traces_sink), vec!["/v1/traces"]);
+    // Opted out of every signal, so its channel is never written at all.
+    assert!(drain_paths(&mut logs_sink).is_empty());
 }
 
 #[tokio::test]
@@ -2523,12 +2647,198 @@ async fn telemetry_ingest_sheds_relays_at_the_in_flight_limit() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    // The payloads differ, so this identifies *which* request was relayed. The
-    // shed request's relay would have been spawned first and so would arrive
-    // first; asserting on the body rather than just the count is what makes
-    // this fail if the admission gate is bypassed.
-    let relayed = sink.next().await;
-    assert_eq!(relayed.body, admitted_payload);
-    assert_ne!(relayed.body, shed_payload);
-    sink.assert_nothing_further();
+    // Every relay task has finished, so the deliveries are final and the
+    // payload identity below is not an arrival-order assumption.
+    drain_after_relays_finish(&state).await;
+    let mut delivered = Vec::new();
+    while let Ok(relay) = sink.received.try_recv() {
+        delivered.push(relay.body);
+    }
+    assert!(delivered.contains(&admitted_payload), "got {delivered:?}");
+    assert!(!delivered.contains(&shed_payload), "got {delivered:?}");
+}
+
+/// The permit a relay takes must be held across its `send().await` and released
+/// only when the task ends. Saturation is produced through real requests whose
+/// relays park inside the sink, so a regression that dropped the permit before
+/// `send` (or never held it across the await) would let the extra request
+/// through.
+#[tokio::test]
+async fn telemetry_relay_permits_are_held_for_the_task_lifetime() {
+    let mut sink = held_telemetry_sink().await;
+    let (mut config, _env) = GatewayEnv::config("telemetry-permit-lifetime");
+    config.server.gateway.as_mut().unwrap().telemetry = Some(GatewayTelemetryConfig {
+        forward_to: vec![telemetry_destination(&sink.base_url)],
+    });
+    let (router, _, state) = build_router(config).unwrap();
+    let bearer = gateway_bearer("dev@example.com");
+    let saturating = otlp_payload();
+    let shed_payload = vec![0xaau8, 0xbb];
+    let after_release_payload = vec![0xccu8, 0xdd];
+
+    let post = |payload: Vec<u8>| {
+        let router = router.clone();
+        let bearer = bearer.clone();
+        async move {
+            json_response(
+                router,
+                telemetry_request(
+                    "/v1/metrics",
+                    Some(&bearer),
+                    "application/x-protobuf",
+                    payload,
+                ),
+            )
+            .await
+        }
+    };
+
+    // One relay per request, so this many requests takes every permit. Each
+    // relay parks in the sink and keeps its permit.
+    for _ in 0..crate::gateway::telemetry_ingest::MAX_INFLIGHT_RELAYS {
+        let (status, _) = post(saturating.clone()).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    // Draining them proves all the relays really are in flight, not merely
+    // spawned — each record is written just before that response parks.
+    for _ in 0..crate::gateway::telemetry_ingest::MAX_INFLIGHT_RELAYS {
+        assert_eq!(sink.next().await.body, saturating);
+    }
+
+    // Saturated: this one must be shed rather than queued.
+    let (status, body) = post(shed_payload.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, json!({}));
+
+    // Completing the parked relays returns their permits. Waiting for one to
+    // come back is itself the proof that task completion re-opens capacity —
+    // and it keeps the recovery request from racing ahead of the release.
+    sink.release();
+    let recovered = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        state
+            .gateway_stores
+            .telemetry_relay_permits
+            .clone()
+            .acquire_owned(),
+    )
+    .await
+    .expect("relay permits were never returned after the relays completed")
+    .expect("relay semaphore is never closed");
+    drop(recovered);
+
+    let (status, _) = post(after_release_payload.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Holding *every* permit means every spawned relay task has ended, since a
+    // permit is released only when its task does. The set of deliveries is
+    // final at that point, so the absence check below cannot be a race — and
+    // ordering between deliveries, which is not guaranteed, never matters.
+    let all = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        state
+            .gateway_stores
+            .telemetry_relay_permits
+            .clone()
+            .acquire_many_owned(
+                u32::try_from(crate::gateway::telemetry_ingest::MAX_INFLIGHT_RELAYS).unwrap(),
+            ),
+    )
+    .await
+    .expect("relay tasks never finished")
+    .expect("relay semaphore is never closed");
+    drop(all);
+
+    let mut delivered = Vec::new();
+    while let Ok(relay) = sink.received.try_recv() {
+        delivered.push(relay.body);
+    }
+    assert!(
+        delivered.contains(&after_release_payload),
+        "the request sent after release should have relayed, got {delivered:?}"
+    );
+    assert!(
+        !delivered.contains(&shed_payload),
+        "the request made while saturated must never reach the destination, got {delivered:?}"
+    );
+}
+
+/// `relay_client` refuses redirects, so a destination answering `3xx` cannot
+/// bounce the payload — or the destination's configured headers — to another
+/// host. Mirrors `oidc_token_redirect_is_not_followed`.
+#[tokio::test]
+async fn telemetry_relay_does_not_follow_redirects() {
+    let mut target = telemetry_sink().await;
+    let mut redirector = redirecting_telemetry_sink(&target.base_url).await;
+    let (mut config, _env) = GatewayEnv::config("telemetry-redirect");
+    // The redirecting destination takes metrics; a second destination points
+    // straight at the target and takes traces, giving a delivery to compare
+    // against without waiting on a quiet window.
+    let mut direct = telemetry_destination(&target.base_url);
+    direct.metrics = false;
+    direct.traces = true;
+    config.server.gateway.as_mut().unwrap().telemetry = Some(GatewayTelemetryConfig {
+        forward_to: vec![telemetry_destination(&redirector.base_url), direct],
+    });
+    let (router, _, state) = build_router(config).unwrap();
+    let bearer = gateway_bearer("dev@example.com");
+
+    let (status, body) = json_response(
+        router.clone(),
+        telemetry_request(
+            "/v1/metrics",
+            Some(&bearer),
+            "application/x-protobuf",
+            otlp_payload(),
+        ),
+    )
+    .await;
+    // The 3xx is reported through the non-success branch; the client is unaffected.
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, json!({}));
+    assert_eq!(redirector.next().await.path, "/v1/metrics");
+
+    let (status, _) = json_response(
+        router,
+        telemetry_request(
+            "/v1/traces",
+            Some(&bearer),
+            "application/x-protobuf",
+            otlp_payload(),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // A followed redirect happens inside the relay's own `send()`, so holding
+    // every permit means any such follow-up has already been delivered. The
+    // target's deliveries are final here, making the absence check sound
+    // without depending on arrival order.
+    let all = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        state
+            .gateway_stores
+            .telemetry_relay_permits
+            .clone()
+            .acquire_many_owned(
+                u32::try_from(crate::gateway::telemetry_ingest::MAX_INFLIGHT_RELAYS).unwrap(),
+            ),
+    )
+    .await
+    .expect("relay tasks never finished")
+    .expect("relay semaphore is never closed");
+    drop(all);
+
+    let mut delivered = Vec::new();
+    while let Ok(relay) = target.received.try_recv() {
+        delivered.push(relay.path);
+    }
+    assert!(
+        delivered.contains(&"/v1/traces".to_string()),
+        "the direct destination should have relayed, got {delivered:?}"
+    );
+    assert!(
+        !delivered.contains(&"/v1/metrics".to_string()),
+        "a redirect must not carry the payload to another host, got {delivered:?}"
+    );
 }

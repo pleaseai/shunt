@@ -318,11 +318,13 @@ fn relay_client() -> &'static reqwest::Client {
 
 /// The destination's configured headers as a [`HeaderMap`].
 ///
-/// A name or value that is not valid HTTP is skipped rather than failing the
-/// relay or panicking — with `RequestBuilder::header` an invalid name poisoned
-/// the whole builder, silently dropping the payload. Each distinct offender is
-/// warned about once per process; the set is bounded by the operator's own
-/// config, never by client input, and the value is never logged.
+/// Config validation is the real gate: it rejects an invalid header name or
+/// value at boot and on every reload, so a destination that reached here
+/// through `[server.gateway.telemetry]` has already been checked. This skip is
+/// defense-in-depth for a destination constructed directly in code, and it
+/// matters because with `RequestBuilder::header` an invalid name poisoned the
+/// whole builder and silently dropped the payload. Each distinct offender is
+/// warned about once per process; the value is never logged.
 fn destination_headers(destination: &GatewayTelemetryDestination, host: &str) -> HeaderMap {
     let mut headers = HeaderMap::new();
     for (name, value) in destination.headers.iter().flatten() {
@@ -399,6 +401,38 @@ mod tests {
             signal_url("  https://collector.example/otlp/  ", Signal::Traces),
             "https://collector.example/otlp/v1/traces"
         );
+    }
+
+    /// Defense-in-depth for a destination built directly in code: config
+    /// validation rejects an invalid header before it can reach here, but if
+    /// one does, it is skipped and its well-formed siblings still apply. With
+    /// `RequestBuilder::header` an invalid name poisoned the builder and the
+    /// whole payload was dropped.
+    #[test]
+    fn invalid_destination_headers_are_skipped_without_dropping_valid_ones() {
+        let mut destination = destination(true, false, false);
+        destination.headers = Some(
+            [
+                (
+                    "x-collector-key".to_string(),
+                    "collector-secret".to_string(),
+                ),
+                // A space is not legal in an HTTP header name.
+                ("x collector key".to_string(), "ignored".to_string()),
+                // A newline is not legal in a header value.
+                ("x-tenant".to_string(), "line\nbreak".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+        );
+
+        let headers = super::destination_headers(&destination, "collector.example");
+        assert_eq!(headers.get("x-collector-key").unwrap(), "collector-secret");
+        assert!(headers.get("x collector key").is_none());
+        assert!(headers.get("x-tenant").is_none());
+        // Only the well-formed header survived, so the relay still fires with a
+        // valid map rather than a poisoned builder.
+        assert_eq!(headers.len(), 1);
     }
 
     #[test]
