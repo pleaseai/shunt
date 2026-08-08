@@ -75,11 +75,18 @@ On a network that blocks direct egress to `api.anthropic.com`, "fast mode can re
 error while inference through the gateway keeps working"
 ([gateway protocol reference](https://code.claude.com/docs/en/llm-gateway-protocol)).
 
-Setting the base URL on its own also doesn't change who pays. Per the
+Setting the base URL on its own also doesn't change the client's credential. Per the
 [LLM gateway overview](https://code.claude.com/docs/en/llm-gateway#subscriptions-and-gateways),
 `ANTHROPIC_BASE_URL` without a gateway credential "doesn't replace the subscription. Requests still
 route through the gateway, but a saved claude.ai login remains the active credential", so that
 login's usage limits and billing still apply.
+
+Which account is billed then depends on how shunt routes the requested model. Passthrough models
+forward the caller's own Anthropic credential, so the caller's subscription is charged, as above.
+Mapped models are answered with the credential shunt injects, so they are charged to the **gateway
+operator's** account no matter what the client sent — that is why sharing an unauthenticated
+instance lets any caller spend the operator's quota. See
+[Shared gateway](/guides/shared-gateway/).
 
 ## Features a gateway credential turns off
 
