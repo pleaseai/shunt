@@ -1,0 +1,21 @@
+docs/gateway-telemetry.md
+  s_d7110dcba595f0::t_da612af762a30d 124-125
+site/src/content/docs/reference/configuration.md
+  s_d7110dcba595f0::t_5278747aa4d007 117
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "aab3d7dc12243252c8c24948547f176432307c2d",
+  "prompts": {},
+  "sessions": {
+    "s_d7110dcba595f0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f60c18df-7bcc-4108-9349-ec349db364cb",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
