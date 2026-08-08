@@ -9,7 +9,7 @@ Gateway login gives each Claude Code user their own rotating OAuth session inste
 
 <Aside type="caution" title="Choose this only for managed, multi-user access">
 
-A gateway login session has the Claude apps gateway feature trade-offs: WebSearch is disabled, first-party-only beta headers and the one-hour cache-TTL beta are omitted, and sign-in requires a browser. For a personal or single-user setup, keep using [`ANTHROPIC_BASE_URL`](/guides/connect-claude-code/) and optional [`[server.auth]`](/guides/shared-gateway/) instead.
+A gateway login session takes on the full Claude apps gateway feature trade-offs — WebSearch off, the one-hour cache TTL omitted, no unattended sign-in, and more; see [Feature trade-offs](#feature-trade-offs) below. For a personal or single-user setup, keep using [`ANTHROPIC_BASE_URL`](/guides/connect-claude-code/) and optional [`[server.auth]`](/guides/shared-gateway/) instead, which trips a much smaller set of client restrictions ([Client Environment Variables](/reference/client-environment/#which-gateway-restrictions-apply-to-you)).
 
 </Aside>
 
@@ -154,6 +154,27 @@ url = "https://collector.example.com"
 
 This configuration gates the managed environment push now. The authenticated
 OTLP ingest/relay routes arrive separately in M-C (#189).
+
+## Feature trade-offs
+
+`forceLoginMethod: "gateway"` puts Claude Code into a signed-in Claude apps gateway session. That is
+a different and much larger gate than pointing `ANTHROPIC_BASE_URL` at shunt, and the restrictions
+below are enforced by the client — shunt cannot lift them by supporting the feature upstream. Each
+row states the outcome Anthropic documents; follow the link for the reasoning.
+
+| What changes | Documented behavior |
+| :-- | :-- |
+| **Server-side web search** | Not available. "The CLI can't see which upstream provider the gateway routes to, so it can't verify web search support and disables WebSearch on gateway sessions" ([Claude apps gateway](https://code.claude.com/docs/en/claude-apps-gateway)). |
+| **1-hour prompt cache TTL** | Not available. "The CLI omits the extended-cache-ttl beta on gateway sessions, because not every upstream the gateway can route to supports the 1-hour TTL, so prompt caching through the gateway uses the 5-minute TTL" (same page). Whether `ENABLE_PROMPT_CACHING_1H` overrides that on a gateway session is not documented either way — don't plan around it. |
+| **First-party-only optimizations** | Not available. Global cache scope and token-efficient tools are among the betas "the CLI doesn't enable … on gateway sessions" (same page). |
+| **Other credentials** | Ignored. "The gateway token is the session's only credential. `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, `apiKeyHelper`, and any earlier claude.ai login are ignored while signed in" (same page). |
+| **Unattended / CI sign-in** | Not possible. "There is no service-token flow for unattended pipelines. Gateway sign-in always runs the browser device flow" (same page). The device flow does work over SSH: approve on a laptop browser, poll on the remote host. |
+| **Startup when the gateway is down** | Fail-closed. "Signed-in sessions exit at startup with an error after about 10 seconds when the gateway is unreachable, rather than starting without their settings" (same page). |
+| **Telemetry transport** | OTLP over HTTP only; OTLP/gRPC is "not supported" (same page). This matches shunt's own [OpenTelemetry](/guides/opentelemetry/) surface. |
+| **Publishing artifacts** | Not possible. "Sessions using an API key, gateway token, or cloud-provider credential cannot publish" ([Artifacts](https://code.claude.com/docs/en/artifacts)). |
+| **Analytics and feedback to Anthropic** | Off, with no opt back in. "On a signed-in Claude apps gateway session, usage analytics, error reporting, and survey ratings to Anthropic are disabled by the gateway credential itself, with no setting to re-enable them" ([Data usage](https://code.claude.com/docs/en/data-usage)). |
+| **Server-managed settings** | Not delivered. "Server-managed settings delivery requires a direct connection to `api.anthropic.com`, so it does not reach gateway-routed sessions. Gateway deployments use this file-based managed settings path" ([rollout guide](https://code.claude.com/docs/en/llm-gateway-rollout)). shunt's own [`GET /managed/settings`](#managed-settings-and-model-policy) is the per-user policy channel instead. |
+| **Auto mode** | Available, but model-restricted. `CLAUDE_CODE_ENABLE_AUTO_MODE` is no longer needed — it is now "accepted for compatibility with older releases and has no effect" ([Environment variables](https://code.claude.com/docs/en/env-vars)). On gateway sessions "only Claude Sonnet 5, Opus 4.7 or later, and Fable 5" support it ([Permission modes](https://code.claude.com/docs/en/permission-modes#eliminate-prompts-with-auto-mode)), so a policy that grants only older ids removes auto mode from the `Shift+Tab` cycle. |
 
 ## Session behavior
 
