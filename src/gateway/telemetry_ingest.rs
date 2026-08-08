@@ -50,12 +50,19 @@ const MAX_TELEMETRY_BODY_BYTES: usize = 32 * 1024 * 1024;
 /// the redirect policy.
 const RELAY_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Most of a destination's response body that a relay will read before
+/// abandoning it (closing the connection). Reading the body is what lets the
+/// connection return to the pool; an OTLP export response is empty or tiny, so
+/// anything near this cap is a misbehaving collector.
+const MAX_RELAY_RESPONSE_DRAIN_BYTES: usize = 64 * 1024;
+
 /// How many relay tasks may be in flight at once, across all destinations and
 /// signals, per [`crate::gateway::GatewayStores`].
 ///
 /// Relays are detached, so their payload bytes outlive the request that
 /// accepted them: the inbound concurrency permit rides the response body and
-/// releases as soon as the empty `{}` is written, while a relay may hold its
+/// releases as soon as the empty success body is written, while a relay may
+/// hold its
 /// copy for up to [`RELAY_TIMEOUT`]. Without a bound, retained heap would be
 /// "everything accepted in the last 30 seconds", which is set by client
 /// traffic rather than by anything shunt controls.
@@ -322,13 +329,18 @@ fn spawn_relay(
         // reqwest's `Display` appends " for url (…)", which would put the full
         // relay URL, including any userinfo or query secrets, into the log.
         match request.send().await {
-            Ok(response) if response.status().is_success() => {}
-            Ok(response) => tracing::warn!(
-                signal = signal.label(),
-                destination = host,
-                status = response.status().as_u16(),
-                "gateway telemetry relay rejected by destination"
-            ),
+            Ok(response) if response.status().is_success() => {
+                drain_relay_response(response).await;
+            }
+            Ok(response) => {
+                tracing::warn!(
+                    signal = signal.label(),
+                    destination = host,
+                    status = response.status().as_u16(),
+                    "gateway telemetry relay rejected by destination"
+                );
+                drain_relay_response(response).await;
+            }
             Err(error) => tracing::warn!(
                 signal = signal.label(),
                 destination = host,
@@ -337,6 +349,22 @@ fn spawn_relay(
             ),
         }
     });
+}
+
+/// Consume the destination's response body so hyper can return the connection
+/// to the pool — a response dropped with an unread body closes its connection
+/// instead. An OTLP export response is empty or tiny, so the cap exists only
+/// for a misbehaving collector, where abandoning the body (and with it the
+/// connection) is the right degradation. The relay's request-level timeout
+/// covers this read, so a stalling body cannot outlive the 30-second bound.
+async fn drain_relay_response(mut response: reqwest::Response) {
+    let mut remaining = MAX_RELAY_RESPONSE_DRAIN_BYTES;
+    while let Ok(Some(chunk)) = response.chunk().await {
+        match remaining.checked_sub(chunk.len()) {
+            Some(rest) => remaining = rest,
+            None => return,
+        }
+    }
 }
 
 /// The HTTP client relays use. Separate from the shared [`AppState`] client so
