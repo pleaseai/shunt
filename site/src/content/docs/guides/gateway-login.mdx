@@ -177,10 +177,12 @@ and file paths, so sending them off-host should be a deliberate choice. Set
 The ingest routes require the same gateway bearer as `/managed/settings`;
 static `[server.auth]` tokens do not authenticate them. Payloads are relayed
 **verbatim** — the exact request bytes, with the inbound `content-type` and
-`content-encoding` preserved and the destination's configured headers applied on
-top — so protobuf and JSON exporters both work and Claude Code's client-side
-attribution attributes survive untouched. The client's `Authorization` header is
-never forwarded to a collector.
+`content-encoding` preserved and the destination's configured headers applied
+over them (a configured key replaces the forwarded value rather than duplicating
+the header) — so protobuf and JSON exporters both work and Claude Code's
+client-side attribution attributes survive untouched. The client's
+`Authorization` header is never forwarded to a collector, and relays do not
+follow redirects.
 
 The response is always an immediate `200`: relays run as detached tasks, so a
 slow or unreachable collector never becomes client-visible latency, and a signal

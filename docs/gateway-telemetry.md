@@ -92,11 +92,12 @@ and appends the signal path, so `https://collector.example.com` receives
 `https://collector.example.com/v1/metrics`. A base with its own path prefix
 keeps it.
 
-A non-empty `forward_to` list is what enables both the managed telemetry
-environment push (M-B) and this ingest path; there is no separate switch. Edits
-to destinations and their per-signal flags hot-apply on config reload. Adding or
-removing `[server.gateway]` itself still requires a restart because route
-registration is fixed at boot.
+The three ingest routes are registered whenever `[server.gateway]` is present at
+boot, independently of this table. A non-empty `forward_to` list is what enables
+the managed telemetry environment push (M-B) and switches ingest from
+accept-and-discard to relay. Edits to destinations and their per-signal flags
+hot-apply on config reload. Adding or removing `[server.gateway]` itself still
+requires a restart because route registration is fixed at boot.
 
 ## Relay semantics
 
@@ -105,29 +106,36 @@ to each opted-in destination with no parsing, decoding, or re-encoding. Both
 `application/x-protobuf` and `application/json` exporters therefore work
 unchanged, as does a gzipped body.
 
-Claude Code stamps its attribution attributes (user, session, organization)
-client-side, so shunt has nothing to add — decoding and re-serializing would
-only risk dropping fields shunt does not model.
+Claude Code stamps the `user.id`, `user.email`, and `user.groups` attribution
+attributes client-side, from the gateway-issued JWT, so shunt has nothing to
+add — decoding and re-serializing would only risk dropping fields shunt does not
+model.
 
 Exactly two inbound headers cross to a destination:
 
 - `content-type`, forwarded as received.
 - `content-encoding`, forwarded when present.
 
-The destination's own configured `headers` are applied after those, so an
-operator-configured value is authoritative for its key. No other inbound header
-is forwarded — in particular the client's `Authorization` gateway JWT is never
-sent onward.
+The destination's own configured `headers` are applied after those as a map, so
+an operator-configured value genuinely replaces the forwarded one for its key
+rather than adding a second copy of the header. No other inbound header is
+forwarded — in particular the client's `Authorization` gateway JWT is never sent
+onward. A configured header whose name or value is not valid HTTP is skipped
+(warned about once) rather than failing the relay.
 
 Relay failures (connection error or a non-2xx response) are logged at `warn`
-with the destination host, the signal, and the status. Header values and
-payload bytes are never logged.
+with the destination host, the signal, and the status. Header values, payload
+bytes, and the full destination URL are never logged.
 
-Each relay attempt is bounded at 30 seconds. The bound is per request rather
-than on shunt's shared HTTP client, which is deliberately timeout-free because
-it also carries streaming inference. Without it, a destination that accepts a
-connection and then never answers would pin a detached task and its payload
-bytes indefinitely — one per client flush.
+Relays do not follow redirects. reqwest's default policy strips only
+`Authorization`- and `Cookie`-class headers across hosts, so a 3xx could
+otherwise carry a destination's configured `x-api-key` to another host; a
+collector has no legitimate reason to redirect, so a 3xx is reported through the
+non-2xx path instead.
+
+Each relay attempt is bounded at 30 seconds. Without it, a destination that
+accepts a connection and then never answers would pin a detached task and its
+payload bytes indefinitely — one per client flush.
 
 Each accepted payload records one `shunt.gateway_telemetry_ingest` count tagged
 with `signal` (`metrics`/`logs`/`traces`) and `outcome` (`relayed` when at least
@@ -149,10 +157,12 @@ would present a gateway-issued JWT to a third-party collector; relaying
 arbitrary inbound headers would let a client reach a destination's own auth or
 routing behavior. Only the two framing headers above cross over.
 
-**Body cap.** Inbound bodies are capped at 32 MiB, matching the reference Claude
-apps gateway's default inbound `limits.max_request_bytes`. An over-cap body is
-rejected with `413` rather than truncated, since a partial OTLP payload is not a
-valid one. The cap bounds per-request memory; it is not a rate limit.
+**Body cap.** Inbound bodies are capped at 32 MiB, matching the default inbound
+`limits.max_request_bytes` in the [Claude apps gateway configuration
+reference](https://code.claude.com/docs/en/claude-apps-gateway-config)'s HTTP
+tuning table. An over-cap body is rejected with `413` rather than truncated,
+since a partial OTLP payload is not a valid one. The cap bounds per-request
+memory; it is not a rate limit.
 
 **Destination secrets.** `headers` values are written in the config file. Treat
 that file as a secret-bearing artifact, or render it from the deployment's
