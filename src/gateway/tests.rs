@@ -2331,6 +2331,28 @@ fn otlp_payload() -> Vec<u8> {
     vec![0x0a, 0x00, 0xff, 0x7f, 0x01, 0x02, 0x03]
 }
 
+/// POSTs a protobuf-framed OTLP request and returns the status. A `200` is
+/// additionally held to the OTLP/HTTP success contract: an
+/// `application/x-protobuf` content type mirroring the request, and an empty
+/// body — the valid serialization of an all-defaults `Export*ServiceResponse`,
+/// which a JSON `{}` is not.
+async fn protobuf_response(router: Router, request: Request<Body>) -> StatusCode {
+    let response = router.oneshot(request).await.unwrap();
+    let status = response.status();
+    if status == StatusCode::OK {
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("application/x-protobuf")
+        );
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(body.is_empty(), "OTLP protobuf success body must be empty");
+    }
+    status
+}
+
 #[tokio::test]
 async fn telemetry_ingest_requires_a_gateway_bearer() {
     for path in ["/v1/metrics", "/v1/logs", "/v1/traces"] {
@@ -2365,7 +2387,7 @@ async fn telemetry_ingest_accepts_and_discards_without_destinations() {
         assert!(config.server.gateway.as_ref().unwrap().telemetry.is_none());
         let (router, _, _) = build_router(config).unwrap();
         let bearer = gateway_bearer("dev@example.com");
-        let (status, body) = json_response(
+        let status = protobuf_response(
             router,
             telemetry_request(
                 path,
@@ -2376,7 +2398,6 @@ async fn telemetry_ingest_accepts_and_discards_without_destinations() {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{path} with no destinations");
-        assert_eq!(body, json!({}));
     }
 }
 
@@ -2409,9 +2430,8 @@ async fn telemetry_ingest_relays_bytes_and_framing_headers_verbatim() {
     request
         .headers_mut()
         .insert(header::CONTENT_ENCODING, "gzip".parse().unwrap());
-    let (status, body) = json_response(router, request).await;
+    let status = protobuf_response(router, request).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, json!({}));
 
     let relayed = sink.next().await;
     assert_eq!(relayed.path, "/v1/metrics");
@@ -2437,7 +2457,7 @@ async fn telemetry_ingest_relays_json_payloads_unchanged() {
     let bearer = gateway_bearer("dev@example.com");
 
     let payload = br#"{"resourceMetrics":[{"scopeMetrics":[]}]}"#.to_vec();
-    let (status, _) = json_response(
+    let (status, body) = json_response(
         router,
         telemetry_request(
             "/v1/metrics",
@@ -2448,6 +2468,9 @@ async fn telemetry_ingest_relays_json_payloads_unchanged() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+    // A JSON request gets the JSON encoding of the empty
+    // `Export*ServiceResponse`.
+    assert_eq!(body, json!({}));
 
     let relayed = sink.next().await;
     assert_eq!(relayed.body, payload);
@@ -2456,8 +2479,9 @@ async fn telemetry_ingest_relays_json_payloads_unchanged() {
 }
 
 /// A destination header must *override* the forwarded framing header of the
-/// same name, not stack a second copy on it. `RequestBuilder::header` appends,
-/// so the relay applies destination headers as a map (`replace_headers`).
+/// same name, not stack a second copy on it: the relay seeds its header map
+/// from the destination's configured headers and only `or_insert`s the
+/// forwarded framing values.
 #[tokio::test]
 async fn telemetry_ingest_destination_headers_override_forwarded_framing() {
     let mut sink = telemetry_sink().await;
@@ -2483,7 +2507,7 @@ async fn telemetry_ingest_destination_headers_override_forwarded_framing() {
     let (router, _, _) = build_router(config).unwrap();
     let bearer = gateway_bearer("dev@example.com");
 
-    let (status, _) = json_response(
+    let status = protobuf_response(
         router,
         telemetry_request(
             "/v1/metrics",
@@ -2521,7 +2545,7 @@ async fn telemetry_ingest_fans_out_to_every_opted_in_destination() {
     let bearer = gateway_bearer("dev@example.com");
 
     let payload = otlp_payload();
-    let (status, _) = json_response(
+    let status = protobuf_response(
         router,
         telemetry_request(
             "/v1/metrics",
@@ -2574,7 +2598,7 @@ async fn telemetry_ingest_routes_only_opted_in_signals() {
     let bearer = gateway_bearer("dev@example.com");
 
     for path in ["/v1/logs", "/v1/metrics", "/v1/traces"] {
-        let (status, _) = json_response(
+        let status = protobuf_response(
             router.clone(),
             telemetry_request(
                 path,
@@ -2608,7 +2632,7 @@ async fn telemetry_ingest_still_returns_200_when_a_destination_is_down() {
     let (router, _, _) = build_router(config).unwrap();
     let bearer = gateway_bearer("dev@example.com");
 
-    let (status, body) = json_response(
+    let status = protobuf_response(
         router,
         telemetry_request(
             "/v1/metrics",
@@ -2619,7 +2643,6 @@ async fn telemetry_ingest_still_returns_200_when_a_destination_is_down() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, json!({}));
 }
 
 #[tokio::test]
@@ -2673,7 +2696,7 @@ async fn telemetry_ingest_sheds_relays_at_the_in_flight_limit() {
         .await
         .expect("relay semaphore is never closed");
 
-    let (status, body) = json_response(
+    let status = protobuf_response(
         router.clone(),
         telemetry_request(
             "/v1/metrics",
@@ -2684,13 +2707,12 @@ async fn telemetry_ingest_sheds_relays_at_the_in_flight_limit() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, json!({}));
 
     // Releasing the permits lets a second request through, which both proves
     // the sink and route are otherwise working and gives a completed round trip
     // to check the shed request's absence against.
     drop(permits);
-    let (status, _) = json_response(
+    let status = protobuf_response(
         router,
         telemetry_request(
             "/v1/metrics",
@@ -2735,7 +2757,7 @@ async fn telemetry_relay_permits_are_held_for_the_task_lifetime() {
         let router = router.clone();
         let bearer = bearer.clone();
         async move {
-            json_response(
+            protobuf_response(
                 router,
                 telemetry_request(
                     "/v1/metrics",
@@ -2751,7 +2773,7 @@ async fn telemetry_relay_permits_are_held_for_the_task_lifetime() {
     // One relay per request, so this many requests takes every permit. Each
     // relay parks in the sink and keeps its permit.
     for _ in 0..crate::gateway::telemetry_ingest::MAX_INFLIGHT_RELAYS {
-        let (status, _) = post(saturating.clone()).await;
+        let status = post(saturating.clone()).await;
         assert_eq!(status, StatusCode::OK);
     }
     // Draining them proves all the relays really are in flight, not merely
@@ -2761,9 +2783,8 @@ async fn telemetry_relay_permits_are_held_for_the_task_lifetime() {
     }
 
     // Saturated: this one must be shed rather than queued.
-    let (status, body) = post(shed_payload.clone()).await;
+    let status = post(shed_payload.clone()).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, json!({}));
 
     // Completing the parked relays returns their permits. Waiting for one to
     // come back is itself the proof that task completion re-opens capacity —
@@ -2782,7 +2803,7 @@ async fn telemetry_relay_permits_are_held_for_the_task_lifetime() {
     .expect("relay semaphore is never closed");
     drop(recovered);
 
-    let (status, _) = post(after_release_payload.clone()).await;
+    let status = post(after_release_payload.clone()).await;
     assert_eq!(status, StatusCode::OK);
 
     // Holding *every* permit means every spawned relay task has ended, since a
@@ -2838,7 +2859,7 @@ async fn telemetry_relay_does_not_follow_redirects() {
     let (router, _, state) = build_router(config).unwrap();
     let bearer = gateway_bearer("dev@example.com");
 
-    let (status, body) = json_response(
+    let status = protobuf_response(
         router.clone(),
         telemetry_request(
             "/v1/metrics",
@@ -2850,10 +2871,9 @@ async fn telemetry_relay_does_not_follow_redirects() {
     .await;
     // The 3xx is reported through the non-success branch; the client is unaffected.
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, json!({}));
     assert_eq!(redirector.next().await.path, "/v1/metrics");
 
-    let (status, _) = json_response(
+    let status = protobuf_response(
         router,
         telemetry_request(
             "/v1/traces",

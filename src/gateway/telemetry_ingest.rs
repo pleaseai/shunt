@@ -232,7 +232,39 @@ async fn ingest(
         },
     );
 
-    (StatusCode::OK, Json(serde_json::json!({}))).into_response()
+    accepted(content_type.as_ref())
+}
+
+/// The OTLP/HTTP success response. The spec requires the response to reuse the
+/// request's content type, and its body is the signal's
+/// `Export*ServiceResponse` message: `{}` is that message's JSON encoding, and
+/// for protobuf an **empty body** is the valid serialization of the same
+/// message with every field unset — so no protobuf codec is needed. A
+/// protobuf exporter that parses the response would misread a JSON `{}` as a
+/// corrupt message and could report a successful flush as failed.
+fn accepted(content_type: Option<&HeaderValue>) -> Response {
+    let is_json = content_type
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(';')
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .eq_ignore_ascii_case("application/json")
+        });
+    if is_json {
+        (StatusCode::OK, Json(serde_json::json!({}))).into_response()
+    } else {
+        (
+            StatusCode::OK,
+            [(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/x-protobuf"),
+            )],
+        )
+            .into_response()
+    }
 }
 
 fn unauthorized(signal: Signal) -> Response {

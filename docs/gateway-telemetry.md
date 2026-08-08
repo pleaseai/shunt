@@ -37,13 +37,20 @@ collectors.
 
 | Request | Response |
 | :-- | :-- |
-| Valid gateway bearer, one or more destinations opted in to the signal | `200` with `{}`; payload relayed to each of them |
-| Valid gateway bearer, no destination opted in to the signal (or no `telemetry` table) | `200` with `{}`; payload discarded |
-| Valid gateway bearer, destination unreachable or answering non-2xx | `200` with `{}`; failure logged, never surfaced to the client |
+| Valid gateway bearer, one or more destinations opted in to the signal | `200`; payload relayed to each of them |
+| Valid gateway bearer, no destination opted in to the signal (or no `telemetry` table) | `200`; payload discarded |
+| Valid gateway bearer, destination unreachable or answering non-2xx | `200`; failure logged, never surfaced to the client |
 | Missing, expired, or invalid gateway bearer | `401 authentication_error` |
 | Body over the inbound size cap, or an interrupted upload | `413 request_too_large` |
 
 Errors use the Anthropic error shape, like the rest of the gateway surface.
+
+The success body follows the OTLP/HTTP contract and mirrors the request's
+protocol: an `application/json` request gets `{}` — the JSON encoding of the
+empty `Export*ServiceResponse` — and any other request (protobuf framing) gets
+an `application/x-protobuf` response with an empty body, the valid
+serialization of that same all-defaults message. A protobuf exporter that
+parses the response would misread a JSON `{}` as a corrupt message.
 
 The response is always `200` on the accept path, and it never waits on a relay:
 each destination is dispatched as a detached task. A client exporter must not
@@ -173,7 +180,7 @@ truncated, since a partial OTLP payload is not a valid one.
 
 That cap alone bounds only one request. Because relays are detached, their
 payload bytes outlive the request that accepted them — the inbound concurrency
-permit releases as soon as the empty `{}` is written, while a relay can hold its
+permit releases as soon as the empty success body is written, while a relay can hold its
 copy for up to the 30-second relay timeout. At most 64 relays may be in flight
 at once, so worst-case resident payload memory is 64 × 32 MiB = 2 GiB, reached
 only if every slot holds a maximum-size body simultaneously; real OTLP exports
