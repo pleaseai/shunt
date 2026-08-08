@@ -141,13 +141,15 @@ async fn ingest(
     }
 
     // `to_bytes` fails on an over-cap body and on a mid-body transport error.
-    // Both are reported as `413`: the size limit is the only cause a client can
-    // act on, and a dropped upload has no client waiting for a better answer.
+    // Both are reported as `413` `request_too_large` — the gateway-wide type
+    // for a body over a cap (docs/gateway-protocol.md): the size limit is the
+    // only cause a client can act on, and a dropped upload has no client
+    // waiting for a better answer.
     let Ok(body) = to_bytes(body, MAX_TELEMETRY_BODY_BYTES).await else {
         crate::metrics::record_gateway_telemetry_ingest(signal.label(), "rejected");
         return ShuntError::new(
             StatusCode::PAYLOAD_TOO_LARGE,
-            "invalid_request_error",
+            "request_too_large",
             format!(
                 "OTLP {} payload could not be read within the {} MiB inbound limit",
                 signal.label(),

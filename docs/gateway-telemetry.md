@@ -41,7 +41,7 @@ collectors.
 | Valid gateway bearer, no destination opted in to the signal (or no `telemetry` table) | `200` with `{}`; payload discarded |
 | Valid gateway bearer, destination unreachable or answering non-2xx | `200` with `{}`; failure logged, never surfaced to the client |
 | Missing, expired, or invalid gateway bearer | `401 authentication_error` |
-| Body over the inbound size cap, or an interrupted upload | `413 invalid_request_error` |
+| Body over the inbound size cap, or an interrupted upload | `413 request_too_large` |
 
 Errors use the Anthropic error shape, like the rest of the gateway surface.
 

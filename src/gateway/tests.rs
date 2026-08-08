@@ -2585,7 +2585,7 @@ async fn telemetry_ingest_rejects_a_body_over_the_cap() {
     )
     .await;
     assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
-    assert_eq!(body["error"]["type"], "invalid_request_error");
+    assert_eq!(body["error"]["type"], "request_too_large");
 }
 
 /// At the in-flight relay limit the payload is shed, not queued: the client
