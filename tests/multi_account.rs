@@ -1296,3 +1296,62 @@ async fn pool_classifier_request_on_a_non_oauth_token_env_account_is_not_rewritt
 
     std::env::remove_var("SHUNT_TEST_MULTI_CLASSIFIER_APIKEY");
 }
+
+#[tokio::test]
+async fn classifier_gate_is_re_evaluated_for_each_candidate_during_rotation() {
+    if !can_bind_loopback() {
+        return;
+    }
+    // The gate lives inside the candidate loop precisely because a pool can mix
+    // token shapes. A single-account pool only proves it runs; this proves it
+    // runs *per candidate* — the api-key account must relay unrewritten, and the
+    // oauth account it rotates to must carry the identity block, in one request.
+    let api_key = ["sk-ant-api03-", "rotate-a"].concat();
+    let oauth = ["sk-ant-oat01-", "rotate-b"].concat();
+    std::env::set_var("SHUNT_TEST_MULTI_CLASSIFIER_ROT_A", &api_key);
+    std::env::set_var("SHUNT_TEST_MULTI_CLASSIFIER_ROT_B", &oauth);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(api_key.clone()))
+        .and(BodyLacksIdentity)
+        .respond_with(ResponseTemplate::new(500).set_body_string(r#"{"error":"rotate"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(oauth.clone()))
+        .and(BodyCarriesIdentity)
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        account(
+            "api-key-account",
+            "SHUNT_TEST_MULTI_CLASSIFIER_ROT_A",
+            "uuid-rot-a",
+        ),
+        account(
+            "oauth-account",
+            "SHUNT_TEST_MULTI_CLASSIFIER_ROT_B",
+            "uuid-rot-b",
+        ),
+    ))
+    .await;
+
+    let response = post_classifier_request(&gateway).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "oauth-account"
+    );
+    upstream.verify().await;
+
+    std::env::remove_var("SHUNT_TEST_MULTI_CLASSIFIER_ROT_A");
+    std::env::remove_var("SHUNT_TEST_MULTI_CLASSIFIER_ROT_B");
+}
