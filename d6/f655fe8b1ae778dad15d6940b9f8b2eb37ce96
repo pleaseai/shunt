@@ -1,0 +1,23 @@
+.claude/agent-memory/review-review-security-reviewer/MEMORY.md
+  s_8c61951a0fa1b0::t_14c82d8dc0d5d3 18
+.claude/agent-memory/review-review-security-reviewer/project_pr331-auto-mode-classifier-injection.md
+  s_8c61951a0fa1b0::t_3b70893c8a429c 1-2,4-9,11,13,15-17,35-37
+  s_8c61951a0fa1b0::t_3f91521ee0dee2 10,12,14,18-34
+  s_8c61951a0fa1b0::t_18a6a1a203335f 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "d6f655fe8b1ae778dad15d6940b9f8b2eb37ce96",
+  "prompts": {},
+  "sessions": {
+    "s_8c61951a0fa1b0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "864f9260-c7a5-4c8c-af35-55672a7b51ed",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
