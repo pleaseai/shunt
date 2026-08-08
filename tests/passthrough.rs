@@ -293,9 +293,10 @@ async fn classifier_request_on_an_api_key_credential_is_forwarded_byte_for_byte(
         return;
     }
     // Same body, non-OAuth credential. An API-key Anthropic-compatible provider
-    // faces no client-shape gate upstream, so the gateway must not rewrite it —
-    // this is what pins the `bearer_is_subscription_oauth` gate at the call
-    // site, which no unit test on the predicate can reach.
+    // faces no client-shape gate upstream, so the gateway must not rewrite it.
+    // This covers the single-credential `forward` path — the default provider
+    // is `AuthMode::Passthrough`, so it never reaches `forward_claude_oauth`.
+    // The pool path's own gate is covered in `tests/multi_account.rs`.
     let body = classifier_body();
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))

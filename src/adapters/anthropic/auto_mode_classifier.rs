@@ -69,11 +69,12 @@ const CLAUDE_CODE_IDENTITY: &str = "You are Claude Code, Anthropic's official CL
 /// exactly the parts that vary.
 ///
 /// Third-party relays gating on this shape add a length floor and a marker set
-/// to resist forgery. This predicate does not, because it decides only whether
-/// to repair the operator's own outbound request, never whether to grant a
-/// client access — and a client that wanted the upstream check satisfied can
-/// already put an accepted marker in its own system prompt, with or without
-/// this module.
+/// to resist forgery — read out of one such public implementation, not from any
+/// specification. This predicate does not, because it decides only whether to
+/// repair the operator's own outbound request, never whether to grant a client
+/// access — and a client that wanted the upstream check satisfied can already
+/// put an accepted marker in its own system prompt, with or without this
+/// module.
 const CLASSIFIER_PROMPT_PREFIX: &str =
     "You are a security monitor for autonomous AI coding agents.";
 
@@ -106,8 +107,9 @@ pub(super) fn restore_claude_code_identity(body: &mut RequestBody) {
     // The gateway does not otherwise rewrite an Anthropic request body, so
     // record the one case where it does — without it a misfire leaves no trace,
     // and an operator has no way to confirm the repair is landing. `debug`
-    // rather than `warn`: this fires once per auto-mode action on a healthy
-    // session, which is routine, not a problem.
+    // rather than `warn` because it marks routine repair rather than a fault;
+    // how often it fires follows the client's calling pattern, which is not
+    // observable from here.
     tracing::debug!("restored the Claude Code identity block on an auto-mode classifier request");
 }
 

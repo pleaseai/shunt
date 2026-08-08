@@ -35,7 +35,6 @@ struct AccountUuidBody {
     expected: &'static str,
     forbidden: &'static str,
 }
-
 impl Match for AccountUuidBody {
     fn matches(&self, request: &Request) -> bool {
         let Ok(outer) = serde_json::from_slice::<serde_json::Value>(&request.body) else {
@@ -1170,4 +1169,130 @@ async fn storm_control_spills_concurrent_request_to_next_account() {
 
     std::env::remove_var("SHUNT_TEST_MULTI_STORM_A");
     std::env::remove_var("SHUNT_TEST_MULTI_STORM_B");
+}
+
+/// Asserts the forwarded body does *not* carry the Claude Code identity block.
+///
+/// Deliberately an absence check rather than an exact-body comparison: the pool
+/// path also applies `normalize_upstream_model_request` and
+/// `rewrite_account_uuid_request`, so pinning the whole body would couple this
+/// test to mutations it is not about.
+struct BodyLacksIdentity;
+
+impl Match for BodyLacksIdentity {
+    fn matches(&self, request: &Request) -> bool {
+        !String::from_utf8_lossy(&request.body).contains(CLAUDE_CODE_IDENTITY)
+    }
+}
+
+struct BodyCarriesIdentity;
+
+impl Match for BodyCarriesIdentity {
+    fn matches(&self, request: &Request) -> bool {
+        String::from_utf8_lossy(&request.body).contains(CLAUDE_CODE_IDENTITY)
+    }
+}
+
+const CLAUDE_CODE_IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
+
+/// Post a body shaped like Claude Code's auto-mode permission classifier
+/// request: the classifier prompt as the first `system` block, no identity
+/// block. This is the one shape `auto_mode_classifier` repairs.
+async fn post_classifier_request(gateway: &TestGateway) -> reqwest::Response {
+    reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .header("content-type", "application/json")
+        .json(&serde_json::json!({
+            "model": "pooled-model",
+            "max_tokens": 64,
+            "stop_sequences": ["</block>"],
+            "system": [{
+                "type": "text",
+                "text": "You are a security monitor for autonomous AI coding agents.\n\n## Context\n\n…",
+            }],
+            "messages": [{"role": "user", "content": "hi"}],
+        }))
+        .send()
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn pool_classifier_request_on_a_subscription_oauth_account_gains_the_identity_block() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let token = ["sk-ant-oat01-", "pool-classifier"].concat();
+    std::env::set_var("SHUNT_TEST_MULTI_CLASSIFIER_OAUTH", &token);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token.clone()))
+        .and(BodyCarriesIdentity)
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config_accounts(
+        &upstream.uri(),
+        vec![account(
+            "oauth-account",
+            "SHUNT_TEST_MULTI_CLASSIFIER_OAUTH",
+            "uuid-oauth",
+        )],
+    ))
+    .await;
+
+    assert_eq!(
+        post_classifier_request(&gateway).await.status(),
+        StatusCode::OK
+    );
+    upstream.verify().await;
+
+    std::env::remove_var("SHUNT_TEST_MULTI_CLASSIFIER_OAUTH");
+}
+
+#[tokio::test]
+async fn pool_classifier_request_on_a_non_oauth_token_env_account_is_not_rewritten() {
+    if !can_bind_loopback() {
+        return;
+    }
+    // The pool resolves every account to `Credential::ClaudeOauth`, but the
+    // `token_env` branch wraps whatever the variable holds without checking it
+    // is a subscription token. An account pointed at an API key therefore faces
+    // no client-shape gate upstream, and must keep its body unrewritten — this
+    // is the invariant the per-candidate `bearer_is_subscription_oauth` check
+    // enforces, and it is only reachable through `forward_claude_oauth`.
+    let token = ["sk-ant-api03-", "pool-classifier"].concat();
+    std::env::set_var("SHUNT_TEST_MULTI_CLASSIFIER_APIKEY", &token);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token.clone()))
+        .and(BodyLacksIdentity)
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config_accounts(
+        &upstream.uri(),
+        vec![account(
+            "api-key-account",
+            "SHUNT_TEST_MULTI_CLASSIFIER_APIKEY",
+            "uuid-api-key",
+        )],
+    ))
+    .await;
+
+    assert_eq!(
+        post_classifier_request(&gateway).await.status(),
+        StatusCode::OK
+    );
+    upstream.verify().await;
+
+    std::env::remove_var("SHUNT_TEST_MULTI_CLASSIFIER_APIKEY");
 }
