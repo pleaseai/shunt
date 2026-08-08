@@ -1,0 +1,43 @@
+site/src/content/docs/reference/troubleshooting.md
+  s_8c61951a0fa1b0::t_5361427f9dd865 26
+site/src/content/docs/ko/reference/troubleshooting.md
+  s_8c61951a0fa1b0::t_3b42363efd0142 24
+site/src/content/docs/ja/reference/troubleshooting.md
+  s_8c61951a0fa1b0::t_d49ca4de7cfc57 24
+src/adapters/anthropic/mod.rs
+  s_8c61951a0fa1b0::t_e788a1270bd222 23
+  s_8c61951a0fa1b0::t_dc83c8e9a0aa9c 59-61,63
+  s_8c61951a0fa1b0::t_48ad8dbfb4a0dc 166-167
+  s_8c61951a0fa1b0::t_a2705631d4f187 168
+  s_8c61951a0fa1b0::t_e3ec539eada792 62
+src/adapters/anthropic/auto_mode_classifier.rs
+  s_8c61951a0fa1b0::t_c107baa5e2c394 38-44
+  s_8c61951a0fa1b0::t_4a9959c01961c3 244-245
+  s_8c61951a0fa1b0::t_1e13f4777b3d79 213-216,218-230
+  s_8c61951a0fa1b0::t_de8434ede3420f 204-210
+  s_8c61951a0fa1b0::t_d95e80507a55e1 5-11
+  s_8c61951a0fa1b0::t_23b216ea3fb7b9 73,76-83,86
+  s_8c61951a0fa1b0::t_4c3649e3a25fd1 1-4,12-37,45-69,72,74-75,84-85,87-101,103-116,118-134,136-148,150-203,211-212,231-243,248-338
+  s_8c61951a0fa1b0::t_995d9a2102e381 217
+  s_8c61951a0fa1b0::t_88f0be435da76a 246-247
+  s_8c61951a0fa1b0::t_a0320065a22759 70-71,135,149
+  s_8c61951a0fa1b0::t_c1f16eed0ed78a 102,117
+site/src/content/docs/zh-cn/reference/troubleshooting.md
+  s_8c61951a0fa1b0::t_1d67f76b7157a1 24
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "8bd626b1388530624656430bffa309b9d555c661",
+  "prompts": {},
+  "sessions": {
+    "s_8c61951a0fa1b0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "864f9260-c7a5-4c8c-af35-55672a7b51ed",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
