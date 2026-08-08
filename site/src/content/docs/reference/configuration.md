@@ -64,7 +64,7 @@ For GitHub, SAML, or another non-OIDC provider, use an OIDC broker such as Dex; 
 
 ## `[server.gateway]` (optional)
 
-Presence of this table enables the [OAuth device-flow gateway login](/guides/gateway-login/) used by Claude Code's managed `forceLoginMethod: "gateway"`. When absent, shunt does not register `/.well-known/oauth-authorization-server`, `/oauth/device_authorization`, `/oauth/token`, `/device`, `/device/authorize`, `/device/callback`, or `/managed/settings`.
+Presence of this table enables the [OAuth device-flow gateway login](/guides/gateway-login/) used by Claude Code's managed `forceLoginMethod: "gateway"`. When absent, shunt does not register `/.well-known/oauth-authorization-server`, `/oauth/device_authorization`, `/oauth/token`, `/device`, `/device/authorize`, `/device/callback`, `/managed/settings`, or the `POST /v1/metrics`, `POST /v1/logs`, and `POST /v1/traces` telemetry-ingest routes.
 
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
@@ -109,7 +109,19 @@ If the resolved `cli.availableModels` is an array of strings, gateway-JWT reques
 
 ### `[server.gateway.telemetry]` (optional)
 
-`forward_to` is an array of destinations with a required HTTP(S) `url` and optional string `headers` map. A non-empty list injects six values into managed `settings.env`: `CLAUDE_CODE_ENABLE_TELEMETRY=1`, the `OTEL_METRICS_EXPORTER`, `OTEL_LOGS_EXPORTER`, and `OTEL_TRACES_EXPORTER` values set to `otlp`, `OTEL_EXPORTER_OTLP_ENDPOINT` set to `public_url`, and `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`. Policy env values win on conflicts. This table gates only the environment push in M-B; inbound OTLP ingest/relay is M-C (#189).
+`forward_to` is an array of destinations, each with a required base OTLP/HTTP `url`, an optional string `headers` map, and per-signal opt-in booleans.
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `url` | required | Base OTLP/HTTP endpoint, `http(s)` with a host; shunt trims a trailing `/` and appends `/v1/metrics`, `/v1/logs`, or `/v1/traces` |
+| `headers` | none | Extra request headers applied to every relay to this destination |
+| `metrics` | `true` | Relay `POST /v1/metrics` to this destination |
+| `logs` | `false` | Relay `POST /v1/logs` to this destination |
+| `traces` | `false` | Relay `POST /v1/traces` to this destination |
+
+A non-empty list injects six values into managed `settings.env`: `CLAUDE_CODE_ENABLE_TELEMETRY=1`, the `OTEL_METRICS_EXPORTER`, `OTEL_LOGS_EXPORTER`, and `OTEL_TRACES_EXPORTER` values set to `otlp`, `OTEL_EXPORTER_OTLP_ENDPOINT` set to `public_url`, and `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`. Policy env values win on conflicts.
+
+The same list also drives inbound ingest: the `POST /v1/metrics`, `POST /v1/logs`, and `POST /v1/traces` routes — registered whenever `[server.gateway]` is present — accept the OTLP payloads those clients export and relay them verbatim to every destination that opted in to the signal; a signal with no opted-in destination is accepted and discarded. Logs and traces default off because Claude Code log records and spans can carry command lines, prompts, and file paths. See the [gateway login guide](/guides/gateway-login/#telemetry-ingest).
 
 ```toml
 [[server.gateway.policies]]
@@ -123,6 +135,7 @@ DISABLE_UPDATES = "1"
 [server.gateway.telemetry]
 [[server.gateway.telemetry.forward_to]]
 url = "https://collector.example.com"
+logs = true
 headers = { "x-api-key" = "..." }
 ```
 

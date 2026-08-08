@@ -142,18 +142,53 @@ client-requested model before comparison, so `allowed[1m]` matches an `allowed`
 entry. A denied model receives `400 invalid_request_error` without contacting
 the upstream.
 
-A non-empty telemetry destination list pushes the six standard Claude Code OTLP
-environment values. Policy `env` keys override injected defaults:
+## Telemetry ingest
+
+A non-empty telemetry destination list does two things at once. It pushes the
+telemetry enable flag plus five `OTEL_*` environment values through managed
+settings — including `OTEL_EXPORTER_OTLP_ENDPOINT`, set to your `public_url` —
+which points every managed client's exporter at the gateway. And it turns on
+verbatim relay for the inbound routes those clients then post to:
+`POST /v1/metrics`, `POST /v1/logs`, and `POST /v1/traces` — registered
+whenever `[server.gateway]` is enabled, and accept-and-discard until a
+destination opts in. Policy `env` keys still override injected defaults.
 
 ```toml
 [server.gateway.telemetry]
+
 [[server.gateway.telemetry.forward_to]]
 url = "https://collector.example.com"
+# metrics = true   # default
+# logs = false     # default
+# traces = false   # default
 # headers = { "x-api-key" = "..." }
 ```
 
-This configuration gates the managed environment push now. The authenticated
-OTLP ingest/relay routes arrive separately in M-C (#189).
+`url` is a **base** OTLP endpoint, the same shape as
+`OTEL_EXPORTER_OTLP_ENDPOINT`. shunt trims a trailing `/` and appends the signal
+path, so the destination above receives
+`https://collector.example.com/v1/metrics`.
+
+Each destination opts in per signal. Metrics default on; logs and traces default
+off, because Claude Code log records and spans can carry command lines, prompts,
+and file paths, so sending them off-host should be a deliberate choice. Set
+`logs = true` or `traces = true` on the destinations that should receive them.
+
+The ingest routes require the same gateway bearer as `/managed/settings`;
+static `[server.auth]` tokens do not authenticate them. Payloads are relayed
+**verbatim** — the exact request bytes, with the inbound `content-type` and
+`content-encoding` preserved and the destination's configured headers applied on
+top — so protobuf and JSON exporters both work and Claude Code's client-side
+attribution attributes survive untouched. The client's `Authorization` header is
+never forwarded to a collector.
+
+The response is always an immediate `200`: relays run as detached tasks, so a
+slow or unreachable collector never becomes client-visible latency, and a signal
+that no destination opted in to is accepted and discarded rather than rejected.
+A body over the 32 MiB inbound cap returns `413`.
+
+For what Claude Code actually exports on each signal, see
+[Claude Code monitoring](https://code.claude.com/docs/en/monitoring-usage).
 
 ## Session behavior
 
@@ -169,6 +204,6 @@ When [`[server.auth]`](/guides/shared-gateway/) and `[server.gateway]` are both 
 
 ## What comes next
 
-Managed policy, `ETag` caching, telemetry environment push, and server-side model
-allow-list enforcement are described above. Authenticated inbound OTLP telemetry
-remains the separate M-C follow-up.
+Managed policy, `ETag` caching, telemetry environment push, inbound OTLP
+telemetry ingest, and server-side model allow-list enforcement are described
+above.

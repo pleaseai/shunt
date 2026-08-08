@@ -123,9 +123,10 @@ The public URL has no trailing slash or path because gateway validation requires
 a bare origin. Injection is a base layer: a policy-provided `env` value wins on
 the same key, and unrelated policy env keys are retained.
 
-This M-B table only gates the managed environment push. The destination headers
-are accepted now for forward compatibility, but authenticated OTLP ingest and
-relay routes `POST /v1/{metrics,logs,traces}` land in M-C (#189).
+This M-B table gates the managed environment push. The same table's destinations
+and their per-signal flags also drive the authenticated OTLP ingest and relay
+routes `POST /v1/{metrics,logs,traces}`, added in M-C (#189) — see
+[`gateway-telemetry.md`](gateway-telemetry.md).
 
 ## `availableModels` enforcement
 

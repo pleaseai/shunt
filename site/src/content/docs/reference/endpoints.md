@@ -13,6 +13,9 @@ description: The endpoints shunt serves as a Claude Code LLM gateway.
 | `POST` | `/v1/messages` | Inference — routed per the request's `model` id |
 | `POST` | `/v1/messages/count_tokens` | [Token counting](/guides/effort-and-context/#token-counting-count_tokens) |
 | `GET` | `/managed/settings` | Per-user Claude Code managed settings for a gateway JWT; supports `ETag`, `If-None-Match`, and `304 Not Modified` |
+| `POST` | `/v1/metrics` | Inbound OTLP/HTTP metrics from managed Claude Code clients — relayed verbatim to opted-in gateway telemetry destinations |
+| `POST` | `/v1/logs` | Inbound OTLP/HTTP log records — relayed only to destinations with `logs = true` |
+| `POST` | `/v1/traces` | Inbound OTLP/HTTP spans — relayed only to destinations with `traces = true` |
 | `GET` | `/admin` | Admin dashboard (HTML); redirects to `/admin/login` when not signed in |
 | `GET`, `POST` | `/admin/login` | Admin-token login form, optional OIDC affordance, and browser-session creation |
 | `POST` | `/admin/oidc/start` | Start the optional same-origin admin OIDC/PKCE login |
@@ -55,6 +58,8 @@ The `/managed/settings` route exists only when [`[server.gateway]`](/reference/c
 ```
 
 `ETag` is the quoted checksum (`"sha256:<settings-hash>"`). Send it back in `If-None-Match` to receive `304 Not Modified` with an empty body when settings have not changed; comma-separated validator lists, weak validators, `*`, and legacy unquoted checksum values are accepted. No configured `policies` returns `404`; a policy that resolves to an empty document returns `200` with `settings: {}`.
+
+The `POST /v1/{metrics,logs,traces}` telemetry-ingest routes exist only when [`[server.gateway]`](/reference/configuration/#servergateway-optional) was enabled at boot, and require the same gateway bearer JWT as `/managed/settings`. They accept the OTLP/HTTP payloads managed Claude Code clients export — [`[server.gateway.telemetry]`](/reference/configuration/#servergatewaytelemetry-optional) points those exporters at the gateway — and relay the exact request bytes to every destination that opted in to the signal, preserving the inbound `content-type` and `content-encoding` and adding the destination's own configured headers. The client's `Authorization` header is never forwarded. Destinations opt in per signal (`metrics` on by default, `logs` and `traces` off), and a signal with no opted-in destination is accepted and discarded. Relays are detached, so the response is always an immediate `200` with `{}` regardless of destination health; a body over the 32 MiB inbound cap returns `413`.
 
 The `/admin*` routes exist only when [`[server.admin]`](/reference/configuration/#serveradmin-optional) is configured; without that table, none of them are registered. `GET /admin/observed` auto-discovers supported Claude Code, Codex CLI, Gemini CLI, Kimi Code, Grok CLI, and Cursor.app credentials on the gateway host. It never refreshes or writes those sources. Claude usage is cached for 60 seconds; Codex usage is response-derived and remains unavailable until traffic through this shunt returns `x-codex-*` headers; the other providers use their first-party read-only quota surfaces. Managed account CRUD and `/admin/pool` remain the separate shunt-owned credential lane.
 
