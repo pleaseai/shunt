@@ -1,0 +1,34 @@
+src/gateway/telemetry_ingest.rs
+  s_d7110dcba595f0::t_74f35346705656 248-250,257,260
+  s_d7110dcba595f0::t_97701ba95b0b96 53-70
+  s_d7110dcba595f0::t_08bc2a3b252983 130-135
+  s_d7110dcba595f0::t_a97cfa16740f9a 176,181-194,202,207-215,222-223,226-230
+src/metrics.rs
+  s_d7110dcba595f0::t_97cbc74d66434e 336-340
+src/gateway/tests.rs
+  s_d7110dcba595f0::t_1a1d389db3e78c 2482-2484
+  s_d7110dcba595f0::t_1129f2f759f12c 2466-2481,2485-2502,2504-2519,2521-2525,2533-2534
+  s_d7110dcba595f0::t_6c4aaa41be2ee2 2503,2520,2526-2532
+src/config.rs
+  s_d7110dcba595f0::t_613f5e410942f4 686-718
+  s_d7110dcba595f0::t_0a7e259f59baaa 5558-5589,5594-5609
+  s_d7110dcba595f0::t_1129f2f759f12c 5590-5593
+src/gateway/store.rs
+  s_d7110dcba595f0::t_89fc663e7a1e32 344-348,363-365
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "0b7362a7414f3c85a43f8c463a32a4e67e7f961f",
+  "prompts": {},
+  "sessions": {
+    "s_d7110dcba595f0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f60c18df-7bcc-4108-9349-ec349db364cb",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
