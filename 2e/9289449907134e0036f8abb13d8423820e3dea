@@ -1,0 +1,28 @@
+site/src/content/docs/guides/opentelemetry.mdx
+  s_d7110dcba595f0::t_51e4c43f40efe4 60
+site/src/content/docs/reference/configuration.md
+  s_d7110dcba595f0::t_42090121a2fff3 124
+  s_d7110dcba595f0::t_92e662219ad082 116
+site/src/content/docs/guides/gateway-login.mdx
+  s_d7110dcba595f0::t_0dbbe1a4c48355 190-196
+docs/gateway-telemetry.md
+  s_d7110dcba595f0::t_db71056cf8c0ed 162-183
+  s_d7110dcba595f0::t_daf10e1e859888 55-58
+  s_d7110dcba595f0::t_8eb479ec925926 143-146
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "2e9289449907134e0036f8abb13d8423820e3dea",
+  "prompts": {},
+  "sessions": {
+    "s_d7110dcba595f0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f60c18df-7bcc-4108-9349-ec349db364cb",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
