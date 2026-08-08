@@ -9,21 +9,26 @@
 //!
 //! Payloads are relayed **verbatim**: the exact request bytes are POSTed to
 //! each opted-in destination without parsing or re-encoding. Claude Code stamps
-//! the user, session, and organization attribution attributes client-side, so
-//! decoding and re-serializing would only risk dropping fields shunt does not
-//! model — and it lets the same handler serve both `application/x-protobuf` and
-//! `application/json` exporters.
+//! the `user.id`, `user.email`, and `user.groups` attribution attributes
+//! client-side, from the gateway-issued JWT, so decoding and re-serializing
+//! would only risk dropping fields shunt does not model — and it lets the same
+//! handler serve both `application/x-protobuf` and `application/json`
+//! exporters.
 //!
 //! The accept path always answers `200` with `{}`. Relays are detached tasks,
 //! so a slow or unreachable collector never becomes client-visible latency, and
 //! a signal with no opted-in destination is accepted and discarded.
 
-use std::time::Duration;
+use std::{
+    collections::HashSet,
+    sync::{Mutex, OnceLock},
+    time::Duration,
+};
 
 use axum::{
     body::{to_bytes, Body},
     extract::State,
-    http::{header, HeaderMap, HeaderValue, StatusCode},
+    http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -31,17 +36,18 @@ use bytes::Bytes;
 
 use crate::{config::GatewayTelemetryDestination, error::ShuntError, server::AppState};
 
-/// Inbound body cap. Matches the reference Claude apps gateway's default
-/// inbound `limits.max_request_bytes` of 32 MiB. An over-cap body is rejected
-/// rather than truncated: a partial OTLP payload is not a valid one.
+/// Inbound body cap. Matches the default inbound `limits.max_request_bytes` of
+/// 32 MiB documented in the Claude apps gateway configuration reference's HTTP
+/// tuning table (<https://code.claude.com/docs/en/claude-apps-gateway-config>).
+/// An over-cap body is rejected rather than truncated: a partial OTLP payload
+/// is not a valid one.
 const MAX_TELEMETRY_BODY_BYTES: usize = 32 * 1024 * 1024;
 
-/// Ceiling on one relay attempt. Applied per request rather than on the client:
-/// the shared [`AppState::http_client`] is deliberately timeout-free because it
-/// also carries streaming inference, which may legitimately run for minutes.
-/// Without a bound here, a destination that accepts the connection and then
-/// never answers would pin a detached task and its payload bytes indefinitely,
-/// one per client flush.
+/// Ceiling on one relay attempt. Without it, a destination that accepts the
+/// connection and then never answers would pin a detached task and its payload
+/// bytes indefinitely, one per client flush. Applied per request so the bound
+/// is visible next to the other relay settings; [`relay_client`] carries only
+/// the redirect policy.
 const RELAY_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The three OTLP/HTTP signals the gateway ingests.
@@ -151,7 +157,6 @@ async fn ingest(
         .filter(|destination| signal.opted_in(destination))
     {
         spawn_relay(
-            state.http_client.clone(),
             destination.clone(),
             signal,
             // Cloning `Bytes` bumps a refcount; the payload itself is shared.
@@ -190,7 +195,6 @@ fn unauthorized(signal: Signal) -> Response {
 /// Relay one payload to one destination as a detached task, so the client's
 /// `200` never waits on a collector and destinations proceed concurrently.
 fn spawn_relay(
-    client: reqwest::Client,
     destination: GatewayTelemetryDestination,
     signal: Signal,
     body: Bytes,
@@ -199,23 +203,28 @@ fn spawn_relay(
 ) {
     tokio::spawn(async move {
         let url = signal_url(&destination.url, signal);
-        let mut request = client.post(&url).timeout(RELAY_TIMEOUT).body(body);
+        let host = destination_host(&url);
+        let mut request = relay_client().post(&url).timeout(RELAY_TIMEOUT).body(body);
         if let Some(content_type) = content_type {
             request = request.header(header::CONTENT_TYPE, content_type);
         }
         if let Some(content_encoding) = content_encoding {
             request = request.header(header::CONTENT_ENCODING, content_encoding);
         }
-        // Destination headers are applied last so an operator-configured value
-        // (a collector API key, say) is authoritative for its key.
-        for (name, value) in destination.headers.iter().flatten() {
-            request = request.header(name, value);
-        }
+        // Destination headers are applied last, and as a map rather than
+        // key-by-key: `RequestBuilder::header` *appends*, which would emit two
+        // `content-type` headers when an operator configures one, while
+        // `RequestBuilder::headers` routes through `replace_headers`, which
+        // inserts per key. So an operator-configured value (a collector API
+        // key, or a deliberate `content-type` override) really is authoritative
+        // for its key.
+        request = request.headers(destination_headers(&destination, &host));
 
-        // Failures are logged with the destination host and signal only —
-        // never a header value and never any part of the payload, which
-        // carries client prompts and file paths.
-        let host = destination_host(&url);
+        // Failures are logged with the destination host and signal only — never
+        // a header value and never any part of the payload, which carries
+        // client prompts and file paths. `without_url` is load-bearing here:
+        // reqwest's `Display` appends " for url (…)", which would put the full
+        // relay URL, including any userinfo or query secrets, into the log.
         match request.send().await {
             Ok(response) if response.status().is_success() => {}
             Ok(response) => tracing::warn!(
@@ -227,11 +236,66 @@ fn spawn_relay(
             Err(error) => tracing::warn!(
                 signal = signal.label(),
                 destination = host,
-                %error,
+                error = %error.without_url(),
                 "gateway telemetry relay failed"
             ),
         }
     });
+}
+
+/// The HTTP client relays use. Separate from the shared [`AppState`] client so
+/// it can refuse redirects: reqwest's default policy follows up to 10 hops and
+/// strips only `Authorization`/`Cookie`-class headers on a cross-host redirect,
+/// so a destination's configured `x-api-key` would follow a 3xx to whatever
+/// host it names. An OTLP collector has no legitimate reason to redirect, so a
+/// 3xx instead surfaces through the non-success branch above. Sibling code
+/// hardens its redirect policy the same way (`gateway::store`, `auth::shared`).
+fn relay_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("build redirect-hardened telemetry relay client")
+    })
+}
+
+/// The destination's configured headers as a [`HeaderMap`].
+///
+/// A name or value that is not valid HTTP is skipped rather than failing the
+/// relay or panicking — with `RequestBuilder::header` an invalid name poisoned
+/// the whole builder, silently dropping the payload. Each distinct offender is
+/// warned about once per process; the set is bounded by the operator's own
+/// config, never by client input, and the value is never logged.
+fn destination_headers(destination: &GatewayTelemetryDestination, host: &str) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    for (name, value) in destination.headers.iter().flatten() {
+        match (
+            HeaderName::try_from(name.as_str()),
+            HeaderValue::try_from(value.as_str()),
+        ) {
+            (Ok(name), Ok(value)) => {
+                headers.insert(name, value);
+            }
+            _ => warn_invalid_header_once(host, name),
+        }
+    }
+    headers
+}
+
+fn warn_invalid_header_once(host: &str, name: &str) {
+    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let mut seen = SEEN
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if seen.insert(format!("{host}\u{0}{name}")) {
+        tracing::warn!(
+            destination = host,
+            header = name,
+            "skipping invalid gateway telemetry destination header"
+        );
+    }
 }
 
 /// The destination's base OTLP endpoint plus this signal's path, mirroring the

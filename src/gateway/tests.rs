@@ -2041,7 +2041,24 @@ struct RelayedTelemetry {
     content_encoding: Option<String>,
     collector_key: Option<String>,
     authorization: Option<String>,
+    /// The full inbound header map. The single-value accessors above use
+    /// `HeaderMap::get`, which silently returns only the first of a repeated
+    /// key — so a test asserting that a header was *overridden* rather than
+    /// appended must count through `all(...)` instead.
+    headers: axum::http::HeaderMap,
     body: Vec<u8>,
+}
+
+impl RelayedTelemetry {
+    /// Every value received for `name`, in order.
+    fn all(&self, name: &str) -> Vec<String> {
+        self.headers
+            .get_all(name)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .map(ToOwned::to_owned)
+            .collect()
+    }
 }
 
 /// A local OTLP collector stand-in. It answers `200` to any POST and publishes
@@ -2095,6 +2112,7 @@ async fn capture_telemetry(
         content_encoding: header("content-encoding"),
         collector_key: header("x-collector-key"),
         authorization: header("authorization"),
+        headers,
         body: body.to_vec(),
     });
     StatusCode::OK
@@ -2264,6 +2282,92 @@ async fn telemetry_ingest_relays_json_payloads_unchanged() {
     assert_eq!(relayed.body, payload);
     assert_eq!(relayed.content_type.as_deref(), Some("application/json"));
     assert_eq!(relayed.content_encoding, None);
+}
+
+/// A destination header must *override* the forwarded framing header of the
+/// same name, not stack a second copy on it. `RequestBuilder::header` appends,
+/// so the relay applies destination headers as a map (`replace_headers`).
+#[tokio::test]
+async fn telemetry_ingest_destination_headers_override_forwarded_framing() {
+    let mut sink = telemetry_sink().await;
+    let (mut config, _env) = GatewayEnv::config("telemetry-override");
+    let mut destination = telemetry_destination(&sink.base_url);
+    destination.headers = Some(
+        [
+            (
+                "content-type".to_string(),
+                "application/x-custom".to_string(),
+            ),
+            (
+                "x-collector-key".to_string(),
+                "collector-secret".to_string(),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    config.server.gateway.as_mut().unwrap().telemetry = Some(GatewayTelemetryConfig {
+        forward_to: vec![destination],
+    });
+    let (router, _, _) = build_router(config).unwrap();
+    let bearer = gateway_bearer("dev@example.com");
+
+    let (status, _) = json_response(
+        router,
+        telemetry_request(
+            "/v1/metrics",
+            Some(&bearer),
+            "application/x-protobuf",
+            otlp_payload(),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let relayed = sink.next().await;
+    // Exactly one content-type, carrying the operator's value — a duplicate
+    // would be invisible to `content_type`, which only reads the first.
+    assert_eq!(relayed.all("content-type"), vec!["application/x-custom"]);
+    assert_eq!(relayed.collector_key.as_deref(), Some("collector-secret"));
+}
+
+/// Every opted-in destination receives the payload, not just the first. Guards
+/// the relay loop's fan-out: swapping its `filter` for a `find` passes the rest
+/// of this suite.
+#[tokio::test]
+async fn telemetry_ingest_fans_out_to_every_opted_in_destination() {
+    let mut first_sink = telemetry_sink().await;
+    let mut second_sink = telemetry_sink().await;
+    let (mut config, _env) = GatewayEnv::config("telemetry-fanout");
+    config.server.gateway.as_mut().unwrap().telemetry = Some(GatewayTelemetryConfig {
+        // Both at the defaults, so both opt in to metrics.
+        forward_to: vec![
+            telemetry_destination(&first_sink.base_url),
+            telemetry_destination(&second_sink.base_url),
+        ],
+    });
+    let (router, _, _) = build_router(config).unwrap();
+    let bearer = gateway_bearer("dev@example.com");
+
+    let payload = otlp_payload();
+    let (status, _) = json_response(
+        router,
+        telemetry_request(
+            "/v1/metrics",
+            Some(&bearer),
+            "application/x-protobuf",
+            payload.clone(),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let first = first_sink.next().await;
+    let second = second_sink.next().await;
+    assert_eq!(first.path, "/v1/metrics");
+    assert_eq!(second.path, "/v1/metrics");
+    assert_eq!(first.body, payload);
+    assert_eq!(second.body, payload);
 }
 
 #[tokio::test]
