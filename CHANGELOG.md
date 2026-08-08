@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.34.1](https://github.com/pleaseai/shunt/compare/v0.34.0...v0.34.1) (2026-08-08)
+
+
+### Bug Fixes
+
+* **anthropic:** restore identity on auto-mode classifier requests ([#331](https://github.com/pleaseai/shunt/issues/331)) ([b3964ed](https://github.com/pleaseai/shunt/commit/b3964eda321fc5c42c4bb52f904c57a5bec8b66f))
+
 ## [0.34.0](https://github.com/pleaseai/shunt/compare/v0.33.2...v0.34.0) (2026-08-08)
 
 
