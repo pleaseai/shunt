@@ -120,7 +120,7 @@ Full OAuth 创建一个新的可刷新 credential;import 把当前的 `~/.claude
   - `anthropic-ratelimit-unified-5h-utilization`、`anthropic-ratelimit-unified-7d-utilization` 和 `anthropic-ratelimit-unified-7d_oi-utilization`;
   - `anthropic-ratelimit-unified-5h-reset`、`anthropic-ratelimit-unified-7d-reset` 和 `anthropic-ratelimit-unified-7d_oi-reset`(Unix 秒);以及
   - `anthropic-ratelimit-unified-status`、`anthropic-ratelimit-unified-5h-status`、`anthropic-ratelimit-unified-7d-status` 和 `anthropic-ratelimit-unified-7d_oi-status`。
-- 默认切换阈值是 `0.98`。当 5 小时或共享 `7d` status 为 `rejected` 时,该账户对所有模型都被视为接近配额。当 `7d_oi` status 为 `rejected` 时,该账户对 Fable 请求被视为接近配额。status 的拒绝判定不取决于对应使用率头部是否存在。计算使用率阈值和余量时,Fable 模型在 `7d_oi` 使用率存在时使用它,否则使用共享 `7d`。聚合 status 仅在没有记录任何按窗口 status 时作为兼容回退使用。阈值可以按账户(上文的 `threshold*` 字段)或池级(见[调优选择](#调优选择serverpool))调低。
+- 默认切换阈值是 `0.98`。当 5 小时或共享 `7d` status 为 `rejected` 时,该账户对所有模型都被视为接近配额。当 `7d_oi` status 为 `rejected` 时,该账户对 Fable 请求被视为接近配额。当共享 5 小时使用率达到阈值,或适用的每周使用率达到阈值时,同样视为接近配额。status 的拒绝判定不取决于对应使用率头部是否存在。计算使用率阈值和余量时,Fable 模型在 `7d_oi` 使用率存在时使用它,否则使用共享 `7d`。聚合 status 仅在没有记录任何按窗口 status 时作为兼容回退使用。阈值可以按账户(上文的 `threshold*` 字段)或池级(见[调优选择](#调优选择serverpool))调低。
 - 5 小时桶适用于所有模型。Fable 模型 id 在 `7d_oi` 周桶使用率存在时使用它,否则回退到共享 `7d`。其他所有模型家族使用共享 `7d`;由于目前没有 Sonnet 专属头部,Sonnet 也使用 `7d`。
 - 接近配额、处于冷却中或被禁用的粘性账户会被主动轮换掉。shunt 优先选择低于阈值的可用账户,先按 `priority`(数值低者优先)排序,再按起决定作用的周桶最早重置的顺序排列,先花掉"不用即失"的配额。周重置未知的账户排在最前。随后是可用但接近配额的账户,再后是按最快恢复排序的冷却中账户。配置了 `[server.pool]` 时,燃烧率余量会取代周重置这一次级排序依据(见下文)。
 - shunt 从不因本地配额状态而安全失败(fail closed):即使所有账户都接近配额或在冷却中,每个非 `disabled` 账户仍留在尝试顺序里。

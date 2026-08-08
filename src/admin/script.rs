@@ -269,7 +269,7 @@ async function loadPool() {
     const c7oi = cell(r, pctReset(a.utilization_7d_oi, a.reset_7d_oi));
     if (a.reset_7d_oi) c7oi.title = "resets " + new Date(a.reset_7d_oi * 1000).toLocaleString();
     cell(r, a.status || "—");
-    cell(r, a.cooldown_secs_remaining ? a.cooldown_secs_remaining + "s" : a.cooldown_fable_secs_remaining ? a.cooldown_fable_secs_remaining + "s (fable)" : "—");
+    cell(r, [a.cooldown_secs_remaining ? a.cooldown_secs_remaining + "s" : null, a.cooldown_fable_secs_remaining ? a.cooldown_fable_secs_remaining + "s (fable)" : null].filter(Boolean).join(" · ") || "—");
   }
   if (!rows) { const r = body.insertRow(); const c = cell(r, "No pooled accounts configured"); c.colSpan = 8; c.className = "muted"; }
 }
