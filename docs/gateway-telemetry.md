@@ -117,9 +117,11 @@ Exactly two inbound headers cross to a destination:
 - `content-type`, forwarded as received.
 - `content-encoding`, forwarded when present.
 
-The destination's own configured `headers` are applied after those as a map, so
-an operator-configured value genuinely replaces the forwarded one for its key
-rather than adding a second copy of the header. No other inbound header is
+The destination's own configured `headers` take precedence: they seed the
+relay's header map, and a forwarded framing header only fills a key the
+operator left unset. An operator-configured value therefore genuinely replaces
+the forwarded one for its key rather than adding a second copy of the header.
+No other inbound header is
 forwarded — in particular the client's `Authorization` gateway JWT is never sent
 onward. Header names and values are validated at startup and on every reload, so
 a malformed entry fails `shunt check` rather than being dropped at relay time.

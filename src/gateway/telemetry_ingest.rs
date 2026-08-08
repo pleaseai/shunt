@@ -262,21 +262,27 @@ fn spawn_relay(
         let _permit = permit;
         let url = signal_url(&destination.url, signal);
         let host = destination_host(&url);
-        let mut request = relay_client().post(&url).timeout(RELAY_TIMEOUT).body(body);
+        // Precedence is decided here, in one map, instead of leaning on
+        // reqwest's builder semantics (`header` appends; `headers` inserts per
+        // key — a distinction that has shifted across reqwest versions). The
+        // destination's configured headers seed the map, so an operator value
+        // (a collector API key, or a deliberate `content-type` override) is
+        // authoritative for its key; the forwarded framing headers only fill
+        // keys the operator left unset.
+        let mut headers = destination_headers(&destination, &host);
         if let Some(content_type) = content_type {
-            request = request.header(header::CONTENT_TYPE, content_type);
+            headers.entry(header::CONTENT_TYPE).or_insert(content_type);
         }
         if let Some(content_encoding) = content_encoding {
-            request = request.header(header::CONTENT_ENCODING, content_encoding);
+            headers
+                .entry(header::CONTENT_ENCODING)
+                .or_insert(content_encoding);
         }
-        // Destination headers are applied last, and as a map rather than
-        // key-by-key: `RequestBuilder::header` *appends*, which would emit two
-        // `content-type` headers when an operator configures one, while
-        // `RequestBuilder::headers` routes through `replace_headers`, which
-        // inserts per key. So an operator-configured value (a collector API
-        // key, or a deliberate `content-type` override) really is authoritative
-        // for its key.
-        request = request.headers(destination_headers(&destination, &host));
+        let request = relay_client()
+            .post(&url)
+            .timeout(RELAY_TIMEOUT)
+            .headers(headers)
+            .body(body);
 
         // Failures are logged with the destination host and signal only — never
         // a header value and never any part of the payload, which carries
