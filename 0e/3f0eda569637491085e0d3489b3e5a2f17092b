@@ -1,0 +1,33 @@
+docs/gateway-login.md
+  s_e49446820dc889::t_bf384d96a5e8ec 179-201
+site/src/content/docs/guides/gateway-login.mdx
+  s_e49446820dc889::t_1ba0fcc000261f 12,158-178
+site/src/content/docs/reference/client-environment.md
+  s_986bb2d5c2945e::t_78ee03b90cffd8 13-30,36,42,53-101,104-107
+site/src/content/docs/reference/troubleshooting.md
+  s_e49446820dc889::t_4d7a84c451e04d 18-20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "0e3f0eda569637491085e0d3489b3e5a2f17092b",
+  "prompts": {},
+  "sessions": {
+    "s_986bb2d5c2945e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7d02e966-275e-4302-b00e-9160bc54f8fb",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_e49446820dc889": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fc5d12bf-149c-40f3-ae55-17975d4e2e31",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
