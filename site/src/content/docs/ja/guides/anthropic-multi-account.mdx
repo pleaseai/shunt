@@ -120,7 +120,7 @@ admin web インターフェースを通じてストア管理アカウントを�
   - `anthropic-ratelimit-unified-5h-utilization`、`anthropic-ratelimit-unified-7d-utilization`、`anthropic-ratelimit-unified-7d_oi-utilization`
   - `anthropic-ratelimit-unified-5h-reset`、`anthropic-ratelimit-unified-7d-reset`、`anthropic-ratelimit-unified-7d_oi-reset`（Unix 秒）
   - `anthropic-ratelimit-unified-status`、`anthropic-ratelimit-unified-5h-status`、`anthropic-ratelimit-unified-7d-status`、`anthropic-ratelimit-unified-7d_oi-status`
-- デフォルトの切り替えしきい値は `0.98` です。5 時間の status が `rejected`、適用される週次の status が `rejected`、共有 5 時間の使用率がそのしきい値に達している、または適用される週次使用率がそのしきい値に達しているとき、アカウントはクォータに近い状態です。Fable モデルでは、適用される週次の status は `7d_oi` の使用率があれば `7d_oi`、なければ共有 `7d` です。集約 status は、ウィンドウ別の status が 1 つも記録されていない場合にのみ使われる互換用のフォールバックです。しきい値は、アカウント単位（上記の `threshold*` フィールド）またはプール全体（[選択のチューニング](#選択のチューニングserverpool)を参照）で下げられます。
+- デフォルトの切り替えしきい値は `0.98` です。5 時間または共有 `7d` の status が `rejected` の場合、すべてのモデルでそのアカウントをクォータに近い状態として扱います。`7d_oi` の status が `rejected` の場合、Fable リクエストでクォータに近い状態として扱います。status の拒否判定は、対応する使用率ヘッダーの有無とは無関係に行われます。使用率のしきい値と余裕を計算するとき、Fable モデルは `7d_oi` の使用率があればそれを使い、なければ共有 `7d` を使います。集約 status は、ウィンドウ別の status が 1 つも記録されていない場合にのみ使われる互換用のフォールバックです。しきい値は、アカウント単位（上記の `threshold*` フィールド）またはプール全体（[選択のチューニング](#選択のチューニングserverpool)を参照）で下げられます。
 - 5 時間バケットはすべてのモデルに適用されます。Fable のモデル id は、`7d_oi` 週次バケットの使用率があればそれを使い、なければ共有 `7d` にフォールバックします。それ以外のモデルファミリーは共有 `7d` を使います。Sonnet 専用のヘッダーが今のところ存在しないため、Sonnet も `7d` を使います。
 - クォータに近い、クールダウン中、または `disabled` なスティッキーアカウントは、プロアクティブにローテーションで外されます。shunt は、しきい値未満で利用可能なアカウントを `priority`（値が小さい順）で優先し、次に適用される週次バケットのリセットが最も早い順で優先して、使わなければ失効するクォータから先に消費します。週次リセットが不明なアカウントが先頭に並びます。その後に利用可能なクォータ接近アカウント、さらに回復が最も早い順のクールダウン中アカウントが続きます。`[server.pool]` が設定されている場合、週次リセットによるタイブレークはバーンレートの余裕（headroom）に置き換わります（下記を参照）。
 - shunt がローカルのクォータ状態を理由にフェイルクローズすることはありません。すべてのアカウントがクォータに近い、またはクールダウン中でも、`disabled` でない各アカウントは試行順序に残ります。
@@ -180,7 +180,7 @@ disabled = true              # kept configured, never selected
 | レスポンス | 挙動 |
 | :-- | :-- |
 | 2xx | 中継し、健全としてマークします。 |
-| Fable リクエストで `anthropic-ratelimit-unified-7d_oi-status: rejected` だけの 429 | Fable のクォータ枯渇：数値の `retry-after` で Fable リクエストのみに効くクールダウン（デフォルト 60 秒、1〜3600 秒にクランプ）を適用し、その後ローテーションします。Fable 以外のリクエストは引き続きそのアカウントを使えます。 |
+| Fable リクエストで `anthropic-ratelimit-unified-7d_oi-status: rejected` だけの 429 | Fable のクォータ枯渇：数値の `retry-after` で Fable リクエストのみに効くクールダウン（デフォルト 60 秒、1〜3600 秒にクランプ）を適用し、その後ローテーションします。Fable 以外のリクエストは引き続きそのアカウントを使えます。Fable 以外のリクエストで同じ `7d_oi` のみの拒否を受けた場合は、アカウント全体のクールダウンを適用します。 |
 | 429 かつ `anthropic-ratelimit-unified-5h-status: rejected` または `-7d-status: rejected` | 共有クォータの枯渇：数値の `retry-after` でアカウント全体をクールダウン（デフォルト 60 秒、1〜3600 秒にクランプ）し、すべてのモデルについてローテーションします。`7d_oi` も同時に `rejected` の場合もアカウント全体のクールダウンです。 |
 | 単なる 429 | 一時的なスロットル：数値の `retry-after` の分だけ待機（デフォルト 1 秒、上限 300 秒）し、**同じ**アカウントを 1 回リトライして、そのリトライのレスポンスを中継します。 |
 | `credentials` での 401 | 強制リフレッシュして同じアカウントを 1 回リトライ。まだ 401 なら 5 分クールダウンしてローテーションします。 |

@@ -120,7 +120,7 @@ admin web 화면을 통해 스토어 관리 계정을 삭제하면, 동일한 �
   - `anthropic-ratelimit-unified-5h-utilization`, `anthropic-ratelimit-unified-7d-utilization`, `anthropic-ratelimit-unified-7d_oi-utilization`;
   - `anthropic-ratelimit-unified-5h-reset`, `anthropic-ratelimit-unified-7d-reset`, `anthropic-ratelimit-unified-7d_oi-reset`(Unix 초); 그리고
   - `anthropic-ratelimit-unified-status`, `anthropic-ratelimit-unified-5h-status`, `anthropic-ratelimit-unified-7d-status`, `anthropic-ratelimit-unified-7d_oi-status`.
-- 기본 전환 임계값은 `0.98`입니다. 5시간 status가 `rejected`이거나, 적용되는 주간 status가 `rejected`이거나, 공유 5시간 사용률이 해당 임계값에 도달했거나, 적용되는 주간 사용률이 해당 임계값에 도달하면 그 계정은 쿼터에 근접한 것입니다. Fable 모델의 경우 적용되는 주간 status는 `7d_oi` 사용률이 있으면 `7d_oi`이고, 없으면 공유 `7d`입니다. 집계 status는 창별 status가 하나도 기록되지 않았을 때만 쓰이는 호환용 폴백입니다. 임계값은 계정별로(위의 `threshold*` 필드) 또는 풀 전체로(자세한 내용은 [선택 튜닝](#선택-튜닝-serverpool) 참고) 낮출 수 있습니다.
+- 기본 전환 임계값은 `0.98`입니다. 5시간 또는 공유 `7d` status가 `rejected`이면 모든 모델에서 그 계정은 쿼터에 근접한 것으로 간주합니다. `7d_oi` status가 `rejected`이면 Fable 요청에서 쿼터에 근접한 것으로 간주합니다. status 거부 여부는 대응하는 사용률 헤더의 유무와 무관하게 평가합니다. 사용률 임계값과 여유를 계산할 때 Fable 모델은 `7d_oi` 사용률이 있으면 이를 사용하고, 없으면 공유 `7d`를 사용합니다. 집계 status는 창별 status가 하나도 기록되지 않았을 때만 쓰이는 호환용 폴백입니다. 임계값은 계정별로(위의 `threshold*` 필드) 또는 풀 전체로(자세한 내용은 [선택 튜닝](#선택-튜닝-serverpool) 참고) 낮출 수 있습니다.
 - 5시간 버킷은 모든 모델에 적용됩니다. Fable 모델 id는 `7d_oi` 주간 버킷의 사용률이 있으면 그것을 쓰고, 없으면 공유 `7d`로 폴백합니다. 그 외 모든 모델 계열은 공유 `7d`를 사용합니다; 현재 Sonnet 전용 헤더가 없으므로 Sonnet도 `7d`를 사용합니다.
 - 쿼터에 근접했거나 쿨다운됐거나 비활성화(disabled)된 스티키 계정은 선제적으로 로테이션됩니다. shunt는 임계값 아래의 사용 가능한 계정을 `priority`(낮은 값 우선) 순으로 먼저 선호하고, 그다음 적용되는 주간 버킷이 가장 빨리 리셋되는 순서로 선호해 쓰지 않으면 사라지는(use-or-lose) 쿼터부터 소진합니다. 주간 리셋을 알 수 없는 계정이 먼저 정렬됩니다. 그다음 사용 가능한 쿼터 근접 계정, 그다음 가장 빨리 회복되는 순서의 쿨다운 계정이 이어집니다. `[server.pool]`이 구성되어 있으면 번-레이트(burn-rate) 여유가 주간 리셋 타이브레이크를 대신합니다(아래 참고).
 - shunt는 로컬 쿼터 상태 때문에 닫힌 채로 실패(fail closed)하지 않습니다: `disabled`가 아닌 모든 계정은 쿼터에 근접했거나 쿨다운 중이어도 시도 순서에 남아 있습니다.
@@ -180,7 +180,7 @@ disabled = true              # 구성은 유지되지만 절대 선택되지 않
 | 응답 | 동작 |
 | :-- | :-- |
 | 2xx | 릴레이하고 정상으로 표시합니다. |
-| Fable 요청에서 `anthropic-ratelimit-unified-7d_oi-status: rejected`만 있는 429 | Fable 쿼터 소진: 숫자 `retry-after`로 Fable 요청에만 적용되는 쿨다운(기본 60초, 1–3600초로 클램프)을 건 뒤 로테이션합니다. non-Fable 요청은 계속 그 계정을 쓸 수 있습니다. |
+| Fable 요청에서 `anthropic-ratelimit-unified-7d_oi-status: rejected`만 있는 429 | Fable 쿼터 소진: 숫자 `retry-after`로 Fable 요청에만 적용되는 쿨다운(기본 60초, 1–3600초로 클램프)을 건 뒤 로테이션합니다. non-Fable 요청은 계속 그 계정을 쓸 수 있습니다. non-Fable 요청에서 같은 `7d_oi` 단독 거부가 발생하면 계정 전체 쿨다운을 적용합니다. |
 | 429 + `anthropic-ratelimit-unified-5h-status: rejected` 또는 `-7d-status: rejected` | 공유 쿼터 소진: 숫자 `retry-after`로 계정 전체 쿨다운(기본 60초, 1–3600초로 클램프)한 뒤 모든 모델에 대해 로테이션합니다. `7d_oi`도 함께 `rejected`인 경우에도 계정 전체 쿨다운입니다. |
 | 일반 429 | 일시적 스로틀: 숫자 `retry-after`만큼 대기(기본 1초, 상한 300초)하고 **같은** 계정을 한 번 재시도한 뒤, 그 재시도 응답을 릴레이합니다. |
 | `credentials`에서의 401 | 강제 갱신 후 같은 계정을 한 번 재시도; 여전히 401이면 5분 쿨다운 후 로테이션합니다. |

@@ -940,11 +940,11 @@ mod tests {
         http::{HeaderMap, StatusCode},
     };
 
-    use crate::config::ApiKeyHeader;
+    use crate::{accounts::CooldownScope, config::ApiKeyHeader};
 
     use super::{
-        hold_admission_on_success, normalize_upstream_model, outbound_headers, rate_limit_kind,
-        rewrite_account_uuid, Credential,
+        hold_admission_on_success, normalize_upstream_model, outbound_headers,
+        quota_cooldown_scope, rate_limit_kind, rewrite_account_uuid, Credential,
     };
 
     fn client_headers() -> HeaderMap {
@@ -978,6 +978,71 @@ mod tests {
             name: "acct".to_string(),
             ..Default::default()
         }
+    }
+
+    fn quota_headers(values: &[(&'static str, &'static str)]) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        for &(name, value) in values {
+            headers.insert(name, value.parse().unwrap());
+        }
+        headers
+    }
+
+    #[test]
+    fn fable_only_rejection_scopes_fable_429_cooldown() {
+        let headers = quota_headers(&[("anthropic-ratelimit-unified-7d_oi-status", "rejected")]);
+
+        assert_eq!(
+            quota_cooldown_scope(StatusCode::TOO_MANY_REQUESTS, &headers, true),
+            CooldownScope::Fable
+        );
+    }
+
+    #[test]
+    fn fable_only_rejection_on_non_fable_request_is_account_wide() {
+        let headers = quota_headers(&[("anthropic-ratelimit-unified-7d_oi-status", "rejected")]);
+
+        assert_eq!(
+            quota_cooldown_scope(StatusCode::TOO_MANY_REQUESTS, &headers, false),
+            CooldownScope::Account
+        );
+    }
+
+    #[test]
+    fn shared_rejection_keeps_fable_429_cooldown_account_wide() {
+        for shared_status in [
+            "anthropic-ratelimit-unified-5h-status",
+            "anthropic-ratelimit-unified-7d-status",
+        ] {
+            let headers = quota_headers(&[
+                ("anthropic-ratelimit-unified-7d_oi-status", "rejected"),
+                (shared_status, "rejected"),
+            ]);
+
+            assert_eq!(
+                quota_cooldown_scope(StatusCode::TOO_MANY_REQUESTS, &headers, true),
+                CooldownScope::Account,
+                "{shared_status} must make the cooldown account-wide"
+            );
+        }
+    }
+
+    #[test]
+    fn fable_rejection_does_not_scope_non_429_cooldown() {
+        let headers = quota_headers(&[("anthropic-ratelimit-unified-7d_oi-status", "rejected")]);
+
+        assert_eq!(
+            quota_cooldown_scope(StatusCode::INTERNAL_SERVER_ERROR, &headers, true),
+            CooldownScope::Account
+        );
+    }
+
+    #[test]
+    fn plain_fable_429_cooldown_is_account_wide() {
+        assert_eq!(
+            quota_cooldown_scope(StatusCode::TOO_MANY_REQUESTS, &HeaderMap::new(), true),
+            CooldownScope::Account
+        );
     }
 
     #[tokio::test]

@@ -92,8 +92,8 @@ pub struct QuotaState {
 
 impl QuotaState {
     /// Whether any persisted quota field carries a recorded signal. Utilization,
-    /// reset metadata, and unified status all affect selection or diagnostics, so
-    /// only an entirely default quota is omitted from persistence.
+    /// reset metadata, and aggregate or per-window status all affect selection or
+    /// diagnostics, so only an entirely default quota is omitted from persistence.
     pub(crate) fn has_signal(&self) -> bool {
         self.utilization_5h.is_some()
             || self.reset_5h.is_some()
@@ -603,7 +603,9 @@ impl AccountPool {
         crate::metrics::record_pool_rotation(provider, reason);
     }
 
-    /// Clear applicable cooldowns and record the account as observed-healthy.
+    /// Clear the account-wide cooldown and record the account as observed-healthy.
+    /// A non-Fable success proves nothing about the Fable quota bucket, so this
+    /// compatibility entry point deliberately leaves the Fable-only slot intact.
     /// `turn_succeeded` gates slow-start growth: a relayed client error (4xx)
     /// proves the account reachable — hence healthy — but must not pre-warm
     /// storm-control capacity, or a burst of malformed requests would bypass
@@ -1043,6 +1045,7 @@ pub fn is_fable_model(model: Option<&str>) -> bool {
 }
 
 fn governing_cooldown(health: &AccountHealth, is_fable: bool) -> Option<Instant> {
+    // Fable traffic must wait for both applicable cooldowns, so the later expiry governs.
     if is_fable {
         match (health.cooldown_until, health.cooldown_until_fable) {
             (Some(account), Some(fable)) => Some(account.max(fable)),
@@ -1127,11 +1130,12 @@ fn assess_quota(
     };
     let has_window_status =
         quota.status_5h.is_some() || quota.status_7d.is_some() || quota.status_7d_oi.is_some();
-    let weekly_rejected = match weekly.2 {
-        QuotaWindow::Fable => quota.status_7d_oi.as_deref() == Some("rejected"),
-        QuotaWindow::Weekly => quota.status_7d.as_deref() == Some("rejected"),
-        QuotaWindow::FiveHour => unreachable!("weekly selection never uses the 5h window"),
-    };
+    // Rejection statuses arrive independently of utilization, so they cannot use
+    // the utilization-presence gate that selects the threshold/headroom window.
+    // A shared weekly rejection also blocks Fable requests; only an isolated
+    // `7d_oi` rejection is Fable-specific.
+    let weekly_rejected = quota.status_7d.as_deref() == Some("rejected")
+        || (is_fable && quota.status_7d_oi.as_deref() == Some("rejected"));
     let rejected = quota.status_5h.as_deref() == Some("rejected")
         || weekly_rejected
         || (!has_window_status && quota.status.as_deref() == Some("rejected"));
@@ -1274,6 +1278,8 @@ const QUOTA_STATUS_HEADERS: [&str; 3] = [
     "anthropic-ratelimit-unified-7d_oi-status",
 ];
 
+/// True when only the Fable weekly quota status rejects the response. A 5-hour
+/// or shared-weekly rejection makes the failure account-wide instead.
 pub fn is_fable_scoped_rejection(headers: &HeaderMap) -> bool {
     let rejected = |name: &str| headers.get(name).is_some_and(|value| value == "rejected");
     rejected(QUOTA_STATUS_HEADERS[2])
@@ -2495,6 +2501,60 @@ mod tests {
             let assessment = assess_quota(&five_hour_rejected, &account, is_fable, None, now);
             assert!(assessment.near);
             assert_eq!(assessment.headroom, f64::NEG_INFINITY);
+        }
+    }
+
+    #[test]
+    fn fable_rejection_status_does_not_require_utilization() {
+        let account = account("a");
+        let quota = QuotaState {
+            status_7d_oi: Some("rejected".to_string()),
+            ..Default::default()
+        };
+
+        let fable = assess_quota(&quota, &account, true, None, unix_now());
+        assert!(fable.near);
+        assert_eq!(fable.headroom, f64::NEG_INFINITY);
+
+        let non_fable = assess_quota(&quota, &account, false, None, unix_now());
+        assert!(!non_fable.near);
+        assert_eq!(non_fable.headroom, f64::INFINITY);
+    }
+
+    #[test]
+    fn shared_weekly_rejection_governs_fable_without_oi_data() {
+        let quota = QuotaState {
+            status_7d: Some("rejected".to_string()),
+            ..Default::default()
+        };
+
+        // The shared weekly rejection is unconditional: it governs Fable
+        // requests (which have no `7d_oi` data to fall back on here) and
+        // ordinary requests alike. Folding this term inside the `is_fable`
+        // gate would silently stop non-Fable traffic from ever being marked
+        // quota-rejected on a shared weekly rejection.
+        for is_fable in [false, true] {
+            let assessment = assess_quota(&quota, &account("a"), is_fable, None, unix_now());
+            assert!(
+                assessment.near,
+                "shared 7d rejection governs is_fable={is_fable}"
+            );
+            assert_eq!(assessment.headroom, f64::NEG_INFINITY);
+        }
+    }
+
+    #[test]
+    fn per_window_status_suppresses_legacy_aggregate_rejection() {
+        let quota = QuotaState {
+            status: Some("rejected".to_string()),
+            status_7d: Some("allowed".to_string()),
+            ..Default::default()
+        };
+
+        for is_fable in [false, true] {
+            let assessment = assess_quota(&quota, &account("a"), is_fable, None, unix_now());
+            assert!(!assessment.near);
+            assert_eq!(assessment.headroom, f64::INFINITY);
         }
     }
 
