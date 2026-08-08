@@ -461,6 +461,21 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
         .local_addr()
         .context("failed to read bind address")?;
     tracing::info!(%local_addr, "shunt listening");
+
+    // Discovering `agy`'s model/effort matrix costs ~20s as a subprocess. Warm
+    // it off the request path so the first Antigravity turn does not pay it;
+    // the adapter re-runs discovery itself if this has not landed yet.
+    if config
+        .providers
+        .values()
+        .any(|provider| provider.kind == shunt::config::ProviderKind::Antigravity)
+    {
+        if let Some(agy) = shunt::adapters::antigravity::find_agy_binary() {
+            tokio::spawn(async move {
+                shunt::adapters::antigravity::models::warm(&agy).await;
+            });
+        }
+    }
     let (router, shared, state) =
         server::build_router(config).context("failed to initialize gateway")?;
     // Reload triggers (SIGHUP and config-file watch) run as background tasks and

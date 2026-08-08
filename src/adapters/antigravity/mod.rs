@@ -1,7 +1,25 @@
 //! Antigravity CLI adapter (`agy`).
 //!
-//! Translates incoming Anthropic Messages requests into `agy` CLI invocations (`agy -p "<prompt>"`),
-//! allowing Gemini models to execute via Google's Antigravity gRPC backend with full capacity.
+//! `agy` is not a text-completion endpoint — it is a full agent with its own
+//! tool set (file edits, shell, search, browser) and its own loop. This adapter
+//! therefore runs it in agentic print mode and translates its
+//! `--output-format stream-json` events back into Anthropic Messages SSE, so a
+//! Gemini-routed turn can actually do work rather than only describe it.
+//!
+//! Consequences worth knowing before routing traffic here:
+//!
+//! - Tools are `agy`'s, not the caller's. `tools` supplied on the Messages
+//!   request are not forwarded, and no `tool_use` block is ever returned; the
+//!   CLI resolves its own tool calls internally and returns finished work.
+//! - It runs with `--dangerously-skip-permissions`, because a print-mode run
+//!   has no interactive channel to approve a permission prompt on. `--add-dir`
+//!   is not a sandbox: the agent still has shell access and can act outside
+//!   that directory. Treat this provider as arbitrary code execution as the
+//!   user running shunt, and see [`resolve_workspace`] for the trust boundary
+//!   on where it starts.
+
+pub mod models;
+pub mod stream;
 
 use axum::{
     body::Body,
@@ -9,14 +27,57 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::{
+    convert::Infallible,
+    path::{Path, PathBuf},
+    process::Stdio,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+use tokio::{
+    io::{AsyncBufReadExt, BufReader},
+    process::Command,
+};
 
 use crate::{
     adapters::{Adapter, AdapterError, AdapterFuture},
+    error::ShuntError,
     request::RequestBody,
     routing::Route,
     server::AppState,
 };
+
+use self::{
+    models::EffortChoice,
+    stream::{AgyEnd, Translator},
+};
+
+/// Wall-clock cap handed to `agy --print-timeout`.
+///
+/// The CLI's own default is 5 minutes, which truncates genuine multi-step
+/// agent runs and surfaces to the caller as a turn that delivered nothing.
+const PRINT_TIMEOUT: &str = "30m";
+
+/// Outer cap shunt enforces itself, independent of `--print-timeout`.
+///
+/// `--print-timeout` is delegated to the process being supervised, so it does
+/// not protect against a wedged CLI or a descendant holding stdout open. Kept
+/// above `PRINT_TIMEOUT` so the CLI's own limit reports first when it works.
+const HARD_TIMEOUT: Duration = Duration::from_secs(35 * 60);
+
+/// Cap on `agy` stderr retained for diagnostics, in bytes.
+const STDERR_LIMIT: usize = 2000;
+
+/// Grace period for the child to exit after stdout EOF before it is killed.
+///
+/// Reaching EOF says the pipe closed, not that the process ended. Short,
+/// because by this point the turn has produced its result and the only thing
+/// left is reaping — but non-zero, so a normally-exiting child still reports
+/// its own status instead of being killed out from under it.
+const EXIT_GRACE: Duration = Duration::from_secs(5);
+
+/// Environment override for the directory `agy` is allowed to work in.
+const WORKSPACE_ENV: &str = "SHUNT_AGY_WORKSPACE";
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AntigravityAdapter;
@@ -24,7 +85,7 @@ pub struct AntigravityAdapter;
 impl Adapter for AntigravityAdapter {
     fn forward<'a>(
         &'a self,
-        _state: AppState,
+        state: AppState,
         route: Route,
         _uri: &'a Uri,
         _headers: &'a HeaderMap,
@@ -38,64 +99,453 @@ impl Adapter for AntigravityAdapter {
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
 
-            let agy_bin = find_agy_binary().ok_or_else(|| AdapterError {
-                message: "Antigravity CLI (agy) binary not found. Please install agy or set AGY_BIN environment variable.".to_string(),
-                response: Box::new(StatusCode::SERVICE_UNAVAILABLE.into_response()),
-                failure: None,
-            })?;
+            let agy_bin = find_agy_binary().ok_or_else(agy_not_found)?;
 
-            let mut cmd = tokio::process::Command::new(&agy_bin);
+            let provider = state.config.providers.get(&route.provider);
+            let roots = provider
+                .map(|provider| provider.workspace_roots.clone())
+                .unwrap_or_default();
+            let sandbox = provider.is_none_or(|provider| provider.sandbox);
+            let workspace = resolve_workspace(request, &roots)?;
+
+            let matrix = models::effort_matrix(&agy_bin).await;
+            let effort = match models::resolve_effort(
+                &matrix,
+                &route.upstream_model,
+                route.effort.as_deref(),
+            ) {
+                EffortChoice::Use(effort) => Some(effort),
+                EffortChoice::Omit => None,
+                // Operator intent shunt cannot satisfy. Say so instead of
+                // substituting a neighbouring level behind their back.
+                EffortChoice::Unsupported {
+                    model,
+                    requested,
+                    supported,
+                } => {
+                    return Err(adapter_error(
+                        StatusCode::BAD_REQUEST,
+                        format!(
+                            "model {model} does not support effort \"{requested}\" (supported: {})",
+                            supported.join(", ")
+                        ),
+                    ));
+                }
+            };
+
+            let mut cmd = Command::new(&agy_bin);
             cmd.arg("-p").arg(&prompt);
             cmd.arg("--model").arg(&route.upstream_model);
-
-            // Add effort for 3.x models or explicitly set effort
-            if route.upstream_model.contains("3.") || route.effort.is_some() {
-                let effort = route.effort.as_deref().unwrap_or("medium");
+            if let Some(effort) = effort {
                 cmd.arg("--effort").arg(effort);
             }
-
-            let output = cmd.output().await.map_err(|err| AdapterError {
-                message: format!("failed to execute agy CLI: {err}"),
-                response: Box::new(StatusCode::BAD_GATEWAY.into_response()),
-                failure: None,
-            })?;
-
-            if !output.status.success() {
-                let err_msg = String::from_utf8_lossy(&output.stderr);
-                return Err(AdapterError {
-                    message: format!("agy CLI execution failed: {err_msg}"),
-                    response: Box::new(StatusCode::BAD_GATEWAY.into_response()),
-                    failure: None,
-                });
+            cmd.arg("--output-format").arg("stream-json");
+            // Print mode cannot service an interactive approval prompt.
+            cmd.arg("--dangerously-skip-permissions");
+            // ...which is why the sandbox matters. Skipping permissions without
+            // it leaves an agent with shell access and no workspace boundary:
+            // refusing an unlisted directory only moves where it starts, and a
+            // path named in the prompt is still reachable from anywhere.
+            if sandbox {
+                cmd.arg("--sandbox");
             }
+            cmd.arg("--print-timeout").arg(PRINT_TIMEOUT);
+            cmd.arg("--add-dir").arg(&workspace);
+            // Without this the agent inherits the gateway process's directory
+            // and operates on whatever tree shunt happened to be started in.
+            cmd.current_dir(&workspace);
+            cmd.stdin(Stdio::null());
+            cmd.stdout(Stdio::piped());
+            cmd.stderr(Stdio::piped());
+            // Without this, a client disconnect drops the body stream and
+            // leaves a permission-skipping agent running unsupervised for up
+            // to PRINT_TIMEOUT, still editing files and burning quota.
+            cmd.kill_on_drop(true);
 
-            let stdout_text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let mut child = cmd
+                .spawn()
+                .map_err(|err| agy_failure(&format!("could not start the CLI: {err}")))?;
+
+            let stdout = child
+                .stdout
+                .take()
+                .ok_or_else(|| agy_failure("the CLI produced no stdout pipe"))?;
+            // stderr must be drained concurrently: left unread, a verbose
+            // failure fills the pipe buffer, blocks the child's write, and
+            // wedges the run behind keepalives that make it look healthy.
+            let stderr_log = drain_stderr(&mut child);
+
+            let message_id = format!("msg_agy_{:016x}", rand::random::<u64>());
+            let mut translator = Translator::new(&route.model, message_id);
+            let mut lines = BufReader::new(stdout).lines();
 
             if is_streaming {
-                let sse_text = format_antigravity_sse(&route.model, &stdout_text);
+                // One deadline for the whole turn, not a fresh allowance per
+                // line. Timing out each `next_line()` individually means any
+                // CLI that keeps emitting tool progress resets the cap forever,
+                // so a wedged permission-skipping child would never be reaped.
+                let deadline = tokio::time::Instant::now() + HARD_TIMEOUT;
+                let stream_state = (lines, translator, child, stderr_log, false);
+                let sse_stream = futures_util::stream::unfold(
+                    stream_state,
+                    move |(mut lines, mut translator, mut child, stderr_log, mut finished)| async move {
+                        if finished {
+                            return None;
+                        }
+                        loop {
+                            let next = tokio::time::timeout_at(deadline, lines.next_line()).await;
+                            match next {
+                                Ok(Ok(Some(line))) => {
+                                    let chunk = translator.on_line(&line);
+                                    if chunk.is_empty() {
+                                        continue;
+                                    }
+                                    return Some((
+                                        Ok::<_, Infallible>(axum::body::Bytes::from(chunk)),
+                                        (lines, translator, child, stderr_log, finished),
+                                    ));
+                                }
+                                // Every remaining case ends the turn. Headers
+                                // are already committed, so the only place a
+                                // failure can still be reported is the message
+                                // body — closing silently would report a crash
+                                // as a successful empty answer.
+                                outcome => {
+                                    finished = true;
+                                    let timed_out = outcome.is_err();
+                                    let mut tail = String::new();
+                                    let failure =
+                                        terminal_failure(translator.end(), timed_out, &stderr_log);
+                                    if let Some(message) = failure {
+                                        tail.push_str(
+                                            &translator
+                                                .on_text(&format!("\n\n[agy error] {message}")),
+                                        );
+                                        tail.push_str(&translator.finish_with_error());
+                                    } else {
+                                        tail.push_str(&translator.finish());
+                                    }
+                                    // Kill before reaping on every terminal
+                                    // path, not just the timeout. A premature
+                                    // stdout EOF leaves the agent alive, and an
+                                    // unbounded `wait` would hang the response
+                                    // behind it. On a clean exit this is a
+                                    // no-op.
+                                    let _ = child.kill().await;
+                                    let _ = child.wait().await;
+                                    return Some((
+                                        Ok::<_, Infallible>(axum::body::Bytes::from(tail)),
+                                        (lines, translator, child, stderr_log, finished),
+                                    ));
+                                }
+                            }
+                        }
+                    },
+                );
+
                 let response = Response::builder()
                     .status(StatusCode::OK)
                     .header("Content-Type", "text/event-stream; charset=utf-8")
                     .header("Cache-Control", "no-cache")
-                    .body(Body::from(sse_text))
-                    .map_err(|err| AdapterError {
-                        message: format!("failed to build SSE response: {err}"),
-                        response: Box::new(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
-                        failure: None,
+                    // `agy` can be silent for tens of seconds before its first
+                    // event while the CLI boots and the model takes its first
+                    // turn. The shared keepalive covers that gap; the ping
+                    // frames the translator emits per tool step then report
+                    // genuine progress on top of it.
+                    .body(Body::from_stream(crate::keepalive::with_pings(
+                        sse_stream,
+                        Duration::from_secs(state.config.server.sse_keepalive_seconds),
+                    )))
+                    .map_err(|err| {
+                        adapter_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("failed to build SSE response: {err}"),
+                        )
                     })?;
-                Ok((StatusCode::OK, response))
-            } else {
-                let json_val = format_antigravity_json(&route.model, &stdout_text);
-                let mut headers = HeaderMap::new();
-                headers.insert(
-                    "content-type",
-                    axum::http::HeaderValue::from_static("application/json"),
-                );
-                let response = (StatusCode::OK, headers, axum::Json(json_val)).into_response();
-                Ok((StatusCode::OK, response))
+                return Ok((StatusCode::OK, response));
             }
+
+            let drained = tokio::time::timeout(HARD_TIMEOUT, async {
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let _ = translator.on_line(&line);
+                }
+            })
+            .await;
+            if drained.is_err() {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                return Err(agy_failure(&format!(
+                    "no result after {}s; {}",
+                    HARD_TIMEOUT.as_secs(),
+                    stderr_text(&stderr_log)
+                )));
+            }
+            // Stdout EOF does not imply the child exited: it may have closed
+            // the pipe and kept running, and an unbounded wait would hang the
+            // response behind a permission-skipping agent. Give it a short
+            // grace period to exit on its own — a normally-exiting child then
+            // reports its own status, which the failure path below uses —
+            // then kill if it overstays.
+            let status = match tokio::time::timeout(EXIT_GRACE, child.wait()).await {
+                Ok(status) => status,
+                Err(_) => {
+                    let _ = child.kill().await;
+                    child.wait().await
+                }
+            };
+
+            // Not `terminal_failure` here: its `None` arm reports "stopped
+            // without reporting a result" with no exit status, and because it
+            // never returns `None` for a missing result, chaining `.or_else`
+            // onto it left the status message unreachable. On this path the
+            // process has been reaped, so the status is available and is the
+            // only signal left about *why* nothing came back — report it.
+            let failure = match translator.end() {
+                Some(AgyEnd::Success) => None,
+                Some(AgyEnd::Failed(message)) => Some(message.clone()),
+                None => {
+                    let code = status.ok().and_then(|status| status.code()).unwrap_or(-1);
+                    Some(format!(
+                        "the CLI exited without a result (status {code}); {}",
+                        stderr_text(&stderr_log)
+                    ))
+                }
+            };
+            if let Some(message) = failure {
+                return Err(agy_failure(&message));
+            }
+
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                "content-type",
+                axum::http::HeaderValue::from_static("application/json"),
+            );
+            let response =
+                (StatusCode::OK, headers, axum::Json(translator.to_message())).into_response();
+            Ok((StatusCode::OK, response))
         })
     }
+}
+
+/// Shared buffer holding a bounded tail of the child's stderr.
+type StderrLog = Arc<Mutex<String>>;
+
+/// Read the child's stderr concurrently into a bounded buffer.
+fn drain_stderr(child: &mut tokio::process::Child) -> StderrLog {
+    let log: StderrLog = Arc::new(Mutex::new(String::new()));
+    let Some(stderr) = child.stderr.take() else {
+        return log;
+    };
+    let sink = Arc::clone(&log);
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if let Ok(mut buffer) = sink.lock() {
+                if buffer.len() >= STDERR_LIMIT {
+                    // Keep draining so the child never blocks on a full pipe,
+                    // but stop accumulating.
+                    continue;
+                }
+                buffer.push_str(&line);
+                buffer.push('\n');
+            }
+        }
+    });
+    log
+}
+
+fn stderr_text(log: &StderrLog) -> String {
+    let text = log
+        .lock()
+        .map(|buffer| buffer.trim().to_string())
+        .unwrap_or_default();
+    if text.is_empty() {
+        "no stderr output".to_string()
+    } else {
+        truncate(&text, STDERR_LIMIT)
+    }
+}
+
+/// Describe how a run ended, or `None` when it genuinely succeeded.
+///
+/// A run that reaches EOF without a terminal `result` event has crashed, been
+/// killed, or emitted output we could not parse. Reporting that as `end_turn`
+/// would turn every one of those into a silent empty success.
+fn terminal_failure(end: Option<&AgyEnd>, timed_out: bool, stderr: &StderrLog) -> Option<String> {
+    if timed_out {
+        return Some(format!(
+            "no output for {}s; {}",
+            HARD_TIMEOUT.as_secs(),
+            stderr_text(stderr)
+        ));
+    }
+    match end {
+        Some(AgyEnd::Success) => None,
+        Some(AgyEnd::Failed(message)) => Some(message.clone()),
+        None => Some(format!(
+            "the CLI stopped without reporting a result; {}",
+            stderr_text(stderr)
+        )),
+    }
+}
+
+/// Shape a missing `agy` binary as an Anthropic-form error.
+///
+/// Worth naming the search path explicitly: a service manager commonly runs
+/// shunt under a restricted `PATH`. Homebrew's `brew services` unit sets
+/// `PATH=/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin`,
+/// which excludes `~/.local/bin` — the default install location for `agy` — so
+/// a provider that works in a shell returns 503 under the service with no
+/// indication why. `AGY_BIN` is the fix, and the message has to say so.
+fn agy_not_found() -> AdapterError {
+    let message = "Antigravity CLI (agy) not found on PATH, in ~/.gemini/antigravity-cli/bin, or at $AGY_BIN. \
+         Install agy, or set AGY_BIN to its absolute path — a service manager \
+         (for example `brew services`) may run shunt with a PATH that excludes it."
+        .to_string();
+    adapter_error(StatusCode::SERVICE_UNAVAILABLE, message)
+}
+
+/// Shape a failed `agy` invocation as an Anthropic-form error carrying the
+/// CLI's own diagnosis, which is often a precise, actionable line such as
+/// `gemini-3.1-pro has no "medium" effort`.
+fn agy_failure(detail: &str) -> AdapterError {
+    let detail = truncate(detail.trim(), STDERR_LIMIT);
+    let detail = if detail.is_empty() {
+        "no output".to_string()
+    } else {
+        detail
+    };
+    adapter_error(
+        StatusCode::BAD_GATEWAY,
+        format!("Antigravity CLI (agy) failed: {detail}"),
+    )
+}
+
+/// Build an [`AdapterError`] whose body is the Anthropic error shape, as
+/// AGENTS.md requires for gateway-owned errors.
+fn adapter_error(status: StatusCode, message: String) -> AdapterError {
+    AdapterError {
+        response: Box::new(ShuntError::new(status, "api_error", message.clone()).into_response()),
+        message,
+        failure: None,
+    }
+}
+
+/// Truncate to at most `limit` bytes, without splitting a UTF-8 character.
+///
+/// Slices at the nearest char boundary rather than rebuilding the string one
+/// `char` at a time, which allocated per character for a value that is usually
+/// returned whole.
+pub fn truncate(text: &str, limit: usize) -> String {
+    if text.len() <= limit {
+        return text.to_string();
+    }
+    let end = (0..=limit)
+        .rev()
+        .find(|index| text.is_char_boundary(*index))
+        .unwrap_or(0);
+    text[..end].to_string()
+}
+
+/// Directory `agy` is launched in and granted via `--add-dir`.
+///
+/// This is a trust boundary, not a convenience. `agy` runs with
+/// `--dangerously-skip-permissions`, so this directory is one an unattended
+/// agent can read, write, and run shell commands in. Resolution order:
+///
+/// 1. `SHUNT_AGY_WORKSPACE` — operator-set, therefore authoritative. If it is
+///    set but not a directory the request fails rather than falling back, so a
+///    typo cannot silently downgrade to a wider directory.
+/// 2. A `Working directory:` line in the request's system prompt, but *only*
+///    when it canonicalizes to a path inside one of the provider's configured
+///    `workspace_roots`. System-prompt text is client-controlled and routinely
+///    quotes fetched documents and tool output, so it is prompt-injectable;
+///    canonicalizing first resolves `..` and symlinks that would otherwise
+///    escape a naive prefix check. With no roots configured, prompt-derived
+///    paths are ignored entirely — the safe default.
+/// 3. The gateway's own directory.
+pub fn resolve_workspace(request: &Value, roots: &[String]) -> Result<PathBuf, AdapterError> {
+    if let Some(raw) = std::env::var_os(WORKSPACE_ENV) {
+        let path = PathBuf::from(&raw);
+        return if path.is_dir() {
+            Ok(path)
+        } else {
+            Err(adapter_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!(
+                    "{WORKSPACE_ENV} is set to {}, which is not a directory",
+                    path.display()
+                ),
+            ))
+        };
+    }
+
+    if let Some(requested) = system_prompt_text(request)
+        .as_deref()
+        .and_then(parse_working_directory)
+    {
+        if let Some(allowed) = permitted_workspace(&requested, roots) {
+            return Ok(allowed);
+        }
+        tracing::debug!(
+            requested = %requested.display(),
+            "ignoring prompt-derived workspace outside the configured workspace_roots"
+        );
+    }
+
+    Ok(std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+}
+
+/// Canonicalize `requested` and accept it only if it lands inside a root.
+///
+/// Both sides are canonicalized so `..` segments and symlinks cannot smuggle a
+/// path out of an allowed root while still passing a textual prefix test.
+fn permitted_workspace(requested: &Path, roots: &[String]) -> Option<PathBuf> {
+    if roots.is_empty() {
+        return None;
+    }
+    let canonical = requested.canonicalize().ok()?;
+    if !canonical.is_dir() {
+        return None;
+    }
+    roots
+        .iter()
+        .filter_map(|root| PathBuf::from(root).canonicalize().ok())
+        .any(|root| canonical.starts_with(&root))
+        .then_some(canonical)
+}
+
+fn system_prompt_text(request: &Value) -> Option<String> {
+    let system = request.get("system")?;
+    if let Some(text) = system.as_str() {
+        return Some(text.to_string());
+    }
+    let blocks = system.as_array()?;
+    let joined = blocks
+        .iter()
+        .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+        .filter_map(|block| block.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!joined.is_empty()).then_some(joined)
+}
+
+/// Find a `Working directory: <path>` line in the system prompt.
+///
+/// Anchored to the start of a line (after leading whitespace and any bullet
+/// marker) rather than matched anywhere in the text: an unanchored search hits
+/// the phrase inside quoted prose, which widens the injection surface for no
+/// benefit. Harnesses state the value on its own line.
+fn parse_working_directory(system: &str) -> Option<PathBuf> {
+    const NEEDLE: &str = "working directory:";
+    system.lines().find_map(|line| {
+        let trimmed = line.trim_start().trim_start_matches(['-', '*', '#', ' ']);
+        let lowered = trimmed.to_ascii_lowercase();
+        // Allow a short qualifier such as "Primary working directory:".
+        let start = lowered.find(NEEDLE).filter(|index| *index <= 16)? + NEEDLE.len();
+        let value = trimmed[start..].trim().trim_matches('`');
+        (!value.is_empty()).then(|| PathBuf::from(value))
+    })
 }
 
 pub fn extract_antigravity_prompt(request: &Value) -> String {
@@ -193,84 +643,4 @@ fn find_agy_binary_uncached() -> Option<PathBuf> {
     }
 
     None
-}
-
-pub fn format_antigravity_json(model: &str, text: &str) -> Value {
-    let msg_id = format!("msg_agy_{:016x}", rand::random::<u64>());
-    json!({
-        "id": msg_id,
-        "type": "message",
-        "role": "assistant",
-        "content": [
-            {
-                "type": "text",
-                "text": text
-            }
-        ],
-        "model": model,
-        "stop_reason": "end_turn",
-        "stop_sequence": null,
-        "usage": {
-            "input_tokens": 1,
-            "output_tokens": text.len() / 4
-        }
-    })
-}
-
-pub fn format_antigravity_sse(model: &str, text: &str) -> String {
-    let msg_id = format!("msg_agy_{:016x}", rand::random::<u64>());
-    let mut out = String::new();
-
-    let msg_start = json!({
-        "type": "message_start",
-        "message": {
-            "id": msg_id,
-            "type": "message",
-            "role": "assistant",
-            "content": [],
-            "model": model,
-            "stop_reason": null,
-            "stop_sequence": null,
-            "usage": { "input_tokens": 1, "output_tokens": 0 }
-        }
-    });
-    out.push_str(&format!("event: message_start\ndata: {}\n\n", msg_start));
-
-    let block_start = json!({
-        "type": "content_block_start",
-        "index": 0,
-        "content_block": { "type": "text", "text": "" }
-    });
-    out.push_str(&format!(
-        "event: content_block_start\ndata: {}\n\n",
-        block_start
-    ));
-
-    let delta = json!({
-        "type": "content_block_delta",
-        "index": 0,
-        "delta": { "type": "text_delta", "text": text }
-    });
-    out.push_str(&format!("event: content_block_delta\ndata: {}\n\n", delta));
-
-    let block_stop = json!({
-        "type": "content_block_stop",
-        "index": 0
-    });
-    out.push_str(&format!(
-        "event: content_block_stop\ndata: {}\n\n",
-        block_stop
-    ));
-
-    let msg_delta = json!({
-        "type": "message_delta",
-        "delta": { "stop_reason": "end_turn", "stop_sequence": null },
-        "usage": { "output_tokens": text.len() / 4 }
-    });
-    out.push_str(&format!("event: message_delta\ndata: {}\n\n", msg_delta));
-
-    let msg_stop = json!({ "type": "message_stop" });
-    out.push_str(&format!("event: message_stop\ndata: {}\n\n", msg_stop));
-
-    out
 }

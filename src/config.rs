@@ -1181,6 +1181,36 @@ pub struct ProviderConfig {
     /// default with conservative settings — set `max_retries = 0` to disable.
     #[serde(default)]
     pub retry: RetryConfig,
+    /// Directories the Antigravity CLI may be pointed at by request content
+    /// (`kind = "antigravity"` only).
+    ///
+    /// `agy` runs with `--dangerously-skip-permissions`, so whatever directory
+    /// it starts in is a directory an unattended agent can read, write, and run
+    /// shell commands in. The adapter can take that directory from a
+    /// `Working directory:` line in the request's system prompt, which is
+    /// client-controlled text — and system prompts routinely quote fetched
+    /// documents and tool output, so it is prompt-injectable.
+    ///
+    /// This list is the trust boundary. A prompt-derived path is canonicalized
+    /// (resolving symlinks and `..`) and used only if it lands inside one of
+    /// these roots; anything else is refused rather than silently downgraded.
+    /// Empty (the default) means no prompt-derived path is ever honored, and
+    /// only `SHUNT_AGY_WORKSPACE` or the gateway's own directory is used.
+    #[serde(default)]
+    pub workspace_roots: Vec<String>,
+    /// Run the Antigravity CLI with `--sandbox` (`kind = "antigravity"` only).
+    ///
+    /// On by default. Without it, `--dangerously-skip-permissions` leaves an
+    /// unattended agent with shell access and no workspace boundary: refusing a
+    /// directory in [`workspace_roots`](Self::workspace_roots) only changes
+    /// where the agent *starts*, and a path named in the prompt can still be
+    /// reached from there. `--sandbox` is what actually keeps reads and writes
+    /// inside the workspace.
+    ///
+    /// Set `false` only where the agent genuinely needs unrestricted terminal
+    /// access and the caller is trusted.
+    #[serde(default = "default_true")]
+    pub sandbox: bool,
 }
 
 /// Per-provider bounded retry/backoff for transient upstream failures (issue
@@ -1627,6 +1657,12 @@ pub enum ConfigError {
     ReadConfigFile { path: PathBuf, message: String },
     #[error("declare either [[upstreams]] or [providers.*], not both; use exactly one provider declaration form")]
     MixedProviderDeclarationForms,
+    #[error(
+        "provider \"{provider}\" runs the Antigravity CLI with sandbox = false, which gives an \
+         autonomous agent shell access as the user running shunt; that cannot be served on the \
+         non-loopback bind \"{bind}\". Remove `sandbox = false`, or bind to loopback (127.0.0.1)."
+    )]
+    UnsandboxedAntigravityOnPublicBind { provider: String, bind: String },
     #[error("upstreams[{index}].name must be non-empty and non-whitespace")]
     EmptyUpstreamName { index: usize },
     #[error("duplicate [[upstreams]] name \"{name}\"; upstream names must be unique")]
@@ -1854,6 +1890,8 @@ impl ProviderConfig {
             tool_search: None,
             request_compression: true,
             retry: RetryConfig::default(),
+            workspace_roots: Vec::new(),
+            sandbox: true,
         }
     }
 
@@ -1876,6 +1914,8 @@ impl ProviderConfig {
             tool_search: None,
             request_compression: true,
             retry: RetryConfig::default(),
+            workspace_roots: Vec::new(),
+            sandbox: true,
         }
     }
 
@@ -1898,6 +1938,8 @@ impl ProviderConfig {
             tool_search: None,
             request_compression: true,
             retry: RetryConfig::default(),
+            workspace_roots: Vec::new(),
+            sandbox: true,
         }
     }
 }
@@ -1942,6 +1984,8 @@ impl Default for Config {
                     tool_search: None,
                     request_compression: true,
                     retry: RetryConfig::default(),
+                    workspace_roots: Vec::new(),
+                    sandbox: true,
                 },
             ),
             (
@@ -2000,6 +2044,8 @@ impl Default for Config {
                     tool_search: None,
                     request_compression: true,
                     retry: RetryConfig::default(),
+                    workspace_roots: Vec::new(),
+                    sandbox: true,
                 },
             ),
         ]);
@@ -2357,6 +2403,23 @@ impl Config {
         // an unauthenticated admin surface. Reject it rather than run open.
         if let Some(admin) = &self.server.admin {
             admin.resolve()?;
+        }
+        // Fail closed at boot: an unsandboxed Antigravity provider runs an
+        // autonomous agent with shell access and no workspace boundary, as the
+        // user running shunt. That is defensible as a personal loopback
+        // integration; reachable from the network it hands arbitrary local
+        // execution to anyone who can post a Messages request. Authentication
+        // is not sufficient on its own, so refuse the combination outright
+        // rather than document it as merely discouraged.
+        if let Some(name) = self.providers.iter().find_map(|(name, provider)| {
+            (provider.kind == ProviderKind::Antigravity && !provider.sandbox).then_some(name)
+        }) {
+            if !self.server.bind_is_loopback() {
+                return Err(ConfigError::UnsandboxedAntigravityOnPublicBind {
+                    provider: name.clone(),
+                    bind: self.server.bind.clone(),
+                });
+            }
         }
         // Fail closed at boot: a configured gateway must have a valid issuer,
         // sufficiently strong signing secret, and at least one approval path.
@@ -3030,6 +3093,16 @@ impl ServerConfig {
     pub fn bind_addr(&self) -> Result<SocketAddr, ConfigError> {
         Ok(self.bind.parse()?)
     }
+
+    /// Whether the bind address only accepts connections from this machine.
+    ///
+    /// An unparseable bind is treated as non-loopback: security gates built on
+    /// this must fail closed, and `bind_addr` reports the parse error itself.
+    pub fn bind_is_loopback(&self) -> bool {
+        self.bind_addr()
+            .map(|addr| addr.ip().is_loopback())
+            .unwrap_or(false)
+    }
 }
 
 /// Serializes every test that reads or writes the process environment against
@@ -3096,6 +3169,67 @@ mod tests {
             .unwrap();
             assert_eq!(server.max_concurrent_requests, configured);
         }
+    }
+
+    #[test]
+    fn validate_rejects_unsandboxed_antigravity_on_a_public_bind() {
+        use crate::config::ProviderConfig;
+
+        let antigravity = |sandbox: bool| {
+            let mut provider = ProviderConfig::gemini("http://localhost");
+            provider.kind = ProviderKind::Antigravity;
+            provider.auth = AuthMode::None;
+            provider.sandbox = sandbox;
+            provider
+        };
+
+        // Loopback: a personal integration, allowed even unsandboxed.
+        let mut config = Config::default();
+        config.server.bind = "127.0.0.1:3001".to_string();
+        config
+            .providers
+            .insert("antigravity".to_string(), antigravity(false));
+        config
+            .validate()
+            .expect("an unsandboxed provider on loopback stays allowed");
+
+        // Reachable from the network, it hands local shell access to anyone
+        // who can post a Messages request.
+        let mut config = Config::default();
+        config.server.bind = "0.0.0.0:3001".to_string();
+        config
+            .providers
+            .insert("antigravity".to_string(), antigravity(false));
+        let error = config
+            .validate()
+            .expect_err("sandbox = false must not be servable off-loopback");
+        assert!(
+            matches!(
+                error,
+                ConfigError::UnsandboxedAntigravityOnPublicBind { .. }
+            ),
+            "unexpected error: {error}"
+        );
+
+        // With the sandbox on, the same bind is fine.
+        let mut config = Config::default();
+        config.server.bind = "0.0.0.0:3001".to_string();
+        config
+            .providers
+            .insert("antigravity".to_string(), antigravity(true));
+        config
+            .validate()
+            .expect("a sandboxed provider is servable off-loopback");
+    }
+
+    #[test]
+    fn bind_is_loopback_fails_closed_on_an_unparseable_bind() {
+        let mut config = Config::default();
+        config.server.bind = "not-an-address".to_string();
+        assert!(
+            !config.server.bind_is_loopback(),
+            "an unparseable bind must not be treated as loopback by a security gate"
+        );
     }
 
     #[test]

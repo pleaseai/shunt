@@ -96,6 +96,8 @@ fn upstream(
         tool_search: None,
         request_compression: true,
         retry: disabled_retry(),
+        workspace_roots: Vec::new(),
+        sandbox: true,
     }
 }
 

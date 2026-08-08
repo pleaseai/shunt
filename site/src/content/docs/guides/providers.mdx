@@ -56,7 +56,76 @@ provider = "antigravity"
 upstream_model = "gemini-3.6-flash"
 ```
 
-The Antigravity path runs one CLI subprocess per request. Its current streaming response is emitted only after `agy` finishes, and token usage is estimated rather than reported by Google. The configured upstream slug proves which model shunt asks `agy` to run; it does not independently attest Google's internal serving identity.
+The Antigravity path runs one CLI subprocess per request in agentic mode. `agy` is a
+full agent with its own tools, so it resolves its own tool calls and returns finished
+work — file edits included. Three consequences follow:
+
+- **Tools are `agy`'s, not the caller's.** A `tools` array on the Messages request is
+  not forwarded, and the response never contains a `tool_use` block. Clients that need
+  to drive the tool loop themselves should use the `gemini` provider instead.
+- **It runs with `--dangerously-skip-permissions` and, by default, `--sandbox`,**
+  because a non-interactive run has no channel to approve a permission prompt. See
+  [Workspace and sandboxing](#workspace-and-sandboxing) — this provider executes code.
+- **Progress is streamed as it happens.** Assistant text is forwarded incrementally and
+  tool steps become SSE `ping` frames, so a long agent turn keeps producing bytes
+  instead of going silent until it finishes. Token usage is Google's reported count,
+  not an estimate.
+
+shunt discovers the valid model/effort pairs from `agy models` on the first Antigravity
+turn. What happens next depends on where the value came from:
+
+- An **explicitly configured** `effort` the model does not offer is rejected with a
+  `400` naming the valid levels. `gemini-3.1-pro` accepts only `low` and `high`, so a
+  route pinning `medium` is an error rather than a silent substitution — quietly running
+  `high` would change cost, latency and quota while the config claimed otherwise.
+- A **default shunt chose itself** is clamped to the nearest supported level, preferring
+  the stronger. No operator intent is being overridden.
+- For a model shunt does not recognise, the configured value is passed through and
+  `agy` validates it; its rejection enumerates the valid levels.
+
+#### Workspace and sandboxing
+
+`agy` runs unattended with permission prompts disabled, so **treat this provider as
+arbitrary code execution as the user running shunt.** Two independent settings bound it,
+and they do different jobs:
+
+`sandbox` (default `true`) passes `--sandbox`, which keeps the agent's reads and writes
+inside its workspace. This is the setting that actually contains it. Turning it off
+leaves an agent with unrestricted shell access.
+
+`workspace_roots` (default empty) decides where the agent may *start*. Resolution order
+is `SHUNT_AGY_WORKSPACE`, then a `Working directory:` line in the request's system
+prompt, then the gateway's own directory. The system prompt is client-controlled text
+and routinely quotes fetched documents and tool output, so a path found there is honored
+only when it canonicalizes inside one of these roots — canonicalizing first so `..` and
+symlinks cannot escape. With no roots configured, prompt-derived paths are ignored.
+
+```toml
+[providers.antigravity]
+kind = "antigravity"
+base_url = "http://localhost"
+auth = "none"
+# Repos an agent may be pointed at by request content.
+workspace_roots = ["/Users/you/repos"]
+# sandbox = false   # only where the agent needs unrestricted terminal access
+```
+
+Be clear about what `workspace_roots` is not: it chooses the starting directory, not a
+jail. With `sandbox = false`, an agent that starts in an allowed root can still act on a
+path named elsewhere in the prompt. Keep the sandbox on unless you have a specific
+reason, and do not expose this provider on a non-loopback bind to untrusted clients.
+
+shunt refuses to start when `sandbox = false` is combined with a non-loopback `bind`:
+that pairing hands local shell access to anyone who can post a Messages request, and
+authentication alone does not make it safe. Either keep the sandbox on or bind to
+loopback.
+
+The model/effort matrix is discovered in the background at startup, so no request pays
+for it. Until it lands, or if `agy models` fails, configured values are passed through
+and `agy` validates them itself — a failed discovery is retried rather than cached.
+
+The configured upstream slug proves which model shunt asks `agy` to run; it does not
+independently attest Google's internal serving identity.
 
 ### The codex provider (ChatGPT subscription)
 
