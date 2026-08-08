@@ -287,21 +287,21 @@ mod tests {
 
     #[test]
     fn managed_operational_states_outrank_a_stale_observed_error() {
-        // A coalesced row's managed pool state (disabled/cooling/near-quota)
-        // is an actionable gateway-side fact and must not be masked by a
-        // stale local observation error: a cooling account whose last local
-        // check happened to see an expired token must still surface as
-        // "cooling" (with its cooldown remediation), not "Needs login" with
-        // no such hint. Guard against the precedence check being introduced
-        // after -- or dropped from ahead of -- the observed-state checks it
-        // must outrank.
+        // A coalesced row's managed pool state (disabled/cooling/near-quota/
+        // cooling-fable) is an actionable gateway-side fact and must not be
+        // masked by a stale local observation error: a cooling account whose
+        // last local check happened to see an expired token must still
+        // surface as "cooling" (with its cooldown remediation), not "Needs
+        // login" with no such hint. Guard against the precedence check being
+        // introduced after -- or dropped from ahead of -- the observed-state
+        // checks it must outrank.
         let page = dashboard_page("csrf");
         let start = page
             .find("function effectiveState(row)")
             .expect("effectiveState function must exist");
         let body = &page[start..start + 800];
         let guard = body
-            .find(r#"row.state === "disabled" || row.state === "cooling" || row.state === "near-quota""#)
+            .find(r#"row.state === "disabled" || row.state === "cooling" || row.state === "near-quota" || row.state === "cooling-fable""#)
             .expect("managed operational states must be checked before observed error states");
         let observed_expired = body
             .find(r#"o.state === "expired""#)
@@ -311,8 +311,31 @@ mod tests {
             "the managed-operational-state guard must run before the observed error checks it outranks"
         );
         assert!(body[guard..].starts_with(
-            r#"row.state === "disabled" || row.state === "cooling" || row.state === "near-quota") return row.state;"#
+            r#"row.state === "disabled" || row.state === "cooling" || row.state === "near-quota" || row.state === "cooling-fable") return row.state;"#
         ));
+    }
+
+    #[test]
+    fn a_fable_only_cooldown_surfaces_in_the_primary_account_state() {
+        // The admin snapshot is taken with `model = None`, so a Fable-only
+        // cooldown leaves `near_quota`/`available` non-Fable-scoped. Without
+        // its own branch the primary account list would keep reporting such
+        // an account as "Live" while Fable traffic is actually cooled -- the
+        // exact conflation this milestone's Fable scoping removes. All three
+        // coupled surfaces (state, label, remediation note) must carry it.
+        let page = dashboard_page("csrf");
+        assert!(
+            page.contains(r#"a.cooldown_fable_secs_remaining ? "cooling-fable""#),
+            "the primary row state must derive a Fable-only cooldown"
+        );
+        assert!(
+            page.contains(r#"if (state === "cooling-fable") return "Cooling (Fable)";"#),
+            "the Fable cooldown state needs its own label"
+        );
+        assert!(
+            page.contains("row.managed.cooldown_fable_secs_remaining"),
+            "the Fable cooldown needs its own remediation note"
+        );
     }
 
     #[test]

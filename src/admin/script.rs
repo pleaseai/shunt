@@ -76,7 +76,7 @@ function accountGroups(observed, pool, accounts) {
     const provider = POOL_PROVIDER_ALIASES[p.provider] || p.provider;
     for (const a of (p.accounts || [])) {
       const row = { provider: provider, label: a.name, detail: null, managed: a, observed: null,
-        state: a.disabled ? "disabled" : !a.has_state ? "unseen" : a.cooldown_secs_remaining ? "cooling" : a.near_quota ? "near-quota" : "available",
+        state: a.disabled ? "disabled" : !a.has_state ? "unseen" : a.cooldown_secs_remaining ? "cooling" : a.near_quota ? "near-quota" : a.cooldown_fable_secs_remaining ? "cooling-fable" : "available",
         utilization_5h: a.utilization_5h, reset_5h: a.reset_5h,
         utilization_7d: a.utilization_7d, reset_7d: a.reset_7d,
         utilization_7d_oi: a.utilization_7d_oi, reset_7d_oi: a.reset_7d_oi };
@@ -120,12 +120,12 @@ function accountGroups(observed, pool, accounts) {
 // "Needs login" label next to a green "available" dot with no login hint.
 function effectiveState(row) {
   // Managed pool operational states are actionable gateway-side facts (the
-  // pool disabled the account, is cooling it down, or sees it near quota) and
-  // must win over a stale local observation error: an account the pool has
-  // already benched should not read "Needs login" -- with no cooldown
-  // remediation -- just because the last local check happened to see an
-  // expired token.
-  if (row.state === "disabled" || row.state === "cooling" || row.state === "near-quota") return row.state;
+  // pool disabled the account, is cooling it down -- account-wide or for
+  // Fable only -- or sees it near quota) and must win over a stale local
+  // observation error: an account the pool has already benched should not
+  // read "Needs login" -- with no cooldown remediation -- just because the
+  // last local check happened to see an expired token.
+  if (row.state === "disabled" || row.state === "cooling" || row.state === "near-quota" || row.state === "cooling-fable") return row.state;
   const o = row.observed;
   if (o) {
     if (o.state === "expired") return "expired";
@@ -143,6 +143,7 @@ function rowStatusText(state) {
   if (state === "connected") return "Connected";
   if (state === "disabled") return "Disabled";
   if (state === "cooling") return "Cooling";
+  if (state === "cooling-fable") return "Cooling (Fable)";
   if (state === "near-quota") return "Near quota";
   if (state === "unseen") return "No traffic yet";
   return "Live";
@@ -191,6 +192,7 @@ async function loadObserved() {
       else if (state === "expired") statusNote.textContent = "The provider client owns refresh";
       else if (state === "unavailable") statusNote.textContent = "Current login could not read quota";
       else if (row.managed && row.managed.cooldown_secs_remaining) statusNote.textContent = "retries in " + untilShort(Math.floor(Date.now() / 1000) + row.managed.cooldown_secs_remaining);
+      else if (row.managed && row.managed.cooldown_fable_secs_remaining) statusNote.textContent = "Fable retries in " + untilShort(Math.floor(Date.now() / 1000) + row.managed.cooldown_fable_secs_remaining);
       if (statusNote.textContent) status.appendChild(statusNote);
       if (row.observed && row.observed.message) status.title = row.observed.message;
       const usage = document.createElement("td"); usage.className = "usage-lines"; r.appendChild(usage);

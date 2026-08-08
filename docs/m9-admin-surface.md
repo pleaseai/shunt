@@ -335,7 +335,12 @@ serializable view per account: 5h/7d/7d_oi utilization + reset, unified status,
 account-wide cooldown-seconds-remaining, Fable-only cooldown-seconds-remaining,
 `near_quota`, and a derived `available` flag. The Fable-only cooldown counts
 toward `available` only when `model` is a Fable model, so an account cooling on
-its `7d_oi` bucket still reports available to every other family. It reads
+its `7d_oi` bucket still reports available to every other family. Because the
+admin snapshot is taken with `model = None`, the dashboard carries the
+Fable-only cooldown as its own `cooling-fable` row state ("Cooling (Fable)",
+with a `Fable retries in …` note) rather than folding it into `available` — the
+account is genuinely live for every non-Fable family, so neither "Live" nor a
+plain "Cooling" describes it. It reads
 the same `entries` map `select_order` reads, clears only already-past quota
 buckets (as the next selection would), never mutates the round-robin cursor, and
 never inserts entries for accounts the pool has not yet seen (reported as
