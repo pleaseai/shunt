@@ -57,7 +57,7 @@ Each signal toggles independently via `traces` / `metrics` / `logs`.
 | `shunt.codex_continuation` | Counter | `provider`, `outcome` | Codex WebSocket continuation hit or fallback. |
 | `shunt.codex_ws_overflow` | Counter | `provider`, `outcome` | Codex WebSocket dedicated overflow connection `opened` or ceiling-`refused` for a concurrent turn (issue #248). |
 | `shunt.codex_client_events` | Counter | `event` | Codex CLI analytics events by sanitized event name; payloads and properties are discarded. |
-| `shunt.gateway_telemetry_ingest` | Counter | `signal`, `outcome` | Inbound gateway OTLP payloads (`metrics`/`logs`/`traces`) by ingest outcome: `relayed`, `discarded` when no destination opted in, or `rejected` for a bad bearer or over-cap body. |
+| `shunt.gateway_telemetry_ingest` | Counter | `signal`, `outcome` | Inbound gateway OTLP payloads (`metrics`/`logs`/`traces`) by ingest outcome: `relayed`, `discarded` when no destination opted in, `shed` when the in-flight relay limit was saturated, or `rejected` for a bad bearer or over-cap body. |
 | `shunt.upstream_retries` | Counter | `provider`, `reason` | Bounded transient upstream retries. |
 | `shunt.failover` | Counter | `provider`, `state` | Ordered-upstream failover transitions: `attempted`, `advanced`, or `exhausted`. |
 | `shunt.requests_shed` | Counter | — | Inbound requests rejected at the `max_concurrent_requests` limit. The rejection itself is logged only at `debug!`, so this counter is what makes a saturated gateway visible. |

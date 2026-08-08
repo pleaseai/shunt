@@ -113,7 +113,7 @@ If the resolved `cli.availableModels` is an array of strings, gateway-JWT reques
 
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
-| `url` | required | Base OTLP/HTTP endpoint, `http(s)` with a host; shunt trims a trailing `/` and appends `/v1/metrics`, `/v1/logs`, or `/v1/traces` |
+| `url` | required | Base OTLP/HTTP endpoint: scheme, host, and optional path, `http(s)` only. A query string, fragment, or embedded userinfo is rejected at startup. shunt trims a trailing `/` and appends `/v1/metrics`, `/v1/logs`, or `/v1/traces` |
 | `headers` | none | Extra request headers applied to every relay to this destination |
 | `metrics` | `true` | Relay `POST /v1/metrics` to this destination |
 | `logs` | `false` | Relay `POST /v1/logs` to this destination |
@@ -121,7 +121,7 @@ If the resolved `cli.availableModels` is an array of strings, gateway-JWT reques
 
 A non-empty list injects six values into managed `settings.env`: `CLAUDE_CODE_ENABLE_TELEMETRY=1`, the `OTEL_METRICS_EXPORTER`, `OTEL_LOGS_EXPORTER`, and `OTEL_TRACES_EXPORTER` values set to `otlp`, `OTEL_EXPORTER_OTLP_ENDPOINT` set to `public_url`, and `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`. Policy env values win on conflicts.
 
-The same list also drives inbound ingest: the `POST /v1/metrics`, `POST /v1/logs`, and `POST /v1/traces` routes — registered whenever `[server.gateway]` is present — accept the OTLP payloads those clients export and relay them verbatim to every destination that opted in to the signal; a signal with no opted-in destination is accepted and discarded. Logs and traces default off because Claude Code log records and spans can carry command lines, prompts, and file paths. See the [gateway login guide](/guides/gateway-login/#telemetry-ingest).
+The same list also drives inbound ingest: the `POST /v1/metrics`, `POST /v1/logs`, and `POST /v1/traces` routes — registered whenever `[server.gateway]` is present — accept the OTLP payloads those clients export and relay them verbatim to every destination that opted in to the signal; a signal with no opted-in destination is accepted and discarded. At most 64 relays run in flight at once; beyond that a payload is shed rather than queued, so a saturated gateway never adds client-visible latency. Logs and traces default off because Claude Code log records and spans can carry command lines, prompts, and file paths. See the [gateway login guide](/guides/gateway-login/#telemetry-ingest).
 
 ```toml
 [[server.gateway.policies]]

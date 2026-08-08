@@ -187,7 +187,13 @@ follow redirects.
 The response is always an immediate `200`: relays run as detached tasks, so a
 slow or unreachable collector never becomes client-visible latency, and a signal
 that no destination opted in to is accepted and discarded rather than rejected.
-A body over the 32 MiB inbound cap returns `413`.
+A body over the 32 MiB inbound cap returns `413`. At most 64 relays are in
+flight at once; past that a payload is dropped with a warning rather than
+queued, so saturation never becomes latency the client can feel.
+
+`url` must be a base endpoint — scheme, host, and optional path. A query string,
+fragment, or embedded `user:password` is rejected at startup, because shunt
+appends the signal path to it and a URL-embedded credential would reach logs.
 
 For what Claude Code actually exports on each signal, see
 [Claude Code monitoring](https://code.claude.com/docs/en/monitoring-usage).

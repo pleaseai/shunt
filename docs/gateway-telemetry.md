@@ -52,9 +52,10 @@ slow or down.
 
 Authentication is the same gateway bearer JWT that `GET /managed/settings`
 requires — static `[server.auth]` client tokens do not authenticate these
-routes. A config reload that removes `[server.gateway]` leaves the
-boot-registered routes in place with no auth to check against; they then fail
-closed with `401`.
+routes. A config reload that removes `[server.gateway]` does **not** close the
+surface: reload deliberately keeps the running JWT-auth capability and warns
+that toggling the table requires a restart, so bearers issued before the reload
+keep working until shunt restarts.
 
 ## Configuration
 
@@ -139,9 +140,10 @@ payload bytes indefinitely — one per client flush.
 
 Each accepted payload records one `shunt.gateway_telemetry_ingest` count tagged
 with `signal` (`metrics`/`logs`/`traces`) and `outcome` (`relayed` when at least
-one destination opted in, `discarded` when none did, `rejected` for a request
-refused before ingest). Both attributes are fixed strings, so the series stay
-low-cardinality.
+one destination opted in, `discarded` when none did, `shed` when nothing could
+be relayed because the in-flight relay limit was saturated, `rejected` for a
+request refused before ingest). Both attributes are fixed strings, so the series
+stay low-cardinality.
 
 ## Security notes
 
@@ -157,12 +159,28 @@ would present a gateway-issued JWT to a third-party collector; relaying
 arbitrary inbound headers would let a client reach a destination's own auth or
 routing behavior. Only the two framing headers above cross over.
 
-**Body cap.** Inbound bodies are capped at 32 MiB, matching the default inbound
-`limits.max_request_bytes` in the [Claude apps gateway configuration
-reference](https://code.claude.com/docs/en/claude-apps-gateway-config)'s HTTP
-tuning table. An over-cap body is rejected with `413` rather than truncated,
-since a partial OTLP payload is not a valid one. The cap bounds per-request
-memory; it is not a rate limit.
+**Body cap and relay bound.** Inbound bodies are capped at 32 MiB, matching the
+default inbound `limits.max_request_bytes` in the [Claude apps gateway
+configuration reference](https://code.claude.com/docs/en/claude-apps-gateway-config)'s
+HTTP tuning table. An over-cap body is rejected with `413` rather than
+truncated, since a partial OTLP payload is not a valid one.
+
+That cap alone bounds only one request. Because relays are detached, their
+payload bytes outlive the request that accepted them — the inbound concurrency
+permit releases as soon as the empty `{}` is written, while a relay can hold its
+copy for up to the 30-second relay timeout. At most 64 relays may be in flight
+at once, so worst-case resident payload memory is 64 × 32 MiB = 2 GiB, reached
+only if every slot holds a maximum-size body simultaneously; real OTLP exports
+are orders of magnitude smaller. Beyond that limit a payload is **shed** —
+dropped with a `warn` log and an `outcome="shed"` count — rather than queued,
+because waiting for a slot would put saturation back on the client's critical
+path. Neither the cap nor the relay limit is a request rate limit.
+
+**Destination URL shape.** A destination `url` must be a base endpoint: scheme,
+host, and an optional path. A query string, fragment, or embedded userinfo is
+rejected at startup — shunt appends `/v1/<signal>` by string concatenation, so a
+query would end up on the wrong side of the join, and a URL-embedded credential
+would reach error paths and logs.
 
 **Destination secrets.** `headers` values are written in the config file. Treat
 that file as a secret-bearing artifact, or render it from the deployment's
