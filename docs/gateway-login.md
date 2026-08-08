@@ -176,10 +176,29 @@ its own trusted client address. Enabling it on a directly exposed gateway lets
 clients choose their rate-limit identity.
 
 A gateway login session also has the reference gateway's reduced Claude Code
-feature set: WebSearch is disabled, first-party-only beta headers and the
-one-hour cache-TTL beta are omitted, and sign-in requires a browser. Personal
-single-user installations that do not need managed identity should continue to
-use `ANTHROPIC_BASE_URL` and, when needed, `[server.auth]`.
+feature set, and the restrictions are client-side — shunt cannot lift them by
+supporting a feature upstream. Per Anthropic's
+[Claude apps gateway](https://code.claude.com/docs/en/claude-apps-gateway)
+reference, on a signed-in gateway session WebSearch is disabled, the
+extended-cache-ttl beta and first-party-only optimizations (global cache scope,
+token-efficient tools) are omitted, the gateway token is the session's only
+credential, startup is fail-closed after about 10 seconds when the gateway is
+unreachable, and telemetry is OTLP over HTTP only. There is no service-token
+flow for CI. Artifact publishing is unavailable on a gateway token
+([artifacts](https://code.claude.com/docs/en/artifacts)); usage analytics,
+error reporting, and survey ratings to Anthropic are disabled with no setting to
+re-enable them ([data usage](https://code.claude.com/docs/en/data-usage)); and
+server-managed settings do not reach gateway-routed sessions
+([rollout](https://code.claude.com/docs/en/llm-gateway-rollout)), which is what
+`GET /managed/settings` below replaces. Auto mode no longer needs
+`CLAUDE_CODE_ENABLE_AUTO_MODE` — that variable is now accepted for compatibility
+and has no effect — but on gateway sessions it is restricted to Claude Sonnet 5,
+Opus 4.7 or later, and Fable 5
+([permission modes](https://code.claude.com/docs/en/permission-modes)).
+
+Sign-in requires a browser. Personal single-user installations that do not need
+managed identity should continue to use `ANTHROPIC_BASE_URL` and, when needed,
+`[server.auth]`; that path trips a much smaller set of client restrictions.
 
 For per-user policy after sign-in, shunt now serves authenticated
 `GET /managed/settings` with ordered email matching, `ETag`/`304`, telemetry
