@@ -114,7 +114,7 @@ If the resolved `cli.availableModels` is an array of strings, gateway-JWT reques
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
 | `url` | required | Base OTLP/HTTP endpoint: scheme, host, and optional path, `http(s)` only. A query string, fragment, or embedded userinfo is rejected at startup. shunt trims a trailing `/` and appends `/v1/metrics`, `/v1/logs`, or `/v1/traces` |
-| `headers` | none | Extra request headers applied to every relay to this destination |
+| `headers` | none | Extra request headers applied to every relay to this destination; a configured key replaces the forwarded value rather than duplicating the header. Names and values are validated at startup |
 | `metrics` | `true` | Relay `POST /v1/metrics` to this destination |
 | `logs` | `false` | Relay `POST /v1/logs` to this destination |
 | `traces` | `false` | Relay `POST /v1/traces` to this destination |

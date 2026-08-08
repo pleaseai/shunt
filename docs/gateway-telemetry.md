@@ -121,8 +121,8 @@ The destination's own configured `headers` are applied after those as a map, so
 an operator-configured value genuinely replaces the forwarded one for its key
 rather than adding a second copy of the header. No other inbound header is
 forwarded — in particular the client's `Authorization` gateway JWT is never sent
-onward. A configured header whose name or value is not valid HTTP is skipped
-(warned about once) rather than failing the relay.
+onward. Header names and values are validated at startup and on every reload, so
+a malformed entry fails `shunt check` rather than being dropped at relay time.
 
 Relay failures (connection error or a non-2xx response) are logged at `warn`
 with the destination host, the signal, and the status. Header values, payload
