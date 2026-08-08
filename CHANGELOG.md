@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.34.0](https://github.com/pleaseai/shunt/compare/v0.33.2...v0.34.0) (2026-08-08)
+
+
+### Features
+
+* **gateway:** inbound OTLP telemetry ingest and verbatim relay ([#189](https://github.com/pleaseai/shunt/issues/189)) ([#326](https://github.com/pleaseai/shunt/issues/326)) ([7b4fe36](https://github.com/pleaseai/shunt/commit/7b4fe3674dfc4677d0e9cdfb53251883dce3927e))
+
+
+### Bug Fixes
+
+* **pool:** scope Fable quota exhaustion to Fable traffic ([#329](https://github.com/pleaseai/shunt/issues/329)) ([cfacde9](https://github.com/pleaseai/shunt/commit/cfacde9bb864504cf73abac0d4e9f29856809eed))
+
 ## [0.33.2](https://github.com/pleaseai/shunt/compare/v0.33.1...v0.33.2) (2026-08-07)
 
 
