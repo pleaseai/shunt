@@ -2502,23 +2502,30 @@ async fn telemetry_ingest_routes_only_opted_in_signals() {
     let mut metrics_sink = telemetry_sink().await;
     let mut logs_sink = telemetry_sink().await;
     let mut traces_sink = telemetry_sink().await;
+    let mut silent_sink = telemetry_sink().await;
     let (mut config, _env) = GatewayEnv::config("telemetry-signals");
     // Defaults: metrics on, logs and traces off.
     let metrics_destination = telemetry_destination(&metrics_sink.base_url);
-    // Opted out of every signal, so its channel is never written at all.
     let mut logs_destination = telemetry_destination(&logs_sink.base_url);
     logs_destination.metrics = false;
+    logs_destination.logs = true;
     let mut traces_destination = telemetry_destination(&traces_sink.base_url);
     traces_destination.metrics = false;
     traces_destination.traces = true;
+    // Opted out of every signal, so its channel is never written at all.
+    let mut silent_destination = telemetry_destination(&silent_sink.base_url);
+    silent_destination.metrics = false;
     config.server.gateway.as_mut().unwrap().telemetry = Some(GatewayTelemetryConfig {
-        forward_to: vec![metrics_destination, logs_destination, traces_destination],
+        forward_to: vec![
+            metrics_destination,
+            logs_destination,
+            traces_destination,
+            silent_destination,
+        ],
     });
     let (router, _, state) = build_router(config).unwrap();
     let bearer = gateway_bearer("dev@example.com");
 
-    // Logs first, so any wrongly-spawned logs relay is dispatched before the
-    // later requests whose relays this test awaits.
     for path in ["/v1/logs", "/v1/metrics", "/v1/traces"] {
         let (status, _) = json_response(
             router.clone(),
@@ -2539,9 +2546,10 @@ async fn telemetry_ingest_routes_only_opted_in_signals() {
     drain_after_relays_finish(&state).await;
 
     assert_eq!(drain_paths(&mut metrics_sink), vec!["/v1/metrics"]);
+    assert_eq!(drain_paths(&mut logs_sink), vec!["/v1/logs"]);
     assert_eq!(drain_paths(&mut traces_sink), vec!["/v1/traces"]);
     // Opted out of every signal, so its channel is never written at all.
-    assert!(drain_paths(&mut logs_sink).is_empty());
+    assert!(drain_paths(&mut silent_sink).is_empty());
 }
 
 #[tokio::test]
