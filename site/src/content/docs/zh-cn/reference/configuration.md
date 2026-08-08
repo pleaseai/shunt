@@ -68,7 +68,7 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 
 ### `[server.gateway.telemetry]`(可选)
 
-`forward_to` 是 destination array,每项具有必需的 HTTP(S) `url` 和可选的 string `headers` map。非空 list 会向 managed `settings.env` 注入 6 个值:`CLAUDE_CODE_ENABLE_TELEMETRY=1`、`OTEL_METRICS_EXPORTER`/`OTEL_LOGS_EXPORTER`/`OTEL_TRACES_EXPORTER=otlp`、`OTEL_EXPORTER_OTLP_ENDPOINT=public_url`、`OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`。发生冲突时 policy env value 优先。此表在 M-B 中只控制 environment push;inbound OTLP ingest/relay 属于 M-C(#189)。
+`forward_to` 是 destination array,每项具有必需的 HTTP(S) `url` 和可选的 string `headers` map。至少 opt-in 一个 signal 的 list 会向 managed `settings.env` 注入 6 个值:`CLAUDE_CODE_ENABLE_TELEMETRY=1`、每个 `OTEL_METRICS_EXPORTER`/`OTEL_LOGS_EXPORTER`/`OTEL_TRACES_EXPORTER` 在有 destination opt-in 该 signal 时为 `otlp`,否则为 `none`、`OTEL_EXPORTER_OTLP_ENDPOINT=public_url`、`OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`。若没有任何 signal 被 opt-in,则不注入任何值。发生冲突时 policy env value 优先。此表在 M-B 中只控制 environment push;inbound OTLP ingest/relay 属于 M-C(#189)。
 
 ```toml
 [[server.gateway.policies]]

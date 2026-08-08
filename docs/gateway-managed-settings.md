@@ -107,17 +107,24 @@ without accidentally broadening an allow-list.
 
 ## Telemetry environment push
 
-A non-empty `[server.gateway.telemetry].forward_to` list injects these six string
-values into the resolved `settings.env`:
+A `[server.gateway.telemetry].forward_to` list in which at least one
+destination opts in to at least one signal injects these six string values into
+the resolved `settings.env`:
 
 ```text
 CLAUDE_CODE_ENABLE_TELEMETRY=1
-OTEL_METRICS_EXPORTER=otlp
-OTEL_LOGS_EXPORTER=otlp
-OTEL_TRACES_EXPORTER=otlp
+OTEL_METRICS_EXPORTER=<otlp when some destination opts in to metrics, else none>
+OTEL_LOGS_EXPORTER=<otlp when some destination opts in to logs, else none>
+OTEL_TRACES_EXPORTER=<otlp when some destination opts in to traces, else none>
 OTEL_EXPORTER_OTLP_ENDPOINT=<server.gateway.public_url>
 OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
 ```
+
+Each exporter follows the per-signal opt-ins: a signal no destination opts in
+to is pushed as `none`, so a managed client never uploads log records or spans
+— which can carry command lines, prompts, and file paths — only for the
+gateway to discard them. When no destination opts in to any signal, nothing is
+injected at all.
 
 The public URL has no trailing slash or path because gateway validation requires
 a bare origin. Injection is a base layer: a policy-provided `env` value wins on

@@ -11,13 +11,33 @@ use sha2::{Digest, Sha256};
 
 use crate::{error::ShuntError, server::AppState};
 
-const TELEMETRY_ENV: [(&str, &str); 5] = [
-    ("CLAUDE_CODE_ENABLE_TELEMETRY", "1"),
-    ("OTEL_METRICS_EXPORTER", "otlp"),
-    ("OTEL_LOGS_EXPORTER", "otlp"),
-    ("OTEL_TRACES_EXPORTER", "otlp"),
-    ("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf"),
-];
+/// Which telemetry signals the managed environment push enables, derived from
+/// the per-destination opt-ins in `[server.gateway.telemetry].forward_to`.
+///
+/// Each exporter is pushed as `otlp` only when at least one destination opts
+/// in to that signal, and `none` otherwise: a signal the gateway would only
+/// discard must not leave the client at all, because log records and spans can
+/// carry command lines, prompts, and file paths.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TelemetryPush {
+    pub(crate) metrics: bool,
+    pub(crate) logs: bool,
+    pub(crate) traces: bool,
+}
+
+impl TelemetryPush {
+    pub(crate) fn any(self) -> bool {
+        self.metrics || self.logs || self.traces
+    }
+
+    fn exporter(enabled: bool) -> &'static str {
+        if enabled {
+            "otlp"
+        } else {
+            "none"
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct ResolvedPolicy {
@@ -27,7 +47,7 @@ pub(crate) struct ResolvedPolicy {
 
 pub(crate) fn resolve_all(
     policies: &[ResolvedPolicy],
-    telemetry_push: bool,
+    telemetry_push: TelemetryPush,
     public_url: &str,
 ) -> (Value, HashMap<String, Value>) {
     let mut catch_all = Value::Object(Map::new());
@@ -60,12 +80,27 @@ pub(crate) fn resolve_all(
     )
 }
 
-fn inject_telemetry(mut settings: Value, telemetry_push: bool, public_url: &str) -> Value {
-    if telemetry_push {
+fn inject_telemetry(mut settings: Value, telemetry_push: TelemetryPush, public_url: &str) -> Value {
+    if telemetry_push.any() {
         let mut env = Map::new();
-        for (key, value) in TELEMETRY_ENV {
-            env.insert(key.to_string(), Value::String(value.to_string()));
+        env.insert(
+            "CLAUDE_CODE_ENABLE_TELEMETRY".to_string(),
+            Value::String("1".to_string()),
+        );
+        for (key, enabled) in [
+            ("OTEL_METRICS_EXPORTER", telemetry_push.metrics),
+            ("OTEL_LOGS_EXPORTER", telemetry_push.logs),
+            ("OTEL_TRACES_EXPORTER", telemetry_push.traces),
+        ] {
+            env.insert(
+                key.to_string(),
+                Value::String(TelemetryPush::exporter(enabled).to_string()),
+            );
         }
+        env.insert(
+            "OTEL_EXPORTER_OTLP_PROTOCOL".to_string(),
+            Value::String("http/protobuf".to_string()),
+        );
         env.insert(
             "OTEL_EXPORTER_OTLP_ENDPOINT".to_string(),
             Value::String(public_url.trim_end_matches('/').to_string()),

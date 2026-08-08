@@ -134,7 +134,7 @@ impl GatewayAuth {
     pub(crate) fn with_managed_policies(
         mut self,
         policies: Option<Vec<ResolvedPolicy>>,
-        telemetry_push: bool,
+        telemetry_push: managed::TelemetryPush,
     ) -> Self {
         if let Some(policies) = policies {
             let (managed_default, managed_by_email) =

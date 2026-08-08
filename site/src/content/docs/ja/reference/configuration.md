@@ -68,7 +68,7 @@ URL が path 等を含まない HTTPS origin でない場合（`http` は loopba
 
 ### `[server.gateway.telemetry]`（オプション）
 
-`forward_to` は、必須の HTTP(S) `url` と任意の string `headers` map を持つ destination の array です。空でない list は managed `settings.env` に 6 つの値を注入します。`CLAUDE_CODE_ENABLE_TELEMETRY=1`、`OTEL_METRICS_EXPORTER`／`OTEL_LOGS_EXPORTER`／`OTEL_TRACES_EXPORTER=otlp`、`OTEL_EXPORTER_OTLP_ENDPOINT=public_url`、`OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` です。競合時は policy の env value が優先します。この table が M-B で制御するのは environment push のみで、inbound OTLP ingest／relay は M-C（#189）です。
+`forward_to` は、必須の HTTP(S) `url` と任意の string `headers` map を持つ destination の array です。いずれかの signal を opt-in した list は managed `settings.env` に 6 つの値を注入します。`CLAUDE_CODE_ENABLE_TELEMETRY=1`、各 `OTEL_METRICS_EXPORTER`／`OTEL_LOGS_EXPORTER`／`OTEL_TRACES_EXPORTER` はその signal を opt-in した destination があれば `otlp`、なければ `none`、`OTEL_EXPORTER_OTLP_ENDPOINT=public_url`、`OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` です。どの signal も opt-in されていない場合は何も注入しません。競合時は policy の env value が優先します。この table が M-B で制御するのは environment push のみで、inbound OTLP ingest／relay は M-C（#189）です。
 
 ```toml
 [[server.gateway.policies]]

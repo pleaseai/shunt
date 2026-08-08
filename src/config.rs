@@ -663,14 +663,18 @@ fn validate_gateway_policy_emails(
 
 fn validate_gateway_telemetry(
     telemetry: Option<&GatewayTelemetryConfig>,
-) -> Result<bool, ConfigError> {
+) -> Result<crate::gateway::managed::TelemetryPush, ConfigError> {
+    let mut push = crate::gateway::managed::TelemetryPush::default();
     let Some(telemetry) = telemetry else {
-        return Ok(false);
+        return Ok(push);
     };
     for (index, destination) in telemetry.forward_to.iter().enumerate() {
         validate_gateway_telemetry_destination(destination, index)?;
+        push.metrics |= destination.metrics;
+        push.logs |= destination.logs;
+        push.traces |= destination.traces;
     }
-    Ok(!telemetry.forward_to.is_empty())
+    Ok(push)
 }
 
 fn validate_gateway_telemetry_destination(

@@ -94,9 +94,12 @@ and appends the signal path, so `https://collector.example.com` receives
 keeps it.
 
 The three ingest routes are registered whenever `[server.gateway]` is present at
-boot, independently of this table. A non-empty `forward_to` list is what enables
-the managed telemetry environment push (M-B) and switches ingest from
-accept-and-discard to relay. Edits to destinations and their per-signal flags
+boot, independently of this table. The per-signal opt-ins drive the rest: a
+signal at least one destination opts in to is relayed on ingest and pushed to
+managed clients as an enabled exporter (M-B), while a signal no destination
+opts in to is pushed as a disabled exporter (`none`) and any payload that still
+arrives — from an unmanaged client, or one holding stale settings — is accepted
+and discarded. Edits to destinations and their per-signal flags
 hot-apply on config reload. Adding or removing `[server.gateway]` itself still
 requires a restart because route registration is fixed at boot.
 
@@ -151,10 +154,11 @@ stay low-cardinality.
 
 **Signal sensitivity drives the defaults.** Metrics are counters and timings, so
 they default on. Logs and traces can carry command lines, prompts, tool inputs,
-and file paths, so each destination must opt in to them explicitly. A signal no
-destination opted in to is accepted and discarded rather than rejected, so a
-client's exporter does not retry against a signal the operator deliberately
-does not collect.
+and file paths, so each destination must opt in to them explicitly. Managed
+clients never upload a signal no destination opted in to — the environment push
+disables that signal's exporter — and a payload that arrives anyway is accepted
+and discarded rather than rejected, so an unmanaged or stale client's exporter
+does not retry against a signal the operator deliberately does not collect.
 
 **No inbound header passthrough.** Relaying the client's `Authorization` header
 would present a gateway-issued JWT to a third-party collector; relaying

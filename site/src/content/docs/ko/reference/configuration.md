@@ -69,7 +69,7 @@ URL이 경로 등을 포함하지 않은 HTTPS origin이 아니거나(`http`는 
 
 ### `[server.gateway.telemetry]` (선택)
 
-`forward_to`는 필수 HTTP(S) `url`과 선택적 string `headers` map을 가진 destination array입니다. 비어 있지 않은 목록은 managed `settings.env`에 값 6개를 주입합니다. `CLAUDE_CODE_ENABLE_TELEMETRY=1`, `OTEL_METRICS_EXPORTER`/`OTEL_LOGS_EXPORTER`/`OTEL_TRACES_EXPORTER=otlp`, `OTEL_EXPORTER_OTLP_ENDPOINT=public_url`, `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`입니다. 충돌 시 policy env value가 우선합니다. 이 테이블은 M-B에서 environment push만 제어하며 inbound OTLP ingest/relay는 M-C(#189)입니다.
+`forward_to`는 필수 HTTP(S) `url`과 선택적 string `headers` map을 가진 destination array입니다. signal을 하나 이상 opt-in한 목록은 managed `settings.env`에 값 6개를 주입합니다. `CLAUDE_CODE_ENABLE_TELEMETRY=1`, 각 `OTEL_METRICS_EXPORTER`/`OTEL_LOGS_EXPORTER`/`OTEL_TRACES_EXPORTER`는 해당 signal을 opt-in한 destination이 있으면 `otlp`, 없으면 `none`, `OTEL_EXPORTER_OTLP_ENDPOINT=public_url`, `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`입니다. 어떤 signal도 opt-in되지 않았으면 아무것도 주입하지 않습니다. 충돌 시 policy env value가 우선합니다. 이 테이블은 M-B에서 environment push만 제어하며 inbound OTLP ingest/relay는 M-C(#189)입니다.
 
 ```toml
 [[server.gateway.policies]]

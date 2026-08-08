@@ -1573,6 +1573,9 @@ async fn managed_settings_injects_telemetry_env_and_policy_wins() {
         toml::toml! { env = { OTEL_METRICS_EXPORTER = "policy", CUSTOM = "yes" } },
     )]);
     gateway.telemetry = Some(GatewayTelemetryConfig {
+        // Defaults: metrics opted in, logs and traces not. The pushed logs and
+        // traces exporters must be `none` so clients never upload signals the
+        // gateway would only discard.
         forward_to: vec![telemetry_destination("https://collector.example")],
     });
     let (router, _, _) = build_router(config).unwrap();
@@ -1584,13 +1587,57 @@ async fn managed_settings_injects_telemetry_env_and_policy_wins() {
         json!({
             "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
             "OTEL_METRICS_EXPORTER": "policy",
-            "OTEL_LOGS_EXPORTER": "otlp",
-            "OTEL_TRACES_EXPORTER": "otlp",
+            "OTEL_LOGS_EXPORTER": "none",
+            "OTEL_TRACES_EXPORTER": "none",
             "OTEL_EXPORTER_OTLP_ENDPOINT": "https://gateway.example",
             "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
             "CUSTOM": "yes"
         })
     );
+}
+
+#[tokio::test]
+async fn managed_settings_telemetry_exporters_follow_signal_opt_ins() {
+    let (mut config, _env) = GatewayEnv::config("managed-telemetry-signals");
+    let gateway = config.server.gateway.as_mut().unwrap();
+    gateway.policies = Some(vec![policy(None, toml::Table::new())]);
+    // Opt-ins spread across destinations: any destination taking a signal
+    // enables that signal's client exporter.
+    let mut logs_destination = telemetry_destination("https://logs.example");
+    logs_destination.metrics = false;
+    logs_destination.logs = true;
+    gateway.telemetry = Some(GatewayTelemetryConfig {
+        forward_to: vec![
+            telemetry_destination("https://metrics.example"),
+            logs_destination,
+        ],
+    });
+    let (router, _, _) = build_router(config).unwrap();
+    let bearer = gateway_bearer("dev@example.com");
+
+    let (_, body) = json_response(router, managed_request(Some(&bearer), None)).await;
+    assert_eq!(body["settings"]["env"]["OTEL_METRICS_EXPORTER"], "otlp");
+    assert_eq!(body["settings"]["env"]["OTEL_LOGS_EXPORTER"], "otlp");
+    assert_eq!(body["settings"]["env"]["OTEL_TRACES_EXPORTER"], "none");
+}
+
+#[tokio::test]
+async fn managed_settings_push_nothing_when_every_signal_is_opted_out() {
+    let (mut config, _env) = GatewayEnv::config("managed-telemetry-optout");
+    let gateway = config.server.gateway.as_mut().unwrap();
+    gateway.policies = Some(vec![policy(None, toml::Table::new())]);
+    let mut destination = telemetry_destination("https://collector.example");
+    destination.metrics = false;
+    gateway.telemetry = Some(GatewayTelemetryConfig {
+        forward_to: vec![destination],
+    });
+    let (router, _, _) = build_router(config).unwrap();
+    let bearer = gateway_bearer("dev@example.com");
+
+    let (_, body) = json_response(router, managed_request(Some(&bearer), None)).await;
+    // No signal can leave the gateway, so no telemetry environment is pushed
+    // at all — the client's exporters stay at their own defaults.
+    assert!(body["settings"].get("env").is_none());
 }
 
 #[tokio::test]
