@@ -144,6 +144,18 @@ fn managed_request(bearer: Option<&str>, if_none_match: Option<&str>) -> Request
     builder.body(Body::empty()).unwrap()
 }
 
+/// A telemetry destination with the per-signal defaults (`metrics` on, `logs`
+/// and `traces` off) so a test only spells out the flags it exercises.
+fn telemetry_destination(url: &str) -> GatewayTelemetryDestination {
+    GatewayTelemetryDestination {
+        url: url.to_string(),
+        headers: None,
+        metrics: true,
+        logs: false,
+        traces: false,
+    }
+}
+
 fn form_request(path: &str, body: impl Into<String>) -> Request<Body> {
     Request::builder()
         .method("POST")
@@ -1560,10 +1572,7 @@ async fn managed_settings_injects_telemetry_env_and_policy_wins() {
         toml::toml! { env = { OTEL_METRICS_EXPORTER = "policy", CUSTOM = "yes" } },
     )]);
     gateway.telemetry = Some(GatewayTelemetryConfig {
-        forward_to: vec![GatewayTelemetryDestination {
-            url: "https://collector.example".to_string(),
-            headers: None,
-        }],
+        forward_to: vec![telemetry_destination("https://collector.example")],
     });
     let (router, _, _) = build_router(config).unwrap();
     let bearer = gateway_bearer("dev@example.com");
@@ -2023,4 +2032,330 @@ fn app_state_can_resolve_gateway_snapshot() {
     let (config, _env) = GatewayEnv::config("state");
     let state = AppState::new(config, reqwest::Client::new()).unwrap();
     assert!(state.gateway_auth.is_some());
+}
+
+/// One request the mock OTLP sink received, captured verbatim.
+struct RelayedTelemetry {
+    path: String,
+    content_type: Option<String>,
+    content_encoding: Option<String>,
+    collector_key: Option<String>,
+    authorization: Option<String>,
+    body: Vec<u8>,
+}
+
+/// A local OTLP collector stand-in. It answers `200` to any POST and publishes
+/// what it received on a channel, so a test can await the gateway's detached
+/// relay task instead of sleeping for it.
+struct TelemetrySink {
+    base_url: String,
+    received: tokio::sync::mpsc::UnboundedReceiver<RelayedTelemetry>,
+}
+
+impl TelemetrySink {
+    /// The next relay, or a panic if none arrives. The bound is generous
+    /// because it only guards against a hang; a loopback relay lands in
+    /// milliseconds.
+    async fn next(&mut self) -> RelayedTelemetry {
+        tokio::time::timeout(std::time::Duration::from_secs(5), self.received.recv())
+            .await
+            .expect("relay did not reach the sink")
+            .expect("sink channel closed")
+    }
+
+    /// Assert nothing (further) was relayed here, without waiting. Sound only
+    /// once every relay the test does expect has been awaited: `ingest` spawns
+    /// a request's relays before returning its `200`, so a relay wrongly
+    /// spawned by an earlier request was already dispatched by the time a later
+    /// request's relay has completed a full round trip.
+    fn assert_nothing_further(&mut self) {
+        if let Ok(relay) = self.received.try_recv() {
+            panic!("unexpected relay of {} to this sink", relay.path);
+        }
+    }
+}
+
+async fn capture_telemetry(
+    axum::extract::State(sender): axum::extract::State<
+        tokio::sync::mpsc::UnboundedSender<RelayedTelemetry>,
+    >,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> StatusCode {
+    let header = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(ToOwned::to_owned)
+    };
+    let _ = sender.send(RelayedTelemetry {
+        path: uri.path().to_string(),
+        content_type: header("content-type"),
+        content_encoding: header("content-encoding"),
+        collector_key: header("x-collector-key"),
+        authorization: header("authorization"),
+        body: body.to_vec(),
+    });
+    StatusCode::OK
+}
+
+async fn telemetry_sink() -> TelemetrySink {
+    let (sender, received) = tokio::sync::mpsc::unbounded_channel();
+    let app = Router::new().fallback(capture_telemetry).with_state(sender);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    TelemetrySink { base_url, received }
+}
+
+/// A loopback address with nothing listening: bind a port, learn it, drop the
+/// listener. Used to prove a dead destination cannot fail the client's request.
+async fn closed_port_url() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    format!("http://{addr}")
+}
+
+fn telemetry_request(
+    path: &str,
+    bearer: Option<&str>,
+    content_type: &str,
+    body: Vec<u8>,
+) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri(path)
+        .header(header::CONTENT_TYPE, content_type);
+    if let Some(bearer) = bearer {
+        builder = builder.header(header::AUTHORIZATION, format!("Bearer {bearer}"));
+    }
+    builder.body(Body::from(body)).unwrap()
+}
+
+/// A stand-in for an encoded OTLP payload: shunt never parses it, so the test
+/// only needs bytes it can compare byte-for-byte after the relay.
+fn otlp_payload() -> Vec<u8> {
+    vec![0x0a, 0x00, 0xff, 0x7f, 0x01, 0x02, 0x03]
+}
+
+#[tokio::test]
+async fn telemetry_ingest_requires_a_gateway_bearer() {
+    for path in ["/v1/metrics", "/v1/logs", "/v1/traces"] {
+        let (config, _env) = GatewayEnv::config("telemetry-auth");
+        let (router, _, _) = build_router(config).unwrap();
+        let (status, body) = json_response(
+            router.clone(),
+            telemetry_request(path, None, "application/x-protobuf", otlp_payload()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{path} without a bearer");
+        assert_eq!(body["error"]["type"], "authentication_error");
+
+        let (status, _) = json_response(
+            router,
+            telemetry_request(
+                path,
+                Some("not-a-jwt"),
+                "application/x-protobuf",
+                otlp_payload(),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{path} with a bad bearer");
+    }
+}
+
+#[tokio::test]
+async fn telemetry_ingest_accepts_and_discards_without_destinations() {
+    for path in ["/v1/metrics", "/v1/logs", "/v1/traces"] {
+        let (config, _env) = GatewayEnv::config("telemetry-discard");
+        assert!(config.server.gateway.as_ref().unwrap().telemetry.is_none());
+        let (router, _, _) = build_router(config).unwrap();
+        let bearer = gateway_bearer("dev@example.com");
+        let (status, body) = json_response(
+            router,
+            telemetry_request(
+                path,
+                Some(&bearer),
+                "application/x-protobuf",
+                otlp_payload(),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{path} with no destinations");
+        assert_eq!(body, json!({}));
+    }
+}
+
+#[tokio::test]
+async fn telemetry_ingest_relays_bytes_and_framing_headers_verbatim() {
+    let mut sink = telemetry_sink().await;
+    let (mut config, _env) = GatewayEnv::config("telemetry-relay");
+    let mut destination = telemetry_destination(&sink.base_url);
+    destination.headers = Some(
+        [(
+            "x-collector-key".to_string(),
+            "collector-secret".to_string(),
+        )]
+        .into_iter()
+        .collect(),
+    );
+    config.server.gateway.as_mut().unwrap().telemetry = Some(GatewayTelemetryConfig {
+        forward_to: vec![destination],
+    });
+    let (router, _, _) = build_router(config).unwrap();
+    let bearer = gateway_bearer("dev@example.com");
+
+    let payload = otlp_payload();
+    let mut request = telemetry_request(
+        "/v1/metrics",
+        Some(&bearer),
+        "application/x-protobuf",
+        payload.clone(),
+    );
+    request
+        .headers_mut()
+        .insert(header::CONTENT_ENCODING, "gzip".parse().unwrap());
+    let (status, body) = json_response(router, request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, json!({}));
+
+    let relayed = sink.next().await;
+    assert_eq!(relayed.path, "/v1/metrics");
+    assert_eq!(relayed.body, payload);
+    assert_eq!(
+        relayed.content_type.as_deref(),
+        Some("application/x-protobuf")
+    );
+    assert_eq!(relayed.content_encoding.as_deref(), Some("gzip"));
+    assert_eq!(relayed.collector_key.as_deref(), Some("collector-secret"));
+    // The client's gateway JWT must not reach the collector.
+    assert_eq!(relayed.authorization, None);
+}
+
+#[tokio::test]
+async fn telemetry_ingest_relays_json_payloads_unchanged() {
+    let mut sink = telemetry_sink().await;
+    let (mut config, _env) = GatewayEnv::config("telemetry-json");
+    config.server.gateway.as_mut().unwrap().telemetry = Some(GatewayTelemetryConfig {
+        forward_to: vec![telemetry_destination(&sink.base_url)],
+    });
+    let (router, _, _) = build_router(config).unwrap();
+    let bearer = gateway_bearer("dev@example.com");
+
+    let payload = br#"{"resourceMetrics":[{"scopeMetrics":[]}]}"#.to_vec();
+    let (status, _) = json_response(
+        router,
+        telemetry_request(
+            "/v1/metrics",
+            Some(&bearer),
+            "application/json",
+            payload.clone(),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let relayed = sink.next().await;
+    assert_eq!(relayed.body, payload);
+    assert_eq!(relayed.content_type.as_deref(), Some("application/json"));
+    assert_eq!(relayed.content_encoding, None);
+}
+
+#[tokio::test]
+async fn telemetry_ingest_routes_only_opted_in_signals() {
+    // One sink per destination, with flags chosen so each sink can be written
+    // by exactly one signal. "Was this signal relayed?" is then answered by
+    // which channel was written, not by waiting out a quiet window.
+    let mut metrics_sink = telemetry_sink().await;
+    let mut logs_sink = telemetry_sink().await;
+    let mut traces_sink = telemetry_sink().await;
+    let (mut config, _env) = GatewayEnv::config("telemetry-signals");
+    // Defaults: metrics on, logs and traces off.
+    let metrics_destination = telemetry_destination(&metrics_sink.base_url);
+    // Opted out of every signal, so its channel is never written at all.
+    let mut logs_destination = telemetry_destination(&logs_sink.base_url);
+    logs_destination.metrics = false;
+    let mut traces_destination = telemetry_destination(&traces_sink.base_url);
+    traces_destination.metrics = false;
+    traces_destination.traces = true;
+    config.server.gateway.as_mut().unwrap().telemetry = Some(GatewayTelemetryConfig {
+        forward_to: vec![metrics_destination, logs_destination, traces_destination],
+    });
+    let (router, _, _) = build_router(config).unwrap();
+    let bearer = gateway_bearer("dev@example.com");
+
+    // Logs first, so any wrongly-spawned logs relay is dispatched before the
+    // later requests whose relays this test awaits.
+    for path in ["/v1/logs", "/v1/metrics", "/v1/traces"] {
+        let (status, _) = json_response(
+            router.clone(),
+            telemetry_request(
+                path,
+                Some(&bearer),
+                "application/x-protobuf",
+                otlp_payload(),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{path} accepted");
+    }
+
+    assert_eq!(metrics_sink.next().await.path, "/v1/metrics");
+    assert_eq!(traces_sink.next().await.path, "/v1/traces");
+    // Both awaited relays completed a full round trip, so a logs relay — which
+    // would have been spawned before either of them — would already be here.
+    logs_sink.assert_nothing_further();
+    // The metrics destination has `logs = false`, so it saw metrics only.
+    metrics_sink.assert_nothing_further();
+    // The traces destination opted out of metrics, so it saw traces only.
+    traces_sink.assert_nothing_further();
+}
+
+#[tokio::test]
+async fn telemetry_ingest_still_returns_200_when_a_destination_is_down() {
+    let (mut config, _env) = GatewayEnv::config("telemetry-down");
+    config.server.gateway.as_mut().unwrap().telemetry = Some(GatewayTelemetryConfig {
+        forward_to: vec![telemetry_destination(&closed_port_url().await)],
+    });
+    let (router, _, _) = build_router(config).unwrap();
+    let bearer = gateway_bearer("dev@example.com");
+
+    let (status, body) = json_response(
+        router,
+        telemetry_request(
+            "/v1/metrics",
+            Some(&bearer),
+            "application/x-protobuf",
+            otlp_payload(),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, json!({}));
+}
+
+#[tokio::test]
+async fn telemetry_ingest_rejects_a_body_over_the_cap() {
+    let (config, _env) = GatewayEnv::config("telemetry-oversized");
+    let (router, _, _) = build_router(config).unwrap();
+    let bearer = gateway_bearer("dev@example.com");
+
+    let oversized = vec![0u8; 32 * 1024 * 1024 + 1];
+    let (status, body) = json_response(
+        router,
+        telemetry_request(
+            "/v1/metrics",
+            Some(&bearer),
+            "application/x-protobuf",
+            oversized,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(body["error"]["type"], "invalid_request_error");
 }

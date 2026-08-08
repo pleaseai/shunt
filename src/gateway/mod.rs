@@ -8,6 +8,7 @@ mod oauth;
 pub mod persist;
 pub mod refresh;
 pub mod store;
+pub mod telemetry_ingest;
 
 use std::{collections::HashMap, sync::Arc};
 
@@ -213,6 +214,22 @@ pub fn gateway_router() -> Router<AppState> {
         .route("/device/authorize", post(idp::authorize))
         .route("/device/callback", get(idp::callback))
         .route("/managed/settings", get(managed::get))
+        // Inbound OTLP/HTTP ingest (M-C). Registered on the gateway surface
+        // because M-B's managed settings point client exporters at
+        // `public_url`; no conflict with the base router, whose `/v1/models` is
+        // a GET and whose `/v1/messages` is a different path.
+        .route(
+            telemetry_ingest::Signal::Metrics.path(),
+            post(telemetry_ingest::metrics),
+        )
+        .route(
+            telemetry_ingest::Signal::Logs.path(),
+            post(telemetry_ingest::logs),
+        )
+        .route(
+            telemetry_ingest::Signal::Traces.path(),
+            post(telemetry_ingest::traces),
+        )
 }
 
 #[cfg(test)]

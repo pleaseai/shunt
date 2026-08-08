@@ -13,10 +13,11 @@
 //! and streaming token usage, Codex continuation decisions, Codex WebSocket
 //! dedicated-overflow admission outcomes, and sanitized client analytics event
 //! names, retries, and requests shed at the inbound concurrency limit. Pool
-//! metrics expose best-account quota utilization and account rotations.
+//! metrics expose best-account quota utilization and account rotations. Gateway
+//! metrics count inbound OTLP telemetry payloads by signal and ingest outcome.
 //!
 //! Attributes stay low-cardinality (provider/model/status/outcome/kind/window/
-//! reason, plus the sanitized, cardinality-capped `event` on
+//! reason/signal, plus the sanitized, cardinality-capped `event` on
 //! `shunt.codex_client_events`) — never client names, account ids, session ids,
 //! or anything else request-derived. Token metrics currently cover streaming
 //! responses only; non-streaming token usage is intentionally out of scope.
@@ -43,6 +44,7 @@ struct OtelInstruments {
     tokens: Counter<u64>,
     continuation: Counter<u64>,
     codex_client_events: Counter<u64>,
+    gateway_telemetry_ingest: Counter<u64>,
     upstream_retries: Counter<u64>,
     failover: Counter<u64>,
     requests_shed: Counter<u64>,
@@ -94,6 +96,12 @@ fn otel_instruments() -> &'static OtelInstruments {
             codex_client_events: meter
                 .u64_counter("shunt.codex_client_events")
                 .with_description("Sanitized Codex client analytics event counts")
+                .build(),
+            gateway_telemetry_ingest: meter
+                .u64_counter("shunt.gateway_telemetry_ingest")
+                .with_description(
+                    "Inbound gateway OTLP payloads by signal and ingest outcome (issue #189)",
+                )
                 .build(),
             upstream_retries: meter
                 .u64_counter("shunt.upstream_retries")
@@ -322,6 +330,27 @@ pub fn record_codex_client_event(event: &str) {
     otel_instruments().codex_client_events.add(1, &attributes);
 }
 
+/// Record one inbound gateway OTLP payload (issue #189), tagged with the
+/// `signal` it was posted for (`metrics`/`logs`/`traces`) and the `outcome`:
+/// `relayed` when at least one destination opted in, `discarded` when none did,
+/// and `rejected` for a request refused before ingest (bad bearer, unreadable
+/// or over-cap body). Both attributes are fixed strings chosen by shunt — no
+/// part of the payload, its headers, or the destination reaches either sink.
+pub fn record_gateway_telemetry_ingest(signal: &'static str, outcome: &'static str) {
+    sentry::metrics::counter("shunt.gateway_telemetry_ingest", 1)
+        .attribute("signal", signal.to_owned())
+        .attribute("outcome", outcome.to_owned())
+        .capture();
+
+    let attributes = [
+        KeyValue::new("signal", signal),
+        KeyValue::new("outcome", outcome),
+    ];
+    otel_instruments()
+        .gateway_telemetry_ingest
+        .add(1, &attributes);
+}
+
 /// Record one bounded upstream retry (issue #48): a `shunt.upstream_retries`
 /// count tagged with the provider and a low-cardinality `reason` — the transient
 /// status (`429`/`502`/`503`/`504`) or `transport` for a connection-level error.
@@ -444,9 +473,9 @@ fn test_overflow_counts() -> &'static Mutex<HashMap<(String, &'static str), u64>
 #[cfg(test)]
 mod tests {
     use super::{
-        record_codex_client_event, record_continuation_outcome, record_pool_rotation,
-        record_pool_utilization, record_proxied_request, record_stream_outcome,
-        record_stream_tokens, record_ttft, ContinuationOutcome,
+        record_codex_client_event, record_continuation_outcome, record_gateway_telemetry_ingest,
+        record_pool_rotation, record_pool_utilization, record_proxied_request,
+        record_stream_outcome, record_stream_tokens, record_ttft, ContinuationOutcome,
     };
 
     /// The core opt-in contract: recording a proxied request must never panic,
@@ -487,6 +516,14 @@ mod tests {
     #[test]
     fn record_codex_client_event_is_noop_without_sinks() {
         record_codex_client_event("codex.turn_completed");
+    }
+
+    /// The gateway telemetry-ingest counter honors the same opt-in no-op contract.
+    #[test]
+    fn record_gateway_telemetry_ingest_is_noop_without_sinks() {
+        record_gateway_telemetry_ingest("metrics", "relayed");
+        record_gateway_telemetry_ingest("logs", "discarded");
+        record_gateway_telemetry_ingest("traces", "rejected");
     }
 
     /// The upstream-retry counter honors the same opt-in no-op contract.

@@ -457,9 +457,10 @@ pub struct GatewayConfig {
     /// its explicit "no managed policy" 404 behavior.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policies: Option<Vec<GatewayPolicyConfig>>,
-    /// Client telemetry configuration. M-B uses this only to push the telemetry
-    /// enable flag plus five `OTEL_*` environment variables; the inbound relay
-    /// routes arrive in M-C (#189).
+    /// Client telemetry configuration. A non-empty `forward_to` list both
+    /// pushes the telemetry enable flag plus five `OTEL_*` environment
+    /// variables through managed settings (M-B) and relays the OTLP payloads
+    /// those clients then post to `POST /v1/{metrics,logs,traces}` (M-C, #189).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telemetry: Option<GatewayTelemetryConfig>,
     /// File persisting refresh sessions across restarts (issue #194). Refresh
@@ -497,11 +498,25 @@ pub struct GatewayTelemetryConfig {
     pub forward_to: Vec<GatewayTelemetryDestination>,
 }
 
+/// One inbound-telemetry relay destination: a base OTLP/HTTP endpoint, the
+/// same shape as `OTEL_EXPORTER_OTLP_ENDPOINT`. shunt appends the signal path
+/// (`/v1/metrics`, `/v1/logs`, `/v1/traces`) when relaying.
+///
+/// Signals are opted in per destination. Metrics default on; logs and traces
+/// default off because Claude Code log records and spans can carry command
+/// lines, prompts, and file paths, so forwarding them off-host is an explicit
+/// operator decision.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GatewayTelemetryDestination {
     pub url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub headers: Option<BTreeMap<String, String>>,
+    #[serde(default = "default_true")]
+    pub metrics: bool,
+    #[serde(default)]
+    pub logs: bool,
+    #[serde(default)]
+    pub traces: bool,
 }
 
 /// `~/.shunt/gateway-sessions.json` (`HOME`, falling back to `USERPROFILE` on
@@ -4253,6 +4268,9 @@ mod tests {
             forward_to: vec![GatewayTelemetryDestination {
                 url: "ftp://collector.example".to_string(),
                 headers: None,
+                metrics: true,
+                logs: false,
+                traces: false,
             }],
         });
         assert!(matches!(
@@ -5512,6 +5530,36 @@ id = "claude-sonnet-5"
         assert!(otel.traces && otel.metrics && otel.logs);
         assert!(!otel.include_session_id);
         assert!(otel.headers.is_empty());
+    }
+
+    #[test]
+    fn gateway_telemetry_signals_default_to_metrics_only() {
+        use figment::providers::{Format, Toml};
+        let telemetry: super::GatewayTelemetryConfig = figment::Figment::from(Toml::string(
+            "[[forward_to]]\nurl = \"https://collector.example\"\n",
+        ))
+        .extract()
+        .unwrap();
+        let destination = &telemetry.forward_to[0];
+        assert!(destination.metrics);
+        assert!(!destination.logs);
+        assert!(!destination.traces);
+        assert!(destination.headers.is_none());
+    }
+
+    #[test]
+    fn gateway_telemetry_signals_parse_explicit_values() {
+        use figment::providers::{Format, Toml};
+        let telemetry: super::GatewayTelemetryConfig = figment::Figment::from(Toml::string(
+            "[[forward_to]]\nurl = \"https://collector.example\"\nmetrics = false\nlogs = true\ntraces = true\nheaders = { \"x-api-key\" = \"secret\" }\n",
+        ))
+        .extract()
+        .unwrap();
+        let destination = &telemetry.forward_to[0];
+        assert!(!destination.metrics);
+        assert!(destination.logs);
+        assert!(destination.traces);
+        assert_eq!(destination.headers.as_ref().unwrap()["x-api-key"], "secret");
     }
 
     #[test]
