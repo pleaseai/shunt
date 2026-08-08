@@ -148,6 +148,7 @@ async fn forward_claude_oauth(
     let session_id = headers
         .get("x-claude-code-session-id")
         .and_then(|value| value.to_str().ok());
+    let is_fable = accounts::is_fable_model(Some(route.upstream_model.as_str()));
     let order = state.accounts.select_order(
         &route.provider,
         &accounts,
@@ -252,9 +253,12 @@ async fn forward_claude_oauth(
             FailoverAction::Relay => {
                 // A relayed 4xx still clears the cooldown (the account answered)
                 // but only a success grows the storm-control allowance.
-                state
-                    .accounts
-                    .mark_healthy(&route.provider, account, status.is_success());
+                state.accounts.mark_healthy_scoped(
+                    &route.provider,
+                    account,
+                    status.is_success(),
+                    is_fable,
+                );
                 return relay_response(&state, &route, upstream, Some(&account.name))
                     .await
                     .map(|(status, response)| {
@@ -272,11 +276,13 @@ async fn forward_claude_oauth(
                 } else {
                     Duration::from_secs(30)
                 };
-                state.accounts.cooldown(
+                let scope = quota_cooldown_scope(status, upstream.headers(), is_fable);
+                state.accounts.cooldown_scoped(
                     &route.provider,
                     account,
                     cooldown,
                     accounts::rotation_reason(status, upstream.headers()),
+                    scope,
                 );
                 // Log on the way out like every other failover arm in this loop
                 // (resolve/post/refresh errors all warn) — this is the most common
@@ -311,16 +317,20 @@ async fn forward_claude_oauth(
                 };
                 let retry_status = retry.status();
                 if retry_status.is_success() {
-                    state.accounts.mark_healthy(&route.provider, account, true);
+                    state
+                        .accounts
+                        .mark_healthy_scoped(&route.provider, account, true, is_fable);
                 } else {
                     let cooldown = accounts::retry_after(retry.headers())
                         .unwrap_or(delay)
                         .clamp(Duration::from_secs(1), Duration::from_secs(300));
-                    state.accounts.cooldown(
+                    let scope = quota_cooldown_scope(retry_status, retry.headers(), is_fable);
+                    state.accounts.cooldown_scoped(
                         &route.provider,
                         account,
                         cooldown,
                         accounts::rotation_reason(retry_status, retry.headers()),
+                        scope,
                     );
                     tracing::warn!(
                         provider = %route.provider,
@@ -460,7 +470,12 @@ async fn forward_claude_oauth(
                 match accounts::classify(retry_status, retry.headers()) {
                     FailoverAction::Relay => {
                         if retry_status.is_success() {
-                            state.accounts.mark_healthy(&route.provider, account, true);
+                            state.accounts.mark_healthy_scoped(
+                                &route.provider,
+                                account,
+                                true,
+                                is_fable,
+                            );
                         }
                         return relay_response(&state, &route, retry, Some(&account.name))
                             .await
@@ -485,11 +500,13 @@ async fn forward_claude_oauth(
                         } else {
                             Duration::from_secs(30)
                         };
-                        state.accounts.cooldown(
+                        let scope = quota_cooldown_scope(retry_status, retry.headers(), is_fable);
+                        state.accounts.cooldown_scoped(
                             &route.provider,
                             account,
                             cooldown,
                             accounts::rotation_reason(retry_status, retry.headers()),
+                            scope,
                         );
                         tracing::warn!(
                             provider = %route.provider,
@@ -521,6 +538,21 @@ async fn forward_claude_oauth(
         ),
         failure: Some(crate::adapters::AdapterFailure::BeforeHeaders),
     })
+}
+
+fn quota_cooldown_scope(
+    status: StatusCode,
+    headers: &HeaderMap,
+    is_fable: bool,
+) -> accounts::CooldownScope {
+    if status == StatusCode::TOO_MANY_REQUESTS
+        && is_fable
+        && accounts::is_fable_scoped_rejection(headers)
+    {
+        accounts::CooldownScope::Fable
+    } else {
+        accounts::CooldownScope::Account
+    }
 }
 
 fn account_is_static_store_token(account: &crate::config::AccountConfig) -> bool {

@@ -24,6 +24,7 @@ fn snapshot(
         available,
         near_quota: false,
         cooldown_secs_remaining: None,
+        cooldown_fable_secs_remaining: None,
         priority,
         disabled: false,
         headroom_secs: None,

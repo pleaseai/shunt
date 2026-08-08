@@ -119,12 +119,12 @@ Full OAuth 创建一个新的可刷新 credential;import 把当前的 `~/.claude
 - 在 `claude_oauth` 账户池处理的每个上游响应上,shunt 会记录以下头部(如存在):
   - `anthropic-ratelimit-unified-5h-utilization`、`anthropic-ratelimit-unified-7d-utilization` 和 `anthropic-ratelimit-unified-7d_oi-utilization`;
   - `anthropic-ratelimit-unified-5h-reset`、`anthropic-ratelimit-unified-7d-reset` 和 `anthropic-ratelimit-unified-7d_oi-reset`(Unix 秒);以及
-  - `anthropic-ratelimit-unified-status`。
-- 默认切换阈值是 `0.98`。当 unified status 为 `rejected`、共享 5 小时使用率达到其阈值,或起决定作用的周使用率达到其阈值时,该账户即接近配额。阈值可以按账户(上文的 `threshold*` 字段)或池级(见[调优选择](#调优选择serverpool))调低。
+  - `anthropic-ratelimit-unified-status`、`anthropic-ratelimit-unified-5h-status`、`anthropic-ratelimit-unified-7d-status` 和 `anthropic-ratelimit-unified-7d_oi-status`。
+- 默认切换阈值是 `0.98`。当 5 小时 status 为 `rejected`、起决定作用的周 status 为 `rejected`、共享 5 小时使用率达到其阈值,或起决定作用的周使用率达到其阈值时,该账户即接近配额。对 Fable 模型,起决定作用的周 status 在 `7d_oi` 使用率存在时为 `7d_oi`,否则为共享 `7d`。聚合 status 仅在没有记录任何按窗口 status 时作为兼容回退使用。阈值可以按账户(上文的 `threshold*` 字段)或池级(见[调优选择](#调优选择serverpool))调低。
 - 5 小时桶适用于所有模型。Fable 模型 id 在 `7d_oi` 周桶使用率存在时使用它,否则回退到共享 `7d`。其他所有模型家族使用共享 `7d`;由于目前没有 Sonnet 专属头部,Sonnet 也使用 `7d`。
 - 接近配额、处于冷却中或被禁用的粘性账户会被主动轮换掉。shunt 优先选择低于阈值的可用账户,先按 `priority`(数值低者优先)排序,再按起决定作用的周桶最早重置的顺序排列,先花掉"不用即失"的配额。周重置未知的账户排在最前。随后是可用但接近配额的账户,再后是按最快恢复排序的冷却中账户。配置了 `[server.pool]` 时,燃烧率余量会取代周重置这一次级排序依据(见下文)。
 - shunt 从不因本地配额状态而安全失败(fail closed):即使所有账户都接近配额或在冷却中,每个非 `disabled` 账户仍留在尝试顺序里。
-- 配额桶在其重置时间戳过后自动清除。成功的响应会清除所选账户的冷却。
+- 配额桶及其按窗口 status 在重置时间戳过后自动清除。非 Fable 的成功响应只清除账户级冷却,保留 Fable 专属冷却;Fable 的成功响应会同时清除两种冷却。
 
 池的选择、冷却和配额状态在进程存活期间跨配置热重载保留。如果主动轮换无法避开上游限制,被动故障转移仍然生效。
 
@@ -180,7 +180,8 @@ disabled = true              # 保留配置,但永不被选中
 | 响应 | 行为 |
 | :-- | :-- |
 | 2xx | 中继并标记为健康。 |
-| 429 且 `anthropic-ratelimit-unified-5h-status`、`-7d-status` 或 `-7d_oi-status` 中出现 `rejected` | 配额耗尽:按数值 `retry-after` 冷却(默认 60 秒,钳制到 1–3600 秒),然后轮换。 |
+| Fable 请求上仅 `anthropic-ratelimit-unified-7d_oi-status: rejected` 的 429 | Fable 配额耗尽:按数值 `retry-after` 施加仅对 Fable 请求生效的冷却(默认 60 秒,钳制到 1–3600 秒),然后轮换。非 Fable 请求仍可使用该账户。 |
+| 429 且 `anthropic-ratelimit-unified-5h-status: rejected` 或 `-7d-status: rejected` | 共享配额耗尽:按数值 `retry-after` 施加账户级冷却(默认 60 秒,钳制到 1–3600 秒),然后对所有模型轮换。即使 `7d_oi` 同时被 `rejected`,仍是账户级冷却。 |
 | 普通 429 | 瞬时限流:按数值 `retry-after` 等待(默认 1 秒,上限 300 秒),对**同一**账户重试一次,然后中继该重试的响应。 |
 | 使用 `credentials` 时的 401 | 强制刷新,对同一账户重试一次;若仍是 401,冷却 5 分钟并轮换。 |
 | 使用 `token_env` 或存储管理的 setup token 时的 401 | 无法刷新:冷却 5 分钟并轮换。 |

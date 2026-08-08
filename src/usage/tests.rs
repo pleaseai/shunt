@@ -23,6 +23,7 @@ fn snapshot(
         available: true,
         near_quota: false,
         cooldown_secs_remaining: None,
+        cooldown_fable_secs_remaining: None,
         priority: 100,
         disabled: false,
         headroom_secs: None,

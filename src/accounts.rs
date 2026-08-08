@@ -82,6 +82,12 @@ pub struct QuotaState {
     pub reset_7d_oi: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_5h: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_7d: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_7d_oi: Option<String>,
 }
 
 impl QuotaState {
@@ -96,6 +102,9 @@ impl QuotaState {
             || self.utilization_7d_oi.is_some()
             || self.reset_7d_oi.is_some()
             || self.status.is_some()
+            || self.status_5h.is_some()
+            || self.status_7d.is_some()
+            || self.status_7d_oi.is_some()
     }
 }
 
@@ -137,6 +146,7 @@ const RAMP_IDLE_RESET: Duration = Duration::from_secs(60);
 #[derive(Debug, Default)]
 struct AccountHealth {
     cooldown_until: Option<Instant>,
+    cooldown_until_fable: Option<Instant>,
     quota: QuotaState,
     /// Latest configured selection state. Quota gauges exclude disabled accounts.
     enabled: bool,
@@ -170,8 +180,10 @@ pub struct AccountSnapshot {
     /// Derived: not disabled, not cooling down, and not near quota.
     pub available: bool,
     pub near_quota: bool,
-    /// Seconds until the current cooldown expires, when the account is cooling.
+    /// Seconds until the account-wide cooldown expires, when active.
     pub cooldown_secs_remaining: Option<u64>,
+    /// Seconds until the Fable-only cooldown expires, when active.
+    pub cooldown_fable_secs_remaining: Option<u64>,
     /// Configured selection priority (lower is preferred; default 100).
     pub priority: u32,
     /// Configured exclusion from pool selection.
@@ -198,6 +210,7 @@ impl AccountSnapshot {
             available: !account.disabled,
             near_quota: false,
             cooldown_secs_remaining: None,
+            cooldown_fable_secs_remaining: None,
             priority: account.priority,
             disabled: account.disabled,
             headroom_secs: None,
@@ -310,7 +323,8 @@ impl AccountPool {
                 // each account's QuotaState just to assess it after release.
                 let assessment = assess_quota(&health.quota, account, is_fable, pool, unix_now);
                 let weekly_reset = governing_weekly_reset(&health.quota, is_fable);
-                snapshots.push((health.cooldown_until, assessment, weekly_reset));
+                let cooldown_until = governing_cooldown(health, is_fable);
+                snapshots.push((cooldown_until, assessment, weekly_reset));
             }
             snapshots
         };
@@ -449,12 +463,14 @@ impl AccountPool {
                 "anthropic-ratelimit-unified-7d_oi-reset",
                 &mut quota.reset_7d_oi,
             );
-            if let Some(status) = headers
-                .get("anthropic-ratelimit-unified-status")
-                .and_then(|value| value.to_str().ok())
-            {
-                quota.status = Some(status.to_string());
-            }
+            update_string_header(headers, QUOTA_STATUS_HEADERS[0], &mut quota.status_5h);
+            update_string_header(headers, QUOTA_STATUS_HEADERS[1], &mut quota.status_7d);
+            update_string_header(headers, QUOTA_STATUS_HEADERS[2], &mut quota.status_7d_oi);
+            update_string_header(
+                headers,
+                "anthropic-ratelimit-unified-status",
+                &mut quota.status,
+            );
             let utilization = self.pool_utilization_for(provider, &mut entries, unix_now());
             record_pool_utilization(provider, utilization);
         }
@@ -525,9 +541,9 @@ impl AccountPool {
     /// to an account's quota state. Each reported window overwrites the matching
     /// utilization/reset pair — the usage API is authoritative and reconciles the
     /// header-derived state with out-of-band consumption — while a window the API
-    /// omits leaves any prior header value untouched. The unified `status` is not
-    /// modified here: the usage API has no equivalent of the header's `rejected`
-    /// signal, so that stays header-driven. Marks the account observed, so the
+    /// omits leaves any prior header value untouched. Status fields are not
+    /// modified here: the usage API has no equivalent of the headers' `rejected`
+    /// signals, so they stay header-driven. Marks the account observed, so the
     /// admin dashboard reports its usage even before the first proxied request.
     pub fn note_usage(&self, provider: &str, account: &AccountConfig, usage: &UsageSnapshot) {
         {
@@ -560,11 +576,25 @@ impl AccountPool {
         duration: Duration,
         reason: &'static str,
     ) {
+        self.cooldown_scoped(provider, account, duration, reason, CooldownScope::Account);
+    }
+
+    pub fn cooldown_scoped(
+        &self,
+        provider: &str,
+        account: &AccountConfig,
+        duration: Duration,
+        reason: &'static str,
+        scope: CooldownScope,
+    ) {
         let mut entries = self.entries.lock().expect("account health lock poisoned");
         let health = entries.entry(account_key(provider, account)).or_default();
         health.observed = true;
         health.enabled = !account.disabled;
-        health.cooldown_until = Some(Instant::now() + duration);
+        match scope {
+            CooldownScope::Account => health.cooldown_until = Some(Instant::now() + duration),
+            CooldownScope::Fable => health.cooldown_until_fable = Some(Instant::now() + duration),
+        }
         // Any failover-worthy failure restarts the storm-control ramp: when the
         // account comes back it re-enters slow start instead of inheriting the
         // allowance it had grown before failing.
@@ -573,17 +603,30 @@ impl AccountPool {
         crate::metrics::record_pool_rotation(provider, reason);
     }
 
-    /// Clear any cooldown and record the account as observed-healthy.
+    /// Clear applicable cooldowns and record the account as observed-healthy.
     /// `turn_succeeded` gates slow-start growth: a relayed client error (4xx)
     /// proves the account reachable — hence healthy — but must not pre-warm
     /// storm-control capacity, or a burst of malformed requests would bypass
     /// slow start before valid traffic arrives.
     pub fn mark_healthy(&self, provider: &str, account: &AccountConfig, turn_succeeded: bool) {
+        self.mark_healthy_scoped(provider, account, turn_succeeded, false);
+    }
+
+    pub fn mark_healthy_scoped(
+        &self,
+        provider: &str,
+        account: &AccountConfig,
+        turn_succeeded: bool,
+        is_fable: bool,
+    ) {
         let mut entries = self.entries.lock().expect("account health lock poisoned");
         let health = entries.entry(account_key(provider, account)).or_default();
         health.observed = true;
         health.enabled = !account.disabled;
         health.cooldown_until = None;
+        if is_fable {
+            health.cooldown_until_fable = None;
+        }
         // Slow-start growth: each successful response doubles the identity's
         // admission allowance, so a healthy account leaves the ramp within a
         // handful of turns. `0` means the ramp is inactive (storm control off,
@@ -741,13 +784,19 @@ impl AccountPool {
                     .cooldown_until
                     .and_then(|until| until.checked_duration_since(now))
                     .map(|remaining| remaining.as_secs());
-                let cooling = cooldown_secs_remaining.is_some();
+                let cooldown_fable_secs_remaining = health
+                    .cooldown_until_fable
+                    .and_then(|until| until.checked_duration_since(now))
+                    .map(|remaining| remaining.as_secs());
+                let cooling = cooldown_secs_remaining.is_some()
+                    || (is_fable && cooldown_fable_secs_remaining.is_some());
                 AccountSnapshot {
                     name: account.name.clone(),
                     has_state: true,
                     available: !account.disabled && !cooling && !quota.near,
                     near_quota: quota.near,
                     cooldown_secs_remaining,
+                    cooldown_fable_secs_remaining,
                     priority: account.priority,
                     disabled: account.disabled,
                     headroom_secs: (pool.is_some() && quota.headroom.is_finite())
@@ -966,6 +1015,12 @@ fn update_header<T: std::str::FromStr>(headers: &HeaderMap, name: &str, field: &
     }
 }
 
+fn update_string_header(headers: &HeaderMap, name: &str, field: &mut Option<String>) {
+    if let Some(value) = headers.get(name).and_then(|value| value.to_str().ok()) {
+        *field = Some(value.to_string());
+    }
+}
+
 fn codex_window_bucket(minutes: i64) -> Option<CodexWindow> {
     if within_five_percent(minutes, 300) {
         Some(CodexWindow::FiveHour)
@@ -983,8 +1038,19 @@ fn within_five_percent(value: i64, expected: i64) -> bool {
     scaled >= expected * 95 && scaled <= expected * 105
 }
 
-fn is_fable_model(model: Option<&str>) -> bool {
+pub fn is_fable_model(model: Option<&str>) -> bool {
     model.is_some_and(|model| model.to_ascii_lowercase().contains("fable"))
+}
+
+fn governing_cooldown(health: &AccountHealth, is_fable: bool) -> Option<Instant> {
+    if is_fable {
+        match (health.cooldown_until, health.cooldown_until_fable) {
+            (Some(account), Some(fable)) => Some(account.max(fable)),
+            (account, fable) => account.or(fable),
+        }
+    } else {
+        health.cooldown_until
+    }
 }
 
 fn governing_weekly_reset(quota: &QuotaState, is_fable: bool) -> Option<u64> {
@@ -1050,7 +1116,25 @@ fn assess_quota(
 ) -> QuotaAssessment {
     let hard = pool.map_or(SWITCH_THRESHOLD, |pool| pool.hard_threshold);
     let burn_avoid = pool.is_some_and(|pool| pool.burn_rate_avoidance);
-    let rejected = quota.status.as_deref() == Some("rejected");
+    let weekly = if is_fable && quota.utilization_7d_oi.is_some() {
+        (
+            quota.utilization_7d_oi,
+            quota.reset_7d_oi,
+            QuotaWindow::Fable,
+        )
+    } else {
+        (quota.utilization_7d, quota.reset_7d, QuotaWindow::Weekly)
+    };
+    let has_window_status =
+        quota.status_5h.is_some() || quota.status_7d.is_some() || quota.status_7d_oi.is_some();
+    let weekly_rejected = match weekly.2 {
+        QuotaWindow::Fable => quota.status_7d_oi.as_deref() == Some("rejected"),
+        QuotaWindow::Weekly => quota.status_7d.as_deref() == Some("rejected"),
+        QuotaWindow::FiveHour => unreachable!("weekly selection never uses the 5h window"),
+    };
+    let rejected = quota.status_5h.as_deref() == Some("rejected")
+        || weekly_rejected
+        || (!has_window_status && quota.status.as_deref() == Some("rejected"));
     let mut assessment = QuotaAssessment {
         near: rejected,
         over_hard: false,
@@ -1063,15 +1147,6 @@ fn assess_quota(
         },
     };
 
-    let weekly = if is_fable && quota.utilization_7d_oi.is_some() {
-        (
-            quota.utilization_7d_oi,
-            quota.reset_7d_oi,
-            QuotaWindow::Fable,
-        )
-    } else {
-        (quota.utilization_7d, quota.reset_7d, QuotaWindow::Weekly)
-    };
     let windows = [
         (
             quota.utilization_5h,
@@ -1159,21 +1234,30 @@ fn expire_stale_quota(quota: &mut QuotaState, now: u64) {
     if quota.reset_5h.is_some_and(|reset| reset <= now) {
         quota.utilization_5h = None;
         quota.reset_5h = None;
+        quota.status_5h = None;
         expired = true;
     }
     if quota.reset_7d.is_some_and(|reset| reset <= now) {
         quota.utilization_7d = None;
         quota.reset_7d = None;
+        quota.status_7d = None;
         expired = true;
     }
     if quota.reset_7d_oi.is_some_and(|reset| reset <= now) {
         quota.utilization_7d_oi = None;
         quota.reset_7d_oi = None;
+        quota.status_7d_oi = None;
         expired = true;
     }
     if expired {
         quota.status = None;
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CooldownScope {
+    Account,
+    Fable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1189,6 +1273,13 @@ const QUOTA_STATUS_HEADERS: [&str; 3] = [
     "anthropic-ratelimit-unified-7d-status",
     "anthropic-ratelimit-unified-7d_oi-status",
 ];
+
+pub fn is_fable_scoped_rejection(headers: &HeaderMap) -> bool {
+    let rejected = |name: &str| headers.get(name).is_some_and(|value| value == "rejected");
+    rejected(QUOTA_STATUS_HEADERS[2])
+        && !rejected(QUOTA_STATUS_HEADERS[0])
+        && !rejected(QUOTA_STATUS_HEADERS[1])
+}
 
 /// Low-cardinality pool-rotation reason for an upstream response that moves off
 /// an account. A quota-rejected Anthropic 429 is distinguished from ordinary
@@ -2258,6 +2349,229 @@ mod tests {
             )[0],
             sticky
         );
+    }
+
+    #[test]
+    fn fable_scoped_cooldown_only_defers_fable_requests() {
+        let pool = AccountPool::new();
+        let accounts = vec![account("a"), account("b")];
+        let session = "fable-cooldown";
+        let rotation = pool.select_order(
+            "anthropic",
+            &accounts,
+            Some(session),
+            Some("claude-sonnet-5"),
+            None,
+        );
+        let sticky = rotation[0];
+        let headers = quota_headers(&[(QUOTA_STATUS_HEADERS[2], "rejected".to_string())]);
+        assert!(is_fable_scoped_rejection(&headers));
+        pool.cooldown_scoped(
+            "anthropic",
+            &accounts[sticky],
+            Duration::from_secs(60),
+            "quota",
+            CooldownScope::Fable,
+        );
+
+        let sonnet_order = pool.select_order(
+            "anthropic",
+            &accounts,
+            Some(session),
+            Some("claude-sonnet-5"),
+            None,
+        );
+        assert_eq!(
+            sonnet_order[0], sticky,
+            "a Fable-only cooldown must leave the sticky account available to Sonnet"
+        );
+        let sonnet_snapshot = &pool.snapshot(
+            "anthropic",
+            std::slice::from_ref(&accounts[sticky]),
+            Some("claude-sonnet-5"),
+            None,
+        )[0];
+        assert!(sonnet_snapshot.available);
+        assert!(sonnet_snapshot.cooldown_fable_secs_remaining.is_some());
+        assert_eq!(
+            pool.select_order(
+                "anthropic",
+                &accounts,
+                Some(session),
+                Some("claude-fable-5"),
+                None,
+            )
+            .last(),
+            Some(&sticky),
+            "the Fable request must put the cooled account in the tail"
+        );
+    }
+
+    #[test]
+    fn shared_rejection_cooldown_defers_both_model_families() {
+        let pool = AccountPool::new();
+        let accounts = vec![account("a"), account("b")];
+        let session = "shared-cooldown";
+        let rotation = pool.select_order(
+            "anthropic",
+            &accounts,
+            Some(session),
+            Some("claude-sonnet-5"),
+            None,
+        );
+        let sticky = rotation[0];
+        let headers = quota_headers(&[(QUOTA_STATUS_HEADERS[0], "rejected".to_string())]);
+        assert!(!is_fable_scoped_rejection(&headers));
+        pool.cooldown_scoped(
+            "anthropic",
+            &accounts[sticky],
+            Duration::from_secs(60),
+            "quota",
+            CooldownScope::Account,
+        );
+
+        for model in ["claude-sonnet-5", "claude-fable-5"] {
+            assert_eq!(
+                pool.select_order("anthropic", &accounts, Some(session), Some(model), None,)
+                    .last(),
+                Some(&sticky),
+                "account-wide cooldown must defer {model}"
+            );
+        }
+    }
+
+    #[test]
+    fn healthy_mark_clears_cooldowns_at_the_request_scope() {
+        let pool = AccountPool::new();
+        let account = account("a");
+        pool.cooldown_scoped(
+            "anthropic",
+            &account,
+            Duration::from_secs(60),
+            "quota",
+            CooldownScope::Fable,
+        );
+        pool.mark_healthy("anthropic", &account, true);
+        assert!(
+            pool.snapshot("anthropic", std::slice::from_ref(&account), None, None)[0]
+                .cooldown_fable_secs_remaining
+                .is_some(),
+            "a non-Fable success proves nothing about the Fable bucket"
+        );
+
+        pool.cooldown("anthropic", &account, Duration::from_secs(60), "transport");
+        pool.mark_healthy_scoped("anthropic", &account, true, true);
+        let snapshot = &pool.snapshot(
+            "anthropic",
+            std::slice::from_ref(&account),
+            Some("claude-fable-5"),
+            None,
+        )[0];
+        assert!(snapshot.cooldown_secs_remaining.is_none());
+        assert!(snapshot.cooldown_fable_secs_remaining.is_none());
+    }
+
+    #[test]
+    fn per_window_rejections_govern_only_their_models() {
+        let account = account("a");
+        let now = unix_now();
+        let fable_rejected = QuotaState {
+            utilization_7d_oi: Some(0.1),
+            status_7d_oi: Some("rejected".to_string()),
+            ..Default::default()
+        };
+        let fable = assess_quota(&fable_rejected, &account, true, None, now);
+        let sonnet = assess_quota(&fable_rejected, &account, false, None, now);
+        assert!(fable.near);
+        assert_eq!(fable.headroom, f64::NEG_INFINITY);
+        assert!(!sonnet.near);
+        assert_eq!(sonnet.headroom, f64::INFINITY);
+
+        let five_hour_rejected = QuotaState {
+            status_5h: Some("rejected".to_string()),
+            ..Default::default()
+        };
+        for is_fable in [false, true] {
+            let assessment = assess_quota(&five_hour_rejected, &account, is_fable, None, now);
+            assert!(assessment.near);
+            assert_eq!(assessment.headroom, f64::NEG_INFINITY);
+        }
+    }
+
+    #[test]
+    fn aggregate_rejection_is_a_legacy_fallback_without_window_statuses() {
+        let quota = QuotaState {
+            status: Some("rejected".to_string()),
+            ..Default::default()
+        };
+        for is_fable in [false, true] {
+            let assessment = assess_quota(&quota, &account("a"), is_fable, None, unix_now());
+            assert!(assessment.near);
+            assert_eq!(assessment.headroom, f64::NEG_INFINITY);
+        }
+    }
+
+    #[test]
+    fn stale_window_clears_only_its_status_and_the_legacy_aggregate() {
+        let now = unix_now();
+        let mut quota = QuotaState {
+            utilization_5h: Some(1.0),
+            reset_5h: Some(now),
+            utilization_7d: Some(0.4),
+            reset_7d: Some(now + 60),
+            utilization_7d_oi: Some(0.5),
+            reset_7d_oi: Some(now + 120),
+            status: Some("rejected".to_string()),
+            status_5h: Some("rejected".to_string()),
+            status_7d: Some("allowed".to_string()),
+            status_7d_oi: Some("rejected".to_string()),
+        };
+        expire_stale_quota(&mut quota, now);
+        assert_eq!(quota.status_5h, None);
+        assert_eq!(quota.status_7d.as_deref(), Some("allowed"));
+        assert_eq!(quota.status_7d_oi.as_deref(), Some("rejected"));
+        assert_eq!(quota.status, None);
+
+        expire_stale_quota(&mut quota, now + 60);
+        assert_eq!(quota.status_7d, None);
+        assert_eq!(quota.status_7d_oi.as_deref(), Some("rejected"));
+        expire_stale_quota(&mut quota, now + 120);
+        assert_eq!(quota.status_7d_oi, None);
+    }
+
+    #[test]
+    fn old_quota_json_deserializes_without_per_window_statuses() {
+        let quota: QuotaState = serde_json::from_str(
+            r#"{"utilization_5h":0.5,"reset_5h":1800000000,"status":"rejected"}"#,
+        )
+        .unwrap();
+        assert_eq!(quota.status.as_deref(), Some("rejected"));
+        assert_eq!(quota.status_5h, None);
+        assert_eq!(quota.status_7d, None);
+        assert_eq!(quota.status_7d_oi, None);
+    }
+
+    #[test]
+    fn note_quota_records_each_window_status_when_present() {
+        let pool = AccountPool::new();
+        let account = account("a");
+        pool.note_quota(
+            "anthropic",
+            &account,
+            &quota_headers(&[
+                (QUOTA_STATUS_HEADERS[0], "allowed".to_string()),
+                (QUOTA_STATUS_HEADERS[1], "rejected".to_string()),
+                (QUOTA_STATUS_HEADERS[2], "allowed".to_string()),
+            ]),
+        );
+        let entries = pool.entries.lock().unwrap();
+        let quota = &entries
+            .get(&account_key("anthropic", &account))
+            .unwrap()
+            .quota;
+        assert_eq!(quota.status_5h.as_deref(), Some("allowed"));
+        assert_eq!(quota.status_7d.as_deref(), Some("rejected"));
+        assert_eq!(quota.status_7d_oi.as_deref(), Some("allowed"));
     }
 
     #[test]

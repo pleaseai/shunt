@@ -261,7 +261,7 @@ async function loadPool() {
   for (const p of providers) for (const a of (p.accounts || [])) {
     rows++; const r = body.insertRow();
     cell(r, p.provider); cell(r, a.name);
-    cell(r, a.disabled ? "disabled" : !a.has_state ? "unseen" : a.near_quota ? "near quota" : a.cooldown_secs_remaining ? "cooling" : "available");
+    cell(r, a.disabled ? "disabled" : !a.has_state ? "unseen" : a.near_quota ? "near quota" : a.cooldown_secs_remaining ? "cooling" : a.cooldown_fable_secs_remaining ? "cooling (fable)" : "available");
     const c5 = cell(r, pctReset(a.utilization_5h, a.reset_5h));
     if (a.reset_5h) c5.title = "resets " + new Date(a.reset_5h * 1000).toLocaleString();
     const c7 = cell(r, pctReset(a.utilization_7d, a.reset_7d));
@@ -269,7 +269,7 @@ async function loadPool() {
     const c7oi = cell(r, pctReset(a.utilization_7d_oi, a.reset_7d_oi));
     if (a.reset_7d_oi) c7oi.title = "resets " + new Date(a.reset_7d_oi * 1000).toLocaleString();
     cell(r, a.status || "—");
-    cell(r, a.cooldown_secs_remaining ? a.cooldown_secs_remaining + "s" : "—");
+    cell(r, a.cooldown_secs_remaining ? a.cooldown_secs_remaining + "s" : a.cooldown_fable_secs_remaining ? a.cooldown_fable_secs_remaining + "s (fable)" : "—");
   }
   if (!rows) { const r = body.insertRow(); const c = cell(r, "No pooled accounts configured"); c.colSpan = 8; c.className = "muted"; }
 }
