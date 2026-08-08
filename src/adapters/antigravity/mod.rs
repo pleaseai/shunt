@@ -68,6 +68,14 @@ const HARD_TIMEOUT: Duration = Duration::from_secs(35 * 60);
 /// Cap on `agy` stderr retained for diagnostics, in bytes.
 const STDERR_LIMIT: usize = 2000;
 
+/// Grace period for the child to exit after stdout EOF before it is killed.
+///
+/// Reaching EOF says the pipe closed, not that the process ended. Short,
+/// because by this point the turn has produced its result and the only thing
+/// left is reaping — but non-zero, so a normally-exiting child still reports
+/// its own status instead of being killed out from under it.
+const EXIT_GRACE: Duration = Duration::from_secs(5);
+
 /// Environment override for the directory `agy` is allowed to work in.
 const WORKSPACE_ENV: &str = "SHUNT_AGY_WORKSPACE";
 
@@ -272,7 +280,18 @@ impl Adapter for AntigravityAdapter {
                     stderr_text(&stderr_log)
                 )));
             }
-            let status = child.wait().await;
+            // Stdout EOF does not imply the child exited: it may have closed
+            // the pipe and kept running, and an unbounded wait would hang the
+            // response behind a permission-skipping agent. Give it a short
+            // grace period to exit on its own — the status is wanted here, so
+            // killing outright would discard it — then kill if it overstays.
+            let status = match tokio::time::timeout(EXIT_GRACE, child.wait()).await {
+                Ok(status) => status,
+                Err(_) => {
+                    let _ = child.kill().await;
+                    child.wait().await
+                }
+            };
 
             if let Some(message) =
                 terminal_failure(translator.end(), false, &stderr_log).or_else(|| {
