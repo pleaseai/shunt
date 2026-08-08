@@ -12,6 +12,10 @@ description: shunt가 Claude Code LLM 게이트웨이로서 제공하는 엔드�
 | `GET` | `/routes` | shunt 네이티브 라우트 디스커버리 — 구성된 `[[routes]]` 테이블을 그대로 반환(model → provider/upstream_model/effort 매핑, claude 프리픽스 디스커버리 별칭 포함); 더 좁은 Anthropic 프로토콜 디스커버리 응답(`id`, `display_name`, 업스트림 모델 메타데이터)을 제공하는 `/v1/models`와 구별됨 |
 | `POST` | `/v1/messages` | 추론 — 요청의 `model` id에 따라 라우팅 |
 | `POST` | `/v1/messages/count_tokens` | [토큰 카운팅](/ko/guides/effort-and-context/#token-counting-count_tokens) |
+| `GET` | `/managed/settings` | 게이트웨이 JWT별 Claude Code managed settings; `ETag`, `If-None-Match`, `304 Not Modified` 지원 |
+| `POST` | `/v1/metrics` | 관리형 Claude Code 클라이언트의 인바운드 OTLP/HTTP 메트릭 — opt-in한 게이트웨이 텔레메트리 목적지로 verbatim relay |
+| `POST` | `/v1/logs` | 인바운드 OTLP/HTTP log record — `logs = true`인 목적지에만 relay |
+| `POST` | `/v1/traces` | 인바운드 OTLP/HTTP span — `traces = true`인 목적지에만 relay |
 | `GET` | `/admin` | 관리자 대시보드(HTML); 로그인하지 않았으면 `/admin/login`으로 리다이렉트 |
 | `GET`, `POST` | `/admin/login` | 관리자 토큰 로그인 폼과 브라우저 세션 생성 |
 | `POST` | `/admin/logout` | 브라우저 세션 삭제 |
@@ -31,6 +35,8 @@ description: shunt가 Claude Code LLM 게이트웨이로서 제공하는 엔드�
 | `POST` | `/codex/analytics-events/events` | Codex CLI 분석 sink — 루트형 `chatgpt_base_url` 형식 |
 
 `/admin*` 라우트는 [`[server.admin]`](/ko/reference/configuration/#serveradmin-선택)이 구성된 경우에만 존재합니다; 그 테이블이 없으면 하나도 등록되지 않습니다.
+
+`GET /managed/settings`와 `POST /v1/{metrics,logs,traces}` 텔레메트리 ingest 라우트는 부팅 시 `[server.gateway]`가 활성화된 경우에만 존재하며, 둘 다 같은 게이트웨이 bearer JWT를 요구합니다. ingest 라우트는 관리형 Claude Code 클라이언트가 export하는 OTLP/HTTP 페이로드를 받아([`[server.gateway.telemetry]`](/ko/reference/configuration/)가 그 exporter들을 게이트웨이로 향하게 합니다) 요청 바이트를 해당 signal에 opt-in한 모든 목적지로 그대로 relay합니다. 인바운드 `content-type`과 `content-encoding`은 유지되고 목적지에 구성된 headers가 그 위에 적용됩니다(구성된 키는 전달값을 대체하며 헤더를 중복시키지 않습니다). 클라이언트의 `Authorization` 헤더는 전달되지 않고 relay는 리다이렉트를 따르지 않습니다. 목적지는 signal별로 opt-in하며(`metrics` 기본 on, `logs`/`traces` 기본 off), 어떤 목적지도 opt-in하지 않은 signal은 수신 후 폐기됩니다. relay는 분리되어 실행되므로 목적지 상태와 무관하게 응답은 항상 즉시 `200`이고, 성공 바디는 OTLP/HTTP에 따라 요청 프로토콜을 미러링합니다(`application/json`에는 `{}`, 그 외에는 빈 `application/x-protobuf` 바디). 32 MiB 인바운드 상한을 넘는 바디는 `413`을 받습니다.
 
 인바운드 Codex Responses 및 분석 라우트는 [`[server.codex_endpoint]`](/ko/reference/configuration/)가 구성된 경우에만 존재합니다. Responses 라우트는 OpenAI Responses 요청과 응답을 그대로 중계합니다. 두 분석 라우트는 같은 인바운드 인증 정책을 적용하고, 클라이언트 payload를 전달하거나 보관하지 않으며, 인증 후에는 잘못된 JSON이나 초과 크기 본문에도 `200 {}`를 반환합니다. 정제된 이벤트 이름만 `shunt.codex_client_events`에 기록되며, 메트릭 sink가 없으면 순수 폐기 sink로 동작합니다.
 

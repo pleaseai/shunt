@@ -12,6 +12,10 @@ description: shunt 作为 Claude Code LLM 网关所提供的端点。
 | `GET` | `/routes` | shunt 原生路由发现 —— 逐字返回配置的 `[[routes]]` 表(model → provider/upstream_model/effort 映射,包括 claude 前缀的发现别名);区别于 `/v1/models`,后者提供更窄的 Anthropic 协议发现响应(`id`、`display_name` 以及上游模型元数据) |
 | `POST` | `/v1/messages` | 推理 —— 按请求的 `model` id 路由 |
 | `POST` | `/v1/messages/count_tokens` | [Token 计数](/zh-cn/guides/effort-and-context/#token-counting-count_tokens) |
+| `GET` | `/managed/settings` | 按网关 JWT 提供的 Claude Code managed settings;支持 `ETag`、`If-None-Match` 与 `304 Not Modified` |
+| `POST` | `/v1/metrics` | 来自托管 Claude Code 客户端的入站 OTLP/HTTP 指标 —— verbatim 中继到 opt-in 的网关遥测目标 |
+| `POST` | `/v1/logs` | 入站 OTLP/HTTP log record —— 只中继到 `logs = true` 的目标 |
+| `POST` | `/v1/traces` | 入站 OTLP/HTTP span —— 只中继到 `traces = true` 的目标 |
 | `GET` | `/admin` | 管理仪表盘(HTML);未登录时重定向到 `/admin/login` |
 | `GET`, `POST` | `/admin/login` | 管理员 token 登录表单与浏览器会话创建 |
 | `POST` | `/admin/logout` | 清除浏览器会话 |
@@ -31,6 +35,8 @@ description: shunt 作为 Claude Code LLM 网关所提供的端点。
 | `POST` | `/codex/analytics-events/events` | Codex CLI 分析 sink —— 根路径式 `chatgpt_base_url` 形式 |
 
 `/admin*` 路由仅在配置了 [`[server.admin]`](/zh-cn/reference/configuration/#serveradmin可选) 时存在;没有该表时,它们一个都不会注册。
+
+`GET /managed/settings` 与 `POST /v1/{metrics,logs,traces}` 遥测接收路由仅在启动时启用了 `[server.gateway]` 的情况下存在,二者要求相同的网关 bearer JWT。接收路由接受托管 Claude Code 客户端 export 的 OTLP/HTTP 载荷([`[server.gateway.telemetry]`](/zh-cn/reference/configuration/) 将这些 exporter 指向网关),并把请求字节原样中继到所有 opt-in 该 signal 的目标。入站的 `content-type` 与 `content-encoding` 会被保留,目标配置的 headers 应用在其上(配置的键会替换转发值,而不是重复该 header)。客户端的 `Authorization` 头永远不会被转发,中继也不跟随重定向。目标按 signal opt-in(`metrics` 默认开启,`logs`/`traces` 默认关闭),没有任何目标 opt-in 的 signal 会被接收后丢弃。中继是分离执行的,因此无论目标状态如何,响应始终是立即的 `200`,成功 body 依照 OTLP/HTTP 镜像请求协议(`application/json` 得到 `{}`,其余得到空的 `application/x-protobuf` body)。超过 32 MiB 入站上限的 body 返回 `413`。
 
 入站 Codex Responses 和分析路由仅在配置了 [`[server.codex_endpoint]`](/zh-cn/reference/configuration/) 时存在。Responses 路由逐字中继 OpenAI Responses 请求和响应。两个分析路由采用相同的入站认证策略，不转发或保留客户端 payload，并在认证后对无效 JSON 或超大正文也返回 `200 {}`。只有净化后的事件名称会记录到 `shunt.codex_client_events`；未配置指标 sink 时，它们是纯丢弃 sink。
 

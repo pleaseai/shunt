@@ -121,6 +121,8 @@ deny = ["WebFetch"]
 
 当 `availableModels` 解析为字符串数组时,shunt 还会在 `/v1/messages` 和 `/v1/messages/count_tokens` 上对该网关用户强制执行它。比较之前,它会从客户端请求的模型中剥掉一个末尾的 Claude Code 上下文窗口提示(`[1m]` 或 `[1M]`),因此 `allowed[1m]` 能匹配 `allowed` 条目。被拒绝的模型会得到 `400 invalid_request_error`,且不会联系上游。
 
+## 遥测接收
+
 至少 opt-in 一个 signal 的遥测目标列表会同时做两件事。它通过托管设置下发遥测启用标志和五个 `OTEL_*` 环境变量值(每个 signal 的 exporter 在有目标 opt-in 该 signal 时为 `otlp`,否则为 `none`;`OTEL_EXPORTER_OTLP_ENDPOINT` 设为你的 `public_url`),把每个托管客户端的 exporter 指向网关。它还为客户端随后 POST 的入站路由启用 verbatim 中继:`POST /v1/metrics`、`POST /v1/logs` 和 `POST /v1/traces` —— 只要启用了 `[server.gateway]` 就会注册,在有目标 opt-in 之前接收后丢弃。策略中的 `env` 键仍覆盖注入的默认值:
 
 ```toml

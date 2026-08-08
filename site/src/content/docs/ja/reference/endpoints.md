@@ -12,6 +12,10 @@ description: shunt が Claude Code LLM ゲートウェイとして提供する�
 | `GET` | `/routes` | shunt ネイティブのルート discovery — 設定された `[[routes]]` テーブルをそのまま返す（model → provider/upstream_model/effort のマッピング、claude プレフィックスの discovery エイリアスを含む）。`/v1/models` とは別物で、後者はより狭い Anthropic プロトコルの discovery レスポンス（`id`、`display_name`、およびアップストリームのモデルメタデータ）を提供する |
 | `POST` | `/v1/messages` | 推論 — リクエストの `model` id に従ってルーティング |
 | `POST` | `/v1/messages/count_tokens` | [トークンカウント](/ja/guides/effort-and-context/#token-counting-count_tokens) |
+| `GET` | `/managed/settings` | ゲートウェイ JWT ごとの Claude Code managed settings。`ETag`、`If-None-Match`、`304 Not Modified` に対応 |
+| `POST` | `/v1/metrics` | 管理された Claude Code クライアントからのインバウンド OTLP/HTTP メトリクス — opt-in したゲートウェイテレメトリー宛先へ verbatim 中継 |
+| `POST` | `/v1/logs` | インバウンド OTLP/HTTP log record — `logs = true` の宛先にのみ中継 |
+| `POST` | `/v1/traces` | インバウンド OTLP/HTTP span — `traces = true` の宛先にのみ中継 |
 | `GET` | `/admin` | 管理ダッシュボード（HTML）。未サインイン時は `/admin/login` へリダイレクト |
 | `GET`, `POST` | `/admin/login` | 管理トークンのログインフォームとブラウザーセッションの作成 |
 | `POST` | `/admin/logout` | ブラウザーセッションの破棄 |
@@ -31,6 +35,8 @@ description: shunt が Claude Code LLM ゲートウェイとして提供する�
 | `POST` | `/codex/analytics-events/events` | Codex CLI analytics sink — ルート形式の `chatgpt_base_url` |
 
 `/admin*` ルートは [`[server.admin]`](/ja/reference/configuration/#serveradminオプション) が設定されている場合にのみ存在します。そのテーブルがなければ、いずれも登録されません。
+
+`GET /managed/settings` と `POST /v1/{metrics,logs,traces}` のテレメトリー受信ルートは、起動時に `[server.gateway]` が有効だった場合にのみ存在し、どちらも同じゲートウェイのベアラー JWT を要求します。受信ルートは、管理された Claude Code クライアントが export する OTLP/HTTP ペイロードを受け取り（[`[server.gateway.telemetry]`](/ja/reference/configuration/) がそれらの exporter をゲートウェイへ向けます）、リクエストのバイト列をその signal に opt-in したすべての宛先へそのまま中継します。インバウンドの `content-type` と `content-encoding` は保持され、宛先に設定された headers がその上に適用されます（設定されたキーは転送値を置き換え、ヘッダーを重複させません）。クライアントの `Authorization` ヘッダーが転送されることはなく、中継はリダイレクトに従いません。宛先は signal ごとに opt-in し（`metrics` はデフォルト on、`logs`／`traces` は off）、どの宛先も opt-in していない signal は受理後に破棄されます。中継はデタッチされているため、宛先の状態にかかわらずレスポンスは常に即座の `200` で、成功ボディは OTLP/HTTP に従いリクエストのプロトコルをミラーします（`application/json` には `{}`、それ以外には空の `application/x-protobuf` ボディ）。32 MiB の受信上限を超えるボディは `413` を返します。
 
 Inbound Codex Responses と analytics のルートは [`[server.codex_endpoint]`](/ja/reference/configuration/) が設定されている場合にのみ存在します。Responses ルートは OpenAI Responses のリクエストとレスポンスをそのまま中継します。2 つの analytics ルートは同じ inbound auth ポリシーを適用し、クライアント payload を転送または保持せず、認証後は不正な JSON やサイズ超過の body にも `200 {}` を返します。サニタイズ済みイベント名だけを `shunt.codex_client_events` に記録し、metric sink がなければ純粋な破棄 sink として動作します。
 

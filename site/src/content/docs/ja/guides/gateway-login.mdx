@@ -139,6 +139,8 @@ Claude Code のコンテキストウィンドウヒント（`[1m]` または `[1
 `allowed` エントリに一致します。拒否されたモデルは、アップストリームに問い合わせることなく
 `400 invalid_request_error` を受け取ります。
 
+## テレメトリーの受信
+
 いずれかの signal を opt-in したテレメトリーの宛先リストは、2 つのことを同時に行います。管理された設定を通じてテレメトリーの有効化フラグと 5 つの `OTEL_*`
 環境変数値を配布し（各 signal の exporter は、その signal を opt-in した宛先があれば `otlp`、なければ `none`。`OTEL_EXPORTER_OTLP_ENDPOINT` は `public_url`）、すべての管理されたクライアントの exporter をゲートウェイに向けます。さらに、クライアントがその後 POST する受信ルート `POST /v1/metrics`・`POST /v1/logs`・`POST /v1/traces` の verbatim 中継を有効にします。これらのルートは `[server.gateway]` が有効なら常に登録され、宛先が opt-in するまでは受理して破棄します。ポリシーの `env` キーは、注入されたデフォルトを上書きします。
 
