@@ -332,7 +332,10 @@ matching was built for.
 Managed provisioning and store metadata remain available under a collapsed
 **Manage pool accounts (advanced)** section. `AccountPool::snapshot(provider, &[AccountConfig], model)` returns a token-free,
 serializable view per account: 5h/7d/7d_oi utilization + reset, unified status,
-cooldown-seconds-remaining, `near_quota`, and a derived `available` flag. It reads
+account-wide cooldown-seconds-remaining, Fable-only cooldown-seconds-remaining,
+`near_quota`, and a derived `available` flag. The Fable-only cooldown counts
+toward `available` only when `model` is a Fable model, so an account cooling on
+its `7d_oi` bucket still reports available to every other family. It reads
 the same `entries` map `select_order` reads, clears only already-past quota
 buckets (as the next selection would), never mutates the round-robin cursor, and
 never inserts entries for accounts the pool has not yet seen (reported as
