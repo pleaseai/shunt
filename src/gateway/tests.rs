@@ -2463,3 +2463,72 @@ async fn telemetry_ingest_rejects_a_body_over_the_cap() {
     assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
     assert_eq!(body["error"]["type"], "invalid_request_error");
 }
+
+/// At the in-flight relay limit the payload is shed, not queued: the client
+/// still gets its `200` and the destination simply never sees that flush.
+///
+/// The permits live on the router's own `GatewayStores`, so exhausting them
+/// here cannot starve a sibling test's relays the way a process-wide static
+/// would.
+#[tokio::test]
+async fn telemetry_ingest_sheds_relays_at_the_in_flight_limit() {
+    let mut sink = telemetry_sink().await;
+    let (mut config, _env) = GatewayEnv::config("telemetry-shed");
+    config.server.gateway.as_mut().unwrap().telemetry = Some(GatewayTelemetryConfig {
+        forward_to: vec![telemetry_destination(&sink.base_url)],
+    });
+    let (router, _, state) = build_router(config).unwrap();
+    let bearer = gateway_bearer("dev@example.com");
+    // Distinct payloads so a delivery identifies which request produced it.
+    let shed_payload = otlp_payload();
+    let admitted_payload = vec![0x7fu8, 0x11, 0x22, 0x33];
+
+    // Hold every permit for the duration of the request.
+    let permits = state
+        .gateway_stores
+        .telemetry_relay_permits
+        .clone()
+        .acquire_many_owned(
+            u32::try_from(crate::gateway::telemetry_ingest::MAX_INFLIGHT_RELAYS).unwrap(),
+        )
+        .await
+        .expect("relay semaphore is never closed");
+
+    let (status, body) = json_response(
+        router.clone(),
+        telemetry_request(
+            "/v1/metrics",
+            Some(&bearer),
+            "application/x-protobuf",
+            shed_payload.clone(),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, json!({}));
+
+    // Releasing the permits lets a second request through, which both proves
+    // the sink and route are otherwise working and gives a completed round trip
+    // to check the shed request's absence against.
+    drop(permits);
+    let (status, _) = json_response(
+        router,
+        telemetry_request(
+            "/v1/metrics",
+            Some(&bearer),
+            "application/x-protobuf",
+            admitted_payload.clone(),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // The payloads differ, so this identifies *which* request was relayed. The
+    // shed request's relay would have been spawned first and so would arrive
+    // first; asserting on the body rather than just the count is what makes
+    // this fail if the admission gate is bypassed.
+    let relayed = sink.next().await;
+    assert_eq!(relayed.body, admitted_payload);
+    assert_ne!(relayed.body, shed_payload);
+    sink.assert_nothing_further();
+}

@@ -50,6 +50,24 @@ const MAX_TELEMETRY_BODY_BYTES: usize = 32 * 1024 * 1024;
 /// the redirect policy.
 const RELAY_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How many relay tasks may be in flight at once, across all destinations and
+/// signals, per [`crate::gateway::GatewayStores`].
+///
+/// Relays are detached, so their payload bytes outlive the request that
+/// accepted them: the inbound concurrency permit rides the response body and
+/// releases as soon as the empty `{}` is written, while a relay may hold its
+/// copy for up to [`RELAY_TIMEOUT`]. Without a bound, retained heap would be
+/// "everything accepted in the last 30 seconds", which is set by client
+/// traffic rather than by anything shunt controls.
+///
+/// The arithmetic: worst-case resident payload bytes are
+/// `MAX_INFLIGHT_RELAYS × MAX_TELEMETRY_BODY_BYTES` = 64 × 32 MiB = 2 GiB, and
+/// that requires every one of the 64 slots to hold a maximum-size body at the
+/// same moment. Real OTLP exports run orders of magnitude smaller, so the
+/// practical ceiling is far below that; the number's job is to make the worst
+/// case finite and computable rather than open-ended.
+pub(crate) const MAX_INFLIGHT_RELAYS: usize = 64;
+
 /// The three OTLP/HTTP signals the gateway ingests.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Signal {
@@ -109,9 +127,12 @@ async fn ingest(
     body: Body,
 ) -> Response {
     let state = state.refreshed();
-    // Same guard as `managed::get`: a reload that removed `[server.gateway]`
-    // leaves the boot-registered routes in place with no auth to check against,
-    // so fail closed rather than accept unauthenticated telemetry.
+    // Defensive, not a reload path: `reload` deliberately keeps the previous
+    // `gateway_auth` when a new config drops `[server.gateway]`, warning that
+    // toggling the table needs a restart, so JWTs issued before such a reload
+    // keep authenticating until then. `None` therefore means the state was
+    // built without a gateway at all, and there is nothing to authenticate
+    // against — fail closed.
     let Some(auth) = &state.gateway_auth else {
         return unauthorized(signal);
     };
@@ -152,10 +173,25 @@ async fn ingest(
     let content_encoding = headers.get(header::CONTENT_ENCODING).cloned();
 
     let mut relayed = 0usize;
+    let mut shed = 0usize;
     for destination in destinations
         .iter()
         .filter(|destination| signal.opted_in(destination))
     {
+        // `try_acquire_owned`, never `acquire`: waiting for admission would put
+        // the saturated case back on the client's critical path, which is the
+        // one thing the detached design exists to avoid. A saturated gateway
+        // drops this payload instead — telemetry is lossy by nature, and
+        // shedding it is strictly better than growing unbounded heap.
+        let Ok(permit) = state
+            .gateway_stores
+            .telemetry_relay_permits
+            .clone()
+            .try_acquire_owned()
+        else {
+            shed += 1;
+            continue;
+        };
         spawn_relay(
             destination.clone(),
             signal,
@@ -163,20 +199,35 @@ async fn ingest(
             body.clone(),
             content_type.clone(),
             content_encoding.clone(),
+            permit,
         );
         relayed += 1;
     }
 
-    if relayed == 0 {
+    if shed > 0 {
+        tracing::warn!(
+            signal = signal.label(),
+            shed,
+            relayed,
+            limit = MAX_INFLIGHT_RELAYS,
+            "shed inbound gateway telemetry relays at the in-flight limit"
+        );
+    } else if relayed == 0 {
         tracing::debug!(
             signal = signal.label(),
             bytes = body.len(),
             "discarded inbound gateway telemetry: no destination opted in to this signal"
         );
     }
+    // One count per request. `shed` wins over `discarded` when nothing was
+    // relayed, so saturation is never reported as a routine discard.
     crate::metrics::record_gateway_telemetry_ingest(
         signal.label(),
-        if relayed == 0 { "discarded" } else { "relayed" },
+        match (relayed, shed) {
+            (0, 0) => "discarded",
+            (0, _) => "shed",
+            _ => "relayed",
+        },
     );
 
     (StatusCode::OK, Json(serde_json::json!({}))).into_response()
@@ -194,14 +245,19 @@ fn unauthorized(signal: Signal) -> Response {
 
 /// Relay one payload to one destination as a detached task, so the client's
 /// `200` never waits on a collector and destinations proceed concurrently.
+///
+/// `permit` is moved into the task and dropped when it ends, so a slot stays
+/// consumed for exactly as long as the payload bytes are resident.
 fn spawn_relay(
     destination: GatewayTelemetryDestination,
     signal: Signal,
     body: Bytes,
     content_type: Option<HeaderValue>,
     content_encoding: Option<HeaderValue>,
+    permit: tokio::sync::OwnedSemaphorePermit,
 ) {
     tokio::spawn(async move {
+        let _permit = permit;
         let url = signal_url(&destination.url, signal);
         let host = destination_host(&url);
         let mut request = relay_client().post(&url).timeout(RELAY_TIMEOUT).body(body);

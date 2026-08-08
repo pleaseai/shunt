@@ -341,6 +341,11 @@ pub struct GatewayStores {
     pub oidc_states: OidcStateStore,
     pub oidc_discovery: Mutex<HashMap<String, DiscoveredEndpoints>>,
     pub oidc_client: reqwest::Client,
+    /// Admission for detached inbound-telemetry relay tasks
+    /// ([`super::telemetry_ingest`]). Each in-flight relay holds one permit for
+    /// its lifetime, so this is the ceiling on how many accepted payloads can
+    /// be resident outside any request's lifetime at once.
+    pub telemetry_relay_permits: Arc<tokio::sync::Semaphore>,
 }
 
 impl GatewayStores {
@@ -355,6 +360,9 @@ impl GatewayStores {
                 .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .expect("OIDC HTTP client configuration is valid"),
+            telemetry_relay_permits: Arc::new(tokio::sync::Semaphore::new(
+                super::telemetry_ingest::MAX_INFLIGHT_RELAYS,
+            )),
         }
     }
 }

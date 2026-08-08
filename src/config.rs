@@ -683,16 +683,39 @@ fn validate_gateway_telemetry_destination(
             message: error.to_string(),
         }
     })?;
-    if matches!(url.scheme(), "http" | "https") && url.host_str().is_some() {
-        return Ok(());
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return Err(ConfigError::InvalidGatewayTelemetryUrl {
+            index,
+            message: format!(
+                "must be an http(s) URL with a host, got `{}`",
+                destination.url
+            ),
+        });
     }
-    Err(ConfigError::InvalidGatewayTelemetryUrl {
-        index,
-        message: format!(
-            "must be an http(s) URL with a host, got `{}`",
-            destination.url
-        ),
-    })
+    // The destination is a *base* endpoint that shunt extends by string
+    // concatenation to reach `/v1/<signal>`. A query or fragment would land on
+    // the wrong side of that join (`…?tenant=x/v1/metrics`), and userinfo would
+    // put a credential in a URL that reaches error paths and logs. All three
+    // are rejected at boot rather than silently misrouted.
+    let offending = if url.query().is_some() {
+        Some("a query string")
+    } else if url.fragment().is_some() {
+        Some("a fragment")
+    } else if !url.username().is_empty() || url.password().is_some() {
+        Some("embedded credentials")
+    } else {
+        None
+    };
+    if let Some(offending) = offending {
+        return Err(ConfigError::InvalidGatewayTelemetryUrl {
+            index,
+            message: format!(
+                "must be a base OTLP endpoint (scheme, host, optional path) without {offending}; \
+                 shunt appends `/v1/<signal>` to it"
+            ),
+        });
+    }
+    Ok(())
 }
 
 fn validate_managed_policy(
@@ -5530,6 +5553,58 @@ id = "claude-sonnet-5"
         assert!(otel.traces && otel.metrics && otel.logs);
         assert!(!otel.include_session_id);
         assert!(otel.headers.is_empty());
+    }
+
+    /// A destination URL is a *base* endpoint that `signal_url` extends by
+    /// string concatenation, so a query, fragment, or embedded credential is
+    /// rejected at boot rather than misrouted or leaked into a log.
+    #[test]
+    fn gateway_telemetry_rejects_query_fragment_and_userinfo_urls() {
+        for url in [
+            "https://collector.example?tenant=acme",
+            "https://collector.example#frag",
+            "https://user:secret@collector.example",
+        ] {
+            let telemetry = GatewayTelemetryConfig {
+                forward_to: vec![GatewayTelemetryDestination {
+                    url: url.to_string(),
+                    headers: None,
+                    metrics: true,
+                    logs: false,
+                    traces: false,
+                }],
+            };
+            assert!(
+                matches!(
+                    super::validate_gateway_telemetry(Some(&telemetry)),
+                    Err(ConfigError::InvalidGatewayTelemetryUrl { index: 0, .. })
+                ),
+                "{url} must be rejected"
+            );
+        }
+    }
+
+    /// The shapes that stay valid: a bare origin and one with a path prefix.
+    #[test]
+    fn gateway_telemetry_accepts_base_endpoints_with_and_without_a_path() {
+        for url in [
+            "https://collector.example",
+            "https://collector.example/otlp",
+        ] {
+            let telemetry = GatewayTelemetryConfig {
+                forward_to: vec![GatewayTelemetryDestination {
+                    url: url.to_string(),
+                    headers: None,
+                    metrics: true,
+                    logs: false,
+                    traces: false,
+                }],
+            };
+            assert!(
+                super::validate_gateway_telemetry(Some(&telemetry)).is_ok(),
+                "{url} must be accepted"
+            );
+        }
     }
 
     #[test]

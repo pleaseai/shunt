@@ -333,9 +333,11 @@ pub fn record_codex_client_event(event: &str) {
 /// Record one inbound gateway OTLP payload (issue #189), tagged with the
 /// `signal` it was posted for (`metrics`/`logs`/`traces`) and the `outcome`:
 /// `relayed` when at least one destination opted in, `discarded` when none did,
-/// and `rejected` for a request refused before ingest (bad bearer, unreadable
-/// or over-cap body). Both attributes are fixed strings chosen by shunt — no
-/// part of the payload, its headers, or the destination reaches either sink.
+/// `shed` when the in-flight relay limit was saturated so nothing could be
+/// relayed, and `rejected` for a request refused before ingest (bad bearer,
+/// unreadable or over-cap body). Both attributes are fixed strings chosen by
+/// shunt — no part of the payload, its headers, or the destination reaches
+/// either sink.
 pub fn record_gateway_telemetry_ingest(signal: &'static str, outcome: &'static str) {
     sentry::metrics::counter("shunt.gateway_telemetry_ingest", 1)
         .attribute("signal", signal.to_owned())
