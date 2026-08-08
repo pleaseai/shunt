@@ -30,6 +30,12 @@ use crate::{
     error::ShuntError, server::AppState,
 };
 
+/// Representative Fable model id used to take the Fable-scoped availability
+/// snapshot that governs the `7d_oi` limit. `accounts::is_fable_model` matches
+/// on the `fable` substring, so any Fable id behaves identically; this is the
+/// catalog id from `discovery.rs`.
+const FABLE_PROBE_MODEL: &str = "claude-fable-5";
+
 /// Exactly Anthropic's `/api/oauth/usage` schema, as parsed by
 /// `crate::auth::claude::usage`'s `parse_usage`/`parse_window`/
 /// `parse_fable_window` — this is not a new contract, it is the mirror of one
@@ -150,10 +156,20 @@ fn window_wire(
 /// I/O, no locking — the caller resolves the snapshots first. `pub(crate)` so
 /// `crate::auth::claude::usage`'s test module can round-trip a built response
 /// through its own private parser (see that module's tests).
-pub(crate) fn to_wire(snapshots: &[AccountSnapshot]) -> OauthUsageWire {
+///
+/// Takes two snapshot sets because `AccountSnapshot::available` is
+/// model-scoped: a Fable-only cooldown or an isolated `7d_oi` rejection leaves
+/// an account available to every other family. `snapshots` (taken with
+/// `model = None`) governs the shared 5h/7d windows; `fable_snapshots` (taken
+/// with a Fable model) governs the `7d_oi` limit, so that bar is computed from
+/// the account Fable traffic would actually route to.
+pub(crate) fn to_wire(
+    snapshots: &[AccountSnapshot],
+    fable_snapshots: &[AccountSnapshot],
+) -> OauthUsageWire {
     let five_hour = window_wire(snapshots, |s| s.utilization_5h, |s| s.reset_5h);
     let seven_day = window_wire(snapshots, |s| s.utilization_7d, |s| s.reset_7d);
-    let fable = routing_aware_window(snapshots, |s| s.utilization_7d_oi, |s| s.reset_7d_oi);
+    let fable = routing_aware_window(fable_snapshots, |s| s.utilization_7d_oi, |s| s.reset_7d_oi);
     let limits = match fable {
         Some((used, resets_at)) => {
             let (percent, resets_at) = to_percent_and_reset(used, resets_at);
@@ -225,6 +241,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     }
 
     let mut snapshots = Vec::new();
+    let mut fable_snapshots = Vec::new();
     for (name, provider) in &state.config.providers {
         // Codex/Cursor/etc. never contribute to this endpoint: the CLI is
         // asking about its own Claude subscription, and blending in a
@@ -267,8 +284,17 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             None,
             state.config.server.pool.as_ref(),
         ));
+        // Second pass under a Fable model: `available` is model-scoped, so the
+        // `model = None` set above would report a Fable-cooled (or
+        // `7d_oi`-rejected) account as usable for the Fable limit.
+        fable_snapshots.extend(state.accounts.snapshot(
+            name,
+            &resolved,
+            Some(FABLE_PROBE_MODEL),
+            state.config.server.pool.as_ref(),
+        ));
     }
-    Json(to_wire(&snapshots)).into_response()
+    Json(to_wire(&snapshots, &fable_snapshots)).into_response()
 }
 
 #[cfg(test)]

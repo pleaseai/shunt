@@ -98,6 +98,13 @@ cooldown countdown), not a general-purpose reimplementation of it. `GET /usage` 
 unchanged: it keeps its pool-wide, identity-blind, cross-provider contract for its own
 audience.
 
+Step 2's `available` is **model-scoped** since Fable quota was split off into its own
+cooldown and `7d_oi` rejection: a Fable-only cooldown leaves an account available to every
+other family. The handler therefore takes two snapshot sets — one with `model = None` for
+the shared 5h/7d windows, and one with a Fable model (`FABLE_PROBE_MODEL`) for the `7d_oi`
+limit — so the Fable bar is computed from the account Fable traffic would actually be routed
+to, not from a Fable-cooled account that still looks usable to non-Fable traffic.
+
 ## Configuration
 
 A new opt-in `[server.oauth_usage]` table, mirroring the `[server.usage]` (M12) and

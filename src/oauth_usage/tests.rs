@@ -50,7 +50,7 @@ fn routing_aware_window_returns_none_when_no_account_reports_it() {
 #[test]
 fn to_wire_omits_absent_windows_and_fable_limit() {
     let snapshots = [snapshot("a", 100, true, None, None)];
-    let wire = to_wire(&snapshots);
+    let wire = to_wire(&snapshots, &snapshots);
     let body = serde_json::to_value(&wire).unwrap();
     assert!(body.get("five_hour").is_none());
     assert!(body.get("seven_day").is_none());
@@ -66,7 +66,7 @@ fn to_wire_rounds_percent_to_two_decimals() {
         Some(0.423_712),
         Some(1_800_000_000),
     )];
-    let wire = to_wire(&snapshots);
+    let wire = to_wire(&snapshots, &snapshots);
     let body = serde_json::to_value(&wire).unwrap();
     assert_eq!(body["five_hour"]["utilization"], json!(42.37));
     assert_eq!(
@@ -107,6 +107,54 @@ fn falls_back_to_full_set_when_no_account_is_available() {
     // lowest-priority value present in that fallback set) governs.
     assert_eq!(used, 0.99);
     assert_eq!(resets_at, Some(111));
+}
+
+/// A seen account snapshot reporting only the `7d_oi` (Fable) window.
+fn oi_snapshot(
+    name: &str,
+    priority: u32,
+    available: bool,
+    util_7d_oi: f64,
+    reset_7d_oi: u64,
+) -> AccountSnapshot {
+    AccountSnapshot {
+        utilization_7d_oi: Some(util_7d_oi),
+        reset_7d_oi: Some(reset_7d_oi),
+        ..snapshot(name, priority, available, None, None)
+    }
+}
+
+/// `AccountSnapshot::available` is model-scoped: a Fable-only cooldown (or an
+/// isolated `7d_oi` rejection) leaves an account available to every other
+/// family, so the `model = None` snapshot set describes *non-Fable* routing.
+/// The `7d_oi` limit must therefore be computed from a Fable-scoped set, or
+/// the synthesized Fable bar reports the preferred account that Fable traffic
+/// will not actually be routed to. Passing `snapshots` for both arguments
+/// reports 95% here instead of the correct 5%.
+#[test]
+fn fable_limit_uses_fable_scoped_availability_not_the_model_none_set() {
+    // Preferred account is cooling on Fable only: available for other
+    // families, unavailable for Fable.
+    let general = [
+        oi_snapshot("preferred", 1, true, 0.95, 111),
+        oi_snapshot("backup", 100, true, 0.05, 222),
+    ];
+    let fable = [
+        oi_snapshot("preferred", 1, false, 0.95, 111),
+        oi_snapshot("backup", 100, true, 0.05, 222),
+    ];
+
+    let body = serde_json::to_value(to_wire(&general, &fable)).unwrap();
+    assert_eq!(body["limits"][0]["percent"], json!(5.0));
+    assert_eq!(
+        body["limits"][0]["resets_at"],
+        json!("1970-01-01T00:03:42Z")
+    );
+
+    // Guard the premise: the same call fed the non-Fable set for both reports
+    // the cooled preferred account, which is the bug this test pins.
+    let regressed = serde_json::to_value(to_wire(&general, &general)).unwrap();
+    assert_eq!(regressed["limits"][0]["percent"], json!(95.0));
 }
 
 /// Config with `[server.auth]` bound to a unique env var and one explicit

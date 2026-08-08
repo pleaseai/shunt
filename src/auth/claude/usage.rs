@@ -365,7 +365,10 @@ mod tests {
             status: None,
         };
 
-        let wire = crate::oauth_usage::to_wire(std::slice::from_ref(&snapshot));
+        let wire = crate::oauth_usage::to_wire(
+            std::slice::from_ref(&snapshot),
+            std::slice::from_ref(&snapshot),
+        );
         let value = serde_json::to_value(&wire).unwrap();
 
         let five_hour = parse_window(value.get("five_hour")).expect("five_hour present");
