@@ -1,0 +1,75 @@
+site/src/content/docs/ko/guides/anthropic-multi-account.mdx
+  s_48d01760c9e79c::t_8ce969e8ba2dfe 122-123,127,183-184
+docs/m8-anthropic-multi-account.md
+  s_48d01760c9e79c::t_e6a0cacf864e34 154
+  s_48d01760c9e79c::t_bb4dff0acb04d8 130-131
+  s_48d01760c9e79c::t_6861c2cc43572c 165-166
+  s_48d01760c9e79c::t_2f1f0d209f3312 139
+  s_48d01760c9e79c::t_6dced8c85a0d3c 124-125
+site/src/content/docs/ja/guides/anthropic-multi-account.mdx
+  s_48d01760c9e79c::t_8ce969e8ba2dfe 122-123,127,183-184
+site/src/content/docs/reference/configuration.md
+  s_48d01760c9e79c::t_29ef237b4e0b84 346
+src/oauth_usage/tests.rs
+  s_48d01760c9e79c::t_13c2207ed2904d 27
+src/usage/tests.rs
+  s_48d01760c9e79c::t_c6e62f3719dc65 26
+src/adapters/anthropic/mod.rs
+  s_48d01760c9e79c::t_59fa188a79acc7 543-557
+  s_48d01760c9e79c::t_34808c9e28286f 320-322
+  s_48d01760c9e79c::t_5112c72e13f8e9 151
+  s_48d01760c9e79c::t_a644a2a4a311c9 327-328,333
+  s_48d01760c9e79c::t_a10e99ef9cc684 256-261,473-478
+  s_48d01760c9e79c::t_a73c2a54b8e6ed 279-280,285
+  s_48d01760c9e79c::t_1e5188f3238976 503-504,509
+src/accounts.rs
+  s_48d01760c9e79c::t_a95582d7a5f629 1237,1243,1249
+  s_48d01760c9e79c::t_c138131a448040 1054,1277-1283
+  s_48d01760c9e79c::t_62e141a5c574a4 544-546
+  s_48d01760c9e79c::t_3214267ec7c4e4 183,185-186
+  s_48d01760c9e79c::t_eb0e14e4aa80ba 799
+  s_48d01760c9e79c::t_0b3f39df6e1fd5 1041,1045-1053
+  s_48d01760c9e79c::t_25e45e803b4349 2377-2383,2385,2388-2395
+  s_48d01760c9e79c::t_fd8cf031c5ecc1 85-90
+  s_48d01760c9e79c::t_21f080ced019e6 469-473
+  s_48d01760c9e79c::t_c1a6689ae0578b 2354-2366,2368-2376,2384,2386-2387,2396-2422,2424-2434,2437-2461,2463-2567,2572-2576
+  s_48d01760c9e79c::t_9836f2fc3665dd 149
+  s_48d01760c9e79c::t_82c56b541dac9b 213
+  s_48d01760c9e79c::t_b1ae470f8e1577 326-327
+  s_48d01760c9e79c::t_a10e99ef9cc684 466-468,579,1128-1129,2367,2423,2435-2436,2462,2568-2571
+  s_48d01760c9e79c::t_5a4d1e461ba31e 578,580-588,594-597,606,612-621,627-629
+  s_48d01760c9e79c::t_cf41bc92605d1d 1018-1023
+  s_48d01760c9e79c::t_5d33199c103965 105-107
+  s_48d01760c9e79c::t_f046dd2db89e88 1119-1127,1130-1137
+  s_48d01760c9e79c::t_7231c795f3d4fc 787-792
+  s_48d01760c9e79c::t_2f4900a7697a13 1258-1262
+  s_48d01760c9e79c::t_3b8569611b8328 1055
+  s_48d01760c9e79c::t_1c6ee9ebd4622f 1257
+src/auth/claude/usage.rs
+  s_48d01760c9e79c::t_8573293cfe2d4b 355
+src/admin/script.rs
+  s_48d01760c9e79c::t_40a164259ec46b 272
+  s_48d01760c9e79c::t_3be4b713778db7 264
+site/src/content/docs/guides/anthropic-multi-account.mdx
+  s_48d01760c9e79c::t_810a769700d7ad 127
+  s_48d01760c9e79c::t_e4d9fe3571a491 185-186
+  s_48d01760c9e79c::t_941e67802a7d7e 122-123
+site/src/content/docs/zh-cn/guides/anthropic-multi-account.mdx
+  s_48d01760c9e79c::t_8ce969e8ba2dfe 122-123,127,183-184
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "2262e97dec9f4e4f069c18e20b25610d1768a741",
+  "prompts": {},
+  "sessions": {
+    "s_48d01760c9e79c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "694dd4db-4f17-40d9-b4c3-6ee5b0f9c711",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
