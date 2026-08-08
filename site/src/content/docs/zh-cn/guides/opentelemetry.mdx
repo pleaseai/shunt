@@ -5,6 +5,8 @@ description: 可选启用的 OTLP 导出,将 trace、指标与日志发送到你
 
 shunt 可以通过 OTLP/HTTP 将 **trace、指标和日志** 导出到你自己的 OpenTelemetry Collector(或任何 OTLP 兼容后端)。它是**可选启用、默认关闭**的 —— 没有 `[otel]` 段时,任何数据都不会离开本机 —— 并且与 Sentry 相互独立,你可以只启用其一或两者都启用。
 
+本页讲的是 shunt **自身**向外发送的遥测。网关独立的[遥测接收](/zh-cn/guides/gateway-login/)处理相反的方向 —— 托管 Claude Code **客户端**发送*给* shunt 的 OTLP 载荷,verbatim 中继到 `[server.gateway.telemetry]` 中的目标。两者独立配置,可以指向不同的 collector。
+
 ## 启用
 
 一个键即可启用 —— 指向你的 collector 的 OTLP/HTTP 接收端:
@@ -55,6 +57,7 @@ authorization = "Bearer <token>"
 | `shunt.codex_continuation` | 计数器 | `provider`, `outcome` | Codex WebSocket continuation 的 hit 或 fallback。 |
 | `shunt.codex_ws_overflow` | 计数器 | `provider`, `outcome` | 并发 turn 使用专用 overflow 连接时记录 `opened`，达到连接上限被拒绝时记录 `refused`（issue #248）。 |
 | `shunt.codex_client_events` | 计数器 | `event` | 按净化后的事件名称统计 Codex CLI 分析事件；payload 和属性会被丢弃。 |
+| `shunt.gateway_telemetry_ingest` | 计数器 | `signal`, `outcome` | 按接收结果统计入站网关 OTLP 载荷（`metrics`/`logs`/`traces`）：`relayed`；没有任何目标 opt-in 时为 `discarded`；在途中继上限饱和时为 `shed`；bearer 无效或 body 超限时为 `rejected`。 |
 | `shunt.upstream_retries` | 计数器 | `provider`, `reason` | 有次数限制的临时上游重试。 |
 | `shunt.failover` | 计数器 | `provider`, `state` | 有序上游故障转移状态：`attempted`、`advanced` 或 `exhausted`。 |
 | `shunt.requests_shed` | 计数器 | — | 在 `max_concurrent_requests` 上限处被拒绝的入站请求。拒绝本身仅以 `debug!` 记录，因此这个计数器才是网关饱和的可见信号。 |

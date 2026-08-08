@@ -5,6 +5,8 @@ description: 트레이스, 메트릭, 로그를 자체 컬렉터/백엔드로 �
 
 shunt는 **트레이스, 메트릭, 로그**를 OTLP/HTTP로 자체 OpenTelemetry Collector(또는 OTLP 호환 백엔드)에 내보낼 수 있습니다. **옵트인이며 기본적으로 꺼져 있습니다** — `[otel]` 섹션이 없으면 아무것도 머신 밖으로 나가지 않습니다 — 그리고 Sentry와 독립적으로 동작하므로 둘 중 하나 또는 둘 다 켤 수 있습니다.
 
+이 페이지는 밖으로 나가는 shunt **자체**의 텔레메트리를 다룹니다. 게이트웨이의 별도 [텔레메트리 ingest](/ko/guides/gateway-login/)는 반대 방향 — 관리형 Claude Code **클라이언트**가 shunt로 보내는 OTLP 페이로드 — 을 담당하며, `[server.gateway.telemetry]`의 목적지로 verbatim relay합니다. 둘은 독립적으로 구성되며 서로 다른 컬렉터를 가리킬 수 있습니다.
+
 ## 활성화
 
 키 하나로 켜집니다 — 컬렉터의 OTLP/HTTP 리시버를 가리키세요:
@@ -55,6 +57,7 @@ authorization = "Bearer <token>"
 | `shunt.codex_continuation` | 카운터 | `provider`, `outcome` | Codex WebSocket continuation hit 또는 fallback. |
 | `shunt.codex_ws_overflow` | 카운터 | `provider`, `outcome` | 동시 turn이 전용 overflow 연결을 열면 `opened`, 연결 상한에서 거부되면 `refused` (issue #248). |
 | `shunt.codex_client_events` | 카운터 | `event` | 정제된 이벤트 이름별 Codex CLI 분석 이벤트. payload와 속성은 폐기됨. |
+| `shunt.gateway_telemetry_ingest` | 카운터 | `signal`, `outcome` | 인바운드 게이트웨이 OTLP 페이로드(`metrics`/`logs`/`traces`)를 ingest 결과별로 집계: `relayed`, 어떤 목적지도 opt-in하지 않았으면 `discarded`, 동시 relay 상한에서 포화됐으면 `shed`, 잘못된 bearer나 상한 초과 바디는 `rejected`. |
 | `shunt.upstream_retries` | 카운터 | `provider`, `reason` | 제한된 일시적 업스트림 재시도. |
 | `shunt.failover` | 카운터 | `provider`, `state` | 순서 있는 업스트림 페일오버 전환: `attempted`, `advanced`, `exhausted`. |
 | `shunt.requests_shed` | 카운터 | — | `max_concurrent_requests` 상한에서 거부된 인바운드 요청. 거부 자체는 `debug!`로만 로깅되므로, 게이트웨이 포화 상태를 드러내는 것은 이 카운터입니다. |

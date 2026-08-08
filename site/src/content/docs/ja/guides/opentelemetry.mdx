@@ -5,6 +5,8 @@ description: トレース・メトリクス・ログを自分のコレクター/
 
 shunt は **トレース・メトリクス・ログ** を OTLP/HTTP で自分の OpenTelemetry Collector(または OTLP 互換バックエンド)へエクスポートできます。**オプトインで、デフォルトはオフ** です — `[otel]` セクションがなければ、何もマシンの外に出ません — そして Sentry とは独立して動作するため、どちらか一方でも両方でも有効にできます。
 
+このページは、外へ出ていく shunt **自身の** テレメトリーについてのものです。ゲートウェイの独立した[テレメトリー受信](/ja/guides/gateway-login/#テレメトリーの受信)は逆方向 — 管理された Claude Code **クライアント** が shunt へ送る OTLP ペイロード — を扱い、`[server.gateway.telemetry]` の宛先へ verbatim に中継します。両者は独立して設定され、異なるコレクターを指すこともできます。
+
 ## 有効化
 
 キー 1 つで有効になります。コレクターの OTLP/HTTP レシーバーを指定してください:
@@ -55,6 +57,7 @@ authorization = "Bearer <token>"
 | `shunt.codex_continuation` | カウンター | `provider`, `outcome` | Codex WebSocket continuation の hit または fallback。 |
 | `shunt.codex_ws_overflow` | カウンター | `provider`, `outcome` | 並行 turn が専用 overflow 接続を開いた場合は `opened`、接続上限で拒否された場合は `refused`（issue #248）。 |
 | `shunt.codex_client_events` | カウンター | `event` | サニタイズ済みイベント名ごとの Codex CLI analytics イベント。payload とプロパティは破棄される。 |
+| `shunt.gateway_telemetry_ingest` | カウンター | `signal`, `outcome` | インバウンドのゲートウェイ OTLP ペイロード(`metrics`/`logs`/`traces`)を受信結果別に集計: `relayed`、どの宛先も opt-in していなければ `discarded`、飛行中の中継上限で飽和していれば `shed`、不正なベアラーや上限超過ボディは `rejected`。 |
 | `shunt.upstream_retries` | カウンター | `provider`, `reason` | 回数制限付きの一時的な upstream retry。 |
 | `shunt.failover` | カウンター | `provider`, `state` | 順序付きアップストリームのフェイルオーバー遷移: `attempted`, `advanced`, `exhausted`。 |
 | `shunt.requests_shed` | カウンター | — | `max_concurrent_requests` の上限で拒否されたインバウンドリクエスト。拒否自体は `debug!` でのみログ出力されるため、ゲートウェイの飽和を可視化するのはこのカウンターです。 |
