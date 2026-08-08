@@ -28,7 +28,12 @@ Verified security posture (after the in-PR review round):
   client reaching the Anthropic route can have the gateway attach the accepted marker to its own
   request on the operator's pooled credentials. This is *not* a new capability — the marker is a
   public constant string, and a client can put it in its own `system[0]` and be accepted with or
-  without this module, so the diff does not change what an attacker can reach. The trigger was
+  without this module, so the diff does not change what an attacker can reach. **Verified against
+  the code (`f073eea` pass):** nothing on the Anthropic route strips, normalizes, or validates a
+  client-supplied `system` array — `headers::filtered` is header-only, and the only body mutations
+  are `normalize_upstream_model_request`, `rewrite_account_uuid_request`, and this module. (The
+  `system`-scrubbing code in `src/adapters/cursor/request.rs` is the Cursor route, not this one.)
+  So a co-tenant already reaches upstream with any marker it likes. The trigger was
   still narrowed to the first block to keep the rewrite inside the measured shape. Re-open if the
   injected string ever becomes client-derived, if the trigger widens past `system[0]`, or if a
   gate is dropped from either call site.
