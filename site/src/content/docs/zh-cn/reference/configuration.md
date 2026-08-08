@@ -68,7 +68,7 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 
 ### `[server.gateway.telemetry]`(可选)
 
-`forward_to` 是 destination array,每项具有必需的 HTTP(S) `url` 和可选的 string `headers` map。至少 opt-in 一个 signal 的 list 会向 managed `settings.env` 注入 6 个值:`CLAUDE_CODE_ENABLE_TELEMETRY=1`、每个 `OTEL_METRICS_EXPORTER`/`OTEL_LOGS_EXPORTER`/`OTEL_TRACES_EXPORTER` 在有 destination opt-in 该 signal 时为 `otlp`,否则为 `none`、`OTEL_EXPORTER_OTLP_ENDPOINT=public_url`、`OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`。若没有任何 signal 被 opt-in,则不注入任何值。发生冲突时 policy env value 优先。此表在 M-B 中只控制 environment push;inbound OTLP ingest/relay 属于 M-C(#189)。
+`forward_to` 是 destination array,每项具有必需的 base OTLP/HTTP `url`、可选的 string `headers` map,以及每个 signal 的 opt-in boolean(`metrics` 默认 `true`,`logs`/`traces` 默认 `false`)。至少 opt-in 一个 signal 的 list 会向 managed `settings.env` 注入 6 个值:`CLAUDE_CODE_ENABLE_TELEMETRY=1`、每个 `OTEL_METRICS_EXPORTER`/`OTEL_LOGS_EXPORTER`/`OTEL_TRACES_EXPORTER` 在有 destination opt-in 该 signal 时为 `otlp`,否则为 `none`、`OTEL_EXPORTER_OTLP_ENDPOINT=public_url`、`OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`。若没有任何 signal 被 opt-in,则不注入任何值。发生冲突时 policy env value 优先。同一 list 也驱动 inbound ingest(M-C,#189):只要存在 `[server.gateway]` 就会注册的 `POST /v1/{metrics,logs,traces}` route 接收客户端 export 的 OTLP payload,并将其 verbatim relay 到所有 opt-in 该 signal 的 destination;没有任何 destination opt-in 的 signal 会被接收后丢弃。`logs`/`traces` 默认关闭,因为 Claude Code 的 log record 和 span 可能携带 command line、prompt 和文件路径。
 
 ```toml
 [[server.gateway.policies]]
