@@ -1,0 +1,41 @@
+site/src/content/docs/guides/opentelemetry.mdx
+  s_d7110dcba595f0::t_2a8e635bf40f74 60
+  s_d7110dcba595f0::t_07ccfe295f2ae0 8-9
+site/src/content/docs/reference/configuration.md
+  s_d7110dcba595f0::t_951c459ce16098 112-123,138
+  s_d7110dcba595f0::t_42436c86261066 67
+  s_d7110dcba595f0::t_ad38423b60488c 124
+site/src/content/docs/reference/endpoints.md
+  s_d7110dcba595f0::t_a1b6a207eb523b 16-18
+  s_d7110dcba595f0::t_954d563081c406 63
+  s_d7110dcba595f0::t_b5646db43568cd 62
+docs/gateway-telemetry.md
+  s_d7110dcba595f0::t_3c0cf983e6fee1 1-64,67-71,74-77,79-159
+  s_d7110dcba595f0::t_da7b2a61f93fa6 65-66,72-73,78
+docs/gateway-managed-settings.md
+  s_d7110dcba595f0::t_666917e5c6266e 126-129
+README.md
+  s_d7110dcba595f0::t_168b9da35c3992 144
+  s_d7110dcba595f0::t_5eb2f7d869e53f 143
+  s_d7110dcba595f0::t_80ab5996c86232 145
+site/src/content/docs/guides/gateway-login.mdx
+  s_d7110dcba595f0::t_db899ed7819cbc 148-154
+  s_d7110dcba595f0::t_18cfd77ef747a3 145-147,158,161-163,167-191
+  s_d7110dcba595f0::t_83ecdc0dfc16d2 207-209
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "7bd816472fde973789762589de9af1c3947ee994",
+  "prompts": {},
+  "sessions": {
+    "s_d7110dcba595f0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f60c18df-7bcc-4108-9349-ec349db364cb",
+        "model": "claude-fable-5"
+      },
+      "human_author": null
+    }
+  }
+}
