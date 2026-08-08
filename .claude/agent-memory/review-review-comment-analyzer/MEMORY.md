@@ -6,3 +6,4 @@
 - [shunt account scan-cache comment rot](shunt-account-scan-cache-comment-rot.md) — Recheck lexical path collisions, discovery-only I/O claims, concurrent misses, and mtime invalidation language.
 - [Codex WS continuation quantifier rot](codex-ws-continuation-quantifier-rot.md) — Reused continuation-enabled turns retrieve stored state; fresh, overflow, and full-retry turns bypass it, so avoid universal “every turn” claims.
 - [shunt perf benchmark baseline scope](shunt-perf-benchmark-baseline-scope.md) — `perf_issues.rs` mixes frozen pre-#261 baselines with later issue-specific pairs; scope each baseline to its refactor.
+- [shunt PR #331 auto-mode classifier clean](shunt-pr331-auto-mode-classifier-clean.md) — 3-round rewordings verified against `resolve_claude_account`/`forward_claude_oauth`; 7-surface cross-check method for gating-invariant claims.
