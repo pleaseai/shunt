@@ -38,6 +38,15 @@ pub struct UpstreamConfig {
     pub request_compression: bool,
     #[serde(default)]
     pub retry: RetryConfig,
+    /// See [`ProviderConfig::workspace_roots`] (`kind = "antigravity"` only).
+    /// Empty by default: no prompt-derived working directory is honored.
+    #[serde(default)]
+    pub workspace_roots: Vec<String>,
+    /// See [`ProviderConfig::sandbox`] (`kind = "antigravity"` only). On by
+    /// default; an ordered upstream must be able to opt out for the same
+    /// reasons a `[providers.*]` entry can.
+    #[serde(default = "super::default_true")]
+    pub sandbox: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -206,8 +215,8 @@ pub(super) fn normalize(
             tool_search: upstream.tool_search,
             request_compression: upstream.request_compression,
             retry: upstream.retry,
-            workspace_roots: Vec::new(),
-            sandbox: true,
+            workspace_roots: upstream.workspace_roots.clone(),
+            sandbox: upstream.sandbox,
         };
         if let Some(auth) = upstream.auth.clone() {
             auth.absorb(&upstream.name, &mut provider)?;

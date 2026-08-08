@@ -172,15 +172,20 @@ impl Adapter for AntigravityAdapter {
             let mut lines = BufReader::new(stdout).lines();
 
             if is_streaming {
+                // One deadline for the whole turn, not a fresh allowance per
+                // line. Timing out each `next_line()` individually means any
+                // CLI that keeps emitting tool progress resets the cap forever,
+                // so a wedged permission-skipping child would never be reaped.
+                let deadline = tokio::time::Instant::now() + HARD_TIMEOUT;
                 let stream_state = (lines, translator, child, stderr_log, false);
                 let sse_stream = futures_util::stream::unfold(
                     stream_state,
-                    |(mut lines, mut translator, mut child, stderr_log, mut finished)| async move {
+                    move |(mut lines, mut translator, mut child, stderr_log, mut finished)| async move {
                         if finished {
                             return None;
                         }
                         loop {
-                            let next = tokio::time::timeout(HARD_TIMEOUT, lines.next_line()).await;
+                            let next = tokio::time::timeout_at(deadline, lines.next_line()).await;
                             match next {
                                 Ok(Ok(Some(line))) => {
                                     let chunk = translator.on_line(&line);
@@ -212,9 +217,13 @@ impl Adapter for AntigravityAdapter {
                                     } else {
                                         tail.push_str(&translator.finish());
                                     }
-                                    if timed_out {
-                                        let _ = child.kill().await;
-                                    }
+                                    // Kill before reaping on every terminal
+                                    // path, not just the timeout. A premature
+                                    // stdout EOF leaves the agent alive, and an
+                                    // unbounded `wait` would hang the response
+                                    // behind it. On a clean exit this is a
+                                    // no-op.
+                                    let _ = child.kill().await;
                                     let _ = child.wait().await;
                                     return Some((
                                         Ok::<_, Infallible>(axum::body::Bytes::from(tail)),

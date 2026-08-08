@@ -21,6 +21,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
     process::Stdio,
+    sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
 
@@ -43,25 +44,54 @@ pub type EffortMatrix = BTreeMap<String, BTreeSet<String>>;
 /// Last successful discovery. Only successes are stored: caching a failure
 /// would disable effort validation for the lifetime of the process because one
 /// `agy models` call happened to time out.
+///
+/// The lock is never held across an `.await` that does work. Holding it across
+/// [`discover`] would serialize every concurrent request behind a ~20s
+/// subprocess — the first arrival pays it and the rest queue behind the lock.
 static MATRIX: Mutex<Option<EffortMatrix>> = Mutex::const_new(None);
+
+/// Set while a discovery subprocess is in flight, so a burst of early requests
+/// spawns one `agy models` between them rather than one apiece.
+static DISCOVERING: AtomicBool = AtomicBool::new(false);
 
 /// Model/effort capabilities, discovered from `agy models` and cached.
 ///
-/// Returns an empty matrix when discovery has never succeeded, which
-/// [`resolve_effort`] treats as "not authoritative" — configured values pass
-/// through and `agy` validates them itself. The next turn retries.
+/// Never blocks on discovery. A request arriving before the cache is warm gets
+/// an empty matrix — which [`resolve_effort`] treats as "not authoritative", so
+/// configured values pass through and `agy` validates them itself — and kicks
+/// off a background refresh for the turns that follow.
 pub async fn effort_matrix(agy_bin: &Path) -> EffortMatrix {
-    let mut cached = MATRIX.lock().await;
-    if let Some(matrix) = cached.as_ref() {
-        return matrix.clone();
+    if let Some(matrix) = cached().await {
+        return matrix;
     }
-    match discover(agy_bin).await {
-        Some(matrix) => {
-            *cached = Some(matrix.clone());
-            matrix
-        }
-        None => EffortMatrix::new(),
+    spawn_refresh(agy_bin);
+    EffortMatrix::new()
+}
+
+/// Read the cache, holding the lock only for the clone.
+async fn cached() -> Option<EffortMatrix> {
+    MATRIX.lock().await.clone()
+}
+
+/// Start a background discovery unless one is already running.
+fn spawn_refresh(agy_bin: &Path) {
+    if DISCOVERING.swap(true, Ordering::AcqRel) {
+        return;
     }
+    let agy_bin = agy_bin.to_path_buf();
+    tokio::spawn(async move { refresh(&agy_bin).await });
+}
+
+/// Discover, then take the lock only long enough to publish a success.
+///
+/// Expects `DISCOVERING` to have been claimed by the caller; clears it so a
+/// failed attempt is retried by the next turn rather than latched forever.
+async fn refresh(agy_bin: &Path) {
+    let discovered = discover(agy_bin).await;
+    if let Some(matrix) = discovered {
+        *MATRIX.lock().await = Some(matrix);
+    }
+    DISCOVERING.store(false, Ordering::Release);
 }
 
 /// Run `agy models` once, returning `None` when it cannot be trusted.
@@ -114,11 +144,18 @@ async fn discover(agy_bin: &Path) -> Option<EffortMatrix> {
 
 /// Populate the cache off the request path.
 ///
-/// Discovery costs ~20s as a gateway subprocess, and the first Antigravity
-/// request should not pay it. Failure is silent here — the request path
-/// retries and reports properly.
+/// Discovery costs ~20s as a gateway subprocess, and no Antigravity request
+/// should pay it — [`effort_matrix`] never waits, so until this lands, turns
+/// pass their effort through for `agy` to validate. Failure is silent: the
+/// flag is cleared, and the next turn schedules another attempt.
 pub async fn warm(agy_bin: &Path) {
-    let _ = effort_matrix(agy_bin).await;
+    if cached().await.is_some() {
+        return;
+    }
+    if DISCOVERING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    refresh(agy_bin).await;
 }
 
 /// Parse `agy models` output into model → supported efforts.

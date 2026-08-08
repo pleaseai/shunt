@@ -472,3 +472,60 @@ fn legacy_provider_env_override_behavior_is_unchanged() {
         .windows(2)
         .all(|pair| pair[0] < pair[1]));
 }
+
+#[test]
+fn ordered_antigravity_upstreams_carry_workspace_roots_and_sandbox() {
+    let upstreams = vec![
+        parse(
+            "name = \"agy-scoped\"\nkind = \"antigravity\"\nbase_url = \"http://localhost\"\nauth = \"passthrough\"\nworkspace_roots = [\"/srv/repos\"]\nsandbox = false",
+        ),
+        parse(
+            "name = \"agy-default\"\nkind = \"antigravity\"\nbase_url = \"http://localhost\"\nauth = \"passthrough\"",
+        ),
+    ];
+
+    let (providers, _order) = normalize(&upstreams).unwrap();
+
+    // Configured values reach the provider instead of being discarded: an
+    // ordered upstream that cannot set these silently runs the agent in
+    // shunt's own directory.
+    let scoped = &providers["agy-scoped"];
+    assert_eq!(scoped.workspace_roots, vec!["/srv/repos".to_string()]);
+    assert!(!scoped.sandbox);
+
+    // Omitted keys keep the safe defaults.
+    let defaulted = &providers["agy-default"];
+    assert!(defaulted.workspace_roots.is_empty());
+    assert!(defaulted.sandbox);
+}
+
+#[test]
+fn unsandboxed_antigravity_declared_as_an_ordered_upstream_is_also_rejected() {
+    // An ordered upstream can now opt out of the sandbox, so the off-loopback
+    // gate has to see the normalized result. Ordering is the actual invariant:
+    // normalization must run before validation, or `[[upstreams]]` would
+    // bypass the gate that `[providers.*]` is held to.
+    let file = TempConfig::new(concat!(
+        "[server]\n",
+        "bind = \"0.0.0.0:3001\"\n",
+        "default_provider = \"agy\"\n\n",
+        "[[upstreams]]\n",
+        "name = \"agy\"\n",
+        "kind = \"antigravity\"\n",
+        "base_url = \"http://localhost\"\n",
+        "auth = \"passthrough\"\n",
+        "sandbox = false\n",
+    ));
+    let _guard = CONFIG_ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let error = crate::config::Config::load(Some(&file.0))
+        .expect_err("an unsandboxed ordered upstream must not be servable off-loopback");
+    assert!(
+        matches!(
+            error,
+            ConfigError::UnsandboxedAntigravityOnPublicBind { .. }
+        ),
+        "expected the unsandboxed-on-public-bind refusal, got: {error}"
+    );
+}
