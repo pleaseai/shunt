@@ -15,9 +15,11 @@
 //! `client-shape-rejection`. Claude Code reads it as "classifier unavailable"
 //! and fails closed on every action needing a safety verdict, while reads and
 //! in-workspace edits keep working, so the session looks half-broken rather
-//! than disconnected. It does not recover either: Claude Code demotes to a
-//! second classifier model once, and once that demotion lands on the session's
-//! own model there is no further candidate.
+//! than disconnected. Nor does it recover on its own: in the shipped 2.1.226
+//! client the classifier demotes to a second model once and offers no further
+//! candidate after that demotion lands on the session's own model. That last
+//! detail was read out of the distributed binary, so it describes the version
+//! measured rather than a contract.
 //!
 //! Measured against a live deployment (Claude Code 2.1.226, Anthropic OAuth
 //! pool), same session and account, varying only the `system` field and leaving
@@ -27,11 +29,12 @@
 //! | --- | --- |
 //! | relayed unmodified | 429, 15/15 |
 //! | `"You are a helpful assistant."` prepended | 429, 10/10 |
-//! | Claude Code identity prepended | 200 |
+//! | Claude Code identity prepended | 200, 1/1 |
 //!
-//! The middle row is why this module injects one specific sentence rather than
-//! a neutral one: upstream matches a set of known prompts, so there is no
-//! neutral string that passes.
+//! The 200 is a single run — enough to show the block is sufficient, not enough
+//! to characterize its reliability. The two 429 rows carry the weight: a
+//! neutral string does not pass, so the injected sentence has to be a specific
+//! one, and a gateway that wants the classifier to work has no neutral option.
 //!
 //! That makes the repair narrow by construction. It fires only on the request
 //! shape that is known to be rejected — identified by the opening sentence of
@@ -55,31 +58,35 @@ const CLAUDE_CODE_IDENTITY: &str = "You are Claude Code, Anthropic's official CL
 
 /// Opening sentence of the auto-mode classifier's system prompt.
 ///
-/// The whole prompt is a ~38 KB template that interpolates its rule sections
-/// from separate constants, and the two classifier stages observed on the wire
-/// differ in their output format (`</block>` versus `</severity>` stop
-/// sequences). Their openings are identical, so this sentence is the stable
-/// part; matching deeper structural markers would couple the relay to sections
-/// that legitimately vary between stages and releases.
+/// Chosen because it is the part that held still. In the shipped Claude Code
+/// 2.1.226 binary the prompt is a ~38 KB template whose rule sections are
+/// interpolated from separate constants, and the two classifier stages seen on
+/// the wire differ in output format (`</block>` versus `</severity>` stop
+/// sequences) while opening identically. Both observations come from outside
+/// this repository — the distributed client and a relay capture — so nothing
+/// here can re-verify them; they are recorded as the reason for the choice, not
+/// as a contract. Matching deeper structural markers would bind the relay to
+/// exactly the parts that vary.
 ///
-/// Third-party relays additionally check a length floor and a marker set to
-/// resist forgery. That is not shunt's problem: this predicate only decides
-/// whether to repair the operator's own outbound request, never whether to
-/// grant an untrusted client access, so a client that "forges" it is only
-/// asking the gateway to prepend a sentence to its own prompt.
+/// Third-party relays gating on this shape add a length floor and a marker set
+/// to resist forgery. This predicate does not, because it decides only whether
+/// to repair the operator's own outbound request, never whether to grant a
+/// client access — and a client that wanted the upstream check satisfied can
+/// already put an accepted marker in its own system prompt, with or without
+/// this module.
 const CLASSIFIER_PROMPT_PREFIX: &str =
     "You are a security monitor for autonomous AI coding agents.";
 
 /// Markers upstream is known to accept, so a classifier request that has
 /// somehow already grown one is left alone rather than gaining a second.
 ///
-/// All three were verified on the wire against the live endpoint: the identity
-/// string as the injected block that flipped a rejection to `200`, the Agent SDK
-/// opening as the head of accepted main-loop requests, and the billing
-/// attribution block as the head of every accepted Claude Desktop chat and
-/// Cowork request. Other accepted markers may exist; they are deliberately not
-/// guessed at here, because this list only ever suppresses an injection that a
-/// classifier match already gated.
+/// Each was seen accepted on the wire: the identity string as the injected
+/// block that flipped a rejection to `200`, the Agent SDK opening at the head
+/// of accepted main-loop requests, and the billing block at the head of every
+/// accepted Claude Desktop chat and Cowork request. Those are observations of a
+/// live endpoint rather than a published contract, and the list is certainly
+/// not exhaustive — it is deliberately not extended by guesswork, since it only
+/// ever suppresses an injection that a classifier match already gated.
 const ACCEPTED_MARKER_PREFIXES: &[&str] = &[
     "You are Claude Code, Anthropic's official CLI for Claude",
     "You are a Claude agent, built on Anthropic's Claude Agent SDK",
@@ -96,6 +103,12 @@ pub(super) fn restore_claude_code_identity(body: &mut RequestBody) {
         return;
     }
     body.mutate(insert_identity);
+    // The gateway does not otherwise rewrite an Anthropic request body, so
+    // record the one case where it does — without it a misfire leaves no trace,
+    // and an operator has no way to confirm the repair is landing. `debug`
+    // rather than `warn`: this fires once per auto-mode action on a healthy
+    // session, which is routine, not a problem.
+    tracing::debug!("restored the Claude Code identity block on an auto-mode classifier request");
 }
 
 /// Whether `request` is a classifier request that is missing an accepted
@@ -108,23 +121,35 @@ fn needs_identity(request: &Value) -> bool {
     let Some(blocks) = request.get("system").and_then(Value::as_array) else {
         return false;
     };
-    let mut is_classifier = false;
-    for block in blocks {
-        let Some(text) = block.get("text").and_then(Value::as_str) else {
-            continue;
-        };
-        let text = text.trim_start();
-        if ACCEPTED_MARKER_PREFIXES
-            .iter()
-            .any(|prefix| text.starts_with(prefix))
-        {
-            return false;
-        }
-        if text.starts_with(CLASSIFIER_PROMPT_PREFIX) {
-            is_classifier = true;
-        }
+    // Suppression scans every block: an accepted marker anywhere in the array is
+    // enough for upstream, so its position is not ours to assume.
+    if blocks.iter().any(|block| {
+        block_text(block).is_some_and(|text| {
+            ACCEPTED_MARKER_PREFIXES
+                .iter()
+                .any(|prefix| text.starts_with(prefix))
+        })
+    }) {
+        return false;
     }
-    is_classifier
+    // The trigger checks the first block alone. Every classifier request
+    // captured on the wire carried the prompt at `system[0]`, so matching deeper
+    // would widen what the relay rewrites past anything that was measured — and
+    // the trigger is client-supplied text, so the narrower it is, the fewer
+    // requests the gateway touches that it was never meant to.
+    blocks
+        .first()
+        .and_then(block_text)
+        .is_some_and(|text| text.starts_with(CLASSIFIER_PROMPT_PREFIX))
+}
+
+/// A system block's text with leading whitespace trimmed, or `None` when the
+/// block carries no string `text` (an image block, say).
+fn block_text(block: &Value) -> Option<&str> {
+    block
+        .get("text")
+        .and_then(Value::as_str)
+        .map(str::trim_start)
 }
 
 /// Insert the identity block, returning whether the request changed.
@@ -136,8 +161,9 @@ fn insert_identity(request: &mut Value) -> bool {
         return false;
     };
     // Ahead of the client's first block, and ahead of any `cache_control` it
-    // carries. Classifier requests are one-shot and uncached in practice, so
-    // this shifts no established cache prefix.
+    // carries. No classifier request captured on the wire carried one, so this
+    // has not been seen to shift an established cache prefix — an observation,
+    // not a guarantee.
     blocks.insert(0, json!({"type": "text", "text": CLAUDE_CODE_IDENTITY}));
     true
 }
@@ -268,20 +294,26 @@ mod tests {
     }
 
     #[test]
-    fn classifier_prompt_is_found_behind_a_non_text_block() {
-        // The opening sentence is the signal wherever it sits, so a leading
-        // image or tool block does not hide it.
-        let out = run(json!({
-            "system": [
-                {"type": "image", "source": {}},
-                {"type": "text", "text": classifier_prompt()},
-            ],
-        }));
+    fn a_classifier_prompt_behind_another_block_is_untouched() {
+        // Deliberately narrower than "the sentence appears somewhere": every
+        // classifier request captured on the wire carried the prompt at
+        // `system[0]`, and the trigger is client-supplied text, so matching
+        // deeper would let an arbitrary prompt pull the rewrite in behind a
+        // block of its own choosing. If a future Claude Code release moves the
+        // prompt, this stops matching — the `debug` line in
+        // `restore_claude_code_identity` is what makes that visible.
+        let body = format!(
+            r#"{{"system":[{{"type":"image","source":{{}}}},{{"type":"text","text":"{CLASSIFIER_PROMPT_PREFIX} …"}}]}}"#
+        );
 
-        let system = out["system"].as_array().unwrap();
-        assert_eq!(system.len(), 3);
-        assert_eq!(system[0]["text"], CLAUDE_CODE_IDENTITY);
-        assert_eq!(system[1]["type"], "image");
+        assert_verbatim(&body);
+    }
+
+    #[test]
+    fn a_leading_block_without_text_is_not_a_classifier_request() {
+        let body = r#"{"system":[{"type":"image","source":{}}]}"#;
+
+        assert_verbatim(body);
     }
 
     #[test]

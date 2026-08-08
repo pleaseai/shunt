@@ -237,6 +237,88 @@ async fn messages_preserves_matching_model_body_byte_for_byte() {
     upstream.verify().await;
 }
 
+/// A body shaped like Claude Code's auto-mode permission classifier request:
+/// the classifier prompt as the first `system` block, and no identity block.
+/// This is the one request shape `auto_mode_classifier` repairs.
+fn classifier_body() -> Vec<u8> {
+    serde_json::to_vec(&json!({
+        "model": "claude-sonnet-4-5",
+        "max_tokens": 64,
+        "messages": [],
+        "system": [{
+            "type": "text",
+            "text": "You are a security monitor for autonomous AI coding agents.\n\n## Context\n\n…",
+        }],
+    }))
+    .unwrap()
+}
+
+#[tokio::test]
+async fn classifier_request_on_a_subscription_oauth_bearer_gains_the_identity_block() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(body_string_contains(
+            "You are Claude Code, Anthropic's official CLI for Claude.",
+        ))
+        // The client's own prompt still rides along — the repair prepends, it
+        // does not replace.
+        .and(body_string_contains(
+            "You are a security monitor for autonomous AI coding agents.",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let gateway = start_gateway(upstream.uri()).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .header("authorization", "Bearer sk-ant-oat01-test")
+        .body(classifier_body())
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    upstream.verify().await;
+}
+
+#[tokio::test]
+async fn classifier_request_on_an_api_key_credential_is_forwarded_byte_for_byte() {
+    if !can_bind_loopback() {
+        return;
+    }
+    // Same body, non-OAuth credential. An API-key Anthropic-compatible provider
+    // faces no client-shape gate upstream, so the gateway must not rewrite it —
+    // this is what pins the `bearer_is_subscription_oauth` gate at the call
+    // site, which no unit test on the predicate can reach.
+    let body = classifier_body();
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(ExactBody(body.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let gateway = start_gateway(upstream.uri()).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .header("x-api-key", "sk-ant-api03-test")
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    upstream.verify().await;
+}
+
 #[tokio::test]
 async fn messages_rejects_duplicate_top_level_model_fields() {
     if !can_bind_loopback() {

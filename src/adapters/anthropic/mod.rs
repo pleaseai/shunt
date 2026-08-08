@@ -163,9 +163,6 @@ async fn forward_claude_oauth(
         state.config.server.pool.as_ref(),
     );
     let url = upstream_url(&state, &route, uri);
-    // Every account on this path authenticates with a subscription-OAuth bearer,
-    // so the client-shape gate applies to all of them — no per-candidate check.
-    auto_mode_classifier::restore_claude_code_identity(&mut body);
     normalize_upstream_model_request(&mut body, &route.upstream_model);
     let base_body = body;
     let ramp_initial = state.config.storm_ramp_initial();
@@ -225,8 +222,17 @@ async fn forward_claude_oauth(
         };
         let mut request_body = base_body.clone();
         rewrite_account_uuid_request(&mut request_body, account_uuid);
-        let request_body = request_body.into_raw();
         let request_headers = outbound_headers(headers, &credential);
+        // Gate on the bearer that actually goes out rather than on the pool's
+        // shape. Every account here resolves to `Credential::ClaudeOauth`, but
+        // the `token_env` branch of `resolve_claude_account` wraps whatever the
+        // variable holds without checking it is a subscription token — so an
+        // account pointed at an `sk-ant-api…` key would otherwise have its body
+        // rewritten despite facing no client-shape gate.
+        if bearer_is_subscription_oauth(&request_headers) {
+            auto_mode_classifier::restore_claude_code_identity(&mut request_body);
+        }
+        let request_body = request_body.into_raw();
 
         let upstream = match post_upstream(
             &state.http_client,
