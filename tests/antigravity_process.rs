@@ -83,9 +83,46 @@ for arg in "$@"; do
 done
 
 case "$prompt" in
+  *MODE=late-stderr*)
+    # Exit immediately, but publish the diagnostic half a second later from a
+    # detached subshell. Without waiting for the drain, the buffer is read at
+    # ~0ms and deterministically yields nothing; with it, the line lands well
+    # inside DRAIN_GRACE. This is what makes the reap-before-publish race
+    # testable at all — the plain MODE=fail stub writes early enough that the
+    # race almost never loses.
+    # Deliberately NOT recorded as a holder: it exits on its own in 0.5s, and
+    # `reap_holders` kills every recorded pid, so a concurrent test would kill
+    # this subshell before it ever wrote the diagnostic.
+    # stdout redirected to /dev/null: if the subshell inherited stdout too, it
+    # would hold that pipe open and the adapter would still be blocked reading
+    # stdout at 0.5s, so the diagnostic would land before stderr was ever read
+    # and the test would pass with or without the fix. Holding ONLY stderr is
+    # what makes this discriminate.
+    ( sleep 0.5; echo "late diagnostic" >&2 ) >/dev/null &
+    exit 1
+    ;;
   *MODE=fail*)
     echo "stub diagnostic on stderr" >&2
     exit 1
+    ;;
+  *MODE=result-then-hold*)
+    # Start the pipe holder and record its pid FIRST. The adapter stops at the
+    # result and kills this stub immediately, so anything after that print can
+    # be cut off mid-script — recording the pid afterwards loses the race and
+    # orphans a 300s process with no way to reap it.
+    #
+    # The holder is a GRANDCHILD: the adapter kills the stub, not this, which is
+    # the point (it keeps the inherited stdout pipe open). Nothing else would
+    # ever reap it, so the test does, via this pid file.
+    sleep 300 &
+    echo $! > "$(dirname "$0")/holder-$$.pid"
+    # Terminal result, then the descendant still holds stdout. The turn is
+    # finished; only the pipe is open. A reader that waits for EOF instead of
+    # stopping at the result stalls here until its deadline.
+    printf '%s\n' '{"event":"init","init":{"model":"gemini-3.1-pro"}}'
+    printf '%s\n' '{"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"hello","usage":{"input_tokens":10,"output_tokens":3}}}'
+    printf '%s\n' '{"event":"result","result":{"status":"SUCCESS","response":"hello","usage":{"input_tokens":10,"output_tokens":3}}}'
+    exit 0
     ;;
   *MODE=eof-hang*)
     printf '%s\n' '{"event":"init","init":{"model":"gemini-3.1-pro"}}'
@@ -243,6 +280,102 @@ async fn non_streaming_turn_returns_the_translated_message() {
     assert_eq!(json["usage"]["output_tokens"], 3);
 }
 
+/// Kill the pipe-holding grandchildren the `result-then-hold` stub leaves behind.
+///
+/// The adapter kills the stub it spawned, but the holder is one level below
+/// that and survives it — by design, since holding the pipe open is the point.
+/// Nothing else reaps it, so without this each run leaves a 300s process behind
+/// and they accumulate across runs.
+fn reap_holders() {
+    let dir = stub_agy().parent().unwrap();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_pidfile = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("holder-") && name.ends_with(".pid"));
+        if !is_pidfile {
+            continue;
+        }
+        if let Ok(pid) = std::fs::read_to_string(&path) {
+            let pid = pid.trim();
+            if !pid.is_empty() {
+                // Best effort via `kill(1)` rather than a `libc` dev-dependency;
+                // the holder may already have exited.
+                let _ = std::process::Command::new("kill")
+                    .arg("-9")
+                    .arg(pid)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status();
+            }
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
+#[tokio::test]
+async fn streaming_finishes_when_a_descendant_holds_stdout_open() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let gateway = start_gateway().await;
+    // Regression: the stub emits a terminal SUCCESS result, then leaves a
+    // background `sleep` holding the inherited stdout pipe. Reading to EOF
+    // instead of stopping at the result stalls a *finished* turn until the
+    // deadline and then reports it as a failure.
+    let (status, body) = turn(&gateway, "MODE=result-then-hold", true).await;
+
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert!(body.contains("hello"), "body: {body}");
+    assert!(body.contains("message_stop"), "body: {body}");
+    assert!(
+        !body.contains("[agy error]"),
+        "a completed turn must not be reported as an error: {body}"
+    );
+    reap_holders();
+}
+
+#[tokio::test]
+async fn non_streaming_finishes_when_a_descendant_holds_stdout_open() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let gateway = start_gateway().await;
+    let (status, body) = turn(&gateway, "MODE=result-then-hold", false).await;
+
+    assert_eq!(status, reqwest::StatusCode::OK);
+    let json: Value = serde_json::from_str(&body).expect("a non-streaming turn returns JSON");
+    assert_eq!(json["content"][0]["text"], "hello");
+    assert_eq!(json["stop_reason"], "end_turn");
+    reap_holders();
+}
+
+#[tokio::test]
+async fn late_stderr_still_reaches_the_caller() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let gateway = start_gateway().await;
+    // Regression for the reap-before-publish race. The stub exits at once and
+    // writes its diagnostic 0.5s later, so without waiting for the drain the
+    // buffer is read empty every time — deterministically, unlike MODE=fail
+    // where the diagnostic lands early enough that the race almost never loses.
+    let (status, body) = turn(&gateway, "MODE=late-stderr", false).await;
+
+    assert!(
+        status.is_client_error() || status.is_server_error(),
+        "status: {status}"
+    );
+    assert!(
+        body.contains("late diagnostic"),
+        "a diagnostic written after exit must still reach the caller: {body}"
+    );
+}
+
 #[tokio::test]
 async fn non_streaming_failure_reports_the_exit_status() {
     if !can_bind_loopback() {
@@ -263,7 +396,12 @@ async fn non_streaming_failure_reports_the_exit_status() {
         body.contains("exited without a result (status 1)"),
         "body: {body}"
     );
-    // Deliberately not asserting on stderr text: `drain_stderr` publishes into
-    // a shared buffer with no join handle, so the child can be reaped before
-    // the final line lands. Asserting it would be flaky.
+    // The CLI's own diagnostic must survive to the caller. This is only
+    // assertable because the adapter now waits for the stderr drain to publish
+    // before composing the message; previously the child could be reaped first
+    // and the caller got "no stderr output" instead.
+    assert!(
+        body.contains("stub diagnostic on stderr"),
+        "the CLI's stderr must reach the caller: {body}"
+    );
 }

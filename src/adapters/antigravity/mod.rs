@@ -68,13 +68,20 @@ const HARD_TIMEOUT: Duration = Duration::from_secs(35 * 60);
 /// Cap on `agy` stderr retained for diagnostics, in bytes.
 const STDERR_LIMIT: usize = 2000;
 
-/// Grace period for the child to exit after stdout EOF before it is killed.
+/// Grace period for the child to exit once the turn is over, before it is killed.
 ///
-/// Reaching EOF says the pipe closed, not that the process ended. Short,
-/// because by this point the turn has produced its result and the only thing
-/// left is reaping — but non-zero, so a normally-exiting child still reports
-/// its own status instead of being killed out from under it.
+/// The turn is over by this point — either the terminal result arrived or
+/// stdout reached EOF — and neither says the process ended. Short, because the
+/// only thing left is reaping; non-zero, so a normally-exiting child still
+/// reports its own status instead of being killed out from under it.
 const EXIT_GRACE: Duration = Duration::from_secs(5);
+
+/// Cap on waiting for the stderr drain to publish before a failure is reported.
+///
+/// The child is already reaped or killed wherever this is awaited, so the task
+/// is finishing regardless; the bound only stops a descendant that inherited
+/// the stderr pipe from holding the response open.
+const DRAIN_GRACE: Duration = Duration::from_secs(2);
 
 /// Environment override for the directory `agy` is allowed to work in.
 const WORKSPACE_ENV: &str = "SHUNT_AGY_WORKSPACE";
@@ -173,7 +180,7 @@ impl Adapter for AntigravityAdapter {
             // stderr must be drained concurrently: left unread, a verbose
             // failure fills the pipe buffer, blocks the child's write, and
             // wedges the run behind keepalives that make it look healthy.
-            let stderr_log = drain_stderr(&mut child);
+            let mut stderr_log = drain_stderr(&mut child);
 
             let message_id = format!("msg_agy_{:016x}", rand::random::<u64>());
             let mut translator = Translator::new(&route.model, message_id);
@@ -188,7 +195,7 @@ impl Adapter for AntigravityAdapter {
                 let stream_state = (lines, translator, child, stderr_log, false);
                 let sse_stream = futures_util::stream::unfold(
                     stream_state,
-                    move |(mut lines, mut translator, mut child, stderr_log, mut finished)| async move {
+                    move |(mut lines, mut translator, mut child, mut stderr_log, mut finished)| async move {
                         if finished {
                             return None;
                         }
@@ -197,6 +204,50 @@ impl Adapter for AntigravityAdapter {
                             match next {
                                 Ok(Ok(Some(line))) => {
                                     let chunk = translator.on_line(&line);
+                                    // Terminal event: emit whatever it produced
+                                    // and finish, rather than reading to EOF. A
+                                    // tool descendant holding the inherited
+                                    // stdout pipe open would otherwise stall a
+                                    // finished turn until the deadline.
+                                    //
+                                    // Checked before the emptiness test, not
+                                    // after: a *failed* result records `end` and
+                                    // returns an empty chunk, so an end-check at
+                                    // the return site below would never see it.
+                                    if translator.end().is_some() {
+                                        finished = true;
+                                        let mut tail = chunk;
+                                        // Match `end` directly rather than going
+                                        // through `terminal_failure`. Both of the
+                                        // reachable outcomes here carry their own
+                                        // message, so stderr is not consulted —
+                                        // and routing through a helper whose
+                                        // `None` arm *does* read stderr would
+                                        // silently re-arm the reap-before-publish
+                                        // race the moment that helper changed,
+                                        // since this log has not been settled.
+                                        match translator.end() {
+                                            Some(AgyEnd::Failed(message)) => {
+                                                let message = message.clone();
+                                                tail.push_str(&translator.on_text(&format!(
+                                                    "\n\n[agy error] {message}"
+                                                )));
+                                                tail.push_str(&translator.finish_with_error());
+                                            }
+                                            _ => tail.push_str(&translator.finish()),
+                                        }
+                                        // The turn is over and streaming never
+                                        // reports an exit status, so there is
+                                        // nothing to wait for — unlike the
+                                        // non-streaming path, which grants
+                                        // EXIT_GRACE precisely to read one.
+                                        let _ = child.kill().await;
+                                        let _ = child.wait().await;
+                                        return Some((
+                                            Ok::<_, Infallible>(axum::body::Bytes::from(tail)),
+                                            (lines, translator, child, stderr_log, finished),
+                                        ));
+                                    }
                                     if chunk.is_empty() {
                                         continue;
                                     }
@@ -213,9 +264,25 @@ impl Adapter for AntigravityAdapter {
                                 outcome => {
                                     finished = true;
                                     let timed_out = outcome.is_err();
+                                    // Kill and reap before reading stderr, on
+                                    // every terminal path rather than only the
+                                    // timeout: a premature stdout EOF leaves
+                                    // the agent alive, and an unbounded `wait`
+                                    // would hang the response behind it. On a
+                                    // clean exit this is a no-op.
+                                    let _ = child.kill().await;
+                                    let _ = child.wait().await;
+                                    // Only then wait for the drain to publish.
+                                    // Reading the buffer first would report "no
+                                    // stderr output" for a CLI that wrote a
+                                    // diagnostic and exited immediately.
+                                    stderr_log.settle().await;
                                     let mut tail = String::new();
-                                    let failure =
-                                        terminal_failure(translator.end(), timed_out, &stderr_log);
+                                    let failure = terminal_failure(
+                                        translator.end(),
+                                        timed_out,
+                                        &stderr_log.log,
+                                    );
                                     if let Some(message) = failure {
                                         tail.push_str(
                                             &translator
@@ -225,14 +292,6 @@ impl Adapter for AntigravityAdapter {
                                     } else {
                                         tail.push_str(&translator.finish());
                                     }
-                                    // Kill before reaping on every terminal
-                                    // path, not just the timeout. A premature
-                                    // stdout EOF leaves the agent alive, and an
-                                    // unbounded `wait` would hang the response
-                                    // behind it. On a clean exit this is a
-                                    // no-op.
-                                    let _ = child.kill().await;
-                                    let _ = child.wait().await;
                                     return Some((
                                         Ok::<_, Infallible>(axum::body::Bytes::from(tail)),
                                         (lines, translator, child, stderr_log, finished),
@@ -268,24 +327,37 @@ impl Adapter for AntigravityAdapter {
             let drained = tokio::time::timeout(HARD_TIMEOUT, async {
                 while let Ok(Some(line)) = lines.next_line().await {
                     let _ = translator.on_line(&line);
+                    // Stop at the terminal event rather than reading to EOF.
+                    // `agy` spawns tool descendants that inherit stdout; one
+                    // holding the pipe open after the result would otherwise
+                    // stall a finished turn until HARD_TIMEOUT and then report
+                    // it as a failure. Checked after `on_line` regardless of
+                    // what it returned: a failed result records `end` and
+                    // returns nothing to emit.
+                    if translator.end().is_some() {
+                        break;
+                    }
                 }
             })
             .await;
             if drained.is_err() {
                 let _ = child.kill().await;
                 let _ = child.wait().await;
+                stderr_log.settle().await;
                 return Err(agy_failure(&format!(
                     "no result after {}s; {}",
                     HARD_TIMEOUT.as_secs(),
-                    stderr_text(&stderr_log)
+                    stderr_log.text()
                 )));
             }
-            // Stdout EOF does not imply the child exited: it may have closed
-            // the pipe and kept running, and an unbounded wait would hang the
+            // The loop above stops at the terminal result, so the common way
+            // here is with the pipe still open and the child still alive; the
+            // other way is a genuine stdout EOF, which likewise does not imply
+            // the process exited. Either way an unbounded wait would hang the
             // response behind a permission-skipping agent. Give it a short
             // grace period to exit on its own — a normally-exiting child then
-            // reports its own status, which the failure path below uses —
-            // then kill if it overstays.
+            // reports its own status, which the failure path below uses — then
+            // kill if it overstays.
             let status = match tokio::time::timeout(EXIT_GRACE, child.wait()).await {
                 Ok(status) => status,
                 Err(_) => {
@@ -304,10 +376,16 @@ impl Adapter for AntigravityAdapter {
                 Some(AgyEnd::Success) => None,
                 Some(AgyEnd::Failed(message)) => Some(message.clone()),
                 None => {
+                    // Only this arm reads stderr, so only this arm waits for the
+                    // drain. Settling unconditionally cost every *successful*
+                    // turn the full DRAIN_GRACE whenever a descendant still held
+                    // the pipe — which is precisely the case the early break was
+                    // added to make fast.
+                    stderr_log.settle().await;
                     let code = status.ok().and_then(|status| status.code()).unwrap_or(-1);
                     Some(format!(
                         "the CLI exited without a result (status {code}); {}",
-                        stderr_text(&stderr_log)
+                        stderr_log.text()
                     ))
                 }
             };
@@ -330,14 +408,45 @@ impl Adapter for AntigravityAdapter {
 /// Shared buffer holding a bounded tail of the child's stderr.
 type StderrLog = Arc<Mutex<String>>;
 
+/// `agy` stderr plus the task draining it.
+///
+/// The handle is kept so a caller can wait for the drain to publish before
+/// reading the buffer. Without it, a CLI that writes a diagnostic and exits
+/// immediately is reaped before the task runs, and the failure surfaces as
+/// "no stderr output" instead of what actually went wrong.
+struct StderrDrain {
+    log: StderrLog,
+    handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl StderrDrain {
+    /// Wait for the drain to finish before its buffer is read.
+    ///
+    /// Bounded: by every call site the child is already reaped or killed, so
+    /// the task is finishing anyway — but a descendant holding the inherited
+    /// stderr pipe open must not be able to hang the response.
+    async fn settle(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            let _ = tokio::time::timeout(DRAIN_GRACE, handle).await;
+        }
+    }
+
+    fn text(&self) -> String {
+        stderr_text(&self.log)
+    }
+}
+
 /// Read the child's stderr concurrently into a bounded buffer.
-fn drain_stderr(child: &mut tokio::process::Child) -> StderrLog {
+///
+/// Draining must happen alongside the run: left unread, a verbose failure fills
+/// the pipe buffer and blocks the child's writes.
+fn drain_stderr(child: &mut tokio::process::Child) -> StderrDrain {
     let log: StderrLog = Arc::new(Mutex::new(String::new()));
     let Some(stderr) = child.stderr.take() else {
-        return log;
+        return StderrDrain { log, handle: None };
     };
     let sink = Arc::clone(&log);
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         let mut lines = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = lines.next_line().await {
             if let Ok(mut buffer) = sink.lock() {
@@ -351,7 +460,10 @@ fn drain_stderr(child: &mut tokio::process::Child) -> StderrLog {
             }
         }
     });
-    log
+    StderrDrain {
+        log,
+        handle: Some(handle),
+    }
 }
 
 fn stderr_text(log: &StderrLog) -> String {
