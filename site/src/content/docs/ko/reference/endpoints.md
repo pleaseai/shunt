@@ -13,6 +13,10 @@ description: shunt가 Claude Code LLM 게이트웨이로서 제공하는 엔드�
 | `POST` | `/v1/messages` | 추론 — 요청의 `model` id에 따라 라우팅 |
 | `POST` | `/v1/messages/count_tokens` | [토큰 카운팅](/ko/guides/effort-and-context/#token-counting-count_tokens) |
 | `GET` | `/managed/settings` | 게이트웨이 JWT별 Claude Code managed settings; `ETag`, `If-None-Match`, `304 Not Modified` 지원 |
+| `GET` | `/v1/organizations/spend_limits` | 저장된 지출 제한을 방향성 커서 페이지네이션으로 조회 |
+| `POST` | `/v1/organizations/spend_limits` | 하나의 `(scope, period)`에 대한 지출 제한을 생성하거나 교체 |
+| `GET` | `/v1/organizations/spend_limits/{id}` | 저장된 지출 제한 하나를 조회 |
+| `DELETE` | `/v1/organizations/spend_limits/{id}` | 저장된 지출 제한 하나를 삭제 |
 | `POST` | `/v1/metrics` | 관리형 Claude Code 클라이언트의 인바운드 OTLP/HTTP 메트릭 — opt-in한 게이트웨이 텔레메트리 목적지로 verbatim relay |
 | `POST` | `/v1/logs` | 인바운드 OTLP/HTTP log record — `logs = true`인 목적지에만 relay |
 | `POST` | `/v1/traces` | 인바운드 OTLP/HTTP span — `traces = true`인 목적지에만 relay |
@@ -35,6 +39,8 @@ description: shunt가 Claude Code LLM 게이트웨이로서 제공하는 엔드�
 | `POST` | `/codex/analytics-events/events` | Codex CLI 분석 sink — 루트형 `chatgpt_base_url` 형식 |
 
 `/admin*` 라우트는 [`[server.admin]`](/ko/reference/configuration/#serveradmin-선택)이 구성된 경우에만 존재합니다; 그 테이블이 없으면 하나도 등록되지 않습니다.
+
+spend-limit 라우트는 부팅 시 [`[server.gateway.admin]`](/ko/reference/configuration/)가 구성된 경우에만 존재합니다. 모든 작업에는 `write_keys_env`의 key를 `x-api-key`로 보내야 하며 `read_keys_env`의 key는 GET에만 사용할 수 있습니다. `POST`는 `user`와 `organization` scope, `daily`/`weekly`/`monthly` period, 음수가 아닌 USD 센트 정수 문자열 또는 `null`인 `amount`를 받아 `(scope, period)` 기준으로 upsert합니다. 목록 페이지네이션은 `limit`(1–1000, 기본값 20), `after_id`, `before_id`, `scope_type`을 받으며 두 커서는 함께 사용할 수 없습니다. 모든 응답에는 `request-id`가 포함되고 오류는 Anthropic Admin API 오류 형태를 사용합니다. 제한과 변경 감사 레코드는 구성한 버전 JSON 상태 파일에 함께 저장됩니다. stage 1은 `/effective`나 `/audit`을 노출하지 않으며 추론 요청에 제한을 적용하지 않습니다.
 
 `GET /managed/settings`와 `POST /v1/{metrics,logs,traces}` 텔레메트리 ingest 라우트는 부팅 시 `[server.gateway]`가 활성화된 경우에만 존재하며, 둘 다 같은 게이트웨이 bearer JWT를 요구합니다. ingest 라우트는 관리형 Claude Code 클라이언트가 export하는 OTLP/HTTP 페이로드를 받아([`[server.gateway.telemetry]`](/ko/reference/configuration/)가 그 exporter들을 게이트웨이로 향하게 합니다) 요청 바이트를 해당 signal에 opt-in한 모든 목적지로 그대로 relay합니다. 인바운드 `content-type`과 `content-encoding`은 유지되고 목적지에 구성된 headers가 그 위에 적용됩니다(구성된 키는 전달값을 대체하며 헤더를 중복시키지 않습니다). 클라이언트의 `Authorization` 헤더는 전달되지 않고 relay는 리다이렉트를 따르지 않습니다. 목적지는 signal별로 opt-in하며(`metrics` 기본 on, `logs`/`traces` 기본 off), 어떤 목적지도 opt-in하지 않은 signal은 수신 후 폐기됩니다. relay는 분리되어 실행되므로 목적지 상태와 무관하게 응답은 항상 즉시 `200`이고, 성공 바디는 OTLP/HTTP에 따라 요청 프로토콜을 미러링합니다(`application/json`에는 `{}`, 그 외에는 빈 `application/x-protobuf` 바디). 32 MiB 인바운드 상한을 넘는 바디는 `413`을 받습니다.
 

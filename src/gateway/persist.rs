@@ -315,6 +315,8 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: Some(path.clone()),
+            admin: None,
+            enforcement: crate::config::GatewayEnforcementConfig::default(),
             oidc: None,
         });
         let state = AppState::new(config, reqwest::Client::new()).expect("gateway config resolves");

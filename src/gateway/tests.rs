@@ -43,6 +43,8 @@ impl GatewayEnv {
             policies: None,
             telemetry: None,
             state_path: None,
+            admin: None,
+            enforcement: crate::config::GatewayEnforcementConfig::default(),
             oidc: None,
         });
         (

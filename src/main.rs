@@ -475,6 +475,10 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     // sessions before serving; later mutations are written by the token
     // endpoint itself. A no-op when the key is unset.
     shunt::gateway::persist::restore(&state).await;
+    // Spend-limit caps and audit records share a versioned, atomic state file.
+    // Restore it before accepting admin mutations; memory-only configuration is
+    // a no-op.
+    shunt::gateway::spend::persist::restore(&state).await;
     // Opt-in `[server.pool] usage_refresh_seconds`: poll the Anthropic OAuth
     // usage API in the background, sharing the router's account pool. A no-op
     // when the key is unset.

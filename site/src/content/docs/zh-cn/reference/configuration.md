@@ -87,6 +87,31 @@ headers = { "x-api-key" = "..." }
 
 默认情况下,`/device` 忽略 forwarding header 并按 socket peer 做 rate limit。只有在 shunt 仅能通过会删除 client 所提供 forwarding header 并设置自身值的 trusted reverse proxy 访问时,才设置 `trust_forwarded_for = true`。不要在直接暴露的 gateway 上启用。
 
+### `[server.gateway.admin]`（可选）
+
+配置此表会注册 spend-limit Admin API。每个设置值都是环境变量名，变量内容为逗号分隔的 `id:key` 对。每个 key 值至少包含 32 个字符，并且 id 在两个环境变量中必须唯一。
+
+| 键 | 默认值 | 含义 |
+| :-- | :-- | :-- |
+| `write_keys_env` | `SHUNT_GATEWAY_ADMIN_WRITE_KEYS` | 存储写入 key 的 `id:key` 对的环境变量 |
+| `read_keys_env` | `SHUNT_GATEWAY_ADMIN_READ_KEYS` | 存储仅限 GET 的 key 的 `id:key` 对的环境变量 |
+| `blocked_message` | 未设置 | 用于未来限制错误的消息 |
+| `audit_retention_days` | `365` | 未来审计记录保留天数 |
+| `spend_retention_months` | `13` | 未来支出数据保留月数 |
+| `identity_retention_days` | `90` | 未来身份数据保留天数 |
+| `group_limit_mode` | `min` | 未来 group 限制解析模式：`min` 或 `max` |
+| `state_path` | `~/.shunt/gateway-spend.json` | 存储限制和审计记录的带版本 JSON；`""` 表示仅内存 |
+
+`write_keys_env` 和 `read_keys_env` 指定环境变量名，而不是内联 secret。每次修改都会通过私有临时文件原子替换状态文件。无法解析 home 目录时，默认仅使用内存。状态路径在启动时固定，配置重载不会更改它。
+
+### `[server.gateway.enforcement]`（可选）
+
+| 键 | 默认值 | 含义 |
+| :-- | :-- | :-- |
+| `fail_closed_on_error` | `false` | 用于未来限制；设为 `true` 时必须配置 `[server.gateway.admin]` |
+
+stage 1 接受这些保留设置、`blocked_message`、`group_limit_mode` 和 `fail_closed_on_error`，但尚未实现推理限制、用量计量、`/effective`、`/audit`、保留清理或 group scope。
+
 ## `[server.pool]`(可选)
 
 面向账户池的配额感知负载均衡调优 —— Claude(Anthropic)([详情](/zh-cn/guides/anthropic-multi-account/#调优选择serverpool)),以及自 issue #195 起的 Codex/ChatGPT([详情](/zh-cn/guides/codex-multi-account/))。此表不存在时,选择逻辑使用单一的内置 `0.98` 阈值,与该表出现之前的行为完全一致。

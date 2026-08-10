@@ -87,6 +87,31 @@ headers = { "x-api-key" = "..." }
 
 デフォルトでは `/device` は forwarding header を無視し、socket peer を rate limit します。shunt が、client 提供の forwarding header を削除して自分の値を設定する trusted reverse proxy からのみ到達可能な場合に限り、`trust_forwarded_for = true` を設定してください。直接公開された gateway では有効化しないでください。
 
+### `[server.gateway.admin]`（オプション）
+
+このテーブルを設定すると、spend-limit Admin API が登録されます。各設定値には、カンマ区切りの `id:key` ペアを格納した環境変数の名前を指定します。各キー値は 32 文字以上でなければならず、id は 2 つの環境変数を通して一意である必要があります。
+
+| キー | デフォルト | 意味 |
+| :-- | :-- | :-- |
+| `write_keys_env` | `SHUNT_GATEWAY_ADMIN_WRITE_KEYS` | 書き込みキーの `id:key` ペアを格納する環境変数 |
+| `read_keys_env` | `SHUNT_GATEWAY_ADMIN_READ_KEYS` | GET 専用キーの `id:key` ペアを格納する環境変数 |
+| `blocked_message` | 未設定 | 将来の上限適用エラーに使うメッセージ |
+| `audit_retention_days` | `365` | 将来の監査レコード保持日数 |
+| `spend_retention_months` | `13` | 将来の支出データ保持月数 |
+| `identity_retention_days` | `90` | 将来のアイデンティティ保持日数 |
+| `group_limit_mode` | `min` | 将来のグループ上限解決モード。`min` または `max` |
+| `state_path` | `~/.shunt/gateway-spend.json` | 上限と監査レコードを保存するバージョン付き JSON。`""` はメモリのみ |
+
+`write_keys_env` と `read_keys_env` にはシークレットそのものではなく、環境変数名を指定します。状態ファイルは変更ごとに非公開の一時ファイルを使ってアトミックに置換されます。ホームディレクトリを解決できない場合、デフォルトはメモリのみです。状態パスは起動時に固定され、設定のリロードでは変更されません。
+
+### `[server.gateway.enforcement]`（オプション）
+
+| キー | デフォルト | 意味 |
+| :-- | :-- | :-- |
+| `fail_closed_on_error` | `false` | 将来の上限適用で使う設定。`true` には `[server.gateway.admin]` が必要 |
+
+ステージ 1 はこれらの保持設定、`blocked_message`、`group_limit_mode`、`fail_closed_on_error` を受け付けますが、推論への上限適用、使用量計測、`/effective`、`/audit`、保持期間の sweep、group scope はまだ実装していません。
+
 ## `[server.pool]`（オプション）
 
 アカウントプール向けの、クォータを考慮した負荷分散のチューニングです — Claude（Anthropic）（[詳細](/ja/guides/anthropic-multi-account/#選択のチューニングserverpool)）と、issue #195 以降は Codex/ChatGPT（[詳細](/ja/guides/codex-multi-account/)）が対象です。テーブルが存在しない場合、選択はこのテーブルが導入される前と同じ、組み込みの単一しきい値 `0.98` を使います。

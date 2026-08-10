@@ -141,6 +141,31 @@ headers = { "x-api-key" = "..." }
 
 By default, `/device` ignores forwarding headers and rate-limits the socket peer. Set `trust_forwarded_for = true` only when shunt is reachable exclusively through a trusted reverse proxy that removes client-provided forwarding headers before setting its own value. Do not enable it on a directly exposed gateway.
 
+### `[server.gateway.admin]` (optional)
+
+Presence of this table registers the spend-limit Admin API. The keys name environment variables containing comma-separated `id:key` pairs. Key values must contain at least 32 characters, and ids must be unique across both variables.
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `write_keys_env` | `SHUNT_GATEWAY_ADMIN_WRITE_KEYS` | Env var holding keys that can read, create, replace, and delete caps |
+| `read_keys_env` | `SHUNT_GATEWAY_ADMIN_READ_KEYS` | Env var holding GET-only keys |
+| `blocked_message` | unset | Accepted for future enforcement errors; stage 1 does not use it |
+| `audit_retention_days` | `365` | Accepted for the later audit retention sweep |
+| `spend_retention_months` | `13` | Accepted for the later spend retention sweep |
+| `identity_retention_days` | `90` | Accepted for the later identity retention sweep |
+| `group_limit_mode` | `min` | `min` or `max`; accepted for later group-limit resolution |
+| `state_path` | `~/.shunt/gateway-spend.json` | Versioned JSON file containing caps and audit records; `""` selects memory-only storage |
+
+Unlike the upstream gateway YAML examples, shunt does not place key values or `${VAR}` placeholders in the config file. Export pairs such as `SHUNT_GATEWAY_ADMIN_WRITE_KEYS="terraform:<32-or-more-character-key>"`. The state file is replaced atomically with private permissions after each mutation. When no home directory resolves, the default is memory-only. The state path is fixed at boot; configuration reloads do not change it.
+
+### `[server.gateway.enforcement]` (optional)
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `fail_closed_on_error` | `false` | Accepted for the later enforcement stage. Setting it to `true` without `[server.gateway.admin]` fails configuration validation |
+
+Stage 1 does not enforce caps on `/v1/messages`. It also does not implement usage metering, `/effective`, `/audit`, retention sweeps, or group scopes.
+
 ## `[server.codex_endpoint]` (optional)
 
 Presence of this table enables an inbound OpenAI Responses passthrough so the **Codex CLI** can point its `base_url` at shunt and be load-balanced across a ChatGPT/Codex OAuth account pool ([details](/guides/inbound-codex-endpoint/)). When the table is absent, none of those routes are registered.

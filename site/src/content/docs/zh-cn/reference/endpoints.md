@@ -13,6 +13,10 @@ description: shunt 作为 Claude Code LLM 网关所提供的端点。
 | `POST` | `/v1/messages` | 推理 —— 按请求的 `model` id 路由 |
 | `POST` | `/v1/messages/count_tokens` | [Token 计数](/zh-cn/guides/effort-and-context/#token-counting-count_tokens) |
 | `GET` | `/managed/settings` | 按网关 JWT 提供的 Claude Code managed settings;支持 `ETag`、`If-None-Match` 与 `304 Not Modified` |
+| `GET` | `/v1/organizations/spend_limits` | 使用方向游标分页列出已存储的支出限制 |
+| `POST` | `/v1/organizations/spend_limits` | 为一个 `(scope, period)` 创建或替换支出限制 |
+| `GET` | `/v1/organizations/spend_limits/{id}` | 获取一个已存储的支出限制 |
+| `DELETE` | `/v1/organizations/spend_limits/{id}` | 删除一个已存储的支出限制 |
 | `POST` | `/v1/metrics` | 来自托管 Claude Code 客户端的入站 OTLP/HTTP 指标 —— verbatim 中继到 opt-in 的网关遥测目标 |
 | `POST` | `/v1/logs` | 入站 OTLP/HTTP log record —— 只中继到 `logs = true` 的目标 |
 | `POST` | `/v1/traces` | 入站 OTLP/HTTP span —— 只中继到 `traces = true` 的目标 |
@@ -35,6 +39,8 @@ description: shunt 作为 Claude Code LLM 网关所提供的端点。
 | `POST` | `/codex/analytics-events/events` | Codex CLI 分析 sink —— 根路径式 `chatgpt_base_url` 形式 |
 
 `/admin*` 路由仅在配置了 [`[server.admin]`](/zh-cn/reference/configuration/#serveradmin可选) 时存在;没有该表时,它们一个都不会注册。
+
+spend-limit 路由仅在启动时配置了 [`[server.gateway.admin]`](/zh-cn/reference/configuration/) 的情况下存在。所有操作都需通过 `x-api-key` 发送 `write_keys_env` 中的 key；`read_keys_env` 中的 key 只能使用 GET。`POST` 接受 `user` 和 `organization` scope、`daily`/`weekly`/`monthly` period，以及非负 USD 美分整数字符串或 `null` 的 `amount`，并按 `(scope, period)` 执行 upsert。列表分页接受 `limit`（1–1000，默认 20）、`after_id`、`before_id` 和 `scope_type`；两个游标不能同时使用。每个响应都包含 `request-id`，错误采用 Anthropic Admin API 错误格式。限制与修改审计记录一起保存到所配置的带版本 JSON 状态文件中。stage 1 不公开 `/effective` 或 `/audit`，也不对推理请求实施限制。
 
 `GET /managed/settings` 与 `POST /v1/{metrics,logs,traces}` 遥测接收路由仅在启动时启用了 `[server.gateway]` 的情况下存在,二者要求相同的网关 bearer JWT。接收路由接受托管 Claude Code 客户端 export 的 OTLP/HTTP 载荷([`[server.gateway.telemetry]`](/zh-cn/reference/configuration/) 将这些 exporter 指向网关),并把请求字节原样中继到所有 opt-in 该 signal 的目标。入站的 `content-type` 与 `content-encoding` 会被保留,目标配置的 headers 应用在其上(配置的键会替换转发值,而不是重复该 header)。客户端的 `Authorization` 头永远不会被转发,中继也不跟随重定向。目标按 signal opt-in(`metrics` 默认开启,`logs`/`traces` 默认关闭),没有任何目标 opt-in 的 signal 会被接收后丢弃。中继是分离执行的,因此无论目标状态如何,响应始终是立即的 `200`,成功 body 依照 OTLP/HTTP 镜像请求协议(`application/json` 得到 `{}`,其余得到空的 `application/x-protobuf` body)。超过 32 MiB 入站上限的 body 返回 `413`。
 

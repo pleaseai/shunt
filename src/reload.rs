@@ -66,10 +66,11 @@ impl RuntimeState {
 /// good config rather than going down or running open.
 ///
 /// Fields that cannot be hot-applied (`server.bind`,
-/// `server.max_concurrent_requests`, `[sentry]`, `[otel]`, and enabling or
-/// disabling the optional `[server.*]` route trees) are compared against the
-/// live config and a `warn!` is logged when they change; the new values are
-/// accepted into the swapped config but only take effect on restart.
+/// `server.max_concurrent_requests`, spend-limit route registration/state path,
+/// `[sentry]`, `[otel]`, and enabling or disabling the optional `[server.*]` route
+/// trees) are compared against the live config and a `warn!` is logged when they
+/// change; the new values are accepted into the swapped config but only take
+/// effect on restart.
 pub fn reload(shared: &SharedState, path: Option<&std::path::Path>) -> Result<(), ConfigError> {
     // Load + validate the candidate before touching the live state.
     let new_config = Config::load(path)?;
@@ -124,6 +125,27 @@ fn warn_on_restart_only_changes(previous: &Config, next: &Config) {
     if previous.server.gateway.is_some() != next.server.gateway.is_some() {
         tracing::warn!(
             "[server.gateway] was enabled or disabled but requires a restart; the running route and JWT-auth capability remains unchanged"
+        );
+    }
+    let previous_spend_admin = previous
+        .server
+        .gateway
+        .as_ref()
+        .and_then(|gateway| gateway.admin.as_ref());
+    let next_spend_admin = next
+        .server
+        .gateway
+        .as_ref()
+        .and_then(|gateway| gateway.admin.as_ref());
+    if previous_spend_admin.is_some() != next_spend_admin.is_some() {
+        tracing::warn!(
+            "[server.gateway.admin] was enabled or disabled but requires a restart to register or drop spend-limit routes"
+        );
+    } else if previous_spend_admin.and_then(|admin| admin.state_path())
+        != next_spend_admin.and_then(|admin| admin.state_path())
+    {
+        tracing::warn!(
+            "[server.gateway.admin].state_path changed but requires a restart; spend-limit persistence is fixed at boot"
         );
     }
     // Like `[server.admin]`, whether the inbound Responses routes are registered

@@ -88,6 +88,31 @@ headers = { "x-api-key" = "..." }
 
 기본적으로 `/device`는 forwarding header를 무시하고 socket peer를 rate limit합니다. shunt가 client 제공 forwarding header를 제거하고 자체 값을 설정하는 trusted reverse proxy를 통해서만 도달 가능한 경우에만 `trust_forwarded_for = true`를 설정하세요. 직접 노출된 gateway에서는 활성화하지 마세요.
 
+### `[server.gateway.admin]` (선택)
+
+이 테이블을 구성하면 spend-limit Admin API가 등록됩니다. 각 설정값은 쉼표로 구분된 `id:key` 쌍을 담는 환경 변수 이름입니다. 각 key 값은 32자 이상이어야 하며 id는 두 환경 변수 전체에서 고유해야 합니다.
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `write_keys_env` | `SHUNT_GATEWAY_ADMIN_WRITE_KEYS` | 쓰기 key의 `id:key` 쌍을 담는 환경 변수 |
+| `read_keys_env` | `SHUNT_GATEWAY_ADMIN_READ_KEYS` | GET 전용 key의 `id:key` 쌍을 담는 환경 변수 |
+| `blocked_message` | 미설정 | 향후 제한 오류에 사용할 메시지 |
+| `audit_retention_days` | `365` | 향후 감사 레코드 보존 일수 |
+| `spend_retention_months` | `13` | 향후 지출 데이터 보존 개월 수 |
+| `identity_retention_days` | `90` | 향후 아이덴티티 보존 일수 |
+| `group_limit_mode` | `min` | 향후 그룹 제한 결정 모드. `min` 또는 `max` |
+| `state_path` | `~/.shunt/gateway-spend.json` | 제한과 감사 레코드를 저장하는 버전이 있는 JSON. `""`은 메모리 전용 |
+
+`write_keys_env`와 `read_keys_env`에는 인라인 secret이 아니라 환경 변수 이름을 지정합니다. 상태 파일은 변경할 때마다 비공개 임시 파일로 원자적으로 교체됩니다. 홈 디렉터리를 확인할 수 없으면 기본값은 메모리 전용입니다. 상태 경로는 부팅 시 고정되며 구성 리로드로 변경되지 않습니다.
+
+### `[server.gateway.enforcement]` (선택)
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `fail_closed_on_error` | `false` | 향후 제한에 사용할 설정. `true`이면 `[server.gateway.admin]` 필요 |
+
+stage 1은 이 보존 설정, `blocked_message`, `group_limit_mode`, `fail_closed_on_error`를 받지만 추론 제한, 사용량 계측, `/effective`, `/audit`, 보존 sweep, group scope는 아직 구현하지 않습니다.
+
 ## `[server.codex_endpoint]` (선택)
 
 이 테이블은 **Codex CLI**가 `base_url`을 shunt로 지정하고 ChatGPT/Codex OAuth 계정 풀 사이에서 load balancing될 수 있도록 inbound OpenAI Responses passthrough를 활성화합니다([상세](/ko/guides/inbound-codex-endpoint/)). 테이블이 없으면 해당 route는 등록되지 않습니다.

@@ -13,7 +13,8 @@ use std::{
 };
 
 use super::{
-    approval::Identity, idp_client::DiscoveredEndpoints, refresh::RefreshTokenStore, ResolvedIdp,
+    approval::Identity, idp_client::DiscoveredEndpoints, refresh::RefreshTokenStore,
+    spend::SpendStore, ResolvedIdp,
 };
 
 pub const DEVICE_CODE_TTL: Duration = Duration::from_secs(600);
@@ -337,6 +338,7 @@ impl PerIpRateLimiter {
 pub struct GatewayStores {
     pub device_grants: DeviceGrantStore,
     pub refresh_tokens: RefreshTokenStore,
+    pub spend: SpendStore,
     pub device_verify_rate: PerIpRateLimiter,
     pub oidc_states: OidcStateStore,
     pub oidc_discovery: Mutex<HashMap<String, DiscoveredEndpoints>>,
@@ -349,10 +351,11 @@ pub struct GatewayStores {
 }
 
 impl GatewayStores {
-    pub fn new() -> Self {
+    pub fn new(spend_state_path: Option<std::path::PathBuf>) -> Self {
         Self {
             device_grants: DeviceGrantStore::new(),
             refresh_tokens: RefreshTokenStore::new(),
+            spend: SpendStore::new(spend_state_path),
             device_verify_rate: PerIpRateLimiter::new(Duration::from_secs(60), 30),
             oidc_states: OidcStateStore::new(),
             oidc_discovery: Mutex::new(HashMap::new()),
@@ -369,7 +372,7 @@ impl GatewayStores {
 
 impl Default for GatewayStores {
     fn default() -> Self {
-        Self::new()
+        Self::new(None)
     }
 }
 
