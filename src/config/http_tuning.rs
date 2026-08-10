@@ -43,7 +43,7 @@ impl AccessControlConfig {
             return false;
         }
         let Some(address) = address else {
-            return !self.enabled();
+            return allow_exempt || !self.enabled();
         };
         if self
             .parsed_deny_cidrs
