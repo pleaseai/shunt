@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.35.0](https://github.com/pleaseai/shunt/compare/v0.34.1...v0.35.0) (2026-08-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* **server:** The inbound request body cap now defaults to 32 MiB instead of the hardcoded 64 MiB limit. Requests between those sizes return 413 until [server.limits] max_request_bytes is raised.
+
+### Features
+
+* **server:** add HTTP tuning config surface ([#334](https://github.com/pleaseai/shunt/issues/334)) ([82f55d6](https://github.com/pleaseai/shunt/commit/82f55d60b47845a12e9e876423293d1f598df103))
+
 ## [0.34.1](https://github.com/pleaseai/shunt/compare/v0.34.0...v0.34.1) (2026-08-08)
 
 
