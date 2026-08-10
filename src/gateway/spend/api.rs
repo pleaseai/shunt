@@ -8,7 +8,10 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::store::{Period, Scope, SpendLimit};
+use super::store::{
+    validate_amount, validate_scope, Period, Scope, SpendLimit, MAX_AMOUNT_LENGTH,
+    MAX_USER_ID_LENGTH,
+};
 use crate::{auth::inbound::constant_time_eq, server::AppState};
 
 #[derive(Debug, Deserialize)]
@@ -182,16 +185,14 @@ pub async fn create(
     }
     let amount = match body.amount {
         serde_json::Value::Null => None,
-        serde_json::Value::String(amount)
-            if !amount.is_empty() && amount.bytes().all(|byte| byte.is_ascii_digit()) =>
-        {
-            Some(amount)
-        }
+        serde_json::Value::String(amount) if validate_amount(Some(&amount)).is_ok() => Some(amount),
         _ => {
             return error(
                 StatusCode::BAD_REQUEST,
                 "invalid_request_error",
-                "amount must be a whole-number string of USD cents or null",
+                format!(
+                    "amount must be a whole-number string of USD cents with at most {MAX_AMOUNT_LENGTH} digits or null"
+                ),
                 request_id,
             );
         }
@@ -392,14 +393,21 @@ fn parse_scope(value: serde_json::Value) -> Result<Scope, ScopeError> {
         .ok_or_else(|| ScopeError::Invalid("scope.type must be a string".into()))?;
     match scope_type {
         "organization" => Ok(Scope::Organization),
-        "user" => object
-            .get("user_id")
-            .and_then(serde_json::Value::as_str)
-            .filter(|value| !value.is_empty())
-            .map(|user_id| Scope::User {
+        "user" => {
+            let user_id = object
+                .get("user_id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| ScopeError::Invalid("user scope requires user_id".into()))?;
+            let scope = Scope::User {
                 user_id: user_id.to_string(),
-            })
-            .ok_or_else(|| ScopeError::Invalid("user scope requires user_id".into())),
+            };
+            validate_scope(&scope).map_err(|_| {
+                ScopeError::Invalid(format!(
+                    "user scope requires a non-empty user_id of at most {MAX_USER_ID_LENGTH} bytes"
+                ))
+            })?;
+            Ok(scope)
+        }
         "rbac_group" | "seat_tier" | "organization_service" => {
             Err(ScopeError::Unsupported(scope_type.to_string()))
         }

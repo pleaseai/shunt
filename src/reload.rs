@@ -590,6 +590,80 @@ mod tests {
         std::env::remove_var(users_env);
     }
 
+    fn gateway_admin_config(
+        state_path: Option<std::path::PathBuf>,
+    ) -> crate::config::GatewayAdminConfig {
+        crate::config::GatewayAdminConfig {
+            write_keys_env: "UNSET_RELOAD_SPEND_WRITE_KEYS".into(),
+            read_keys_env: "UNSET_RELOAD_SPEND_READ_KEYS".into(),
+            blocked_message: None,
+            audit_retention_days: 365,
+            spend_retention_months: 13,
+            identity_retention_days: 90,
+            group_limit_mode: crate::config::GroupLimitMode::Min,
+            state_path,
+            write_keys: Vec::new(),
+            read_keys: Vec::new(),
+        }
+    }
+
+    fn gateway_config(
+        admin: Option<crate::config::GatewayAdminConfig>,
+    ) -> crate::config::GatewayConfig {
+        crate::config::GatewayConfig {
+            public_url: "https://gateway.example".into(),
+            jwt_secret_env: "UNSET_RELOAD_GATEWAY_SECRET".into(),
+            users_env: "UNSET_RELOAD_GATEWAY_USERS".into(),
+            token_ttl_seconds: 3600,
+            trust_forwarded_for: false,
+            policies: None,
+            telemetry: None,
+            state_path: None,
+            admin,
+            enforcement: crate::config::GatewayEnforcementConfig::default(),
+            oidc: None,
+        }
+    }
+
+    #[test]
+    fn spend_admin_presence_toggle_warns_that_restart_is_required() {
+        let mut previous = Config::default();
+        previous.server.gateway = Some(gateway_config(None));
+        let mut next = previous.clone();
+        next.server.gateway.as_mut().unwrap().admin = Some(gateway_admin_config(None));
+
+        let logs = capture_logs(|| super::warn_on_restart_only_changes(&previous, &next));
+        assert!(
+            logs.contains("[server.gateway.admin] was enabled or disabled"),
+            "{logs}"
+        );
+        assert!(logs.contains("requires a restart"), "{logs}");
+    }
+
+    #[test]
+    fn spend_state_path_change_warns_that_restart_is_required() {
+        let mut previous = Config::default();
+        previous.server.gateway = Some(gateway_config(Some(gateway_admin_config(Some(
+            "/tmp/spend-before.json".into(),
+        )))));
+        let mut next = previous.clone();
+        next.server
+            .gateway
+            .as_mut()
+            .unwrap()
+            .admin
+            .as_mut()
+            .unwrap()
+            .state_path = Some("/tmp/spend-after.json".into());
+
+        let logs = capture_logs(|| super::warn_on_restart_only_changes(&previous, &next));
+        assert!(
+            logs.contains("[server.gateway.admin].state_path changed"),
+            "{logs}"
+        );
+        assert!(logs.contains("requires a restart"), "{logs}");
+    }
+
     #[test]
     fn bind_change_warns_and_reload_still_succeeds() {
         let dir = temp_dir("bind");

@@ -2,7 +2,7 @@ use std::{fs, io, path::Path};
 
 use serde::{Deserialize, Serialize};
 
-use super::store::SpendState;
+use super::store::{validate_limit, SpendState};
 use crate::server::AppState;
 
 const STATE_VERSION: u32 = 1;
@@ -68,7 +68,7 @@ fn load(path: &Path) -> io::Result<Option<PersistedSpend>> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
-    let persisted: PersistedSpend = match serde_json::from_slice(&bytes) {
+    let mut persisted: PersistedSpend = match serde_json::from_slice(&bytes) {
         Ok(persisted) => persisted,
         Err(error) => {
             tracing::warn!(path = %path.display(), %error, "gateway spend-limit state is not valid json; ignoring");
@@ -84,6 +84,20 @@ fn load(path: &Path) -> io::Result<Option<PersistedSpend>> {
         );
         return Ok(None);
     }
+    persisted
+        .state
+        .limits
+        .retain(|limit| match validate_limit(limit) {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(
+                    id = %limit.id,
+                    field = error.field(),
+                    "dropping invalid gateway spend-limit record from persisted state"
+                );
+                false
+            }
+        });
     Ok(Some(persisted))
 }
 
@@ -98,6 +112,10 @@ fn save_snapshot(path: &Path, state: &SpendState) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use serde_json::json;
+
     use super::*;
     use crate::gateway::spend::store::{Period, Scope, SpendStore};
 
@@ -112,6 +130,36 @@ mod tests {
         ));
         fs::create_dir_all(&directory).expect("create temp directory");
         directory.join("state.json")
+    }
+
+    fn capture_logs<T>(run: impl FnOnce() -> T) -> (T, String) {
+        use std::io::{self, Write};
+
+        struct BufferWriter {
+            buffer: Arc<Mutex<Vec<u8>>>,
+        }
+        impl Write for BufferWriter {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.buffer.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let writer_output = Arc::clone(&output);
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || BufferWriter {
+                buffer: Arc::clone(&writer_output),
+            })
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        let result = tracing::subscriber::with_default(subscriber, run);
+        let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        (result, logs)
     }
 
     #[test]
@@ -191,6 +239,72 @@ mod tests {
             std::env::remove_var(env);
         }
         fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn invalid_persisted_limits_are_dropped_individually_and_warned() {
+        let cases = [
+            ("amount-negative", "amount", json!({"amount":"-5"})),
+            ("amount-text", "amount", json!({"amount":"abc"})),
+            (
+                "amount-long",
+                "amount",
+                json!({"amount":"9".repeat(super::super::store::MAX_AMOUNT_LENGTH + 1)}),
+            ),
+            ("currency", "currency", json!({"currency":"EUR"})),
+            ("object-type", "type", json!({"type":"nonsense"})),
+            (
+                "user-empty",
+                "scope.user_id",
+                json!({"scope":{"type":"user","user_id":""}}),
+            ),
+            (
+                "user-long",
+                "scope.user_id",
+                json!({"scope":{"type":"user","user_id":"u".repeat(super::super::store::MAX_USER_ID_LENGTH + 1)}}),
+            ),
+        ];
+
+        for (label, field, patch) in cases {
+            let path = temp_file(label);
+            let valid = serde_json::json!({
+                "id":"spl_valid",
+                "amount":"100",
+                "created_at":"2026-08-10T00:00:00.000Z",
+                "currency":"USD",
+                "period":"monthly",
+                "scope":{"type":"organization"},
+                "type":"spend_limit",
+                "updated_at":"2026-08-10T00:00:00.000Z"
+            });
+            let mut invalid = valid.clone();
+            invalid["id"] = serde_json::json!(format!("spl_{label}"));
+            for (key, value) in patch.as_object().unwrap() {
+                invalid[key] = value.clone();
+            }
+            fs::write(
+                &path,
+                serde_json::to_vec(&serde_json::json!({
+                    "version":1,
+                    "limits":[valid, invalid],
+                    "audit":[],
+                    "next_audit_id":1
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+
+            let (loaded, logs) = capture_logs(|| load(&path).unwrap().unwrap());
+            assert_eq!(loaded.state.limits.len(), 1, "case {label}");
+            assert_eq!(loaded.state.limits[0].id, "spl_valid", "case {label}");
+            assert!(logs.contains(&format!("spl_{label}")), "{logs}");
+            assert!(logs.contains(field), "{logs}");
+            assert!(
+                logs.contains("dropping invalid gateway spend-limit record"),
+                "{logs}"
+            );
+            fs::remove_dir_all(path.parent().unwrap()).ok();
+        }
     }
 
     #[test]

@@ -4,7 +4,7 @@ This stage adds an authenticated Admin API for storing spend caps. It does not a
 
 ## Configuration
 
-Enable the API under the existing gateway block. Store keys in environment variables as comma-separated `id:key` pairs; each key must contain at least 32 characters, and an id may appear only once across both variables.
+Enable the API under the existing gateway block. Store keys in environment variables as comma-separated `id:key` pairs; each key must contain at least 32 characters. Key ids and key values must each be unique across both variables. If either uniqueness check fails, configuration validation reports the colliding ids without logging the key value. If both variables are unset or blank, shunt starts with the routes enabled but logs both variable names and warns that every request will receive `401`.
 
 ```toml
 [server.gateway.admin]
@@ -21,7 +21,7 @@ state_path = "~/.shunt/gateway-spend.json"
 fail_closed_on_error = false
 ```
 
-`state_path = ""` keeps caps and audit records in memory only. When shunt cannot resolve a home directory, the default path also becomes memory-only. The state file uses a versioned JSON envelope and an atomic private-file replacement. The path is fixed at boot; configuration reloads do not move the process-lifetime store to a different file.
+`state_path = ""` keeps caps and audit records in memory only. When shunt cannot resolve a home directory, the default path also becomes memory-only. The state file uses a versioned JSON envelope and an atomic private-file replacement. At restore, shunt drops each cap whose amount, currency, object type, or user id fails the same validation as `POST`, and logs a warning containing that cap's id and invalid field; other caps in the file still load. The path is fixed at boot; configuration reloads do not move the process-lifetime store to a different file.
 
 The retention settings, `blocked_message`, `group_limit_mode`, and `fail_closed_on_error` are parsed now for configuration compatibility. Stage 1 does not run a retention sweep, resolve group limits, customize an enforcement error, or perform enforcement. `fail_closed_on_error = true` requires `[server.gateway.admin]`, even though enforcement is deferred.
 
@@ -38,7 +38,7 @@ The following routes exist only when `[server.gateway.admin]` is configured at s
 
 Send `x-api-key` with a write key for all operations. A read key can use `GET` and receives `403` on mutations. An invalid or missing key receives `401`.
 
-`POST` accepts `{scope, amount, period}`. `scope` supports `{ "type": "organization" }` and `{ "type": "user", "user_id": "..." }`. `period` is `daily`, `weekly`, or `monthly`; when the client omits it, shunt uses `monthly`. `amount` is a whole-number string of USD cents or `null`; `"0"` is distinct from unlimited. A supplied `currency` must equal `USD`.
+`POST` accepts `{scope, amount, period}`. `scope` supports `{ "type": "organization" }` and `{ "type": "user", "user_id": "..." }`; `user_id` must contain 1–256 bytes. `period` is `daily`, `weekly`, or `monthly`; when the client omits it, shunt uses `monthly`. `amount` is a whole-number string of 1–19 USD-cent digits or `null`; `"0"` is distinct from unlimited. A supplied `currency` must equal `USD`.
 
 The operation upserts by `(scope, period)`. Replacing a cap keeps its original `id` and `created_at`. Each mutation appends an audit record containing the before and after snapshots and the actor `admin-key:<id>`, then persists caps and audit records in one JSON write.
 

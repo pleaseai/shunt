@@ -1,4 +1,7 @@
-use std::sync::{Mutex, MutexGuard};
+use std::{
+    path::{Path, PathBuf},
+    sync::{Mutex, MutexGuard},
+};
 
 use axum::{
     body::{to_bytes, Body},
@@ -28,6 +31,10 @@ struct SpendEnv {
 
 impl SpendEnv {
     fn config(label: &str) -> (Config, Self) {
+        Self::config_with_state_path(label, None)
+    }
+
+    fn config_with_state_path(label: &str, state_path: Option<PathBuf>) -> (Config, Self) {
         let guard = ENV_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -58,7 +65,7 @@ impl SpendEnv {
                 spend_retention_months: 13,
                 identity_retention_days: 90,
                 group_limit_mode: GroupLimitMode::Min,
-                state_path: None,
+                state_path,
                 write_keys: Vec::new(),
                 read_keys: Vec::new(),
             }),
@@ -147,6 +154,37 @@ fn organization(amount: Value, period: &str) -> Value {
     json!({"scope":{"type":"organization"},"amount":amount,"period":period})
 }
 
+fn user(user_id: &str, amount: Value, period: &str) -> Value {
+    json!({"scope":{"type":"user","user_id":user_id},"amount":amount,"period":period})
+}
+
+fn temp_dir(label: &str) -> PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "shunt-spend-api-{}-{}-{label}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&path).expect("create temp directory");
+    path
+}
+
+struct TempDir(PathBuf);
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.0).ok();
+    }
+}
+
+fn failing_state_path(directory: &Path) -> PathBuf {
+    let blocker = directory.join("blocker");
+    std::fs::write(&blocker, b"file blocks directory creation").expect("create blocker file");
+    blocker.join("state.json")
+}
+
 #[tokio::test]
 async fn upsert_preserves_identity_and_distinguishes_unlimited_from_zero() {
     let (config, _env) = SpendEnv::config("upsert");
@@ -186,6 +224,52 @@ async fn invalid_amount_currency_and_unsupported_scope_return_400() {
         .as_str()
         .unwrap()
         .contains("does not support scope type"));
+}
+
+#[tokio::test]
+async fn amount_and_user_id_length_boundaries_are_enforced() {
+    let (config, _env) = SpendEnv::config("length-bounds");
+    let (router, _, _) = build_router(config).unwrap();
+    let max_amount = "9".repeat(super::store::MAX_AMOUNT_LENGTH);
+    let max_user_id = "u".repeat(super::store::MAX_USER_ID_LENGTH);
+    let (response, _) = post(
+        &router,
+        WRITE_KEY,
+        user(&max_user_id, json!(max_amount), "monthly"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let (response, body) = post(
+        &router,
+        WRITE_KEY,
+        organization(
+            json!("9".repeat(super::store::MAX_AMOUNT_LENGTH + 1)),
+            "monthly",
+        ),
+    )
+    .await;
+    assert_error_response(&response, &body, StatusCode::BAD_REQUEST);
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains(&super::store::MAX_AMOUNT_LENGTH.to_string()));
+
+    let (response, body) = post(
+        &router,
+        WRITE_KEY,
+        user(
+            &"u".repeat(super::store::MAX_USER_ID_LENGTH + 1),
+            json!("1"),
+            "monthly",
+        ),
+    )
+    .await;
+    assert_error_response(&response, &body, StatusCode::BAD_REQUEST);
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains(&super::store::MAX_USER_ID_LENGTH.to_string()));
 }
 
 #[tokio::test]
@@ -280,6 +364,18 @@ async fn list_paginates_forward_and_backward_with_directional_has_more() {
     .await;
     assert_eq!(before["data"][0]["id"], ids[1]);
     assert_eq!(before["has_more"], true);
+    let (max_response, max_page) = send(
+        &router,
+        request(
+            "GET",
+            "/v1/organizations/spend_limits?limit=1000",
+            READ_KEY,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(max_response.status(), StatusCode::OK);
+    assert_eq!(max_page["data"].as_array().unwrap().len(), 3);
     for path in [
         format!(
             "/v1/organizations/spend_limits?after_id={}&before_id={}",
@@ -290,6 +386,55 @@ async fn list_paginates_forward_and_backward_with_directional_has_more() {
     ] {
         let (response, _) = send(&router, request("GET", &path, READ_KEY, None)).await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+}
+
+#[tokio::test]
+async fn list_rejects_unknown_cursors() {
+    let (config, _env) = SpendEnv::config("unknown-cursors");
+    let (router, _, _) = build_router(config).unwrap();
+    post(&router, WRITE_KEY, organization(json!("1"), "daily")).await;
+    for cursor in ["after_id", "before_id"] {
+        let path = format!("/v1/organizations/spend_limits?{cursor}=spl_does_not_exist");
+        let (response, body) = send(&router, request("GET", &path, READ_KEY, None)).await;
+        assert_error_response(&response, &body, StatusCode::BAD_REQUEST);
+        assert!(body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("unknown {cursor}")));
+    }
+}
+
+#[tokio::test]
+async fn list_filters_supported_scope_types_and_rejects_others() {
+    let (config, _env) = SpendEnv::config("scope-filter");
+    let (router, _, _) = build_router(config).unwrap();
+    let (_, organization_limit) = post(&router, WRITE_KEY, organization(json!("1"), "daily")).await;
+    let (_, user_limit) = post(&router, WRITE_KEY, user("usr_filter", json!("2"), "weekly")).await;
+
+    for (scope_type, included, excluded) in [
+        ("user", &user_limit, &organization_limit),
+        ("organization", &organization_limit, &user_limit),
+    ] {
+        let path = format!("/v1/organizations/spend_limits?scope_type={scope_type}");
+        let (response, body) = send(&router, request("GET", &path, READ_KEY, None)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body["data"].as_array().unwrap().len(), 1);
+        assert_eq!(body["data"][0]["id"], included["id"]);
+        assert_ne!(body["data"][0]["id"], excluded["id"]);
+    }
+
+    for (scope_type, expected) in [
+        ("rbac_group", "does not support scope type"),
+        ("unknown", "invalid scope_type"),
+    ] {
+        let path = format!("/v1/organizations/spend_limits?scope_type={scope_type}");
+        let (response, body) = send(&router, request("GET", &path, READ_KEY, None)).await;
+        assert_error_response(&response, &body, StatusCode::BAD_REQUEST);
+        assert!(body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains(expected));
     }
 }
 
@@ -324,6 +469,53 @@ async fn extractor_failures_use_the_admin_error_envelope() {
     )
     .await;
     assert_error_response(&response, &value, StatusCode::METHOD_NOT_ALLOWED);
+}
+
+#[tokio::test]
+async fn create_persistence_failure_rolls_back_store() {
+    let directory = TempDir(temp_dir("create-persist-failure"));
+    let state_path = failing_state_path(&directory.0);
+    let (config, _env) =
+        SpendEnv::config_with_state_path("create-persist-failure", Some(state_path));
+    let (router, _, state) = build_router(config).unwrap();
+
+    let (response, body) = post(&router, WRITE_KEY, organization(json!("100"), "monthly")).await;
+    assert_error_response(&response, &body, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body["error"]["type"], "api_error");
+    assert!(state.gateway_stores.spend.list().is_empty());
+    assert!(state.gateway_stores.spend.export().audit.is_empty());
+}
+
+#[tokio::test]
+async fn delete_persistence_failure_rolls_back_store() {
+    let directory = TempDir(temp_dir("delete-persist-failure"));
+    let state_path = failing_state_path(&directory.0);
+    let (config, _env) =
+        SpendEnv::config_with_state_path("delete-persist-failure", Some(state_path));
+    let (router, _, state) = build_router(config).unwrap();
+    let created = state.gateway_stores.spend.upsert(
+        super::store::Scope::Organization,
+        super::store::Period::Monthly,
+        Some("100".into()),
+        "admin-key:writer",
+        "2026-08-10T00:00:00.000Z".into(),
+    );
+    let id = created.id.clone();
+
+    let (response, body) = send(
+        &router,
+        request(
+            "DELETE",
+            &format!("/v1/organizations/spend_limits/{id}"),
+            WRITE_KEY,
+            None,
+        ),
+    )
+    .await;
+    assert_error_response(&response, &body, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body["error"]["type"], "api_error");
+    assert_eq!(state.gateway_stores.spend.get(&id), Some(created));
+    assert_eq!(state.gateway_stores.spend.export().audit.len(), 1);
 }
 
 #[tokio::test]
@@ -371,4 +563,39 @@ async fn routes_are_absent_without_gateway_admin_config() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+/// Routes are registered from the presence of `[server.gateway.admin]` alone,
+/// so a block whose key env vars resolve to nothing leaves the surface present
+/// but unusable. The companion test in `config.rs` only proves the boot warning
+/// fires and the lists come back empty; it would not catch an `authenticate`
+/// refactor that read "no keys configured" as "auth disabled". Assert the
+/// fail-closed behavior over HTTP, where that regression would actually show.
+#[tokio::test]
+async fn configured_admin_block_without_resolved_keys_denies_every_request() {
+    let (config, env) = SpendEnv::config("keyless");
+    // Keep the admin block, drop only the key material the harness exported.
+    std::env::set_var(&env.write_env, "");
+    std::env::set_var(&env.read_env, "");
+
+    let (router, _, _) = build_router(config).unwrap();
+
+    // The routes still exist — this is not the absent-config 404 case.
+    let (response, body) = send(
+        &router,
+        request("GET", "/v1/organizations/spend_limits", WRITE_KEY, None),
+    )
+    .await;
+    assert_error_response(&response, &body, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["error"]["type"], "authentication_error");
+
+    let (response, body) = post(&router, WRITE_KEY, organization(json!("100"), "monthly")).await;
+    assert_error_response(&response, &body, StatusCode::UNAUTHORIZED);
+
+    let (response, body) = send(
+        &router,
+        request("GET", "/v1/organizations/spend_limits", READ_KEY, None),
+    )
+    .await;
+    assert_error_response(&response, &body, StatusCode::UNAUTHORIZED);
 }

@@ -2,6 +2,31 @@ use std::{path::PathBuf, sync::Mutex};
 
 use serde::{Deserialize, Serialize};
 
+/// Nineteen decimal digits always fit in the unsigned 64-bit arithmetic used
+/// by the next enforcement stage.
+pub(crate) const MAX_AMOUNT_LENGTH: usize = 19;
+/// User identifiers are opaque, but bounding them limits persisted snapshots.
+pub(crate) const MAX_USER_ID_LENGTH: usize = 256;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ValidationError {
+    Amount,
+    Currency,
+    ObjectType,
+    UserId,
+}
+
+impl ValidationError {
+    pub(crate) fn field(self) -> &'static str {
+        match self {
+            Self::Amount => "amount",
+            Self::Currency => "currency",
+            Self::ObjectType => "type",
+            Self::UserId => "scope.user_id",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Scope {
@@ -29,6 +54,37 @@ pub struct SpendLimit {
     #[serde(rename = "type")]
     pub object_type: String,
     pub updated_at: String,
+}
+
+pub(crate) fn validate_amount(amount: Option<&str>) -> Result<(), ValidationError> {
+    if amount.is_some_and(|value| {
+        value.is_empty()
+            || value.len() > MAX_AMOUNT_LENGTH
+            || !value.bytes().all(|byte| byte.is_ascii_digit())
+    }) {
+        return Err(ValidationError::Amount);
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_scope(scope: &Scope) -> Result<(), ValidationError> {
+    if let Scope::User { user_id } = scope {
+        if user_id.is_empty() || user_id.len() > MAX_USER_ID_LENGTH {
+            return Err(ValidationError::UserId);
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_limit(limit: &SpendLimit) -> Result<(), ValidationError> {
+    validate_amount(limit.amount.as_deref())?;
+    if limit.currency != "USD" {
+        return Err(ValidationError::Currency);
+    }
+    if limit.object_type != "spend_limit" {
+        return Err(ValidationError::ObjectType);
+    }
+    validate_scope(&limit.scope)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

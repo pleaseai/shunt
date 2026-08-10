@@ -515,9 +515,9 @@ pub enum GroupLimitMode {
     Max,
 }
 
-/// `[server.gateway.admin]` enables spend-limit CRUD. The retention fields and
-/// `group_limit_mode` are accepted and validated in stage 1, but the retention
-/// sweep and group-scoped limit resolution are not implemented yet.
+/// `[server.gateway.admin]` enables spend-limit CRUD. Stage 1 deserializes the
+/// retention fields without range validation and validates `group_limit_mode`
+/// against its enum, but does not yet run retention sweeps or resolve group limits.
 #[derive(Clone, Deserialize, Serialize)]
 pub struct GatewayAdminConfig {
     #[serde(default = "default_gateway_admin_write_keys_env")]
@@ -584,10 +584,24 @@ impl GatewayAdminConfig {
         self.write_keys = resolve_gateway_admin_keys(&self.write_keys_env, "write_keys_env")?;
         self.read_keys = resolve_gateway_admin_keys(&self.read_keys_env, "read_keys_env")?;
         let mut ids = HashSet::new();
-        for (id, _) in self.write_keys.iter().chain(&self.read_keys) {
+        let mut values = std::collections::HashMap::<&str, &str>::new();
+        for (id, value) in self.write_keys.iter().chain(&self.read_keys) {
             if !ids.insert(id.clone()) {
                 return Err(ConfigError::DuplicateGatewayAdminKeyId { id: id.clone() });
             }
+            if let Some(first_id) = values.insert(value, id) {
+                return Err(ConfigError::DuplicateGatewayAdminKeyValue {
+                    first_id: first_id.to_string(),
+                    second_id: id.clone(),
+                });
+            }
+        }
+        if self.write_keys.is_empty() && self.read_keys.is_empty() {
+            tracing::warn!(
+                write_keys_env = %self.write_keys_env,
+                read_keys_env = %self.read_keys_env,
+                "[server.gateway.admin] resolved zero API keys; all spend-limit requests will be unauthorized"
+            );
         }
         Ok(())
     }
@@ -2024,6 +2038,10 @@ pub enum ConfigError {
     },
     #[error("[server.gateway.admin] key id {id:?} is duplicated across read_keys_env and write_keys_env")]
     DuplicateGatewayAdminKeyId { id: String },
+    #[error(
+        "[server.gateway.admin] key value is duplicated by ids {first_id:?} and {second_id:?} across read_keys_env and write_keys_env"
+    )]
+    DuplicateGatewayAdminKeyValue { first_id: String, second_id: String },
     #[error("[server.gateway.enforcement].fail_closed_on_error = true requires [server.gateway.admin]; configure both keys or disable fail_closed_on_error")]
     GatewayFailClosedRequiresAdmin,
     /// The header value is deliberately not echoed — it is typically a
@@ -4304,6 +4322,27 @@ mod tests {
             Err(ConfigError::DuplicateGatewayAdminKeyId { .. })
         ));
 
+        std::env::set_var(&write_env, format!("writer:{key}"));
+        std::env::set_var(&read_env, format!("reader:{key}"));
+        let error = config
+            .clone()
+            .validate()
+            .expect_err("duplicate key values must fail validation");
+        assert!(matches!(
+            error,
+            ConfigError::DuplicateGatewayAdminKeyValue {
+                ref first_id,
+                ref second_id,
+            } if first_id == "writer" && second_id == "reader"
+        ));
+        assert!(!error.to_string().contains(key));
+
+        std::env::set_var(&read_env, "reader:fedcba9876543210fedcba9876543210");
+        config
+            .clone()
+            .validate()
+            .expect("distinct key values across lists must validate");
+
         let gateway = config.server.gateway.as_mut().unwrap();
         gateway.admin = None;
         gateway.enforcement.fail_closed_on_error = true;
@@ -4311,6 +4350,67 @@ mod tests {
             config.validate(),
             Err(ConfigError::GatewayFailClosedRequiresAdmin)
         ));
+        for env in [secret_env, users_env, write_env, read_env] {
+            std::env::remove_var(env);
+        }
+    }
+
+    #[test]
+    fn gateway_admin_with_no_resolved_keys_warns_and_resolves_empty() {
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let suffix = format!("{}_spend_empty", std::process::id());
+        let secret_env = format!("SHUNT_TEST_SPEND_SECRET_{suffix}");
+        let users_env = format!("SHUNT_TEST_SPEND_USERS_{suffix}");
+        let write_env = format!("SHUNT_TEST_SPEND_WRITE_{suffix}");
+        let read_env = format!("SHUNT_TEST_SPEND_READ_{suffix}");
+        std::env::set_var(&secret_env, "0123456789abcdef0123456789abcdef");
+        std::env::set_var(&users_env, "dev@example.com:password");
+        let mut config = Config::default();
+        config.server.gateway = Some(GatewayConfig {
+            public_url: "https://gateway.example".into(),
+            jwt_secret_env: secret_env.clone(),
+            users_env: users_env.clone(),
+            token_ttl_seconds: 3600,
+            trust_forwarded_for: false,
+            policies: None,
+            telemetry: None,
+            state_path: None,
+            admin: Some(super::GatewayAdminConfig {
+                write_keys_env: write_env.clone(),
+                read_keys_env: read_env.clone(),
+                blocked_message: None,
+                audit_retention_days: 365,
+                spend_retention_months: 13,
+                identity_retention_days: 90,
+                group_limit_mode: super::GroupLimitMode::Min,
+                state_path: None,
+                write_keys: Vec::new(),
+                read_keys: Vec::new(),
+            }),
+            enforcement: GatewayEnforcementConfig::default(),
+            oidc: None,
+        });
+
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let writer_output = Arc::clone(&output);
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || BufferWriter {
+                buffer: Arc::clone(&writer_output),
+            })
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        let validated =
+            tracing::subscriber::with_default(subscriber, || config.validate().unwrap());
+        let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        let admin = validated.server.gateway.unwrap().admin.unwrap();
+        assert!(admin.write_keys.is_empty() && admin.read_keys.is_empty());
+        assert!(logs.contains("resolved zero API keys"), "{logs}");
+        assert!(logs.contains(&write_env), "{logs}");
+        assert!(logs.contains(&read_env), "{logs}");
+
         for env in [secret_env, users_env, write_env, read_env] {
             std::env::remove_var(env);
         }
