@@ -2,7 +2,7 @@ use std::{fs, io, path::Path};
 
 use serde::{Deserialize, Serialize};
 
-use super::store::{validate_limit, SpendState};
+use super::store::{validate_limit, AuditRecord, SpendLimit, SpendState};
 use crate::server::AppState;
 
 const STATE_VERSION: u32 = 1;
@@ -12,6 +12,14 @@ struct PersistedSpend {
     version: u32,
     #[serde(flatten)]
     state: SpendState,
+}
+
+#[derive(Deserialize)]
+struct PersistedSpendWire {
+    version: u32,
+    limits: Vec<serde_json::Value>,
+    audit: Vec<AuditRecord>,
+    next_audit_id: u64,
 }
 
 pub async fn restore(state: &AppState) {
@@ -68,37 +76,55 @@ fn load(path: &Path) -> io::Result<Option<PersistedSpend>> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
-    let mut persisted: PersistedSpend = match serde_json::from_slice(&bytes) {
+    let wire: PersistedSpendWire = match serde_json::from_slice(&bytes) {
         Ok(persisted) => persisted,
         Err(error) => {
             tracing::warn!(path = %path.display(), %error, "gateway spend-limit state is not valid json; ignoring");
             return Ok(None);
         }
     };
-    if persisted.version != STATE_VERSION {
+    if wire.version != STATE_VERSION {
         tracing::warn!(
             path = %path.display(),
-            found = persisted.version,
+            found = wire.version,
             expected = STATE_VERSION,
             "gateway spend-limit state version mismatch; ignoring"
         );
         return Ok(None);
     }
-    persisted
-        .state
+    let limits = wire
         .limits
-        .retain(|limit| match validate_limit(limit) {
-            Ok(()) => true,
+        .into_iter()
+        .filter_map(|value| match serde_json::from_value::<SpendLimit>(value) {
+            Ok(limit) => match validate_limit(&limit) {
+                Ok(()) => Some(limit),
+                Err(error) => {
+                    tracing::warn!(
+                        id = %limit.id,
+                        field = error.field(),
+                        "dropping invalid gateway spend-limit record from persisted state"
+                    );
+                    None
+                }
+            },
             Err(error) => {
                 tracing::warn!(
-                    id = %limit.id,
-                    field = error.field(),
-                    "dropping invalid gateway spend-limit record from persisted state"
+                    path = %path.display(),
+                    %error,
+                    "dropping malformed gateway spend-limit record from persisted state"
                 );
-                false
+                None
             }
-        });
-    Ok(Some(persisted))
+        })
+        .collect();
+    Ok(Some(PersistedSpend {
+        version: wire.version,
+        state: SpendState {
+            limits,
+            audit: wire.audit,
+            next_audit_id: wire.next_audit_id,
+        },
+    }))
 }
 
 fn save_snapshot(path: &Path, state: &SpendState) -> io::Result<()> {
@@ -301,6 +327,53 @@ mod tests {
             assert!(logs.contains(field), "{logs}");
             assert!(
                 logs.contains("dropping invalid gateway spend-limit record"),
+                "{logs}"
+            );
+            fs::remove_dir_all(path.parent().unwrap()).ok();
+        }
+    }
+
+    #[test]
+    fn malformed_typed_limit_is_dropped_without_losing_valid_limits() {
+        let cases = [
+            ("period", json!({"period":"quarterly"})),
+            ("scope-type", json!({"scope":{"type":"workspace"}})),
+        ];
+
+        for (label, patch) in cases {
+            let path = temp_file(label);
+            let valid = json!({
+                "id":"spl_valid",
+                "amount":"100",
+                "created_at":"2026-08-10T00:00:00.000Z",
+                "currency":"USD",
+                "period":"monthly",
+                "scope":{"type":"organization"},
+                "type":"spend_limit",
+                "updated_at":"2026-08-10T00:00:00.000Z"
+            });
+            let mut malformed = valid.clone();
+            malformed["id"] = json!(format!("spl_{label}"));
+            for (key, value) in patch.as_object().unwrap() {
+                malformed[key] = value.clone();
+            }
+            fs::write(
+                &path,
+                serde_json::to_vec(&json!({
+                    "version":1,
+                    "limits":[valid, malformed],
+                    "audit":[],
+                    "next_audit_id":1
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+
+            let (loaded, logs) = capture_logs(|| load(&path).unwrap().unwrap());
+            assert_eq!(loaded.state.limits.len(), 1, "case {label}");
+            assert_eq!(loaded.state.limits[0].id, "spl_valid", "case {label}");
+            assert!(
+                logs.contains("dropping malformed gateway spend-limit record"),
                 "{logs}"
             );
             fs::remove_dir_all(path.parent().unwrap()).ok();

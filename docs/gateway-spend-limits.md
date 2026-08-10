@@ -15,13 +15,14 @@ audit_retention_days = 365
 spend_retention_months = 13
 identity_retention_days = 90
 group_limit_mode = "min"
-state_path = "~/.shunt/gateway-spend.json"
+# Omit state_path to use the default under $HOME/.shunt, or set an absolute path.
+# state_path = "/home/you/.shunt/gateway-spend.json"
 
 [server.gateway.enforcement]
 fail_closed_on_error = false
 ```
 
-`state_path = ""` keeps caps and audit records in memory only. When shunt cannot resolve a home directory, the default path also becomes memory-only. The state file uses a versioned JSON envelope and an atomic private-file replacement. At restore, shunt drops each cap whose amount, currency, object type, or user id fails the same validation as `POST`, and logs a warning containing that cap's id and invalid field; other caps in the file still load. The path is fixed at boot; configuration reloads do not move the process-lifetime store to a different file.
+`state_path = ""` keeps caps and audit records in memory only. Omit `state_path` to use `$HOME/.shunt/gateway-spend.json`; an explicitly configured path is used literally, without shell-style `~` expansion. When shunt cannot resolve a home directory, the default path also becomes memory-only. The state file uses a versioned JSON envelope and an atomic private-file replacement. At restore, shunt drops each malformed cap or cap whose amount, currency, object type, or user id fails the same validation as `POST`, and logs a warning; other caps in the file still load. The path is fixed at boot; configuration reloads do not move the process-lifetime store to a different file.
 
 The retention settings, `blocked_message`, `group_limit_mode`, and `fail_closed_on_error` are parsed now for configuration compatibility. Stage 1 does not run a retention sweep, resolve group limits, customize an enforcement error, or perform enforcement. `fail_closed_on_error = true` requires `[server.gateway.admin]`, even though enforcement is deferred.
 
