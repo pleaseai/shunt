@@ -37,7 +37,12 @@ pub(super) async fn forward(
     let body = crate::http_tuning::read_body(body, max_request_bytes, false)
         .await
         .map_err(|response| ForwardError {
-            message: "request body exceeds the configured limit".to_string(),
+            message: if response.status() == StatusCode::PAYLOAD_TOO_LARGE {
+                "request body exceeds the configured limit"
+            } else {
+                "failed to read request body"
+            }
+            .to_string(),
             response,
         })?;
     let mut body = crate::request::RequestBody::parse(body.to_vec())

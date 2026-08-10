@@ -63,11 +63,10 @@ pub(crate) async fn enforce_http_tuning(
         }
     }
     if let Some(limit) = tuning.limits.max_url_length {
-        let url_length = request.uri().path().len()
-            + request
-                .uri()
-                .query()
-                .map_or(0, |query| 1usize.saturating_add(query.len()));
+        let url_length = request
+            .uri()
+            .path_and_query()
+            .map_or(0, |path_and_query| path_and_query.as_str().len());
         if url_length > limit {
             return owned_error(
                 StatusCode::URI_TOO_LONG,
@@ -245,6 +244,17 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), StatusCode::FORBIDDEN);
         }
+    }
+
+    #[tokio::test]
+    async fn access_policy_fails_closed_when_unvalidated() {
+        let mut configured = AccessControlConfig::default();
+        configured.allow_cidrs = vec!["10.0.0.0/8".to_string()];
+        let response = app(configured, LimitsConfig::default())
+            .oneshot(request("/v1/messages", Some("10.1.2.3".parse().unwrap())))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

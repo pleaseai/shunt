@@ -29,17 +29,21 @@ impl AccessControlConfig {
         Ok(())
     }
 
-    /// Reports whether a validated policy contains any CIDRs. Before
-    /// [`Self::validate`], the skipped parsed lists are empty even when the raw
-    /// CIDR lists are not, so treating an unvalidated value as runtime state
-    /// would fail open.
+    /// Reports whether a policy contains any configured CIDRs. Using the raw
+    /// lists here makes an accidentally unvalidated value active rather than
+    /// silently disabling access control.
     pub(crate) fn enabled(&self) -> bool {
-        !self.parsed_allow_cidrs.is_empty() || !self.parsed_deny_cidrs.is_empty()
+        !self.allow_cidrs.is_empty() || !self.deny_cidrs.is_empty()
     }
 
     pub(crate) fn allows(&self, address: Option<std::net::IpAddr>, allow_exempt: bool) -> bool {
+        if self.parsed_allow_cidrs.len() != self.allow_cidrs.len()
+            || self.parsed_deny_cidrs.len() != self.deny_cidrs.len()
+        {
+            return false;
+        }
         let Some(address) = address else {
-            return allow_exempt || !self.enabled();
+            return !self.enabled();
         };
         if self
             .parsed_deny_cidrs
