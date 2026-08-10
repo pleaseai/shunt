@@ -79,7 +79,7 @@ pub async fn list(
 ) -> Response {
     let request_id = request_id();
     let state = state.refreshed();
-    if let Err(response) = authenticate(&state, &headers, false, &request_id) {
+    if let Err(response) = authenticate(&state, &headers, Access::Read, &request_id) {
         return *response;
     }
     let Query(query) = match query {
@@ -156,7 +156,7 @@ pub async fn list(
 pub async fn create(State(state): State<AppState>, request: Request) -> Response {
     let request_id = request_id();
     let state = state.refreshed();
-    let actor = match authenticate(&state, request.headers(), true, &request_id) {
+    let actor = match authenticate(&state, request.headers(), Access::Write, &request_id) {
         Ok(actor) => actor,
         Err(response) => return *response,
     };
@@ -208,13 +208,16 @@ pub async fn create(State(state): State<AppState>, request: Request) -> Response
         }
     };
     let _gate = state.gateway_stores.spend.mutation_gate().await;
-    let previous = state.gateway_stores.spend.export();
-    let limit = state
-        .gateway_stores
-        .spend
-        .upsert(scope, body.period, amount, &actor, timestamp());
-    if let Err(message) = super::persist::save(&state).await {
-        state.gateway_stores.spend.replace(previous);
+    let snapshot = state.gateway_stores.spend.export();
+    let (next, limit) = super::store::SpendStore::upsert_state(
+        snapshot,
+        scope,
+        body.period,
+        amount,
+        &actor,
+        timestamp(),
+    );
+    if let Err(message) = super::persist::save(&state, &next).await {
         tracing::error!(%message);
         return error(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -223,6 +226,7 @@ pub async fn create(State(state): State<AppState>, request: Request) -> Response
             request_id,
         );
     }
+    state.gateway_stores.spend.replace(next);
     success(StatusCode::OK, &limit, request_id)
 }
 
@@ -233,7 +237,7 @@ pub async fn get_by_id(
 ) -> Response {
     let request_id = request_id();
     let state = state.refreshed();
-    if let Err(response) = authenticate(&state, &headers, false, &request_id) {
+    if let Err(response) = authenticate(&state, &headers, Access::Read, &request_id) {
         return *response;
     }
     match state.gateway_stores.spend.get(&id) {
@@ -249,22 +253,18 @@ pub async fn delete_by_id(
 ) -> Response {
     let request_id = request_id();
     let state = state.refreshed();
-    let actor = match authenticate(&state, &headers, true, &request_id) {
+    let actor = match authenticate(&state, &headers, Access::Write, &request_id) {
         Ok(actor) => actor,
         Err(response) => return *response,
     };
     let _gate = state.gateway_stores.spend.mutation_gate().await;
-    let previous = state.gateway_stores.spend.export();
-    if state
-        .gateway_stores
-        .spend
-        .delete(&id, &actor, timestamp())
-        .is_none()
-    {
+    let snapshot = state.gateway_stores.spend.export();
+    let Some((next, _)) =
+        super::store::SpendStore::delete_state(snapshot, &id, &actor, timestamp())
+    else {
         return not_found(&id, request_id);
-    }
-    if let Err(message) = super::persist::save(&state).await {
-        state.gateway_stores.spend.replace(previous);
+    };
+    if let Err(message) = super::persist::save(&state, &next).await {
         tracing::error!(%message);
         return error(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -273,6 +273,7 @@ pub async fn delete_by_id(
             request_id,
         );
     }
+    state.gateway_stores.spend.replace(next);
     success(
         StatusCode::OK,
         &DeletedResponse {
@@ -296,7 +297,7 @@ pub async fn method_not_allowed() -> Response {
 fn authenticate(
     state: &AppState,
     headers: &HeaderMap,
-    write_required: bool,
+    required_access: Access,
     request_id: &str,
 ) -> Result<String, Box<Response>> {
     let Some(admin) = state
@@ -328,7 +329,7 @@ fn authenticate(
         }
     }
     match matched {
-        Some((Access::Read, _)) if write_required => Err(Box::new(error(
+        Some((Access::Read, _)) if required_access == Access::Write => Err(Box::new(error(
             StatusCode::FORBIDDEN,
             "permission_error",
             "read-only admin key cannot mutate spend limits",

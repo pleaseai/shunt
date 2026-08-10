@@ -143,25 +143,22 @@ impl SpendStore {
             .clone()
     }
 
-    pub fn upsert(
-        &self,
+    pub(crate) fn upsert_state(
+        mut state: SpendState,
         scope: Scope,
         period: Period,
         amount: Option<String>,
         actor: &str,
         now: String,
-    ) -> SpendLimit {
-        let mut state = self
-            .state
-            .lock()
-            .expect("gateway spend-limit lock poisoned");
+    ) -> (SpendState, SpendLimit) {
         let position = state
             .limits
             .iter()
             .position(|limit| limit.scope == scope && limit.period == period);
         if let Some(index) = position {
             if state.limits[index].amount == amount {
-                return state.limits[index].clone();
+                let limit = state.limits[index].clone();
+                return (state, limit);
             }
         }
         let before = position.map(|index| state.limits[index].clone());
@@ -188,18 +185,38 @@ impl SpendStore {
             }
         };
         append_audit(&mut state, actor, now, before, Some(limit.clone()));
+        (state, limit)
+    }
+
+    pub fn upsert(
+        &self,
+        scope: Scope,
+        period: Period,
+        amount: Option<String>,
+        actor: &str,
+        now: String,
+    ) -> SpendLimit {
+        let (state, limit) = Self::upsert_state(self.export(), scope, period, amount, actor, now);
+        self.replace(state);
         limit
     }
 
-    pub fn delete(&self, id: &str, actor: &str, now: String) -> Option<SpendLimit> {
-        let mut state = self
-            .state
-            .lock()
-            .expect("gateway spend-limit lock poisoned");
+    pub(crate) fn delete_state(
+        mut state: SpendState,
+        id: &str,
+        actor: &str,
+        now: String,
+    ) -> Option<(SpendState, SpendLimit)> {
         let position = state.limits.iter().position(|limit| limit.id == id)?;
         let before = state.limits.remove(position);
         append_audit(&mut state, actor, now, Some(before.clone()), None);
-        Some(before)
+        Some((state, before))
+    }
+
+    pub fn delete(&self, id: &str, actor: &str, now: String) -> Option<SpendLimit> {
+        let (state, deleted) = Self::delete_state(self.export(), id, actor, now)?;
+        self.replace(state);
+        Some(deleted)
     }
 
     pub(crate) fn export(&self) -> SpendState {

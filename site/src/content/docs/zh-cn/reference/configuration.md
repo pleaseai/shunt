@@ -87,7 +87,7 @@ headers = { "x-api-key" = "..." }
 
 默认情况下,`/device` 忽略 forwarding header 并按 socket peer 做 rate limit。只有在 shunt 仅能通过会删除 client 所提供 forwarding header 并设置自身值的 trusted reverse proxy 访问时,才设置 `trust_forwarded_for = true`。不要在直接暴露的 gateway 上启用。
 
-### `[server.gateway.admin]`（可选）
+### `[server.gateway.admin]` (可选)
 
 配置此表会注册 spend-limit Admin API。每个设置值都是环境变量名，变量内容为逗号分隔的 `id:key` 对。每个 key 值至少包含 32 个字符，并且 id 在两个环境变量中必须唯一。
 

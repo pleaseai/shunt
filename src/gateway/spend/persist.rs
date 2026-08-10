@@ -53,7 +53,7 @@ pub async fn restore(state: &AppState) -> io::Result<()> {
     }
 }
 
-pub(crate) async fn save(state: &AppState) -> Result<(), String> {
+pub(crate) async fn save(state: &AppState, snapshot: &SpendState) -> Result<(), String> {
     let Some(path) = state
         .gateway_stores
         .spend
@@ -62,7 +62,7 @@ pub(crate) async fn save(state: &AppState) -> Result<(), String> {
     else {
         return Ok(());
     };
-    let snapshot = state.gateway_stores.spend.export();
+    let snapshot = snapshot.clone();
     tokio::task::spawn_blocking(move || save_snapshot(&path, &snapshot))
         .await
         .map_err(|error| format!("gateway spend-limit persistence task panicked: {error}"))?
