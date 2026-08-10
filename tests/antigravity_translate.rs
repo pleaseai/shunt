@@ -6,8 +6,14 @@ use shunt::adapters::antigravity::{
     stream::{AgyEnd, Translator},
 };
 
-/// Real `agy models` output shape: `<model>-<effort>` per usable combination,
-/// and a bare model name when it takes no `--effort` flag.
+/// One id per usable `<model>-<effort>` combination, plus a bare model name
+/// where the model takes no `--effort` flag.
+///
+/// The ids are real, the layout is reduced: the shipped CLI pads each row with
+/// a tab and a display label (`gemini-3.1-pro-high\tGemini 3.1 Pro (High)`),
+/// which `test_parse_models_ignores_a_display_label_after_the_slug` covers.
+/// This fixture keeps the bare column so the effort assertions below stay about
+/// effort resolution rather than about field splitting.
 const AGY_MODELS: &str = "\
 gemini-3.6-flash-high
 gemini-3.6-flash-medium

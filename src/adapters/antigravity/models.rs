@@ -4,18 +4,21 @@
 //! accepts only `low` and `high` — passing `medium` fails the run), and the
 //! valid set differs per model and changes as Google ships new ones. Rather
 //! than hardcode a table that silently rots, discover it from `agy models`,
-//! whose output lists one `<model>-<effort>` line per usable combination:
+//! which lists one row per usable combination — a `<model>-<effort>` id, a tab,
+//! and a display label (shown here with the tabs expanded):
 //!
 //! ```text
-//! gemini-3.6-flash-high
-//! gemini-3.6-flash-medium
-//! gemini-3.6-flash-low
-//! gemini-3.1-pro-high
-//! gemini-3.1-pro-low
-//! claude-sonnet-4-6
+//! gemini-3.6-flash-high     Gemini 3.6 Flash (High)
+//! gemini-3.6-flash-medium   Gemini 3.6 Flash (Medium)
+//! gemini-3.1-pro-high       Gemini 3.1 Pro (High)
+//! gemini-3.1-pro-low        Gemini 3.1 Pro (Low)
+//! claude-sonnet-4-6         Claude Sonnet 4.6 (Thinking)
 //! ```
 //!
-//! A line with no effort suffix denotes a model that takes no `--effort` flag.
+//! Only the first field is parsed; see [`parse_models`]. An id with no effort
+//! suffix denotes a model that takes no `--effort` flag. The
+//! `Fetching available models...` banner the CLI prints goes to stderr, so it
+//! never reaches the parser.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -237,9 +240,17 @@ pub enum EffortChoice {
 ///
 /// When the model is unknown — discovery failed, or `agy` gained a model we
 /// have not seen — nothing here is authoritative, so defer to the CLI: pass a
-/// configured value through, and omit the flag when there is none. `agy`
-/// rejects a missing or invalid `--effort` with a message that enumerates the
-/// valid levels, which is a better answer than a guess.
+/// configured value through, and omit the flag when there is none.
+///
+/// Deferring is not free, and the cost is worth stating plainly. Measured
+/// against the shipped CLI, an id that requires an effort rejects the omitted
+/// flag (`--model gemini-3.1-pro requires --effort (available: low, high)`),
+/// while one that takes none rejects a supplied default (`--effort is not
+/// supported for model "claude-sonnet-4-6"`). A cold matrix cannot tell those
+/// two apart, so no choice here is right for both — `agy` at least rejects
+/// either before spending tokens. The exposure is the first turn after boot,
+/// plus any first turn on a route a reload newly adds, since [`warm`] is gated
+/// on the boot config; the next turn, once discovery lands, resolves normally.
 pub fn resolve_effort(
     matrix: &EffortMatrix,
     model: &str,
