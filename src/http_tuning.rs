@@ -63,7 +63,12 @@ pub(crate) async fn enforce_http_tuning(
         }
     }
     if let Some(limit) = tuning.limits.max_url_length {
-        if request.uri().to_string().len() > limit {
+        let url_length = request.uri().path().len()
+            + request
+                .uri()
+                .query()
+                .map_or(0, |query| 1usize.saturating_add(query.len()));
+        if url_length > limit {
             return owned_error(
                 StatusCode::URI_TOO_LONG,
                 "request_too_large",
@@ -217,6 +222,25 @@ mod tests {
         for peer in [Some("192.0.2.1".parse().unwrap()), None] {
             let response = app(configured.clone(), LimitsConfig::default())
                 .oneshot(request("/v1/messages", peer))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_or_malformed_address_fails_closed_when_policy_is_enabled() {
+        let denied_only = access(&[], &["192.0.2.0/24"]);
+        let missing = request("/v1/messages", None);
+        let mut malformed = request("/v1/messages", None);
+        malformed
+            .headers_mut()
+            .insert("x-forwarded-for", "not-an-ip".parse().unwrap());
+        let mut denied_only = denied_only;
+        denied_only.trust_forwarded_for = true;
+        for request in [missing, malformed] {
+            let response = app(denied_only.clone(), LimitsConfig::default())
+                .oneshot(request)
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::FORBIDDEN);

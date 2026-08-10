@@ -38,20 +38,22 @@ impl AccessControlConfig {
     }
 
     pub(crate) fn allows(&self, address: Option<std::net::IpAddr>, allow_exempt: bool) -> bool {
-        if address.is_some_and(|address| {
-            self.parsed_deny_cidrs
-                .iter()
-                .any(|network| network.contains(&address))
-        }) {
+        let Some(address) = address else {
+            return allow_exempt || !self.enabled();
+        };
+        if self
+            .parsed_deny_cidrs
+            .iter()
+            .any(|network| network.contains(&address))
+        {
             return false;
         }
         allow_exempt
             || self.parsed_allow_cidrs.is_empty()
-            || address.is_some_and(|address| {
-                self.parsed_allow_cidrs
-                    .iter()
-                    .any(|network| network.contains(&address))
-            })
+            || self
+                .parsed_allow_cidrs
+                .iter()
+                .any(|network| network.contains(&address))
     }
 }
 
