@@ -58,7 +58,15 @@ fn stub_agy() -> &'static Path {
         std::env::set_var("AGY_BIN", &script);
         // Pin the workspace instead of falling back to the test process's cwd,
         // so a stub that misbehaves cannot touch the checkout.
-        std::env::set_var("SHUNT_AGY_WORKSPACE", &dir);
+        //
+        // Deliberately written in a non-canonical form. The same value becomes
+        // both `--add-dir` and `current_dir`, so it must be canonicalized
+        // before it reaches the child; a `..` segment here keeps
+        // `workspace_env_is_canonicalized_before_it_reaches_the_child`
+        // non-vacuous on Linux, where the temp dir is already a real path. It
+        // resolves to `dir`, so every other test sees the workspace unchanged.
+        std::fs::create_dir_all(dir.join("wsprobe")).unwrap();
+        std::env::set_var("SHUNT_AGY_WORKSPACE", dir.join("wsprobe").join(".."));
         // Resolve now, while this initializer still holds the only writer, so
         // the memoized value is this stub for every later call.
         let resolved = shunt::adapters::antigravity::find_agy_binary()
@@ -103,6 +111,15 @@ case "$prompt" in
     # and the test would pass with or without the fix. Holding ONLY stderr is
     # what makes this discriminate.
     ( sleep 0.5; echo "late diagnostic" >&2 ) >/dev/null &
+    exit 1
+    ;;
+  *MODE=bad-utf8-stderr*)
+    # A byte sequence that is never valid UTF-8, then a real diagnostic. Reading
+    # stderr as lines made the first one an `Err`, which ended the drain and
+    # lost everything after it — and, worse, left the child free to block on a
+    # full pipe. Both bytes must be consumed and the later line still delivered.
+    printf '\376\377 binary junk\n' >&2
+    printf 'valid diagnostic after junk\n' >&2
     exit 1
     ;;
   *MODE=fail*)
@@ -450,6 +467,52 @@ async fn non_streaming_finishes_when_a_descendant_holds_stdout_open() {
     assert_eq!(json["content"][0]["text"], "hello");
     assert_eq!(json["stop_reason"], "end_turn");
     assert_process_exited(holder.pid()).await;
+}
+
+#[tokio::test]
+async fn invalid_utf8_on_stderr_does_not_stop_the_drain() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let gateway = start_gateway().await;
+    // Regression: reading stderr with `lines()` yielded `Err(InvalidData)` on
+    // the junk bytes, which ended the drain loop. Everything written after it
+    // was lost, and a child that kept writing would have blocked forever on a
+    // pipe nobody was reading.
+    let (status, body) = turn(&gateway, "MODE=bad-utf8-stderr", false).await;
+
+    assert!(
+        status.is_client_error() || status.is_server_error(),
+        "status: {status}"
+    );
+    assert!(
+        body.contains("valid diagnostic after junk"),
+        "stderr written after invalid UTF-8 must still reach the caller: {body}"
+    );
+}
+
+#[test]
+fn workspace_env_is_canonicalized_before_it_reaches_the_child() {
+    let dir = stub_agy().parent().expect("stub lives in a directory");
+    // `SHUNT_AGY_WORKSPACE` is set to a `..`-bearing form of this same
+    // directory. It becomes both `--add-dir` and `current_dir`, so if it
+    // reached the child uncanonicalized the child would resolve the add-dir
+    // from its new cwd and be granted a different directory than the one that
+    // was vetted.
+    let resolved = shunt::adapters::antigravity::resolve_workspace(&serde_json::json!({}), &[])
+        .expect("the configured workspace resolves");
+
+    assert_eq!(
+        resolved,
+        dir.canonicalize().expect("stub dir canonicalizes")
+    );
+    assert!(
+        !resolved
+            .components()
+            .any(|component| component.as_os_str() == ".."),
+        "no relative segment may survive into the spawned command: {}",
+        resolved.display()
+    );
 }
 
 #[tokio::test]

@@ -488,16 +488,30 @@ fn drain_stderr(child: &mut tokio::process::Child) -> StderrDrain {
     };
     let sink = Arc::clone(&log);
     let handle = tokio::spawn(async move {
-        let mut lines = BufReader::new(stderr).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
+        let mut reader = BufReader::new(stderr);
+        // Bytes, not `lines()`. `next_line` returns `Err(InvalidData)` on
+        // invalid UTF-8, which ended the loop and stopped the drain — the exact
+        // situation this function exists to prevent, since the child then
+        // blocks on a full pipe forever. `agy` and its descendants are
+        // arbitrary programs whose stderr we do not control, so a stray
+        // non-UTF-8 byte must cost a replacement character, not the run.
+        let mut raw = Vec::new();
+        loop {
+            raw.clear();
+            // Reading a line at a time keeps a multi-byte character from being
+            // split across two lossy conversions, which a fixed-size read would
+            // do. A genuine I/O error means the pipe is gone, so stop.
+            match reader.read_until(b'\n', &mut raw).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
             if let Ok(mut buffer) = sink.lock() {
                 if buffer.len() >= STDERR_LIMIT {
                     // Keep draining so the child never blocks on a full pipe,
                     // but stop accumulating.
                     continue;
                 }
-                buffer.push_str(&line);
-                buffer.push('\n');
+                buffer.push_str(&String::from_utf8_lossy(&raw));
             }
         }
     });
@@ -620,16 +634,22 @@ pub fn truncate(text: &str, limit: usize) -> String {
 pub fn resolve_workspace(request: &Value, roots: &[String]) -> Result<PathBuf, AdapterError> {
     if let Some(raw) = std::env::var_os(WORKSPACE_ENV) {
         let path = PathBuf::from(&raw);
-        return if path.is_dir() {
-            Ok(path)
-        } else {
-            Err(adapter_error(
+        // Canonicalized, not just checked. The same value becomes both
+        // `--add-dir` and `current_dir`, so a relative one is resolved twice
+        // against different bases: `SHUNT_AGY_WORKSPACE=repo` passes `is_dir()`
+        // against the gateway's directory, then the child — already moved into
+        // `repo` — reads `--add-dir repo` as `repo/repo`. The granted directory
+        // would not be the one that was vetted. Canonicalizing also folds the
+        // existence check in, since it fails on a path that is not there.
+        return match path.canonicalize() {
+            Ok(canonical) if canonical.is_dir() => Ok(canonical),
+            _ => Err(adapter_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!(
                     "{WORKSPACE_ENV} is set to {}, which is not a directory",
                     path.display()
                 ),
-            ))
+            )),
         };
     }
 
