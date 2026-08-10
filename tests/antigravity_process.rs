@@ -113,6 +113,18 @@ case "$prompt" in
     ( sleep 0.5; echo "late diagnostic" >&2 ) >/dev/null &
     exit 1
     ;;
+  *MODE=unterminated-stderr*)
+    # ~256 KiB of stderr with no newline anywhere, then a real diagnostic.
+    # Line-oriented draining accumulated the whole run of bytes before any size
+    # check could see it, so a child that never emits `\n` grew the buffer
+    # without bound. Only a bounded prefix may be retained.
+    i=0
+    while [ $i -lt 256 ]; do
+      printf 'PADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPAD' >&2
+      i=$((i + 1))
+    done
+    exit 1
+    ;;
   *MODE=bad-utf8-stderr*)
     # A byte sequence that is never valid UTF-8, then a real diagnostic. Reading
     # stderr as lines made the first one an `Err`, which ended the drain and
@@ -512,6 +524,34 @@ fn workspace_env_is_canonicalized_before_it_reaches_the_child() {
             .any(|component| component.as_os_str() == ".."),
         "no relative segment may survive into the spawned command: {}",
         resolved.display()
+    );
+}
+
+#[tokio::test]
+async fn newline_free_stderr_still_completes_the_turn() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let gateway = start_gateway().await;
+    // A child that emits no newline at all — a redrawing progress bar, or
+    // binary noise — must still be drained to EOF and reported. The memory
+    // bound itself is asserted in `drain_stderr_bounds_newline_free_output`;
+    // this path cannot show it, because `stderr_text` truncates on the way out
+    // and so returns a small body either way.
+    let (status, body) = turn(&gateway, "MODE=unterminated-stderr", false).await;
+
+    assert!(
+        status.is_client_error() || status.is_server_error(),
+        "status: {status}"
+    );
+    assert!(
+        body.len() < 8 * 1024,
+        "an unterminated stderr run must be truncated, not relayed whole: {} bytes",
+        body.len()
+    );
+    assert!(
+        body.contains("PAD"),
+        "the retained prefix should still carry the diagnostic: {body}"
     );
 }
 

@@ -37,7 +37,7 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::{AsyncBufReadExt, BufReader},
+    io::{AsyncBufReadExt, AsyncReadExt, BufReader},
     process::Command,
 };
 
@@ -446,8 +446,13 @@ impl Adapter for AntigravityAdapter {
     }
 }
 
-/// Shared buffer holding a bounded tail of the child's stderr.
-type StderrLog = Arc<Mutex<String>>;
+/// Shared buffer holding a bounded prefix of the child's stderr.
+///
+/// Raw bytes, decoded only when read out. `agy` and its descendants are
+/// arbitrary programs whose stderr is not guaranteed to be UTF-8, and deferring
+/// the lossy decode to one contiguous prefix means no multi-byte character can
+/// be split across two conversions — which is what a chunked decode would do.
+type StderrLog = Arc<Mutex<Vec<u8>>>;
 
 /// `agy` stderr plus the task draining it.
 ///
@@ -481,37 +486,36 @@ impl StderrDrain {
 ///
 /// Draining must happen alongside the run: left unread, a verbose failure fills
 /// the pipe buffer and blocks the child's writes.
+///
+/// Reads fixed-size chunks rather than lines. Line-oriented reads — whether
+/// `lines()` or `read_until` — accumulate an entire line before anything can
+/// check its size, so a child emitting newline-free output (a progress bar
+/// redrawing with `\r`, or binary noise) grows the buffer without bound. Only
+/// `STDERR_LIMIT` bytes are ever retained, and reading continues past that so
+/// the child still never blocks on a full pipe.
 fn drain_stderr(child: &mut tokio::process::Child) -> StderrDrain {
-    let log: StderrLog = Arc::new(Mutex::new(String::new()));
+    let log: StderrLog = Arc::new(Mutex::new(Vec::new()));
     let Some(stderr) = child.stderr.take() else {
         return StderrDrain { log, handle: None };
     };
     let sink = Arc::clone(&log);
     let handle = tokio::spawn(async move {
-        let mut reader = BufReader::new(stderr);
-        // Bytes, not `lines()`. `next_line` returns `Err(InvalidData)` on
-        // invalid UTF-8, which ended the loop and stopped the drain — the exact
-        // situation this function exists to prevent, since the child then
-        // blocks on a full pipe forever. `agy` and its descendants are
-        // arbitrary programs whose stderr we do not control, so a stray
-        // non-UTF-8 byte must cost a replacement character, not the run.
-        let mut raw = Vec::new();
+        let mut stderr = stderr;
+        let mut chunk = [0u8; 4096];
         loop {
-            raw.clear();
-            // Reading a line at a time keeps a multi-byte character from being
-            // split across two lossy conversions, which a fixed-size read would
-            // do. A genuine I/O error means the pipe is gone, so stop.
-            match reader.read_until(b'\n', &mut raw).await {
+            // A genuine I/O error means the pipe is gone, so stop. Notably a
+            // non-UTF-8 byte is no longer an error at all: `lines()` reported
+            // one as `Err(InvalidData)`, which ended the drain and left the
+            // child free to block forever on a pipe nobody was reading.
+            let read = match stderr.read(&mut chunk).await {
                 Ok(0) | Err(_) => break,
-                Ok(_) => {}
-            }
+                Ok(read) => read,
+            };
             if let Ok(mut buffer) = sink.lock() {
-                if buffer.len() >= STDERR_LIMIT {
-                    // Keep draining so the child never blocks on a full pipe,
-                    // but stop accumulating.
-                    continue;
+                let room = STDERR_LIMIT.saturating_sub(buffer.len());
+                if room > 0 {
+                    buffer.extend_from_slice(&chunk[..read.min(room)]);
                 }
-                buffer.push_str(&String::from_utf8_lossy(&raw));
             }
         }
     });
@@ -524,7 +528,7 @@ fn drain_stderr(child: &mut tokio::process::Child) -> StderrDrain {
 fn stderr_text(log: &StderrLog) -> String {
     let text = log
         .lock()
-        .map(|buffer| buffer.trim().to_string())
+        .map(|buffer| String::from_utf8_lossy(&buffer).trim().to_string())
         .unwrap_or_default();
     if text.is_empty() {
         "no stderr output".to_string()
@@ -816,4 +820,50 @@ fn find_agy_binary_uncached() -> Option<PathBuf> {
     }
 
     None
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// The retained buffer, not the response, is what the bound protects.
+    ///
+    /// `stderr_text` truncates on the way out, so an end-to-end assertion on the
+    /// response body passes whether or not the drain itself is bounded — it
+    /// cannot distinguish the two. This reads the buffer directly.
+    #[tokio::test]
+    async fn drain_stderr_bounds_newline_free_output() {
+        // 75 bytes, repeated 1000 times, with no newline anywhere: the shape
+        // that made a line-oriented drain accumulate the whole run before any
+        // size check could see it. POSIX sh only — no `seq`, no bashisms.
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg(
+                "s=PADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPADPAD; \
+                 i=0; while [ $i -lt 1000 ]; do printf '%s' \"$s\" >&2; i=$((i+1)); done",
+            )
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn stderr producer");
+
+        let mut drain = drain_stderr(&mut child);
+        child.wait().await.expect("producer exits");
+        drain.settle().await;
+
+        let retained = drain
+            .log
+            .lock()
+            .expect("stderr buffer is not poisoned")
+            .len();
+        assert!(
+            retained <= STDERR_LIMIT,
+            "75000 newline-free bytes must not be retained whole: kept {retained}"
+        );
+        assert!(
+            drain.text().contains("PAD"),
+            "the bounded prefix must still carry the diagnostic"
+        );
+    }
 }
