@@ -47,9 +47,11 @@ pub(crate) async fn enforce_http_tuning(
             request.headers(),
             peer,
             tuning.access_control.trust_forwarded_for,
-        )
-        .parse::<IpAddr>()
-        .ok();
+        );
+        let client = client
+            .parse::<IpAddr>()
+            .or_else(|_| client.parse::<SocketAddr>().map(|address| address.ip()))
+            .ok();
         if !tuning.access_control.allows(client, allow_exempt) {
             return owned_error(
                 StatusCode::FORBIDDEN,
@@ -222,6 +224,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn forwarded_socket_address_is_checked_by_ip() {
+        let mut configured = access(&["198.51.100.0/24"], &[]);
+        configured.trust_forwarded_for = true;
+        let mut forwarded = Request::post("/v1/messages").body(Body::empty()).unwrap();
+        forwarded
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::new(
+                "203.0.113.1".parse().unwrap(),
+                1,
+            )));
+        forwarded
+            .headers_mut()
+            .insert("x-forwarded-for", "198.51.100.4:43123".parse().unwrap());
+        let response = app(configured, LimitsConfig::default())
+            .oneshot(forwarded)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
     async fn health_is_exempt_from_allow_but_not_deny() {
         let response = app(access(&["10.0.0.0/8"], &[]), LimitsConfig::default())
             .oneshot(request("/health", Some("192.0.2.1".parse().unwrap())))
@@ -269,15 +292,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn non_limit_body_errors_remain_bad_gateway_errors() {
-        let streamed_body = Body::from_stream(stream::iter([Err::<Bytes, _>(
-            std::io::Error::other("client body failed"),
-        )]));
-        let response = read_body(streamed_body, 1024, false)
-            .await
-            .expect_err("the body source error should be preserved");
-        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-        assert_eq!(body(response).await["error"]["type"], "api_error");
+    async fn body_errors_use_protocol_specific_shapes() {
+        for (codex_shape, expected_type) in [(false, "api_error"), (true, "api_error")] {
+            let streamed_body = Body::from_stream(stream::iter([Err::<Bytes, _>(
+                std::io::Error::other("client body failed"),
+            )]));
+            let response = read_body(streamed_body, 1024, codex_shape)
+                .await
+                .expect_err("the body source error should be preserved");
+            assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+            let response = body(response).await;
+            if codex_shape {
+                assert!(response.get("type").is_none());
+                assert_eq!(response["error"]["type"], expected_type);
+            } else {
+                assert_eq!(response["error"]["type"], expected_type);
+            }
+        }
     }
 
     #[tokio::test]

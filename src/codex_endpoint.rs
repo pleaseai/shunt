@@ -306,13 +306,18 @@ async fn forward(
     if crate::http_tuning::content_length_exceeds(&headers, max_request_bytes) {
         return Err(ForwardError {
             message: "request body exceeds the configured limit".to_string(),
-            response: crate::http_tuning::request_too_large(false).await,
+            response: crate::http_tuning::request_too_large(true).await,
         });
     }
-    let body = crate::http_tuning::read_body(body, max_request_bytes, false)
+    let body = crate::http_tuning::read_body(body, max_request_bytes, true)
         .await
         .map_err(|response| ForwardError {
-            message: "request body exceeds the configured limit".to_string(),
+            message: if response.status() == StatusCode::PAYLOAD_TOO_LARGE {
+                "request body exceeds the configured limit"
+            } else {
+                "failed to read request body"
+            }
+            .to_string(),
             response,
         })?;
 

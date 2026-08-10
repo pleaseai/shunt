@@ -81,20 +81,13 @@ pub async fn device_authorization(
         return no_store(oauth_error(StatusCode::BAD_REQUEST, "invalid_request"));
     }
     let state = state.refreshed();
-    let peer = connection.map(|axum::Extension(axum::extract::ConnectInfo(address))| address);
-    let ip = super::device::client_ip(
-        &headers,
-        peer,
-        state
-            .gateway_auth
-            .as_ref()
-            .is_some_and(|auth| auth.trust_forwarded_for()),
-    );
-    if !state.gateway_stores.device_authorization_rate.check(&ip) {
-        return no_store(oauth_error(StatusCode::TOO_MANY_REQUESTS, "slow_down"));
-    }
     let Some(auth) = state.gateway_auth else {
         return StatusCode::NOT_FOUND.into_response();
+    };
+    let peer = connection.map(|axum::Extension(axum::extract::ConnectInfo(address))| address);
+    let ip = super::device::client_ip(&headers, peer, auth.trust_forwarded_for());
+    if !state.gateway_stores.device_authorization_rate.check(&ip) {
+        return no_store(oauth_error(StatusCode::TOO_MANY_REQUESTS, "slow_down"));
     };
     let Some((device_code, user_code)) = create_device_grant(&state.gateway_stores.device_grants)
     else {
