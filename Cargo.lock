@@ -2746,6 +2746,7 @@ dependencies = [
  "http-body",
  "http-body-util",
  "httpdate",
+ "ipnet",
  "libc",
  "notify",
  "opentelemetry",

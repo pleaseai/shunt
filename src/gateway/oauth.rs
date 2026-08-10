@@ -69,6 +69,8 @@ struct DeviceAuthorizationResponse {
 
 pub async fn device_authorization(
     State(state): State<AppState>,
+    connection: Option<axum::Extension<axum::extract::ConnectInfo<std::net::SocketAddr>>>,
+    headers: axum::http::HeaderMap,
     form: Result<Form<DeviceAuthorizationForm>, FormRejection>,
 ) -> Response {
     let Form(form) = match form {
@@ -79,6 +81,18 @@ pub async fn device_authorization(
         return no_store(oauth_error(StatusCode::BAD_REQUEST, "invalid_request"));
     }
     let state = state.refreshed();
+    let peer = connection.map(|axum::Extension(axum::extract::ConnectInfo(address))| address);
+    let ip = super::device::client_ip(
+        &headers,
+        peer,
+        state
+            .gateway_auth
+            .as_ref()
+            .is_some_and(|auth| auth.trust_forwarded_for()),
+    );
+    if !state.gateway_stores.device_authorization_rate.check(&ip) {
+        return no_store(oauth_error(StatusCode::TOO_MANY_REQUESTS, "slow_down"));
+    }
     let Some(auth) = state.gateway_auth else {
         return StatusCode::NOT_FOUND.into_response();
     };

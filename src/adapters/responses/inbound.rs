@@ -418,11 +418,12 @@ async fn passthrough_send(
         }
         Credential::CursorOauth { .. } | Credential::Passthrough => {}
     }
-    request
-        .body(body.clone())
-        .send()
-        .await
-        .map_err(|error| own_error(error.to_string()))
+    crate::upstream_timeout::wait(
+        state.config.server.timeouts.upstream_ttfb_ms,
+        request.body(body.clone()).send(),
+    )
+    .await
+    .map_err(|error| error.into_adapter_error(|error| own_error(error.to_string())))
 }
 
 /// Relay an upstream Responses response to the inbound client **verbatim**:

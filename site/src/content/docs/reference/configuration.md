@@ -14,6 +14,45 @@ The keys below are shown in TOML, but a config file may also be written in YAML 
 | `max_concurrent_requests` | `1024` | Maximum inbound requests in flight through response-body completion. Excess requests are shed immediately with `503` and `Retry-After: 1`; `0` disables the limit. `/` and `/health` are exempt. A restart is required after changing this key |
 | `sse_keepalive_seconds` | `30` | Idle seconds before an SSE `ping` is injected; `0` disables ([details](/guides/shared-gateway/#sse-keepalive-pings)) |
 
+## `[server.access_control]`
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `allow_cidrs` | `[]` | Allowed client CIDRs. A non-empty list makes other addresses default-deny. `/` and `/health` bypass this allow check only |
+| `deny_cidrs` | `[]` | Denied client CIDRs. Deny is evaluated first and also applies to `/` and `/health` |
+| `trust_forwarded_for` | `false` | Use the first `X-Forwarded-For` value, then `X-Real-IP`, instead of the connection peer. Enable only behind a trusted proxy that overwrites client-supplied forwarding headers |
+
+CIDRs are validated by `shunt check`. A missing peer address is rejected when `allow_cidrs` is non-empty. Access-control changes require a restart because the router layer is installed at boot.
+
+This `trust_forwarded_for` switch is independent of `[server.gateway] trust_forwarded_for`. The access-control switch affects only CIDR allow/deny rules; the gateway switch affects only the device-flow rate limiters. If both surfaces run behind a trusted reverse proxy, set both switches. Setting only one leaves the other surface using the socket peer address.
+
+## `[server.limits]`
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `max_request_bytes` | `33554432` (32 MiB) | Maximum inbound body bytes. An oversized declared `Content-Length` is rejected before body buffering; chunked bodies use the same cap while being read. Returns `413 request_too_large`. Hot-reloads |
+| `max_request_header_bytes` | _(unset)_ | Maximum sum of parsed header-name and header-value lengths across all headers. This is not raw HTTP wire size. Returns `431`; changing it requires a restart |
+| `max_url_length` | _(unset)_ | Maximum request URI string length, including the query. Returns `414`; changing it requires a restart |
+
+`max_request_bytes` must be greater than zero. The optional limits must be greater than zero when set. The 32 MiB body default replaces the previous hardcoded 64 MiB limit; raise it for larger file or image requests.
+
+## `[server.timeouts]`
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `upstream_ttfb_ms` | `120000` | Maximum wait for inference-upstream HTTP response headers; `0` disables. The response body then has no wall-clock cap, preserving long SSE streams. Returns `504 timeout_error` and hot-reloads |
+
+This timeout covers the Anthropic Messages transports, OpenAI Responses HTTP transport (including WebSocket fallback), Gemini HTTP transport, and inbound Codex Responses passthrough. It does not cover Codex WebSocket turns, Cursor transports, Antigravity processes, discovery, login/OAuth, usage polling, OIDC, or telemetry relay.
+
+## `[server.rate_limits]`
+
+| Table | `max` default | `window_seconds` default | Meaning |
+| :-- | :-- | :-- | :-- |
+| `device_authorization` | `30` | `600` | Per-IP fixed-window limit for `POST /oauth/device_authorization` |
+| `device_verify` | `10` | `600` | Independent per-IP fixed-window limit for `user_code` submissions at `POST /device` |
+
+Both `max` and `window_seconds` must be greater than zero. These tables are inert without `[server.gateway]`. The limiter stores are created at boot, so changes require a restart.
+
 ## `[server.auth]` (optional)
 
 Presence of this table enables inbound client-token auth ([details](/guides/shared-gateway/)):

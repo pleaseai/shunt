@@ -14,6 +14,18 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 | `max_concurrent_requests` | `1024` | 入站并发请求上限，请求会一直计数到响应正文结束。超出上限的请求不会排队，而是立即以 `503` 和 `Retry-After: 1` 拒绝。`0` 表示禁用限制，`/` 和 `/health` 不受限制。更改此键后需要重启 |
 | `sse_keepalive_seconds` | `30` | 注入 SSE `ping` 前的闲置秒数;`0` 禁用([详情](/zh-cn/guides/shared-gateway/#sse-keepalive-pings)) |
 
+## HTTP 调优表
+
+`[server.access_control]` 提供 `allow_cidrs = []`、`deny_cidrs = []` 和 `trust_forwarded_for = false`。deny 规则优先，并且也适用于 `/` 和 `/health`。非空 allow 列表会启用默认拒绝，但这两个健康检查路径只免除 allow 检查。仅在可信代理会覆盖客户端提供的转发头时才信任这些头。更改后需要重启。
+
+此 `trust_forwarded_for` 设置与 `[server.gateway] trust_forwarded_for` 相互独立。access-control 设置仅影响 CIDR 允许/拒绝规则，gateway 设置仅影响设备流速率限制器。如果两个表面都在可信反向代理后运行，请同时启用这两个设置。只设置其中一个时，另一个表面仍会使用套接字对端地址。
+
+`[server.limits]` 的 `max_request_bytes` 默认为 `33554432`（32 MiB），超出时返回 `413`。`max_request_header_bytes` 和 `max_url_length` 默认未设置，分别返回 `431` 和 `414`。头部大小是所有已解析头部名称长度与值长度之和。正文限制可热重载，头部和 URL 限制需要重启。
+
+`[server.timeouts] upstream_ttfb_ms` 默认为 `120000`，设为 `0` 可禁用。它只限制等待推理上游 HTTP 响应头的时间，因此不会对响应正文和长时间 SSE 流施加总时限。覆盖 Anthropic Messages、OpenAI Responses HTTP（包括 WebSocket 回退）、Gemini HTTP 和入站 Codex Responses 透传；不覆盖 Codex WebSocket、Cursor、Antigravity 或辅助 HTTP 请求。
+
+`[server.rate_limits.device_authorization]` 默认为 `max = 30`、`window_seconds = 600`，`[server.rate_limits.device_verify]` 默认为 `max = 10`、`window_seconds = 600`。两个 per-IP 限制彼此独立；未配置 `[server.gateway]` 时不生效。更改后需要重启。
+
 ## `[server.auth]`(可选)
 
 存在此表即启用入站客户端 token 认证([详情](/zh-cn/guides/shared-gateway/)):

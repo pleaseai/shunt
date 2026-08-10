@@ -11,9 +11,13 @@ use figment::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+mod http_tuning;
 mod presets;
 mod upstreams;
 
+pub use http_tuning::{
+    AccessControlConfig, LimitsConfig, RateLimitConfig, RateLimitsConfig, TimeoutsConfig,
+};
 pub use presets::{provider_presets, ProviderPresetView};
 pub use upstreams::{AccountSelection, AuthMap, UpstreamAuth, UpstreamConfig};
 
@@ -125,6 +129,18 @@ pub struct ServerConfig {
     /// is in flight, so this is not on its own a resident-memory bound.
     #[serde(default = "default_max_concurrent_requests")]
     pub max_concurrent_requests: usize,
+    /// Inbound client-address allow/deny policy.
+    #[serde(default)]
+    pub access_control: AccessControlConfig,
+    /// Inbound request size limits.
+    #[serde(default)]
+    pub limits: LimitsConfig,
+    /// Upstream response-header timeout.
+    #[serde(default)]
+    pub timeouts: TimeoutsConfig,
+    /// Per-IP limits for unauthenticated device-flow endpoints.
+    #[serde(default)]
+    pub rate_limits: RateLimitsConfig,
 }
 
 fn default_sse_keepalive_seconds() -> u64 {
@@ -1892,6 +1908,23 @@ pub enum ConfigError {
         max_concurrent_requests: usize,
         limit: usize,
     },
+    #[error("server.access_control.{field}[{index}] is not a valid CIDR `{value}`: {message}")]
+    InvalidAccessControlCidr {
+        field: &'static str,
+        index: usize,
+        value: String,
+        message: String,
+    },
+    #[error("server.limits.max_request_bytes must be greater than zero")]
+    InvalidMaxRequestBytes,
+    #[error("server.limits.max_request_header_bytes must be greater than zero when set")]
+    InvalidMaxRequestHeaderBytes,
+    #[error("server.limits.max_url_length must be greater than zero when set")]
+    InvalidMaxUrlLength,
+    #[error("server.rate_limits.{limit}.max must be greater than zero")]
+    InvalidRateLimitMax { limit: &'static str },
+    #[error("server.rate_limits.{limit}.window_seconds must be greater than zero")]
+    InvalidRateLimitWindow { limit: &'static str },
     #[error(
         "providers.{provider}.retry.multiplier must be a finite value >= 1.0, got {multiplier}"
     )]
@@ -2087,6 +2120,10 @@ impl Default for Config {
                 pool: None,
                 sse_keepalive_seconds: default_sse_keepalive_seconds(),
                 max_concurrent_requests: default_max_concurrent_requests(),
+                access_control: AccessControlConfig::default(),
+                limits: LimitsConfig::default(),
+                timeouts: TimeoutsConfig::default(),
+                rate_limits: RateLimitsConfig::default(),
             },
             providers,
             upstreams: Vec::new(),
@@ -2418,6 +2455,30 @@ impl Config {
                 max_concurrent_requests: self.server.max_concurrent_requests,
                 limit: MAX_CONCURRENT_REQUESTS_LIMIT,
             });
+        }
+        self.server.access_control.validate()?;
+        if self.server.limits.max_request_bytes == 0 {
+            return Err(ConfigError::InvalidMaxRequestBytes);
+        }
+        if self.server.limits.max_request_header_bytes == Some(0) {
+            return Err(ConfigError::InvalidMaxRequestHeaderBytes);
+        }
+        if self.server.limits.max_url_length == Some(0) {
+            return Err(ConfigError::InvalidMaxUrlLength);
+        }
+        for (limit, configured) in [
+            (
+                "device_authorization",
+                &self.server.rate_limits.device_authorization,
+            ),
+            ("device_verify", &self.server.rate_limits.device_verify),
+        ] {
+            if configured.max == 0 {
+                return Err(ConfigError::InvalidRateLimitMax { limit });
+            }
+            if configured.window_seconds == 0 {
+                return Err(ConfigError::InvalidRateLimitWindow { limit });
+            }
         }
         // Fail closed at boot: [server.auth] without resolvable tokens is an
         // error, not an open gateway.
@@ -3149,6 +3210,80 @@ mod tests {
 
     fn model_upstream(provider: &str, upstream_model: &str) -> BTreeMap<String, String> {
         BTreeMap::from([(provider.to_string(), upstream_model.to_string())])
+    }
+
+    type ValidationCase = (Config, fn(&ConfigError) -> bool);
+
+    #[test]
+    fn http_tuning_validation_rejects_each_invalid_value() {
+        let cases: Vec<ValidationCase> = vec![
+            (
+                {
+                    let mut config = Config::default();
+                    config.server.access_control.allow_cidrs = vec!["not-a-cidr".into()];
+                    config
+                },
+                |error| matches!(error, ConfigError::InvalidAccessControlCidr { .. }),
+            ),
+            (
+                {
+                    let mut config = Config::default();
+                    config.server.limits.max_request_bytes = 0;
+                    config
+                },
+                |error| matches!(error, ConfigError::InvalidMaxRequestBytes),
+            ),
+            (
+                {
+                    let mut config = Config::default();
+                    config.server.limits.max_request_header_bytes = Some(0);
+                    config
+                },
+                |error| matches!(error, ConfigError::InvalidMaxRequestHeaderBytes),
+            ),
+            (
+                {
+                    let mut config = Config::default();
+                    config.server.limits.max_url_length = Some(0);
+                    config
+                },
+                |error| matches!(error, ConfigError::InvalidMaxUrlLength),
+            ),
+            (
+                {
+                    let mut config = Config::default();
+                    config.server.rate_limits.device_authorization.max = 0;
+                    config
+                },
+                |error| {
+                    matches!(
+                        error,
+                        ConfigError::InvalidRateLimitMax {
+                            limit: "device_authorization"
+                        }
+                    )
+                },
+            ),
+            (
+                {
+                    let mut config = Config::default();
+                    config.server.rate_limits.device_verify.window_seconds = 0;
+                    config
+                },
+                |error| {
+                    matches!(
+                        error,
+                        ConfigError::InvalidRateLimitWindow {
+                            limit: "device_verify"
+                        }
+                    )
+                },
+            ),
+        ];
+        for (config, matches_error) in cases {
+            let error = config.validate().unwrap_err();
+            assert!(matches_error(&error), "unexpected error: {error}");
+        }
     }
 
     #[test]

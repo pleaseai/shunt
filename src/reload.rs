@@ -111,6 +111,24 @@ fn warn_on_restart_only_changes(previous: &Config, next: &Config) {
             "server.max_concurrent_requests changed but requires a restart to apply; the concurrency gate is fixed at boot"
         );
     }
+    if previous.server.access_control != next.server.access_control {
+        tracing::warn!(
+            "[server.access_control] changed but requires a restart to apply; its middleware is fixed at boot"
+        );
+    }
+    if previous.server.limits.max_request_header_bytes
+        != next.server.limits.max_request_header_bytes
+        || previous.server.limits.max_url_length != next.server.limits.max_url_length
+    {
+        tracing::warn!(
+            "server.limits header or URL limits changed but require a restart to apply; their middleware is fixed at boot"
+        );
+    }
+    if previous.server.rate_limits != next.server.rate_limits {
+        tracing::warn!(
+            "[server.rate_limits] changed but requires a restart to apply; the limiter stores are fixed at boot"
+        );
+    }
     // Whether the admin route tree is registered is decided once at boot from
     // the initial config (like `server.bind`). Token/header edits within an
     // already-enabled `[server.admin]` hot-apply via `admin_auth`, but toggling

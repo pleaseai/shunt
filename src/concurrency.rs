@@ -70,7 +70,7 @@ pub(crate) async fn limit_requests(
 /// would have matched and must classify by path. It reads the same constants the
 /// router registers from, so a Codex route cannot be added without also getting
 /// the correct error shape.
-fn is_codex_path(path: &str) -> bool {
+pub(crate) fn is_codex_path(path: &str) -> bool {
     crate::codex_endpoint::PATHS.contains(&path) || crate::codex_analytics::PATHS.contains(&path)
 }
 

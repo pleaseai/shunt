@@ -35,10 +35,13 @@ pub(super) async fn http_send(
     credential: Credential,
     session_id: Option<&str>,
     body: PreparedBody,
-) -> Result<reqwest::Response, reqwest::Error> {
-    body.attach(request_builder(state, route, credential, session_id))
-        .send()
-        .await
+) -> Result<reqwest::Response, crate::upstream_timeout::SendError<reqwest::Error>> {
+    crate::upstream_timeout::wait(
+        state.config.server.timeouts.upstream_ttfb_ms,
+        body.attach(request_builder(state, route, credential, session_id))
+            .send(),
+    )
+    .await
 }
 
 /// The bounded-retry policy for `route`'s provider (issue #48), or a disabled
@@ -87,16 +90,7 @@ pub(super) async fn forward_http(
         || http_send(state, route, credential.clone(), session_id, body.clone()),
     )
     .await
-    .map_err(|error| {
-        // Preserve the raw transport cause in logs before transport_error maps it to
-        // the stable gateway-facing Responses error envelope.
-        tracing::warn!(
-            provider = %route.provider,
-            error = %error,
-            "responses upstream request failed after retries"
-        );
-        transport_error(error.to_string())
-    })?;
+    .map_err(|error| error.into_adapter_error(|error| transport_error(error.to_string())))?;
     if let Some(account) = &codex_quota_account {
         state
             .accounts

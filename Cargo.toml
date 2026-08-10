@@ -39,10 +39,13 @@ futures-util = "0.3"
 # The inbound concurrency limiter delegates `poll_frame` so streaming response
 # permits live through body completion without discarding HTTP trailers.
 http-body = "1"
+# Distinguish an inbound body-size limit from an underlying body-stream failure.
+http-body-util = "0.1"
 # Parse the HTTP-date form of `Retry-After` (RFC 7231); already in the tree via
 # reqwest/hyper, promoted to a direct dep for `accounts::retry_after`.
 httpdate = "1"
 hmac = "0.12"
+ipnet = "2"
 notify = "8.2.0"
 # OpenTelemetry export (opt-in `[otel]`). The OTLP exporter speaks HTTP/protobuf
 # over reqwest's *blocking* client so the SDK's dedicated-thread batch span/log
@@ -108,7 +111,6 @@ zstd = { version = "0.13", default-features = false }
 [dev-dependencies]
 divan = { version = "5.0.1", package = "codspeed-divan-compat" }
 hex = "0.4"
-http-body-util = "0.1"
 libc = "0.2"
 sentry = { version = "0.48.4", default-features = false, features = ["test"] }
 tokio = { version = "1", features = ["full", "test-util"] }

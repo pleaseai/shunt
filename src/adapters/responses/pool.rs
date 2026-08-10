@@ -189,6 +189,12 @@ pub(super) async fn forward_chatgpt_oauth(
         .await
         {
             Ok(response) => response,
+            Err(crate::upstream_timeout::SendError::Timeout) => {
+                return Err(
+                    crate::upstream_timeout::SendError::<reqwest::Error>::Timeout
+                        .into_adapter_error(|error| transport_error(error.to_string())),
+                );
+            }
             Err(error) => {
                 state.accounts.cooldown(
                     &route.provider,
@@ -269,6 +275,12 @@ pub(super) async fn forward_chatgpt_oauth(
                 .await
                 {
                     Ok(response) => response,
+                    Err(crate::upstream_timeout::SendError::Timeout) => {
+                        return Err(
+                            crate::upstream_timeout::SendError::<reqwest::Error>::Timeout
+                                .into_adapter_error(|error| transport_error(error.to_string())),
+                        );
+                    }
                     Err(error) => {
                         state.accounts.cooldown(
                             &route.provider,

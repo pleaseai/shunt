@@ -82,15 +82,18 @@ async fn forward(
         &route.provider,
         crate::retry::RetrySafety::NonIdempotentPost,
         || {
-            client
-                .post(url.as_str())
-                .headers(request_headers.clone())
-                .body(body.clone())
-                .send()
+            crate::upstream_timeout::wait(
+                state.config.server.timeouts.upstream_ttfb_ms,
+                client
+                    .post(url.as_str())
+                    .headers(request_headers.clone())
+                    .body(body.clone())
+                    .send(),
+            )
         },
     )
     .await
-    .map_err(upstream_error)?;
+    .map_err(|error| error.into_adapter_error(upstream_error))?;
     let status = upstream.status();
     if status == StatusCode::TOO_MANY_REQUESTS {
         tracing::warn!(
@@ -235,7 +238,7 @@ async fn forward_claude_oauth(
         let request_body = request_body.into_raw();
 
         let upstream = match post_upstream(
-            &state.http_client,
+            &state,
             &url,
             request_headers.clone(),
             request_body.clone(),
@@ -243,6 +246,12 @@ async fn forward_claude_oauth(
         .await
         {
             Ok(response) => response,
+            Err(crate::upstream_timeout::SendError::Timeout) => {
+                return Err(
+                    crate::upstream_timeout::SendError::<reqwest::Error>::Timeout
+                        .into_adapter_error(upstream_error),
+                );
+            }
             Err(error) => {
                 state.accounts.cooldown(
                     &route.provider,
@@ -325,7 +334,7 @@ async fn forward_claude_oauth(
                     request_body,
                     "Claude OAuth throttle retry failed",
                 )
-                .await
+                .await?
                 else {
                     last_response = Some(upstream);
                     continue;
@@ -458,7 +467,7 @@ async fn forward_claude_oauth(
                     request_body,
                     "Claude OAuth refresh retry failed",
                 )
-                .await
+                .await?
                 else {
                     last_response = Some(upstream);
                     continue;
@@ -589,19 +598,28 @@ fn account_is_static_store_token(account: &crate::config::AccountConfig) -> bool
 }
 
 async fn post_upstream(
-    client: &reqwest::Client,
+    state: &AppState,
     url: &str,
     headers: HeaderMap,
     body: Vec<u8>,
-) -> Result<reqwest::Response, reqwest::Error> {
-    client.post(url).headers(headers).body(body).send().await
+) -> Result<reqwest::Response, crate::upstream_timeout::SendError<reqwest::Error>> {
+    crate::upstream_timeout::wait(
+        state.config.server.timeouts.upstream_ttfb_ms,
+        state
+            .http_client
+            .post(url)
+            .headers(headers)
+            .body(body)
+            .send(),
+    )
+    .await
 }
 
 /// Send a per-account retry POST, noting quota headers on success. On a
 /// transport error it cools the account down for 30s, logs `fail_msg`, and
-/// returns `None` so the caller fails over to the next account. Shared by the
-/// throttle-retry and refresh-retry arms, whose transport-error handling is
-/// otherwise identical.
+/// returns `None` so the caller fails over to the next account. A TTFB timeout
+/// is returned directly as a 504 instead of being classified as transport
+/// failover. Shared by the throttle-retry and refresh-retry arms.
 async fn retry_upstream(
     state: &AppState,
     route: &Route,
@@ -610,14 +628,18 @@ async fn retry_upstream(
     headers: HeaderMap,
     body: Vec<u8>,
     fail_msg: &str,
-) -> Option<reqwest::Response> {
-    match post_upstream(&state.http_client, url, headers, body).await {
+) -> Result<Option<reqwest::Response>, AdapterError> {
+    match post_upstream(state, url, headers, body).await {
         Ok(response) => {
             state
                 .accounts
                 .note_quota(&route.provider, account, response.headers());
-            Some(response)
+            Ok(Some(response))
         }
+        Err(crate::upstream_timeout::SendError::Timeout) => Err(
+            crate::upstream_timeout::SendError::<reqwest::Error>::Timeout
+                .into_adapter_error(upstream_error),
+        ),
         Err(error) => {
             state.accounts.cooldown(
                 &route.provider,
@@ -632,7 +654,7 @@ async fn retry_upstream(
                 "{}",
                 fail_msg
             );
-            None
+            Ok(None)
         }
     }
 }
@@ -1106,6 +1128,7 @@ mod tests {
             "retry failed",
         )
         .await
+        .expect("a 200 send should not fail")
         .expect("a 200 upstream should be handed back to the caller");
         assert!(response.status().is_success());
     }
@@ -1126,7 +1149,8 @@ mod tests {
             Vec::new(),
             "retry failed",
         )
-        .await;
+        .await
+        .expect("a transport failure should be handled as failover");
         assert!(
             outcome.is_none(),
             "a transport error should signal fail-over"

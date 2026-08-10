@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use axum::{
-    body::{to_bytes, Body},
+    body::Body,
     http::{HeaderMap, HeaderValue, StatusCode, Uri},
     response::IntoResponse,
 };
@@ -13,15 +13,12 @@ use crate::{
     },
     config::{AuthMode, CountTokens},
     count_tokens,
-    error::{ShuntError, UpstreamError},
+    error::ShuntError,
     routing::{self, AdapterKind},
     server::AppState,
 };
 
-use super::{
-    count_tokens_unsupported, is_count_tokens, normalize_request_body, ForwardError,
-    MAX_REQUEST_BODY_BYTES,
-};
+use super::{count_tokens_unsupported, is_count_tokens, normalize_request_body, ForwardError};
 
 pub(super) async fn forward(
     state: AppState,
@@ -30,14 +27,18 @@ pub(super) async fn forward(
     body: Body,
     started_at: Instant,
 ) -> Result<(StatusCode, axum::response::Response), ForwardError> {
-    let body = to_bytes(body, MAX_REQUEST_BODY_BYTES)
+    let max_request_bytes = state.config.server.limits.max_request_bytes;
+    if crate::http_tuning::content_length_exceeds(headers, max_request_bytes) {
+        return Err(ForwardError {
+            message: "request body exceeds the configured limit".to_string(),
+            response: crate::http_tuning::request_too_large(false).await,
+        });
+    }
+    let body = crate::http_tuning::read_body(body, max_request_bytes, false)
         .await
-        .map_err(|error| {
-            let message = error.to_string();
-            ForwardError {
-                message: message.clone(),
-                response: UpstreamError::from_message(message).into_response(),
-            }
+        .map_err(|response| ForwardError {
+            message: "request body exceeds the configured limit".to_string(),
+            response,
         })?;
     let mut body = crate::request::RequestBody::parse(body.to_vec())
         .map_err(routing::invalid_routing_request)

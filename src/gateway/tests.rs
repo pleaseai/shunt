@@ -1261,14 +1261,36 @@ async fn device_grant_error_table_and_csrf_rejection_match_contract() {
 }
 
 #[tokio::test]
+async fn device_authorization_uses_its_configured_independent_rate_limit() {
+    let (mut config, _env) = GatewayEnv::config("device-authorization-rate-limit");
+    config.server.rate_limits.device_authorization.max = 1;
+    config.server.rate_limits.device_verify.max = 2;
+    let (router, _, _) = build_router(config).unwrap();
+    let peer: std::net::SocketAddr = "203.0.113.4:43123".parse().unwrap();
+
+    for (attempt, expected) in [StatusCode::OK, StatusCode::TOO_MANY_REQUESTS]
+        .into_iter()
+        .enumerate()
+    {
+        let mut request = form_request("/oauth/device_authorization", "client_id=claude-code");
+        request.extensions_mut().insert(ConnectInfo(peer));
+        let (status, body) = json_response(router.clone(), request).await;
+        assert_eq!(status, expected, "attempt {attempt}: {body}");
+        if expected == StatusCode::TOO_MANY_REQUESTS {
+            assert_eq!(body["error"], "slow_down");
+        }
+    }
+}
+
+#[tokio::test]
 async fn device_rate_limit_ignores_spoofed_forwarded_ips_by_default() {
     let (config, _env) = GatewayEnv::config("forwarded-default");
     let (router, _, _) = build_router(config).unwrap();
     let peer: std::net::SocketAddr = "203.0.113.4:43123".parse().unwrap();
 
-    for attempt in 0..31 {
+    for attempt in 0..11 {
         let html = device_attempt(&router, peer, &format!("198.51.100.{attempt}")).await;
-        if attempt < 30 {
+        if attempt < 10 {
             assert!(html.contains("login or secret"));
         } else {
             assert!(html.contains("Too many attempts"));

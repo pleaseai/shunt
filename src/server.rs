@@ -16,6 +16,7 @@ use crate::{
     config::{Config, ConfigError},
     discovery,
     gateway::{self, GatewayAuth, GatewayStores},
+    http_tuning::{enforce_http_tuning, HttpTuningLayer},
     oauth_usage, protocol, proxy,
     reload::{RuntimeState, SharedState},
     routes, usage,
@@ -59,6 +60,7 @@ impl AppState {
     /// by callers that do not thread an external [`SharedState`].
     pub fn new(config: Config, http_client: reqwest::Client) -> Result<Self, ConfigError> {
         let boot_is_loopback = boot_is_loopback(&config);
+        let rate_limits = config.server.rate_limits.clone();
         let runtime = RuntimeState::from_config(config)?;
         let shared: SharedState = Arc::new(arc_swap::ArcSwap::from_pointee(runtime));
         Ok(Self::from_shared(
@@ -66,7 +68,7 @@ impl AppState {
             http_client,
             Arc::new(AccountPool::new()),
             Arc::new(AdminStores::new()),
-            Arc::new(GatewayStores::new()),
+            Arc::new(GatewayStores::new(&rate_limits)),
             boot_is_loopback,
         ))
     }
@@ -127,9 +129,20 @@ fn boot_is_loopback(config: &Config) -> bool {
 /// that hot-swap the same store and background tasks (the usage poller) that
 /// share the same [`AccountPool`] the request handlers use.
 pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), ConfigError> {
+    // Validate before deriving boot-fixed layers and stores. `Config::load` already
+    // validates, but callers may construct `Config` programmatically.
+    let runtime = RuntimeState::from_config(config)?;
+    let config = runtime.config.as_ref();
     // The inbound concurrency gate is fixed at boot because its semaphore is
     // installed as a router layer. Reloaded values take effect after restart.
     let max_concurrent_requests = config.server.max_concurrent_requests;
+    let http_tuning = HttpTuningLayer::new(
+        config.server.access_control.clone(),
+        config.server.limits.clone(),
+    );
+    let http_tuning_enabled = config.server.access_control.enabled()
+        || config.server.limits.max_request_header_bytes.is_some()
+        || config.server.limits.max_url_length.is_some();
     // Whether the admin surface exists is decided once here, from the initial
     // config: a reload cannot add or drop routes (it only re-resolves tokens).
     let admin_enabled = config.server.admin.is_some();
@@ -153,15 +166,15 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     // capability: `oauth_usage::get` gates auth on it, and a later reload
     // rewriting `server.bind` must not move that gate without a restart (see
     // `AppState::boot_is_loopback`).
-    let boot_is_loopback = boot_is_loopback(&config);
-    let runtime = RuntimeState::from_config(config)?;
+    let boot_is_loopback = boot_is_loopback(config);
+    let rate_limits = config.server.rate_limits.clone();
     let shared: SharedState = Arc::new(arc_swap::ArcSwap::from_pointee(runtime));
     let state = AppState::from_shared(
         shared.clone(),
         reqwest::Client::new(),
         Arc::new(AccountPool::new()),
         Arc::new(AdminStores::new()),
-        Arc::new(GatewayStores::new()),
+        Arc::new(GatewayStores::new(&rate_limits)),
         boot_is_loopback,
     );
 
@@ -244,6 +257,16 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
         ));
     }
     router = router.merge(liveness_router);
+    // Access control must wrap liveness too: allow rules exempt `/` and
+    // `/health`, but deny rules still apply to them. Header and URL limits share
+    // this boot-fixed layer. The body limit is read in each handler so it can
+    // hot-apply on reload.
+    if http_tuning_enabled {
+        router = router.layer(middleware::from_fn_with_state(
+            http_tuning,
+            enforce_http_tuning,
+        ));
+    }
 
     // Clone the state into the router; the returned clone shares the same
     // `AccountPool`/`SharedState` Arcs, so a background poller populating quota

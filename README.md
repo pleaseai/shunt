@@ -88,6 +88,11 @@ A shared deployment bounds in-flight inbound requests with `[server] max_concurr
 (default `1024`). Excess requests are shed immediately with `503` and `Retry-After: 1`, while
 streaming requests keep their slot until the response body ends or the client disconnects. Set the
 value to `0` to disable the limit; `/` and `/health` always remain available for liveness probes.
+Shared gateways can also configure CIDR allow/deny rules, request/header/URL size limits, an
+upstream response-header timeout that leaves streaming bodies uncapped, and independent device-flow
+rate limits under `[server.access_control]`, `[server.limits]`, `[server.timeouts]`, and
+`[server.rate_limits]`. The inbound request-body default is 32 MiB; raise
+`max_request_bytes` for larger file or image requests.
 See the [configuration reference](https://shunt-docs.pages.dev/reference/configuration/#server).
 
 ## Providers
