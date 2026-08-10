@@ -230,10 +230,22 @@ impl Adapter for AntigravityAdapter {
                 // CLI that keeps emitting tool progress resets the cap forever,
                 // so a wedged permission-skipping child would never be reaped.
                 let deadline = tokio::time::Instant::now() + HARD_TIMEOUT;
-                let stream_state = (lines, translator, child, stderr_log, false);
+                // `timeout_at` below reports the deadline to an active reader,
+                // but it is itself only polled with the response body. Keep a
+                // separate supervisor alive in the stream state so backpressure
+                // cannot suspend the wall-clock containment guarantee.
+                let deadline_guard = child.arm_deadline(deadline);
+                let stream_state = (lines, translator, child, stderr_log, false, deadline_guard);
                 let sse_stream = futures_util::stream::unfold(
                     stream_state,
-                    move |(mut lines, mut translator, mut child, mut stderr_log, mut finished)| async move {
+                    move |(
+                        mut lines,
+                        mut translator,
+                        mut child,
+                        mut stderr_log,
+                        mut finished,
+                        deadline_guard,
+                    )| async move {
                         if finished {
                             return None;
                         }
@@ -270,7 +282,7 @@ impl Adapter for AntigravityAdapter {
                                                 tail.push_str(&translator.on_text(&format!(
                                                     "\n\n[agy error] {message}"
                                                 )));
-                                                tail.push_str(&translator.finish_with_error());
+                                                tail.push_str(&translator.finish_with_error(None));
                                             }
                                             _ => tail.push_str(&translator.finish()),
                                         }
@@ -282,7 +294,14 @@ impl Adapter for AntigravityAdapter {
                                         child.terminate().await;
                                         return Some((
                                             Ok::<_, Infallible>(axum::body::Bytes::from(tail)),
-                                            (lines, translator, child, stderr_log, finished),
+                                            (
+                                                lines,
+                                                translator,
+                                                child,
+                                                stderr_log,
+                                                finished,
+                                                deadline_guard,
+                                            ),
                                         ));
                                     }
                                     if chunk.is_empty() {
@@ -290,7 +309,14 @@ impl Adapter for AntigravityAdapter {
                                     }
                                     return Some((
                                         Ok::<_, Infallible>(axum::body::Bytes::from(chunk)),
-                                        (lines, translator, child, stderr_log, finished),
+                                        (
+                                            lines,
+                                            translator,
+                                            child,
+                                            stderr_log,
+                                            finished,
+                                            deadline_guard,
+                                        ),
                                     ));
                                 }
                                 // Every remaining case ends the turn. Headers
@@ -324,13 +350,22 @@ impl Adapter for AntigravityAdapter {
                                             &translator
                                                 .on_text(&format!("\n\n[agy error] {message}")),
                                         );
-                                        tail.push_str(&translator.finish_with_error());
+                                        tail.push_str(
+                                            &translator.finish_with_error(Some(&message)),
+                                        );
                                     } else {
                                         tail.push_str(&translator.finish());
                                     }
                                     return Some((
                                         Ok::<_, Infallible>(axum::body::Bytes::from(tail)),
-                                        (lines, translator, child, stderr_log, finished),
+                                        (
+                                            lines,
+                                            translator,
+                                            child,
+                                            stderr_log,
+                                            finished,
+                                            deadline_guard,
+                                        ),
                                     ));
                                 }
                             }

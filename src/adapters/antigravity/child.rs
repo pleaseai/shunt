@@ -147,6 +147,23 @@ pub(super) struct AgyChild {
     pgid: Option<u32>,
 }
 
+/// Cancels the wall-clock watchdog when its run is no longer client-visible.
+///
+/// Aborting on drop is essential: a normally finished turn or a disconnected
+/// client drops the body stream, and its old deadline must not later signal a
+/// process-group id that the operating system may have reused.
+pub(super) struct DeadlineGuard {
+    handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl Drop for DeadlineGuard {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            handle.abort();
+        }
+    }
+}
+
 impl AgyChild {
     pub(super) fn new(child: Child) -> Self {
         let pgid = child.id().and_then(|pid| {
@@ -159,6 +176,18 @@ impl AgyChild {
 
     pub(super) fn inner_mut(&mut self) -> &mut Child {
         &mut self.child
+    }
+
+    /// Kill this run's process group at `deadline` even when backpressure means
+    /// nothing is polling the response body and its in-stream timeout is idle.
+    pub(super) fn arm_deadline(&self, deadline: tokio::time::Instant) -> DeadlineGuard {
+        let handle = self.pgid.map(|pgid| {
+            tokio::spawn(async move {
+                tokio::time::sleep_until(deadline).await;
+                kill_group(pgid);
+            })
+        });
+        DeadlineGuard { handle }
     }
 
     pub(super) async fn terminate(&mut self) {
@@ -230,6 +259,38 @@ mod tests {
     #[tokio::test]
     async fn terminate_all_groups_sweeps_registered_and_late_arriving_children() {
         reset();
+
+        // The deadline watchdog runs in supervision, independently of response
+        // body polling. Waiting only on the real process proves it fires without
+        // any stream future being driven.
+        let watched = spawn_group();
+        let watched_pid = watched.id().expect("spawned child has a pid");
+        let mut watched = AgyChild::new(watched);
+        let _deadline_guard = watched
+            .arm_deadline(tokio::time::Instant::now() + std::time::Duration::from_millis(200));
+        assert_reaped_and_dead(&mut watched, watched_pid).await;
+        // Deregister before moving on: the sweep phase below asserts against an
+        // *empty* registry, and a leftover entry here would quietly turn that
+        // into a different test.
+        drop(watched);
+
+        // Dropping the guard cancels its task. Otherwise a completed turn's old
+        // timer could later kill a reused process-group id.
+        let cancelled = spawn_group();
+        let mut cancelled = AgyChild::new(cancelled);
+        let guard = cancelled
+            .arm_deadline(tokio::time::Instant::now() + std::time::Duration::from_millis(200));
+        drop(guard);
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(
+            cancelled
+                .inner_mut()
+                .try_wait()
+                .expect("inspect cancelled watchdog child")
+                .is_none(),
+            "dropping the deadline guard must leave the child running"
+        );
+        cancelled.terminate().await;
 
         // An empty registry is a no-op rather than a panic.
         terminate_all_groups();

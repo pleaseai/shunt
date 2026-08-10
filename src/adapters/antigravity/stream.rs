@@ -248,7 +248,7 @@ impl Translator {
     /// known, so the failure has to be reported inside the stream. Anthropic's
     /// SSE protocol carries an `error` event for exactly this; emitting a plain
     /// `message_stop` instead would present a crash as a normal end of turn.
-    pub fn finish_with_error(&mut self) -> String {
+    pub fn finish_with_error(&mut self, detail: Option<&str>) -> String {
         let mut out = String::new();
         if self.block_open {
             self.block_open = false;
@@ -257,11 +257,14 @@ impl Translator {
                 &json!({ "type": "content_block_stop", "index": 0 }),
             ));
         }
+        let message = detail
+            .map(str::to_owned)
+            .unwrap_or_else(|| self.error_message());
         out.push_str(&sse(
             "error",
             &json!({
                 "type": "error",
-                "error": { "type": "api_error", "message": self.error_message() },
+                "error": { "type": "api_error", "message": message },
             }),
         ));
         out.push_str(&sse("message_stop", &json!({ "type": "message_stop" })));

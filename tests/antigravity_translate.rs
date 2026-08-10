@@ -266,12 +266,17 @@ fn test_premature_eof_is_not_reported_as_success() {
     );
     assert_eq!(t.end(), None, "no result event was seen");
 
-    let out = t.finish_with_error();
+    let detail = "no output for 1800s; model unavailable on this account";
+    let out = t.finish_with_error(Some(detail));
 
     // Headers are already committed, so the failure has to travel in-stream.
     // Closing with a bare message_stop would present a crash as a normal turn.
     assert!(out.contains("event: error"), "must emit an SSE error event");
     assert!(out.contains("api_error"));
+    assert!(
+        out.contains(detail),
+        "the SSE error must retain the caller's actionable stderr/timeout detail"
+    );
     assert!(!out.contains("end_turn"), "must not claim a clean end_turn");
     assert!(out.contains("event: message_stop"));
 }
