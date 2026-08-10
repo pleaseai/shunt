@@ -1,0 +1,47 @@
+site/src/content/docs/guides/providers.mdx
+  s_40ea8b4a3d09f7::t_c45e4d5eb3db6f 75
+  s_40ea8b4a3d09f7::t_3f28db4f2ec05e 73-74
+  s_40ea8b4a3d09f7::t_caaf101719cfa6 61
+site/src/content/docs/reference/configuration.md
+  s_40ea8b4a3d09f7::t_db3f509ce1e11b 279
+tests/antigravity_process.rs
+  s_40ea8b4a3d09f7::t_76c3006211c128 390-394,400-403
+  s_40ea8b4a3d09f7::t_0ceca90a6f2ce3 395-399
+docs/running.md
+  s_40ea8b4a3d09f7::t_cbb55757c5d1fb 329-333
+  s_40ea8b4a3d09f7::t_7c6910bf39a8cd 326-327
+  s_40ea8b4a3d09f7::t_7798474df71057 328
+site/src/content/docs/getting-started/installation.mdx
+  s_40ea8b4a3d09f7::t_b27d9e08f9d46c 32
+  s_40ea8b4a3d09f7::t_20738c7b3cb9f1 29
+  s_40ea8b4a3d09f7::t_6ff1cd7a6c1d9c 30-31
+src/adapters/antigravity/mod.rs
+  s_40ea8b4a3d09f7::t_94c0a7ad4cc59b 199-200
+  s_40ea8b4a3d09f7::t_271aa8135a566f 92-105
+src/adapters/antigravity/child.rs
+  s_40ea8b4a3d09f7::t_bab4573280ad55 104,106
+  s_40ea8b4a3d09f7::t_db4abbccda85d6 1-5,8-13,27-36,45-47,61-63,67,69,76,78,82-103,105,107-116
+src/shutdown.rs
+  s_40ea8b4a3d09f7::t_07fe772951f10d 52
+  s_40ea8b4a3d09f7::t_40bf5eece9a7cb 85
+  s_40ea8b4a3d09f7::t_8c54cea6aa4b27 1-6
+README.md
+  s_40ea8b4a3d09f7::t_ffe78d3ddfd569 41-42
+  s_40ea8b4a3d09f7::t_46138fab152388 43-44
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "16607acd4826335fc611836e52314c4404447f78",
+  "prompts": {},
+  "sessions": {
+    "s_40ea8b4a3d09f7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "87a33153-3253-44da-ba3d-68d83cee51d7",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
