@@ -187,7 +187,7 @@ async fn forward_codex_passthrough(
                 tracing::warn!(
                     provider = %route.provider,
                     account = %account.name,
-                    error = %error,
+                    error = %error.without_url(),
                     "inbound passthrough upstream request failed"
                 );
                 continue;
@@ -252,7 +252,7 @@ async fn forward_codex_passthrough(
                         tracing::warn!(
                             provider = %route.provider,
                             account = %account.name,
-                            error = %error,
+                            error = %error.without_url(),
                             "inbound passthrough refresh retry failed"
                         );
                         last_response = Some(upstream);
