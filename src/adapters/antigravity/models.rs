@@ -21,11 +21,12 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
     process::Stdio,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex, PoisonError,
+    },
     time::Duration,
 };
-
-use tokio::sync::Mutex;
 
 /// Cap on the one-off `agy models` discovery call. Generous because the CLI
 /// is markedly slower as a gateway subprocess (~20s) than from a shell (~2s),
@@ -45,10 +46,17 @@ pub type EffortMatrix = BTreeMap<String, BTreeSet<String>>;
 /// would disable effort validation for the lifetime of the process because one
 /// `agy models` call happened to time out.
 ///
-/// The lock is never held across an `.await` that does work. Holding it across
+/// A synchronous mutex, deliberately. The lock is only ever taken to clone the
+/// map or store a finished one, never across an `.await` — holding it across
 /// [`discover`] would serialize every concurrent request behind a ~20s
-/// subprocess — the first arrival pays it and the rest queue behind the lock.
-static MATRIX: Mutex<Option<EffortMatrix>> = Mutex::const_new(None);
+/// subprocess. Using `std::sync::Mutex` makes that structural rather than a
+/// rule to remember, and costs no async machinery on the cache-hit path.
+///
+/// Poisoning is recovered from rather than treated as a miss: the guarded value
+/// is a plain map that a panic cannot leave inconsistent, and swallowing a
+/// poisoned lock would disable effort validation for the rest of the process —
+/// exactly the failure mode the success-only caching above exists to avoid.
+static MATRIX: Mutex<Option<EffortMatrix>> = Mutex::new(None);
 
 /// Set while a discovery subprocess is in flight, so a burst of early requests
 /// spawns one `agy models` between them rather than one apiece.
@@ -61,7 +69,7 @@ static DISCOVERING: AtomicBool = AtomicBool::new(false);
 /// configured values pass through and `agy` validates them itself — and kicks
 /// off a background refresh for the turns that follow.
 pub async fn effort_matrix(agy_bin: &Path) -> EffortMatrix {
-    if let Some(matrix) = cached().await {
+    if let Some(matrix) = cached() {
         return matrix;
     }
     spawn_refresh(agy_bin);
@@ -69,8 +77,11 @@ pub async fn effort_matrix(agy_bin: &Path) -> EffortMatrix {
 }
 
 /// Read the cache, holding the lock only for the clone.
-async fn cached() -> Option<EffortMatrix> {
-    MATRIX.lock().await.clone()
+fn cached() -> Option<EffortMatrix> {
+    MATRIX
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
 }
 
 /// Start a background discovery unless one is already running.
@@ -89,7 +100,7 @@ fn spawn_refresh(agy_bin: &Path) {
 async fn refresh(agy_bin: &Path) {
     let discovered = discover(agy_bin).await;
     if let Some(matrix) = discovered {
-        *MATRIX.lock().await = Some(matrix);
+        *MATRIX.lock().unwrap_or_else(PoisonError::into_inner) = Some(matrix);
     }
     DISCOVERING.store(false, Ordering::Release);
 }
@@ -149,7 +160,7 @@ async fn discover(agy_bin: &Path) -> Option<EffortMatrix> {
 /// pass their effort through for `agy` to validate. Failure is silent: the
 /// flag is cleared, and the next turn schedules another attempt.
 pub async fn warm(agy_bin: &Path) {
-    if cached().await.is_some() {
+    if cached().is_some() {
         return;
     }
     if DISCOVERING.swap(true, Ordering::AcqRel) {
