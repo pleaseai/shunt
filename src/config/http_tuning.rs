@@ -126,12 +126,53 @@ pub struct RateLimitConfig {
     pub window_seconds: u64,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct RateLimitsConfig {
-    #[serde(default = "default_device_authorization_rate_limit")]
     pub device_authorization: RateLimitConfig,
-    #[serde(default = "default_device_verify_rate_limit")]
     pub device_verify: RateLimitConfig,
+}
+
+#[derive(Default, Deserialize)]
+struct PartialRateLimitsConfig {
+    device_authorization: Option<PartialRateLimitConfig>,
+    device_verify: Option<PartialRateLimitConfig>,
+}
+
+#[derive(Deserialize)]
+struct PartialRateLimitConfig {
+    max: Option<u32>,
+    window_seconds: Option<u64>,
+}
+
+impl PartialRateLimitConfig {
+    fn resolve(self, default: RateLimitConfig) -> RateLimitConfig {
+        RateLimitConfig {
+            max: self.max.unwrap_or(default.max),
+            window_seconds: self.window_seconds.unwrap_or(default.window_seconds),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for RateLimitsConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let partial = PartialRateLimitsConfig::deserialize(deserializer)?;
+        let defaults = Self::default();
+        Ok(Self {
+            device_authorization: partial
+                .device_authorization
+                .map_or(defaults.device_authorization.clone(), |config| {
+                    config.resolve(defaults.device_authorization)
+                }),
+            device_verify: partial
+                .device_verify
+                .map_or(defaults.device_verify.clone(), |config| {
+                    config.resolve(defaults.device_verify)
+                }),
+        })
+    }
 }
 
 fn default_device_authorization_rate_limit() -> RateLimitConfig {
@@ -189,6 +230,23 @@ mod tests {
         assert_eq!(parsed.rate_limits.device_authorization.window_seconds, 600);
         assert_eq!(parsed.rate_limits.device_verify.max, 10);
         assert_eq!(parsed.rate_limits.device_verify.window_seconds, 600);
+    }
+
+    #[test]
+    fn partial_rate_limit_tables_inherit_per_endpoint_defaults() {
+        let parsed: HttpTuning = toml::from_str(
+            r#"
+                [rate_limits.device_authorization]
+                max = 5
+                [rate_limits.device_verify]
+                window_seconds = 45
+            "#,
+        )
+        .unwrap();
+        assert_eq!(parsed.rate_limits.device_authorization.max, 5);
+        assert_eq!(parsed.rate_limits.device_authorization.window_seconds, 600);
+        assert_eq!(parsed.rate_limits.device_verify.max, 10);
+        assert_eq!(parsed.rate_limits.device_verify.window_seconds, 45);
     }
 
     #[test]
