@@ -1,23 +1,32 @@
 use std::{
     collections::BTreeSet,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Mutex, PoisonError,
-    },
+    sync::{Mutex, MutexGuard, PoisonError},
 };
 
 use tokio::process::Child;
 
-static LIVE_GROUPS: Mutex<BTreeSet<u32>> = Mutex::new(BTreeSet::new());
+/// Live `agy` process groups, and whether shutdown has begun sweeping them.
+///
+/// One lock over both fields, deliberately. `shutting_down` exists so a turn
+/// that spawns after the sweep cannot slip past it, and that only works if a
+/// registration either lands in the sweep's drain or observes the flag, never
+/// in between — which requires the two to move together. Holding them in one
+/// `Mutex` makes that structural: there is no way to read the flag without the
+/// lock, so the pairing cannot be broken by a later edit. It previously lived
+/// in a separate `AtomicBool` with a comment asking callers to keep it under
+/// this lock, which is the same invariant maintained by convention instead.
+struct Registry {
+    groups: BTreeSet<u32>,
+    shutting_down: bool,
+}
 
-/// Set once shutdown has begun sweeping, so a turn that spawns after the sweep
-/// does not slip past it. Written and read only under the [`LIVE_GROUPS`] lock:
-/// that is what makes the pairing airtight, since a registration either lands
-/// in the sweep's drain or observes the flag, never in between.
-static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
+static REGISTRY: Mutex<Registry> = Mutex::new(Registry {
+    groups: BTreeSet::new(),
+    shutting_down: false,
+});
 
-fn live_groups() -> std::sync::MutexGuard<'static, BTreeSet<u32>> {
-    LIVE_GROUPS.lock().unwrap_or_else(PoisonError::into_inner)
+fn registry() -> MutexGuard<'static, Registry> {
+    REGISTRY.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Record a freshly spawned group, or refuse it because shutdown already swept.
@@ -34,8 +43,8 @@ fn live_groups() -> std::sync::MutexGuard<'static, BTreeSet<u32>> {
 /// cancellation path.
 #[cfg(unix)]
 fn register(pgid: u32) -> Option<u32> {
-    let mut groups = live_groups();
-    if SHUTTING_DOWN.load(Ordering::Acquire) {
+    let mut registry = registry();
+    if registry.shutting_down {
         // The gateway is going down and this group missed the sweep by a hair.
         // Kill it here rather than let a permission-skipping agent outlive the
         // shutdown that was already in progress when it started.
@@ -48,10 +57,10 @@ fn register(pgid: u32) -> Option<u32> {
         // the kill instead. Safe to hold: `kill_group` is one non-blocking
         // syscall that never re-enters the registry.
         kill_group(pgid);
-        drop(groups);
+        drop(registry);
         return None;
     }
-    groups.insert(pgid);
+    registry.groups.insert(pgid);
     Some(pgid)
 }
 
@@ -98,7 +107,11 @@ pub(super) fn kill_group(pgid: u32) {
     // sharing its group. No live pid is 0, so this is unreachable today; it is
     // a one-branch invariant guard on an `unsafe` FFI call whose degenerate
     // input is catastrophic rather than merely wrong.
-    if pgid == 0 {
+    // `> i32::MAX` would make the cast negative and the negation wrap, turning
+    // a group signal into a signal at some unrelated *pid* — the pid-reuse
+    // hazard the group-only addressing exists to avoid. No real pid reaches
+    // either bound, so both arms are unreachable today.
+    if pgid == 0 || pgid > i32::MAX as u32 {
         return;
     }
     // ESRCH is expected when the leader and all descendants are already gone.
@@ -120,9 +133,9 @@ pub(super) fn kill_group(_pgid: u32) {
 /// teardown must not have to wait behind a sweep that is issuing signals.
 pub(crate) fn terminate_all_groups() {
     let pgids = {
-        let mut groups = live_groups();
-        SHUTTING_DOWN.store(true, Ordering::Release);
-        std::mem::take(&mut *groups)
+        let mut registry = registry();
+        registry.shutting_down = true;
+        std::mem::take(&mut registry.groups)
     };
     for pgid in pgids {
         kill_group(pgid);
@@ -155,14 +168,14 @@ impl AgyChild {
         let _ = self.child.kill().await;
         let _ = self.child.wait().await;
         if let Some(pgid) = self.pgid.take() {
-            live_groups().remove(&pgid);
+            registry().groups.remove(&pgid);
         }
     }
 
     pub(super) fn sweep_descendants(&mut self) {
         if let Some(pgid) = self.pgid.take() {
             kill_group(pgid);
-            live_groups().remove(&pgid);
+            registry().groups.remove(&pgid);
         }
     }
 }
@@ -171,7 +184,7 @@ impl Drop for AgyChild {
     fn drop(&mut self) {
         if let Some(pgid) = self.pgid.take() {
             kill_group(pgid);
-            live_groups().remove(&pgid);
+            registry().groups.remove(&pgid);
         }
     }
 }
@@ -184,14 +197,14 @@ mod tests {
 
     /// Clear the process-wide latch and registry between phases.
     ///
-    /// `terminate_all_groups` deliberately latches [`SHUTTING_DOWN`] forever —
+    /// `terminate_all_groups` deliberately latches `shutting_down` forever —
     /// the process it runs in is on its way out. Tests share one process, so
     /// each phase resets it explicitly rather than inheriting the previous
     /// phase's shutdown state.
     fn reset() {
-        let mut groups = live_groups();
-        SHUTTING_DOWN.store(false, Ordering::Release);
-        groups.clear();
+        let mut registry = registry();
+        registry.shutting_down = false;
+        registry.groups.clear();
     }
 
     fn spawn_group() -> Child {
@@ -211,7 +224,7 @@ mod tests {
         assert!(!alive, "process {pid} survived group termination");
     }
 
-    /// One test function, not several: [`LIVE_GROUPS`] and [`SHUTTING_DOWN`] are
+    /// One test function, not several: the [`REGISTRY`] state is
     /// process-wide, and the library's tests share a process and run in
     /// parallel, so separate `#[test]`s touching them would race each other.
     #[tokio::test]
@@ -220,14 +233,14 @@ mod tests {
 
         // An empty registry is a no-op rather than a panic.
         terminate_all_groups();
-        assert!(live_groups().is_empty());
+        assert!(registry().groups.is_empty());
 
         // A group registered before the sweep is killed by it.
         reset();
         let child = spawn_group();
         let pid = child.id().expect("spawned child has a pid");
         let mut child = AgyChild::new(child);
-        assert!(live_groups().contains(&pid));
+        assert!(registry().groups.contains(&pid));
         // By the time `new` returns, the group exists — the parent's own
         // `setpgid` has run even if the child has not reached its copy yet.
         // Without that, a sweep in this window would signal a group with no
@@ -240,7 +253,13 @@ mod tests {
 
         terminate_all_groups();
         assert_reaped_and_dead(&mut child, pid).await;
-        assert!(live_groups().is_empty());
+        assert!(registry().groups.is_empty());
+
+        // `kill_group` refuses both degenerate inputs rather than signalling
+        // the caller's own group (`-0`) or, once the cast wraps, an unrelated
+        // pid. Surviving these calls is the assertion.
+        kill_group(0);
+        kill_group(u32::MAX);
 
         // Regression: a turn that spawns *after* the sweep must not survive it.
         // Before the latch, this group was registered into an already-drained
@@ -250,7 +269,7 @@ mod tests {
         let mut late = AgyChild::new(late);
         assert_reaped_and_dead(&mut late, late_pid).await;
         assert!(
-            live_groups().is_empty(),
+            registry().groups.is_empty(),
             "a group killed on arrival must not be tracked as live"
         );
 
