@@ -194,7 +194,19 @@ fn can_bind_loopback() -> bool {
 
 async fn start_gateway() -> TestGateway {
     let dir = stub_agy().parent().unwrap();
-    let config_path = dir.join("shunt.toml");
+    // One config file per gateway, never a shared name. Tests in a binary run
+    // in parallel, and `fs::write` truncates before it writes: with a single
+    // `shunt.toml` a concurrent `Config::load` could read the empty window and
+    // succeed, since an empty document is a valid config. That yields
+    // `default_provider = "anthropic"` and no routes, so the turn is forwarded
+    // to the real Anthropic upstream as `passthrough` with no credential and
+    // comes back 401 — a failure with nothing to do with the behaviour under
+    // test. Seen on Linux CI once this file grew past a handful of gateways.
+    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let config_path = dir.join(format!(
+        "shunt-{}.toml",
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
     std::fs::write(
         &config_path,
         format!(
