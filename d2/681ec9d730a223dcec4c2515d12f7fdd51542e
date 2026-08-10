@@ -1,0 +1,25 @@
+src/adapters/antigravity/child.rs
+  s_40ea8b4a3d09f7::t_6802ad94d5711e 96-103
+src/adapters/antigravity/mod.rs
+  s_40ea8b4a3d09f7::t_99587ced0201da 208-210,847-866
+  s_40ea8b4a3d09f7::t_736c3f7b9959dd 45,575-594
+  s_40ea8b4a3d09f7::t_f8093fa16727e2 867
+docs/upstreams-failover.md
+  s_40ea8b4a3d09f7::t_890a2578ab0477 23,27
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "d2681ec9d730a223dcec4c2515d12f7fdd51542e",
+  "prompts": {},
+  "sessions": {
+    "s_40ea8b4a3d09f7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "87a33153-3253-44da-ba3d-68d83cee51d7",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
