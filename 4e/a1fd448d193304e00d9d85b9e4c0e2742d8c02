@@ -1,0 +1,38 @@
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_5e7fbeaaf3c6fc::t_541fa7c2df3e1c 23
+site/src/content/docs/ja/reference/configuration.md
+  s_5e7fbeaaf3c6fc::t_28276cb04fd594 23
+src/adapters/responses/pool.rs
+  s_5e7fbeaaf3c6fc::t_e63e02c5f44e1e 284,294
+  s_5e7fbeaaf3c6fc::t_4e06bddd32c336 198,208
+src/adapters/anthropic/mod.rs
+  s_5e7fbeaaf3c6fc::t_160ecbc09c848a 643,653
+  s_5e7fbeaaf3c6fc::t_e9f9d940f42505 255,265
+docs/http-tuning.md
+  s_5e7fbeaaf3c6fc::t_9688922ca06a6f 65-70
+  s_5e7fbeaaf3c6fc::t_8f6bf3066a4010 9-13
+docs/gateway-telemetry.md
+  s_5e7fbeaaf3c6fc::t_fc9498b3ce28a8 175-179
+site/src/content/docs/ko/reference/configuration.md
+  s_5e7fbeaaf3c6fc::t_84695055e9e925 23
+README.md
+  s_5e7fbeaaf3c6fc::t_53e5470389d244 94-96
+site/src/content/docs/reference/configuration.md
+  s_5e7fbeaaf3c6fc::t_2824af4db16098 33
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "4ea1fd448d193304e00d9d85b9e4c0e2742d8c02",
+  "prompts": {},
+  "sessions": {
+    "s_5e7fbeaaf3c6fc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fb1cecae-f612-4f7a-adaf-2c03cc759d63",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
