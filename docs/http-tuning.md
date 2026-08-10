@@ -6,9 +6,11 @@ The `[server]` HTTP tuning tables control inbound admission, request sizes,
 upstream response-header waits, and the two unauthenticated device-flow rate
 limits. They apply independently of provider routing.
 
-The default inbound body limit changes from the previous hardcoded 64 MiB cap
-to 32 MiB. Requests between those sizes now receive `413 request_too_large`
-unless you raise `[server.limits] max_request_bytes`.
+The default inference request-body limit changes from the previous hardcoded 64
+MiB cap to 32 MiB. Anthropic Messages and inbound Codex Responses requests
+between those sizes now receive `413 request_too_large` unless you raise
+`[server.limits] max_request_bytes`. Other gateway, admin, telemetry, and
+analytics routes retain their endpoint-specific body limits.
 
 ## Configuration
 
@@ -60,10 +62,12 @@ the router is built.
 
 ## Request limits
 
-`max_request_bytes` defaults to 33,554,432 bytes (32 MiB). A declared
-`Content-Length` above the limit is rejected before shunt reads the body.
-Chunked requests without a declared length use the same limit while the body is
-read. Both paths return `413 request_too_large`. This key is read from the
+`max_request_bytes` defaults to 33,554,432 bytes (32 MiB) for Anthropic
+Messages and inbound Codex Responses requests. A declared `Content-Length`
+above the limit is rejected before shunt reads the body. Chunked requests
+without a declared length use the same limit while the body is read. Both paths
+return `413 request_too_large`. Other gateway, admin, telemetry, and analytics
+routes retain their endpoint-specific body limits. This key is read from the
 per-request configuration snapshot and hot-applies after reload.
 
 `max_request_header_bytes` is optional. Its measurement is the sum of each

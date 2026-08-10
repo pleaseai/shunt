@@ -30,7 +30,7 @@ This `trust_forwarded_for` switch is independent of `[server.gateway] trust_forw
 
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
-| `max_request_bytes` | `33554432` (32 MiB) | Maximum inbound body bytes. An oversized declared `Content-Length` is rejected before body buffering; chunked bodies use the same cap while being read. Returns `413 request_too_large`. Hot-reloads |
+| `max_request_bytes` | `33554432` (32 MiB) | Maximum body bytes for Anthropic Messages and inbound Codex Responses requests. An oversized declared `Content-Length` is rejected before body buffering; chunked bodies use the same cap while being read. Returns `413 request_too_large`. Other gateway, admin, telemetry, and analytics routes retain their endpoint-specific limits. Hot-reloads |
 | `max_request_header_bytes` | _(unset)_ | Maximum sum of parsed header-name and header-value lengths across all headers. This is not raw HTTP wire size. Returns `431`; changing it requires a restart |
 | `max_url_length` | _(unset)_ | Maximum request URI string length, including the query. Returns `414`; changing it requires a restart |
 

@@ -20,7 +20,7 @@ description: すべての shunt.toml キー — server、providers、routes、mo
 
 この `trust_forwarded_for` 設定は `[server.gateway] trust_forwarded_for` とは独立しています。access-control の設定は CIDR の許可・拒否ルールだけに適用され、gateway の設定はデバイスフローのレート制限だけに適用されます。両方のサーフェスを信頼済みリバースプロキシの背後で運用する場合は、両方の設定を有効にしてください。一方だけを設定すると、もう一方のサーフェスは引き続きソケットのピアアドレスを使用します。
 
-`[server.limits]` の `max_request_bytes` はデフォルト `33554432`（32 MiB）で、超過時は `413` を返します。`max_request_header_bytes` と `max_url_length` はデフォルト未設定で、それぞれ `431` と `414` を返します。ヘッダーサイズは、解析済みの全ヘッダーについて名前と値の長さを合計した値です。ボディ制限はホットリロードされますが、ヘッダーと URL の制限には再起動が必要です。
+`[server.limits]` の `max_request_bytes` は Anthropic Messages とインバウンド Codex Responses のリクエストボディに適用され、デフォルトは `33554432`（32 MiB）です。超過時は `413` を返します。その他の gateway、admin、telemetry、analytics ルートでは、エンドポイント固有のボディ制限が維持されます。`max_request_header_bytes` と `max_url_length` はデフォルト未設定で、それぞれ `431` と `414` を返します。ヘッダーサイズは、解析済みの全ヘッダーについて名前と値の長さを合計した値です。ボディ制限はホットリロードされますが、ヘッダーと URL の制限には再起動が必要です。
 
 `[server.timeouts] upstream_ttfb_ms` はデフォルト `120000` で、`0` で無効化します。推論アップストリームの HTTP レスポンスヘッダー待ちだけを制限するため、レスポンスボディと長時間の SSE ストリームには全体時間制限を設定しません。Anthropic Messages、OpenAI Responses HTTP（WebSocket フォールバックを含む）、Gemini HTTP、インバウンド Codex Responses パススルーを対象とし、Codex WebSocket、Cursor、Antigravity、補助 HTTP 呼び出しは対象外です。
 

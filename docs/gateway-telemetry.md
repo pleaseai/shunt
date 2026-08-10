@@ -172,10 +172,11 @@ would present a gateway-issued JWT to a third-party collector; relaying
 arbitrary inbound headers would let a client reach a destination's own auth or
 routing behavior. Only the two framing headers above cross over.
 
-**Body cap and relay bound.** Inbound bodies are capped at 32 MiB, matching the
-default inbound `limits.max_request_bytes` in the [Claude apps gateway
-configuration reference](https://code.claude.com/docs/en/claude-apps-gateway-config)'s
-HTTP tuning table. An over-cap body is rejected with `413` rather than
+**Body cap and relay bound.** Inbound telemetry bodies are capped at 32 MiB,
+matching the default `limits.max_request_bytes` value in the [Claude apps
+gateway configuration reference](https://code.claude.com/docs/en/claude-apps-gateway-config)'s
+HTTP tuning table, but this telemetry cap is endpoint-specific and does not
+hot-reload from that key. An over-cap body is rejected with `413` rather than
 truncated, since a partial OTLP payload is not a valid one.
 
 That cap alone bounds only one request. Because relays are detached, their

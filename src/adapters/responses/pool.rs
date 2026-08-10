@@ -195,7 +195,7 @@ pub(super) async fn forward_chatgpt_oauth(
                         .into_adapter_error(|error| transport_error(error.to_string())),
                 );
             }
-            Err(error) => {
+            Err(crate::upstream_timeout::SendError::Transport(error)) => {
                 state.accounts.cooldown(
                     &route.provider,
                     account,
@@ -205,7 +205,7 @@ pub(super) async fn forward_chatgpt_oauth(
                 tracing::warn!(
                     provider = %route.provider,
                     account = %account.name,
-                    error = %error,
+                    error = %error.without_url(),
                     "ChatGPT OAuth upstream request failed"
                 );
                 continue;
@@ -281,7 +281,7 @@ pub(super) async fn forward_chatgpt_oauth(
                                 .into_adapter_error(|error| transport_error(error.to_string())),
                         );
                     }
-                    Err(error) => {
+                    Err(crate::upstream_timeout::SendError::Transport(error)) => {
                         state.accounts.cooldown(
                             &route.provider,
                             account,
@@ -291,7 +291,7 @@ pub(super) async fn forward_chatgpt_oauth(
                         tracing::warn!(
                             provider = %route.provider,
                             account = %account.name,
-                            error = %error,
+                            error = %error.without_url(),
                             "ChatGPT OAuth refresh retry failed"
                         );
                         last_response = Some(upstream);

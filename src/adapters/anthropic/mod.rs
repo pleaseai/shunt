@@ -252,7 +252,7 @@ async fn forward_claude_oauth(
                         .into_adapter_error(upstream_error),
                 );
             }
-            Err(error) => {
+            Err(crate::upstream_timeout::SendError::Transport(error)) => {
                 state.accounts.cooldown(
                     &route.provider,
                     account,
@@ -262,7 +262,7 @@ async fn forward_claude_oauth(
                 tracing::warn!(
                     provider = %route.provider,
                     account = %account.name,
-                    error = %error,
+                    error = %error.without_url(),
                     "Claude OAuth upstream request failed"
                 );
                 continue;
@@ -640,7 +640,7 @@ async fn retry_upstream(
             crate::upstream_timeout::SendError::<reqwest::Error>::Timeout
                 .into_adapter_error(upstream_error),
         ),
-        Err(error) => {
+        Err(crate::upstream_timeout::SendError::Transport(error)) => {
             state.accounts.cooldown(
                 &route.provider,
                 account,
@@ -650,7 +650,7 @@ async fn retry_upstream(
             tracing::warn!(
                 provider = %route.provider,
                 account = %account.name,
-                error = %error,
+                error = %error.without_url(),
                 "{}",
                 fail_msg
             );
