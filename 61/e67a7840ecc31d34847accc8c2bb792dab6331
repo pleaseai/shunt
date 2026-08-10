@@ -1,0 +1,19 @@
+site/src/content/docs/ja/reference/configuration.md
+  s_32780bb205c938::t_4efb82a313569b 92
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "61e67a7840ecc31d34847accc8c2bb792dab6331",
+  "prompts": {},
+  "sessions": {
+    "s_32780bb205c938": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6a0e5cb2-bfb6-4baa-beca-32660b04bfbf",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
