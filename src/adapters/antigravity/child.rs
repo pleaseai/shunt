@@ -36,11 +36,19 @@ fn live_groups() -> std::sync::MutexGuard<'static, BTreeSet<u32>> {
 fn register(pgid: u32) -> Option<u32> {
     let mut groups = live_groups();
     if SHUTTING_DOWN.load(Ordering::Acquire) {
-        drop(groups);
         // The gateway is going down and this group missed the sweep by a hair.
         // Kill it here rather than let a permission-skipping agent outlive the
         // shutdown that was already in progress when it started.
+        //
+        // Killed while still holding the registry lock, deliberately. Releasing
+        // first would leave the group neither recorded nor yet killed, and a
+        // forced exit landing in that gap sweeps an empty registry and then
+        // calls `std::process::exit` — orphaning exactly the agent this branch
+        // exists to stop. Holding the lock makes any concurrent sweep wait for
+        // the kill instead. Safe to hold: `kill_group` is one non-blocking
+        // syscall that never re-enters the registry.
         kill_group(pgid);
+        drop(groups);
         return None;
     }
     groups.insert(pgid);
