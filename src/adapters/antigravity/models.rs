@@ -184,10 +184,12 @@ pub fn parse_models(output: &str) -> EffortMatrix {
         let Some(entry) = line.split_whitespace().next() else {
             continue;
         };
-        match LADDER
-            .iter()
-            .find_map(|effort| entry.strip_suffix(&format!("-{effort}")).zip(Some(*effort)))
-        {
+        match LADDER.iter().find_map(|effort| {
+            entry
+                .strip_suffix(effort)
+                .and_then(|model| model.strip_suffix('-'))
+                .zip(Some(*effort))
+        }) {
             Some((model, effort)) => {
                 matrix
                     .entry(model.to_string())

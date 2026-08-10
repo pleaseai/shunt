@@ -60,6 +60,37 @@ fn register(_pgid: u32) -> Option<u32> {
     None
 }
 
+/// Close the window between spawn and the child's own `setpgid`.
+///
+/// `Command::process_group(0)` makes the *child* create the group, so on the
+/// fork/exec path there is a window where the parent already holds the pid but
+/// the group does not exist yet. A sweep landing in it would signal a group
+/// with no members and leave the child to go on and exec `agy` unsupervised.
+///
+/// The parent setting the same group is the standard both-sides idiom:
+/// whichever call runs first wins and the other is a no-op. `EACCES` means the
+/// child already exec'd — so its own call had succeeded — and every other error
+/// here is equally benign, which is why the result is dropped.
+///
+/// Deliberately *not* a bare `kill(pid)`, which would close the same window at
+/// a much worse price. The child is unreaped only while its [`AgyChild`] owns
+/// it, and the registry outlives that, so signalling a raw pid from a sweep
+/// could hit a recycled one. Addressing the group everywhere is what keeps the
+/// registry safe: Linux holds the `struct pid` backing a pgid alive while the
+/// group still has members, so a pgid cannot be recycled out from under a
+/// pending sweep.
+#[cfg(unix)]
+fn adopt_group(pid: u32) {
+    unsafe {
+        libc::setpgid(pid as libc::pid_t, pid as libc::pid_t);
+    }
+}
+
+#[cfg(not(unix))]
+fn adopt_group(_pid: u32) {
+    // No process groups to establish; see `register`.
+}
+
 #[cfg(unix)]
 pub(super) fn kill_group(pgid: u32) {
     // ESRCH is expected when the leader and all descendants are already gone.
@@ -97,7 +128,11 @@ pub(super) struct AgyChild {
 
 impl AgyChild {
     pub(super) fn new(child: Child) -> Self {
-        let pgid = child.id().and_then(register);
+        let pgid = child.id().and_then(|pid| {
+            // Establish the group from this side before anything can sweep it.
+            adopt_group(pid);
+            register(pid)
+        });
         Self { child, pgid }
     }
 
@@ -185,6 +220,15 @@ mod tests {
         let pid = child.id().expect("spawned child has a pid");
         let mut child = AgyChild::new(child);
         assert!(live_groups().contains(&pid));
+        // By the time `new` returns, the group exists — the parent's own
+        // `setpgid` has run even if the child has not reached its copy yet.
+        // Without that, a sweep in this window would signal a group with no
+        // members and the child would exec `agy` unsupervised.
+        assert_eq!(
+            unsafe { libc::getpgid(pid as libc::pid_t) },
+            pid as libc::pid_t,
+            "child must lead its own group as soon as AgyChild::new returns"
+        );
 
         terminate_all_groups();
         assert_reaped_and_dead(&mut child, pid).await;
