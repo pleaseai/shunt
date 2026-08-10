@@ -1,0 +1,35 @@
+src/adapters/antigravity/child.rs
+  s_40ea8b4a3d09f7::t_33be2fa05edde2 263-268,271,276-280,283-284,292-294
+  s_40ea8b4a3d09f7::t_dfaed101454167 269-270,281-282
+  s_40ea8b4a3d09f7::t_d80ec7c9bcbb0b 272-275
+  s_40ea8b4a3d09f7::t_c8faf5c30849ea 181-192
+  s_40ea8b4a3d09f7::t_4735fa78319a33 285-291
+  s_40ea8b4a3d09f7::t_f843adc7d2df18 150-166
+src/adapters/antigravity/stream.rs
+  s_40ea8b4a3d09f7::t_2135716af444f0 260-262
+  s_40ea8b4a3d09f7::t_69ab29566d588d 251,267
+tests/antigravity_translate.rs
+  s_40ea8b4a3d09f7::t_c4d5bb558f1139 269-270,276-279
+src/adapters/antigravity/mod.rs
+  s_40ea8b4a3d09f7::t_a985b790a7618d 233-237,241-248
+  s_40ea8b4a3d09f7::t_675f70fbbb9451 312-319,361-368
+  s_40ea8b4a3d09f7::t_57a5fc581afb5c 297-304
+  s_40ea8b4a3d09f7::t_dfaed101454167 238,285
+  s_40ea8b4a3d09f7::t_05ae6132b46269 353-355
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "f4fa7d49f49296219619ee33f0dac127cc516b34",
+  "prompts": {},
+  "sessions": {
+    "s_40ea8b4a3d09f7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "87a33153-3253-44da-ba3d-68d83cee51d7",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
