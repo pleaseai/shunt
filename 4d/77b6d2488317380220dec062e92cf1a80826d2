@@ -1,0 +1,22 @@
+src/adapters/antigravity/child.rs
+  s_40ea8b4a3d09f7::t_3bb1443bd5be8c 258-262
+  s_40ea8b4a3d09f7::t_ea7c644f781eef 200,227,243
+  s_40ea8b4a3d09f7::t_ad68cd20b213a5 3,8-21,23-26,28-29,46-47,60,63,110-114,136-138,171,178,187,205-207,236,256,272
+  s_40ea8b4a3d09f7::t_6c83bb5d01c36f 257
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "4d77b6d2488317380220dec062e92cf1a80826d2",
+  "prompts": {},
+  "sessions": {
+    "s_40ea8b4a3d09f7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "87a33153-3253-44da-ba3d-68d83cee51d7",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
