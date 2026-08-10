@@ -42,7 +42,7 @@ use tokio::{
 };
 
 use crate::{
-    adapters::{Adapter, AdapterError, AdapterFailure, AdapterFuture},
+    adapters::{Adapter, AdapterError, AdapterFuture},
     error::ShuntError,
     request::RequestBody,
     routing::Route,
@@ -205,9 +205,10 @@ impl Adapter for AntigravityAdapter {
             // to PRINT_TIMEOUT, still editing files and burning quota.
             cmd.kill_on_drop(true);
 
-            let mut child = AgyChild::new(cmd.spawn().map_err(|err| {
-                failoverable(agy_failure(&format!("could not start the CLI: {err}")))
-            })?);
+            let mut child = AgyChild::new(
+                cmd.spawn()
+                    .map_err(|err| agy_failure(&format!("could not start the CLI: {err}")))?,
+            );
 
             let stdout = child
                 .inner_mut()
@@ -572,26 +573,7 @@ fn agy_not_found() -> AdapterError {
          Install agy, or set AGY_BIN to its absolute path — a service manager \
          (for example `brew services`) may run shunt with a PATH that excludes it."
         .to_string();
-    failoverable(adapter_error(StatusCode::SERVICE_UNAVAILABLE, message))
-}
-
-/// Mark a failure that happened before the CLI could start as failoverable.
-///
-/// `adapter_error` leaves `failure: None`, which the failover loop treats as
-/// terminal — correct for a configuration error, wrong here. Nothing has been
-/// spawned, the request is untouched, and a missing binary is a property of
-/// this machine rather than of the request, so an ordered `upstream_model`
-/// chain can still hand the turn to its next upstream. This is the same
-/// `BeforeHeaders` marking the HTTP adapters use for a transport failure that
-/// happens before any response headers exist.
-///
-/// Deliberately narrow: only the pre-spawn paths use it. Once a child is
-/// running, or when the error is adapter-owned validation (an unsupported
-/// effort, an unsandboxed public listener), failing over would mask a
-/// configuration problem instead of routing around a transient one.
-fn failoverable(mut error: AdapterError) -> AdapterError {
-    error.failure = Some(AdapterFailure::BeforeHeaders);
-    error
+    adapter_error(StatusCode::SERVICE_UNAVAILABLE, message)
 }
 
 /// Shape a failed `agy` invocation as an Anthropic-form error carrying the
@@ -843,19 +825,6 @@ fn find_agy_binary_uncached() -> Option<PathBuf> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-
-    /// A missing binary must not abort an ordered chain.
-    ///
-    /// `adapter_error` leaves `failure: None`, which the failover loop reads as
-    /// terminal. Nothing has spawned at this point, so a chain with a fallback
-    /// upstream can still serve the turn.
-    #[test]
-    fn a_missing_agy_binary_is_failoverable() {
-        assert!(
-            matches!(agy_not_found().failure, Some(AdapterFailure::BeforeHeaders)),
-            "a missing CLI must advance the failover chain, not end it"
-        );
-    }
 
     /// `kill(-0, ...)` is `kill(0, ...)`: every process in shunt's own group.
     #[test]
