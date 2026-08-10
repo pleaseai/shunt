@@ -232,7 +232,17 @@ pub fn resolve_effort(
         };
     };
     if supported.is_empty() {
-        return EffortChoice::Omit;
+        // An empty set is authoritative: discovery positively identified a
+        // model that takes no effort flag. This is distinct from the unknown
+        // model arm above, where configured values pass through to the CLI.
+        return match configured {
+            Some(effort) => EffortChoice::Unsupported {
+                model: model.to_string(),
+                requested: effort.to_string(),
+                supported: Vec::new(),
+            },
+            None => EffortChoice::Omit,
+        };
     }
     if let Some(effort) = configured {
         return if supported.contains(effort) {
@@ -263,4 +273,43 @@ fn clamp(supported: &BTreeSet<String>, requested: &str) -> Option<String> {
         .filter(|(_, level)| supported.contains(**level))
         .min_by_key(|(index, _)| (index.abs_diff(target), usize::from(*index < target)))
         .map(|(_, level)| (*level).to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{resolve_effort, EffortChoice, EffortMatrix};
+
+    #[test]
+    fn configured_effort_is_rejected_for_a_model_without_effort_levels() {
+        let mut matrix = EffortMatrix::new();
+        matrix.insert("fixed-model".to_string(), Default::default());
+
+        assert_eq!(
+            resolve_effort(&matrix, "fixed-model", Some("high")),
+            EffortChoice::Unsupported {
+                model: "fixed-model".to_string(),
+                requested: "high".to_string(),
+                supported: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn unconfigured_effort_is_omitted_for_a_model_without_effort_levels() {
+        let mut matrix = EffortMatrix::new();
+        matrix.insert("fixed-model".to_string(), Default::default());
+
+        assert_eq!(
+            resolve_effort(&matrix, "fixed-model", None),
+            EffortChoice::Omit
+        );
+    }
+
+    #[test]
+    fn configured_effort_passes_through_for_an_unknown_model() {
+        assert_eq!(
+            resolve_effort(&EffortMatrix::new(), "new-model", Some("ultra")),
+            EffortChoice::Use("ultra".to_string())
+        );
+    }
 }

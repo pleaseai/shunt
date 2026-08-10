@@ -117,8 +117,10 @@ reason, and do not expose this provider on a non-loopback bind to untrusted clie
 
 shunt refuses to start when `sandbox = false` is combined with a non-loopback `bind`:
 that pairing hands local shell access to anyone who can post a Messages request, and
-authentication alone does not make it safe. Either keep the sandbox on or bind to
-loopback.
+authentication alone does not make it safe. It also enforces the rule per request against
+the listener bound at boot. Because a hot reload cannot move that listener, reloading a
+loopback `bind` does not permit you to disable the sandbox while a public listener remains
+active. Either keep the sandbox on or restart shunt with a loopback bind.
 
 The model/effort matrix is discovered in the background at startup, so no request pays
 for it. Until it lands, or if `agy models` fails, configured values are passed through

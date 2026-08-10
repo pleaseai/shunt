@@ -129,10 +129,15 @@ fn test_unknown_model_defers_to_the_cli() {
         resolve_effort(&matrix, "gemini-9-future", None),
         EffortChoice::Omit
     );
-    // A model that takes no --effort flag gets none.
+    // A discovered model that takes no --effort flag is authoritative, so an
+    // explicit effort is rejected rather than silently discarded.
     assert_eq!(
         resolve_effort(&matrix, "claude-sonnet-4-6", Some("high")),
-        EffortChoice::Omit
+        EffortChoice::Unsupported {
+            model: "claude-sonnet-4-6".to_string(),
+            requested: "high".to_string(),
+            supported: Vec::new(),
+        }
     );
 }
 

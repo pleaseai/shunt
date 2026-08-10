@@ -20,12 +20,16 @@ use std::{
     net::SocketAddr,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
-    sync::OnceLock,
+    sync::{Arc, OnceLock},
     time::Duration,
 };
 
 use serde_json::Value;
-use shunt::{config::Config, server};
+use shunt::{
+    config::{Config, RouteConfig},
+    reload::RuntimeState,
+    server,
+};
 use tokio::task::JoinHandle;
 
 /// Model id the fixture config routes to the stub.
@@ -90,9 +94,9 @@ case "$prompt" in
     # inside DRAIN_GRACE. This is what makes the reap-before-publish race
     # testable at all — the plain MODE=fail stub writes early enough that the
     # race almost never loses.
-    # Deliberately NOT recorded as a holder: it exits on its own in 0.5s, and
-    # `reap_holders` kills every recorded pid, so a concurrent test would kill
-    # this subshell before it ever wrote the diagnostic.
+    # Deliberately NOT recorded as a holder: it exits on its own in 0.5s.
+    # It stays inside agy's process group because surviving the non-streaming
+    # stderr settle window is what makes this test discriminate.
     # stdout redirected to /dev/null: if the subshell inherited stdout too, it
     # would hold that pipe open and the adapter would still be blocked reading
     # stdout at 0.5s, so the diagnostic would land before stderr was ever read
@@ -106,16 +110,18 @@ case "$prompt" in
     exit 1
     ;;
   *MODE=result-then-hold*)
+    tag=${prompt##*TAG=}
+    tag=${tag%% *}
     # Start the pipe holder and record its pid FIRST. The adapter stops at the
     # result and kills this stub immediately, so anything after that print can
     # be cut off mid-script — recording the pid afterwards loses the race and
     # orphans a 300s process with no way to reap it.
     #
-    # The holder is a GRANDCHILD: the adapter kills the stub, not this, which is
-    # the point (it keeps the inherited stdout pipe open). Nothing else would
-    # ever reap it, so the test does, via this pid file.
+    # The holder is a GRANDCHILD and inherits the agy process group. The adapter
+    # must kill that whole group when the turn finishes; the pid file lets the
+    # test prove it and clean up safely if containment regresses.
     sleep 300 &
-    echo $! > "$(dirname "$0")/holder-$$.pid"
+    echo $! > "$(dirname "$0")/holder-$tag.pid"
     # Terminal result, then the descendant still holds stdout. The turn is
     # finished; only the pipe is open. A reader that waits for EOF instead of
     # stopping at the result stalls here until its deadline.
@@ -197,6 +203,43 @@ async fn start_gateway() -> TestGateway {
     }
 }
 
+async fn start_gateway_after_unsandboxed_loopback_reload() -> TestGateway {
+    let _ = stub_agy();
+    let mut boot_config = Config::default();
+    boot_config.server.bind = "0.0.0.0:0".to_string();
+    boot_config.server.default_provider = "antigravity".to_string();
+    boot_config.routes.push(RouteConfig {
+        model: MODEL.to_string(),
+        provider: "antigravity".to_string(),
+        upstream_model: Some("gemini-3.1-pro".to_string()),
+        effort: None,
+        service_tier: None,
+    });
+
+    // build_router records the public boot bind but does not open it. The only
+    // socket this test creates remains loopback-only.
+    let mut reloaded_config = boot_config.clone();
+    let (app, shared, _) = server::build_router(boot_config).unwrap();
+    reloaded_config.server.bind = "127.0.0.1:0".to_string();
+    reloaded_config
+        .providers
+        .get_mut("antigravity")
+        .unwrap()
+        .sandbox = false;
+    let runtime = RuntimeState::from_config(reloaded_config).unwrap();
+    shared.store(Arc::new(runtime));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr: SocketAddr = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    TestGateway {
+        base_url: format!("http://{addr}"),
+        task,
+    }
+}
+
 /// Send a turn and read the body to completion.
 ///
 /// The guard wraps the body read as well as `send()`: a streaming response
@@ -223,6 +266,26 @@ async fn turn(gateway: &TestGateway, marker: &str, stream: bool) -> (reqwest::St
     })
     .await
     .expect("the turn must finish within the guard rather than hang")
+}
+
+#[tokio::test]
+async fn reload_cannot_unsandbox_antigravity_on_the_public_boot_listener() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let gateway = start_gateway_after_unsandboxed_loopback_reload().await;
+    let (status, body) = turn(&gateway, "MODE=ok must not run", false).await;
+
+    assert_eq!(status, reqwest::StatusCode::SERVICE_UNAVAILABLE);
+    assert!(body.contains("unsandboxed"), "body: {body}");
+    assert!(
+        body.contains("running listener is non-loopback"),
+        "body: {body}"
+    );
+    assert!(
+        body.contains("reload cannot move the listener"),
+        "body: {body}"
+    );
 }
 
 #[tokio::test]
@@ -280,40 +343,59 @@ async fn non_streaming_turn_returns_the_translated_message() {
     assert_eq!(json["usage"]["output_tokens"], 3);
 }
 
-/// Kill the pipe-holding grandchildren the `result-then-hold` stub leaves behind.
+/// Per-turn safety net for a pipe-holding grandchild.
 ///
-/// The adapter kills the stub it spawned, but the holder is one level below
-/// that and survives it — by design, since holding the pipe open is the point.
-/// Nothing else reaps it, so without this each run leaves a 300s process behind
-/// and they accumulate across runs.
-fn reap_holders() {
-    let dir = stub_agy().parent().unwrap();
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let is_pidfile = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with("holder-") && name.ends_with(".pid"));
-        if !is_pidfile {
-            continue;
-        }
-        if let Ok(pid) = std::fs::read_to_string(&path) {
-            let pid = pid.trim();
-            if !pid.is_empty() {
-                // Best effort via `kill(1)` rather than a `libc` dev-dependency;
-                // the holder may already have exited.
-                let _ = std::process::Command::new("kill")
-                    .arg("-9")
-                    .arg(pid)
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status();
+/// The adapter should kill the process before the turn returns. Drop remains
+/// responsible for only this test's tagged pid if containment regresses or an
+/// assertion unwinds early.
+struct HolderGuard {
+    path: PathBuf,
+}
+
+impl HolderGuard {
+    fn new(tag: &str) -> Self {
+        let path = stub_agy()
+            .parent()
+            .unwrap()
+            .join(format!("holder-{tag}.pid"));
+        let _ = std::fs::remove_file(&path);
+        Self { path }
+    }
+
+    fn pid(&self) -> libc::pid_t {
+        std::fs::read_to_string(&self.path)
+            .expect("the stub should record its holder pid")
+            .trim()
+            .parse()
+            .expect("the holder pid should be numeric")
+    }
+}
+
+impl Drop for HolderGuard {
+    fn drop(&mut self) {
+        if let Ok(pid) = std::fs::read_to_string(&self.path) {
+            if let Ok(pid) = pid.trim().parse::<libc::pid_t>() {
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                }
             }
         }
-        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+async fn assert_process_exited(pid: libc::pid_t) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let alive = unsafe { libc::kill(pid, 0) == 0 };
+        if !alive {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "holder process {pid} survived the completed turn"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
 
@@ -323,11 +405,12 @@ async fn streaming_finishes_when_a_descendant_holds_stdout_open() {
         return;
     }
     let gateway = start_gateway().await;
+    let holder = HolderGuard::new("stream-hold");
     // Regression: the stub emits a terminal SUCCESS result, then leaves a
     // background `sleep` holding the inherited stdout pipe. Reading to EOF
     // instead of stopping at the result stalls a *finished* turn until the
     // deadline and then reports it as a failure.
-    let (status, body) = turn(&gateway, "MODE=result-then-hold", true).await;
+    let (status, body) = turn(&gateway, "MODE=result-then-hold TAG=stream-hold", true).await;
 
     assert_eq!(status, reqwest::StatusCode::OK);
     assert!(body.contains("hello"), "body: {body}");
@@ -336,7 +419,7 @@ async fn streaming_finishes_when_a_descendant_holds_stdout_open() {
         !body.contains("[agy error]"),
         "a completed turn must not be reported as an error: {body}"
     );
-    reap_holders();
+    assert_process_exited(holder.pid()).await;
 }
 
 #[tokio::test]
@@ -345,13 +428,14 @@ async fn non_streaming_finishes_when_a_descendant_holds_stdout_open() {
         return;
     }
     let gateway = start_gateway().await;
-    let (status, body) = turn(&gateway, "MODE=result-then-hold", false).await;
+    let holder = HolderGuard::new("non-stream-hold");
+    let (status, body) = turn(&gateway, "MODE=result-then-hold TAG=non-stream-hold", false).await;
 
     assert_eq!(status, reqwest::StatusCode::OK);
     let json: Value = serde_json::from_str(&body).expect("a non-streaming turn returns JSON");
     assert_eq!(json["content"][0]["text"], "hello");
     assert_eq!(json["stop_reason"], "end_turn");
-    reap_holders();
+    assert_process_exited(holder.pid()).await;
 }
 
 #[tokio::test]

@@ -2410,7 +2410,10 @@ impl Config {
         // integration; reachable from the network it hands arbitrary local
         // execution to anyone who can post a Messages request. Authentication
         // is not sufficient on its own, so refuse the combination outright
-        // rather than document it as merely discouraged.
+        // rather than document it as merely discouraged. The Antigravity
+        // adapter repeats this check against AppState::boot_is_loopback on every
+        // request because a reload can change this config value but not the
+        // listener the process actually bound.
         if let Some(name) = self.providers.iter().find_map(|(name, provider)| {
             (provider.kind == ProviderKind::Antigravity && !provider.sandbox).then_some(name)
         }) {

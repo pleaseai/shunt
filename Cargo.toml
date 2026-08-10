@@ -105,6 +105,9 @@ url = "2.5.8"
 # default features stay off.
 zstd = { version = "0.13", default-features = false }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 divan = { version = "5.0.1", package = "codspeed-divan-compat" }
 hex = "0.4"

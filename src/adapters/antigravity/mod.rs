@@ -16,8 +16,10 @@
 //!   is not a sandbox: the agent still has shell access and can act outside
 //!   that directory. Treat this provider as arbitrary code execution as the
 //!   user running shunt, and see [`resolve_workspace`] for the trust boundary
-//!   on where it starts.
+//!   on where it starts. Each run is isolated in its own process group so every
+//!   cancellation path also kills tool subprocesses spawned by `agy`.
 
+mod child;
 pub mod models;
 pub mod stream;
 
@@ -48,6 +50,7 @@ use crate::{
 };
 
 use self::{
+    child::AgyChild,
     models::EffortChoice,
     stream::{AgyEnd, Translator},
 };
@@ -113,6 +116,16 @@ impl Adapter for AntigravityAdapter {
                 .map(|provider| provider.workspace_roots.clone())
                 .unwrap_or_default();
             let sandbox = provider.is_none_or(|provider| provider.sandbox);
+            // Runtime half of Config::validate's boot check: `server.bind` is
+            // restart-only, so a reload cannot make the socket already serving
+            // public traffic safe for an unsandboxed agent.
+            if !sandbox && !state.boot_is_loopback {
+                return Err(adapter_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Antigravity is unsandboxed while the running listener is non-loopback. A reload cannot move the listener; restart shunt on a loopback bind or re-enable the sandbox."
+                        .to_string(),
+                ));
+            }
             let workspace = resolve_workspace(request, &roots)?;
 
             let matrix = models::effort_matrix(&agy_bin).await;
@@ -130,13 +143,17 @@ impl Adapter for AntigravityAdapter {
                     requested,
                     supported,
                 } => {
-                    return Err(adapter_error(
-                        StatusCode::BAD_REQUEST,
+                    let detail = if supported.is_empty() {
+                        format!(
+                            "model {model} takes no effort level, but effort \"{requested}\" was configured"
+                        )
+                    } else {
                         format!(
                             "model {model} does not support effort \"{requested}\" (supported: {})",
                             supported.join(", ")
-                        ),
-                    ));
+                        )
+                    };
+                    return Err(adapter_error(StatusCode::BAD_REQUEST, detail));
                 }
             };
 
@@ -164,23 +181,30 @@ impl Adapter for AntigravityAdapter {
             cmd.stdin(Stdio::null());
             cmd.stdout(Stdio::piped());
             cmd.stderr(Stdio::piped());
+            // Isolate the agent and every tool it spawns. It no longer receives
+            // Ctrl-C sent to shunt's process group, so the explicit termination
+            // paths below are responsible for containing it.
+            #[cfg(unix)]
+            cmd.process_group(0);
             // Without this, a client disconnect drops the body stream and
             // leaves a permission-skipping agent running unsupervised for up
             // to PRINT_TIMEOUT, still editing files and burning quota.
             cmd.kill_on_drop(true);
 
-            let mut child = cmd
-                .spawn()
-                .map_err(|err| agy_failure(&format!("could not start the CLI: {err}")))?;
+            let mut child = AgyChild::new(
+                cmd.spawn()
+                    .map_err(|err| agy_failure(&format!("could not start the CLI: {err}")))?,
+            );
 
             let stdout = child
+                .inner_mut()
                 .stdout
                 .take()
                 .ok_or_else(|| agy_failure("the CLI produced no stdout pipe"))?;
             // stderr must be drained concurrently: left unread, a verbose
             // failure fills the pipe buffer, blocks the child's write, and
             // wedges the run behind keepalives that make it look healthy.
-            let mut stderr_log = drain_stderr(&mut child);
+            let mut stderr_log = drain_stderr(child.inner_mut());
 
             let message_id = format!("msg_agy_{:016x}", rand::random::<u64>());
             let mut translator = Translator::new(&route.model, message_id);
@@ -241,8 +265,7 @@ impl Adapter for AntigravityAdapter {
                                         // nothing to wait for — unlike the
                                         // non-streaming path, which grants
                                         // EXIT_GRACE precisely to read one.
-                                        let _ = child.kill().await;
-                                        let _ = child.wait().await;
+                                        child.terminate().await;
                                         return Some((
                                             Ok::<_, Infallible>(axum::body::Bytes::from(tail)),
                                             (lines, translator, child, stderr_log, finished),
@@ -270,8 +293,7 @@ impl Adapter for AntigravityAdapter {
                                     // the agent alive, and an unbounded `wait`
                                     // would hang the response behind it. On a
                                     // clean exit this is a no-op.
-                                    let _ = child.kill().await;
-                                    let _ = child.wait().await;
+                                    child.terminate().await;
                                     // Only then wait for the drain to publish.
                                     // Reading the buffer first would report "no
                                     // stderr output" for a CLI that wrote a
@@ -341,8 +363,7 @@ impl Adapter for AntigravityAdapter {
             })
             .await;
             if drained.is_err() {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
+                child.terminate().await;
                 stderr_log.settle().await;
                 return Err(agy_failure(&format!(
                     "no result after {}s; {}",
@@ -358,11 +379,11 @@ impl Adapter for AntigravityAdapter {
             // grace period to exit on its own — a normally-exiting child then
             // reports its own status, which the failure path below uses — then
             // kill if it overstays.
-            let status = match tokio::time::timeout(EXIT_GRACE, child.wait()).await {
+            let status = match tokio::time::timeout(EXIT_GRACE, child.inner_mut().wait()).await {
                 Ok(status) => status,
                 Err(_) => {
-                    let _ = child.kill().await;
-                    child.wait().await
+                    child.terminate().await;
+                    child.inner_mut().wait().await
                 }
             };
 
@@ -389,6 +410,12 @@ impl Adapter for AntigravityAdapter {
                     ))
                 }
             };
+            // Unlike streaming and hard-timeout paths, a natural non-streaming
+            // exit settles a missing-result diagnostic before sweeping. Linux
+            // keeps the struct pid backing a process-group id alive while the
+            // group has members, so the pgid cannot be recycled while a
+            // descendant remains; an already-empty group simply yields ESRCH.
+            child.sweep_descendants();
             if let Some(message) = failure {
                 return Err(agy_failure(&message));
             }
