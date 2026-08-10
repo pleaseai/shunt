@@ -178,16 +178,39 @@ impl AgyChild {
         &mut self.child
     }
 
-    /// Kill this run's process group at `deadline` even when backpressure means
-    /// nothing is polling the response body and its in-stream timeout is idle.
-    pub(super) fn arm_deadline(&self, deadline: tokio::time::Instant) -> DeadlineGuard {
-        let handle = self.pgid.map(|pgid| {
-            tokio::spawn(async move {
-                tokio::time::sleep_until(deadline).await;
-                kill_group(pgid);
-            })
+    /// Kill *and reap* this run's process group at `deadline`, even when
+    /// backpressure means nothing is polling the response body and its
+    /// in-stream timeout is idle.
+    ///
+    /// Takes shared ownership rather than `&self` because signalling is only
+    /// half the job. Nothing reaps a [`Child`] except a `wait` on its handle,
+    /// and on the streaming path that handle lives in the stream state, which
+    /// is polled only as the client reads. A client that stalls without
+    /// disconnecting therefore never drives it, so a watchdog that merely
+    /// signalled the group would leave the killed leader a zombie for as long
+    /// as that connection is held open — precisely the case this supervisor
+    /// exists to cover. Routing through [`Self::terminate`] reaps it here and
+    /// deregisters the group in the same step.
+    ///
+    /// The lock is uncontended in the case that matters: a stream that is not
+    /// being polled is not holding it. A stream that *is* being polled reaches
+    /// the same `terminate` through its own `timeout_at`, and `terminate` is
+    /// idempotent — killing and waiting an already-reaped child returns the
+    /// stored status, and the registry removal is guarded by `pgid.take()`.
+    ///
+    /// Armed unconditionally, unlike the pgid-only predecessor: a run with no
+    /// process group still has a direct child worth reaping.
+    pub(super) fn arm_deadline(
+        child: std::sync::Arc<tokio::sync::Mutex<Self>>,
+        deadline: tokio::time::Instant,
+    ) -> DeadlineGuard {
+        let handle = tokio::spawn(async move {
+            tokio::time::sleep_until(deadline).await;
+            child.lock().await.terminate().await;
         });
-        DeadlineGuard { handle }
+        DeadlineGuard {
+            handle: Some(handle),
+        }
     }
 
     pub(super) async fn terminate(&mut self) {
@@ -244,6 +267,25 @@ mod tests {
         command.spawn().expect("spawn long-lived process group")
     }
 
+    /// Poll the OS until `pid` is gone from the process table entirely.
+    ///
+    /// Deliberately never touches the [`AgyChild`]: the point is to prove the
+    /// supervisor did the reaping. A surviving zombie keeps its table entry and
+    /// answers signal 0, so this fails against a watchdog that kills the group
+    /// without waiting on the handle.
+    async fn assert_reaped_by_supervisor(pid: u32) {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        while tokio::time::Instant::now() < deadline {
+            if unsafe { libc::kill(pid as libc::pid_t, 0) } != 0 {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!(
+            "process {pid} was still in the process table; the deadline supervisor did not reap it"
+        );
+    }
+
     async fn assert_reaped_and_dead(child: &mut AgyChild, pid: u32) {
         tokio::time::timeout(std::time::Duration::from_secs(2), child.inner_mut().wait())
             .await
@@ -261,14 +303,24 @@ mod tests {
         reset();
 
         // The deadline watchdog runs in supervision, independently of response
-        // body polling. Waiting only on the real process proves it fires without
-        // any stream future being driven.
+        // body polling. Nothing here touches the child after arming: the guard
+        // must both kill and *reap* it on its own.
+        //
+        // `kill(pid, 0)` is the discriminator, and it is why this waits on the
+        // OS rather than on the handle. A zombie still has a process table
+        // entry and accepts signal 0, so a watchdog that only signalled the
+        // group would pass any assertion phrased as "is it dead"; only a reaped
+        // pid gives ESRCH. Calling `wait`/`try_wait` here instead would reap
+        // the child *from the test*, which is exactly how the previous version
+        // of this assertion hid the leak.
         let watched = spawn_group();
         let watched_pid = watched.id().expect("spawned child has a pid");
-        let mut watched = AgyChild::new(watched);
-        let _deadline_guard = watched
-            .arm_deadline(tokio::time::Instant::now() + std::time::Duration::from_millis(200));
-        assert_reaped_and_dead(&mut watched, watched_pid).await;
+        let watched = std::sync::Arc::new(tokio::sync::Mutex::new(AgyChild::new(watched)));
+        let _deadline_guard = AgyChild::arm_deadline(
+            watched.clone(),
+            tokio::time::Instant::now() + std::time::Duration::from_millis(200),
+        );
+        assert_reaped_by_supervisor(watched_pid).await;
         // Deregister before moving on: the sweep phase below asserts against an
         // *empty* registry, and a leftover entry here would quietly turn that
         // into a different test.
@@ -277,20 +329,24 @@ mod tests {
         // Dropping the guard cancels its task. Otherwise a completed turn's old
         // timer could later kill a reused process-group id.
         let cancelled = spawn_group();
-        let mut cancelled = AgyChild::new(cancelled);
-        let guard = cancelled
-            .arm_deadline(tokio::time::Instant::now() + std::time::Duration::from_millis(200));
+        let cancelled = std::sync::Arc::new(tokio::sync::Mutex::new(AgyChild::new(cancelled)));
+        let guard = AgyChild::arm_deadline(
+            cancelled.clone(),
+            tokio::time::Instant::now() + std::time::Duration::from_millis(200),
+        );
         drop(guard);
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         assert!(
             cancelled
+                .lock()
+                .await
                 .inner_mut()
                 .try_wait()
                 .expect("inspect cancelled watchdog child")
                 .is_none(),
             "dropping the deadline guard must leave the child running"
         );
-        cancelled.terminate().await;
+        cancelled.lock().await.terminate().await;
 
         // An empty registry is a no-op rather than a panic.
         terminate_all_groups();

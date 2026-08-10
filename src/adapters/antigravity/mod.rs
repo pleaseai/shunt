@@ -233,15 +233,20 @@ impl Adapter for AntigravityAdapter {
                 // `timeout_at` below reports the deadline to an active reader,
                 // but it is itself only polled with the response body. Keep a
                 // separate supervisor alive in the stream state so backpressure
-                // cannot suspend the wall-clock containment guarantee.
-                let deadline_guard = child.arm_deadline(deadline);
+                // cannot suspend the wall-clock containment guarantee. The
+                // child is shared with it rather than moved, because the
+                // supervisor must be able to reap as well as signal: a client
+                // that stalls without disconnecting never polls this stream, so
+                // its `terminate` below is the one thing that would not run.
+                let child = std::sync::Arc::new(tokio::sync::Mutex::new(child));
+                let deadline_guard = AgyChild::arm_deadline(child.clone(), deadline);
                 let stream_state = (lines, translator, child, stderr_log, false, deadline_guard);
                 let sse_stream = futures_util::stream::unfold(
                     stream_state,
                     move |(
                         mut lines,
                         mut translator,
-                        mut child,
+                        child,
                         mut stderr_log,
                         mut finished,
                         deadline_guard,
@@ -291,7 +296,7 @@ impl Adapter for AntigravityAdapter {
                                         // nothing to wait for — unlike the
                                         // non-streaming path, which grants
                                         // EXIT_GRACE precisely to read one.
-                                        child.terminate().await;
+                                        child.lock().await.terminate().await;
                                         return Some((
                                             Ok::<_, Infallible>(axum::body::Bytes::from(tail)),
                                             (
@@ -333,7 +338,7 @@ impl Adapter for AntigravityAdapter {
                                     // the agent alive, and an unbounded `wait`
                                     // would hang the response behind it. On a
                                     // clean exit this is a no-op.
-                                    child.terminate().await;
+                                    child.lock().await.terminate().await;
                                     // Only then wait for the drain to publish.
                                     // Reading the buffer first would report "no
                                     // stderr output" for a CLI that wrote a
