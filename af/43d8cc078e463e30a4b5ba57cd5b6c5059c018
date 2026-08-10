@@ -1,0 +1,41 @@
+src/gateway/spend/api.rs
+  s_32780bb205c938::t_f247a46af693bd 4
+  s_32780bb205c938::t_00034f18519b71 156,159,163
+src/gateway/spend/tests.rs
+  s_32780bb205c938::t_412c11d120dd8a 202-204,207-211
+  s_32780bb205c938::t_c8a479d8617f15 205-206
+  s_32780bb205c938::t_6450c80b2e2283 455-469
+  s_32780bb205c938::t_2df2d985009ec5 201
+  s_32780bb205c938::t_ce73c40b53b347 454
+src/main.rs
+  s_32780bb205c938::t_bf6aeb5e7abca8 481-483
+src/gateway/spend/persist.rs
+  s_32780bb205c938::t_5b14766fa46a5e 46
+  s_32780bb205c938::t_dbb5b67c664544 25
+  s_32780bb205c938::t_684c29eaa98047 32
+  s_32780bb205c938::t_5fb485e7819d00 258
+  s_32780bb205c938::t_dc30b82dcd9cc4 382,385-387,396-398
+  s_32780bb205c938::t_d3117604e4761f 48-52
+  s_32780bb205c938::t_1d35c573ea0630 78-83,85-91
+docs/gateway-spend-limits.md
+  s_32780bb205c938::t_2ae777c57e9d69 25
+  s_32780bb205c938::t_7fd75826de1f70 44
+src/gateway/spend/store.rs
+  s_32780bb205c938::t_9ac87435e46a85 162-166
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "af43d8cc078e463e30a4b5ba57cd5b6c5059c018",
+  "prompts": {},
+  "sessions": {
+    "s_32780bb205c938": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6a0e5cb2-bfb6-4baa-beca-32660b04bfbf",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
