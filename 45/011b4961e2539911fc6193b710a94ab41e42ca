@@ -1,0 +1,69 @@
+src/gateway/spend/store.rs
+  s_90e5fb302b3207::t_8e1c296b86e0c8 5-29
+  s_90e5fb302b3207::t_9630262db72ca3 59-89
+docs/gateway-spend-limits.md
+  s_90e5fb302b3207::t_4180d769d3527b 41
+  s_90e5fb302b3207::t_42f40abcea2350 7
+  s_90e5fb302b3207::t_2966a581196074 24
+src/gateway/spend/api.rs
+  s_90e5fb302b3207::t_5d72a213da6ac6 396-401,403-410
+  s_90e5fb302b3207::t_83b28cecadf385 188,193-195
+  s_90e5fb302b3207::t_3a5f1ccd28d4de 11-14
+src/gateway/spend/persist.rs
+  s_90e5fb302b3207::t_6f8b2177fa3c46 117-118
+  s_90e5fb302b3207::t_e6c3af07c13376 87-100,302-305
+  s_90e5fb302b3207::t_958b9ba02b0e6e 5
+  s_90e5fb302b3207::t_3f1fc8f1772f80 115-116
+  s_90e5fb302b3207::t_39ccbbb0fa5993 135-164
+  s_90e5fb302b3207::t_3b61844f46545c 71
+  s_90e5fb302b3207::t_02f0ba94000893 245-301,306-309
+  s_90e5fb302b3207::t_41bdb7a442adcd 244
+src/config.rs
+  s_90e5fb302b3207::t_ab85ca66bc923d 518-520
+  s_90e5fb302b3207::t_5aaee962c2bfa6 592-596
+  s_90e5fb302b3207::t_bc33bc2cbeffc2 2041-2044
+  s_90e5fb302b3207::t_e6c3af07c13376 4405-4406
+  s_90e5fb302b3207::t_628e0f71df508f 4325-4345
+  s_90e5fb302b3207::t_8eee65e8d25dd7 587-588,597-604
+  s_90e5fb302b3207::t_6c4f59adc707e8 4359
+  s_90e5fb302b3207::t_614795989e6e92 4358,4360-4404,4407-4418
+site/src/content/docs/ko/reference/endpoints.md
+  s_90e5fb302b3207::t_a17337606f0b73 43
+site/src/content/docs/ja/reference/endpoints.md
+  s_90e5fb302b3207::t_a17337606f0b73 43
+src/gateway/spend/tests.rs
+  s_90e5fb302b3207::t_eded118be05d46 229,392,474,567-601
+  s_90e5fb302b3207::t_0d7331b00017b4 230-274
+  s_90e5fb302b3207::t_01dab0aee21fb8 68
+  s_90e5fb302b3207::t_e5d61f9076567a 393-397,399-411,414-440
+  s_90e5fb302b3207::t_ee006e06bf3f9b 367-378
+  s_90e5fb302b3207::t_dc1d446691849a 1-4
+  s_90e5fb302b3207::t_f2d2f10a499565 475-477,480-481,483-491,493,495,504-516,518-520
+  s_90e5fb302b3207::t_e6c3af07c13376 398,412-413,478-479,482
+  s_90e5fb302b3207::t_51a40bb2cadc34 34-37
+  s_90e5fb302b3207::t_6fee9a2bde0fc8 157-187
+  s_90e5fb302b3207::t_6cc491528cf89a 492,494,496-503,517
+src/reload.rs
+  s_90e5fb302b3207::t_e6c3af07c13376 593-595,610-612,636-639,650-657,660-663
+  s_90e5fb302b3207::t_4884c421c48ab6 596-609,613-635,640-649,658-659,664-666
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_90e5fb302b3207::t_a17337606f0b73 43
+site/src/content/docs/reference/endpoints.md
+  s_90e5fb302b3207::t_a17337606f0b73 68
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "45011b4961e2539911fc6193b710a94ab41e42ca",
+  "prompts": {},
+  "sessions": {
+    "s_90e5fb302b3207": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "651856f1-f54f-4ef4-869b-05f69799178e",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
