@@ -176,7 +176,7 @@ async fn forward_codex_passthrough(
         .await
         {
             Ok(response) => response,
-            Err(SendError::Timeout) => return Err(send_error(SendError::Timeout)),
+            Err(error @ SendError::Timeout) => return Err(send_error(error)),
             Err(SendError::Transport(error)) => {
                 state.accounts.cooldown(
                     &route.provider,
@@ -241,7 +241,7 @@ async fn forward_codex_passthrough(
                 .await
                 {
                     Ok(response) => response,
-                    Err(SendError::Timeout) => return Err(send_error(SendError::Timeout)),
+                    Err(error @ SendError::Timeout) => return Err(send_error(error)),
                     Err(SendError::Transport(error)) => {
                         state.accounts.cooldown(
                             &route.provider,

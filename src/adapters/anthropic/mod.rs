@@ -246,11 +246,8 @@ async fn forward_claude_oauth(
         .await
         {
             Ok(response) => response,
-            Err(crate::upstream_timeout::SendError::Timeout) => {
-                return Err(
-                    crate::upstream_timeout::SendError::<reqwest::Error>::Timeout
-                        .into_adapter_error(upstream_error),
-                );
+            Err(error @ crate::upstream_timeout::SendError::Timeout) => {
+                return Err(error.into_adapter_error(upstream_error));
             }
             Err(crate::upstream_timeout::SendError::Transport(error)) => {
                 state.accounts.cooldown(
@@ -636,10 +633,9 @@ async fn retry_upstream(
                 .note_quota(&route.provider, account, response.headers());
             Ok(Some(response))
         }
-        Err(crate::upstream_timeout::SendError::Timeout) => Err(
-            crate::upstream_timeout::SendError::<reqwest::Error>::Timeout
-                .into_adapter_error(upstream_error),
-        ),
+        Err(error @ crate::upstream_timeout::SendError::Timeout) => {
+            Err(error.into_adapter_error(upstream_error))
+        }
         Err(crate::upstream_timeout::SendError::Transport(error)) => {
             state.accounts.cooldown(
                 &route.provider,
