@@ -93,6 +93,14 @@ fn adopt_group(_pid: u32) {
 
 #[cfg(unix)]
 pub(super) fn kill_group(pgid: u32) {
+    // `kill(-0, ...)` is `kill(0, ...)`, which POSIX defines as "every process
+    // in the sender's own group" — shunt would SIGKILL itself and everything
+    // sharing its group. No live pid is 0, so this is unreachable today; it is
+    // a one-branch invariant guard on an `unsafe` FFI call whose degenerate
+    // input is catastrophic rather than merely wrong.
+    if pgid == 0 {
+        return;
+    }
     // ESRCH is expected when the leader and all descendants are already gone.
     unsafe {
         libc::kill(-(pgid as i32), libc::SIGKILL);
