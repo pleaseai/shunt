@@ -1,7 +1,7 @@
 use std::time::SystemTime;
 
 use axum::{
-    extract::{rejection::JsonRejection, Path, Query, State},
+    extract::{FromRequest, Path, Query, Request, State},
     http::{HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json,
@@ -153,18 +153,14 @@ pub async fn list(
     success(StatusCode::OK, &page, request_id)
 }
 
-pub async fn create(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    body: Result<Json<CreateRequest>, JsonRejection>,
-) -> Response {
+pub async fn create(State(state): State<AppState>, request: Request) -> Response {
     let request_id = request_id();
     let state = state.refreshed();
-    let actor = match authenticate(&state, &headers, true, &request_id) {
+    let actor = match authenticate(&state, request.headers(), true, &request_id) {
         Ok(actor) => actor,
         Err(response) => return *response,
     };
-    let Json(body) = match body {
+    let Json(body) = match Json::<CreateRequest>::from_request(request, &state).await {
         Ok(body) => body,
         Err(rejection) => {
             return error(

@@ -22,7 +22,7 @@ group_limit_mode = "min"
 fail_closed_on_error = false
 ```
 
-`state_path = ""` keeps caps and audit records in memory only. Omit `state_path` to use `$HOME/.shunt/gateway-spend.json`; an explicitly configured path is used literally, without shell-style `~` expansion. When shunt cannot resolve a home directory, the default path also becomes memory-only. The state file uses a versioned JSON envelope and an atomic private-file replacement. At restore, shunt drops each malformed cap or cap whose amount, currency, object type, or user id fails the same validation as `POST`, and logs a warning; other caps in the file still load. The path is fixed at boot; configuration reloads do not move the process-lifetime store to a different file.
+`state_path = ""` keeps caps and audit records in memory only. Omit `state_path` to use `$HOME/.shunt/gateway-spend.json`; an explicitly configured path is used literally, without shell-style `~` expansion. When shunt cannot resolve a home directory, the default path also becomes memory-only. The state file uses a versioned JSON envelope and an atomic private-file replacement. At restore, shunt drops each malformed cap or cap whose amount, currency, object type, or user id fails the same validation as `POST`, and logs a warning; other caps in the file still load. Invalid top-level JSON or an unsupported state version aborts startup so a later mutation cannot overwrite unreadable state. The path is fixed at boot; configuration reloads do not move the process-lifetime store to a different file.
 
 The retention settings, `blocked_message`, `group_limit_mode`, and `fail_closed_on_error` are parsed now for configuration compatibility. Stage 1 does not run a retention sweep, resolve group limits, customize an enforcement error, or perform enforcement. `fail_closed_on_error = true` requires `[server.gateway.admin]`, even though enforcement is deferred.
 
@@ -41,7 +41,7 @@ Send `x-api-key` with a write key for all operations. A read key can use `GET` a
 
 `POST` accepts `{scope, amount, period}`. `scope` supports `{ "type": "organization" }` and `{ "type": "user", "user_id": "..." }`; `user_id` must contain 1–256 bytes. `period` is `daily`, `weekly`, or `monthly`; when the client omits it, shunt uses `monthly`. `amount` is a whole-number string of 1–19 USD-cent digits or `null`; `"0"` is distinct from unlimited. A supplied `currency` must equal `USD`.
 
-The operation upserts by `(scope, period)`. Replacing a cap keeps its original `id` and `created_at`. Each mutation appends an audit record containing the before and after snapshots and the actor `admin-key:<id>`, then persists caps and audit records in one JSON write.
+The operation upserts by `(scope, period)`. Replacing a cap keeps its original `id` and `created_at`; submitting the same amount again is idempotent and preserves `updated_at` without adding an audit record. Each actual mutation appends an audit record containing the before and after snapshots and the actor `admin-key:<id>`, then persists caps and audit records in one JSON write.
 
 List results use `{data, has_more, first_id, last_id}`. `limit` defaults to 20 and accepts 1–1000. `after_id` and `before_id` are mutually exclusive. Results remain in creation order; `has_more` describes additional results in the selected traversal direction.
 

@@ -199,6 +199,17 @@ async fn upsert_preserves_identity_and_distinguishes_unlimited_from_zero() {
 }
 
 #[tokio::test]
+async fn idempotent_upsert_preserves_timestamp_and_skips_duplicate_audit() {
+    let (config, _env) = SpendEnv::config("idempotent-upsert");
+    let (router, _, state) = build_router(config).unwrap();
+    let (_, first) = post(&router, WRITE_KEY, organization(json!("100"), "monthly")).await;
+    let (_, second) = post(&router, WRITE_KEY, organization(json!("100"), "monthly")).await;
+
+    assert_eq!(second, first);
+    assert_eq!(state.gateway_stores.spend.export().audit.len(), 1);
+}
+
+#[tokio::test]
 async fn invalid_amount_currency_and_unsupported_scope_return_400() {
     let (config, _env) = SpendEnv::config("validation");
     let (router, _, _) = build_router(config).unwrap();
@@ -438,6 +449,22 @@ async fn list_filters_supported_scope_types_and_rejects_others() {
             .unwrap()
             .contains(expected));
     }
+}
+
+#[tokio::test]
+async fn create_authenticates_before_parsing_json() {
+    let (config, _env) = SpendEnv::config("auth-before-json");
+    let (router, _, _) = build_router(config).unwrap();
+    let (response, body) = send(
+        &router,
+        Request::post("/v1/organizations/spend_limits")
+            .header("content-type", "application/json")
+            .body(Body::from("not json"))
+            .unwrap(),
+    )
+    .await;
+
+    assert_error_response(&response, &body, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]

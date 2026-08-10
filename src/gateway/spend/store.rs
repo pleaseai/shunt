@@ -159,6 +159,11 @@ impl SpendStore {
             .limits
             .iter()
             .position(|limit| limit.scope == scope && limit.period == period);
+        if let Some(index) = position {
+            if state.limits[index].amount == amount {
+                return state.limits[index].clone();
+            }
+        }
         let before = position.map(|index| state.limits[index].clone());
         let limit = match position {
             Some(index) => {

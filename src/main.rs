@@ -478,7 +478,9 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     // Spend-limit caps and audit records share a versioned, atomic state file.
     // Restore it before accepting admin mutations; memory-only configuration is
     // a no-op.
-    shunt::gateway::spend::persist::restore(&state).await;
+    shunt::gateway::spend::persist::restore(&state)
+        .await
+        .context("failed to restore gateway spend-limit state")?;
     // Opt-in `[server.pool] usage_refresh_seconds`: poll the Anthropic OAuth
     // usage API in the background, sharing the router's account pool. A no-op
     // when the key is unset.

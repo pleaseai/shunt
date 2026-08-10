@@ -22,14 +22,14 @@ struct PersistedSpendWire {
     next_audit_id: u64,
 }
 
-pub async fn restore(state: &AppState) {
+pub async fn restore(state: &AppState) -> io::Result<()> {
     let Some(path) = state
         .gateway_stores
         .spend
         .state_path()
         .map(ToOwned::to_owned)
     else {
-        return;
+        return Ok(());
     };
     let load_path = path.clone();
     match tokio::task::spawn_blocking(move || load(&load_path)).await {
@@ -43,14 +43,13 @@ pub async fn restore(state: &AppState) {
                 audit_records,
                 "restored gateway spend-limit state from disk"
             );
+            Ok(())
         }
-        Ok(Ok(None)) => {}
-        Ok(Err(error)) => tracing::warn!(
-            path = %path.display(),
-            %error,
-            "failed to read gateway spend-limit state; starting empty"
-        ),
-        Err(error) => tracing::warn!(%error, "gateway spend-limit restore task panicked"),
+        Ok(Ok(None)) => Ok(()),
+        Ok(Err(error)) => Err(error),
+        Err(error) => Err(io::Error::other(format!(
+            "gateway spend-limit restore task panicked: {error}"
+        ))),
     }
 }
 
@@ -76,21 +75,20 @@ fn load(path: &Path) -> io::Result<Option<PersistedSpend>> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
-    let wire: PersistedSpendWire = match serde_json::from_slice(&bytes) {
-        Ok(persisted) => persisted,
-        Err(error) => {
-            tracing::warn!(path = %path.display(), %error, "gateway spend-limit state is not valid json; ignoring");
-            return Ok(None);
-        }
-    };
+    let wire: PersistedSpendWire = serde_json::from_slice(&bytes).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("gateway spend-limit state is not valid json: {error}"),
+        )
+    })?;
     if wire.version != STATE_VERSION {
-        tracing::warn!(
-            path = %path.display(),
-            found = wire.version,
-            expected = STATE_VERSION,
-            "gateway spend-limit state version mismatch; ignoring"
-        );
-        return Ok(None);
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "gateway spend-limit state version mismatch: found {}, expected {STATE_VERSION}",
+                wire.version
+            ),
+        ));
     }
     let limits = wire
         .limits
@@ -257,7 +255,7 @@ mod tests {
         });
         let state =
             crate::server::AppState::new(config, reqwest::Client::new()).expect("build app state");
-        restore(&state).await;
+        restore(&state).await.expect("restore state");
 
         assert_eq!(state.gateway_stores.spend.get(&expected.id), Some(expected));
         assert_eq!(state.gateway_stores.spend.export().audit.len(), 1);
@@ -381,10 +379,12 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_and_version_mismatched_files_are_ignored() {
+    fn corrupt_and_version_mismatched_files_fail_closed() {
         let corrupt = temp_file("corrupt");
         fs::write(&corrupt, b"not json").unwrap();
-        assert!(load(&corrupt).unwrap().is_none());
+        let error = load(&corrupt).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("not valid json"));
         fs::remove_dir_all(corrupt.parent().unwrap()).ok();
 
         let mismatch = temp_file("version");
@@ -393,7 +393,9 @@ mod tests {
             br#"{"version":999,"limits":[],"audit":[],"next_audit_id":1}"#,
         )
         .unwrap();
-        assert!(load(&mismatch).unwrap().is_none());
+        let error = load(&mismatch).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("version mismatch"));
         fs::remove_dir_all(mismatch.parent().unwrap()).ok();
     }
 }
