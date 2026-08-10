@@ -1193,9 +1193,14 @@ pub struct ProviderConfig {
     ///
     /// This list is the trust boundary. A prompt-derived path is canonicalized
     /// (resolving symlinks and `..`) and used only if it lands inside one of
-    /// these roots; anything else is refused rather than silently downgraded.
-    /// Empty (the default) means no prompt-derived path is ever honored, and
-    /// only `SHUNT_AGY_WORKSPACE` or the gateway's own directory is used.
+    /// these roots. A path outside them is refused, but it is the *path* that
+    /// is dropped, not the request: the run logs the rejection and falls back
+    /// to the gateway's own working directory, exactly as it would had the
+    /// prompt named no directory at all. Failing the turn instead would let
+    /// anyone able to inject one line of system-prompt text break every
+    /// request. Empty (the default) means no prompt-derived path is ever
+    /// honored, and only `SHUNT_AGY_WORKSPACE` or the gateway's own directory
+    /// is used.
     #[serde(default)]
     pub workspace_roots: Vec<String>,
     /// Run the Antigravity CLI with `--sandbox` (`kind = "antigravity"` only).
