@@ -1,0 +1,21 @@
+src/gateway/spend/api.rs
+  s_32780bb205c938::t_601ac8a6918433 116-117
+src/gateway/spend/tests.rs
+  s_32780bb205c938::t_ce5f90c5c2fc8a 429-430
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "9ece116911cbf9902e48b72dab7c453cc5b816de",
+  "prompts": {},
+  "sessions": {
+    "s_32780bb205c938": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6a0e5cb2-bfb6-4baa-beca-32660b04bfbf",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
