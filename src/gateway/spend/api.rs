@@ -113,8 +113,8 @@ pub async fn list(
         None => None,
         Some("user") => Some("user"),
         Some("organization") => Some("organization"),
-        Some("rbac_group") => {
-            return unsupported_scope("rbac_group", request_id);
+        Some(scope_type @ ("rbac_group" | "seat_tier" | "organization_service")) => {
+            return unsupported_scope(scope_type, request_id);
         }
         Some(other) => {
             return error(

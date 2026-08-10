@@ -426,6 +426,8 @@ async fn list_filters_supported_scope_types_and_rejects_others() {
 
     for (scope_type, expected) in [
         ("rbac_group", "does not support scope type"),
+        ("seat_tier", "does not support scope type"),
+        ("organization_service", "does not support scope type"),
         ("unknown", "invalid scope_type"),
     ] {
         let path = format!("/v1/organizations/spend_limits?scope_type={scope_type}");
