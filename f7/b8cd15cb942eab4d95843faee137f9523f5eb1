@@ -1,0 +1,27 @@
+src/adapters/antigravity/mod.rs
+  s_40ea8b4a3d09f7::t_dc509466dbcc84 824-869
+  s_40ea8b4a3d09f7::t_a668c2e7545318 489-495,497,531
+  s_40ea8b4a3d09f7::t_1ec87f29edaf72 503-504,506-510,512-513,515-517
+  s_40ea8b4a3d09f7::t_919119a1837808 449-455
+  s_40ea8b4a3d09f7::t_b9f107820cb59c 40
+tests/antigravity_process.rs
+  s_40ea8b4a3d09f7::t_6f443ec9fc879d 531,536-540
+  s_40ea8b4a3d09f7::t_31eeaf545ac175 116-127,530,532-535,541-555
+  s_40ea8b4a3d09f7::t_f3904eaa974c98 556-557
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "f7b8cd15cb942eab4d95843faee137f9523f5eb1",
+  "prompts": {},
+  "sessions": {
+    "s_40ea8b4a3d09f7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "87a33153-3253-44da-ba3d-68d83cee51d7",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
