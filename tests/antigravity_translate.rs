@@ -70,6 +70,36 @@ fn test_parse_models_builds_effort_matrix() {
 }
 
 #[test]
+fn test_parse_models_ignores_a_display_label_after_the_slug() {
+    // Antigravity's headless docs show the model list with a display label in a
+    // second column. Suffix-stripping the whole row matches no effort, so the
+    // matrix would key on the label text and lose `gemini-3.1-pro` — silently
+    // disabling both effort rejection and default clamping.
+    let matrix = parse_models(
+        "\
+gemini-3.1-pro-high       Gemini 3.1 Pro (High)
+gemini-3.1-pro-low        Gemini 3.1 Pro (Low)
+claude-sonnet-4-6         Claude Sonnet 4.6
+",
+    );
+
+    let pro = matrix.get("gemini-3.1-pro").expect("pro entry");
+    assert!(pro.contains("low") && pro.contains("high"));
+    assert!(
+        matrix
+            .get("claude-sonnet-4-6")
+            .expect("bare entry")
+            .is_empty(),
+        "a labelled row with no effort suffix still takes no effort flag"
+    );
+    assert!(
+        matrix.keys().all(|model| !model.contains(' ')),
+        "no label text may be recorded as a model id: {:?}",
+        matrix.keys().collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn test_explicit_unsupported_effort_is_reported_not_clamped() {
     let matrix = parse_models(AGY_MODELS);
 

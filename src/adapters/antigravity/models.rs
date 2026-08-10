@@ -173,10 +173,17 @@ pub async fn warm(agy_bin: &Path) {
 pub fn parse_models(output: &str) -> EffortMatrix {
     let mut matrix: EffortMatrix = BTreeMap::new();
     for line in output.lines() {
-        let entry = line.trim();
-        if entry.is_empty() {
+        // Only the first field is the model id. `agy models` may pad a row with
+        // a human-readable label after the slug (`gemini-3.1-pro-high    Gemini
+        // 3.1 Pro (High)`); suffix-stripping the whole row would then never
+        // match an effort, so the label would be registered as its own
+        // effort-less model and `gemini-3.1-pro` would be missing entirely.
+        // That fails open: unsupported efforts stop being rejected and the
+        // default stops being clamped. Blank lines yield no field and are
+        // skipped.
+        let Some(entry) = line.split_whitespace().next() else {
             continue;
-        }
+        };
         match LADDER
             .iter()
             .find_map(|effort| entry.strip_suffix(&format!("-{effort}")).zip(Some(*effort)))
