@@ -11,7 +11,7 @@ use crate::{
         anthropic::AnthropicAdapter, cursor::CursorAdapter, responses::ResponsesAdapter, Adapter,
         AdapterError, AdapterFailure,
     },
-    config::{AuthMode, CountTokens},
+    config::{AuthMode, CountTokens, ProviderKind},
     count_tokens,
     error::{ShuntError, UpstreamError},
     routing::{self, AdapterKind},
@@ -498,12 +498,13 @@ fn check_inbound_auth(
         .gateway_auth
         .as_ref()
         .and_then(|auth| auth.authenticate_bearer(headers));
-    let injects_credential = routes.iter().any(|route| {
-        state
-            .config
-            .provider(&route.provider)
-            .is_some_and(|provider| provider.auth != AuthMode::Passthrough)
-    });
+    // One definition of "passthrough" for both the auth gate and header
+    // handling. The inline form this replaced disagreed with the helper on an
+    // unknown provider — it treated one as *not* credential-injecting, which
+    // skipped `[server.auth]` rather than demanding it. Fail closed instead.
+    let injects_credential = routes
+        .iter()
+        .any(|route| !is_passthrough_route(state, route));
     if !injects_credential || (state.inbound_auth.is_none() && state.gateway_auth.is_none()) {
         return Ok((
             forwarded,
@@ -602,11 +603,22 @@ fn headers_for_route(
 /// Whether a route's provider forwards the caller's own upstream credential
 /// (`AuthMode::Passthrough`) rather than injecting a gateway-held one. An
 /// unknown provider is treated as credential-injecting (fail closed).
+///
+/// Antigravity is never passthrough, whatever its `auth` says. The exemption
+/// exists because a passthrough route lends the caller nothing — their own
+/// credential goes upstream, so gating it behind `[server.auth]` would protect
+/// nothing. That reasoning does not survive contact with this kind: the adapter
+/// ignores the caller's credential entirely and runs the operator's local `agy`
+/// with `--dangerously-skip-permissions`. Since `AuthMode::Passthrough` is also
+/// the default when `auth` is omitted, honouring it here would let anyone
+/// reach a protected gateway and execute code as the user running shunt.
 fn is_passthrough_route(state: &AppState, route: &routing::Route) -> bool {
     state
         .config
         .provider(&route.provider)
-        .is_some_and(|provider| provider.auth == AuthMode::Passthrough)
+        .is_some_and(|provider| {
+            provider.auth == AuthMode::Passthrough && provider.kind != ProviderKind::Antigravity
+        })
 }
 
 /// The origin (scheme + host + port) of a provider's `base_url`, used to decide

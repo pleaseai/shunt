@@ -427,6 +427,54 @@ async fn passthrough_route_needs_no_token_and_still_strips_the_header() {
     assert_eq!(response.status(), StatusCode::OK);
 }
 
+/// Antigravity is the exception to
+/// [`passthrough_route_needs_no_token_and_still_strips_the_header`].
+///
+/// The passthrough exemption is safe for an HTTP upstream because the caller
+/// supplies their own credential — the gateway lends them nothing. Antigravity
+/// lends them the operator's machine: the adapter ignores the caller credential
+/// and runs the local `agy` with `--dangerously-skip-permissions`. Since
+/// `AuthMode::Passthrough` is also what an omitted `auth` resolves to, the
+/// exemption would have made a protected gateway an unauthenticated local code
+/// execution surface.
+///
+/// Only the rejected cases are exercised. A request that passes the gate goes on
+/// to spawn the real `agy` on whatever machine runs this suite, which a test
+/// must never do; the gate is the whole security property in question.
+#[tokio::test]
+async fn antigravity_requires_a_client_token_even_on_passthrough_auth() {
+    if !can_bind_loopback() {
+        return;
+    }
+    std::env::set_var("SHUNT_TEST_M4_KEY_AGY", "upstream-key");
+    std::env::set_var("SHUNT_TEST_M4_TOKENS_AGY", "alice:tok-a");
+    let upstream = MockServer::start().await;
+    let mut config = with_inbound_auth(
+        test_config(&upstream.uri(), "SHUNT_TEST_M4_KEY_AGY"),
+        "SHUNT_TEST_M4_TOKENS_AGY",
+    );
+    // The reported configuration: a declared Antigravity upstream left on the
+    // default auth mode.
+    config.providers.get_mut("antigravity").unwrap().auth = AuthMode::Passthrough;
+    config.routes.push(RouteConfig {
+        model: "agy-guarded".to_string(),
+        provider: "antigravity".to_string(),
+        upstream_model: Some("gemini-3.1-pro".to_string()),
+        effort: None,
+        service_tier: None,
+    });
+    let gateway = start_gateway_with(config).await;
+
+    for token in [None, Some("not-the-token")] {
+        let response = post_messages(&gateway, "agy-guarded", token).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "passthrough auth must not open a local-execution provider (token: {token:?})"
+        );
+    }
+}
+
 #[tokio::test]
 async fn models_discovery_requires_valid_token_when_inbound_auth_is_configured() {
     if !can_bind_loopback() {
