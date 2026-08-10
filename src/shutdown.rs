@@ -1,6 +1,9 @@
-//! Graceful-shutdown wiring: waits for SIGTERM/ctrl-c, drains in-flight
-//! requests, and arms a second-signal escape hatch. Extracted from
-//! `main.rs` to keep that file focused (see `src/AGENTS.md`).
+//! Graceful-shutdown wiring: waits for SIGTERM/ctrl-c, terminates isolated
+//! Antigravity process groups, drains in-flight requests, and arms a
+//! second-signal escape hatch. `agy` runs no longer share shunt's process group,
+//! so signals sent to the gateway do not reach them; both the initial graceful
+//! shutdown and the immediate-exit path terminate them explicitly. Extracted
+//! from `main.rs` to keep that file focused (see `src/AGENTS.md`).
 
 use std::future::Future;
 
@@ -46,6 +49,7 @@ async fn shutdown_signal_inner(ready: Option<tokio::sync::oneshot::Sender<()>>) 
         signal,
         "shutdown signal received; draining in-flight requests"
     );
+    shunt::adapters::antigravity::terminate_all_agy_groups();
     arm_force_exit(
         async move { select_shutdown_trigger(sigterm.recv(), ctrl_c.recv()).await },
         |signal| force_exit(signal),
@@ -78,6 +82,7 @@ fn force_exit(signal: &'static str) -> ! {
         signal,
         "second shutdown signal received; exiting immediately without draining"
     );
+    shunt::adapters::antigravity::terminate_all_agy_groups();
     let code = if signal == "SIGTERM" { 143 } else { 130 };
     std::process::exit(code);
 }

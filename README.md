@@ -38,9 +38,10 @@ brew services start shunt
 ```
 
 Logs go to `$(brew --prefix)/var/log/shunt.log`. `brew services stop` sends `SIGTERM`, and shunt
-drains in-flight requests before exiting; editing the config file afterwards doesn't need a
-restart — it [hot-reloads](docs/config-reload.md) automatically. Details: [Running as a
-service](docs/running.md#run-as-a-background-service-homebrew).
+drains in-flight requests before exiting; on Unix, Antigravity agent turns are terminated when
+shutdown starts so their isolated process groups cannot hold the drain open. Editing the config file
+afterwards doesn't need a restart — it [hot-reloads](docs/config-reload.md) automatically. Details:
+[Running as a service](docs/running.md#run-as-a-background-service-homebrew).
 
 ## Quickstart
 

@@ -58,7 +58,7 @@ upstream_model = "gemini-3.6-flash"
 
 The Antigravity path runs one CLI subprocess per request in agentic mode. `agy` is a
 full agent with its own tools, so it resolves its own tool calls and returns finished
-work — file edits included. Three consequences follow:
+work — file edits included. Four consequences follow:
 
 - **Tools are `agy`'s, not the caller's.** A `tools` array on the Messages request is
   not forwarded, and the response never contains a `tool_use` block. Clients that need
@@ -70,6 +70,9 @@ work — file edits included. Three consequences follow:
   tool steps become SSE `ping` frames, so a long agent turn keeps producing bytes
   instead of going silent until it finishes. Token usage is Google's reported count,
   not an estimate.
+- **Gateway shutdown ends the turn on Unix.** Each run has an isolated process group,
+  so shunt terminates the agent and its tool subprocesses when shutdown starts instead
+  of letting an unattended turn hold the graceful drain open.
 
 shunt discovers the valid model/effort pairs from `agy models` on the first Antigravity
 turn. What happens next depends on where the value came from:

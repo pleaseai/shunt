@@ -89,6 +89,20 @@ const DRAIN_GRACE: Duration = Duration::from_secs(2);
 /// Environment override for the directory `agy` is allowed to work in.
 const WORKSPACE_ENV: &str = "SHUNT_AGY_WORKSPACE";
 
+/// Kill every `agy` process group this process still has running.
+///
+/// Shutdown's counterpart to the per-turn cancellation paths. Each run is
+/// isolated in its own process group (see [`child::AgyChild`]), which is what
+/// lets a cancelled turn take the CLI's tool subprocesses with it — but it also
+/// means a signal sent to shunt's own process group no longer reaches the
+/// agent. Without this, ctrl-c would leave a permission-skipping agent holding
+/// the graceful drain open for up to [`HARD_TIMEOUT`], and the second-signal
+/// `std::process::exit` would skip [`child::AgyChild`]'s destructor entirely and
+/// orphan it. Called from `shutdown.rs` on both paths.
+pub fn terminate_all_agy_groups() {
+    child::terminate_all_groups();
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AntigravityAdapter;
 
@@ -182,8 +196,8 @@ impl Adapter for AntigravityAdapter {
             cmd.stdout(Stdio::piped());
             cmd.stderr(Stdio::piped());
             // Isolate the agent and every tool it spawns. It no longer receives
-            // Ctrl-C sent to shunt's process group, so the explicit termination
-            // paths below are responsible for containing it.
+            // Ctrl-C sent to shunt's process group, so per-turn cancellation and
+            // gateway shutdown explicitly terminate its process group.
             #[cfg(unix)]
             cmd.process_group(0);
             // Without this, a client disconnect drops the body stream and

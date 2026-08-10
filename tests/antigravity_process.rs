@@ -387,6 +387,20 @@ impl Drop for HolderGuard {
 async fn assert_process_exited(pid: libc::pid_t) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     loop {
+        // Signal 0 also succeeds for an unreaped zombie. Linux exposes the
+        // process state independently of PID 1's reaping cadence, so treat Z as
+        // exited; the comm field can contain spaces, hence the last `)` split.
+        #[cfg(target_os = "linux")]
+        let alive = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => {
+                stat.rsplit_once(')')
+                    .and_then(|(_, suffix)| suffix.trim_start().chars().next())
+                    != Some('Z')
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(_) => unsafe { libc::kill(pid, 0) == 0 },
+        };
+        #[cfg(not(target_os = "linux"))]
         let alive = unsafe { libc::kill(pid, 0) == 0 };
         if !alive {
             return;

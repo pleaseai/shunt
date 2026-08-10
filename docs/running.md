@@ -323,10 +323,14 @@ brew services stop shunt     # sends SIGTERM; shunt drains in-flight requests, t
 brew services info shunt
 ```
 
-`SIGTERM` and ctrl-c both start the same drain, and that drain has no deadline — an open SSE
-stream keeps the process alive for as long as its client keeps reading. Send a **second** signal
-(another ctrl-c, or `kill` again) to skip the drain and exit immediately with the conventional
-128+signal exit status: 143 for a second `SIGTERM`, 130 for a second ctrl-c/`SIGINT`.
+`SIGTERM` and ctrl-c both start the same drain. On Unix, Antigravity `agy` runs are the exception:
+shunt terminates their isolated process groups as soon as shutdown starts, because gateway signals do
+not reach those groups and an unattended agent must not hold the drain open. Other in-flight requests
+continue draining with no deadline — an open SSE stream keeps the process alive for as long as its
+client keeps reading. Send a **second** signal (another ctrl-c, or `kill` again) to skip the drain and
+exit immediately with the conventional 128+signal exit status: 143 for a second `SIGTERM`, 130 for
+a second ctrl-c/`SIGINT`. The immediate-exit path also terminates any Antigravity groups before the
+process exits.
 
 Logs go to `$(brew --prefix)/var/log/shunt.log` (stdout and stderr combined). Config discovery
 works the same as any other invocation (see [§3 Configure](#3-configure)): a service has no
