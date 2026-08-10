@@ -188,6 +188,7 @@ impl SpendStore {
         (state, limit)
     }
 
+    #[cfg(test)]
     pub fn upsert(
         &self,
         scope: Scope,
@@ -217,6 +218,7 @@ impl SpendStore {
         Some((state, before))
     }
 
+    #[cfg(test)]
     pub fn delete(&self, id: &str, actor: &str, now: String) -> Option<SpendLimit> {
         let mut current = self
             .state

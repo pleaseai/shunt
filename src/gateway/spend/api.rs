@@ -345,7 +345,7 @@ fn authenticate(
     }
 }
 
-fn paginate(limits: Vec<SpendLimit>, query: &ListQuery) -> Result<ListResponse, String> {
+fn paginate(mut limits: Vec<SpendLimit>, query: &ListQuery) -> Result<ListResponse, String> {
     let (start, end, has_more) = if let Some(after) = &query.after_id {
         let cursor = limits
             .iter()
@@ -365,7 +365,8 @@ fn paginate(limits: Vec<SpendLimit>, query: &ListQuery) -> Result<ListResponse, 
         let end = query.limit.min(limits.len());
         (0, end, end < limits.len())
     };
-    let data = limits[start..end].to_vec();
+    limits.truncate(end);
+    let data = limits.split_off(start);
     Ok(ListResponse {
         first_id: data.first().map(|limit| limit.id.clone()),
         last_id: data.last().map(|limit| limit.id.clone()),

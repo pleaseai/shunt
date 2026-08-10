@@ -14,6 +14,13 @@ struct PersistedSpend {
     state: SpendState,
 }
 
+#[derive(Serialize)]
+struct PersistedSpendRef<'a> {
+    version: u32,
+    #[serde(flatten)]
+    state: &'a SpendState,
+}
+
 #[derive(Deserialize)]
 struct PersistedSpendWire {
     version: u32,
@@ -126,9 +133,9 @@ fn load(path: &Path) -> io::Result<Option<PersistedSpend>> {
 }
 
 fn save_snapshot(path: &Path, state: &SpendState) -> io::Result<()> {
-    let persisted = PersistedSpend {
+    let persisted = PersistedSpendRef {
         version: STATE_VERSION,
-        state: state.clone(),
+        state,
     };
     let json = serde_json::to_vec_pretty(&persisted).map_err(io::Error::other)?;
     crate::atomic_file::write_private_atomic(path, &json)
