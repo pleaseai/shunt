@@ -143,7 +143,7 @@ By default, `/device` ignores forwarding headers and rate-limits the socket peer
 
 ### `[server.gateway.admin]` (optional)
 
-Presence of this table registers the spend-limit Admin API. The keys name environment variables containing comma-separated `id:key` pairs. Key values must contain at least 32 characters, and ids must be unique across both variables.
+Presence of this table registers the spend-limit Admin API. The keys name environment variables containing comma-separated `id:key` pairs. Key values must contain at least 32 characters. Both ids and key values must be unique across the two variables.
 
 | Key | Default | Meaning |
 | :-- | :-- | :-- |

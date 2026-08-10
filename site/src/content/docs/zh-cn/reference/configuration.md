@@ -89,7 +89,7 @@ headers = { "x-api-key" = "..." }
 
 ### `[server.gateway.admin]` (可选)
 
-配置此表会注册 spend-limit Admin API。每个设置值都是环境变量名，变量内容为逗号分隔的 `id:key` 对。每个 key 值至少包含 32 个字符，并且 id 在两个环境变量中必须唯一。
+配置此表会注册 spend-limit Admin API。每个设置值都是环境变量名，变量内容为逗号分隔的 `id:key` 对。每个 key 值至少包含 32 个字符；id 和 key 值都必须分别在两个环境变量中保持唯一。
 
 | 键 | 默认值 | 含义 |
 | :-- | :-- | :-- |
