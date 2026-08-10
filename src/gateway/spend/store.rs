@@ -196,8 +196,12 @@ impl SpendStore {
         actor: &str,
         now: String,
     ) -> SpendLimit {
-        let (state, limit) = Self::upsert_state(self.export(), scope, period, amount, actor, now);
-        self.replace(state);
+        let mut current = self
+            .state
+            .lock()
+            .expect("gateway spend-limit lock poisoned");
+        let (state, limit) = Self::upsert_state(current.clone(), scope, period, amount, actor, now);
+        *current = state;
         limit
     }
 
@@ -214,8 +218,12 @@ impl SpendStore {
     }
 
     pub fn delete(&self, id: &str, actor: &str, now: String) -> Option<SpendLimit> {
-        let (state, deleted) = Self::delete_state(self.export(), id, actor, now)?;
-        self.replace(state);
+        let mut current = self
+            .state
+            .lock()
+            .expect("gateway spend-limit lock poisoned");
+        let (state, deleted) = Self::delete_state(current.clone(), id, actor, now)?;
+        *current = state;
         Some(deleted)
     }
 
