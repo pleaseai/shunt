@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.36.0](https://github.com/pleaseai/shunt/compare/v0.35.0...v0.36.0) (2026-08-11)
+
+
+### Features
+
+* **antigravity:** run agy in agentic mode with streaming, sandboxing, and discovered effort matrix ([#325](https://github.com/pleaseai/shunt/issues/325)) ([109c38d](https://github.com/pleaseai/shunt/commit/109c38d37ed39629bd012008a10ff8dd7d1b1a6f))
+
 ## [0.35.0](https://github.com/pleaseai/shunt/compare/v0.34.1...v0.35.0) (2026-08-10)
 
 
