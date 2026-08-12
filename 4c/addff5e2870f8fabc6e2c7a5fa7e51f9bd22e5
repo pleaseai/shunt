@@ -1,0 +1,93 @@
+src/status_poll.rs
+  s_f7e9fdae91361d::t_06552ec534650b 1-325
+src/admin/html.rs
+  s_f7e9fdae91361d::t_a66aa399fe113c 155-161
+  s_f7e9fdae91361d::t_b7fb5b91b0bb9d 72-73
+src/upstream_status.rs
+  s_f7e9fdae91361d::t_f63de7f1789ab5 1-155,162-288,293-306
+  s_f7e9fdae91361d::t_ecb8b36f6fef83 156-161,289-292
+src/server.rs
+  s_f7e9fdae91361d::t_53abfe331dd471 187
+  s_f7e9fdae91361d::t_ecb8b36f6fef83 22,24
+  s_f7e9fdae91361d::t_98e19e771a63de 23,33-37,77,89,102,118
+site/src/content/docs/reference/configuration.md
+  s_f7e9fdae91361d::t_1f2a0d777305fc 235-264
+src/admin/mod.rs
+  s_f7e9fdae91361d::t_e1e785c0ecf045 125
+  s_f7e9fdae91361d::t_d7f73d2a034008 888-917
+docs/upstream-status.md
+  s_f7e9fdae91361d::t_44993eaaa1c049 1-94
+src/lib.rs
+  s_f7e9fdae91361d::t_7b3eab5f878a0b 35,38
+site/src/content/docs/ja/guides/opentelemetry.mdx
+  s_f7e9fdae91361d::t_de895c38f6e08e 66
+site/src/content/docs/guides/opentelemetry.mdx
+  s_f7e9fdae91361d::t_f70897cb2165c8 66
+src/config.rs
+  s_f7e9fdae91361d::t_909ae8c21ac33e 2650-2685
+  s_f7e9fdae91361d::t_a7092c74e26c53 1875-1880
+  s_f7e9fdae91361d::t_e708572c7eb85b 3380-3381
+  s_f7e9fdae91361d::t_6a91037c290b31 2234
+  s_f7e9fdae91361d::t_4ff2cd1df83ab6 117-122
+  s_f7e9fdae91361d::t_6ce5f8709c8fdc 3618-3649
+  s_f7e9fdae91361d::t_8103073e4531f9 4205-4285
+  s_f7e9fdae91361d::t_f0128cd013b126 249-298
+  s_d656a1515d76ec::t_8f676777112440 3617,4204
+site/src/content/docs/ko/guides/opentelemetry.mdx
+  s_f7e9fdae91361d::t_746154a90cb21a 66
+site/src/content/docs/reference/endpoints.md
+  s_f7e9fdae91361d::t_49cb42de70cfaf 28
+site/src/content/docs/zh-cn/guides/opentelemetry.mdx
+  s_f7e9fdae91361d::t_5fe76dda7e97e5 66
+src/admin/script.rs
+  s_f7e9fdae91361d::t_2d5737b062e96b 392
+  s_f7e9fdae91361d::t_0bcb1f2a32e58d 279-305
+src/metrics.rs
+  s_f7e9fdae91361d::t_132e48a216596e 580-586,588-593
+  s_f7e9fdae91361d::t_640875b503e568 164-177
+  s_f7e9fdae91361d::t_ca20a562dc601a 587
+  s_f7e9fdae91361d::t_0752ea04647114 54,64-72
+  s_f7e9fdae91361d::t_f32d1d8b71ca97 74,275-316
+  s_f7e9fdae91361d::t_f6a42f7912b5b4 549-550
+  s_0e9ab59c63fa63::t_ece747dddcb3bf 73,75
+README.md
+  s_f7e9fdae91361d::t_4105208ce95f61 163-164
+tests/admin_surface.rs
+  s_f7e9fdae91361d::t_64748cf05ae545 683
+  s_f7e9fdae91361d::t_89a228660d5e4a 481
+  s_f7e9fdae91361d::t_728f2668d9ff90 607-672
+src/main.rs
+  s_f7e9fdae91361d::t_c2bf3e7b2ce490 494-497
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "4caddff5e2870f8fabc6e2c7a5fa7e51f9bd22e5",
+  "prompts": {},
+  "sessions": {
+    "s_0e9ab59c63fa63": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7a9221c2-5219-453a-b219-61ed30773a8d",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_d656a1515d76ec": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "19acb656-d213-4abe-836a-8e744a224ba1",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_f7e9fdae91361d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "416b7965-de77-4a1e-8fd5-d51d50b37561",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
