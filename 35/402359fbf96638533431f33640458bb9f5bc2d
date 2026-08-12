@@ -1,0 +1,50 @@
+site/src/components/ui/card/Card.astro
+  s_9d9468bc9dd6bf::t_e4512b31e818a7 2
+site/src/components/ui/button/Button.astro
+  s_9d9468bc9dd6bf::t_e4512b31e818a7 22
+  s_9d9468bc9dd6bf::t_8bb4498def9fe0 15
+site/src/components/ui/pagination/Pagination.astro
+  s_9d9468bc9dd6bf::t_e4512b31e818a7 2
+site/src/components/ui/aside/Aside.astro
+  s_9d9468bc9dd6bf::t_e4512b31e818a7 2
+site/src/layouts/DocsLayout.astro
+  s_9d9468bc9dd6bf::t_e4512b31e818a7 8
+site/src/components/ui/page-actions/PageActions.astro
+  s_9d9468bc9dd6bf::t_e4512b31e818a7 2
+site/src/components/ui/sidebar/SidebarGroup.astro
+  s_9d9468bc9dd6bf::t_e4512b31e818a7 17
+site/src/components/ui/search/SearchDialog.astro
+  s_9d9468bc9dd6bf::t_e4512b31e818a7 2
+site/src/components/ui/theme-toggle/ThemeToggle.astro
+  s_9d9468bc9dd6bf::t_e4512b31e818a7 7
+site/src/components/ui/search/SearchTrigger.astro
+  s_9d9468bc9dd6bf::t_e4512b31e818a7 3
+site/src/components/ui/link-button/LinkButton.astro
+  s_9d9468bc9dd6bf::t_e4512b31e818a7 18
+site/src/components/ui/banner/Banner.astro
+  s_9d9468bc9dd6bf::t_e4512b31e818a7 6
+site/src/components/Header.astro
+  s_9d9468bc9dd6bf::t_e4512b31e818a7 2
+site/src/components/ui/package-managers/PackageManagers.astro
+  s_9d9468bc9dd6bf::t_e4512b31e818a7 8
+site/package.json
+  s_9d9468bc9dd6bf::t_91eb046cc640ac 17
+site/package-lock.json
+  s_9d9468bc9dd6bf::t_a9107c5026d2a2 11,72-74,80-88,92-94,108-110,124-126,140-142,156-158,172-174,188-190,197,204-206,220-222,236-238,241,305-308,311,315,318-321,324-331,368-392,664-666,670,673-677,680,683,693,706,719-753,1884-1886,1892-1894,1900-1901,2287-2289,2292-2293,2295,2303-2305,2308,2317-2319,2322,2330-2332,2335,2342-2344,2347,2349,2356-2358,2361,2368-2370,2373-2374,2381-2383,2387,3061-3063,3066-3068,3091,3093,3135,3157-3172,3201-3209,4010-4015,4085-4093,4378-4381,4383-4385,4811,5875-5878,5881,6908-6910,6913-6918,6920
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "35402359fbf96638533431f33640458bb9f5bc2d",
+  "prompts": {},
+  "sessions": {
+    "s_9d9468bc9dd6bf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "858864f0-9711-45f9-888d-3c9a925cd36b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
