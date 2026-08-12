@@ -1,0 +1,33 @@
+src/config.rs
+  s_419e1cdecbdfd9::t_cde7cbfa5e0eb7 4259-4278
+  s_419e1cdecbdfd9::t_1b902da892d91e 2684-2694
+docs/upstream-status.md
+  s_419e1cdecbdfd9::t_70b0786d5cc841 30-33
+site/src/content/docs/reference/configuration.md
+  s_419e1cdecbdfd9::t_daf6ff39433879 257
+src/upstream_status.rs
+  s_419e1cdecbdfd9::t_4e3f23d0bff2a2 101
+  s_419e1cdecbdfd9::t_abb1bb722d26fc 106-110
+src/status_poll.rs
+  s_419e1cdecbdfd9::t_c22b38b9e38e64 20
+  s_419e1cdecbdfd9::t_e7aefa1df5e888 95,97
+  s_419e1cdecbdfd9::t_a1122864015f7d 173,176
+  s_419e1cdecbdfd9::t_2492d543c0898b 98-100
+  s_419e1cdecbdfd9::t_18345cb32a5cbf 96
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "9bf293f0ee09438fd7aa674f00fa9b084de18267",
+  "prompts": {},
+  "sessions": {
+    "s_419e1cdecbdfd9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "85a4b40d-7d8d-4796-84ff-4cac8b9aa1f6",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
