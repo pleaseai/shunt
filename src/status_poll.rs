@@ -125,13 +125,35 @@ async fn poll_source(client: &reqwest::Client, source: &StatusSource) -> Upstrea
         Err(message) => return UpstreamStatus::unknown(observed_at, message),
     };
     if !status_code.is_success() {
-        let detail: String = body.chars().take(200).collect();
-        return UpstreamStatus::unknown(
-            observed_at,
-            format!("status request failed ({status_code}): {detail}"),
-        );
+        return UpstreamStatus::unknown(observed_at, format_non_2xx_detail(status_code, &body));
     }
     parse_summary(&body, observed_at)
+}
+
+/// Build the stored error detail for a non-2xx status response.
+///
+/// The status line (`status request failed (403 Forbidden)`) is always
+/// present. An excerpt of `body` is appended only when the body itself looks
+/// like a diagnostic — not markup: a Cloudflare (or similar) block page in
+/// front of a status endpoint returns an HTML error page, and that page's
+/// raw markup has no diagnostic value but, rendered verbatim into the admin
+/// dashboard's Description column, makes the "Upstream status" table look
+/// broken. A JSON or plain-text error body, by contrast, is worth keeping.
+///
+/// When an excerpt is appended, whitespace runs (including newlines) are
+/// collapsed to single spaces first so the stored detail is always one line,
+/// then capped at ~120 chars — comfortably under `UpstreamStatus::unknown`'s
+/// 200-char backstop, which still applies to every error path including this
+/// one.
+fn format_non_2xx_detail(status_code: reqwest::StatusCode, body: &str) -> String {
+    let base = format!("status request failed ({status_code})");
+    let trimmed = body.trim();
+    if trimmed.is_empty() || trimmed.starts_with('<') {
+        return base;
+    }
+    let collapsed = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
+    let excerpt: String = collapsed.chars().take(120).collect();
+    format!("{base}: {excerpt}")
 }
 
 /// Read a response body as UTF-8 text, capped at `limit` bytes. The body is
@@ -321,5 +343,50 @@ mod tests {
         let observed = snapshot.get("claude").expect("entry present");
         assert_eq!(observed.indicator, Indicator::Unknown);
         assert_eq!(observed.error.as_deref(), Some("response too large"));
+    }
+
+    #[test]
+    fn non_2xx_html_error_body_yields_no_markup_and_no_newline() {
+        // Reproduces a live capture: status.x.ai returns a 403 fronted by a
+        // Cloudflare block page. That markup has no diagnostic value and,
+        // rendered verbatim into the admin dashboard, made the table look
+        // broken — the detail must drop it entirely rather than excerpt it.
+        let cloudflare_page = "<!DOCTYPE html>\n<!--[if lt IE 7]> <html class=\"no-js ie6 oldie\" lang=\"en-US\"> <![endif]-->\n<title>Attention Required! | Cloudflare</title>";
+        let detail = format_non_2xx_detail(reqwest::StatusCode::FORBIDDEN, cloudflare_page);
+        assert_eq!(detail, "status request failed (403 Forbidden)");
+        assert!(!detail.contains('<'));
+        assert!(!detail.contains('\n'));
+    }
+
+    #[test]
+    fn non_2xx_json_error_body_still_yields_its_excerpt() {
+        let body = r#"{"error":{"code":"forbidden","message":"blocked by WAF"}}"#;
+        let detail = format_non_2xx_detail(reqwest::StatusCode::FORBIDDEN, body);
+        assert_eq!(
+            detail,
+            format!("status request failed (403 Forbidden): {body}")
+        );
+    }
+
+    #[test]
+    fn non_2xx_error_detail_collapses_whitespace_runs() {
+        let body = "forbidden\n\tby   the   edge\nfirewall";
+        let detail = format_non_2xx_detail(reqwest::StatusCode::FORBIDDEN, body);
+        assert_eq!(
+            detail,
+            "status request failed (403 Forbidden): forbidden by the edge firewall"
+        );
+        assert!(!detail.contains('\n'));
+        assert!(!detail.contains('\t'));
+    }
+
+    #[test]
+    fn non_2xx_error_detail_caps_the_excerpt_at_120_chars() {
+        let body = "x".repeat(500);
+        let detail = format_non_2xx_detail(reqwest::StatusCode::FORBIDDEN, &body);
+        let prefix = "status request failed (403 Forbidden): ";
+        assert!(detail.starts_with(prefix));
+        let excerpt = &detail[prefix.len()..];
+        assert_eq!(excerpt.chars().count(), 120);
     }
 }

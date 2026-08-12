@@ -298,7 +298,12 @@ async function loadStatus() {
     const r = body.insertRow();
     cell(r, s.provider);
     const status = cell(r, statusLabel(s.indicator)); status.className = "status"; status.dataset.state = s.indicator;
-    cell(r, s.error || s.description || "—");
+    const detail = cell(r, s.error || s.description || "—");
+    // The visible text is already short (the server keeps error details to a
+    // single line, ~160 chars); the title attribute just makes that same
+    // detail reachable on hover too, same as the other tables' use of title
+    // for out-of-band context.
+    if (s.error) detail.title = s.error;
     cell(r, when(s.observed_at ? s.observed_at * 1000 : null));
   }
 }
