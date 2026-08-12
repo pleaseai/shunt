@@ -17,7 +17,7 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use futures_util::{future::join_all, StreamExt};
+use futures_util::{stream, StreamExt};
 
 use crate::{
     config::StatusSource,
@@ -32,6 +32,11 @@ use crate::{
 /// endpoint. Enforced while streaming the body in, not after buffering it in
 /// full — see [`read_bounded_body`].
 const MAX_BODY_BYTES: usize = 1024 * 1024;
+
+/// Maximum number of status fetches in flight at once. This keeps a large
+/// reloaded source list from opening an unbounded number of connections or
+/// retaining one bounded response buffer per source simultaneously.
+const MAX_CONCURRENT_POLLS: usize = 8;
 
 /// Per-request timeout for a status fetch. The shared `state.http_client`
 /// carries no default timeout, so every outbound call must set its own
@@ -95,16 +100,21 @@ async fn poll_all(state: &AppState) {
         }
         return;
     };
-    let providers = status.sources.iter().map(|source| source.provider.as_str());
+    let sources = status.sources.clone();
+    let providers = sources.iter().map(|source| source.provider.as_str());
     for removed in state.status.retain_providers(providers) {
         metrics::record_upstream_status(&removed, None);
     }
-    let client = &state.http_client;
-    let polls = status.sources.iter().map(|source| async move {
-        let observed = poll_source(client, source).await;
-        (source, observed)
+    let client = state.http_client.clone();
+    let polls = sources.into_iter().map(|source| {
+        let client = client.clone();
+        async move {
+            let observed = poll_source(&client, &source).await;
+            (source, observed)
+        }
     });
-    for (source, observed) in join_all(polls).await {
+    let mut polls = stream::iter(polls).buffer_unordered(MAX_CONCURRENT_POLLS);
+    while let Some((source, observed)) = polls.next().await {
         metrics::record_upstream_status(&source.provider, observed.indicator.severity());
         tracing::debug!(
             provider = source.provider,
@@ -170,9 +180,11 @@ fn format_non_2xx_detail(status_code: reqwest::StatusCode, body: &str) -> String
     if trimmed.is_empty() || trimmed.starts_with('<') {
         return base;
     }
-    let collapsed = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
-    let excerpt: String = collapsed.chars().take(120).collect();
-    format!("{base}: {excerpt}")
+    let mut collapsed = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
+    if let Some((index, _)) = collapsed.char_indices().nth(120) {
+        collapsed.truncate(index);
+    }
+    format!("{base}: {collapsed}")
 }
 
 /// Read a response body as UTF-8 text, capped at `limit` bytes. The body is
