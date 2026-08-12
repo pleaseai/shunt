@@ -30,7 +30,7 @@ brew install pleaseai/tap/shunt
 cargo install --git https://github.com/pleaseai/shunt
 ```
 
-新しいバージョンは Homebrew と、各 [GitHub リリース](https://github.com/pleaseai/shunt/releases)に添付されるビルド済みバイナリ（macOS/Linux、arm64/x64）で配布されます。crates.io パッケージは、最後に公開されたバージョンで更新を停止します。ビルド済みバイナリおよびソースからのインストール手順は [Installation](https://shunt.dev/getting-started/installation/) を参照してください。
+新しいバージョンは Homebrew と、各 [GitHub リリース](https://github.com/pleaseai/shunt/releases)に添付されるビルド済みバイナリ（macOS/Linux、arm64/x64）で配布されます。crates.io パッケージは、最後に公開されたバージョンで更新を停止します。ビルド済みバイナリおよびソースからのインストール手順は [インストール](https://shunt.dev/getting-started/installation/) を参照してください。
 
 ### サービスとして実行する (macOS/Homebrew)
 
@@ -60,7 +60,7 @@ export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
 claude                                              # /model -> pick gpt-5.6-sol
 ```
 
-マッピングされていないモデル（あなたのすべての `claude-*` id）は、これまでとまったく同じように動作します。shunt はあなた自身の認証情報を使って Anthropic へ転送します。詳しい手順は [Quickstart](https://shunt.dev/getting-started/quickstart/) を参照してください。
+マッピングされていないモデル（あなたのすべての `claude-*` id）は、これまでとまったく同じように動作します。shunt はあなた自身の認証情報を使って Anthropic へ転送します。詳しい手順は [クイックスタート](https://shunt.dev/getting-started/quickstart/) を参照してください。
 
 ### スターター設定
 
@@ -108,7 +108,7 @@ anthropic-primary = "claude-opus-4-8"
 codex-fallback = "gpt-5.6-sol"
 ```
 
-このチェーンは `anthropic-primary`、次に `codex-fallback` を試行します。`auth` は mode 文字列またはマップを受け付け、`claude_oauth` と `chatgpt_oauth` のマップは `account = "name"` または `accounts = [...]` で認証情報の範囲を絞れます。レガシーな `[providers.<name>]` は引き続きサポートされ、名前順の暗黙的アップストリームになります。設定ファイル内で両方の形式を宣言しないでください。`[[upstreams]]` と `[providers.*]` の混在は設定エラーです。preset、失敗クラス、移行の詳細は [Configuration reference](https://shunt.dev/reference/configuration/) を参照してください。
+このチェーンは `anthropic-primary`、次に `codex-fallback` を試行します。`auth` は mode 文字列またはマップを受け付け、`claude_oauth` と `chatgpt_oauth` のマップは `account = "name"` または `accounts = [...]` で認証情報の範囲を絞れます。レガシーな `[providers.<name>]` は引き続きサポートされ、名前順の暗黙的アップストリームになります。設定ファイル内で両方の形式を宣言しないでください。`[[upstreams]]` と `[providers.*]` の混在は設定エラーです。preset、失敗クラス、移行の詳細は [設定リファレンス](https://shunt.dev/reference/configuration/) を参照してください。
 
 **標準搭載:**
 
@@ -144,7 +144,7 @@ model = "cursor:gpt-5.5"                             # cursor-plan:<id> / cursor
 provider = "cursor"
 ```
 
-`cursor:` / `cursor-agent:` / `cursor-plan:` / `cursor-ask:` プレフィックスが Cursor のエージェントモードを選択し、サフィックスが Cursor のモデル id です。詳細は [Providers → Cursor](https://shunt.dev/ja/providers/cursor/) を参照してください。
+`cursor:` / `cursor-agent:` / `cursor-plan:` / `cursor-ask:` プレフィックスが Cursor のエージェントモードを選択し、サフィックスが Cursor のモデル id です。詳細は [プロバイダー → Cursor](https://shunt.dev/ja/providers/cursor/) を参照してください。
 
 **あらゆる Anthropic 互換バックエンド**が、テーブルを 1 つ書くだけで使えます。コード変更は不要です。
 
@@ -175,7 +175,7 @@ provider = "kimi"
 
 すべては **[shunt.dev](https://shunt.dev)** にあります。
 
-- [Quickstart](https://shunt.dev/getting-started/quickstart/) · [Why shunt?](https://shunt.dev/getting-started/why-shunt/) · [Providers](https://shunt.dev/guides/providers/) · [Configuration](https://shunt.dev/guides/configuration/) · [Troubleshooting](https://shunt.dev/reference/troubleshooting/)
+- [クイックスタート](https://shunt.dev/getting-started/quickstart/) · [なぜ shunt なのか？](https://shunt.dev/getting-started/why-shunt/) · [プロバイダー](https://shunt.dev/guides/providers/) · [設定](https://shunt.dev/guides/configuration/) · [トラブルシューティング](https://shunt.dev/reference/troubleshooting/)
 - **エージェント向け:** すべてのページに Markdown の双子版があります（任意の URL に `.md` を付けるか、ページの *Copy Markdown* / *Open in AI* ボタンを使用）。またサイトは [llms.txt spec](https://llmstxt.org/) に従って [`/llms.txt`](https://shunt.dev/llms.txt)、[`/llms-small.txt`](https://shunt.dev/llms-small.txt)、[`/llms-full.txt`](https://shunt.dev/llms-full.txt) を公開しています。
 
 設計ノートとマイルストーン仕様は [`docs/`](docs/) にあります（まずは [`docs/implementation-plan.md`](docs/implementation-plan.md) から）。Claude Code を ChatGPT/Codex サブスクリプションへルーティングするには、[Codex 設定リファレンス](docs/codex-configuration.md)を参照してください。
