@@ -180,11 +180,29 @@ fn format_non_2xx_detail(status_code: reqwest::StatusCode, body: &str) -> String
     if trimmed.is_empty() || trimmed.starts_with('<') {
         return base;
     }
-    let mut collapsed = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
-    if let Some((index, _)) = collapsed.char_indices().nth(120) {
-        collapsed.truncate(index);
+    let mut excerpt = String::new();
+    let mut pending_space = false;
+    let mut count = 0;
+    for character in trimmed.chars() {
+        if count >= 120 {
+            break;
+        }
+        if character.is_whitespace() {
+            pending_space = !excerpt.is_empty();
+        } else {
+            if pending_space {
+                excerpt.push(' ');
+                count += 1;
+                if count >= 120 {
+                    break;
+                }
+                pending_space = false;
+            }
+            excerpt.push(character);
+            count += 1;
+        }
     }
-    format!("{base}: {collapsed}")
+    format!("{base}: {excerpt}")
 }
 
 /// Read a response body as UTF-8 text, capped at `limit` bytes. The body is
