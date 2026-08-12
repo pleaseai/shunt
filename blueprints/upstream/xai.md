@@ -42,7 +42,7 @@ id = "claude-grok-via-xai"
 display_name = "Grok (via xAI API)"
 
 [models.upstream_model]
-xai = "grok-4.5"
+xai = "grok-4.6"
 ```
 
 The map key is the upstream name. Verify the current xAI model slug and entitlement. A legacy exact `[[routes]]` entry may instead use `provider = "xai"` with an `upstream_model`; do not define both forms for one id.

@@ -18,7 +18,7 @@
     {
       "name": "shunt-xai",
       "source": "./plugins/shunt-xai",
-      "description": "Subagents on xAI Grok models (grok-build-0.1, grok-4.5, grok-4.3), routed through shunt at the inference layer. EXPERIMENTAL — the xAI provider is not yet verified against the live API.",
+      "description": "Subagents on xAI Grok models (grok-4.6, grok-4.5, grok-build-0.1), routed through shunt at the inference layer. EXPERIMENTAL — the xAI provider is not yet verified against the live API.",
       "keywords": ["xai", "grok"]
     },
     {

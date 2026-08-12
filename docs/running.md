@@ -530,11 +530,11 @@ subscription. Full spec: [`m6-xai-provider.md`](m6-xai-provider.md).
 ```toml
 # built-in defaults already define [providers.xai]; you only add routes
 [[routes]]
-model = "grok-build-0.1"    # flagship coding model
+model = "grok-4.6"          # current frontier model
 provider = "xai"
 
 [[routes]]
-model = "grok-4.3"
+model = "grok-build-0.1"    # flagship coding model
 provider = "xai"
 ```
 
@@ -550,11 +550,11 @@ auth = "xai_oauth"          # reuse the SuperGrok / X Premium+ login instead of 
 # base_url stays https://api.x.ai/v1 — shunt refuses xai_oauth on a non-x.ai or non-https host
 
 [[routes]]
-model = "grok-build-0.1"
+model = "grok-4.6"
 provider = "xai"
 
 [[routes]]
-model = "grok-4.3"
+model = "grok-build-0.1"
 provider = "xai"
 ```
 

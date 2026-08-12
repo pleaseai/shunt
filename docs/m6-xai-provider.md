@@ -154,9 +154,10 @@ or sent per-request via `output_config.effort`. Derived defaults (thinking flag,
 stay off. Encrypted-reasoning
 replay (`include`) stays gated on the client's extended-thinking flag, exactly like the codex path.
 
-Live note (2026-07): `grok-4.5` on the CLI proxy **accepts** `reasoning.effort` (HTTP 200 with a
-configured `effort = "high"` route), so it is not among the models that 400; the opt-in default
-stays as the safe choice for the families that still reject it.
+Live note (2026-07, re-verified 2026-08 on `grok-4.6`): `grok-4.6` and `grok-4.5` on the CLI proxy
+**accept** `reasoning.effort` (HTTP 200 with a configured `effort = "high"` route), so they are not
+among the models that 400; the opt-in default stays as the safe choice for the families that still
+reject it.
 
 ## 7. Config & validation (`config.rs`)
 
@@ -179,7 +180,7 @@ stays as the safe choice for the families that still reject it.
 
 ## 9. Models (reference only — not hardcoded)
 
-`grok-build-0.1` (flagship coding), `grok-4.5`, `grok-4.3`,
+`grok-4.6` (current frontier), `grok-4.5`, `grok-build-0.1` (flagship coding), `grok-4.3`,
 `grok-4.20-0309-reasoning` / `-non-reasoning`, `grok-4.20-multi-agent-0309`. Pick a slug via a
 `[[routes]]` entry or `ANTHROPIC_CUSTOM_MODEL_OPTION`; shunt passes it through.
 
@@ -196,7 +197,10 @@ stays as the safe choice for the families that still reject it.
   practice, revisit the buffer.
 - **Live-API validation.** ✅ Confirmed end-to-end against a live SuperGrok account (2026-07):
   `grok-4.5` returns HTTP 200 through the `grok` provider (`cli-chat-proxy.grok.com`) for
-  non-streaming, streaming, and `reasoning.effort` requests. The `api.x.ai` surface returned a 402
+  non-streaming, streaming, and `reasoning.effort` requests; re-verified 2026-08 for `grok-4.6`
+  (non-streaming, plain and with `effort = "high"`). A non-streaming sweep of the same surface on
+  the same date returned HTTP 200 for `grok-4.6`, `grok-4.5`, `grok-4.3`, `grok-build-0.1`,
+  `grok-4`, and `grok-4-fast` — no slug in that set is retired. The `api.x.ai` surface returned a 402
   entitlement gate for the same token, which is what motivated retargeting the OAuth path to the CLI
   proxy with the Grok-CLI headers. (Whether every account tier is entitled on the CLI proxy still
   varies — see below.)

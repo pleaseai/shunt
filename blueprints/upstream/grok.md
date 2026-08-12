@@ -42,7 +42,7 @@ id = "claude-grok-via-subscription"
 display_name = "Grok (subscription)"
 
 [models.upstream_model]
-grok = "grok-4.5"
+grok = "grok-4.6"
 ```
 
 The map key is the upstream name. Verify the currently entitled model slug. A legacy `[[routes]]` entry can instead use `provider = "grok"` and an `upstream_model`; do not define both exact-routing forms for one id.
