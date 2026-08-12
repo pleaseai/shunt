@@ -280,10 +280,8 @@ function statusLabel(indicator) {
   return ({ none: "Operational", minor: "Minor issues", major: "Major outage", critical: "Critical outage", unknown: "Unknown" })[indicator] || indicator;
 }
 
-// `[server.status]` is opt-in and observation-only. Zero sources means the
-// feature is off (or not yet polled once); hide the whole section rather than
-// showing an empty table, per the same "loading vs. absent" convention as the
-// rest of this dashboard.
+// `[server.status]` is opt-in and observation-only. Zero configured sources
+// means the feature is off; configured-but-unpolled sources arrive as Unknown.
 async function loadStatus() {
   const section = $("status-section");
   let data, res;

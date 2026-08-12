@@ -885,25 +885,33 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
     json_secure(json!({ "providers": providers }))
 }
 
-/// Observation-only view of `[server.status]` polling: each source's most
-/// recently observed Statuspage indicator, ordered by provider name.
-/// `[server.status]` absent, empty `sources`, or a poller that has not yet
-/// completed its first tick all read the same way here: an empty `sources`
-/// list, which the dashboard treats as "hide the whole section" rather than
-/// rendering an empty table. Never consulted by routing, failover, or
-/// pool/cooldown decisions -- this handler only reads `state.status`.
+/// Observation-only view of `[server.status]` polling, ordered by provider
+/// name. Configured sources that have not completed their first poll are
+/// returned as `unknown` so the dashboard can distinguish "enabled but not yet
+/// observed" from "disabled". Never consulted by routing, failover, or
+/// pool/cooldown decisions.
 async fn status(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let state = state.refreshed();
     if authenticate(&state, &headers).is_none() {
         return unauthorized();
     }
-    let mut snapshot: Vec<_> = state.status.snapshot().into_iter().collect();
-    snapshot.sort_by(|(a, _), (b, _)| a.cmp(b));
-    let sources: Vec<_> = snapshot
+    let mut observed = state.status.snapshot();
+    let mut configured = state
+        .config
+        .server
+        .status
+        .as_ref()
+        .map(|status| status.sources.iter().collect::<Vec<_>>())
+        .unwrap_or_default();
+    configured.sort_by(|a, b| a.provider.cmp(&b.provider));
+    let sources: Vec<_> = configured
         .into_iter()
-        .map(|(provider, observed)| {
+        .map(|source| {
+            let observed = observed.remove(&source.provider).unwrap_or_else(|| {
+                crate::upstream_status::UpstreamStatus::unknown(0, "not polled yet")
+            });
             json!({
-                "provider": provider,
+                "provider": source.provider,
                 "indicator": observed.indicator,
                 "description": observed.description,
                 "incidents": observed.incidents,

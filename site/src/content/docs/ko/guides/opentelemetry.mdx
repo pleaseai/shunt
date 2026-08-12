@@ -63,7 +63,7 @@ authorization = "Bearer <token>"
 | `shunt.requests_shed` | 카운터 | — | `max_concurrent_requests` 상한에서 거부된 인바운드 요청. 거부 자체는 `debug!`로만 로깅되므로, 게이트웨이 포화 상태를 드러내는 것은 이 카운터입니다. |
 | `shunt.pool.quota_utilization` | 게이지 | `provider`, `window` | `5h`, `7d`, `7d_oi`별 활성 상태이고 관측됐으며 만료되지 않은 quota 값 중 최소 사용률. |
 | `shunt.pool.rotations` | 카운터 | `provider`, `reason` | 계정에서 이동한 횟수와 pool이 소진된 요청 수. |
-| `shunt.upstream.status` | 게이지 | `provider` | 관측된 [`[server.status]`](/reference/configuration/#serverstatus-optional) Statuspage severity: `0` none, `1` minor, `2` major, `3` critical. 현재 `unknown`(신호 없음) 상태인 provider는 `0`으로 보고되는 대신 이 시리즈에서 완전히 제외됩니다. |
+| `shunt.upstream.status` | 게이지 | `provider` | 관측된 [`[server.status]`](/ko/reference/configuration/#serverstatus-선택) Statuspage severity: `0` none, `1` minor, `2` major, `3` critical. 현재 `unknown`(신호 없음) 상태인 provider는 `0`으로 보고되는 대신 이 시리즈에서 완전히 제외됩니다. |
 
 ## 프라이버시
 

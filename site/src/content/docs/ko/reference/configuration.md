@@ -134,6 +134,26 @@ headers = { "x-api-key" = "..." }
 
 양수 `ramp_initial_concurrency`는 모든 계정 풀에 **폭주 제어(storm control)**를 활성화합니다: 페일오버 전환 후에는 진행 중인 동시 요청이 방금 선택된 계정에 한꺼번에 몰릴 수 있습니다. 게이트를 켜면, 방금 트래픽을 받기 시작한 아이덴티티(신규, 쿨다운에서 복귀, 또는 60초간 유휴)는 최대 구성된 개수만큼의 동시 요청만 허용합니다; 성공 응답마다 허용치가 두 배로 늘고(슬로 스타트), 페일오버에 해당하는 실패는 램프를 다시 시작하며, 거부된 요청은 선택 순서상 다음 계정으로 넘어갑니다. 마지막 남은 후보는 게이트와 무관하게 항상 시도되므로, 게이팅은 요청을 미룰 수는 있어도 게이트가 없었다면 서빙됐을 요청을 실패시키는 일은 절대 없습니다. 이는 곧 풀의 모든 계정이 하나의 업스트림 아이덴티티로 귀결되면 사실상 게이트가 없는 것과 같다는 뜻이기도 합니다: 유일한 후보가 곧 마지막 후보이므로, 이 설정은 서로 다른 계정 아이덴티티가 둘 이상일 때만 효력이 있습니다.
 
+## `[server.status]` (선택)
+
+provider Statuspage `summary.json` 엔드포인트를 관측 목적으로만 백그라운드 폴링합니다. 이 정보는 라우팅, 페일오버, pool/cooldown 동작에 영향을 주지 않습니다. 공유 상태는 `shunt.upstream.status` 메트릭과 admin dashboard의 "Upstream status" 영역에만 표시됩니다. 테이블이 없거나 `sources`가 비어 있으면 poller가 시작되지 않습니다.
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `refresh_seconds` | `300` | polling 간격(초). 60 미만의 양수는 60초로 올림. `0`이면 polling 비활성 |
+| `sources` | `[]` | polling할 Statuspage `summary.json` 엔드포인트별 `{ provider, url }` 테이블 배열 |
+
+```toml
+[server.status]
+refresh_seconds = 300
+
+[[server.status.sources]]
+provider = "claude"
+url = "https://status.claude.com/api/v2/summary.json"
+```
+
+각 source에는 비어 있지 않은 고유 `provider` label과 query, fragment, embedded credential이 없는 `http`/`https` URL이 필요합니다. 잘못된 설정은 시작 시 거부됩니다. 아직 첫 polling이 끝나지 않은 source는 `unknown`으로 표시되며, polling 실패·non-2xx response·1 MiB 초과 body·잘못된 JSON·알 수 없는 indicator도 false all-clear 대신 `unknown`으로 저장됩니다.
+
 ## `[[upstreams]]` (순서가 있는 페일오버)
 
 `[[upstreams]]`는 이름이 지정된 업스트림의 순서 있는 배열입니다. 선언 순서가 전역 페일오버 순서이며, 모델의 `[models.upstream_model]` 맵이 참여할 항목을 선택합니다. 맵에 적힌 텍스트 순서는 라우팅에 영향을 주지 않습니다.

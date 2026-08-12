@@ -90,8 +90,15 @@ pub fn spawn_status_poller(state: AppState) {
 async fn poll_all(state: &AppState) {
     let state = state.refreshed();
     let Some(status) = state.config.server.status.as_ref() else {
+        for removed in state.status.retain_providers(std::iter::empty()) {
+            metrics::record_upstream_status(&removed, None);
+        }
         return;
     };
+    let providers = status.sources.iter().map(|source| source.provider.as_str());
+    for removed in state.status.retain_providers(providers) {
+        metrics::record_upstream_status(&removed, None);
+    }
     let client = &state.http_client;
     let polls = status.sources.iter().map(|source| async move {
         let observed = poll_source(client, source).await;
@@ -117,10 +124,18 @@ async fn poll_all(state: &AppState) {
 /// not actually reach.
 async fn poll_source(client: &reqwest::Client, source: &StatusSource) -> UpstreamStatus {
     let observed_at = now_unix();
-    let response = match client.get(&source.url).timeout(FETCH_TIMEOUT).send().await {
+    let response = match client
+        .get(source.url.trim())
+        .timeout(FETCH_TIMEOUT)
+        .send()
+        .await
+    {
         Ok(response) => response,
         Err(error) => {
-            return UpstreamStatus::unknown(observed_at, format!("request failed: {error}"))
+            return UpstreamStatus::unknown(
+                observed_at,
+                format!("request failed: {}", error.without_url()),
+            )
         }
     };
     let status_code = response.status();
@@ -347,6 +362,33 @@ mod tests {
         let observed = snapshot.get("claude").expect("entry present");
         assert_eq!(observed.indicator, Indicator::Unknown);
         assert_eq!(observed.error.as_deref(), Some("response too large"));
+    }
+
+    #[tokio::test]
+    async fn removed_sources_are_pruned_from_store_and_metrics() {
+        let mut config = Config::default();
+        config.server.status = Some(StatusConfig {
+            refresh_seconds: 300,
+            sources: Vec::new(),
+        });
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+        state.status.set(
+            "removed",
+            UpstreamStatus {
+                indicator: Indicator::Major,
+                description: None,
+                incidents: Vec::new(),
+                page_updated_at: None,
+                observed_at: 1,
+                error: None,
+            },
+        );
+        metrics::record_upstream_status("removed", Some(2));
+
+        poll_all(&state).await;
+
+        assert!(!state.status.snapshot().contains_key("removed"));
+        assert_eq!(metrics::upstream_status_value_for_tests("removed"), None);
     }
 
     #[test]

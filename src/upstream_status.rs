@@ -215,6 +215,23 @@ impl StatusStore {
             .insert(provider.to_string(), status);
     }
 
+    /// Remove entries whose provider is no longer configured, returning the
+    /// removed provider names so callers can clear their metric samples too.
+    pub fn retain_providers<'a>(
+        &self,
+        providers: impl IntoIterator<Item = &'a str>,
+    ) -> Vec<String> {
+        let providers: std::collections::HashSet<_> = providers.into_iter().collect();
+        let mut entries = self.entries.lock().expect("status store lock poisoned");
+        let removed = entries
+            .keys()
+            .filter(|provider| !providers.contains(provider.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        entries.retain(|provider, _| providers.contains(provider.as_str()));
+        removed
+    }
+
     /// Snapshot every stored entry, keyed by provider name.
     pub fn snapshot(&self) -> HashMap<String, UpstreamStatus> {
         self.entries
@@ -298,6 +315,20 @@ mod tests {
         assert_eq!(status.indicator, Indicator::Unknown);
         assert_ne!(status.indicator, Indicator::None);
         assert_eq!(status.observed_at, 2_000);
+    }
+
+    #[test]
+    fn retain_providers_prunes_removed_entries() {
+        let store = StatusStore::new();
+        store.set("claude", UpstreamStatus::unknown(1_000, "unavailable"));
+        store.set("openai", UpstreamStatus::unknown(1_000, "unavailable"));
+
+        let removed = store.retain_providers(["claude"]);
+
+        assert_eq!(removed, vec!["openai"]);
+        let snapshot = store.snapshot();
+        assert!(snapshot.contains_key("claude"));
+        assert!(!snapshot.contains_key("openai"));
     }
 
     #[test]

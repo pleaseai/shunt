@@ -55,15 +55,17 @@ This distinction is the reason the feature exists in this shape: a failed
 poll must never silently report an all-clear for a source shunt could not
 actually reach. Concretely, a failed poll always *replaces* any previously
 good stored value with `Unknown` rather than leaving the stale "operational"
-reading in place, and one source's failure cannot stop the others in the same
-tick from polling. Errors are truncated to roughly 200 characters before
-being stored.
+reading in place. Sources are polled concurrently, so one slow source does not
+delay the others in the same tick. A reload that removes a source prunes its
+stored value and metric sample on the next tick. Errors are truncated to
+roughly 200 characters before being stored.
 
 ## Admin surface
 
 `GET /admin/status` (admin-authenticated, same auth as `GET /admin/pool`)
 returns each configured source's most recently observed indicator,
-description, incidents, and observed timestamp:
+description, incidents, and observed timestamp. Before a configured source's
+first poll completes, it appears as `unknown` with a `not polled yet` detail:
 
 ```json
 {

@@ -628,6 +628,43 @@ async fn admin_status_reports_no_sources_when_unconfigured() {
     std::env::remove_var("SHUNT_TEST_ADMIN_STATUS_EMPTY");
 }
 
+#[tokio::test]
+async fn admin_status_reports_configured_source_before_first_poll() {
+    if !can_bind_loopback() {
+        return;
+    }
+    std::env::set_var(
+        "SHUNT_TEST_ADMIN_STATUS_UNPOLLED",
+        "ops:status-unpolled-secret",
+    );
+    let mut config = admin_config("SHUNT_TEST_ADMIN_STATUS_UNPOLLED");
+    config.server.status = Some(shunt::config::StatusConfig {
+        refresh_seconds: 300,
+        sources: vec![shunt::config::StatusSource {
+            provider: "claude".to_string(),
+            url: "https://status.claude.com/api/v2/summary.json".to_string(),
+        }],
+    });
+    let gateway = start(config).await;
+
+    let response = reqwest::Client::new()
+        .get(format!("{}/admin/status", gateway.base_url))
+        .header("x-shunt-admin-token", "status-unpolled-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = response.json().await.unwrap();
+    let sources = body["sources"].as_array().unwrap();
+    assert_eq!(sources.len(), 1);
+    assert_eq!(sources[0]["provider"], "claude");
+    assert_eq!(sources[0]["indicator"], "unknown");
+    assert_eq!(sources[0]["error"], "not polled yet");
+    assert_eq!(sources[0]["observed_at"], 0);
+
+    std::env::remove_var("SHUNT_TEST_ADMIN_STATUS_UNPOLLED");
+}
+
 /// A populated `StatusStore` entry (as the background poller in
 /// `shunt::status_poll` would apply) round-trips through the JSON shape the
 /// dashboard reads: `provider`, `indicator`, `description`, `incidents`,
@@ -638,7 +675,15 @@ async fn admin_status_reports_observed_sources() {
         return;
     }
     std::env::set_var("SHUNT_TEST_ADMIN_STATUS_SEEDED", "ops:status-seeded-secret");
-    let (gateway, state) = start_with_state(admin_config("SHUNT_TEST_ADMIN_STATUS_SEEDED")).await;
+    let mut config = admin_config("SHUNT_TEST_ADMIN_STATUS_SEEDED");
+    config.server.status = Some(shunt::config::StatusConfig {
+        refresh_seconds: 300,
+        sources: vec![shunt::config::StatusSource {
+            provider: "claude".to_string(),
+            url: "https://status.claude.com/api/v2/summary.json".to_string(),
+        }],
+    });
+    let (gateway, state) = start_with_state(config).await;
     state.status.set(
         "claude",
         shunt::upstream_status::UpstreamStatus {
