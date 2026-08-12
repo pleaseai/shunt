@@ -1,0 +1,19 @@
+README.ja.md
+  s_404eac2f56919c::t_0d89b7877ce686 172
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "30fe606d04ef266145c7ef157323bde5caf3cf3a",
+  "prompts": {},
+  "sessions": {
+    "s_404eac2f56919c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "08d5a858-26a9-47fa-8c7a-f77df3765640",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
