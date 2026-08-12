@@ -1,0 +1,21 @@
+site/package.json
+  s_2fb0e5bf022832::t_fa9bdf84904a5b 21
+site/package-lock.json
+  s_2fb0e5bf022832::t_3e283f32e25999 15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "8cde5f6dff62082186fdce8f757bec16de043c0c",
+  "prompts": {},
+  "sessions": {
+    "s_2fb0e5bf022832": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3bd8cd41-59ca-4cee-9bd4-b0c4c309ac21",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
