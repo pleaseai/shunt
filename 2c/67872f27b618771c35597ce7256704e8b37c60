@@ -1,0 +1,31 @@
+plugins/shunt-codex/README.md
+  s_94f8d1d8a8b9fc::t_86e7af3d95d0df 70,102,104,106
+src/init.rs
+  s_94f8d1d8a8b9fc::t_86e7af3d95d0df 22
+README.ko.md
+  s_94f8d1d8a8b9fc::t_86e7af3d95d0df 33,63,111,147,172,176,178-179
+site/astro.config.ts
+  s_94f8d1d8a8b9fc::t_86e7af3d95d0df 9
+README.ja.md
+  s_94f8d1d8a8b9fc::t_86e7af3d95d0df 33,63,111,147,172,176,178-179
+README.md
+  s_94f8d1d8a8b9fc::t_86e7af3d95d0df 33,66,98,126,143,145,147,149,151,153,155,157,159,161,184,213,217,219-220,230,250
+README.zh-CN.md
+  s_94f8d1d8a8b9fc::t_86e7af3d95d0df 33,63,111,147,172,176,178-179
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "2c67872f27b618771c35597ce7256704e8b37c60",
+  "prompts": {},
+  "sessions": {
+    "s_94f8d1d8a8b9fc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dd565116-ab96-46d5-9946-2382c05d957e",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
