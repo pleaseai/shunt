@@ -30,7 +30,7 @@ brew install pleaseai/tap/shunt
 cargo install --git https://github.com/pleaseai/shunt
 ```
 
-新版本通过 Homebrew 和每个 [GitHub release](https://github.com/pleaseai/shunt/releases) 附带的预构建二进制文件(macOS/Linux,arm64/x64)分发。crates.io 软件包将停留在最后发布的版本。预构建二进制和从源码构建的说明见 [安装](https://shunt-docs.pages.dev/getting-started/installation/)。
+新版本通过 Homebrew 和每个 [GitHub release](https://github.com/pleaseai/shunt/releases) 附带的预构建二进制文件(macOS/Linux,arm64/x64)分发。crates.io 软件包将停留在最后发布的版本。预构建二进制和从源码构建的说明见 [安装](https://shunt.dev/getting-started/installation/)。
 
 ### 作为服务运行 (macOS/Homebrew)
 
@@ -60,7 +60,7 @@ export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
 claude                                              # /model -> 选择 gpt-5.6-sol
 ```
 
-未映射的模型(你所有的 `claude-*` id)会完全照旧工作 —— shunt 使用你自己的凭据将它们转发给 Anthropic。完整演练见 [快速开始](https://shunt-docs.pages.dev/getting-started/quickstart/)。
+未映射的模型(你所有的 `claude-*` id)会完全照旧工作 —— shunt 使用你自己的凭据将它们转发给 Anthropic。完整演练见 [快速开始](https://shunt.dev/getting-started/quickstart/)。
 
 ### 起始配置
 
@@ -108,7 +108,7 @@ anthropic-primary = "claude-opus-4-8"
 codex-fallback = "gpt-5.6-sol"
 ```
 
-该链先尝试 `anthropic-primary`，再尝试 `codex-fallback`。`auth` 接受 mode 字符串或映射；`claude_oauth` 与 `chatgpt_oauth` 映射可用 `account = "name"` 或 `accounts = [...]` 缩小凭据范围。旧式 `[providers.<name>]` 仍受支持，并会成为按名称排序的隐式上游。不要在配置文件中同时声明两种形式；混用 `[[upstreams]]` 与 `[providers.*]` 会导致配置错误。有关 preset、失败类别和迁移细节，请参阅[配置参考](https://shunt-docs.pages.dev/reference/configuration/)。
+该链先尝试 `anthropic-primary`，再尝试 `codex-fallback`。`auth` 接受 mode 字符串或映射；`claude_oauth` 与 `chatgpt_oauth` 映射可用 `account = "name"` 或 `accounts = [...]` 缩小凭据范围。旧式 `[providers.<name>]` 仍受支持，并会成为按名称排序的隐式上游。不要在配置文件中同时声明两种形式；混用 `[[upstreams]]` 与 `[providers.*]` 会导致配置错误。有关 preset、失败类别和迁移细节，请参阅[配置参考](https://shunt.dev/reference/configuration/)。
 
 **内置:**
 
@@ -144,7 +144,7 @@ model = "cursor:gpt-5.5"                             # cursor-plan:<id> / cursor
 provider = "cursor"
 ```
 
-`cursor:` / `cursor-agent:` / `cursor-plan:` / `cursor-ask:` 前缀用于选择 Cursor 的 agent 模式;后缀是 Cursor 模型 id。详情见 [提供方 → Cursor](https://shunt-docs.pages.dev/zh-cn/providers/cursor/)。
+`cursor:` / `cursor-agent:` / `cursor-plan:` / `cursor-ask:` 前缀用于选择 Cursor 的 agent 模式;后缀是 Cursor 模型 id。详情见 [提供方 → Cursor](https://shunt.dev/zh-cn/providers/cursor/)。
 
 **任何兼容 Anthropic 的后端**只需一个表即可接入 —— 无需改动代码:
 
@@ -169,14 +169,14 @@ model = "kimi-k2.7-code"
 provider = "kimi"
 ```
 
-完整列表和各提供方说明见 [提供方](https://shunt-docs.pages.dev/guides/providers/)。
+完整列表和各提供方说明见 [提供方](https://shunt.dev/guides/providers/)。
 
 ## 文档
 
-一切都在 **[shunt-docs.pages.dev](https://shunt-docs.pages.dev)**:
+一切都在 **[shunt.dev](https://shunt.dev)**:
 
-- [快速开始](https://shunt-docs.pages.dev/getting-started/quickstart/) · [为什么选 shunt?](https://shunt-docs.pages.dev/getting-started/why-shunt/) · [提供方](https://shunt-docs.pages.dev/guides/providers/) · [配置](https://shunt-docs.pages.dev/guides/configuration/) · [故障排查](https://shunt-docs.pages.dev/reference/troubleshooting/)
-- **面向 agent:** 每个页面都有一个 Markdown 孪生版本(在任意 URL 后追加 `.md`,或使用页面的 *Copy Markdown* / *Open in AI* 按钮),并且站点按 [llms.txt 规范](https://llmstxt.org/) 发布了 [`/llms.txt`](https://shunt-docs.pages.dev/llms.txt)、[`/llms-small.txt`](https://shunt-docs.pages.dev/llms-small.txt) 和 [`/llms-full.txt`](https://shunt-docs.pages.dev/llms-full.txt)。
+- [快速开始](https://shunt.dev/getting-started/quickstart/) · [为什么选 shunt?](https://shunt.dev/getting-started/why-shunt/) · [提供方](https://shunt.dev/guides/providers/) · [配置](https://shunt.dev/guides/configuration/) · [故障排查](https://shunt.dev/reference/troubleshooting/)
+- **面向 agent:** 每个页面都有一个 Markdown 孪生版本(在任意 URL 后追加 `.md`,或使用页面的 *Copy Markdown* / *Open in AI* 按钮),并且站点按 [llms.txt 规范](https://llmstxt.org/) 发布了 [`/llms.txt`](https://shunt.dev/llms.txt)、[`/llms-small.txt`](https://shunt.dev/llms-small.txt) 和 [`/llms-full.txt`](https://shunt.dev/llms-full.txt)。
 
 设计笔记和里程碑规范位于 [`docs/`](docs/)(从 [`docs/implementation-plan.md`](docs/implementation-plan.md) 开始)。要将 Claude Code 路由到你的 ChatGPT/Codex 订阅,见 [Codex 配置参考](docs/codex-configuration.md)。
 

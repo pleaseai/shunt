@@ -30,7 +30,7 @@ brew install pleaseai/tap/shunt
 cargo install --git https://github.com/pleaseai/shunt
 ```
 
-새 버전은 Homebrew와 각 [GitHub 릴리스](https://github.com/pleaseai/shunt/releases)에 첨부된 사전 빌드 바이너리(macOS/Linux, arm64/x64)로 배포됩니다. crates.io 패키지는 마지막으로 게시된 버전에서 중단됩니다. 사전 빌드 바이너리 및 소스 빌드 안내는 [설치](https://shunt-docs.pages.dev/getting-started/installation/)를 참고하세요.
+새 버전은 Homebrew와 각 [GitHub 릴리스](https://github.com/pleaseai/shunt/releases)에 첨부된 사전 빌드 바이너리(macOS/Linux, arm64/x64)로 배포됩니다. crates.io 패키지는 마지막으로 게시된 버전에서 중단됩니다. 사전 빌드 바이너리 및 소스 빌드 안내는 [설치](https://shunt.dev/getting-started/installation/)를 참고하세요.
 
 ### 서비스로 실행하기 (macOS/Homebrew)
 
@@ -60,7 +60,7 @@ export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
 claude                                              # /model -> gpt-5.6-sol 선택
 ```
 
-매핑되지 않은 모델(모든 `claude-*` id)은 이전과 완전히 동일하게 동작합니다. shunt가 사용자 본인의 자격 증명으로 Anthropic에 전달합니다. 전체 안내: [빠른 시작](https://shunt-docs.pages.dev/getting-started/quickstart/).
+매핑되지 않은 모델(모든 `claude-*` id)은 이전과 완전히 동일하게 동작합니다. shunt가 사용자 본인의 자격 증명으로 Anthropic에 전달합니다. 전체 안내: [빠른 시작](https://shunt.dev/getting-started/quickstart/).
 
 ### 시작 구성
 
@@ -108,7 +108,7 @@ anthropic-primary = "claude-opus-4-8"
 codex-fallback = "gpt-5.6-sol"
 ```
 
-이 체인은 `anthropic-primary`를 먼저 시도한 다음 `codex-fallback`을 시도합니다. `auth`는 mode 문자열 또는 맵을 받으며, `claude_oauth`와 `chatgpt_oauth` 맵은 `account = "name"` 또는 `accounts = [...]`로 자격 증명 범위를 좁힐 수 있습니다. 레거시 `[providers.<name>]`는 계속 지원되며 이름순의 암시적 업스트림이 됩니다. 구성 파일에서 두 형식을 함께 선언하지 마세요. `[[upstreams]]`와 `[providers.*]`를 혼합하면 구성 오류입니다. preset, 실패 클래스, 마이그레이션 세부 사항은 [구성 레퍼런스](https://shunt-docs.pages.dev/reference/configuration/)를 참고하세요.
+이 체인은 `anthropic-primary`를 먼저 시도한 다음 `codex-fallback`을 시도합니다. `auth`는 mode 문자열 또는 맵을 받으며, `claude_oauth`와 `chatgpt_oauth` 맵은 `account = "name"` 또는 `accounts = [...]`로 자격 증명 범위를 좁힐 수 있습니다. 레거시 `[providers.<name>]`는 계속 지원되며 이름순의 암시적 업스트림이 됩니다. 구성 파일에서 두 형식을 함께 선언하지 마세요. `[[upstreams]]`와 `[providers.*]`를 혼합하면 구성 오류입니다. preset, 실패 클래스, 마이그레이션 세부 사항은 [구성 레퍼런스](https://shunt.dev/reference/configuration/)를 참고하세요.
 
 **기본 내장:**
 
@@ -144,7 +144,7 @@ model = "cursor:gpt-5.5"                             # cursor-plan:<id> / cursor
 provider = "cursor"
 ```
 
-`cursor:` / `cursor-agent:` / `cursor-plan:` / `cursor-ask:` 프리픽스는 Cursor의 에이전트 모드를 선택하며, 접미사는 Cursor 모델 id입니다. 자세한 내용은 [프로바이더 → Cursor](https://shunt-docs.pages.dev/ko/providers/cursor/)를 참고하세요.
+`cursor:` / `cursor-agent:` / `cursor-plan:` / `cursor-ask:` 프리픽스는 Cursor의 에이전트 모드를 선택하며, 접미사는 Cursor 모델 id입니다. 자세한 내용은 [프로바이더 → Cursor](https://shunt.dev/ko/providers/cursor/)를 참고하세요.
 
 **Anthropic 호환 백엔드**라면 무엇이든 테이블 하나만 추가하면 됩니다. 코드 변경은 없습니다.
 
@@ -169,14 +169,14 @@ model = "kimi-k2.7-code"
 provider = "kimi"
 ```
 
-전체 목록과 프로바이더별 참고 사항은 [프로바이더](https://shunt-docs.pages.dev/guides/providers/)를 참고하세요.
+전체 목록과 프로바이더별 참고 사항은 [프로바이더](https://shunt.dev/guides/providers/)를 참고하세요.
 
 ## 문서
 
-모든 내용은 **[shunt-docs.pages.dev](https://shunt-docs.pages.dev)**에 있습니다.
+모든 내용은 **[shunt.dev](https://shunt.dev)**에 있습니다.
 
-- [빠른 시작](https://shunt-docs.pages.dev/getting-started/quickstart/) · [왜 shunt인가?](https://shunt-docs.pages.dev/getting-started/why-shunt/) · [프로바이더](https://shunt-docs.pages.dev/guides/providers/) · [구성](https://shunt-docs.pages.dev/guides/configuration/) · [문제 해결](https://shunt-docs.pages.dev/reference/troubleshooting/)
-- **에이전트용:** 모든 페이지에는 Markdown 쌍둥이 페이지가 있으며(임의의 URL에 `.md`를 붙이거나 페이지의 *Copy Markdown* / *Open in AI* 버튼 사용), 사이트는 [llms.txt 스펙](https://llmstxt.org/)에 따라 [`/llms.txt`](https://shunt-docs.pages.dev/llms.txt), [`/llms-small.txt`](https://shunt-docs.pages.dev/llms-small.txt), [`/llms-full.txt`](https://shunt-docs.pages.dev/llms-full.txt)를 게시합니다.
+- [빠른 시작](https://shunt.dev/getting-started/quickstart/) · [왜 shunt인가?](https://shunt.dev/getting-started/why-shunt/) · [프로바이더](https://shunt.dev/guides/providers/) · [구성](https://shunt.dev/guides/configuration/) · [문제 해결](https://shunt.dev/reference/troubleshooting/)
+- **에이전트용:** 모든 페이지에는 Markdown 쌍둥이 페이지가 있으며(임의의 URL에 `.md`를 붙이거나 페이지의 *Copy Markdown* / *Open in AI* 버튼 사용), 사이트는 [llms.txt 스펙](https://llmstxt.org/)에 따라 [`/llms.txt`](https://shunt.dev/llms.txt), [`/llms-small.txt`](https://shunt.dev/llms-small.txt), [`/llms-full.txt`](https://shunt.dev/llms-full.txt)를 게시합니다.
 
 설계 노트와 마일스톤 스펙은 [`docs/`](docs/)에 있습니다([`docs/implementation-plan.md`](docs/implementation-plan.md)부터 시작하세요). Claude Code를 ChatGPT/Codex 구독으로 라우팅하려면 [Codex 구성 레퍼런스](docs/codex-configuration.md)를 참고하세요.
 
