@@ -169,7 +169,7 @@ model = "kimi-k2.7-code"
 provider = "kimi"
 ```
 
-全リストとプロバイダーごとの注意点は [Providers](https://shunt.dev/guides/providers/) を参照してください。
+全リストとプロバイダーごとの注意点は [プロバイダー](https://shunt.dev/guides/providers/) を参照してください。
 
 ## ドキュメント
 
