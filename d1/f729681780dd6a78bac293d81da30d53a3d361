@@ -1,0 +1,20 @@
+src/status_poll.rs
+  s_419e1cdecbdfd9::t_5aac54a9de9e08 183-184,186,188-194,197-201,203,205
+  s_419e1cdecbdfd9::t_0ffe8814dbf90d 185,187,195-196,202
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "d1f729681780dd6a78bac293d81da30d53a3d361",
+  "prompts": {},
+  "sessions": {
+    "s_419e1cdecbdfd9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "85a4b40d-7d8d-4796-84ff-4cac8b9aa1f6",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
