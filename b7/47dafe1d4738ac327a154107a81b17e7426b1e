@@ -1,0 +1,31 @@
+src/status_poll.rs
+  s_f7e9fdae91361d::t_203fca5d0034e9 128,133-156
+  s_f7e9fdae91361d::t_22e9649390c744 347-391
+  s_0e9ab59c63fa63::t_cd21d78ad522bc 157-158
+src/admin/script.rs
+  s_f7e9fdae91361d::t_b5aa11f7633d59 301-306
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "b747dafe1d4738ac327a154107a81b17e7426b1e",
+  "prompts": {},
+  "sessions": {
+    "s_0e9ab59c63fa63": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7a9221c2-5219-453a-b219-61ed30773a8d",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_f7e9fdae91361d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "416b7965-de77-4a1e-8fd5-d51d50b37561",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
