@@ -276,6 +276,33 @@ async function loadPool() {
   if (!rows) { const r = body.insertRow(); const c = cell(r, "No pooled accounts configured"); c.colSpan = 8; c.className = "muted"; }
 }
 
+function statusLabel(indicator) {
+  return ({ none: "Operational", minor: "Minor issues", major: "Major outage", critical: "Critical outage", unknown: "Unknown" })[indicator] || indicator;
+}
+
+// `[server.status]` is opt-in and observation-only. Zero sources means the
+// feature is off (or not yet polled once); hide the whole section rather than
+// showing an empty table, per the same "loading vs. absent" convention as the
+// rest of this dashboard.
+async function loadStatus() {
+  const section = $("status-section");
+  let data, res;
+  try { res = await fetch("/admin/status"); data = await res.json(); }
+  catch (e) { section.style.display = "none"; return; }
+  if (!res.ok) { section.style.display = "none"; return; }
+  const sources = (data && data.sources) || [];
+  if (!sources.length) { section.style.display = "none"; return; }
+  section.style.display = "";
+  const body = $("status"); body.textContent = "";
+  for (const s of sources) {
+    const r = body.insertRow();
+    cell(r, s.provider);
+    const status = cell(r, statusLabel(s.indicator)); status.className = "status"; status.dataset.state = s.indicator;
+    cell(r, s.error || s.description || "—");
+    cell(r, when(s.observed_at ? s.observed_at * 1000 : null));
+  }
+}
+
 function showMsg(id, text, ok) { const el = $(id); el.className = "msg " + (ok ? "ok" : "err"); el.textContent = text; }
 
 function selectedMode() {
@@ -362,4 +389,4 @@ async function removeCodexAccount(name) {
   } catch (e) { showMsg("codex-addmsg", "Request failed", false); }
 }
 
-loadObserved(); loadAccounts(); loadCodexAccounts(); loadPool();"#;
+loadObserved(); loadAccounts(); loadCodexAccounts(); loadPool(); loadStatus();"#;

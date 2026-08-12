@@ -491,6 +491,10 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     // sessions before serving; later mutations are written by the token
     // endpoint itself. A no-op when the key is unset.
     shunt::gateway::persist::restore(&state).await;
+    // Opt-in `[server.status]`: poll provider Statuspage `summary.json`
+    // endpoints in the background, sharing the router's status store.
+    // Observation-only (see AGENTS.md) and a no-op when `sources` is empty.
+    shunt::status_poll::spawn_status_poller(state.clone());
     // Opt-in `[server.pool] usage_refresh_seconds`: poll the Anthropic OAuth
     // usage API in the background, sharing the router's account pool. A no-op
     // when the key is unset.

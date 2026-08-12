@@ -114,6 +114,12 @@ pub struct ServerConfig {
     /// reconciliation. Absent ⇒ legacy quota selection and no background polling.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool: Option<PoolConfig>,
+    /// Optional opt-in upstream Statuspage polling. Absent, or present with no
+    /// `sources`, ⇒ no background polling and the admin dashboard's "Upstream
+    /// status" strip stays hidden. Observation-only: never consulted by
+    /// routing, failover, or pool/cooldown decisions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<StatusConfig>,
     /// Idle seconds before shunt injects an SSE `ping` event into a streaming
     /// response so middlebox timers (Cloudflare's 100s → 524) never expire.
     /// `0` disables injection (M5).
@@ -237,6 +243,56 @@ impl PoolConfig {
     /// gating is disabled (unset or `0`).
     pub fn storm_ramp_initial(&self) -> Option<u32> {
         self.ramp_initial_concurrency.filter(|&initial| initial > 0)
+    }
+}
+
+/// `[server.status]` — opt-in, observation-only polling of provider Statuspage
+/// JSON APIs (`summary.json`). Purely informational: the polled result is
+/// exposed via a metric and the admin dashboard, and is never consulted by
+/// routing, failover, or pool/cooldown decisions. Absent, or present with an
+/// empty `sources` list, ⇒ no background polling.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StatusConfig {
+    /// Poll each source every N seconds. `0` disables polling; positive
+    /// values below 60 are clamped to 60 seconds.
+    #[serde(default = "default_status_refresh_seconds")]
+    pub refresh_seconds: u64,
+    /// Provider Statuspage sources to poll. Empty ⇒ no background polling.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<StatusSource>,
+}
+
+/// A single provider's Statuspage JSON endpoint (e.g.
+/// `https://status.claude.com/api/v2/summary.json`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StatusSource {
+    /// Label used for the metric's `provider` attribute and the admin
+    /// dashboard row. Must be unique across `sources`.
+    pub provider: String,
+    /// The Statuspage `summary.json` URL. Must be `http` or `https`.
+    pub url: String,
+}
+
+pub(crate) fn default_status_refresh_seconds() -> u64 {
+    300
+}
+
+impl Default for StatusConfig {
+    fn default() -> Self {
+        Self {
+            refresh_seconds: default_status_refresh_seconds(),
+            sources: Vec::new(),
+        }
+    }
+}
+
+impl StatusConfig {
+    /// The effective poll interval, or `None` when polling is disabled.
+    pub fn refresh_interval(&self) -> Option<u64> {
+        match self.refresh_seconds {
+            0 => None,
+            seconds => Some(seconds.max(60)),
+        }
     }
 }
 
@@ -1816,6 +1872,12 @@ pub enum ConfigError {
     AccountMultipleCredentialSources { provider: String, name: String },
     #[error("server.pool.{key} must be between 0.0 and 1.0, got {value}")]
     InvalidPoolThreshold { key: &'static str, value: f64 },
+    #[error("[server.status].sources[{index}].provider must not be empty")]
+    InvalidStatusSourceProvider { index: usize },
+    #[error("[server.status].sources[{index}].url is invalid: {message}")]
+    InvalidStatusSourceUrl { index: usize, message: String },
+    #[error("[server.status] has more than one source named \"{provider}\"; provider names must be unique")]
+    DuplicateStatusSourceProvider { provider: String },
     #[error("providers.{provider}.accounts account \"{name}\" {key} must be between 0.0 and 1.0, got {value}")]
     InvalidAccountThreshold {
         provider: String,
@@ -2169,6 +2231,7 @@ impl Default for Config {
                 usage: None,
                 oauth_usage: None,
                 pool: None,
+                status: None,
                 sse_keepalive_seconds: default_sse_keepalive_seconds(),
                 max_concurrent_requests: default_max_concurrent_requests(),
                 access_control: AccessControlConfig::default(),
@@ -2581,6 +2644,42 @@ impl Config {
                     if !(0.0..=1.0).contains(&value) {
                         return Err(ConfigError::InvalidPoolThreshold { key, value });
                     }
+                }
+            }
+        }
+        // Fail closed at boot: [server.status] sources are polled unattended in
+        // the background, so a malformed URL or a duplicate provider label
+        // would otherwise surface only as a silent, permanently-failing poller
+        // (or a metric/dashboard row silently overwritten by another source).
+        // This is the config-time counterpart to the runtime fail-open rule
+        // below: bad config is rejected loudly here, but a *reachable* source
+        // that later fails to answer must degrade to `Indicator::Unknown`,
+        // never to a silent `None` ("operational").
+        if let Some(status) = &self.server.status {
+            let mut seen_providers = HashSet::new();
+            for (index, source) in status.sources.iter().enumerate() {
+                if source.provider.trim().is_empty() {
+                    return Err(ConfigError::InvalidStatusSourceProvider { index });
+                }
+                if !seen_providers.insert(source.provider.as_str()) {
+                    return Err(ConfigError::DuplicateStatusSourceProvider {
+                        provider: source.provider.clone(),
+                    });
+                }
+                let url = reqwest::Url::parse(source.url.trim()).map_err(|error| {
+                    ConfigError::InvalidStatusSourceUrl {
+                        index,
+                        message: error.to_string(),
+                    }
+                })?;
+                if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+                    return Err(ConfigError::InvalidStatusSourceUrl {
+                        index,
+                        message: format!(
+                            "must be an http(s) URL with a host, got `{}`",
+                            source.url
+                        ),
+                    });
                 }
             }
         }
@@ -3278,7 +3377,8 @@ mod tests {
         ConfigError, ConfigFormat, GatewayConfig, GatewayOidcConfig, GatewayPolicyConfig,
         GatewayPolicyMatch, GatewayTelemetryConfig, GatewayTelemetryDestination, InboundAuthConfig,
         ModelConfig, OauthUsageConfig, OidcProviderConfig, PoolConfig, ProviderKind,
-        ResponsesFlavor, RetryConfig, UsageEndpointConfig, CONFIG_ENV_LOCK,
+        ResponsesFlavor, RetryConfig, StatusConfig, StatusSource, UsageEndpointConfig,
+        CONFIG_ENV_LOCK,
     };
 
     fn model_config(id: &str, upstream_model: Option<BTreeMap<String, String>>) -> ModelConfig {
@@ -3512,6 +3612,39 @@ mod tests {
             .usage_refresh_interval(),
             Some(300)
         );
+    }
+
+    #[test]
+    fn status_config_refresh_interval_disables_and_clamps() {
+        use super::StatusConfig;
+        // `0` disables polling.
+        assert_eq!(
+            StatusConfig {
+                refresh_seconds: 0,
+                ..Default::default()
+            }
+            .refresh_interval(),
+            None
+        );
+        // A positive value below the 60s floor is clamped up; at/above passes through.
+        assert_eq!(
+            StatusConfig {
+                refresh_seconds: 30,
+                ..Default::default()
+            }
+            .refresh_interval(),
+            Some(60)
+        );
+        assert_eq!(
+            StatusConfig {
+                refresh_seconds: 300,
+                ..Default::default()
+            }
+            .refresh_interval(),
+            Some(300)
+        );
+        // The default itself (300s) is unaffected by the floor.
+        assert_eq!(StatusConfig::default().refresh_interval(), Some(300));
     }
 
     #[test]
@@ -4065,6 +4198,88 @@ mod tests {
         }
         let mut config = Config::default();
         config.server.pool = Some(PoolConfig::default());
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_invalid_status_sources() {
+        // An empty provider label is rejected.
+        let mut config = Config::default();
+        config.server.status = Some(StatusConfig {
+            refresh_seconds: 300,
+            sources: vec![StatusSource {
+                provider: String::new(),
+                url: "https://status.claude.com/api/v2/summary.json".to_string(),
+            }],
+        });
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::InvalidStatusSourceProvider { index: 0 }
+        ));
+
+        // An unparseable URL is rejected.
+        let mut config = Config::default();
+        config.server.status = Some(StatusConfig {
+            refresh_seconds: 300,
+            sources: vec![StatusSource {
+                provider: "claude".to_string(),
+                url: "not-a-url".to_string(),
+            }],
+        });
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::InvalidStatusSourceUrl { index: 0, .. }
+        ));
+
+        // A non-http(s) scheme is rejected even though it parses fine.
+        let mut config = Config::default();
+        config.server.status = Some(StatusConfig {
+            refresh_seconds: 300,
+            sources: vec![StatusSource {
+                provider: "claude".to_string(),
+                url: "ftp://status.claude.com/summary.json".to_string(),
+            }],
+        });
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::InvalidStatusSourceUrl { index: 0, .. }
+        ));
+
+        // Duplicate provider labels are rejected.
+        let mut config = Config::default();
+        config.server.status = Some(StatusConfig {
+            refresh_seconds: 300,
+            sources: vec![
+                StatusSource {
+                    provider: "claude".to_string(),
+                    url: "https://status.claude.com/api/v2/summary.json".to_string(),
+                },
+                StatusSource {
+                    provider: "claude".to_string(),
+                    url: "https://status.openai.com/api/v2/summary.json".to_string(),
+                },
+            ],
+        });
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::DuplicateStatusSourceProvider { provider } if provider == "claude"
+        ));
+
+        // Distinct, well-formed http(s) sources pass validation.
+        let mut config = Config::default();
+        config.server.status = Some(StatusConfig {
+            refresh_seconds: 300,
+            sources: vec![
+                StatusSource {
+                    provider: "claude".to_string(),
+                    url: "https://status.claude.com/api/v2/summary.json".to_string(),
+                },
+                StatusSource {
+                    provider: "openai".to_string(),
+                    url: "https://status.openai.com/api/v2/summary.json".to_string(),
+                },
+            ],
+        });
         config.validate().unwrap();
     }
 

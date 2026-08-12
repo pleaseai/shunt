@@ -19,7 +19,9 @@ use crate::{
     http_tuning::{enforce_http_tuning, HttpTuningLayer},
     oauth_usage, protocol, proxy,
     reload::{RuntimeState, SharedState},
-    routes, usage,
+    routes,
+    upstream_status::StatusStore,
+    usage,
 };
 
 #[derive(Clone)]
@@ -28,6 +30,11 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub http_client: reqwest::Client,
     pub accounts: Arc<AccountPool>,
+    /// Observation-only store of the most recently polled upstream provider
+    /// status (`[server.status]`). Process-lifetime like `accounts`, and
+    /// likewise never consulted by routing, failover, or pool/cooldown
+    /// decisions — see [`crate::status_poll`].
+    pub status: Arc<StatusStore>,
     /// Inbound client-token auth snapshot for this request (None ⇒ open).
     pub inbound_auth: Option<Arc<InboundAuth>>,
     /// Admin-surface auth snapshot for this request (None ⇒ admin disabled).
@@ -67,6 +74,7 @@ impl AppState {
             shared,
             http_client,
             Arc::new(AccountPool::new()),
+            Arc::new(StatusStore::new()),
             Arc::new(AdminStores::new()),
             Arc::new(GatewayStores::new(&rate_limits)),
             boot_is_loopback,
@@ -78,6 +86,7 @@ impl AppState {
         shared: SharedState,
         http_client: reqwest::Client,
         accounts: Arc<AccountPool>,
+        status: Arc<StatusStore>,
         admin_stores: Arc<AdminStores>,
         gateway_stores: Arc<GatewayStores>,
         boot_is_loopback: bool,
@@ -90,6 +99,7 @@ impl AppState {
             gateway_auth: current.gateway_auth.clone(),
             http_client,
             accounts,
+            status,
             admin_stores,
             gateway_stores,
             boot_is_loopback,
@@ -105,6 +115,7 @@ impl AppState {
             self.shared.clone(),
             self.http_client.clone(),
             self.accounts.clone(),
+            self.status.clone(),
             self.admin_stores.clone(),
             self.gateway_stores.clone(),
             self.boot_is_loopback,
@@ -173,6 +184,7 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
         shared.clone(),
         reqwest::Client::new(),
         Arc::new(AccountPool::new()),
+        Arc::new(StatusStore::new()),
         Arc::new(AdminStores::new()),
         Arc::new(GatewayStores::new(&rate_limits)),
         boot_is_loopback,

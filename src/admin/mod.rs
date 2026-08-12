@@ -122,6 +122,7 @@ pub fn admin_router() -> Router<AppState> {
         .route("/admin/accounts", get(list_accounts))
         .route("/admin/observed", get(observed_accounts))
         .route("/admin/pool", get(pool))
+        .route("/admin/status", get(status))
         .route("/admin/accounts/claude", post(add_account))
         .route(
             "/admin/accounts/claude/{name}/complete",
@@ -882,6 +883,36 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
         providers.push(json!({ "provider": name, "auth": provider.auth, "accounts": snapshots }));
     }
     json_secure(json!({ "providers": providers }))
+}
+
+/// Observation-only view of `[server.status]` polling: each source's most
+/// recently observed Statuspage indicator, ordered by provider name.
+/// `[server.status]` absent, empty `sources`, or a poller that has not yet
+/// completed its first tick all read the same way here: an empty `sources`
+/// list, which the dashboard treats as "hide the whole section" rather than
+/// rendering an empty table. Never consulted by routing, failover, or
+/// pool/cooldown decisions -- this handler only reads `state.status`.
+async fn status(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let state = state.refreshed();
+    if authenticate(&state, &headers).is_none() {
+        return unauthorized();
+    }
+    let mut snapshot: Vec<_> = state.status.snapshot().into_iter().collect();
+    snapshot.sort_by(|(a, _), (b, _)| a.cmp(b));
+    let sources: Vec<_> = snapshot
+        .into_iter()
+        .map(|(provider, observed)| {
+            json!({
+                "provider": provider,
+                "indicator": observed.indicator,
+                "description": observed.description,
+                "incidents": observed.incidents,
+                "observed_at": observed.observed_at,
+                "error": observed.error,
+            })
+        })
+        .collect();
+    json_secure(json!({ "sources": sources }))
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize)]

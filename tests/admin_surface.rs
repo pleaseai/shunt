@@ -478,6 +478,7 @@ async fn admin_routes_are_absent_without_the_block() {
         "/admin/oidc/callback",
         "/admin/observed",
         "/admin/pool",
+        "/admin/status",
     ] {
         let response = client
             .get(format!("{}{route}", gateway.base_url))
@@ -603,6 +604,72 @@ async fn admin_pool_reports_auth_kind_independent_of_provider_name() {
     std::env::remove_var("SHUNT_TEST_ADMIN_AUTH_KIND");
 }
 
+/// `[server.status]` is absent from `admin_config`, so `/admin/status` must
+/// report an empty `sources` list -- the shape the dashboard reads as "hide
+/// the whole section" rather than an empty table.
+#[tokio::test]
+async fn admin_status_reports_no_sources_when_unconfigured() {
+    if !can_bind_loopback() {
+        return;
+    }
+    std::env::set_var("SHUNT_TEST_ADMIN_STATUS_EMPTY", "ops:status-empty-secret");
+    let gateway = start(admin_config("SHUNT_TEST_ADMIN_STATUS_EMPTY")).await;
+
+    let response = reqwest::Client::new()
+        .get(format!("{}/admin/status", gateway.base_url))
+        .header("x-shunt-admin-token", "status-empty-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["sources"].as_array().unwrap().len(), 0);
+
+    std::env::remove_var("SHUNT_TEST_ADMIN_STATUS_EMPTY");
+}
+
+/// A populated `StatusStore` entry (as the background poller in
+/// `shunt::status_poll` would apply) round-trips through the JSON shape the
+/// dashboard reads: `provider`, `indicator`, `description`, `incidents`,
+/// `observed_at`, `error`.
+#[tokio::test]
+async fn admin_status_reports_observed_sources() {
+    if !can_bind_loopback() {
+        return;
+    }
+    std::env::set_var("SHUNT_TEST_ADMIN_STATUS_SEEDED", "ops:status-seeded-secret");
+    let (gateway, state) = start_with_state(admin_config("SHUNT_TEST_ADMIN_STATUS_SEEDED")).await;
+    state.status.set(
+        "claude",
+        shunt::upstream_status::UpstreamStatus {
+            indicator: shunt::upstream_status::Indicator::Minor,
+            description: Some("Partially Degraded Service".to_string()),
+            incidents: Vec::new(),
+            page_updated_at: Some("2026-08-12T14:25:14.330Z".to_string()),
+            observed_at: 1_000,
+            error: None,
+        },
+    );
+
+    let response = reqwest::Client::new()
+        .get(format!("{}/admin/status", gateway.base_url))
+        .header("x-shunt-admin-token", "status-seeded-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = response.json().await.unwrap();
+    let sources = body["sources"].as_array().unwrap();
+    assert_eq!(sources.len(), 1);
+    assert_eq!(sources[0]["provider"], "claude");
+    assert_eq!(sources[0]["indicator"], "minor");
+    assert_eq!(sources[0]["description"], "Partially Degraded Service");
+    assert_eq!(sources[0]["observed_at"], 1_000);
+    assert!(sources[0]["error"].is_null());
+
+    std::env::remove_var("SHUNT_TEST_ADMIN_STATUS_SEEDED");
+}
+
 #[tokio::test]
 async fn admin_api_requires_authentication() {
     if !can_bind_loopback() {
@@ -613,7 +680,7 @@ async fn admin_api_requires_authentication() {
     let client = reqwest::Client::new();
 
     // No credential at all.
-    for route in ["/admin/observed", "/admin/pool"] {
+    for route in ["/admin/observed", "/admin/pool", "/admin/status"] {
         let response = client
             .get(format!("{}{route}", gateway.base_url))
             .send()

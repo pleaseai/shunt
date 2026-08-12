@@ -232,6 +232,36 @@ A positive `usage_refresh_seconds` additionally starts a background poller that 
 
 A positive `ramp_initial_concurrency` enables **storm control** on every account pool: after a failover switch, concurrent in-flight requests would otherwise all land on the freshly selected account at once. With the gate on, an identity that just started taking traffic (fresh, back from a cooldown, or idle for 60 seconds) admits at most the configured number of concurrent requests; each successful response doubles the allowance (slow start), a failover-worthy failure restarts the ramp, and a denied request spills to the next account in selection order. The last remaining candidate is always attempted regardless of the gate, so gating can defer but never fail a request that an ungated pool would have served. Note this also means a pool whose accounts all resolve to a single upstream identity is effectively ungated: its only candidate is always the last candidate, so the setting only takes effect with two or more distinct account identities.
 
+## `[server.status]` (optional)
+
+Observation-only background polling of provider Statuspage `summary.json` endpoints, for visibility rather than decisioning: it never feeds routing, failover, or pool/cooldown behavior. It only updates a shared store surfaced by the `shunt.upstream.status` metric and the admin dashboard's "Upstream status" strip ([`GET /admin/status`](/reference/endpoints/)). When the table is absent, or `sources` is empty, the poller does not start.
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `refresh_seconds` | `300` | Poll interval, in seconds; a positive value below 60 is clamped up to a 60-second floor. `0` disables polling |
+| `sources` | `[]` | Array of `{ provider, url }` tables, one per Statuspage `summary.json` endpoint to poll |
+
+```toml
+[server.status]
+refresh_seconds = 300
+
+[[server.status.sources]]
+provider = "claude"
+url = "https://status.claude.com/api/v2/summary.json"
+
+[[server.status.sources]]
+provider = "openai"
+url = "https://status.openai.com/api/v2/summary.json"
+```
+
+Each `sources` entry needs a non-empty, unique `provider` label and an `http`/`https` `url`; shunt fails startup on an empty or duplicate `provider`, or an unparseable/non-`http(s)` `url`. This validation is fail-closed (a bad config refuses to boot), unlike the poller's own runtime behavior below, which is deliberately fail-open into an explicit "no signal" state.
+
+A fetch failure, non-2xx response, oversized body (capped at 1 MiB), invalid JSON, or an unrecognized `indicator` string in the response all resolve to `unknown` ("no signal") rather than `none` ("operational"): a failed poll can only ever replace a source's stored entry with `unknown`, never leave a stale "operational" value in place or report a false all-clear for a source shunt could not actually reach. Sources in the `unknown` state are also omitted from the `shunt.upstream.status` metric entirely, rather than reported as a `0` sample.
+
+`GET /admin/status` (admin-authenticated) returns each configured source's most recently observed indicator, description, incidents, and observed timestamp; an unconfigured or empty `[server.status]` reports an empty `sources` list, which the dashboard reads as "hide this section" rather than rendering an empty table.
+
+Whether the poller runs at all, and its polling interval, are decided once from the boot config — exactly like `[server.pool] usage_refresh_seconds` above: if `[server.status]` is absent, empty, or `refresh_seconds` is `0` at boot, no background task is created, and a later reload that enables it does not retroactively start one. Once running, each tick re-reads the current `sources` list from the live (possibly reloaded) config, so edits to which sources are polled take effect from the next tick onward; the polling interval itself does not change on reload.
+
 ## `[[upstreams]]` (ordered failover)
 
 `[[upstreams]]` is an ordered array of named upstreams. Declaration order is the global failover order; a model's `[models.upstream_model]` map selects which entries participate. The map's textual order does not affect routing.
