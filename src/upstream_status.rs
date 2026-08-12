@@ -98,13 +98,16 @@ impl UpstreamStatus {
             incidents: Vec::new(),
             page_updated_at: None,
             observed_at,
-            error: Some(truncate(&detail.into())),
+            error: Some(truncate(detail.into())),
         }
     }
 }
 
-fn truncate(detail: &str) -> String {
-    detail.chars().take(200).collect()
+fn truncate(mut detail: String) -> String {
+    if let Some((index, _)) = detail.char_indices().nth(200) {
+        detail.truncate(index);
+    }
+    detail
 }
 
 /// Mirrors Statuspage's `GET /api/v2/summary.json` shape, defensively: every

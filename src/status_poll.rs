@@ -17,7 +17,7 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use futures_util::StreamExt;
+use futures_util::{future::join_all, StreamExt};
 
 use crate::{
     config::StatusSource,
@@ -92,8 +92,12 @@ async fn poll_all(state: &AppState) {
     let Some(status) = state.config.server.status.as_ref() else {
         return;
     };
-    for source in &status.sources {
-        let observed = poll_source(&state.http_client, source).await;
+    let client = &state.http_client;
+    let polls = status.sources.iter().map(|source| async move {
+        let observed = poll_source(client, source).await;
+        (source, observed)
+    });
+    for (source, observed) in join_all(polls).await {
         metrics::record_upstream_status(&source.provider, observed.indicator.severity());
         tracing::debug!(
             provider = source.provider,
@@ -166,10 +170,10 @@ async fn read_bounded_body(response: reqwest::Response, limit: usize) -> Result<
     let mut buf: Vec<u8> = Vec::new();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| format!("failed to read response body: {error}"))?;
-        buf.extend_from_slice(&chunk);
-        if buf.len() > limit {
+        if buf.len().saturating_add(chunk.len()) > limit {
             return Err("response too large".to_string());
         }
+        buf.extend_from_slice(&chunk);
     }
     String::from_utf8(buf).map_err(|error| format!("response body is not valid UTF-8: {error}"))
 }

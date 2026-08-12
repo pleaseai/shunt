@@ -2681,6 +2681,17 @@ impl Config {
                         ),
                     });
                 }
+                if url.query().is_some()
+                    || url.fragment().is_some()
+                    || !url.username().is_empty()
+                    || url.password().is_some()
+                {
+                    return Err(ConfigError::InvalidStatusSourceUrl {
+                        index,
+                        message: "must not contain a query, fragment, or embedded credentials"
+                            .to_string(),
+                    });
+                }
             }
         }
         // A [sentry] section with a non-empty DSN must parse at boot; a typo'd
@@ -4244,6 +4255,26 @@ mod tests {
             config.validate().unwrap_err(),
             ConfigError::InvalidStatusSourceUrl { index: 0, .. }
         ));
+
+        // Query strings, fragments, and embedded credentials are rejected.
+        for url in [
+            "https://status.claude.com/api/v2/summary.json?token=secret",
+            "https://status.claude.com/api/v2/summary.json#status",
+            "https://user:secret@status.claude.com/api/v2/summary.json",
+        ] {
+            let mut config = Config::default();
+            config.server.status = Some(StatusConfig {
+                refresh_seconds: 300,
+                sources: vec![StatusSource {
+                    provider: "claude".to_string(),
+                    url: url.to_string(),
+                }],
+            });
+            assert!(matches!(
+                config.validate().unwrap_err(),
+                ConfigError::InvalidStatusSourceUrl { index: 0, .. }
+            ));
+        }
 
         // Duplicate provider labels are rejected.
         let mut config = Config::default();

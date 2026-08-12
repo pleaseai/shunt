@@ -27,9 +27,10 @@ url = "https://status.openai.com/api/v2/summary.json"
 `refresh_seconds` defaults to 300; a positive value below 60 is clamped up to
 a 60-second floor (mirroring `[server.pool] usage_refresh_seconds`), and `0`
 disables polling. Each `sources` entry needs a non-empty, unique `provider`
-label and an `http`/`https` `url`. Configuration validation fails closed: an
-empty or duplicate `provider`, or an unparseable/non-`http(s)` `url`, makes
-`shunt check` (and boot) fail — full detail in
+label and an `http`/`https` `url` without a query, fragment, or embedded
+credentials. Configuration validation fails closed: an empty or duplicate
+`provider`, or an invalid URL shape, makes `shunt check` (and boot) fail — full
+detail in
 [`docs/reference/configuration.md`](../site/src/content/docs/reference/configuration.md#serverstatus-optional).
 
 Whether the poller starts at all, and its interval, are decided once from the

@@ -254,7 +254,7 @@ provider = "openai"
 url = "https://status.openai.com/api/v2/summary.json"
 ```
 
-Each `sources` entry needs a non-empty, unique `provider` label and an `http`/`https` `url`; shunt fails startup on an empty or duplicate `provider`, or an unparseable/non-`http(s)` `url`. This validation is fail-closed (a bad config refuses to boot), unlike the poller's own runtime behavior below, which is deliberately fail-open into an explicit "no signal" state.
+Each `sources` entry needs a non-empty, unique `provider` label and an `http`/`https` `url` without a query, fragment, or embedded credentials. Shunt fails startup on an empty or duplicate `provider`, or an invalid URL shape. This validation is fail-closed (a bad config refuses to boot), unlike the poller's own runtime behavior below, which is deliberately fail-open into an explicit "no signal" state.
 
 A fetch failure, non-2xx response, oversized body (capped at 1 MiB), invalid JSON, or an unrecognized `indicator` string in the response all resolve to `unknown` ("no signal") rather than `none` ("operational"): a failed poll can only ever replace a source's stored entry with `unknown`, never leave a stale "operational" value in place or report a false all-clear for a source shunt could not actually reach. Sources in the `unknown` state are also omitted from the `shunt.upstream.status` metric entirely, rather than reported as a `0` sample.
 
