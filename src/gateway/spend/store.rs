@@ -294,15 +294,39 @@ fn append_audit(
         before,
         after,
     });
-    let dropped = state.audit.len().saturating_sub(MAX_AUDIT_RECORDS);
-    if dropped > 0 {
-        state.audit.drain(..dropped);
-        state
+    trim_audit_records(state);
+}
+
+fn trim_audit_records(state: &mut SpendState) {
+    let dropped = state
+        .audit
+        .len()
+        .saturating_add(state.opaque_audit.len())
+        .saturating_sub(MAX_AUDIT_RECORDS);
+    if dropped == 0 {
+        return;
+    }
+
+    let mut typed_dropped = 0;
+    let mut opaque_dropped = 0;
+    for _ in 0..dropped {
+        if state
             .opaque_audit
-            .retain(|record| record.typed_before >= dropped);
-        for record in &mut state.opaque_audit {
-            record.typed_before -= dropped;
+            .get(opaque_dropped)
+            .is_some_and(|record| record.typed_before <= typed_dropped)
+        {
+            opaque_dropped += 1;
+        } else if typed_dropped < state.audit.len() {
+            typed_dropped += 1;
+        } else {
+            opaque_dropped += 1;
         }
+    }
+
+    state.audit.drain(..typed_dropped);
+    state.opaque_audit.drain(..opaque_dropped);
+    for record in &mut state.opaque_audit {
+        record.typed_before -= typed_dropped;
     }
 }
 

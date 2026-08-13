@@ -5,6 +5,8 @@ use serde_json::json;
 use super::*;
 use crate::gateway::spend::store::{Period, Scope, SpendStore};
 
+mod audit_cap;
+
 fn temp_file(label: &str) -> std::path::PathBuf {
     let directory = std::env::temp_dir().join(format!(
         "shunt-spend-persist-{}-{}-{label}",
