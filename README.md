@@ -101,7 +101,9 @@ Secret-shaped values don't have to live in the config file as literals: any stri
 be written as `${VAR}` (an environment variable, e.g. `"Bearer ${TOKEN}"`) or `${file:/abs/path}`
 (a file's trimmed contents, as the field's entire value), resolved fresh on every config load —
 including [hot reload](docs/config-reload.md), so a `${file:}`-backed secret can be rotated
-without restarting shunt. See [Config secret references](docs/config-secrets.md).
+without restarting shunt. Whether the new value then takes effect follows the field's own
+reload behavior: `[sentry]` and `[otel]` are built once at startup, so rotating a secret in
+those two sections still needs a restart. See [Config secret references](docs/config-secrets.md).
 
 ## Providers
 

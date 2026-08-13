@@ -72,6 +72,18 @@ trigger a reload afterward (SIGHUP, or a write to the config file itself) to
 pick up the new value, since the file watcher only watches the config file's
 own parent directory, not arbitrary `${file:...}` target paths.
 
+Re-resolution is not the same as taking effect. The reloaded config always
+holds the new value, but whether the running gateway uses it follows that
+field's own reload behavior, and two of the three secret-typed field groups
+are restart-only: `[sentry]` (the Sentry client is initialized once at
+startup) and `[otel]` (the OpenTelemetry exporters likewise). Rotating a
+`${file:...}` secret in either section updates the config and logs
+`requires a restart to apply`, while the running client keeps the old
+credential until shunt restarts. `[server.gateway.telemetry].forward_to`
+headers are read from the live config per request, so those do rotate on
+reload. See `warn_on_restart_only_changes` in `src/reload.rs` for the full
+restart-only set.
+
 Reload's usual fail-safe behavior applies: if the reloaded config fails to
 resolve a reference (undefined variable, unreadable file), the reload is
 rejected and the currently-running config stays live. See
