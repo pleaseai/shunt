@@ -5,6 +5,14 @@ description: すべての shunt.toml キー — server、providers、routes、mo
 
 ファイルの場所、優先順位、注釈付きの例については [Configuration](/ja/guides/configuration/) を参照してください。完全なテンプレート: [`shunt.toml.example`](https://github.com/pleaseai/shunt/blob/main/shunt.toml.example)。
 
+## Secret 参照
+
+設定ファイルの文字列値は、リテラルの代わりに `${VAR}` または `${file:/絶対/パス}` として書けます。`${VAR}` は環境変数 `VAR` の値に置き換わり、`"Bearer ${TOKEN}"` のようにより長い文字列に埋め込むこともできます(変数が未定義だと設定の読み込みは失敗します)。`${file:/絶対/パス}` は指定したファイルの内容(トリム済み)に置き換わり、パスは絶対パスでなければならず、フィールドの値全体でなければなりません — 他の文字列に埋め込むことはできません(ファイルが読み取れない、パスが相対パスである、または他の文字列に埋め込まれている場合、設定の読み込みは失敗します)。`${` はリテラルの `${` にエスケープされます。解決は再帰的ではありません — 解決済みの値は再スキャンされません。この置換は設定ファイルにのみ適用され、`SHUNT_*` 環境変数オーバーライドはそのまま使われます。起動時、`shunt check`、[ホットリロード](https://github.com/pleaseai/shunt/blob/main/docs/config-reload.md)(SIGHUP とファイル監視)を含む設定の読み込みのたびに再実行されるため、`${file:}` で参照したシークレットはファイルを書き換えてリロードをトリガーするだけで、再起動なしにローテーションできます。
+
+`[sentry] dsn`、`[otel.headers]` の値、`[server.gateway.telemetry] forward_to[].headers` の値の 3 つのフィールドは redacting secret 型として扱われ、診断出力では `[redacted]` と表示されます。これらのフィールドにリテラル値を書くことは以前とまったく同じように動作します。secret 型のフィールドがリテラルを保持している場合、shunt は起動時に該当するフィールドパスのみを(値は決して含めずに)知らせる勧告的な警告を 1 回記録します。
+
+既存の `tokens_env`、`jwt_secret_env`、`client_secret_env`、`api_key_env`、`users_env`、`token_env`、`tokens_file` フィールドはこの変更の影響を受けず、引き続き環境変数(`tokens_file` の場合はファイルパス)を指します。
+
 ## `[server]`
 
 | キー | デフォルト | 意味 |
@@ -37,6 +45,8 @@ description: すべての shunt.toml キー — server、providers、routes、mo
 
 指定された環境変数には 1 つ以上の認証情報が必要です。例: `SHUNT_CLIENT_TOKENS="alice:<token>,bob:<token>"`。テーブルが存在するのに変数が未設定・空・不正な場合、起動はフェイルクローズします。ゲートされるルート（マッピングされた `/v1/messages` 推論と `GET /v1/models` discovery）は、設定されたヘッダー、`Authorization: Bearer`、`x-api-key` のいずれでもトークンを受け付けます — 複数のスロットに有効なトークンがある場合は専用ヘッダーが優先されます。
 
+`tokens_env` の値も、他の設定ファイル文字列と同様に `${VAR}` / `${file:...}` で書けます([Secret 参照](#secret-参照)を参照)。shunt がトークンを読み取る環境変数名を指す点は変わりません。
+
 ## `[server.admin]`（オプション）
 
 このテーブルの存在が、ブラウザーでのアカウントプロビジョニングとアカウントプールの健全性のための管理 Web サーフェスを有効化します（[詳細](/ja/guides/admin-remote-provisioning/)）。テーブルがない場合、`/admin*` ルートは一切登録されません。
@@ -52,6 +62,8 @@ description: すべての shunt.toml キー — server、providers、routes、mo
 
 管理トークンは `[server.auth]` の下で設定されるクライアントトークンとは別個の認証情報です。1 つの認証情報を両方のサーフェスで再利用しないでください。
 
+`[server.auth]` の `tokens_env` と同様、この `tokens_env` の値も `${VAR}` / `${file:...}` で書けます([Secret 参照](#secret-参照)を参照)。
+
 ## `[server.gateway]`（オプション）
 
 このテーブルの存在が、Claude Code の managed `forceLoginMethod: "gateway"` で使う [OAuth device-flow gateway ログイン](/ja/guides/gateway-login/)を有効化します。テーブルがなければ、shunt は `/.well-known/oauth-authorization-server`、`/oauth/device_authorization`、`/oauth/token`、`/device`、`/managed/settings` を登録しません。
@@ -64,7 +76,7 @@ description: すべての shunt.toml キー — server、providers、routes、mo
 | `token_ttl_seconds` | `3600` | access token の寿命。`expires_in` として返される |
 | `trust_forwarded_for` | `false` | `/device` の rate-limit identity として `X-Forwarded-For`／`X-Real-IP` を信頼する。client 提供値を置換する trusted proxy の背後でのみ有効化 |
 
-URL が path 等を含まない HTTPS origin でない場合（`http` は loopback のみ許可）、TTL が 0 の場合、secret がないか 32 bytes 未満の場合、または user list が空・不正な場合、起動は fail closed します。secret には `:` を含められ、最初の colon だけが email と secret を分けます。env-backed secret と user の変更は config reload で反映されますが、route tree は boot 時に固定されるため、テーブルの追加・削除には restart が必要です。
+URL が path 等を含まない HTTPS origin でない場合（`http` は loopback のみ許可）、TTL が 0 の場合、secret がないか 32 bytes 未満の場合、または user list が空・不正な場合、起動は fail closed します。secret には `:` を含められ、最初の colon だけが email と secret を分けます。`jwt_secret_env` と `users_env` の値も、他の設定ファイル文字列と同様に `${VAR}` / `${file:...}` で書けます([Secret 参照](#secret-参照)を参照)。env-backed secret と user の変更は config reload で反映されますが、route tree は boot 時に固定されるため、テーブルの追加・削除には restart が必要です。
 
 発行された bearer は、選択された provider が server-side credential を注入する場合に `/v1/models`、`/v1/messages`、`/v1/messages/count_tokens` を認証します。passthrough provider は open のままです。`[server.auth]` もある場合は、どちらかの credential で access できます。device grant と rotating refresh token は process-lifetime の in-memory state です。config reload では維持されますが、restart では無効になります。
 
@@ -80,7 +92,7 @@ URL が path 等を含まない HTTPS origin でない場合（`http` は loopba
 
 ### `[server.gateway.telemetry]`（オプション）
 
-`forward_to` は、必須の base OTLP/HTTP `url`、任意の string `headers` map、signal ごとの opt-in boolean（`metrics` は既定で `true`、`logs`／`traces` は既定で `false`）を持つ destination の array です。いずれかの signal を opt-in した list は managed `settings.env` に 6 つの値を注入します。`CLAUDE_CODE_ENABLE_TELEMETRY=1`、各 `OTEL_METRICS_EXPORTER`／`OTEL_LOGS_EXPORTER`／`OTEL_TRACES_EXPORTER` はその signal を opt-in した destination があれば `otlp`、なければ `none`、`OTEL_EXPORTER_OTLP_ENDPOINT=public_url`、`OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` です。どの signal も opt-in されていない場合は何も注入しません。競合時は policy の env value が優先します。同じ list は inbound ingest も駆動します（M-C、#189）。`[server.gateway]` があれば常に登録される `POST /v1/{metrics,logs,traces}` route がクライアントの OTLP payload を受け取り、その signal を opt-in したすべての destination に verbatim で relay し、opt-in した destination がない signal は受理後に破棄します。`logs`／`traces` が既定で off なのは、Claude Code の log record と span に command line、prompt、ファイルパスが含まれ得るためです。
+`forward_to` は、必須の base OTLP/HTTP `url`、任意の string `headers` map、signal ごとの opt-in boolean（`metrics` は既定で `true`、`logs`／`traces` は既定で `false`）を持つ destination の array です。`headers` の各値は redacting secret 型として扱われ、診断出力では `[redacted]` と表示されます([Secret 参照](#secret-参照)を参照)。いずれかの signal を opt-in した list は managed `settings.env` に 6 つの値を注入します。`CLAUDE_CODE_ENABLE_TELEMETRY=1`、各 `OTEL_METRICS_EXPORTER`／`OTEL_LOGS_EXPORTER`／`OTEL_TRACES_EXPORTER` はその signal を opt-in した destination があれば `otlp`、なければ `none`、`OTEL_EXPORTER_OTLP_ENDPOINT=public_url`、`OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` です。どの signal も opt-in されていない場合は何も注入しません。競合時は policy の env value が優先します。同じ list は inbound ingest も駆動します（M-C、#189）。`[server.gateway]` があれば常に登録される `POST /v1/{metrics,logs,traces}` route がクライアントの OTLP payload を受け取り、その signal を opt-in したすべての destination に verbatim で relay し、opt-in した destination がない signal は受理後に破棄します。`logs`／`traces` が既定で off なのは、Claude Code の log record と span に command line、prompt、ファイルパスが含まれ得るためです。
 
 ```toml
 [[server.gateway.policies]]
@@ -210,7 +222,7 @@ codex-fallback = "gpt-5.2"
 | `kind` | `anthropic` \| `responses` \| `cursor` \| `gemini` \| `antigravity` | 上流プロトコル / アダプター。`anthropic` = Messages API（パススルー、オプションで再キー付け）。`responses` = Anthropic Messages を OpenAI Responses API へ変換。`cursor` = ネイティブな Cursor ConnectRPC/protobuf AgentService アダプター。`gemini` = Anthropic Messages を Google Code Assist バックエンドの Gemini `generateContent`/`streamGenerateContent` へ変換。`antigravity` = 上流を持たず、ローカルの Antigravity CLI バイナリ（`agy`）をサブプロセスとして実行。 |
 | `base_url` | URL | 上流のベース。shunt がエンドポイントパスを追加します。`kind = "cursor"` ではログイン／トークン更新用エンドポイントにのみ使われ、エージェント／推論ホストは選択しません。 |
 | `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `claude_oauth` \| `xai_oauth` \| `cursor_oauth` \| `google_oauth` \| `none` | `passthrough` はクライアント自身の credential を転送。`api_key` は `api_key_env` からキーを注入。`chatgpt_oauth` は `~/.codex/auth.json` を再利用。`claude_oauth` は明示的な Anthropic アカウントから選択。`xai_oauth` は `shunt login xai` からの `~/.shunt/xai-auth.json` を再利用（HTTPS 上の x.ai/grok.com ホストへのみ送信）。`cursor_oauth` は `~/.shunt/cursor-auth.json`（`shunt login cursor`）を再利用。`google_oauth` は gemini CLI ログインの `~/.gemini/oauth_creds.json` を再利用し、`kind = "gemini"` でのみ有効。`none` は認証すべき上流を持たないアダプター（`kind = "antigravity"`）向けに、credential を一切送信しません。 |
-| `api_key_env` | 環境変数名 | `auth = "api_key"` のとき、キーを読み取る場所。 |
+| `api_key_env` | 環境変数名 | `auth = "api_key"` のとき、キーを読み取る場所。この値自体も `${VAR}` / `${file:...}` で書けます([Secret 参照](#secret-参照)を参照)。 |
 | `api_key_header` | `bearer`（デフォルト） \| `x_api_key` | 注入されたキーを送るヘッダー。 |
 | `effort` | `low` … `max` | オプションのデフォルト reasoning エフォート（`responses` プロバイダー）。 |
 | `count_tokens` | `tiktoken`（デフォルト） \| `estimate` | `responses` および `cursor` provider: ローカルの tiktoken カウント vs. `501 not_supported` フォールバック（[詳細](/ja/guides/effort-and-context/#token-counting-count_tokens)）。 |
@@ -271,7 +283,7 @@ codex = "gpt-5.2"
 
 | キー | デフォルト | 意味 |
 | :-- | :-- | :-- |
-| `dsn` | — | Sentry プロジェクトの DSN。空で無効化、不正な DSN は起動エラー。 |
+| `dsn` | — | Sentry プロジェクトの DSN。空で無効化、不正な DSN は起動エラー。Redacting secret — 診断出力では `[redacted]` と表示される([Secret 参照](#secret-参照)を参照)。 |
 | `environment` | — | 報告イベントに付く任意の environment タグ |
 | `metrics` | `false` | 使用量メトリクスも送信 — OpenTelemetry ガイドに記載された gateway メトリクス系列(集計値のみ) |
 | `traces_sample_rate` | `0.0` | パフォーマンストレースも送信: リクエストごとのスパンが Sentry トランザクションになり、`[0.0, 1.0]` のこのレートでヘッドサンプリング。`0.0` はスパンを一切送らず、範囲外は起動エラー。 |
@@ -294,7 +306,7 @@ codex = "gpt-5.2"
 
 ## `[otel.headers]`(任意)
 
-すべての OTLP リクエストに付くヘッダー(例: ホスト型コレクターのトークン)。標準の `OTEL_EXPORTER_OTLP_HEADERS` の下にマージされます。
+すべての OTLP リクエストに付くヘッダー(例: ホスト型コレクターのトークン)。標準の `OTEL_EXPORTER_OTLP_HEADERS` の下にマージされます。各ヘッダー値は redacting secret 型として扱われ、診断出力では `[redacted]` と表示されます([Secret 参照](#secret-参照)を参照)。
 
 | キー | 意味 |
 | :-- | :-- |

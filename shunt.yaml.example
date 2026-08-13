@@ -2,6 +2,8 @@
 # The full annotated template is shunt.toml.example; this file demonstrates the
 # equivalent YAML structure. Every provider has built-in defaults, so only
 # override values you need.
+# Any string value below can also be ${VAR} or ${file:/abs/path} instead of a
+# literal, so a secret doesn't have to sit in this file — see docs/config-secrets.md.
 
 server:
   bind: "127.0.0.1:3001"
