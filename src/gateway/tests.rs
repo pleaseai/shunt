@@ -2431,7 +2431,7 @@ async fn telemetry_ingest_relays_bytes_and_framing_headers_verbatim() {
     destination.headers = Some(
         [(
             "x-collector-key".to_string(),
-            "collector-secret".to_string(),
+            "collector-secret".to_string().into(),
         )]
         .into_iter()
         .collect(),
@@ -2513,11 +2513,11 @@ async fn telemetry_ingest_destination_headers_override_forwarded_framing() {
         [
             (
                 "content-type".to_string(),
-                "application/x-custom".to_string(),
+                "application/x-custom".to_string().into(),
             ),
             (
                 "x-collector-key".to_string(),
-                "collector-secret".to_string(),
+                "collector-secret".to_string().into(),
             ),
         ]
         .into_iter()

@@ -398,7 +398,7 @@ fn destination_headers(destination: &GatewayTelemetryDestination, host: &str) ->
     for (name, value) in destination.headers.iter().flatten() {
         match (
             HeaderName::try_from(name.as_str()),
-            HeaderValue::try_from(value.as_str()),
+            HeaderValue::try_from(value.expose()),
         ) {
             (Ok(name), Ok(value)) => {
                 headers.insert(name, value);
@@ -483,12 +483,12 @@ mod tests {
             [
                 (
                     "x-collector-key".to_string(),
-                    "collector-secret".to_string(),
+                    "collector-secret".to_string().into(),
                 ),
                 // A space is not legal in an HTTP header name.
-                ("x collector key".to_string(), "ignored".to_string()),
+                ("x collector key".to_string(), "ignored".to_string().into()),
                 // A newline is not legal in a header value.
-                ("x-tenant".to_string(), "line\nbreak".to_string()),
+                ("x-tenant".to_string(), "line\nbreak".to_string().into()),
             ]
             .into_iter()
             .collect(),
