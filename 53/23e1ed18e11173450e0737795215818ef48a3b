@@ -1,0 +1,26 @@
+docs/gateway-spend-limits.md
+  s_90e5fb302b3207::t_d81df55e620c45 44
+src/gateway/spend/persist/tests.rs
+  s_90e5fb302b3207::t_7d59a042f17be4 8-9
+src/gateway/spend/store.rs
+  s_90e5fb302b3207::t_9136e09c65405b 297-313,315-322,325-330
+src/gateway/spend/persist/tests/audit_cap.rs
+  s_90e5fb302b3207::t_cc4b3b1f82f578 1-74,76-99
+  s_90e5fb302b3207::t_cccd8bd4a6fe2b 75
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "5323e1ed18e11173450e0737795215818ef48a3b",
+  "prompts": {},
+  "sessions": {
+    "s_90e5fb302b3207": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "651856f1-f54f-4ef4-869b-05f69799178e",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
