@@ -1,0 +1,21 @@
+docs/desktop-app.md
+  s_90e5fb302b3207::t_f784b6e095491c 221
+docs/config-reload.md
+  s_90e5fb302b3207::t_68a3353de71e20 63-68
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "8e2ae07b80535e067cbca61f218bacac6ad76c63",
+  "prompts": {},
+  "sessions": {
+    "s_90e5fb302b3207": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "651856f1-f54f-4ef4-869b-05f69799178e",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
