@@ -1,0 +1,20 @@
+site/src/content/docs/ko/guides/xai.mdx
+  s_f7e9f161512334::t_e0e84bc605cb22 259
+  s_f7e9f161512334::t_5b302ec1c0c5bc 210
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "83b2c6595fab867f5186b3df38ec2cd783b7dae2",
+  "prompts": {},
+  "sessions": {
+    "s_f7e9f161512334": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "99e776ff-f37e-409d-90f3-2c0fc05e167e",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
