@@ -1,0 +1,27 @@
+src/config/secrets.rs
+  s_ebcd9411f97838::t_d7f2a321f068a0 199-202
+src/config.rs
+  s_ebcd9411f97838::t_b8c3f6267aa09b 6799-6822,6826-6827,6829-6856,6861-6870
+  s_ebcd9411f97838::t_5f4c495517f747 6823-6825,6828
+  s_ebcd9411f97838::t_a270f4ef3bd0bd 2461-2463
+  s_ebcd9411f97838::t_a664c594c16cd4 2477-2478
+  s_ebcd9411f97838::t_878ceabb7ee41e 2441-2447
+  s_ebcd9411f97838::t_5cc4becc98b5a6 6857-6860
+  s_ebcd9411f97838::t_e815dc126eb2ea 6798
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "80e8039f878a979a9ca00da12463480fba768c55",
+  "prompts": {},
+  "sessions": {
+    "s_ebcd9411f97838": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2854279c-a956-4cbd-b907-cbef4efe8271",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
