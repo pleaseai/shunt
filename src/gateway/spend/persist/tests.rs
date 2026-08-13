@@ -48,6 +48,41 @@ fn capture_logs<T>(run: impl FnOnce() -> T) -> (T, String) {
     (result, logs)
 }
 
+fn app_state_with_path(
+    path: std::path::PathBuf,
+    secret_env: &str,
+    users_env: &str,
+    write_env: &str,
+    read_env: &str,
+) -> AppState {
+    let mut config = crate::config::Config::default();
+    config.server.gateway = Some(crate::config::GatewayConfig {
+        public_url: "https://gateway.example".into(),
+        jwt_secret_env: secret_env.to_string(),
+        users_env: users_env.to_string(),
+        token_ttl_seconds: 3600,
+        trust_forwarded_for: false,
+        policies: None,
+        telemetry: None,
+        state_path: None,
+        admin: Some(crate::config::GatewayAdminConfig {
+            write_keys_env: write_env.to_string(),
+            read_keys_env: read_env.to_string(),
+            blocked_message: None,
+            audit_retention_days: 365,
+            spend_retention_months: 13,
+            identity_retention_days: 90,
+            group_limit_mode: crate::config::GroupLimitMode::Min,
+            state_path: Some(path),
+            write_keys: Vec::new(),
+            read_keys: Vec::new(),
+        }),
+        enforcement: crate::config::GatewayEnforcementConfig::default(),
+        oidc: None,
+    });
+    crate::server::AppState::new(config, reqwest::Client::new()).expect("build app state")
+}
+
 #[test]
 fn round_trip_preserves_limits_and_audit_records() {
     let path = temp_file("roundtrip");
@@ -68,8 +103,11 @@ fn round_trip_preserves_limits_and_audit_records() {
     fs::remove_dir_all(path.parent().unwrap()).ok();
 }
 
-#[tokio::test]
-async fn app_state_restore_populates_the_process_lifetime_store() {
+#[test]
+fn app_state_restore_populates_the_process_lifetime_store() {
+    let _env_guard = crate::config::CONFIG_ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let path = temp_file("app-state");
     let source = SpendStore::new(None);
     let expected = source.upsert(
@@ -90,34 +128,9 @@ async fn app_state_restore_populates_the_process_lifetime_store() {
     let read_env = format!("SHUNT_SPEND_RESTORE_READ_{suffix}");
     std::env::set_var(&secret_env, "0123456789abcdef0123456789abcdef");
     std::env::set_var(&users_env, "dev@example.com:password");
-    let mut config = crate::config::Config::default();
-    config.server.gateway = Some(crate::config::GatewayConfig {
-        public_url: "https://gateway.example".into(),
-        jwt_secret_env: secret_env.clone(),
-        users_env: users_env.clone(),
-        token_ttl_seconds: 3600,
-        trust_forwarded_for: false,
-        policies: None,
-        telemetry: None,
-        state_path: None,
-        admin: Some(crate::config::GatewayAdminConfig {
-            write_keys_env: write_env.clone(),
-            read_keys_env: read_env.clone(),
-            blocked_message: None,
-            audit_retention_days: 365,
-            spend_retention_months: 13,
-            identity_retention_days: 90,
-            group_limit_mode: crate::config::GroupLimitMode::Min,
-            state_path: Some(path.clone()),
-            write_keys: Vec::new(),
-            read_keys: Vec::new(),
-        }),
-        enforcement: crate::config::GatewayEnforcementConfig::default(),
-        oidc: None,
-    });
-    let state =
-        crate::server::AppState::new(config, reqwest::Client::new()).expect("build app state");
-    restore(&state).await.expect("restore state");
+    let state = app_state_with_path(path.clone(), &secret_env, &users_env, &write_env, &read_env);
+    let runtime = tokio::runtime::Runtime::new().expect("build runtime");
+    runtime.block_on(restore(&state)).expect("restore state");
 
     assert_eq!(state.gateway_stores.spend.get(&expected.id), Some(expected));
     assert_eq!(state.gateway_stores.spend.export().audit.len(), 1);
@@ -290,7 +303,12 @@ fn unknown_and_invalid_limits_round_trip_verbatim_without_becoming_visible() {
     assert_eq!(loaded.state.limits.len(), 1);
     assert_eq!(loaded.state.limits[0].id, "spl_valid");
     assert_eq!(
-        loaded.state.opaque_limits,
+        loaded
+            .state
+            .opaque_limits
+            .iter()
+            .map(|record| record.value.clone())
+            .collect::<Vec<_>>(),
         [unknown.clone(), invalid.clone()]
     );
     save_snapshot(&path, &loaded.state).unwrap();
@@ -298,6 +316,151 @@ fn unknown_and_invalid_limits_round_trip_verbatim_without_becoming_visible() {
     assert_eq!(saved["limits"].as_array().unwrap().len(), 3);
     assert!(saved["limits"].as_array().unwrap().contains(&unknown));
     assert!(saved["limits"].as_array().unwrap().contains(&invalid));
+    fs::remove_dir_all(path.parent().unwrap()).ok();
+}
+
+#[test]
+fn valid_limit_with_unknown_field_round_trips_verbatim() {
+    let path = temp_file("unknown-limit-field");
+    let limit = json!({
+        "id":"spl_future_field",
+        "amount":"100",
+        "created_at":"2026-08-10T00:00:00.000Z",
+        "currency":"USD",
+        "period":"monthly",
+        "scope":{"type":"organization"},
+        "type":"spend_limit",
+        "updated_at":"2026-08-10T00:00:00.000Z",
+        "future_policy":{"mode":"strict"}
+    });
+    fs::write(
+        &path,
+        serde_json::to_vec(&json!({
+            "version":1,
+            "limits":[limit.clone()],
+            "audit":[],
+            "next_audit_id":1
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let loaded = load(&path).unwrap().unwrap();
+    save_snapshot(&path, &loaded.state).unwrap();
+    let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(saved["limits"], json!([limit]));
+    fs::remove_dir_all(path.parent().unwrap()).ok();
+}
+
+#[test]
+fn opaque_limit_keeps_its_position_between_visible_limits() {
+    let path = temp_file("opaque-limit-order");
+    let visible = |id: &str| {
+        json!({
+            "id":id,
+            "amount":"100",
+            "created_at":"2026-08-10T00:00:00.000Z",
+            "currency":"USD",
+            "period":"monthly",
+            "scope":{"type":"organization"},
+            "type":"spend_limit",
+            "updated_at":"2026-08-10T00:00:00.000Z"
+        })
+    };
+    let first = visible("spl_first");
+    let opaque = json!({
+        "id":"spl_future",
+        "amount":"200",
+        "created_at":"2026-08-10T00:00:00.000Z",
+        "currency":"USD",
+        "period":"monthly",
+        "scope":{"type":"rbac_group","rbac_group_id":"eng"},
+        "type":"spend_limit",
+        "updated_at":"2026-08-10T00:00:00.000Z"
+    });
+    let last = visible("spl_last");
+    fs::write(
+        &path,
+        serde_json::to_vec(&json!({
+            "version":1,
+            "limits":[first, opaque, last],
+            "audit":[],
+            "next_audit_id":1
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let loaded = load(&path).unwrap().unwrap();
+    save_snapshot(&path, &loaded.state).unwrap();
+    let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let ids = saved["limits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value["id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(ids, ["spl_first", "spl_future", "spl_last"]);
+    fs::remove_dir_all(path.parent().unwrap()).ok();
+}
+
+#[test]
+fn restore_tolerates_and_round_trips_unknown_audit_snapshots() {
+    let _env_guard = crate::config::CONFIG_ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let path = temp_file("unknown-audit-snapshot");
+    let audit = json!({
+        "id":7,
+        "created_at":"2026-08-10T00:00:00.000Z",
+        "actor":"admin-key:test",
+        "before":null,
+        "after":{
+            "id":"spl_future",
+            "amount":"200",
+            "created_at":"2026-08-10T00:00:00.000Z",
+            "currency":"USD",
+            "period":"monthly",
+            "scope":{"type":"rbac_group","rbac_group_id":"eng"},
+            "type":"spend_limit",
+            "updated_at":"2026-08-10T00:00:00.000Z"
+        }
+    });
+    fs::write(
+        &path,
+        serde_json::to_vec(&json!({
+            "version":1,
+            "limits":[],
+            "audit":[audit.clone()],
+            "next_audit_id":8
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let suffix = format!("{}_unknown_audit", std::process::id());
+    let secret_env = format!("SHUNT_SPEND_RESTORE_SECRET_{suffix}");
+    let users_env = format!("SHUNT_SPEND_RESTORE_USERS_{suffix}");
+    let write_env = format!("SHUNT_SPEND_RESTORE_WRITE_{suffix}");
+    let read_env = format!("SHUNT_SPEND_RESTORE_READ_{suffix}");
+    std::env::set_var(&secret_env, "0123456789abcdef0123456789abcdef");
+    std::env::set_var(&users_env, "dev@example.com:password");
+    let state = app_state_with_path(path.clone(), &secret_env, &users_env, &write_env, &read_env);
+
+    let runtime = tokio::runtime::Runtime::new().expect("build runtime");
+    runtime
+        .block_on(restore(&state))
+        .expect("restore must tolerate future audit snapshots");
+    save_snapshot(&path, &state.gateway_stores.spend.export()).unwrap();
+    let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(saved["audit"], json!([audit]));
+    load(&path)
+        .expect("saved audit state remains loadable")
+        .expect("state exists");
+
+    for env in [secret_env, users_env, write_env, read_env] {
+        std::env::remove_var(env);
+    }
     fs::remove_dir_all(path.parent().unwrap()).ok();
 }
 

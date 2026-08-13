@@ -2,23 +2,23 @@ use std::{fs, io, path::Path};
 
 use serde::{Deserialize, Serialize};
 
-use super::store::{canonical_amount, validate_limit, AuditRecord, SpendLimit, SpendState};
+use super::store::{
+    canonical_amount, validate_limit, AuditRecord, OpaqueRecord, SpendLimit, SpendState,
+};
 use crate::server::AppState;
 
 const STATE_VERSION: u32 = 1;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
 struct PersistedSpend {
-    version: u32,
-    #[serde(flatten)]
     state: SpendState,
 }
 
 #[derive(Serialize)]
-struct PersistedSpendRef<'a> {
+struct PersistedSpendRef {
     version: u32,
     limits: Vec<serde_json::Value>,
-    audit: &'a [AuditRecord],
+    audit: Vec<serde_json::Value>,
     next_audit_id: u64,
 }
 
@@ -26,7 +26,7 @@ struct PersistedSpendRef<'a> {
 struct PersistedSpendWire {
     version: u32,
     limits: Vec<serde_json::Value>,
-    audit: Vec<AuditRecord>,
+    audit: Vec<serde_json::Value>,
     next_audit_id: u64,
 }
 
@@ -101,13 +101,23 @@ fn load(path: &Path) -> io::Result<Option<PersistedSpend>> {
     let mut limits = Vec::new();
     let mut opaque_limits = Vec::new();
     for value in wire.limits {
+        let typed_before = limits.len();
         match serde_json::from_value::<SpendLimit>(value.clone()) {
-            Ok(limit) => match validate_limit(&limit) {
-                Ok(()) => {
-                    let mut limit = limit;
+            Ok(mut limit) => match validate_limit(&limit) {
+                Ok(()) if serde_json::to_value(&limit).map_err(io::Error::other)? == value => {
                     limit.amount = canonical_amount(limit.amount.as_deref())
                         .expect("validated persisted amount is canonicalizable");
                     limits.push(limit);
+                }
+                Ok(()) => {
+                    tracing::warn!(
+                        id = %limit.id,
+                        "preserving lossy gateway spend-limit record from persisted state"
+                    );
+                    opaque_limits.push(OpaqueRecord {
+                        typed_before,
+                        value,
+                    });
                 }
                 Err(error) => {
                     tracing::warn!(
@@ -115,7 +125,10 @@ fn load(path: &Path) -> io::Result<Option<PersistedSpend>> {
                         field = error.field(),
                         "preserving invalid gateway spend-limit record from persisted state"
                     );
-                    opaque_limits.push(value);
+                    opaque_limits.push(OpaqueRecord {
+                        typed_before,
+                        value,
+                    });
                 }
             },
             Err(error) => {
@@ -124,40 +137,103 @@ fn load(path: &Path) -> io::Result<Option<PersistedSpend>> {
                     %error,
                     "preserving malformed gateway spend-limit record from persisted state"
                 );
-                opaque_limits.push(value);
+                opaque_limits.push(OpaqueRecord {
+                    typed_before,
+                    value,
+                });
             }
         }
     }
     let next_audit_id = wire
         .audit
         .iter()
-        .map(|record| record.id.saturating_add(1))
+        .filter_map(|record| record.get("id").and_then(serde_json::Value::as_u64))
+        .map(|id| id.saturating_add(1))
         .max()
         .unwrap_or(1)
         .max(wire.next_audit_id);
+    let (audit, opaque_audit) = parse_records::<AuditRecord>(wire.audit, path, "audit")?;
     Ok(Some(PersistedSpend {
-        version: wire.version,
         state: SpendState {
             limits,
             opaque_limits,
-            audit: wire.audit,
+            audit,
+            opaque_audit,
             next_audit_id,
         },
     }))
 }
 
+fn parse_records<T>(
+    values: Vec<serde_json::Value>,
+    path: &Path,
+    kind: &str,
+) -> io::Result<(Vec<T>, Vec<OpaqueRecord>)>
+where
+    T: serde::de::DeserializeOwned + Serialize,
+{
+    let mut typed = Vec::new();
+    let mut opaque = Vec::new();
+    for value in values {
+        let typed_before = typed.len();
+        match serde_json::from_value::<T>(value.clone()) {
+            Ok(record) if serde_json::to_value(&record).map_err(io::Error::other)? == value => {
+                typed.push(record);
+            }
+            Ok(_) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    kind,
+                    "preserving lossy gateway spend-limit record from persisted state"
+                );
+                opaque.push(OpaqueRecord {
+                    typed_before,
+                    value,
+                });
+            }
+            Err(error) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    kind,
+                    %error,
+                    "preserving malformed gateway spend-limit record from persisted state"
+                );
+                opaque.push(OpaqueRecord {
+                    typed_before,
+                    value,
+                });
+            }
+        }
+    }
+    Ok((typed, opaque))
+}
+
+fn interleave_records<T: Serialize>(
+    typed: &[T],
+    opaque: &[OpaqueRecord],
+) -> io::Result<Vec<serde_json::Value>> {
+    let mut output = Vec::with_capacity(typed.len() + opaque.len());
+    let mut opaque = opaque.iter().peekable();
+    for (index, record) in typed.iter().enumerate() {
+        while opaque
+            .peek()
+            .is_some_and(|record| record.typed_before <= index)
+        {
+            output.push(opaque.next().expect("peeked opaque record").value.clone());
+        }
+        output.push(serde_json::to_value(record).map_err(io::Error::other)?);
+    }
+    output.extend(opaque.map(|record| record.value.clone()));
+    Ok(output)
+}
+
 fn save_snapshot(path: &Path, state: &SpendState) -> io::Result<()> {
-    let mut limits = state
-        .limits
-        .iter()
-        .map(serde_json::to_value)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(io::Error::other)?;
-    limits.extend(state.opaque_limits.iter().cloned());
+    let limits = interleave_records(&state.limits, &state.opaque_limits)?;
+    let audit = interleave_records(&state.audit, &state.opaque_audit)?;
     let persisted = PersistedSpendRef {
         version: STATE_VERSION,
         limits,
-        audit: &state.audit,
+        audit,
         next_audit_id: state.next_audit_id,
     };
     let json = serde_json::to_vec_pretty(&persisted).map_err(io::Error::other)?;

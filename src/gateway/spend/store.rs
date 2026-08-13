@@ -102,12 +102,18 @@ pub struct AuditRecord {
     pub after: Option<SpendLimit>,
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OpaqueRecord {
+    pub typed_before: usize,
+    pub value: serde_json::Value,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct SpendState {
     pub limits: Vec<SpendLimit>,
-    #[serde(skip)]
-    pub opaque_limits: Vec<serde_json::Value>,
+    pub opaque_limits: Vec<OpaqueRecord>,
     pub audit: Vec<AuditRecord>,
+    pub opaque_audit: Vec<OpaqueRecord>,
     pub next_audit_id: u64,
 }
 
@@ -224,6 +230,11 @@ impl SpendStore {
     ) -> Option<(SpendState, SpendLimit)> {
         let position = state.limits.iter().position(|limit| limit.id == id)?;
         let before = state.limits.remove(position);
+        for record in &mut state.opaque_limits {
+            if record.typed_before > position {
+                record.typed_before -= 1;
+            }
+        }
         append_audit(&mut state, actor, now, Some(before.clone()), None);
         Some((state, before))
     }
@@ -283,15 +294,56 @@ fn append_audit(
         before,
         after,
     });
-    let excess = state.audit.len().saturating_sub(MAX_AUDIT_RECORDS);
-    if excess > 0 {
-        state.audit.drain(..excess);
+    let dropped = state.audit.len().saturating_sub(MAX_AUDIT_RECORDS);
+    if dropped > 0 {
+        state.audit.drain(..dropped);
+        state
+            .opaque_audit
+            .retain(|record| record.typed_before >= dropped);
+        for record in &mut state.opaque_audit {
+            record.typed_before -= dropped;
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deleting_visible_limit_keeps_opaque_record_relative_position() {
+        let first = SpendLimit {
+            id: "spl_first".into(),
+            amount: Some("1".into()),
+            created_at: "2026-08-09T00:00:00.000Z".into(),
+            currency: "USD".into(),
+            period: Period::Daily,
+            scope: Scope::Organization,
+            object_type: "spend_limit".into(),
+            updated_at: "2026-08-09T00:00:00.000Z".into(),
+        };
+        let mut second = first.clone();
+        second.id = "spl_second".into();
+        second.period = Period::Weekly;
+        let state = SpendState {
+            limits: vec![first.clone(), second],
+            opaque_limits: vec![OpaqueRecord {
+                typed_before: 1,
+                value: serde_json::json!({"id":"spl_opaque"}),
+            }],
+            next_audit_id: 1,
+            ..SpendState::default()
+        };
+
+        let (state, _) = SpendStore::delete_state(
+            state,
+            &first.id,
+            "admin-key:writer",
+            "2026-08-09T00:00:01.000Z".into(),
+        )
+        .unwrap();
+        assert_eq!(state.opaque_limits[0].typed_before, 0);
+    }
 
     #[test]
     fn upsert_state_canonicalizes_before_idempotency_comparison() {
