@@ -1,0 +1,56 @@
+src/gateway/tests.rs
+  s_ebcd9411f97838::t_5093541db47d37 2516,2520
+  s_ebcd9411f97838::t_3ee8cd8bba2512 2434
+src/config/secrets.rs
+  s_ebcd9411f97838::t_11d68a1113c9e7 214-218,257-260,289-292,464-467
+  s_ebcd9411f97838::t_9fc1cff4137348 1-165,181-213,219-256,261-288,293-463,468-570
+  s_ebcd9411f97838::t_48329e07a4341c 177-180
+  s_ebcd9411f97838::t_aa141f5054cca5 166-176
+src/gateway/telemetry_ingest.rs
+  s_ebcd9411f97838::t_932cb20a8792af 401
+  s_ebcd9411f97838::t_55f2904279c7f1 486,489,491
+src/telemetry.rs
+  s_ebcd9411f97838::t_11d68a1113c9e7 459-462,525-528
+  s_ebcd9411f97838::t_3cecd394c2cde9 359-363
+src/main.rs
+  s_ebcd9411f97838::t_1b8321e442d2fb 999
+  s_ebcd9411f97838::t_0106c9eaafb8c1 1011
+  s_ebcd9411f97838::t_88d868689e2bfd 549
+src/reload.rs
+  s_ebcd9411f97838::t_92bddf8889dc6d 756
+  s_ebcd9411f97838::t_e26d1d34204fa0 557-588
+  s_ebcd9411f97838::t_3483357ef47914 743
+  s_ebcd9411f97838::t_929622fbfa29d0 556
+src/config.rs
+  s_ebcd9411f97838::t_b82ca6f89de7e3 587
+  s_ebcd9411f97838::t_11d68a1113c9e7 2765-2769,2771,6574-6575,6579-6580
+  s_ebcd9411f97838::t_101e837ba137b2 2361-2365,2381-2387,2390-2392,2404-2409,2426-2444
+  s_ebcd9411f97838::t_8ac4d4943430b4 1195
+  s_ebcd9411f97838::t_ec6613af2b93be 1133
+  s_ebcd9411f97838::t_4dfc5b3809a16d 2
+  s_ebcd9411f97838::t_3f6e1bb656a98d 5980
+  s_ebcd9411f97838::t_6c032d2a2d4315 6238
+  s_ebcd9411f97838::t_8b3535095a3d38 6558-6573,6576-6578,6581-6582
+  s_ebcd9411f97838::t_c4af684f5b9694 6439-6440,6442-6557,6583-6637
+  s_ebcd9411f97838::t_e9d51c8a7fec76 1160
+  s_ebcd9411f97838::t_efc365f4fe1c2c 803
+  s_ebcd9411f97838::t_ac2f6ff910b3df 16,23
+  s_ebcd9411f97838::t_0c0fe316528307 1799-1820
+  s_ebcd9411f97838::t_cb9a8c34aef715 6441
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "3835eaee02b71c55dc7641a25923e7f0718ea813",
+  "prompts": {},
+  "sessions": {
+    "s_ebcd9411f97838": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2854279c-a956-4cbd-b907-cbef4efe8271",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
