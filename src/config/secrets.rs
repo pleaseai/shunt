@@ -196,9 +196,10 @@ impl LiteralScope {
     }
 
     /// Count of literal secret occurrences that could not be attributed to a
-    /// single field path so far (the same literal value appeared at more
-    /// than one Secret-shaped path in the config file). Safe to call with no
-    /// active scope (returns 0).
+    /// single field path so far — the value appeared at more than one
+    /// Secret-shaped path, or at none at all. See `LiteralContext::
+    /// unattributed` for both causes. Safe to call with no active scope
+    /// (returns 0).
     pub(crate) fn unattributed_count() -> usize {
         LOAD_CONTEXT.with(|context| {
             context

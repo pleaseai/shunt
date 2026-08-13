@@ -2438,10 +2438,13 @@ impl Config {
         // value was written literally in the config file — never the value
         // itself. A `Secret` populated from an env override, a `${...}`
         // reference, or a default has no entry here and is not reported. A
-        // literal value whose path could not be attributed unambiguously
-        // (the same value at more than one Secret-shaped path) is reported
-        // as a count rather than guessed at. Advisory only: a literal secret
-        // is allowed and never fails the load.
+        // literal value whose path could not be attributed is reported as a
+        // count rather than guessed at. Attribution fails for two unrelated
+        // reasons — the same value sits at more than one Secret-shaped path,
+        // or no path matched because the allowlist has drifted behind a newly
+        // added Secret field — so the message states only that the field is
+        // unidentified, never why. Advisory only: a literal secret is allowed
+        // and never fails the load.
         let literal_hits = secrets::LiteralScope::hits();
         let unattributed_hits = secrets::LiteralScope::unattributed_count();
         drop(literal_scope);
@@ -2455,9 +2458,9 @@ impl Config {
                 (true, unattributed) if unattributed > 0 => {
                     tracing::warn!(
                         "{unattributed} config value(s) are written literally in the config \
-                         file at more than one Secret field with the same value, so the \
-                         specific field(s) could not be identified; if they are credentials, \
-                         prefer ${{VAR}} or ${{file:}} so the secret does not live in the file"
+                         file but could not be attributed to a specific field; if they are \
+                         credentials, prefer ${{VAR}} or ${{file:}} so the secret does not \
+                         live in the file"
                     );
                 }
                 (false, 0) => {
@@ -2471,9 +2474,8 @@ impl Config {
                     tracing::warn!(
                         "config values at {paths} are written literally in the config file, and \
                          {unattributed} additional value(s) could not be attributed to a \
-                         specific field because they match more than one Secret field; if they \
-                         are credentials, prefer ${{VAR}} or ${{file:}} so the secret does not \
-                         live in the file"
+                         specific field; if they are credentials, prefer ${{VAR}} or \
+                         ${{file:}} so the secret does not live in the file"
                     );
                 }
                 _ => unreachable!("guarded by the outer `if`"),
@@ -6789,6 +6791,79 @@ provider = "kimi"
 
         assert!(logs.contains("[sentry].dsn"), "{logs}");
         assert!(!logs.contains("[otel].endpoint"), "{logs}");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn literal_secret_warning_at_two_secret_paths_reports_a_count_without_naming_a_cause() {
+        // Regression guard for the wording fixed alongside #348: attribution
+        // can fail for two unrelated reasons -- the same literal value
+        // sitting at more than one Secret-shaped path (this test's
+        // scenario: `sentry.dsn` and `otel.headers.<key>` sharing one
+        // string), or a literal value at a path the hand-maintained
+        // allowlist hasn't caught up to (see
+        // `literal_hit_at_a_path_missing_from_the_secret_field_allowlist_is_unattributed_not_silent`
+        // in src/config/secrets.rs). The aggregated warning must report a
+        // count either way, and must never claim the more specific "more
+        // than one Secret field" cause -- that would be wrong for the
+        // drifted-allowlist case.
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-secrets-unattributed-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shunt.toml");
+        // A clearly-fake literal (the same placeholder DSN the sibling tests
+        // above use), never a real-looking credential; must also be a
+        // syntactically valid DSN since `sentry.dsn` is validated as one. No
+        // `SHUNT_*` env var may hold this same value, or `never_literal`
+        // would suppress the warning by design.
+        let shared = "https://public@o0.ingest.sentry.io/1";
+        std::fs::write(
+            &path,
+            format!(
+                "[server]\ndefault_provider = \"anthropic\"\n\n\
+                 [sentry]\ndsn = \"{shared}\"\n\n\
+                 [otel]\nendpoint = \"https://otel.example.com\"\nservice_name = \"shunt-test\"\n\n\
+                 [otel.headers]\nx-fake-header = \"{shared}\"\n"
+            ),
+        )
+        .unwrap();
+
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let writer_output = Arc::clone(&output);
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || BufferWriter {
+                buffer: Arc::clone(&writer_output),
+            })
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        let config =
+            tracing::subscriber::with_default(subscriber, || Config::load(Some(&path)).unwrap());
+        // Advisory only: a literal secret at an ambiguous path must never
+        // fail the load, and the value itself still resolves normally.
+        assert_eq!(config.sentry.as_ref().unwrap().dsn.expose(), shared);
+
+        let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        assert!(
+            logs.contains(
+                "2 config value(s) are written literally in the config file but \
+                            could not be attributed to a specific field"
+            ),
+            "{logs}"
+        );
+        assert!(
+            !logs.contains("more than one Secret field"),
+            "the message must not assert why attribution failed, only that it did: {logs}"
+        );
 
         let _ = std::fs::remove_dir_all(dir);
     }
