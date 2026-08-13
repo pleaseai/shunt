@@ -26,7 +26,7 @@ reference forms:
   Config load fails if the file is unreadable, the path is relative, or the
   reference is embedded in a longer string.
 
-`${` escapes to a literal `${`, so a field can still contain that character
+`$${` escapes to a literal `${`, so a field can still contain that character
 sequence as ordinary text.
 
 Resolution is **not recursive** — a value produced by `${VAR}` or

@@ -7,7 +7,7 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 
 ## Secret 引用
 
-配置文件中的字符串值可以写成 `${VAR}` 或 `${file:/绝对/路径}` 而不是字面量。`${VAR}` 会替换为环境变量 `VAR` 的值,可以嵌入更长的字符串中,例如 `"Bearer ${TOKEN}"`(若变量未定义,配置加载会失败)。`${file:/绝对/路径}` 会替换为该文件的内容(已 trim),路径必须是绝对路径,且引用必须是该字段的整个值 —— 不能嵌入更长的字符串中(若文件不可读、路径是相对路径,或引用嵌入在更长的字符串中,配置加载会失败)。`${` 会转义为字面量 `${`。解析不是递归的 —— 解析出的值不会被再次扫描。此替换仅适用于配置文件,`SHUNT_*` 环境变量覆盖会按原样使用。它会在每次配置加载时重新执行,包括启动、`shunt check` 以及[热重载](https://github.com/pleaseai/shunt/blob/main/docs/config-reload.md)(SIGHUP 与文件监视),因此以 `${file:}` 引用的 secret 可以通过重写所引用的文件并触发一次重载来轮换,无需重启 shunt。
+配置文件中的字符串值可以写成 `${VAR}` 或 `${file:/绝对/路径}` 而不是字面量。`${VAR}` 会替换为环境变量 `VAR` 的值,可以嵌入更长的字符串中,例如 `"Bearer ${TOKEN}"`(若变量未定义,配置加载会失败)。`${file:/绝对/路径}` 会替换为该文件的内容(已 trim),路径必须是绝对路径,且引用必须是该字段的整个值 —— 不能嵌入更长的字符串中(若文件不可读、路径是相对路径,或引用嵌入在更长的字符串中,配置加载会失败)。`$${` 会转义为字面量 `${`。解析不是递归的 —— 解析出的值不会被再次扫描。此替换仅适用于配置文件,`SHUNT_*` 环境变量覆盖会按原样使用。它会在每次配置加载时重新执行,包括启动、`shunt check` 以及[热重载](https://github.com/pleaseai/shunt/blob/main/docs/config-reload.md)(SIGHUP 与文件监视),因此以 `${file:}` 引用的 secret 可以通过重写所引用的文件并触发一次重载来轮换,无需重启 shunt。
 
 `[sentry] dsn`、`[otel.headers]` 的值,以及 `[server.gateway.telemetry] forward_to[].headers` 的值这三个字段被标记为 redacting secret 类型,在诊断输出中显示为 `[redacted]`。在这些字段中写入字面量值的行为与之前完全相同;若某个 secret 类型字段持有字面量值,shunt 会在启动时记录一次仅列出相关字段路径(绝不包含值)的建议性警告,提示改用 `${VAR}` / `${file:...}`。
 
