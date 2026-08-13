@@ -210,6 +210,33 @@ async fn idempotent_upsert_preserves_timestamp_and_skips_duplicate_audit() {
 }
 
 #[tokio::test]
+async fn canonical_amounts_make_equivalent_upserts_idempotent() {
+    let (config, _env) = SpendEnv::config("canonical-idempotent-upsert");
+    let (router, _, state) = build_router(config).unwrap();
+    let (_, first) = post(&router, WRITE_KEY, organization(json!("7"), "monthly")).await;
+    let (_, second) = post(&router, WRITE_KEY, organization(json!("07"), "monthly")).await;
+
+    assert_eq!(second, first);
+    assert_eq!(second["amount"], "7");
+    assert_eq!(state.gateway_stores.spend.export().audit.len(), 1);
+}
+
+#[tokio::test]
+async fn amount_validation_is_numeric_and_canonicalizes_leading_zeroes() {
+    let (config, _env) = SpendEnv::config("numeric-amount-bound");
+    let (router, _, _) = build_router(config).unwrap();
+    let (response, body) = post(
+        &router,
+        WRITE_KEY,
+        organization(json!("09999999999999999999"), "monthly"),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body["amount"], "9999999999999999999");
+}
+
+#[tokio::test]
 async fn invalid_amount_currency_and_unsupported_scope_return_400() {
     let (config, _env) = SpendEnv::config("validation");
     let (router, _, _) = build_router(config).unwrap();
@@ -241,7 +268,7 @@ async fn invalid_amount_currency_and_unsupported_scope_return_400() {
 async fn amount_and_user_id_length_boundaries_are_enforced() {
     let (config, _env) = SpendEnv::config("length-bounds");
     let (router, _, _) = build_router(config).unwrap();
-    let max_amount = "9".repeat(super::store::MAX_AMOUNT_LENGTH);
+    let max_amount = super::store::MAX_AMOUNT.to_string();
     let max_user_id = "u".repeat(super::store::MAX_USER_ID_LENGTH);
     let (response, _) = post(
         &router,
@@ -255,7 +282,7 @@ async fn amount_and_user_id_length_boundaries_are_enforced() {
         &router,
         WRITE_KEY,
         organization(
-            json!("9".repeat(super::store::MAX_AMOUNT_LENGTH + 1)),
+            json!((super::store::MAX_AMOUNT as u128 + 1).to_string()),
             "monthly",
         ),
     )
@@ -264,7 +291,7 @@ async fn amount_and_user_id_length_boundaries_are_enforced() {
     assert!(body["error"]["message"]
         .as_str()
         .unwrap()
-        .contains(&super::store::MAX_AMOUNT_LENGTH.to_string()));
+        .contains(&super::store::MAX_AMOUNT.to_string()));
 
     let (response, body) = post(
         &router,
@@ -498,6 +525,23 @@ async fn extractor_failures_use_the_admin_error_envelope() {
     )
     .await;
     assert_error_response(&response, &value, StatusCode::METHOD_NOT_ALLOWED);
+}
+
+#[tokio::test]
+async fn unchanged_upsert_skips_persistence() {
+    let directory = TempDir(temp_dir("no-op-skips-persist"));
+    let state_path = directory.0.join("state.json");
+    let (config, _env) =
+        SpendEnv::config_with_state_path("no-op-skips-persist", Some(state_path.clone()));
+    let (router, _, _) = build_router(config).unwrap();
+
+    let (_, first) = post(&router, WRITE_KEY, organization(json!("100"), "monthly")).await;
+    std::fs::remove_file(&state_path).expect("remove persisted state");
+    std::fs::create_dir(&state_path).expect("replace state file with a directory");
+
+    let (response, second) = post(&router, WRITE_KEY, organization(json!("0100"), "monthly")).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(second, first);
 }
 
 #[tokio::test]

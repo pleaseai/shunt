@@ -9,8 +9,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use super::store::{
-    validate_amount, validate_scope, Period, Scope, SpendLimit, MAX_AMOUNT_LENGTH,
-    MAX_USER_ID_LENGTH,
+    canonical_amount, validate_scope, Period, Scope, SpendLimit, MAX_AMOUNT, MAX_USER_ID_LENGTH,
 };
 use crate::{auth::inbound::constant_time_eq, server::AppState};
 
@@ -181,13 +180,25 @@ pub async fn create(State(state): State<AppState>, request: Request) -> Response
     }
     let amount = match body.amount {
         serde_json::Value::Null => None,
-        serde_json::Value::String(amount) if validate_amount(Some(&amount)).is_ok() => Some(amount),
+        serde_json::Value::String(amount) => match canonical_amount(Some(&amount)) {
+            Ok(amount) => amount,
+            Err(_) => {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request_error",
+                    format!(
+                        "amount must be a whole-number string of USD cents between 0 and {MAX_AMOUNT} or null"
+                    ),
+                    request_id,
+                );
+            }
+        },
         _ => {
             return error(
                 StatusCode::BAD_REQUEST,
                 "invalid_request_error",
                 format!(
-                    "amount must be a whole-number string of USD cents with at most {MAX_AMOUNT_LENGTH} digits or null"
+                    "amount must be a whole-number string of USD cents between 0 and {MAX_AMOUNT} or null"
                 ),
                 request_id,
             );
@@ -210,13 +221,16 @@ pub async fn create(State(state): State<AppState>, request: Request) -> Response
     let _gate = state.gateway_stores.spend.mutation_gate().await;
     let snapshot = state.gateway_stores.spend.export();
     let (next, limit) = super::store::SpendStore::upsert_state(
-        snapshot,
+        snapshot.clone(),
         scope,
         body.period,
         amount,
         &actor,
         timestamp(),
     );
+    if next == snapshot {
+        return success(StatusCode::OK, &limit, request_id);
+    }
     if let Err(message) = super::persist::save(&state, &next).await {
         tracing::error!(%message);
         return error(

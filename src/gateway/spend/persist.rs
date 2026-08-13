@@ -2,7 +2,7 @@ use std::{fs, io, path::Path};
 
 use serde::{Deserialize, Serialize};
 
-use super::store::{validate_limit, AuditRecord, SpendLimit, SpendState};
+use super::store::{canonical_amount, validate_limit, AuditRecord, SpendLimit, SpendState};
 use crate::server::AppState;
 
 const STATE_VERSION: u32 = 1;
@@ -17,8 +17,9 @@ struct PersistedSpend {
 #[derive(Serialize)]
 struct PersistedSpendRef<'a> {
     version: u32,
-    #[serde(flatten)]
-    state: &'a SpendState,
+    limits: Vec<serde_json::Value>,
+    audit: &'a [AuditRecord],
+    next_audit_id: u64,
 }
 
 #[derive(Deserialize)]
@@ -97,312 +98,71 @@ fn load(path: &Path) -> io::Result<Option<PersistedSpend>> {
             ),
         ));
     }
-    let limits = wire
-        .limits
-        .into_iter()
-        .filter_map(|value| match serde_json::from_value::<SpendLimit>(value) {
+    let mut limits = Vec::new();
+    let mut opaque_limits = Vec::new();
+    for value in wire.limits {
+        match serde_json::from_value::<SpendLimit>(value.clone()) {
             Ok(limit) => match validate_limit(&limit) {
-                Ok(()) => Some(limit),
+                Ok(()) => {
+                    let mut limit = limit;
+                    limit.amount = canonical_amount(limit.amount.as_deref())
+                        .expect("validated persisted amount is canonicalizable");
+                    limits.push(limit);
+                }
                 Err(error) => {
                     tracing::warn!(
                         id = %limit.id,
                         field = error.field(),
-                        "dropping invalid gateway spend-limit record from persisted state"
+                        "preserving invalid gateway spend-limit record from persisted state"
                     );
-                    None
+                    opaque_limits.push(value);
                 }
             },
             Err(error) => {
                 tracing::warn!(
                     path = %path.display(),
                     %error,
-                    "dropping malformed gateway spend-limit record from persisted state"
+                    "preserving malformed gateway spend-limit record from persisted state"
                 );
-                None
+                opaque_limits.push(value);
             }
-        })
-        .collect();
+        }
+    }
+    let next_audit_id = wire
+        .audit
+        .iter()
+        .map(|record| record.id.saturating_add(1))
+        .max()
+        .unwrap_or(1)
+        .max(wire.next_audit_id);
     Ok(Some(PersistedSpend {
         version: wire.version,
         state: SpendState {
             limits,
+            opaque_limits,
             audit: wire.audit,
-            next_audit_id: wire.next_audit_id,
+            next_audit_id,
         },
     }))
 }
 
 fn save_snapshot(path: &Path, state: &SpendState) -> io::Result<()> {
+    let mut limits = state
+        .limits
+        .iter()
+        .map(serde_json::to_value)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(io::Error::other)?;
+    limits.extend(state.opaque_limits.iter().cloned());
     let persisted = PersistedSpendRef {
         version: STATE_VERSION,
-        state,
+        limits,
+        audit: &state.audit,
+        next_audit_id: state.next_audit_id,
     };
     let json = serde_json::to_vec_pretty(&persisted).map_err(io::Error::other)?;
     crate::atomic_file::write_private_atomic(path, &json)
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::{Arc, Mutex};
-
-    use serde_json::json;
-
-    use super::*;
-    use crate::gateway::spend::store::{Period, Scope, SpendStore};
-
-    fn temp_file(label: &str) -> std::path::PathBuf {
-        let directory = std::env::temp_dir().join(format!(
-            "shunt-spend-persist-{}-{}-{label}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock after epoch")
-                .as_nanos()
-        ));
-        fs::create_dir_all(&directory).expect("create temp directory");
-        directory.join("state.json")
-    }
-
-    fn capture_logs<T>(run: impl FnOnce() -> T) -> (T, String) {
-        use std::io::{self, Write};
-
-        struct BufferWriter {
-            buffer: Arc<Mutex<Vec<u8>>>,
-        }
-        impl Write for BufferWriter {
-            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-                self.buffer.lock().unwrap().extend_from_slice(bytes);
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
-
-        let output = Arc::new(Mutex::new(Vec::new()));
-        let writer_output = Arc::clone(&output);
-        let subscriber = tracing_subscriber::fmt()
-            .with_writer(move || BufferWriter {
-                buffer: Arc::clone(&writer_output),
-            })
-            .with_ansi(false)
-            .without_time()
-            .finish();
-        let result = tracing::subscriber::with_default(subscriber, run);
-        let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
-        (result, logs)
-    }
-
-    #[test]
-    fn round_trip_preserves_limits_and_audit_records() {
-        let path = temp_file("roundtrip");
-        let store = SpendStore::new(None);
-        store.upsert(
-            Scope::Organization,
-            Period::Monthly,
-            Some("50000".into()),
-            "admin-key:test",
-            "2026-08-09T00:00:00.000Z".into(),
-        );
-        let snapshot = store.export();
-        save_snapshot(&path, &snapshot).expect("save state");
-
-        let loaded = load(&path).expect("load state").expect("state exists");
-        assert_eq!(loaded.state.limits, snapshot.limits);
-        assert_eq!(loaded.state.audit, snapshot.audit);
-        fs::remove_dir_all(path.parent().unwrap()).ok();
-    }
-
-    #[tokio::test]
-    async fn app_state_restore_populates_the_process_lifetime_store() {
-        let path = temp_file("app-state");
-        let source = SpendStore::new(None);
-        let expected = source.upsert(
-            Scope::User {
-                user_id: "usr_test".into(),
-            },
-            Period::Weekly,
-            Some("750".into()),
-            "admin-key:test",
-            "2026-08-09T00:00:00.000Z".into(),
-        );
-        save_snapshot(&path, &source.export()).expect("save state");
-
-        let suffix = format!("{}_restore", std::process::id());
-        let secret_env = format!("SHUNT_SPEND_RESTORE_SECRET_{suffix}");
-        let users_env = format!("SHUNT_SPEND_RESTORE_USERS_{suffix}");
-        let write_env = format!("SHUNT_SPEND_RESTORE_WRITE_{suffix}");
-        let read_env = format!("SHUNT_SPEND_RESTORE_READ_{suffix}");
-        std::env::set_var(&secret_env, "0123456789abcdef0123456789abcdef");
-        std::env::set_var(&users_env, "dev@example.com:password");
-        let mut config = crate::config::Config::default();
-        config.server.gateway = Some(crate::config::GatewayConfig {
-            public_url: "https://gateway.example".into(),
-            jwt_secret_env: secret_env.clone(),
-            users_env: users_env.clone(),
-            token_ttl_seconds: 3600,
-            trust_forwarded_for: false,
-            policies: None,
-            telemetry: None,
-            state_path: None,
-            admin: Some(crate::config::GatewayAdminConfig {
-                write_keys_env: write_env.clone(),
-                read_keys_env: read_env.clone(),
-                blocked_message: None,
-                audit_retention_days: 365,
-                spend_retention_months: 13,
-                identity_retention_days: 90,
-                group_limit_mode: crate::config::GroupLimitMode::Min,
-                state_path: Some(path.clone()),
-                write_keys: Vec::new(),
-                read_keys: Vec::new(),
-            }),
-            enforcement: crate::config::GatewayEnforcementConfig::default(),
-            oidc: None,
-        });
-        let state =
-            crate::server::AppState::new(config, reqwest::Client::new()).expect("build app state");
-        restore(&state).await.expect("restore state");
-
-        assert_eq!(state.gateway_stores.spend.get(&expected.id), Some(expected));
-        assert_eq!(state.gateway_stores.spend.export().audit.len(), 1);
-        for env in [secret_env, users_env, write_env, read_env] {
-            std::env::remove_var(env);
-        }
-        fs::remove_dir_all(path.parent().unwrap()).ok();
-    }
-
-    #[test]
-    fn invalid_persisted_limits_are_dropped_individually_and_warned() {
-        let cases = [
-            ("amount-negative", "amount", json!({"amount":"-5"})),
-            ("amount-text", "amount", json!({"amount":"abc"})),
-            (
-                "amount-long",
-                "amount",
-                json!({"amount":"9".repeat(super::super::store::MAX_AMOUNT_LENGTH + 1)}),
-            ),
-            ("currency", "currency", json!({"currency":"EUR"})),
-            ("object-type", "type", json!({"type":"nonsense"})),
-            (
-                "user-empty",
-                "scope.user_id",
-                json!({"scope":{"type":"user","user_id":""}}),
-            ),
-            (
-                "user-long",
-                "scope.user_id",
-                json!({"scope":{"type":"user","user_id":"u".repeat(super::super::store::MAX_USER_ID_LENGTH + 1)}}),
-            ),
-        ];
-
-        for (label, field, patch) in cases {
-            let path = temp_file(label);
-            let valid = serde_json::json!({
-                "id":"spl_valid",
-                "amount":"100",
-                "created_at":"2026-08-10T00:00:00.000Z",
-                "currency":"USD",
-                "period":"monthly",
-                "scope":{"type":"organization"},
-                "type":"spend_limit",
-                "updated_at":"2026-08-10T00:00:00.000Z"
-            });
-            let mut invalid = valid.clone();
-            invalid["id"] = serde_json::json!(format!("spl_{label}"));
-            for (key, value) in patch.as_object().unwrap() {
-                invalid[key] = value.clone();
-            }
-            fs::write(
-                &path,
-                serde_json::to_vec(&serde_json::json!({
-                    "version":1,
-                    "limits":[valid, invalid],
-                    "audit":[],
-                    "next_audit_id":1
-                }))
-                .unwrap(),
-            )
-            .unwrap();
-
-            let (loaded, logs) = capture_logs(|| load(&path).unwrap().unwrap());
-            assert_eq!(loaded.state.limits.len(), 1, "case {label}");
-            assert_eq!(loaded.state.limits[0].id, "spl_valid", "case {label}");
-            assert!(logs.contains(&format!("spl_{label}")), "{logs}");
-            assert!(logs.contains(field), "{logs}");
-            assert!(
-                logs.contains("dropping invalid gateway spend-limit record"),
-                "{logs}"
-            );
-            fs::remove_dir_all(path.parent().unwrap()).ok();
-        }
-    }
-
-    #[test]
-    fn malformed_typed_limit_is_dropped_without_losing_valid_limits() {
-        let cases = [
-            ("period", json!({"period":"quarterly"})),
-            ("scope-type", json!({"scope":{"type":"workspace"}})),
-        ];
-
-        for (label, patch) in cases {
-            let path = temp_file(label);
-            let valid = json!({
-                "id":"spl_valid",
-                "amount":"100",
-                "created_at":"2026-08-10T00:00:00.000Z",
-                "currency":"USD",
-                "period":"monthly",
-                "scope":{"type":"organization"},
-                "type":"spend_limit",
-                "updated_at":"2026-08-10T00:00:00.000Z"
-            });
-            let mut malformed = valid.clone();
-            malformed["id"] = json!(format!("spl_{label}"));
-            for (key, value) in patch.as_object().unwrap() {
-                malformed[key] = value.clone();
-            }
-            fs::write(
-                &path,
-                serde_json::to_vec(&json!({
-                    "version":1,
-                    "limits":[valid, malformed],
-                    "audit":[],
-                    "next_audit_id":1
-                }))
-                .unwrap(),
-            )
-            .unwrap();
-
-            let (loaded, logs) = capture_logs(|| load(&path).unwrap().unwrap());
-            assert_eq!(loaded.state.limits.len(), 1, "case {label}");
-            assert_eq!(loaded.state.limits[0].id, "spl_valid", "case {label}");
-            assert!(
-                logs.contains("dropping malformed gateway spend-limit record"),
-                "{logs}"
-            );
-            fs::remove_dir_all(path.parent().unwrap()).ok();
-        }
-    }
-
-    #[test]
-    fn corrupt_and_version_mismatched_files_fail_closed() {
-        let corrupt = temp_file("corrupt");
-        fs::write(&corrupt, b"not json").unwrap();
-        let error = load(&corrupt).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-        assert!(error.to_string().contains("not valid json"));
-        fs::remove_dir_all(corrupt.parent().unwrap()).ok();
-
-        let mismatch = temp_file("version");
-        fs::write(
-            &mismatch,
-            br#"{"version":999,"limits":[],"audit":[],"next_audit_id":1}"#,
-        )
-        .unwrap();
-        let error = load(&mismatch).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-        assert!(error.to_string().contains("version mismatch"));
-        fs::remove_dir_all(mismatch.parent().unwrap()).ok();
-    }
-}
+mod tests;

@@ -2,9 +2,12 @@ use std::{path::PathBuf, sync::Mutex};
 
 use serde::{Deserialize, Serialize};
 
-/// Nineteen decimal digits always fit in the unsigned 64-bit arithmetic used
-/// by the next enforcement stage.
-pub(crate) const MAX_AMOUNT_LENGTH: usize = 19;
+/// Largest supported amount in USD cents. The next enforcement stage uses
+/// unsigned 64-bit arithmetic, and this bound keeps the wire value at 19 digits.
+pub(crate) const MAX_AMOUNT: u64 = 9_999_999_999_999_999_999;
+/// Stage 1 keeps only the newest audit records to bound whole-state
+/// persistence costs.
+pub(crate) const MAX_AUDIT_RECORDS: usize = 10_000;
 /// User identifiers are opaque, but bounding them limits persisted snapshots.
 pub(crate) const MAX_USER_ID_LENGTH: usize = 256;
 
@@ -56,15 +59,18 @@ pub struct SpendLimit {
     pub updated_at: String,
 }
 
-pub(crate) fn validate_amount(amount: Option<&str>) -> Result<(), ValidationError> {
-    if amount.is_some_and(|value| {
-        value.is_empty()
-            || value.len() > MAX_AMOUNT_LENGTH
-            || !value.bytes().all(|byte| byte.is_ascii_digit())
-    }) {
+pub(crate) fn canonical_amount(amount: Option<&str>) -> Result<Option<String>, ValidationError> {
+    let Some(value) = amount else {
+        return Ok(None);
+    };
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(ValidationError::Amount);
     }
-    Ok(())
+    let amount = value.parse::<u64>().map_err(|_| ValidationError::Amount)?;
+    if amount > MAX_AMOUNT {
+        return Err(ValidationError::Amount);
+    }
+    Ok(Some(amount.to_string()))
 }
 
 pub(crate) fn validate_scope(scope: &Scope) -> Result<(), ValidationError> {
@@ -77,7 +83,7 @@ pub(crate) fn validate_scope(scope: &Scope) -> Result<(), ValidationError> {
 }
 
 pub(crate) fn validate_limit(limit: &SpendLimit) -> Result<(), ValidationError> {
-    validate_amount(limit.amount.as_deref())?;
+    canonical_amount(limit.amount.as_deref())?;
     if limit.currency != "USD" {
         return Err(ValidationError::Currency);
     }
@@ -96,9 +102,11 @@ pub struct AuditRecord {
     pub after: Option<SpendLimit>,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct SpendState {
     pub limits: Vec<SpendLimit>,
+    #[serde(skip)]
+    pub opaque_limits: Vec<serde_json::Value>,
     pub audit: Vec<AuditRecord>,
     pub next_audit_id: u64,
 }
@@ -151,6 +159,8 @@ impl SpendStore {
         actor: &str,
         now: String,
     ) -> (SpendState, SpendLimit) {
+        let amount = canonical_amount(amount.as_deref())
+            .expect("spend amount must be validated before updating state");
         let position = state
             .limits
             .iter()
@@ -273,11 +283,63 @@ fn append_audit(
         before,
         after,
     });
+    let excess = state.audit.len().saturating_sub(MAX_AUDIT_RECORDS);
+    if excess > 0 {
+        state.audit.drain(..excess);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upsert_state_canonicalizes_before_idempotency_comparison() {
+        let state = SpendState {
+            next_audit_id: 1,
+            ..SpendState::default()
+        };
+        let (state, first) = SpendStore::upsert_state(
+            state,
+            Scope::Organization,
+            Period::Monthly,
+            Some("7".into()),
+            "admin-key:writer",
+            "2026-08-09T00:00:00.000Z".into(),
+        );
+        let (state, second) = SpendStore::upsert_state(
+            state,
+            Scope::Organization,
+            Period::Monthly,
+            Some("07".into()),
+            "admin-key:writer",
+            "2026-08-09T00:00:01.000Z".into(),
+        );
+
+        assert_eq!(second, first);
+        assert_eq!(state.audit.len(), 1);
+    }
+
+    #[test]
+    fn audit_records_are_capped_by_dropping_the_oldest() {
+        let mut state = SpendState {
+            next_audit_id: 1,
+            ..SpendState::default()
+        };
+        for index in 0..=MAX_AUDIT_RECORDS {
+            append_audit(
+                &mut state,
+                "admin-key:writer",
+                format!("2026-08-09T00:00:{index:02}.000Z"),
+                None,
+                None,
+            );
+        }
+
+        assert_eq!(state.audit.len(), MAX_AUDIT_RECORDS);
+        assert_eq!(state.audit.first().unwrap().id, 2);
+        assert_eq!(state.audit.last().unwrap().id, MAX_AUDIT_RECORDS as u64 + 1);
+    }
 
     #[test]
     fn audit_records_have_monotonic_ids_actor_and_snapshots() {
