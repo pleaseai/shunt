@@ -112,9 +112,9 @@ auth = "xai_oauth"                                # 读取 + 自动刷新 ~/.shu
 
 ```toml
 [[routes]]
-model = "grok-4.5"
+model = "grok-4.6"
 provider = "grok"
-# upstream_model = "grok-4.5"   # 可选:向上游转发一个不同的 slug
+# upstream_model = "grok-4.6"   # 可选:向上游转发一个不同的 slug
 ```
 
 ## 路径 B —— xAI 开发者 API(`xai`)
@@ -139,7 +139,7 @@ api_key_env = "XAI_API_KEY"
 
 ```toml
 [[routes]]
-model = "grok-4.5"
+model = "grok-4.6"
 provider = "xai"
 ```
 
@@ -159,7 +159,7 @@ provider = "xai"
 ## 模型 slug
 
 slug 目录是 **xAI 的**,而非 shunt 的 —— shunt 转发你所路由的任意 slug。当前的
-编码/前沿 slug 有 `grok-4.5`、`grok-4.3` 和 `grok-build-0.1`。在路由中用 `upstream_model`
+编码/前沿 slug 有 `grok-4.6`、`grok-4.5` 和 `grok-build-0.1`。在路由中用 `upstream_model`
 可将一个别名映射到一个实时 slug,而无需改动你的 Claude Code 环境。(模型
 [发现](/zh-cn/guides/model-discovery/) 只会透出你声明的 `claude-` 命名别名,因此无法列出原始 Grok
 slug —— 请通过下文的 `ANTHROPIC_CUSTOM_MODEL_OPTION` 或分层重映射来访问。)
@@ -170,7 +170,7 @@ Grok slug 不以 `claude-` 开头,因此 Claude Code 的 `/model` 选择器不�
 其机制与 **Codex 完全相同** —— 直接把 id 加入选择器:
 
 ```bash
-export ANTHROPIC_CUSTOM_MODEL_OPTION="grok-4.5"   # 必须通过 [models.upstream_model]、[[routes]] 或 [[route_prefixes]] 解析
+export ANTHROPIC_CUSTOM_MODEL_OPTION="grok-4.6"   # 必须通过 [models.upstream_model]、[[routes]] 或 [[route_prefixes]] 解析
 ```
 
 同一节 [Codex 章节](/zh-cn/guides/codex/#4-在-claude-code-中选择模型) 逐字覆盖其余内容:
@@ -182,7 +182,7 @@ export ANTHROPIC_CUSTOM_MODEL_OPTION="grok-4.5"   # 必须通过 [models.upstrea
 <Aside type="tip" title="现成的 agent">
 
 **[`shunt-xai` 插件](https://github.com/pleaseai/shunt/tree/main/plugins/shunt-xai)** 提供了
-面向 `grok-4.5` / `grok-4.3` / `grok-build-0.1` 的子 agent —— 在
+面向 `grok-4.6` / `grok-4.5` / `grok-build-0.1` 的子 agent —— 在
 `/plugin marketplace add pleaseai/shunt` 之后用 `/plugin install shunt-xai@shunt` 安装。每个 agent
 固定其 `model:`,因此只有该子 agent 会分流;主会话仍留在 Claude。按你所持的凭据将 slug 路由到
 `grok` 或 `xai`(在 `shunt.toml` 中)。
@@ -204,12 +204,12 @@ effort = "high"        # 应用于所有 grok 流量
 
 # ……或按路由
 [[routes]]
-model = "grok-4.5"
+model = "grok-4.6"
 provider = "grok"
 effort = "high"
 ```
 
-`grok-4.5` 接受 `reasoning.effort`(已实测)。对任何在其上 `400` 的 slug,请让 `effort`
+`grok-4.6` 接受 `reasoning.effort`(已实测)。对任何在其上 `400` 的 slug,请让 `effort`
 保持未设置。完整优先级和力度表:[力度与上下文](/zh-cn/guides/effort-and-context/#推理力度)。
 
 ## 上下文窗口
@@ -244,7 +244,7 @@ default_provider = "anthropic"
 effort = "high"     # 可选:为所有 Grok 流量选择性启用推理力度
 
 [[routes]]
-model = "grok-4.5"
+model = "grok-4.6"
 provider = "grok"
 ```
 
@@ -255,10 +255,10 @@ shunt login xai                                     # 一次性设备码登录
 ./target/release/shunt run                          # 启动网关
 
 export ANTHROPIC_BASE_URL=http://127.0.0.1:3001
-export ANTHROPIC_CUSTOM_MODEL_OPTION="grok-4.5"     # 加入 /model 选择器
+export ANTHROPIC_CUSTOM_MODEL_OPTION="grok-4.6"     # 加入 /model 选择器
 ```
 
-从 `/model` 选择 **grok-4.5**。会话中的其他一切仍原样流向 Anthropic;
+从 `/model` 选择 **grok-4.6**。会话中的其他一切仍原样流向 Anthropic;
 只有映射模型的推理由你的 SuperGrok 订阅应答。
 
 ## 故障排查

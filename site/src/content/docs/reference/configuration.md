@@ -14,6 +14,45 @@ The keys below are shown in TOML, but a config file may also be written in YAML 
 | `max_concurrent_requests` | `1024` | Maximum inbound requests in flight through response-body completion. Excess requests are shed immediately with `503` and `Retry-After: 1`; `0` disables the limit. `/` and `/health` are exempt. A restart is required after changing this key |
 | `sse_keepalive_seconds` | `30` | Idle seconds before an SSE `ping` is injected; `0` disables ([details](/guides/shared-gateway/#sse-keepalive-pings)) |
 
+## `[server.access_control]`
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `allow_cidrs` | `[]` | Allowed client CIDRs. A non-empty list makes other addresses default-deny. `/` and `/health` bypass this allow check only |
+| `deny_cidrs` | `[]` | Denied client CIDRs. Deny is evaluated first and also applies to `/` and `/health` |
+| `trust_forwarded_for` | `false` | Use the first `X-Forwarded-For` value, then `X-Real-IP`, instead of the connection peer. Enable only behind a trusted proxy that overwrites client-supplied forwarding headers |
+
+CIDRs are validated by `shunt check`. A missing peer address is rejected when `allow_cidrs` is non-empty. Access-control changes require a restart because the router layer is installed at boot.
+
+This `trust_forwarded_for` switch is independent of `[server.gateway] trust_forwarded_for`. The access-control switch affects only CIDR allow/deny rules; the gateway switch affects only the device-flow rate limiters. If both surfaces run behind a trusted reverse proxy, set both switches. Setting only one leaves the other surface using the socket peer address.
+
+## `[server.limits]`
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `max_request_bytes` | `33554432` (32 MiB) | Maximum body bytes for Anthropic Messages and inbound Codex Responses requests. An oversized declared `Content-Length` is rejected before body buffering; chunked bodies use the same cap while being read. Returns `413 request_too_large`. Other gateway, admin, telemetry, and analytics routes retain their endpoint-specific limits. Hot-reloads |
+| `max_request_header_bytes` | _(unset)_ | Maximum sum of parsed header-name and header-value lengths across all headers. This is not raw HTTP wire size. Returns `431`; changing it requires a restart |
+| `max_url_length` | _(unset)_ | Maximum request URI string length, including the query. Returns `414`; changing it requires a restart |
+
+`max_request_bytes` must be greater than zero. The optional limits must be greater than zero when set. The 32 MiB body default replaces the previous hardcoded 64 MiB limit; raise it for larger file or image requests.
+
+## `[server.timeouts]`
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `upstream_ttfb_ms` | `120000` | Maximum wait for inference-upstream HTTP response headers; `0` disables. The response body then has no wall-clock cap, preserving long SSE streams. Returns `504 timeout_error` and hot-reloads |
+
+This timeout covers the Anthropic Messages transports, OpenAI Responses HTTP transport (including WebSocket fallback), Gemini HTTP transport, and inbound Codex Responses passthrough. It does not cover Codex WebSocket turns, Cursor transports, Antigravity processes, discovery, login/OAuth, usage polling, OIDC, or telemetry relay.
+
+## `[server.rate_limits]`
+
+| Table | `max` default | `window_seconds` default | Meaning |
+| :-- | :-- | :-- | :-- |
+| `device_authorization` | `30` | `600` | Per-IP fixed-window limit for `POST /oauth/device_authorization` |
+| `device_verify` | `10` | `600` | Independent per-IP fixed-window limit for `user_code` submissions at `POST /device` |
+
+Both `max` and `window_seconds` must be greater than zero. These tables are inert without `[server.gateway]`. The limiter stores are created at boot, so changes require a restart.
+
 ## `[server.auth]` (optional)
 
 Presence of this table enables inbound client-token auth ([details](/guides/shared-gateway/)):
@@ -24,6 +63,8 @@ Presence of this table enables inbound client-token auth ([details](/guides/shar
 | `tokens_env` | `SHUNT_CLIENT_TOKENS` | Env var holding comma-separated `name:token` pairs |
 
 The named environment variable must contain one or more credentials, for example `SHUNT_CLIENT_TOKENS="alice:<token>,bob:<token>"`. Startup fails closed if the table is present but the variable is unset, empty, or malformed. Gated routes (mapped `/v1/messages` inference and `GET /v1/models` discovery) accept the token via the configured header, `Authorization: Bearer`, or `x-api-key` — the dedicated header wins when several carry valid tokens.
+
+A request whose whole route chain is `passthrough` skips this gate: such a route forwards the caller's own upstream credential, so the gateway lends them nothing. **`kind = "antigravity"` is exempt from that exemption** and is always treated as credential-injecting, whatever its `auth` says. The adapter ignores the caller's credential entirely and runs the operator's local `agy` with `--dangerously-skip-permissions`, so a passthrough Antigravity route would otherwise be unauthenticated local code execution as the user running shunt — sandboxed or not. Note this closes the exemption, it does not create a requirement: with neither `[server.auth]` nor [`[server.gateway]`](#servergateway-optional) configured, every route stays open, which is why an unsandboxed Antigravity provider is [refused outright off loopback](#providersname-legacy).
 
 ## `[server.admin]` (optional)
 
@@ -216,6 +257,36 @@ A positive `usage_refresh_seconds` additionally starts a background poller that 
 
 A positive `ramp_initial_concurrency` enables **storm control** on every account pool: after a failover switch, concurrent in-flight requests would otherwise all land on the freshly selected account at once. With the gate on, an identity that just started taking traffic (fresh, back from a cooldown, or idle for 60 seconds) admits at most the configured number of concurrent requests; each successful response doubles the allowance (slow start), a failover-worthy failure restarts the ramp, and a denied request spills to the next account in selection order. The last remaining candidate is always attempted regardless of the gate, so gating can defer but never fail a request that an ungated pool would have served. Note this also means a pool whose accounts all resolve to a single upstream identity is effectively ungated: its only candidate is always the last candidate, so the setting only takes effect with two or more distinct account identities.
 
+## `[server.status]` (optional)
+
+Observation-only background polling of provider Statuspage `summary.json` endpoints, for visibility rather than decisioning: it never feeds routing, failover, or pool/cooldown behavior. It only updates a shared store surfaced by the `shunt.upstream.status` metric and the admin dashboard's "Upstream status" strip ([`GET /admin/status`](/reference/endpoints/)). When the table is absent, or `sources` is empty, the poller does not start.
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `refresh_seconds` | `300` | Poll interval, in seconds; a positive value below 60 is clamped up to a 60-second floor. `0` disables polling |
+| `sources` | `[]` | Array of `{ provider, url }` tables, one per Statuspage `summary.json` endpoint to poll |
+
+```toml
+[server.status]
+refresh_seconds = 300
+
+[[server.status.sources]]
+provider = "claude"
+url = "https://status.claude.com/api/v2/summary.json"
+
+[[server.status.sources]]
+provider = "openai"
+url = "https://status.openai.com/api/v2/summary.json"
+```
+
+Each `sources` entry needs a non-empty, unique `provider` label and an `http`/`https` `url` without a query, fragment, or embedded credentials. Shunt fails startup on an empty or duplicate `provider`, or an invalid URL shape. This validation is fail-closed (a bad config refuses to boot), unlike the poller's own runtime behavior below, which is deliberately fail-open into an explicit "no signal" state.
+
+A fetch failure, non-2xx response, oversized body (capped at 1 MiB), invalid JSON, or an unrecognized `indicator` string in the response all resolve to `unknown` ("no signal") rather than `none` ("operational"): a failed poll can only ever replace a source's stored entry with `unknown`, never leave a stale "operational" value in place or report a false all-clear for a source shunt could not actually reach. Sources in the `unknown` state are also omitted from the `shunt.upstream.status` metric entirely, rather than reported as a `0` sample.
+
+`GET /admin/status` (admin-authenticated) returns each configured source's most recently observed indicator, description, incidents, and observed timestamp. A configured source whose first poll has not completed is returned as `unknown`; an unconfigured or empty `[server.status]` reports an empty `sources` list, which the dashboard reads as "hide this section" rather than rendering an empty table.
+
+Whether the poller runs at all, and its polling interval, are decided once from the boot config — exactly like `[server.pool] usage_refresh_seconds` above: if `[server.status]` is absent, empty, or `refresh_seconds` is `0` at boot, no background task is created, and a later reload that enables it does not retroactively start one. Once running, each tick re-reads the current `sources` list from the live (possibly reloaded) config, so edits to which sources are polled take effect from the next tick onward; the polling interval itself does not change on reload.
+
 ## `[[upstreams]]` (ordered failover)
 
 `[[upstreams]]` is an ordered array of named upstreams. Declaration order is the global failover order; a model's `[models.upstream_model]` map selects which entries participate. The map's textual order does not affect routing.
@@ -251,10 +322,11 @@ The example attempts `anthropic-primary`, `kimi-overflow`, and `codex-fallback`,
 | :-- | :-- | :-- |
 | `name` | yes | Unique non-empty upstream name. Routes, model maps, `server.default_provider`, metrics, and admin views use this name. |
 | `provider` | unless `kind` + `base_url` are set | Built-in preset. Supplies `kind`, `base_url`, and default auth. Explicit fields override preset values. |
-| `kind` | without a preset | `anthropic`, `responses`, or `cursor`. |
-| `base_url` | without a preset | Upstream base URL. For `kind = "cursor"`, this is the login/token-refresh surface only; inference uses the fixed agent host `https://agentn.global.api5.cursor.sh`, overridable only with `SHUNT_CURSOR_AGENT_BASE_URL`. |
+| `kind` | without a preset | `anthropic`, `responses`, `cursor`, `gemini`, or `antigravity`. The last two have no entry in the preset table below — the built-in `[providers.*]` tables of the same names are the separate legacy mechanism, not presets — so an ordered upstream on either must set `kind` explicitly. |
+| `base_url` | without a preset | Upstream base URL. For `kind = "cursor"`, this is the login/token-refresh surface only; inference uses the fixed agent host `https://agentn.global.api5.cursor.sh`, overridable only with `SHUNT_CURSOR_AGENT_BASE_URL`. For `kind = "antigravity"` there is no upstream to address — the adapter runs a local `agy` binary and never reads this field — but a presetless upstream must still set it; any placeholder (the built-in provider uses `http://localhost`) will do. |
 | `auth` | no | Auth mode string, or a mode-specific map. Defaults to the preset's auth, otherwise `passthrough`. |
 | `effort`, `service_tier`, `count_tokens`, `websocket`, `tool_search`, `request_compression`, `retry` | no | Same per-upstream settings documented for legacy providers. Presets do not override `count_tokens`. `retry` is normalized for Cursor upstreams but does not apply to the Cursor streaming turn. |
+| `workspace_roots`, `sandbox` | no | Same Antigravity controls documented for legacy providers, with the same defaults (`[]` and `true`). An ordered upstream needs them for the same reasons a `[providers.*]` entry does. |
 
 Available presets:
 
@@ -296,13 +368,13 @@ The `kimi` preset reads `MOONSHOT_API_KEY`. Older examples that explicitly used 
 
 ## `[providers.<name>]` (legacy)
 
-Each provider is a table under a name of your choosing. Built-ins (`anthropic`, `openai`, `codex`, `xai`, `grok`, `cursor`) can be partially overridden — config maps deep-merge.
+Each provider is a table under a name of your choosing. Built-ins (`anthropic`, `openai`, `codex`, `xai`, `grok`, `cursor`, `gemini`, `antigravity`) can be partially overridden — config maps deep-merge.
 
 | Key | Values | Meaning |
 | :-- | :-- | :-- |
-| `kind` | `anthropic` \| `responses` \| `cursor` | Upstream protocol / adapter. `anthropic` = Messages API (passed through, optionally re-keyed); `responses` = Anthropic Messages translated to the OpenAI Responses API; `cursor` = the native Cursor ConnectRPC/protobuf AgentService adapter. |
+| `kind` | `anthropic` \| `responses` \| `cursor` \| `gemini` \| `antigravity` | Upstream protocol / adapter. `anthropic` = Messages API (passed through, optionally re-keyed); `responses` = Anthropic Messages translated to the OpenAI Responses API; `cursor` = the native Cursor ConnectRPC/protobuf AgentService adapter; `gemini` = Anthropic Messages translated to Gemini `generateContent`/`streamGenerateContent` on the Google Code Assist backend; `antigravity` = no upstream at all, running the local Antigravity CLI binary (`agy`) as a subprocess. |
 | `base_url` | URL | Upstream base; shunt appends the endpoint path. For `kind = "cursor"`, this is the login/token-refresh surface only; it does not select the agent/inference host. |
-| `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `claude_oauth` \| `xai_oauth` \| `cursor_oauth` | `passthrough` forwards the client's own credential; `api_key` injects a key from `api_key_env`; `chatgpt_oauth` reuses `~/.codex/auth.json`; `claude_oauth` selects from explicit Anthropic accounts; `xai_oauth` reuses `~/.shunt/xai-auth.json` from `shunt login xai` (only sent to x.ai/grok.com hosts over HTTPS); `cursor_oauth` reuses `~/.shunt/cursor-auth.json` (`shunt login cursor`). |
+| `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `claude_oauth` \| `xai_oauth` \| `cursor_oauth` \| `google_oauth` \| `none` | `passthrough` forwards the client's own credential; `api_key` injects a key from `api_key_env`; `chatgpt_oauth` reuses `~/.codex/auth.json`; `claude_oauth` selects from explicit Anthropic accounts; `xai_oauth` reuses `~/.shunt/xai-auth.json` from `shunt login xai` (only sent to x.ai/grok.com hosts over HTTPS); `cursor_oauth` reuses `~/.shunt/cursor-auth.json` (`shunt login cursor`); `google_oauth` reuses the gemini CLI login in `~/.gemini/oauth_creds.json` and is valid only with `kind = "gemini"`; `none` sends no credential at all, for adapters with no upstream to authenticate against (`kind = "antigravity"`). |
 | `api_key_env` | env var name | Where the key is read from, when `auth = "api_key"`. |
 | `api_key_header` | `bearer` (default) \| `x_api_key` | Header the injected key is sent in. |
 | `accounts` | array of account tables | Anthropic OAuth account pool. Valid only with `kind = "anthropic"` and `auth = "claude_oauth"`; see below. |
@@ -313,6 +385,8 @@ Each provider is a table under a name of your choosing. Built-ins (`anthropic`, 
 | `tool_search` | unset ("auto", default) \| `true` \| `false` | Use the native client-executed `tool_search` protocol for Claude Code's tool search on a GPT-5.4+ model, gated on flavor (non-xAI/Grok). Unset defaults to native only for known-good hosts — the ChatGPT/Codex backend and `api.openai.com` — and the text shim everywhere else, including custom OpenAI-compatible endpoints (LiteLLM, vLLM, OpenRouter, self-hosted). Set `true` to opt a verified custom endpoint into native, or `false` to always force the shim. See [Codex → Tool search](/guides/codex/#native-protocol). |
 | `request_compression` | `true` (default) \| `false` | zstd-compress the Responses **request** body (`content-encoding: zstd`, level 3), matching what the Codex CLI sends to the same backend. Effective only on the ChatGPT/Codex flavor (`auth = "chatgpt_oauth"`) — no other Responses upstream is verified to accept a compressed request body, so the flag is inert there. Set `false` to send plain JSON, e.g. behind a middlebox that mishandles compressed request bodies. |
 | `retry` | sub-table | Bounded retry/backoff for supported transient upstream failures. On by default (conservative); see below. Normalized but inert for the Cursor streaming turn. |
+| `workspace_roots` | array of paths (default `[]`) | `kind = "antigravity"` only. Roots inside which a prompt-supplied `Working directory:` may land. The system prompt is client-controlled and routinely quotes fetched documents, so it is prompt-injectable; a prompt-derived path is canonicalized (resolving symlinks and `..`) and honored **only** if it falls inside one of these roots. A path outside them is refused — the *path* is ignored, not the request, and the run falls back to the gateway's own working directory, exactly as it would had the prompt named no directory at all. Refusing the request instead would let anyone able to inject a line of system-prompt text fail every turn. Empty (the default) means no prompt-derived path is ever honored — only `SHUNT_AGY_WORKSPACE` or the gateway's own directory. |
+| `sandbox` | `true` (default) \| `false` | `kind = "antigravity"` only. Runs the CLI with `--sandbox`, which keeps the agent's reads and writes inside the workspace. Print mode passes `--dangerously-skip-permissions` (it cannot service an approval prompt), so without the sandbox the agent has shell access and no workspace boundary — `workspace_roots` only changes where it *starts*. Set `false` only where unrestricted terminal access is genuinely needed and the caller is trusted. **Refused at startup when combined with a non-loopback `bind`**, which would hand arbitrary local execution to anyone who can post a Messages request. The adapter also enforces this rule per request against the listener bound at boot, so a hot reload cannot disable the sandbox while a public listener remains active. Restart shunt on a loopback bind before disabling it. |
 
 ### `[providers.<name>.retry]`
 

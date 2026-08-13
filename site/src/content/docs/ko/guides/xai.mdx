@@ -110,9 +110,9 @@ auth = "xai_oauth"                                # ~/.shunt/xai-auth.json 읽�
 
 ```toml
 [[routes]]
-model = "grok-4.5"
+model = "grok-4.6"
 provider = "grok"
-# upstream_model = "grok-4.5"   # 선택: 다른 슬러그를 업스트림으로 전달
+# upstream_model = "grok-4.6"   # 선택: 다른 슬러그를 업스트림으로 전달
 ```
 
 ## 경로 B — xAI 개발자 API (`xai`)
@@ -137,7 +137,7 @@ api_key_env = "XAI_API_KEY"
 
 ```toml
 [[routes]]
-model = "grok-4.5"
+model = "grok-4.6"
 provider = "xai"
 ```
 
@@ -157,7 +157,7 @@ provider = "xai"
 ## 모델 슬러그
 
 슬러그 카탈로그는 shunt의 것이 아니라 **xAI의 것**입니다 — shunt는 사용자가 라우팅하는 슬러그를 그대로
-전달합니다. 현재 코딩/프런티어 슬러그는 `grok-4.5`, `grok-4.3`, `grok-build-0.1`입니다. 라우트에서
+전달합니다. 현재 코딩/프런티어 슬러그는 `grok-4.6`, `grok-4.5`, `grok-build-0.1`입니다. 라우트에서
 `upstream_model`을 사용하면 Claude Code env를 건드리지 않고 별칭을 실제 슬러그로 매핑할 수 있습니다. (모델
 [디스커버리](/ko/guides/model-discovery/)는 사용자가 선언한 `claude-` 이름의 별칭만 노출하므로 원시 Grok
 슬러그는 나열할 수 없습니다 — 아래의 `ANTHROPIC_CUSTOM_MODEL_OPTION`이나 티어 리매핑으로 접근하세요.)
@@ -168,7 +168,7 @@ Grok 슬러그는 `claude-`로 시작하지 않으므로, Claude Code의 `/model
 나열하지 않습니다. 메커니즘은 **Codex와 동일합니다** — id를 선택기에 직접 추가하세요:
 
 ```bash
-export ANTHROPIC_CUSTOM_MODEL_OPTION="grok-4.5"   # [models.upstream_model], [[routes]], [[route_prefixes]] 중 하나로 해석되어야 함
+export ANTHROPIC_CUSTOM_MODEL_OPTION="grok-4.6"   # [models.upstream_model], [[routes]], [[route_prefixes]] 중 하나로 해석되어야 함
 ```
 
 동일한 [Codex 섹션](/ko/guides/codex/#4-claude-code에서-모델-선택)이 나머지를 그대로 다룹니다:
@@ -180,7 +180,7 @@ export ANTHROPIC_CUSTOM_MODEL_OPTION="grok-4.5"   # [models.upstream_model], [[r
 <Aside type="tip" title="미리 만들어진 에이전트">
 
 **[`shunt-xai` 플러그인](https://github.com/pleaseai/shunt/tree/main/plugins/shunt-xai)**은
-`grok-4.5` / `grok-4.3` / `grok-build-0.1`용 서브에이전트를 제공합니다 —
+`grok-4.6` / `grok-4.5` / `grok-build-0.1`용 서브에이전트를 제공합니다 —
 `/plugin marketplace add pleaseai/shunt` 후 `/plugin install shunt-xai@shunt`로 설치하세요.
 각 에이전트는 자신의 `model:`을 고정하므로, 그 서브에이전트만 우회하며 메인 세션은 Claude에 머뭅니다.
 보유한 자격 증명에 따라 `shunt.toml`에서 슬러그를 `grok` 또는 `xai`로 라우팅하세요.
@@ -202,12 +202,12 @@ effort = "high"        # 모든 grok 트래픽에 적용
 
 # …또는 라우트별
 [[routes]]
-model = "grok-4.5"
+model = "grok-4.6"
 provider = "grok"
 effort = "high"
 ```
 
-`grok-4.5`는 `reasoning.effort`를 받아들입니다(실시간 검증됨). `400`을 반환하는 슬러그에 대해서는
+`grok-4.6`은 `reasoning.effort`를 받아들입니다(실시간 검증됨). `400`을 반환하는 슬러그에 대해서는
 `effort`를 설정하지 마세요. 전체 우선순위와 effort 테이블: [노력 & 컨텍스트](/ko/guides/effort-and-context/#추론-노력).
 
 ## 컨텍스트 윈도우
@@ -242,7 +242,7 @@ default_provider = "anthropic"
 effort = "high"     # 선택: 모든 Grok 트래픽에 추론 노력 활성화
 
 [[routes]]
-model = "grok-4.5"
+model = "grok-4.6"
 provider = "grok"
 ```
 
@@ -253,10 +253,10 @@ shunt login xai                                     # 일회성 디바이스 코
 ./target/release/shunt run                          # 게이트웨이 시작
 
 export ANTHROPIC_BASE_URL=http://127.0.0.1:3001
-export ANTHROPIC_CUSTOM_MODEL_OPTION="grok-4.5"     # /model 선택기에 추가
+export ANTHROPIC_CUSTOM_MODEL_OPTION="grok-4.6"     # /model 선택기에 추가
 ```
 
-`/model`에서 **grok-4.5**를 선택하세요. 세션의 나머지는 모두 여전히 변경 없이 Anthropic으로 흐르며,
+`/model`에서 **grok-4.6**을 선택하세요. 세션의 나머지는 모두 여전히 변경 없이 Anthropic으로 흐르며,
 오직 매핑된 모델의 추론만 사용자의 SuperGrok 구독이 응답합니다.
 
 ## 문제 해결

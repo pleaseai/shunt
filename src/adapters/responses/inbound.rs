@@ -14,6 +14,7 @@ use crate::{
     config::AccountConfig,
     routing::Route,
     server::AppState,
+    upstream_timeout::SendError,
 };
 
 use super::{
@@ -88,8 +89,9 @@ async fn forward_codex_passthrough_single(
         }),
         _ => None,
     };
-    let upstream =
-        passthrough_send(&state, &route, credential, &passthrough_headers, &body).await?;
+    let upstream = passthrough_send(&state, &route, credential, &passthrough_headers, &body)
+        .await
+        .map_err(send_error)?;
     if let Some(account) = &observed_account {
         state
             .accounts
@@ -174,7 +176,8 @@ async fn forward_codex_passthrough(
         .await
         {
             Ok(response) => response,
-            Err(error) => {
+            Err(error @ SendError::Timeout) => return Err(send_error(error)),
+            Err(SendError::Transport(error)) => {
                 state.accounts.cooldown(
                     &route.provider,
                     account,
@@ -184,7 +187,7 @@ async fn forward_codex_passthrough(
                 tracing::warn!(
                     provider = %route.provider,
                     account = %account.name,
-                    error = %error.message,
+                    error = %error.without_url(),
                     "inbound passthrough upstream request failed"
                 );
                 continue;
@@ -238,7 +241,8 @@ async fn forward_codex_passthrough(
                 .await
                 {
                     Ok(response) => response,
-                    Err(error) => {
+                    Err(error @ SendError::Timeout) => return Err(send_error(error)),
+                    Err(SendError::Transport(error)) => {
                         state.accounts.cooldown(
                             &route.provider,
                             account,
@@ -248,7 +252,7 @@ async fn forward_codex_passthrough(
                         tracing::warn!(
                             provider = %route.provider,
                             account = %account.name,
-                            error = %error.message,
+                            error = %error.without_url(),
                             "inbound passthrough refresh retry failed"
                         );
                         last_response = Some(upstream);
@@ -391,7 +395,7 @@ async fn passthrough_send(
     credential: Credential,
     passthrough_headers: &HeaderMap,
     body: &Bytes,
-) -> Result<reqwest::Response, AdapterError> {
+) -> Result<reqwest::Response, SendError<reqwest::Error>> {
     let mut request = state
         .http_client
         .post(responses_url(&state.config, &route.provider))
@@ -418,11 +422,15 @@ async fn passthrough_send(
         }
         Credential::CursorOauth { .. } | Credential::Passthrough => {}
     }
-    request
-        .body(body.clone())
-        .send()
-        .await
-        .map_err(|error| own_error(error.to_string()))
+    crate::upstream_timeout::wait(
+        state.config.server.timeouts.upstream_ttfb_ms,
+        request.body(body.clone()).send(),
+    )
+    .await
+}
+
+fn send_error(error: SendError<reqwest::Error>) -> AdapterError {
+    error.into_adapter_error(|error| own_error(error.to_string()))
 }
 
 /// Relay an upstream Responses response to the inbound client **verbatim**:

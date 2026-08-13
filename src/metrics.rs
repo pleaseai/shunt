@@ -51,12 +51,25 @@ struct OtelInstruments {
     _pool_utilization: ObservableGauge<f64>,
     pool_rotations: Counter<u64>,
     codex_ws_overflow: Counter<u64>,
+    _upstream_status: ObservableGauge<f64>,
 }
 
 type PoolUtilizationValues = HashMap<(String, &'static str), Option<f64>>;
 
 fn pool_utilization_values() -> &'static Mutex<PoolUtilizationValues> {
     static VALUES: OnceLock<Mutex<PoolUtilizationValues>> = OnceLock::new();
+    VALUES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Current `shunt.upstream.status` severity per provider (`[server.status]`).
+/// A provider absent from this map reports no sample on the next collection
+/// — used for `Indicator::Unknown` ("no signal"), which must never surface as
+/// a `0` (`Indicator::None`, "operational") sample. See
+/// [`crate::upstream_status::Indicator`].
+type UpstreamStatusValues = HashMap<String, f64>;
+
+fn upstream_status_values() -> &'static Mutex<UpstreamStatusValues> {
+    static VALUES: OnceLock<Mutex<UpstreamStatusValues>> = OnceLock::new();
     VALUES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -147,6 +160,20 @@ fn otel_instruments() -> &'static OtelInstruments {
                 .with_description(
                     "Codex WebSocket dedicated overflow connections (opened vs refused at the ceiling, issue #248)",
                 )
+                .build(),
+            _upstream_status: meter
+                .f64_observable_gauge("shunt.upstream.status")
+                .with_description(
+                    "Observed upstream provider Statuspage severity (0=none, 1=minor, 2=major, 3=critical); omitted, not zero, when unknown ([server.status])",
+                )
+                .with_callback(|observer| {
+                    let values = upstream_status_values()
+                        .lock()
+                        .expect("upstream status metric lock poisoned");
+                    for (provider, value) in values.iter() {
+                        observer.observe(*value, &[KeyValue::new("provider", provider.clone())]);
+                    }
+                })
                 .build(),
         }
     })
@@ -243,6 +270,48 @@ pub fn record_pool_rotation(provider: &str, reason: &'static str) {
         KeyValue::new("reason", reason),
     ];
     otel_instruments().pool_rotations.add(1, &attributes);
+}
+
+/// Replace the current `shunt.upstream.status` severity for one provider
+/// (`[server.status]`). `severity` is [`crate::upstream_status::Indicator::severity`]:
+/// `None` — i.e. `Indicator::Unknown`, "we have no signal" — removes the
+/// provider from subsequent OpenTelemetry collections entirely, exactly how
+/// [`record_pool_utilization`] drops a series on `None`. Reporting `0` for an
+/// unknown status would be the same false all-clear that `Indicator::Unknown`
+/// exists to make unrepresentable.
+pub fn record_upstream_status(provider: &str, severity: Option<u8>) {
+    match severity {
+        Some(severity) => {
+            let severity = f64::from(severity);
+            sentry::metrics::gauge("shunt.upstream.status", severity)
+                .attribute("provider", provider.to_owned())
+                .capture();
+            upstream_status_values()
+                .lock()
+                .expect("upstream status metric lock poisoned")
+                .insert(provider.to_owned(), severity);
+        }
+        None => {
+            upstream_status_values()
+                .lock()
+                .expect("upstream status metric lock poisoned")
+                .remove(provider);
+        }
+    }
+    let _ = otel_instruments();
+}
+
+/// Test-only observation point for [`record_upstream_status`]: the callback-
+/// driven `ObservableGauge` only reports on collection by a live OTel reader,
+/// so tests that need to prove a provider is (or is not) present in the value
+/// map read this instead.
+#[cfg(test)]
+pub fn upstream_status_value_for_tests(provider: &str) -> Option<f64> {
+    upstream_status_values()
+        .lock()
+        .expect("upstream status metric lock poisoned")
+        .get(provider)
+        .copied()
 }
 
 /// The outcome of a Codex WebSocket continuation decision on a *reused*
@@ -477,7 +546,8 @@ mod tests {
     use super::{
         record_codex_client_event, record_continuation_outcome, record_gateway_telemetry_ingest,
         record_pool_rotation, record_pool_utilization, record_proxied_request,
-        record_stream_outcome, record_stream_tokens, record_ttft, ContinuationOutcome,
+        record_stream_outcome, record_stream_tokens, record_ttft, record_upstream_status,
+        upstream_status_value_for_tests, ContinuationOutcome,
     };
 
     /// The core opt-in contract: recording a proxied request must never panic,
@@ -505,6 +575,20 @@ mod tests {
         record_pool_utilization("anthropic", "5h", Some(0.25));
         record_pool_utilization("anthropic", "5h", None);
         record_pool_rotation("anthropic", "rate_limit");
+    }
+
+    /// A known-good severity is observable in the value map; an `Unknown`
+    /// provider (`severity: None`) must be *absent* from it, not present with
+    /// a `0` value — the metric-side half of `Indicator::Unknown` never
+    /// collapsing to `Indicator::None`.
+    #[test]
+    fn unknown_upstream_status_produces_no_gauge_sample() {
+        let provider = "status-metrics-test-provider";
+        record_upstream_status(provider, Some(2));
+        assert_eq!(upstream_status_value_for_tests(provider), Some(2.0));
+
+        record_upstream_status(provider, None);
+        assert_eq!(upstream_status_value_for_tests(provider), None);
     }
 
     /// The continuation counter honors the same opt-in no-op contract.

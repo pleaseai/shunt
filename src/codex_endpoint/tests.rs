@@ -1,4 +1,8 @@
 use super::{model_label, pool_sticky_key, UNKNOWN_MODEL};
+
+/// Matches the production default; individual body-limit behavior is tested in
+/// the HTTP tuning layer and handler tests.
+const TEST_REQUEST_LIMIT: usize = 32 * 1024 * 1024;
 use axum::{
     body::Bytes,
     http::{header::CONTENT_ENCODING, HeaderMap},
@@ -36,7 +40,12 @@ fn gzip_compress(body: &[u8]) -> Bytes {
 #[tokio::test]
 async fn reads_the_model_from_an_uncompressed_body() {
     assert_eq!(
-        model_label(&HeaderMap::new(), &request_body("gpt-5.2-codex")).await,
+        model_label(
+            &HeaderMap::new(),
+            &request_body("gpt-5.2-codex"),
+            TEST_REQUEST_LIMIT
+        )
+        .await,
         "gpt-5.2-codex"
     );
 }
@@ -52,7 +61,10 @@ async fn reads_the_model_from_a_zstd_body() {
         .expect("compression should succeed")
         .expect("the fixture should be large enough to compress");
 
-    assert_eq!(model_label(&zstd_headers(), &body).await, "gpt-5.2-codex");
+    assert_eq!(
+        model_label(&zstd_headers(), &body, TEST_REQUEST_LIMIT).await,
+        "gpt-5.2-codex"
+    );
 }
 
 /// A body that claims `zstd` but cannot be decoded degrades to the `unknown`
@@ -60,7 +72,10 @@ async fn reads_the_model_from_a_zstd_body() {
 #[tokio::test]
 async fn falls_back_to_unknown_for_an_undecodable_zstd_body() {
     let body = request_body("gpt-5.2-codex");
-    assert_eq!(model_label(&zstd_headers(), &body).await, UNKNOWN_MODEL);
+    assert_eq!(
+        model_label(&zstd_headers(), &body, TEST_REQUEST_LIMIT).await,
+        UNKNOWN_MODEL
+    );
 }
 
 /// A content coding shunt does not decode falls through to a best-effort
@@ -75,7 +90,10 @@ async fn falls_back_to_unknown_for_an_unsupported_content_encoding() {
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_ENCODING, "gzip".parse().unwrap());
     let body = gzip_compress(request_body("gpt-5.2-codex").as_ref());
-    assert_eq!(model_label(&headers, &body).await, UNKNOWN_MODEL);
+    assert_eq!(
+        model_label(&headers, &body, TEST_REQUEST_LIMIT).await,
+        UNKNOWN_MODEL
+    );
 }
 
 /// A body claiming an unsupported content-encoding, but that is in fact
@@ -87,7 +105,7 @@ async fn reads_the_model_despite_an_unsupported_content_encoding_label() {
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_ENCODING, "gzip".parse().unwrap());
     assert_eq!(
-        model_label(&headers, &request_body("gpt-5.2-codex")).await,
+        model_label(&headers, &request_body("gpt-5.2-codex"), TEST_REQUEST_LIMIT).await,
         "gpt-5.2-codex"
     );
 }
@@ -95,7 +113,10 @@ async fn reads_the_model_despite_an_unsupported_content_encoding_label() {
 #[tokio::test]
 async fn falls_back_to_unknown_without_a_model_field() {
     let body = Bytes::from_static(b"{\"input\":[]}");
-    assert_eq!(model_label(&HeaderMap::new(), &body).await, UNKNOWN_MODEL);
+    assert_eq!(
+        model_label(&HeaderMap::new(), &body, TEST_REQUEST_LIMIT).await,
+        UNKNOWN_MODEL
+    );
 }
 
 /// A `model` field present but not a string (B1) degrades to `unknown` just
@@ -103,7 +124,10 @@ async fn falls_back_to_unknown_without_a_model_field() {
 #[tokio::test]
 async fn falls_back_to_unknown_when_the_model_field_is_not_a_string() {
     let body = Bytes::from_static(b"{\"model\":42,\"input\":[]}");
-    assert_eq!(model_label(&HeaderMap::new(), &body).await, UNKNOWN_MODEL);
+    assert_eq!(
+        model_label(&HeaderMap::new(), &body, TEST_REQUEST_LIMIT).await,
+        UNKNOWN_MODEL
+    );
 }
 
 /// Every non-string shape is classified without materializing it, so each
@@ -120,7 +144,12 @@ async fn falls_back_to_unknown_for_every_non_string_model_shape() {
         &b"{\"model\":null,\"input\":[]}"[..],
     ] {
         assert_eq!(
-            model_label(&HeaderMap::new(), &Bytes::from_static(body)).await,
+            model_label(
+                &HeaderMap::new(),
+                &Bytes::from_static(body),
+                TEST_REQUEST_LIMIT
+            )
+            .await,
             UNKNOWN_MODEL,
             "non-string model {} must degrade to `unknown`",
             String::from_utf8_lossy(body)
@@ -145,7 +174,7 @@ async fn a_large_non_string_model_is_drained_rather_than_materialized() {
     body.extend_from_slice(b"],\"input\":[]}");
 
     assert_eq!(
-        model_label(&HeaderMap::new(), &Bytes::from(body)).await,
+        model_label(&HeaderMap::new(), &Bytes::from(body), TEST_REQUEST_LIMIT).await,
         UNKNOWN_MODEL
     );
 }
@@ -156,7 +185,10 @@ async fn a_large_non_string_model_is_drained_rather_than_materialized() {
 #[tokio::test]
 async fn falls_back_to_unknown_for_malformed_json() {
     let body = Bytes::from_static(b"not json at all");
-    assert_eq!(model_label(&HeaderMap::new(), &body).await, UNKNOWN_MODEL);
+    assert_eq!(
+        model_label(&HeaderMap::new(), &body, TEST_REQUEST_LIMIT).await,
+        UNKNOWN_MODEL
+    );
 }
 
 #[test]

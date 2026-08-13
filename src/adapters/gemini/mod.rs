@@ -119,6 +119,7 @@ async fn forward(
     let is_google_oauth = provider.auth == AuthMode::GoogleOauth;
     let token = access_token.clone();
 
+    let ttfb_ms = state.config.server.timeouts.upstream_ttfb_ms;
     let response = crate::retry::send_with_retry(policy, &route.provider, || {
         let client = http_client.clone();
         let payload = payload_clone.clone();
@@ -135,14 +136,16 @@ async fn forward(
                 req = req.header("x-goog-api-key", &token);
             }
 
-            req.json(&payload).send().await
+            crate::upstream_timeout::wait(ttfb_ms, req.json(&payload).send()).await
         }
     })
     .await
-    .map_err(|error| AdapterError {
-        message: format!("network error calling Gemini backend: {error}"),
-        response: Box::new(StatusCode::BAD_GATEWAY.into_response()),
-        failure: None,
+    .map_err(|error| {
+        error.into_adapter_error(|error| AdapterError {
+            message: format!("network error calling Gemini backend: {error}"),
+            response: Box::new(StatusCode::BAD_GATEWAY.into_response()),
+            failure: None,
+        })
     })?;
 
     let status = response.status();

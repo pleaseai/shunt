@@ -176,7 +176,7 @@ auth = "chatgpt_oauth"         # reads + auto-refreshes ~/.codex/auth.json
 # count_tokens = "tiktoken"
 
 # xAI Grok (EXPERIMENTAL). Two built-in providers cover the two ways in — you
-# only need to add [[routes]] (grok-build-0.1, grok-4.5, grok-4.3). Pick one:
+# only need to add [[routes]] (grok-4.6, grok-4.5, grok-build-0.1). Pick one:
 #   • `xai`  — API key: the developer API (api.x.ai), billed per token.
 #              export XAI_API_KEY, then route models to provider = "xai".
 #   • `grok` — SuperGrok / X Premium+ subscription: the Grok CLI chat proxy

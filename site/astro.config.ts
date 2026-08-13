@@ -1,12 +1,11 @@
 import { defineConfig } from "astro/config";
-import icon from "astro-icon";
 import tailwindcss from "@tailwindcss/vite";
 import nimbus, { defineConfig as defineNimbusConfig } from "@cloudflare/nimbus-docs";
 import { tableScroll } from "@cloudflare/nimbus-docs/markdown";
 import { ENGLISH_SIDEBAR_ITEMS } from "./src/lib/i18n";
 
 const nimbusConfig = defineNimbusConfig({
-  site: "https://shunt-docs.pages.dev",
+  site: "https://shunt.dev",
   title: "shunt",
   description: "Shunt Claude Code to any model — a spec-compliant Claude Code LLM gateway.",
   locale: "en",
@@ -29,7 +28,6 @@ export default defineConfig({
     defaultStrategy: "hover",
   },
   integrations: [
-    icon(),
     nimbus(nimbusConfig, {
       rules: {
         "nimbus/frontmatter-shape": "error",

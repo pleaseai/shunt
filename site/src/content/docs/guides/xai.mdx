@@ -113,9 +113,9 @@ auth = "xai_oauth"                                # read + auto-refresh ~/.shunt
 
 ```toml
 [[routes]]
-model = "grok-4.5"
+model = "grok-4.6"
 provider = "grok"
-# upstream_model = "grok-4.5"   # optional: forward a different slug upstream
+# upstream_model = "grok-4.6"   # optional: forward a different slug upstream
 ```
 
 ## Path B — xAI developer API (`xai`)
@@ -140,7 +140,7 @@ api_key_env = "XAI_API_KEY"
 
 ```toml
 [[routes]]
-model = "grok-4.5"
+model = "grok-4.6"
 provider = "xai"
 ```
 
@@ -160,7 +160,7 @@ entitle the developer API — an unfunded account returns `402 Payment Required`
 ## Model slugs
 
 The slug catalog is **xAI's**, not shunt's — shunt forwards whatever slug you route. Current
-coding/frontier slugs are `grok-4.5`, `grok-4.3`, and `grok-build-0.1`. Use `upstream_model` in a
+coding/frontier slugs are `grok-4.6`, `grok-4.5`, and `grok-build-0.1`. Use `upstream_model` in a
 route to map an alias onto a live slug without touching your Claude Code env. (Model
 [discovery](/guides/model-discovery/) only surfaces `claude-`named aliases you declare, so it can't
 list a raw Grok slug — reach these via `ANTHROPIC_CUSTOM_MODEL_OPTION` or a tier remap below.)
@@ -171,7 +171,7 @@ Grok slugs don't start with `claude-`, so Claude Code's `/model` picker won't li
 discovery. The mechanics are **identical to Codex** — add the id to the picker directly:
 
 ```bash
-export ANTHROPIC_CUSTOM_MODEL_OPTION="grok-4.5"   # must resolve via [models.upstream_model], [[routes]], or [[route_prefixes]]
+export ANTHROPIC_CUSTOM_MODEL_OPTION="grok-4.6"   # must resolve via [models.upstream_model], [[routes]], or [[route_prefixes]]
 ```
 
 The same [Codex section](/guides/codex/#4-select-the-model-in-claude-code) covers the rest verbatim:
@@ -183,7 +183,7 @@ putting a **subagent** on a Grok slug via `model:` frontmatter, and remapping th
 <Aside type="tip" title="Ready-made agents">
 
 The **[`shunt-xai` plugin](https://github.com/pleaseai/shunt/tree/main/plugins/shunt-xai)** ships
-subagents for `grok-4.5` / `grok-4.3` / `grok-build-0.1` — install with
+subagents for `grok-4.6` / `grok-4.5` / `grok-build-0.1` — install with
 `/plugin install shunt-xai@shunt` after `/plugin marketplace add pleaseai/shunt`. Each agent pins
 its `model:`, so only that subagent diverts; the main session stays on Claude. Route the slugs to
 `grok` or `xai` in `shunt.toml` per the credential you have.
@@ -205,12 +205,12 @@ effort = "high"        # applies to all grok traffic
 
 # …or per route
 [[routes]]
-model = "grok-4.5"
+model = "grok-4.6"
 provider = "grok"
 effort = "high"
 ```
 
-`grok-4.5` accepts `reasoning.effort` (verified live). Leave `effort` unset for any slug that
+`grok-4.6` accepts `reasoning.effort` (verified live). Leave `effort` unset for any slug that
 `400`s on it. Full precedence and the effort table: [Effort & Context](/guides/effort-and-context/#reasoning-effort).
 
 ## Context window
@@ -245,7 +245,7 @@ default_provider = "anthropic"
 effort = "high"     # optional: opt in to reasoning effort for all Grok traffic
 
 [[routes]]
-model = "grok-4.5"
+model = "grok-4.6"
 provider = "grok"
 ```
 
@@ -256,10 +256,10 @@ shunt login xai                                     # one-time device-code login
 ./target/release/shunt run                          # start the gateway
 
 export ANTHROPIC_BASE_URL=http://127.0.0.1:3001
-export ANTHROPIC_CUSTOM_MODEL_OPTION="grok-4.5"     # add to /model picker
+export ANTHROPIC_CUSTOM_MODEL_OPTION="grok-4.6"     # add to /model picker
 ```
 
-Pick **grok-4.5** from `/model`. Everything else in the session still flows to Anthropic unchanged;
+Pick **grok-4.6** from `/model`. Everything else in the session still flows to Anthropic unchanged;
 only the mapped model's inference is answered by your SuperGrok subscription.
 
 ## Troubleshooting

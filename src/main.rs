@@ -461,6 +461,22 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
         .local_addr()
         .context("failed to read bind address")?;
     tracing::info!(%local_addr, "shunt listening");
+
+    // Discovering `agy`'s model/effort matrix costs ~20s as a subprocess. Warm
+    // it off the request path so the first Antigravity turn does not pay it;
+    // the adapter re-runs discovery itself if this has not landed yet.
+    //
+    // Gated on the provider being *reachable*, not merely present: every
+    // `Config::default()` seeds a built-in `antigravity` provider, so keying
+    // off the provider map alone spawned the subprocess on every startup with
+    // `agy` installed, including configs that route nowhere near it.
+    if routes_to_antigravity(&config) {
+        if let Some(agy) = shunt::adapters::antigravity::find_agy_binary() {
+            tokio::spawn(async move {
+                shunt::adapters::antigravity::models::warm(&agy).await;
+            });
+        }
+    }
     let (router, shared, state) =
         server::build_router(config).context("failed to initialize gateway")?;
     // Reload triggers (SIGHUP and config-file watch) run as background tasks and
@@ -481,6 +497,10 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     shunt::gateway::spend::persist::restore(&state)
         .await
         .context("failed to restore gateway spend-limit state")?;
+    // Opt-in `[server.status]`: poll provider Statuspage `summary.json`
+    // endpoints in the background, sharing the router's status store.
+    // Observation-only (see AGENTS.md) and a no-op when `sources` is empty.
+    shunt::status_poll::spawn_status_poller(state.clone());
     // Opt-in `[server.pool] usage_refresh_seconds`: poll the Anthropic OAuth
     // usage API in the background, sharing the router's account pool. A no-op
     // when the key is unset.
@@ -660,6 +680,40 @@ fn init_telemetry(config: Option<&OtelConfig>) -> Option<TelemetryGuard> {
             None
         }
     }
+}
+
+/// Whether any routing surface can actually reach an Antigravity provider.
+///
+/// Presence in the provider map is not routing: `Config::default()` seeds a
+/// built-in `antigravity` entry, so a config whose traffic goes entirely to
+/// Anthropic still "has" one. Warming on that spawned a ~20s `agy models`
+/// subprocess on every startup with `agy` installed, for nothing.
+///
+/// Checks every way a request can select a provider: the default provider,
+/// exact routes, prefix routes, and a model's `upstream_model` map.
+fn routes_to_antigravity(config: &Config) -> bool {
+    let is_antigravity = |name: &str| {
+        config
+            .providers
+            .get(name)
+            .is_some_and(|provider| provider.kind == shunt::config::ProviderKind::Antigravity)
+    };
+
+    is_antigravity(&config.server.default_provider)
+        || config
+            .routes
+            .iter()
+            .any(|route| is_antigravity(&route.provider))
+        || config
+            .route_prefixes
+            .iter()
+            .any(|prefix| is_antigravity(&prefix.provider))
+        || config.models.iter().any(|model| {
+            model
+                .upstream_model
+                .as_ref()
+                .is_some_and(|map| map.keys().any(|provider| is_antigravity(provider)))
+        })
 }
 
 #[cfg(test)]
@@ -1113,5 +1167,92 @@ mod tests {
             .expect("serve returns before the test deadline")
             .expect("serve task join")
             .expect("graceful shutdown returns Ok once drained");
+    }
+}
+
+#[cfg(test)]
+mod warm_gate_tests {
+    use shunt::config::{Config, ModelConfig, ProviderKind, RouteConfig, RoutePrefixConfig};
+
+    use super::routes_to_antigravity;
+
+    /// Turn the built-in `antigravity` provider into the one under test without
+    /// hand-building a provider: `Config::default()` already seeds it.
+    fn base() -> Config {
+        let config = Config::default();
+        assert_eq!(
+            config
+                .providers
+                .get("antigravity")
+                .map(|provider| provider.kind),
+            Some(ProviderKind::Antigravity),
+            "this test rests on the default config seeding an antigravity provider"
+        );
+        config
+    }
+
+    #[test]
+    fn default_config_does_not_route_to_antigravity() {
+        // The provider exists but nothing selects it. This is the whole point:
+        // presence is not routing.
+        assert!(!routes_to_antigravity(&base()));
+    }
+
+    #[test]
+    fn default_provider_pointing_at_antigravity_counts() {
+        let mut config = base();
+        config.server.default_provider = "antigravity".to_string();
+        assert!(routes_to_antigravity(&config));
+    }
+
+    #[test]
+    fn an_exact_route_counts() {
+        let mut config = base();
+        config.routes.push(RouteConfig {
+            model: "gemini-3.1-pro".to_string(),
+            provider: "antigravity".to_string(),
+            upstream_model: None,
+            effort: None,
+            service_tier: None,
+        });
+        assert!(routes_to_antigravity(&config));
+    }
+
+    #[test]
+    fn a_prefix_route_counts() {
+        let mut config = base();
+        config.route_prefixes.push(RoutePrefixConfig {
+            prefix: "gemini-".to_string(),
+            provider: "antigravity".to_string(),
+        });
+        assert!(routes_to_antigravity(&config));
+    }
+
+    #[test]
+    fn a_model_upstream_map_counts() {
+        let mut config = base();
+        config.models.push(ModelConfig {
+            id: "claude-gemini-via-agy".to_string(),
+            display_name: None,
+            upstream_model: Some(
+                [("antigravity".to_string(), "gemini-3.1-pro".to_string())]
+                    .into_iter()
+                    .collect(),
+            ),
+        });
+        assert!(routes_to_antigravity(&config));
+    }
+
+    #[test]
+    fn routing_to_a_non_antigravity_provider_does_not_count() {
+        let mut config = base();
+        config.routes.push(RouteConfig {
+            model: "some-model".to_string(),
+            provider: "anthropic".to_string(),
+            upstream_model: None,
+            effort: None,
+            service_tier: None,
+        });
+        assert!(!routes_to_antigravity(&config));
     }
 }

@@ -122,6 +122,7 @@ pub fn admin_router() -> Router<AppState> {
         .route("/admin/accounts", get(list_accounts))
         .route("/admin/observed", get(observed_accounts))
         .route("/admin/pool", get(pool))
+        .route("/admin/status", get(status))
         .route("/admin/accounts/claude", post(add_account))
         .route(
             "/admin/accounts/claude/{name}/complete",
@@ -884,6 +885,44 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
     json_secure(json!({ "providers": providers }))
 }
 
+/// Observation-only view of `[server.status]` polling, ordered by provider
+/// name. Configured sources that have not completed their first poll are
+/// returned as `unknown` so the dashboard can distinguish "enabled but not yet
+/// observed" from "disabled". Never consulted by routing, failover, or
+/// pool/cooldown decisions.
+async fn status(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let state = state.refreshed();
+    if authenticate(&state, &headers).is_none() {
+        return unauthorized();
+    }
+    let mut observed = state.status.snapshot();
+    let mut configured = state
+        .config
+        .server
+        .status
+        .as_ref()
+        .map(|status| status.sources.iter().collect::<Vec<_>>())
+        .unwrap_or_default();
+    configured.sort_by(|a, b| a.provider.cmp(&b.provider));
+    let sources: Vec<_> = configured
+        .into_iter()
+        .map(|source| {
+            let observed = observed.remove(&source.provider).unwrap_or_else(|| {
+                crate::upstream_status::UpstreamStatus::unknown(0, "not polled yet")
+            });
+            json!({
+                "provider": source.provider,
+                "indicator": observed.indicator,
+                "description": observed.description,
+                "incidents": observed.incidents,
+                "observed_at": observed.observed_at,
+                "error": observed.error,
+            })
+        })
+        .collect();
+    json_secure(json!({ "sources": sources }))
+}
+
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum AddMode {
@@ -1456,6 +1495,8 @@ mod tests {
                 tool_search: None,
                 request_compression: true,
                 retry: Default::default(),
+                workspace_roots: Vec::new(),
+                sandbox: true,
             },
         );
         let config = crate::config::Config {

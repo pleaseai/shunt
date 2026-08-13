@@ -11,9 +11,13 @@ use figment::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+mod http_tuning;
 mod presets;
 mod upstreams;
 
+pub use http_tuning::{
+    AccessControlConfig, LimitsConfig, RateLimitConfig, RateLimitsConfig, TimeoutsConfig,
+};
 pub use presets::{provider_presets, ProviderPresetView};
 pub use upstreams::{AccountSelection, AuthMap, UpstreamAuth, UpstreamConfig};
 
@@ -110,6 +114,12 @@ pub struct ServerConfig {
     /// reconciliation. Absent ⇒ legacy quota selection and no background polling.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool: Option<PoolConfig>,
+    /// Optional opt-in upstream Statuspage polling. Absent, or present with no
+    /// `sources`, ⇒ no background polling and the admin dashboard's "Upstream
+    /// status" strip stays hidden. Observation-only: never consulted by
+    /// routing, failover, or pool/cooldown decisions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<StatusConfig>,
     /// Idle seconds before shunt injects an SSE `ping` event into a streaming
     /// response so middlebox timers (Cloudflare's 100s → 524) never expire.
     /// `0` disables injection (M5).
@@ -125,6 +135,18 @@ pub struct ServerConfig {
     /// is in flight, so this is not on its own a resident-memory bound.
     #[serde(default = "default_max_concurrent_requests")]
     pub max_concurrent_requests: usize,
+    /// Inbound client-address allow/deny policy.
+    #[serde(default)]
+    pub access_control: AccessControlConfig,
+    /// Inbound request size limits.
+    #[serde(default)]
+    pub limits: LimitsConfig,
+    /// Upstream response-header timeout.
+    #[serde(default)]
+    pub timeouts: TimeoutsConfig,
+    /// Per-IP limits for unauthenticated device-flow endpoints.
+    #[serde(default)]
+    pub rate_limits: RateLimitsConfig,
 }
 
 fn default_sse_keepalive_seconds() -> u64 {
@@ -221,6 +243,56 @@ impl PoolConfig {
     /// gating is disabled (unset or `0`).
     pub fn storm_ramp_initial(&self) -> Option<u32> {
         self.ramp_initial_concurrency.filter(|&initial| initial > 0)
+    }
+}
+
+/// `[server.status]` — opt-in, observation-only polling of provider Statuspage
+/// JSON APIs (`summary.json`). Purely informational: the polled result is
+/// exposed via a metric and the admin dashboard, and is never consulted by
+/// routing, failover, or pool/cooldown decisions. Absent, or present with an
+/// empty `sources` list, ⇒ no background polling.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StatusConfig {
+    /// Poll each source every N seconds. `0` disables polling; positive
+    /// values below 60 are clamped to 60 seconds.
+    #[serde(default = "default_status_refresh_seconds")]
+    pub refresh_seconds: u64,
+    /// Provider Statuspage sources to poll. Empty ⇒ no background polling.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<StatusSource>,
+}
+
+/// A single provider's Statuspage JSON endpoint (e.g.
+/// `https://status.claude.com/api/v2/summary.json`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StatusSource {
+    /// Label used for the metric's `provider` attribute and the admin
+    /// dashboard row. Must be unique across `sources`.
+    pub provider: String,
+    /// The Statuspage `summary.json` URL. Must be `http` or `https`.
+    pub url: String,
+}
+
+pub(crate) fn default_status_refresh_seconds() -> u64 {
+    300
+}
+
+impl Default for StatusConfig {
+    fn default() -> Self {
+        Self {
+            refresh_seconds: default_status_refresh_seconds(),
+            sources: Vec::new(),
+        }
+    }
+}
+
+impl StatusConfig {
+    /// The effective poll interval, or `None` when polling is disabled.
+    pub fn refresh_interval(&self) -> Option<u64> {
+        match self.refresh_seconds {
+            0 => None,
+            seconds => Some(seconds.max(60)),
+        }
     }
 }
 
@@ -1409,6 +1481,41 @@ pub struct ProviderConfig {
     /// default with conservative settings — set `max_retries = 0` to disable.
     #[serde(default)]
     pub retry: RetryConfig,
+    /// Directories the Antigravity CLI may be pointed at by request content
+    /// (`kind = "antigravity"` only).
+    ///
+    /// `agy` runs with `--dangerously-skip-permissions`, so whatever directory
+    /// it starts in is a directory an unattended agent can read, write, and run
+    /// shell commands in. The adapter can take that directory from a
+    /// `Working directory:` line in the request's system prompt, which is
+    /// client-controlled text — and system prompts routinely quote fetched
+    /// documents and tool output, so it is prompt-injectable.
+    ///
+    /// This list is the trust boundary. A prompt-derived path is canonicalized
+    /// (resolving symlinks and `..`) and used only if it lands inside one of
+    /// these roots. A path outside them is refused, but it is the *path* that
+    /// is dropped, not the request: the run logs the rejection and falls back
+    /// to the gateway's own working directory, exactly as it would had the
+    /// prompt named no directory at all. Failing the turn instead would let
+    /// anyone able to inject one line of system-prompt text break every
+    /// request. Empty (the default) means no prompt-derived path is ever
+    /// honored, and only `SHUNT_AGY_WORKSPACE` or the gateway's own directory
+    /// is used.
+    #[serde(default)]
+    pub workspace_roots: Vec<String>,
+    /// Run the Antigravity CLI with `--sandbox` (`kind = "antigravity"` only).
+    ///
+    /// On by default. Without it, `--dangerously-skip-permissions` leaves an
+    /// unattended agent with shell access and no workspace boundary: refusing a
+    /// directory in [`workspace_roots`](Self::workspace_roots) only changes
+    /// where the agent *starts*, and a path named in the prompt can still be
+    /// reached from there. `--sandbox` is what actually keeps reads and writes
+    /// inside the workspace.
+    ///
+    /// Set `false` only where the agent genuinely needs unrestricted terminal
+    /// access and the caller is trusted.
+    #[serde(default = "default_true")]
+    pub sandbox: bool,
 }
 
 /// Per-provider bounded retry/backoff for transient upstream failures (issue
@@ -1855,6 +1962,12 @@ pub enum ConfigError {
     ReadConfigFile { path: PathBuf, message: String },
     #[error("declare either [[upstreams]] or [providers.*], not both; use exactly one provider declaration form")]
     MixedProviderDeclarationForms,
+    #[error(
+        "provider \"{provider}\" runs the Antigravity CLI with sandbox = false, which gives an \
+         autonomous agent shell access as the user running shunt; that cannot be served on the \
+         non-loopback bind \"{bind}\". Remove `sandbox = false`, or bind to loopback (127.0.0.1)."
+    )]
+    UnsandboxedAntigravityOnPublicBind { provider: String, bind: String },
     #[error("upstreams[{index}].name must be non-empty and non-whitespace")]
     EmptyUpstreamName { index: usize },
     #[error("duplicate [[upstreams]] name \"{name}\"; upstream names must be unique")]
@@ -1927,6 +2040,12 @@ pub enum ConfigError {
     AccountMultipleCredentialSources { provider: String, name: String },
     #[error("server.pool.{key} must be between 0.0 and 1.0, got {value}")]
     InvalidPoolThreshold { key: &'static str, value: f64 },
+    #[error("[server.status].sources[{index}].provider must not be empty")]
+    InvalidStatusSourceProvider { index: usize },
+    #[error("[server.status].sources[{index}].url is invalid: {message}")]
+    InvalidStatusSourceUrl { index: usize, message: String },
+    #[error("[server.status] has more than one source named \"{provider}\"; provider names must be unique")]
+    DuplicateStatusSourceProvider { provider: String },
     #[error("providers.{provider}.accounts account \"{name}\" {key} must be between 0.0 and 1.0, got {value}")]
     InvalidAccountThreshold {
         provider: String,
@@ -2080,6 +2199,23 @@ pub enum ConfigError {
         max_concurrent_requests: usize,
         limit: usize,
     },
+    #[error("server.access_control.{field}[{index}] is not a valid CIDR `{value}`: {message}")]
+    InvalidAccessControlCidr {
+        field: &'static str,
+        index: usize,
+        value: String,
+        message: String,
+    },
+    #[error("server.limits.max_request_bytes must be greater than zero")]
+    InvalidMaxRequestBytes,
+    #[error("server.limits.max_request_header_bytes must be greater than zero when set")]
+    InvalidMaxRequestHeaderBytes,
+    #[error("server.limits.max_url_length must be greater than zero when set")]
+    InvalidMaxUrlLength,
+    #[error("server.rate_limits.{limit}.max must be greater than zero")]
+    InvalidRateLimitMax { limit: &'static str },
+    #[error("server.rate_limits.{limit}.window_seconds must be greater than zero")]
+    InvalidRateLimitWindow { limit: &'static str },
     #[error(
         "providers.{provider}.retry.multiplier must be a finite value >= 1.0, got {multiplier}"
     )]
@@ -2113,6 +2249,8 @@ impl ProviderConfig {
             tool_search: None,
             request_compression: true,
             retry: RetryConfig::default(),
+            workspace_roots: Vec::new(),
+            sandbox: true,
         }
     }
 
@@ -2135,6 +2273,8 @@ impl ProviderConfig {
             tool_search: None,
             request_compression: true,
             retry: RetryConfig::default(),
+            workspace_roots: Vec::new(),
+            sandbox: true,
         }
     }
 
@@ -2157,6 +2297,8 @@ impl ProviderConfig {
             tool_search: None,
             request_compression: true,
             retry: RetryConfig::default(),
+            workspace_roots: Vec::new(),
+            sandbox: true,
         }
     }
 }
@@ -2201,6 +2343,8 @@ impl Default for Config {
                     tool_search: None,
                     request_compression: true,
                     retry: RetryConfig::default(),
+                    workspace_roots: Vec::new(),
+                    sandbox: true,
                 },
             ),
             (
@@ -2259,6 +2403,8 @@ impl Default for Config {
                     tool_search: None,
                     request_compression: true,
                     retry: RetryConfig::default(),
+                    workspace_roots: Vec::new(),
+                    sandbox: true,
                 },
             ),
         ]);
@@ -2273,8 +2419,13 @@ impl Default for Config {
                 usage: None,
                 oauth_usage: None,
                 pool: None,
+                status: None,
                 sse_keepalive_seconds: default_sse_keepalive_seconds(),
                 max_concurrent_requests: default_max_concurrent_requests(),
+                access_control: AccessControlConfig::default(),
+                limits: LimitsConfig::default(),
+                timeouts: TimeoutsConfig::default(),
+                rate_limits: RateLimitsConfig::default(),
             },
             providers,
             upstreams: Vec::new(),
@@ -2607,6 +2758,30 @@ impl Config {
                 limit: MAX_CONCURRENT_REQUESTS_LIMIT,
             });
         }
+        self.server.access_control.validate()?;
+        if self.server.limits.max_request_bytes == 0 {
+            return Err(ConfigError::InvalidMaxRequestBytes);
+        }
+        if self.server.limits.max_request_header_bytes == Some(0) {
+            return Err(ConfigError::InvalidMaxRequestHeaderBytes);
+        }
+        if self.server.limits.max_url_length == Some(0) {
+            return Err(ConfigError::InvalidMaxUrlLength);
+        }
+        for (limit, configured) in [
+            (
+                "device_authorization",
+                &self.server.rate_limits.device_authorization,
+            ),
+            ("device_verify", &self.server.rate_limits.device_verify),
+        ] {
+            if configured.max == 0 {
+                return Err(ConfigError::InvalidRateLimitMax { limit });
+            }
+            if configured.window_seconds == 0 {
+                return Err(ConfigError::InvalidRateLimitWindow { limit });
+            }
+        }
         // Fail closed at boot: [server.auth] without resolvable tokens is an
         // error, not an open gateway.
         if let Some(auth) = &self.server.auth {
@@ -2616,6 +2791,26 @@ impl Config {
         // an unauthenticated admin surface. Reject it rather than run open.
         if let Some(admin) = &self.server.admin {
             admin.resolve()?;
+        }
+        // Fail closed at boot: an unsandboxed Antigravity provider runs an
+        // autonomous agent with shell access and no workspace boundary, as the
+        // user running shunt. That is defensible as a personal loopback
+        // integration; reachable from the network it hands arbitrary local
+        // execution to anyone who can post a Messages request. Authentication
+        // is not sufficient on its own, so refuse the combination outright
+        // rather than document it as merely discouraged. The Antigravity
+        // adapter repeats this check against AppState::boot_is_loopback on every
+        // request because a reload can change this config value but not the
+        // listener the process actually bound.
+        if let Some(name) = self.providers.iter().find_map(|(name, provider)| {
+            (provider.kind == ProviderKind::Antigravity && !provider.sandbox).then_some(name)
+        }) {
+            if !self.server.bind_is_loopback() {
+                return Err(ConfigError::UnsandboxedAntigravityOnPublicBind {
+                    provider: name.clone(),
+                    bind: self.server.bind.clone(),
+                });
+            }
         }
         // Fail closed at boot: a configured gateway must have a valid issuer,
         // sufficiently strong signing secret, and at least one approval path.
@@ -2643,6 +2838,53 @@ impl Config {
                     if !(0.0..=1.0).contains(&value) {
                         return Err(ConfigError::InvalidPoolThreshold { key, value });
                     }
+                }
+            }
+        }
+        // Fail closed at boot: [server.status] sources are polled unattended in
+        // the background, so a malformed URL or a duplicate provider label
+        // would otherwise surface only as a silent, permanently-failing poller
+        // (or a metric/dashboard row silently overwritten by another source).
+        // This is the config-time counterpart to the runtime fail-open rule
+        // below: bad config is rejected loudly here, but a *reachable* source
+        // that later fails to answer must degrade to `Indicator::Unknown`,
+        // never to a silent `None` ("operational").
+        if let Some(status) = &self.server.status {
+            let mut seen_providers = HashSet::new();
+            for (index, source) in status.sources.iter().enumerate() {
+                if source.provider.trim().is_empty() {
+                    return Err(ConfigError::InvalidStatusSourceProvider { index });
+                }
+                if !seen_providers.insert(source.provider.as_str()) {
+                    return Err(ConfigError::DuplicateStatusSourceProvider {
+                        provider: source.provider.clone(),
+                    });
+                }
+                let url = reqwest::Url::parse(source.url.trim()).map_err(|error| {
+                    ConfigError::InvalidStatusSourceUrl {
+                        index,
+                        message: error.to_string(),
+                    }
+                })?;
+                if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+                    return Err(ConfigError::InvalidStatusSourceUrl {
+                        index,
+                        message: format!(
+                            "must be an http(s) URL with a host, got `{}`",
+                            source.url
+                        ),
+                    });
+                }
+                if url.query().is_some()
+                    || url.fragment().is_some()
+                    || !url.username().is_empty()
+                    || url.password().is_some()
+                {
+                    return Err(ConfigError::InvalidStatusSourceUrl {
+                        index,
+                        message: "must not contain a query, fragment, or embedded credentials"
+                            .to_string(),
+                    });
                 }
             }
         }
@@ -3295,6 +3537,16 @@ impl ServerConfig {
     pub fn bind_addr(&self) -> Result<SocketAddr, ConfigError> {
         Ok(self.bind.parse()?)
     }
+
+    /// Whether the bind address only accepts connections from this machine.
+    ///
+    /// An unparseable bind is treated as non-loopback: security gates built on
+    /// this must fail closed, and `bind_addr` reports the parse error itself.
+    pub fn bind_is_loopback(&self) -> bool {
+        self.bind_addr()
+            .map(|addr| addr.ip().is_loopback())
+            .unwrap_or(false)
+    }
 }
 
 /// Serializes every test that reads or writes the process environment against
@@ -3330,8 +3582,8 @@ mod tests {
         ConfigError, ConfigFormat, GatewayConfig, GatewayEnforcementConfig, GatewayOidcConfig,
         GatewayPolicyConfig, GatewayPolicyMatch, GatewayTelemetryConfig,
         GatewayTelemetryDestination, InboundAuthConfig, ModelConfig, OauthUsageConfig,
-        OidcProviderConfig, PoolConfig, ProviderKind, ResponsesFlavor, RetryConfig,
-        UsageEndpointConfig, CONFIG_ENV_LOCK,
+        OidcProviderConfig, PoolConfig, ProviderKind, ResponsesFlavor, RetryConfig, StatusConfig,
+        StatusSource, UsageEndpointConfig, CONFIG_ENV_LOCK,
     };
 
     fn model_config(id: &str, upstream_model: Option<BTreeMap<String, String>>) -> ModelConfig {
@@ -3344,6 +3596,80 @@ mod tests {
 
     fn model_upstream(provider: &str, upstream_model: &str) -> BTreeMap<String, String> {
         BTreeMap::from([(provider.to_string(), upstream_model.to_string())])
+    }
+
+    type ValidationCase = (Config, fn(&ConfigError) -> bool);
+
+    #[test]
+    fn http_tuning_validation_rejects_each_invalid_value() {
+        let cases: Vec<ValidationCase> = vec![
+            (
+                {
+                    let mut config = Config::default();
+                    config.server.access_control.allow_cidrs = vec!["not-a-cidr".into()];
+                    config
+                },
+                |error| matches!(error, ConfigError::InvalidAccessControlCidr { .. }),
+            ),
+            (
+                {
+                    let mut config = Config::default();
+                    config.server.limits.max_request_bytes = 0;
+                    config
+                },
+                |error| matches!(error, ConfigError::InvalidMaxRequestBytes),
+            ),
+            (
+                {
+                    let mut config = Config::default();
+                    config.server.limits.max_request_header_bytes = Some(0);
+                    config
+                },
+                |error| matches!(error, ConfigError::InvalidMaxRequestHeaderBytes),
+            ),
+            (
+                {
+                    let mut config = Config::default();
+                    config.server.limits.max_url_length = Some(0);
+                    config
+                },
+                |error| matches!(error, ConfigError::InvalidMaxUrlLength),
+            ),
+            (
+                {
+                    let mut config = Config::default();
+                    config.server.rate_limits.device_authorization.max = 0;
+                    config
+                },
+                |error| {
+                    matches!(
+                        error,
+                        ConfigError::InvalidRateLimitMax {
+                            limit: "device_authorization"
+                        }
+                    )
+                },
+            ),
+            (
+                {
+                    let mut config = Config::default();
+                    config.server.rate_limits.device_verify.window_seconds = 0;
+                    config
+                },
+                |error| {
+                    matches!(
+                        error,
+                        ConfigError::InvalidRateLimitWindow {
+                            limit: "device_verify"
+                        }
+                    )
+                },
+            ),
+        ];
+        for (config, matches_error) in cases {
+            let error = config.validate().unwrap_err();
+            assert!(matches_error(&error), "unexpected error: {error}");
+        }
     }
 
     #[test]
@@ -3362,6 +3688,67 @@ mod tests {
             .unwrap();
             assert_eq!(server.max_concurrent_requests, configured);
         }
+    }
+
+    #[test]
+    fn validate_rejects_unsandboxed_antigravity_on_a_public_bind() {
+        use crate::config::ProviderConfig;
+
+        let antigravity = |sandbox: bool| {
+            let mut provider = ProviderConfig::gemini("http://localhost");
+            provider.kind = ProviderKind::Antigravity;
+            provider.auth = AuthMode::None;
+            provider.sandbox = sandbox;
+            provider
+        };
+
+        // Loopback: a personal integration, allowed even unsandboxed.
+        let mut config = Config::default();
+        config.server.bind = "127.0.0.1:3001".to_string();
+        config
+            .providers
+            .insert("antigravity".to_string(), antigravity(false));
+        config
+            .validate()
+            .expect("an unsandboxed provider on loopback stays allowed");
+
+        // Reachable from the network, it hands local shell access to anyone
+        // who can post a Messages request.
+        let mut config = Config::default();
+        config.server.bind = "0.0.0.0:3001".to_string();
+        config
+            .providers
+            .insert("antigravity".to_string(), antigravity(false));
+        let error = config
+            .validate()
+            .expect_err("sandbox = false must not be servable off-loopback");
+        assert!(
+            matches!(
+                error,
+                ConfigError::UnsandboxedAntigravityOnPublicBind { .. }
+            ),
+            "unexpected error: {error}"
+        );
+
+        // With the sandbox on, the same bind is fine.
+        let mut config = Config::default();
+        config.server.bind = "0.0.0.0:3001".to_string();
+        config
+            .providers
+            .insert("antigravity".to_string(), antigravity(true));
+        config
+            .validate()
+            .expect("a sandboxed provider is servable off-loopback");
+    }
+
+    #[test]
+    fn bind_is_loopback_fails_closed_on_an_unparseable_bind() {
+        let mut config = Config::default();
+        config.server.bind = "not-an-address".to_string();
+        assert!(
+            !config.server.bind_is_loopback(),
+            "an unparseable bind must not be treated as loopback by a security gate"
+        );
     }
 
     #[test]
@@ -3430,6 +3817,39 @@ mod tests {
             .usage_refresh_interval(),
             Some(300)
         );
+    }
+
+    #[test]
+    fn status_config_refresh_interval_disables_and_clamps() {
+        use super::StatusConfig;
+        // `0` disables polling.
+        assert_eq!(
+            StatusConfig {
+                refresh_seconds: 0,
+                ..Default::default()
+            }
+            .refresh_interval(),
+            None
+        );
+        // A positive value below the 60s floor is clamped up; at/above passes through.
+        assert_eq!(
+            StatusConfig {
+                refresh_seconds: 30,
+                ..Default::default()
+            }
+            .refresh_interval(),
+            Some(60)
+        );
+        assert_eq!(
+            StatusConfig {
+                refresh_seconds: 300,
+                ..Default::default()
+            }
+            .refresh_interval(),
+            Some(300)
+        );
+        // The default itself (300s) is unaffected by the floor.
+        assert_eq!(StatusConfig::default().refresh_interval(), Some(300));
     }
 
     #[test]
@@ -3983,6 +4403,108 @@ mod tests {
         }
         let mut config = Config::default();
         config.server.pool = Some(PoolConfig::default());
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_invalid_status_sources() {
+        // An empty provider label is rejected.
+        let mut config = Config::default();
+        config.server.status = Some(StatusConfig {
+            refresh_seconds: 300,
+            sources: vec![StatusSource {
+                provider: String::new(),
+                url: "https://status.claude.com/api/v2/summary.json".to_string(),
+            }],
+        });
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::InvalidStatusSourceProvider { index: 0 }
+        ));
+
+        // An unparseable URL is rejected.
+        let mut config = Config::default();
+        config.server.status = Some(StatusConfig {
+            refresh_seconds: 300,
+            sources: vec![StatusSource {
+                provider: "claude".to_string(),
+                url: "not-a-url".to_string(),
+            }],
+        });
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::InvalidStatusSourceUrl { index: 0, .. }
+        ));
+
+        // A non-http(s) scheme is rejected even though it parses fine.
+        let mut config = Config::default();
+        config.server.status = Some(StatusConfig {
+            refresh_seconds: 300,
+            sources: vec![StatusSource {
+                provider: "claude".to_string(),
+                url: "ftp://status.claude.com/summary.json".to_string(),
+            }],
+        });
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::InvalidStatusSourceUrl { index: 0, .. }
+        ));
+
+        // Query strings, fragments, and embedded credentials are rejected.
+        for url in [
+            "https://status.claude.com/api/v2/summary.json?token=secret",
+            "https://status.claude.com/api/v2/summary.json#status",
+            "https://user:secret@status.claude.com/api/v2/summary.json",
+        ] {
+            let mut config = Config::default();
+            config.server.status = Some(StatusConfig {
+                refresh_seconds: 300,
+                sources: vec![StatusSource {
+                    provider: "claude".to_string(),
+                    url: url.to_string(),
+                }],
+            });
+            assert!(matches!(
+                config.validate().unwrap_err(),
+                ConfigError::InvalidStatusSourceUrl { index: 0, .. }
+            ));
+        }
+
+        // Duplicate provider labels are rejected.
+        let mut config = Config::default();
+        config.server.status = Some(StatusConfig {
+            refresh_seconds: 300,
+            sources: vec![
+                StatusSource {
+                    provider: "claude".to_string(),
+                    url: "https://status.claude.com/api/v2/summary.json".to_string(),
+                },
+                StatusSource {
+                    provider: "claude".to_string(),
+                    url: "https://status.openai.com/api/v2/summary.json".to_string(),
+                },
+            ],
+        });
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::DuplicateStatusSourceProvider { provider } if provider == "claude"
+        ));
+
+        // Distinct, well-formed http(s) sources pass validation.
+        let mut config = Config::default();
+        config.server.status = Some(StatusConfig {
+            refresh_seconds: 300,
+            sources: vec![
+                StatusSource {
+                    provider: "claude".to_string(),
+                    url: "https://status.claude.com/api/v2/summary.json".to_string(),
+                },
+                StatusSource {
+                    provider: "openai".to_string(),
+                    url: "https://status.openai.com/api/v2/summary.json".to_string(),
+                },
+            ],
+        });
         config.validate().unwrap();
     }
 

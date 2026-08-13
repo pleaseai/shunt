@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.37.0](https://github.com/pleaseai/shunt/compare/v0.36.0...v0.37.0) (2026-08-13)
+
+
+### Features
+
+* **status:** add opt-in upstream Statuspage polling ([#341](https://github.com/pleaseai/shunt/issues/341)) ([a233bef](https://github.com/pleaseai/shunt/commit/a233bef78ee4a24d84b1a88353f34455ab4d825b))
+* **xai:** add grok-4.6 and refresh the Grok model surface ([#343](https://github.com/pleaseai/shunt/issues/343)) ([29c456f](https://github.com/pleaseai/shunt/commit/29c456f53f514e1c48d19e151128f55298db7578))
+
+## [0.36.0](https://github.com/pleaseai/shunt/compare/v0.35.0...v0.36.0) (2026-08-11)
+
+
+### Features
+
+* **antigravity:** run agy in agentic mode with streaming, sandboxing, and discovered effort matrix ([#325](https://github.com/pleaseai/shunt/issues/325)) ([109c38d](https://github.com/pleaseai/shunt/commit/109c38d37ed39629bd012008a10ff8dd7d1b1a6f))
+
+## [0.35.0](https://github.com/pleaseai/shunt/compare/v0.34.1...v0.35.0) (2026-08-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* **server:** The inbound request body cap now defaults to 32 MiB instead of the hardcoded 64 MiB limit. Requests between those sizes return 413 until [server.limits] max_request_bytes is raised.
+
+### Features
+
+* **server:** add HTTP tuning config surface ([#334](https://github.com/pleaseai/shunt/issues/334)) ([82f55d6](https://github.com/pleaseai/shunt/commit/82f55d60b47845a12e9e876423293d1f598df103))
+
 ## [0.34.1](https://github.com/pleaseai/shunt/compare/v0.34.0...v0.34.1) (2026-08-08)
 
 

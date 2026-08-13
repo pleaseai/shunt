@@ -69,6 +69,8 @@ code, .mono { font-family: inherit; font-size: .85em; }
 .status { white-space: nowrap; font-weight: 600; }
 .status[data-state="available"]::before { content: ""; display: inline-block; width: .46rem; height: .46rem; margin-right: .42rem; border-radius: 50%; background: var(--accent); }
 .status[data-state="expired"], .status[data-state="unavailable"] { color: var(--danger); }
+.status[data-state="minor"] { color: var(--accent-light); }
+.status[data-state="major"], .status[data-state="critical"], .status[data-state="unknown"] { color: var(--danger); }
 .usage-lines { min-width: 24rem; }
 .usage-item + .usage-item { margin-top: .62rem; }
 .usage-meta { display: flex; justify-content: space-between; gap: 1rem; margin-bottom: .26rem; font-size: .78rem; }
@@ -149,6 +151,13 @@ pub fn dashboard_page(csrf: &str) -> String {
 <header><h1>shunt admin</h1>
 <form method="post" action="/admin/logout"><button class="secondary" type="submit">Sign out</button></form>
 </header>
+
+<div id="status-section" style="display:none">
+<h2>Upstream status</h2>
+<p class="muted">Provider-reported status from each configured Statuspage endpoint (<code>[server.status]</code>). Observation only — never consulted by routing or failover.</p>
+<div class="card overflow"><table><thead><tr><th>Provider</th><th>Status</th><th>Description</th><th>Observed</th></tr></thead>
+<tbody id="status"></tbody></table></div>
+</div>
 
 <h2>Accounts and usage</h2>
 <p class="muted">Read-only signals from provider clients on this machine. <strong>Waiting for traffic</strong> means GPT has not returned quota headers to this shunt yet; <strong>Needs login</strong> means the provider-owned access token expired and must be renewed by that provider client.</p>

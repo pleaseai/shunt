@@ -1,7 +1,7 @@
 # shunt-xai
 
-Claude Code subagents that run on xAI's **Grok** models — **grok-build-0.1**,
-**grok-4.5**, and **grok-4.3** — routed through the
+Claude Code subagents that run on xAI's **Grok** models — **grok-4.6**,
+**grok-4.5**, and **grok-build-0.1** — routed through the
 [shunt](https://github.com/pleaseai/shunt) gateway.
 
 > **EXPERIMENTAL.** shunt's `xai` provider is not yet verified against the live
@@ -17,9 +17,9 @@ Only the model that generates the tokens changes.
 
 | Agent (`@`-mention)          | Model id (`model:`) | Notes                        |
 | ---------------------------- | ------------------- | ---------------------------- |
+| `shunt-xai:grok-4.6`         | `grok-4.6`          | Current frontier Grok model  |
+| `shunt-xai:grok-4.5`         | `grok-4.5`          | Previous frontier model      |
 | `shunt-xai:grok-build-0.1`   | `grok-build-0.1`    | Flagship Grok coding model   |
-| `shunt-xai:grok-4.5`         | `grok-4.5`          |                              |
-| `shunt-xai:grok-4.3`         | `grok-4.3`          |                              |
 
 Each agent's `model:` frontmatter pins the request to a Grok slug, so only that
 subagent diverts — the main session stays on Claude.
@@ -50,7 +50,7 @@ built-in provider — you only need a credential and a route).
 3. **Map the slugs** in your `shunt.toml` to the `xai` provider:
    ```toml
    [[routes]]
-   model = "grok-build-0.1"
+   model = "grok-4.6"
    provider = "xai"
 
    [[routes]]
@@ -58,9 +58,12 @@ built-in provider — you only need a credential and a route).
    provider = "xai"
 
    [[routes]]
-   model = "grok-4.3"
+   model = "grok-build-0.1"
    provider = "xai"
    ```
+
+   Older slugs (`grok-4.3`, `grok-4`, `grok-4-fast`, …) are not shipped as agents
+   but still route fine — add a `[[routes]]` entry for whichever slug you want.
 
    For the full setup — API-key vs. subscription OAuth, the reasoning gate, and
    troubleshooting — see [`docs/m6-xai-provider.md`](https://github.com/pleaseai/shunt/blob/main/docs/m6-xai-provider.md).
@@ -78,11 +81,11 @@ Without a running shunt gateway mapping these ids, Claude Code will send the
 ## Usage
 
 ```
-@shunt-xai:grok-build-0.1  refactor this module and run the tests
+@shunt-xai:grok-4.6  refactor this module and run the tests
 ```
 
 Or set every subagent to a Grok model for a session with
-`CLAUDE_CODE_SUBAGENT_MODEL=grok-4.5`.
+`CLAUDE_CODE_SUBAGENT_MODEL=grok-4.6`.
 
 Both require a running shunt gateway with the slug routed to the `xai` provider —
 see [Prerequisites](#prerequisites). Without it the request fails against Anthropic.

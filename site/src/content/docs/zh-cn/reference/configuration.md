@@ -14,6 +14,18 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 | `max_concurrent_requests` | `1024` | 入站并发请求上限，请求会一直计数到响应正文结束。超出上限的请求不会排队，而是立即以 `503` 和 `Retry-After: 1` 拒绝。`0` 表示禁用限制，`/` 和 `/health` 不受限制。更改此键后需要重启 |
 | `sse_keepalive_seconds` | `30` | 注入 SSE `ping` 前的闲置秒数;`0` 禁用([详情](/zh-cn/guides/shared-gateway/#sse-keepalive-pings)) |
 
+## HTTP 调优表
+
+`[server.access_control]` 提供 `allow_cidrs = []`、`deny_cidrs = []` 和 `trust_forwarded_for = false`。deny 规则优先，并且也适用于 `/` 和 `/health`。非空 allow 列表会启用默认拒绝，但这两个健康检查路径只免除 allow 检查。仅在可信代理会覆盖客户端提供的转发头时才信任这些头。更改后需要重启。
+
+此 `trust_forwarded_for` 设置与 `[server.gateway] trust_forwarded_for` 相互独立。access-control 设置仅影响 CIDR 允许/拒绝规则，gateway 设置仅影响设备流速率限制器。如果两个表面都在可信反向代理后运行，请同时启用这两个设置。只设置其中一个时，另一个表面仍会使用套接字对端地址。
+
+`[server.limits]` 的 `max_request_bytes` 适用于 Anthropic Messages 和入站 Codex Responses 请求正文，默认为 `33554432`（32 MiB），超出时返回 `413`。其他网关、管理、遥测和分析路由仍使用各端点自身的正文限制。`max_request_header_bytes` 和 `max_url_length` 默认未设置，分别返回 `431` 和 `414`。头部大小是所有已解析头部名称长度与值长度之和。正文限制可热重载，头部和 URL 限制需要重启。
+
+`[server.timeouts] upstream_ttfb_ms` 默认为 `120000`，设为 `0` 可禁用。它只限制等待推理上游 HTTP 响应头的时间，因此不会对响应正文和长时间 SSE 流施加总时限。覆盖 Anthropic Messages、OpenAI Responses HTTP（包括 WebSocket 回退）、Gemini HTTP 和入站 Codex Responses 透传；不覆盖 Codex WebSocket、Cursor、Antigravity 或辅助 HTTP 请求。
+
+`[server.rate_limits.device_authorization]` 默认为 `max = 30`、`window_seconds = 600`，`[server.rate_limits.device_verify]` 默认为 `max = 10`、`window_seconds = 600`。两个 per-IP 限制彼此独立；未配置 `[server.gateway]` 时不生效。更改后需要重启。
+
 ## `[server.auth]`(可选)
 
 存在此表即启用入站客户端 token 认证([详情](/zh-cn/guides/shared-gateway/)):
@@ -171,7 +183,7 @@ codex-fallback = "gpt-5.2"
 | :-- | :-- | :-- |
 | `name` | 是 | 非空且唯一的上游名称。路由、模型映射、`server.default_provider`、指标和管理界面都使用它。 |
 | `provider` | 未设置 `kind` + `base_url` 时 | 内置 preset。提供 `kind`、`base_url` 和默认 auth。显式字段覆盖 preset 值。 |
-| `kind` | 无 preset 时 | `anthropic`、`responses` 或 `cursor`。 |
+| `kind` | 无 preset 时 | `anthropic`、`responses`、`cursor`、`gemini` 或 `antigravity`。后两者在下方 preset 表中没有条目(同名的内置 `[providers.*]` 表是另一套遗留机制,并非 preset),因此有序 upstream 必须显式设置 `kind`。 |
 | `base_url` | 无 preset 时 | 上游 base URL。对于 `kind = "cursor"`，它仅用于登录/令牌刷新接口；推理使用固定的代理主机 `https://agentn.global.api5.cursor.sh`，且只能通过 `SHUNT_CURSOR_AGENT_BASE_URL` 覆盖。 |
 | `auth` | 否 | auth mode 字符串或特定于 mode 的映射。默认采用 preset 的 auth；没有 preset 时为 `passthrough`。 |
 | `effort`, `count_tokens`, `websocket`, `tool_search`, `request_compression`, `retry` | 否 | 与旧式 provider 相同的按上游设置。preset 不会覆盖 `count_tokens`。Cursor 上游的 `retry` 也会被标准化，但不适用于 Cursor 流式推理请求。 |
@@ -216,13 +228,13 @@ codex-fallback = "gpt-5.2"
 
 ## `[providers.<name>]`（旧式）
 
-每个提供方都是一个以你自选名称命名的表。内置项(`anthropic`、`openai`、`codex`、`xai`、`grok`、`cursor`)可被部分覆盖 —— 配置映射深度合并。
+每个提供方都是一个以你自选名称命名的表。内置项(`anthropic`、`openai`、`codex`、`xai`、`grok`、`cursor`、`gemini`、`antigravity`)可被部分覆盖 —— 配置映射深度合并。
 
 | 键 | 取值 | 含义 |
 | :-- | :-- | :-- |
-| `kind` | `anthropic` \| `responses` \| `cursor` | 上游协议 / 适配器。`anthropic` = Messages API(透传,可选择重新设置密钥);`responses` = Anthropic Messages 转换为 OpenAI Responses API;`cursor` = 原生 Cursor ConnectRPC/protobuf AgentService 适配器。 |
+| `kind` | `anthropic` \| `responses` \| `cursor` \| `gemini` \| `antigravity` | 上游协议 / 适配器。`anthropic` = Messages API(透传,可选择重新设置密钥);`responses` = Anthropic Messages 转换为 OpenAI Responses API;`cursor` = 原生 Cursor ConnectRPC/protobuf AgentService 适配器;`gemini` = Anthropic Messages 转换为 Google Code Assist 后端的 Gemini `generateContent`/`streamGenerateContent`;`antigravity` = 没有任何上游,以子进程方式运行本地 Antigravity CLI 二进制(`agy`)。 |
 | `base_url` | URL | 上游 base；shunt 追加端点路径。对于 `kind = "cursor"`，它仅用于登录/令牌刷新接口，不会选择代理/推理主机。 |
-| `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `claude_oauth` \| `xai_oauth` \| `cursor_oauth` | `passthrough` 转发客户端自己的 credential;`api_key` 从 `api_key_env` 注入一个密钥;`chatgpt_oauth` 复用 `~/.codex/auth.json`;`claude_oauth` 从显式 Anthropic 账户中选择;`xai_oauth` 复用来自 `shunt login xai` 的 `~/.shunt/xai-auth.json`(仅经由 HTTPS 发送到 x.ai/grok.com 主机);`cursor_oauth` 复用 `~/.shunt/cursor-auth.json`(`shunt login cursor`)。 |
+| `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `claude_oauth` \| `xai_oauth` \| `cursor_oauth` \| `google_oauth` \| `none` | `passthrough` 转发客户端自己的 credential;`api_key` 从 `api_key_env` 注入一个密钥;`chatgpt_oauth` 复用 `~/.codex/auth.json`;`claude_oauth` 从显式 Anthropic 账户中选择;`xai_oauth` 复用来自 `shunt login xai` 的 `~/.shunt/xai-auth.json`(仅经由 HTTPS 发送到 x.ai/grok.com 主机);`cursor_oauth` 复用 `~/.shunt/cursor-auth.json`(`shunt login cursor`);`google_oauth` 复用 gemini CLI 登录的 `~/.gemini/oauth_creds.json`,仅在 `kind = "gemini"` 下有效;`none` 完全不发送 credential,用于没有上游需要认证的适配器(`kind = "antigravity"`)。 |
 | `api_key_env` | 环境变量名 | 当 `auth = "api_key"` 时,从何处读取密钥。 |
 | `api_key_header` | `bearer`(默认) \| `x_api_key` | 注入的密钥在哪个头部中发送。 |
 | `effort` | `low` … `max` | 可选的默认推理力度(`responses` 提供方)。 |

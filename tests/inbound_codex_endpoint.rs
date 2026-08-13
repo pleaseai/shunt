@@ -989,6 +989,69 @@ async fn token_env_401_cools_down_and_rotates_to_next_account() {
 }
 
 #[tokio::test]
+async fn body_limit_error_uses_openai_responses_shape() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut config = test_config("http://127.0.0.1:1", vec![]);
+    config.server.limits.max_request_bytes = 4;
+    let gateway = start_gateway_with(config).await;
+
+    let response = post_responses(&gateway, "/responses", None, None).await;
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert!(body.get("type").is_none());
+    assert_eq!(body["error"]["type"], "request_too_large");
+}
+
+#[tokio::test]
+async fn pooled_ttfb_timeout_returns_504_without_replaying() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-timeout-a");
+    let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-timeout-b");
+    std::env::set_var("SHUNT_TEST_INBOUND_TIMEOUT_A", &token_a);
+    std::env::set_var("SHUNT_TEST_INBOUND_TIMEOUT_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(token_a))
+        .respond_with(ResponseTemplate::new(200).set_delay(std::time::Duration::from_millis(200)))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(token_b))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&upstream)
+        .await;
+
+    let mut config = test_config(
+        &upstream.uri(),
+        vec![
+            account("account-a", "SHUNT_TEST_INBOUND_TIMEOUT_A"),
+            account("account-b", "SHUNT_TEST_INBOUND_TIMEOUT_B"),
+        ],
+    );
+    config.server.timeouts.upstream_ttfb_ms = 25;
+    let gateway = start_gateway_with(config).await;
+    let session_id = session_id_for_account(0, 2);
+
+    let response = post_responses(&gateway, "/responses", Some(&session_id), None).await;
+    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["error"]["type"], "timeout_error");
+    upstream.verify().await;
+
+    std::env::remove_var("SHUNT_TEST_INBOUND_TIMEOUT_A");
+    std::env::remove_var("SHUNT_TEST_INBOUND_TIMEOUT_B");
+}
+
+#[tokio::test]
 async fn single_credential_fallback_when_no_accounts_configured() {
     // With no [[accounts]] configured and an empty store, forward_codex_inbound
     // falls back to the single default `~/.codex/auth.json` ($CODEX_AUTH_FILE)

@@ -323,10 +323,14 @@ brew services stop shunt     # sends SIGTERM; shunt drains in-flight requests, t
 brew services info shunt
 ```
 
-`SIGTERM` and ctrl-c both start the same drain, and that drain has no deadline — an open SSE
-stream keeps the process alive for as long as its client keeps reading. Send a **second** signal
-(another ctrl-c, or `kill` again) to skip the drain and exit immediately with the conventional
-128+signal exit status: 143 for a second `SIGTERM`, 130 for a second ctrl-c/`SIGINT`.
+`SIGTERM` and ctrl-c both start the same drain. On Unix, Antigravity `agy` runs are the exception:
+shunt terminates their isolated process groups as soon as shutdown starts, because gateway signals do
+not reach those groups and an unattended agent must not hold the drain open. Other in-flight requests
+continue draining with no deadline — an open SSE stream keeps the process alive for as long as its
+client keeps reading. Send a **second** signal (another ctrl-c, or `kill` again) to skip the drain and
+exit immediately with the conventional 128+signal exit status: 143 for a second `SIGTERM`, 130 for
+a second ctrl-c/`SIGINT`. The immediate-exit path also terminates any Antigravity groups before the
+process exits.
 
 Logs go to `$(brew --prefix)/var/log/shunt.log` (stdout and stderr combined). Config discovery
 works the same as any other invocation (see [§3 Configure](#3-configure)): a service has no
@@ -526,11 +530,11 @@ subscription. Full spec: [`m6-xai-provider.md`](m6-xai-provider.md).
 ```toml
 # built-in defaults already define [providers.xai]; you only add routes
 [[routes]]
-model = "grok-build-0.1"    # flagship coding model
+model = "grok-4.6"          # current frontier model
 provider = "xai"
 
 [[routes]]
-model = "grok-4.3"
+model = "grok-build-0.1"    # flagship coding model
 provider = "xai"
 ```
 
@@ -546,11 +550,11 @@ auth = "xai_oauth"          # reuse the SuperGrok / X Premium+ login instead of 
 # base_url stays https://api.x.ai/v1 — shunt refuses xai_oauth on a non-x.ai or non-https host
 
 [[routes]]
-model = "grok-build-0.1"
+model = "grok-4.6"
 provider = "xai"
 
 [[routes]]
-model = "grok-4.3"
+model = "grok-build-0.1"
 provider = "xai"
 ```
 

@@ -14,6 +14,18 @@ description: 모든 shunt.toml 키 — server, providers, routes, models.
 | `max_concurrent_requests` | `1024` | 응답 본문이 끝날 때까지 진행 중으로 계산하는 인바운드 요청의 최대 수. 초과 요청은 대기열에 넣지 않고 즉시 `503`과 `Retry-After: 1`로 거부합니다. `0`은 제한을 비활성화하며 `/`와 `/health`는 제한에서 제외됩니다. 이 키를 변경한 뒤에는 재시작해야 합니다 |
 | `sse_keepalive_seconds` | `30` | SSE `ping`이 주입되기 전의 유휴 초; `0`은 비활성화([상세](/ko/guides/shared-gateway/#sse-keepalive-pings)) |
 
+## HTTP 튜닝 테이블
+
+`[server.access_control]`은 `allow_cidrs = []`, `deny_cidrs = []`, `trust_forwarded_for = false`를 제공합니다. deny 규칙이 우선하며 `/`와 `/health`에도 적용됩니다. allow 목록이 비어 있지 않으면 기본 거부가 되지만 두 상태 경로는 allow 검사만 면제됩니다. 전달 헤더 신뢰는 클라이언트가 보낸 값을 덮어쓰는 신뢰할 수 있는 프록시 뒤에서만 활성화하세요. 변경 후 재시작해야 합니다.
+
+이 `trust_forwarded_for` 설정은 `[server.gateway] trust_forwarded_for`와 독립적입니다. access-control 설정은 CIDR 허용/거부 규칙에만 적용되고 gateway 설정은 디바이스 플로 속도 제한에만 적용됩니다. 두 표면 모두 신뢰할 수 있는 리버스 프록시 뒤에서 실행한다면 두 설정을 모두 활성화해야 합니다. 하나만 설정하면 다른 표면은 소켓 피어 주소를 계속 사용합니다.
+
+`[server.limits]`의 `max_request_bytes`는 Anthropic Messages 및 인바운드 Codex Responses 요청 본문에 적용되며 기본값은 `33554432`(32 MiB)입니다. 초과 시 `413`을 반환합니다. 그 외 게이트웨이, 관리, 텔레메트리 및 분석 경로는 각 엔드포인트별 본문 제한을 유지합니다. `max_request_header_bytes`와 `max_url_length`는 기본적으로 설정되지 않으며 각각 `431`과 `414`를 반환합니다. 헤더 크기는 파싱된 모든 헤더의 이름 길이와 값 길이의 합입니다. 본문 제한은 핫 리로드되지만 헤더/URL 제한은 재시작해야 합니다.
+
+`[server.timeouts] upstream_ttfb_ms` 기본값은 `120000`이며 `0`으로 비활성화합니다. 추론 업스트림 HTTP 응답 헤더를 기다리는 시간만 제한하므로 응답 본문과 긴 SSE 스트림에는 전체 시간 제한이 없습니다. Anthropic Messages, OpenAI Responses HTTP(웹소켓 폴백 포함), Gemini HTTP, 인바운드 Codex Responses 패스스루를 포함하며 Codex 웹소켓, Cursor, Antigravity와 보조 HTTP 호출은 포함하지 않습니다.
+
+`[server.rate_limits.device_authorization]` 기본값은 `max = 30`, `window_seconds = 600`이고 `[server.rate_limits.device_verify]`는 `max = 10`, `window_seconds = 600`입니다. 두 per-IP 제한은 서로 독립적이며 `[server.gateway]`가 없으면 비활성 상태입니다. 변경 후 재시작해야 합니다.
+
 ## `[server.auth]` (선택)
 
 이 테이블의 존재가 인바운드 클라이언트 토큰 인증을 활성화합니다([상세](/ko/guides/shared-gateway/)):
@@ -147,6 +159,26 @@ stage 1은 이 보존 설정, `blocked_message`, `group_limit_mode`, `fail_close
 
 양수 `ramp_initial_concurrency`는 모든 계정 풀에 **폭주 제어(storm control)**를 활성화합니다: 페일오버 전환 후에는 진행 중인 동시 요청이 방금 선택된 계정에 한꺼번에 몰릴 수 있습니다. 게이트를 켜면, 방금 트래픽을 받기 시작한 아이덴티티(신규, 쿨다운에서 복귀, 또는 60초간 유휴)는 최대 구성된 개수만큼의 동시 요청만 허용합니다; 성공 응답마다 허용치가 두 배로 늘고(슬로 스타트), 페일오버에 해당하는 실패는 램프를 다시 시작하며, 거부된 요청은 선택 순서상 다음 계정으로 넘어갑니다. 마지막 남은 후보는 게이트와 무관하게 항상 시도되므로, 게이팅은 요청을 미룰 수는 있어도 게이트가 없었다면 서빙됐을 요청을 실패시키는 일은 절대 없습니다. 이는 곧 풀의 모든 계정이 하나의 업스트림 아이덴티티로 귀결되면 사실상 게이트가 없는 것과 같다는 뜻이기도 합니다: 유일한 후보가 곧 마지막 후보이므로, 이 설정은 서로 다른 계정 아이덴티티가 둘 이상일 때만 효력이 있습니다.
 
+## `[server.status]` (선택)
+
+provider Statuspage `summary.json` 엔드포인트를 관측 목적으로만 백그라운드 폴링합니다. 이 정보는 라우팅, 페일오버, pool/cooldown 동작에 영향을 주지 않습니다. 공유 상태는 `shunt.upstream.status` 메트릭과 admin dashboard의 "Upstream status" 영역에만 표시됩니다. 테이블이 없거나 `sources`가 비어 있으면 poller가 시작되지 않습니다.
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `refresh_seconds` | `300` | polling 간격(초). 60 미만의 양수는 60초로 올림. `0`이면 polling 비활성 |
+| `sources` | `[]` | polling할 Statuspage `summary.json` 엔드포인트별 `{ provider, url }` 테이블 배열 |
+
+```toml
+[server.status]
+refresh_seconds = 300
+
+[[server.status.sources]]
+provider = "claude"
+url = "https://status.claude.com/api/v2/summary.json"
+```
+
+각 source에는 비어 있지 않은 고유 `provider` label과 query, fragment, embedded credential이 없는 `http`/`https` URL이 필요합니다. 잘못된 설정은 시작 시 거부됩니다. 아직 첫 polling이 끝나지 않은 source는 `unknown`으로 표시되며, polling 실패·non-2xx response·1 MiB 초과 body·잘못된 JSON·알 수 없는 indicator도 false all-clear 대신 `unknown`으로 저장됩니다.
+
 ## `[[upstreams]]` (순서가 있는 페일오버)
 
 `[[upstreams]]`는 이름이 지정된 업스트림의 순서 있는 배열입니다. 선언 순서가 전역 페일오버 순서이며, 모델의 `[models.upstream_model]` 맵이 참여할 항목을 선택합니다. 맵에 적힌 텍스트 순서는 라우팅에 영향을 주지 않습니다.
@@ -182,7 +214,7 @@ codex-fallback = "gpt-5.2"
 | :-- | :-- | :-- |
 | `name` | 예 | 비어 있지 않은 고유 업스트림 이름. 라우트, 모델 맵, `server.default_provider`, 메트릭, 관리자 화면에서 사용합니다. |
 | `provider` | `kind`와 `base_url`을 직접 설정하지 않은 경우 | 내장 preset. `kind`, `base_url`, 기본 auth를 제공합니다. 명시한 필드가 preset 값을 덮어씁니다. |
-| `kind` | preset이 없는 경우 | `anthropic`, `responses`, `cursor` 중 하나. |
+| `kind` | preset이 없는 경우 | `anthropic`, `responses`, `cursor`, `gemini`, `antigravity` 중 하나. 뒤의 두 종류는 아래 preset 표에 항목이 없으므로 — 같은 이름의 내장 `[providers.*]` 테이블은 preset이 아니라 별개의 레거시 방식입니다 — 정렬 업스트림에서 `kind`를 직접 지정해야 합니다. |
 | `base_url` | preset이 없는 경우 | 업스트림 base URL. `kind = "cursor"`에서는 로그인/토큰 갱신 엔드포인트에만 사용됩니다. 추론은 고정 에이전트 호스트인 `https://agentn.global.api5.cursor.sh`를 사용하며, `SHUNT_CURSOR_AGENT_BASE_URL`로만 재정의할 수 있습니다. |
 | `auth` | 아니요 | auth mode 문자열 또는 mode별 맵. 기본값은 preset의 auth이며, preset도 없으면 `passthrough`입니다. |
 | `effort`, `count_tokens`, `websocket`, `tool_search`, `request_compression`, `retry` | 아니요 | 레거시 provider에 설명된 것과 같은 업스트림별 설정. preset은 `count_tokens`를 덮어쓰지 않습니다. Cursor 업스트림에서도 `retry`는 정규화되지만 Cursor 스트리밍 턴에는 적용되지 않습니다. |
@@ -227,13 +259,13 @@ codex-fallback = "gpt-5.2"
 
 ## `[providers.<name>]` (레거시)
 
-각 프로바이더는 원하는 이름의 테이블입니다. 내장(`anthropic`, `openai`, `codex`, `xai`, `grok`, `cursor`)은 부분 오버라이드할 수 있습니다 — 구성 맵은 깊은 병합됩니다.
+각 프로바이더는 원하는 이름의 테이블입니다. 내장(`anthropic`, `openai`, `codex`, `xai`, `grok`, `cursor`, `gemini`, `antigravity`)은 부분 오버라이드할 수 있습니다 — 구성 맵은 깊은 병합됩니다.
 
 | 키 | 값 | 의미 |
 | :-- | :-- | :-- |
-| `kind` | `anthropic` \| `responses` \| `cursor` | 업스트림 프로토콜 / 어댑터. `anthropic` = Messages API(패스스루, 선택적으로 키 재설정); `responses` = Anthropic Messages를 OpenAI Responses API로 변환; `cursor` = 네이티브 Cursor ConnectRPC/protobuf AgentService 어댑터. |
+| `kind` | `anthropic` \| `responses` \| `cursor` \| `gemini` \| `antigravity` | 업스트림 프로토콜 / 어댑터. `anthropic` = Messages API(패스스루, 선택적으로 키 재설정); `responses` = Anthropic Messages를 OpenAI Responses API로 변환; `cursor` = 네이티브 Cursor ConnectRPC/protobuf AgentService 어댑터; `gemini` = Anthropic Messages를 Google Code Assist 백엔드의 Gemini `generateContent`/`streamGenerateContent`로 변환; `antigravity` = 업스트림 없이 로컬 Antigravity CLI 바이너리(`agy`)를 서브프로세스로 실행. |
 | `base_url` | URL | 업스트림 base; shunt가 엔드포인트 경로를 붙입니다. `kind = "cursor"`에서는 로그인/토큰 갱신 엔드포인트에만 사용되며 에이전트/추론 호스트를 선택하지 않습니다. |
-| `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `claude_oauth` \| `xai_oauth` \| `cursor_oauth` | `passthrough`는 클라이언트 본인의 credential을 전달; `api_key`는 `api_key_env`의 키를 주입; `chatgpt_oauth`는 `~/.codex/auth.json`을 재사용; `claude_oauth`는 명시적 Anthropic 계정에서 선택; `xai_oauth`는 `shunt login xai`의 `~/.shunt/xai-auth.json`을 재사용(HTTPS를 통한 x.ai/grok.com 호스트에만 전송); `cursor_oauth`는 `~/.shunt/cursor-auth.json`을 재사용(`shunt login cursor`). |
+| `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `claude_oauth` \| `xai_oauth` \| `cursor_oauth` \| `google_oauth` \| `none` | `passthrough`는 클라이언트 본인의 credential을 전달; `api_key`는 `api_key_env`의 키를 주입; `chatgpt_oauth`는 `~/.codex/auth.json`을 재사용; `claude_oauth`는 명시적 Anthropic 계정에서 선택; `xai_oauth`는 `shunt login xai`의 `~/.shunt/xai-auth.json`을 재사용(HTTPS를 통한 x.ai/grok.com 호스트에만 전송); `cursor_oauth`는 `~/.shunt/cursor-auth.json`을 재사용(`shunt login cursor`); `google_oauth`는 gemini CLI 로그인의 `~/.gemini/oauth_creds.json`을 재사용하며 `kind = "gemini"`에서만 유효; `none`은 인증할 업스트림이 없는 어댑터(`kind = "antigravity"`)를 위해 크리덴셜을 전혀 보내지 않습니다. |
 | `api_key_env` | env 변수 이름 | `auth = "api_key"`일 때 키를 읽어오는 곳. |
 | `api_key_header` | `bearer`(기본) \| `x_api_key` | 주입된 키가 전송되는 헤더. |
 | `accounts` | 계정 테이블 배열 | Anthropic OAuth 계정 풀. `kind = "anthropic"`이고 `auth = "claude_oauth"`일 때만 유효; 아래 참고. |

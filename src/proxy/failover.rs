@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use axum::{
-    body::{to_bytes, Body},
+    body::Body,
     http::{HeaderMap, HeaderValue, StatusCode, Uri},
     response::IntoResponse,
 };
@@ -11,17 +11,14 @@ use crate::{
         anthropic::AnthropicAdapter, cursor::CursorAdapter, responses::ResponsesAdapter, Adapter,
         AdapterError, AdapterFailure,
     },
-    config::{AuthMode, CountTokens},
+    config::{AuthMode, CountTokens, ProviderKind},
     count_tokens,
-    error::{ShuntError, UpstreamError},
+    error::ShuntError,
     routing::{self, AdapterKind},
     server::AppState,
 };
 
-use super::{
-    count_tokens_unsupported, is_count_tokens, normalize_request_body, ForwardError,
-    MAX_REQUEST_BODY_BYTES,
-};
+use super::{count_tokens_unsupported, is_count_tokens, normalize_request_body, ForwardError};
 
 pub(super) async fn forward(
     state: AppState,
@@ -30,14 +27,23 @@ pub(super) async fn forward(
     body: Body,
     started_at: Instant,
 ) -> Result<(StatusCode, axum::response::Response), ForwardError> {
-    let body = to_bytes(body, MAX_REQUEST_BODY_BYTES)
+    let max_request_bytes = state.config.server.limits.max_request_bytes;
+    if crate::http_tuning::content_length_exceeds(headers, max_request_bytes) {
+        return Err(ForwardError {
+            message: "request body exceeds the configured limit".to_string(),
+            response: crate::http_tuning::request_too_large(false).await,
+        });
+    }
+    let body = crate::http_tuning::read_body(body, max_request_bytes, false)
         .await
-        .map_err(|error| {
-            let message = error.to_string();
-            ForwardError {
-                message: message.clone(),
-                response: UpstreamError::from_message(message).into_response(),
+        .map_err(|response| ForwardError {
+            message: if response.status() == StatusCode::PAYLOAD_TOO_LARGE {
+                "request body exceeds the configured limit"
+            } else {
+                "failed to read request body"
             }
+            .to_string(),
+            response,
         })?;
     let mut body = crate::request::RequestBody::parse(body.to_vec())
         .map_err(routing::invalid_routing_request)
@@ -498,12 +504,13 @@ fn check_inbound_auth(
         .gateway_auth
         .as_ref()
         .and_then(|auth| auth.authenticate_bearer(headers));
-    let injects_credential = routes.iter().any(|route| {
-        state
-            .config
-            .provider(&route.provider)
-            .is_some_and(|provider| provider.auth != AuthMode::Passthrough)
-    });
+    // One definition of "passthrough" for both the auth gate and header
+    // handling. The inline form this replaced disagreed with the helper on an
+    // unknown provider — it treated one as *not* credential-injecting, which
+    // skipped `[server.auth]` rather than demanding it. Fail closed instead.
+    let injects_credential = routes
+        .iter()
+        .any(|route| !is_passthrough_route(state, route));
     if !injects_credential || (state.inbound_auth.is_none() && state.gateway_auth.is_none()) {
         return Ok((
             forwarded,
@@ -602,11 +609,22 @@ fn headers_for_route(
 /// Whether a route's provider forwards the caller's own upstream credential
 /// (`AuthMode::Passthrough`) rather than injecting a gateway-held one. An
 /// unknown provider is treated as credential-injecting (fail closed).
+///
+/// Antigravity is never passthrough, whatever its `auth` says. The exemption
+/// exists because a passthrough route lends the caller nothing — their own
+/// credential goes upstream, so gating it behind `[server.auth]` would protect
+/// nothing. That reasoning does not survive contact with this kind: the adapter
+/// ignores the caller's credential entirely and runs the operator's local `agy`
+/// with `--dangerously-skip-permissions`. Since `AuthMode::Passthrough` is also
+/// the default when `auth` is omitted, honouring it here would let anyone
+/// reach a protected gateway and execute code as the user running shunt.
 fn is_passthrough_route(state: &AppState, route: &routing::Route) -> bool {
     state
         .config
         .provider(&route.provider)
-        .is_some_and(|provider| provider.auth == AuthMode::Passthrough)
+        .is_some_and(|provider| {
+            provider.auth == AuthMode::Passthrough && provider.kind != ProviderKind::Antigravity
+        })
 }
 
 /// The origin (scheme + host + port) of a provider's `base_url`, used to decide

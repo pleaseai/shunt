@@ -391,6 +391,8 @@ mod tests {
                 tool_search: None,
                 request_compression: true,
                 retry: Default::default(),
+                workspace_roots: Vec::new(),
+                sandbox: true,
             },
         );
         let state = AppState::new(config, reqwest::Client::new()).unwrap();
@@ -450,6 +452,8 @@ mod tests {
                     tool_search: None,
                     request_compression: true,
                     retry: Default::default(),
+                    workspace_roots: Vec::new(),
+                    sandbox: true,
                 },
             );
         }
@@ -517,6 +521,8 @@ mod tests {
             tool_search: None,
             request_compression: true,
             retry: Default::default(),
+            workspace_roots: Vec::new(),
+            sandbox: true,
         };
         let mut config = Config::default();
         config

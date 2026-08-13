@@ -178,7 +178,7 @@ fn same_url_origin(candidate: &str, public_url: &str) -> bool {
     candidate.origin() == public_url.origin()
 }
 
-pub(super) fn client_ip(
+pub(crate) fn client_ip(
     headers: &HeaderMap,
     peer: Option<SocketAddr>,
     trust_forwarded_for: bool,

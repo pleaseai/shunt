@@ -1,8 +1,8 @@
 use axum::{
-    extract::{rejection::FormRejection, State},
+    extract::{rejection::FormRejection, ConnectInfo, State},
     http::{header, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
-    Form, Json,
+    Extension, Form, Json,
 };
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -69,6 +69,8 @@ struct DeviceAuthorizationResponse {
 
 pub async fn device_authorization(
     State(state): State<AppState>,
+    connection: Option<Extension<ConnectInfo<std::net::SocketAddr>>>,
+    headers: axum::http::HeaderMap,
     form: Result<Form<DeviceAuthorizationForm>, FormRejection>,
 ) -> Response {
     let Form(form) = match form {
@@ -81,6 +83,11 @@ pub async fn device_authorization(
     let state = state.refreshed();
     let Some(auth) = state.gateway_auth else {
         return StatusCode::NOT_FOUND.into_response();
+    };
+    let peer = connection.map(|Extension(ConnectInfo(address))| address);
+    let ip = super::device::client_ip(&headers, peer, auth.trust_forwarded_for());
+    if !state.gateway_stores.device_authorization_rate.check(&ip) {
+        return no_store(oauth_error(StatusCode::TOO_MANY_REQUESTS, "slow_down"));
     };
     let Some((device_code, user_code)) = create_device_grant(&state.gateway_stores.device_grants)
     else {

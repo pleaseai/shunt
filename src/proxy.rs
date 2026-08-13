@@ -13,8 +13,6 @@ use crate::{error::ShuntError, model::responses::anthropic_error_type, server::A
 
 mod failover;
 
-const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024 * 1024;
-
 pub async fn post(
     State(state): State<AppState>,
     method: Method,

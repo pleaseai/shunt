@@ -67,7 +67,7 @@ and is configured to route the model ids above to the Codex provider:
 
    For the full setup — auth-file handling, effort, context-window sizing, and
    troubleshooting — see the **Codex configuration reference**
-   ([site guide](https://shunt-docs.pages.dev/guides/codex/) ·
+   ([site guide](https://shunt.dev/guides/codex/) ·
    [`docs/codex-configuration.md`](https://github.com/pleaseai/shunt/blob/main/docs/codex-configuration.md)).
 
 > The ChatGPT-account backend only accepts the slugs your account is entitled to.
@@ -99,11 +99,11 @@ see [Prerequisites](#prerequisites). Without it the request fails against Anthro
 
 ## Further reading
 
-- [Codex configuration reference](https://shunt-docs.pages.dev/guides/codex/) — the
+- [Codex configuration reference](https://shunt.dev/guides/codex/) — the
   full end-to-end setup ([Markdown source](https://github.com/pleaseai/shunt/blob/main/docs/codex-configuration.md)).
-- [Effort & Context](https://shunt-docs.pages.dev/guides/effort-and-context/) — reasoning
+- [Effort & Context](https://shunt.dev/guides/effort-and-context/) — reasoning
   effort, `count_tokens`, and the 372k context window in depth.
-- [Model Discovery](https://shunt-docs.pages.dev/guides/model-discovery/) — auto-list
+- [Model Discovery](https://shunt.dev/guides/model-discovery/) — auto-list
   Codex models in the `/model` picker via a `claude-`-named alias.
 - [ChatGPT / Codex auth spec](https://github.com/pleaseai/shunt/blob/main/docs/m2-chatgpt-oauth.md)
   — how shunt reads and refreshes `~/.codex/auth.json`.

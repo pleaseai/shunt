@@ -26,9 +26,10 @@ brew services start shunt
 ```
 
 Logs go to `$(brew --prefix)/var/log/shunt.log`. `brew services stop` sends `SIGTERM`, and shunt
-drains in-flight requests before exiting. Config changes don't need a restart — shunt
-[hot-reloads](https://github.com/pleaseai/shunt/blob/main/docs/config-reload.md) the file
-automatically. See [Running as a
+drains in-flight requests before exiting. On Unix, Antigravity agent turns are terminated when
+shutdown starts so their isolated process groups cannot hold the drain open. Config changes don't need
+a restart — shunt [hot-reloads](https://github.com/pleaseai/shunt/blob/main/docs/config-reload.md)
+the file automatically. See [Running as a
 service](https://github.com/pleaseai/shunt/blob/main/docs/running.md#run-as-a-background-service-homebrew)
 for config discovery paths and more detail.
 

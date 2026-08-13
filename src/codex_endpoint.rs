@@ -11,7 +11,7 @@
 use std::time::Instant;
 
 use axum::{
-    body::{to_bytes, Body, Bytes},
+    body::{Body, Bytes},
     extract::{OriginalUri, State},
     http::{HeaderMap, Method, StatusCode},
     response::IntoResponse,
@@ -22,7 +22,7 @@ use tracing::Instrument;
 use crate::{
     adapters::{responses, AdapterError},
     compression::BodyEncoding,
-    error::{ShuntError, UpstreamError},
+    error::ShuntError,
     routing::{AdapterKind, Route},
     server::AppState,
 };
@@ -40,9 +40,6 @@ pub(crate) const PATHS: [&str; 3] = [
     "/responses",
     "/v1/responses",
 ];
-
-/// Same inbound body cap as the Anthropic Messages path (`proxy::post`).
-const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024 * 1024;
 
 /// Minimal view of the inbound Responses body: the `model` is read only for
 /// metrics/logging labels — the body itself forwards upstream byte-for-byte, so
@@ -305,18 +302,27 @@ async fn forward(
         None
     };
 
-    let body = to_bytes(body, MAX_REQUEST_BODY_BYTES)
+    let max_request_bytes = state.config.server.limits.max_request_bytes;
+    if crate::http_tuning::content_length_exceeds(&headers, max_request_bytes) {
+        return Err(ForwardError {
+            message: "request body exceeds the configured limit".to_string(),
+            response: crate::http_tuning::request_too_large(true).await,
+        });
+    }
+    let body = crate::http_tuning::read_body(body, max_request_bytes, true)
         .await
-        .map_err(|error| {
-            let message = error.to_string();
-            ForwardError {
-                message: message.clone(),
-                response: UpstreamError::from_message(message).into_response(),
+        .map_err(|response| ForwardError {
+            message: if response.status() == StatusCode::PAYLOAD_TOO_LARGE {
+                "request body exceeds the configured limit"
+            } else {
+                "failed to read request body"
             }
+            .to_string(),
+            response,
         })?;
 
     // Read the model for metrics/logging only; the body forwards verbatim.
-    let model = model_label(&headers, &body).await;
+    let model = model_label(&headers, &body, max_request_bytes).await;
     crate::observability::record_requested_model(&model);
     // The body-`model` does not pick a provider (the endpoint is pinned to one
     // `chatgpt_oauth` provider). `request_builder` only reads `route.provider`,
@@ -409,12 +415,12 @@ const UNKNOWN_MODEL: &str = "unknown";
 /// The identity/`Other` branches below have the same worker-blocking parse
 /// property but predate this fix — see the comment at their call site for why
 /// they are deliberately left as-is.
-async fn model_label(headers: &HeaderMap, body: &Bytes) -> String {
+async fn model_label(headers: &HeaderMap, body: &Bytes, max_request_bytes: usize) -> String {
     match crate::compression::body_encoding(headers) {
         BodyEncoding::Zstd => {
             match crate::compression::decode_zstd_and_parse(
                 body.clone(),
-                MAX_REQUEST_BODY_BYTES,
+                max_request_bytes,
                 |decoded| {
                     let decoded_bytes = decoded.len();
                     (parse_model(&decoded), decoded_bytes)
@@ -428,7 +434,7 @@ async fn model_label(headers: &HeaderMap, body: &Bytes) -> String {
                 Ok(None) => {
                     tracing::warn!(
                         wire_bytes = body.len(),
-                        limit = MAX_REQUEST_BODY_BYTES,
+                        limit = max_request_bytes,
                         "inbound codex body decodes past the request size limit or the \
                          compressed-to-decoded ratio bound; model label unavailable"
                     );
