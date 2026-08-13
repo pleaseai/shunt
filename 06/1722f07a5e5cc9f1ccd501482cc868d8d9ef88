@@ -1,0 +1,233 @@
+site/src/layouts/DocsLayout.astro
+  s_90e5fb302b3207::t_8424a4add04d8f 8
+site/src/content/docs/ja/reference/configuration.md
+  s_90e5fb302b3207::t_8424a4add04d8f 17-28,186,231,235,237
+site/src/content/docs/guides/providers.mdx
+  s_90e5fb302b3207::t_8424a4add04d8f 59-133,237
+README.ko.md
+  s_90e5fb302b3207::t_8424a4add04d8f 33,63,111,147,172,176,178-179
+site/src/content/docs/ja/guides/xai.mdx
+  s_90e5fb302b3207::t_8424a4add04d8f 98,100,125,141,148,157,173,178,207,218,221
+.release-please-manifest.json
+  s_90e5fb302b3207::t_8424a4add04d8f 2
+src/adapters/antigravity/models.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 1-346
+src/adapters/antigravity/stream.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 1-319
+src/adapters/responses/pool.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 192-195,205,275-280,290
+shunt.toml.example
+  s_90e5fb302b3207::t_8424a4add04d8f 179
+src/codex_endpoint.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 14,25,305-312,314-318,320-321,325,418,423,437
+src/shutdown.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 1-6,52,85
+src/upstream_status.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 1-340
+src/upstream_timeout.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 1-114
+tests/failover.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 99-100
+docs/upstreams-failover.md
+  s_90e5fb302b3207::t_8424a4add04d8f 23,27
+Cargo.toml
+  s_90e5fb302b3207::t_8424a4add04d8f 10,42-43,48,111-113
+plugins/shunt-xai/README.md
+  s_90e5fb302b3207::t_8424a4add04d8f 3-4,20-21,53,61,65-67,84,88
+src/adapters/anthropic/mod.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 85-92,96,241,249-252,262,334,467,598,602-612,617-619,628-629,634,636-639,649,653,1127,1148-1149
+src/main.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 464-479,500-503,685-718,1172-1257
+  s_90e5fb302b3207::t_e2f65ac4adcb05 1258
+src/gateway/mod.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 2
+docs/m6-xai-provider.md
+  s_90e5fb302b3207::t_8424a4add04d8f 157-160,183,200-203
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_90e5fb302b3207::t_8424a4add04d8f 17-28,186,231,235,237
+src/status_poll.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 1-468
+src/config.rs
+  s_90e5fb302b3207::t_75ed6f0918012c 3585-3586
+  s_90e5fb302b3207::t_8424a4add04d8f 14,18-20,117-122,138-149,249-298,1484-1518,1965-1970,2043-2048,2202-2218,2252-2253,2276-2277,2300-2301,2346-2347,2406-2407,2422,2425-2428,2761-2784,2795-2814,2844-2890,3540-3549,3601-3674,3693-3753,3822-3854,4409-4507,4509
+  s_90e5fb302b3207::t_7c95f2745039f4 4508
+  s_90e5fb302b3207::t_b6a12505dfd9c5 4510
+blueprints/upstream/grok.md
+  s_90e5fb302b3207::t_8424a4add04d8f 45
+src/config/http_tuning.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 1-283
+src/adapters/antigravity/mod.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 3-24,32-42,46,52-105,112,126-143,145-174,177,180-188,190-221,223-225,228-380,385-398,400-474,476-484,489-767,865-867,869-875,877-897,899-901,903-916
+src/lib.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 18,35,38-39
+site/src/components/ui/link-button/LinkButton.astro
+  s_90e5fb302b3207::t_8424a4add04d8f 18
+src/adapters/gemini/mod.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 122,139,143-148
+docs/upstream-status.md
+  s_90e5fb302b3207::t_8424a4add04d8f 1-97
+CHANGELOG.md
+  s_90e5fb302b3207::t_8424a4add04d8f 3-28
+src/admin/html.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 72-73,155-160
+  s_90e5fb302b3207::t_2e75953dcfce98 161
+site/src/components/ui/search/SearchTrigger.astro
+  s_90e5fb302b3207::t_8424a4add04d8f 3
+site/src/components/ui/search/SearchDialog.astro
+  s_90e5fb302b3207::t_8424a4add04d8f 2
+site/src/content/docs/getting-started/installation.mdx
+  s_90e5fb302b3207::t_8424a4add04d8f 29-32
+src/adapters/antigravity/child.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 1-395
+site/src/content/docs/ko/guides/xai.mdx
+  s_90e5fb302b3207::t_8424a4add04d8f 113,115,140,160,171,183,205,210,245,256,259
+site/src/content/docs/zh-cn/guides/xai.mdx
+  s_90e5fb302b3207::t_8424a4add04d8f 115,117,142,162,173,185,207,212,247,258,261
+src/config/upstreams.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 41-49,218-219
+src/gateway/store.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 342,363-370,574-575,586,589-593
+  s_90e5fb302b3207::t_597694e3f9527c 386
+  s_90e5fb302b3207::t_39387656f4f13f 576-585,587-588
+  s_90e5fb302b3207::t_96f773b1be4f5e 355-358
+  s_90e5fb302b3207::t_b53202376c4062 594-595
+src/gateway/tests.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 1266-1286,1293,1295
+  s_90e5fb302b3207::t_a0da720a774802 1265
+tests/antigravity_process.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 1-620
+tests/antigravity_translate.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 3-6,9-25,58-340,344-389
+docs/http-tuning.md
+  s_90e5fb302b3207::t_8424a4add04d8f 1-111
+src/http_tuning.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 1-388
+site/src/components/Header.astro
+  s_90e5fb302b3207::t_8424a4add04d8f 2
+site/src/content/docs/ja/guides/opentelemetry.mdx
+  s_90e5fb302b3207::t_8424a4add04d8f 66
+src/gateway/oauth.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 2,5,72-73,87-90
+  s_90e5fb302b3207::t_1111121e76f169 91
+src/adapters/responses/http.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 38-44,93
+README.zh-CN.md
+  s_90e5fb302b3207::t_8424a4add04d8f 33,63,111,147,172,176,178-179
+site/package.json
+  s_90e5fb302b3207::t_8424a4add04d8f 17,21
+site/src/components/ui/card/Card.astro
+  s_90e5fb302b3207::t_8424a4add04d8f 2
+src/admin/script.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 279-308,395
+tests/inbound_codex_endpoint.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 991-1053
+site/src/components/ui/aside/Aside.astro
+  s_90e5fb302b3207::t_8424a4add04d8f 2
+src/gateway/device.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 181
+docs/running.md
+  s_90e5fb302b3207::t_8424a4add04d8f 326-333,533,537,553,557
+blueprints/upstream/xai.md
+  s_90e5fb302b3207::t_8424a4add04d8f 45
+README.ja.md
+  s_90e5fb302b3207::t_8424a4add04d8f 33,63,111,147,172,176,178-179
+site/src/components/ui/page-actions/PageActions.astro
+  s_90e5fb302b3207::t_8424a4add04d8f 2
+site/src/content/docs/ko/guides/opentelemetry.mdx
+  s_90e5fb302b3207::t_8424a4add04d8f 66
+src/metrics.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 54,64-75,164-177,275-316,549-550,580-592
+  s_90e5fb302b3207::t_c558c03b461cf8 593
+tests/admin_surface.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 481,607-717,728
+.claude-plugin/marketplace.json
+  s_90e5fb302b3207::t_8424a4add04d8f 21
+site/src/content/docs/ko/reference/configuration.md
+  s_90e5fb302b3207::t_8424a4add04d8f 17-28,162-181,217,262,266,268
+src/codex_endpoint/tests.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 2-5,43-48,64-67,75-78,93-96,108,116-119,127-130,147-152,177,188-191
+site/src/content/docs/ja/guides/providers.mdx
+  s_90e5fb302b3207::t_8424a4add04d8f 117
+site/src/content/docs/zh-cn/guides/opentelemetry.mdx
+  s_90e5fb302b3207::t_8424a4add04d8f 66
+src/concurrency.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 73
+site/src/components/ui/pagination/Pagination.astro
+  s_90e5fb302b3207::t_8424a4add04d8f 2
+src/reload.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 115-132
+src/usage_poll.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 394-395,455-456,524-525
+site/src/components/ui/button/Button.astro
+  s_90e5fb302b3207::t_8424a4add04d8f 15,22
+site/astro.config.ts
+  s_90e5fb302b3207::t_8424a4add04d8f 8
+site/src/components/ui/package-managers/PackageManagers.astro
+  s_90e5fb302b3207::t_8424a4add04d8f 8
+site/src/content/docs/zh-cn/guides/providers.mdx
+  s_90e5fb302b3207::t_8424a4add04d8f 129
+site/src/components/ui/banner/Banner.astro
+  s_90e5fb302b3207::t_8424a4add04d8f 6
+site/src/content/docs/guides/xai.mdx
+  s_90e5fb302b3207::t_8424a4add04d8f 116,118,143,163,174,186,208,213,248,259,262
+src/adapters/responses/inbound.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 17,92-94,179-180,190,244-245,255,398,425-433
+site/src/content/docs/reference/endpoints.md
+  s_90e5fb302b3207::t_8424a4add04d8f 32
+src/admin/mod.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 125,888-925,1498-1499
+plugins/shunt-codex/README.md
+  s_90e5fb302b3207::t_8424a4add04d8f 70,102,104,106
+src/config/upstreams/tests.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 475-531
+src/init.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 22
+src/proxy/failover.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 4,14,16,21,30-37,39-43,45-46,507-513,612-620,625-627
+site/src/content/docs/guides/opentelemetry.mdx
+  s_90e5fb302b3207::t_8424a4add04d8f 66
+site/src/components/ui/theme-toggle/ThemeToggle.astro
+  s_90e5fb302b3207::t_8424a4add04d8f 7
+site/src/content/docs/ko/guides/providers.mdx
+  s_90e5fb302b3207::t_8424a4add04d8f 120
+tests/inbound_auth.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 66-67,430-475
+  s_90e5fb302b3207::t_aab53823cfdb0a 476-477
+plugins/shunt-xai/.claude-plugin/plugin.json
+  s_90e5fb302b3207::t_8424a4add04d8f 5-6
+src/server.rs
+  s_90e5fb302b3207::t_8424a4add04d8f 19,22-24,33-37,71,78,90,103,119,155-158,162-168,197,199,205,290-299
+  s_90e5fb302b3207::t_10ba69ff76f6de 207
+  s_90e5fb302b3207::t_1b61b285fb0052 198
+  s_90e5fb302b3207::t_19ae736fa1d568 80
+README.md
+  s_90e5fb302b3207::t_8424a4add04d8f 33,42-45,66,92-98,126,143,145,147,149,151-153,157-159,161,163,165,188,217,221,223-224,234,254
+site/src/components/ui/sidebar/SidebarGroup.astro
+  s_90e5fb302b3207::t_8424a4add04d8f 17
+plugins/shunt-xai/agents/grok-4.6.md
+  s_90e5fb302b3207::t_8424a4add04d8f 1-31
+docs/gateway-telemetry.md
+  s_90e5fb302b3207::t_8424a4add04d8f 175-179
+site/src/content/docs/reference/configuration.md
+  s_90e5fb302b3207::t_8424a4add04d8f 17-55,67-68,260-289,325-326,329,371,375,377,388-389
+Cargo.lock
+  s_90e5fb302b3207::t_0d6588b4879ed4 2732,2749
+site/package-lock.json
+  s_90e5fb302b3207::t_fd4a55f5144fad 11,15,72-74,80-88,92-94,108-110,124-126,140-142,156-158,172-174,188-190,197,204-206,220-222,236-238,241,305-308,311,315,318-321,324-331,368-392,664-666,670,673-677,680,683,693,706,719-753,1884-1886,1892-1894,1900-1901,2287-2289,2292-2293,2295,2303-2305,2308,2317-2319,2322,2330-2332,2335,2342-2344,2347,2349,2356-2358,2361,2368-2370,2373-2374,2381-2383,2387,3061-3063,3066-3068,3091,3093,3135,3157-3172,3201-3209,4010-4015,4085-4093,4378-4381,4383-4385,4811,5875-5878,5881,6908-6910,6913-6918,6920
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "061722f07a5e5cc9f1ccd501482cc868d8d9ef88",
+  "prompts": {},
+  "sessions": {
+    "s_90e5fb302b3207": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "651856f1-f54f-4ef4-869b-05f69799178e",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
