@@ -320,10 +320,18 @@ fn record_literal_hit(value: &str) {
 /// supplied by a `SHUNT_*` env override never triggers the literal-secret
 /// warning, even if its value happens to also appear literally elsewhere in
 /// the config file.
+///
+/// Deliberately `vars_os`, not `vars`: the latter panics when *any* variable
+/// in the environment is not valid Unicode, including one wholly unrelated
+/// to shunt, because the conversion happens before a caller can filter by
+/// prefix. That would turn an advisory warning's bookkeeping into a process
+/// panic on every load, check, and hot reload. Undecodable entries are
+/// dropped instead — losing nothing, since a non-Unicode value can never
+/// equal one of the `String` values this set is compared against.
 pub(crate) fn shunt_env_values() -> HashSet<String> {
-    std::env::vars()
-        .filter(|(key, _)| key.starts_with("SHUNT_"))
-        .map(|(_, value)| value)
+    std::env::vars_os()
+        .filter(|(key, _)| key.to_str().is_some_and(|key| key.starts_with("SHUNT_")))
+        .filter_map(|(_, value)| value.into_string().ok())
         .collect()
 }
 
@@ -673,6 +681,40 @@ mod tests {
             "{message}"
         );
         std::env::remove_var("SHUNT_SECRETS_TEST_VAR_NON_UNICODE");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn shunt_env_values_survives_non_unicode_variables() {
+        // `std::env::vars` panics when *any* variable in the environment is
+        // not valid Unicode -- including one that has nothing to do with
+        // shunt, because the conversion happens before a caller can filter
+        // by prefix. Since this scan runs on every load, check, and hot
+        // reload, that would turn an unrelated env var into a process panic.
+        // Seed both shapes and assert the scan still returns.
+        use std::os::unix::ffi::OsStringExt;
+        let invalid = || std::ffi::OsString::from_vec(vec![0xFF, 0xFE, 0xFD]);
+        // Unrelated key, undecodable value: must not even be looked at.
+        std::env::set_var("NOT_SHUNT_SECRETS_TEST_NON_UNICODE", invalid());
+        // `SHUNT_`-prefixed key, undecodable value: dropped, not fatal. It
+        // can never equal one of the `String`s this set is compared against.
+        std::env::set_var("SHUNT_SECRETS_TEST_ENV_SCAN_NON_UNICODE", invalid());
+        // A value unique enough that it cannot collide with a literal in a
+        // concurrently-running config test's fixture.
+        std::env::set_var(
+            "SHUNT_SECRETS_TEST_ENV_SCAN",
+            "shunt-secrets-test-env-scan-sentinel",
+        );
+
+        let values = shunt_env_values();
+
+        assert!(
+            values.contains("shunt-secrets-test-env-scan-sentinel"),
+            "decodable SHUNT_ values must still be collected: {values:?}"
+        );
+        std::env::remove_var("NOT_SHUNT_SECRETS_TEST_NON_UNICODE");
+        std::env::remove_var("SHUNT_SECRETS_TEST_ENV_SCAN_NON_UNICODE");
+        std::env::remove_var("SHUNT_SECRETS_TEST_ENV_SCAN");
     }
 
     #[test]
