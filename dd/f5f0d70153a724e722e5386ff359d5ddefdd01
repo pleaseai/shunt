@@ -1,0 +1,37 @@
+src/reload.rs
+  s_ebcd9411f97838::t_4ce2c7b2e5103f 567-569,573
+src/config.rs
+  s_ebcd9411f97838::t_1e53e282944838 6833-6839
+  s_ebcd9411f97838::t_b28fd5a0e80b27 2368-2374,2397,2413,2420,2439-2444,2446,2448,2454-2480
+  s_ebcd9411f97838::t_224dbd2482b3d1 6654-6658,6677-6685,6687-6737,6745-6832
+  s_ebcd9411f97838::t_da814e6b876d25 6686
+  s_ebcd9411f97838::t_5339936d64aadf 6738-6744
+src/config/secrets.rs
+  s_ebcd9411f97838::t_63f3295836aced 39-70
+  s_ebcd9411f97838::t_2bffa953ba2ca9 30
+  s_ebcd9411f97838::t_da814e6b876d25 340-345,363-368
+  s_ebcd9411f97838::t_94b68ce3550233 536-539
+  s_ebcd9411f97838::t_4f37f37f5ea990 143-149,151-154,171,175,177,195-206
+  s_ebcd9411f97838::t_f3706fbaf4e5a2 316-319,339,349-353,362,372-376,391,401-402,408-413,419,431,441-442,448-453,459,463
+  s_ebcd9411f97838::t_7d28009c19283a 270-272,278-291
+  s_ebcd9411f97838::t_3af2d8fe579670 691-702
+  s_ebcd9411f97838::t_95a74217075eeb 207,307
+  s_ebcd9411f97838::t_0a11aff41fbe21 228-268,274-277,296-306
+  s_ebcd9411f97838::t_ed8557048bcf1b 208,805-815
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "ddf5f0d70153a724e722e5386ff359d5ddefdd01",
+  "prompts": {},
+  "sessions": {
+    "s_ebcd9411f97838": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2854279c-a956-4cbd-b907-cbef4efe8271",
+        "model": "claude-opus-5"
+      },
+      "human_author": null
+    }
+  }
+}
