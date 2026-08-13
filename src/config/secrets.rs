@@ -148,9 +148,11 @@ struct LiteralContext {
     /// literal elsewhere happens to share the same string.
     never_literal: HashSet<String>,
     hits: BTreeSet<String>,
-    /// Count of literal secret occurrences whose value matched more than one
-    /// Secret-shaped path in `map` (an unresolvable ambiguity — never
-    /// guessed) so far.
+    /// Count of literal secret occurrences that could not be attributed to
+    /// exactly one Secret-shaped path in `map` so far — either because the
+    /// value matched more than one such path (an unresolvable ambiguity) or
+    /// because it matched none (see `is_secret_field_path`'s allowlist-drift
+    /// note). Never guessed, and never dropped silently.
     unattributed: usize,
 }
 
@@ -233,6 +235,15 @@ pub(crate) fn format_literal_path(path: &str) -> String {
 /// before deciding whether the attribution is unambiguous, so a plain
 /// (non-`Secret`) field's path is never named in the warning — even when it
 /// happens to share a literal value with a real `Secret` field.
+///
+/// This list exists only to make attribution *precise* — it is not, and
+/// must never become, the definition of which fields are secret (that is
+/// what the `Secret` type itself is for; issue #345 deliberately rejected a
+/// separate designated-fields list). It will drift: the day someone adds a
+/// new `Secret` field without adding its path shape here, `record_literal_hit`
+/// degrades to counting that field's literal value as unattributed rather
+/// than naming it — it must never go silent. Add the new path shape here
+/// when adding a `Secret` field, to keep the warning message precise.
 fn is_secret_field_path(path: &str) -> bool {
     if path == "sentry.dsn" {
         return true;
@@ -264,8 +275,10 @@ fn is_secret_field_path(path: &str) -> bool {
 /// var, never warns either, even if some unrelated literal elsewhere shares
 /// the same string. Otherwise, candidate paths for `value` are narrowed to
 /// Secret-shaped ones (`is_secret_field_path`) before checking for
-/// ambiguity: exactly one candidate is attributed by path; more than one is
-/// counted as unattributed rather than guessed.
+/// ambiguity: exactly one candidate is attributed by path; zero or more
+/// than one is counted as unattributed rather than guessed or dropped
+/// silently — see `is_secret_field_path` for why zero candidates can still
+/// happen for a genuine `Secret` field.
 fn record_literal_hit(value: &str) {
     if value.trim().is_empty() {
         return;
@@ -283,6 +296,14 @@ fn record_literal_hit(value: &str) {
         };
         let mut candidates = paths.iter().filter(|path| is_secret_field_path(path));
         let Some(first) = candidates.next() else {
+            // No path in the map matched `is_secret_field_path` — either a
+            // genuine attribution ambiguity resolved to zero after
+            // filtering, or (more likely) the allowlist is missing a shape
+            // for a `Secret` field added since it was last updated. Either
+            // way this is still a literal secret that must not vanish
+            // silently: degrade to an unattributed count rather than
+            // suppressing the warning outright.
+            context.unattributed += 1;
             return;
         };
         if candidates.next().is_some() {
@@ -812,5 +833,23 @@ mod tests {
         );
         // No-dot passthrough: a top-level path has no section to bracket.
         assert_eq!(format_literal_path("dsn"), "dsn");
+    }
+
+    #[test]
+    fn literal_hit_at_a_path_missing_from_the_secret_field_allowlist_is_unattributed_not_silent() {
+        // `is_secret_field_path` is a hand-maintained allowlist that will
+        // drift the day someone adds a new `Secret` field without adding its
+        // path shape here. This pins the fail-safe for that drift: a value
+        // whose only candidate path fails `is_secret_field_path` must still
+        // surface as an unattributed literal-secret hit, never vanish.
+        let mut map = HashMap::new();
+        map.insert(
+            "drifted-secret-value".to_string(),
+            vec!["some.future.secret_field".to_string()],
+        );
+        let _scope = LiteralScope::enter(map, HashSet::new());
+        record_literal_hit("drifted-secret-value");
+        assert_eq!(LiteralScope::unattributed_count(), 1);
+        assert!(LiteralScope::hits().is_empty());
     }
 }
