@@ -2365,6 +2365,13 @@ impl Config {
         // used only to warn about a `Secret` field holding a plaintext
         // credential. Left empty when there is no config file.
         let mut literal_values = HashMap::new();
+        // Values that must never be mistaken for a literal secret: every
+        // value produced by resolving a `${VAR}`/`${file:...}` reference in
+        // the file, plus every current `SHUNT_*` env var's value (a `Secret`
+        // fed by either can coincidentally share text with an unrelated
+        // literal elsewhere without that literal's warning misfiring onto
+        // it). See `secrets::record_literal_hit`.
+        let mut never_literal_values = HashSet::new();
         if let Some(path) = &path {
             // Read the file ourselves instead of `Toml::file`, which silently
             // yields an empty provider for a missing file — a typo'd --config
@@ -2387,6 +2394,7 @@ impl Config {
             let format = ConfigFormat::from_path(path);
             let substituted = secrets::substitute(&raw, format)?;
             literal_values = substituted.literals;
+            never_literal_values = substituted.resolved_values;
             // Probe only the file layer: serialized defaults always contain the
             // built-in providers, and env overrides are allowed under either form.
             let file_figment = match format {
@@ -2402,13 +2410,14 @@ impl Config {
             // both accepted; an unknown extension is treated as TOML.
             figment = figment.merge(file_figment);
         }
+        never_literal_values.extend(secrets::shunt_env_values());
         let env = Env::prefixed("SHUNT_").split("__");
         // Scopes the literal-value map for the extraction below so
         // `Secret::deserialize` can record which config-file paths held a
         // secret written verbatim, for the aggregated warning after
         // validation. Dropped (and the thread-local cleared) once this
         // function returns.
-        let literal_scope = secrets::LiteralScope::enter(literal_values);
+        let literal_scope = secrets::LiteralScope::enter(literal_values, never_literal_values);
         let mut config: Self = if file_declares_upstreams {
             // Provider env overrides address normalized upstreams by name; applying
             // them to the defaults first would let an env var create a legacy
@@ -2427,22 +2436,48 @@ impl Config {
         let config = config.validate()?;
         // One aggregated warning per load naming every `Secret` field whose
         // value was written literally in the config file — never the value
-        // itself. A `Secret` populated from an env override or a default has
-        // no entry in `literal_values` and is not reported here. Advisory
-        // only: a literal secret is allowed and never fails the load.
+        // itself. A `Secret` populated from an env override, a `${...}`
+        // reference, or a default has no entry here and is not reported. A
+        // literal value whose path could not be attributed unambiguously
+        // (the same value at more than one Secret-shaped path) is reported
+        // as a count rather than guessed at. Advisory only: a literal secret
+        // is allowed and never fails the load.
         let literal_hits = secrets::LiteralScope::hits();
+        let unattributed_hits = secrets::LiteralScope::unattributed_count();
         drop(literal_scope);
-        if !literal_hits.is_empty() {
+        if !literal_hits.is_empty() || unattributed_hits > 0 {
             let paths = literal_hits
                 .iter()
                 .map(|path| secrets::format_literal_path(path))
                 .collect::<Vec<_>>()
                 .join(", ");
-            tracing::warn!(
-                "config values at {paths} are written literally in the config file; if they \
-                 are credentials, prefer ${{VAR}} or ${{file:}} so the secret does not live in \
-                 the file"
-            );
+            match (literal_hits.is_empty(), unattributed_hits) {
+                (true, unattributed) if unattributed > 0 => {
+                    tracing::warn!(
+                        "{unattributed} config value(s) are written literally in the config \
+                         file at more than one Secret field with the same value, so the \
+                         specific field(s) could not be identified; if they are credentials, \
+                         prefer ${{VAR}} or ${{file:}} so the secret does not live in the file"
+                    );
+                }
+                (false, 0) => {
+                    tracing::warn!(
+                        "config values at {paths} are written literally in the config file; if \
+                         they are credentials, prefer ${{VAR}} or ${{file:}} so the secret does \
+                         not live in the file"
+                    );
+                }
+                (false, unattributed) => {
+                    tracing::warn!(
+                        "config values at {paths} are written literally in the config file, and \
+                         {unattributed} additional value(s) could not be attributed to a \
+                         specific field because they match more than one Secret field; if they \
+                         are credentials, prefer ${{VAR}} or ${{file:}} so the secret does not \
+                         live in the file"
+                    );
+                }
+                _ => unreachable!("guarded by the outer `if`"),
+            }
         }
         // Collision reporting belongs to the load boundary rather than
         // validation: RuntimeState defensively re-validates an already-loaded
@@ -6616,7 +6651,11 @@ provider = "kimi"
     #[test]
     fn secret_field_with_a_literal_value_still_loads_successfully() {
         // A literal secret in the config file is allowed; the aggregated
-        // warning is advisory only and must never fail the load.
+        // warning is advisory only and must never fail the load, and it
+        // must name the offending field's path so an operator can act on it
+        // (issue #348: attribution used to be by *value*, not field
+        // identity, so an unrelated field could be misnamed instead — see
+        // the sibling tests below for the specific regressions this guards).
         let _guard = CONFIG_ENV_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -6635,7 +6674,169 @@ provider = "kimi"
         )
         .unwrap();
 
-        assert!(Config::load(Some(&path)).is_ok());
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let writer_output = Arc::clone(&output);
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || BufferWriter {
+                buffer: Arc::clone(&writer_output),
+            })
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        let config = tracing::subscriber::with_default(subscriber, || Config::load(Some(&path)));
+        assert!(config.is_ok());
+        let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        assert!(logs.contains("[sentry].dsn"), "{logs}");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn reference_fed_secret_never_warns_even_when_a_plain_field_shares_its_value() {
+        // Regression for issue #348's R3: a `Secret` populated from a
+        // `${VAR}` reference must never trigger the literal-secret warning,
+        // even when an unrelated *non*-Secret field happens to hold that
+        // same resolved value written literally. Attribution used to be by
+        // value rather than field identity, so this used to wrongly warn
+        // about `[otel].endpoint` — a plain `String` field, not a `Secret` —
+        // even though there was no literal secret anywhere in the file.
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-secrets-r3-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shunt.toml");
+        let env = format!("SHUNT_CONFIG_TEST_R3_DSN_{}", std::process::id());
+        let dsn = "https://public@o0.ingest.sentry.io/1";
+        std::env::set_var(&env, dsn);
+        let reference = format!("${{{env}}}");
+        std::fs::write(
+            &path,
+            format!("[sentry]\ndsn = \"{reference}\"\n\n[otel]\nendpoint = \"{dsn}\"\n"),
+        )
+        .unwrap();
+
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let writer_output = Arc::clone(&output);
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || BufferWriter {
+                buffer: Arc::clone(&writer_output),
+            })
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        let config =
+            tracing::subscriber::with_default(subscriber, || Config::load(Some(&path)).unwrap());
+        assert_eq!(config.sentry.as_ref().unwrap().dsn.expose(), dsn);
+        let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        // `Config::load` always emits an unconditional "loaded config" INFO
+        // line, so asserting `logs.is_empty()` would be wrong here; what must
+        // be absent is the literal-secret WARN.
+        assert!(
+            !logs.contains("are written literally in the config file"),
+            "expected no literal-secret warning, got: {logs}"
+        );
+
+        std::env::remove_var(&env);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn literal_secret_warning_names_only_the_secret_field_on_value_collision() {
+        // Regression for issue #348's R1/R2: when a literal `Secret` field
+        // and a plain (non-Secret) field happen to hold the exact same
+        // string, the warning must name only the `Secret`'s path. Value-keyed
+        // attribution used to name *every* path bound to that value,
+        // regardless of whether the field was actually a `Secret`.
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-secrets-r1-r2-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shunt.toml");
+        let shared = "https://public@o0.ingest.sentry.io/1";
+        std::fs::write(
+            &path,
+            format!("[sentry]\ndsn = \"{shared}\"\n\n[otel]\nendpoint = \"{shared}\"\n"),
+        )
+        .unwrap();
+
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let writer_output = Arc::clone(&output);
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || BufferWriter {
+                buffer: Arc::clone(&writer_output),
+            })
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            Config::load(Some(&path)).unwrap();
+        });
+        let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+
+        assert!(logs.contains("[sentry].dsn"), "{logs}");
+        assert!(!logs.contains("[otel].endpoint"), "{logs}");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn empty_secret_and_empty_plain_fields_never_warn() {
+        // An empty string is the documented "disabled" sentinel (e.g.
+        // `SHUNT_SENTRY__DSN=""`), never a credential, so it must never
+        // trigger the literal-secret warning — including when other empty
+        // string fields are also present in the file.
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-secrets-empty-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shunt.toml");
+        std::fs::write(
+            &path,
+            "[sentry]\ndsn = \"\"\n\n[otel]\nendpoint = \"\"\nservice_name = \"\"\n",
+        )
+        .unwrap();
+
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let writer_output = Arc::clone(&output);
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || BufferWriter {
+                buffer: Arc::clone(&writer_output),
+            })
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            Config::load(Some(&path)).unwrap();
+        });
+        let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        // `Config::load` always emits an unconditional "loaded config" INFO
+        // line, so asserting `logs.is_empty()` would be wrong here; what must
+        // be absent is the literal-secret WARN.
+        assert!(
+            !logs.contains("are written literally in the config file"),
+            "expected no literal-secret warning, got: {logs}"
+        );
 
         let _ = std::fs::remove_dir_all(dir);
     }

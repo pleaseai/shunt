@@ -27,7 +27,7 @@
 //!   resolves.
 
 use std::cell::RefCell;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -36,15 +36,38 @@ use super::{ConfigError, ConfigFormat};
 /// A string config value that must never be echoed back — a token, DSN, or
 /// header value. `Debug` and `Serialize` both render `[redacted]`.
 ///
-/// INVARIANT: because `Serialize` is lossy (it does not round-trip the real
-/// value), a `Secret` must never be re-serialized and then re-deserialized
-/// through figment's `Serialized::defaults` layer — doing so would silently
-/// replace the real value with the literal string `[redacted]`. `Config::load`
-/// only feeds `Serialized::defaults` with `Config::default()` (no `Secret`
-/// field defaults to a non-empty value) and with the normalized `providers`
-/// map (which has no `Secret` field at all). Keep it that way: never give a
-/// `Secret` field a non-empty default, and never place a `Secret` under
-/// `providers`.
+/// INVARIANT: because `Serialize` is lossy (it unconditionally emits
+/// `[redacted]`, real value or not), a `Secret` must never be reachable when
+/// `Config::load` re-serializes a Rust value and re-extracts it through
+/// figment — doing so would silently replace the real value with the
+/// literal string `[redacted]`, which then decodes right back into a
+/// `Secret` on the next extract as if `[redacted]` were the operator's
+/// actual DSN or token. An empty *default* would not save this: the danger
+/// is reachability, not the default's emptiness, since any concrete value a
+/// user ever configures is what gets clobbered. The two round-trips in
+/// `../config.rs` stay safe for different reasons:
+/// - `Figment::from(Serialized::defaults(Self::default()))` at
+///   `../config.rs:2361` seeds the whole `Config`, including every
+///   `Secret`-bearing section (`SentryConfig`, `OtelConfig`,
+///   `GatewayTelemetryDestination`) — but each of those sections sits behind
+///   an `Option` that defaults to `None` with `#[serde(skip_serializing_if =
+///   "Option::is_none")]`, so `Serialized::defaults` never serializes into
+///   the section at all, and no `Secret` inside it is ever visited.
+/// - `Figment::from(Serialized::default("providers", &self.providers))` at
+///   `../config.rs:2606` is a different figment API (singular `default`,
+///   namespaced under one key) that only round-trips the `providers` map,
+///   which has no `Secret` field at all.
+///
+/// Keep it that way: every `Secret`-bearing section must stay behind an
+/// `Option` defaulting to `None` with `skip_serializing_if =
+/// "Option::is_none"` (never hoisted out so it is unconditionally present in
+/// `Config::default()`), and a `Secret` must never be placed under
+/// `providers`. Concretely, hoisting a section like `SentryConfig` out from
+/// behind its `Option` would make `Serialized::defaults` serialize it (with
+/// `dsn` rendering as `[redacted]`) and figment re-extract that back as
+/// `dsn`'s real value — and since `SentryConfig::enabled()` is
+/// `!dsn.expose().trim().is_empty()`, a non-empty `[redacted]` string would
+/// silently enable Sentry reporting with a garbage DSN.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct Secret(String);
 
@@ -117,7 +140,18 @@ impl PartialEq<&str> for Secret {
 /// paths a `Secret::deserialize` call has actually matched against it.
 struct LiteralContext {
     map: HashMap<String, Vec<String>>,
+    /// Values that must never trigger the literal-secret warning: every
+    /// value produced by resolving a `${VAR}`/`${file:...}` reference
+    /// anywhere in the file, plus the current value of every `SHUNT_*`
+    /// process env var. Checked before consulting `map`, so a `Secret` fed
+    /// by a reference or an env override never warns even if some unrelated
+    /// literal elsewhere happens to share the same string.
+    never_literal: HashSet<String>,
     hits: BTreeSet<String>,
+    /// Count of literal secret occurrences whose value matched more than one
+    /// Secret-shaped path in `map` (an unresolvable ambiguity — never
+    /// guessed) so far.
+    unattributed: usize,
 }
 
 thread_local! {
@@ -134,11 +168,13 @@ thread_local! {
 pub(crate) struct LiteralScope;
 
 impl LiteralScope {
-    pub(crate) fn enter(map: HashMap<String, Vec<String>>) -> Self {
+    pub(crate) fn enter(map: HashMap<String, Vec<String>>, never_literal: HashSet<String>) -> Self {
         LOAD_CONTEXT.with(|context| {
             *context.borrow_mut() = Some(LiteralContext {
                 map,
+                never_literal,
                 hits: BTreeSet::new(),
+                unattributed: 0,
             });
         });
         Self
@@ -154,6 +190,20 @@ impl LiteralScope {
                 .as_ref()
                 .map(|context| context.hits.iter().cloned().collect())
                 .unwrap_or_default()
+        })
+    }
+
+    /// Count of literal secret occurrences that could not be attributed to a
+    /// single field path so far (the same literal value appeared at more
+    /// than one Secret-shaped path in the config file). Safe to call with no
+    /// active scope (returns 0).
+    pub(crate) fn unattributed_count() -> usize {
+        LOAD_CONTEXT.with(|context| {
+            context
+                .borrow()
+                .as_ref()
+                .map(|context| context.unattributed)
+                .unwrap_or(0)
         })
     }
 }
@@ -175,20 +225,84 @@ pub(crate) fn format_literal_path(path: &str) -> String {
     }
 }
 
-/// Called from `Secret::deserialize`. Records `path` as a warning-worthy hit
-/// if `value` is present in the active load's literal map (i.e. it was
-/// written verbatim in the config file rather than resolved from a
-/// `${...}` reference). A no-op with no active scope.
+/// Closed-form allowlist of the dotted field paths that are actually
+/// `Secret` fields in the config schema: `sentry.dsn`,
+/// `otel.headers.<key>`, and
+/// `server.gateway.telemetry.forward_to.<index>.headers.<key>`. Used to
+/// filter candidate paths for a literal value down to Secret-shaped ones
+/// before deciding whether the attribution is unambiguous, so a plain
+/// (non-`Secret`) field's path is never named in the warning — even when it
+/// happens to share a literal value with a real `Secret` field.
+fn is_secret_field_path(path: &str) -> bool {
+    if path == "sentry.dsn" {
+        return true;
+    }
+    let segments: Vec<&str> = path.split('.').collect();
+    if segments.len() >= 3 && segments[0] == "otel" && segments[1] == "headers" {
+        return true;
+    }
+    if segments.len() >= 7
+        && segments[0] == "server"
+        && segments[1] == "gateway"
+        && segments[2] == "telemetry"
+        && segments[3] == "forward_to"
+        && segments[5] == "headers"
+    {
+        return true;
+    }
+    false
+}
+
+/// Called from `Secret::deserialize`. Records the sole config-file path that
+/// `value` was written to literally as a warning-worthy hit, when that
+/// attribution is unambiguous. A no-op with no active scope.
+///
+/// An empty or whitespace-only value never warns — it is the documented
+/// sentinel for "disabled" (e.g. `SHUNT_SENTRY__DSN=""`), never a
+/// credential. A value already known to come from resolving a
+/// `${VAR}`/`${file:...}` reference, or to match a current `SHUNT_*` env
+/// var, never warns either, even if some unrelated literal elsewhere shares
+/// the same string. Otherwise, candidate paths for `value` are narrowed to
+/// Secret-shaped ones (`is_secret_field_path`) before checking for
+/// ambiguity: exactly one candidate is attributed by path; more than one is
+/// counted as unattributed rather than guessed.
 fn record_literal_hit(value: &str) {
+    if value.trim().is_empty() {
+        return;
+    }
     LOAD_CONTEXT.with(|context| {
-        if let Some(context) = context.borrow_mut().as_mut() {
-            if let Some(paths) = context.map.get(value) {
-                for path in paths {
-                    context.hits.insert(path.clone());
-                }
-            }
+        let mut context = context.borrow_mut();
+        let Some(context) = context.as_mut() else {
+            return;
+        };
+        if context.never_literal.contains(value) {
+            return;
+        }
+        let Some(paths) = context.map.get(value) else {
+            return;
+        };
+        let mut candidates = paths.iter().filter(|path| is_secret_field_path(path));
+        let Some(first) = candidates.next() else {
+            return;
+        };
+        if candidates.next().is_some() {
+            context.unattributed += 1;
+        } else {
+            context.hits.insert(first.clone());
         }
     });
+}
+
+/// The current value of every `SHUNT_`-prefixed process environment
+/// variable. Seeds `LiteralContext::never_literal` so a `Secret` field
+/// supplied by a `SHUNT_*` env override never triggers the literal-secret
+/// warning, even if its value happens to also appear literally elsewhere in
+/// the config file.
+pub(crate) fn shunt_env_values() -> HashSet<String> {
+    std::env::vars()
+        .filter(|(key, _)| key.starts_with("SHUNT_"))
+        .map(|(_, value)| value)
+        .collect()
 }
 
 /// A parsed-and-substituted config file, ready to hand to figment.
@@ -199,6 +313,10 @@ pub(crate) struct Substituted {
     /// Every literal (non-reference) string value found in the file, mapped
     /// to the dotted path(s) it appeared at.
     pub literals: HashMap<String, Vec<String>>,
+    /// Every value produced by resolving a `${VAR}`/`${file:...}` reference
+    /// anywhere in the file — never a literal-secret warning candidate,
+    /// however it later shows up in a `Secret` field's parsed value.
+    pub resolved_values: HashSet<String>,
 }
 
 /// Parses `raw` in `format`, substitutes every `${...}` reference found in a
@@ -218,11 +336,21 @@ fn substitute_toml(raw: &str) -> Result<Substituted, ConfigError> {
                 message: error.to_string(),
             })?;
     let mut literals = HashMap::new();
-    walk_toml(&mut value, String::new(), &mut literals)?;
+    let mut resolved_values = HashSet::new();
+    walk_toml(
+        &mut value,
+        String::new(),
+        &mut literals,
+        &mut resolved_values,
+    )?;
     let text = toml::to_string(&value).map_err(|error| ConfigError::InvalidConfigSyntax {
         message: error.to_string(),
     })?;
-    Ok(Substituted { text, literals })
+    Ok(Substituted {
+        text,
+        literals,
+        resolved_values,
+    })
 }
 
 fn substitute_yaml(raw: &str) -> Result<Substituted, ConfigError> {
@@ -231,11 +359,21 @@ fn substitute_yaml(raw: &str) -> Result<Substituted, ConfigError> {
             message: error.to_string(),
         })?;
     let mut literals = HashMap::new();
-    walk_yaml(&mut value, String::new(), &mut literals)?;
+    let mut resolved_values = HashSet::new();
+    walk_yaml(
+        &mut value,
+        String::new(),
+        &mut literals,
+        &mut resolved_values,
+    )?;
     let text = serde_yaml::to_string(&value).map_err(|error| ConfigError::InvalidConfigSyntax {
         message: error.to_string(),
     })?;
-    Ok(Substituted { text, literals })
+    Ok(Substituted {
+        text,
+        literals,
+        resolved_values,
+    })
 }
 
 fn child_path(parent: &str, segment: &str) -> String {
@@ -250,6 +388,7 @@ fn walk_toml(
     value: &mut toml::Value,
     path: String,
     literals: &mut HashMap<String, Vec<String>>,
+    resolved_values: &mut HashSet<String>,
 ) -> Result<(), ConfigError> {
     match value {
         toml::Value::String(s) => {
@@ -259,18 +398,25 @@ fn walk_toml(
                     .entry(resolved.value.clone())
                     .or_default()
                     .push(path);
+            } else {
+                resolved_values.insert(resolved.value.clone());
             }
             *s = resolved.value;
         }
         toml::Value::Array(items) => {
             for (index, item) in items.iter_mut().enumerate() {
-                walk_toml(item, child_path(&path, &index.to_string()), literals)?;
+                walk_toml(
+                    item,
+                    child_path(&path, &index.to_string()),
+                    literals,
+                    resolved_values,
+                )?;
             }
         }
         toml::Value::Table(map) => {
             for (key, item) in map.iter_mut() {
                 let child = child_path(&path, key);
-                walk_toml(item, child, literals)?;
+                walk_toml(item, child, literals, resolved_values)?;
             }
         }
         _ => {}
@@ -282,6 +428,7 @@ fn walk_yaml(
     value: &mut serde_yaml::Value,
     path: String,
     literals: &mut HashMap<String, Vec<String>>,
+    resolved_values: &mut HashSet<String>,
 ) -> Result<(), ConfigError> {
     match value {
         serde_yaml::Value::String(s) => {
@@ -291,22 +438,29 @@ fn walk_yaml(
                     .entry(resolved.value.clone())
                     .or_default()
                     .push(path);
+            } else {
+                resolved_values.insert(resolved.value.clone());
             }
             *s = resolved.value;
         }
         serde_yaml::Value::Sequence(items) => {
             for (index, item) in items.iter_mut().enumerate() {
-                walk_yaml(item, child_path(&path, &index.to_string()), literals)?;
+                walk_yaml(
+                    item,
+                    child_path(&path, &index.to_string()),
+                    literals,
+                    resolved_values,
+                )?;
             }
         }
         serde_yaml::Value::Mapping(map) => {
             for (key, item) in map.iter_mut() {
                 let child = child_path(&path, &yaml_key_to_string(key));
-                walk_yaml(item, child, literals)?;
+                walk_yaml(item, child, literals, resolved_values)?;
             }
         }
         serde_yaml::Value::Tagged(tagged) => {
-            walk_yaml(&mut tagged.value, path, literals)?;
+            walk_yaml(&mut tagged.value, path, literals, resolved_values)?;
         }
         _ => {}
     }
@@ -379,7 +533,10 @@ fn resolve_string(input: &str, path: &str) -> Result<Resolved, ConfigError> {
                         path: path.to_string(),
                     });
                 }
-                if !file_path.starts_with('/') {
+                // `starts_with('/')` would reject every Windows absolute path
+                // (`C:\secrets\token`), making `${file:...}` unusable there;
+                // `Path::is_absolute` is the portable check for both platforms.
+                if !std::path::Path::new(file_path).is_absolute() {
                     return Err(ConfigError::RelativeFileReference {
                         path: path.to_string(),
                         file: file_path.to_string(),
@@ -531,6 +688,18 @@ mod tests {
         assert!(matches!(error, ConfigError::RelativeFileReference { .. }));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_absolute_file_reference_is_not_rejected_as_relative() {
+        // `C:\...` does not start with `/`, so the old `starts_with('/')`
+        // check rejected every Windows absolute path as relative. The file
+        // below doesn't exist, so resolution still fails, but with
+        // `UnreadableReferenceFile` rather than `RelativeFileReference` —
+        // proving the path was accepted as absolute before the read failed.
+        let error = resolve(r"${file:C:\definitely\does\not\exist\token}").unwrap_err();
+        assert!(matches!(error, ConfigError::UnreadableReferenceFile { .. }));
+    }
+
     #[test]
     fn embedded_file_reference_is_an_error() {
         let error = resolve("prefix ${file:/abs/path}").unwrap_err();
@@ -632,5 +801,16 @@ mod tests {
         let json = serde_json::to_string(&holder).unwrap();
         assert!(!json.contains("super-secret-value"), "{json}");
         assert!(json.contains("[redacted]"), "{json}");
+    }
+
+    #[test]
+    fn format_literal_path_renders_the_section_leaf_style() {
+        assert_eq!(format_literal_path("sentry.dsn"), "[sentry].dsn");
+        assert_eq!(
+            format_literal_path("otel.headers.authorization"),
+            "[otel.headers].authorization"
+        );
+        // No-dot passthrough: a top-level path has no section to bracket.
+        assert_eq!(format_literal_path("dsn"), "dsn");
     }
 }

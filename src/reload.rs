@@ -564,10 +564,13 @@ mod tests {
         // load, so a reload picks up a changed file's contents without a
         // restart, same as any other config field.
         std::fs::write(&secret_path, "svc-one\n").unwrap();
+        // The path is interpolated as a TOML *literal* (single-quoted)
+        // string: a basic (double-quoted) string treats backslash as an
+        // escape, which would mangle a Windows path like `C:\path\to\file`.
         std::fs::write(
             &path,
             format!(
-                "[server]\ndefault_provider = \"anthropic\"\n\n[otel]\nendpoint = \"\"\nservice_name = \"${{file:{}}}\"\n",
+                "[server]\ndefault_provider = \"anthropic\"\n\n[otel]\nendpoint = \"\"\nservice_name = '${{file:{}}}'\n",
                 secret_path.display()
             ),
         )
