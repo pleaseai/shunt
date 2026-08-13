@@ -60,6 +60,12 @@ shunt logs a `warn!` so the change is not mistaken for live:
   whether these route trees are registered is decided once at boot. Edits
   *within* an already-enabled table (tokens, headers, target provider) do
   hot-apply; only adding or removing the table needs a restart.
+- **Enabling or disabling `[server.gateway.admin]`** — an exception to the rule
+  above: this is an edit *within* an already-enabled `[server.gateway]`, but
+  whether the spend-limit routes are registered is still decided once at boot,
+  so adding or removing the nested table needs a restart. Its `state_path` is
+  likewise fixed at boot. Both cases log a warning on reload rather than taking
+  effect silently.
 
 ## 5. What reload does not do
 
