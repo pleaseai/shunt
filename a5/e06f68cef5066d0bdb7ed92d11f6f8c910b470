@@ -1,0 +1,100 @@
+src/gateway/mod.rs
+  s_86db5589d9a397::t_83d449756cc7bd 68-73,124,134-148,178-179,181,220-222
+site/src/content/docs/guides/gateway-login.mdx
+  s_86db5589d9a397::t_3c3af24cb6271f 27,35-38,41-43
+src/config.rs
+  s_86db5589d9a397::t_8b24f43a2f7dbe 17,25
+  s_86db5589d9a397::t_712f33f9cf50dc 4771,4773,4779
+  s_86db5589d9a397::t_f29813b5b298f4 4935,4937,4955
+  s_86db5589d9a397::t_f6b9f188b76a1f 5088-5330
+  s_86db5589d9a397::t_90f75a0ea7a639 558-562
+  s_86db5589d9a397::t_f0da862ec98dbc 4853
+  s_86db5589d9a397::t_b858dd78a9c6af 758-760
+  s_86db5589d9a397::t_69d82b82f69d01 649-654,656-662,664-692,718-719,722-723,729-757,761-775
+  s_86db5589d9a397::t_7f0aa663746d37 4823,4825,4831
+  s_86db5589d9a397::t_012200ca8ba6b5 2600-2604
+  s_86db5589d9a397::t_ad8583711e0753 5087,7284-7344,7347-7363,7366-7369,7372-7382
+  s_86db5589d9a397::t_69977fc8f23b77 4974,4976,4982
+  s_86db5589d9a397::t_a757d03515a942 2070-2087
+  s_86db5589d9a397::t_80aebecef8d21b 7345-7346
+  s_86db5589d9a397::t_e995c447a5b9e7 7364-7365,7370-7371
+  s_86db5589d9a397::t_9ddeadd68e9b2a 520-524,528-531
+  s_86db5589d9a397::t_52c82c2595d651 3608-3611
+site/src/content/docs/ja/reference/configuration.md
+  s_86db5589d9a397::t_60689e71679260 12
+  s_86db5589d9a397::t_7dff7e2dd3e9ec 14
+  s_86db5589d9a397::t_98c692dcc9a4b1 74,76,81-82,85-105
+  s_1eb44ad0bca191::t_8eec601ff946b0 106
+src/gateway/tests.rs
+  s_86db5589d9a397::t_eddec01c9d1759 15-16
+  s_86db5589d9a397::t_1e1539ab94a78d 39,41,47
+  s_86db5589d9a397::t_49a9ce8c2d40f2 1446-1509
+  s_1eb44ad0bca191::t_c47f646f73bfb8 1442-1445
+site/src/content/docs/reference/configuration.md
+  s_86db5589d9a397::t_b339ca51d5ba88 21
+  s_86db5589d9a397::t_107b7baa14e14d 134,136,144-166
+  s_86db5589d9a397::t_a488388e3a6e3f 19
+  s_1eb44ad0bca191::t_d456b8a1f52c2f 167
+site/src/content/docs/zh-cn/guides/gateway-login.mdx
+  s_86db5589d9a397::t_c32be853a760a7 27,35-38,41-43
+src/config/session.rs
+  s_86db5589d9a397::t_2ed9fba55485c2 1-83
+src/config/secrets.rs
+  s_86db5589d9a397::t_6096a934a1cc2f 267-276
+  s_86db5589d9a397::t_08b49fdd4cdc62 910-938
+  s_86db5589d9a397::t_c26db90aaad964 233-236
+site/src/content/docs/ko/reference/configuration.md
+  s_86db5589d9a397::t_e51c82d5ef406f 12
+  s_86db5589d9a397::t_c5bc4472e0f100 14
+  s_86db5589d9a397::t_50a3175a2aac7d 74,76,82-83,86-106
+  s_1eb44ad0bca191::t_51b4bf880434f2 107
+site/src/content/docs/ja/guides/gateway-login.mdx
+  s_86db5589d9a397::t_36d28ed8db4eb3 27,35-38,41-43
+src/gateway/persist.rs
+  s_86db5589d9a397::t_3c9bb7e23f826e 311,313,319
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_86db5589d9a397::t_0d366c5e058f7a 12
+  s_86db5589d9a397::t_c9ddfb10615264 14
+  s_86db5589d9a397::t_536f355c99f8c9 74,76,81-82,85-105
+  s_1eb44ad0bca191::t_ae98b462be6126 106
+site/src/content/docs/ko/guides/gateway-login.mdx
+  s_86db5589d9a397::t_d99da0acf03f8d 27,35-38,41-43
+docs/config-secrets.md
+  s_86db5589d9a397::t_d8f61d4a56d652 59,61-63
+  s_86db5589d9a397::t_16a1bcba4c8e37 41-55
+docs/gateway-login.md
+  s_86db5589d9a397::t_a509ac336b7f3c 42-47,57-60,68-100
+  s_883e26f2c25b24::t_c32b0ede8df3a1 101
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "a5e06f68cef5066d0bdb7ed92d11f6f8c910b470",
+  "prompts": {},
+  "sessions": {
+    "s_1eb44ad0bca191": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "41aeb5db-3c09-4fd1-86d1-d488288161b7",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_86db5589d9a397": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "979daad4-a728-4f57-b665-f56f80159683",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_883e26f2c25b24": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "24405184-39b1-4f05-b98a-99e19a73664c",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
