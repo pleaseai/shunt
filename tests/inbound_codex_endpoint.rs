@@ -382,6 +382,7 @@ async fn analytics_sink_matches_inbound_auth_posture() {
     vars.set(&tokens_env, "cli:analytics-secret");
     let mut config = test_config("http://127.0.0.1:1", vec![]);
     config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: tokens_env.clone(),
     });
@@ -740,6 +741,7 @@ async fn inbound_auth_gates_the_endpoint() {
         vec![account("account-auth", "SHUNT_TEST_INBOUND_AUTH")],
     );
     config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: tokens_env.clone(),
     });
@@ -786,6 +788,7 @@ async fn authorization_bearer_authenticates_the_endpoint() {
         vec![account("account-bearer", "SHUNT_TEST_INBOUND_BEARER")],
     );
     config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: tokens_env.clone(),
     });
@@ -863,6 +866,7 @@ async fn forwards_client_identity_headers_verbatim_and_strips_shunt_token() {
         vec![account("account-hdr", "SHUNT_TEST_INBOUND_HDR")],
     );
     config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: tokens_env.clone(),
     });
@@ -1598,6 +1602,7 @@ async fn gateway_owned_401_body_is_openai_shaped() {
         vec![account("account-401-shape", "SHUNT_TEST_INBOUND_401_SHAPE")],
     );
     config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: tokens_env.clone(),
     });

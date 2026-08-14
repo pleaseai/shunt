@@ -28,6 +28,7 @@ use tracing::Instrument;
 
 use crate::{
     adapters::{responses, AdapterError},
+    auth::{gate, inbound::InboundAuth, inbound_jwt::JwksCache},
     config::CodexRouteConfig,
     error::ShuntError,
     routing::{AdapterKind, Route},
@@ -172,9 +173,20 @@ async fn forward(
     };
     let provider = codex_endpoint.provider.clone();
 
-    let inbound_client = authenticate_inbound(state.inbound_auth.as_deref(), &headers, &provider)
-        .map_err(|err| ForwardError {
-        message: "inbound authentication failed".to_string(),
+    let inbound_client = authenticate_inbound(
+        state.inbound_auth.as_deref(),
+        &state.inbound_jwks,
+        &headers,
+        &provider,
+    )
+    .await
+    .map_err(|err| ForwardError {
+        message: if err.status() == StatusCode::SERVICE_UNAVAILABLE {
+            "inbound authentication unavailable"
+        } else {
+            "inbound authentication failed"
+        }
+        .to_string(),
         response: Box::new(err.into_response()),
     })?;
 
@@ -216,32 +228,44 @@ pub(crate) fn extract_session_id(headers: &HeaderMap) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-pub(crate) fn authenticate_inbound(
-    auth: Option<&crate::auth::inbound::InboundAuth>,
+/// Gate one inbound Codex request against `[server.auth]`: a static token in the
+/// configured header or `Authorization: Bearer`, or a verified
+/// `[[server.auth.jwt]]` JWT in the bearer slot. `Ok(None)` when no
+/// `[server.auth]` is configured. An unreachable JWT issuer key set is a `503`,
+/// never a `401`, so an operator is not sent hunting a credential that is fine.
+pub(crate) async fn authenticate_inbound(
+    auth: Option<&InboundAuth>,
+    jwks: &JwksCache,
     headers: &HeaderMap,
     provider: &str,
 ) -> Result<Option<String>, ShuntError> {
-    if let Some(auth) = auth {
-        match auth.authenticate_bearer(headers) {
-            Some(client) => Ok(Some(client.to_string())),
-            None => {
-                tracing::warn!(
-                    provider = %provider,
-                    "inbound codex auth failed: missing or invalid client token"
-                );
-                let message = format!(
-                    "missing or invalid client token for the inbound codex endpoint: provide it via the `{}` header or `Authorization: Bearer <token>` (e.g. OPENAI_API_KEY); ask the operator for one",
-                    auth.header()
-                );
-                Err(ShuntError::new(
-                    StatusCode::UNAUTHORIZED,
-                    "authentication_error",
-                    message,
-                ))
-            }
+    let Some(auth) = auth else {
+        return Ok(None);
+    };
+    match gate::authenticate(auth, jwks, headers, gate::Slots::Bearer).await {
+        gate::Outcome::Authenticated { client, .. } => Ok(Some(client)),
+        gate::Outcome::Unavailable => {
+            tracing::warn!(
+                provider = %provider,
+                "inbound codex auth: cannot verify credential, JWT issuer key set unreachable"
+            );
+            Err(gate::unavailable_error())
         }
-    } else {
-        Ok(None)
+        gate::Outcome::Rejected => {
+            tracing::warn!(
+                provider = %provider,
+                "inbound codex auth failed: missing or invalid client token"
+            );
+            let message = format!(
+                "missing or invalid client token for the inbound codex endpoint: provide it via the `{}` header or `Authorization: Bearer <token>` (e.g. OPENAI_API_KEY); ask the operator for one",
+                auth.header()
+            );
+            Err(ShuntError::new(
+                StatusCode::UNAUTHORIZED,
+                "authentication_error",
+                message,
+            ))
+        }
     }
 }
 

@@ -177,6 +177,7 @@ async fn start_native_gateway(
         }],
     });
     config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: client_env,
     });
@@ -223,6 +224,7 @@ async fn start_gateway(
         routes: Vec::new(),
     });
     config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: client_env,
     });
@@ -464,6 +466,7 @@ async fn upgrade_after_reload_disables_endpoint_returns_responses_error_envelope
         routes: Vec::new(),
     });
     config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: client_env.to_string(),
     });
@@ -646,6 +649,7 @@ async fn missing_model_websocket_uses_pinned_fallback_even_when_unknown_route_ex
         }],
     });
     config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: client_env.to_string(),
     });
@@ -720,6 +724,7 @@ async fn hot_reload_snapshot_routes_each_websocket_turn_once() {
         }],
     });
     config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: client_env.to_string(),
     });

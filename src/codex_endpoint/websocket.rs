@@ -59,7 +59,14 @@ pub async fn get(
         .await;
     }
 
-    if let Err(err) = authenticate_inbound(state.inbound_auth.as_deref(), &headers, &provider) {
+    if let Err(err) = authenticate_inbound(
+        state.inbound_auth.as_deref(),
+        &state.inbound_jwks,
+        &headers,
+        &provider,
+    )
+    .await
+    {
         return crate::error::into_openai_error_shape(err.into_response()).await;
     }
 

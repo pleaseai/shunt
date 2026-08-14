@@ -99,6 +99,7 @@ pub(crate) fn lane_config(
     ];
     config.server.default_provider = "efficient".to_string();
     config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: TOKENS_ENV.to_string(),
     });

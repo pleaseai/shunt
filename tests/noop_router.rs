@@ -204,6 +204,7 @@ async fn a_noop_route_still_requires_the_inbound_credential() {
 
     let mut config = noop_config();
     config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: "SHUNT_TEST_NOOP_TOKENS".to_string(),
     });

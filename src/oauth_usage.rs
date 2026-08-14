@@ -26,8 +26,8 @@ use serde::Serialize;
 
 use crate::{
     accounts::AccountSnapshot, auth::claude::store as claude_store,
-    auth::claude::usage::FABLE_SCOPE_DISPLAY_NAME, auth::shared::format_iso8601, config::AuthMode,
-    error::ShuntError, server::AppState,
+    auth::claude::usage::FABLE_SCOPE_DISPLAY_NAME, auth::gate, auth::shared::format_iso8601,
+    config::AuthMode, error::ShuntError, server::AppState,
 };
 
 /// Representative Fable model id used to take the Fable-scoped availability
@@ -211,15 +211,27 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         // subscription login — so there is no unverifiable-Anthropic-bearer
         // caller to accommodate here, and accepting bare presence would let any
         // remote caller scrape pool quota telemetry with a fabricated header.
-        let static_client = state
-            .inbound_auth
-            .as_ref()
-            .and_then(|auth| auth.authenticate_client(&headers));
+        let inbound = match &state.inbound_auth {
+            Some(auth) => {
+                gate::authenticate(auth, &state.inbound_jwks, &headers, gate::Slots::Client).await
+            }
+            None => gate::Outcome::Rejected,
+        };
+        if inbound == gate::Outcome::Unavailable {
+            tracing::warn!(
+                "GET /api/oauth/usage: cannot verify credential, JWT issuer key set unreachable"
+            );
+            return gate::unavailable_response();
+        }
+        let inbound_client = match &inbound {
+            gate::Outcome::Authenticated { client, .. } => Some(client.as_str()),
+            _ => None,
+        };
         let gateway_client = state
             .gateway_auth
             .as_ref()
             .and_then(|auth| auth.authenticate_bearer(&headers));
-        if static_client.is_none() && gateway_client.is_none() {
+        if inbound_client.is_none() && gateway_client.is_none() {
             tracing::warn!(
                 "inbound auth failed for GET /api/oauth/usage: missing or invalid credential on a non-loopback bind"
             );
@@ -230,7 +242,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             )
             .into_response();
         }
-        match static_client {
+        match inbound_client {
             Some(client) => {
                 tracing::info!(client = %client, "inbound client authenticated for GET /api/oauth/usage")
             }

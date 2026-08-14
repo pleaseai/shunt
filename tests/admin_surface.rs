@@ -1701,6 +1701,7 @@ async fn admin_credential_never_authenticates_an_inference_route_in_either_slot(
     vars.set(client_env, "device:client-token-value");
     let mut config = admin_config_with_keys(admin_env);
     config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: client_env.to_string(),
     });

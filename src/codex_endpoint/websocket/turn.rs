@@ -71,22 +71,40 @@ pub(super) async fn run_turn(context: TurnContext) {
     // pool with the client name *this* turn resolved: a reload can revoke the
     // token or move it to another client, and a pool key frozen at upgrade time
     // would keep pinning the old client's accounts.
-    let Ok(inbound_client) = crate::codex_endpoint::authenticate_inbound(
+    let inbound_client = match crate::codex_endpoint::authenticate_inbound(
         state.inbound_auth.as_deref(),
+        &state.inbound_jwks,
         &headers,
         &codex_endpoint.provider,
-    ) else {
-        let err_frame = build_ws_error_frame(
-            401,
-            "authentication_error",
-            "authentication_error",
-            "missing or invalid client token",
-            None,
-        );
-        let _ = out_tx
-            .send((turn_gen, Message::Text(err_frame.into())))
-            .await;
-        return;
+    )
+    .await
+    {
+        Ok(client) => client,
+        Err(err) => {
+            // A JWT issuer key set that became unreachable mid-connection is a
+            // `503`, like the upgrade gate answers, not a credential failure.
+            let err_frame = if err.status() == axum::http::StatusCode::SERVICE_UNAVAILABLE {
+                build_ws_error_frame(
+                    503,
+                    "api_error",
+                    "api_error",
+                    "cannot verify the presented credential: a configured JWT issuer's key set is unreachable",
+                    None,
+                )
+            } else {
+                build_ws_error_frame(
+                    401,
+                    "authentication_error",
+                    "authentication_error",
+                    "missing or invalid client token",
+                    None,
+                )
+            };
+            let _ = out_tx
+                .send((turn_gen, Message::Text(err_frame.into())))
+                .await;
+            return;
+        }
     };
     let pool_key = pool_sticky_key(inbound_client.as_deref(), session_id.clone());
     let max_request_bytes = state.config.server.limits.max_request_bytes;

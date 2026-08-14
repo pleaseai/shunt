@@ -231,8 +231,8 @@ fn off_origin_failover_strips_both_slots_without_a_gateway_jwt() {
     assert!(result.get("x-api-key").is_none());
 }
 
-#[test]
-fn ungated_passthrough_chain_still_strips_only_the_gateway_jwt_slot() {
+#[tokio::test]
+async fn ungated_passthrough_chain_still_strips_only_the_gateway_jwt_slot() {
     // `check_inbound_auth`'s `!injects_credential` early return (a pure
     // passthrough chain, never gated) still carries `gateway_claims` into
     // `headers_for_route`, so the per-slot rule applies identically here: the
@@ -241,7 +241,7 @@ fn ungated_passthrough_chain_still_strips_only_the_gateway_jwt_slot() {
     let headers = mixed_slot_headers(&gateway_jwt());
     let routes = vec![passthrough_route()];
 
-    let (base_headers, inbound) = match check_inbound_auth(&state, &routes, &headers) {
+    let (base_headers, inbound) = match check_inbound_auth(&state, &routes, &headers).await {
         Ok(result) => result,
         Err(error) => panic!("check_inbound_auth rejected the request: {}", error.message),
     };
@@ -368,8 +368,8 @@ fn same_origin_passthrough_strips_an_unprefixed_static_token_in_the_authorizatio
     assert_only_bearer_slot_stripped(&result);
 }
 
-#[test]
-fn gated_mixed_chain_never_forwards_the_static_token_used_to_pass_the_gate() {
+#[tokio::test]
+async fn gated_mixed_chain_never_forwards_the_static_token_used_to_pass_the_gate() {
     // The exact leak path #357 describes: a chain whose primary
     // (`anthropic`) is passthrough but whose fallback (`openai`) injects a
     // credential is chain-level `injects_credential`, so `check_inbound_auth`
@@ -382,7 +382,7 @@ fn gated_mixed_chain_never_forwards_the_static_token_used_to_pass_the_gate() {
     headers.insert("x-api-key", HeaderValue::from_static(STATIC_TOKEN));
     let routes = vec![passthrough_route(), injecting_fallback_route()];
 
-    let (base_headers, inbound) = match check_inbound_auth(&state, &routes, &headers) {
+    let (base_headers, inbound) = match check_inbound_auth(&state, &routes, &headers).await {
         Ok(result) => result,
         Err(error) => panic!("check_inbound_auth rejected the request: {}", error.message),
     };
@@ -684,8 +684,8 @@ fn same_origin_passthrough_keeps_an_unrelated_value_with_admin_configured() {
     );
 }
 
-#[test]
-fn check_inbound_auth_removes_the_configured_admin_header() {
+#[tokio::test]
+async fn check_inbound_auth_removes_the_configured_admin_header() {
     // The dedicated `[server.admin]` header is a slot shunt consumes, so it is
     // dropped outright before forwarding, exactly like the `[server.auth]` one.
     // The caller's own credentials in the other slots are untouched, which is
@@ -695,6 +695,7 @@ fn check_inbound_auth_removes_the_configured_admin_header() {
     headers.insert("x-shunt-admin", ADMIN_WRITE_KEY.parse().unwrap());
 
     let (forwarded, _) = check_inbound_auth(&state, &[passthrough_route()], &headers)
+        .await
         .unwrap_or_else(|error| {
             panic!("check_inbound_auth rejected the request: {}", error.message)
         });
@@ -709,8 +710,9 @@ fn check_inbound_auth_removes_the_configured_admin_header() {
 /// decision made in either step is visible in the result. The per-slot tests
 /// above call `headers_for_route` directly and cannot see what the gate already
 /// removed.
-fn forward_through_gate(state: &AppState, headers: &HeaderMap) -> HeaderMap {
+async fn forward_through_gate(state: &AppState, headers: &HeaderMap) -> HeaderMap {
     let (forwarded, inbound) = check_inbound_auth(state, &[passthrough_route()], headers)
+        .await
         .unwrap_or_else(|error| {
             panic!("check_inbound_auth rejected the request: {}", error.message)
         });
@@ -724,8 +726,8 @@ fn forward_through_gate(state: &AppState, headers: &HeaderMap) -> HeaderMap {
     )
 }
 
-#[test]
-fn admin_header_pointed_at_a_shared_slot_keeps_a_genuine_credential() {
+#[tokio::test]
+async fn admin_header_pointed_at_a_shared_slot_keeps_a_genuine_credential() {
     // `[server.admin] header = "x-api-key"` points the admin slot at a header
     // that on a passthrough route carries the caller's *own* upstream key.
     // Removing that header outright in `check_inbound_auth` would delete a
@@ -736,13 +738,13 @@ fn admin_header_pointed_at_a_shared_slot_keeps_a_genuine_credential() {
     let mut headers = HeaderMap::new();
     headers.insert("x-api-key", GENUINE_UPSTREAM_KEY.parse().unwrap());
 
-    let result = forward_through_gate(&state, &headers);
+    let result = forward_through_gate(&state, &headers).await;
 
     assert_eq!(result.get("x-api-key").unwrap(), GENUINE_UPSTREAM_KEY);
 }
 
-#[test]
-fn admin_header_pointed_at_a_shared_slot_still_strips_an_admin_credential() {
+#[tokio::test]
+async fn admin_header_pointed_at_a_shared_slot_still_strips_an_admin_credential() {
     // The other half of the rule above: not removing the shared slot outright
     // must not let an admin credential through it. `consumed_by` recognizes
     // every admin credential kind, so the slot is still stripped — by value.
@@ -751,7 +753,7 @@ fn admin_header_pointed_at_a_shared_slot_still_strips_an_admin_credential() {
         let mut headers = HeaderMap::new();
         headers.insert("x-api-key", credential.parse().unwrap());
 
-        let result = forward_through_gate(&state, &headers);
+        let result = forward_through_gate(&state, &headers).await;
 
         assert!(
             result.get("x-api-key").is_none(),
@@ -917,8 +919,8 @@ async fn an_early_committed_streaming_request_records_the_classified_status() {
 /// demand `[server.auth]`. Gate against the answer chain alone — which is what
 /// `check_inbound_auth` saw before the envelope — and the judge call is made on
 /// a gateway-held credential for a caller who presented none.
-#[test]
-fn an_envelope_whose_only_injecting_route_is_the_judge_demands_the_credential() {
+#[tokio::test]
+async fn an_envelope_whose_only_injecting_route_is_the_judge_demands_the_credential() {
     let state = driven_state();
     let envelope = crate::routing::envelope::dependency_envelope(&state.config, "claude-auto");
     let answer_chain = crate::routing::resolve_model_chain(&state.config, "claude-auto");
@@ -934,11 +936,13 @@ fn an_envelope_whose_only_injecting_route_is_the_judge_demands_the_credential() 
         "the fixture's answer tiers must both be passthrough: {answer_chain:?}"
     );
     assert!(
-        check_inbound_auth(&state, &answer_chain, &HeaderMap::new()).is_ok(),
+        check_inbound_auth(&state, &answer_chain, &HeaderMap::new())
+            .await
+            .is_ok(),
         "a passthrough-only chain lends the caller nothing, so it is not gated"
     );
 
-    let rejected = match check_inbound_auth(&state, &envelope, &HeaderMap::new()) {
+    let rejected = match check_inbound_auth(&state, &envelope, &HeaderMap::new()).await {
         Ok(_) => panic!("the envelope carries the judge's injecting route"),
         Err(error) => error,
     };
@@ -949,7 +953,9 @@ fn an_envelope_whose_only_injecting_route_is_the_judge_demands_the_credential() 
     let mut headers = HeaderMap::new();
     headers.insert("x-shunt-token", HeaderValue::from_static(STATIC_TOKEN));
     assert!(
-        check_inbound_auth(&state, &envelope, &headers).is_ok(),
+        check_inbound_auth(&state, &envelope, &headers)
+            .await
+            .is_ok(),
         "a valid client token admits the same envelope"
     );
 }

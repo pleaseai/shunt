@@ -11,7 +11,7 @@ use crate::{
         anthropic::AnthropicAdapter, cursor::CursorAdapter, responses::ResponsesAdapter, Adapter,
         AdapterError,
     },
-    auth::{inbound::ConsumedBy, slots::ShuntCredentials},
+    auth::{gate, inbound::ConsumedBy, slots::ShuntCredentials},
     config::CountTokens,
     count_tokens,
     error::ShuntError,
@@ -224,8 +224,9 @@ pub(super) async fn forward(
         }
         None => &routes,
     };
-    let (base_headers, inbound) =
-        check_inbound_auth(&state, admission, headers).map_err(|error| *error)?;
+    let (base_headers, inbound) = check_inbound_auth(&state, admission, headers)
+        .await
+        .map_err(|error| *error)?;
     enforce_managed_model_policy(&state, inbound.gateway_claims.as_ref(), &requested_model)
         .map_err(|error| *error)?;
     // The request is admitted, so the tier it was routed at may be recorded —
@@ -827,7 +828,7 @@ impl InboundContext {
 /// it. On failover, a passthrough attempt keeps the credential only while its
 /// origin matches the primary upstream's, so a host-specific token is never
 /// replayed to a different origin (a same-origin fallback still carries it).
-pub(crate) fn check_inbound_auth(
+pub(crate) async fn check_inbound_auth(
     state: &AppState,
     routes: &[routing::Route],
     headers: &HeaderMap,
@@ -864,13 +865,33 @@ pub(crate) fn check_inbound_auth(
         ));
     }
 
-    let static_client = state
-        .inbound_auth
-        .as_ref()
-        .and_then(|auth| auth.authenticate_client(headers));
-    if static_client.is_some() || gateway_claims.is_some() {
-        let client = static_client
-            .map(str::to_string)
+    let inbound = match &state.inbound_auth {
+        Some(auth) => {
+            gate::authenticate(auth, &state.inbound_jwks, headers, gate::Slots::Client).await
+        }
+        None => gate::Outcome::Rejected,
+    };
+    // An unreachable JWT issuer is shunt's problem, not the caller's: answering
+    // `401` here would send an operator hunting a credential that is fine.
+    if inbound == gate::Outcome::Unavailable {
+        tracing::warn!("inbound auth: cannot verify credential, JWT issuer key set unreachable");
+        return Err(Box::new(ForwardError {
+            message: "inbound authentication unavailable".to_string(),
+            response: Box::new(gate::unavailable_response()),
+        }));
+    }
+    let inbound_client = match &inbound {
+        gate::Outcome::Authenticated { client, .. } => Some(client.clone()),
+        _ => None,
+    };
+    // `static_client` drives credential handling downstream, not attribution:
+    // it means "this caller presented a `[server.auth]` credential", which a
+    // verified JWT also is. Both are shunt-owned gate credentials that must be
+    // stripped before the request leaves, unlike a passthrough caller's own
+    // upstream credential.
+    let static_client = inbound_client.is_some();
+    if inbound_client.is_some() || gateway_claims.is_some() {
+        let client = inbound_client
             .or_else(|| gateway_claims.as_ref().map(|claims| claims.email.clone()))
             .expect("one composed authentication branch matched");
         tracing::info!(client = %client, "inbound client authenticated for route chain");
@@ -879,7 +900,7 @@ pub(crate) fn check_inbound_auth(
             InboundContext {
                 gateway_claims,
                 client: Some(client),
-                static_client: static_client.is_some(),
+                static_client,
             },
         ));
     }

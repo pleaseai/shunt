@@ -75,6 +75,10 @@ impl ShuntError {
     pub fn bad_gateway(message: impl Into<String>) -> Self {
         Self::new(StatusCode::BAD_GATEWAY, "api_error", message)
     }
+
+    pub fn status(&self) -> StatusCode {
+        self.status
+    }
 }
 
 impl IntoResponse for ShuntError {

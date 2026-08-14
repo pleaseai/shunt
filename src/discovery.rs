@@ -7,7 +7,7 @@ use axum::{
 use serde::Serialize;
 
 use crate::{
-    auth::slots::ShuntCredentials,
+    auth::{gate, slots::ShuntCredentials},
     error::{into_openai_error_shape, ShuntError},
     server::AppState,
 };
@@ -138,16 +138,31 @@ async fn authentication_error(
     headers: &HeaderMap,
     codex_shape: bool,
 ) -> Option<Response> {
-    let static_client = state
-        .inbound_auth
-        .as_ref()
-        .and_then(|auth| auth.authenticate_client(headers));
+    let inbound = match &state.inbound_auth {
+        Some(auth) => {
+            gate::authenticate(auth, &state.inbound_jwks, headers, gate::Slots::Client).await
+        }
+        None => gate::Outcome::Rejected,
+    };
+    if inbound == gate::Outcome::Unavailable {
+        tracing::warn!("GET /v1/models: cannot verify credential, JWT issuer key set unreachable");
+        let response = gate::unavailable_response();
+        return Some(if codex_shape {
+            into_openai_error_shape(response).await
+        } else {
+            response
+        });
+    }
+    let inbound_client = match &inbound {
+        gate::Outcome::Authenticated { client, .. } => Some(client.as_str()),
+        _ => None,
+    };
     let gateway_identity = state
         .gateway_auth
         .as_ref()
         .and_then(|auth| auth.authenticate_bearer(headers));
     if (state.inbound_auth.is_some() || state.gateway_auth.is_some())
-        && static_client.is_none()
+        && inbound_client.is_none()
         && gateway_identity.is_none()
     {
         tracing::warn!(
@@ -176,7 +191,7 @@ async fn authentication_error(
             response
         });
     }
-    if let Some(client) = static_client {
+    if let Some(client) = inbound_client {
         tracing::info!(client = %client, "inbound client authenticated for GET /v1/models");
     } else if let Some(identity) = gateway_identity.as_ref() {
         tracing::info!(client = %identity.email, "gateway user authenticated for GET /v1/models");
@@ -710,6 +725,7 @@ mod tests {
         let _env_guard = OwnedEnvGuard(env.clone());
         let mut config = codex_enabled_config();
         config.server.auth = Some(InboundAuthConfig {
+            jwt: Vec::new(),
             header: "x-shunt-token".to_string(),
             tokens_env: env.clone(),
         });

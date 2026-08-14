@@ -652,6 +652,7 @@ async fn inbound_auth_gates_routed_requests() {
     );
     vars.set("SHUNT_TEST_ROUTED_TOKENS_G", "alice:secret-token");
     config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: "SHUNT_TEST_ROUTED_TOKENS_G".to_string(),
     });

@@ -275,6 +275,7 @@ async fn all_surfaces_config(label: &str) -> (Config, common::EnvVars) {
 
     // `[server.auth]` is not itself a route, but `[server.usage]` requires it.
     config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: client_env,
     });

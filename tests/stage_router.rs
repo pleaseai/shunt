@@ -444,6 +444,7 @@ async fn a_rejected_request_does_not_pin_the_session() {
         )
     });
     config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: "SHUNT_TEST_STAGE_TOKENS".to_string(),
     });

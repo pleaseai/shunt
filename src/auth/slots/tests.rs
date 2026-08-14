@@ -346,6 +346,7 @@ impl ForwardSite {
                 // `check_inbound_auth`'s `!injects_credential` early return, so
                 // this never fails and never depends on the gate's verdict.
                 let (forwarded, inbound) = check_inbound_auth(state, &routes, headers)
+                    .await
                     .unwrap_or_else(|_| unreachable!("a passthrough chain is never gated"));
                 headers_for_route(state, &routes[0], &forwarded, &inbound, true, None)
             }
