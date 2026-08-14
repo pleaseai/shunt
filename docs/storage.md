@@ -51,8 +51,9 @@ control.
 ## Hazards a store introduces
 
 - **Refresh coordination becomes a lease, not a transaction.** Replacing the
-  process-global `REFRESH_LOCK` (`src/auth/claude/auth.rs`, mirrored in
-  `src/auth/codex/auth.rs`) means claiming a lease in one short transaction,
+  in-process single-flight locks (`REFRESH_LOCK` in `src/auth/claude/auth.rs`,
+  process-global; `REFRESH_LOCKS` in `src/auth/codex/auth.rs`, keyed per
+  credential path) means claiming a lease in one short transaction,
   performing the OAuth round trip, then writing the token and releasing in a
   second one. A write transaction must not be held across the network call —
   SQLite has a single writer, so that stalls every other writer for the duration

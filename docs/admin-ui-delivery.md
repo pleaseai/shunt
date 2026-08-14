@@ -47,7 +47,7 @@ baseline for any new route.
 | always | `GET` | `/health` — unauthenticated, exempt from the concurrency gate |
 | always | `GET` | `/protocol`, `/v1/models`, `/routes` |
 | always | `POST` | `/v1/messages`, `/v1/messages/count_tokens` |
-| `[server.admin]` | — | 15 routes under `/admin` — see [M9](m9-admin-surface.md#endpoints-registered-only-when-serveradmin-is-set) |
+| `[server.admin]` | — | 15 paths under `/admin`, 17 method+path pairs — `admin_router` in `src/admin/mod.rs`. [M9's endpoint table](m9-admin-surface.md#endpoints-registered-only-when-serveradmin-is-set) documents all of them except `GET /admin/status` |
 | `[server.gateway]` | `GET` | `/.well-known/oauth-authorization-server`, `/device`, `/device/callback`, `/managed/settings` |
 | `[server.gateway]` | `POST` | `/oauth/device_authorization`, `/oauth/token`, `/device`, `/device/authorize` |
 | `[server.gateway]` | `POST` | `/v1/metrics`, `/v1/logs`, `/v1/traces` (inbound OTLP ingest) |
@@ -59,8 +59,15 @@ baseline for any new route.
 Two properties of this table matter downstream:
 
 - **The router has no wildcard or fallback route anywhere.** An unmatched path
-  404s in the gateway's own error shape. That is a contract clients depend on,
-  not an accident.
+  therefore gets axum's built-in `404` with an **empty body** — not a
+  `ShuntError` envelope, since nothing constructs one for a path that reached no
+  handler. The status is the part clients depend on, and it is what makes an
+  unimplemented endpoint legible rather than a parse failure. Whether the empty
+  body should be shaped is an open question this document does not settle:
+  `AGENTS.md` asks that gateway-owned errors keep the Anthropic error shape, and
+  it is arguable both ways whether a `404` no shunt code constructs is in that
+  rule's scope. Recorded only so a UI fallback is not designed on the assumption
+  that a shaped body already exists here.
 - **The Codex endpoint paths are fixed constants**, not configuration.
   `CodexEndpointConfig` carries only `provider`; the paths live in
   `codex_endpoint::PATHS` and `codex_analytics::PATHS`, which
@@ -82,14 +89,17 @@ here because a dashboard is the surface where an operator first notices it.
 | `AccountPool` quota/cooldown | memory + optional `[server.pool] state_path` | Per-instance view. `/admin/pool` reports one replica, not the fleet. |
 | Gateway login sessions | optional `[server.gateway] state_path` | Per-instance view. |
 | Either `state_path` | `atomic_file::write_private_atomic` | Atomic per write, but **last-writer-wins across processes**. No lock, no merge — a shared path is silently clobbered. |
-| Credential refresh | `static REFRESH_LOCK` | In-process single-flight only. See below. |
+| Credential refresh | `REFRESH_LOCK` (Claude) / `REFRESH_LOCKS` (Codex) | In-process single-flight only, by two different designs. See below. |
 | `max_concurrent_requests` | per process | Fleet ceiling is N× the configured value. |
 
-**The blocking constraint is refresh serialization.** `src/auth/claude/auth.rs`
-holds a process-global `tokio::sync::Mutex`, documented as "In-process
-single-flight for Claude OAuth refreshes"; `src/auth/codex/auth.rs` mirrors it.
-Two processes sharing an account store have no shared lock, so both can refresh
-the same account concurrently. Refresh tokens rotate, so the loser's stored token
+**The blocking constraint is refresh serialization.** Both OAuth providers
+single-flight refreshes, and both do it **in-process only**. `src/auth/claude/auth.rs`
+uses one process-global `static REFRESH_LOCK`, so every Claude account serializes
+against every other; `src/auth/codex/auth.rs` uses `REFRESH_LOCKS`, a registry
+keyed by credential path, so different accounts refresh in parallel while the
+same file still serializes. The designs differ, the scope does not: two processes
+sharing an account store have no shared lock either way, so both can refresh the
+same account concurrently. Refresh tokens rotate, so the loser's stored token
 is invalidated — the exact condition the code already warns about ("stored
 refresh token is now stale until re-login"). Recovery is a manual re-login.
 
@@ -219,8 +229,8 @@ Coder's layout suggests — is closed by three separate facts:
 
 1. `/` is already a handler that also answers `HEAD` for liveness probes.
    Replacing it changes behavior for any deployment probing it.
-2. A catch-all fallback would make unmatched paths return HTML `200` instead of a
-   404 in the gateway error shape. That breaks client error handling and, when
+2. A catch-all fallback would make unmatched paths return HTML `200` instead of
+   `404`. That breaks client error handling and, when
    Anthropic adds an endpoint shunt has not implemented yet, converts a clean
    "not implemented" into a parse failure. [`gateway-protocol.md`](gateway-protocol.md)
    relies on `404` being a legible answer.
@@ -351,7 +361,7 @@ independent decision.
 - Path-inventory assertion: the set of registered paths matches this document's
   table, so a new route cannot be added without the conflict review.
 - `/` still answers `HEAD` after any UI work.
-- An unmatched path still returns the gateway error shape, not HTML.
+- An unmatched path still `404`s rather than returning HTML.
 - With `[server.admin].bind` set, admin paths 404 on `server.bind` and serve on
   the admin listener — and the reverse when it is unset.
 - Graceful shutdown drains both listeners from a single signal.
@@ -364,7 +374,10 @@ independent decision.
 - `site/src/content/docs/reference/cli.mdx` — `shunt ui`, next to
   `shunt dashboard setup`.
 - [`m9-admin-surface.md`](m9-admin-surface.md) — its endpoint table becomes the
-  pre-split record; add a pointer here rather than rewriting it.
+  pre-split record; add a pointer here rather than rewriting it. It is also
+  missing `GET /admin/status`, which `admin_router` has registered since the
+  route was added — an existing drift, worth a one-row fix independently of this
+  design.
 - `docs/running.md` — the single-instance topology statement belongs in the
   operational guide, not only in this design record.
 - `README.md` — only if the dashboard becomes a headline capability.
