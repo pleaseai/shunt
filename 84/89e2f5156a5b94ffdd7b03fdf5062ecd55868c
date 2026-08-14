@@ -1,0 +1,27 @@
+src/discovery/upstream.rs
+  s_883e26f2c25b24::t_bbfb83833cb845 276-280,282-286
+src/discovery/upstream/tests.rs
+  s_883e26f2c25b24::t_8d3293114eb50d 177-211
+  s_883e26f2c25b24::t_3e006a34a57b02 176
+docs/m4-inbound-auth.md
+  s_883e26f2c25b24::t_5e0113cb9e1192 81-100
+src/proxy/failover.rs
+  s_883e26f2c25b24::t_7a32ddf3a33a28 581-590,597
+  s_883e26f2c25b24::t_3b4df9ad034205 670-765
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "8489e2f5156a5b94ffdd7b03fdf5062ecd55868c",
+  "prompts": {},
+  "sessions": {
+    "s_883e26f2c25b24": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "24405184-39b1-4f05-b98a-99e19a73664c",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
