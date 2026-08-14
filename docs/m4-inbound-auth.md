@@ -96,7 +96,12 @@ On a same-origin passthrough attempt, `authorization` and `x-api-key` are checke
 independently, by what each slot actually holds: a slot is cleared if its own value verifies as
 either shunt's gateway JWT or a configured `[server.auth]` static token, via the shared
 `auth::inbound::consumed_by` check used identically on the passthrough attempt of a chain
-(`proxy/failover.rs`) and in upstream model discovery (`discovery/upstream.rs`). The origin
+(`proxy/failover.rs`) and in upstream model discovery (`discovery/upstream.rs`). The
+`authorization` slot is evaluated in **both** shapes it can carry a gate credential in — the
+`Bearer <token>` payload, and the entire header value — because `[server.auth] header` is a
+free-form header name that an operator may set to `authorization`, in which case
+`authenticate_client` gates on the whole unprefixed value and a payload-only check would relay
+the gate token itself upstream (`auth::inbound::authorization_consumed_by`). The origin
 filter runs first — an off-origin failover attempt strips both slots outright before this
 by-value check ever runs; the by-value check applies only to whichever slots the origin filter
 retained. Within a same-origin attempt, the other slot's presence never triggers a strip by

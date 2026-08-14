@@ -345,6 +345,27 @@ fn same_origin_passthrough_strips_only_the_slot_holding_the_static_token() {
 }
 
 #[test]
+fn same_origin_passthrough_strips_an_unprefixed_static_token_in_the_authorization_slot() {
+    // `[server.auth] header = "authorization"` lets a caller pass the gate with
+    // a bare `Authorization: <token>` and no `Bearer ` scheme, which a
+    // Bearer-payload-only check cannot see — the shape that was leaking on the
+    // discovery path. `check_inbound_auth` removes the configured header before
+    // this function runs, so on the inference path this is defence in depth
+    // rather than a live leak; it is asserted here because both passthrough
+    // paths are documented to agree on what counts as shunt's own credential,
+    // and only a test keeps that agreement true.
+    let state = state_with_static_auth();
+    let mut headers = HeaderMap::new();
+    headers.insert("authorization", HeaderValue::from_static(STATIC_TOKEN));
+    headers.insert("x-api-key", HeaderValue::from_static(GENUINE_UPSTREAM_KEY));
+    let inbound = context_for(&state, &headers);
+
+    let result = headers_for_route(&state, &passthrough_route(), &headers, &inbound, true, None);
+
+    assert_only_bearer_slot_stripped(&result);
+}
+
+#[test]
 fn gated_mixed_chain_never_forwards_the_static_token_used_to_pass_the_gate() {
     // The exact leak path #357 describes: a chain whose primary
     // (`anthropic`) is passthrough but whose fallback (`openai`) injects a

@@ -219,6 +219,31 @@ pub(crate) fn is_consumed_by_shunt(
     consumed_by(value, gateway_auth, static_auth).is_some()
 }
 
+/// Evaluate the whole `Authorization` slot, which can carry a shunt-owned
+/// credential in **two** shapes. Usually it is the `Bearer <token>` payload —
+/// a gateway JWT, or a `[server.auth]` token sent the way Claude Code sends
+/// `ANTHROPIC_AUTH_TOKEN`. But `[server.auth] header` is a free-form header
+/// name (`InboundAuthConfig::resolve` only checks it parses as a `HeaderName`),
+/// so an operator may set it to `authorization`; then
+/// [`InboundAuth::authenticate_client`] authenticates off the *entire* header
+/// value with no scheme prefix, and a caller passes the gate with a bare
+/// `Authorization: <token>`. Checking only the Bearer payload finds nothing
+/// consumed for that caller and relays their gate token upstream, so both
+/// shapes are checked here.
+///
+/// Returns `None` when the header is absent or holds the caller's own
+/// credential.
+pub(crate) fn authorization_consumed_by(
+    headers: &HeaderMap,
+    gateway_auth: Option<&GatewayAuth>,
+    static_auth: Option<&InboundAuth>,
+) -> Option<ConsumedBy> {
+    let raw = headers.get("authorization")?;
+    bearer_token(headers)
+        .and_then(|token| consumed_by(token, gateway_auth, static_auth))
+        .or_else(|| consumed_by(raw.as_bytes(), gateway_auth, static_auth))
+}
+
 #[cfg(test)]
 mod tests {
     use axum::http::{HeaderMap, HeaderName, HeaderValue};

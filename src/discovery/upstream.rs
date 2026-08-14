@@ -21,7 +21,7 @@ use crate::{
     adapters::anthropic::strip_duplicate_oauth_api_key,
     auth::{
         self, claude,
-        inbound::{bearer_token, is_consumed_by_shunt, InboundAuth},
+        inbound::{authorization_consumed_by, is_consumed_by_shunt, InboundAuth},
         resolve_claude_account, resolve_credential, Credential,
     },
     config::{ApiKeyHeader, AuthMode, Config, ProviderConfig, ProviderKind},
@@ -263,13 +263,15 @@ async fn upstream_headers(
             // A bearer shunt already consumed — gateway login, or a
             // `[server.auth]` client token sent as `Authorization` — authenticates
             // the caller against shunt, not the caller against the upstream.
-            let bearer_is_consumed = bearer_token(inbound).is_some_and(|token| {
-                is_consumed_by_shunt(
-                    token,
-                    inbound_context.gateway_auth,
-                    inbound_context.static_auth,
-                )
-            });
+            // Evaluated over the whole slot, because a `[server.auth] header =
+            // "authorization"` caller passes the gate with a bare, unprefixed
+            // token that no Bearer-only check would recognise as shunt's.
+            let bearer_is_consumed = authorization_consumed_by(
+                inbound,
+                inbound_context.gateway_auth,
+                inbound_context.static_auth,
+            )
+            .is_some();
             let bearer = inbound
                 .get("authorization")
                 .cloned()

@@ -11,7 +11,7 @@ use crate::{
         anthropic::AnthropicAdapter, cursor::CursorAdapter, responses::ResponsesAdapter, Adapter,
         AdapterError, AdapterFailure,
     },
-    auth::inbound::{bearer_token, consumed_by, ConsumedBy},
+    auth::inbound::{authorization_consumed_by, consumed_by, ConsumedBy},
     config::{AuthMode, CountTokens, ProviderKind},
     count_tokens,
     error::ShuntError,
@@ -617,13 +617,11 @@ fn headers_for_route(
             );
             return headers;
         }
-        if let Some(reason) = bearer_token(&headers).and_then(|token| {
-            consumed_by(
-                token,
-                state.gateway_auth.as_deref(),
-                state.inbound_auth.as_deref(),
-            )
-        }) {
+        if let Some(reason) = authorization_consumed_by(
+            &headers,
+            state.gateway_auth.as_deref(),
+            state.inbound_auth.as_deref(),
+        ) {
             headers.remove("authorization");
             tracing::debug!(
                 provider = %route.provider,
