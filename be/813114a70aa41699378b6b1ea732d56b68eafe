@@ -1,0 +1,42 @@
+tests/passthrough.rs
+  s_883e26f2c25b24::t_becde6d8b5e613 6-7
+  s_883e26f2c25b24::t_63192a10e869b3 384-505,507,509-511,513
+  s_883e26f2c25b24::t_e792f8b70b4266 506,508,512,514-515
+src/proxy/failover/tests.rs
+  s_883e26f2c25b24::t_20261640f229c7 222-244
+  s_883e26f2c25b24::t_fe2e4abcbbff21 10
+  s_883e26f2c25b24::t_b5e9805d2043ea 69-76,83-84
+docs/m4-inbound-auth.md
+  s_883e26f2c25b24::t_f2e040bd478e29 104-114
+  s_883e26f2c25b24::t_36b79bf20bbb90 82-93
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_883e26f2c25b24::t_02e1d032010300 261
+site/src/content/docs/reference/configuration.md
+  s_883e26f2c25b24::t_b0ecf832fe020b 480
+src/gateway/tests.rs
+  s_883e26f2c25b24::t_7387910281cb52 137-178
+  s_883e26f2c25b24::t_be6cc2a0d9e136 21
+src/discovery/upstream/tests.rs
+  s_883e26f2c25b24::t_9ef99718889978 3
+  s_883e26f2c25b24::t_e7f4d6fed20ec1 17
+  s_883e26f2c25b24::t_27d2ad09f5924f 332-344
+  s_883e26f2c25b24::t_3fc3f14cec5d57 345-348
+src/proxy/failover.rs
+  s_883e26f2c25b24::t_8965ac7809d021 583-604
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "be813114a70aa41699378b6b1ea732d56b68eafe",
+  "prompts": {},
+  "sessions": {
+    "s_883e26f2c25b24": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "24405184-39b1-4f05-b98a-99e19a73664c",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
