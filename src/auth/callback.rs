@@ -113,13 +113,18 @@ pub(crate) struct CallbackServer {
 impl CallbackServer {
     /// Bind the callback listener.
     ///
-    /// On a fixed port the IPv6 loopback is bound too, best-effort. That pairs
-    /// with advertising the `localhost` hostname: RFC 6761 requires it to
-    /// resolve to loopback, but it may resolve to `::1` first, and a v4-only
-    /// listener would then leave the browser hanging until the login timeout.
-    /// Providers that register the `127.0.0.1` literal do not need this, and an
-    /// ephemeral port cannot use it — the two families would get different
-    /// ports, so only the advertised one would receive the redirect.
+    /// On a fixed port the IPv6 loopback is bound too. That pairs with
+    /// advertising the `localhost` hostname: RFC 6761 requires it to resolve
+    /// to loopback, but it may resolve to `::1` first, and a v4-only listener
+    /// would then leave the browser hanging until the login timeout. A host
+    /// with no IPv6 loopback at all still works over v4 (best-effort — that
+    /// bind failure only means "unavailable"). But a port already held by
+    /// another process on `[::1]` is refused loudly rather than silently
+    /// falling back to v4: that other process would otherwise receive the
+    /// redirect instead of this listener. Providers that register the
+    /// `127.0.0.1` literal do not need this, and an ephemeral port cannot use
+    /// it — the two families would get different ports, so only the
+    /// advertised one would receive the redirect.
     pub(crate) async fn bind(
         config: CallbackConfig,
         expected_state: String,
@@ -153,9 +158,24 @@ impl CallbackServer {
         server.serve(listener, state.clone());
 
         if config.port != 0 {
-            // Best effort: a host without IPv6 loopback still works over v4.
             match tokio::net::TcpListener::bind((Ipv6Addr::LOCALHOST, addr.port())).await {
                 Ok(listener_v6) => server.serve(listener_v6, state),
+                // Another process already owns [::1]:port: silently continuing
+                // would let that process receive the redirect whenever the
+                // browser resolves the advertised `localhost` host to IPv6
+                // first, while this listener waits forever. Loud beats a hang.
+                Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "{label} OAuth callback port {} is already in use on [::1] by \
+                             another process. Free it and try again — a stray listener there \
+                             can silently swallow the redirect if the browser resolves \
+                             `localhost` to IPv6 first.",
+                            addr.port()
+                        )
+                    });
+                }
+                // Best effort: a host without IPv6 loopback still works over v4.
                 Err(error) => {
                     tracing::debug!(
                         "{label} OAuth callback could not bind [::1]:{}: {error}",
@@ -376,6 +396,40 @@ mod tests {
             .unwrap();
         assert_eq!(right.status(), StatusCode::OK);
         assert_eq!(waiting.await.unwrap().unwrap(), "c");
+    }
+
+    #[tokio::test]
+    async fn a_fixed_port_with_v6_already_taken_refuses_loudly() {
+        // Another process squatting on [::1]:port must not be silently
+        // tolerated: the advertised `localhost` host can resolve there first,
+        // and a quiet fallback to v4-only would leave the browser's redirect
+        // swallowed by the other process instead of reaching this listener.
+        let v4 = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let port = v4.local_addr().unwrap().port();
+        drop(v4);
+        let Ok(v6_holder) = tokio::net::TcpListener::bind((Ipv6Addr::LOCALHOST, port)).await else {
+            // No IPv6 loopback on this host: nothing to assert.
+            return;
+        };
+
+        let config = CallbackConfig {
+            label: "Antigravity",
+            port,
+            path: "/oauth-callback",
+            host: "localhost",
+        };
+        let result = CallbackServer::bind(config, "state".to_string()).await;
+        let Err(error) = result else {
+            panic!("a port already held on [::1] must be refused, not silently ignored");
+        };
+        let message = format!("{error:#}");
+        assert!(
+            message.contains(&port.to_string()),
+            "error should name the port: {message}"
+        );
+        drop(v6_holder);
     }
 
     #[tokio::test]
