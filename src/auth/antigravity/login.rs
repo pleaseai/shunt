@@ -7,17 +7,18 @@
 //! rejected as a redirect_uri mismatch.
 //!
 //! The project id is resolved here rather than on the first request, because
-//! provisioning a first-time account polls `onboardUser` for up to ten seconds
-//! — acceptable in an interactive login, not in front of a proxied turn.
+//! provisioning a first-time account polls `onboardUser` to exhaustion —
+//! `ONBOARD_MAX_ATTEMPTS` attempts at up to `ONBOARD_REQUEST_TIMEOUT` each,
+//! spaced by `ONBOARD_POLL_INTERVAL` — a worst case of roughly 158 seconds,
+//! acceptable in an interactive login, not in front of a proxied turn.
 
 use std::time::Duration;
 
 use anyhow::{bail, Context};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use rand::RngCore;
 use serde::Deserialize;
 
 use crate::auth::callback::{CallbackConfig, CallbackServer};
+use crate::auth::shared::{generate_pkce, PkceChallenge};
 
 use super::auth::{
     write_stored, StoredAuth, TokenResponse, AUTH_URL, CALLBACK_PATH, CALLBACK_PORT, CLIENT_ID,
@@ -32,7 +33,9 @@ const CALLBACK_CONFIG: CallbackConfig = CallbackConfig {
     port: CALLBACK_PORT,
     path: CALLBACK_PATH,
     // Matches the registered redirect URI. `CallbackServer` binds both loopback
-    // families on a fixed port, so the `localhost` spelling cannot hang on ::1.
+    // families on a fixed port, and refuses to start rather than silently fall
+    // back to v4-only if another process already holds [::1] on this port — so
+    // the `localhost` spelling cannot silently hang on ::1.
     host: "localhost",
 };
 
@@ -44,9 +47,11 @@ struct UserInfo {
 
 pub async fn run() -> anyhow::Result<()> {
     let client = reqwest::Client::new();
-    let mut random = [0_u8; 32];
-    rand::rng().fill_bytes(&mut random);
-    let state = URL_SAFE_NO_PAD.encode(random);
+    let PkceChallenge {
+        verifier,
+        challenge,
+        state,
+    } = generate_pkce();
 
     let callback = CallbackServer::bind(CALLBACK_CONFIG, state.clone())
         .await
@@ -58,7 +63,7 @@ pub async fn run() -> anyhow::Result<()> {
             )
         })?;
     let redirect_uri = callback.redirect_uri();
-    let auth_url = build_auth_url(&state, &redirect_uri);
+    let auth_url = build_auth_url(&challenge, &state, &redirect_uri);
 
     println!("Open this URL to authenticate with Antigravity:\n\n    {auth_url}\n");
     if let Err(error) = open_url(&auth_url) {
@@ -66,7 +71,7 @@ pub async fn run() -> anyhow::Result<()> {
     }
 
     let code = callback.wait_for_code(CALLBACK_TIMEOUT).await?;
-    let tokens = exchange_code(&client, TOKEN_URL, &code, &redirect_uri).await?;
+    let tokens = exchange_code(&client, TOKEN_URL, &code, &redirect_uri, &verifier).await?;
     let refresh_token = tokens.refresh_token.clone().ok_or_else(|| {
         anyhow::anyhow!(
             "Antigravity returned no refresh token; the login would expire within the hour. \
@@ -130,7 +135,7 @@ pub async fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
-pub(crate) fn build_auth_url(state: &str, redirect_uri: &str) -> String {
+pub(crate) fn build_auth_url(challenge: &str, state: &str, redirect_uri: &str) -> String {
     let mut url = reqwest::Url::parse(AUTH_URL).expect("Antigravity auth endpoint is a valid URL");
     url.query_pairs_mut()
         // `offline` + `consent` are what make Google return a refresh token; a
@@ -141,6 +146,8 @@ pub(crate) fn build_auth_url(state: &str, redirect_uri: &str) -> String {
         .append_pair("redirect_uri", redirect_uri)
         .append_pair("response_type", "code")
         .append_pair("scope", &SCOPES.join(" "))
+        .append_pair("code_challenge", challenge)
+        .append_pair("code_challenge_method", "S256")
         .append_pair("state", state);
     url.to_string()
 }
@@ -150,6 +157,7 @@ async fn exchange_code(
     token_url: &str,
     code: &str,
     redirect_uri: &str,
+    verifier: &str,
 ) -> anyhow::Result<TokenResponse> {
     let params = [
         ("grant_type", "authorization_code"),
@@ -157,6 +165,7 @@ async fn exchange_code(
         ("client_id", CLIENT_ID),
         ("client_secret", CLIENT_SECRET),
         ("redirect_uri", redirect_uri),
+        ("code_verifier", verifier),
     ];
     let response = client
         .post(token_url)
@@ -238,7 +247,11 @@ mod tests {
 
     #[test]
     fn auth_url_requests_offline_access_and_every_scope() {
-        let url = build_auth_url("state-1", "http://localhost:51121/oauth-callback");
+        let url = build_auth_url(
+            "challenge-1",
+            "state-1",
+            "http://localhost:51121/oauth-callback",
+        );
         let parsed = reqwest::Url::parse(&url).unwrap();
         let pairs: std::collections::HashMap<_, _> = parsed.query_pairs().into_owned().collect();
 
@@ -270,6 +283,31 @@ mod tests {
         assert!(scope.contains("experimentsandconfigs"));
     }
 
+    #[test]
+    fn auth_url_carries_the_pkce_challenge() {
+        // Without `code_challenge`/`code_challenge_method` Google's authorization
+        // server issues a code that the token exchange's `code_verifier` cannot
+        // redeem, so both must survive on the URL — this fails if either is
+        // dropped.
+        let url = build_auth_url(
+            "challenge-value",
+            "state-1",
+            "http://localhost:51121/oauth-callback",
+        );
+        let parsed = reqwest::Url::parse(&url).unwrap();
+        let pairs: std::collections::HashMap<_, _> = parsed.query_pairs().into_owned().collect();
+
+        assert_eq!(
+            pairs.get("code_challenge_method").map(String::as_str),
+            Some("S256")
+        );
+        let challenge = pairs
+            .get("code_challenge")
+            .expect("code_challenge must be present");
+        assert!(!challenge.is_empty());
+        assert_eq!(challenge, "challenge-value");
+    }
+
     #[tokio::test]
     async fn code_exchange_returns_the_token_pair() {
         let server = MockServer::start().await;
@@ -288,6 +326,7 @@ mod tests {
             &format!("{}/token", server.uri()),
             "code-1",
             "http://localhost:51121/oauth-callback",
+            "verifier-1",
         )
         .await
         .unwrap();
@@ -295,6 +334,43 @@ mod tests {
         assert_eq!(tokens.access_token, "access-1");
         assert_eq!(tokens.refresh_token.as_deref(), Some("refresh-1"));
         assert_eq!(tokens.expires_in, Some(3599));
+    }
+
+    #[tokio::test]
+    async fn code_exchange_posts_the_pkce_verifier() {
+        // The verifier must be the exact one that produced the authorization
+        // URL's challenge — if it were dropped or a different value sent,
+        // Google's token endpoint would reject the exchange.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "access-1",
+                "refresh_token": "refresh-1",
+                "expires_in": 3599
+            })))
+            .mount(&server)
+            .await;
+
+        exchange_code(
+            &reqwest::Client::new(),
+            &format!("{}/token", server.uri()),
+            "code-1",
+            "http://localhost:51121/oauth-callback",
+            "the-verifier-value",
+        )
+        .await
+        .unwrap();
+
+        let requests = server
+            .received_requests()
+            .await
+            .expect("mock records requests");
+        let body = String::from_utf8_lossy(&requests[0].body);
+        assert!(
+            body.contains("code_verifier=the-verifier-value"),
+            "token exchange body missing code_verifier: {body}"
+        );
     }
 
     #[tokio::test]
@@ -313,6 +389,7 @@ mod tests {
             &format!("{}/token", server.uri()),
             "code-1",
             "http://127.0.0.1:1/oauth-callback",
+            "verifier-1",
         )
         .await
         .unwrap_err();
