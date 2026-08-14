@@ -25,10 +25,10 @@ use std::{
     path::Path,
     process::Stdio,
     sync::{
-        atomic::{AtomicBool, Ordering},
-        Mutex, PoisonError,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Mutex, OnceLock, PoisonError,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 /// Cap on the one-off `agy models` discovery call. Generous because the CLI
@@ -65,18 +65,77 @@ static MATRIX: Mutex<Option<EffortMatrix>> = Mutex::new(None);
 /// spawns one `agy models` between them rather than one apiece.
 static DISCOVERING: AtomicBool = AtomicBool::new(false);
 
-/// Model/effort capabilities, discovered from `agy models` and cached.
+/// Floor on the gap between discoveries triggered by an unrecognized model.
+///
+/// [`DISCOVERING`] collapses a concurrent burst but not a steady stream, so
+/// without this a route naming an id `agy` does not have would spawn one
+/// `agy models` per turn, forever. A model that appears upstream mid-run is
+/// not urgent to the minute, and discovery costs ~1.3-1.9s as a gateway
+/// subprocess (measured, pleaseai/shunt#337), so a minute is cheap either way.
+const UNKNOWN_MODEL_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Monotonic origin, so refresh attempts can be stamped as a plain integer.
+/// `Instant::now()` is not const, so the first caller seeds it.
+static EPOCH: OnceLock<Instant> = OnceLock::new();
+
+/// Milliseconds since [`EPOCH`] of the last discovery triggered by an
+/// unrecognized model. Zero means never, which is why stamps are floored to 1.
+static LAST_UNKNOWN_MODEL_REFRESH: AtomicU64 = AtomicU64::new(0);
+
+/// Model/effort capabilities for the turn's `model`, discovered from
+/// `agy models` and cached.
 ///
 /// Never blocks on discovery. A request arriving before the cache is warm gets
 /// an empty matrix — which [`resolve_effort`] treats as "not authoritative", so
 /// configured values pass through and `agy` validates them itself — and kicks
 /// off a background refresh for the turns that follow.
-pub async fn effort_matrix(agy_bin: &Path) -> EffortMatrix {
-    if let Some(matrix) = cached() {
-        return matrix;
+///
+/// A populated cache is *not* treated as a closed catalogue. `agy` gains models
+/// while the gateway runs, and a cache with no invalidation would make every
+/// one of them permanently unknown to a long-running process — turning the
+/// documented first-turn cost into an outage lasting until restart
+/// (pleaseai/shunt#366). So a miss against a warm cache also schedules a
+/// refresh, rate-limited by [`UNKNOWN_MODEL_REFRESH_INTERVAL`] so an id that
+/// genuinely does not exist cannot spawn a subprocess per turn.
+///
+/// This turn still sees the stale matrix: the refresh is deliberately off the
+/// request path, matching the rest of this module. The guarantee is that the
+/// model becomes unknown *once* rather than forever.
+pub async fn effort_matrix(agy_bin: &Path, model: &str) -> EffortMatrix {
+    let Some(matrix) = cached() else {
+        spawn_refresh(agy_bin);
+        return EffortMatrix::new();
+    };
+    if !matrix.contains_key(model) && claim_unknown_model_refresh() {
+        spawn_refresh(agy_bin);
     }
-    spawn_refresh(agy_bin);
-    EffortMatrix::new()
+    matrix
+}
+
+/// Take the rate-limit slot for an unknown-model refresh, if it is free.
+///
+/// The compare-and-exchange is what makes a burst of turns naming the same
+/// missing model claim once between them rather than once apiece; losing the
+/// race means another turn just scheduled the same discovery.
+fn claim_unknown_model_refresh() -> bool {
+    let now = EPOCH.get_or_init(Instant::now).elapsed().as_millis() as u64;
+    let last = LAST_UNKNOWN_MODEL_REFRESH.load(Ordering::Acquire);
+    if !refresh_is_due(last, now, UNKNOWN_MODEL_REFRESH_INTERVAL) {
+        return false;
+    }
+    LAST_UNKNOWN_MODEL_REFRESH
+        .compare_exchange(last, now.max(1), Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+}
+
+/// Whether enough time has passed since `last` to allow another refresh.
+///
+/// Split out from the atomics so the policy is testable without a process-wide
+/// clock: `last == 0` is the never-refreshed sentinel, and the comparison
+/// saturates so a clock that appears to move backwards denies rather than
+/// panics or wraps into a permanent allow.
+fn refresh_is_due(last: u64, now: u64, interval: Duration) -> bool {
+    last == 0 || now.saturating_sub(last) >= interval.as_millis() as u64
 }
 
 /// Read the cache, holding the lock only for the clone.
@@ -308,7 +367,44 @@ fn clamp(supported: &BTreeSet<String>, requested: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_effort, EffortChoice, EffortMatrix};
+    use super::{
+        claim_unknown_model_refresh, refresh_is_due, resolve_effort, EffortChoice, EffortMatrix,
+    };
+    use std::time::Duration;
+
+    const INTERVAL: Duration = Duration::from_secs(60);
+
+    #[test]
+    fn a_never_refreshed_matrix_is_immediately_due() {
+        assert!(refresh_is_due(0, 0, INTERVAL));
+    }
+
+    #[test]
+    fn a_second_unknown_model_within_the_interval_is_not_due() {
+        // The regression that matters: without this, one route naming an id
+        // `agy` does not have spawns an `agy models` subprocess per turn.
+        assert!(!refresh_is_due(1, 1 + 59_999, INTERVAL));
+    }
+
+    #[test]
+    fn the_interval_boundary_is_due() {
+        assert!(refresh_is_due(1, 1 + 60_000, INTERVAL));
+    }
+
+    #[test]
+    fn a_backwards_clock_denies_rather_than_wrapping() {
+        // saturating_sub yields 0, which is below the interval, so this denies.
+        // Wrapping would produce a huge delta and allow every turn through.
+        assert!(!refresh_is_due(10_000, 1, INTERVAL));
+    }
+
+    #[test]
+    fn the_first_claim_wins_and_the_next_is_throttled() {
+        // Exercises the atomics, not just the policy. Sole test touching this
+        // process-global slot, so it does not race its neighbours.
+        assert!(claim_unknown_model_refresh());
+        assert!(!claim_unknown_model_refresh());
+    }
 
     #[test]
     fn configured_effort_is_rejected_for_a_model_without_effort_levels() {
