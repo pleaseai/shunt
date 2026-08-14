@@ -6,9 +6,10 @@ socket it listens on, which paths it may claim, and how its assets are built.
 This is a design record, not an implementation plan. It fixes four decisions —
 **in-process serving**, an **optional second listener**, a **three-way path
 split**, and an **embedded SPA bundle** — reserves one namespace
-(`/v1/organizations/*`) that a later milestone will need, records the
-**single-instance deployment constraint** the dashboard would otherwise obscure,
-and evaluates the **shared store** that constraint implies without adopting one.
+(`/v1/organizations/*`) that a later milestone will need, and records the
+**single-instance deployment constraint** the dashboard would otherwise obscure.
+The storage question that constraint implies is evaluated separately, in
+[`storage.md`](storage.md).
 
 It builds on [`m9-admin-surface.md`](m9-admin-surface.md), which already ships an
 admin-authenticated web surface. M9 answered *what* the admin surface does; this
@@ -103,118 +104,22 @@ to share a config shape, not one horizontally-scaled gateway. Reaching the admin
 surface then means addressing a replica directly rather than going through a load
 balancer, which Decision 2 makes natural.
 
-## Storage — what a shared store fixes, and what it does not
+## Storage — evaluated separately
 
-The topology section says scaling out needs a shared store. This section records
-what was evaluated and why nothing is adopted here, so the same research is not
-repeated. It is deliberately not a fifth decision: a store is a gateway-wide
-concern that outgrew this document the moment it came up.
+The topology above says scaling out needs a shared store, and a dashboard worth
+building needs durable history. Both are storage questions that outgrew this
+document; they are recorded in [`storage.md`](storage.md), which evaluates
+SQLite, Turso, and PostgreSQL and adopts none of them.
 
-### A store is justified independently of replicas
+Two conclusions from there bear on the decisions below:
 
-Three of these have nothing to do with running more than one process:
-
-- **Dashboard history.** Every observable today is a point-in-time value in
-  memory. "Per-account usage over the last seven days" — the thing that makes a
-  dashboard worth building rather than a status page — is impossible without
-  durable storage. This is the strongest reason to want a store at all.
-- **Spend limits and audit.** The reserved `/v1/organizations/*` namespace needs
-  durable counters and an append-only mutation trail. `/audit` is a table.
-- **Replacing two ad-hoc JSON files.** `[server.pool] state_path` and
-  `[server.gateway] state_path` are separate hand-rolled snapshots.
-- **Cross-process clobbering.** Both files are written whole via
-  `atomic_file::write_private_atomic`. Atomic per write, last-writer-wins between
-  processes. A transactional read-modify-write ends that.
-
-### What a store does not fix
-
-`max_concurrent_requests` is per-process by nature, and a distributed semaphore
-on the request hot path is not wanted. The admin rate limiters could be stored,
-but a write per login attempt on the hot path is a poor trade for a
-defense-in-depth control.
-
-### Two hazards a store introduces
-
-- **Refresh coordination is a lease, not a transaction.** Replacing the
-  process-global `REFRESH_LOCK` means claiming a lease in one short transaction,
-  performing the OAuth round trip, then writing the token and releasing in a
-  second one. A write transaction must not be held across the network call —
-  SQLite has a single writer, so that stalls everything. The hazard moves from
-  "no lock" to "lease expiry versus a slow refresh", which is an improvement but
-  still a distributed-lock design with the usual failure modes.
-- **Persisting sessions weakens a documented security property.** M9 specifies
-  that the pending-login store is in-memory, single-use and TTL-bound, and that
-  emergency token rotation works because a restart "drops every session the old
-  token minted". Session rows in a database survive a restart, so that recovery
-  path has to be rebuilt rather than inherited.
-
-Moving credential material itself into a store is a separate question again: it
-would break interop with the `~/.claude/.credentials.json`-shaped files other
-tools read, and `src/AGENTS.md` requires sign-off before changing credential
-refresh or writeback semantics.
-
-### Candidates
-
-**SQLite** is the low-cost option. `rusqlite` 0.32 (`bundled`) is already a
-dependency, used today only to read Cursor's app-state database read-only
-(`src/auth/observation.rs`); shunt owns no database of its own. It covers
-everything in "justified independently" above. Its ceiling is that it is a
-single-host embedded engine: locking over a network filesystem is documented as
-unreliable, so replicas on separate nodes sharing one file is a corruption path,
-not a deployment. SQLite turns "one process" into "one **host**, several
-processes" — not into horizontal scale.
-
-**Turso** was evaluated because it is Rust-native and markets the multi-node
-story. It does not fit today, for three independent reasons:
-
-- Its Rust rewrite is pre-1.0, and the one capability that would matter here —
-  multi-process WAL coordination — is listed as experimental.
-- Turso Sync and embedded replicas are eventually consistent by design. shunt's
-  multi-instance problems are write *coordination* (the refresh lease, pool
-  read-modify-write), not read scaling. An eventually consistent lease is not a
-  lease: two replicas can each acquire it locally and both refresh, reproducing
-  the token-rotation race with extra steps.
-- Its Postgres wire compatibility, which would otherwise be attractive given the
-  upstream gateway's Postgres schema, currently has `FOR UPDATE` perform no
-  locking and no advisory locks at all — the two primitives a lease needs, one
-  silently broken and one absent. The server also "trusts every connection" and
-  offers no TLS. Its own compatibility matrix warns of "wrong results or lost
-  information without any error".
-
-Revisit Turso if multi-process WAL coordination leaves experimental status, or if
-Postgres compatibility gains real locking, authentication, and TLS.
-
-**Postgres** is the answer if the requirement ever becomes genuine multi-node,
-and the upstream gateway's configuration reference is the strongest evidence for
-that. There, `store` is not an optional scaling upgrade — it is one of five
-**required** sections, and `postgres_url` is mandatory for a stated reason worth
-quoting: "the device-grant rendezvous, where the browser callback writes and the
-polling CLI reads, needs cross-replica state." Spend limits are not the
-justification; the login flow is. `max_connections` is documented as a per-replica
-pool with the guidance to keep "replicas × this" under the database's own limit,
-so several replicas are the assumed topology rather than an advanced case, and
-the gateway runs its own schema migrations at boot.
-
-That matters to shunt beyond this document. shunt's own gateway surface has the
-same rendezvous — `/oauth/device_authorization` writes, `/device` completes,
-`/oauth/token` polls — and it is in-memory, exactly like the admin pending-login
-store. The constraint the upstream gateway resolved by making Postgres mandatory
-is structural and already present here; it is not created by adding a dashboard.
-Adopting the reserved namespace later would land on the same schema, so it would
-port rather than be reinvented.
-
-### Position
-
-Adopt nothing here. If a store lands, plain SQLite for the history and audit work
-that stands on its own merits, kept deliberately separate from the multi-instance
-question — which is Open question 5, and which Postgres, not SQLite, would answer.
-
-The upstream comparison raises the stakes on that question rather than settling
-it. A gateway that requires Postgres to boot is a different product from one that
-runs from a single binary on a laptop, and shunt's single-binary local mode is a
-deliberate feature. The realistic shape is therefore a store that is **optional**,
-with the single-instance in-memory path remaining the default — which is more
-work than either extreme and should be decided on purpose.
+- **History is a prerequisite, not a feature.** Everything the dashboard can show
+  today is a point-in-time value in memory, so a store is what separates a
+  dashboard from a status page. That argues for keeping Decision 4's frontend
+  work independent of the store decision, so neither blocks the other.
+- **Single-instance is not created by the UI.** shunt's gateway device-flow
+  rendezvous already needs cross-replica state and does not have it. A dashboard
+  only makes that visible.
 
 ## Decision 1 — the UI is served in-process; `shunt ui` is a launcher
 
@@ -351,9 +256,8 @@ Two constraints to carry forward if it is ever implemented:
   upstream — spend counters, caps, an audit trail, and last-seen identity —
   because the gateway they belong to is a multi-replica design. Adopting the API
   is therefore not a routing change; it is the same shared-state work the
-  topology section says scaling out needs. See
-  [Storage](#storage--what-a-shared-store-fixes-and-what-it-does-not); the two
-  should be planned together, not separately.
+  topology section says scaling out needs. See [`storage.md`](storage.md); the
+  two should be planned together, not separately.
 - **Authentication collides with an existing credential slot.** That API
   authenticates with `x-api-key` (against admin read/write key sets) or a gateway
   bearer whose `groups` claim grants admin. `x-api-key` is a slot shunt already
@@ -434,13 +338,9 @@ independent decision.
    always assumed?
 4. Should `shunt ui` open the browser only, or also run `dashboard setup` when
    the surface is not yet configured?
-5. Is single-instance a documented *limitation* or a documented *decision*? The
-   answer changes whether a shared-state store is a roadmap item or a non-goal —
-   and the reserved namespace's fate follows it. See
-   [Storage](#storage--what-a-shared-store-fixes-and-what-it-does-not) for what
-   was evaluated; the upstream gateway requires Postgres to boot, while shunt's
-   single-binary local mode is deliberate, so "optional store, in-memory default"
-   is the likely shape and is more work than either extreme.
+5. Is single-instance a documented *limitation* or a documented *decision*? It
+   decides whether the reserved namespace is a roadmap item or a non-goal, and it
+   is owned by [`storage.md`](storage.md) rather than restated here.
 
 ## Testing
 
