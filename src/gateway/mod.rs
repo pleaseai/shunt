@@ -195,6 +195,12 @@ impl GatewayAuth {
                     .eq_ignore_ascii_case("bearer")
                     .then_some(token.trim())
             })?;
+        self.authenticate_token(token)
+    }
+
+    /// Verify a bare token value — no `Bearer ` prefix — against this gateway's
+    /// issuer and signing key.
+    pub fn authenticate_token(&self, token: &str) -> Option<jwt::Claims> {
         jwt::verify(token, &self.public_url, &self.jwt_secret)
     }
 }
