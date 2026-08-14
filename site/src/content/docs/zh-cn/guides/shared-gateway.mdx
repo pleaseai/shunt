@@ -50,6 +50,36 @@ export SHUNT_CLIENT_TOKENS="minsu:$(openssl rand -hex 32),alice:$(openssl rand -
 
 如果你还启用了可选的[管理 Web 界面](/zh-cn/guides/admin-remote-provisioning/),请用独立的管理员 token 保护它,并且只通过 HTTPS 或可信隧道暴露。
 
+## 验证自有 identity provider 签发的 JWT
+
+如果你的组织已经在运行 identity provider,`[[server.auth.jwt]]` 可以让 shunt 接受它签发的 token,而不必分发共享 secret —— 在不让 shunt 变成认证服务器的前提下获得按用户区分的身份。shunt **只做验证**:没有登录流程、没有会话存储、没有签名 secret。与 [gateway 登录](/zh-cn/guides/gateway-login/)不同,客户端仍然只需要配置 base URL 和 bearer,因此不会进入 Claude Code 的 gateway provider 模式,也不会失去该模式禁用的功能。
+
+```toml
+[server.auth]
+# 配置了 issuer 之后就不再需要静态 token。
+tokens_env = "SHUNT_CLIENT_TOKENS"
+
+[[server.auth.jwt]]
+issuer = "https://accounts.google.com"
+audience = ["<你为 shunt 创建的 client id>"]
+email_domains = ["example.com"]
+```
+
+每个调用方发送 token 的位置和静态 token 完全一样:
+
+```bash
+export ANTHROPIC_AUTH_TOKEN="<IdP 签发的 JWT>"   # 作为 Authorization: Bearer 发送
+```
+
+JWT **只**通过 `Authorization: Bearer` 接受 —— 配置的 header 和 `x-api-key` 仍然只接受静态 token。两种方式可以同时配置,静态 token 会先被检查。
+
+配置时有两点需要注意:
+
+- **给 shunt 单独的 audience。** 为 shunt 单独创建一个 client id 并写入 `audience`,这样同一租户中为其他应用签发的 token 就不会在这里通过认证。
+- **签发短寿命 token。** shunt 不保存吊销状态,所以 token 会一直可用到过期。`max_token_age_seconds`(默认 `3600`)会拒绝寿命超过该值的 token —— 如果需要更严格的吊销,请调小它并让 IdP 签发分钟级的 token。
+
+条目配置错误时启动会 fail closed,包括只有 `audience` 而没有 `email_domains` / `allowed_emails` 规则的情况。如果请求返回的是 `503` 而不是 `401`,说明 shunt 根本没能拉取到 issuer 的 key set —— 这时应该检查 issuer URL 和网络可达性,而不是凭据。完整的键列表见[配置参考](/zh-cn/reference/configuration/)。
+
 ## SSE keepalive ping
 
 中间盒会中断安静的流 —— Cloudflare 的代理在**100 秒无字节后返回 524**(Enterprise 以下固定如此),而长时间的推理过程可能安静那么久。因此,每当一个流式响应闲置时,shunt 会注入 Anthropic 协议自身的 `ping` 事件(`api.anthropic.com` 自己也会发出它,而每个客户端都会忽略它):

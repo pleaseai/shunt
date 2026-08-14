@@ -50,6 +50,36 @@ This is application-layer identification only — transport encryption still com
 
 If you also enable the opt-in [admin web surface](/guides/admin-remote-provisioning/), protect it with a separate admin token and expose it only through HTTPS or a trusted tunnel.
 
+## Verifying JWTs from your own identity provider
+
+If your organization already runs an identity provider, `[[server.auth.jwt]]` lets shunt accept its tokens instead of a shared secret — per-user identity without shunt becoming an auth server. It **verifies only**: no login flow, no session store, no signing secret. Compared with [gateway login](/guides/gateway-login/), the client is still configured with just a base URL and a bearer, so it does not enter Claude Code's gateway provider mode or lose the features that mode disables.
+
+```toml
+[server.auth]
+# No static tokens needed once an issuer is configured.
+tokens_env = "SHUNT_CLIENT_TOKENS"
+
+[[server.auth.jwt]]
+issuer = "https://accounts.google.com"
+audience = ["<client id you created for shunt>"]
+email_domains = ["example.com"]
+```
+
+Each caller sends the token exactly where they would send a static one:
+
+```bash
+export ANTHROPIC_AUTH_TOKEN="<the JWT your IdP issued>"   # sent as Authorization: Bearer
+```
+
+A JWT is accepted **only** in `Authorization: Bearer` — the configured header and `x-api-key` still take static tokens only. Both kinds can be configured at once; the static token is checked first.
+
+Two things to get right when you set this up:
+
+- **Give shunt its own audience.** Create a client id dedicated to shunt and list it in `audience`, so a token minted for some other application in the same tenant does not authenticate here.
+- **Issue short-lived tokens.** shunt keeps no revocation state, so a token works until it expires. `max_token_age_seconds` (default `3600`) rejects anything minted with a longer lifetime — lower it and have your IdP mint minutes-scale tokens if you want tighter revocation.
+
+Startup fails closed on a misconfigured entry, including one that carries an `audience` but no `email_domains`/`allowed_emails` rule. If a request comes back `503` rather than `401`, shunt could not fetch the issuer's key set at all — check the issuer URL and network reachability, not the credential. Full key list in the [configuration reference](/reference/configuration/#serverauthjwt-optional).
+
 ## SSE keepalive pings
 
 Middleboxes kill quiet streams — Cloudflare's proxy returns **524 after 100 seconds without a byte** (fixed below Enterprise), and long reasoning stretches can be silent that long. shunt therefore injects the Anthropic protocol's own `ping` event (which `api.anthropic.com` itself emits and every client ignores) whenever a streaming response has been idle:
