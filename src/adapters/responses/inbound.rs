@@ -473,3 +473,63 @@ fn relay_passthrough(upstream: reqwest::Response) -> axum::response::Response {
         .expect("response builder uses valid status and forwarded headers")
         .into_response()
 }
+
+#[cfg(test)]
+mod tests {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use crate::{config::Config, routing::AdapterKind};
+
+    use super::*;
+
+    fn codex_route() -> Route {
+        Route {
+            provider: "codex".to_string(),
+            adapter: AdapterKind::Responses,
+            model: "gpt-5.2-codex".to_string(),
+            upstream_model: "gpt-5.2-codex".to_string(),
+            effort: None,
+            service_tier: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn antigravity_oauth_sends_no_credential_on_the_passthrough_path() {
+        // Config validation pins `antigravity_oauth` to `kind = "antigravity"`,
+        // so this arm is unreachable in a valid config — but if it were ever
+        // reached, it must fail closed rather than bearer an off-origin
+        // subscription token onto the Codex passthrough upstream.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .mount(&server)
+            .await;
+
+        let mut config = Config::default();
+        config.providers.get_mut("codex").unwrap().base_url = server.uri();
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+
+        passthrough_send(
+            &state,
+            &codex_route(),
+            Credential::AntigravityOauth {
+                access_token: "antigravity-token".to_string(),
+                project_id: "proj-1".to_string(),
+            },
+            &HeaderMap::new(),
+            &Bytes::from_static(b"{}"),
+        )
+        .await
+        .unwrap();
+
+        let requests = server
+            .received_requests()
+            .await
+            .expect("mock records requests");
+        assert_eq!(requests.len(), 1);
+        let headers = &requests[0].headers;
+        assert!(headers.get("authorization").is_none());
+        assert!(headers.get("x-api-key").is_none());
+    }
+}

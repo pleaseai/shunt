@@ -393,4 +393,26 @@ mod tests {
         assert!(request.headers().get("originator").is_none());
         assert!(request.headers().get("version").is_none());
     }
+
+    #[test]
+    fn antigravity_oauth_sends_no_credential_on_the_responses_path() {
+        // Config validation pins `antigravity_oauth` to `kind = "antigravity"`,
+        // so this arm is unreachable in a valid config — but if it were ever
+        // reached, it must fail closed rather than bearer a subscription token
+        // issued for a different origin (OpenAI/xAI/Cursor are not it).
+        let state = AppState::new(Config::default(), reqwest::Client::new()).unwrap();
+
+        let request = build_test_request(
+            &state,
+            &codex_route(),
+            Credential::AntigravityOauth {
+                access_token: "antigravity-token".to_string(),
+                project_id: "proj-1".to_string(),
+            },
+            None,
+        );
+
+        assert!(request.headers().get("authorization").is_none());
+        assert!(request.headers().get("x-api-key").is_none());
+    }
 }

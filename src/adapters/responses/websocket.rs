@@ -545,6 +545,25 @@ mod tests {
     }
 
     #[test]
+    fn websocket_headers_antigravity_oauth_sends_no_authorization() {
+        use super::codex_ws::WEBSOCKET_BETA_PROTOCOL;
+        use super::{websocket_headers, Credential};
+
+        // Config validation pins `antigravity_oauth` to `kind = "antigravity"`,
+        // so this arm is unreachable in a valid config — but if it were ever
+        // reached, it must fail closed rather than bearer an off-origin
+        // subscription token onto the Codex WebSocket.
+        let headers = websocket_headers(Credential::AntigravityOauth {
+            access_token: "antigravity-token".to_string(),
+            project_id: "proj-1".to_string(),
+        })
+        .unwrap();
+        assert_eq!(headers.get("openai-beta").unwrap(), WEBSOCKET_BETA_PROTOCOL);
+        assert!(headers.get("authorization").is_none());
+        assert!(headers.get("x-api-key").is_none());
+    }
+
+    #[test]
     fn websocket_headers_reject_malformed_credential_as_bad_gateway() {
         use super::{websocket_headers, Credential};
 
