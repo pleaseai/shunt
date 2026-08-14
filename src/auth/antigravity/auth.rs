@@ -285,11 +285,7 @@ impl AntigravityAuthStore {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = tokio::time::timeout(self.request_timeout, response.text())
-                .await
-                .ok()
-                .and_then(Result::ok)
-                .unwrap_or_default();
+            let body = diagnostic_body(self.request_timeout, response).await;
             tracing::warn!(
                 status = %status,
                 body = %body,
@@ -365,11 +361,7 @@ impl AntigravityAuthStore {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = tokio::time::timeout(self.request_timeout, response.text())
-                .await
-                .ok()
-                .and_then(Result::ok)
-                .unwrap_or_default();
+            let body = diagnostic_body(self.request_timeout, response).await;
             tracing::warn!(
                 status = %status,
                 body = %body,
@@ -430,7 +422,7 @@ impl AntigravityAuthStore {
 
             if !response.status().is_success() {
                 let status = response.status();
-                let body = response.text().await.unwrap_or_default();
+                let body = diagnostic_body(ONBOARD_REQUEST_TIMEOUT, response).await;
                 tracing::warn!(
                     status = %status,
                     body = %body,
@@ -441,9 +433,9 @@ impl AntigravityAuthStore {
                 )));
             }
 
-            let payload = response
-                .json::<Value>()
+            let payload = tokio::time::timeout(ONBOARD_REQUEST_TIMEOUT, response.json::<Value>())
                 .await
+                .map_err(|_| auth_error("Antigravity onboardUser timed out reading the response"))?
                 .map_err(|error| auth_error(format!("invalid JSON from onboardUser: {error}")))?;
 
             if payload.get("done").and_then(Value::as_bool) == Some(true) {
@@ -477,6 +469,21 @@ pub(crate) fn control_plane_metadata() -> Value {
         "ide_name": "antigravity",
         "ide_version": super::version::current(),
     })
+}
+
+/// Best-effort diagnostic read of a non-2xx response body for the `tracing::warn!`
+/// alongside it. An empty body, a read that errors mid-stream, and a read that
+/// times out are three different failure shapes; collapsing them all into `""`
+/// would make the log line as ambiguous as the bare status code it accompanies.
+/// This is diagnostic-only — the caller still receives a distinct [`AdapterError`]
+/// regardless of which of these three a rejected response hits.
+async fn diagnostic_body(timeout: Duration, response: reqwest::Response) -> String {
+    match tokio::time::timeout(timeout, response.text()).await {
+        Ok(Ok(body)) if body.is_empty() => "<empty body>".to_string(),
+        Ok(Ok(body)) => body,
+        Ok(Err(error)) => format!("<error reading body: {error}>"),
+        Err(_) => "<timed out reading body>".to_string(),
+    }
 }
 
 /// Pull the project id out of a `loadCodeAssist` / `onboardUser` payload. The
@@ -731,6 +738,40 @@ mod tests {
             .discover_project("token")
             .await
             .expect_err("a stalled endpoint must time out rather than hang");
+        use axum::body::to_bytes;
+        let bytes = to_bytes(error.response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&bytes);
+        assert!(
+            body.contains("timed out"),
+            "expected a timeout error, got: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stalled_refresh_endpoint_times_out_instead_of_hanging() {
+        // `refresh_call` runs on every stale-token request — far more often than
+        // `discover_project` — so a stuck token endpoint must not hang it either.
+        // Mirrors `a_stalled_discovery_endpoint_times_out_instead_of_hanging`
+        // above for the sibling call.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"access_token": "new-token", "expires_in": 3600}))
+                    .set_delay(Duration::from_millis(200)),
+            )
+            .mount(&server)
+            .await;
+
+        let store = store_at(temp_auth_file("stalled_refresh"), &server)
+            .with_request_timeout(Duration::from_millis(20));
+        let error = store
+            .refresh_call("refresh-token")
+            .await
+            .expect_err("a stalled token endpoint must time out rather than hang");
         use axum::body::to_bytes;
         let bytes = to_bytes(error.response.into_body(), usize::MAX)
             .await
