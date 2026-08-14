@@ -544,6 +544,17 @@ fn resolve_inline_identity(store_family: StoreFamily, account: &AccountConfig) -
             family: StoreFamily::Chatgpt,
             path,
         } => crate::auth::codex::store::credential_account_id(Path::new(path)),
+        InlineIdentityKey::Credentials {
+            family: StoreFamily::Kimi,
+            ..
+        } => {
+            // Unreachable by construction: `inline_identity_key` only builds a
+            // `Credentials` key for `Claude`/`Chatgpt` — Kimi has no verified
+            // identity source, so it never enters the inline-identity cache at
+            // all and always falls back to its account name (see
+            // `inline_identity_key` and `accounts::account_key`).
+            None
+        }
         InlineIdentityKey::TokenEnv { name } => env::var(name)
             .ok()
             .and_then(|token| crate::auth::codex::auth::jwt_account_id(&token)),

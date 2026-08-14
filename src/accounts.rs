@@ -21,6 +21,7 @@ use crate::config::{AccountConfig, PoolConfig};
 pub enum StoreFamily {
     Claude,
     Chatgpt,
+    Kimi,
 }
 
 /// Stable physical-account identity used by every runtime state map.

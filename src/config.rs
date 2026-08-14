@@ -1982,7 +1982,7 @@ pub enum ConfigError {
     GoogleOauthNonGoogleHost { provider: String, host: String },
     #[error("providers.{provider} uses auth = \"google_oauth\" but base_url is not https; refusing to send a subscription token over plaintext")]
     GoogleOauthNotHttps { provider: String },
-    #[error("providers.{provider}.accounts requires auth = \"claude_oauth\" or \"chatgpt_oauth\"")]
+    #[error("providers.{provider}.accounts requires auth = \"claude_oauth\", \"chatgpt_oauth\", or \"kimi_oauth\"")]
     AccountsRequireOauthProvider { provider: String },
     #[error("providers.{provider} uses auth = \"claude_oauth\" but kind is not \"anthropic\"")]
     ClaudeOauthWrongKind { provider: String },
@@ -3061,7 +3061,7 @@ impl Config {
             if !provider.accounts.is_empty()
                 && !matches!(
                     provider.auth,
-                    AuthMode::ClaudeOauth | AuthMode::ChatgptOauth
+                    AuthMode::ClaudeOauth | AuthMode::ChatgptOauth | AuthMode::KimiOauth
                 )
             {
                 return Err(ConfigError::AccountsRequireOauthProvider {

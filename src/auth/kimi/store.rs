@@ -2,16 +2,14 @@
 //!
 //! Each account is a named file at `~/.shunt/accounts/kimi/<name>.json` (or
 //! `$SHUNT_KIMI_ACCOUNTS_DIR/<name>.json`), read and refreshed by
-//! [`super::auth::KimiAuthStore`]. Kept intentionally minimal for now —
-//! multi-account pooling (scanning, UUID-based identity, metadata for the
-//! admin surface) is a follow-up task; this only needs to write and locate
-//! one account's file.
+//! [`super::auth::KimiAuthStore`].
 
-use std::path::PathBuf;
+use std::{io, path::PathBuf};
 
 use serde_json::json;
 
 use crate::auth::shared;
+use crate::config::AccountConfig;
 
 // Name validation and born-private write are provider-agnostic, so they live
 // in `auth::shared` and every store calls them — only the env var and subdir
@@ -24,6 +22,16 @@ pub fn default_accounts_dir() -> PathBuf {
 
 pub fn account_path(name: &str) -> PathBuf {
     default_accounts_dir().join(format!("{name}.json"))
+}
+
+/// Return store-managed accounts in deterministic name order. Unlike the
+/// Claude store (`shuntAccountUuid`) or the Codex store (`account_id`/JWT
+/// claim), no Kimi Code login response has been observed to carry a stable
+/// upstream account identifier — so every scanned entry gets no `uuid`,
+/// falling back (via `accounts::account_identity`) to its own file name as
+/// its pool identity, same as the Codex store's untagged entries.
+pub fn scan_accounts() -> io::Result<Vec<AccountConfig>> {
+    shared::scan_account_dir(&default_accounts_dir(), |_path| None)
 }
 
 /// Store a freshly issued Kimi Code device-flow login — access + refresh token

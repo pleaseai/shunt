@@ -10,7 +10,8 @@ use crate::{
     accounts::{self, FailoverAction},
     adapters::{Adapter, AdapterError, AdapterFuture},
     auth::{
-        self, claude::auth::ClaudeAuthStore, resolve_claude_account, resolve_credential, Credential,
+        self, claude::auth::ClaudeAuthStore, resolve_claude_account, resolve_credential,
+        resolve_kimi_account, Credential,
     },
     config::{ApiKeyHeader, AuthMode},
     error::UpstreamError,
@@ -51,6 +52,9 @@ async fn forward(
         .expect("route provider was validated");
     if provider.auth == AuthMode::ClaudeOauth {
         return forward_claude_oauth(state, route, uri, headers, body).await;
+    }
+    if provider.auth == AuthMode::KimiOauth {
+        return forward_kimi_oauth(state, route, uri, headers, body).await;
     }
 
     let credential = resolve_credential(&state.config, &route, &state.http_client).await?;
@@ -554,6 +558,224 @@ async fn forward_claude_oauth(
         response: Box::new(
             UpstreamError::from_message(
                 "all Claude OAuth accounts failed before receiving an upstream response",
+            )
+            .into_response(),
+        ),
+        failure: Some(crate::adapters::AdapterFailure::BeforeHeaders),
+    })
+}
+
+/// Kimi Code OAuth pool: resolves the provider's Kimi accounts, then rotates
+/// across them on auth/quota/server failures using the same account pool and
+/// storm control as [`forward_claude_oauth`].
+///
+/// Deliberately simpler than the Claude path in two ways:
+/// - No account-UUID rewrite: that mechanism (`metadata.user_id`'s embedded
+///   `account_uuid`) is specific to Anthropic's first-party client protocol,
+///   not part of the Kimi Code wire protocol — and `outbound_headers` never
+///   injects Claude Code's `anthropic-beta: oauth-2025-04-20` for a
+///   `Credential::KimiOauth`, which would be equally out of place upstream.
+/// - No `PauseSame`/`RefreshRetry` same-account retry: `KimiAuthStore` only
+///   exposes `get_valid()` (refresh-on-read, before the request goes out),
+///   with no forced-refresh-past-a-rejected-token entry point, unlike
+///   `ClaudeAuthStore::force_refresh_if_access_token` and the ChatGPT store's
+///   equivalent. So every non-`Relay` classification here — quota rotate,
+///   throttle pause, or a 401 that would otherwise trigger a refresh retry —
+///   collapses to the same treatment: cool the account down and rotate to the
+///   next candidate.
+///
+/// Also unlike the Claude path, cooldown/health use the unscoped
+/// `cooldown`/`mark_healthy` (not `_scoped`): Kimi models are never
+/// Fable-scoped, so there is no separate quota window to track.
+async fn forward_kimi_oauth(
+    state: AppState,
+    route: Route,
+    uri: &Uri,
+    headers: &HeaderMap,
+    mut body: RequestBody,
+) -> Result<(StatusCode, axum::response::Response), AdapterError> {
+    let provider = state
+        .config
+        .provider(&route.provider)
+        .expect("route provider was validated");
+    let accounts = auth::shared::resolve_pool_accounts(
+        "Kimi",
+        &provider.accounts,
+        &provider.account_scope,
+        crate::accounts::StoreFamily::Kimi,
+        auth::kimi::store::default_accounts_dir(),
+        auth::kimi::store::scan_accounts,
+    )
+    .await
+    .map_err(auth::auth_error)?;
+    if accounts.is_empty() {
+        return Err(auth::auth_error(format!(
+            "provider '{}' uses kimi_oauth but has no accounts; run `shunt login kimi --name <name>` or configure [[providers.{}.accounts]]",
+            route.provider, route.provider
+        )));
+    }
+    // Distinguish an all-`disabled` pool from a genuine upstream outage: with
+    // every account disabled, select_order returns an empty order and the loop
+    // below would otherwise fall through to the generic "all accounts failed"
+    // error, misdirecting an operator who disabled every account by mistake.
+    if accounts.iter().all(|account| account.disabled) {
+        tracing::warn!(
+            provider = %route.provider,
+            accounts = accounts.len(),
+            "all accounts for provider are disabled; none are selectable"
+        );
+        return Err(auth::auth_error(format!(
+            "provider '{}' has {} account(s) but all are `disabled = true`; none are selectable",
+            route.provider,
+            accounts.len()
+        )));
+    }
+
+    let session_id = headers
+        .get("x-claude-code-session-id")
+        .and_then(|value| value.to_str().ok());
+    let order = state.accounts.select_order(
+        &route.provider,
+        &accounts,
+        session_id,
+        Some(route.upstream_model.as_str()),
+        state.config.server.pool.as_ref(),
+    );
+    let url = upstream_url(&state, &route, uri);
+    normalize_upstream_model_request(&mut body, &route.upstream_model);
+    let base_body = body;
+    let ramp_initial = state.config.storm_ramp_initial();
+    let candidates = order.len();
+    let mut last_response = None;
+
+    for (position, index) in order.into_iter().enumerate() {
+        let account = &accounts[index];
+
+        // Storm control, same as forward_claude_oauth: a saturated identity
+        // rotates to the next candidate rather than piling onto it.
+        let admission = match state.accounts.admit_candidate(
+            &route.provider,
+            account,
+            ramp_initial,
+            position,
+            candidates,
+        ) {
+            Some(admission) => admission,
+            None => continue,
+        };
+        // Per-account refresh_lock, held only around the credential resolve
+        // (which may refresh-on-read and write the token back) — never across
+        // the upstream POST — so concurrent same-account requests are not
+        // serialized behind an unrelated request.
+        let refresh_lock = state.accounts.refresh_lock(&route.provider, account);
+
+        let credential = {
+            let _guard = refresh_lock.lock().await;
+            match resolve_kimi_account(account, &state.http_client).await {
+                Ok(credential) => credential,
+                Err(error) => {
+                    state.accounts.cooldown(
+                        &route.provider,
+                        account,
+                        Duration::from_secs(5 * 60),
+                        "auth",
+                    );
+                    tracing::warn!(
+                        provider = %route.provider,
+                        account = %account.name,
+                        error = %error.message,
+                        "failed to resolve Kimi OAuth account"
+                    );
+                    continue;
+                }
+            }
+        };
+        let request_headers = outbound_headers(headers, &credential);
+        let request_body = base_body.clone().into_raw();
+
+        let upstream = match post_upstream(&state, &url, request_headers, request_body).await {
+            Ok(response) => response,
+            Err(error @ crate::upstream_timeout::SendError::Timeout) => {
+                return Err(error.into_adapter_error(upstream_error));
+            }
+            Err(crate::upstream_timeout::SendError::Transport(error)) => {
+                state.accounts.cooldown(
+                    &route.provider,
+                    account,
+                    Duration::from_secs(30),
+                    "transport",
+                );
+                tracing::warn!(
+                    provider = %route.provider,
+                    account = %account.name,
+                    error = %error.without_url(),
+                    "Kimi OAuth upstream request failed"
+                );
+                continue;
+            }
+        };
+
+        state
+            .accounts
+            .note_quota(&route.provider, account, upstream.headers());
+        let status = upstream.status();
+        match accounts::classify(status, upstream.headers()) {
+            FailoverAction::Relay => {
+                // A relayed 4xx still clears the cooldown (the account answered)
+                // but only a success grows the storm-control allowance.
+                state
+                    .accounts
+                    .mark_healthy(&route.provider, account, status.is_success());
+                return relay_response(&state, &route, upstream, Some(&account.name))
+                    .await
+                    .map(|(status, response)| {
+                        (
+                            status,
+                            hold_admission_on_success(status, response, admission),
+                        )
+                    });
+            }
+            // Rotate, PauseSame, and RefreshRetry all collapse to the same
+            // cooldown-and-rotate treatment — see the function doc comment for
+            // why: `KimiAuthStore` has no same-account forced-refresh path, so
+            // there is nothing a same-account retry could accomplish that
+            // failing over to the next candidate does not already do at least
+            // as well.
+            FailoverAction::Rotate | FailoverAction::PauseSame | FailoverAction::RefreshRetry => {
+                let cooldown = if status == StatusCode::TOO_MANY_REQUESTS {
+                    accounts::retry_after(upstream.headers())
+                        .unwrap_or(Duration::from_secs(60))
+                        .clamp(Duration::from_secs(1), Duration::from_secs(3600))
+                } else {
+                    Duration::from_secs(30)
+                };
+                state.accounts.cooldown(
+                    &route.provider,
+                    account,
+                    cooldown,
+                    accounts::rotation_reason(status, upstream.headers()),
+                );
+                tracing::warn!(
+                    provider = %route.provider,
+                    account = %account.name,
+                    status = %status,
+                    "Kimi OAuth account failed over; cooling down and rotating to the next account"
+                );
+                last_response = Some(upstream);
+            }
+        }
+    }
+
+    crate::metrics::record_pool_rotation(&route.provider, "exhausted");
+    if let Some(response) = last_response {
+        return relay_response(&state, &route, response, None).await;
+    }
+
+    Err(AdapterError {
+        message: "all Kimi OAuth accounts failed before receiving an upstream response".to_string(),
+        response: Box::new(
+            UpstreamError::from_message(
+                "all Kimi OAuth accounts failed before receiving an upstream response",
             )
             .into_response(),
         ),
