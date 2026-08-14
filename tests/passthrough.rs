@@ -3,7 +3,8 @@ use std::{collections::BTreeMap, io::ErrorKind, net::SocketAddr, time::Duration}
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 use shunt::{
-    config::{Config, CountTokens, ModelConfig, RouteConfig, RoutePrefixConfig},
+    config::{Config, CountTokens, GatewayConfig, ModelConfig, RouteConfig, RoutePrefixConfig},
+    gateway::{approval::Identity, jwt},
     server,
 };
 use tokio::task::JoinHandle;
@@ -371,6 +372,138 @@ async fn messages_forwards_incoming_credentials_unchanged() {
         .post(format!("{}/v1/messages", gateway.base_url))
         .header("x-api-key", "sk-ant-test")
         .header("authorization", "Bearer gateway-token")
+        .body(r#"{"model":"claude-sonnet-4-5"}"#)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    upstream.verify().await;
+}
+
+/// A `[server.gateway]`-enabled config with anthropic passthrough pointed at
+/// the mock upstream. `secret_env`/`users_env` are per-test env var names so
+/// parallel tests never clobber each other's secret.
+fn gateway_enabled_config(
+    upstream_base_url: String,
+    secret_env: &'static str,
+    users_env: &'static str,
+) -> Config {
+    let mut config = Config::default();
+    config.providers.get_mut("anthropic").unwrap().base_url = upstream_base_url;
+    config.server.gateway = Some(GatewayConfig {
+        public_url: "https://gateway.example".to_string(),
+        jwt_secret_env: secret_env.to_string(),
+        users_env: users_env.to_string(),
+        token_ttl_seconds: 3600,
+        trust_forwarded_for: false,
+        policies: None,
+        telemetry: None,
+        state_path: None,
+        oidc: None,
+    });
+    config
+}
+
+#[tokio::test]
+async fn same_origin_passthrough_strips_a_gateway_jwt_from_both_slots_end_to_end() {
+    // End-to-end seam this file otherwise leaves uncovered: a real HTTP request
+    // through the axum router, `check_inbound_auth` → routing →
+    // `headers_for_route` → adapter dispatch, carrying shunt's own gateway JWT
+    // in both `Authorization` and `x-api-key` (the shape an `apiKeyHelper`
+    // produces). Neither slot may reach the upstream.
+    if !can_bind_loopback() {
+        return;
+    }
+    std::env::set_var(
+        "SHUNT_TEST_PT_GW_SECRET_A",
+        "0123456789abcdef0123456789abcdef",
+    );
+    std::env::set_var(
+        "SHUNT_TEST_PT_GW_USERS_A",
+        "dev@example.com:approval-secret",
+    );
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(HeaderAbsent("authorization"))
+        .and(HeaderAbsent("x-api-key"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let config = gateway_enabled_config(
+        upstream.uri(),
+        "SHUNT_TEST_PT_GW_SECRET_A",
+        "SHUNT_TEST_PT_GW_USERS_A",
+    );
+    let gateway = start_gateway_with(config).await;
+    let token = jwt::mint(
+        &Identity {
+            sub: "dev".to_string(),
+            email: "dev@example.com".to_string(),
+            name: "Dev".to_string(),
+        },
+        "https://gateway.example",
+        "0123456789abcdef0123456789abcdef".as_bytes(),
+        3600,
+    );
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .header("authorization", format!("Bearer {token}"))
+        .header("x-api-key", token)
+        .body(r#"{"model":"claude-sonnet-4-5"}"#)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    upstream.verify().await;
+}
+
+#[tokio::test]
+async fn same_origin_passthrough_forwards_an_ordinary_credential_with_gateway_auth_enabled() {
+    // Non-vacuity control for the JWT-stripping test above: with the same
+    // `[server.gateway]` config enabled, an ordinary (non-JWT) caller
+    // credential in both slots must still reach the upstream unchanged. This
+    // isolates what the sibling test actually proves — that the strip targets
+    // the JWT-bearing slot, not "gateway auth enabled" blanket-blocking
+    // passthrough credentials.
+    if !can_bind_loopback() {
+        return;
+    }
+    std::env::set_var(
+        "SHUNT_TEST_PT_GW_SECRET_B",
+        "0123456789abcdef0123456789abcdef",
+    );
+    std::env::set_var(
+        "SHUNT_TEST_PT_GW_USERS_B",
+        "dev@example.com:approval-secret",
+    );
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(header(
+            "authorization",
+            "Bearer sk-ant-genuine-upstream-key",
+        ))
+        .and(header("x-api-key", "sk-ant-genuine-upstream-key"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let config = gateway_enabled_config(
+        upstream.uri(),
+        "SHUNT_TEST_PT_GW_SECRET_B",
+        "SHUNT_TEST_PT_GW_USERS_B",
+    );
+    let gateway = start_gateway_with(config).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .header("authorization", "Bearer sk-ant-genuine-upstream-key")
+        .header("x-api-key", "sk-ant-genuine-upstream-key")
         .body(r#"{"model":"claude-sonnet-4-5"}"#)
         .send()
         .await

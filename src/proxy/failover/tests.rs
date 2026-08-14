@@ -7,7 +7,7 @@ use crate::gateway::{approval::Identity, jwt, GatewayAuth};
 use crate::routing::{AdapterKind, Route};
 use crate::server::AppState;
 
-use super::{check_inbound_auth, headers_for_route, InboundContext};
+use super::{check_inbound_auth, headers_for_route, is_gateway_jwt, InboundContext};
 
 const GATEWAY_URL: &str = "https://gateway.example";
 const GATEWAY_SECRET: &[u8] = b"0123456789abcdef0123456789abcdef";
@@ -66,16 +66,22 @@ fn caller_headers() -> HeaderMap {
 }
 
 /// Build the `InboundContext` the way `check_inbound_auth` would for these
-/// headers: `gateway_claims` reflects whatever `authorization` actually
-/// verifies as, rather than a claim asserted independently of the headers.
+/// headers, on the route chain every test in this file uses: a chain of
+/// nothing but passthrough entries. That takes `check_inbound_auth`'s
+/// `!injects_credential` early return, which never runs the client-token gate
+/// at all, so the real function always produces `client: None` and
+/// `static_client: false` here — not a value derived from whether a gateway
+/// JWT happens to be present. `gateway_claims` reflects whatever
+/// `authorization` actually verifies as, rather than a claim asserted
+/// independently of the headers.
 fn context_for(state: &AppState, headers: &HeaderMap) -> InboundContext {
     let gateway_claims = state
         .gateway_auth
         .as_ref()
         .and_then(|auth| auth.authenticate_bearer(headers));
     InboundContext {
-        client: Some("dev@example.com".to_string()),
-        static_client: gateway_claims.is_none(),
+        client: None,
+        static_client: false,
         gateway_claims,
     }
 }
@@ -211,5 +217,28 @@ fn ungated_passthrough_chain_still_strips_only_the_gateway_jwt_slot() {
     assert_eq!(
         result.get("x-api-key").unwrap(),
         "sk-ant-genuine-upstream-key"
+    );
+}
+
+#[test]
+fn non_utf8_x_api_key_is_not_shunts_gateway_jwt_and_is_forwarded() {
+    // `is_gateway_jwt` has an explicit non-UTF-8 fallback
+    // (`value.to_str().ok()?`) with no dedicated coverage: a header value
+    // that fails UTF-8 decoding can't possibly be a JWT (a base64url/HS256
+    // string), so it must be treated as not shunt's and kept, not silently
+    // stripped alongside a real one.
+    let state = state();
+    let non_utf8 = HeaderValue::from_bytes(&[0xff, 0xfe, b'x']).expect("opaque header value");
+    assert!(!is_gateway_jwt(&state, &non_utf8));
+
+    let mut headers = HeaderMap::new();
+    headers.insert("x-api-key", non_utf8.clone());
+    let inbound = context_for(&state, &headers);
+
+    let result = headers_for_route(&state, &passthrough_route(), &headers, &inbound, true, None);
+
+    assert_eq!(
+        result.get("x-api-key").unwrap().as_bytes(),
+        non_utf8.as_bytes()
     );
 }

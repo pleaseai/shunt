@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use axum::http::{HeaderMap, HeaderName};
+use axum::http::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::json;
 use wiremock::{
     matchers::{header, method, path, query_param},
@@ -14,7 +14,7 @@ use crate::{
     server::AppState,
 };
 
-use super::{anthropic_provider, fetch, InboundCredentialContext};
+use super::{anthropic_provider, fetch, is_consumed_by_shunt, InboundCredentialContext};
 
 /// Point the default anthropic provider at `base_url` with the given auth.
 fn config_for(base_url: &str, auth: AuthMode) -> crate::config::Config {
@@ -327,6 +327,23 @@ async fn a_gateway_jwt_present_only_in_the_api_key_slot_is_not_forwarded() {
 
     assert!(models.is_none());
     assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[test]
+fn non_utf8_value_is_not_consumed_by_shunt() {
+    // `is_consumed_by_shunt`'s gateway-JWT branch has an explicit non-UTF-8
+    // fallback (`std::str::from_utf8(value)`) with no dedicated coverage: a
+    // header value that fails UTF-8 decoding can't be a JWT or a configured
+    // static token, so it must be treated as the caller's own credential —
+    // not shunt's — and kept for forwarding.
+    let auth = gateway_auth();
+    let non_utf8 = HeaderValue::from_bytes(&[0xff, 0xfe, b'x']).expect("opaque header value");
+
+    assert!(!is_consumed_by_shunt(
+        non_utf8.as_bytes(),
+        Some(&auth),
+        None
+    ));
 }
 
 #[tokio::test]

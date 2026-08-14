@@ -18,7 +18,7 @@ use crate::{
     server::{build_router, AppState},
 };
 
-use super::{approval::Identity, jwt};
+use super::{approval::Identity, jwt, GatewayAuth};
 
 struct GatewayEnv {
     secret_env: String,
@@ -132,6 +132,48 @@ fn gateway_bearer(email: &str) -> String {
         b"0123456789abcdef0123456789abcdef",
         3600,
     )
+}
+
+#[test]
+fn authenticate_token_pins_the_verification_contract() {
+    // Direct coverage: `authenticate_token` (the bare-token verifier that
+    // makes the `x-api-key` slot checkable at all) was previously exercised
+    // only indirectly, through `authenticate_bearer` and the callers built on
+    // top of it (`is_gateway_jwt`, `is_consumed_by_shunt`).
+    const SECRET: &[u8] = b"0123456789abcdef0123456789abcdef";
+    let auth = GatewayAuth::with_optional_approval(
+        "https://gateway.example".to_string(),
+        SECRET.to_vec(),
+        3600,
+        false,
+        None,
+    );
+    let identity = Identity {
+        sub: "dev@example.com".to_string(),
+        email: "dev@example.com".to_string(),
+        name: "dev".to_string(),
+    };
+
+    let valid = jwt::mint(&identity, "https://gateway.example", SECRET, 3600);
+    let claims = auth
+        .authenticate_token(&valid)
+        .expect("a token minted with this issuer/secret verifies");
+    assert_eq!(claims.email, "dev@example.com");
+
+    let wrong_secret = jwt::mint(
+        &identity,
+        "https://gateway.example",
+        b"fedcba9876543210fedcba9876543210",
+        3600,
+    );
+    assert!(auth.authenticate_token(&wrong_secret).is_none());
+
+    // ttl = 0 makes `exp == iat`, so the token is already expired the instant
+    // it is verified — deterministic, no sleep required.
+    let expired = jwt::mint(&identity, "https://gateway.example", SECRET, 0);
+    assert!(auth.authenticate_token(&expired).is_none());
+
+    assert!(auth.authenticate_token("not-a-jwt").is_none());
 }
 
 fn managed_request(bearer: Option<&str>, if_none_match: Option<&str>) -> Request<Body> {

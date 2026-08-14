@@ -580,20 +580,28 @@ fn headers_for_route(
         // was presented for, so it is kept without parsing any URL (the
         // single-upstream hot path).
         //
-        // Independent of origin, each slot is also checked *by value* against
-        // shunt's own gateway JWT and stripped only if it holds one — never
-        // both slots just because one of them does. `authorization` and
-        // `x-api-key` are the two slots an `apiKeyHelper` can fill (it fills
-        // both), so shunt's own identity token can land in either or both,
-        // beside a genuine upstream credential in the other slot that must
-        // keep flowing. `check_inbound_auth`'s auth gate authenticates once for
-        // the whole route chain, so a chain mixing mapped and passthrough
-        // routes can still reach this branch same-origin with a gateway JWT in
-        // one of these slots. A static `[server.auth]` token has an
-        // alternative slot — operators mixing passthrough and mapped models
-        // hand out dedicated `x-shunt-token` values so these stay free for the
-        // caller's real credential (`docs/m4-inbound-auth.md` §2). A gateway
-        // JWT has no such alternative.
+        // Within a same-origin attempt, each retained slot is also checked *by
+        // value* against shunt's own gateway JWT and stripped only if it holds
+        // one — never both slots just because one of them does. `authorization`
+        // and `x-api-key` are the two slots an `apiKeyHelper` can fill (it
+        // fills both), so shunt's own identity token can land in either or
+        // both, beside a genuine upstream credential in the other slot that
+        // must keep flowing. `check_inbound_auth`'s auth gate authenticates
+        // once for the whole route chain, so a chain mixing mapped and
+        // passthrough routes can still reach this branch same-origin with a
+        // gateway JWT in one of these slots. A static `[server.auth]` token
+        // can use an alternative slot in the common case — operators mixing
+        // passthrough and mapped models hand out dedicated `x-shunt-token`
+        // values so `authorization`/`x-api-key` stay free for the caller's
+        // real credential (`docs/m4-inbound-auth.md` §2) — but that is
+        // advisory, not enforced here: a static token delivered through a
+        // rotating-credential mechanism like `apiKeyHelper` hits the same
+        // both-slots problem, and unlike the gateway JWT this function never
+        // checks a static token's value (only `discovery/upstream.rs`'s
+        // `is_consumed_by_shunt` does), so it survives a same-origin
+        // passthrough attempt even when it should be stripped (#357). A
+        // gateway JWT has no advisory alternative and is always checked here
+        // by value.
         let mut headers = base.clone();
         let same_origin = is_primary
             || matches!(
