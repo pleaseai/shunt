@@ -85,12 +85,13 @@ enum Command {
         print: bool,
     },
     /// Log in to a subscription provider and save its credential for shunt to
-    /// inject. Supports `xai`, `cursor`, `claude`, and `codex`.
+    /// inject. Supports `xai`, `cursor`, `claude`, `codex`, and `kimi`.
     Login {
-        /// Provider to log in to (`xai`, `cursor`, `claude`, or `codex`).
+        /// Provider to log in to (`xai`, `cursor`, `claude`, `codex`, or
+        /// `kimi`).
         provider: String,
-        /// Stable account name used by a name-only pool entry (`claude` and
-        /// `codex` only).
+        /// Stable account name used by a name-only pool entry (`claude`,
+        /// `codex`, and `kimi` only).
         #[arg(long)]
         name: Option<String>,
         /// Generate and store a one-year `claude setup-token` value (`claude`
