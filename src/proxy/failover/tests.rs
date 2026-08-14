@@ -123,30 +123,40 @@ fn context_for(state: &AppState, headers: &HeaderMap) -> InboundContext {
     }
 }
 
+/// The caller's own upstream Anthropic key. It is never shunt's, so no strip
+/// rule in this file may touch it.
+const GENUINE_UPSTREAM_KEY: &str = "sk-ant-genuine-upstream-key";
+
+/// The mixed-slot request shape the per-slot rule turns on: a shunt-owned
+/// credential in `Authorization`, the caller's genuine upstream key in
+/// `x-api-key`. A request-level (rather than per-slot) strip decision cannot
+/// tell these two apart, which is what the assertion below detects.
+fn mixed_slot_headers(bearer: &str) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert("authorization", format!("Bearer {bearer}").parse().unwrap());
+    headers.insert("x-api-key", GENUINE_UPSTREAM_KEY.parse().unwrap());
+    headers
+}
+
+/// Assert what `mixed_slot_headers` is built to detect: only the slot holding
+/// the shunt-owned credential was stripped.
+fn assert_only_bearer_slot_stripped(result: &HeaderMap) {
+    assert!(result.get("authorization").is_none());
+    assert_eq!(result.get("x-api-key").unwrap(), GENUINE_UPSTREAM_KEY);
+}
+
 #[test]
 fn same_origin_passthrough_strips_only_the_slot_holding_the_gateway_jwt() {
     // The regression (#352 follow-up): a caller logged into the gateway
     // (JWT in `Authorization`) who also carries a genuine upstream Anthropic
     // key in `x-api-key` must keep that key — only the JWT-bearing slot goes.
     let state = state();
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        "authorization",
-        format!("Bearer {}", gateway_jwt()).parse().unwrap(),
-    );
-    headers.insert(
-        "x-api-key",
-        HeaderValue::from_static("sk-ant-genuine-upstream-key"),
-    );
+    let headers = mixed_slot_headers(&gateway_jwt());
     let inbound = context_for(&state, &headers);
 
     let result = headers_for_route(&state, &passthrough_route(), &headers, &inbound, true, None);
 
-    assert!(result.get("authorization").is_none());
-    assert_eq!(
-        result.get("x-api-key").unwrap(),
-        "sk-ant-genuine-upstream-key"
-    );
+    assert_only_bearer_slot_stripped(&result);
 }
 
 #[test]
@@ -226,15 +236,7 @@ fn ungated_passthrough_chain_still_strips_only_the_gateway_jwt_slot() {
     // `headers_for_route`, so the per-slot rule applies identically here: the
     // JWT-bearing slot goes, the genuine upstream key survives.
     let state = state();
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        "authorization",
-        format!("Bearer {}", gateway_jwt()).parse().unwrap(),
-    );
-    headers.insert(
-        "x-api-key",
-        HeaderValue::from_static("sk-ant-genuine-upstream-key"),
-    );
+    let headers = mixed_slot_headers(&gateway_jwt());
     let routes = vec![passthrough_route()];
 
     let (base_headers, inbound) = match check_inbound_auth(&state, &routes, &headers) {
@@ -250,11 +252,7 @@ fn ungated_passthrough_chain_still_strips_only_the_gateway_jwt_slot() {
         None,
     );
 
-    assert!(result.get("authorization").is_none());
-    assert_eq!(
-        result.get("x-api-key").unwrap(),
-        "sk-ant-genuine-upstream-key"
-    );
+    assert_only_bearer_slot_stripped(&result);
 }
 
 #[test]
@@ -338,24 +336,12 @@ fn same_origin_passthrough_strips_only_the_slot_holding_the_static_token() {
     // the static token in `Authorization` is stripped, while a genuine
     // upstream key sitting in `x-api-key` at the same time survives.
     let state = state_with_static_auth();
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        "authorization",
-        format!("Bearer {STATIC_TOKEN}").parse().unwrap(),
-    );
-    headers.insert(
-        "x-api-key",
-        HeaderValue::from_static("sk-ant-genuine-upstream-key"),
-    );
+    let headers = mixed_slot_headers(STATIC_TOKEN);
     let inbound = context_for(&state, &headers);
 
     let result = headers_for_route(&state, &passthrough_route(), &headers, &inbound, true, None);
 
-    assert!(result.get("authorization").is_none());
-    assert_eq!(
-        result.get("x-api-key").unwrap(),
-        "sk-ant-genuine-upstream-key"
-    );
+    assert_only_bearer_slot_stripped(&result);
 }
 
 #[test]
