@@ -1,0 +1,40 @@
+src/auth/kimi/store.rs
+  s_7cd4b75ce75eb6::t_efbb0132e789ff 5,7,12,27-34
+  s_7cd4b75ce75eb6::t_56fb7b06095a19 35-36
+src/adapters/anthropic/mod.rs
+  s_7cd4b75ce75eb6::t_9352a2c5ab4841 568-774,776-785
+  s_7cd4b75ce75eb6::t_515a707f78b4ed 56-58
+  s_7cd4b75ce75eb6::t_879e85be09cc97 13-14
+  s_7cd4b75ce75eb6::t_9f337094ca21b7 775
+src/accounts.rs
+  s_7cd4b75ce75eb6::t_83f600e89b2a5b 24
+src/config.rs
+  s_7cd4b75ce75eb6::t_deebf718d6420a 1985
+  s_7cd4b75ce75eb6::t_81cedb60795103 3064
+src/auth/shared.rs
+  s_7cd4b75ce75eb6::t_0e6030a21af85c 547-557
+tests/kimi_multi_account.rs
+  s_7cd4b75ce75eb6::t_f494a0dd486ff2 110-112,117-119
+  s_7cd4b75ce75eb6::t_a15c839e1ee757 8,11
+  s_7cd4b75ce75eb6::t_9f337094ca21b7 330-332
+  s_7cd4b75ce75eb6::t_0d9341be558056 178-180,187
+  s_7cd4b75ce75eb6::t_3666d366c62e97 137-142
+  s_7cd4b75ce75eb6::t_d4ec1596ff6601 1-7,9-10,12-109,113-116,120-136,143,145-177,181-186,188-329,333-375
+  s_7cd4b75ce75eb6::t_8538c0361dfc4b 144
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "c6ed670809f3ed69b1575a74e47b23f5248eee27",
+  "prompts": {},
+  "sessions": {
+    "s_7cd4b75ce75eb6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8d73aea4-2266-4691-a90d-9b0005c91a74",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
