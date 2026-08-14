@@ -1016,3 +1016,47 @@ fn driven_state() -> AppState {
     state.inbound_auth = Some(Arc::new(static_inbound_auth()));
     state
 }
+
+#[test]
+fn an_inbound_jwt_is_stripped_before_a_same_origin_passthrough_attempt() {
+    // A gated mixed chain admits the caller on a `[[server.auth.jwt]]` JWT in
+    // the bearer slot, and the same-origin passthrough attempt in that chain
+    // relays the caller's slots. A static token has a dedicated-header
+    // alternative that keeps it out of the bearer slot; a JWT has none, so the
+    // by-value strip is the only thing keeping an identity token from the
+    // operator's IdP away from a third-party upstream. The genuine key beside
+    // it must still flow.
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    let issuer = "https://idp.example";
+    let mut state = state();
+    state.inbound_auth = Some(Arc::new(static_inbound_auth().with_jwt(vec![
+        crate::auth::inbound_jwt::JwtIssuerRule {
+            issuer: issuer.to_string(),
+            jwks_url: None,
+            audience: vec!["shunt-clients".to_string()],
+            algorithms: vec![jsonwebtoken::Algorithm::RS256],
+            authorized_parties: vec!["shunt-clients".to_string()],
+            allowed_domains: vec!["example.com".to_string()],
+            allowed_emails: Vec::new(),
+            clock_skew_seconds: 0,
+            max_token_age_seconds: 3600,
+        },
+    ])));
+    let payload = URL_SAFE_NO_PAD.encode(format!(r#"{{"iss":"{issuer}"}}"#));
+    let token = format!("eyJhbGciOiJSUzI1NiJ9.{payload}.sig");
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "authorization",
+        HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+    );
+    headers.insert("x-api-key", HeaderValue::from_static(GENUINE_UPSTREAM_KEY));
+    let inbound = context_for(&state, &headers);
+
+    let forwarded = headers_for_route(&state, &passthrough_route(), &headers, &inbound, true, None);
+
+    assert!(forwarded.get("authorization").is_none());
+    assert_eq!(
+        forwarded.get("x-api-key").unwrap(),
+        &HeaderValue::from_static(GENUINE_UPSTREAM_KEY)
+    );
+}

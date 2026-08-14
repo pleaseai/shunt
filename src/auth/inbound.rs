@@ -63,6 +63,14 @@ impl InboundAuth {
         &self.jwt
     }
 
+    /// Whether `value` is a JWT from one of the configured
+    /// `[[server.auth.jwt]]` issuers — the by-value strip predicate for the
+    /// JWT half of this gate. See
+    /// [`crate::auth::inbound_jwt::names_configured_issuer`].
+    pub(crate) fn is_jwt_credential(&self, value: &[u8]) -> bool {
+        crate::auth::inbound_jwt::names_configured_issuer(&self.jwt, value)
+    }
+
     /// Check the request's configured inbound-auth header. Returns the matching
     /// client's name, or `None` when the header is missing or matches no
     /// configured token.
@@ -229,14 +237,15 @@ pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 pub(crate) enum ConsumedBy {
     GatewayJwt,
     StaticToken,
+    InboundJwt,
     AdminCredential,
 }
 
 /// Whether `value` — the raw contents of a header slot — is a credential shunt
 /// itself consumes rather than the caller's own upstream credential, and which
-/// one. Three kinds qualify: shunt's gateway JWT (checked as a bare token, no
-/// `Bearer ` prefix), a configured static `[server.auth]` token, and a
-/// `[server.admin]` credential (a `tokens_env`/`tokens_file` pair or either key
+/// one. Four kinds qualify: shunt's gateway JWT (checked as a bare token, no
+/// `Bearer ` prefix), a configured static `[server.auth]` token, a JWT from a
+/// configured `[[server.auth.jwt]]` issuer, and a `[server.admin]` credential (a `tokens_env`/`tokens_file` pair or either key
 /// array — the read tier included, since a read key still reaches the admin
 /// surface). Checked by value
 /// per slot, not by whether *some* slot in the request authenticated the
@@ -254,6 +263,13 @@ pub(crate) enum ConsumedBy {
 /// Verifying first keeps the [`ConsumedBy::GatewayJwt`] label meaning "this
 /// authenticated the caller" whenever it can; the shape check only widens
 /// which non-authenticating tokens are still caught and stripped.
+///
+/// The inbound-JWT branch matches by the token's unverified `iss`, not by
+/// verifying it: the gate accepts a JWT only in the bearer slot, but an
+/// `apiKeyHelper` fills `x-api-key` with the same value, and an expired or
+/// rotated-out token from the operator's IdP is still not the caller's
+/// upstream credential. See
+/// [`crate::auth::inbound_jwt::names_configured_issuer`].
 ///
 /// The admin branch is the mirror of
 /// [`crate::admin::AdminAuth::authenticate_credential`], which accepts an admin
@@ -284,6 +300,9 @@ pub(crate) fn consumed_by(
     }
     if static_auth.is_some_and(|auth| auth.authenticate_value(value).is_some()) {
         return Some(ConsumedBy::StaticToken);
+    }
+    if static_auth.is_some_and(|auth| auth.is_jwt_credential(value)) {
+        return Some(ConsumedBy::InboundJwt);
     }
     admin_credentials
         .is_some_and(|credentials| credentials.contains(value))

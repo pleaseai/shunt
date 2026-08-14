@@ -145,6 +145,19 @@ A JWT is accepted **only** in `Authorization: Bearer` — not in the configured
 `ANTHROPIC_AUTH_TOKEN` in, which is the point: the client needs no shunt-specific
 configuration.
 
+**A JWT from a configured issuer is never forwarded upstream.** `m4-inbound-auth.md` §2
+states the boundary for static tokens and resolves the mixed passthrough/mapped case by
+advice: hand out dedicated `x-shunt-token` values so the bearer slot stays free to carry each
+caller's real upstream credential. That advice does not exist for a JWT, which is only ever
+accepted in the bearer slot — so the strip has to be explicit. It is the JWT kind in
+`auth::inbound::consumed_by`, the by-value predicate every forward site enumerated in
+`auth::slots` applies to both shared slots: a value is withheld when its unverified `iss`
+names a configured `[[server.auth.jwt]]` issuer. That covers `x-api-key` as well as
+`Authorization`, because an `apiKeyHelper` fills both with the same value, and it does not
+require the token to verify: an expired token, or one signed by a key that rotated out of
+the issuer's set, is still an identity token from the operator's IdP. A JWT naming any other
+issuer is left alone, since it may be the caller's own upstream credential.
+
 The gate covers the routes `[server.auth]` already guards — injected-credential
 `/v1/messages` and `/v1/messages/count_tokens`, `GET /v1/models`, `GET /usage`,
 `GET /api/oauth/usage`, and the inbound Codex Responses and analytics routes. Passthrough

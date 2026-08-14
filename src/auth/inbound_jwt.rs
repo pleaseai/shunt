@@ -419,6 +419,29 @@ fn validate_claims(rule: &JwtIssuerRule, token: &str, key: &DecodingKey) -> Opti
     Some(claims)
 }
 
+/// Whether `value` — one raw header-slot value — is a JWT naming one of
+/// `rules`' issuers, judged by its unverified `iss` alone.
+///
+/// This is the strip-side mirror of [`verify`], which selects a rule by the
+/// same claim before it checks anything else: every token `verify` could
+/// accept passes this, so a forward site that strips on it never relays a
+/// credential the gate would have authenticated. It deliberately does not
+/// verify. An expired token, or one whose key rotated out of the issuer's set,
+/// is still an identity token from the operator's IdP, and relaying it to a
+/// third-party upstream leaks the caller's identity just the same — the
+/// reasoning `GatewayAuth::is_shunt_shaped_token` applies to shunt's own JWT.
+/// A JWT naming an issuer no entry configures is left alone: it may be the
+/// caller's own upstream credential.
+pub(crate) fn names_configured_issuer(rules: &[JwtIssuerRule], value: &[u8]) -> bool {
+    if rules.is_empty() {
+        return false;
+    }
+    std::str::from_utf8(value)
+        .ok()
+        .and_then(|token| unverified_issuer(token.trim()))
+        .is_some_and(|issuer| rules.iter().any(|rule| rule.issuer == issuer))
+}
+
 /// The `iss` claim read without verifying the signature — for entry selection
 /// only. See [`verify`] for why that is safe.
 fn unverified_issuer(token: &str) -> Option<String> {

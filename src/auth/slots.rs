@@ -36,6 +36,11 @@
 //!   raw, plus the `Authorization: Bearer` payload.
 //! - [`crate::auth::inbound::InboundAuth::authenticate_client`] — that header
 //!   raw, plus the `Authorization: Bearer` payload, plus `x-api-key` raw.
+//! - [`crate::auth::gate::authenticate`] — the `Authorization: Bearer`
+//!   payload verified as a `[[server.auth.jwt]]` JWT, after the three
+//!   static-token entry points above. Its strip mirror is
+//!   [`InboundAuth::is_jwt_credential`], which matches by the token's
+//!   unverified `iss` in either shared slot.
 //! - [`crate::gateway::GatewayAuth::authenticate_bearer`] — the
 //!   `Authorization: Bearer` payload; `authenticate_token` the bare value,
 //!   reached in production only through that bearer path and through

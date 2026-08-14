@@ -1045,6 +1045,7 @@ fn reason_label(reason: ConsumedBy) -> &'static str {
     match reason {
         ConsumedBy::GatewayJwt => "gateway_jwt",
         ConsumedBy::StaticToken => "static_token",
+        ConsumedBy::InboundJwt => "inbound_jwt",
         ConsumedBy::AdminCredential => "admin_credential",
     }
 }
