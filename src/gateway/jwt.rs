@@ -11,6 +11,10 @@ use super::approval::Identity;
 
 const AUDIENCE: &str = "shunt";
 const HEADER_JSON: &[u8] = br#"{"alg":"HS256","typ":"JWT"}"#;
+/// Claim name of the dedicated shunt marker (see [`has_shunt_shape`]).
+const MARKER_CLAIM: &str = "shunt_token_use";
+/// Claim value of the dedicated shunt marker (see [`has_shunt_shape`]).
+const MARKER_VALUE: &str = "gateway-session";
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -23,6 +27,12 @@ pub struct Claims {
     pub iss: String,
     pub iat: u64,
     pub exp: u64,
+    /// Marker claim identifying this token as shunt-minted regardless of
+    /// `aud`/`iss`. `#[serde(default)]` so a token minted before this field
+    /// existed still deserializes (empty string), which is what lets
+    /// [`verify_at`] keep authenticating pre-marker tokens.
+    #[serde(default)]
+    pub shunt_token_use: String,
 }
 
 pub fn mint(identity: &Identity, issuer: &str, secret: &[u8], ttl_seconds: u64) -> String {
@@ -42,6 +52,7 @@ fn mint_at(identity: &Identity, issuer: &str, secret: &[u8], ttl_seconds: u64, n
         iss: issuer.to_string(),
         iat: now,
         exp: now.saturating_add(ttl_seconds),
+        shunt_token_use: MARKER_VALUE.to_string(),
     };
     let header = URL_SAFE_NO_PAD.encode(HEADER_JSON);
     let payload =
@@ -79,9 +90,10 @@ fn verify_at(token: &str, issuer: &str, secret: &[u8], now: u64) -> Option<Claim
 }
 
 /// Whether `token` is *shaped* like a JWT this gateway issued: three
-/// base64url segments whose payload carries `aud == "shunt"` or an `iss`
-/// equal to this gateway's issuer — deliberately WITHOUT verifying the
-/// signature or the expiry.
+/// base64url segments whose payload carries `aud == "shunt"`, or an `iss`
+/// equal to this gateway's issuer, or the marker claim
+/// (`shunt_token_use == "gateway-session"`) that only shunt mints —
+/// deliberately WITHOUT verifying the signature or the expiry.
 ///
 /// A do-not-forward decision asks "did we issue this?"; authentication asks
 /// "is this valid right now?". They must not share an implementation: an
@@ -91,6 +103,18 @@ fn verify_at(token: &str, issuer: &str, secret: &[u8], now: u64) -> Option<Claim
 /// third-party upstream. Forging `iss` to force a strip only removes the
 /// forger's own credential, so the fail-safe direction is correct.
 ///
+/// The marker is a widening arm, appended to the existing two, never a
+/// required conjunct: a false positive (stripping a caller's own JWT) only
+/// costs that caller a failed upstream auth, loud and recoverable, while a
+/// false negative (relaying a shunt-minted JWT upstream) silently leaks the
+/// caller's identity in the unencrypted payload and hands the upstream an
+/// offline HMAC oracle over `jwt_secret`. Tightening the check to require the
+/// marker would trade a cheap, visible failure mode for a silent, expensive
+/// one, so it stays purely additive. A token minted before this claim
+/// existed still matches by `aud`/`iss` — precision only improves as those
+/// pre-marker tokens age out of their TTL, without ever inverting the
+/// fail-safe direction.
+///
 /// Never panics: any malformed input (wrong segment count, a header or
 /// signature segment that is not base64url, non-base64 payload, non-UTF-8
 /// bytes, non-JSON payload, JSON that is not an object) falls through to
@@ -98,7 +122,7 @@ fn verify_at(token: &str, issuer: &str, secret: &[u8], now: u64) -> Option<Claim
 /// [`serde_json::Value`] rather than deserialized into [`Claims`] — an
 /// arbitrary third-party JWT is missing fields `Claims` requires and would
 /// fail to deserialize, silently returning `false` for a token that does
-/// carry a matching `aud` or `iss`.
+/// carry a matching `aud`, `iss`, or marker claim.
 pub fn has_shunt_shape(token: &str, issuer: &str) -> bool {
     let mut parts = token.split('.');
     let (Some(header), Some(payload), Some(signature)) = (parts.next(), parts.next(), parts.next())
@@ -129,6 +153,7 @@ pub fn has_shunt_shape(token: &str, issuer: &str) -> bool {
 
     object.get("aud").and_then(serde_json::Value::as_str) == Some(AUDIENCE)
         || object.get("iss").and_then(serde_json::Value::as_str) == Some(issuer)
+        || object.get(MARKER_CLAIM).and_then(serde_json::Value::as_str) == Some(MARKER_VALUE)
 }
 
 fn sign(message: &[u8], secret: &[u8]) -> Vec<u8> {
@@ -161,6 +186,15 @@ mod tests {
         }
     }
 
+    /// Builds `header.payload.sig` from a raw JSON payload, matching
+    /// `mint_at`'s segment encoding. The signature is the literal string
+    /// `sig` — sufficient for `has_shunt_shape`, which never verifies it.
+    fn shaped_token(payload: &[u8]) -> String {
+        let header = URL_SAFE_NO_PAD.encode(HEADER_JSON);
+        let payload = URL_SAFE_NO_PAD.encode(payload);
+        format!("{header}.{payload}.sig")
+    }
+
     #[test]
     fn round_trips_claims() {
         let token = mint_at(&identity(), "https://gateway.example", SECRET, 3600, 1000);
@@ -174,6 +208,7 @@ mod tests {
         assert_eq!(claims.iss, "https://gateway.example");
         assert_eq!(claims.iat, 1000);
         assert_eq!(claims.exp, 4600);
+        assert_eq!(claims.shunt_token_use, "gateway-session");
     }
 
     #[test]
@@ -325,5 +360,60 @@ mod tests {
         let payload = URL_SAFE_NO_PAD.encode(br#"{"aud":"shunt"}"#);
         let forged = format!("{header}.{payload}.sig");
         assert!(has_shunt_shape(&forged, "https://gateway.example"));
+    }
+
+    #[test]
+    fn shape_matches_by_marker_when_aud_and_iss_do_not_match() {
+        // A payload carrying ONLY the marker claim: no `aud`, and an `iss`
+        // that does NOT match the issuer under test.
+        let token = shaped_token(
+            br#"{"iss":"https://not-this-gateway.example","shunt_token_use":"gateway-session"}"#,
+        );
+        assert!(has_shunt_shape(&token, "https://gateway.example"));
+
+        // Non-vacuity: the identical payload with the marker claim removed
+        // (same `iss` mismatch, still no `aud`) must no longer match —
+        // otherwise the assertion above proves nothing about the new arm.
+        let without_marker = shaped_token(br#"{"iss":"https://not-this-gateway.example"}"#);
+        assert!(!has_shunt_shape(&without_marker, "https://gateway.example"));
+    }
+
+    #[test]
+    fn shape_rejects_marker_with_wrong_value() {
+        // The marker arm matches on the exact value, not merely the key's
+        // presence.
+        let token = shaped_token(
+            br#"{"iss":"https://not-this-gateway.example","shunt_token_use":"something-else"}"#,
+        );
+        assert!(!has_shunt_shape(&token, "https://gateway.example"));
+    }
+
+    #[test]
+    fn verify_accepts_pre_marker_token() {
+        // Hand-built payload with exactly the old field set (no
+        // `shunt_token_use`), simulating a token minted by a shunt version
+        // that predates the marker claim but is still inside its TTL. Real
+        // signature, so this exercises `verify_at`, not just the shape
+        // check.
+        let payload = br#"{"sub":"dev@example.com","email":"dev@example.com","name":"dev","aud":"shunt","iss":"https://gateway.example","iat":1000,"exp":4600}"#;
+        let header = URL_SAFE_NO_PAD.encode(HEADER_JSON);
+        let payload_b64 = URL_SAFE_NO_PAD.encode(payload);
+        let signing_input = format!("{header}.{payload_b64}");
+        let signature = super::sign(signing_input.as_bytes(), SECRET);
+        let token = format!("{signing_input}.{}", URL_SAFE_NO_PAD.encode(signature));
+
+        let claims = verify_at(&token, "https://gateway.example", SECRET, 1001)
+            .expect("pre-marker token still verifies");
+        assert_eq!(claims.shunt_token_use, "");
+    }
+
+    #[test]
+    fn shape_rejects_third_party_jwt_without_either_arm() {
+        // A realistic third-party JWT carrying neither `aud == "shunt"`,
+        // nor a matching `iss`, nor the marker claim.
+        let token = shaped_token(
+            br#"{"sub":"u","aud":"https://api.example","iss":"https://idp.example","exp":1}"#,
+        );
+        assert!(!has_shunt_shape(&token, "https://gateway.example"));
     }
 }
