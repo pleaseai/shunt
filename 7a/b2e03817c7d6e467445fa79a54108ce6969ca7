@@ -1,0 +1,35 @@
+src/gateway/jwt.rs
+  s_290918004cba6e::t_e930ef5c22afdb 156
+  s_290918004cba6e::t_8d4b68bc2732a6 55
+  s_290918004cba6e::t_b80afd601a26b3 93-96,106-117,125
+  s_290918004cba6e::t_b69ef8d5df3e11 14-17,30-35
+  s_290918004cba6e::t_9a06824144530f 364-376,378-418
+  s_290918004cba6e::t_698cfb52efc60e 189-197,211
+  s_290918004cba6e::t_94f0d412d594f9 377
+docs/m4-inbound-auth.md
+  s_290918004cba6e::t_47b61895de1893 101-102,113-119
+site/src/content/docs/ja/reference/configuration.md
+  s_290918004cba6e::t_8f701b490f9853 226
+site/src/content/docs/reference/configuration.md
+  s_290918004cba6e::t_22e4b1650779a9 379
+site/src/content/docs/ko/reference/configuration.md
+  s_290918004cba6e::t_09e65c0d2a5b40 257
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_290918004cba6e::t_8e8b0bc8a667e2 226
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "7ab2e03817c7d6e467445fa79a54108ce6969ca7",
+  "prompts": {},
+  "sessions": {
+    "s_290918004cba6e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8064a4de-9929-46d1-a589-d8eb200158c5",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
