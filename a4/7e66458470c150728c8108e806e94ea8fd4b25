@@ -1,0 +1,45 @@
+site/src/content/docs/reference/endpoints.md
+  s_66c3bdd127475a::t_f7dc8fcc4d877f 103
+shunt.toml.example
+  s_66c3bdd127475a::t_26a2b0671392bc 29-41
+site/src/content/docs/ja/guides/shared-gateway.mdx
+  s_66c3bdd127475a::t_55febeea4a3620 53-82
+docs/inbound-jwt-auth.md
+  s_66c3bdd127475a::t_a68820966c0a23 1-13,16-149,152-183
+  s_66c3bdd127475a::t_b9ac9bb846b08d 14-15,150-151
+site/src/content/docs/reference/configuration.md
+  s_66c3bdd127475a::t_299faf13ca02e7 86-121
+site/src/content/docs/ja/reference/configuration.md
+  s_66c3bdd127475a::t_17c0782f41e5de 50-85
+site/src/content/docs/ko/reference/configuration.md
+  s_66c3bdd127475a::t_17c0782f41e5de 50-85
+README.md
+  s_66c3bdd127475a::t_f7dc8fcc4d877f 161
+  s_66c3bdd127475a::t_ebd4a0448aea0e 162
+site/src/content/docs/guides/shared-gateway.mdx
+  s_66c3bdd127475a::t_55febeea4a3620 53-82
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_66c3bdd127475a::t_17c0782f41e5de 50-85
+docs/m4-inbound-auth.md
+  s_66c3bdd127475a::t_00d646c777ca57 3-6
+site/src/content/docs/ko/guides/shared-gateway.mdx
+  s_66c3bdd127475a::t_55febeea4a3620 53-82
+site/src/content/docs/zh-cn/guides/shared-gateway.mdx
+  s_66c3bdd127475a::t_55febeea4a3620 53-82
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "a47e66458470c150728c8108e806e94ea8fd4b25",
+  "prompts": {},
+  "sessions": {
+    "s_66c3bdd127475a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "42d1844c-4f1d-4739-ba6d-cd8ab7401e1d",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
