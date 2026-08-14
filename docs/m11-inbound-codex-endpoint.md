@@ -125,7 +125,11 @@ to `chatgpt.com`. The only request headers shunt changes are:
   `chatgpt-account-id` (replacing whatever the client sent).
 - **Stripped**: the shunt client-token header (the default `x-shunt-token` is stripped unconditionally
   — even on an ungated endpoint, or one using a custom auth header — so it never leaks upstream),
-  the client's own `Authorization`/`chatgpt-account-id` (replaced above), `accept-encoding` (so the
+  the client's own `Authorization`/`chatgpt-account-id` (replaced above), `x-api-key` (stripped
+  unconditionally too — the target provider is validated `chatgpt_oauth`-only at boot, so no inbound
+  `x-api-key` value can ever be a valid upstream credential; a client that sets both `Authorization`
+  and `x-api-key` to the same key, as Claude Code's `apiKeyHelper` does, must not have the second slot
+  leak the first slot's secret), `accept-encoding` (so the
   upstream body stays uncompressed for a clean byte relay), and framing/hop-by-hop headers the HTTP
   client recomputes (`host`, `content-length`, `connection`, …).
 
@@ -150,7 +154,9 @@ Critically, the client's `Authorization: Bearer` header is **never forwarded ups
 carries: if it holds the shunt client token it authenticates the request (via `authenticate_bearer`
 above) and is then stripped; if it holds anything else (e.g. the Codex CLI's own ChatGPT credential)
 it fails the inbound check and is likewise stripped. The shunt client-token header is **stripped**
-too, so neither the shunt token nor the client's own credential ever leaks to the backend. The passthrough forwards the
+too, and so is `x-api-key` — unconditionally, whether or not `[server.auth]` is configured, since the
+gate never reads that header and the upstream is `chatgpt_oauth`-only — so neither the shunt token
+nor the client's own credential, in either slot, ever leaks to the backend. The passthrough forwards the
 Codex CLI's own request headers verbatim (see [Header passthrough](#header-passthrough) below) but
 **swaps in only** the selected pool account's `Authorization` bearer + `chatgpt-account-id` — see
 [`codex-configuration.md` §4.4](codex-configuration.md#4-authentication-codexauthjson). Nothing

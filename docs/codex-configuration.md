@@ -777,7 +777,9 @@ auto-discovered accounts, so imported store logins still get pooling.)
   headers). The inbound endpoint does **not** — the client already *is* a Codex CLI, so its own
   request headers (`version`, `originator`, `OpenAI-Beta`, `x-codex-*`, …) are forwarded unchanged
   and shunt swaps in **only** the pool account's `Authorization` + `chatgpt-account-id` (and strips
-  the `x-shunt-token` header). So the client's real `version` — not shunt's pinned one — drives the
+  the `x-shunt-token` header, plus `x-api-key` unconditionally — the target provider is validated
+  `chatgpt_oauth`-only, so no inbound `x-api-key` value can ever be a valid upstream credential).
+  So the client's real `version` — not shunt's pinned one — drives the
   backend's `minimal_client_version` gating (§5).
 - On pool exhaustion, the last upstream response is relayed **verbatim** rather than re-shaped
   into an Anthropic-style error — the opposite of §13's outbound Codex pool, which re-shapes the
