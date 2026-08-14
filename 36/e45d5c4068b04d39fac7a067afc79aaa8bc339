@@ -1,0 +1,33 @@
+site/src/content/docs/guides/shared-gateway.mdx
+  s_883e26f2c25b24::t_62b1106be1eb19 25,35
+site/src/content/docs/ja/guides/shared-gateway.mdx
+  s_883e26f2c25b24::t_a10970de86b8d0 25,35
+site/src/content/docs/ja/reference/troubleshooting.md
+  s_883e26f2c25b24::t_ed712beac730b4 23
+site/src/content/docs/ko/guides/shared-gateway.mdx
+  s_883e26f2c25b24::t_a1b0fe4b01ac6a 25,35
+site/src/content/docs/ko/reference/troubleshooting.md
+  s_883e26f2c25b24::t_df886a77104da3 23
+site/src/content/docs/reference/troubleshooting.md
+  s_883e26f2c25b24::t_23d545dcd85296 27
+site/src/content/docs/zh-cn/guides/shared-gateway.mdx
+  s_883e26f2c25b24::t_39bf5be6dd213d 25,35
+site/src/content/docs/zh-cn/reference/troubleshooting.md
+  s_883e26f2c25b24::t_b12f8fc73e85f6 23
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "36e45d5c4068b04d39fac7a067afc79aaa8bc339",
+  "prompts": {},
+  "sessions": {
+    "s_883e26f2c25b24": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "24405184-39b1-4f05-b98a-99e19a73664c",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
