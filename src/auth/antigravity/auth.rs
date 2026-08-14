@@ -78,6 +78,13 @@ const ONBOARD_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const ONBOARD_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const ONBOARD_MAX_ATTEMPTS: usize = 5;
 
+/// Bound on a single request/response leg of the token-refresh and
+/// project-discovery calls. Both are reached per-request from
+/// `resolve_credential` (`src/auth/mod.rs`), ahead of the request-path
+/// `upstream_timeout::wait` that only wraps the inference send — without this,
+/// a stalled Google endpoint would hang every request indefinitely.
+const CREDENTIAL_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// In-process single-flight for the refresh path, mirroring the other stores.
 static REFRESH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -119,6 +126,9 @@ pub struct AntigravityAuthStore {
     api_endpoint: String,
     daily_api_endpoint: String,
     project_cache: Arc<RwLock<Option<String>>>,
+    /// Bound on a single leg (send, or body read) of the refresh/discovery
+    /// calls. Fixed at [`CREDENTIAL_REQUEST_TIMEOUT`] outside tests.
+    request_timeout: Duration,
 }
 
 impl AntigravityAuthStore {
@@ -130,6 +140,7 @@ impl AntigravityAuthStore {
             api_endpoint: API_ENDPOINT.to_string(),
             daily_api_endpoint: DAILY_API_ENDPOINT.to_string(),
             project_cache: Arc::new(RwLock::new(None)),
+            request_timeout: CREDENTIAL_REQUEST_TIMEOUT,
         }
     }
 
@@ -148,7 +159,16 @@ impl AntigravityAuthStore {
             api_endpoint,
             daily_api_endpoint,
             project_cache: Arc::new(RwLock::new(None)),
+            request_timeout: CREDENTIAL_REQUEST_TIMEOUT,
         }
+    }
+
+    /// Test-only override so a stalled-endpoint test does not have to wait out
+    /// the real [`CREDENTIAL_REQUEST_TIMEOUT`].
+    #[cfg(test)]
+    pub(crate) fn with_request_timeout(mut self, timeout: Duration) -> Self {
+        self.request_timeout = timeout;
+        self
     }
 
     /// Return a valid access token plus the Code Assist project id, refreshing
@@ -251,21 +271,25 @@ impl AntigravityAuthStore {
             ("client_secret", CLIENT_SECRET),
             ("refresh_token", refresh_token),
         ];
-        let response = self
-            .client
-            .post(&self.token_url)
-            .form(&params)
-            .send()
-            .await
-            .map_err(|error| {
-                auth_error(format!(
-                    "Antigravity token refresh network failure: {error}"
-                ))
-            })?;
+        let response = tokio::time::timeout(
+            self.request_timeout,
+            self.client.post(&self.token_url).form(&params).send(),
+        )
+        .await
+        .map_err(|_| auth_error("Antigravity token refresh timed out"))?
+        .map_err(|error| {
+            auth_error(format!(
+                "Antigravity token refresh network failure: {error}"
+            ))
+        })?;
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = tokio::time::timeout(self.request_timeout, response.text())
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or_default();
             tracing::warn!(
                 status = %status,
                 body = %body,
@@ -276,15 +300,22 @@ impl AntigravityAuthStore {
             ));
         }
 
-        response.json::<TokenResponse>().await.map_err(|error| {
-            auth_error(format!(
-                "invalid JSON response from Google token endpoint: {error}"
-            ))
-        })
+        tokio::time::timeout(self.request_timeout, response.json::<TokenResponse>())
+            .await
+            .map_err(|_| auth_error("Antigravity token refresh timed out reading the response"))?
+            .map_err(|error| {
+                auth_error(format!(
+                    "invalid JSON response from Google token endpoint: {error}"
+                ))
+            })
     }
 
     /// The Code Assist project id: the persisted one when login resolved it,
-    /// otherwise a discovery round trip cached for the process lifetime.
+    /// otherwise a discovery round trip cached for the lifetime of this store.
+    /// `resolve_credential` constructs a fresh store per request, so this cache
+    /// does not survive past the request that populated it — what actually
+    /// persists across requests is the `project_id` [`write_stored`] writes into
+    /// the on-disk credential file once discovery succeeds.
     async fn project_id(&self, stored: &StoredAuth) -> Result<String, AdapterError> {
         if let Some(project) = stored.project_id.as_deref().filter(|id| !id.is_empty()) {
             return Ok(project.to_string());
@@ -315,23 +346,30 @@ impl AntigravityAuthStore {
         access_token: &str,
     ) -> Result<String, AdapterError> {
         let url = format!("{}/{}:loadCodeAssist", self.api_endpoint, API_VERSION);
-        let response = self
-            .client
-            .post(&url)
-            .bearer_auth(access_token)
-            .header("User-Agent", super::version::user_agent())
-            .json(&json!({ "metadata": load_code_assist_metadata() }))
-            .send()
-            .await
-            .map_err(|error| {
-                auth_error(format!(
-                    "Antigravity project discovery network failure: {error}"
-                ))
-            })?;
+        let response = tokio::time::timeout(
+            self.request_timeout,
+            self.client
+                .post(&url)
+                .bearer_auth(access_token)
+                .header("User-Agent", super::version::user_agent())
+                .json(&json!({ "metadata": load_code_assist_metadata() }))
+                .send(),
+        )
+        .await
+        .map_err(|_| auth_error("Antigravity project discovery timed out"))?
+        .map_err(|error| {
+            auth_error(format!(
+                "Antigravity project discovery network failure: {error}"
+            ))
+        })?;
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = tokio::time::timeout(self.request_timeout, response.text())
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or_default();
             tracing::warn!(
                 status = %status,
                 body = %body,
@@ -342,9 +380,11 @@ impl AntigravityAuthStore {
             )));
         }
 
-        let body = response
-            .json::<Value>()
+        let body = tokio::time::timeout(self.request_timeout, response.json::<Value>())
             .await
+            .map_err(|_| {
+                auth_error("Antigravity project discovery timed out reading the response")
+            })?
             .map_err(|error| auth_error(format!("invalid JSON from loadCodeAssist: {error}")))?;
 
         if let Some(project) = extract_project(&body) {
@@ -665,6 +705,41 @@ mod tests {
         let store = store_at(temp_auth_file("ide_type"), &server);
         let project = store.discover_project("token").await.unwrap();
         assert_eq!(project, "proj-agy");
+    }
+
+    #[tokio::test]
+    async fn a_stalled_discovery_endpoint_times_out_instead_of_hanging() {
+        // A stuck Google endpoint must not hang every request indefinitely —
+        // `discover_project` is reached per-request from `resolve_credential`,
+        // ahead of the request-path upstream timeout that only wraps the
+        // inference send. Use a request timeout far shorter than the delayed
+        // response so the test itself stays fast.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1internal:loadCodeAssist"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"cloudaicompanionProject": "proj-agy"}))
+                    .set_delay(Duration::from_millis(200)),
+            )
+            .mount(&server)
+            .await;
+
+        let store = store_at(temp_auth_file("stalled_discovery"), &server)
+            .with_request_timeout(Duration::from_millis(20));
+        let error = store
+            .discover_project("token")
+            .await
+            .expect_err("a stalled endpoint must time out rather than hang");
+        use axum::body::to_bytes;
+        let bytes = to_bytes(error.response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&bytes);
+        assert!(
+            body.contains("timed out"),
+            "expected a timeout error, got: {body}"
+        );
     }
 
     #[tokio::test]
