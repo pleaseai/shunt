@@ -69,7 +69,8 @@ upstream_model = "gemini-3.6-flash"
 `kind = "antigravity_cli"` (built-in provider `antigravity-cli`), which is deprecated. A config still carrying the old meaning is
 refused by name rather than retargeted, and a routed `antigravity` provider with no credential refuses to start — changing transport,
 credentials, and egress underneath a green startup would be worse than failing. Run `shunt login antigravity`, or point the route at
-`antigravity-cli`.
+`antigravity-cli`. Startup also logs a warning whenever a route still resolves to the deprecated `antigravity_cli` kind, so operators
+can catch a stale config without waiting for a request.
 
 </Aside>
 

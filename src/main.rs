@@ -478,6 +478,11 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     // `Config::default()` seeds a built-in `antigravity` provider, so keying
     // off the provider map alone spawned the subprocess on every startup with
     // `agy` installed, including configs that route nowhere near it.
+    // Issue #368 Stage 1: `kind = "antigravity_cli"` shells out to the local
+    // `agy` binary; `kind = "antigravity"` reaches the same service natively
+    // over HTTP without the subprocess. Warn operators still routed to the CLI
+    // transport so they can migrate before it is removed.
+    warn_if_routes_to_antigravity_cli(&config);
     if routes_to_antigravity_cli(&config) {
         if let Some(agy) = shunt::adapters::antigravity::find_agy_binary() {
             tokio::spawn(async move {
@@ -742,6 +747,18 @@ fn routes_to_antigravity_cli(config: &Config) -> bool {
 /// Whether the native Antigravity HTTP upstream is reachable.
 fn routes_to_antigravity(config: &Config) -> bool {
     routes_to_kind(config, shunt::config::ProviderKind::Antigravity)
+}
+
+/// Issue #368 Stage 1: warn when config still routes to the deprecated `agy`
+/// subprocess transport. Split from the call site so the warning is testable
+/// without spinning up `serve()`.
+fn warn_if_routes_to_antigravity_cli(config: &Config) {
+    if routes_to_antigravity_cli(config) {
+        tracing::warn!(
+            "config routes to `kind = \"antigravity_cli\"`, which is deprecated. \
+             Switch to `kind = \"antigravity\"` for the native HTTP transport."
+        );
+    }
 }
 
 /// The startup refusal for a routed native Antigravity provider with no
@@ -1213,9 +1230,27 @@ mod tests {
 
 #[cfg(test)]
 mod warm_gate_tests {
+    use std::io;
+    use std::sync::{Arc, Mutex};
+
     use shunt::config::{Config, ModelConfig, ProviderKind, RouteConfig, RoutePrefixConfig};
 
     use super::routes_to_antigravity;
+
+    struct BufferWriter {
+        buffer: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl std::io::Write for BufferWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.buffer.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
 
     /// Turn the built-in `antigravity` provider into the one under test without
     /// hand-building a provider: `Config::default()` already seeds it.
@@ -1263,6 +1298,49 @@ mod warm_gate_tests {
         config.server.default_provider = "antigravity-cli".to_string();
         assert!(super::routes_to_antigravity_cli(&config));
         assert!(!super::routes_to_antigravity(&config));
+    }
+
+    #[test]
+    fn a_routed_cli_config_warns_about_the_deprecated_kind() {
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let writer_output = Arc::clone(&output);
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || BufferWriter {
+                buffer: Arc::clone(&writer_output),
+            })
+            .with_ansi(false)
+            .without_time()
+            .finish();
+
+        let mut config = base();
+        config.server.default_provider = "antigravity-cli".to_string();
+        tracing::subscriber::with_default(subscriber, || {
+            super::warn_if_routes_to_antigravity_cli(&config);
+        });
+        let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+
+        assert!(logs.contains("antigravity_cli"), "{logs}");
+        assert!(logs.contains("deprecated"), "{logs}");
+    }
+
+    #[test]
+    fn a_default_config_does_not_warn_about_the_deprecated_kind() {
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let writer_output = Arc::clone(&output);
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || BufferWriter {
+                buffer: Arc::clone(&writer_output),
+            })
+            .with_ansi(false)
+            .without_time()
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || {
+            super::warn_if_routes_to_antigravity_cli(&base());
+        });
+        let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+
+        assert!(logs.is_empty(), "{logs}");
     }
 
     #[test]
