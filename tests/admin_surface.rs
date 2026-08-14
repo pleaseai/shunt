@@ -604,6 +604,52 @@ async fn admin_pool_reports_auth_kind_independent_of_provider_name() {
     std::env::remove_var("SHUNT_TEST_ADMIN_AUTH_KIND");
 }
 
+/// The read-only pool dashboard resolves and lists `kimi_oauth` accounts the
+/// same way it already does for `claude_oauth`/`chatgpt_oauth`: this only
+/// covers listing (`/admin/pool`) -- Kimi's device-flow login has no
+/// browser-based provisioning UI in this pass, unlike Claude/Codex's
+/// redirect-style add-account flow (see `shunt login kimi`).
+#[tokio::test]
+async fn admin_pool_lists_kimi_oauth_accounts_read_only() {
+    if !can_bind_loopback() {
+        return;
+    }
+    std::env::set_var("SHUNT_TEST_ADMIN_KIMI_POOL", "ops:kimi-pool-secret");
+    let mut config = admin_config("SHUNT_TEST_ADMIN_KIMI_POOL");
+    let anthropic = config.providers.get_mut("anthropic").unwrap();
+    anthropic.auth = AuthMode::KimiOauth;
+    // kimi_oauth requires a kimi.com (or loopback) base_url -- this test
+    // never sends an upstream request, so any host that passes validation
+    // is fine.
+    anthropic.base_url = "https://api.kimi.com".to_string();
+    anthropic.accounts = vec![AccountConfig {
+        name: "kimi-primary".to_string(),
+        token_env: Some("SHUNT_TEST_ADMIN_KIMI_TOKEN".to_string()),
+        ..Default::default()
+    }];
+    std::env::set_var("SHUNT_TEST_ADMIN_KIMI_TOKEN", "kimi-access-token");
+    let gateway = start(config).await;
+
+    let response = reqwest::Client::new()
+        .get(format!("{}/admin/pool", gateway.base_url))
+        .header("x-shunt-admin-token", "kimi-pool-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = response.json().await.unwrap();
+    let providers = body["providers"].as_array().unwrap();
+    let section = providers
+        .iter()
+        .find(|provider| provider["provider"] == "anthropic")
+        .expect("kimi_oauth provider is present in the pool listing");
+    assert_eq!(section["auth"], "kimi_oauth");
+    assert_eq!(section["accounts"][0]["name"], "kimi-primary");
+
+    std::env::remove_var("SHUNT_TEST_ADMIN_KIMI_POOL");
+    std::env::remove_var("SHUNT_TEST_ADMIN_KIMI_TOKEN");
+}
+
 /// `[server.status]` is absent from `admin_config`, so `/admin/status` must
 /// report an empty `sources` list -- the shape the dashboard reads as "hide
 /// the whole section" rather than an empty table.
