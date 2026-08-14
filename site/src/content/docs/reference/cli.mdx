@@ -146,6 +146,27 @@ Run xAI's device-code OAuth flow and save its refreshable credential:
 shunt login xai
 ```
 
+## `shunt login antigravity`
+
+Run Antigravity's Google authorization-code flow and save its refreshable credential to
+`~/.shunt/antigravity-auth.json` (override with `SHUNT_ANTIGRAVITY_AUTH_FILE`):
+
+```bash
+shunt login antigravity
+```
+
+The browser callback uses the fixed loopback port **51121**, because that is the redirect URI
+registered for Antigravity's OAuth client — unlike shunt's other loopback logins it cannot fall back
+to an ephemeral port, so free that port if the login reports it is in use.
+
+Antigravity requests two scopes a Gemini CLI login never carries (`cclog`,
+`experimentsandconfigs`), so this credential and the `gemini` provider's `~/.gemini/oauth_creds.json`
+are **not** interchangeable in either direction.
+
+The login also resolves the Code Assist project, provisioning one for a first-time account, and
+stores it alongside the tokens so no discovery runs in front of a request. If that step fails the
+credential is still saved and discovery is retried on the first request.
+
 ## Anthropic account-pool authentication
 
 For an Anthropic provider with `auth = "claude_oauth"`, an account can use a name-only store entry, `credentials = "~/.claude/.credentials.json"`, or `token_env = "YOUR_ENV_NAME"`. The store entry can come from full OAuth, an imported Claude Code login, or the setup-token flow described above. See [Anthropic Multi-Account](/guides/anthropic-multi-account/) for complete configuration and failover rules.
@@ -160,5 +181,6 @@ For an Anthropic provider with `auth = "claude_oauth"`, an account can use a nam
 | `SHUNT_GATEWAY_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN` | Static token for `shunt token` |
 | `CLAUDE_CREDENTIALS` | Alternate credentials file path for `shunt token` and refreshable `shunt login claude` import |
 | `SHUNT_CLAUDE_ACCOUNTS_DIR` | Alternate shunt-managed Claude account-store directory |
+| `SHUNT_ANTIGRAVITY_AUTH_FILE` | Alternate credential file for `shunt login antigravity` (default `~/.shunt/antigravity-auth.json`) |
 | Account-specific variable named by `token_env` | Setup token for an Anthropic `claude_oauth` pool entry; used verbatim |
 | `OPENAI_API_KEY` | Default key env for the `openai` provider (per-provider via `api_key_env`) |
