@@ -945,11 +945,19 @@ pub(crate) fn account_identity(account: &AccountConfig) -> &str {
 
 pub(crate) fn account_key(upstream: &str, account: &AccountConfig) -> AccountKey {
     let store_family = account.store_family.unwrap_or_else(|| {
-        // Case-insensitive so an upstream named e.g. `My-Codex` still infers the
-        // ChatGPT store family instead of falling through to Claude.
+        // Only a caller that bypassed `resolve_pool_accounts` (which always
+        // stamps the family) lands here, so this is a defensive guess, not the
+        // normal path. Case-insensitive so an upstream named e.g. `My-Codex`
+        // still infers the ChatGPT store family instead of falling through to
+        // Claude. Kimi is matched before the Claude fallback because it would
+        // otherwise be keyed as a Claude account and could collide with a
+        // real Claude account of the same name — note `kimi-code`, the
+        // preset's own name, does *not* contain `codex`.
         let lower = upstream.to_lowercase();
         if lower.contains("codex") || lower.contains("chatgpt") {
             StoreFamily::Chatgpt
+        } else if lower.contains("kimi") {
+            StoreFamily::Kimi
         } else {
             StoreFamily::Claude
         }
@@ -2248,6 +2256,45 @@ mod tests {
 
         assert!(!pool.snapshot("codex", &[codex], None, None)[0].has_state);
         assert!(pool.snapshot("anthropic", &[anthropic], None, None)[0].has_state);
+    }
+
+    #[test]
+    fn unstamped_account_key_infers_kimi_rather_than_defaulting_to_claude() {
+        // `account_key` guesses a store family only when the caller bypassed
+        // `resolve_pool_accounts` (which always stamps one). The guess used to
+        // be "codex/chatgpt, else Claude", which silently filed a Kimi account
+        // under the Claude family — note that `kimi-code`, the preset's own
+        // upstream name, does not contain `codex`, so it took the Claude
+        // branch, and two same-named store accounts collided on one key.
+        //
+        // Both accounts are `store_entry`, so their identity is the bare
+        // account name with no upstream in it. That makes `store_family` the
+        // only component that can distinguish the two keys — an inline account
+        // would differ by upstream name alone and prove nothing about family.
+        let store_account = |name: &str| AccountConfig {
+            store_entry: true,
+            ..account(name)
+        };
+        let kimi = store_account("shared-name");
+        let claude = store_account("shared-name");
+        assert_eq!(kimi.store_family, None, "the guess only applies unstamped");
+
+        assert_ne!(
+            account_key("kimi-code", &kimi),
+            account_key("anthropic", &claude),
+            "a Kimi account must not share a pool-state key with a Claude account of the same name"
+        );
+
+        // The stamped family still wins over the upstream-name guess.
+        let stamped = AccountConfig {
+            store_family: Some(StoreFamily::Claude),
+            ..store_account("shared-name")
+        };
+        assert_eq!(
+            account_key("kimi-code", &stamped),
+            account_key("anthropic", &claude),
+            "an explicitly stamped family must override the upstream-name guess"
+        );
     }
 
     #[test]

@@ -171,7 +171,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     for (name, provider) in &state.config.providers {
         if !matches!(
             provider.auth,
-            AuthMode::ClaudeOauth | AuthMode::ChatgptOauth
+            AuthMode::ClaudeOauth | AuthMode::ChatgptOauth | AuthMode::KimiOauth
         ) {
             continue;
         }
@@ -195,6 +195,17 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
                     crate::accounts::StoreFamily::Chatgpt,
                     crate::auth::codex::store::default_accounts_dir(),
                     crate::auth::codex::store::scan_accounts,
+                )
+                .await
+            }
+            AuthMode::KimiOauth => {
+                crate::auth::shared::resolve_pool_accounts(
+                    "Kimi",
+                    &provider.accounts,
+                    &provider.account_scope,
+                    crate::accounts::StoreFamily::Kimi,
+                    crate::auth::kimi::store::default_accounts_dir(),
+                    crate::auth::kimi::store::scan_accounts,
                 )
                 .await
             }

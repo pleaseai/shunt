@@ -207,6 +207,114 @@ async fn serves_aggregate_to_an_authenticated_client() {
     assert_eq!(body["pool"]["windows"]["fable"]["remaining"], Value::Null);
 }
 
+/// `GET /usage` must cover a `kimi_oauth` pool, not just Claude and Codex.
+/// The handler filters providers by auth mode before resolving accounts, and
+/// that filter is an explicit enumeration — the same shape that had already
+/// dropped Kimi from `providers.accounts` validation and from `/admin/pool`.
+///
+/// Kimi is seeded *less* utilized than the codex account, so Kimi is the one
+/// that drives the reported headroom: were Kimi filtered out, 5h remaining
+/// would fall back to codex's 0.75. Both accounts are seeded with the
+/// `store_family` the pool path stamps on them in `resolve_pool_accounts`,
+/// because `account_key` keys pool state by family — seeding an unstamped
+/// account would file the usage under a different key than the handler reads.
+#[tokio::test]
+async fn aggregate_covers_a_kimi_oauth_pool_alongside_claude_and_codex() {
+    use crate::accounts::StoreFamily;
+    use crate::config::{ApiKeyHeader, AuthMode, CountTokens, ProviderConfig, ProviderKind};
+
+    let env = format!("SHUNT_USAGE_TEST_TOKENS_{}_kimi", std::process::id());
+    std::env::set_var(&env, "tester:tok-secret");
+    let reset_5h = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 3_600;
+
+    let mut config = crate::config::Config::default();
+    config.server.auth = Some(InboundAuthConfig {
+        header: "x-shunt-token".to_string(),
+        tokens_env: env.clone(),
+    });
+    config.server.usage = Some(UsageEndpointConfig::default());
+
+    let codex_account = AccountConfig {
+        name: "codex-a".to_string(),
+        ..AccountConfig::default()
+    };
+    config
+        .providers
+        .get_mut("codex")
+        .expect("built-in codex provider")
+        .accounts = vec![codex_account.clone()];
+
+    let kimi_account = AccountConfig {
+        name: "kimi-a".to_string(),
+        ..AccountConfig::default()
+    };
+    config.providers.insert(
+        "kimi-code".to_string(),
+        ProviderConfig {
+            kind: ProviderKind::Anthropic,
+            base_url: "https://api.kimi.com/coding".to_string(),
+            auth: AuthMode::KimiOauth,
+            api_key_env: None,
+            api_key_header: ApiKeyHeader::Bearer,
+            effort: None,
+            service_tier: None,
+            count_tokens: CountTokens::default(),
+            accounts: vec![kimi_account.clone()],
+            account_scope: Vec::new(),
+            websocket: false,
+            tool_search: None,
+            request_compression: true,
+            retry: Default::default(),
+            workspace_roots: Vec::new(),
+            sandbox: true,
+        },
+    );
+
+    let state = AppState::new(config, reqwest::Client::new()).unwrap();
+    let seeded = |account: &AccountConfig, family: StoreFamily| AccountConfig {
+        store_family: Some(family),
+        ..account.clone()
+    };
+    state.accounts.note_usage(
+        "codex",
+        &seeded(&codex_account, StoreFamily::Chatgpt),
+        &UsageSnapshot {
+            five_hour: Some(UsageWindow {
+                utilization: 0.25,
+                resets_at: Some(reset_5h),
+            }),
+            seven_day: None,
+            seven_day_oi: None,
+        },
+    );
+    state.accounts.note_usage(
+        "kimi-code",
+        &seeded(&kimi_account, StoreFamily::Kimi),
+        &UsageSnapshot {
+            five_hour: Some(UsageWindow {
+                utilization: 0.10,
+                resets_at: Some(reset_5h),
+            }),
+            seven_day: None,
+            seven_day_oi: None,
+        },
+    );
+
+    let mut headers = HeaderMap::new();
+    headers.insert("x-api-key", "tok-secret".parse().unwrap());
+    let response = get(State(state), headers).await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = body_json(response).await;
+    std::env::remove_var(&env);
+
+    assert_eq!(body["pool"]["windows"]["5h"]["remaining"], json!(0.90));
+    assert_eq!(body["pool"]["windows"]["5h"]["resets_at"], json!(reset_5h));
+}
+
 #[tokio::test]
 async fn rejects_a_request_without_a_valid_client_token() {
     let (state, env, _) = state_with_auth_and_seeded_pool("tok-secret", "rejects");
