@@ -6,7 +6,7 @@ use axum::{
 };
 use serde::Serialize;
 
-use crate::{error::ShuntError, server::AppState};
+use crate::{auth::gate, error::ShuntError, server::AppState};
 
 mod upstream;
 
@@ -123,16 +123,26 @@ impl ModelEntry {
 pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
     // Snapshot the live config so this response reflects the latest reload.
     let state = state.refreshed();
-    let static_client = state
-        .inbound_auth
-        .as_ref()
-        .and_then(|auth| auth.authenticate_client(&headers));
+    let inbound = match &state.inbound_auth {
+        Some(auth) => {
+            gate::authenticate(auth, &state.inbound_jwks, &headers, gate::Slots::Client).await
+        }
+        None => gate::Outcome::Rejected,
+    };
+    if inbound == gate::Outcome::Unavailable {
+        tracing::warn!("GET /v1/models: cannot verify credential, JWT issuer key set unreachable");
+        return gate::unavailable_response();
+    }
+    let inbound_client = match &inbound {
+        gate::Outcome::Authenticated { client, .. } => Some(client.as_str()),
+        _ => None,
+    };
     let gateway_identity = state
         .gateway_auth
         .as_ref()
         .and_then(|auth| auth.authenticate_bearer(&headers));
     if (state.inbound_auth.is_some() || state.gateway_auth.is_some())
-        && static_client.is_none()
+        && inbound_client.is_none()
         && gateway_identity.is_none()
     {
         tracing::warn!(
@@ -156,7 +166,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         return ShuntError::new(StatusCode::UNAUTHORIZED, "authentication_error", message)
             .into_response();
     }
-    if let Some(client) = static_client {
+    if let Some(client) = inbound_client {
         tracing::info!(client = %client, "inbound client authenticated for GET /v1/models");
     } else if let Some(identity) = gateway_identity.as_ref() {
         tracing::info!(client = %identity.email, "gateway user authenticated for GET /v1/models");

@@ -21,6 +21,7 @@ use tracing::Instrument;
 
 use crate::{
     adapters::{responses, AdapterError},
+    auth::gate,
     compression::BodyEncoding,
     error::ShuntError,
     routing::{AdapterKind, Route},
@@ -276,9 +277,19 @@ async fn forward(
         // the Codex CLI and llmgateway/LiteLLM setups use), so no custom header is
         // required. The client's Bearer is only checked here — it is stripped and
         // never forwarded upstream (see `forward_codex_inbound`).
-        match auth.authenticate_bearer(&headers) {
-            Some(client) => Some(client.to_string()),
-            None => {
+        match gate::authenticate(auth, &state.inbound_jwks, &headers, gate::Slots::Bearer).await {
+            gate::Outcome::Authenticated { client, .. } => Some(client),
+            gate::Outcome::Unavailable => {
+                tracing::warn!(
+                    provider = %provider,
+                    "inbound codex auth: cannot verify credential, JWT issuer key set unreachable"
+                );
+                return Err(ForwardError {
+                    message: "inbound authentication unavailable".to_string(),
+                    response: gate::unavailable_response(),
+                });
+            }
+            gate::Outcome::Rejected => {
                 tracing::warn!(
                     provider = %provider,
                     "inbound codex auth failed: missing or invalid client token"

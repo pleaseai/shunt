@@ -148,6 +148,7 @@ fn state_with_auth_and_seeded_pool(token: &str, label: &str) -> (AppState, Strin
         + 3_600;
     let mut config = crate::config::Config::default();
     config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: env.clone(),
     });
@@ -261,6 +262,7 @@ async fn returns_api_error_500_when_account_store_scan_fails() {
     std::env::set_var(&env, "tester:tok-secret");
     let mut config = crate::config::Config::default();
     config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: env.clone(),
     });

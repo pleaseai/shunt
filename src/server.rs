@@ -10,7 +10,7 @@ use serde::Serialize;
 use crate::{
     accounts::AccountPool,
     admin::{self, AdminAuth, AdminStores},
-    auth::inbound::InboundAuth,
+    auth::{inbound::InboundAuth, inbound_jwt::JwksCache},
     codex_analytics, codex_endpoint,
     concurrency::{limit_requests, ConcurrencyLimit},
     config::{Config, ConfigError},
@@ -48,6 +48,11 @@ pub struct AppState {
     pub gateway_auth: Option<Arc<GatewayAuth>>,
     /// Process-lifetime device grants, IdP states/cache, refresh tokens, and limits.
     pub gateway_stores: Arc<GatewayStores>,
+    /// Process-lifetime JWKS cache for `[[server.auth.jwt]]` issuers. Kept here
+    /// rather than on `inbound_auth` so a reload that re-resolves the entries
+    /// does not throw away keys it would immediately refetch — and so a
+    /// reload cannot be used to force repeated fetches against an issuer.
+    pub inbound_jwks: Arc<JwksCache>,
     /// Whether the listener this process actually bound at startup is
     /// loopback. Fixed at boot like `server.bind` itself (see
     /// `reload::warn_on_restart_only_changes`): a reload can rewrite
@@ -77,11 +82,19 @@ impl AppState {
             Arc::new(StatusStore::new()),
             Arc::new(AdminStores::new()),
             Arc::new(GatewayStores::new(&rate_limits)),
+            Arc::new(JwksCache::new()),
             boot_is_loopback,
         ))
     }
 
     /// Snapshot the current runtime state from an existing shared store.
+    ///
+    /// The parameter list is long because every process-lifetime store must be
+    /// threaded through explicitly: `refreshed()` re-snapshots per request, and
+    /// a store created here instead of passed in would be silently recreated on
+    /// every request — which for `inbound_jwks` would mean refetching an
+    /// issuer's JWKS per request.
+    #[allow(clippy::too_many_arguments)]
     pub fn from_shared(
         shared: SharedState,
         http_client: reqwest::Client,
@@ -89,6 +102,7 @@ impl AppState {
         status: Arc<StatusStore>,
         admin_stores: Arc<AdminStores>,
         gateway_stores: Arc<GatewayStores>,
+        inbound_jwks: Arc<JwksCache>,
         boot_is_loopback: bool,
     ) -> Self {
         let current = shared.load();
@@ -102,6 +116,7 @@ impl AppState {
             status,
             admin_stores,
             gateway_stores,
+            inbound_jwks,
             boot_is_loopback,
             shared,
         }
@@ -118,6 +133,7 @@ impl AppState {
             self.status.clone(),
             self.admin_stores.clone(),
             self.gateway_stores.clone(),
+            self.inbound_jwks.clone(),
             self.boot_is_loopback,
         )
     }
@@ -187,6 +203,7 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
         Arc::new(StatusStore::new()),
         Arc::new(AdminStores::new()),
         Arc::new(GatewayStores::new(&rate_limits)),
+        Arc::new(JwksCache::new()),
         boot_is_loopback,
     );
 
@@ -336,6 +353,7 @@ mod tests {
         std::env::set_var(&env, "tester:tok-secret");
         let mut config = Config::default();
         config.server.auth = Some(InboundAuthConfig {
+            jwt: Vec::new(),
             header: "x-shunt-token".to_string(),
             tokens_env: env.clone(),
         });

@@ -21,7 +21,7 @@ use axum::{
 use serde::Serialize;
 
 use crate::{
-    accounts::AccountSnapshot, auth::claude::store as claude_store, config::AuthMode,
+    accounts::AccountSnapshot, auth::claude::store as claude_store, auth::gate, config::AuthMode,
     error::ShuntError, server::AppState,
 };
 
@@ -156,14 +156,23 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         )
         .into_response();
     };
-    let Some(client) = auth.authenticate_client(&headers) else {
-        tracing::warn!("inbound auth failed for GET /usage: missing or invalid client token");
-        let message = format!(
-            "missing or invalid credential: this gateway requires a client token (via {}, x-api-key, or Authorization: Bearer) to read pool usage; ask the operator for one",
-            auth.header()
-        );
-        return ShuntError::new(StatusCode::UNAUTHORIZED, "authentication_error", message)
-            .into_response();
+    let client = match gate::authenticate(&auth, &state.inbound_jwks, &headers, gate::Slots::Client)
+        .await
+    {
+        gate::Outcome::Authenticated { client, .. } => client,
+        gate::Outcome::Unavailable => {
+            tracing::warn!("GET /usage: cannot verify credential, JWT issuer key set unreachable");
+            return gate::unavailable_response();
+        }
+        gate::Outcome::Rejected => {
+            tracing::warn!("inbound auth failed for GET /usage: missing or invalid client token");
+            let message = format!(
+                "missing or invalid credential: this gateway requires a client token (via {}, x-api-key, or Authorization: Bearer) to read pool usage; ask the operator for one",
+                auth.header()
+            );
+            return ShuntError::new(StatusCode::UNAUTHORIZED, "authentication_error", message)
+                .into_response();
+        }
     };
     tracing::info!(client = %client, "inbound client authenticated for GET /usage");
 

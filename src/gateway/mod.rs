@@ -54,12 +54,24 @@ impl ResolvedIdp {
     }
 
     pub fn email_allowed(&self, email: &str) -> bool {
-        let email = email.to_ascii_lowercase();
-        self.allowed_emails.iter().any(|allowed| allowed == &email)
-            || email.rsplit_once('@').is_some_and(|(_, domain)| {
-                self.allowed_domains.iter().any(|allowed| allowed == domain)
-            })
+        email_allowed(email, &self.allowed_emails, &self.allowed_domains)
     }
+}
+
+/// Whether `email` is covered by an allowlist. The domain rule matches the part
+/// after the **final** `@` exactly — never as a suffix, which would let
+/// `example.com` admit `attacker@notexample.com`. Both lists are expected
+/// pre-lowercased by config resolution; the address is lowercased here.
+///
+/// Shared by the gateway/admin OIDC sign-in path and by verify-only inbound JWT
+/// entries (`[[server.auth.jwt]]`), so the two cannot drift apart on the one
+/// rule that decides who gets in.
+pub fn email_allowed(email: &str, allowed_emails: &[String], allowed_domains: &[String]) -> bool {
+    let email = email.to_ascii_lowercase();
+    allowed_emails.iter().any(|allowed| allowed == &email)
+        || email
+            .rsplit_once('@')
+            .is_some_and(|(_, domain)| allowed_domains.iter().any(|allowed| allowed == domain))
 }
 
 #[derive(Clone)]

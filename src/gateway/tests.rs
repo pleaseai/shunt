@@ -1384,6 +1384,7 @@ async fn gateway_jwt_and_static_client_token_compose_on_models() {
     let auth_env = format!("SHUNT_GATEWAY_TEST_CLIENT_{}", std::process::id());
     std::env::set_var(&auth_env, "static:static-token");
     config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
         header: "x-shunt-token".into(),
         tokens_env: auth_env.clone(),
     });
@@ -1989,6 +1990,7 @@ async fn available_models_policy_denies_or_allows_gateway_requests() {
     std::env::set_var(&key_env, "upstream-key");
     std::env::set_var(&client_env, "static-user:static-token");
     config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: client_env.clone(),
     });
