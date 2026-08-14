@@ -1,0 +1,27 @@
+docs/m4-inbound-auth.md
+  s_bab66734c4065c::t_60159431d5c5a1 114-124
+site/src/content/docs/ja/reference/configuration.md
+  s_bab66734c4065c::t_96a07b8f9d28ea 226
+site/src/content/docs/ko/reference/configuration.md
+  s_bab66734c4065c::t_685fa8e71981ac 257
+site/src/content/docs/reference/configuration.md
+  s_bab66734c4065c::t_bae9d83d16701a 379
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_bab66734c4065c::t_6512d837d151d1 226
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "f2c170ef441d5c4028491b0d675a9cc52a4b1792",
+  "prompts": {},
+  "sessions": {
+    "s_bab66734c4065c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "103c0c62-2ce0-4cd0-9653-616e2f6934db",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
