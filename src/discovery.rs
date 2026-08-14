@@ -187,6 +187,13 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             upstream::InboundCredentialContext {
                 static_auth: state.inbound_auth.as_deref(),
                 gateway_bearer_authenticated: gateway_identity.is_some(),
+                jwt_bearer_authenticated: matches!(
+                    inbound,
+                    gate::Outcome::Authenticated {
+                        static_token: false,
+                        ..
+                    }
+                ),
             },
         )
         .await

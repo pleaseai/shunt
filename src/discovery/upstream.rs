@@ -89,6 +89,11 @@ impl From<UpstreamModel> for ModelEntry {
 pub(super) struct InboundCredentialContext<'a> {
     pub(super) static_auth: Option<&'a InboundAuth>,
     pub(super) gateway_bearer_authenticated: bool,
+    /// Whether a `[[server.auth.jwt]]` entry verified the caller's bearer.
+    /// Unlike a static token, a JWT credential can *only* arrive in the bearer
+    /// slot, so there is no "use the dedicated header instead" advice that
+    /// keeps it out of an upstream request — it has to be detected here.
+    pub(super) jwt_bearer_authenticated: bool,
 }
 
 /// Fetch the caller's own model list from the Anthropic upstream.
@@ -263,6 +268,7 @@ async fn upstream_headers(
             // `[server.auth]` client token sent as `Authorization` — authenticates
             // the caller against shunt, not the caller against the upstream.
             let bearer_is_consumed = inbound_context.gateway_bearer_authenticated
+                || inbound_context.jwt_bearer_authenticated
                 || bearer_token(inbound).is_some_and(|token| {
                     inbound_context
                         .static_auth
