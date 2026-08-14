@@ -1410,7 +1410,7 @@ pub struct ProviderConfig {
     #[serde(default)]
     pub retry: RetryConfig,
     /// Directories the Antigravity CLI may be pointed at by request content
-    /// (`kind = "antigravity"` only).
+    /// (`kind = "antigravity_cli"` only).
     ///
     /// `agy` runs with `--dangerously-skip-permissions`, so whatever directory
     /// it starts in is a directory an unattended agent can read, write, and run
@@ -1431,7 +1431,7 @@ pub struct ProviderConfig {
     /// is used.
     #[serde(default)]
     pub workspace_roots: Vec<String>,
-    /// Run the Antigravity CLI with `--sandbox` (`kind = "antigravity"` only).
+    /// Run the Antigravity CLI with `--sandbox` (`kind = "antigravity_cli"` only).
     ///
     /// On by default. Without it, `--dangerously-skip-permissions` leaves an
     /// unattended agent with shell access and no workspace boundary: refusing a
