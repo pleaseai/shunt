@@ -1,16 +1,18 @@
 use std::sync::Arc;
 
-use axum::http::{HeaderMap, HeaderValue};
+use axum::http::{HeaderMap, HeaderName, HeaderValue};
 
+use crate::auth::inbound::{is_consumed_by_shunt, InboundAuth};
 use crate::config::{AuthMode, Config};
 use crate::gateway::{approval::Identity, jwt, GatewayAuth};
 use crate::routing::{AdapterKind, Route};
 use crate::server::AppState;
 
-use super::{check_inbound_auth, headers_for_route, is_gateway_jwt, InboundContext};
+use super::{check_inbound_auth, headers_for_route, InboundContext};
 
 const GATEWAY_URL: &str = "https://gateway.example";
 const GATEWAY_SECRET: &[u8] = b"0123456789abcdef0123456789abcdef";
+const STATIC_TOKEN: &str = "static-secret-token";
 
 fn passthrough_route() -> Route {
     Route {
@@ -23,10 +25,26 @@ fn passthrough_route() -> Route {
     }
 }
 
+/// A credential-injecting fallback route (`openai`, `AuthMode::ApiKey` by
+/// default) — used only by the mixed-chain test below to make the whole
+/// chain `injects_credential`, so `check_inbound_auth` runs the real
+/// client-token gate instead of the `!injects_credential` shortcut every
+/// other fixture in this file relies on.
+fn injecting_fallback_route() -> Route {
+    Route {
+        provider: "openai".to_string(),
+        adapter: AdapterKind::Responses,
+        model: "gpt-5".to_string(),
+        upstream_model: "gpt-5".to_string(),
+        effort: None,
+        service_tier: None,
+    }
+}
+
 /// A gateway-enabled state with a single passthrough Anthropic provider.
-/// `gateway_auth` is always configured so `is_gateway_jwt` has a real key to
-/// verify against; a fixture header that is not shunt's JWT never matches it
-/// regardless.
+/// `gateway_auth` is always configured so the gateway-JWT check has a real
+/// key to verify against; a fixture header that is not shunt's JWT never
+/// matches it regardless.
 fn state() -> AppState {
     let mut config = Config::default();
     config.providers.get_mut("anthropic").unwrap().auth = AuthMode::Passthrough;
@@ -38,6 +56,25 @@ fn state() -> AppState {
         false,
         None,
     )));
+    state
+}
+
+/// A configured `[server.auth]` static client token, independent of the
+/// gateway JWT fixture above.
+fn static_inbound_auth() -> InboundAuth {
+    InboundAuth::new(
+        HeaderName::from_static("x-shunt-token"),
+        vec![("client".to_string(), STATIC_TOKEN.to_string())],
+    )
+}
+
+/// Like [`state`], but also configures a static `[server.auth]` token, so
+/// tests can exercise the by-value static-token check independently of the
+/// gateway-JWT one (both are configured at once, matching how a real
+/// deployment mixes gateway login with static client tokens).
+fn state_with_static_auth() -> AppState {
+    let mut state = state();
+    state.inbound_auth = Some(Arc::new(static_inbound_auth()));
     state
 }
 
@@ -222,14 +259,18 @@ fn ungated_passthrough_chain_still_strips_only_the_gateway_jwt_slot() {
 
 #[test]
 fn non_utf8_x_api_key_is_not_shunts_gateway_jwt_and_is_forwarded() {
-    // `is_gateway_jwt` has an explicit non-UTF-8 fallback
-    // (`value.to_str().ok()?`) with no dedicated coverage: a header value
-    // that fails UTF-8 decoding can't possibly be a JWT (a base64url/HS256
-    // string), so it must be treated as not shunt's and kept, not silently
-    // stripped alongside a real one.
+    // `consumed_by`'s gateway-JWT check has an explicit non-UTF-8 fallback
+    // (`str::from_utf8(value).is_ok_and(...)`) with no dedicated coverage: a
+    // header value that fails UTF-8 decoding can't possibly be a JWT (a
+    // base64url/HS256 string), so it must be treated as not shunt's and kept,
+    // not silently stripped alongside a real one.
     let state = state();
     let non_utf8 = HeaderValue::from_bytes(&[0xff, 0xfe, b'x']).expect("opaque header value");
-    assert!(!is_gateway_jwt(&state, &non_utf8));
+    assert!(!is_consumed_by_shunt(
+        non_utf8.as_bytes(),
+        state.gateway_auth.as_deref(),
+        state.inbound_auth.as_deref()
+    ));
 
     let mut headers = HeaderMap::new();
     headers.insert("x-api-key", non_utf8.clone());
@@ -241,4 +282,108 @@ fn non_utf8_x_api_key_is_not_shunts_gateway_jwt_and_is_forwarded() {
         result.get("x-api-key").unwrap().as_bytes(),
         non_utf8.as_bytes()
     );
+}
+
+#[test]
+fn same_origin_passthrough_strips_a_static_token_in_the_api_key_slot() {
+    // #357: a configured `[server.auth]` token forwarded in `x-api-key` must
+    // never reach the upstream, exactly like a gateway JWT already didn't.
+    let state = state_with_static_auth();
+    let mut headers = HeaderMap::new();
+    headers.insert("x-api-key", HeaderValue::from_static(STATIC_TOKEN));
+    let inbound = context_for(&state, &headers);
+
+    let result = headers_for_route(&state, &passthrough_route(), &headers, &inbound, true, None);
+
+    assert!(result.get("x-api-key").is_none());
+}
+
+#[test]
+fn same_origin_passthrough_strips_a_static_token_in_the_authorization_slot() {
+    // #357: the same static token, delivered as `Authorization: Bearer`
+    // instead of `x-api-key`, must also be stripped.
+    let state = state_with_static_auth();
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "authorization",
+        format!("Bearer {STATIC_TOKEN}").parse().unwrap(),
+    );
+    let inbound = context_for(&state, &headers);
+
+    let result = headers_for_route(&state, &passthrough_route(), &headers, &inbound, true, None);
+
+    assert!(result.get("authorization").is_none());
+}
+
+#[test]
+fn same_origin_passthrough_keeps_a_genuine_credential_even_with_static_auth_configured() {
+    // Non-vacuity control for the two tests above: merely configuring
+    // `[server.auth]` must not itself cause stripping — only a slot that
+    // actually holds the configured token does. This varies only the
+    // static-token-ness dimension relative to those two tests, so it isolates
+    // what they are actually asserting.
+    let state = state_with_static_auth();
+    let headers = caller_headers();
+    let inbound = context_for(&state, &headers);
+
+    let result = headers_for_route(&state, &passthrough_route(), &headers, &inbound, true, None);
+
+    assert_eq!(result.get("authorization").unwrap(), "Bearer caller");
+    assert_eq!(result.get("x-api-key").unwrap(), "caller");
+}
+
+#[test]
+fn same_origin_passthrough_strips_only_the_slot_holding_the_static_token() {
+    // The static-token counterpart of the gateway-JWT mixed-slot test above:
+    // the static token in `Authorization` is stripped, while a genuine
+    // upstream key sitting in `x-api-key` at the same time survives.
+    let state = state_with_static_auth();
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "authorization",
+        format!("Bearer {STATIC_TOKEN}").parse().unwrap(),
+    );
+    headers.insert(
+        "x-api-key",
+        HeaderValue::from_static("sk-ant-genuine-upstream-key"),
+    );
+    let inbound = context_for(&state, &headers);
+
+    let result = headers_for_route(&state, &passthrough_route(), &headers, &inbound, true, None);
+
+    assert!(result.get("authorization").is_none());
+    assert_eq!(
+        result.get("x-api-key").unwrap(),
+        "sk-ant-genuine-upstream-key"
+    );
+}
+
+#[test]
+fn gated_mixed_chain_never_forwards_the_static_token_used_to_pass_the_gate() {
+    // The exact leak path #357 describes: a chain whose primary
+    // (`anthropic`) is passthrough but whose fallback (`openai`) injects a
+    // credential is chain-level `injects_credential`, so `check_inbound_auth`
+    // runs the real client-token gate — not the `!injects_credential`
+    // shortcut every other fixture in this file takes via `context_for`. The
+    // static token that authenticated against that gate must still never
+    // reach the primary passthrough attempt's upstream headers.
+    let state = state_with_static_auth();
+    let mut headers = HeaderMap::new();
+    headers.insert("x-api-key", HeaderValue::from_static(STATIC_TOKEN));
+    let routes = vec![passthrough_route(), injecting_fallback_route()];
+
+    let (base_headers, inbound) = match check_inbound_auth(&state, &routes, &headers) {
+        Ok(result) => result,
+        Err(error) => panic!("check_inbound_auth rejected the request: {}", error.message),
+    };
+    let result = headers_for_route(
+        &state,
+        &passthrough_route(),
+        &base_headers,
+        &inbound,
+        true,
+        None,
+    );
+
+    assert!(result.get("x-api-key").is_none());
 }

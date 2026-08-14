@@ -8,13 +8,13 @@ use wiremock::{
 };
 
 use crate::{
-    auth::inbound::InboundAuth,
+    auth::inbound::{is_consumed_by_shunt, InboundAuth},
     config::{AccountConfig, ApiKeyHeader, AuthMode, ProviderKind},
     gateway::{approval::Identity, jwt, GatewayAuth},
     server::AppState,
 };
 
-use super::{anthropic_provider, fetch, is_consumed_by_shunt, InboundCredentialContext};
+use super::{anthropic_provider, fetch, InboundCredentialContext};
 
 /// Point the default anthropic provider at `base_url` with the given auth.
 fn config_for(base_url: &str, auth: AuthMode) -> crate::config::Config {

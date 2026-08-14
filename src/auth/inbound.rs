@@ -10,6 +10,8 @@
 
 use axum::http::{HeaderMap, HeaderName};
 
+use crate::gateway::GatewayAuth;
+
 /// Resolved inbound-auth state: the header to inspect and the accepted
 /// `name → token` pairs. Built once at startup from `[server.auth]` plus the
 /// configured env var; absent entirely when inbound auth is not configured.
@@ -167,6 +169,54 @@ pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
         diff |= usize::from(x ^ y);
     }
     diff == 0
+}
+
+/// Which of shunt's own inbound credentials [`consumed_by`] matched. Exists
+/// only so a caller can log *why* a slot was stripped without logging the
+/// token value itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConsumedBy {
+    GatewayJwt,
+    StaticToken,
+}
+
+/// Whether `value` — the raw contents of a header slot — is a credential shunt
+/// itself consumes rather than the caller's own upstream credential: either
+/// shunt's gateway JWT (checked as a bare token, no `Bearer ` prefix) or a
+/// configured static `[server.auth]` token, and which one. Checked by value
+/// per slot, not by whether *some* slot in the request authenticated the
+/// caller, so a genuine upstream credential in one slot survives even when the
+/// other slot holds a credential shunt consumed.
+///
+/// Shared by discovery's passthrough header filtering
+/// (`discovery/upstream.rs`) and inference failover's passthrough header
+/// filtering (`proxy/failover.rs`), which independently apply it to the same
+/// two slots (`authorization`, `x-api-key`) so the two request paths agree on
+/// what "the caller's own credential" means.
+pub(crate) fn consumed_by(
+    value: &[u8],
+    gateway_auth: Option<&GatewayAuth>,
+    static_auth: Option<&InboundAuth>,
+) -> Option<ConsumedBy> {
+    let is_gateway_jwt = gateway_auth.is_some_and(|auth| {
+        std::str::from_utf8(value)
+            .is_ok_and(|token| auth.authenticate_token(token.trim()).is_some())
+    });
+    if is_gateway_jwt {
+        return Some(ConsumedBy::GatewayJwt);
+    }
+    static_auth
+        .is_some_and(|auth| auth.authenticate_value(value).is_some())
+        .then_some(ConsumedBy::StaticToken)
+}
+
+/// Like [`consumed_by`], but for a caller that only needs the yes/no answer.
+pub(crate) fn is_consumed_by_shunt(
+    value: &[u8],
+    gateway_auth: Option<&GatewayAuth>,
+    static_auth: Option<&InboundAuth>,
+) -> bool {
+    consumed_by(value, gateway_auth, static_auth).is_some()
 }
 
 #[cfg(test)]

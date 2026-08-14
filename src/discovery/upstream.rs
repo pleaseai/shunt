@@ -21,7 +21,7 @@ use crate::{
     adapters::anthropic::strip_duplicate_oauth_api_key,
     auth::{
         self, claude,
-        inbound::{bearer_token, InboundAuth},
+        inbound::{bearer_token, is_consumed_by_shunt, InboundAuth},
         resolve_claude_account, resolve_credential, Credential,
     },
     config::{ApiKeyHeader, AuthMode, Config, ProviderConfig, ProviderKind},
@@ -90,25 +90,6 @@ impl From<UpstreamModel> for ModelEntry {
 pub(super) struct InboundCredentialContext<'a> {
     pub(super) static_auth: Option<&'a InboundAuth>,
     pub(super) gateway_auth: Option<&'a GatewayAuth>,
-}
-
-/// Whether `value` — the raw contents of a header slot — is a credential shunt
-/// itself consumes rather than the caller's own upstream credential: either
-/// shunt's gateway JWT (checked as a bare token, no `Bearer ` prefix) or a
-/// configured static `[server.auth]` token. Checked by value per slot, not by
-/// whether *some* slot in the request authenticated the caller, so a genuine
-/// upstream credential in one slot survives even when the other slot holds a
-/// credential shunt consumed.
-fn is_consumed_by_shunt(
-    value: &[u8],
-    gateway_auth: Option<&GatewayAuth>,
-    static_auth: Option<&InboundAuth>,
-) -> bool {
-    let is_gateway_jwt = gateway_auth.is_some_and(|auth| {
-        std::str::from_utf8(value)
-            .is_ok_and(|token| auth.authenticate_token(token.trim()).is_some())
-    });
-    is_gateway_jwt || static_auth.is_some_and(|auth| auth.authenticate_value(value).is_some())
 }
 
 /// Fetch the caller's own model list from the Anthropic upstream.
