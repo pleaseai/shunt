@@ -373,9 +373,25 @@ fn login(
             })?;
             runtime()?.block_on(shunt::auth::codex::login::run(name))
         }
+        "kimi" if long_lived => {
+            anyhow::bail!(
+                "--long-lived is not supported for `shunt login kimi`; Kimi Code OAuth tokens are always refreshable"
+            )
+        }
+        "kimi" if mode.is_some() => {
+            anyhow::bail!(
+                "--mode is not supported for `shunt login kimi`; Kimi Code OAuth tokens are always refreshable"
+            )
+        }
+        "kimi" => {
+            let name = name.ok_or_else(|| {
+                anyhow::anyhow!("`shunt login kimi` requires --name <account-name>")
+            })?;
+            runtime()?.block_on(shunt::auth::kimi::login::run(name))
+        }
         _ => {
             anyhow::bail!(
-                "unknown login provider {provider:?}; supported: claude, codex, cursor, xai"
+                "unknown login provider {provider:?}; supported: claude, codex, cursor, xai, kimi"
             )
         }
     }
@@ -866,6 +882,7 @@ mod tests {
         assert!(ensure_manual_flag_valid("xai", Some(LoginMode::Oauth), true).is_err());
         assert!(ensure_manual_flag_valid("cursor", None, true).is_err());
         assert!(ensure_manual_flag_valid("codex", None, true).is_err());
+        assert!(ensure_manual_flag_valid("kimi", None, true).is_err());
     }
 
     #[test]
@@ -973,6 +990,49 @@ mod tests {
             None,
         )
         .expect_err("--mode must be rejected for codex");
+        assert!(error.to_string().contains("--mode is not supported"));
+    }
+
+    #[test]
+    fn kimi_login_parses_name_and_rejects_missing_name_or_long_lived() {
+        assert!(Cli::try_parse_from(["shunt", "login", "kimi", "--name", "ci"]).is_ok());
+        let parsed = Cli::try_parse_from(["shunt", "login", "kimi", "--name", "ci"]).unwrap();
+        let Some(Command::Login {
+            provider,
+            name,
+            long_lived,
+            mode,
+            manual,
+        }) = parsed.command
+        else {
+            panic!("expected login command");
+        };
+        assert_eq!(provider, "kimi");
+        assert_eq!(name.as_deref(), Some("ci"));
+        assert!(!long_lived);
+        assert!(mode.is_none());
+        assert!(!manual);
+
+        // These error branches return before touching the network or runtime,
+        // so they are safe to exercise directly (mirrors the codex coverage
+        // above).
+        let error =
+            login("kimi", None, false, None, false, None).expect_err("missing --name must fail");
+        assert!(error.to_string().contains("requires --name"));
+
+        let error = login("kimi", Some("ci"), true, None, false, None)
+            .expect_err("--long-lived must be rejected for kimi");
+        assert!(error.to_string().contains("--long-lived is not supported"));
+
+        let error = login(
+            "kimi",
+            Some("ci"),
+            false,
+            Some(LoginMode::Oauth),
+            false,
+            None,
+        )
+        .expect_err("--mode must be rejected for kimi");
         assert!(error.to_string().contains("--mode is not supported"));
     }
 

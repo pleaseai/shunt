@@ -78,6 +78,15 @@ pub enum AuthMap {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         accounts: Option<Vec<AccountSelection>>,
     },
+    /// Kimi Code subscription OAuth. Shaped like `ClaudeOauth`/`ChatgptOauth`
+    /// for the account-pool follow-up to build on; `resolve_kimi_account`
+    /// (single-account only today) is the only consumer so far.
+    KimiOauth {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        accounts: Option<Vec<AccountSelection>>,
+    },
     XaiOauth {},
     CursorOauth {},
 }
@@ -112,6 +121,9 @@ impl UpstreamAuth {
                     accounts,
                     provider,
                 )?;
+            }
+            Self::Map(AuthMap::KimiOauth { account, accounts }) => {
+                absorb_oauth_scope(upstream, AuthMode::KimiOauth, account, accounts, provider)?;
             }
             Self::Map(AuthMap::XaiOauth {}) => provider.auth = AuthMode::XaiOauth,
             Self::Map(AuthMap::CursorOauth {}) => provider.auth = AuthMode::CursorOauth,

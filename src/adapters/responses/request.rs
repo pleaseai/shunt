@@ -91,7 +91,11 @@ pub(super) fn request_builder(
         }
         // A Responses provider configured with passthrough auth is a
         // misconfiguration; send no credential and let the upstream reject it.
-        Credential::CursorOauth { .. } | Credential::Passthrough => {}
+        // Kimi's coding API speaks the Anthropic Messages shape, so a
+        // `kimi_oauth` provider is always `kind = "anthropic"` and never
+        // reaches the Responses adapter in practice.
+        Credential::CursorOauth { .. } | Credential::KimiOauth { .. } | Credential::Passthrough => {
+        }
     }
     request
 }

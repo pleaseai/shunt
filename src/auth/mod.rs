@@ -14,6 +14,7 @@ pub mod codex;
 pub mod cursor;
 pub mod google;
 pub mod inbound;
+pub mod kimi;
 pub mod observation;
 pub mod shared;
 pub mod xai;
@@ -43,6 +44,12 @@ pub enum Credential {
     ClaudeOauth {
         access_token: String,
         account_uuid: Option<String>,
+    },
+    /// Kimi Code subscription OAuth: bearer plus the account's stable
+    /// `X-Msh-Device-Id` (sent as one of the required `X-Msh-*` headers).
+    KimiOauth {
+        access_token: String,
+        device_id: Option<String>,
     },
 }
 
@@ -96,6 +103,9 @@ pub async fn resolve_credential(
         }
         AuthMode::ClaudeOauth => Err(auth_error(
             "claude_oauth is resolved per-account by the account pool, not resolve_credential",
+        )),
+        AuthMode::KimiOauth => Err(auth_error(
+            "kimi_oauth is resolved per-account by the account pool, not resolve_credential",
         )),
         AuthMode::GoogleOauth => {
             let store =
@@ -176,6 +186,44 @@ pub async fn resolve_claude_account(
             account_uuid,
         })
         .map_err(|error| auth_error(error.to_string()))
+}
+
+/// Resolve one Kimi Code OAuth account for the account pool. Mirrors
+/// [`resolve_claude_account`]: `token_env` and an explicit `credentials` path
+/// override the default named-account file
+/// (`~/.shunt/accounts/kimi/<name>.json`), but neither is exercised by
+/// today's config surface — this exists for the pool-integration follow-up to
+/// build on. A `token_env`-sourced token carries no device id (no account
+/// file to persist one in), so `X-Msh-Device-Id` is omitted for it; the
+/// anthropic adapter's outbound header injection accepts a `None` device id.
+pub async fn resolve_kimi_account(
+    account: &crate::config::AccountConfig,
+    client: &reqwest::Client,
+) -> Result<Credential, AdapterError> {
+    if let Some(token_env) = account.token_env.as_deref() {
+        let access_token = env::var(token_env)
+            .ok()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| auth_error(format!("{token_env} is not set")))?;
+        return Ok(Credential::KimiOauth {
+            access_token,
+            device_id: None,
+        });
+    }
+
+    let path = account
+        .credentials
+        .as_deref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| kimi::store::account_path(&account.name));
+    let store = kimi::auth::KimiAuthStore::new(path, client.clone());
+    store
+        .get_valid()
+        .await
+        .map(|credential| Credential::KimiOauth {
+            access_token: credential.access_token,
+            device_id: credential.device_id,
+        })
 }
 
 /// Resolve one ChatGPT (Codex) OAuth account for the account pool. Unlike

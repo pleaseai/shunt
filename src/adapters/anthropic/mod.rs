@@ -19,6 +19,7 @@ use crate::{
     routing::Route,
     server::AppState,
 };
+use uuid::Uuid;
 
 mod auto_mode_classifier;
 mod model_rewrite;
@@ -893,6 +894,29 @@ fn outbound_headers(headers: &HeaderMap, credential: &Credential) -> HeaderMap {
                 }
             }
         }
+        Credential::KimiOauth {
+            access_token,
+            device_id,
+        } => {
+            out.remove("authorization");
+            out.remove("x-api-key");
+            if let Ok(value) = HeaderValue::from_str(&format!("Bearer {access_token}")) {
+                out.insert("authorization", value);
+            }
+            // `device_id` is normally the account's stable, persisted
+            // `X-Msh-Device-Id` (see `kimi::auth::msh_headers`). A
+            // `token_env`-backed credential has no account file to persist
+            // one in, so fall back to a fresh id for that request rather
+            // than omitting a header Kimi requires on every call.
+            let device_id = device_id
+                .clone()
+                .unwrap_or_else(|| Uuid::new_v4().to_string());
+            for (name, value) in crate::auth::kimi::auth::msh_headers(&device_id) {
+                if let Ok(value) = HeaderValue::from_str(&value) {
+                    out.insert(name, value);
+                }
+            }
+        }
         // Passthrough forwards the client's own credential unchanged — with one
         // fix-up. Claude Code's `apiKeyHelper` is an API-key mechanism: it sends
         // its output in *both* `x-api-key` and `Authorization: Bearer`. When that
@@ -1299,6 +1323,45 @@ mod tests {
             unchanged.get("anthropic-beta").unwrap(),
             "feature-a, oauth-2025-04-20"
         );
+    }
+
+    #[test]
+    fn kimi_oauth_sets_bearer_strips_client_auth_and_adds_msh_headers() {
+        let mut headers = client_headers();
+        headers.insert("x-api-key", "client-key".parse().unwrap());
+        let out = outbound_headers(
+            &headers,
+            &Credential::KimiOauth {
+                access_token: "kimi-token".to_string(),
+                device_id: Some("11111111-1111-1111-1111-111111111111".to_string()),
+            },
+        );
+        assert_eq!(out.get("authorization").unwrap(), "Bearer kimi-token");
+        assert!(out.get("x-api-key").is_none());
+        assert_eq!(out.get("x-msh-platform").unwrap(), "shunt");
+        assert_eq!(out.get("x-msh-version").unwrap(), env!("CARGO_PKG_VERSION"));
+        assert_eq!(
+            out.get("x-msh-device-id").unwrap(),
+            "11111111-1111-1111-1111-111111111111"
+        );
+        assert!(!out.get("x-msh-device-name").unwrap().is_empty());
+        assert!(!out.get("x-msh-device-model").unwrap().is_empty());
+    }
+
+    #[test]
+    fn kimi_oauth_without_a_stored_device_id_still_sets_all_five_headers() {
+        // A `token_env`-backed credential has no account file to persist a
+        // device id in; outbound_headers must still send every X-Msh-*
+        // header Kimi requires, falling back to a freshly generated id.
+        let out = outbound_headers(
+            &client_headers(),
+            &Credential::KimiOauth {
+                access_token: "kimi-token".to_string(),
+                device_id: None,
+            },
+        );
+        assert_eq!(out.get("authorization").unwrap(), "Bearer kimi-token");
+        assert!(!out.get("x-msh-device-id").unwrap().is_empty());
     }
 
     #[test]

@@ -430,7 +430,8 @@ async fn passthrough_send(
         | Credential::GoogleOauth { access_token, .. } => {
             request = request.bearer_auth(access_token);
         }
-        Credential::CursorOauth { .. } | Credential::Passthrough => {}
+        Credential::CursorOauth { .. } | Credential::KimiOauth { .. } | Credential::Passthrough => {
+        }
     }
     crate::upstream_timeout::wait(
         state.config.server.timeouts.upstream_ttfb_ms,

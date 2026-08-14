@@ -338,6 +338,10 @@ fn websocket_headers(credential: Credential) -> Result<HeaderMap, AdapterError> 
             set("authorization", format!("Bearer {access_token}"))?
         }
         Credential::Passthrough => {}
+        // Kimi's coding API speaks the Anthropic Messages shape, so a
+        // `kimi_oauth` provider is always `kind = "anthropic"` and never
+        // reaches this Responses/Codex WebSocket path in practice.
+        Credential::KimiOauth { .. } => {}
     }
     Ok(headers)
 }

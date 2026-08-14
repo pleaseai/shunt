@@ -1719,6 +1719,10 @@ pub enum AuthMode {
     XaiOauth,
     /// Cursor OAuth acquired by `shunt login cursor`.
     CursorOauth,
+    /// Kimi Code subscription OAuth, acquired via the device-code flow
+    /// (`shunt login kimi --name <account-name>`) and stored per-account in
+    /// `~/.shunt/accounts/kimi/<name>.json`.
+    KimiOauth,
     /// Google OAuth subscription token (Gemini Code Assist / Google One AI Pro),
     /// reused from the gemini CLI login (`~/.gemini/oauth_creds.json`). shunt
     /// can refresh it when operator-supplied client credentials are present.
@@ -1830,6 +1834,14 @@ pub fn host_is_chatgpt(host: &str) -> bool {
 /// leaks the reused Google subscription bearer off-origin.
 pub fn host_is_google_codeassist(host: &str) -> bool {
     host == "cloudcode-pa.googleapis.com"
+}
+
+/// Whether `host` belongs to Kimi (`kimi.com` or any subdomain, which covers
+/// the measured `api.kimi.com` API host). Used to reject a `kimi_oauth`
+/// provider pointed at a non-Kimi host, so shunt never leaks a Kimi Code
+/// subscription bearer to another origin.
+pub fn host_is_kimi(host: &str) -> bool {
+    host == "kimi.com" || host.ends_with(".kimi.com")
 }
 
 /// Whether `host` identifies the local machine.
@@ -1984,6 +1996,12 @@ pub enum ConfigError {
     ChatgptOauthNotHttps { provider: String },
     #[error("providers.{provider} uses auth = \"chatgpt_oauth\" but kind is not \"responses\"; the anthropic adapter would forward the client's own credential instead of the Codex token")]
     ChatgptOauthWrongKind { provider: String },
+    #[error("providers.{provider} uses auth = \"kimi_oauth\" but kind is not \"anthropic\"")]
+    KimiOauthWrongKind { provider: String },
+    #[error("providers.{provider} uses auth = \"kimi_oauth\" but base_url host {host} is not kimi.com; refusing to send a subscription token off-origin")]
+    KimiOauthNonKimiHost { provider: String, host: String },
+    #[error("providers.{provider} uses auth = \"kimi_oauth\" but base_url is not https; refusing to send a subscription token over plaintext")]
+    KimiOauthNotHttps { provider: String },
     #[error("providers.{provider}.accounts contains duplicate account name \"{name}\"")]
     DuplicateAccountName { provider: String, name: String },
     #[error("providers.{provider}.accounts account name \"{name}\" must match [a-z0-9-]+")]
@@ -3149,6 +3167,35 @@ impl Config {
                     }
                     if !host_is_chatgpt(host) {
                         return Err(ConfigError::ChatgptOauthNonChatgptHost {
+                            provider: name.clone(),
+                            host: host.to_string(),
+                        });
+                    }
+                }
+            }
+            // A kimi_oauth provider injects the operator's stored Kimi Code
+            // subscription bearer, so — like claude_oauth above — its base_url
+            // must stay on a Kimi host over https, never a gateway or plaintext
+            // endpoint that would receive the token. It must also be an
+            // `anthropic`-kind provider (Kimi's coding API speaks the Anthropic
+            // Messages wire shape): the anthropic adapter is what injects the
+            // Kimi bearer and X-Msh-* headers, whereas any other adapter would
+            // forward the client's own credential off-origin.
+            if provider.auth == AuthMode::KimiOauth {
+                if provider.kind != ProviderKind::Anthropic {
+                    return Err(ConfigError::KimiOauthWrongKind {
+                        provider: name.clone(),
+                    });
+                }
+                let host = url.host_str().unwrap_or_default();
+                if !host_is_loopback(host) {
+                    if url.scheme() != "https" {
+                        return Err(ConfigError::KimiOauthNotHttps {
+                            provider: name.clone(),
+                        });
+                    }
+                    if !host_is_kimi(host) {
+                        return Err(ConfigError::KimiOauthNonKimiHost {
                             provider: name.clone(),
                             host: host.to_string(),
                         });
