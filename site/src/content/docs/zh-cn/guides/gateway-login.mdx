@@ -40,7 +40,7 @@ ttl_hours = 1                                 # default
 
 如果 `public_url` 不是一个纯 HTTPS origin(只有回环地址允许 `http`)、token TTL 为零、签名密钥短于 32 字节,或者既没有配置有效的用户列表也没有配置有效的外部 IdP,启动会安全失败(fail closed)。静态用户的 secret 中可以包含 `:`,因为只有第一个冒号用于分隔 email 与其 secret。
 
-已弃用的 `jwt_secret_env`(env 变量名,默认 `SHUNT_GATEWAY_JWT_SECRET`)和 `token_ttl_seconds`(默认 `3600`)在单独使用时仍完全受支持,`token_ttl_seconds` 仍是设置小于一小时生命周期的唯一方式。同时设置一个已弃用的键和它对应的 `session.*` 替代键会导致启动失败(`jwt_secret_env` 与 `session.jwt_secret`,或 `token_ttl_seconds` 与 `session.ttl_hours`)。只有当配置文件中显式设置了这两个键之一时,shunt 才会记录一次弃用警告。完整的优先级规则和密钥轮换步骤见[配置参考](/zh-cn/reference/configuration/#servergatewaysession可选)。
+已弃用的 `jwt_secret_env`(env 变量名,默认 `SHUNT_GATEWAY_JWT_SECRET`)和 `token_ttl_seconds`(默认 `3600`)在单独使用时仍完全受支持,`token_ttl_seconds` 仍是设置小于一小时生命周期的唯一方式。同时设置一个已弃用的键和它对应的 `session.*` 替代键会导致启动失败(`jwt_secret_env` 与 `session.jwt_secret`,或 `token_ttl_seconds` 与 `session.ttl_hours`)。只要已弃用的键被显式设置——无论是在配置文件中,还是通过 `SHUNT_*` 环境变量 override——shunt 都会记录一次弃用警告,只有当该键本身完全未被设置时才会保持沉默(不设置 `jwt_secret_env`、只依赖 `SHUNT_GATEWAY_JWT_SECRET` env 变量来保存 secret 的配置仍然不会触发警告)。完整的优先级规则和密钥轮换步骤见[配置参考](/zh-cn/reference/configuration/#servergatewaysession可选)。
 
 ### 改用 Google OIDC
 

@@ -78,7 +78,7 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 
 如果 URL 不是不带路径等内容的 HTTPS origin(仅 loopback 允许 `http`)、TTL 为 0、secret 缺失或少于 32 bytes,或者 user list 为空或格式错误,启动会 fail closed。secret 可以包含 `:`,只有第一个 colon 用于分隔 email 与 secret。`jwt_secret_env` 和 `users_env` 的值也和其他配置文件字符串一样,可以写成 `${VAR}` / `${file:...}`(见 [Secret 引用](#secret-引用))。env-backed secret 和 user 的变更会在 config reload 时生效;由于 route tree 在 boot 时固定,添加或移除此表需要 restart。
 
-同时设置一个已弃用的键和其对应的 `[server.gateway.session]` 替代键会导致启动失败,按键分别判断:`jwt_secret_env` 与 `session.jwt_secret` 同时设置是错误;`token_ttl_seconds` 与 `session.ttl_hours` 同时设置也是错误。跨这两组混用(例如同时设置 `session.jwt_secret` 和 `token_ttl_seconds`)则没有问题。只有当配置文件中显式写出某个已弃用的键时,shunt 才会记录一次弃用警告 —— 完全不提及 `jwt_secret_env` 或 `token_ttl_seconds`、仅依赖默认值(env 变量 `SHUNT_GATEWAY_JWT_SECRET`,以及 1 小时/3600 秒)的配置不会触发警告。当某一对中只设置了一侧时,`session.*`(若存在)优先,其次是已弃用的键,最后才是默认值。
+同时设置一个已弃用的键和其对应的 `[server.gateway.session]` 替代键会导致启动失败,按键分别判断:`jwt_secret_env` 与 `session.jwt_secret` 同时设置是错误;`token_ttl_seconds` 与 `session.ttl_hours` 同时设置也是错误。跨这两组混用(例如同时设置 `session.jwt_secret` 和 `token_ttl_seconds`)则没有问题。只要已弃用的键被显式设置——无论是在配置文件中,还是通过 `SHUNT_*` 环境变量 override——shunt 就会记录一次弃用警告;只有当该键本身完全未被设置、使用默认值时才会保持沉默 —— 不设置 `jwt_secret_env`、只依赖 `SHUNT_GATEWAY_JWT_SECRET` env 变量来保存 secret 的配置仍然不会触发警告,因为该变量保存的是 secret 的值,而不是已弃用的键本身被设置。当某一对中只设置了一侧时,`session.*`(若存在)优先,其次是已弃用的键,最后才是默认值。
 
 颁发的 bearer 会在所选 provider 注入 server-side credential 时认证 `/v1/models`、`/v1/messages` 和 `/v1/messages/count_tokens`。passthrough provider 仍保持 open。如果还存在 `[server.auth]`,任一 credential 都能授权访问。device grant 和 rotating refresh token 是 process-lifetime in-memory state:config reload 会保留它们,但 restart 会使其失效。
 

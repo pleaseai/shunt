@@ -40,7 +40,7 @@ ttl_hours = 1                                 # 기본값
 
 `public_url`이 순수 HTTPS origin이 아니거나(`http`는 루프백에서만 허용됨), token TTL이 0이거나, 서명 시크릿이 32바이트보다 짧거나, 유효한 사용자 목록과 유효한 외부 IdP 중 어느 것도 구성되지 않았으면 시작은 닫힌 채로 실패(fail closed)합니다. 정적 사용자의 시크릿에는 `:`가 포함될 수 있습니다 — 첫 번째 콜론만 이메일과 시크릿을 구분하기 때문입니다.
 
-deprecated된 `jwt_secret_env`(env 변수 이름, 기본값 `SHUNT_GATEWAY_JWT_SECRET`)와 `token_ttl_seconds`(기본값 `3600`) 키는 단독으로 사용하는 한 계속 완전히 지원되며, `token_ttl_seconds`는 여전히 1시간 미만의 수명을 지정할 수 있는 유일한 방법입니다. deprecated된 키와 그 `session.*` 대체 키를 함께 설정하면 시작이 실패합니다(`jwt_secret_env`와 `session.jwt_secret`, 또는 `token_ttl_seconds`와 `session.ttl_hours`). shunt는 설정 파일에 두 키 중 하나가 명시적으로 적혀 있을 때만 deprecation 경고를 기록합니다. 전체 우선순위 규칙과 시크릿 rotation 절차는 [설정 레퍼런스](/ko/reference/configuration/#servergatewaysession-선택)를 참고하세요.
+deprecated된 `jwt_secret_env`(env 변수 이름, 기본값 `SHUNT_GATEWAY_JWT_SECRET`)와 `token_ttl_seconds`(기본값 `3600`) 키는 단독으로 사용하는 한 계속 완전히 지원되며, `token_ttl_seconds`는 여전히 1시간 미만의 수명을 지정할 수 있는 유일한 방법입니다. deprecated된 키와 그 `session.*` 대체 키를 함께 설정하면 시작이 실패합니다(`jwt_secret_env`와 `session.jwt_secret`, 또는 `token_ttl_seconds`와 `session.ttl_hours`). shunt는 deprecated된 키가 설정 파일이든 `SHUNT_*` 환경 변수 override든 명시적으로 설정될 때마다 deprecation 경고를 기록하며, 그 키 자체가 전혀 설정되지 않았을 때만 조용히 넘어갑니다(`jwt_secret_env`를 설정하지 않고 `SHUNT_GATEWAY_JWT_SECRET` env 변수에 secret 값만 담아 두는 설정은 여전히 경고하지 않습니다). 전체 우선순위 규칙과 시크릿 rotation 절차는 [설정 레퍼런스](/ko/reference/configuration/#servergatewaysession-선택)를 참고하세요.
 
 ### 대신 Google OIDC 사용하기
 

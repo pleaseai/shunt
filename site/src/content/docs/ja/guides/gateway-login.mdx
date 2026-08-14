@@ -40,7 +40,7 @@ ttl_hours = 1                                 # default
 
 `public_url` が素の HTTPS オリジンでない場合（`http` はループバックでのみ許可されます）、token TTL が 0 の場合、署名シークレットが 32 バイト未満の場合、あるいは有効なユーザーリストと有効な外部 IdP のどちらも設定されていない場合、起動はフェイルクローズします。静的ユーザーのシークレットには `:` を含められます — 最初のコロンだけがメールアドレスとシークレットを区切るためです。
 
-deprecated な `jwt_secret_env`(env 変数名、デフォルト `SHUNT_GATEWAY_JWT_SECRET`)と `token_ttl_seconds`(デフォルト `3600`)は、単独で使う限り引き続き完全にサポートされます。`token_ttl_seconds` は今も 1 時間未満の寿命を指定できる唯一の方法です。deprecated なキーとその `session.*` 置き換えを併用すると起動が失敗します(`jwt_secret_env` と `session.jwt_secret`、または `token_ttl_seconds` と `session.ttl_hours`)。shunt は、設定ファイルにどちらかのキーが明示的に書かれている場合にのみ deprecation 警告を記録します。優先順位の全体像と secret のローテーション手順は[設定リファレンス](/ja/reference/configuration/#servergatewaysessionオプション)を参照してください。
+deprecated な `jwt_secret_env`(env 変数名、デフォルト `SHUNT_GATEWAY_JWT_SECRET`)と `token_ttl_seconds`(デフォルト `3600`)は、単独で使う限り引き続き完全にサポートされます。`token_ttl_seconds` は今も 1 時間未満の寿命を指定できる唯一の方法です。deprecated なキーとその `session.*` 置き換えを併用すると起動が失敗します(`jwt_secret_env` と `session.jwt_secret`、または `token_ttl_seconds` と `session.ttl_hours`)。shunt は、deprecated なキーが設定ファイルであれ `SHUNT_*` 環境変数 override であれ明示的に設定されるたびに deprecation 警告を記録し、そのキー自体が一切設定されていない場合にのみ警告なしのままです(`jwt_secret_env` を設定せず `SHUNT_GATEWAY_JWT_SECRET` env 変数に secret の値だけを入れておく設定は、引き続き警告しません)。優先順位の全体像と secret のローテーション手順は[設定リファレンス](/ja/reference/configuration/#servergatewaysessionオプション)を参照してください。
 
 ### 代わりに Google OIDC を使う
 

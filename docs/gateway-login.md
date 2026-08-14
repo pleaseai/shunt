@@ -92,11 +92,13 @@ still fully supported with no behavior change when used alone —
 together with `session.jwt_secret` is an error, and `token_ttl_seconds`
 together with `session.ttl_hours` is an error; mixing across the two pairs
 (e.g. `token_ttl_seconds` alongside `session.jwt_secret`) is fine. shunt logs
-one deprecation warning only when a deprecated key is explicitly written in
-the config file — a config that never mentions `jwt_secret_env` or
-`token_ttl_seconds` and relies on the `SHUNT_GATEWAY_JWT_SECRET` env var and
-the 1-hour/3600s default stays silent. Where only one side of a pair is set,
-`session.*` wins if present, otherwise the deprecated key, otherwise the
+one deprecation warning whenever a deprecated key is explicitly set —
+whether in the config file or through a `SHUNT_*` environment override —
+and stays silent only when the key itself is never configured; a config
+that never sets `jwt_secret_env` and simply relies on the
+`SHUNT_GATEWAY_JWT_SECRET` env var holding the secret still doesn't warn,
+since that variable holds the secret's value, not the deprecated key being
+set. Where only one side of a pair is set, `session.*` wins if present, otherwise the deprecated key, otherwise the
 default.
 
 Startup fails closed if `public_url` is not a bare HTTPS origin (`http` is
