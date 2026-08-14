@@ -12,8 +12,8 @@ use tower::ServiceExt;
 use crate::{
     config::{
         Config, GatewayConfig, GatewayOidcConfig, GatewayPolicyConfig, GatewayPolicyMatch,
-        GatewayTelemetryConfig, GatewayTelemetryDestination, InboundAuthConfig, ModelConfig,
-        OidcProviderConfig, RouteConfig,
+        GatewaySessionConfig, GatewayTelemetryConfig, GatewayTelemetryDestination,
+        InboundAuthConfig, ModelConfig, OidcProviderConfig, RouteConfig, Secret,
     },
     server::{build_router, AppState},
 };
@@ -36,14 +36,15 @@ impl GatewayEnv {
         let mut config = Config::default();
         config.server.gateway = Some(GatewayConfig {
             public_url: "https://gateway.example".into(),
-            jwt_secret_env: secret_env.clone(),
+            jwt_secret_env: Some(secret_env.clone()),
             users_env: users_env.clone(),
-            token_ttl_seconds: 3600,
+            token_ttl_seconds: Some(3600),
             trust_forwarded_for: false,
             policies: None,
             telemetry: None,
             state_path: None,
             oidc: None,
+            session: None,
         });
         (
             config,
@@ -1437,6 +1438,74 @@ async fn gateway_jwt_and_static_client_token_compose_on_models() {
     )
     .await;
     std::env::remove_var(auth_env);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["error"]["type"], "authentication_error");
+}
+
+#[tokio::test]
+async fn gateway_session_secret_rotation_accepts_every_listed_secret_and_rejects_others() {
+    // `[server.gateway.session] jwt_secret` accepts an ordered list for
+    // rotation (issue #348): every listed secret must verify a bearer token,
+    // and a secret that was never listed must not.
+    let (mut config, _env) = GatewayEnv::config("rotation");
+    let gateway = config.server.gateway.as_mut().unwrap();
+    gateway.jwt_secret_env = None;
+    gateway.session = Some(GatewaySessionConfig {
+        jwt_secret: vec![
+            Secret::from("0123456789abcdef0123456789abcdef"),
+            Secret::from("fedcba9876543210fedcba9876543210"),
+        ],
+        ttl_hours: None,
+    });
+    config.models = vec![ModelConfig {
+        id: "claude-via-gateway".into(),
+        display_name: None,
+        upstream_model: None,
+    }];
+    let (router, _, _) = build_router(config).unwrap();
+
+    let identity = Identity {
+        sub: "dev@example.com".into(),
+        email: "dev@example.com".into(),
+        name: "dev".into(),
+    };
+    let request_with_bearer = |bearer: String| {
+        Request::builder()
+            .uri("/v1/models")
+            .header(header::AUTHORIZATION, format!("Bearer {bearer}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    // A token signed with the primary (index 0) secret verifies.
+    let primary = jwt::mint(
+        &identity,
+        "https://gateway.example",
+        b"0123456789abcdef0123456789abcdef",
+        3600,
+    );
+    let (status, _) = json_response(router.clone(), request_with_bearer(primary)).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // A token signed with a rotated (index 1) secret also verifies.
+    let rotated = jwt::mint(
+        &identity,
+        "https://gateway.example",
+        b"fedcba9876543210fedcba9876543210",
+        3600,
+    );
+    let (status, _) = json_response(router.clone(), request_with_bearer(rotated)).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // A token signed with a secret that was never listed is rejected, proving
+    // rotation doesn't degrade into accept-anything.
+    let unrelated = jwt::mint(
+        &identity,
+        "https://gateway.example",
+        b"not-a-configured-secret-at-all!",
+        3600,
+    );
+    let (status, body) = json_response(router, request_with_bearer(unrelated)).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(body["error"]["type"], "authentication_error");
 }

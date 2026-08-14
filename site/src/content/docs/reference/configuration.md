@@ -16,9 +16,9 @@ Any string value in the config file may be written as `${VAR}` or `${file:/abs/p
 
 `$${` escapes to a literal `${`. Resolution is not recursive — a resolved value is not re-scanned for further references. This applies only to the config file; `SHUNT_*` environment overrides are used as-is. It reruns on every config load, including [hot reload](https://github.com/pleaseai/shunt/blob/main/docs/config-reload.md), so a `${file:}`-backed secret can be rotated by rewriting the referenced file and triggering a reload, without restarting shunt. Whether the new value then takes effect follows the field's own reload behavior: `[sentry]` and `[otel]` are initialized once at startup, so rotating a secret in those two sections updates the config but needs a restart to apply.
 
-Three fields are additionally typed as a redacting secret and render as `[redacted]` in diagnostic output: [`[sentry] dsn`](#sentry-optional), [`[otel.headers]`](#otelheaders-optional) values, and [`[server.gateway.telemetry] forward_to[].headers`](#servergatewaytelemetry-optional) values. A literal value in one of these fields still works exactly as before; shunt additionally logs one advisory boot warning naming the affected field paths — never the values — suggesting `${VAR}` / `${file:...}` when a secret-typed field holds a literal.
+Four fields are additionally typed as a redacting secret and render as `[redacted]` in diagnostic output: [`[sentry] dsn`](#sentry-optional), [`[otel.headers]`](#otelheaders-optional) values, [`[server.gateway.telemetry] forward_to[].headers`](#servergatewaytelemetry-optional) values, and [`[server.gateway.session] jwt_secret`](#servergatewaysession-optional). A literal value in one of these fields still works exactly as before; shunt additionally logs one advisory boot warning naming the affected field paths — never the values — suggesting `${VAR}` / `${file:...}` when a secret-typed field holds a literal.
 
-The existing `tokens_env`, `jwt_secret_env`, `client_secret_env`, `api_key_env`, `users_env`, `token_env`, and `tokens_file` fields are unaffected by this and keep naming an environment variable or file path, as before — see each field's own entry below.
+The existing `tokens_env`, `jwt_secret_env`, `client_secret_env`, `api_key_env`, `users_env`, `token_env`, and `tokens_file` fields are unaffected by this and keep naming an environment variable or file path, as before (`jwt_secret_env` is separately deprecated in favor of [`session.jwt_secret`](#servergatewaysession-optional)) — see each field's own entry below.
 
 ## `[server]`
 
@@ -131,15 +131,39 @@ Presence of this table enables the [OAuth device-flow gateway login](/guides/gat
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
 | `public_url` | required | Externally reachable HTTPS origin used as the JWT issuer and base for advertised OAuth endpoints; `http` is accepted only for loopback |
-| `jwt_secret_env` | `SHUNT_GATEWAY_JWT_SECRET` | Env var holding the HS256 signing secret (at least 32 bytes) |
+| `jwt_secret_env` | `SHUNT_GATEWAY_JWT_SECRET` | Env var holding the HS256 signing secret (at least 32 bytes). **Deprecated**, still fully supported — superseded by [`session.jwt_secret`](#servergatewaysession-optional) |
 | `users_env` | `SHUNT_GATEWAY_USERS` | Env var holding comma-separated `email:secret` approval users; optional when `[server.gateway.oidc]` is configured |
-| `token_ttl_seconds` | `3600` | Access-token lifetime; returned as `expires_in` |
+| `token_ttl_seconds` | `3600` | Access-token lifetime; returned as `expires_in`. **Deprecated**, still fully supported — superseded by [`session.ttl_hours`](#servergatewaysession-optional), except that this key remains the only way to express a sub-hour lifetime |
 | `trust_forwarded_for` | `false` | Trust `X-Forwarded-For`/`X-Real-IP` as the `/device` rate-limit identity; enable only behind a trusted proxy that replaces client-supplied values |
 | `state_path` | `~/.shunt/gateway-sessions.json` | File persisting refresh sessions across restarts; tokens are stored as SHA-256 hashes and written atomically with owner-only permissions (0600 on Unix). Set `""` for memory-only sessions (also the fallback when no home directory resolves) |
 
 Startup fails closed when the URL is not a bare HTTPS origin (`http` is allowed only on loopback), the TTL is zero, the secret is missing or shorter than 32 bytes, or neither a valid static-user list nor a valid external IdP is configured. Static-user secrets may contain `:` because only the first colon separates the email and secret. Changes to the environment-backed secrets, users, and IdP configuration hot-apply on config reload; adding or removing the gateway table requires a restart because the route tree is fixed at boot.
 
 `jwt_secret_env`'s and `users_env`'s own values can also be written as `${VAR}` / `${file:...}` (see [Secret references](#secret-references)).
+
+Setting both a deprecated key and its `[server.gateway.session]` replacement fails startup, per key: `jwt_secret_env` together with `session.jwt_secret` is an error, and `token_ttl_seconds` together with `session.ttl_hours` is an error; mixing across the two pairs (e.g. `token_ttl_seconds` alongside `session.jwt_secret`) is fine. shunt logs one deprecation warning only when a deprecated key is explicitly written in the config file — a config that never mentions `jwt_secret_env` or `token_ttl_seconds` and relies on the defaults stays silent. Where only one side of a pair is set, `session.*` wins if present, else the deprecated key, else the default.
+
+### `[server.gateway.session]` (optional)
+
+Mirrors the upstream Claude apps gateway `session:` block:
+
+```toml
+[server.gateway.session]
+jwt_secret = "${SHUNT_GATEWAY_JWT_SECRET}"
+ttl_hours = 1
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `jwt_secret` | required when this table is present | HS256 signing secret, at least 32 bytes of entropy (e.g. `openssl rand -base64 32`). A single string, or an array for rotation — index 0 signs new tokens and every entry verifies |
+| `ttl_hours` | `1` | Access-token lifetime, in whole hours |
+
+`jwt_secret` is a `Secret`-typed field: its value supports `${VAR}` / `${file:/abs/path}` like any other config string (see [Secret references](#secret-references)) and is redacted in diagnostic output. To rotate without invalidating live sessions, prepend the new secret to the array, wait `ttl_hours` for outstanding access tokens to expire, then drop the old entry:
+
+```toml
+[server.gateway.session]
+jwt_secret = ["new-secret-value", "old-secret-value"]
+```
 
 ### `[server.gateway.oidc]` (optional)
 

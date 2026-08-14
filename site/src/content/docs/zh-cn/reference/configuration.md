@@ -9,9 +9,9 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 
 配置文件中的字符串值可以写成 `${VAR}` 或 `${file:/绝对/路径}` 而不是字面量。`${VAR}` 会替换为环境变量 `VAR` 的值,可以嵌入更长的字符串中,例如 `"Bearer ${TOKEN}"`(若变量未定义,配置加载会失败)。`${file:/绝对/路径}` 会替换为该文件的内容(已 trim),路径必须是绝对路径,且引用必须是该字段的整个值 —— 不能嵌入更长的字符串中(若文件不可读、路径是相对路径,或引用嵌入在更长的字符串中,配置加载会失败)。`$${` 会转义为字面量 `${`。解析不是递归的 —— 解析出的值不会被再次扫描。此替换仅适用于配置文件,`SHUNT_*` 环境变量覆盖会按原样使用。它会在每次配置加载时重新执行,包括启动、`shunt check` 以及[热重载](https://github.com/pleaseai/shunt/blob/main/docs/config-reload.md)(SIGHUP 与文件监视),因此以 `${file:}` 引用的 secret 可以通过重写所引用的文件并触发一次重载来轮换,无需重启 shunt。但轮换后的值是否生效取决于该字段自身的重载行为:`[sentry]` 和 `[otel]` 只在启动时初始化一次,因此轮换这两个部分中的 secret 只会更新配置,需要重启才能生效。
 
-`[sentry] dsn`、`[otel.headers]` 的值,以及 `[server.gateway.telemetry] forward_to[].headers` 的值这三个字段被标记为 redacting secret 类型,在诊断输出中显示为 `[redacted]`。在这些字段中写入字面量值的行为与之前完全相同;若某个 secret 类型字段持有字面量值,shunt 会在启动时记录一次仅列出相关字段路径(绝不包含值)的建议性警告,提示改用 `${VAR}` / `${file:...}`。
+`[sentry] dsn`、`[otel.headers]` 的值、`[server.gateway.telemetry] forward_to[].headers` 的值,以及 `[server.gateway.session] jwt_secret` 这四个字段被标记为 redacting secret 类型,在诊断输出中显示为 `[redacted]`。在这些字段中写入字面量值的行为与之前完全相同;若某个 secret 类型字段持有字面量值,shunt 会在启动时记录一次仅列出相关字段路径(绝不包含值)的建议性警告,提示改用 `${VAR}` / `${file:...}`。
 
-现有的 `tokens_env`、`jwt_secret_env`、`client_secret_env`、`api_key_env`、`users_env`、`token_env`、`tokens_file` 字段不受此变更影响,仍然指向一个环境变量(对 `tokens_file` 而言是文件路径)。
+现有的 `tokens_env`、`jwt_secret_env`、`client_secret_env`、`api_key_env`、`users_env`、`token_env`、`tokens_file` 字段不受此变更影响,仍然指向一个环境变量(对 `tokens_file` 而言是文件路径)(`jwt_secret_env` 已单独被 [`session.jwt_secret`](#servergatewaysession可选) 取代,已弃用)。
 
 ## `[server]`
 
@@ -71,14 +71,38 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 | 键 | 默认 | 含义 |
 | :-- | :-- | :-- |
 | `public_url` | 必需 | 对外可达的 HTTPS origin,用作 JWT issuer 和 OAuth endpoint 基址;仅 loopback 允许 `http` |
-| `jwt_secret_env` | `SHUNT_GATEWAY_JWT_SECRET` | 保存至少 32 bytes 的 HS256 signing secret 的 env 变量 |
+| `jwt_secret_env` | `SHUNT_GATEWAY_JWT_SECRET` | 保存至少 32 bytes 的 HS256 signing secret 的 env 变量。**已弃用**,单独使用时仍完全受支持 —— 已被 [`session.jwt_secret`](#servergatewaysession可选) 取代 |
 | `users_env` | `SHUNT_GATEWAY_USERS` | 保存逗号分隔的 `email:secret` approval user 的 env 变量 |
-| `token_ttl_seconds` | `3600` | access token 生命周期,以 `expires_in` 返回 |
+| `token_ttl_seconds` | `3600` | access token 生命周期,以 `expires_in` 返回。**已弃用**,单独使用时仍完全受支持 —— 已被 [`session.ttl_hours`](#servergatewaysession可选) 取代,但它仍是表达小于一小时生命周期的唯一方式 |
 | `trust_forwarded_for` | `false` | 将 `X-Forwarded-For`/`X-Real-IP` 信任为 `/device` rate-limit identity;只能在会替换 client 所提供值的 trusted proxy 后启用 |
 
 如果 URL 不是不带路径等内容的 HTTPS origin(仅 loopback 允许 `http`)、TTL 为 0、secret 缺失或少于 32 bytes,或者 user list 为空或格式错误,启动会 fail closed。secret 可以包含 `:`,只有第一个 colon 用于分隔 email 与 secret。`jwt_secret_env` 和 `users_env` 的值也和其他配置文件字符串一样,可以写成 `${VAR}` / `${file:...}`(见 [Secret 引用](#secret-引用))。env-backed secret 和 user 的变更会在 config reload 时生效;由于 route tree 在 boot 时固定,添加或移除此表需要 restart。
 
+同时设置一个已弃用的键和其对应的 `[server.gateway.session]` 替代键会导致启动失败,按键分别判断:`jwt_secret_env` 与 `session.jwt_secret` 同时设置是错误;`token_ttl_seconds` 与 `session.ttl_hours` 同时设置也是错误。跨这两组混用(例如同时设置 `session.jwt_secret` 和 `token_ttl_seconds`)则没有问题。只有当配置文件中显式写出某个已弃用的键时,shunt 才会记录一次弃用警告 —— 完全不提及 `jwt_secret_env` 或 `token_ttl_seconds`、仅依赖默认值(env 变量 `SHUNT_GATEWAY_JWT_SECRET`,以及 1 小时/3600 秒)的配置不会触发警告。当某一对中只设置了一侧时,`session.*`(若存在)优先,其次是已弃用的键,最后才是默认值。
+
 颁发的 bearer 会在所选 provider 注入 server-side credential 时认证 `/v1/models`、`/v1/messages` 和 `/v1/messages/count_tokens`。passthrough provider 仍保持 open。如果还存在 `[server.auth]`,任一 credential 都能授权访问。device grant 和 rotating refresh token 是 process-lifetime in-memory state:config reload 会保留它们,但 restart 会使其失效。
+
+### `[server.gateway.session]`(可选)
+
+对应上游 Claude apps gateway 的 `session:` 块:
+
+```toml
+[server.gateway.session]
+jwt_secret = "${SHUNT_GATEWAY_JWT_SECRET}"
+ttl_hours = 1
+```
+
+| 键 | 默认 | 含义 |
+| :-- | :-- | :-- |
+| `jwt_secret` | 存在此表时必需 | HS256 signing secret,至少需要 32 bytes 的熵(例如 `openssl rand -base64 32`)。可以是单个字符串,也可以是用于轮换的 array —— index 0 用于签发新 token,所有条目都参与验证 |
+| `ttl_hours` | `1` | access token 生命周期,以小时为单位 |
+
+`jwt_secret` 是一个 `Secret` 类型的字段:它的值和其他配置文件字符串一样支持 `${VAR}` / `${file:/绝对/路径}`(见 [Secret 引用](#secret-引用)),并在诊断输出中被 redact。要在不使旧会话失效的情况下轮换,把新 secret 加到 array 开头,等待 `ttl_hours` 让未过期的 access token 到期,再删除旧的那一项:
+
+```toml
+[server.gateway.session]
+jwt_secret = ["new-secret-value", "old-secret-value"]
+```
 
 ### `[[server.gateway.policies]]`(可选)
 

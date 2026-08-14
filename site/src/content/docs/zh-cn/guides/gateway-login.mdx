@@ -24,19 +24,23 @@ export SHUNT_GATEWAY_JWT_SECRET="$(openssl rand -base64 48)"
 export SHUNT_GATEWAY_USERS='alice@example.com:<unique-secret>,bob@example.com:<unique-secret>'
 ```
 
-添加 Claude Code 和用户浏览器可以触达的公开 URL:
+添加 Claude Code 和用户浏览器可以触达的公开 URL,并让 `[server.gateway.session]` 指向该密钥:
 
 ```toml
 [server.gateway]
 public_url = "https://gateway.example.com"
-jwt_secret_env = "SHUNT_GATEWAY_JWT_SECRET" # default
 users_env = "SHUNT_GATEWAY_USERS"            # default
-token_ttl_seconds = 3600                      # default
 trust_forwarded_for = false                   # default
 # state_path = "~/.shunt/gateway-sessions.json"  # default; "" = memory-only sessions
+
+[server.gateway.session]
+jwt_secret = "${SHUNT_GATEWAY_JWT_SECRET}"
+ttl_hours = 1                                 # default
 ```
 
-如果 `public_url` 不是一个纯 HTTPS origin(只有回环地址允许 `http`)、`token_ttl_seconds` 为零、签名密钥短于 32 字节,或者既没有配置有效的用户列表也没有配置有效的外部 IdP,启动会安全失败(fail closed)。静态用户的 secret 中可以包含 `:`,因为只有第一个冒号用于分隔 email 与其 secret。
+如果 `public_url` 不是一个纯 HTTPS origin(只有回环地址允许 `http`)、token TTL 为零、签名密钥短于 32 字节,或者既没有配置有效的用户列表也没有配置有效的外部 IdP,启动会安全失败(fail closed)。静态用户的 secret 中可以包含 `:`,因为只有第一个冒号用于分隔 email 与其 secret。
+
+已弃用的 `jwt_secret_env`(env 变量名,默认 `SHUNT_GATEWAY_JWT_SECRET`)和 `token_ttl_seconds`(默认 `3600`)在单独使用时仍完全受支持,`token_ttl_seconds` 仍是设置小于一小时生命周期的唯一方式。同时设置一个已弃用的键和它对应的 `session.*` 替代键会导致启动失败(`jwt_secret_env` 与 `session.jwt_secret`,或 `token_ttl_seconds` 与 `session.ttl_hours`)。只有当配置文件中显式设置了这两个键之一时,shunt 才会记录一次弃用警告。完整的优先级规则和密钥轮换步骤见[配置参考](/zh-cn/reference/configuration/#servergatewaysession可选)。
 
 ### 改用 Google OIDC
 
