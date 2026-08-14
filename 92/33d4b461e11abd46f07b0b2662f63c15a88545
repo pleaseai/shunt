@@ -1,0 +1,56 @@
+tests/passthrough.rs
+  s_883e26f2c25b24::t_bbf1b48a9b1813 396-399,401,407
+src/gateway/mod.rs
+  s_883e26f2c25b24::t_cef9ca4d1014ce 224-225
+  s_883e26f2c25b24::t_9329e4f25ffd63 68-73,124,134-148,178-179,181,227-229
+.claude/agent-memory/review-review-comment-analyzer/MEMORY.md
+  s_883e26f2c25b24::t_e195b177c843ac 9
+.claude/agent-memory/review-review-comment-analyzer/shunt-gateway-claims-scope-rot.md
+  s_883e26f2c25b24::t_2d0ca27ac5839b 1-16
+docs/config-secrets.md
+  s_883e26f2c25b24::t_5da74f5c86313b 41-55,59,61-63
+docs/gateway-login.md
+  s_883e26f2c25b24::t_b2554292763421 42-47,57-60,68-103
+site/src/content/docs/guides/gateway-login.mdx
+  s_883e26f2c25b24::t_2311cffc06ffe4 27,35-38,41-43
+site/src/content/docs/ja/guides/gateway-login.mdx
+  s_883e26f2c25b24::t_cfa47d3259be25 27,35-38,41-43
+site/src/content/docs/ja/reference/configuration.md
+  s_883e26f2c25b24::t_134138f16dec1e 12,14,74,76,81-82,85-106
+site/src/content/docs/ko/guides/gateway-login.mdx
+  s_883e26f2c25b24::t_7b8c0ce3b06dd9 27,35-38,41-43
+site/src/content/docs/ko/reference/configuration.md
+  s_883e26f2c25b24::t_70b0acc9cec183 12,14,74,76,82-83,86-107
+site/src/content/docs/reference/configuration.md
+  s_883e26f2c25b24::t_a8f2f7bb244fed 19,21,134,136,144-167
+site/src/content/docs/zh-cn/guides/gateway-login.mdx
+  s_883e26f2c25b24::t_1659c5329f06cc 27,35-38,41-43
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_883e26f2c25b24::t_acc36fded6cd58 12,14,74,76,81-82,85-106
+src/config.rs
+  s_883e26f2c25b24::t_ec3575593b5aa4 17,25,520-524,528-531,558-562,649-654,656-662,664-692,718-719,722-723,729-775,2070-2087,2600-2604,3608-3611,4771,4773,4779,4823,4825,4831,4853,4935,4937,4955,4974,4976,4982,5087-5330,7284-7382
+src/config/secrets.rs
+  s_883e26f2c25b24::t_bc9f43185e455a 233-236,267-276,910-938
+src/config/session.rs
+  s_883e26f2c25b24::t_9bc2b76a6c9928 1-83
+src/gateway/persist.rs
+  s_883e26f2c25b24::t_cec2779af2d50a 311,313,319
+src/gateway/tests.rs
+  s_883e26f2c25b24::t_d6f634f3132cfb 15-16,39,41,47,1484-1551
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "9233d4b461e11abd46f07b0b2662f63c15a88545",
+  "prompts": {},
+  "sessions": {
+    "s_883e26f2c25b24": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "24405184-39b1-4f05-b98a-99e19a73664c",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
