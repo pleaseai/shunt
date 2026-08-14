@@ -8,9 +8,11 @@
 //!
 //! The project id is resolved here rather than on the first request, because
 //! provisioning a first-time account polls `onboardUser` to exhaustion —
-//! `ONBOARD_MAX_ATTEMPTS` attempts at up to `ONBOARD_REQUEST_TIMEOUT` each,
-//! spaced by `ONBOARD_POLL_INTERVAL` — a worst case of roughly 158 seconds,
-//! acceptable in an interactive login, not in front of a proxied turn.
+//! `ONBOARD_MAX_ATTEMPTS` attempts, each bounded by up to two
+//! `ONBOARD_REQUEST_TIMEOUT` windows (the send and, separately, the body
+//! read), spaced by `ONBOARD_POLL_INTERVAL` — a worst case of roughly
+//! 5 minutes, acceptable in an interactive login, not in front of a proxied
+//! turn.
 
 use std::time::Duration;
 
@@ -34,8 +36,11 @@ const CALLBACK_CONFIG: CallbackConfig = CallbackConfig {
     path: CALLBACK_PATH,
     // Matches the registered redirect URI. `CallbackServer` binds both loopback
     // families on a fixed port, and refuses to start rather than silently fall
-    // back to v4-only if another process already holds [::1] on this port — so
-    // the `localhost` spelling cannot silently hang on ::1.
+    // back to v4-only if another process already holds [::1] on this port —
+    // closing that one squatted-port case. Any other bind failure on [::1]
+    // (permission denied, resource exhaustion, ...) still falls back to
+    // v4-only, best-effort, so the `localhost` spelling can still hang if the
+    // browser resolves it to ::1 first in one of those cases.
     host: "localhost",
 };
 
