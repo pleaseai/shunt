@@ -445,3 +445,6 @@ fn bounded_identity(email: &str) -> String {
     }
     email[..end].to_string()
 }
+
+#[cfg(test)]
+mod tests;

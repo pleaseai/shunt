@@ -3756,9 +3756,9 @@ mod tests {
         AccountConfig, AdminConfig, AdminOidcConfig, AuthMode, CodexEndpointConfig, Config,
         ConfigError, ConfigFormat, GatewayConfig, GatewayOidcConfig, GatewayPolicyConfig,
         GatewayPolicyMatch, GatewayTelemetryConfig, GatewayTelemetryDestination, InboundAuthConfig,
-        ModelConfig, OauthUsageConfig, OidcProviderConfig, PoolConfig, ProviderKind,
-        ResponsesFlavor, RetryConfig, StatusConfig, StatusSource, UsageEndpointConfig,
-        CONFIG_ENV_LOCK,
+        InboundJwtConfig, ModelConfig, OauthUsageConfig, OidcProviderConfig, PoolConfig,
+        ProviderKind, ResponsesFlavor, RetryConfig, StatusConfig, StatusSource,
+        UsageEndpointConfig, CONFIG_ENV_LOCK,
     };
 
     fn model_config(id: &str, upstream_model: Option<BTreeMap<String, String>>) -> ModelConfig {
@@ -7429,5 +7429,251 @@ routes:
             .routes
             .iter()
             .any(|route| route.model == "kimi-k2.7-code" && route.provider == "kimi"));
+    }
+
+    /// A `[server.gateway]` whose only interesting field is `public_url`. Its
+    /// signing secret is deliberately unset: these tests assert on the
+    /// inbound-JWT collision check, which runs before the gateway resolves.
+    fn gateway_config() -> GatewayConfig {
+        GatewayConfig {
+            public_url: "https://gw.example".to_string(),
+            jwt_secret_env: format!("SHUNT_TEST_UNSET_GW_SECRET_{}", std::process::id()),
+            users_env: format!("SHUNT_TEST_UNSET_GW_USERS_{}", std::process::id()),
+            token_ttl_seconds: 3600,
+            trust_forwarded_for: false,
+            policies: None,
+            telemetry: None,
+            state_path: None,
+            oidc: None,
+        }
+    }
+
+    /// A `[[server.auth.jwt]]` entry that resolves cleanly, for tests that then
+    /// break exactly one field.
+    fn jwt_entry() -> InboundJwtConfig {
+        InboundJwtConfig {
+            issuer: "https://issuer.example".to_string(),
+            audience: super::StringList::One("shunt-clients".to_string()),
+            email_domains: vec!["example.com".to_string()],
+            allowed_emails: Vec::new(),
+            algorithms: vec!["RS256".to_string()],
+            authorized_parties: Vec::new(),
+            clock_skew_seconds: 0,
+            max_token_age_seconds: 3600,
+            jwks_url: None,
+        }
+    }
+
+    fn auth_with_jwt(entries: Vec<InboundJwtConfig>, tokens_env: &str) -> InboundAuthConfig {
+        InboundAuthConfig {
+            header: default_auth_header(),
+            tokens_env: tokens_env.to_string(),
+            jwt: entries,
+        }
+    }
+
+    /// An env var name guaranteed unset, so `tokens_env` resolves empty.
+    fn unset_tokens_env(tag: &str) -> String {
+        let env = format!("SHUNT_TEST_NO_TOKENS_{tag}_{}", std::process::id());
+        std::env::remove_var(&env);
+        env
+    }
+
+    #[test]
+    fn inbound_auth_boots_with_a_jwt_issuer_and_no_static_tokens() {
+        // The deployment shape the feature exists for: identity comes entirely
+        // from the IdP, so there is no `name:token` list to set.
+        let env = unset_tokens_env("JWT_ONLY");
+        let auth = auth_with_jwt(vec![jwt_entry()], &env);
+
+        let resolved = auth.resolve().expect("a JWT issuer is credential enough");
+        assert_eq!(resolved.jwt().len(), 1);
+        assert_eq!(resolved.jwt()[0].issuer, "https://issuer.example");
+        // Nothing silently became an accepted static token.
+        assert_eq!(resolved.authenticate_value(b""), None);
+    }
+
+    #[test]
+    fn inbound_auth_with_neither_tokens_nor_jwt_still_fails_closed() {
+        let env = unset_tokens_env("NEITHER");
+
+        assert!(matches!(
+            auth_with_jwt(Vec::new(), &env).resolve().unwrap_err(),
+            ConfigError::MissingClientTokens { .. }
+        ));
+    }
+
+    #[test]
+    fn inbound_jwt_requires_an_authorization_rule_beyond_audience() {
+        // `audience` is not an authorization decision for every issuer — a
+        // GitHub Actions workflow picks its own `aud` — so an entry carrying
+        // only an audience must not resolve.
+        let env = unset_tokens_env("NO_RULE");
+        let mut entry = jwt_entry();
+        entry.email_domains = Vec::new();
+        entry.allowed_emails = Vec::new();
+
+        let error = auth_with_jwt(vec![entry], &env).resolve().unwrap_err();
+        assert!(
+            matches!(&error, ConfigError::InvalidInboundJwt { index: 0, message }
+                if message.contains("email_domains")),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn inbound_jwt_requires_an_audience() {
+        let env = unset_tokens_env("NO_AUD");
+        let mut entry = jwt_entry();
+        entry.audience = super::StringList::Many(Vec::new());
+
+        assert!(matches!(
+            auth_with_jwt(vec![entry], &env).resolve().unwrap_err(),
+            ConfigError::InvalidInboundJwt { index: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn inbound_jwt_rejects_a_symmetric_algorithm() {
+        // The config-time half of `alg` confusion: a shared secret must never
+        // reach the verifier, because a published JWKS key would then be
+        // usable as one.
+        let env = unset_tokens_env("SYMMETRIC");
+        let mut entry = jwt_entry();
+        entry.algorithms = vec!["HS256".to_string()];
+
+        let error = auth_with_jwt(vec![entry], &env).resolve().unwrap_err();
+        assert!(
+            matches!(&error, ConfigError::InvalidInboundJwt { index: 0, message }
+                if message.contains("symmetric")),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn inbound_jwt_rejects_an_unknown_algorithm_and_an_empty_list() {
+        let env = unset_tokens_env("ALGS");
+        for algorithms in [vec!["RS255".to_string()], Vec::new()] {
+            let mut entry = jwt_entry();
+            entry.algorithms = algorithms.clone();
+            assert!(
+                matches!(
+                    auth_with_jwt(vec![entry], &env).resolve().unwrap_err(),
+                    ConfigError::InvalidInboundJwt { index: 0, .. }
+                ),
+                "{algorithms:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn inbound_jwt_rejects_an_unsafe_issuer_or_jwks_url() {
+        let env = unset_tokens_env("URLS");
+        let mut plaintext_issuer = jwt_entry();
+        plaintext_issuer.issuer = "http://issuer.example".to_string();
+        let mut plaintext_jwks = jwt_entry();
+        plaintext_jwks.jwks_url = Some("http://issuer.example/jwks".to_string());
+        let mut empty_issuer = jwt_entry();
+        empty_issuer.issuer = "  ".to_string();
+
+        for entry in [plaintext_issuer, plaintext_jwks, empty_issuer] {
+            assert!(matches!(
+                auth_with_jwt(vec![entry], &env).resolve().unwrap_err(),
+                ConfigError::InvalidInboundJwt { index: 0, .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn inbound_jwt_reports_the_offending_entry_index() {
+        let env = unset_tokens_env("INDEX");
+        let mut broken = jwt_entry();
+        broken.issuer = "https://other.example".to_string();
+        broken.email_domains = Vec::new();
+
+        assert!(matches!(
+            auth_with_jwt(vec![jwt_entry(), broken], &env)
+                .resolve()
+                .unwrap_err(),
+            ConfigError::InvalidInboundJwt { index: 1, .. }
+        ));
+    }
+
+    #[test]
+    fn inbound_jwt_audience_accepts_a_string_or_an_array() {
+        let env = unset_tokens_env("AUD_FORMS");
+        let mut many = jwt_entry();
+        many.audience =
+            super::StringList::Many(vec![" rotated-id ".to_string(), String::new(), "id".into()]);
+
+        let one = auth_with_jwt(vec![jwt_entry()], &env).resolve().unwrap();
+        let many = auth_with_jwt(vec![many], &env).resolve().unwrap();
+
+        assert_eq!(one.jwt()[0].audience, vec!["shunt-clients".to_string()]);
+        // Trimmed, and the blank entry dropped rather than becoming an
+        // accepted empty audience.
+        assert_eq!(
+            many.jwt()[0].audience,
+            vec!["rotated-id".to_string(), "id".to_string()]
+        );
+    }
+
+    #[test]
+    fn inbound_jwt_authorized_parties_default_to_the_audience() {
+        let env = unset_tokens_env("AZP");
+        let mut explicit = jwt_entry();
+        explicit.authorized_parties = vec!["dedicated-azp".to_string()];
+
+        let defaulted = auth_with_jwt(vec![jwt_entry()], &env).resolve().unwrap();
+        let explicit = auth_with_jwt(vec![explicit], &env).resolve().unwrap();
+
+        assert_eq!(
+            defaulted.jwt()[0].authorized_parties,
+            vec!["shunt-clients".to_string()]
+        );
+        assert_eq!(
+            explicit.jwt()[0].authorized_parties,
+            vec!["dedicated-azp".to_string()]
+        );
+    }
+
+    #[test]
+    fn inbound_jwt_issuer_may_not_be_the_gateway_public_url() {
+        // Both verifiers read `Authorization: Bearer`, so a shared issuer would
+        // make ownership of a token depend on evaluation order.
+        let env = unset_tokens_env("GATEWAY_COLLISION");
+        let mut entry = jwt_entry();
+        entry.issuer = "https://gw.example".to_string();
+        let mut config = Config::default();
+        config.server.auth = Some(auth_with_jwt(vec![entry], &env));
+        config.server.gateway = Some(GatewayConfig {
+            public_url: "https://gw.example/".to_string(),
+            ..gateway_config()
+        });
+
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::InboundJwtCollidesWithGateway { index: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn inbound_jwt_issuer_next_to_a_different_gateway_url_validates() {
+        // The non-vacuity control for the collision test above: the same
+        // config with a distinct issuer must clear the collision check (it
+        // then fails on the gateway's own unset signing secret, which is a
+        // different error).
+        let env = unset_tokens_env("GATEWAY_NO_COLLISION");
+        let mut config = Config::default();
+        config.server.auth = Some(auth_with_jwt(vec![jwt_entry()], &env));
+        config.server.gateway = Some(GatewayConfig {
+            public_url: "https://gw.example/".to_string(),
+            ..gateway_config()
+        });
+
+        assert!(!matches!(
+            config.validate().unwrap_err(),
+            ConfigError::InboundJwtCollidesWithGateway { .. }
+        ));
     }
 }
