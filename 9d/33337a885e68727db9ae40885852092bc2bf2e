@@ -1,0 +1,40 @@
+site/src/content/docs/guides/inbound-codex-endpoint.md
+  s_883e26f2c25b24::t_69a5981767b5a9 113
+  s_883e26f2c25b24::t_0b5cd98c1b74cf 83
+src/adapters/responses/inbound.rs
+  s_883e26f2c25b24::t_1530abf077540c 315-324
+site/src/content/docs/ja/guides/inbound-codex-endpoint.md
+  s_883e26f2c25b24::t_ffb184fd06afeb 113
+  s_883e26f2c25b24::t_e221eb0acddaef 83
+docs/m11-inbound-codex-endpoint.md
+  s_883e26f2c25b24::t_b1fad9d39c53a9 128-132
+  s_883e26f2c25b24::t_79fad76455d33c 157-159
+tests/inbound_codex_endpoint.rs
+  s_883e26f2c25b24::t_de01cb37730535 825-826
+  s_883e26f2c25b24::t_96e99dbc5058a2 792-795
+  s_883e26f2c25b24::t_d7d3adec4c258b 843-846,859-861,878
+site/src/content/docs/ko/guides/inbound-codex-endpoint.md
+  s_883e26f2c25b24::t_a0ae1d2a77080c 83
+  s_883e26f2c25b24::t_a52d985d4a74c5 113
+docs/codex-configuration.md
+  s_883e26f2c25b24::t_a50f0a942753aa 780-782
+site/src/content/docs/zh-cn/guides/inbound-codex-endpoint.md
+  s_883e26f2c25b24::t_4a13e432877470 83
+  s_883e26f2c25b24::t_3018b8d565bccd 113
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "9d33337a885e68727db9ae40885852092bc2bf2e",
+  "prompts": {},
+  "sessions": {
+    "s_883e26f2c25b24": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "24405184-39b1-4f05-b98a-99e19a73664c",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
