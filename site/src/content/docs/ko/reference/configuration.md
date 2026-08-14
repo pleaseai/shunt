@@ -9,9 +9,9 @@ description: 모든 shunt.toml 키 — server, providers, routes, models.
 
 설정 파일의 문자열 값은 리터럴 대신 `${VAR}` 또는 `${file:/절대/경로}`로 쓸 수 있습니다. `${VAR}`는 환경 변수 `VAR`의 값으로 치환되며 `"Bearer ${TOKEN}"`처럼 더 긴 문자열 안에 포함될 수 있습니다(변수가 없으면 로드 실패). `${file:/절대/경로}`는 해당 파일의 내용(trim)으로 치환되며, 반드시 절대 경로여야 하고 필드의 값 전체여야 합니다 — 다른 문자열에 포함될 수 없습니다(파일을 읽을 수 없거나, 상대 경로이거나, 다른 문자열에 포함되어 있으면 로드 실패). `$${`는 리터럴 `${`로 이스케이프됩니다. 치환은 재귀적이지 않습니다 — 치환된 값은 다시 스캔되지 않습니다. 이 치환은 설정 파일에만 적용되며 `SHUNT_*` 환경 변수 오버라이드는 그대로 사용됩니다. 부팅, `shunt check`, [핫 리로드](https://github.com/pleaseai/shunt/blob/main/docs/config-reload.md)(SIGHUP과 파일 감시)를 포함해 매 설정 로드마다 다시 실행되므로, `${file:}`로 참조한 시크릿은 파일을 다시 쓰고 리로드를 트리거하는 것만으로 재시작 없이 교체할 수 있습니다. 다만 교체한 값이 실제로 적용되는지는 해당 필드 자신의 리로드 동작을 따릅니다. `[sentry]`와 `[otel]`은 시작 시 한 번만 초기화되므로, 이 두 섹션의 시크릿을 교체하면 설정은 갱신되지만 적용하려면 재시작이 필요합니다.
 
-`[sentry] dsn`, `[otel.headers]` 값, `[server.gateway.telemetry] forward_to[].headers` 값 세 필드는 redacting secret 타입으로 진단 출력에서 `[redacted]`로 표시됩니다. 이 필드에 리터럴 값을 적는 것은 이전과 완전히 동일하게 동작하며, secret 타입 필드가 리터럴을 담고 있으면 shunt는 부팅 시 해당 필드 경로만(값은 절대 포함하지 않음) 알리는 권고성 경고를 한 번 기록합니다.
+`[sentry] dsn`, `[otel.headers]` 값, `[server.gateway.telemetry] forward_to[].headers` 값, `[server.gateway.session] jwt_secret` 네 필드는 redacting secret 타입으로 진단 출력에서 `[redacted]`로 표시됩니다. 이 필드에 리터럴 값을 적는 것은 이전과 완전히 동일하게 동작하며, secret 타입 필드가 리터럴을 담고 있으면 shunt는 부팅 시 해당 필드 경로만(값은 절대 포함하지 않음) 알리는 권고성 경고를 한 번 기록합니다.
 
-기존 `tokens_env`, `jwt_secret_env`, `client_secret_env`, `api_key_env`, `users_env`, `token_env`, `tokens_file` 필드는 이 변경의 영향을 받지 않으며 그대로 환경 변수(또는 `tokens_file`의 경우 파일 경로)를 가리킵니다.
+기존 `tokens_env`, `jwt_secret_env`, `client_secret_env`, `api_key_env`, `users_env`, `token_env`, `tokens_file` 필드는 이 변경의 영향을 받지 않으며 그대로 환경 변수(또는 `tokens_file`의 경우 파일 경로)를 가리킵니다(`jwt_secret_env`는 별도로 [`session.jwt_secret`](#servergatewaysession-선택)로 대체되어 deprecated됨).
 
 ## `[server]`
 
@@ -71,15 +71,39 @@ description: 모든 shunt.toml 키 — server, providers, routes, models.
 | 키 | 기본값 | 의미 |
 | :-- | :-- | :-- |
 | `public_url` | 필수 | JWT issuer와 OAuth endpoint 기준으로 사용하는 외부 공개 HTTPS origin. `http`는 loopback에서만 허용 |
-| `jwt_secret_env` | `SHUNT_GATEWAY_JWT_SECRET` | 32 bytes 이상의 HS256 signing secret을 담는 env 변수 |
+| `jwt_secret_env` | `SHUNT_GATEWAY_JWT_SECRET` | 32 bytes 이상의 HS256 signing secret을 담는 env 변수. **Deprecated**, 단독 사용 시 계속 완전히 지원됨 — [`session.jwt_secret`](#servergatewaysession-선택)로 대체됨 |
 | `users_env` | `SHUNT_GATEWAY_USERS` | 쉼표로 구분된 `email:secret` approval user를 담는 env 변수 |
-| `token_ttl_seconds` | `3600` | access token 수명. `expires_in`으로 반환 |
+| `token_ttl_seconds` | `3600` | access token 수명. `expires_in`으로 반환. **Deprecated**, 단독 사용 시 계속 완전히 지원됨 — [`session.ttl_hours`](#servergatewaysession-선택)로 대체됨. 다만 시간 미만 수명을 지정할 수 있는 유일한 방법으로는 계속 남아 있음 |
 | `trust_forwarded_for` | `false` | `/device` rate-limit identity로 `X-Forwarded-For`/`X-Real-IP`를 신뢰. client 제공 값을 교체하는 trusted proxy 뒤에서만 활성화 |
 | `state_path` | `~/.shunt/gateway-sessions.json` | 재시작 후에도 refresh session을 유지하는 파일. token은 SHA-256 hash로 저장하고 Unix에서는 소유자 전용 권한(`0600`)으로 원자적으로 기록. `""`로 설정하면 memory-only session 사용(home directory를 찾지 못한 경우에도 동일) |
 
 URL이 경로 등을 포함하지 않은 HTTPS origin이 아니거나(`http`는 loopback에서만 허용), TTL이 0이거나, secret이 없거나 32 bytes 미만이거나, user list가 비었거나 잘못되면 시작은 fail closed합니다. secret에는 `:`를 포함할 수 있으며 첫 번째 colon만 email과 secret을 구분합니다. `jwt_secret_env`와 `users_env`의 값도 다른 설정 파일 문자열과 마찬가지로 `${VAR}` / `${file:...}`로 쓸 수 있습니다([Secret 참조](#secret-참조) 참고). env-backed secret과 user 변경은 config reload 시 반영되지만, route tree는 boot 시 고정되므로 테이블 추가·제거에는 restart가 필요합니다.
 
+deprecated 키와 그에 대응하는 `[server.gateway.session]` 대체 키를 함께 설정하면 키별로 시작이 실패합니다: `jwt_secret_env`와 `session.jwt_secret`를 함께 쓰면 오류이고, `token_ttl_seconds`와 `session.ttl_hours`를 함께 쓰면 오류입니다. 두 쌍을 교차해서 섞는 것(예: `session.jwt_secret`과 함께 `token_ttl_seconds`를 쓰는 것)은 문제없습니다. shunt는 deprecated 키가 설정 파일이든 `SHUNT_*` 환경 변수 override든 명시적으로 설정될 때마다 deprecation 경고를 한 번 기록하며, 그 키 자체가 전혀 설정되지 않아 기본값이 적용될 때만 조용히 넘어갑니다 — `jwt_secret_env`를 설정하지 않고 `SHUNT_GATEWAY_JWT_SECRET` env 변수에 secret 값만 담아 두는 설정은 그 변수가 deprecated 키 자체가 아니라 secret의 값을 담고 있을 뿐이므로 여전히 경고하지 않습니다. 쌍 중 한쪽만 설정된 경우 `session.*`이 있으면 그 값이, 없으면 deprecated 키가, 둘 다 없으면 기본값이 우선합니다.
+
 발급된 bearer는 선택된 provider가 server-side credential을 주입할 때 `/v1/models`, `/v1/messages`, `/v1/messages/count_tokens`를 인증합니다. passthrough provider는 open 상태를 유지합니다. `[server.auth]`도 있으면 어느 credential이든 access를 허용합니다. refresh session은 기본적으로 재시작 후에도 유지됩니다. boot 시 `state_path`의 token hash를 복원하므로 사용자는 계속 silent refresh할 수 있습니다. 이 파일을 여러 shunt process가 동시에 공유하면 안 됩니다. `state_path = ""`이면 session은 memory-only이며, config reload에서는 유지되지만 shunt를 재시작하면 access JWT 만료 후 다시 로그인해야 합니다. Device grant와 rate-limit counter는 항상 memory-only이므로 로그인 도중 재시작하면 해당 시도만 손실됩니다. 만료된 grant와 idle rate-limit identity는 opportunistic하게 정리되며 각각 최대 4,096개로 제한됩니다. 사용한 refresh-token tombstone은 30일 동안 family당 최대 64개 유지되고, 30일 동안 사용하지 않은 active refresh token은 만료됩니다.
+
+### `[server.gateway.session]` (선택)
+
+Claude 앱의 gateway `session:` 블록과 대응됩니다:
+
+```toml
+[server.gateway.session]
+jwt_secret = "${SHUNT_GATEWAY_JWT_SECRET}"
+ttl_hours = 1
+```
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `jwt_secret` | 이 테이블이 있으면 필수 | HS256 signing secret, 32 bytes 이상의 entropy 필요(예: `openssl rand -base64 32`). 단일 문자열이거나, rotation을 위한 배열도 가능 — index 0이 새 토큰에 서명하고 모든 항목이 검증에 쓰임 |
+| `ttl_hours` | `1` | access token 수명(시간 단위, 정수) |
+
+`jwt_secret`은 `Secret` 타입 필드입니다: 다른 설정 파일 문자열과 마찬가지로 `${VAR}` / `${file:/절대/경로}`를 쓸 수 있고([Secret 참조](#secret-참조) 참고), 진단 출력에서는 redact됩니다. 기존 세션을 무효화하지 않고 rotate하려면 새 secret을 배열 앞에 추가하고, `ttl_hours`만큼 기다려 기존 access token이 만료되게 한 뒤, 이전 항목을 제거하세요:
+
+```toml
+[server.gateway.session]
+jwt_secret = ["new-secret-value", "old-secret-value"]
+```
 
 ### `[[server.gateway.policies]]` (선택)
 

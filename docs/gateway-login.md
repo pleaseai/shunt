@@ -39,27 +39,67 @@ Successful device and refresh grants return the same shape:
 ```
 
 The JWT contains `sub`, `email`, `name`, `aud: "shunt"`, `iss`, `iat`, and
-`exp`. It is signed with HS256 using the environment-backed secret configured by
-`jwt_secret_env`. Refresh tokens are 256-bit opaque identifiers. Every successful
-refresh rotates the token; replaying a used token revokes the active token in
-that rotation family and returns `401 {"error":"invalid_grant"}`.
+`exp`. It is signed with HS256 using the secret configured by
+`[server.gateway.session] jwt_secret` (or the deprecated `jwt_secret_env`,
+which names an environment variable holding it). Refresh tokens are 256-bit
+opaque identifiers. Every successful refresh rotates the token; replaying a
+used token revokes the active token in that rotation family and returns
+`401 {"error":"invalid_grant"}`.
 
 ## Configuration
 
 ```toml
 [server.gateway]
 public_url = "https://gateway.example.com"
-jwt_secret_env = "SHUNT_GATEWAY_JWT_SECRET" # default
 users_env = "SHUNT_GATEWAY_USERS"           # default
-token_ttl_seconds = 3600                     # default
 trust_forwarded_for = false                  # default
 # state_path = "~/.shunt/gateway-sessions.json"  # default; "" = memory-only sessions
+
+[server.gateway.session]
+jwt_secret = "${SHUNT_GATEWAY_JWT_SECRET}"
+ttl_hours = 1                                # default
 ```
 
 ```bash
 export SHUNT_GATEWAY_JWT_SECRET="$(openssl rand -base64 48)"
 export SHUNT_GATEWAY_USERS='alice@example.com:<secret>,bob@example.com:<secret>'
 ```
+
+`jwt_secret` is required when `[server.gateway.session]` is present, needs at
+least 32 bytes of entropy, and signs the HS256 access JWTs. Being a
+`Secret`-typed field, it accepts `${VAR}` / `${file:/abs/path}` references and
+is redacted in any config echo. It also accepts an array for rotation — index
+0 signs new tokens and every entry verifies:
+
+```toml
+[server.gateway.session]
+jwt_secret = ["new-secret-value", "old-secret-value"]
+```
+
+Rotate by prepending the new secret, waiting `ttl_hours` for outstanding
+access tokens to expire, then dropping the old entry. `ttl_hours` sets the
+access-token lifetime in whole hours and defaults to `1`; raise it (e.g. `8`
+or `12`) when the IdP issues no refresh token (no `offline_access`), since
+there is then no silent refresh and a short TTL just sends developers back to
+the browser login more often.
+
+`jwt_secret_env` (default `SHUNT_GATEWAY_JWT_SECRET`, an environment-variable
+name) and `token_ttl_seconds` (default `3600`) are deprecated equivalents,
+still fully supported with no behavior change when used alone —
+`token_ttl_seconds` remains the only way to express a sub-hour lifetime, since
+`ttl_hours` is whole hours only. Setting both a deprecated key and its
+`session.*` replacement fails startup, evaluated per key: `jwt_secret_env`
+together with `session.jwt_secret` is an error, and `token_ttl_seconds`
+together with `session.ttl_hours` is an error; mixing across the two pairs
+(e.g. `token_ttl_seconds` alongside `session.jwt_secret`) is fine. shunt logs
+one deprecation warning whenever a deprecated key is explicitly set —
+whether in the config file or through a `SHUNT_*` environment override —
+and stays silent only when the key itself is never configured; a config
+that never sets `jwt_secret_env` and simply relies on the
+`SHUNT_GATEWAY_JWT_SECRET` env var holding the secret still doesn't warn,
+since that variable holds the secret's value, not the deprecated key being
+set. Where only one side of a pair is set, `session.*` wins if present, otherwise the deprecated key, otherwise the
+default.
 
 Startup fails closed if `public_url` is not a bare HTTPS origin (`http` is
 accepted only on loopback), the token TTL is zero, the JWT secret is shorter than

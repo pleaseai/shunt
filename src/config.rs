@@ -14,6 +14,7 @@ use thiserror::Error;
 mod http_tuning;
 mod presets;
 mod secrets;
+mod session;
 mod upstreams;
 
 pub use http_tuning::{
@@ -21,6 +22,7 @@ pub use http_tuning::{
 };
 pub use presets::{provider_presets, ProviderPresetView};
 pub use secrets::Secret;
+pub use session::GatewaySessionConfig;
 pub use upstreams::{AccountSelection, AuthMap, UpstreamAuth, UpstreamConfig};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -515,14 +517,18 @@ pub struct GatewayConfig {
     /// Externally reachable URL used for issuer and OAuth endpoint metadata.
     pub public_url: String,
     /// Env var holding an HS256 signing secret of at least 32 bytes.
-    #[serde(default = "default_gateway_jwt_secret_env")]
-    pub jwt_secret_env: String,
+    /// Deprecated in favor of `[server.gateway.session] jwt_secret`; set at
+    /// most one of the two (both unset falls back to the historical default
+    /// env var name below).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jwt_secret_env: Option<String>,
     /// Env var holding comma-separated `email:secret` approval users.
     #[serde(default = "default_gateway_users_env")]
     pub users_env: String,
-    /// Access-token lifetime in seconds.
-    #[serde(default = "default_gateway_token_ttl_seconds")]
-    pub token_ttl_seconds: u64,
+    /// Access-token lifetime in seconds. Deprecated in favor of
+    /// `[server.gateway.session] ttl_hours`; set at most one of the two.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_ttl_seconds: Option<u64>,
     /// Honor `X-Forwarded-For`/`X-Real-IP` for `/device` rate limiting.
     /// Enable only behind a trusted proxy that replaces client-supplied values.
     #[serde(default)]
@@ -549,6 +555,11 @@ pub struct GatewayConfig {
     /// Optional external identity provider for browser approval.
     #[serde(default)]
     pub oidc: Option<GatewayOidcConfig>,
+    /// `[server.gateway.session]` — the upstream Claude apps gateway
+    /// `session:` block; see `GatewaySessionConfig`. Supersedes
+    /// `jwt_secret_env` and `token_ttl_seconds` above.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<GatewaySessionConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -635,15 +646,50 @@ impl GatewayConfig {
         let public_url = resolve_public_origin(&self.public_url, |message| {
             ConfigError::InvalidGatewayPublicUrl { message }
         })?;
-        if self.token_ttl_seconds == 0 {
-            return Err(ConfigError::InvalidGatewayTokenTtl);
+        // `session` is required to carry `jwt_secret` (no default), so its
+        // presence alone means the replacement key is set — fail closed
+        // rather than silently pick a side when both the legacy key and its
+        // replacement are configured.
+        if self.jwt_secret_env.is_some() && self.session.is_some() {
+            return Err(ConfigError::GatewaySessionJwtSecretConflict);
         }
-        let secret = std::env::var(&self.jwt_secret_env).unwrap_or_default();
-        if secret.len() < 32 {
-            return Err(ConfigError::InvalidGatewayJwtSecret {
-                env: self.jwt_secret_env.clone(),
-            });
+        if self.token_ttl_seconds.is_some()
+            && self
+                .session
+                .as_ref()
+                .is_some_and(|session| session.ttl_hours.is_some())
+        {
+            return Err(ConfigError::GatewaySessionTtlConflict);
         }
+        let ttl_seconds = match self.session.as_ref().and_then(|session| session.ttl_hours) {
+            Some(hours) => {
+                if hours == 0 {
+                    return Err(ConfigError::InvalidGatewaySessionTtlHours);
+                }
+                hours
+                    .checked_mul(3600)
+                    .ok_or(ConfigError::GatewaySessionTtlHoursOverflow)?
+            }
+            None => match self.token_ttl_seconds {
+                Some(0) => return Err(ConfigError::InvalidGatewayTokenTtl),
+                Some(seconds) => seconds,
+                None => default_gateway_token_ttl_seconds(),
+            },
+        };
+        let secrets = match &self.session {
+            Some(session) => resolve_session_jwt_secrets(session)?,
+            None => {
+                let env = self
+                    .jwt_secret_env
+                    .clone()
+                    .unwrap_or_else(default_gateway_jwt_secret_env);
+                let secret = std::env::var(&env).unwrap_or_default();
+                if secret.len() < 32 {
+                    return Err(ConfigError::InvalidGatewayJwtSecret { env });
+                }
+                vec![secret.into_bytes()]
+            }
+        };
         let raw_users = std::env::var(&self.users_env).unwrap_or_default();
         let approval = if raw_users.trim().is_empty() {
             if self.oidc.is_none() {
@@ -669,16 +715,64 @@ impl GatewayConfig {
         let telemetry_push = validate_gateway_telemetry(self.telemetry.as_ref())?;
         let mut auth = crate::gateway::GatewayAuth::with_optional_approval(
             public_url.as_str().trim_end_matches('/').to_string(),
-            secret.into_bytes(),
-            self.token_ttl_seconds,
+            secrets[0].clone(),
+            ttl_seconds,
             self.trust_forwarded_for,
             approval,
-        );
+        )
+        .with_signing_secrets(secrets);
         if let Some(oidc) = &self.oidc {
             auth = auth.with_oidc(oidc.resolve()?);
         }
         Ok(auth.with_managed_policies(policies, telemetry_push))
     }
+
+    /// Boot-time deprecation warnings for the legacy `jwt_secret_env` /
+    /// `token_ttl_seconds` keys, which `[server.gateway.session]`
+    /// supersedes. Pure and independently testable so `Config::load` only
+    /// has to log whatever it returns.
+    pub fn deprecations(&self) -> Vec<String> {
+        let mut messages = Vec::new();
+        if self.jwt_secret_env.is_some() {
+            messages.push(
+                "[server.gateway] jwt_secret_env is deprecated; use \
+                 [server.gateway.session] jwt_secret instead"
+                    .to_string(),
+            );
+        }
+        if self.token_ttl_seconds.is_some() {
+            messages.push(
+                "[server.gateway] token_ttl_seconds is deprecated; use \
+                 [server.gateway.session] ttl_hours instead"
+                    .to_string(),
+            );
+        }
+        messages
+    }
+}
+
+/// Validates every secret in `session.jwt_secret` (non-empty list, each
+/// entry at least 32 bytes, the offending index named on failure) and
+/// returns them as signing/verification key bytes in file order — index 0
+/// signs, every entry verifies.
+fn resolve_session_jwt_secrets(
+    session: &GatewaySessionConfig,
+) -> Result<Vec<Vec<u8>>, ConfigError> {
+    if session.jwt_secret.is_empty() {
+        return Err(ConfigError::EmptyGatewaySessionJwtSecret);
+    }
+    session
+        .jwt_secret
+        .iter()
+        .enumerate()
+        .map(|(index, secret)| {
+            if secret.expose().len() < 32 {
+                Err(ConfigError::InvalidGatewaySessionJwtSecret { index })
+            } else {
+                Ok(secret.expose().as_bytes().to_vec())
+            }
+        })
+        .collect()
 }
 
 fn resolve_gateway_policies(
@@ -1974,6 +2068,24 @@ pub enum ConfigError {
     )]
     InvalidGatewayJwtSecret { env: String },
     #[error(
+        "[server.gateway] jwt_secret_env conflicts with [server.gateway.session] jwt_secret; \
+         set exactly one"
+    )]
+    GatewaySessionJwtSecretConflict,
+    #[error(
+        "[server.gateway] token_ttl_seconds conflicts with [server.gateway.session] ttl_hours; \
+         set exactly one"
+    )]
+    GatewaySessionTtlConflict,
+    #[error("[server.gateway.session] jwt_secret must contain at least one secret")]
+    EmptyGatewaySessionJwtSecret,
+    #[error("[server.gateway.session] jwt_secret[{index}] must be at least 32 bytes")]
+    InvalidGatewaySessionJwtSecret { index: usize },
+    #[error("[server.gateway.session] ttl_hours must be greater than zero")]
+    InvalidGatewaySessionTtlHours,
+    #[error("[server.gateway.session] ttl_hours is too large to convert to seconds")]
+    GatewaySessionTtlHoursOverflow,
+    #[error(
         "[server.gateway] is set but {env} is unset or empty; no approval users are configured"
     )]
     MissingGatewayUsers { env: String },
@@ -2485,6 +2597,11 @@ impl Config {
         // validation: RuntimeState defensively re-validates an already-loaded
         // config, and logging there would emit the same warning twice.
         config.warn_identity_collisions();
+        if let Some(gateway) = config.server.gateway.as_ref() {
+            for message in gateway.deprecations() {
+                tracing::warn!("{message}");
+            }
+        }
         // Logged only after validation so a rejected config never boots with a
         // misleading "loaded config" line.
         match &path {
@@ -3488,10 +3605,10 @@ mod tests {
         config_file_candidates, default_auth_header, host_is_chatgpt, identity_collisions,
         AccountConfig, AdminConfig, AdminOidcConfig, AuthMode, CodexEndpointConfig, Config,
         ConfigError, ConfigFormat, GatewayConfig, GatewayOidcConfig, GatewayPolicyConfig,
-        GatewayPolicyMatch, GatewayTelemetryConfig, GatewayTelemetryDestination, InboundAuthConfig,
-        ModelConfig, OauthUsageConfig, OidcProviderConfig, PoolConfig, ProviderKind,
-        ResponsesFlavor, RetryConfig, StatusConfig, StatusSource, UsageEndpointConfig,
-        CONFIG_ENV_LOCK,
+        GatewayPolicyMatch, GatewaySessionConfig, GatewayTelemetryConfig,
+        GatewayTelemetryDestination, InboundAuthConfig, ModelConfig, OauthUsageConfig,
+        OidcProviderConfig, PoolConfig, ProviderKind, ResponsesFlavor, RetryConfig, Secret,
+        StatusConfig, StatusSource, UsageEndpointConfig, CONFIG_ENV_LOCK,
     };
 
     fn model_config(id: &str, upstream_model: Option<BTreeMap<String, String>>) -> ModelConfig {
@@ -4651,14 +4768,15 @@ mod tests {
         let users_env = format!("SHUNT_GATEWAY_CONFIG_USERS_{suffix}");
         let gateway = GatewayConfig {
             public_url: "https://gateway.example".to_string(),
-            jwt_secret_env: secret_env.clone(),
+            jwt_secret_env: Some(secret_env.clone()),
             users_env: users_env.clone(),
-            token_ttl_seconds: 3600,
+            token_ttl_seconds: Some(3600),
             trust_forwarded_for: false,
             policies: None,
             telemetry: None,
             state_path: None,
             oidc: None,
+            session: None,
         };
 
         assert!(matches!(
@@ -4702,14 +4820,15 @@ mod tests {
     fn gateway_config_rejects_invalid_public_url_and_zero_ttl() {
         let mut gateway = GatewayConfig {
             public_url: "not a URL".to_string(),
-            jwt_secret_env: "UNUSED_GATEWAY_SECRET".to_string(),
+            jwt_secret_env: Some("UNUSED_GATEWAY_SECRET".to_string()),
             users_env: "UNUSED_GATEWAY_USERS".to_string(),
-            token_ttl_seconds: 3600,
+            token_ttl_seconds: Some(3600),
             trust_forwarded_for: false,
             policies: None,
             telemetry: None,
             state_path: None,
             oidc: None,
+            session: None,
         };
         assert!(matches!(
             gateway.resolve(),
@@ -4731,7 +4850,7 @@ mod tests {
             Err(ConfigError::InvalidGatewayPublicUrl { .. })
         ));
         gateway.public_url = "http://127.0.0.1:8787".to_string();
-        gateway.token_ttl_seconds = 0;
+        gateway.token_ttl_seconds = Some(0);
         assert!(matches!(
             gateway.resolve(),
             Err(ConfigError::InvalidGatewayTokenTtl)
@@ -4813,9 +4932,9 @@ mod tests {
         std::env::set_var(&oidc_env, "client-secret");
         let gateway = GatewayConfig {
             public_url: "https://gateway.example".into(),
-            jwt_secret_env: jwt_env.clone(),
+            jwt_secret_env: Some(jwt_env.clone()),
             users_env: users_env.clone(),
-            token_ttl_seconds: 3600,
+            token_ttl_seconds: Some(3600),
             trust_forwarded_for: false,
             policies: None,
             telemetry: None,
@@ -4833,6 +4952,7 @@ mod tests {
                     userinfo_endpoint: None,
                 },
             }),
+            session: None,
         };
         let resolved = gateway.resolve().expect("OIDC-only gateway resolves");
         assert!(resolved.approval_provider().is_none());
@@ -4851,14 +4971,15 @@ mod tests {
         std::env::set_var(&users_env, "dev@example.com:password");
         let base = GatewayConfig {
             public_url: "https://gateway.example".to_string(),
-            jwt_secret_env: secret_env.clone(),
+            jwt_secret_env: Some(secret_env.clone()),
             users_env: users_env.clone(),
-            token_ttl_seconds: 3600,
+            token_ttl_seconds: Some(3600),
             trust_forwarded_for: false,
             policies: None,
             telemetry: None,
             state_path: None,
             oidc: None,
+            session: None,
         };
 
         let mut gateway = base.clone();
@@ -4961,6 +5082,250 @@ mod tests {
 
         std::env::remove_var(secret_env);
         std::env::remove_var(users_env);
+    }
+
+    #[test]
+    fn gateway_session_jwt_secret_conflicts_with_legacy_jwt_secret_env() {
+        let gateway = GatewayConfig {
+            public_url: "https://gateway.example".to_string(),
+            jwt_secret_env: Some("UNUSED_GATEWAY_SECRET".to_string()),
+            users_env: "UNUSED_GATEWAY_USERS".to_string(),
+            token_ttl_seconds: None,
+            trust_forwarded_for: false,
+            policies: None,
+            telemetry: None,
+            state_path: None,
+            oidc: None,
+            session: Some(GatewaySessionConfig {
+                jwt_secret: vec![Secret::from("0123456789abcdef0123456789abcdef")],
+                ttl_hours: None,
+            }),
+        };
+        assert!(matches!(
+            gateway.resolve(),
+            Err(ConfigError::GatewaySessionJwtSecretConflict)
+        ));
+    }
+
+    #[test]
+    fn gateway_session_ttl_hours_conflicts_with_legacy_token_ttl_seconds() {
+        let gateway = GatewayConfig {
+            public_url: "https://gateway.example".to_string(),
+            jwt_secret_env: None,
+            users_env: "UNUSED_GATEWAY_USERS".to_string(),
+            token_ttl_seconds: Some(3600),
+            trust_forwarded_for: false,
+            policies: None,
+            telemetry: None,
+            state_path: None,
+            oidc: None,
+            session: Some(GatewaySessionConfig {
+                jwt_secret: vec![Secret::from("0123456789abcdef0123456789abcdef")],
+                ttl_hours: Some(2),
+            }),
+        };
+        assert!(matches!(
+            gateway.resolve(),
+            Err(ConfigError::GatewaySessionTtlConflict)
+        ));
+    }
+
+    #[test]
+    fn gateway_session_jwt_secret_scalar_and_array_wire_forms_both_resolve() {
+        // Proves the `session.jwt_secret` string-or-array wire format survives
+        // the full figment extraction -> resolve() pipeline, not just the
+        // GatewaySessionConfig-level deserialize tests in config/session.rs.
+        let suffix = std::process::id();
+        let users_env = format!("SHUNT_GATEWAY_SESSION_WIRE_USERS_{suffix}");
+        std::env::set_var(&users_env, "dev@example.com:password");
+
+        let scalar_toml = format!(
+            "public_url = \"https://gateway.example\"\n\
+             users_env = \"{users_env}\"\n\
+             [session]\n\
+             jwt_secret = \"0123456789abcdef0123456789abcdef\"\n"
+        );
+        let scalar: GatewayConfig =
+            figment::Figment::from(figment::providers::Toml::string(&scalar_toml))
+                .extract()
+                .unwrap();
+        let resolved = scalar.resolve().expect("scalar jwt_secret resolves");
+        // Absent ttl_hours falls back to the historical 3600s default.
+        assert_eq!(resolved.token_ttl_seconds(), 3600);
+
+        let array_toml = format!(
+            "public_url = \"https://gateway.example\"\n\
+             users_env = \"{users_env}\"\n\
+             [session]\n\
+             jwt_secret = [\"0123456789abcdef0123456789abcdef\", \"fedcba9876543210fedcba9876543210\"]\n\
+             ttl_hours = 2\n"
+        );
+        let array: GatewayConfig =
+            figment::Figment::from(figment::providers::Toml::string(&array_toml))
+                .extract()
+                .unwrap();
+        let resolved = array.resolve().expect("array jwt_secret resolves");
+        assert_eq!(resolved.token_ttl_seconds(), 7200);
+
+        std::env::remove_var(users_env);
+    }
+
+    #[test]
+    fn gateway_session_jwt_secret_rejects_a_short_scalar_secret() {
+        let gateway = GatewayConfig {
+            public_url: "https://gateway.example".to_string(),
+            jwt_secret_env: None,
+            users_env: "UNUSED_GATEWAY_USERS".to_string(),
+            token_ttl_seconds: None,
+            trust_forwarded_for: false,
+            policies: None,
+            telemetry: None,
+            state_path: None,
+            oidc: None,
+            session: Some(GatewaySessionConfig {
+                jwt_secret: vec![Secret::from("too-short")],
+                ttl_hours: None,
+            }),
+        };
+        assert!(matches!(
+            gateway.resolve(),
+            Err(ConfigError::InvalidGatewaySessionJwtSecret { index: 0 })
+        ));
+    }
+
+    #[test]
+    fn gateway_session_jwt_secret_names_the_offending_index_past_zero() {
+        let gateway = GatewayConfig {
+            public_url: "https://gateway.example".to_string(),
+            jwt_secret_env: None,
+            users_env: "UNUSED_GATEWAY_USERS".to_string(),
+            token_ttl_seconds: None,
+            trust_forwarded_for: false,
+            policies: None,
+            telemetry: None,
+            state_path: None,
+            oidc: None,
+            session: Some(GatewaySessionConfig {
+                jwt_secret: vec![
+                    Secret::from("0123456789abcdef0123456789abcdef"),
+                    Secret::from("too-short"),
+                ],
+                ttl_hours: None,
+            }),
+        };
+        assert!(matches!(
+            gateway.resolve(),
+            Err(ConfigError::InvalidGatewaySessionJwtSecret { index: 1 })
+        ));
+    }
+
+    #[test]
+    fn gateway_session_jwt_secret_rejects_an_empty_array() {
+        let gateway = GatewayConfig {
+            public_url: "https://gateway.example".to_string(),
+            jwt_secret_env: None,
+            users_env: "UNUSED_GATEWAY_USERS".to_string(),
+            token_ttl_seconds: None,
+            trust_forwarded_for: false,
+            policies: None,
+            telemetry: None,
+            state_path: None,
+            oidc: None,
+            session: Some(GatewaySessionConfig {
+                jwt_secret: vec![],
+                ttl_hours: None,
+            }),
+        };
+        assert!(matches!(
+            gateway.resolve(),
+            Err(ConfigError::EmptyGatewaySessionJwtSecret)
+        ));
+    }
+
+    #[test]
+    fn gateway_session_ttl_hours_zero_is_rejected() {
+        let gateway = GatewayConfig {
+            public_url: "https://gateway.example".to_string(),
+            jwt_secret_env: None,
+            users_env: "UNUSED_GATEWAY_USERS".to_string(),
+            token_ttl_seconds: None,
+            trust_forwarded_for: false,
+            policies: None,
+            telemetry: None,
+            state_path: None,
+            oidc: None,
+            session: Some(GatewaySessionConfig {
+                jwt_secret: vec![Secret::from("0123456789abcdef0123456789abcdef")],
+                ttl_hours: Some(0),
+            }),
+        };
+        assert!(matches!(
+            gateway.resolve(),
+            Err(ConfigError::InvalidGatewaySessionTtlHours)
+        ));
+    }
+
+    #[test]
+    fn gateway_session_ttl_hours_overflow_is_rejected_not_panicked() {
+        let gateway = GatewayConfig {
+            public_url: "https://gateway.example".to_string(),
+            jwt_secret_env: None,
+            users_env: "UNUSED_GATEWAY_USERS".to_string(),
+            token_ttl_seconds: None,
+            trust_forwarded_for: false,
+            policies: None,
+            telemetry: None,
+            state_path: None,
+            oidc: None,
+            session: Some(GatewaySessionConfig {
+                jwt_secret: vec![Secret::from("0123456789abcdef0123456789abcdef")],
+                ttl_hours: Some(u64::MAX),
+            }),
+        };
+        assert!(matches!(
+            gateway.resolve(),
+            Err(ConfigError::GatewaySessionTtlHoursOverflow)
+        ));
+    }
+
+    #[test]
+    fn gateway_deprecations_is_empty_when_legacy_keys_are_unset() {
+        let gateway = GatewayConfig {
+            public_url: "https://gateway.example".to_string(),
+            jwt_secret_env: None,
+            users_env: "UNUSED_GATEWAY_USERS".to_string(),
+            token_ttl_seconds: None,
+            trust_forwarded_for: false,
+            policies: None,
+            telemetry: None,
+            state_path: None,
+            oidc: None,
+            session: Some(GatewaySessionConfig {
+                jwt_secret: vec![Secret::from("0123456789abcdef0123456789abcdef")],
+                ttl_hours: Some(2),
+            }),
+        };
+        assert!(gateway.deprecations().is_empty());
+    }
+
+    #[test]
+    fn gateway_deprecations_reports_both_legacy_keys_when_set() {
+        let gateway = GatewayConfig {
+            public_url: "https://gateway.example".to_string(),
+            jwt_secret_env: Some("SHUNT_GATEWAY_JWT_SECRET".to_string()),
+            users_env: "UNUSED_GATEWAY_USERS".to_string(),
+            token_ttl_seconds: Some(3600),
+            trust_forwarded_for: false,
+            policies: None,
+            telemetry: None,
+            state_path: None,
+            oidc: None,
+            session: None,
+        };
+        let messages = gateway.deprecations();
+        assert_eq!(messages.len(), 2);
+        assert!(messages[0].contains("jwt_secret_env"));
+        assert!(messages[1].contains("token_ttl_seconds"));
     }
 
     #[test]
@@ -6914,6 +7279,105 @@ provider = "kimi"
         );
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn literal_gateway_session_jwt_secret_is_attributed_in_both_wire_forms() {
+        // End-to-end companion to
+        // `is_secret_field_path_matches_gateway_session_jwt_secret_scalar_and_array_forms`
+        // in `secrets.rs`. That test hand-builds the `LiteralScope` path map,
+        // so it is self-consistent with the `is_secret_field_path` arm rather
+        // than with the real traversal: were `walk_toml` to emit a different
+        // shape for array elements, the arm and the test would be wrong
+        // together and stay green while the boot warning silently degraded to
+        // an unattributed count. This one drives the actual `Config::load`
+        // pass instead. It also pins the exact number of occurrences, so it
+        // fails if `jwt_secret`'s `untagged` deserializer ever records a value
+        // twice — serde buffers content for untagged variants, and
+        // `Secret::deserialize` has the `record_literal_hit` side effect.
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // `[server.gateway]` resolves only with an approval source; this value
+        // is deliberately unrelated to the secrets under test.
+        std::env::set_var("SHUNT_GATEWAY_USERS", "dev@example.com:approval-secret");
+
+        // Clearly-fake literals, each over the 32-byte floor. No `SHUNT_*` env
+        // var may hold these same values, or `never_literal` would suppress
+        // the warning by design.
+        let scalar = "literal-session-secret-0123456789abcdef";
+        let rotated_new = "literal-rotated-new-0123456789abcdef";
+        let rotated_old = "literal-rotated-old-0123456789abcdef";
+
+        let load_logs = |session_body: &str| -> String {
+            let dir = std::env::temp_dir().join(format!(
+                "shunt-config-test-session-literal-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("shunt.toml");
+            std::fs::write(
+                &path,
+                format!(
+                    "[server]\ndefault_provider = \"anthropic\"\n\n\
+                     [server.gateway]\npublic_url = \"https://gateway.example.com\"\n\n\
+                     [server.gateway.session]\n{session_body}\n"
+                ),
+            )
+            .unwrap();
+
+            let output = Arc::new(Mutex::new(Vec::new()));
+            let writer_output = Arc::clone(&output);
+            let subscriber = tracing_subscriber::fmt()
+                .with_writer(move || BufferWriter {
+                    buffer: Arc::clone(&writer_output),
+                })
+                .with_ansi(false)
+                .without_time()
+                .finish();
+            tracing::subscriber::with_default(subscriber, || {
+                Config::load(Some(&path)).unwrap();
+            });
+            let _ = std::fs::remove_dir_all(dir);
+            let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+            logs
+        };
+
+        let logs = load_logs(&format!("jwt_secret = \"{scalar}\""));
+        assert_eq!(
+            logs.matches("[server.gateway.session].jwt_secret").count(),
+            1,
+            "the bare-string form must be attributed by path exactly once: {logs}"
+        );
+        assert!(
+            !logs.contains("could not be attributed"),
+            "the bare-string form must not fall back to an unattributed count: {logs}"
+        );
+
+        let logs = load_logs(&format!(
+            "jwt_secret = [\"{rotated_new}\", \"{rotated_old}\"]"
+        ));
+        assert_eq!(
+            logs.matches("[server.gateway.session.jwt_secret].0")
+                .count(),
+            1,
+            "array element 0 must be attributed by path exactly once: {logs}"
+        );
+        assert_eq!(
+            logs.matches("[server.gateway.session.jwt_secret].1")
+                .count(),
+            1,
+            "array element 1 must be attributed by path exactly once: {logs}"
+        );
+        assert!(
+            !logs.contains("could not be attributed"),
+            "the array form must not fall back to an unattributed count: {logs}"
+        );
+
+        std::env::remove_var("SHUNT_GATEWAY_USERS");
     }
 
     // Default-propagation coverage for issue #286/#289: `Config::load` seeds

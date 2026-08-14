@@ -393,14 +393,18 @@ fn gateway_enabled_config(
     config.providers.get_mut("anthropic").unwrap().base_url = upstream_base_url;
     config.server.gateway = Some(GatewayConfig {
         public_url: "https://gateway.example".to_string(),
-        jwt_secret_env: secret_env.to_string(),
+        // The deprecated env-var pair, deliberately: `session` stays `None`
+        // because setting a deprecated key alongside its `[server.gateway.session]
+        // replacement is a startup error.
+        jwt_secret_env: Some(secret_env.to_string()),
         users_env: users_env.to_string(),
-        token_ttl_seconds: 3600,
+        token_ttl_seconds: Some(3600),
         trust_forwarded_for: false,
         policies: None,
         telemetry: None,
         state_path: None,
         oidc: None,
+        session: None,
     });
     config
 }

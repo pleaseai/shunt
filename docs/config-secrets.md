@@ -38,22 +38,29 @@ used as-is; they are not substituted.
 
 ## 2. Coexistence with `*_env` fields
 
-`tokens_env`, `jwt_secret_env`, `client_secret_env`, `api_key_env`,
-`users_env`, `token_env`, and `tokens_file` keep their existing meaning
-unchanged — each still names an environment variable (or, for `tokens_file`,
-a file path) that shunt reads at request time. They are not deprecated.
-`${VAR}` / `${file:...}` substitution is a separate, additive idiom: it
-inlines a value directly into the config file instead of pointing at an
-external name. Both are supported, and like any other config-file string a
-`*_env` field's own value also passes through substitution before shunt reads
-the environment variable it names.
+`tokens_env`, `client_secret_env`, `api_key_env`, `users_env`, `token_env`,
+and `tokens_file` keep their existing meaning unchanged — each still names an
+environment variable (or, for `tokens_file`, a file path) that shunt reads at
+request time. They are not deprecated. `${VAR}` / `${file:...}` substitution
+is a separate, additive idiom: it inlines a value directly into the config
+file instead of pointing at an external name. Both are supported, and like
+any other config-file string a `*_env` field's own value also passes through
+substitution before shunt reads the environment variable it names.
+
+`jwt_secret_env` is the one exception: it is deprecated (still fully
+supported) in favor of [`[server.gateway.session] jwt_secret`](../site/src/content/docs/reference/configuration.md#servergatewaysession-optional),
+which is itself a `${VAR}` / `${file:...}`-capable field — the same
+indirection this document describes, applied directly to the secret-typed
+field instead of through a separate `*_env` name. See
+[gateway-login.md](gateway-login.md) for the deprecation and conflict rules.
 
 ## 3. Redaction
 
-Three fields are typed as a redacting secret and render as `[redacted]` in
+Four fields are typed as a redacting secret and render as `[redacted]` in
 diagnostic output (logs, `shunt check`, admin/debug surfaces): `[sentry]
-dsn`, each value in `[otel] headers`, and each `headers` value under
-`[server.gateway.telemetry] forward_to[]`.
+dsn`, each value in `[otel] headers`, each `headers` value under
+`[server.gateway.telemetry] forward_to[]`, and `[server.gateway.session]
+jwt_secret`.
 
 Writing one of these literally in the config file still works exactly as
 before — this is a redaction change, not a validation change. On boot, if a

@@ -230,8 +230,10 @@ pub(crate) fn format_literal_path(path: &str) -> String {
 
 /// Closed-form allowlist of the dotted field paths that are actually
 /// `Secret` fields in the config schema: `sentry.dsn`,
-/// `otel.headers.<key>`, and
-/// `server.gateway.telemetry.forward_to.<index>.headers.<key>`. Used to
+/// `otel.headers.<key>`,
+/// `server.gateway.telemetry.forward_to.<index>.headers.<key>`, and
+/// `server.gateway.session.jwt_secret` (scalar or, per array element,
+/// `server.gateway.session.jwt_secret.<index>`). Used to
 /// filter candidate paths for a literal value down to Secret-shaped ones
 /// before deciding whether the attribution is unambiguous, so a plain
 /// (non-`Secret`) field's path is never named in the warning — even when it
@@ -259,6 +261,16 @@ fn is_secret_field_path(path: &str) -> bool {
         && segments[2] == "telemetry"
         && segments[3] == "forward_to"
         && segments[5] == "headers"
+    {
+        return true;
+    }
+    // `server.gateway.session.jwt_secret` (bare-string form) or
+    // `server.gateway.session.jwt_secret.<index>` (array element).
+    if (segments.len() == 4 || segments.len() == 5)
+        && segments[0] == "server"
+        && segments[1] == "gateway"
+        && segments[2] == "session"
+        && segments[3] == "jwt_secret"
     {
         return true;
     }
@@ -894,5 +906,34 @@ mod tests {
         record_literal_hit("drifted-secret-value");
         assert_eq!(LiteralScope::unattributed_count(), 1);
         assert!(LiteralScope::hits().is_empty());
+    }
+
+    #[test]
+    fn is_secret_field_path_matches_gateway_session_jwt_secret_scalar_and_array_forms() {
+        // Pins the two path shapes `is_secret_field_path` must recognize for
+        // `[server.gateway.session] jwt_secret`: the bare-string form and an
+        // array element. If either arm were removed, `record_literal_hit`
+        // would degrade both values to unattributed (see the drift test
+        // above) instead of attributing them by path.
+        let mut map = HashMap::new();
+        map.insert(
+            "scalar-session-secret".to_string(),
+            vec!["server.gateway.session.jwt_secret".to_string()],
+        );
+        map.insert(
+            "rotated-session-secret".to_string(),
+            vec!["server.gateway.session.jwt_secret.1".to_string()],
+        );
+        let _scope = LiteralScope::enter(map, HashSet::new());
+        record_literal_hit("scalar-session-secret");
+        record_literal_hit("rotated-session-secret");
+        assert_eq!(
+            LiteralScope::hits(),
+            vec![
+                "server.gateway.session.jwt_secret".to_string(),
+                "server.gateway.session.jwt_secret.1".to_string(),
+            ]
+        );
+        assert_eq!(LiteralScope::unattributed_count(), 0);
     }
 }

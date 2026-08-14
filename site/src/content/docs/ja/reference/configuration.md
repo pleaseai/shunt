@@ -9,9 +9,9 @@ description: すべての shunt.toml キー — server、providers、routes、mo
 
 設定ファイルの文字列値は、リテラルの代わりに `${VAR}` または `${file:/絶対/パス}` として書けます。`${VAR}` は環境変数 `VAR` の値に置き換わり、`"Bearer ${TOKEN}"` のようにより長い文字列に埋め込むこともできます(変数が未定義だと設定の読み込みは失敗します)。`${file:/絶対/パス}` は指定したファイルの内容(トリム済み)に置き換わり、パスは絶対パスでなければならず、フィールドの値全体でなければなりません — 他の文字列に埋め込むことはできません(ファイルが読み取れない、パスが相対パスである、または他の文字列に埋め込まれている場合、設定の読み込みは失敗します)。`$${` はリテラルの `${` にエスケープされます。解決は再帰的ではありません — 解決済みの値は再スキャンされません。この置換は設定ファイルにのみ適用され、`SHUNT_*` 環境変数オーバーライドはそのまま使われます。起動時、`shunt check`、[ホットリロード](https://github.com/pleaseai/shunt/blob/main/docs/config-reload.md)(SIGHUP とファイル監視)を含む設定の読み込みのたびに再実行されるため、`${file:}` で参照したシークレットはファイルを書き換えてリロードをトリガーするだけで、再起動なしにローテーションできます。ただし、ローテーションした値が実際に反映されるかどうかは、そのフィールド自身のリロード動作に従います。`[sentry]` と `[otel]` は起動時に一度だけ初期化されるため、この 2 つのセクションのシークレットをローテーションしても設定が更新されるだけで、反映するには再起動が必要です。
 
-`[sentry] dsn`、`[otel.headers]` の値、`[server.gateway.telemetry] forward_to[].headers` の値の 3 つのフィールドは redacting secret 型として扱われ、診断出力では `[redacted]` と表示されます。これらのフィールドにリテラル値を書くことは以前とまったく同じように動作します。secret 型のフィールドがリテラルを保持している場合、shunt は起動時に該当するフィールドパスのみを(値は決して含めずに)知らせる勧告的な警告を 1 回記録します。
+`[sentry] dsn`、`[otel.headers]` の値、`[server.gateway.telemetry] forward_to[].headers` の値、`[server.gateway.session] jwt_secret` の 4 つのフィールドは redacting secret 型として扱われ、診断出力では `[redacted]` と表示されます。これらのフィールドにリテラル値を書くことは以前とまったく同じように動作します。secret 型のフィールドがリテラルを保持している場合、shunt は起動時に該当するフィールドパスのみを(値は決して含めずに)知らせる勧告的な警告を 1 回記録します。
 
-既存の `tokens_env`、`jwt_secret_env`、`client_secret_env`、`api_key_env`、`users_env`、`token_env`、`tokens_file` フィールドはこの変更の影響を受けず、引き続き環境変数(`tokens_file` の場合はファイルパス)を指します。
+既存の `tokens_env`、`jwt_secret_env`、`client_secret_env`、`api_key_env`、`users_env`、`token_env`、`tokens_file` フィールドはこの変更の影響を受けず、引き続き環境変数(`tokens_file` の場合はファイルパス)を指します(`jwt_secret_env` は別途 [`session.jwt_secret`](#servergatewaysessionオプション) に置き換えられ deprecated です)。
 
 ## `[server]`
 
@@ -71,14 +71,38 @@ description: すべての shunt.toml キー — server、providers、routes、mo
 | キー | デフォルト | 意味 |
 | :-- | :-- | :-- |
 | `public_url` | 必須 | JWT issuer および OAuth endpoint の基点となる外部公開 HTTPS origin。`http` は loopback のみ許可 |
-| `jwt_secret_env` | `SHUNT_GATEWAY_JWT_SECRET` | 32 bytes 以上の HS256 signing secret を保持する env 変数 |
+| `jwt_secret_env` | `SHUNT_GATEWAY_JWT_SECRET` | 32 bytes 以上の HS256 signing secret を保持する env 変数。**Deprecated**。単独使用では引き続き完全にサポートされる — [`session.jwt_secret`](#servergatewaysessionオプション) に置き換えられた |
 | `users_env` | `SHUNT_GATEWAY_USERS` | カンマ区切りの `email:secret` approval user を保持する env 変数 |
-| `token_ttl_seconds` | `3600` | access token の寿命。`expires_in` として返される |
+| `token_ttl_seconds` | `3600` | access token の寿命。`expires_in` として返される。**Deprecated**。単独使用では引き続き完全にサポートされる — [`session.ttl_hours`](#servergatewaysessionオプション) に置き換えられたが、1 時間未満の寿命を指定できる唯一の方法として残る |
 | `trust_forwarded_for` | `false` | `/device` の rate-limit identity として `X-Forwarded-For`／`X-Real-IP` を信頼する。client 提供値を置換する trusted proxy の背後でのみ有効化 |
 
 URL が path 等を含まない HTTPS origin でない場合（`http` は loopback のみ許可）、TTL が 0 の場合、secret がないか 32 bytes 未満の場合、または user list が空・不正な場合、起動は fail closed します。secret には `:` を含められ、最初の colon だけが email と secret を分けます。`jwt_secret_env` と `users_env` の値も、他の設定ファイル文字列と同様に `${VAR}` / `${file:...}` で書けます([Secret 参照](#secret-参照)を参照)。env-backed secret と user の変更は config reload で反映されますが、route tree は boot 時に固定されるため、テーブルの追加・削除には restart が必要です。
 
+Deprecated なキーと、それに対応する `[server.gateway.session]` の置き換えキーを両方設定すると、キーごとに起動が失敗します: `jwt_secret_env` と `session.jwt_secret` を併用するとエラー、`token_ttl_seconds` と `session.ttl_hours` を併用するとエラーです。2 つのペアをまたいで組み合わせる(例: `session.jwt_secret` と `token_ttl_seconds` の併用)のは問題ありません。shunt は、deprecated なキーが設定ファイルであれ `SHUNT_*` 環境変数 override であれ明示的に設定されるたびに deprecation 警告を 1 回記録し、そのキー自体が一切設定されずデフォルトが適用される場合にのみ警告なしのままです — `jwt_secret_env` を設定せず `SHUNT_GATEWAY_JWT_SECRET` env 変数に secret の値だけを入れておく設定は、その変数が deprecated なキー自体ではなく secret の値を保持しているだけなので、引き続き警告しません。ペアの片方だけが設定されている場合、`session.*` があればそちらが優先され、なければ deprecated なキー、どちらもなければデフォルトが使われます。
+
 発行された bearer は、選択された provider が server-side credential を注入する場合に `/v1/models`、`/v1/messages`、`/v1/messages/count_tokens` を認証します。passthrough provider は open のままです。`[server.auth]` もある場合は、どちらかの credential で access できます。device grant と rotating refresh token は process-lifetime の in-memory state です。config reload では維持されますが、restart では無効になります。
+
+### `[server.gateway.session]`（オプション）
+
+upstream の Claude apps gateway の `session:` ブロックに対応します:
+
+```toml
+[server.gateway.session]
+jwt_secret = "${SHUNT_GATEWAY_JWT_SECRET}"
+ttl_hours = 1
+```
+
+| キー | デフォルト | 意味 |
+| :-- | :-- | :-- |
+| `jwt_secret` | このテーブルがある場合は必須 | HS256 signing secret。32 bytes 以上の entropy が必要(例: `openssl rand -base64 32`)。単一の文字列、またはローテーション用の array も指定可能 — index 0 が新しいトークンに署名し、すべてのエントリが検証に使われる |
+| `ttl_hours` | `1` | access token の寿命(時間単位) |
+
+`jwt_secret` は `Secret` 型のフィールドです: 他の設定ファイル文字列と同様に `${VAR}` / `${file:/絶対/パス}` を使え([Secret 参照](#secret-参照)を参照)、診断出力では redact されます。既存のセッションを無効化せずにローテーションするには、新しい secret を array の先頭に追加し、`ttl_hours` の間だけ待って未完了の access token を失効させてから、古いエントリを削除します:
+
+```toml
+[server.gateway.session]
+jwt_secret = ["new-secret-value", "old-secret-value"]
+```
 
 ### `[[server.gateway.policies]]`（オプション）
 
