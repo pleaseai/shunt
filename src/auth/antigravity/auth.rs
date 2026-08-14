@@ -184,6 +184,20 @@ impl AntigravityAuthStore {
         }
 
         let _guard = REFRESH_LOCK.lock().await;
+        // Everything below, up to and including the `project_id` call after
+        // `write`, runs while holding this process-global lock — so every
+        // other concurrent Antigravity request is blocked on it too, not just
+        // the token refresh. `project_id` can chain through `discover_project`
+        // into `onboard_user` when the stored credential has no project id
+        // yet: refresh_call (send + body read, each up to
+        // CREDENTIAL_REQUEST_TIMEOUT) + discover_project's loadCodeAssist
+        // (send + body read, each up to CREDENTIAL_REQUEST_TIMEOUT) +
+        // onboard_user (ONBOARD_MAX_ATTEMPTS attempts, each up to two
+        // ONBOARD_REQUEST_TIMEOUT windows, spaced by ONBOARD_POLL_INTERVAL) —
+        // 2*30s + 2*30s + (5*(2*30s) + 4*2s) = 60 + 60 + 308 = 428s, roughly
+        // 7 minutes, worst case before this lock is released. See the
+        // `onboard_user` timing note in `login.rs` for the derivation of the
+        // 308s figure.
         // Re-read: another task may have refreshed while we waited on the lock.
         let stored = self.read().await?;
         if is_stored_valid(&stored, SystemTime::now()) {

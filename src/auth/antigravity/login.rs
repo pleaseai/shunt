@@ -10,9 +10,14 @@
 //! provisioning a first-time account polls `onboardUser` to exhaustion —
 //! `ONBOARD_MAX_ATTEMPTS` attempts, each bounded by up to two
 //! `ONBOARD_REQUEST_TIMEOUT` windows (the send and, separately, the body
-//! read), spaced by `ONBOARD_POLL_INTERVAL` — a worst case of roughly
-//! 5 minutes, acceptable in an interactive login, not in front of a proxied
-//! turn.
+//! read), spaced by `ONBOARD_POLL_INTERVAL`: 5 * (2 * 30s) + 4 * 2s = 308s,
+//! roughly 5 minutes for `onboard_user` alone. But discovery on the request
+//! path (see `get_valid` in `auth.rs`) can reach `onboard_user` only after
+//! `refresh_call` and `discover_project`'s own `loadCodeAssist` round trip
+//! have each already spent up to two `CREDENTIAL_REQUEST_TIMEOUT` windows,
+//! so the true worst case there is roughly 2 * 60s + 308s = 428s, about
+//! 7 minutes — acceptable in an interactive login, not in front of a
+//! proxied turn.
 
 use std::time::Duration;
 
