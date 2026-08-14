@@ -785,6 +785,7 @@ async fn mixed_chain_is_gated_and_strips_credentials_per_attempt() {
         &[("passthrough", "model-a"), ("credentialed", "model-b")],
     );
     config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: tokens_env.clone(),
     });

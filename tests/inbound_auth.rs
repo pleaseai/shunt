@@ -79,6 +79,7 @@ fn test_config(upstream_base_url: &str, api_key_env: &'static str) -> Config {
 
 fn with_inbound_auth(mut config: Config, tokens_env: &'static str) -> Config {
     config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: tokens_env.to_string(),
     });

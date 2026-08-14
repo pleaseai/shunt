@@ -12,8 +12,10 @@ use crate::{
 pub mod claude;
 pub mod codex;
 pub mod cursor;
+pub mod gate;
 pub mod google;
 pub mod inbound;
+pub mod inbound_jwt;
 pub mod observation;
 pub mod shared;
 pub mod xai;

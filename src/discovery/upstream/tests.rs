@@ -165,12 +165,81 @@ async fn consumed_x_api_key_is_not_forwarded_to_passthrough_upstream() {
         InboundCredentialContext {
             static_auth: Some(&auth),
             gateway_bearer_authenticated: false,
+            jwt_bearer_authenticated: false,
         },
     )
     .await;
 
     assert!(models.is_none());
     assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_verified_jwt_bearer_is_not_forwarded_to_a_passthrough_upstream() {
+    // A JWT credential can only ever arrive in the bearer slot, so unlike a
+    // static token there is no "send it in the dedicated header instead"
+    // advice keeping it out of an upstream request. Without the explicit
+    // check, shunt would relay an identity token from the operator's IdP to a
+    // third party.
+    let server = MockServer::start().await;
+    mount_models_ok(&server, single_model_page("claude-opus-5")).await;
+    let state = state_for(&server.uri(), AuthMode::Passthrough);
+    let auth = inbound_auth("gateway-token");
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "authorization",
+        "Bearer header.payload.sig".parse().unwrap(),
+    );
+
+    let models = fetch(
+        &state,
+        &headers,
+        InboundCredentialContext {
+            static_auth: Some(&auth),
+            gateway_bearer_authenticated: false,
+            jwt_bearer_authenticated: true,
+        },
+    )
+    .await;
+
+    // Nothing was left to ask the upstream with, so it was never called — and
+    // the mock is mounted, so a forwarded bearer would have produced a model.
+    assert!(models.is_none());
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn an_unconsumed_bearer_still_reaches_a_passthrough_upstream() {
+    // Non-vacuity control for the test above: the same request with no shunt
+    // credential consumed does forward the bearer, so the assertion there is
+    // about `jwt_bearer_authenticated` and not about the fixture.
+    let server = MockServer::start().await;
+    mount_models_ok_with_headers(
+        &server,
+        &[("authorization", "Bearer caller-own-credential")],
+        single_model_page("claude-opus-5"),
+    )
+    .await;
+    let state = state_for(&server.uri(), AuthMode::Passthrough);
+    let auth = inbound_auth("gateway-token");
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "authorization",
+        "Bearer caller-own-credential".parse().unwrap(),
+    );
+
+    let models = fetch(
+        &state,
+        &headers,
+        InboundCredentialContext {
+            static_auth: Some(&auth),
+            gateway_bearer_authenticated: false,
+            jwt_bearer_authenticated: false,
+        },
+    )
+    .await;
+
+    assert_eq!(models.unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -195,6 +264,7 @@ async fn upstream_x_api_key_survives_when_inbound_auth_is_also_configured() {
         InboundCredentialContext {
             static_auth: Some(&auth),
             gateway_bearer_authenticated: false,
+            jwt_bearer_authenticated: false,
         },
     )
     .await;

@@ -302,6 +302,9 @@ impl StatusConfig {
 /// and `GET /v1/models`.
 /// Tokens live in the environment (never in the TOML), as `name:token` pairs:
 /// `SHUNT_CLIENT_TOKENS="alice:3f9c…,bob:a41b…"`. See `docs/m4-inbound-auth.md`.
+///
+/// A deployment may instead (or additionally) accept JWTs minted by an external
+/// identity provider — see [`InboundJwtConfig`] and `docs/inbound-jwt-auth.md`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct InboundAuthConfig {
     /// Header carrying the client token.
@@ -310,6 +313,84 @@ pub struct InboundAuthConfig {
     /// Env var holding the `name:token` pairs.
     #[serde(default = "default_tokens_env")]
     pub tokens_env: String,
+    /// `[[server.auth.jwt]]` — verify-only external JWT issuers. An array from
+    /// the start: one Google issuer with separate client ids for humans and
+    /// services is a normal configuration, and human SSO and workload identity
+    /// use different claim vocabularies.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub jwt: Vec<InboundJwtConfig>,
+}
+
+/// One `[[server.auth.jwt]]` entry: an external issuer whose JWTs shunt
+/// verifies. shunt issues nothing here — no login flow, no session, no signing
+/// secret — so this table holds no secret material and needs no
+/// [`crate::config::secrets::Secret`] field: an issuer, an audience, and a
+/// JWKS endpoint are all public.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct InboundJwtConfig {
+    /// Exact `iss` match. The JWKS is derived from
+    /// `{issuer}/.well-known/openid-configuration` unless [`Self::jwks_url`]
+    /// overrides it.
+    pub issuer: String,
+    /// Accepted `aud` values, as a string or an array — an array so a client-id
+    /// rotation is not a flag day.
+    #[serde(default)]
+    pub audience: StringList,
+    /// Domains whose verified addresses are accepted, matched **exactly**
+    /// against the part after the final `@`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub email_domains: Vec<String>,
+    /// Individual verified addresses that are accepted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_emails: Vec<String>,
+    /// Accepted signing algorithms. The token header's `alg` never selects the
+    /// algorithm; this list does.
+    #[serde(default = "default_jwt_algorithms")]
+    pub algorithms: Vec<String>,
+    /// Accepted `azp` values when the claim is present. Defaults to
+    /// [`Self::audience`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub authorized_parties: Vec<String>,
+    /// Tolerance applied to `exp` and `nbf`.
+    #[serde(default)]
+    pub clock_skew_seconds: u64,
+    /// Reject when `exp - iat` exceeds this. shunt keeps no revocation state,
+    /// so this bounds how long a revoked identity keeps working; issue
+    /// minutes-scale tokens.
+    #[serde(default = "default_max_token_age_seconds")]
+    pub max_token_age_seconds: u64,
+    /// Explicit JWKS endpoint, for issuers that serve no discovery document.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jwks_url: Option<String>,
+}
+
+/// A config value that accepts either one string or a list of them.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum StringList {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl Default for StringList {
+    fn default() -> Self {
+        Self::Many(Vec::new())
+    }
+}
+
+impl StringList {
+    /// Trimmed, non-empty entries.
+    fn resolve(&self) -> Vec<String> {
+        let values: &[String] = match self {
+            Self::One(value) => std::slice::from_ref(value),
+            Self::Many(values) => values,
+        };
+        values
+            .iter()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .collect()
+    }
 }
 
 fn default_auth_header() -> String {
@@ -320,29 +401,173 @@ fn default_tokens_env() -> String {
     "SHUNT_CLIENT_TOKENS".to_string()
 }
 
+fn default_jwt_algorithms() -> Vec<String> {
+    vec!["RS256".to_string()]
+}
+
+fn default_max_token_age_seconds() -> u64 {
+    3600
+}
+
 impl InboundAuthConfig {
-    /// Resolve the configured tokens from the environment. Fails closed: a
-    /// present `[server.auth]` with an unset/empty/malformed env var is a
-    /// startup error, never a silently-open gateway.
+    /// Resolve the configured credentials. Fails closed: a present
+    /// `[server.auth]` that ends up accepting nothing is a startup error, never
+    /// a silently-open gateway.
+    ///
+    /// `tokens_env` may resolve empty **only** when at least one
+    /// `[[server.auth.jwt]]` entry is configured — a deployment that
+    /// authenticates entirely through an IdP has no static tokens to set. With
+    /// neither, this still refuses to run.
     pub fn resolve(&self) -> Result<crate::auth::inbound::InboundAuth, ConfigError> {
         let header = axum::http::HeaderName::from_bytes(self.header.as_bytes()).map_err(|_| {
             ConfigError::InvalidAuthHeader {
                 header: self.header.clone(),
             }
         })?;
+        let jwt = self
+            .jwt
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| entry.resolve(index))
+            .collect::<Result<Vec<_>, _>>()?;
         let raw = std::env::var(&self.tokens_env).unwrap_or_default();
-        if raw.trim().is_empty() {
-            return Err(ConfigError::MissingClientTokens {
-                env: self.tokens_env.clone(),
-            });
-        }
-        let tokens = crate::auth::inbound::parse_tokens(&raw).map_err(|message| {
-            ConfigError::InvalidClientTokens {
-                env: self.tokens_env.clone(),
-                message,
+        let tokens = if raw.trim().is_empty() {
+            if jwt.is_empty() {
+                return Err(ConfigError::MissingClientTokens {
+                    env: self.tokens_env.clone(),
+                });
             }
-        })?;
-        Ok(crate::auth::inbound::InboundAuth::new(header, tokens))
+            Vec::new()
+        } else {
+            crate::auth::inbound::parse_tokens(&raw).map_err(|message| {
+                ConfigError::InvalidClientTokens {
+                    env: self.tokens_env.clone(),
+                    message,
+                }
+            })?
+        };
+        Ok(crate::auth::inbound::InboundAuth::new(header, tokens).with_jwt(jwt))
+    }
+}
+
+impl InboundJwtConfig {
+    fn resolve(
+        &self,
+        index: usize,
+    ) -> Result<crate::auth::inbound_jwt::JwtIssuerRule, ConfigError> {
+        let invalid = |message: String| ConfigError::InvalidInboundJwt { index, message };
+
+        let issuer = self.issuer.trim();
+        if issuer.is_empty() {
+            return Err(invalid("issuer must not be empty".to_string()));
+        }
+        let issuer_url = validate_idp_url(OidcSection::InboundJwt(index), issuer, true, "issuer")?;
+        // Normalize exactly as `[server.gateway] public_url` is, so the
+        // gateway-collision check below compares like with like.
+        let issuer = if issuer_url.path() == "/" {
+            issuer_url.as_str().trim_end_matches('/').to_string()
+        } else {
+            issuer_url.as_str().to_string()
+        };
+
+        let audience = self.audience.resolve();
+        if audience.is_empty() {
+            return Err(invalid("audience must not be empty".to_string()));
+        }
+
+        let allowed_domains: Vec<_> = self
+            .email_domains
+            .iter()
+            .map(|domain| domain.trim().to_ascii_lowercase())
+            .filter(|domain| !domain.is_empty())
+            .collect();
+        let allowed_emails: Vec<_> = self
+            .allowed_emails
+            .iter()
+            .map(|email| email.trim().to_ascii_lowercase())
+            .filter(|email| !email.is_empty())
+            .collect();
+        // Every entry must carry an authorization rule beyond `audience`.
+        // Phase 1 offers only the email operators; the rule is enforced here
+        // rather than documented because for some issuers `audience` is not an
+        // authorization decision at all — a GitHub Actions workflow picks its
+        // own `aud`, so any repository could mint a token carrying it.
+        if allowed_domains.is_empty() && allowed_emails.is_empty() {
+            return Err(invalid(
+                "requires at least one email_domains or allowed_emails entry: audience alone is not an authorization rule".to_string(),
+            ));
+        }
+
+        let mut algorithms = Vec::new();
+        for raw in &self.algorithms {
+            let name = raw.trim();
+            let algorithm: jsonwebtoken::Algorithm = name
+                .parse()
+                .map_err(|_| invalid(format!("unknown algorithm {name:?}")))?;
+            // A symmetric algorithm here would let a published JWKS key be
+            // replayed as an HMAC secret, which is the classic `alg` confusion.
+            // shunt never verifies an inbound JWT with a shared secret.
+            if matches!(
+                algorithm,
+                jsonwebtoken::Algorithm::HS256
+                    | jsonwebtoken::Algorithm::HS384
+                    | jsonwebtoken::Algorithm::HS512
+            ) {
+                return Err(invalid(format!(
+                    "algorithm {name:?} is symmetric; inbound JWT entries verify against a public JWKS and accept asymmetric algorithms only"
+                )));
+            }
+            if !algorithms.contains(&algorithm) {
+                algorithms.push(algorithm);
+            }
+        }
+        if algorithms.is_empty() {
+            return Err(invalid("algorithms must not be empty".to_string()));
+        }
+
+        let authorized_parties: Vec<_> = self
+            .authorized_parties
+            .iter()
+            .map(|party| party.trim().to_string())
+            .filter(|party| !party.is_empty())
+            .collect();
+        // Resolved to a concrete list so the runtime never has to re-derive the
+        // default, and `azp` is checked against the same values in both cases.
+        let authorized_parties = if authorized_parties.is_empty() {
+            audience.clone()
+        } else {
+            authorized_parties
+        };
+
+        if self.max_token_age_seconds == 0 {
+            return Err(invalid(
+                "max_token_age_seconds must be greater than zero".to_string(),
+            ));
+        }
+
+        let jwks_url = self
+            .jwks_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+            .map(|url| {
+                crate::auth::inbound_jwt::validate_endpoint(url)
+                    .map(|url| url.to_string())
+                    .map_err(|message| invalid(format!("jwks_url {message}")))
+            })
+            .transpose()?;
+
+        Ok(crate::auth::inbound_jwt::JwtIssuerRule {
+            issuer,
+            jwks_url,
+            audience,
+            algorithms,
+            authorized_parties,
+            allowed_domains,
+            allowed_emails,
+            clock_skew_seconds: self.clock_skew_seconds,
+            max_token_age_seconds: self.max_token_age_seconds,
+        })
     }
 }
 
@@ -905,6 +1130,10 @@ impl AdminOidcConfig {
 enum OidcSection {
     Gateway,
     Admin,
+    /// `[[server.auth.jwt]]` at this index. Not an OIDC *client* section — it
+    /// borrows only the URL validation, since a verify-only entry's issuer must
+    /// satisfy the same transport and shape rules as a sign-in issuer.
+    InboundJwt(usize),
 }
 
 impl OidcSection {
@@ -913,6 +1142,7 @@ impl OidcSection {
         match self {
             Self::Gateway => ConfigError::InvalidGatewayOidc { message },
             Self::Admin => ConfigError::InvalidAdminOidc { message },
+            Self::InboundJwt(index) => ConfigError::InvalidInboundJwt { index, message },
         }
     }
 
@@ -920,6 +1150,10 @@ impl OidcSection {
         match self {
             Self::Gateway => ConfigError::MissingGatewayOidcSecret { env },
             Self::Admin => ConfigError::MissingAdminOidcSecret { env },
+            Self::InboundJwt(index) => ConfigError::InvalidInboundJwt {
+                index,
+                message: format!("unexpected client secret requirement ({env})"),
+            },
         }
     }
 
@@ -927,6 +1161,10 @@ impl OidcSection {
         match self {
             Self::Gateway => ConfigError::MissingGatewayOidcAllowlist,
             Self::Admin => ConfigError::MissingAdminOidcAllowlist,
+            Self::InboundJwt(index) => ConfigError::InvalidInboundJwt {
+                index,
+                message: "requires at least one email_domains or allowed_emails entry".to_string(),
+            },
         }
     }
 }
@@ -2012,10 +2250,14 @@ pub enum ConfigError {
         name: String,
         part: &'static str,
     },
-    #[error("[server.auth] is set but {env} is unset or empty; refusing to run open")]
+    #[error("[server.auth] is set but {env} is unset or empty and no [[server.auth.jwt]] issuer is configured; refusing to run open")]
     MissingClientTokens { env: String },
     #[error("invalid client tokens in {env}: {message}")]
     InvalidClientTokens { env: String, message: String },
+    #[error("[[server.auth.jwt]] entry {index}: {message}")]
+    InvalidInboundJwt { index: usize, message: String },
+    #[error("[[server.auth.jwt]] entry {index} uses issuer {issuer}, which is also [server.gateway] public_url: the gateway's own session tokens and this issuer's tokens would be indistinguishable")]
+    InboundJwtCollidesWithGateway { index: usize, issuer: String },
     #[error("sentry.dsn is not a valid DSN: {message}")]
     InvalidSentryDsn { message: String },
     #[error("sentry.traces_sample_rate must be between 0.0 and 1.0, got {rate}")]
@@ -2697,7 +2939,32 @@ impl Config {
         // Fail closed at boot: [server.auth] without resolvable tokens is an
         // error, not an open gateway.
         if let Some(auth) = &self.server.auth {
-            auth.resolve()?;
+            let resolved = auth.resolve()?;
+            // Keep the two JWT paths unambiguous. `[server.gateway]` mints its
+            // own session tokens with `iss` equal to its `public_url`, and
+            // `authenticate_bearer` checks them on the same header slot as an
+            // inbound JWT entry. An entry claiming that issuer would make which
+            // verifier owns a token depend on evaluation order. A malformed
+            // `public_url` is left to `gateway.resolve()` below, which reports
+            // it as the gateway error it is.
+            if let Some(gateway) = &self.server.gateway {
+                if let Ok(public_url) = resolve_public_origin(&gateway.public_url, |message| {
+                    ConfigError::InvalidGatewayPublicUrl { message }
+                }) {
+                    let gateway_issuer = public_url.as_str().trim_end_matches('/');
+                    if let Some((index, rule)) = resolved
+                        .jwt()
+                        .iter()
+                        .enumerate()
+                        .find(|(_, rule)| rule.issuer == gateway_issuer)
+                    {
+                        return Err(ConfigError::InboundJwtCollidesWithGateway {
+                            index,
+                            issuer: rule.issuer.clone(),
+                        });
+                    }
+                }
+            }
         }
         // Fail closed at boot: [server.admin] without resolvable tokens would be
         // an unauthenticated admin surface. Reject it rather than run open.
@@ -3489,9 +3756,9 @@ mod tests {
         AccountConfig, AdminConfig, AdminOidcConfig, AuthMode, CodexEndpointConfig, Config,
         ConfigError, ConfigFormat, GatewayConfig, GatewayOidcConfig, GatewayPolicyConfig,
         GatewayPolicyMatch, GatewayTelemetryConfig, GatewayTelemetryDestination, InboundAuthConfig,
-        ModelConfig, OauthUsageConfig, OidcProviderConfig, PoolConfig, ProviderKind,
-        ResponsesFlavor, RetryConfig, StatusConfig, StatusSource, UsageEndpointConfig,
-        CONFIG_ENV_LOCK,
+        InboundJwtConfig, ModelConfig, OauthUsageConfig, OidcProviderConfig, PoolConfig,
+        ProviderKind, ResponsesFlavor, RetryConfig, StatusConfig, StatusSource,
+        UsageEndpointConfig, CONFIG_ENV_LOCK,
     };
 
     fn model_config(id: &str, upstream_model: Option<BTreeMap<String, String>>) -> ModelConfig {
@@ -4985,6 +5252,7 @@ mod tests {
         let mut config = Config::default();
         config.server.usage = Some(UsageEndpointConfig::default());
         config.server.auth = Some(InboundAuthConfig {
+            jwt: Vec::new(),
             header: default_auth_header(),
             tokens_env: env.clone(),
         });
@@ -5078,6 +5346,7 @@ mod tests {
         let env = format!("SHUNT_SELF_POLL_WILDCARD_{}", std::process::id());
         std::env::set_var(&env, "tester:tok-secret");
         config.server.auth = Some(InboundAuthConfig {
+            jwt: Vec::new(),
             header: "x-shunt-token".to_string(),
             tokens_env: env.clone(),
         });
@@ -5103,6 +5372,7 @@ mod tests {
         let env = format!("SHUNT_SELF_POLL_XFAMILY_{}", std::process::id());
         std::env::set_var(&env, "tester:tok-secret");
         config.server.auth = Some(InboundAuthConfig {
+            jwt: Vec::new(),
             header: "x-shunt-token".to_string(),
             tokens_env: env.clone(),
         });
@@ -5125,6 +5395,7 @@ mod tests {
         let env = format!("SHUNT_SELF_POLL_DUALSTACK_{}", std::process::id());
         std::env::set_var(&env, "tester:tok-secret");
         config.server.auth = Some(InboundAuthConfig {
+            jwt: Vec::new(),
             header: "x-shunt-token".to_string(),
             tokens_env: env.clone(),
         });
@@ -7158,5 +7429,251 @@ routes:
             .routes
             .iter()
             .any(|route| route.model == "kimi-k2.7-code" && route.provider == "kimi"));
+    }
+
+    /// A `[server.gateway]` whose only interesting field is `public_url`. Its
+    /// signing secret is deliberately unset: these tests assert on the
+    /// inbound-JWT collision check, which runs before the gateway resolves.
+    fn gateway_config() -> GatewayConfig {
+        GatewayConfig {
+            public_url: "https://gw.example".to_string(),
+            jwt_secret_env: format!("SHUNT_TEST_UNSET_GW_SECRET_{}", std::process::id()),
+            users_env: format!("SHUNT_TEST_UNSET_GW_USERS_{}", std::process::id()),
+            token_ttl_seconds: 3600,
+            trust_forwarded_for: false,
+            policies: None,
+            telemetry: None,
+            state_path: None,
+            oidc: None,
+        }
+    }
+
+    /// A `[[server.auth.jwt]]` entry that resolves cleanly, for tests that then
+    /// break exactly one field.
+    fn jwt_entry() -> InboundJwtConfig {
+        InboundJwtConfig {
+            issuer: "https://issuer.example".to_string(),
+            audience: super::StringList::One("shunt-clients".to_string()),
+            email_domains: vec!["example.com".to_string()],
+            allowed_emails: Vec::new(),
+            algorithms: vec!["RS256".to_string()],
+            authorized_parties: Vec::new(),
+            clock_skew_seconds: 0,
+            max_token_age_seconds: 3600,
+            jwks_url: None,
+        }
+    }
+
+    fn auth_with_jwt(entries: Vec<InboundJwtConfig>, tokens_env: &str) -> InboundAuthConfig {
+        InboundAuthConfig {
+            header: default_auth_header(),
+            tokens_env: tokens_env.to_string(),
+            jwt: entries,
+        }
+    }
+
+    /// An env var name guaranteed unset, so `tokens_env` resolves empty.
+    fn unset_tokens_env(tag: &str) -> String {
+        let env = format!("SHUNT_TEST_NO_TOKENS_{tag}_{}", std::process::id());
+        std::env::remove_var(&env);
+        env
+    }
+
+    #[test]
+    fn inbound_auth_boots_with_a_jwt_issuer_and_no_static_tokens() {
+        // The deployment shape the feature exists for: identity comes entirely
+        // from the IdP, so there is no `name:token` list to set.
+        let env = unset_tokens_env("JWT_ONLY");
+        let auth = auth_with_jwt(vec![jwt_entry()], &env);
+
+        let resolved = auth.resolve().expect("a JWT issuer is credential enough");
+        assert_eq!(resolved.jwt().len(), 1);
+        assert_eq!(resolved.jwt()[0].issuer, "https://issuer.example");
+        // Nothing silently became an accepted static token.
+        assert_eq!(resolved.authenticate_value(b""), None);
+    }
+
+    #[test]
+    fn inbound_auth_with_neither_tokens_nor_jwt_still_fails_closed() {
+        let env = unset_tokens_env("NEITHER");
+
+        assert!(matches!(
+            auth_with_jwt(Vec::new(), &env).resolve().unwrap_err(),
+            ConfigError::MissingClientTokens { .. }
+        ));
+    }
+
+    #[test]
+    fn inbound_jwt_requires_an_authorization_rule_beyond_audience() {
+        // `audience` is not an authorization decision for every issuer — a
+        // GitHub Actions workflow picks its own `aud` — so an entry carrying
+        // only an audience must not resolve.
+        let env = unset_tokens_env("NO_RULE");
+        let mut entry = jwt_entry();
+        entry.email_domains = Vec::new();
+        entry.allowed_emails = Vec::new();
+
+        let error = auth_with_jwt(vec![entry], &env).resolve().unwrap_err();
+        assert!(
+            matches!(&error, ConfigError::InvalidInboundJwt { index: 0, message }
+                if message.contains("email_domains")),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn inbound_jwt_requires_an_audience() {
+        let env = unset_tokens_env("NO_AUD");
+        let mut entry = jwt_entry();
+        entry.audience = super::StringList::Many(Vec::new());
+
+        assert!(matches!(
+            auth_with_jwt(vec![entry], &env).resolve().unwrap_err(),
+            ConfigError::InvalidInboundJwt { index: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn inbound_jwt_rejects_a_symmetric_algorithm() {
+        // The config-time half of `alg` confusion: a shared secret must never
+        // reach the verifier, because a published JWKS key would then be
+        // usable as one.
+        let env = unset_tokens_env("SYMMETRIC");
+        let mut entry = jwt_entry();
+        entry.algorithms = vec!["HS256".to_string()];
+
+        let error = auth_with_jwt(vec![entry], &env).resolve().unwrap_err();
+        assert!(
+            matches!(&error, ConfigError::InvalidInboundJwt { index: 0, message }
+                if message.contains("symmetric")),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn inbound_jwt_rejects_an_unknown_algorithm_and_an_empty_list() {
+        let env = unset_tokens_env("ALGS");
+        for algorithms in [vec!["RS255".to_string()], Vec::new()] {
+            let mut entry = jwt_entry();
+            entry.algorithms = algorithms.clone();
+            assert!(
+                matches!(
+                    auth_with_jwt(vec![entry], &env).resolve().unwrap_err(),
+                    ConfigError::InvalidInboundJwt { index: 0, .. }
+                ),
+                "{algorithms:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn inbound_jwt_rejects_an_unsafe_issuer_or_jwks_url() {
+        let env = unset_tokens_env("URLS");
+        let mut plaintext_issuer = jwt_entry();
+        plaintext_issuer.issuer = "http://issuer.example".to_string();
+        let mut plaintext_jwks = jwt_entry();
+        plaintext_jwks.jwks_url = Some("http://issuer.example/jwks".to_string());
+        let mut empty_issuer = jwt_entry();
+        empty_issuer.issuer = "  ".to_string();
+
+        for entry in [plaintext_issuer, plaintext_jwks, empty_issuer] {
+            assert!(matches!(
+                auth_with_jwt(vec![entry], &env).resolve().unwrap_err(),
+                ConfigError::InvalidInboundJwt { index: 0, .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn inbound_jwt_reports_the_offending_entry_index() {
+        let env = unset_tokens_env("INDEX");
+        let mut broken = jwt_entry();
+        broken.issuer = "https://other.example".to_string();
+        broken.email_domains = Vec::new();
+
+        assert!(matches!(
+            auth_with_jwt(vec![jwt_entry(), broken], &env)
+                .resolve()
+                .unwrap_err(),
+            ConfigError::InvalidInboundJwt { index: 1, .. }
+        ));
+    }
+
+    #[test]
+    fn inbound_jwt_audience_accepts_a_string_or_an_array() {
+        let env = unset_tokens_env("AUD_FORMS");
+        let mut many = jwt_entry();
+        many.audience =
+            super::StringList::Many(vec![" rotated-id ".to_string(), String::new(), "id".into()]);
+
+        let one = auth_with_jwt(vec![jwt_entry()], &env).resolve().unwrap();
+        let many = auth_with_jwt(vec![many], &env).resolve().unwrap();
+
+        assert_eq!(one.jwt()[0].audience, vec!["shunt-clients".to_string()]);
+        // Trimmed, and the blank entry dropped rather than becoming an
+        // accepted empty audience.
+        assert_eq!(
+            many.jwt()[0].audience,
+            vec!["rotated-id".to_string(), "id".to_string()]
+        );
+    }
+
+    #[test]
+    fn inbound_jwt_authorized_parties_default_to_the_audience() {
+        let env = unset_tokens_env("AZP");
+        let mut explicit = jwt_entry();
+        explicit.authorized_parties = vec!["dedicated-azp".to_string()];
+
+        let defaulted = auth_with_jwt(vec![jwt_entry()], &env).resolve().unwrap();
+        let explicit = auth_with_jwt(vec![explicit], &env).resolve().unwrap();
+
+        assert_eq!(
+            defaulted.jwt()[0].authorized_parties,
+            vec!["shunt-clients".to_string()]
+        );
+        assert_eq!(
+            explicit.jwt()[0].authorized_parties,
+            vec!["dedicated-azp".to_string()]
+        );
+    }
+
+    #[test]
+    fn inbound_jwt_issuer_may_not_be_the_gateway_public_url() {
+        // Both verifiers read `Authorization: Bearer`, so a shared issuer would
+        // make ownership of a token depend on evaluation order.
+        let env = unset_tokens_env("GATEWAY_COLLISION");
+        let mut entry = jwt_entry();
+        entry.issuer = "https://gw.example".to_string();
+        let mut config = Config::default();
+        config.server.auth = Some(auth_with_jwt(vec![entry], &env));
+        config.server.gateway = Some(GatewayConfig {
+            public_url: "https://gw.example/".to_string(),
+            ..gateway_config()
+        });
+
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::InboundJwtCollidesWithGateway { index: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn inbound_jwt_issuer_next_to_a_different_gateway_url_validates() {
+        // The non-vacuity control for the collision test above: the same
+        // config with a distinct issuer must clear the collision check (it
+        // then fails on the gateway's own unset signing secret, which is a
+        // different error).
+        let env = unset_tokens_env("GATEWAY_NO_COLLISION");
+        let mut config = Config::default();
+        config.server.auth = Some(auth_with_jwt(vec![jwt_entry()], &env));
+        config.server.gateway = Some(GatewayConfig {
+            public_url: "https://gw.example/".to_string(),
+            ..gateway_config()
+        });
+
+        assert!(!matches!(
+            config.validate().unwrap_err(),
+            ConfigError::InboundJwtCollidesWithGateway { .. }
+        ));
     }
 }

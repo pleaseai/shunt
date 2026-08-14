@@ -11,6 +11,7 @@ use crate::{
         anthropic::AnthropicAdapter, cursor::CursorAdapter, responses::ResponsesAdapter, Adapter,
         AdapterError, AdapterFailure,
     },
+    auth::gate,
     config::{AuthMode, CountTokens, ProviderKind},
     count_tokens,
     error::ShuntError,
@@ -76,8 +77,9 @@ pub(super) async fn forward(
         // count_tokens request.
         routes.truncate(1);
     }
-    let (base_headers, inbound) =
-        check_inbound_auth(&state, &routes, headers).map_err(|error| *error)?;
+    let (base_headers, inbound) = check_inbound_auth(&state, &routes, headers)
+        .await
+        .map_err(|error| *error)?;
     enforce_managed_model_policy(&state, inbound.gateway_claims.as_ref(), &requested_model)
         .map_err(|error| *error)?;
 
@@ -481,6 +483,17 @@ struct InboundContext {
     gateway_claims: Option<crate::gateway::jwt::Claims>,
     client: Option<String>,
     static_client: bool,
+    /// Whether a `[[server.auth.jwt]]` entry verified the caller's bearer.
+    ///
+    /// A static `[server.auth]` token has an alternative slot — operators
+    /// mixing passthrough and mapped models hand out dedicated
+    /// `x-shunt-token` values so the bearer stays free to carry the caller's
+    /// real upstream credential (`docs/m4-inbound-auth.md` §2). A JWT has no
+    /// such alternative: it is only ever accepted in the bearer slot. So on a
+    /// mixed chain the passthrough attempt must strip it explicitly, or shunt
+    /// would forward an identity token from the operator's IdP to a third-party
+    /// upstream.
+    jwt_client: bool,
 }
 
 /// Authenticate once against the whole route chain. Client credential stripping
@@ -489,7 +502,7 @@ struct InboundContext {
 /// it. On failover, a passthrough attempt keeps the credential only while its
 /// origin matches the primary upstream's, so a host-specific token is never
 /// replayed to a different origin (a same-origin fallback still carries it).
-fn check_inbound_auth(
+async fn check_inbound_auth(
     state: &AppState,
     routes: &[routing::Route],
     headers: &HeaderMap,
@@ -518,17 +531,45 @@ fn check_inbound_auth(
                 gateway_claims,
                 client: None,
                 static_client: false,
+                jwt_client: false,
             },
         ));
     }
 
-    let static_client = state
-        .inbound_auth
-        .as_ref()
-        .and_then(|auth| auth.authenticate_client(headers));
-    if static_client.is_some() || gateway_claims.is_some() {
-        let client = static_client
-            .map(str::to_string)
+    let inbound = match &state.inbound_auth {
+        Some(auth) => {
+            gate::authenticate(auth, &state.inbound_jwks, headers, gate::Slots::Client).await
+        }
+        None => gate::Outcome::Rejected,
+    };
+    // An unreachable JWT issuer is shunt's problem, not the caller's: answering
+    // `401` here would send an operator hunting a credential that is fine.
+    if inbound == gate::Outcome::Unavailable {
+        tracing::warn!("inbound auth: cannot verify credential, JWT issuer key set unreachable");
+        return Err(Box::new(ForwardError {
+            message: "inbound authentication unavailable".to_string(),
+            response: gate::unavailable_response(),
+        }));
+    }
+    let inbound_client = match &inbound {
+        gate::Outcome::Authenticated { client, .. } => Some(client.clone()),
+        _ => None,
+    };
+    // `static_client` drives credential handling downstream, not attribution:
+    // it means "this caller presented a `[server.auth]` credential", which a
+    // verified JWT also is. Both are shunt-owned gate credentials that must be
+    // stripped before the request leaves, unlike a passthrough caller's own
+    // upstream credential.
+    let static_client = inbound_client.is_some();
+    let jwt_client = matches!(
+        inbound,
+        gate::Outcome::Authenticated {
+            static_token: false,
+            ..
+        }
+    );
+    if inbound_client.is_some() || gateway_claims.is_some() {
+        let client = inbound_client
             .or_else(|| gateway_claims.as_ref().map(|claims| claims.email.clone()))
             .expect("one composed authentication branch matched");
         tracing::info!(client = %client, "inbound client authenticated for route chain");
@@ -537,7 +578,8 @@ fn check_inbound_auth(
             InboundContext {
                 gateway_claims,
                 client: Some(client),
-                static_client: static_client.is_some(),
+                static_client,
+                jwt_client,
             },
         ));
     }
@@ -584,7 +626,7 @@ fn headers_for_route(
                 (primary_origin, provider_origin(state, &route.provider).as_deref()),
                 (Some(primary), Some(this)) if primary == this
             );
-        if !same_origin {
+        if !same_origin || inbound.jwt_client {
             headers.remove("authorization");
             headers.remove("x-api-key");
         }
@@ -655,5 +697,87 @@ fn stamp_gateway_headers(
         if let Ok(value) = HeaderValue::from_str(value) {
             response.headers_mut().insert(name, value);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::{HeaderMap, HeaderValue};
+
+    use crate::config::{AuthMode, Config};
+    use crate::routing::{AdapterKind, Route};
+    use crate::server::AppState;
+
+    use super::{headers_for_route, InboundContext};
+
+    fn passthrough_route() -> Route {
+        Route {
+            provider: "anthropic".to_string(),
+            adapter: AdapterKind::Anthropic,
+            model: "claude-opus-5".to_string(),
+            upstream_model: "claude-opus-5".to_string(),
+            effort: None,
+            service_tier: None,
+        }
+    }
+
+    fn state() -> AppState {
+        let mut config = Config::default();
+        config.providers.get_mut("anthropic").unwrap().auth = AuthMode::Passthrough;
+        AppState::new(config, reqwest::Client::new()).unwrap()
+    }
+
+    fn caller_headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", HeaderValue::from_static("Bearer caller"));
+        headers
+    }
+
+    fn context(static_client: bool, jwt_client: bool) -> InboundContext {
+        InboundContext {
+            gateway_claims: None,
+            client: Some("caller".to_string()),
+            static_client,
+            jwt_client,
+        }
+    }
+
+    #[test]
+    fn a_verified_jwt_is_stripped_before_a_passthrough_attempt() {
+        // A mixed chain gates the request, so a JWT bearer *is* consumed by
+        // shunt — but the passthrough attempt in that same chain would forward
+        // it to a third-party upstream. There is no dedicated-header
+        // alternative for a JWT, so the strip has to happen here.
+        let headers = headers_for_route(
+            &state(),
+            &passthrough_route(),
+            &caller_headers(),
+            &context(true, true),
+            true,
+            None,
+        );
+
+        assert!(headers.get("authorization").is_none());
+    }
+
+    #[test]
+    fn a_static_token_deployment_keeps_forwarding_the_caller_bearer() {
+        // The non-vacuity control, and the compatibility guarantee: with no JWT
+        // entries the bearer on a same-origin passthrough attempt is still the
+        // caller's own upstream credential and still goes upstream, exactly as
+        // `docs/m4-inbound-auth.md` §2 describes.
+        let headers = headers_for_route(
+            &state(),
+            &passthrough_route(),
+            &caller_headers(),
+            &context(true, false),
+            true,
+            None,
+        );
+
+        assert_eq!(
+            headers.get("authorization").unwrap(),
+            &HeaderValue::from_static("Bearer caller")
+        );
     }
 }

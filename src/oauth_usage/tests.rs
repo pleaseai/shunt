@@ -185,6 +185,7 @@ fn state_with_claude_and_codex_accounts(
     let mut config = crate::config::Config::default();
     config.server.bind = bind.to_string();
     config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: env.clone(),
     });
