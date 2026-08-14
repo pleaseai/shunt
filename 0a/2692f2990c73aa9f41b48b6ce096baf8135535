@@ -1,0 +1,41 @@
+src/auth/inbound.rs
+  s_883e26f2c25b24::t_ea4506a3a5eaf5 222-246
+src/proxy/failover.rs
+  s_883e26f2c25b24::t_a59b03f310e0c9 14
+  s_883e26f2c25b24::t_fe660a6fa8e65c 620-624
+src/proxy/failover/tests.rs
+  s_883e26f2c25b24::t_469870bf12d34b 348-367
+  s_883e26f2c25b24::t_6ec1a2e73a1988 347
+docs/m4-inbound-auth.md
+  s_883e26f2c25b24::t_786c58bac0d7d8 99-104
+src/discovery/upstream/tests.rs
+  s_883e26f2c25b24::t_cd459b3fcf4577 332-364
+  s_883e26f2c25b24::t_e6fa9c3f032fd7 329-331
+src/discovery/upstream.rs
+  s_883e26f2c25b24::t_08532b3fd71236 24
+  s_883e26f2c25b24::t_e41d69b26503f6 266-274
+site/src/content/docs/ja/reference/configuration.md
+  s_883e26f2c25b24::t_1602cddde335bc 226
+site/src/content/docs/ko/reference/configuration.md
+  s_883e26f2c25b24::t_f345aa385c0b15 257
+site/src/content/docs/reference/configuration.md
+  s_883e26f2c25b24::t_d311c75b1f778b 379
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_883e26f2c25b24::t_ff897f7985bc20 226
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "0a2692f2990c73aa9f41b48b6ce096baf8135535",
+  "prompts": {},
+  "sessions": {
+    "s_883e26f2c25b24": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "24405184-39b1-4f05-b98a-99e19a73664c",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
