@@ -85,9 +85,9 @@ enum Command {
         print: bool,
     },
     /// Log in to a subscription provider and save its credential for shunt to
-    /// inject. Supports `xai`, `cursor`, `claude`, and `codex`.
+    /// inject. Supports `xai`, `cursor`, `claude`, `codex`, and `antigravity`.
     Login {
-        /// Provider to log in to (`xai`, `cursor`, `claude`, or `codex`).
+        /// Provider to log in to (`xai`, `cursor`, `claude`, `codex`, or `antigravity`).
         provider: String,
         /// Stable account name used by a name-only pool entry (`claude` and
         /// `codex` only).
@@ -367,6 +367,14 @@ fn login(
                 "--mode is not supported for `shunt login codex`; Codex OAuth tokens are always refreshable"
             )
         }
+        "antigravity" if name.is_none() && !long_lived && mode.is_none() => {
+            runtime()?.block_on(shunt::auth::antigravity::login::run())
+        }
+        "antigravity" => {
+            anyhow::bail!(
+                "--name, --long-lived, and --mode are only valid for `shunt login claude`"
+            )
+        }
         "codex" => {
             let name = name.ok_or_else(|| {
                 anyhow::anyhow!("`shunt login codex` requires --name <account-name>")
@@ -375,7 +383,7 @@ fn login(
         }
         _ => {
             anyhow::bail!(
-                "unknown login provider {provider:?}; supported: claude, codex, cursor, xai"
+                "unknown login provider {provider:?}; supported: antigravity, claude, codex, cursor, xai"
             )
         }
     }
@@ -470,12 +478,29 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     // `Config::default()` seeds a built-in `antigravity` provider, so keying
     // off the provider map alone spawned the subprocess on every startup with
     // `agy` installed, including configs that route nowhere near it.
-    if routes_to_antigravity(&config) {
+    if routes_to_antigravity_cli(&config) {
         if let Some(agy) = shunt::adapters::antigravity::find_agy_binary() {
             tokio::spawn(async move {
                 shunt::adapters::antigravity::models::warm(&agy).await;
             });
         }
+    }
+    // The native Antigravity upstream advertises the shipping client version.
+    // The refresher is bounded, off the request path, and falls back to the
+    // compiled-in version, so a manifest outage degrades the fingerprint
+    // rather than the provider.
+    if routes_to_antigravity(&config) {
+        // `antigravity` changed meaning: it used to run the local `agy` binary,
+        // and now reaches the same service over HTTP under its own credential.
+        // A config that still means the old thing must fail loudly here rather
+        // than resolve quietly to a different transport, with different
+        // credentials, egress, and failure modes, behind a green startup.
+        if let Some(message) = antigravity_migration_error(
+            shunt::auth::antigravity::default_antigravity_auth_path().exists(),
+        ) {
+            anyhow::bail!(message);
+        }
+        shunt::auth::antigravity::version::spawn_refresher(reqwest::Client::new());
     }
     let (router, shared, state) =
         server::build_router(config).context("failed to initialize gateway")?;
@@ -677,38 +702,59 @@ fn init_telemetry(config: Option<&OtelConfig>) -> Option<TelemetryGuard> {
     }
 }
 
-/// Whether any routing surface can actually reach an Antigravity provider.
+/// Whether any routing surface can actually reach a provider of `kind`.
 ///
-/// Presence in the provider map is not routing: `Config::default()` seeds a
-/// built-in `antigravity` entry, so a config whose traffic goes entirely to
-/// Anthropic still "has" one. Warming on that spawned a ~20s `agy models`
-/// subprocess on every startup with `agy` installed, for nothing.
+/// Presence in the provider map is not routing: `Config::default()` seeds
+/// built-in `antigravity` and `antigravity-cli` entries, so a config whose
+/// traffic goes entirely to Anthropic still "has" them. Warming on that spawned
+/// a ~20s `agy models` subprocess on every startup with `agy` installed, for
+/// nothing.
 ///
 /// Checks every way a request can select a provider: the default provider,
 /// exact routes, prefix routes, and a model's `upstream_model` map.
-fn routes_to_antigravity(config: &Config) -> bool {
-    let is_antigravity = |name: &str| {
+fn routes_to_kind(config: &Config, kind: shunt::config::ProviderKind) -> bool {
+    let is_kind = |name: &str| {
         config
             .providers
             .get(name)
-            .is_some_and(|provider| provider.kind == shunt::config::ProviderKind::Antigravity)
+            .is_some_and(|provider| provider.kind == kind)
     };
 
-    is_antigravity(&config.server.default_provider)
-        || config
-            .routes
-            .iter()
-            .any(|route| is_antigravity(&route.provider))
+    is_kind(&config.server.default_provider)
+        || config.routes.iter().any(|route| is_kind(&route.provider))
         || config
             .route_prefixes
             .iter()
-            .any(|prefix| is_antigravity(&prefix.provider))
+            .any(|prefix| is_kind(&prefix.provider))
         || config.models.iter().any(|model| {
             model
                 .upstream_model
                 .as_ref()
-                .is_some_and(|map| map.keys().any(|provider| is_antigravity(provider)))
+                .is_some_and(|map| map.keys().any(|provider| is_kind(provider)))
         })
+}
+
+/// Whether the deprecated `agy` subprocess transport is reachable.
+fn routes_to_antigravity_cli(config: &Config) -> bool {
+    routes_to_kind(config, shunt::config::ProviderKind::AntigravityCli)
+}
+
+/// Whether the native Antigravity HTTP upstream is reachable.
+fn routes_to_antigravity(config: &Config) -> bool {
+    routes_to_kind(config, shunt::config::ProviderKind::Antigravity)
+}
+
+/// The startup refusal for a routed native Antigravity provider with no
+/// credential. Split from the filesystem probe so the message is testable
+/// without depending on what happens to exist in the test environment's home
+/// directory.
+fn antigravity_migration_error(credential_exists: bool) -> Option<String> {
+    (!credential_exists).then(|| {
+        "provider `antigravity` is routed but has no credential. It is now the native HTTP \
+         upstream, not the local `agy` CLI. Run `shunt login antigravity` to authenticate it, \
+         or route to `antigravity-cli` to stay on the deprecated subprocess transport."
+            .to_string()
+    })
 }
 
 #[cfg(test)]
@@ -1184,6 +1230,39 @@ mod warm_gate_tests {
             "this test rests on the default config seeding an antigravity provider"
         );
         config
+    }
+
+    #[test]
+    fn a_routed_native_antigravity_without_a_credential_refuses_to_start() {
+        // Loud beats silent: routing to `antigravity` used to mean "run the
+        // local `agy` binary", so booting green on the HTTP transport instead
+        // would change credentials and egress underneath the operator.
+        let message = super::antigravity_migration_error(false)
+            .expect("a missing credential must refuse the boot");
+        assert!(message.contains("shunt login antigravity"), "{message}");
+        // Both ways forward have to be named, including staying on the old
+        // transport.
+        assert!(message.contains("antigravity-cli"), "{message}");
+    }
+
+    #[test]
+    fn a_present_credential_starts_normally() {
+        assert_eq!(super::antigravity_migration_error(true), None);
+    }
+
+    #[test]
+    fn the_two_antigravity_transports_are_detected_separately() {
+        // Routing to one must not warm or gate the other: the CLI path spawns a
+        // ~20s subprocess and the native path starts a version refresher.
+        let mut config = base();
+        config.server.default_provider = "antigravity".to_string();
+        assert!(super::routes_to_antigravity(&config));
+        assert!(!super::routes_to_antigravity_cli(&config));
+
+        let mut config = base();
+        config.server.default_provider = "antigravity-cli".to_string();
+        assert!(super::routes_to_antigravity_cli(&config));
+        assert!(!super::routes_to_antigravity(&config));
     }
 
     #[test]

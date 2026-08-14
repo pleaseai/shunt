@@ -337,6 +337,10 @@ fn websocket_headers(credential: Credential) -> Result<HeaderMap, AdapterError> 
         Credential::GoogleOauth { access_token, .. } => {
             set("authorization", format!("Bearer {access_token}"))?
         }
+        // Fails closed for the same reason as the HTTP Responses path: the
+        // Codex WebSocket is not the origin an Antigravity subscription token
+        // was issued for, so an unreachable-by-validation arm must not carry it.
+        Credential::AntigravityOauth { .. } => {}
         Credential::Passthrough => {}
     }
     Ok(headers)

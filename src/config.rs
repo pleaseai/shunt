@@ -1697,8 +1697,21 @@ pub enum ProviderKind {
     /// in the Code Assist `{model,project,request}` envelope. Auth reuses a
     /// Google OAuth subscription token (`google_oauth`).
     Gemini,
-    /// Local Antigravity CLI binary (`agy`) execution.
+    /// Antigravity over its native HTTP backend. Wire-identical to the Code
+    /// Assist path `kind = "gemini"` speaks (`v1internal:generateContent` under
+    /// the `{model,project,request}` envelope), but authenticated with an
+    /// Antigravity subscription token rather than a Gemini CLI one, and carrying
+    /// `ideType: ANTIGRAVITY` through project discovery. Requires
+    /// `auth = "antigravity_oauth"`.
     Antigravity,
+    /// Local Antigravity CLI binary (`agy`) execution.
+    ///
+    /// **Deprecated.** Superseded by `kind = "antigravity"`, which reaches the
+    /// same service over HTTP without depending on an installed binary, on
+    /// `PATH`, or on a subprocess. Retained so existing deployments keep working
+    /// while they migrate; it will be removed once the HTTP transport reaches
+    /// parity.
+    AntigravityCli,
 }
 
 /// How shunt authenticates to an upstream.
@@ -1725,6 +1738,12 @@ pub enum AuthMode {
     /// Only valid for
     /// `kind = "gemini"`.
     GoogleOauth,
+    /// Antigravity subscription OAuth, acquired via `shunt login antigravity`
+    /// and stored in ~/.shunt/antigravity-auth.json. Shares Google's OAuth
+    /// endpoints with [`AuthMode::GoogleOauth`] but uses the Antigravity client
+    /// and scopes, so the two credentials are not interchangeable. Only valid
+    /// for `kind = "antigravity"`.
+    AntigravityOauth,
     /// No authentication header sent (e.g. local subprocess CLI adapters).
     None,
 }
@@ -1970,6 +1989,20 @@ pub enum ConfigError {
     GoogleOauthNonGoogleHost { provider: String, host: String },
     #[error("providers.{provider} uses auth = \"google_oauth\" but base_url is not https; refusing to send a subscription token over plaintext")]
     GoogleOauthNotHttps { provider: String },
+    #[error("providers.{provider} uses auth = \"antigravity_oauth\" but kind is not \"antigravity\"; another adapter would forward the client's own credential instead of the Antigravity token")]
+    AntigravityOauthWrongKind { provider: String },
+    #[error("providers.{provider} uses auth = \"antigravity_oauth\" but base_url host {host} is not a googleapis.com host; refusing to send a subscription token off-origin")]
+    AntigravityOauthNonGoogleHost { provider: String, host: String },
+    #[error("providers.{provider} uses auth = \"antigravity_oauth\" but base_url is not https; refusing to send a subscription token over plaintext")]
+    AntigravityOauthNotHttps { provider: String },
+    #[error(
+        "providers.{provider} uses kind = \"antigravity\" with auth = \"{auth}\", but \
+         kind = \"antigravity\" is now the native HTTP upstream and requires \
+         auth = \"antigravity_oauth\". The local `agy` CLI transport moved to \
+         kind = \"antigravity_cli\" (built-in provider `antigravity-cli`), which is \
+         deprecated. Pick one explicitly rather than have the transport change underneath you."
+    )]
+    AntigravityKindRequiresOauth { provider: String, auth: String },
     #[error("providers.{provider}.accounts requires auth = \"claude_oauth\" or \"chatgpt_oauth\"")]
     AccountsRequireOauthProvider { provider: String },
     #[error("providers.{provider} uses auth = \"claude_oauth\" but kind is not \"anthropic\"")]
@@ -2251,6 +2284,30 @@ impl ProviderConfig {
             sandbox: true,
         }
     }
+
+    /// An `Antigravity`-kind provider on the Antigravity HTTP backend, reusing
+    /// an Antigravity subscription token (`antigravity_oauth`). Used for the
+    /// built-in `antigravity` provider.
+    fn antigravity(base_url: &str) -> Self {
+        Self {
+            kind: ProviderKind::Antigravity,
+            base_url: base_url.to_string(),
+            auth: AuthMode::AntigravityOauth,
+            api_key_env: None,
+            api_key_header: ApiKeyHeader::Bearer,
+            effort: None,
+            service_tier: None,
+            count_tokens: CountTokens::default(),
+            accounts: Vec::new(),
+            account_scope: Vec::new(),
+            websocket: false,
+            tool_search: None,
+            request_compression: true,
+            retry: RetryConfig::default(),
+            workspace_roots: Vec::new(),
+            sandbox: true,
+        }
+    }
 }
 
 impl Default for Config {
@@ -2336,10 +2393,20 @@ impl Default for Config {
                 ProviderConfig::gemini("https://cloudcode-pa.googleapis.com"),
             ),
             (
-                // Local Antigravity CLI binary (`agy`) execution for Gemini models.
+                // Antigravity over its native HTTP backend, authenticated with
+                // `shunt login antigravity`. Same service the `agy` CLI reaches,
+                // without the subprocess.
                 "antigravity".to_string(),
+                ProviderConfig::antigravity("https://cloudcode-pa.googleapis.com"),
+            ),
+            (
+                // Local Antigravity CLI binary (`agy`) execution for Gemini
+                // models. Deprecated in favour of the `antigravity` provider
+                // above; retained for deployments still on the subprocess
+                // transport.
+                "antigravity-cli".to_string(),
                 ProviderConfig {
-                    kind: ProviderKind::Antigravity,
+                    kind: ProviderKind::AntigravityCli,
                     base_url: "http://localhost".to_string(),
                     auth: AuthMode::None,
                     api_key_env: None,
@@ -2832,7 +2899,7 @@ impl Config {
         // request because a reload can change this config value but not the
         // listener the process actually bound.
         if let Some(name) = self.providers.iter().find_map(|(name, provider)| {
-            (provider.kind == ProviderKind::Antigravity && !provider.sandbox).then_some(name)
+            (provider.kind == ProviderKind::AntigravityCli && !provider.sandbox).then_some(name)
         }) {
             if !self.server.bind_is_loopback() {
                 return Err(ConfigError::UnsandboxedAntigravityOnPublicBind {
@@ -3034,6 +3101,48 @@ impl Config {
                     }
                     if !host_is_google_codeassist(host) {
                         return Err(ConfigError::GoogleOauthNonGoogleHost {
+                            provider: name.clone(),
+                            host: host.to_string(),
+                        });
+                    }
+                }
+            }
+            // `kind = "antigravity"` used to mean "run the local `agy` binary".
+            // It now means the native HTTP upstream, so a config carrying the
+            // old meaning must not resolve quietly to a different transport
+            // with different credentials, egress, and failure modes. Anything
+            // that is not the new auth mode is rejected by name.
+            if provider.kind == ProviderKind::Antigravity
+                && provider.auth != AuthMode::AntigravityOauth
+            {
+                return Err(ConfigError::AntigravityKindRequiresOauth {
+                    provider: name.clone(),
+                    auth: serde_json::to_value(provider.auth)
+                        .ok()
+                        .and_then(|value| value.as_str().map(str::to_string))
+                        .unwrap_or_else(|| "unknown".to_string()),
+                });
+            }
+            // Mirrors the `google_oauth` guards above: the Antigravity token is
+            // a subscription bearer on the same Google host family, so it must
+            // stay on a googleapis.com host over https and be carried by the
+            // adapter that injects it rather than one that forwards the
+            // client's own credential.
+            if provider.auth == AuthMode::AntigravityOauth {
+                if provider.kind != ProviderKind::Antigravity {
+                    return Err(ConfigError::AntigravityOauthWrongKind {
+                        provider: name.clone(),
+                    });
+                }
+                let host = url.host_str().unwrap_or_default();
+                if !host_is_loopback(host) {
+                    if url.scheme() != "https" {
+                        return Err(ConfigError::AntigravityOauthNotHttps {
+                            provider: name.clone(),
+                        });
+                    }
+                    if !host_is_google_codeassist(host) {
+                        return Err(ConfigError::AntigravityOauthNonGoogleHost {
                             provider: name.clone(),
                             host: host.to_string(),
                         });
@@ -3721,7 +3830,7 @@ mod tests {
 
         let antigravity = |sandbox: bool| {
             let mut provider = ProviderConfig::gemini("http://localhost");
-            provider.kind = ProviderKind::Antigravity;
+            provider.kind = ProviderKind::AntigravityCli;
             provider.auth = AuthMode::None;
             provider.sandbox = sandbox;
             provider
@@ -6121,6 +6230,106 @@ id = "claude-sonnet-5"
         let error = config.validate().unwrap_err();
         assert!(matches!(error, ConfigError::CursorOauthNotHttps { .. }));
         assert!(error.to_string().contains("plaintext"));
+    }
+
+    #[test]
+    fn default_seeds_the_native_antigravity_provider_and_the_deprecated_cli_one() {
+        let config = Config::default();
+
+        // `antigravity` is the native HTTP upstream.
+        let native = config.provider("antigravity").unwrap();
+        assert_eq!(native.kind, ProviderKind::Antigravity);
+        assert_eq!(native.auth, AuthMode::AntigravityOauth);
+        assert_eq!(native.base_url, "https://cloudcode-pa.googleapis.com");
+
+        // The `agy` subprocess transport kept its behaviour under a new name.
+        let cli = config.provider("antigravity-cli").unwrap();
+        assert_eq!(cli.kind, ProviderKind::AntigravityCli);
+        assert_eq!(cli.auth, AuthMode::None);
+        assert_eq!(cli.base_url, "http://localhost");
+        assert!(cli.sandbox);
+
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn a_legacy_antigravity_block_is_rejected_by_name_rather_than_retargeted() {
+        // The whole point of the rename: a config that meant "run the local
+        // `agy` binary" must not resolve quietly to an OAuth HTTP upstream with
+        // different credentials, egress, and failure modes.
+        // The two shapes a legacy config can actually have: the old built-in
+        // preset used `none`, and an omitted `auth` defaults to passthrough.
+        // (`api_key` is not a legacy shape and is caught earlier by the
+        // missing-`api_key_env` guard.)
+        for auth in [AuthMode::None, AuthMode::Passthrough] {
+            let mut config = Config::default();
+            let provider = config.providers.get_mut("antigravity").unwrap();
+            provider.auth = auth;
+            let error = config.validate().unwrap_err();
+            assert!(
+                matches!(error, ConfigError::AntigravityKindRequiresOauth { .. }),
+                "auth {auth:?} should be refused, got: {error}"
+            );
+            // The message has to name both ways forward, or the operator has to
+            // guess which transport they are on.
+            let text = error.to_string();
+            assert!(text.contains("antigravity_oauth"), "message: {text}");
+            assert!(text.contains("antigravity_cli"), "message: {text}");
+        }
+    }
+
+    #[test]
+    fn antigravity_oauth_requires_the_antigravity_kind() {
+        let mut config = Config::default();
+        // Carrying the token on an anthropic-kind provider would forward the
+        // client's own credential instead of injecting the Antigravity one.
+        config.providers.get_mut("antigravity").unwrap().kind = ProviderKind::Anthropic;
+        let error = config.validate().unwrap_err();
+        assert!(matches!(
+            error,
+            ConfigError::AntigravityOauthWrongKind { .. }
+        ));
+    }
+
+    #[test]
+    fn antigravity_oauth_rejects_an_off_origin_host() {
+        let mut config = Config::default();
+        config.providers.get_mut("antigravity").unwrap().base_url =
+            "https://evil.example.com".to_string();
+        let error = config.validate().unwrap_err();
+        assert!(matches!(
+            error,
+            ConfigError::AntigravityOauthNonGoogleHost { .. }
+        ));
+        assert!(error.to_string().contains("evil.example.com"));
+    }
+
+    #[test]
+    fn antigravity_oauth_requires_https() {
+        let mut config = Config::default();
+        config.providers.get_mut("antigravity").unwrap().base_url =
+            "http://cloudcode-pa.googleapis.com".to_string();
+        let error = config.validate().unwrap_err();
+        assert!(matches!(
+            error,
+            ConfigError::AntigravityOauthNotHttps { .. }
+        ));
+        assert!(error.to_string().contains("plaintext"));
+    }
+
+    #[test]
+    fn the_native_antigravity_provider_rides_the_gemini_adapter() {
+        // Stage 1 is wire-identical to Code Assist, so it must dispatch to the
+        // Gemini adapter rather than the `agy` subprocess one.
+        use crate::routing::AdapterKind;
+        assert_eq!(
+            AdapterKind::from(ProviderKind::Antigravity),
+            AdapterKind::Gemini
+        );
+        assert_eq!(
+            AdapterKind::from(ProviderKind::AntigravityCli),
+            AdapterKind::AntigravityCli
+        );
     }
 
     #[test]

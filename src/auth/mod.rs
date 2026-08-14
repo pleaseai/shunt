@@ -9,6 +9,8 @@ use crate::{
     routing::Route,
 };
 
+pub mod antigravity;
+pub(crate) mod callback;
 pub mod claude;
 pub mod codex;
 pub mod cursor;
@@ -37,6 +39,13 @@ pub enum Credential {
     CursorOauth { access_token: String },
     /// Google OAuth bearer & project ID (Gemini Code Assist / Google One AI Pro).
     GoogleOauth {
+        access_token: String,
+        project_id: String,
+    },
+    /// Antigravity OAuth bearer & Code Assist project ID. Distinct from
+    /// [`Credential::GoogleOauth`] because the tokens come from different OAuth
+    /// clients with different scopes and are not interchangeable.
+    AntigravityOauth {
         access_token: String,
         project_id: String,
     },
@@ -104,6 +113,19 @@ pub async fn resolve_credential(
                 .get_valid()
                 .await
                 .map(|credential| Credential::GoogleOauth {
+                    access_token: credential.access_token,
+                    project_id: credential.project_id,
+                })
+        }
+        AuthMode::AntigravityOauth => {
+            let store = antigravity::auth::AntigravityAuthStore::new(
+                antigravity::default_antigravity_auth_path(),
+                client.clone(),
+            );
+            store
+                .get_valid()
+                .await
+                .map(|credential| Credential::AntigravityOauth {
                     access_token: credential.access_token,
                     project_id: credential.project_id,
                 })

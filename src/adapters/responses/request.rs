@@ -91,7 +91,16 @@ pub(super) fn request_builder(
         }
         // A Responses provider configured with passthrough auth is a
         // misconfiguration; send no credential and let the upstream reject it.
-        Credential::CursorOauth { .. } | Credential::Passthrough => {}
+        //
+        // An Antigravity token belongs to the same class: config validation
+        // pins `antigravity_oauth` to `kind = "antigravity"`, so it cannot
+        // legitimately reach a Responses upstream. Fail closed rather than
+        // bearer it — the hosts on this path (OpenAI, xAI, Cursor) are not the
+        // origin the subscription token was issued for, so a reachable bug here
+        // would be a credential leak rather than a 401.
+        Credential::CursorOauth { .. }
+        | Credential::AntigravityOauth { .. }
+        | Credential::Passthrough => {}
     }
     request
 }

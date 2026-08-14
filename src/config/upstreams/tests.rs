@@ -511,7 +511,7 @@ fn unsandboxed_antigravity_declared_as_an_ordered_upstream_is_also_rejected() {
         "default_provider = \"agy\"\n\n",
         "[[upstreams]]\n",
         "name = \"agy\"\n",
-        "kind = \"antigravity\"\n",
+        "kind = \"antigravity_cli\"\n",
         "base_url = \"http://localhost\"\n",
         "auth = \"passthrough\"\n",
         "sandbox = false\n",

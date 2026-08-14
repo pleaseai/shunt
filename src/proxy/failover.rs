@@ -283,7 +283,7 @@ async fn count_tokens_response(
         AdapterKind::Responses
             | AdapterKind::Cursor
             | AdapterKind::Gemini
-            | AdapterKind::Antigravity
+            | AdapterKind::AntigravityCli
     ) {
         let mode = state
             .config
@@ -367,7 +367,7 @@ async fn dispatch(
                 .forward(state, route, uri, headers, body)
                 .await
         }
-        AdapterKind::Antigravity => {
+        AdapterKind::AntigravityCli => {
             crate::adapters::antigravity::AntigravityAdapter
                 .forward(state, route, uri, headers, body)
                 .await
@@ -680,7 +680,7 @@ fn is_passthrough_route(state: &AppState, route: &routing::Route) -> bool {
         .config
         .provider(&route.provider)
         .is_some_and(|provider| {
-            provider.auth == AuthMode::Passthrough && provider.kind != ProviderKind::Antigravity
+            provider.auth == AuthMode::Passthrough && provider.kind != ProviderKind::AntigravityCli
         })
 }
 

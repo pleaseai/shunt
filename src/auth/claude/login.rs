@@ -11,7 +11,8 @@ use serde::Deserialize;
 
 pub(crate) use crate::auth::shared::{generate_pkce, PkceChallenge};
 
-use super::{auth, callback::CallbackServer, store};
+use super::{auth, store};
+use crate::auth::callback::{CallbackConfig, CallbackServer};
 
 pub(crate) const AUTHORIZE_URL: &str = "https://claude.com/cai/oauth/authorize";
 pub(crate) const MANUAL_REDIRECT_URL: &str = "https://platform.claude.com/oauth/code/callback";
@@ -64,7 +65,7 @@ async fn run_oauth_auto(name: &str) -> anyhow::Result<PathBuf> {
         challenge,
         state,
     } = generate_pkce();
-    let callback = CallbackServer::bind(state.clone()).await?;
+    let callback = CallbackServer::bind(CallbackConfig::ephemeral("Claude"), state.clone()).await?;
     let redirect_uri = callback.redirect_uri();
     let authorize_url = build_authorize_url(&challenge, &state, auth::SCOPE, &redirect_uri)?;
     println!("Open this URL to authorize shunt with the Claude account to store:\n");
