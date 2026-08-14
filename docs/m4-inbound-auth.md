@@ -93,10 +93,23 @@ one anyway) can still land in either slot there too. Either way, each slot is ch
 value it holds rather than by whether the request was gated:
 
 On a same-origin passthrough attempt, `authorization` and `x-api-key` are checked
-independently, by what each slot actually holds: a slot is cleared if its own value verifies as
-either shunt's gateway JWT or a configured `[server.auth]` static token, via the shared
-`auth::inbound::consumed_by` check used identically on the passthrough attempt of a chain
-(`proxy/failover.rs`) and in upstream model discovery (`discovery/upstream.rs`). The
+independently, by what each slot actually holds: a slot is cleared if its own value is either
+shaped like a JWT shunt itself issued or matches a configured `[server.auth]` static token, via
+the shared `auth::inbound::consumed_by` check used identically on the passthrough attempt of a
+chain (`proxy/failover.rs`) and in upstream model discovery (`discovery/upstream.rs`). The
+gateway-JWT half of that check (`jwt::has_shunt_shape`) is deliberately by shape — three base64url
+segments whose payload's `aud` claims `"shunt"` or whose `iss` claims this gateway's issuer — not
+by whether the token currently authenticates: a do-not-forward decision has to ask "did shunt
+issue this?", not "is this valid right now?". An expired token, one minted by a sibling instance
+under a different `public_url` (a fleet sharing one `jwt_secret` across differing `public_url`
+values — the case a strict authenticate-only check misses, since it is still live), or one that no
+longer verifies after a `jwt_secret` rotation is still shunt's own credential and must still be
+stripped; forwarding it leaks the caller's identity in the unencrypted payload and hands a
+third-party upstream a valid (message, tag) pair over `jwt_secret` as an offline oracle. `consumed_by`
+therefore checks `authenticate_token` first (so the `GatewayJwt` reason label keeps meaning "this
+authenticated the caller" whenever it can) and falls back to the shape check only if that fails.
+Forging `aud`/`iss` to force a strip only removes the forger's own credential — the check is
+per-value, never per-request — so the fail-safe direction is correct. The
 `authorization` slot is evaluated in **both** shapes it can carry a gate credential in — the
 `Bearer <token>` payload, and the entire header value — because `[server.auth] header` is a
 free-form header name that an operator may set to `authorization`, in which case

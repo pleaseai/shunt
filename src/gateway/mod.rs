@@ -228,6 +228,17 @@ impl GatewayAuth {
             .iter()
             .find_map(|secret| jwt::verify(token, &self.public_url, secret))
     }
+
+    /// Whether `token` is *shaped* like a JWT this gateway (or a sibling
+    /// instance sharing its `jwt_secret`) issued — see
+    /// [`jwt::has_shunt_shape`]. Deliberately weaker than
+    /// [`Self::authenticate_token`]: used for the "never forward this
+    /// upstream" decision, which must still catch a token this gateway
+    /// issued even when it is expired, was minted under a different
+    /// `public_url`, or no longer verifies after a secret rotation.
+    pub fn is_shunt_shaped_token(&self, token: &str) -> bool {
+        jwt::has_shunt_shape(token, &self.public_url)
+    }
 }
 
 pub fn gateway_router() -> Router<AppState> {

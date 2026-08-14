@@ -78,6 +78,51 @@ fn verify_at(token: &str, issuer: &str, secret: &[u8], now: u64) -> Option<Claim
     Some(claims)
 }
 
+/// Whether `token` is *shaped* like a JWT this gateway issued: three
+/// base64url segments whose payload carries `aud == "shunt"` or an `iss`
+/// equal to this gateway's issuer — deliberately WITHOUT verifying the
+/// signature or the expiry.
+///
+/// A do-not-forward decision asks "did we issue this?"; authentication asks
+/// "is this valid right now?". They must not share an implementation: an
+/// expired token, one minted by a sibling instance under a different
+/// `public_url`, or one whose signature no longer matches after a secret
+/// rotation, is still shunt's own credential and must never be relayed to a
+/// third-party upstream. Forging `iss` to force a strip only removes the
+/// forger's own credential, so the fail-safe direction is correct.
+///
+/// Never panics: any malformed input (wrong segment count, non-base64
+/// payload, non-UTF-8 bytes, non-JSON payload, JSON that is not an object)
+/// falls through to `false`. The payload is parsed as a bare
+/// [`serde_json::Value`] rather than deserialized into [`Claims`] — an
+/// arbitrary third-party JWT is missing fields `Claims` requires and would
+/// fail to deserialize, silently returning `false` for a token that does
+/// carry a matching `aud` or `iss`.
+pub fn has_shunt_shape(token: &str, issuer: &str) -> bool {
+    let mut parts = token.split('.');
+    let (Some(_header), Some(payload), Some(_signature)) =
+        (parts.next(), parts.next(), parts.next())
+    else {
+        return false;
+    };
+    if parts.next().is_some() {
+        return false;
+    }
+
+    let Ok(decoded) = URL_SAFE_NO_PAD.decode(payload) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&decoded) else {
+        return false;
+    };
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+
+    object.get("aud").and_then(serde_json::Value::as_str) == Some(AUDIENCE)
+        || object.get("iss").and_then(serde_json::Value::as_str) == Some(issuer)
+}
+
 fn sign(message: &[u8], secret: &[u8]) -> Vec<u8> {
     let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length");
     mac.update(message);
@@ -93,7 +138,9 @@ fn unix_now() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{mint_at, verify_at};
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+
+    use super::{has_shunt_shape, mint_at, verify_at, HEADER_JSON};
     use crate::gateway::approval::Identity;
 
     const SECRET: &[u8] = b"0123456789abcdef0123456789abcdef";
@@ -139,5 +186,93 @@ mod tests {
         let token = mint_at(&identity(), "https://gateway.example", SECRET, 60, 1000);
         assert!(verify_at(&token, "https://gateway.example", SECRET, 1059).is_some());
         assert!(verify_at(&token, "https://gateway.example", SECRET, 1060).is_none());
+    }
+
+    #[test]
+    fn shape_matches_expired_token() {
+        let token = mint_at(&identity(), "https://gateway.example", SECRET, 60, 1000);
+        // Long expired, but still shunt-shaped: aud == "shunt".
+        assert!(has_shunt_shape(&token, "https://gateway.example"));
+        assert!(verify_at(&token, "https://gateway.example", SECRET, 999_999_999).is_none());
+    }
+
+    #[test]
+    fn shape_matches_wrong_issuer_by_aud() {
+        // Minted for a sibling instance under a different public_url, still
+        // live. `verify_at` under this issuer rejects it, but its `aud` is
+        // still "shunt" so it must still be recognized as shunt's own.
+        let token = mint_at(&identity(), "https://sibling.example", SECRET, 3600, 1000);
+        assert!(verify_at(&token, "https://gateway.example", SECRET, 1001).is_none());
+        assert!(has_shunt_shape(&token, "https://gateway.example"));
+    }
+
+    #[test]
+    fn shape_matches_by_issuer_when_aud_absent() {
+        // A token whose payload lacks `aud` entirely (e.g. hand-forged, or
+        // from a future claims shape) but whose `iss` matches this gateway.
+        let header = URL_SAFE_NO_PAD.encode(HEADER_JSON);
+        let payload = URL_SAFE_NO_PAD.encode(br#"{"iss":"https://gateway.example"}"#);
+        let token = format!("{header}.{payload}.sig");
+        assert!(has_shunt_shape(&token, "https://gateway.example"));
+    }
+
+    #[test]
+    fn shape_matches_bad_signature() {
+        // Well-formed, aud = "shunt", but signed under a different secret —
+        // fails `verify_at`, must still be caught by shape.
+        let token = mint_at(
+            &identity(),
+            "https://gateway.example",
+            b"a-different-secret",
+            3600,
+            1000,
+        );
+        assert!(verify_at(&token, "https://gateway.example", SECRET, 1001).is_none());
+        assert!(has_shunt_shape(&token, "https://gateway.example"));
+    }
+
+    #[test]
+    fn shape_rejects_ordinary_caller_credentials() {
+        assert!(!has_shunt_shape(
+            "sk-ant-api03-not-a-jwt-at-all",
+            "https://gateway.example"
+        ));
+        assert!(!has_shunt_shape(
+            "just-a-random-opaque-token",
+            "https://gateway.example"
+        ));
+    }
+
+    #[test]
+    fn shape_rejects_malformed_input_without_panicking() {
+        // Wrong segment count.
+        assert!(!has_shunt_shape("a.b", "https://gateway.example"));
+        assert!(!has_shunt_shape("a.b.c.d", "https://gateway.example"));
+        // Garbage segments — non-base64 payload.
+        assert!(!has_shunt_shape("a.b.c", "https://gateway.example"));
+        // Valid base64, non-UTF-8 bytes.
+        let header = URL_SAFE_NO_PAD.encode(HEADER_JSON);
+        let non_utf8_payload = URL_SAFE_NO_PAD.encode([0xff, 0xfe, 0xfd]);
+        let token = format!("{header}.{non_utf8_payload}.sig");
+        assert!(!has_shunt_shape(&token, "https://gateway.example"));
+        // Valid base64+UTF-8, but not JSON.
+        let not_json_payload = URL_SAFE_NO_PAD.encode(b"not json");
+        let token = format!("{header}.{not_json_payload}.sig");
+        assert!(!has_shunt_shape(&token, "https://gateway.example"));
+        // Valid JSON, but not an object.
+        let array_payload = URL_SAFE_NO_PAD.encode(b"[1,2,3]");
+        let token = format!("{header}.{array_payload}.sig");
+        assert!(!has_shunt_shape(&token, "https://gateway.example"));
+    }
+
+    #[test]
+    fn shape_forged_issuer_only_removes_forgers_own_credential() {
+        // A caller crafting aud/iss to force a strip only marks their own
+        // value as shunt's — it can never leak someone else's, since the
+        // check is per-value, not per-request.
+        let header = URL_SAFE_NO_PAD.encode(HEADER_JSON);
+        let payload = URL_SAFE_NO_PAD.encode(br#"{"aud":"shunt"}"#);
+        let forged = format!("{header}.{payload}.sig");
+        assert!(has_shunt_shape(&forged, "https://gateway.example"));
     }
 }

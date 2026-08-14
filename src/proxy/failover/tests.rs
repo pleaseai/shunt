@@ -394,3 +394,126 @@ fn gated_mixed_chain_never_forwards_the_static_token_used_to_pass_the_gate() {
 
     assert!(result.get("x-api-key").is_none());
 }
+
+/// A different secret than the one `state()`/`gateway_auth()` verify with —
+/// for minting a well-formed, `aud = "shunt"` token that fails signature
+/// verification (e.g. after a secret rotation) but is still shape-recognized.
+const OTHER_SECRET: &[u8] = b"fedcba9876543210fedcba9876543210";
+
+/// A different `public_url` than `GATEWAY_URL` — for minting a token as if by
+/// a sibling instance sharing the same `jwt_secret` but configured under a
+/// different issuer.
+const SIBLING_URL: &str = "https://sibling.gateway.example";
+
+fn identity_for_test() -> Identity {
+    Identity {
+        sub: "dev".to_string(),
+        email: "dev@example.com".to_string(),
+        name: "Dev".to_string(),
+    }
+}
+
+#[test]
+fn expired_gateway_jwt_in_x_api_key_is_not_forwarded() {
+    // #358 case 1: shunt itself minted this token (aud = "shunt", real
+    // secret), but its ttl is 0, so it is already expired by the time
+    // `verify_at` runs. `authenticate_token` therefore returns `None`, but it
+    // is still shunt's own credential and must not reach the upstream.
+    let state = state();
+    let expired = jwt::mint(&identity_for_test(), GATEWAY_URL, GATEWAY_SECRET, 0);
+    assert!(state
+        .gateway_auth
+        .as_ref()
+        .unwrap()
+        .authenticate_token(&expired)
+        .is_none());
+
+    let mut headers = HeaderMap::new();
+    headers.insert("x-api-key", expired.parse().unwrap());
+    let inbound = context_for(&state, &headers);
+
+    let result = headers_for_route(&state, &passthrough_route(), &headers, &inbound, true, None);
+
+    assert!(result.get("x-api-key").is_none());
+}
+
+#[test]
+fn wrong_issuer_gateway_jwt_in_authorization_is_not_forwarded() {
+    // #358 case 2, the sharper one: a fleet sharing one `jwt_secret` across
+    // differing `public_url` values. This token is minted for a sibling
+    // instance, is still live, and fails `authenticate_token` under
+    // `GATEWAY_URL` purely on issuer mismatch — but its `aud` is still
+    // "shunt", so it must still be recognized and stripped. The genuine
+    // upstream key in `x-api-key` must survive untouched.
+    let state = state();
+    let sibling_token = jwt::mint(&identity_for_test(), SIBLING_URL, GATEWAY_SECRET, 3600);
+    assert!(state
+        .gateway_auth
+        .as_ref()
+        .unwrap()
+        .authenticate_token(&sibling_token)
+        .is_none());
+
+    let headers = mixed_slot_headers(&sibling_token);
+    let inbound = context_for(&state, &headers);
+
+    let result = headers_for_route(&state, &passthrough_route(), &headers, &inbound, true, None);
+
+    assert_only_bearer_slot_stripped(&result);
+}
+
+#[test]
+fn bad_signature_gateway_jwt_is_not_forwarded() {
+    // #358 case 3: minted under a different secret (e.g. post-rotation), so
+    // `authenticate_token` rejects it on signature — but it is well-formed
+    // with `aud = "shunt"`, so shape still catches it.
+    let state = state();
+    let token = jwt::mint(&identity_for_test(), GATEWAY_URL, OTHER_SECRET, 3600);
+    assert!(state
+        .gateway_auth
+        .as_ref()
+        .unwrap()
+        .authenticate_token(&token)
+        .is_none());
+
+    let mut headers = HeaderMap::new();
+    headers.insert("x-api-key", token.parse().unwrap());
+    let inbound = context_for(&state, &headers);
+
+    let result = headers_for_route(&state, &passthrough_route(), &headers, &inbound, true, None);
+
+    assert!(result.get("x-api-key").is_none());
+}
+
+#[test]
+fn bare_authorization_header_with_an_invalid_shunt_jwt_is_not_forwarded() {
+    // #358 case 4: `[server.auth] header = "authorization"` lets a bare
+    // `Authorization: <token>` (no `Bearer ` scheme) pass the gate, so the
+    // by-value check must also see the raw header value, not just the Bearer
+    // payload. Here the raw value is an expired shunt-minted JWT.
+    let state = state();
+    let expired = jwt::mint(&identity_for_test(), GATEWAY_URL, GATEWAY_SECRET, 0);
+    let mut headers = HeaderMap::new();
+    headers.insert("authorization", expired.parse().unwrap());
+    headers.insert("x-api-key", HeaderValue::from_static(GENUINE_UPSTREAM_KEY));
+    let inbound = context_for(&state, &headers);
+
+    let result = headers_for_route(&state, &passthrough_route(), &headers, &inbound, true, None);
+
+    assert_only_bearer_slot_stripped(&result);
+}
+
+#[test]
+fn garbage_three_segment_string_is_not_treated_as_shunts_and_is_forwarded() {
+    // Malformed-input control: a string with the right segment count but no
+    // valid base64/JSON payload must not panic and must not be treated as
+    // shunt's own credential.
+    let state = state();
+    let mut headers = HeaderMap::new();
+    headers.insert("x-api-key", HeaderValue::from_static("a.b.c"));
+    let inbound = context_for(&state, &headers);
+
+    let result = headers_for_route(&state, &passthrough_route(), &headers, &inbound, true, None);
+
+    assert_eq!(result.get("x-api-key").unwrap(), "a.b.c");
+}

@@ -188,6 +188,18 @@ pub(crate) enum ConsumedBy {
 /// caller, so a genuine upstream credential in one slot survives even when the
 /// other slot holds a credential shunt consumed.
 ///
+/// The gateway-JWT branch asks two different questions, deliberately in this
+/// order: "does this authenticate right now" (`authenticate_token`), and only
+/// if that fails, "is this shaped like a token shunt issued"
+/// (`is_shunt_shaped_token`). A do-not-forward decision needs the second
+/// question, not the first — an expired token, one minted by a sibling
+/// instance under a different `public_url`, or one that no longer verifies
+/// after a secret rotation is still shunt's own credential, and forwarding it
+/// leaks the caller's identity and an offline HMAC oracle for `jwt_secret`.
+/// Verifying first keeps the [`ConsumedBy::GatewayJwt`] label meaning "this
+/// authenticated the caller" whenever it can; the shape check only widens
+/// which non-authenticating tokens are still caught and stripped.
+///
 /// Shared by discovery's passthrough header filtering
 /// (`discovery/upstream.rs`) and inference failover's passthrough header
 /// filtering (`proxy/failover.rs`), which independently apply it to the same
@@ -199,8 +211,10 @@ pub(crate) fn consumed_by(
     static_auth: Option<&InboundAuth>,
 ) -> Option<ConsumedBy> {
     let is_gateway_jwt = gateway_auth.is_some_and(|auth| {
-        std::str::from_utf8(value)
-            .is_ok_and(|token| auth.authenticate_token(token.trim()).is_some())
+        std::str::from_utf8(value).is_ok_and(|token| {
+            let token = token.trim();
+            auth.authenticate_token(token).is_some() || auth.is_shunt_shaped_token(token)
+        })
     });
     if is_gateway_jwt {
         return Some(ConsumedBy::GatewayJwt);
