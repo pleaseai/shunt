@@ -254,6 +254,8 @@ codex-fallback = "gpt-5.2"
 
 `passthrough` 업스트림에서는 클라이언트 자신의 `authorization` / `x-api-key`가 페일오버 시도에서 전달되는 것은 **기본(primary)** 라우트 자체가 `passthrough`이고 해당 시도의 대상 origin이 그 기본 라우트와 일치하는 경우에 한합니다. 이때 자격 증명은 기본 라우트에 origin 전용인 클라이언트 자신의 업스트림 자격 증명이므로, **다른** origin으로의 `passthrough` 페일오버 시도는 이를 제거하고 페일클로즈(fail closed)하여 호스트 전용 토큰을 다른 출처로 재전송하지 않습니다. 동일 origin 폴백(예: 한 호스트의 passthrough 항목 2개)은 계속 자격 증명을 유지합니다. 기본 라우트가 대신 자체 자격 증명을 주입하는 경우, 클라이언트 헤더는 업스트림 자격 증명이 아니라 게이트웨이/클라이언트 시크릿이므로 모든 `passthrough` 폴백은 origin과 무관하게 이를 제거합니다. `api_key`/OAuth 업스트림은 위치와 무관하게 자체 서버 측 자격 증명을 주입합니다.
 
+origin과 무관하게, 유지된 각 슬롯은 그 슬롯이 실제로 담고 있는 값으로도 검사됩니다. `authorization`과 `x-api-key`는 각각 그 슬롯 자신의 값이 shunt 자체의 `[server.gateway]` JWT이거나 설정된 `[server.auth]` 클라이언트 토큰으로 검증될 때에만 제거됩니다 — `apiKeyHelper`는 두 슬롯을 같은 값으로 채우므로 어느 크리덴셜이든 한쪽 또는 양쪽 슬롯에 들어올 수 있습니다. 다른 슬롯이 게이트웨이 JWT나 static 클라이언트 토큰을 담고 있어도, 진짜 업스트림 크리덴셜을 담은 슬롯은 그대로 전달됩니다. 게이트 크리덴셜을 담은 슬롯만 제거됩니다.
+
 프록시한 성공 응답과 최종 실패에는 모두 `x-gateway-upstream`(선택한 업스트림 이름), `x-gateway-model`(클라이언트가 요청한 id), `x-gateway-upstream-model`(매핑된 백엔드 id)이 포함됩니다. `count_tokens`는 체인의 첫 항목만 사용하며 페일오버하지 않습니다. `[server.codex_endpoint]`는 설정된 업스트림 하나에 고정되며 이 체인에 참여하지 않습니다.
 
 ### 기존 설정 마이그레이션

@@ -223,6 +223,8 @@ codex-fallback = "gpt-5.2"
 
 对于 `passthrough` 上游，客户端自己的 `authorization` / `x-api-key` 仅在故障转移尝试中当**主**路由自身为 `passthrough` 且该尝试的目标来源(origin)与该主路由一致时才转发。此时该凭据是客户端自己的上游凭据、对主路由而言是来源专属的，因此对**不同**来源的 `passthrough` 故障转移尝试会将其剥离并快速失败(fail closed)，而不会把主机专属令牌重放到另一个来源；同一来源的回退(例如同一主机上的两个 passthrough 条目)仍会携带该凭据。当主路由改为注入自己的凭据时，客户端头部是网关/客户端密钥而非上游凭据，因此每个 `passthrough` 回退无论来源如何都会将其剥离。`api_key`/OAuth 上游无论位置如何都会注入自己的服务端凭据。
 
+与 origin 无关，每个被保留的槽位还会按它实际持有的值进行检查：只有当 `authorization` 或 `x-api-key` 槽位自身的值被验证为 shunt 自身的 `[server.gateway]` JWT 或配置的 `[server.auth]` 客户端令牌时，该槽位才会被清除 —— `apiKeyHelper` 会用同一个值填充两个槽位，因此任一凭据都可能出现在其中一个或两个槽位中。即使另一个槽位持有网关 JWT 或 static 客户端令牌，持有真实上游凭据的槽位仍会被转发；只有持有门控凭据的那个槽位会被清除。
+
 每个代理成功响应或最终失败都带有 `x-gateway-upstream`（所选上游名称）、`x-gateway-model`（客户端请求的 id）和 `x-gateway-upstream-model`（映射后的后端 id）。`count_tokens` 只使用链中第一个条目，且不会故障转移。`[server.codex_endpoint]` 仍固定到所配置的单一上游，不参与此链。
 
 ### 迁移现有配置
