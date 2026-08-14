@@ -429,6 +429,16 @@ mod tests {
             message.contains(&port.to_string()),
             "error should name the port: {message}"
         );
+        // `message.contains(&port.to_string())` alone would also pass if a
+        // race let another process grab the v4 port between the `drop(v4)`
+        // above and `CallbackServer::bind` — that failure names the port too,
+        // but on the wrong (v4) branch. Require text unique to the intended
+        // v6-already-taken branch so the assertion can't be satisfied by the
+        // wrong failure.
+        assert!(
+            message.contains("[::1]"),
+            "error should name the v6 branch, not a v4 bind race: {message}"
+        );
         drop(v6_holder);
     }
 
