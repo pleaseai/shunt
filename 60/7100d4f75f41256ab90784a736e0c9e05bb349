@@ -1,0 +1,23 @@
+site/src/content/docs/ko/reference/configuration.md
+  s_adbd034048d994::t_dc12a0c66bff2b 257
+site/src/content/docs/ja/reference/configuration.md
+  s_adbd034048d994::t_c5bae9fedb5a26 226
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_adbd034048d994::t_86cbc6a4f5a90d 226
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "607100d4f75f41256ab90784a736e0c9e05bb349",
+  "prompts": {},
+  "sessions": {
+    "s_adbd034048d994": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9f39b319-d237-42bb-aa78-8dbe54e97c0e",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
