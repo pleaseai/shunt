@@ -863,6 +863,11 @@ routing metadata (the configured provider/upstream-model mapping), never credent
 only in provider config and are never read by that handler.
 On gated routes the accepted credential headers are always stripped before forwarding,
 matching is constant-time, and token values are never logged (client *names* are, per request).
+A passthrough route injects nothing and forwards the caller's own credential as presented,
+except per slot: `authorization` and `x-api-key` are each cleared when that slot's own value is
+one of shunt's own inbound credentials (an accepted client token, or a `[server.gateway]` JWT),
+so a credential accepted at the gate is never relayed upstream while a genuine upstream
+credential in the other slot keeps flowing (`docs/m4-inbound-auth.md` §2).
 
 Client side, on a **pool/mapped-only** gateway (e.g. `claude_oauth` as the default provider)
 the client token can simply *be* the Anthropic credential Claude Code already sends:
@@ -871,9 +876,12 @@ the client token can simply *be* the Anthropic credential Claude Code already se
 export ANTHROPIC_AUTH_TOKEN="<your client token>"   # sent as Authorization: Bearer
 ```
 
-When the gateway also serves **passthrough** models, the `Bearer` slot must keep carrying
-the caller's real Anthropic credential, so hand out dedicated tokens in the configured
-header instead (`ANTHROPIC_CUSTOM_HEADERS` takes one `Name: Value` per line):
+When the gateway also serves **passthrough** models, the caller's real Anthropic credential
+needs a slot of its own, so hand out dedicated tokens in the configured header and keep
+`authorization` / `x-api-key` free for it (`ANTHROPIC_CUSTOM_HEADERS` takes one `Name: Value`
+per line). This is hygiene rather than the only thing preventing a leak: a client token that
+does arrive in `authorization` or `x-api-key` is cleared from that slot by value before any
+passthrough forward.
 
 ```bash
 export ANTHROPIC_CUSTOM_HEADERS="x-shunt-token: <your token>"
