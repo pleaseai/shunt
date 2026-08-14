@@ -73,6 +73,11 @@ const BLUEPRINTS: &[Blueprint] = &[
         "Moonshot Kimi (Anthropic-compatible) via MOONSHOT_API_KEY"
     ),
     upstream_blueprint!("cursor", &[], "Cursor subscription via cursor_oauth login"),
+    upstream_blueprint!(
+        "kimi-code",
+        &[],
+        "Kimi Code subscription via kimi_oauth login"
+    ),
 ];
 
 const GENERIC_UPSTREAM: &str = include_str!("../blueprints/upstream/_generic.md");
@@ -259,6 +264,7 @@ mod tests {
             "grok",
             "kimi",
             "cursor",
+            "kimi-code",
         ] {
             assert!(error.contains(slug), "missing {slug:?} in {error:?}");
         }

@@ -15,7 +15,7 @@
 
 이름 자체가 동작 방식을 나타냅니다. 전기/철도의 *shunt*는 흐름의 일부를 선택해 병렬 경로로 우회시킵니다. 여기서는 매핑된 모델의 추론이 다른 프로바이더로 우회되는 동안 Claude Code의 도구와 스킬은 그대로 유지됩니다.
 
-**OpenAI**, **ChatGPT/Codex**(`codex login`으로 구독을 재사용), **xAI**(API 키), **Grok**(`shunt login xai`로 SuperGrok / X Premium+ 구독을 재사용), **Cursor**(`shunt login cursor`로 구독을 재사용), **Anthropic** 패스스루가 기본 내장되어 있으며, Anthropic Messages 호환 백엔드(Kimi, DeepSeek, GLM, MiniMax, OpenRouter, Vercel AI Gateway 등)라면 무엇이든 TOML 테이블 하나만 추가하면 됩니다. 코드 변경은 필요 없습니다.
+**OpenAI**, **ChatGPT/Codex**(`codex login`으로 구독을 재사용), **xAI**(API 키), **Grok**(`shunt login xai`로 SuperGrok / X Premium+ 구독을 재사용), **Cursor**(`shunt login cursor`로 구독을 재사용), **Kimi Code**(`shunt login kimi`로 구독을 재사용), **Anthropic** 패스스루가 기본 내장되어 있으며, Anthropic Messages 호환 백엔드(Kimi, DeepSeek, GLM, MiniMax, OpenRouter, Vercel AI Gateway 등)라면 무엇이든 TOML 테이블 하나만 추가하면 됩니다. 코드 변경은 필요 없습니다.
 
 > [!NOTE]
 > `shunt`는 활발히 개발 중인 1.0 미만(pre-1.0) 소프트웨어입니다. [SemVer](https://semver.org/lang/ko/#spec) 관례에 따라 `0.x` 릴리스에는 설정 키, CLI, 동작에 대한 호환성이 깨지는 변경(breaking change)이 포함될 수 있으니, 업그레이드 전에 [릴리스 노트](https://github.com/pleaseai/shunt/releases)를 확인하세요.
@@ -151,11 +151,32 @@ provider = "cursor"
 | 프로바이더 | `base_url` | 예시 모델 ID |
 | :-- | :-- | :-- |
 | Kimi (Moonshot) | `https://api.moonshot.ai/anthropic` | `kimi-k2.7-code` |
+| Kimi Code (구독, OAuth) | `https://api.kimi.com/coding` | 구독에서 제공하는 ID 사용 |
 | DeepSeek | `https://api.deepseek.com/anthropic` | `deepseek-v4-pro`, `deepseek-v4-flash` |
 | Z.ai (GLM) | `https://api.z.ai/api/anthropic` | `glm-5.2`, `glm-4.7` |
 | MiniMax | `https://api.minimax.io/anthropic` | [MiniMax 문서](https://platform.minimax.io/docs/token-plan/claude-code) 참고 |
 | OpenRouter | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8` |
 | Vercel AI Gateway | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8` |
+
+위 표의 행은 대부분 `auth = "api_key"`를 사용합니다. 예외는 **Kimi Code**로, 바로 위 행의 종량제 Moonshot API와는 별개의 구독형 Kimi 서비스입니다 — 호스트가 다르고, API 키 대신 OAuth를 사용합니다. `kind = "anthropic"`, `base_url = "https://api.kimi.com/coding"`, `auth = "kimi_oauth"`를 제공하는 전용 내장 `kimi-code` 프리셋이 있어, `provider = "kimi-code"`와 로그인한 계정만 있으면 별도의 `[providers.*]`/`[[upstreams]]` 테이블 작성이 필요 없습니다:
+
+```bash
+shunt login kimi --name <account-name>                # RFC 8628 디바이스 플로우 -> ~/.shunt/accounts/kimi/<account-name>.json
+```
+
+```toml
+# shunt.toml — Kimi Code 구독으로 라우팅
+[[upstreams]]
+name = "kimi-code"
+provider = "kimi-code"
+auth = { mode = "kimi_oauth", account = "<account-name>" }
+
+[[routes]]
+model = "<model-id-your-subscription-exposes>"
+provider = "kimi-code"
+```
+
+`kimi_oauth`는 `claude_oauth`/`chatgpt_oauth`와 마찬가지로 풀링이 가능합니다 — `account` 대신 `accounts = [...]`를 사용하면 여러 개의 저장된 Kimi 계정에 부하를 분산할 수 있습니다. 어드민/`/usage` 풀 화면을 포함한 전체 안내는 [Kimi → Kimi Code (OAuth subscription)](https://shunt.dev/providers/kimi/#kimi-code-oauth-subscription)를 참고하세요. 디바이스 플로우·토큰 저장소·검증 내부 구조는 [M15 설계 노트](docs/m15-kimi-oauth.md)를 참고하세요.
 
 ```toml
 [providers.kimi]

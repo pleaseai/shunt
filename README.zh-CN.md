@@ -15,7 +15,7 @@
 
 名字即机制:电气/铁路中的 *shunt(分流)* 将流量中被选中的部分导向一条并行路径。在这里,被映射模型的推理被分流到另一个提供方,而 Claude Code 的工具和技能保持完好。
 
-它内置了 **OpenAI**、**ChatGPT/Codex**(通过 `codex login` 复用你的订阅)、**xAI**(API 密钥)、**Grok**(通过 `shunt login xai` 复用你的 SuperGrok / X Premium+ 订阅)、**Cursor**(通过 `shunt login cursor` 复用你的订阅)以及 **Anthropic** 透传 —— 而任何兼容 Anthropic-Messages 的后端(Kimi、DeepSeek、GLM、MiniMax、OpenRouter、Vercel AI Gateway……)只需一个 TOML 表即可接入,无需改动代码。
+它内置了 **OpenAI**、**ChatGPT/Codex**(通过 `codex login` 复用你的订阅)、**xAI**(API 密钥)、**Grok**(通过 `shunt login xai` 复用你的 SuperGrok / X Premium+ 订阅)、**Cursor**(通过 `shunt login cursor` 复用你的订阅)、**Kimi Code**(通过 `shunt login kimi` 复用你的订阅)以及 **Anthropic** 透传 —— 而任何兼容 Anthropic-Messages 的后端(Kimi、DeepSeek、GLM、MiniMax、OpenRouter、Vercel AI Gateway……)只需一个 TOML 表即可接入,无需改动代码。
 
 > [!NOTE]
 > `shunt` 是仍在活跃开发中的 1.0 之前(pre-1.0)软件。按照 [SemVer](https://semver.org/lang/zh-CN/#spec) 惯例,`0.x` 版本可能包含对配置键、CLI 和行为的破坏性变更(breaking change) —— 升级前请查看[发布说明](https://github.com/pleaseai/shunt/releases)。
@@ -151,11 +151,32 @@ provider = "cursor"
 | 提供方 | `base_url` | 示例模型 ID |
 | :-- | :-- | :-- |
 | Kimi (Moonshot) | `https://api.moonshot.ai/anthropic` | `kimi-k2.7-code` |
+| Kimi Code(订阅制,OAuth) | `https://api.kimi.com/coding` | 使用你订阅提供的 ID |
 | DeepSeek | `https://api.deepseek.com/anthropic` | `deepseek-v4-pro`、`deepseek-v4-flash` |
 | Z.ai (GLM) | `https://api.z.ai/api/anthropic` | `glm-5.2`、`glm-4.7` |
 | MiniMax | `https://api.minimax.io/anthropic` | 见 [MiniMax 文档](https://platform.minimax.io/docs/token-plan/claude-code) |
 | OpenRouter | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8` |
 | Vercel AI Gateway | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8` |
+
+上表中的行大多使用 `auth = "api_key"`。例外是 **Kimi Code**,它是与上一行按量计费的 Moonshot API 完全不同的订阅制 Kimi 服务 —— 主机不同,使用 OAuth 而非 API 密钥。它有专门的内置 `kimi-code` 预设(`kind = "anthropic"`、`base_url = "https://api.kimi.com/coding"`、`auth = "kimi_oauth"`),因此只需 `provider = "kimi-code"` 和一个已登录的账户,无需手动编写 `[providers.*]`/`[[upstreams]]` 表:
+
+```bash
+shunt login kimi --name <account-name>                # RFC 8628 设备流程 -> ~/.shunt/accounts/kimi/<account-name>.json
+```
+
+```toml
+# shunt.toml — 路由到你的 Kimi Code 订阅
+[[upstreams]]
+name = "kimi-code"
+provider = "kimi-code"
+auth = { mode = "kimi_oauth", account = "<account-name>" }
+
+[[routes]]
+model = "<model-id-your-subscription-exposes>"
+provider = "kimi-code"
+```
+
+`kimi_oauth` 和 `claude_oauth`/`chatgpt_oauth` 一样支持账户池 —— 用 `accounts = [...]` 代替 `account`,即可在多个已保存的 Kimi 账户间分摊负载。包括 admin/`/usage` 池视图在内的完整说明,见 [Kimi → Kimi Code (OAuth subscription)](https://shunt.dev/providers/kimi/#kimi-code-oauth-subscription);设备流程、令牌存储与校验的内部细节见 [M15 设计说明](docs/m15-kimi-oauth.md)。
 
 ```toml
 [providers.kimi]
