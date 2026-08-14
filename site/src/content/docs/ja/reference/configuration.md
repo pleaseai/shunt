@@ -47,6 +47,42 @@ description: すべての shunt.toml キー — server、providers、routes、mo
 
 `tokens_env` の値も、他の設定ファイル文字列と同様に `${VAR}` / `${file:...}` で書けます([Secret 参照](#secret-参照)を参照)。shunt がトークンを読み取る環境変数名を指す点は変わりません。
 
+### `[[server.auth.jwt]]`（オプション）
+
+インバウンド認証情報の 2 つ目の種類を追加するテーブル配列です。外部 identity provider が発行した JWT を shunt は**検証するだけで、発行は一切しません** — ログインフローもセッションストアも署名 secret もありません。クライアントの設定は静的トークンと同じ（base URL と bearer）なので、`[server.gateway]` ログインと違って Claude Code を gateway provider モードに入れず、そのモードで無効化されるクライアント機能も失いません。[動作仕様](https://github.com/pleaseai/shunt/blob/main/docs/inbound-jwt-auth.md)を参照してください。
+
+```toml
+[server.auth]
+tokens_env = "SHUNT_CLIENT_TOKENS"   # JWT issuer を設定したら任意
+
+[[server.auth.jwt]]
+issuer = "https://accounts.google.com"
+audience = ["<shunt 専用の client id>"]
+email_domains = ["example.com"]
+```
+
+| キー | デフォルト | 意味 |
+| :-- | :-- | :-- |
+| `issuer` | 必須 | `iss` の完全一致。HTTPS 必須（ループバックのみ HTTP 可）、パスは可 |
+| `audience` | 必須 | 受け入れる `aud` 値。文字列または配列 |
+| `email_domains` | `[]` | 大文字小文字を区別しないドメイン。最後の `@` の後ろの部分と**完全一致**で、サフィックス一致ではない |
+| `allowed_emails` | `[]` | 大文字小文字を区別しない完全なメールアドレス |
+| `algorithms` | `["RS256"]` | 受け入れる署名アルゴリズム。非対称のみ |
+| `authorized_parties` | `audience` | `azp` クレームが存在する場合に受け入れる値 |
+| `clock_skew_seconds` | `0` | `exp` と `nbf` に適用する許容誤差 |
+| `max_token_age_seconds` | `3600` | `exp - iat` がこれを超えたら拒否 |
+| `jwks_url` | discovery | discovery ドキュメントを提供しない issuer 向けの明示的な JWKS エンドポイント |
+
+各エントリには `issuer`、`audience`、そして `email_domains` か `allowed_emails` の値が最低 1 つ必要です。`audience` だけでは認可ルールになりません — issuer によっては呼び出し側が自分で audience を選べるからです。`algorithms` に対称アルゴリズムや未知の値がある場合、また `issuer` が `[server.gateway]` の `public_url` と同じ場合も、起動は fail closed します。両方の検証器が同じ bearer スロットを読むため、issuer が重なるとトークンの所有権が評価順に左右されます。
+
+エントリが 1 つでもあれば `tokens_env` は空でも構いません — 認証をすべて IdP に任せるデプロイには設定すべき静的トークンがありません。トークンリストもエントリもない場合、`[server.auth]` は従来どおり起動に失敗します。
+
+JWT は **`Authorization: Bearer` でのみ**受け付けます — 設定された `header` でも `x-api-key` でもありません。Claude Code がすでに `ANTHROPIC_AUTH_TOKEN` を送っているスロットです。ゲートされたルートでは、まず静的トークン、そのルートが受け付ける場合は gateway JWT、次に `iss` で JWT エントリの順に確認します。検証はアルゴリズムを config で固定し（トークンヘッダーの `alg` が選ぶことはありません）、`kid` を必須とし、`exp`/`nbf`、`aud`、`azp`、`exp - iat`、`email_verified = true`、メール許可リストを確認します。検証済みのメールがログと使用量の帰属における呼び出し元 identity になり、256 バイトに制限されます。
+
+key set は issuer ごとに初回使用時に遅延取得されるため、IdP に到達できなくても起動を妨げず、プロセス寿命の間キャッシュされます — config reload はエントリを解決し直すだけで鍵は破棄しません。未知の `kid` は issuer あたり 60 秒のウィンドウで最大 1 回しか再取得を起こしません。どのエントリでも検証できなかったトークンは `401`、key set 自体を取得できない issuer は **`503`** です — IdP の障害が不正な認証情報として報告されることはありません。
+
+shunt は失効状態を保持しないため、有効なトークンは期限まで使えます。その範囲を制限するのが `max_token_age_seconds` で、issuer は分単位の寿命のトークンを発行すべきです。許可リストからドメインやアドレスを削除した場合は次のリクエストから反映されます。
+
 ## `[server.admin]`（オプション）
 
 このテーブルの存在が、ブラウザーでのアカウントプロビジョニングとアカウントプールの健全性のための管理 Web サーフェスを有効化します（[詳細](/ja/guides/admin-remote-provisioning/)）。テーブルがない場合、`/admin*` ルートは一切登録されません。

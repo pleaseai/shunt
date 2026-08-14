@@ -50,6 +50,36 @@ export SHUNT_CLIENT_TOKENS="minsu:$(openssl rand -hex 32),alice:$(openssl rand -
 
 옵트인 [관리자 웹 화면](/ko/guides/admin-remote-provisioning/)도 활성화한다면, 별도의 관리자 토큰으로 보호하고 HTTPS 또는 신뢰할 수 있는 터널을 통해서만 노출하세요.
 
+## 자체 identity provider의 JWT 검증
+
+조직에서 이미 identity provider를 운영한다면, `[[server.auth.jwt]]`로 공유 secret 대신 그 토큰을 받을 수 있습니다 — shunt가 인증 서버가 되지 않으면서 사용자별 신원을 얻는 방법입니다. shunt는 **검증만** 합니다: 로그인 플로우도, 세션 저장소도, 서명 secret도 없습니다. [gateway 로그인](/ko/guides/gateway-login/)과 달리 클라이언트는 여전히 base URL과 bearer만으로 구성되므로, Claude Code의 gateway provider 모드로 들어가지 않고 그 모드가 비활성화하는 기능도 잃지 않습니다.
+
+```toml
+[server.auth]
+# issuer를 구성하면 정적 토큰은 없어도 됩니다.
+tokens_env = "SHUNT_CLIENT_TOKENS"
+
+[[server.auth.jwt]]
+issuer = "https://accounts.google.com"
+audience = ["<shunt용으로 만든 client id>"]
+email_domains = ["example.com"]
+```
+
+각 호출자는 정적 토큰과 똑같은 자리에 토큰을 보냅니다:
+
+```bash
+export ANTHROPIC_AUTH_TOKEN="<IdP가 발급한 JWT>"   # Authorization: Bearer로 전송
+```
+
+JWT는 **오직** `Authorization: Bearer`로만 받습니다 — 구성된 헤더와 `x-api-key`는 여전히 정적 토큰만 받습니다. 두 방식을 동시에 구성할 수 있으며, 정적 토큰을 먼저 확인합니다.
+
+설정할 때 챙겨야 할 두 가지:
+
+- **shunt 전용 audience를 주세요.** shunt 전용 client id를 만들어 `audience`에 넣으면, 같은 테넌트의 다른 애플리케이션용으로 발급된 토큰이 여기서 인증되지 않습니다.
+- **수명이 짧은 토큰을 발급하세요.** shunt는 취소 상태를 보관하지 않으므로 토큰은 만료될 때까지 동작합니다. `max_token_age_seconds`(기본 `3600`)는 그보다 긴 수명으로 발급된 토큰을 거부합니다 — 취소를 더 촘촘하게 하려면 이 값을 낮추고 IdP가 분 단위 토큰을 발급하게 하세요.
+
+항목이 잘못 구성되면 시작이 닫힌 채로 실패하며, `audience`만 있고 `email_domains`/`allowed_emails` 규칙이 없는 경우도 여기에 해당합니다. 요청이 `401`이 아니라 `503`으로 돌아온다면 shunt가 issuer의 key set을 아예 가져오지 못한 것입니다 — 자격 증명이 아니라 issuer URL과 네트워크 도달성을 확인하세요. 전체 키 목록은 [구성 레퍼런스](/ko/reference/configuration/)에 있습니다.
+
 ## SSE keepalive ping
 
 미들박스는 조용한 스트림을 끊습니다 — Cloudflare의 프록시는 **한 바이트도 없이 100초가 지나면 524를 반환**하며(Enterprise 미만에서는 고정), 긴 추론 구간은 그만큼 조용할 수 있습니다. 그래서 shunt는 스트리밍 응답이 유휴 상태일 때마다 Anthropic 프로토콜 자체의 `ping` 이벤트를 주입합니다(`api.anthropic.com`이 직접 방출하며 모든 클라이언트가 무시하는 것):

@@ -50,6 +50,36 @@ export SHUNT_CLIENT_TOKENS="minsu:$(openssl rand -hex 32),alice:$(openssl rand -
 
 オプトインの[管理 Web サーフェス](/ja/guides/admin-remote-provisioning/)も有効にする場合は、別個の管理トークンで保護し、HTTPS または信頼できるトンネル経由でのみ公開してください。
 
+## 自組織の identity provider が発行する JWT の検証
+
+組織がすでに identity provider を運用しているなら、`[[server.auth.jwt]]` で共有 secret の代わりにそのトークンを受け付けられます — shunt を認証サーバーにせずにユーザーごとの identity を得る方法です。shunt は**検証するだけ**で、ログインフローもセッションストアも署名 secret もありません。[gateway ログイン](/ja/guides/gateway-login/)と違い、クライアントの設定は base URL と bearer だけのままなので、Claude Code の gateway provider モードには入らず、そのモードで無効化される機能も失いません。
+
+```toml
+[server.auth]
+# issuer を設定すれば静的トークンは不要です。
+tokens_env = "SHUNT_CLIENT_TOKENS"
+
+[[server.auth.jwt]]
+issuer = "https://accounts.google.com"
+audience = ["<shunt 用に作成した client id>"]
+email_domains = ["example.com"]
+```
+
+各呼び出し元は、静的トークンと同じ場所にトークンを送ります:
+
+```bash
+export ANTHROPIC_AUTH_TOKEN="<IdP が発行した JWT>"   # Authorization: Bearer として送信
+```
+
+JWT は **`Authorization: Bearer` でのみ**受け付けます — 設定されたヘッダーと `x-api-key` は引き続き静的トークンだけを受け付けます。両方を同時に設定でき、静的トークンが先に確認されます。
+
+設定時に押さえておく点が 2 つあります:
+
+- **shunt 専用の audience を用意する。** shunt 専用の client id を作って `audience` に列挙すれば、同じテナントの別アプリケーション向けに発行されたトークンがここで認証されることはありません。
+- **短命なトークンを発行する。** shunt は失効状態を保持しないため、トークンは期限まで使えます。`max_token_age_seconds`（デフォルト `3600`）はそれより長い寿命で発行されたトークンを拒否します — 失効をより厳しくしたい場合はこの値を下げ、IdP に分単位のトークンを発行させてください。
+
+エントリの設定が誤っている場合は起動が fail closed します。`audience` はあるが `email_domains` / `allowed_emails` のルールがない場合も同様です。リクエストが `401` ではなく `503` で返る場合、shunt は issuer の key set をまったく取得できていません — 認証情報ではなく issuer の URL とネットワーク到達性を確認してください。キーの一覧は[設定リファレンス](/ja/reference/configuration/)にあります。
+
 ## SSE キープアライブ ping
 
 中間装置は静かなストリームを切断します — Cloudflare のプロキシは **1 バイトも来ないまま 100 秒で 524** を返し（Enterprise 未満では固定）、長い reasoning の合間はそれだけ静かになりえます。そのため shunt は、ストリーミングレスポンスがアイドルになるたびに、Anthropic プロトコル自身の `ping` イベント（`api.anthropic.com` 自身が発行し、すべてのクライアントが無視するもの）を注入します。

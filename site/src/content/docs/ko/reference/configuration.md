@@ -47,6 +47,42 @@ description: 모든 shunt.toml 키 — server, providers, routes, models.
 
 `tokens_env` 자신의 값도 다른 설정 파일 문자열과 마찬가지로 `${VAR}` / `${file:...}`로 쓸 수 있습니다([Secret 참조](#secret-참조) 참고) — shunt가 토큰을 읽어오는 환경 변수 이름을 가리키는 역할은 그대로입니다.
 
+### `[[server.auth.jwt]]` (선택)
+
+인바운드 자격 증명의 두 번째 종류를 추가하는 테이블 배열입니다. 외부 identity provider가 발급한 JWT를 shunt가 **검증만 하고 발급은 전혀 하지 않습니다** — 로그인 플로우도, 세션 저장소도, 서명 secret도 없습니다. 클라이언트는 정적 토큰과 똑같이(base URL + bearer) 구성하므로, `[server.gateway]` 로그인과 달리 Claude Code를 gateway provider 모드로 넣지 않고 그 모드가 비활성화하는 클라이언트 기능도 잃지 않습니다. [동작 명세](https://github.com/pleaseai/shunt/blob/main/docs/inbound-jwt-auth.md)를 참고하세요.
+
+```toml
+[server.auth]
+tokens_env = "SHUNT_CLIENT_TOKENS"   # JWT issuer가 구성되면 선택
+
+[[server.auth.jwt]]
+issuer = "https://accounts.google.com"
+audience = ["<shunt 전용 client id>"]
+email_domains = ["example.com"]
+```
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `issuer` | 필수 | 정확한 `iss` 일치. HTTPS여야 하며 루프백에서만 HTTP 허용, 경로는 가능 |
+| `audience` | 필수 | 허용되는 `aud` 값. 문자열 또는 배열 |
+| `email_domains` | `[]` | 대소문자 무시 도메인. 마지막 `@` 뒤 부분과 **정확히** 일치해야 하며 접미사 매칭이 아님 |
+| `allowed_emails` | `[]` | 대소문자 무시 전체 이메일 주소 |
+| `algorithms` | `["RS256"]` | 허용되는 서명 알고리즘. 비대칭만 가능 |
+| `authorized_parties` | `audience` | `azp` 클레임이 있을 때 허용되는 값 |
+| `clock_skew_seconds` | `0` | `exp`와 `nbf`에 적용되는 허용 오차 |
+| `max_token_age_seconds` | `3600` | `exp - iat`가 이 값을 넘으면 거부 |
+| `jwks_url` | discovery | discovery 문서를 제공하지 않는 issuer용 명시적 JWKS 엔드포인트 |
+
+각 항목에는 `issuer`, `audience`, 그리고 `email_domains` 또는 `allowed_emails` 값이 최소 하나 필요합니다. `audience`만으로는 인가 규칙이 되지 않습니다 — issuer에 따라서는 호출자가 audience를 스스로 정하기 때문입니다. `algorithms`에 대칭 알고리즘이나 알 수 없는 값이 있어도, `issuer`가 `[server.gateway]`의 `public_url`과 같아도 시작은 닫힌 채로 실패합니다. 두 검증기가 같은 bearer 슬롯을 읽으므로, issuer가 겹치면 토큰의 소유권이 평가 순서에 좌우됩니다.
+
+항목이 하나라도 있으면 `tokens_env`는 비어 있어도 됩니다 — 인증을 전부 IdP로 하는 배포에는 설정할 정적 토큰이 없습니다. 토큰 목록도 항목도 없으면 `[server.auth]`는 여전히 시작에 실패합니다.
+
+JWT는 **오직** `Authorization: Bearer`로만 받습니다 — 구성된 `header`도, `x-api-key`도 아닙니다. Claude Code가 이미 `ANTHROPIC_AUTH_TOKEN`을 보내는 슬롯입니다. 게이팅되는 라우트에서는 정적 토큰을 먼저 확인하고, 그 라우트가 받는 경우 gateway JWT를, 그다음 `iss`로 JWT 항목을 확인합니다. 검증은 알고리즘을 config에서 고정하고(토큰 헤더의 `alg`는 절대 선택하지 않습니다) `kid`를 요구하며, `exp`/`nbf`, `aud`, `azp`, `exp - iat`, `email_verified = true`, 이메일 허용 목록을 확인합니다. 검증된 이메일이 로그와 사용량 귀속에서 호출자 신원이 되며 256바이트로 제한됩니다.
+
+key set은 issuer별로 최초 사용 시점에 lazy하게 가져오므로 IdP에 접근할 수 없어도 시작을 막지 않고, 프로세스 수명 동안 캐시됩니다 — config reload는 항목만 다시 해석하고 키는 버리지 않습니다. 알 수 없는 `kid`는 issuer당 60초 창에서 최대 한 번만 재조회를 유발합니다. 어떤 항목으로도 검증되지 않은 토큰은 `401`이고, key set 자체를 가져올 수 없는 issuer는 **`503`**입니다 — IdP 장애가 잘못된 자격 증명으로 보고되지 않습니다.
+
+shunt는 취소(revocation) 상태를 보관하지 않으므로 유효한 토큰은 만료될 때까지 동작합니다. 그 범위를 제한하는 것이 `max_token_age_seconds`이며, issuer는 분 단위 수명의 토큰을 발급해야 합니다. 허용 목록에서 도메인이나 주소를 제거하면 다음 요청부터 적용됩니다.
+
 ## `[server.admin]` (선택)
 
 이 테이블의 존재가 브라우저 계정 프로비저닝과 계정 풀 상태를 위한 관리자 웹 화면을 활성화합니다([상세](/ko/guides/admin-remote-provisioning/)). 테이블이 없으면 `/admin*` 라우트는 하나도 등록되지 않습니다.

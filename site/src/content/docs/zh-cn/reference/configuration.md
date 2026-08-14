@@ -47,6 +47,42 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 
 `tokens_env` 自身的值也和其他配置文件字符串一样,可以写成 `${VAR}` / `${file:...}`(见 [Secret 引用](#secret-引用))——它仍然指向 shunt 用来读取 token 的环境变量。
 
+### `[[server.auth.jwt]]`(可选)
+
+一个表数组,增加第二种入站凭据:由外部 identity provider 签发的 JWT,shunt **只验证、从不签发** —— 没有登录流程、没有会话存储、没有签名 secret。客户端的配置方式与静态 token 完全相同(base URL 加 bearer),因此不同于 `[server.gateway]` 登录,它不会让 Claude Code 进入 gateway provider 模式,也不会失去该模式禁用的客户端功能。参见[行为规范](https://github.com/pleaseai/shunt/blob/main/docs/inbound-jwt-auth.md)。
+
+```toml
+[server.auth]
+tokens_env = "SHUNT_CLIENT_TOKENS"   # 配置了 JWT issuer 后即为可选
+
+[[server.auth.jwt]]
+issuer = "https://accounts.google.com"
+audience = ["<专供 shunt 使用的 client id>"]
+email_domains = ["example.com"]
+```
+
+| 键 | 默认值 | 含义 |
+| :-- | :-- | :-- |
+| `issuer` | 必填 | `iss` 精确匹配。必须使用 HTTPS,仅回环地址允许 HTTP;可以带路径 |
+| `audience` | 必填 | 接受的 `aud` 值,字符串或数组 |
+| `email_domains` | `[]` | 不区分大小写的域名,与最后一个 `@` 之后的部分**精确**匹配,不是后缀匹配 |
+| `allowed_emails` | `[]` | 不区分大小写的完整邮箱地址 |
+| `algorithms` | `["RS256"]` | 接受的签名算法,仅限非对称算法 |
+| `authorized_parties` | `audience` | `azp` claim 存在时接受的值 |
+| `clock_skew_seconds` | `0` | 应用于 `exp` 和 `nbf` 的容差 |
+| `max_token_age_seconds` | `3600` | `exp - iat` 超过该值时拒绝 |
+| `jwks_url` | discovery | 为不提供 discovery 文档的 issuer 显式指定 JWKS 端点 |
+
+每个条目都需要 `issuer`、`audience`,以及至少一个 `email_domains` 或 `allowed_emails` 值。仅有 `audience` 不构成授权规则 —— 对某些 issuer 来说,调用方可以自行选择 audience。如果 `algorithms` 含有对称算法或未知值,或者 `issuer` 与 `[server.gateway]` 的 `public_url` 相同,启动同样会 fail closed:两个验证器读取同一个 bearer 槽位,issuer 相同会让 token 的归属取决于求值顺序。
+
+只要存在至少一个条目,`tokens_env` 就可以解析为空 —— 完全通过 IdP 认证的部署没有静态 token 需要设置。既没有可解析的 token 列表也没有条目时,`[server.auth]` 仍然启动失败。
+
+JWT **只**通过 `Authorization: Bearer` 接受 —— 不接受配置的 `header`,也不接受 `x-api-key`。这正是 Claude Code 已经发送 `ANTHROPIC_AUTH_TOKEN` 的槽位。在受控路由上先检查静态 token,该路由接受时再检查 gateway JWT,然后按 `iss` 检查 JWT 条目。验证会从 config 固定算法(token header 里的 `alg` 永远不参与选择)、要求 `kid`,并检查 `exp`/`nbf`、`aud`、`azp`、`exp - iat`、`email_verified = true` 和邮箱允许列表。验证通过的邮箱成为日志和用量归属中的调用方身份,上限 256 字节。
+
+key set 按 issuer 在首次使用时惰性拉取,因此 IdP 不可达不会阻塞启动,并在进程生命周期内缓存 —— config reload 只重新解析条目,不会丢弃密钥。未知的 `kid` 在每个 issuer 的 60 秒窗口内最多触发一次重新拉取。没有任何条目能验证的 token 返回 `401`;完全拉不到 key set 的 issuer 返回 **`503`**,这样 IdP 故障就不会被报告成凭据错误。
+
+shunt 不保存吊销状态,所以有效的 token 会一直可用到过期:限制这一范围的是 `max_token_age_seconds`,issuer 应当签发分钟级寿命的 token。从允许列表中移除域名或地址会在下一次请求时生效。
+
 ## `[server.admin]`(可选)
 
 存在此表即启用管理 Web 界面,用于浏览器账户预配与账户池健康状况([详情](/zh-cn/guides/admin-remote-provisioning/))。此表不存在时,任何 `/admin*` 路由都不会注册。

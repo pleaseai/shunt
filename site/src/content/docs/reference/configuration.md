@@ -83,6 +83,42 @@ The named environment variable must contain one or more credentials, for example
 
 A request whose whole route chain is `passthrough` skips this gate: such a route forwards the caller's own upstream credential, so the gateway lends them nothing. **`kind = "antigravity"` is exempt from that exemption** and is always treated as credential-injecting, whatever its `auth` says. The adapter ignores the caller's credential entirely and runs the operator's local `agy` with `--dangerously-skip-permissions`, so a passthrough Antigravity route would otherwise be unauthenticated local code execution as the user running shunt — sandboxed or not. Note this closes the exemption, it does not create a requirement: with neither `[server.auth]` nor [`[server.gateway]`](#servergateway-optional) configured, every route stays open, which is why an unsandboxed Antigravity provider is [refused outright off loopback](#providersname-legacy).
 
+### `[[server.auth.jwt]]` (optional)
+
+An array of tables adding a second kind of inbound credential: a JWT minted by an external identity provider, which shunt **verifies but never issues** — no login flow, no session store, no signing secret. The client is configured exactly as it is for a static token (a base URL plus a bearer), so unlike [`[server.gateway]`](#servergateway-optional) login it does not put Claude Code into gateway provider mode or cost it the client features that mode disables. See the [behavior specification](https://github.com/pleaseai/shunt/blob/main/docs/inbound-jwt-auth.md).
+
+```toml
+[server.auth]
+tokens_env = "SHUNT_CLIENT_TOKENS"   # optional once a JWT issuer is configured
+
+[[server.auth.jwt]]
+issuer = "https://accounts.google.com"
+audience = ["<client id dedicated to shunt>"]
+email_domains = ["example.com"]
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `issuer` | required | Exact `iss` match. Must use HTTPS, except HTTP on loopback; a path is allowed |
+| `audience` | required | Accepted `aud` values, as a string or an array |
+| `email_domains` | `[]` | Case-insensitive domains, matched **exactly** against the part after the final `@` — never as a suffix |
+| `allowed_emails` | `[]` | Case-insensitive full email addresses |
+| `algorithms` | `["RS256"]` | Accepted signing algorithms. Asymmetric only |
+| `authorized_parties` | `audience` | Accepted `azp` values, checked when the claim is present |
+| `clock_skew_seconds` | `0` | Tolerance applied to `exp` and `nbf` |
+| `max_token_age_seconds` | `3600` | Reject when `exp - iat` exceeds this |
+| `jwks_url` | discovery | Explicit JWKS endpoint, for issuers serving no discovery document |
+
+Each entry needs `issuer`, `audience`, and at least one `email_domains` or `allowed_emails` value; `audience` alone is not an authorization rule, because for some issuers the caller chooses their own audience. Startup also fails closed for a symmetric or unknown `algorithms` entry, and for an entry whose `issuer` equals `[server.gateway]`'s `public_url` — both verifiers read the same bearer slot, so a shared issuer would make ownership of a token depend on evaluation order.
+
+Once at least one entry exists, `tokens_env` may resolve empty: a deployment authenticating entirely through an IdP has no static tokens to set. With neither a resolvable token list nor an entry, `[server.auth]` still fails startup.
+
+A JWT is accepted **only** in `Authorization: Bearer` — not in the configured `header` and not in `x-api-key` — which is the slot Claude Code already sends `ANTHROPIC_AUTH_TOKEN` in. On a gated route the static token is checked first, then the gateway JWT where that route accepts it, then JWT entries by `iss`. Verification pins the algorithm from config (the token header's `alg` never selects it), requires `kid`, and checks `exp`/`nbf`, `aud`, `azp`, `exp - iat`, `email_verified = true`, and the email allowlist. The verified email becomes the caller identity in logs and usage attribution, capped at 256 bytes.
+
+Key sets are fetched lazily on first use per issuer, so an unreachable IdP does not block startup, and are cached for the process lifetime — a config reload re-resolves the entries without discarding keys. An unknown `kid` triggers at most one refetch per 60-second window per issuer. A token that verifies against no entry is `401`; an issuer whose key set cannot be fetched at all is **`503`**, so an IdP outage is not reported as a bad credential.
+
+shunt keeps no revocation state, so a valid token works until it expires: `max_token_age_seconds` is what bounds that, and issuers should mint minutes-scale tokens. Removing a domain or address from the allowlist does take effect on the next request.
+
 ## `[server.admin]` (optional)
 
 Presence of this table enables the admin web surface for browser account provisioning and account-pool health ([details](/guides/admin-remote-provisioning/)). When the table is absent, none of the `/admin*` routes are registered.
