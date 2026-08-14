@@ -1,0 +1,87 @@
+src/init.rs
+  s_16f955127f342a::t_722c25cac69e7b 193
+src/auth/mod.rs
+  s_16f955127f342a::t_0eef999a2150ff 45-51
+  s_16f955127f342a::t_70c8bc0b0b75ae 12-13
+  s_16f955127f342a::t_da467d555ab61b 120-132
+src/auth/antigravity/login.rs
+  s_16f955127f342a::t_73db6ce1f135c3 1-123,128-191,196-246,251-260,265-338,343-358
+  s_16f955127f342a::t_24d6d4a065e4ea 124-127,192-195,247-250,261-264,339-342
+src/adapters/gemini/mod.rs
+  s_16f955127f342a::t_478b980d6f119c 109-117,131-136
+  s_16f955127f342a::t_ac74de99df0d0d 145,151-153
+  s_16f955127f342a::t_6bf67fb6755fd2 82-85
+  s_16f955127f342a::t_e07fd7975c826b 154
+src/main.rs
+  s_16f955127f342a::t_7c986da894fbf5 504,1235-1267
+  s_16f955127f342a::t_a5cd20edc64e30 745,747-759
+  s_16f955127f342a::t_86bbb951d2ed77 370-377,386
+  s_16f955127f342a::t_d27121c9a121a7 88,90
+  s_16f955127f342a::t_641332b8b918dc 481,488-492,503
+  s_16f955127f342a::t_9ebb01dba9c0db 493-502
+  s_16f955127f342a::t_1b8685c377a92a 705,707-711,715-716,720,723-724,728,733,737-744
+  s_16f955127f342a::t_30d6cf61dcc3c9 746
+src/adapters/responses/request.rs
+  s_16f955127f342a::t_ec412ed24d434a 94-103
+src/adapters/responses/inbound.rs
+  s_16f955127f342a::t_0ad6862b790548 433-439
+src/auth/antigravity/mod.rs
+  s_16f955127f342a::t_2cad43bc8dbef3 1-27
+src/auth/claude/login.rs
+  s_16f955127f342a::t_4cda219fcb8915 68
+  s_16f955127f342a::t_9a974dbf997eca 14-15
+src/config/upstreams/tests.rs
+  s_16f955127f342a::t_273dba41e27c7c 514
+src/adapters/responses/websocket.rs
+  s_16f955127f342a::t_2d7afd9a1eafb8 340-343
+src/auth/callback.rs
+  s_16f955127f342a::t_e6a11ba23a9666 1-130,135-359,364-423
+  s_16f955127f342a::t_24d6d4a065e4ea 131-134,360-363
+src/proxy/failover.rs
+  s_16f955127f342a::t_262dda6223ab36 286,370,683
+src/routing.rs
+  s_16f955127f342a::t_e66cf44bd70296 15-17,27-33
+src/config.rs
+  s_16f955127f342a::t_273dba41e27c7c 3833
+  s_16f955127f342a::t_7a8049687ce77c 6235-6259,6265-6334
+  s_16f955127f342a::t_176ed03d1eb082 2902
+  s_16f955127f342a::t_7b73c9685c9dc2 1700-1705,1707-1714
+  s_16f955127f342a::t_37adf45d2e8ffd 2287-2310
+  s_16f955127f342a::t_6ada762b50eef9 3110-3151
+  s_16f955127f342a::t_1276828c439295 6260-6264
+  s_16f955127f342a::t_00dd584a64f596 2396-2398,2400-2407,2409
+  s_16f955127f342a::t_385960c552f6a1 1741-1746
+  s_16f955127f342a::t_4395a79036ea29 1992-2005
+tests/antigravity_process.rs
+  s_16f955127f342a::t_be96ce02135235 218
+  s_16f955127f342a::t_b399fe05422d9d 251,254,267
+src/auth/antigravity/version.rs
+  s_16f955127f342a::t_6d81d0ae39f4e5 1-197,202-217,222-225
+  s_16f955127f342a::t_24d6d4a065e4ea 198-201,218-221
+src/auth/antigravity/auth.rs
+  s_16f955127f342a::t_96fa7a9d1ee291 526-619,624-779,783-810,815-823,828-874
+  s_16f955127f342a::t_3652295b6ce435 620-623,780-782,811-814,824-827
+  s_16f955127f342a::t_24d6d4a065e4ea 233-235,261-263
+  s_16f955127f342a::t_b6ec69c484e747 301
+  s_16f955127f342a::t_d9d401a7ae679b 366-370
+  s_16f955127f342a::t_cd29e46c0c474e 1-232,236-260,264-300,302-365,371-525
+tests/inbound_auth.rs
+  s_16f955127f342a::t_f26bb858ed0934 456-459,463
+  s_16f955127f342a::t_24d6d4a065e4ea 460
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "2885e670c12d22acc682b9e16c568c924f994f97",
+  "prompts": {},
+  "sessions": {
+    "s_16f955127f342a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7e475516-843e-4208-aa72-51d1addafc89",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
