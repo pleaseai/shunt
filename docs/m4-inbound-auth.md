@@ -78,6 +78,26 @@ Operators mixing passthrough and mapped models on one shared gateway should keep
 out dedicated `x-shunt-token` values: the `Bearer` slot then stays free to carry the real
 Anthropic credential for passthrough models.
 
+That advice resolves the mixed case for a **static** token, because the operator controls
+which slot it occupies. It does not resolve it for a `[server.gateway]` JWT, for two
+reasons, so the strip is explicit there instead:
+
+- A caller delivering the JWT through an `apiKeyHelper` — the mechanism that refreshes a
+  rotating credential — has it in **both** `Authorization` and `x-api-key`, because that is
+  [what the helper sends](https://code.claude.com/docs/en/llm-gateway-connect#rotate-credentials-with-apikeyhelper).
+  There is no free slot left to move it out of.
+- "Gated" is decided per route **chain**, not per route, so a chain mixing mapped and
+  passthrough entries is authenticated by that JWT and then reaches its passthrough attempt
+  with the caller's headers intact.
+
+So whenever a gateway JWT authenticated the request, both slots are cleared before the
+request leaves — on the passthrough attempt of a gated chain (`proxy/failover.rs`) and in
+upstream model discovery (`discovery/upstream.rs`), regardless of destination origin. A
+passthrough caller who presented no gateway JWT is unaffected and still forwards their own
+credential. Consequence to expect: a gateway-JWT caller cannot also present an upstream
+credential, so passthrough discovery falls back to the builtin catalog rather than relaying
+anything.
+
 ## 3. Comparison & hygiene
 
 - **Constant-time comparison**, no new dependency: compare presented token against every

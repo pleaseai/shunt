@@ -578,13 +578,23 @@ fn headers_for_route(
         // still carries the credential, so that fallback keeps working. The
         // primary route is the origin the credential was presented for, so it is
         // kept without parsing any URL (the single-upstream hot path).
+        //
+        // A gateway JWT is exempt from that reasoning: it is shunt's own
+        // credential, never the caller's upstream one, so it must not leave for
+        // *any* origin. A static `[server.auth]` token has an alternative slot —
+        // operators mixing passthrough and mapped models hand out dedicated
+        // `x-shunt-token` values so these stay free for the caller's real
+        // credential (`docs/m4-inbound-auth.md` §2). A gateway JWT has no such
+        // alternative: an `apiKeyHelper` puts it in both slots, and
+        // `injects_credential` is chain-level, so a mixed chain authenticated by
+        // that JWT reaches this branch same-origin with the headers intact.
         let mut headers = base.clone();
         let same_origin = is_primary
             || matches!(
                 (primary_origin, provider_origin(state, &route.provider).as_deref()),
                 (Some(primary), Some(this)) if primary == this
             );
-        if !same_origin {
+        if !same_origin || inbound.gateway_claims.is_some() {
             headers.remove("authorization");
             headers.remove("x-api-key");
         }
@@ -655,5 +665,101 @@ fn stamp_gateway_headers(
         if let Ok(value) = HeaderValue::from_str(value) {
             response.headers_mut().insert(name, value);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::{HeaderMap, HeaderValue};
+
+    use crate::config::{AuthMode, Config};
+    use crate::routing::{AdapterKind, Route};
+    use crate::server::AppState;
+
+    use super::{headers_for_route, InboundContext};
+
+    fn passthrough_route() -> Route {
+        Route {
+            provider: "anthropic".to_string(),
+            adapter: AdapterKind::Anthropic,
+            model: "claude-opus-5".to_string(),
+            upstream_model: "claude-opus-5".to_string(),
+            effort: None,
+            service_tier: None,
+        }
+    }
+
+    fn state() -> AppState {
+        let mut config = Config::default();
+        config.providers.get_mut("anthropic").unwrap().auth = AuthMode::Passthrough;
+        AppState::new(config, reqwest::Client::new()).unwrap()
+    }
+
+    /// Both slots, because an `apiKeyHelper` fills both.
+    fn caller_headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", HeaderValue::from_static("Bearer caller"));
+        headers.insert("x-api-key", HeaderValue::from_static("caller"));
+        headers
+    }
+
+    fn claims() -> crate::gateway::jwt::Claims {
+        crate::gateway::jwt::Claims {
+            sub: "dev".to_string(),
+            email: "dev@example.com".to_string(),
+            name: "Dev".to_string(),
+            aud: "claude-code".to_string(),
+            iss: "http://127.0.0.1".to_string(),
+            iat: 0,
+            exp: u64::MAX,
+        }
+    }
+
+    fn context(gateway: bool) -> InboundContext {
+        InboundContext {
+            gateway_claims: gateway.then(claims),
+            client: Some("dev@example.com".to_string()),
+            static_client: !gateway,
+        }
+    }
+
+    #[test]
+    fn a_gateway_jwt_is_stripped_before_a_same_origin_passthrough_attempt() {
+        // `injects_credential` is chain-level, so a chain mixing mapped and
+        // passthrough routes is gated — and a gateway JWT is what authenticated
+        // it. The passthrough attempt in that same chain is same-origin with the
+        // primary, so the origin check alone keeps the caller's headers and
+        // relays shunt's own identity token upstream. Unlike a static token
+        // there is no dedicated-header alternative that keeps the JWT out of
+        // these slots: an `apiKeyHelper` puts it in both.
+        let headers = headers_for_route(
+            &state(),
+            &passthrough_route(),
+            &caller_headers(),
+            &context(true),
+            true,
+            None,
+        );
+
+        assert!(headers.get("authorization").is_none());
+        assert!(headers.get("x-api-key").is_none());
+    }
+
+    #[test]
+    fn a_static_token_caller_still_forwards_its_own_credential() {
+        // Non-vacuity control: the same same-origin passthrough attempt with a
+        // static-token gate keeps both slots, so the assertion above is about
+        // the gateway JWT and not about the fixture or the origin check.
+        let headers = headers_for_route(
+            &state(),
+            &passthrough_route(),
+            &caller_headers(),
+            &context(false),
+            true,
+            None,
+        );
+
+        assert_eq!(headers.get("authorization").unwrap(), "Bearer caller");
+        assert_eq!(headers.get("x-api-key").unwrap(), "caller");
     }
 }

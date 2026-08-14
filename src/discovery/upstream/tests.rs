@@ -174,6 +174,42 @@ async fn consumed_x_api_key_is_not_forwarded_to_passthrough_upstream() {
 }
 
 #[tokio::test]
+async fn a_gateway_jwt_is_not_forwarded_in_the_api_key_slot() {
+    // An `apiKeyHelper` sends its value in *both* `Authorization` and
+    // `x-api-key` (Claude Code's `llm-gateway-connect` reference, "How the
+    // credential variable maps to a header"), and it is the delivery mechanism
+    // for any credential that rotates. So a gateway JWT does reach this slot,
+    // and filtering it on static tokens alone strips the bearer while relaying
+    // shunt's own identity token to a third party beside it.
+    let server = MockServer::start().await;
+    mount_models_ok(&server, single_model_page("claude-opus-5")).await;
+    let state = state_for(&server.uri(), AuthMode::Passthrough);
+    let auth = inbound_auth("gateway-token");
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "authorization",
+        "Bearer header.payload.sig".parse().unwrap(),
+    );
+    headers.insert("x-api-key", "header.payload.sig".parse().unwrap());
+
+    let models = fetch(
+        &state,
+        &headers,
+        InboundCredentialContext {
+            static_auth: Some(&auth),
+            gateway_bearer_authenticated: true,
+        },
+    )
+    .await;
+
+    // The mock is mounted, so a forwarded credential would have produced a
+    // model; `upstream_x_api_key_survives_when_inbound_auth_is_also_configured`
+    // is the non-vacuity control for an *unconsumed* `x-api-key`.
+    assert!(models.is_none());
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn upstream_x_api_key_survives_when_inbound_auth_is_also_configured() {
     let server = MockServer::start().await;
     mount_models_ok_with_headers(

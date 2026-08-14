@@ -273,11 +273,17 @@ async fn upstream_headers(
                 .get("authorization")
                 .cloned()
                 .filter(|_| !bearer_is_consumed);
+            // The same gateway JWT also occupies `x-api-key` whenever the
+            // caller delivers it through an `apiKeyHelper`, which fills both
+            // slots — and that is the delivery mechanism for any credential
+            // that rotates. Filtering this slot on static tokens alone would
+            // strip the bearer and relay the identity token beside it.
             let api_key = inbound.get("x-api-key").cloned().filter(|value| {
-                inbound_context
-                    .static_auth
-                    .and_then(|auth| auth.authenticate_value(value.as_bytes()))
-                    .is_none()
+                !inbound_context.gateway_bearer_authenticated
+                    && inbound_context
+                        .static_auth
+                        .and_then(|auth| auth.authenticate_value(value.as_bytes()))
+                        .is_none()
             });
             if bearer.is_none() && api_key.is_none() {
                 tracing::warn!(
