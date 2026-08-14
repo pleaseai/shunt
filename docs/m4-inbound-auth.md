@@ -111,6 +111,17 @@ same-origin attempt — only the gate-credential-bearing slot is cleared. A gate
 no accompanying upstream credential in either slot still falls back to the builtin catalog for
 discovery, since no forwardable credential remains.
 
+Caveat for `[server.auth] header = "authorization"` (or `"x-api-key"`): on the **inference**
+path `check_inbound_auth` removes the configured header from the forwarded map for *every*
+request, before any route handling, so that slot never reaches the by-value check and never
+carries a caller's own upstream credential to a passthrough route — whether or not it holds a
+gate token. The by-value check is what covers the slot on the **discovery** path, which passes
+the request headers through unmodified. The consequence is that pointing `header` at a slot
+callers also need for their real credential costs them that slot on inference; the default
+dedicated `x-shunt-token` avoids the collision entirely. Over-stripping is the deliberate
+direction here — the alternative, deciding per value at the gate, would forward a slot the gate
+had already accepted under some configurations.
+
 ## 3. Comparison & hygiene
 
 - **Constant-time comparison**, no new dependency: compare presented token against every
