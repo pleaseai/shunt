@@ -368,6 +368,16 @@ async fn upstream_headers(
                 HeaderValue::from_static("oauth-2025-04-20"),
             );
         }
+        // Kimi Code is the one other mode that *does* front an
+        // Anthropic-compatible base URL, so it does not belong in the
+        // catch-all below. It is still skipped: `api.kimi.com/coding` answers
+        // `GET /v1/models` (unauthenticated probes return 401 rather than
+        // 404), but that 401 carries an OpenAI-shaped error envelope, not the
+        // Anthropic one its `/v1/messages` returns, so the list payload is not
+        // known to match the Anthropic envelope this function's callers parse.
+        // Discovery therefore falls back to the builtin catalog until the
+        // authenticated response shape has actually been measured.
+        AuthMode::KimiOauth => return None,
         // No other mode authenticates against an Anthropic models endpoint.
         _ => return None,
     }

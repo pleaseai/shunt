@@ -21,10 +21,12 @@
 use std::{
     fs, io,
     path::{Path, PathBuf},
+    sync::OnceLock,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use serde_json::{json, Value};
+use uuid::Uuid;
 
 use crate::adapters::AdapterError;
 use crate::auth::auth_error;
@@ -391,6 +393,20 @@ pub(crate) fn msh_headers(device_id: &str) -> [(&'static str, String); 5] {
         ("x-msh-device-model", device_model()),
         ("x-msh-device-id", device_id.to_string()),
     ]
+}
+
+/// The `X-Msh-Device-Id` to send for a credential that carries none of its own
+/// — today only a `token_env`-sourced token, which has no account file to
+/// persist one in. Kimi requires the header on every call, so it cannot simply
+/// be omitted; generating a fresh id per request would instead present the
+/// same account to Kimi as a different device on every request, which is the
+/// churn pattern a device-bound API is most likely to penalise. One id per
+/// process is the closest honest approximation of "this shunt instance": it is
+/// stable for as long as the credential is in use, and it is not persisted,
+/// because there is no account file whose identity it could legitimately claim.
+pub(crate) fn process_device_id() -> &'static str {
+    static PROCESS_DEVICE_ID: OnceLock<String> = OnceLock::new();
+    PROCESS_DEVICE_ID.get_or_init(|| Uuid::new_v4().to_string())
 }
 
 fn device_name() -> String {

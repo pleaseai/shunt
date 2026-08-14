@@ -19,7 +19,6 @@ use crate::{
     routing::Route,
     server::AppState,
 };
-use uuid::Uuid;
 
 mod auto_mode_classifier;
 mod model_rewrite;
@@ -905,13 +904,15 @@ fn outbound_headers(headers: &HeaderMap, credential: &Credential) -> HeaderMap {
             }
             // `device_id` is normally the account's stable, persisted
             // `X-Msh-Device-Id` (see `kimi::auth::msh_headers`). A
-            // `token_env`-backed credential has no account file to persist
-            // one in, so fall back to a fresh id for that request rather
-            // than omitting a header Kimi requires on every call.
-            let device_id = device_id
-                .clone()
-                .unwrap_or_else(|| Uuid::new_v4().to_string());
-            for (name, value) in crate::auth::kimi::auth::msh_headers(&device_id) {
+            // `token_env`-backed credential has no account file to persist one
+            // in, so fall back to this process's id rather than omitting a
+            // header Kimi requires on every call — a per-request id would
+            // present one account to Kimi as a new device on every request.
+            let device_id: &str = match device_id.as_deref() {
+                Some(device_id) => device_id,
+                None => crate::auth::kimi::auth::process_device_id(),
+            };
+            for (name, value) in crate::auth::kimi::auth::msh_headers(device_id) {
                 if let Ok(value) = HeaderValue::from_str(&value) {
                     out.insert(name, value);
                 }
@@ -1349,19 +1350,32 @@ mod tests {
     }
 
     #[test]
-    fn kimi_oauth_without_a_stored_device_id_still_sets_all_five_headers() {
+    fn kimi_oauth_without_a_stored_device_id_reuses_one_id_across_requests() {
         // A `token_env`-backed credential has no account file to persist a
-        // device id in; outbound_headers must still send every X-Msh-*
-        // header Kimi requires, falling back to a freshly generated id.
-        let out = outbound_headers(
+        // device id in. outbound_headers must still send every X-Msh-* header
+        // Kimi requires, and the fallback id must be stable across requests:
+        // minting a fresh one per call would present a single account to Kimi
+        // as a different device on every request.
+        let credential = Credential::KimiOauth {
+            access_token: "kimi-token".to_string(),
+            device_id: None,
+        };
+        let first = outbound_headers(&client_headers(), &credential);
+        let second = outbound_headers(&client_headers(), &credential);
+
+        assert_eq!(first.get("authorization").unwrap(), "Bearer kimi-token");
+        let first_id = first.get("x-msh-device-id").unwrap();
+        assert!(!first_id.is_empty());
+        assert_eq!(first_id, second.get("x-msh-device-id").unwrap());
+        // ...and it must not silently collide with a stored account's id.
+        let stored = outbound_headers(
             &client_headers(),
             &Credential::KimiOauth {
                 access_token: "kimi-token".to_string(),
-                device_id: None,
+                device_id: Some("11111111-1111-1111-1111-111111111111".to_string()),
             },
         );
-        assert_eq!(out.get("authorization").unwrap(), "Bearer kimi-token");
-        assert!(!out.get("x-msh-device-id").unwrap().is_empty());
+        assert_ne!(first_id, stored.get("x-msh-device-id").unwrap());
     }
 
     #[test]
