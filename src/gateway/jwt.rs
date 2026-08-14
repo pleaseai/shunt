@@ -91,21 +91,29 @@ fn verify_at(token: &str, issuer: &str, secret: &[u8], now: u64) -> Option<Claim
 /// third-party upstream. Forging `iss` to force a strip only removes the
 /// forger's own credential, so the fail-safe direction is correct.
 ///
-/// Never panics: any malformed input (wrong segment count, non-base64
-/// payload, non-UTF-8 bytes, non-JSON payload, JSON that is not an object)
-/// falls through to `false`. The payload is parsed as a bare
+/// Never panics: any malformed input (wrong segment count, a header or
+/// signature segment that is not base64url, non-base64 payload, non-UTF-8
+/// bytes, non-JSON payload, JSON that is not an object) falls through to
+/// `false`. The payload is parsed as a bare
 /// [`serde_json::Value`] rather than deserialized into [`Claims`] — an
 /// arbitrary third-party JWT is missing fields `Claims` requires and would
 /// fail to deserialize, silently returning `false` for a token that does
 /// carry a matching `aud` or `iss`.
 pub fn has_shunt_shape(token: &str, issuer: &str) -> bool {
     let mut parts = token.split('.');
-    let (Some(_header), Some(payload), Some(_signature)) =
-        (parts.next(), parts.next(), parts.next())
+    let (Some(header), Some(payload), Some(signature)) = (parts.next(), parts.next(), parts.next())
     else {
         return false;
     };
     if parts.next().is_some() {
+        return false;
+    }
+    // `mint_at` encodes all three segments with `URL_SAFE_NO_PAD`, so requiring
+    // the header and signature to decode cannot narrow this away from anything
+    // shunt actually issued — it only keeps a value that merely *carries* a
+    // shunt-shaped payload between two non-base64url segments from being
+    // classified as a JWT at all.
+    if URL_SAFE_NO_PAD.decode(header).is_err() || URL_SAFE_NO_PAD.decode(signature).is_err() {
         return false;
     }
 
@@ -232,6 +240,24 @@ mod tests {
     }
 
     #[test]
+    fn shape_matches_regardless_of_token_length() {
+        // The shape check is deliberately length-independent. A fast-fail
+        // length cap here would fail *open*: `false` means "not shunt's own,
+        // forward it upstream", so an oversized gateway JWT — claims are
+        // built from IdP-supplied `sub`/`email`/`name` and a configured
+        // `iss`, none of them bounded here — would be relayed to a
+        // third-party upstream, which is the leak this check exists to
+        // close. Bounding the work belongs at the HTTP header limit, not in
+        // a predicate whose `false` branch forwards a credential.
+        let mut identity = identity();
+        identity.name = "n".repeat(8192);
+        let token = mint_at(&identity, "https://gateway.example", SECRET, 3600, 1000);
+
+        assert!(token.len() > 8192);
+        assert!(has_shunt_shape(&token, "https://gateway.example"));
+    }
+
+    #[test]
     fn shape_rejects_ordinary_caller_credentials() {
         assert!(!has_shunt_shape(
             "sk-ant-api03-not-a-jwt-at-all",
@@ -263,6 +289,31 @@ mod tests {
         let array_payload = URL_SAFE_NO_PAD.encode(b"[1,2,3]");
         let token = format!("{header}.{array_payload}.sig");
         assert!(!has_shunt_shape(&token, "https://gateway.example"));
+    }
+
+    #[test]
+    fn shape_requires_base64url_header_and_signature() {
+        // A shunt-shaped payload wedged between segments that are not
+        // base64url is not a JWT, so it is not something this gateway could
+        // have minted — `mint_at` encodes every segment with URL_SAFE_NO_PAD.
+        let payload = URL_SAFE_NO_PAD.encode(br#"{"aud":"shunt"}"#);
+        let header = URL_SAFE_NO_PAD.encode(HEADER_JSON);
+
+        // `+` and `=` are outside the URL-safe, unpadded alphabet.
+        assert!(!has_shunt_shape(
+            &format!("not+base64.{payload}.sig"),
+            "https://gateway.example"
+        ));
+        assert!(!has_shunt_shape(
+            &format!("{header}.{payload}.not+base64"),
+            "https://gateway.example"
+        ));
+        // The same payload between well-formed segments still matches, so the
+        // rejections above are the segment check and not the payload.
+        assert!(has_shunt_shape(
+            &format!("{header}.{payload}.sig"),
+            "https://gateway.example"
+        ));
     }
 
     #[test]
