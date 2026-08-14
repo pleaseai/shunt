@@ -1,0 +1,55 @@
+README.ja.md
+  s_7cd4b75ce75eb6::t_3e60c5837b708d 179
+  s_7cd4b75ce75eb6::t_cf7a806f7e831a 18
+  s_7cd4b75ce75eb6::t_d54f382fd45859 154,161-178
+  s_7cd4b75ce75eb6::t_50fb27b35d2114 180
+site/src/content/docs/providers/kimi.md
+  s_7cd4b75ce75eb6::t_a78b90442be3e1 180-181
+  s_7cd4b75ce75eb6::t_9ffa1778254370 103-179
+  s_7cd4b75ce75eb6::t_e29ecf00349def 3,10-13
+  s_7cd4b75ce75eb6::t_6529e4f92412f5 14
+README.zh-CN.md
+  s_7cd4b75ce75eb6::t_ec3fdedcf2d8de 154,161-178
+  s_7cd4b75ce75eb6::t_9e0a9373899739 18
+  s_7cd4b75ce75eb6::t_40a7c08615c07e 179
+  s_7cd4b75ce75eb6::t_9d2ba9c747d386 180
+README.ko.md
+  s_7cd4b75ce75eb6::t_f33f3aab7ca777 18
+  s_7cd4b75ce75eb6::t_ad5ebd4e34a635 154,161-178
+  s_7cd4b75ce75eb6::t_7964a2099a5490 179
+  s_7cd4b75ce75eb6::t_4553a3c51aa329 180
+blueprints/upstream/kimi-code.md
+  s_7cd4b75ce75eb6::t_227ea29626bcb3 1-97
+site/src/content/docs/reference/configuration.md
+  s_7cd4b75ce75eb6::t_c9c6c0e5f3c485 422
+  s_7cd4b75ce75eb6::t_0376cae43288c3 366,368
+  s_7cd4b75ce75eb6::t_4397ac8f5695f2 404,407
+site/src/content/docs/reference/endpoints.md
+  s_7cd4b75ce75eb6::t_e25ba37813e7d3 27
+README.md
+  s_7cd4b75ce75eb6::t_324551553b75dd 18
+  s_7cd4b75ce75eb6::t_e716c23055cc81 201,208-225
+  s_7cd4b75ce75eb6::t_f2590799858544 226
+  s_7cd4b75ce75eb6::t_b895c6de9adc93 227
+docs/m15-kimi-oauth.md
+  s_7cd4b75ce75eb6::t_7dd8d548c43829 1-246
+src/blueprints.rs
+  s_7cd4b75ce75eb6::t_63d32bc2596cdb 76-80
+  s_7cd4b75ce75eb6::t_b795e41bb3ca92 267
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "f4e33b921c0ff32bb72f87778809877b0ea4021e",
+  "prompts": {},
+  "sessions": {
+    "s_7cd4b75ce75eb6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8d73aea4-2266-4691-a90d-9b0005c91a74",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
