@@ -178,7 +178,17 @@ impl KimiAuthStore {
         let path = self.path.clone();
         let handle = tokio::spawn(async move {
             let _refreshing = refreshing;
-            let refreshed = refresh_tokens(&client, &token_url, &refresh_token, &device_id).await?;
+            // Kimi requires the header on every request; an account file with
+            // no persisted `deviceId` must not send an empty one to
+            // auth.kimi.com — fall back the same way the outbound request path
+            // already does for a deviceId-less credential.
+            let header_device_id = if device_id.is_empty() {
+                process_device_id()
+            } else {
+                &device_id
+            };
+            let refreshed =
+                refresh_tokens(&client, &token_url, &refresh_token, header_device_id).await?;
             // Kimi's rotation behavior on refresh is unmeasured; be lenient like
             // Claude and reuse the existing refresh token when the response
             // omits one, rather than rejecting the response as invalid like
@@ -340,11 +350,10 @@ pub(crate) async fn refresh_tokens(
     for (name, value) in msh_headers(device_id) {
         request = request.header(name, value);
     }
-    let response = request.send().await.map_err(|_| {
-        auth_error(
-            "failed to reach Kimi token endpoint; run shunt login kimi --name <account-name>",
-        )
-    })?;
+    let response = request
+        .send()
+        .await
+        .map_err(|error| auth_error(format!("failed to reach Kimi token endpoint: {error}")))?;
     let status = response.status();
     let text = response.text().await.unwrap_or_default();
     // See the module doc comment: never gate on `status` before parsing —
@@ -352,9 +361,13 @@ pub(crate) async fn refresh_tokens(
     let value: Value = match serde_json::from_str(&text) {
         Ok(value) => value,
         Err(_) => {
-            return Err(auth_error(format!(
-            "Kimi token refresh failed (HTTP {status}); run shunt login kimi --name <account-name>"
-        )))
+            return Err(if status.is_server_error() {
+                auth_error(format!("Kimi token refresh failed (HTTP {status})"))
+            } else {
+                auth_error(format!(
+                    "Kimi token refresh failed (HTTP {status}); run shunt login kimi --name <account-name>"
+                ))
+            })
         }
     };
     if let Some(parsed) = parse_token_response(&value) {
@@ -385,6 +398,9 @@ fn refresh_error(body: &Value, status: reqwest::StatusCode) -> AdapterError {
             } else {
                 auth_error(format!("Kimi token refresh failed ({code}): {description}"))
             }
+        }
+        None if status.is_server_error() => {
+            auth_error(format!("Kimi token refresh failed (HTTP {status})"))
         }
         None => auth_error(format!(
             "Kimi token refresh failed (HTTP {status}); run shunt login kimi --name <account-name>"
