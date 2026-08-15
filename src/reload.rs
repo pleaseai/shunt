@@ -392,6 +392,8 @@ fn event_touches_path(event: &notify::Event, path: &std::path::Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
+
     use std::sync::Arc;
 
     use arc_swap::ArcSwap;
@@ -655,6 +657,62 @@ mod tests {
             crate::auth::antigravity::version::is_refresher_started(),
             "a reload that newly routes to antigravity must start the version \
              refresher, not just accept the config"
+        );
+    }
+
+    #[tokio::test]
+    // cubic flagged `spawn_refresher`'s `tokio::spawn` (called from inside
+    // `reload`, which `reload_off_thread` always drives through
+    // `tokio::task::spawn_blocking`) as a P1 panic risk on the theory that a
+    // blocking-pool thread has no runtime context to spawn onto. It does:
+    // tokio's blocking-pool threads `enter()` the runtime for the whole
+    // thread's lifetime (`tokio::runtime::blocking::pool::run`), so
+    // `Handle::current()` resolves fine there. That makes this test's
+    // premise a false positive rather than a bug -- but the invariant is
+    // exactly the kind a future tokio upgrade or refactor could silently
+    // break, so pin it here in the real production shape (`spawn_blocking`
+    // wrapping `reload`, mirroring `reload_off_thread` below) rather than
+    // only through the direct call in
+    // `reload_routing_to_antigravity_starts_the_version_refresher` above,
+    // which never exercises the blocking-pool thread at all.
+    async fn reload_via_spawn_blocking_starts_the_refresher_without_panicking() {
+        use crate::auth::antigravity::ANTIGRAVITY_AUTH_FILE_ENV_LOCK;
+
+        let _env_guard = ANTIGRAVITY_AUTH_FILE_ENV_LOCK.lock().unwrap();
+        let dir = temp_dir("antigravity-spawn-blocking-refresher");
+        let _guard = TempDirGuard(dir.clone());
+        let path = dir.join("shunt.toml");
+
+        let credential_path = dir.join("antigravity-auth.json");
+        std::fs::write(&credential_path, "{}").unwrap();
+        let _env_var_guard = EnvVarGuard::set("SHUNT_ANTIGRAVITY_AUTH_FILE", &credential_path);
+
+        std::fs::write(&path, "[server]\ndefault_provider = \"anthropic\"\n").unwrap();
+        let shared = shared_from(Config::load(Some(&path)).unwrap());
+
+        std::fs::write(&path, "[server]\ndefault_provider = \"antigravity\"\n").unwrap();
+
+        // Mirror `reload_off_thread` exactly: move owned clones into the
+        // blocking closure and drive `reload` through `spawn_blocking`. A
+        // panic inside the closure surfaces as `Err(JoinError)`, not a
+        // propagated panic in this test's own task, so assert on the join
+        // result rather than letting a panic there be swallowed.
+        let shared_for_blocking = shared.clone();
+        let path_for_blocking = path.clone();
+        let join_result = tokio::task::spawn_blocking(move || {
+            reload(&shared_for_blocking, Some(&path_for_blocking))
+        })
+        .await;
+
+        assert!(
+            matches!(join_result, Ok(Ok(()))),
+            "reload driven through spawn_blocking must neither panic nor fail: {join_result:?}"
+        );
+        assert_eq!(shared.load().config.server.default_provider, "antigravity");
+        assert!(
+            crate::auth::antigravity::version::is_refresher_started(),
+            "the refresher must start even when reload runs on a blocking-pool \
+             thread, not only when called directly from an async context"
         );
     }
 
