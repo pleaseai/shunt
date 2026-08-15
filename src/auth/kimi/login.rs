@@ -211,7 +211,15 @@ async fn poll_for_tokens(
             }
             PollOutcome::Failed(reason) => bail!("{reason}"),
         }
-        sleep(Duration::from_secs(interval)).await;
+        // Never sleep past the device-code deadline. The server supplies
+        // `interval` and RFC 8628 puts no ceiling on it, so a large value would
+        // otherwise stall the login well beyond `expires_in` before the loop
+        // condition gets a chance to report the timeout.
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        sleep(remaining.min(Duration::from_secs(interval))).await;
     }
     bail!("Kimi device authorization timed out; run shunt login kimi --name <account-name> to try again")
 }
