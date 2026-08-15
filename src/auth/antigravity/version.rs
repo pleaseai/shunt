@@ -216,13 +216,19 @@ pub(crate) fn parse_manifest_version(body: &str) -> Option<String> {
         // rather than silently truncated.
         let value = if let Some(quoted) = rest.strip_prefix('"') {
             match quoted.find('"') {
-                Some(end) => &quoted[..end],
-                None => continue, // unterminated quote: not a value to trust
+                Some(end) if trailer_is_acceptable(&quoted[end + 1..]) => &quoted[..end],
+                // Either unterminated, or something other than trailing
+                // whitespace/comment follows the closing quote (e.g.
+                // `"1.2" garbage`) -- salvaging the quoted prefix there would
+                // accept a value out of a line that is not actually a clean
+                // `version: "..."` entry. The manifest is untrusted input;
+                // a malformed line must be rejected outright, not repaired.
+                _ => continue,
             }
         } else if let Some(quoted) = rest.strip_prefix('\'') {
             match quoted.find('\'') {
-                Some(end) => &quoted[..end],
-                None => continue,
+                Some(end) if trailer_is_acceptable(&quoted[end + 1..]) => &quoted[..end],
+                _ => continue,
             }
         } else {
             // Unquoted scalar: a `#` here does start a comment.
@@ -233,6 +239,18 @@ pub(crate) fn parse_manifest_version(body: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Whether the text following a quoted `version:` value's closing quote is
+/// something a well-formed YAML scalar line would actually have there: only
+/// whitespace, or whitespace then a `#` comment. Anything else -- most
+/// notably trailing content after the quote, e.g. `version: "1.2" garbage`
+/// -- means the closing quote [`parse_manifest_version`] found was not
+/// actually the end of the line's value, so the "extracted" text is a
+/// truncation of something malformed rather than a value to trust.
+fn trailer_is_acceptable(trailer: &str) -> bool {
+    let trailer = trailer.trim_start();
+    trailer.is_empty() || trailer.starts_with('#')
 }
 
 /// Whether `value` looks like a real version string rather than manifest
@@ -318,6 +336,43 @@ mod tests {
             None,
             "a `#` inside quotes must not truncate the value into a \
              different, plausible-looking one"
+        );
+    }
+
+    #[test]
+    fn a_quoted_version_with_trailing_garbage_is_rejected_not_truncated() {
+        // The closing quote's position alone does not make what precedes it
+        // trustworthy: `find('"')` also matches the quote that closes
+        // `"1.2"` in a line that keeps going past it. Salvaging `1.2` there
+        // would let a corrupted or tampered manifest line still update the
+        // User-Agent -- the whole point of validating the manifest is to
+        // distrust exactly this kind of malformed input, not repair it.
+        assert_eq!(
+            parse_manifest_version("version: \"1.2\" garbage\n"),
+            None,
+            "trailing content after the closing quote must reject the line, \
+             not yield the truncated prefix"
+        );
+        assert_eq!(
+            parse_manifest_version("version: '1.2' garbage\n"),
+            None,
+            "the same must hold for single-quoted values"
+        );
+    }
+
+    #[test]
+    fn a_quoted_version_followed_by_only_a_comment_is_still_accepted() {
+        // Whitespace, or whitespace then a `#` comment, after the closing
+        // quote is an ordinary well-formed line and must keep working.
+        assert_eq!(
+            parse_manifest_version("version: \"2.4.0\"   \n").as_deref(),
+            Some("2.4.0"),
+            "trailing whitespace after the closing quote must still parse"
+        );
+        assert_eq!(
+            parse_manifest_version("version: \"2.4.0\" # released today\n").as_deref(),
+            Some("2.4.0"),
+            "a comment after the closing quote must still parse"
         );
     }
 
