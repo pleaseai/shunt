@@ -120,17 +120,30 @@ Four serialize every account of that provider against every other; Codex's
 path-keyed registry lets different accounts refresh in parallel while the same
 file still serializes. The designs differ, the scope does not: two processes
 sharing an account store have no shared lock in any of the five, so both can
-refresh the same account concurrently. Refresh tokens rotate, so the loser's
-stored token is invalidated — the exact condition the code already warns about
-("stored refresh token is now stale until re-login"). Recovery is a manual
-re-login.
+refresh the same account concurrently.
+
+**How badly that ends is provider-specific, and the difference is load-bearing.**
+Where the refresh token rotates and is consumed, the loser replays a spent token
+and the stored credential is invalidated — xAI states this outright
+(`src/auth/xai/auth.rs:48-52`), and Claude and Codex carry matching warnings —
+"stored refresh token is now stale until re-login" (`src/auth/claude/auth.rs:187`)
+and "stored refresh token **may** now be stale until re-login"
+(`src/auth/codex/auth.rs:216`). Recovery there is a
+manual re-login. Cursor and Google do **not** assume rotation: both keep the
+existing refresh token when the response omits a replacement
+(`src/auth/cursor/auth.rs:84-91`, whose comment says Cursor "is not known to
+rotate+consume its refresh tokens (unlike xAI)"; `src/auth/google/auth.rs:152-154`
+has the same shape). For those two the concurrent-refresh hazard is a lost-update
+race on the credential file, not guaranteed invalidation. Recording the weaker
+case as the strong one would push a future store toward recovery semantics two of
+the five stores do not need.
 
 Enumerating all five matters because the list is the audit scope for any future
 shared-store work: a lease design that covers only Claude and Codex would leave
-the other three racy across replicas while looking complete. `src/auth/xai/auth.rs:48-52`
-also states the assumption in code rather than leaving it to this document —
-"Cross-process races are out of scope — shunt owns the file and one gateway
-process is the norm."
+the other three racy across replicas while looking complete. That same xAI
+comment also states the single-process assumption in code rather than leaving it
+to this document — "Cross-process races are out of scope — shunt owns the file
+and one gateway process is the norm."
 
 Sharing one account pool across replicas requires sharing those very files, so
 this is not a tuning problem. Scaling out safely needs a shared store for pool
@@ -475,7 +488,13 @@ independent decision.
 - Path-inventory assertion: the set of registered paths matches this document's
   table, so a new route cannot be added without the conflict review.
 - `/` still answers `HEAD` after any UI work.
-- An unmatched path still `404`s rather than returning HTML.
+- An unmatched path **outside the `/admin` mount** (`/v1/nope`, `/nope`) still
+  `404`s rather than returning HTML. Scope matters: once Decision 3 adds an SPA
+  fallback, an unmatched path *under* `/admin` is exactly what must return the
+  shell, so a blanket assertion would either fail the intended deep-link
+  behavior or force the admin SPA back to `404`s. The property this protects is
+  that the UI fallback stays confined to its mount — which is the
+  [Why not the root](#why-not-the-root) argument stated as a test.
 - A browser `GET` on a mutation-only admin path (`/admin/accounts/claude`,
   `/admin/accounts/claude/{name}`) asserts whichever outcome Decision 3's chosen
   escape specifies — `405` or the SPA shell. Asserting it either way is what

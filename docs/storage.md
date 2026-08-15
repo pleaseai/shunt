@@ -65,8 +65,13 @@ control.
   across the network call — SQLite has a single writer, so that stalls every
   other writer for the duration of an HTTP request. The hazard moves from "no
   lock" to "lease expiry versus a slow refresh": an improvement, but still a
-  distributed-lock design with the usual failure modes, and the failure it guards
-  against is an invalidated refresh token requiring manual re-login.
+  distributed-lock design with the usual failure modes. What it guards against
+  is provider-specific: an invalidated refresh token requiring manual re-login
+  where the token rotates and is consumed (xAI, and the case Claude and Codex
+  warn about), and a lost-update race on the credential file for Cursor and
+  Google, which keep the existing token when a refresh response omits a
+  replacement. Sizing the recovery semantics to the strong case for all five
+  would overbuild.
 - **Persisting sessions weakens a documented security property.**
   [M9](m9-admin-surface.md#authentication-and-hardening) specifies that the
   pending-login store is in-memory, single-use, and TTL-bound, and that emergency
