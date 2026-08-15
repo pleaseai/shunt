@@ -1,0 +1,44 @@
+site/src/content/docs/ko/reference/endpoints.md
+  s_465bd3ca72b0d8::t_b934137b1b4875 41
+site/src/content/docs/reference/configuration.md
+  s_465bd3ca72b0d8::t_62f2c5ad0eb8f6 121
+site/src/content/docs/ko/reference/configuration.md
+  s_465bd3ca72b0d8::t_0d0bcba1f6d0ae 58
+  s_465bd3ca72b0d8::t_6b80867d2840f9 85
+  s_465bd3ca72b0d8::t_c3d4bfdd4d3018 62
+  s_465bd3ca72b0d8::t_ae15cba5ae42ee 66
+site/src/content/docs/ja/reference/endpoints.md
+  s_465bd3ca72b0d8::t_8467d6705d7c8a 41
+site/src/content/docs/reference/endpoints.md
+  s_465bd3ca72b0d8::t_4fbdafbab21563 71
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_465bd3ca72b0d8::t_d68c2df9e06298 62
+  s_465bd3ca72b0d8::t_220eff1357be3d 58
+  s_465bd3ca72b0d8::t_7499e4ac299507 85
+  s_465bd3ca72b0d8::t_dc71d6a48783ed 66
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_465bd3ca72b0d8::t_9259557c967495 41
+site/src/content/docs/ja/reference/configuration.md
+  s_465bd3ca72b0d8::t_e183330395a31f 58
+  s_465bd3ca72b0d8::t_4672548741481d 62
+  s_465bd3ca72b0d8::t_26ac3f1d6e88e4 85
+  s_465bd3ca72b0d8::t_b4e842292d197b 66
+docs/m9-admin-surface.md
+  s_465bd3ca72b0d8::t_4ee217b2f6e765 122-125
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "db109bf7ad7f3c6a63829659b51abab6692dfaed",
+  "prompts": {},
+  "sessions": {
+    "s_465bd3ca72b0d8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "66f88073-f7a8-4995-827e-48edf7ded210",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
