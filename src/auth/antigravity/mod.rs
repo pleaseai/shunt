@@ -14,6 +14,11 @@ pub mod version;
 /// refreshed by shunt alone — unlike the Gemini path, no other tool owns it.
 pub fn default_antigravity_auth_path() -> PathBuf {
     env::var_os("SHUNT_ANTIGRAVITY_AUTH_FILE")
+        // An empty override (e.g. `SHUNT_ANTIGRAVITY_AUTH_FILE=` from a
+        // half-configured shell/CI environment) must fall back to the
+        // default path rather than resolve to a bare empty PathBuf, which
+        // would point at the process's current directory.
+        .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .or_else(|| {
             // `HOME` is unset on Windows; fall back to `USERPROFILE` so the
@@ -96,14 +101,17 @@ pub(crate) static ANTIGRAVITY_AUTH_FILE_ENV_LOCK: std::sync::Mutex<()> = std::sy
 
 #[cfg(test)]
 mod tests {
+    use std::env;
     use std::io;
+    use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
 
     use crate::config::{Config, ModelConfig, ProviderKind, RouteConfig, RoutePrefixConfig};
 
     use super::{
-        antigravity_migration_error, routes_to_antigravity, routes_to_antigravity_cli,
-        warn_if_routes_to_antigravity_cli,
+        antigravity_migration_error, default_antigravity_auth_path, routes_to_antigravity,
+        routes_to_antigravity_cli, warn_if_routes_to_antigravity_cli,
+        ANTIGRAVITY_AUTH_FILE_ENV_LOCK,
     };
 
     struct BufferWriter {
@@ -262,5 +270,43 @@ mod tests {
             ),
         });
         assert!(routes_to_antigravity(&config));
+    }
+
+    #[test]
+    fn an_empty_auth_file_override_falls_back_to_the_default_path() {
+        let _guard = ANTIGRAVITY_AUTH_FILE_ENV_LOCK.lock().unwrap();
+        let previous = env::var_os("SHUNT_ANTIGRAVITY_AUTH_FILE");
+        // A half-configured shell/CI environment (`SHUNT_ANTIGRAVITY_AUTH_FILE=`)
+        // must not resolve to an empty PathBuf, which would point at the
+        // process's current working directory rather than a real path.
+        env::set_var("SHUNT_ANTIGRAVITY_AUTH_FILE", "");
+        let path = default_antigravity_auth_path();
+        match previous {
+            Some(value) => env::set_var("SHUNT_ANTIGRAVITY_AUTH_FILE", value),
+            None => env::remove_var("SHUNT_ANTIGRAVITY_AUTH_FILE"),
+        }
+
+        assert_ne!(path, PathBuf::new());
+        assert!(
+            path.ends_with("antigravity-auth.json"),
+            "expected the default path, got {path:?}"
+        );
+    }
+
+    #[test]
+    fn a_non_empty_auth_file_override_is_honored() {
+        let _guard = ANTIGRAVITY_AUTH_FILE_ENV_LOCK.lock().unwrap();
+        let previous = env::var_os("SHUNT_ANTIGRAVITY_AUTH_FILE");
+        env::set_var(
+            "SHUNT_ANTIGRAVITY_AUTH_FILE",
+            "/tmp/custom-antigravity-auth.json",
+        );
+        let path = default_antigravity_auth_path();
+        match previous {
+            Some(value) => env::set_var("SHUNT_ANTIGRAVITY_AUTH_FILE", value),
+            None => env::remove_var("SHUNT_ANTIGRAVITY_AUTH_FILE"),
+        }
+
+        assert_eq!(path, PathBuf::from("/tmp/custom-antigravity-auth.json"));
     }
 }
