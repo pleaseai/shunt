@@ -267,8 +267,16 @@ pub(crate) fn parse_manifest_version(body: &str) -> Option<String> {
                 _ => continue,
             }
         } else {
-            // Unquoted scalar: a `#` here does start a comment.
-            rest.split('#').next().unwrap_or("").trim()
+            // Unquoted scalar: a `#` starts a comment here too, but only
+            // when it is preceded by whitespace -- see `comment_start`. A
+            // `#` glued directly onto the value (e.g. `1.2#3`) is part of
+            // the scalar, not a comment marker, so it must survive into
+            // `value` and be rejected by `is_plausible_version` rather than
+            // silently cut off.
+            match comment_start(rest) {
+                Some(idx) => rest[..idx].trim(),
+                None => rest.trim(),
+            }
         };
         if is_plausible_version(value) {
             return Some(value.to_string());
@@ -285,8 +293,28 @@ pub(crate) fn parse_manifest_version(body: &str) -> Option<String> {
 /// actually the end of the line's value, so the "extracted" text is a
 /// truncation of something malformed rather than a value to trust.
 fn trailer_is_acceptable(trailer: &str) -> bool {
-    let trailer = trailer.trim_start();
-    trailer.is_empty() || trailer.starts_with('#')
+    let value = match comment_start(trailer) {
+        Some(idx) => &trailer[..idx],
+        None => trailer,
+    };
+    value.trim().is_empty()
+}
+
+/// Byte offset of the `#` that starts a YAML inline comment in `s`, if any.
+/// YAML requires a `#` to be preceded by whitespace to begin a comment there
+/// -- one glued directly onto preceding text (`"1.2"#x`, `1.2#x`) is part of
+/// that text, not a comment marker. `trailer_is_acceptable`'s previous
+/// `trim_start().starts_with('#')` check trimmed away any leading whitespace
+/// before asking whether it existed, so `"1.2"# comment` (no separator) was
+/// wrongly accepted; this only reports a `#` match when a whitespace byte
+/// actually precedes it in `s`, never for one at the very start.
+///
+/// Byte-indexed rather than char-indexed: `#` and ASCII whitespace are both
+/// single-byte, so a match index is always on a char boundary and safe to
+/// slice on, even if the rest of `s` (untrusted manifest text) is not ASCII.
+fn comment_start(s: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    (1..bytes.len()).find(|&i| bytes[i] == b'#' && bytes[i - 1].is_ascii_whitespace())
 }
 
 /// Whether `value` looks like a real version string rather than manifest
@@ -419,6 +447,35 @@ mod tests {
             parse_manifest_version("version: \"2.4.0\" # released today\n").as_deref(),
             Some("2.4.0"),
             "a comment after the closing quote must still parse"
+        );
+    }
+
+    #[test]
+    fn a_comment_glued_directly_onto_a_quoted_value_is_rejected() {
+        // YAML requires whitespace before `#` for it to start an inline
+        // comment. `"1.2"# comment` has none between the closing quote and
+        // the `#`, so that `#` is trailing garbage, not a comment marker --
+        // the line must be rejected like any other malformed trailer, not
+        // have the "comment" stripped and the value accepted anyway.
+        assert_eq!(
+            parse_manifest_version("version: \"1.2\"# comment\n"),
+            None,
+            "a `#` with no separating whitespace must not be treated as \
+             starting a comment after a quoted value"
+        );
+    }
+
+    #[test]
+    fn a_comment_glued_directly_onto_an_unquoted_value_is_rejected() {
+        // Same rule, unquoted branch: `2.4.0#comment` is one scalar
+        // containing a `#`, not `2.4.0` plus a comment, so it must fail
+        // `is_plausible_version` rather than be silently truncated down to
+        // the plausible-looking `2.4.0`.
+        assert_eq!(
+            parse_manifest_version("version: 2.4.0#comment\n"),
+            None,
+            "a `#` with no separating whitespace must not be treated as \
+             starting a comment after an unquoted value"
         );
     }
 
