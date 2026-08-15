@@ -194,7 +194,7 @@ codex-fallback = "gpt-5.2"
 | :-- | :-- | :-- |
 | `name` | 是 | 非空且唯一的上游名称。路由、模型映射、`server.default_provider`、指标和管理界面都使用它。 |
 | `provider` | 未设置 `kind` + `base_url` 时 | 内置 preset。提供 `kind`、`base_url` 和默认 auth。显式字段覆盖 preset 值。 |
-| `kind` | 无 preset 时 | `anthropic`、`responses`、`cursor`、`gemini`、`antigravity` 或 `antigravity_cli`。后三者在下方 preset 表中没有条目(同名的内置 `[providers.*]` 表是另一套遗留机制,并非 preset),因此有序 upstream 必须显式设置 `kind`。 |
+| `kind` | 无 preset 时 | `anthropic`、`responses`、`cursor`、`gemini`、`antigravity` 或 `antigravity_cli`。后三者在下方 preset 表中没有条目(内置的 `[providers.gemini]`、`[providers.antigravity]`、`[providers.antigravity-cli]` 表是另一套遗留机制,并非 preset),因此有序 upstream 必须显式设置 `kind`。注意 CLI provider 的表名是带连字符的 `antigravity-cli`,而其 `kind` 值是带下划线的 `antigravity_cli`。 |
 | `base_url` | 无 preset 时 | 上游 base URL。对于 `kind = "cursor"`，它仅用于登录/令牌刷新接口；推理使用固定的代理主机 `https://agentn.global.api5.cursor.sh`，且只能通过 `SHUNT_CURSOR_AGENT_BASE_URL` 覆盖。 |
 | `auth` | 否 | auth mode 字符串或特定于 mode 的映射。默认采用 preset 的 auth；没有 preset 时为 `passthrough`。 |
 | `effort`, `count_tokens`, `websocket`, `tool_search`, `request_compression`, `retry` | 否 | 与旧式 provider 相同的按上游设置。preset 不会覆盖 `count_tokens`。Cursor 上游的 `retry` 也会被标准化，但不适用于 Cursor 流式推理请求。 |
