@@ -1,4 +1,4 @@
-use std::{env, path::PathBuf};
+use std::{env, path::PathBuf, time::Duration};
 
 use axum::{http::StatusCode, response::IntoResponse};
 
@@ -122,13 +122,16 @@ pub async fn resolve_credential(
                 antigravity::default_antigravity_auth_path(),
                 client.clone(),
             );
-            store
-                .get_valid()
-                .await
-                .map(|credential| Credential::AntigravityOauth {
-                    access_token: credential.access_token,
-                    project_id: credential.project_id,
-                })
+            with_credential_timeout(
+                ANTIGRAVITY_CREDENTIAL_TIMEOUT,
+                store.get_valid(),
+                "Antigravity credential resolution timed out",
+            )
+            .await
+            .map(|credential| Credential::AntigravityOauth {
+                access_token: credential.access_token,
+                project_id: credential.project_id,
+            })
         }
         AuthMode::None => Ok(Credential::Passthrough),
     }
@@ -267,6 +270,28 @@ fn resolve_api_key(name: &str, provider: &ProviderConfig) -> Result<String, Adap
     Err(auth_error(format!("{env_name} is not set")))
 }
 
+/// `AntigravityAuthStore::get_valid` documents a worst case of roughly 428s
+/// (~7 minutes) when it has to refresh and then onboard a projectless account
+/// while holding `REFRESH_LOCK` — acceptable for an interactive login, not
+/// for a proxied request. Bound resolution well under that so a stuck
+/// upstream fails the request instead of hanging it for the full 7 minutes.
+const ANTIGRAVITY_CREDENTIAL_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Wrap a credential-resolution future with a timeout, mapping expiry to a
+/// clear auth error. A dropped future here does not tear a credential file
+/// mid-write: writeback (see `AntigravityAuthStore::write`) goes through
+/// `tokio::task::spawn_blocking`, which runs the write to completion on the
+/// blocking pool even once the awaiting future is cancelled.
+async fn with_credential_timeout<T>(
+    duration: Duration,
+    future: impl std::future::Future<Output = Result<T, AdapterError>>,
+    timeout_message: &str,
+) -> Result<T, AdapterError> {
+    tokio::time::timeout(duration, future)
+        .await
+        .map_err(|_| auth_error(timeout_message.to_string()))?
+}
+
 pub fn auth_error(message: impl Into<String>) -> AdapterError {
     let error = ShuntError::new(StatusCode::UNAUTHORIZED, "authentication_error", message);
     AdapterError {
@@ -334,7 +359,35 @@ pub fn default_xai_auth_path() -> PathBuf {
 mod tests {
     use crate::config::{AccountConfig, Config};
 
-    use super::{resolve_api_key, resolve_chatgpt_account, resolve_claude_account, Credential};
+    use super::{
+        resolve_api_key, resolve_chatgpt_account, resolve_claude_account, with_credential_timeout,
+        Credential,
+    };
+
+    #[tokio::test]
+    async fn credential_timeout_maps_a_stalled_future_to_a_clear_auth_error() {
+        use axum::body::to_bytes;
+        // Proves the AntigravityOauth arm's timeout wrapper, without waiting
+        // out the real ANTIGRAVITY_CREDENTIAL_TIMEOUT: a future that never
+        // resolves must still surface as a named auth error rather than
+        // hanging the request forever.
+        let error = with_credential_timeout(
+            std::time::Duration::from_millis(10),
+            std::future::pending::<Result<(), crate::adapters::AdapterError>>(),
+            "Antigravity credential resolution timed out",
+        )
+        .await
+        .unwrap_err();
+
+        let bytes = to_bytes(error.response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&bytes);
+        assert!(
+            body.contains("Antigravity credential resolution timed out"),
+            "expected the timeout to surface its named message, got: {body}"
+        );
+    }
 
     #[tokio::test]
     async fn resolves_claude_account_token_env_verbatim_with_uuid() {
