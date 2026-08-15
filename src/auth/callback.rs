@@ -57,6 +57,9 @@ type CallbackSender = oneshot::Sender<CallbackResult>;
 
 #[derive(Clone)]
 struct CallbackState {
+    /// Provider name used in the terminal error when the provider reports
+    /// `error=...` instead of a code (e.g. the user denied consent).
+    label: &'static str,
     expected_state: String,
     sender: Arc<Mutex<Option<CallbackSender>>>,
 }
@@ -73,8 +76,15 @@ impl CallbackState {
 
 #[derive(Deserialize)]
 struct CallbackQuery {
-    code: String,
-    state: String,
+    #[serde(default)]
+    code: Option<String>,
+    #[serde(default)]
+    state: Option<String>,
+    /// Set by the provider instead of `code` when authorization fails —
+    /// e.g. `access_denied` when the user declines consent. Provider-neutral:
+    /// whatever string the provider sends is surfaced verbatim in the error.
+    #[serde(default)]
+    error: Option<String>,
 }
 
 async fn callback(
@@ -92,10 +102,27 @@ async fn callback(
             return (StatusCode::BAD_REQUEST, Html(ERROR_PAGE)).into_response();
         }
     };
-    if query.code.is_empty() || query.state != callback.expected_state {
+    let Some(state) = query.state.as_deref() else {
+        return (StatusCode::BAD_REQUEST, Html(ERROR_PAGE)).into_response();
+    };
+    if state != callback.expected_state {
         return (StatusCode::BAD_REQUEST, Html(ERROR_PAGE)).into_response();
     }
-    if !callback.complete(Ok(query.code)) {
+    // Only a state-matched request can end the pending login: this is
+    // confirmed to be the flow we started, not a stray hit on the loopback
+    // port, so a provider-reported denial should complete the wait with a
+    // terminal error rather than let the caller run out the clock.
+    if let Some(error) = query.error.filter(|error| !error.is_empty()) {
+        let label = callback.label;
+        callback.complete(Err(anyhow::anyhow!(
+            "{label} authorization was denied ({error})"
+        )));
+        return (StatusCode::OK, Html(ERROR_PAGE)).into_response();
+    }
+    let Some(code) = query.code.filter(|code| !code.is_empty()) else {
+        return (StatusCode::BAD_REQUEST, Html(ERROR_PAGE)).into_response();
+    };
+    if !callback.complete(Ok(code)) {
         return (StatusCode::BAD_REQUEST, Html(ERROR_PAGE)).into_response();
     }
     (StatusCode::OK, Html(SUCCESS_PAGE)).into_response()
@@ -144,6 +171,7 @@ impl CallbackServer {
 
         let (sender, receiver) = oneshot::channel();
         let state = CallbackState {
+            label,
             expected_state,
             sender: Arc::new(Mutex::new(Some(sender))),
         };
@@ -335,6 +363,55 @@ mod tests {
         assert!(!body.contains("callback-code"));
         assert!(!body.contains("wrong-state"));
         // The subsequent legitimate callback still completes the flow.
+        let response = reqwest::get(url_right).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(waiting.await.unwrap().unwrap(), "callback-code");
+    }
+
+    #[tokio::test]
+    async fn a_denial_with_matching_state_completes_with_a_terminal_error() {
+        // `error=access_denied` (no `code`) is how a provider reports the
+        // user declining consent. With the expected `state`, this must
+        // complete the pending login with a named error rather than leave
+        // the caller to run out the clock waiting for a code that will
+        // never arrive.
+        let server = CallbackServer::bind(CLAUDE, "expected-state".to_string())
+            .await
+            .unwrap();
+        let url = format!(
+            "http://127.0.0.1:{}/callback?error=access_denied&state=expected-state",
+            server.addr().port()
+        );
+        let waiting = tokio::spawn(server.wait_for_code(Duration::from_secs(2)));
+        let response = reqwest::get(url).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let error = waiting
+            .await
+            .unwrap()
+            .expect_err("a denial must surface as an error, not a code");
+        let message = error.to_string();
+        assert!(message.contains("Claude"), "{message}");
+        assert!(message.contains("access_denied"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn a_denial_with_a_mismatched_state_is_ignored_and_keeps_waiting() {
+        // A stray/spoofed `error=` hit that does not carry the expected
+        // state must not be able to cancel someone else's pending login.
+        let server = CallbackServer::bind(CLAUDE, "expected-state".to_string())
+            .await
+            .unwrap();
+        let url_wrong = format!(
+            "http://127.0.0.1:{}/callback?error=access_denied&state=wrong-state",
+            server.addr().port()
+        );
+        let url_right = format!(
+            "http://127.0.0.1:{}/callback?code=callback-code&state=expected-state",
+            server.addr().port()
+        );
+        let waiting = tokio::spawn(server.wait_for_code(Duration::from_secs(2)));
+        let response = reqwest::get(url_wrong).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let response = reqwest::get(url_right).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(waiting.await.unwrap().unwrap(), "callback-code");
