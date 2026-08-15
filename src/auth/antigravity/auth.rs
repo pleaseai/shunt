@@ -620,6 +620,14 @@ pub(crate) fn control_plane_metadata() -> Value {
     })
 }
 
+/// Upper bound on how much of a non-2xx body [`diagnostic_body`] reads and
+/// logs. This is a diagnostic aid, not the response the caller acts on — a
+/// hostile or merely oversized upstream must not be able to make shunt buffer
+/// an unbounded body into memory and then write all of it into a `tracing`
+/// field. A few KiB is comfortably enough to eyeball the shape of an error
+/// response (JSON error bodies from these endpoints are far smaller).
+const DIAGNOSTIC_BODY_MAX_BYTES: usize = 4096;
+
 /// Best-effort diagnostic read of a non-2xx response body for the `tracing::warn!`
 /// alongside it. An empty body, a read that errors mid-stream, and a read that
 /// times out are three different failure shapes; collapsing them all into `""`
@@ -627,15 +635,47 @@ pub(crate) fn control_plane_metadata() -> Value {
 /// This is diagnostic-only — the caller still receives a distinct [`AdapterError`]
 /// regardless of which of these three a rejected response hits.
 ///
+/// The read is capped at [`DIAGNOSTIC_BODY_MAX_BYTES`]: rather than draining
+/// the body in full with [`reqwest::Response::text`] and only truncating the
+/// string afterwards (which still buffers the whole thing), this reads chunk
+/// by chunk and stops once the cap is hit, so an oversized body is never
+/// fully buffered. A body cut short this way is marked in the returned
+/// string so the truncation itself is visible in the log line rather than
+/// looking like the response actually ended there.
+///
 /// `pub(super)` rather than private: `version.rs` and `login.rs` (siblings under
 /// `antigravity`) reuse this to drain their own non-2xx responses rather than
 /// dropping them un-drained, which would otherwise strand the reqwest
 /// connection instead of returning it to the pool.
-pub(super) async fn diagnostic_body(timeout: Duration, response: reqwest::Response) -> String {
-    match tokio::time::timeout(timeout, response.text()).await {
-        Ok(Ok(body)) if body.is_empty() => "<empty body>".to_string(),
-        Ok(Ok(body)) => body,
-        Ok(Err(error)) => format!("<error reading body: {error}>"),
+pub(super) async fn diagnostic_body(timeout: Duration, mut response: reqwest::Response) -> String {
+    let read = async {
+        let mut buf = Vec::new();
+        let mut truncated = false;
+        loop {
+            if buf.len() >= DIAGNOSTIC_BODY_MAX_BYTES {
+                truncated = true;
+                break;
+            }
+            match response.chunk().await {
+                Ok(Some(chunk)) => buf.extend_from_slice(&chunk),
+                Ok(None) => break,
+                Err(error) => return Err(format!("<error reading body: {error}>")),
+            }
+        }
+        Ok((buf, truncated))
+    };
+    match tokio::time::timeout(timeout, read).await {
+        Ok(Ok((buf, _))) if buf.is_empty() => "<empty body>".to_string(),
+        Ok(Ok((buf, truncated))) => {
+            let mut text = String::from_utf8_lossy(&buf).into_owned();
+            if truncated {
+                text.push_str(&format!(
+                    "...<truncated after {DIAGNOSTIC_BODY_MAX_BYTES} bytes>"
+                ));
+            }
+            text
+        }
+        Ok(Err(message)) => message,
         Err(_) => "<timed out reading body>".to_string(),
     }
 }
@@ -1407,5 +1447,55 @@ mod tests {
         );
         // The upstream body must not be echoed to the client.
         assert!(!body.contains("invalid_grant"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn diagnostic_body_caps_an_oversized_response_body() {
+        let server = MockServer::start().await;
+        let huge = "x".repeat(DIAGNOSTIC_BODY_MAX_BYTES * 4);
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500).set_body_string(huge.clone()))
+            .mount(&server)
+            .await;
+
+        let response = reqwest::Client::new()
+            .get(server.uri())
+            .send()
+            .await
+            .unwrap();
+        let body = diagnostic_body(Duration::from_secs(5), response).await;
+
+        // Without the cap this would be the full `huge.len()` bytes, buffered
+        // and written into the log line whole.
+        assert!(
+            body.len() < huge.len(),
+            "an oversized body must not be buffered and logged in full: got {} bytes",
+            body.len()
+        );
+        assert!(
+            body.contains("truncated"),
+            "a capped body must say so, rather than silently reading like the whole \
+             response ended there: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn diagnostic_body_returns_a_small_body_untouched() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("small error"))
+            .mount(&server)
+            .await;
+
+        let response = reqwest::Client::new()
+            .get(server.uri())
+            .send()
+            .await
+            .unwrap();
+        let body = diagnostic_body(Duration::from_secs(5), response).await;
+
+        // A body well under the cap must come through exactly, with no
+        // spurious truncation marker.
+        assert_eq!(body, "small error");
     }
 }
