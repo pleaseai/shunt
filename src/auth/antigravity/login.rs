@@ -61,6 +61,18 @@ const USERINFO_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
+/// Wall-clock budget for the one-shot client-version refresh at login.
+///
+/// `version::refresh_now` is bounded internally, but by the background
+/// refresher's `FETCH_TIMEOUT` applied to each of its two stages — up to ~20s.
+/// That is a reasonable bound for a task nobody is waiting on, and a poor one
+/// directly after a browser flow, where the operator is watching a terminal
+/// and the thing being fetched only labels the User-Agent. Five seconds buys
+/// the fresh fingerprint on any healthy network and gives up quickly
+/// otherwise; the refresh fails open, so giving up costs nothing but
+/// freshness.
+const LOGIN_VERSION_REFRESH_BUDGET: Duration = Duration::from_secs(5);
+
 const CALLBACK_CONFIG: CallbackConfig = CallbackConfig {
     label: "Antigravity",
     port: CALLBACK_PORT,
@@ -139,11 +151,21 @@ pub async fn run() -> anyhow::Result<()> {
     };
 
     // Login never starts `spawn_refresher` (that only runs from the
-    // serve/reload paths), so without this one-shot, bounded refresh the
-    // discovery call below would always send the compiled-in fallback
-    // User-Agent instead of a current one. See `version::refresh_now` for the
-    // ~20s bound and fail-open behavior.
-    super::version::refresh_now(&client).await;
+    // serve/reload paths), so without this one-shot refresh the discovery call
+    // below would always send the compiled-in fallback User-Agent instead of a
+    // current one.
+    //
+    // Bounded again here, on top of the bound inside `refresh_now`: that one is
+    // sized for the background refresher, where nobody is waiting. Here someone
+    // just finished a browser flow and is watching a terminal, so the refresh
+    // gets a short budget and no more. Discarding the result is deliberate —
+    // `refresh_now` fails open to the compiled-in version, so cutting it short
+    // costs only the freshness of a User-Agent string, never the login.
+    let _ = tokio::time::timeout(
+        LOGIN_VERSION_REFRESH_BUDGET,
+        super::version::refresh_now(&client),
+    )
+    .await;
 
     let path = default_antigravity_auth_path();
     let store = super::auth::AntigravityAuthStore::new(path.clone(), client.clone());
