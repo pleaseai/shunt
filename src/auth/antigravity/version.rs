@@ -11,7 +11,12 @@
 //!
 //! 1. **Never on the request path.** `40d6093` moved `agy` discovery off it
 //!    after a ~20s subprocess landed in front of every startup. [`current`] is
-//!    a lock read that never performs I/O; only [`spawn_refresher`] fetches.
+//!    a lock read that never performs I/O; only [`spawn_refresher`] and
+//!    [`refresh_now`] fetch. The former runs in the background on a TTL and is
+//!    never awaited; the latter is a bounded one-shot for `shunt login
+//!    antigravity`, which resolves the Code Assist project during login
+//!    itself (see `login.rs`) rather than on the request path, and so needs a
+//!    fresh version *before* that call, not eventually.
 //! 2. **Fail open.** A failed, slow, or malformed manifest response leaves the
 //!    last known good version in place, and the compiled-in [`FALLBACK_VERSION`]
 //!    is what a cold process uses. There is no state in which the User-Agent is
@@ -146,6 +151,37 @@ pub fn spawn_refresher(client: reqwest::Client) {
     });
 }
 
+/// One-shot version refresh for a caller that needs today's value *now*,
+/// rather than eventually from [`spawn_refresher`]'s background poller.
+///
+/// `shunt login antigravity` is the one caller: it resolves the Code Assist
+/// project during login itself (see `login.rs`), and login never starts
+/// `spawn_refresher` (that only runs from the `serve`/`reload` paths), so
+/// without this the discovery/onboarding calls it makes would always send
+/// the compiled-in [`FALLBACK_VERSION`], never a refreshed one. Spawning the
+/// background refresher instead and racing it would not help: it is
+/// fire-and-forget by design, so login would have nothing to await.
+///
+/// Bounded by the same [`FETCH_TIMEOUT`] that already governs
+/// [`fetch_version`]'s two stages (the request and the body read), so this
+/// adds at most ~2 * `FETCH_TIMEOUT` = 20s to a login — the existing bound,
+/// not a new one. Fail-open, matching the rest of this module: a failed
+/// fetch leaves the cache untouched and this returns whatever was already in
+/// it (the compiled-in fallback, on a cold process), exactly as if it had
+/// never been called. Never blocks the login on a manifest outage.
+pub(crate) async fn refresh_now(client: &reqwest::Client) -> String {
+    refresh_now_from(client, MANIFEST_URL).await
+}
+
+/// [`refresh_now`] with an injectable URL, so tests can point it at a mock
+/// server instead of the real manifest endpoint.
+async fn refresh_now_from(client: &reqwest::Client, url: &str) -> String {
+    if let Some(version) = fetch_version(client, url).await {
+        store(version);
+    }
+    current()
+}
+
 /// How long to wait before the next refresh attempt: the full TTL half-life
 /// after a successful fetch, or [`FAILED_FETCH_RETRY_INTERVAL`] after a failed
 /// one so an outage does not leave the fingerprint stale for hours.
@@ -278,6 +314,16 @@ pub(crate) fn is_refresher_started() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Serializes tests that read or write the module-global version cache
+    /// (`cache()`/`store()`/`current()`). Rust runs tests in the same
+    /// process across a thread pool by default, and that cache has no
+    /// per-test isolation, so a test that stores a real fetched version
+    /// could otherwise race a concurrent test asserting the cache is still
+    /// at its cold-start `FALLBACK_VERSION`. Tokio's mutex, not std's,
+    /// because the guard needs to stay held across the `.await`s in the test
+    /// bodies below.
+    static VERSION_CACHE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     #[test]
     fn parses_version_from_a_manifest() {
@@ -420,6 +466,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_fetch_returns_none_rather_than_an_empty_version() {
+        let _guard = VERSION_CACHE_LOCK.lock().await;
         use wiremock::matchers::method;
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -435,6 +482,54 @@ mod tests {
         );
         // The advertised version is unchanged by the failure.
         assert_eq!(current(), FALLBACK_VERSION);
+    }
+
+    #[tokio::test]
+    async fn refresh_now_leaves_the_cache_untouched_on_a_manifest_outage() {
+        // The `shunt login antigravity` one-shot must be fail-open exactly
+        // like the background refresher: a manifest outage returns whatever
+        // was already cached instead of blocking or erroring.
+        let _guard = VERSION_CACHE_LOCK.lock().await;
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let before = current();
+        let result = refresh_now_from(&reqwest::Client::new(), &server.uri()).await;
+        assert_eq!(result, before);
+        assert_eq!(current(), before);
+    }
+
+    #[tokio::test]
+    async fn refresh_now_populates_the_cache_that_user_agent_reads() {
+        // This is the property `shunt login antigravity` depends on: a
+        // successful one-shot fetch must land in the same cache
+        // `user_agent()`/`current()` read, not just be returned to the
+        // caller, or the discover_project call login.rs makes right after it
+        // would still see the stale fallback.
+        let _guard = VERSION_CACHE_LOCK.lock().await;
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("version: 9.9.9-test\n"))
+            .mount(&server)
+            .await;
+
+        let result = refresh_now_from(&reqwest::Client::new(), &server.uri()).await;
+        assert_eq!(result, "9.9.9-test");
+        assert_eq!(current(), "9.9.9-test");
+        assert!(user_agent().contains("9.9.9-test"));
+
+        // Restore the cold-start value so later tests (and reruns of this
+        // one) still observe the compiled-in fallback.
+        store(FALLBACK_VERSION.to_string());
     }
 
     #[test]

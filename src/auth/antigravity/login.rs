@@ -138,6 +138,13 @@ pub async fn run() -> anyhow::Result<()> {
         project_id: None,
     };
 
+    // Login never starts `spawn_refresher` (that only runs from the
+    // serve/reload paths), so without this one-shot, bounded refresh the
+    // discovery call below would always send the compiled-in fallback
+    // User-Agent instead of a current one. See `version::refresh_now` for the
+    // ~20s bound and fail-open behavior.
+    super::version::refresh_now(&client).await;
+
     let path = default_antigravity_auth_path();
     let store = super::auth::AntigravityAuthStore::new(path.clone(), client.clone());
     match store.discover_project(&stored.access_token).await {
