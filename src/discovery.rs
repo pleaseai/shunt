@@ -177,6 +177,10 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             upstream::InboundCredentialContext {
                 static_auth: state.inbound_auth.as_deref(),
                 gateway_auth: state.gateway_auth.as_deref(),
+                admin_credentials: state
+                    .admin_auth
+                    .as_deref()
+                    .map(crate::admin::AdminAuth::credentials),
             },
         )
         .await
@@ -433,5 +437,100 @@ mod tests {
     fn router_includes_get_models_route() {
         let (_router, _shared, _state) =
             server::build_router(crate::config::Config::default()).unwrap();
+    }
+
+    const ADMIN_WRITE_KEY: &str = "admin-write-key-0123456789abcdef0";
+
+    /// A passthrough anthropic upstream that answers `/v1/models` with an id
+    /// the builtin catalog has never heard of, plus a state whose
+    /// `[server.admin]` holds [`ADMIN_WRITE_KEY`]. The distinctive id is the
+    /// probe: it can only appear in the response if the caller's `x-api-key`
+    /// was forwarded upstream.
+    ///
+    /// `[server.admin]` is configured through the `Config`, not by assigning
+    /// `state.admin_auth`: `get` opens with `state.refreshed()`, which
+    /// re-snapshots every resolved auth from the shared runtime state, so a
+    /// hand-set field would be silently dropped before the handler reads it.
+    async fn admin_state_with_probe_upstream() -> (wiremock::MockServer, AppState) {
+        use wiremock::{
+            matchers::{method, path},
+            Mock, MockServer, ResponseTemplate,
+        };
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": [{"type": "model", "id": "claude-only-upstream-knows"}],
+                "has_more": false,
+                "first_id": "claude-only-upstream-knows",
+                "last_id": "claude-only-upstream-knows"
+            })))
+            .mount(&server)
+            .await;
+
+        let mut config = crate::config::Config::default();
+        let anthropic = config.providers.get_mut("anthropic").unwrap();
+        anthropic.base_url = server.uri();
+        anthropic.auth = crate::config::AuthMode::Passthrough;
+        config.server.admin = Some(crate::config::AdminConfig {
+            header: "x-shunt-admin".to_string(),
+            // Empty so an ambient `SHUNT_ADMIN_TOKENS` cannot add a credential
+            // this test does not know about; the write key is the only one.
+            tokens_env: String::new(),
+            tokens_file: None,
+            write_keys: vec![crate::config::AdminKey {
+                id: "writer".to_string(),
+                key: crate::config::Secret::from(ADMIN_WRITE_KEY),
+            }],
+            read_keys: Vec::new(),
+            session_ttl_secs: 3600,
+            pending_ttl_secs: 600,
+            oidc: None,
+        });
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+        (server, state)
+    }
+
+    async fn model_ids(response: axum::response::Response) -> Vec<String> {
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["id"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn get_models_does_not_relay_an_admin_credential_to_the_upstream() {
+        // Pins the wiring, not just the predicate: `get` has to hand the
+        // resolved admin keyring to `upstream::fetch`, or the strip rule
+        // `upstream.rs` implements never sees an admin credential on this path.
+        let (server, state) = admin_state_with_probe_upstream().await;
+        let mut headers = HeaderMap::new();
+        headers.insert("x-api-key", ADMIN_WRITE_KEY.parse().unwrap());
+
+        let ids = model_ids(get(State(state), headers).await).await;
+
+        assert!(!ids.contains(&"claude-only-upstream-knows".to_string()));
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_models_still_relays_a_caller_key_with_admin_configured() {
+        // Non-vacuity control for the test above: the same state and upstream,
+        // varying only whether the presented value is an admin credential.
+        let (server, state) = admin_state_with_probe_upstream().await;
+        let mut headers = HeaderMap::new();
+        headers.insert("x-api-key", "sk-ant-genuine-upstream-key".parse().unwrap());
+
+        let ids = model_ids(get(State(state), headers).await).await;
+
+        assert!(ids.contains(&"claude-only-upstream-knows".to_string()));
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
 }

@@ -11,6 +11,7 @@ use crate::{
         anthropic::AnthropicAdapter, cursor::CursorAdapter, responses::ResponsesAdapter, Adapter,
         AdapterError, AdapterFailure,
     },
+    admin::AdminAuth,
     auth::inbound::{authorization_consumed_by, consumed_by, ConsumedBy},
     config::{AuthMode, CountTokens, ProviderKind},
     count_tokens,
@@ -500,6 +501,13 @@ fn check_inbound_auth(
     if let Some(auth) = &state.inbound_auth {
         forwarded.remove(auth.header());
     }
+    // The admin credential header is likewise a slot shunt consumes, and
+    // `[server.admin] header` is free-form exactly like `[server.auth] header`.
+    // Its *value* is stripped from `authorization`/`x-api-key` per slot in
+    // `headers_for_route`; the dedicated header is removed outright here.
+    if let Some(admin) = &state.admin_auth {
+        forwarded.remove(admin.header());
+    }
 
     let gateway_claims = state
         .gateway_auth
@@ -582,24 +590,28 @@ fn headers_for_route(
         // single-upstream hot path).
         //
         // Within a same-origin attempt, each retained slot is also checked *by
-        // value*, independently, against both of shunt's own inbound
-        // credentials — the gateway JWT and a configured static
-        // `[server.auth]` token — and stripped only if it holds one, never
+        // value*, independently, against all three of shunt's own inbound
+        // credentials — the gateway JWT, a configured static `[server.auth]`
+        // token, and a `[server.admin]` credential — and stripped only if it
+        // holds one, never
         // both slots just because one of them does. `authorization` and
         // `x-api-key` are the two slots an `apiKeyHelper` can fill (it fills
-        // both), so either of shunt's own credentials can land in either or
+        // both), so any of shunt's own credentials can land in either or
         // both, beside a genuine upstream credential in the other slot that
         // must keep flowing. `check_inbound_auth`'s auth gate authenticates
         // once for the whole route chain, so a chain mixing mapped and
         // passthrough routes can still reach this branch same-origin with a
-        // shunt-owned credential in one of these slots. A dedicated
+        // shunt-owned credential in one of these slots. An admin credential
+        // reaches these slots because the admin surface accepts one in
+        // `x-api-key` beside its own header, and it is the highest-value of
+        // the three: it can provision upstream accounts. A dedicated
         // `x-shunt-token` header remains a good operational habit — it keeps
         // `authorization`/`x-api-key` free for the caller's real credential
         // without needing this per-value check at all (`docs/m4-inbound-auth.md`
         // §2) — but it is no longer the only thing standing between a static
         // token and the upstream: `is_consumed_by_shunt` (shared with
-        // `discovery/upstream.rs`) is applied to both slots for both
-        // credential kinds, so a static token delivered through a
+        // `discovery/upstream.rs`) is applied to both slots for every
+        // credential kind, so a static token delivered through a
         // rotating-credential mechanism like `apiKeyHelper` is stripped here
         // too.
         let mut headers = base.clone();
@@ -617,10 +629,12 @@ fn headers_for_route(
             );
             return headers;
         }
+        let admin_credentials = state.admin_auth.as_deref().map(AdminAuth::credentials);
         if let Some(reason) = authorization_consumed_by(
             &headers,
             state.gateway_auth.as_deref(),
             state.inbound_auth.as_deref(),
+            admin_credentials,
         ) {
             headers.remove("authorization");
             tracing::debug!(
@@ -635,6 +649,7 @@ fn headers_for_route(
                 value.as_bytes(),
                 state.gateway_auth.as_deref(),
                 state.inbound_auth.as_deref(),
+                admin_credentials,
             )
         }) {
             headers.remove("x-api-key");
@@ -704,6 +719,7 @@ fn reason_label(reason: ConsumedBy) -> &'static str {
     match reason {
         ConsumedBy::GatewayJwt => "gateway_jwt",
         ConsumedBy::StaticToken => "static_token",
+        ConsumedBy::AdminCredential => "admin_credential",
     }
 }
 

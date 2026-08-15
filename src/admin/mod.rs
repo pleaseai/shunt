@@ -27,7 +27,7 @@ use std::{collections::HashSet, io, sync::Arc, time::Duration};
 
 use axum::{
     extract::{rejection::JsonRejection, Path, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{header, HeaderMap, HeaderName, StatusCode},
     response::{IntoResponse, Response},
     routing::{delete, get, post},
     Form, Json, Router,
@@ -38,7 +38,7 @@ use serde_json::{json, Value};
 use crate::{
     auth::{
         claude::{auth as claude_auth, login as claude_login, store as claude_store},
-        inbound::{constant_time_eq, InboundAuth},
+        inbound::constant_time_eq,
         observation::{self, ObservedCredential, ObservedProvider},
     },
     config::{AdminAccess, AdminCredential, AdminKeyring, AuthMode},
@@ -52,19 +52,21 @@ use session::{PendingAttempt, PendingKind};
 
 const SESSION_COOKIE: &str = "shunt_admin_session";
 
-/// Resolved admin credential plus session/pending lifetimes. Held in
-/// `RuntimeState` (hot-reloaded so token edits apply); the session and pending
-/// stores live in `AppState` (process lifetime). The token check reuses the
+/// Resolved admin credentials plus session/pending lifetimes. Held in
+/// `RuntimeState` (hot-reloaded so credential edits apply); the session and
+/// pending stores live in `AppState` (process lifetime). Matching reuses the
 /// inbound-auth constant-time compare.
-/// No `Debug`: `InboundAuth` holds the raw admin token values, so a derived
-/// `Debug` would risk leaking them (matches the secret-carrying `PendingLogin`).
+/// No `Debug` derive: it would be safe today (the keyring holds `Secret`s), but
+/// the type is the one place resolved admin credentials live, so keep it
+/// unprintable by construction (matches the secret-carrying `PendingLogin`).
 #[derive(Clone)]
 pub struct AdminAuth {
-    /// `tokens_env`/`tokens_file` pairs: the write tier, since full access is
-    /// read plus write.
-    inbound: InboundAuth,
-    /// `[[server.admin.write_keys]]`/`[[server.admin.read_keys]]`.
-    keyring: AdminKeyring,
+    /// The credential header configured by `[server.admin] header`. `x-api-key`
+    /// is accepted alongside it; see [`Self::authenticate_credential`].
+    header: HeaderName,
+    /// Every resolved credential: the `tokens_env`/`tokens_file` pairs and both
+    /// key arrays.
+    credentials: AdminKeyring,
     session_ttl: Duration,
     pending_ttl: Duration,
     oidc: Option<Arc<crate::gateway::ResolvedIdp>>,
@@ -72,10 +74,15 @@ pub struct AdminAuth {
 }
 
 impl AdminAuth {
-    pub fn new(inbound: InboundAuth, session_ttl: Duration, pending_ttl: Duration) -> Self {
+    pub fn new(
+        header: HeaderName,
+        credentials: AdminKeyring,
+        session_ttl: Duration,
+        pending_ttl: Duration,
+    ) -> Self {
         Self {
-            inbound,
-            keyring: AdminKeyring::default(),
+            header,
+            credentials,
             session_ttl,
             pending_ttl,
             oidc: None,
@@ -83,9 +90,19 @@ impl AdminAuth {
         }
     }
 
-    pub fn with_keyring(mut self, keyring: AdminKeyring) -> Self {
-        self.keyring = keyring;
-        self
+    /// The configured credential header. `check_inbound_auth` removes it from
+    /// the forwarded header set, mirroring what it does for `[server.auth]`:
+    /// this slot is one shunt consumes, so its value must never go upstream.
+    pub(crate) fn header(&self) -> &HeaderName {
+        &self.header
+    }
+
+    /// The resolved credential table, for the outbound strip predicate
+    /// (`crate::auth::inbound::consumed_by`). Exposed as the keyring rather
+    /// than as `AdminAuth` so `auth::inbound` does not have to depend on the
+    /// admin surface.
+    pub(crate) fn credentials(&self) -> &AdminKeyring {
+        &self.credentials
     }
 
     pub fn with_oidc(mut self, public_url: String, idp: crate::gateway::ResolvedIdp) -> Self {
@@ -127,11 +144,16 @@ impl AdminAuth {
     /// caller's *Anthropic* credential slot and must never authenticate an
     /// admin credential.
     ///
+    /// Whatever this accepts, `crate::auth::inbound::consumed_by` strips from
+    /// the same slot before anything is forwarded upstream — the strip
+    /// predicate is the mirror of this one, and both read
+    /// [`Self::credentials`].
+    ///
     /// Privilege is the explicit maximum over every set that matched, so
     /// scanning order cannot change it. Every slot is compared against every
     /// set with no early exit.
     pub(crate) fn authenticate_credential(&self, headers: &HeaderMap) -> Option<AdminCredential> {
-        let slots = [self.inbound.header().as_str(), "x-api-key"];
+        let slots = [self.header.as_str(), "x-api-key"];
         let mut matched: Option<AdminCredential> = None;
         for slot in slots {
             let Some(presented) = headers.get(slot).map(|value| value.as_bytes()) else {
@@ -146,21 +168,12 @@ impl AdminAuth {
     /// [`Self::authenticate_credential`], for values that did not come from a
     /// header (the login form).
     fn authenticate_value(&self, presented: &[u8]) -> Option<AdminCredential> {
-        let token = self
-            .inbound
-            .authenticate_value(presented)
-            .map(|name| AdminCredential {
-                access: AdminAccess::Write,
-                actor: format!("admin-token:{name}"),
-            });
-        let key = self
-            .keyring
+        self.credentials
             .lookup(presented)
-            .map(|(access, id)| AdminCredential {
+            .map(|(access, actor)| AdminCredential {
                 access,
-                actor: format!("admin-key:{id}"),
-            });
-        keep_higher(token, key)
+                actor: actor.to_string(),
+            })
     }
 
     /// Whether a raw token (from the login form) may mint a browser session.

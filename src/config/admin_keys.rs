@@ -56,45 +56,74 @@ pub struct AdminCredential {
     pub actor: String,
 }
 
-/// The resolved array keyring consulted on every admin and spend-limit
-/// request. Built by `AdminConfig::resolve` once the arrays have passed
-/// [`validate_key_arrays`] and [`check_key_uniqueness`], so no entry here can
-/// be blank, too short, or ambiguous with another set.
+/// One resolved credential in the keyring: what it may do, the audit actor it
+/// is recorded as, and the key material itself.
+#[derive(Debug, Clone)]
+struct AdminKeyEntry {
+    access: AdminAccess,
+    actor: String,
+    key: Secret,
+}
+
+/// Every credential `[server.admin]` resolved — the `tokens_env`/`tokens_file`
+/// pairs *and* both key arrays — in one place, consulted on every admin and
+/// spend-limit request and by the outbound strip predicate
+/// (`crate::auth::inbound::consumed_by`). Built by `AdminConfig::resolve` once
+/// the arrays have passed [`validate_key_arrays`] and [`check_key_uniqueness`],
+/// so no entry here can be blank, too short, or ambiguous with another set.
+///
+/// It is the single source of truth for "is this value an admin credential":
+/// the accept path (`AdminAuth::authenticate_credential`) and the strip path
+/// must agree, or a credential shunt accepts in a slot would be forwarded
+/// upstream from that same slot.
 #[derive(Debug, Clone, Default)]
 pub struct AdminKeyring {
-    entries: Vec<(AdminAccess, String, Secret)>,
+    entries: Vec<AdminKeyEntry>,
 }
 
 impl AdminKeyring {
-    pub(crate) fn new(write_keys: &[AdminKey], read_keys: &[AdminKey]) -> Self {
-        let entries = write_keys
+    /// `tokens` are the legacy `name:token` pairs: the write tier, recorded as
+    /// `admin-token:<name>`. Array entries are recorded as `admin-key:<id>`.
+    pub(crate) fn new(
+        tokens: &[(String, String)],
+        write_keys: &[AdminKey],
+        read_keys: &[AdminKey],
+    ) -> Self {
+        let token_entries = tokens.iter().map(|(name, token)| AdminKeyEntry {
+            access: AdminAccess::Write,
+            actor: format!("admin-token:{name}"),
+            key: Secret::from(token.as_str()),
+        });
+        let array_entries = write_keys
             .iter()
-            .map(|entry| (AdminAccess::Write, entry.clone()))
-            .chain(
-                read_keys
-                    .iter()
-                    .map(|entry| (AdminAccess::Read, entry.clone())),
-            )
-            .map(|(access, entry)| (access, entry.id, entry.key))
-            .collect();
-        Self { entries }
+            .map(|entry| (AdminAccess::Write, entry))
+            .chain(read_keys.iter().map(|entry| (AdminAccess::Read, entry)))
+            .map(|(access, entry)| AdminKeyEntry {
+                access,
+                actor: format!("admin-key:{}", entry.id),
+                key: entry.key.clone(),
+            });
+        Self {
+            entries: token_entries.chain(array_entries).collect(),
+        }
     }
 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
-    /// The highest access level `presented` matches, with the id it matched
-    /// under. Every entry is compared with no early exit, so timing does not
-    /// reveal which key matched, and the result is an explicit maximum over the
-    /// whole keyring: reordering the arrays cannot change a credential's
-    /// privilege. Values are unique across every set (`check_key_uniqueness`),
-    /// so at most one entry can match and the tie-break on `id` is unreachable.
+    /// The highest access level `presented` matches, with the audit actor it
+    /// matched as. Every entry is compared with no early exit, so timing does
+    /// not reveal which credential matched, and the result is an explicit
+    /// maximum over the whole keyring: reordering the sets cannot change a
+    /// credential's privilege. Values are unique across every set
+    /// (`check_key_uniqueness`), so at most one entry can match and the
+    /// tie-break on the actor string is unreachable.
     pub fn lookup(&self, presented: &[u8]) -> Option<(AdminAccess, &str)> {
         let mut matched: Option<(AdminAccess, &str)> = None;
-        for (access, id, key) in &self.entries {
-            if constant_time_eq(presented, key.expose().as_bytes()) {
-                let candidate = (*access, id.as_str());
+        for entry in &self.entries {
+            if constant_time_eq(presented, entry.key.expose().as_bytes()) {
+                let candidate = (entry.access, entry.actor.as_str());
                 matched = Some(match matched {
                     Some(existing) => std::cmp::max(existing, candidate),
                     None => candidate,
@@ -102,6 +131,13 @@ impl AdminKeyring {
             }
         }
         matched
+    }
+
+    /// Whether `presented` is an admin credential of any tier. Used by the
+    /// outbound strip predicate, which only needs the yes/no answer — a read
+    /// key must be stripped just as a write key is.
+    pub fn contains(&self, presented: &[u8]) -> bool {
+        self.lookup(presented).is_some()
     }
 }
 
@@ -201,28 +237,40 @@ mod tests {
         let write = vec![key("dual", A)];
         let read = vec![key("dual", A)];
         assert_eq!(
-            AdminKeyring::new(&write, &read).lookup(A.as_bytes()),
-            Some((AdminAccess::Write, "dual"))
+            AdminKeyring::new(&[], &write, &read).lookup(A.as_bytes()),
+            Some((AdminAccess::Write, "admin-key:dual"))
         );
         // Feeding the sets in the other order must not change the answer.
         assert_eq!(
-            AdminKeyring::new(&read, &write).lookup(A.as_bytes()),
-            Some((AdminAccess::Write, "dual"))
+            AdminKeyring::new(&[], &read, &write).lookup(A.as_bytes()),
+            Some((AdminAccess::Write, "admin-key:dual"))
         );
     }
 
     #[test]
-    fn lookup_returns_the_matching_tier_and_id() {
-        let keyring = AdminKeyring::new(&[key("terraform", A)], &[key("reporting", B)]);
+    fn lookup_returns_the_matching_tier_and_actor() {
+        let tokens = vec![("ops".to_string(), "ops-token-value".to_string())];
+        let keyring = AdminKeyring::new(&tokens, &[key("terraform", A)], &[key("reporting", B)]);
         assert_eq!(
             keyring.lookup(A.as_bytes()),
-            Some((AdminAccess::Write, "terraform"))
+            Some((AdminAccess::Write, "admin-key:terraform"))
         );
         assert_eq!(
             keyring.lookup(B.as_bytes()),
-            Some((AdminAccess::Read, "reporting"))
+            Some((AdminAccess::Read, "admin-key:reporting"))
+        );
+        // A legacy `tokens_env` pair is the write tier, attributed by name.
+        assert_eq!(
+            keyring.lookup(b"ops-token-value"),
+            Some((AdminAccess::Write, "admin-token:ops"))
         );
         assert_eq!(keyring.lookup(b"nonsense"), None);
+        // `contains` is the strip predicate's view of the same table: every
+        // tier counts, the read tier included.
+        assert!(keyring.contains(A.as_bytes()));
+        assert!(keyring.contains(B.as_bytes()));
+        assert!(keyring.contains(b"ops-token-value"));
+        assert!(!keyring.contains(b"a-genuine-upstream-key"));
     }
 
     #[test]

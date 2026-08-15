@@ -1,9 +1,11 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::http::{HeaderMap, HeaderName, HeaderValue};
 
+use crate::admin::AdminAuth;
 use crate::auth::inbound::{is_consumed_by_shunt, InboundAuth};
-use crate::config::{AuthMode, Config};
+use crate::config::{AdminKey, AdminKeyring, AuthMode, Config, Secret};
 use crate::gateway::{approval::Identity, jwt, GatewayAuth};
 use crate::routing::{AdapterKind, Route};
 use crate::server::AppState;
@@ -267,7 +269,8 @@ fn non_utf8_x_api_key_is_not_shunts_gateway_jwt_and_is_forwarded() {
     assert!(!is_consumed_by_shunt(
         non_utf8.as_bytes(),
         state.gateway_auth.as_deref(),
-        state.inbound_auth.as_deref()
+        state.inbound_auth.as_deref(),
+        None
     ));
 
     let mut headers = HeaderMap::new();
@@ -516,4 +519,187 @@ fn garbage_three_segment_string_is_not_treated_as_shunts_and_is_forwarded() {
     let result = headers_for_route(&state, &passthrough_route(), &headers, &inbound, true, None);
 
     assert_eq!(result.get("x-api-key").unwrap(), "a.b.c");
+}
+
+// --- Admin credentials (#346) ------------------------------------------------
+//
+// Making `x-api-key` an accepted admin slot (`AdminAuth::authenticate_credential`)
+// widens what shunt itself consumes, so the strip predicate has to widen with it:
+// whatever slot and shape can authenticate an admin credential must be stripped
+// in that same slot and shape before anything goes upstream. Admin credentials
+// provision upstream accounts, so forwarding one verbatim to a provider is a
+// strictly worse leak than the static-token case above.
+
+const ADMIN_TOKEN: &str = "admin-legacy-token-0123456789abcd";
+const ADMIN_WRITE_KEY: &str = "admin-write-key-0123456789abcdef0";
+const ADMIN_READ_KEY: &str = "admin-read-key-0123456789abcdef01";
+
+/// A resolved admin keyring holding one credential of each of the three kinds
+/// `AdminKeyring` can authenticate, under `header`. The header name matters:
+/// `[server.admin] header` is free-form and may even be `authorization`, which
+/// is what the `authorization`-slot tests below configure.
+fn admin_auth_with_header(header: &'static str) -> AdminAuth {
+    AdminAuth::new(
+        HeaderName::from_static(header),
+        AdminKeyring::new(
+            &[("ops".to_string(), ADMIN_TOKEN.to_string())],
+            &[AdminKey {
+                id: "writer".to_string(),
+                key: Secret::from(ADMIN_WRITE_KEY),
+            }],
+            &[AdminKey {
+                id: "reader".to_string(),
+                key: Secret::from(ADMIN_READ_KEY),
+            }],
+        ),
+        Duration::from_secs(3600),
+        Duration::from_secs(600),
+    )
+}
+
+/// Like [`state`], but with `[server.admin]` resolved under `header`.
+fn state_with_admin_auth(header: &'static str) -> AppState {
+    let mut state = state();
+    state.admin_auth = Some(Arc::new(admin_auth_with_header(header)));
+    state
+}
+
+/// The mirror of [`mixed_slot_headers`]: the credential under test sits in
+/// `x-api-key` while the caller's genuine upstream key sits in `Authorization`,
+/// so a request-level strip decision would take the genuine one down with it.
+fn admin_in_api_key_slot(credential: &str) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "authorization",
+        format!("Bearer {GENUINE_UPSTREAM_KEY}").parse().unwrap(),
+    );
+    headers.insert("x-api-key", credential.parse().unwrap());
+    headers
+}
+
+/// Assert what [`admin_in_api_key_slot`] is built to detect: only the slot
+/// holding the admin credential was stripped.
+fn assert_only_api_key_slot_stripped(result: &HeaderMap) {
+    assert!(result.get("x-api-key").is_none());
+    assert_eq!(
+        result.get("authorization").unwrap(),
+        format!("Bearer {GENUINE_UPSTREAM_KEY}").as_str()
+    );
+}
+
+#[test]
+fn same_origin_passthrough_strips_an_admin_token_in_the_api_key_slot() {
+    let state = state_with_admin_auth("x-shunt-admin");
+    let headers = admin_in_api_key_slot(ADMIN_TOKEN);
+    let inbound = context_for(&state, &headers);
+
+    let result = headers_for_route(&state, &passthrough_route(), &headers, &inbound, true, None);
+
+    assert_only_api_key_slot_stripped(&result);
+}
+
+#[test]
+fn same_origin_passthrough_strips_an_admin_write_key_in_the_api_key_slot() {
+    let state = state_with_admin_auth("x-shunt-admin");
+    let headers = admin_in_api_key_slot(ADMIN_WRITE_KEY);
+    let inbound = context_for(&state, &headers);
+
+    let result = headers_for_route(&state, &passthrough_route(), &headers, &inbound, true, None);
+
+    assert_only_api_key_slot_stripped(&result);
+}
+
+#[test]
+fn same_origin_passthrough_strips_an_admin_read_key_in_the_api_key_slot() {
+    // A read key authenticates the admin GETs, so it is just as much a shunt
+    // credential as the write tiers — enumerating only the write sets would
+    // leave this one forwarded upstream.
+    let state = state_with_admin_auth("x-shunt-admin");
+    let headers = admin_in_api_key_slot(ADMIN_READ_KEY);
+    let inbound = context_for(&state, &headers);
+
+    let result = headers_for_route(&state, &passthrough_route(), &headers, &inbound, true, None);
+
+    assert_only_api_key_slot_stripped(&result);
+}
+
+#[test]
+fn same_origin_passthrough_strips_an_admin_credential_in_the_authorization_slot() {
+    // `[server.admin] header = "authorization"` is legal — `InvalidAdminHeader`
+    // only checks the name parses — so the admin credential arrives in the
+    // `authorization` slot in both shapes `AdminAuth` accepts: the bare value
+    // (what the configured header carries) and `Bearer <value>`.
+    for shape in [
+        ADMIN_WRITE_KEY.to_string(),
+        format!("Bearer {ADMIN_WRITE_KEY}"),
+    ] {
+        let state = state_with_admin_auth("authorization");
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", shape.parse().unwrap());
+        headers.insert("x-api-key", GENUINE_UPSTREAM_KEY.parse().unwrap());
+        let inbound = context_for(&state, &headers);
+
+        let result =
+            headers_for_route(&state, &passthrough_route(), &headers, &inbound, true, None);
+
+        assert_only_bearer_slot_stripped(&result);
+    }
+}
+
+#[test]
+fn same_origin_passthrough_keeps_a_genuine_credential_with_no_admin_configured() {
+    // Non-vacuity control #1 for the four tests above: without `[server.admin]`
+    // resolved at all, the same slots carry the caller's own credential through
+    // untouched, so those tests cannot be passing because everything is
+    // stripped.
+    let state = state();
+    let headers = admin_in_api_key_slot(GENUINE_UPSTREAM_KEY);
+    let inbound = context_for(&state, &headers);
+
+    let result = headers_for_route(&state, &passthrough_route(), &headers, &inbound, true, None);
+
+    assert_eq!(result.get("x-api-key").unwrap(), GENUINE_UPSTREAM_KEY);
+    assert_eq!(
+        result.get("authorization").unwrap(),
+        format!("Bearer {GENUINE_UPSTREAM_KEY}").as_str()
+    );
+}
+
+#[test]
+fn same_origin_passthrough_keeps_an_unrelated_value_with_admin_configured() {
+    // Non-vacuity control #2: configuring `[server.admin]` must not itself
+    // cause stripping — only a slot whose *value* is one of the three admin
+    // credential sets does. This varies only the admin-credential-ness
+    // dimension relative to the tests above.
+    let state = state_with_admin_auth("x-shunt-admin");
+    let headers = admin_in_api_key_slot(GENUINE_UPSTREAM_KEY);
+    let inbound = context_for(&state, &headers);
+
+    let result = headers_for_route(&state, &passthrough_route(), &headers, &inbound, true, None);
+
+    assert_eq!(result.get("x-api-key").unwrap(), GENUINE_UPSTREAM_KEY);
+    assert_eq!(
+        result.get("authorization").unwrap(),
+        format!("Bearer {GENUINE_UPSTREAM_KEY}").as_str()
+    );
+}
+
+#[test]
+fn check_inbound_auth_removes_the_configured_admin_header() {
+    // The dedicated `[server.admin]` header is a slot shunt consumes, so it is
+    // dropped outright before forwarding, exactly like the `[server.auth]` one.
+    // The caller's own credentials in the other slots are untouched, which is
+    // what distinguishes "removed the admin header" from "removed everything".
+    let state = state_with_admin_auth("x-shunt-admin");
+    let mut headers = caller_headers();
+    headers.insert("x-shunt-admin", ADMIN_WRITE_KEY.parse().unwrap());
+
+    let (forwarded, _) = check_inbound_auth(&state, &[passthrough_route()], &headers)
+        .unwrap_or_else(|error| {
+            panic!("check_inbound_auth rejected the request: {}", error.message)
+        });
+
+    assert!(forwarded.get("x-shunt-admin").is_none());
+    assert_eq!(forwarded.get("authorization").unwrap(), "Bearer caller");
+    assert_eq!(forwarded.get("x-api-key").unwrap(), "caller");
 }

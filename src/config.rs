@@ -527,11 +527,11 @@ impl AdminConfig {
         admin_keys::check_key_uniqueness(&tokens, &self.write_keys, &self.read_keys)?;
         admin_keys::warn_short_tokens(&tokens, &source);
         let mut auth = crate::admin::AdminAuth::new(
-            crate::auth::inbound::InboundAuth::new(header, tokens),
+            header,
+            AdminKeyring::new(&tokens, &self.write_keys, &self.read_keys),
             std::time::Duration::from_secs(self.session_ttl_secs),
             std::time::Duration::from_secs(self.pending_ttl_secs),
-        )
-        .with_keyring(AdminKeyring::new(&self.write_keys, &self.read_keys));
+        );
         if let Some(oidc) = &self.oidc {
             let public_url = resolve_public_origin(&oidc.public_url, |message| {
                 ConfigError::InvalidAdminOidc { message }
