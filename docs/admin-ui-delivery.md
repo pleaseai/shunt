@@ -115,7 +115,7 @@ re-login.
 
 Enumerating all five matters because the list is the audit scope for any future
 shared-store work: a lease design that covers only Claude and Codex would leave
-the other three racy across replicas while looking complete. `src/auth/xai/auth.rs:29-33`
+the other three racy across replicas while looking complete. `src/auth/xai/auth.rs:48-52`
 also states the assumption in code rather than leaving it to this document —
 "Cross-process races are out of scope — shunt owns the file and one gateway
 process is the norm."
