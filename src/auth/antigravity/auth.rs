@@ -353,6 +353,23 @@ impl AntigravityAuthStore {
             })?;
         let mut cache = self.project_cache.write().await;
         *cache = Some(project.clone());
+        drop(cache);
+
+        // Persist the discovered id to disk (preserving every other field), not
+        // just the in-memory cache: `resolve_credential` builds a fresh store
+        // per request, so without this every request from a project-less
+        // credential would keep re-discovering until a login happened to write
+        // one. Best-effort — a write failure here must not fail a request that
+        // already has a working access token and project id in hand.
+        let mut persisted = stored.clone();
+        persisted.project_id = Some(project.clone());
+        if let Err(error) = self.write(&persisted).await {
+            tracing::warn!(
+                "failed to persist discovered Antigravity project id: {}",
+                error.message
+            );
+        }
+
         Ok(project)
     }
 
@@ -909,6 +926,55 @@ mod tests {
         assert_eq!(cred.access_token, "live-token");
         // The persisted project id keeps discovery off the request path.
         assert_eq!(cred.project_id, "proj-cached");
+    }
+
+    #[tokio::test]
+    async fn discovered_project_id_is_persisted_and_avoids_rediscovery() {
+        // Exactly one discovery call is allowed: a second call from a fresh
+        // store reading the same file would prove the persistence write did
+        // not actually land.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1internal:loadCodeAssist"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"cloudaicompanionProject": "proj-discovered"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let path_buf = temp_auth_file("persist_discovery");
+        write(
+            &path_buf,
+            &StoredAuth {
+                access_token: "live-token".to_string(),
+                refresh_token: "refresh".to_string(),
+                expiry_date: Some(future_millis(3600)),
+                email: Some("a@example.com".to_string()),
+                project_id: None,
+            },
+        );
+
+        let store = store_at(path_buf.clone(), &server);
+        let cred = store.get_valid().await.unwrap();
+        assert_eq!(cred.project_id, "proj-discovered");
+
+        let written: StoredAuth =
+            serde_json::from_str(&fs::read_to_string(&path_buf).unwrap()).unwrap();
+        assert_eq!(written.project_id.as_deref(), Some("proj-discovered"));
+        // Every other field on disk must survive the persistence write intact.
+        assert_eq!(written.access_token, "live-token");
+        assert_eq!(written.refresh_token, "refresh");
+        assert_eq!(written.email.as_deref(), Some("a@example.com"));
+
+        // A brand-new store (no warm in-memory project_cache) reading the same
+        // file must find the persisted project id rather than discovering
+        // again — `server`'s mock above is capped at exactly one call and will
+        // fail the test on drop if a second request lands.
+        let second_store = store_at(path_buf, &server);
+        let second_cred = second_store.get_valid().await.unwrap();
+        assert_eq!(second_cred.project_id, "proj-discovered");
     }
 
     #[tokio::test]
