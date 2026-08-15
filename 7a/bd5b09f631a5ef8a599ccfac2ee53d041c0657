@@ -1,0 +1,33 @@
+src/auth/kimi/auth.rs
+  s_02afa83fa6c310::t_4540da6699a8ba 322-326
+  s_02afa83fa6c310::t_ed894f3ddf08d2 327
+  s_db9d835bc4959b::t_9656f16839905d 332
+src/auth/mod.rs
+  s_02afa83fa6c310::t_aee6dbcb32651a 206-211,229
+src/auth/kimi/login.rs
+  s_02afa83fa6c310::t_c85b3d4afd3d32 62-67
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "7abd5b09f631a5ef8a599ccfac2ee53d041c0657",
+  "prompts": {},
+  "sessions": {
+    "s_02afa83fa6c310": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "41a940fb-b079-41d6-801c-c90fdac76db6",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_db9d835bc4959b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-afixer-wave2-30d0205af72f2fcb",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
