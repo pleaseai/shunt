@@ -2003,6 +2003,15 @@ pub enum ConfigError {
          deprecated. Pick one explicitly rather than have the transport change underneath you."
     )]
     AntigravityKindRequiresOauth { provider: String, auth: String },
+    #[error(
+        "providers.antigravity has no `auth` key, so it deep-merges the built-in \
+         antigravity_oauth default instead of being caught by the kind = \"antigravity\" \
+         guard. kind = \"antigravity\" is now the native HTTP upstream and requires an \
+         explicit auth = \"antigravity_oauth\". The local `agy` CLI transport moved to \
+         kind = \"antigravity_cli\" (built-in provider `antigravity-cli`), which is \
+         deprecated. Pick one explicitly rather than have the transport change underneath you."
+    )]
+    AntigravityLegacyTableMissingAuth,
     #[error("providers.{provider}.accounts requires auth = \"claude_oauth\" or \"chatgpt_oauth\"")]
     AccountsRequireOauthProvider { provider: String },
     #[error("providers.{provider} uses auth = \"claude_oauth\" but kind is not \"anthropic\"")]
@@ -2514,6 +2523,42 @@ impl ConfigFormat {
     }
 }
 
+/// Refuses a `[providers.antigravity]` table that omits `auth` before it ever
+/// reaches the merge against the built-in `antigravity` default.
+///
+/// Figment deep-merges nested tables: any key the file layer omits is filled
+/// in from the base (`Serialized::defaults(Config::default())`) layer, and
+/// the built-in `antigravity` entry already sets
+/// `auth = "antigravity_oauth"`. A pre-#372 config never carried an `auth`
+/// key under this name -- `kind = "antigravity"` meant "run the local `agy`
+/// binary", and there was nothing to authenticate over HTTP with -- so after
+/// the merge it would end up with `auth = "antigravity_oauth"` anyway,
+/// passing the `AntigravityKindRequiresOauth` guard in [`Config::validate`]
+/// (which only ever sees the already-merged value) and silently switching
+/// transport. This check runs on the file layer alone, before that merge can
+/// paper over the missing key.
+fn reject_legacy_antigravity_table_without_auth(file_figment: &Figment) -> Result<(), ConfigError> {
+    let Ok(value) = file_figment.find_value("providers.antigravity") else {
+        return Ok(());
+    };
+    let Some(dict) = value.as_dict() else {
+        return Ok(());
+    };
+    // An explicit `kind` naming something else (e.g. migrating straight to
+    // `antigravity_cli` under this table name) is not the ambiguous legacy
+    // shape; an omitted `kind` inherits the built-in default, which is
+    // `antigravity`.
+    let kind_is_antigravity = dict
+        .get("kind")
+        .and_then(figment::value::Value::as_str)
+        .map(|kind| kind == "antigravity")
+        .unwrap_or(true);
+    if kind_is_antigravity && !dict.contains_key("auth") {
+        return Err(ConfigError::AntigravityLegacyTableMissingAuth);
+    }
+    Ok(())
+}
+
 /// Normalizes a raw `service_tier` config value to its Responses wire form.
 /// `default` is preserved as its own sentinel string rather than collapsed to
 /// `None`: `None` also means "not configured", and collapsing the two made an
@@ -2585,6 +2630,7 @@ impl Config {
             if file_declares_providers && file_declares_upstreams {
                 return Err(ConfigError::MixedProviderDeclarationForms);
             }
+            reject_legacy_antigravity_table_without_auth(&file_figment)?;
             // The parser is chosen by extension so TOML and YAML configs are
             // both accepted; an unknown extension is treated as TOML.
             figment = figment.merge(file_figment);
@@ -6276,6 +6322,49 @@ id = "claude-sonnet-5"
             assert!(text.contains("antigravity_oauth"), "message: {text}");
             assert!(text.contains("antigravity_cli"), "message: {text}");
         }
+    }
+
+    #[test]
+    fn a_legacy_antigravity_table_without_auth_is_rejected_not_silently_retargeted() {
+        // Shaped like a real pre-#372 config: `kind = "antigravity"` meant "run
+        // the local `agy` binary", so it never carried an `auth` key (there was
+        // nothing to authenticate over HTTP with) and carried CLI-only knobs
+        // like `workspace_roots`/`sandbox`. Figment deep-merges this table over
+        // the built-in `antigravity` default, which *does* set
+        // `auth = "antigravity_oauth"` -- if the merge fills the missing `auth`
+        // key from the default rather than the table being rejected outright,
+        // this legacy config would resolve quietly to the new OAuth HTTP
+        // upstream instead of erroring by name like the sibling test above.
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-legacy-antigravity-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shunt.toml");
+        std::fs::write(
+            &path,
+            "[providers.antigravity]\n\
+             kind = \"antigravity\"\n\
+             base_url = \"http://localhost\"\n\
+             workspace_roots = [\"/home/user/project\"]\n\
+             sandbox = true\n",
+        )
+        .unwrap();
+
+        let error = Config::load(Some(&path))
+            .expect_err("a legacy antigravity table without `auth` must not load");
+        assert!(
+            matches!(error, ConfigError::AntigravityLegacyTableMissingAuth),
+            "expected AntigravityLegacyTableMissingAuth, got: {error}"
+        );
+        let text = error.to_string();
+        assert!(text.contains("antigravity_oauth"), "message: {text}");
+        assert!(text.contains("antigravity_cli"), "message: {text}");
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
