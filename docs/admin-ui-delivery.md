@@ -9,8 +9,8 @@ split**, and an **embedded SPA bundle** — reserves one namespace
 (`/v1/organizations/*`) that a later milestone will need, and records the
 **single-instance deployment constraint** the dashboard would otherwise obscure.
 The storage question that constraint implies is evaluated separately, in
-[`storage.md`](storage.md). The questions this document originally left open are
-now settled in [Resolutions](#resolutions).
+[`storage.md`](storage.md). The seven questions this document originally left
+open are now settled in [Resolutions](#resolutions).
 
 It builds on [`m9-admin-surface.md`](m9-admin-surface.md), which already ships an
 admin-authenticated web surface. M9 answered *what* the admin surface does; this
@@ -293,7 +293,8 @@ rewrites headers.
 The JSON endpoints move to `/admin/api/*`, and the current paths are **removed,
 not aliased** ([Resolutions](#resolutions), item 6). M9 documents them as a
 curl-able surface and scripted callers exist, so the removal ships with a
-path-migration table in the release notes rather than a compatibility shim.
+path-migration table in `endpoints.md` rather than a compatibility shim, its
+`BREAKING CHANGE:` commit footer pointing there.
 
 **An alias and a deep link cannot share a path**, which is why aliases were
 rejected. While `GET /admin/pool` still answers JSON, the SPA cannot claim
@@ -450,9 +451,12 @@ independent decision.
   together, so a collision would surface on an operator's machine rather than in
   CI. This is a gap today, independent of the UI work.
 - **Breaking migration.** Removing the legacy `/admin/*` JSON and mutation paths
-  breaks every scripted caller M9 documented. The release notes must carry the
-  path-migration table, and the removal must land in one release rather than
-  piecemeal.
+  breaks every scripted caller M9 documented. The path-migration table lives in
+  `endpoints.md`, and the breaking change must be declared in a commit
+  `BREAKING CHANGE:` footer that points at it — the release notes here are
+  release-please prose built from commit footers, which cannot carry a table and
+  never see a footer written only in a PR body (issue #270). The removal must
+  land in one release rather than piecemeal.
 - **Second listener, second auth path.** The M9 session cookie is scoped
   `Path=/admin`, and its `Secure` flag keys off request-host loopback-ness. A
   separate admin listener changes the host a browser sees; the cookie scoping
@@ -465,7 +469,7 @@ independent decision.
 
 ## Resolutions
 
-The questions this document originally left open are now decided:
+The seven questions this document originally left open are now decided:
 
 1. **Assets: feature-gated (`--features ui`).** A default `cargo build` requires
    no Node toolchain and produces no dashboard; release CI enables the feature,
@@ -490,13 +494,13 @@ The questions this document originally left open are now decided:
    reservation is accordingly a roadmap item, not a non-goal.
 6. **No aliases — the admin JSON moves in one breaking change.** Every JSON
    endpoint and every mutation under `/admin/*` moves to `/admin/api/*` at once
-   (`feat!`, with a path-migration table in the release notes); the legacy paths
-   are removed, not aliased. The SPA therefore claims clean `/admin/*` deep
-   links from the start, and Decision 3's blocked-path table becomes the
-   migration inventory rather than a constraint. Hash routing and a separate
-   `/admin/ui/*` prefix were rejected as permanent URL costs that only defer the
-   collision. Scripted callers migrate once — acceptable while the crate is 0.x
-   and `publish = false` (issue #292).
+   (`feat!`, its `BREAKING CHANGE:` commit footer pointing at a path-migration
+   table in `endpoints.md`); the legacy paths are removed, not aliased. The SPA
+   therefore claims clean `/admin/*` deep links from the start, and Decision 3's
+   blocked-path table becomes the migration inventory rather than a constraint.
+   Hash routing and a separate `/admin/ui/*` prefix were rejected as permanent
+   URL costs that only defer the collision. Scripted callers migrate once —
+   acceptable while the crate is 0.x.
 7. **The admin listener inherits `[server.access_control]` — always.** No
    dedicated admin-scoped block: it is the smaller change, preserves today's
    behavior, and keeps one set of CIDR rules to reason about. Admin-scoped
@@ -545,7 +549,8 @@ The questions this document originally left open are now decided:
 - `site/src/content/docs/reference/configuration.md` — `[server.admin].bind`.
 - `site/src/content/docs/reference/endpoints.md` — the namespace split, the
   canonical `/admin/api/*` paths, and the removal of the legacy `/admin/*` JSON
-  and mutation paths (breaking; migration table in the release notes).
+  and mutation paths (breaking), including the path-migration table the
+  release's `BREAKING CHANGE:` footer points at.
 - `site/src/content/docs/reference/cli.mdx` — `shunt ui`, next to
   `shunt dashboard setup`.
 - [`m9-admin-surface.md`](m9-admin-surface.md) — its endpoint table becomes the
