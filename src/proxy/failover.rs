@@ -503,10 +503,20 @@ fn check_inbound_auth(
     }
     // The admin credential header is likewise a slot shunt consumes, and
     // `[server.admin] header` is free-form exactly like `[server.auth] header`.
-    // Its *value* is stripped from `authorization`/`x-api-key` per slot in
-    // `headers_for_route`; the dedicated header is removed outright here.
+    // Removing it outright is only correct while it is *dedicated*: an operator
+    // may point it at `authorization` or `x-api-key`, which on a passthrough
+    // route carry the caller's own upstream credential, and dropping the slot
+    // here would delete a genuine credential sight unseen. Those two shared
+    // slots are handled by value instead, in `headers_for_route`, where
+    // `consumed_by` strips them only when they actually hold an admin
+    // credential — the mirror of `AdminAuth::authenticate_credential` either
+    // way. `HeaderName` lowercase-normalizes on construction, so comparing
+    // against the lowercase names is already case-insensitive.
     if let Some(admin) = &state.admin_auth {
-        forwarded.remove(admin.header());
+        let name = admin.header();
+        if !matches!(name.as_str(), "authorization" | "x-api-key") {
+            forwarded.remove(name);
+        }
     }
 
     let gateway_claims = state

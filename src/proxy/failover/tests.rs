@@ -703,3 +703,59 @@ fn check_inbound_auth_removes_the_configured_admin_header() {
     assert_eq!(forwarded.get("authorization").unwrap(), "Bearer caller");
     assert_eq!(forwarded.get("x-api-key").unwrap(), "caller");
 }
+
+/// Run the real two-step pipeline a passthrough request takes — the whole-chain
+/// gate in `check_inbound_auth`, then the per-route header build — so a strip
+/// decision made in either step is visible in the result. The per-slot tests
+/// above call `headers_for_route` directly and cannot see what the gate already
+/// removed.
+fn forward_through_gate(state: &AppState, headers: &HeaderMap) -> HeaderMap {
+    let (forwarded, inbound) = check_inbound_auth(state, &[passthrough_route()], headers)
+        .unwrap_or_else(|error| {
+            panic!("check_inbound_auth rejected the request: {}", error.message)
+        });
+    headers_for_route(
+        state,
+        &passthrough_route(),
+        &forwarded,
+        &inbound,
+        true,
+        None,
+    )
+}
+
+#[test]
+fn admin_header_pointed_at_a_shared_slot_keeps_a_genuine_credential() {
+    // `[server.admin] header = "x-api-key"` points the admin slot at a header
+    // that on a passthrough route carries the caller's *own* upstream key.
+    // Removing that header outright in `check_inbound_auth` would delete a
+    // genuine credential before anything looked at its value, so only a
+    // dedicated admin header is dropped there; a shared slot is left to the
+    // by-value check in `headers_for_route`.
+    let state = state_with_admin_auth("x-api-key");
+    let mut headers = HeaderMap::new();
+    headers.insert("x-api-key", GENUINE_UPSTREAM_KEY.parse().unwrap());
+
+    let result = forward_through_gate(&state, &headers);
+
+    assert_eq!(result.get("x-api-key").unwrap(), GENUINE_UPSTREAM_KEY);
+}
+
+#[test]
+fn admin_header_pointed_at_a_shared_slot_still_strips_an_admin_credential() {
+    // The other half of the rule above: not removing the shared slot outright
+    // must not let an admin credential through it. `consumed_by` recognizes
+    // every admin credential kind, so the slot is still stripped — by value.
+    let state = state_with_admin_auth("x-api-key");
+    for credential in [ADMIN_TOKEN, ADMIN_WRITE_KEY, ADMIN_READ_KEY] {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-api-key", credential.parse().unwrap());
+
+        let result = forward_through_gate(&state, &headers);
+
+        assert!(
+            result.get("x-api-key").is_none(),
+            "admin credential survived the shared slot"
+        );
+    }
+}

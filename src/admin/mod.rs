@@ -91,8 +91,11 @@ impl AdminAuth {
     }
 
     /// The configured credential header. `check_inbound_auth` removes it from
-    /// the forwarded header set, mirroring what it does for `[server.auth]`:
-    /// this slot is one shunt consumes, so its value must never go upstream.
+    /// the forwarded header set while it is a *dedicated* name: this slot is one
+    /// shunt consumes, so its value must never go upstream. When an operator
+    /// points it at `authorization` or `x-api-key` instead, the slot is shared
+    /// with the caller's own upstream credential, so it is stripped by value in
+    /// `headers_for_route` rather than dropped outright.
     pub(crate) fn header(&self) -> &HeaderName {
         &self.header
     }
