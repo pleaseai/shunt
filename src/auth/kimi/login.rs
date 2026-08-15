@@ -15,6 +15,7 @@
 //! the response body before ever looking at the HTTP status, per
 //! [`super::auth`]'s module doc comment.
 
+use std::borrow::Cow;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context};
@@ -33,6 +34,11 @@ const SLOW_DOWN_INCREMENT_SECS: u64 = 5;
 const MAX_INTERVAL_SECS: u64 = 30;
 // Measured against the live device-authorization endpoint: `expires_in` = 1800.
 const DEFAULT_EXPIRES_SECS: u64 = 1800;
+// A transient blip (one dropped connection) should not abort the login, but a
+// permanently unreachable or misconfigured endpoint (bad `token_url`, offline
+// machine, broken TLS/MITM) must fail fast rather than silently retry for the
+// full device-code lifetime — up to 30 minutes at the default interval.
+const MAX_CONSECUTIVE_TRANSPORT_FAILURES: u32 = 3;
 
 struct DeviceCode {
     device_code: String,
@@ -131,7 +137,10 @@ async fn request_device_code(
     // failure here may still carry a parseable OAuth error envelope.
     let value: Value = match serde_json::from_str(&text) {
         Ok(value) => value,
-        Err(_) => bail!("Kimi device-code request failed (HTTP {status}): {text}"),
+        Err(_) => bail!(
+            "Kimi device-code request failed (HTTP {status}): {}",
+            truncate_for_error(&text)
+        ),
     };
     if let Some(device) = parse_device_code(&value) {
         return Ok(device);
@@ -173,14 +182,38 @@ fn positive_secs(value: Option<&Value>, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
+/// Cap a raw upstream body before it reaches an error message. A proxy or WAF
+/// can answer with a full HTML page, which would otherwise be dumped whole into
+/// the operator's terminal. Truncates on a char boundary, never mid-codepoint.
+fn truncate_for_error(text: &str) -> Cow<'_, str> {
+    const LIMIT: usize = 200;
+    match text.char_indices().nth(LIMIT) {
+        Some((byte_index, _)) => Cow::Owned(format!("{}\u{2026}", &text[..byte_index])),
+        None => Cow::Borrowed(text),
+    }
+}
+
+/// Compute the poll deadline without panicking. `Instant + Duration` panics on
+/// overflow, and `expires_in` is a server-supplied value only checked for being
+/// positive, so a pathological one must degrade to the default lifetime rather
+/// than abort the login. If even that overflows, return `now` so the poll loop
+/// exits immediately and reports the ordinary timeout.
+fn poll_deadline(now: Instant, expires_in: u64) -> Instant {
+    now.checked_add(Duration::from_secs(expires_in))
+        .or_else(|| now.checked_add(Duration::from_secs(DEFAULT_EXPIRES_SECS)))
+        .unwrap_or(now)
+}
+
 async fn poll_for_tokens(
     client: &reqwest::Client,
     device: &DeviceCode,
     token_url: &str,
     device_id: &str,
 ) -> anyhow::Result<super::auth::TokenResponse> {
-    let deadline = Instant::now() + Duration::from_secs(device.expires_in);
+    let deadline = poll_deadline(Instant::now(), device.expires_in);
     let mut interval = device.interval.max(MIN_INTERVAL_SECS);
+    let mut last_transport_error: Option<String> = None;
+    let mut consecutive_transport_failures: u32 = 0;
     while Instant::now() < deadline {
         let mut request = client
             .post(token_url)
@@ -193,7 +226,34 @@ async fn poll_for_tokens(
         for (name, value) in msh_headers(device_id) {
             request = request.header(name, value);
         }
-        let response = request.send().await?;
+        // A single DNS/TLS/connect blip during a 15-30 minute poll must not
+        // abort the whole login: remember the error and fall through to the
+        // deadline-bounded sleep below, then retry. This is safe because the
+        // loop is bounded by `deadline` — a permanently unreachable endpoint
+        // still fails fast via `MAX_CONSECUTIVE_TRANSPORT_FAILURES` below
+        // rather than spinning until `deadline` (up to 30 minutes).
+        let response = match request.send().await {
+            Ok(response) => response,
+            Err(error) => {
+                tracing::warn!("Kimi token poll request failed, will retry: {error}");
+                last_transport_error = Some(error.to_string());
+                consecutive_transport_failures += 1;
+                if consecutive_transport_failures >= MAX_CONSECUTIVE_TRANSPORT_FAILURES {
+                    bail!(
+                        "Kimi token poll failed {MAX_CONSECUTIVE_TRANSPORT_FAILURES} times in a row; last error: {error}"
+                    );
+                }
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                sleep(remaining.min(Duration::from_secs(interval))).await;
+                continue;
+            }
+        };
+        // The request succeeded, so any earlier run of transport failures is
+        // over — only *consecutive* failures should trip the fail-fast cap.
+        consecutive_transport_failures = 0;
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
         // *** CRITICAL: Kimi returns HTTP 400 for the ordinary
@@ -204,7 +264,10 @@ async fn poll_for_tokens(
         // envelope. See the module doc comment.
         let value: Value = match serde_json::from_str(&text) {
             Ok(value) => value,
-            Err(_) => bail!("invalid Kimi token response (HTTP {status}): {text}"),
+            Err(_) => bail!(
+                "invalid Kimi token response (HTTP {status}): {}",
+                truncate_for_error(&text)
+            ),
         };
         if let Some(tokens) = parse_token_response(&value) {
             return Ok(tokens);
@@ -226,7 +289,14 @@ async fn poll_for_tokens(
         }
         sleep(remaining.min(Duration::from_secs(interval))).await;
     }
-    bail!("Kimi device authorization timed out; run shunt login kimi --name <account-name> to try again")
+    match last_transport_error {
+        Some(error) => bail!(
+            "Kimi device authorization timed out; the last poll attempt failed: {error}. Run shunt login kimi --name <account-name> to try again"
+        ),
+        None => {
+            bail!("Kimi device authorization timed out; run shunt login kimi --name <account-name> to try again")
+        }
+    }
 }
 
 /// Apply the RFC 8628 `slow_down` backoff: bump the poll interval by
@@ -370,6 +440,35 @@ mod tests {
         assert_eq!(next_interval(30), 30);
     }
 
+    #[test]
+    fn poll_deadline_saturates_instead_of_panicking() {
+        let now = Instant::now();
+        // A pathological server-supplied expires_in must not panic `Instant +
+        // Duration` — it degrades to the default lifetime instead.
+        assert_eq!(
+            poll_deadline(now, u64::MAX),
+            now + Duration::from_secs(DEFAULT_EXPIRES_SECS)
+        );
+        // A normal value is used as-is.
+        assert_eq!(poll_deadline(now, 900), now + Duration::from_secs(900));
+    }
+
+    #[test]
+    fn truncate_for_error_caps_long_bodies_on_a_char_boundary() {
+        let short = "short body";
+        assert_eq!(truncate_for_error(short), short);
+        assert!(matches!(truncate_for_error(short), Cow::Borrowed(_)));
+
+        // 500 multi-byte characters: a naive byte-slice `&text[..200]` would
+        // panic here since 200 bytes lands mid-codepoint.
+        let long: String = "한".repeat(500);
+        let truncated = truncate_for_error(&long);
+        let chars: Vec<char> = truncated.chars().collect();
+        assert_eq!(chars.len(), 201, "200 chars + the ellipsis");
+        assert_eq!(chars.last(), Some(&'\u{2026}'));
+        assert!(truncated.starts_with(&long[..long.char_indices().nth(200).unwrap().0]));
+    }
+
     fn test_device(interval: u64, expires_in: u64) -> DeviceCode {
         DeviceCode {
             device_code: "dev".to_string(),
@@ -470,5 +569,28 @@ mod tests {
             .await
             .expect_err("poll should time out");
         assert!(error.to_string().contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn poll_for_tokens_gives_up_after_consecutive_transport_failures() {
+        // Port 1 needs root to bind, so nothing is listening on it here —
+        // every connection attempt fails deterministically and immediately
+        // with connection-refused, unlike a dropped MockServer whose port
+        // could in principle be reclaimed before the request lands.
+        let client = reqwest::Client::new();
+        // A long expiry with a short interval: if the consecutive-failure
+        // cap regressed back to unbounded retry, this test would run toward
+        // the full deadline instead of failing fast, so the deadline itself
+        // must not be what ends this test.
+        let device = test_device(1, 1800);
+        let error = poll_for_tokens(&client, &device, "http://127.0.0.1:1/token", "device-1")
+            .await
+            .expect_err("a permanently unreachable endpoint must fail fast");
+        let message = error.to_string();
+        assert!(message.contains("3 times in a row"), "got: {message}");
+        assert!(
+            !message.contains("timed out"),
+            "must exit via the consecutive-failure cap, not the deadline: {message}"
+        );
     }
 }
