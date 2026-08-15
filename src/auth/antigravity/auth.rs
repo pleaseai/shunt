@@ -832,10 +832,19 @@ fn onboard_operation_outcome(payload: &Value) -> Result<OnboardOperation, Adapte
 }
 
 /// Pull the project id out of a `loadCodeAssist` / `onboardUser` payload. The
-/// field has three spellings across the two endpoints, and `project` may be an
-/// object rather than a string.
+/// field has four spellings across the two endpoints, and `project` may be an
+/// object rather than a string. `companionProject` is the same spelling the
+/// Gemini Code Assist credential path accepts (`google::auth`'s
+/// `cloudaicompanion_project` alias) — the two talk to the same backend, so
+/// missing it here would send an already-provisioned account down the
+/// `onboardUser` path instead of using the project it just returned.
 pub(crate) fn extract_project(value: &Value) -> Option<String> {
-    for key in ["cloudaicompanionProject", "projectId", "project"] {
+    for key in [
+        "cloudaicompanionProject",
+        "companionProject",
+        "projectId",
+        "project",
+    ] {
         match value.get(key) {
             Some(Value::String(id)) => {
                 let trimmed = id.trim();
@@ -1038,6 +1047,13 @@ mod tests {
             extract_project(&json!({"projectId": "p-2"})).as_deref(),
             Some("p-2")
         );
+        // The Gemini Code Assist credential path accepts this spelling too
+        // (`google::auth`'s `cloudaicompanion_project` alias). Both talk to
+        // the same backend, so it has to resolve here as well.
+        assert_eq!(
+            extract_project(&json!({"companionProject": "p-4"})).as_deref(),
+            Some("p-4")
+        );
         // `project` arrives as an object on the onboarding response.
         assert_eq!(
             extract_project(&json!({"project": {"id": "p-3"}})).as_deref(),
@@ -1192,6 +1208,38 @@ mod tests {
         assert!(
             body.contains("network failure"),
             "expected the refused redirect to surface as a network failure, got: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_companion_project_spelling_is_used_instead_of_onboarding() {
+        // `companionProject` is one of the spellings the backend uses (the
+        // Gemini Code Assist path accepts it too). Missing it here would read
+        // an already-provisioned account as project-less and spend the
+        // onboarding budget against the daily control plane instead of using
+        // the project `loadCodeAssist` just handed back.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1internal:loadCodeAssist"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"companionProject": "proj-companion"})),
+            )
+            .mount(&server)
+            .await;
+        // Falling through to onboarding is the regression this pins down, so
+        // assert it never happens rather than inferring it from the result.
+        Mock::given(method("POST"))
+            .and(path("/v1internal:onboardUser"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let store = store_at(temp_auth_file("companion_project"), &server);
+        assert_eq!(
+            store.discover_project("access-token").await.unwrap(),
+            "proj-companion"
         );
     }
 
