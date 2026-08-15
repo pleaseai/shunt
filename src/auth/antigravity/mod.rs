@@ -96,8 +96,19 @@ pub fn antigravity_migration_error(credential_exists: bool) -> Option<String> {
     })
 }
 
+/// Process-env guard for tests that set `SHUNT_ANTIGRAVITY_AUTH_FILE`.
+///
+/// Deliberately the *same* mutex as [`crate::config::CONFIG_ENV_LOCK`] rather
+/// than a second one. Both guard the single process environment against a
+/// concurrent `Config::load`, and two independent mutexes do not exclude each
+/// other: with a lock of its own, this family ran concurrently with
+/// `an_env_only_legacy_antigravity_shape_is_rejected`, whose
+/// `SHUNT_PROVIDERS__ANTIGRAVITY__BASE_URL` then leaked into a reload test's
+/// `Config::load` and failed it with `AntigravityLegacyTableMissingAuth`
+/// (~40% of filtered runs). Acquire it poison-tolerantly, per that constant's
+/// documented convention.
 #[cfg(test)]
-pub(crate) static ANTIGRAVITY_AUTH_FILE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) use crate::config::CONFIG_ENV_LOCK as ANTIGRAVITY_AUTH_FILE_ENV_LOCK;
 
 #[cfg(test)]
 mod tests {
@@ -274,7 +285,9 @@ mod tests {
 
     #[test]
     fn an_empty_auth_file_override_falls_back_to_the_default_path() {
-        let _guard = ANTIGRAVITY_AUTH_FILE_ENV_LOCK.lock().unwrap();
+        let _guard = ANTIGRAVITY_AUTH_FILE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let previous = env::var_os("SHUNT_ANTIGRAVITY_AUTH_FILE");
         // A half-configured shell/CI environment (`SHUNT_ANTIGRAVITY_AUTH_FILE=`)
         // must not resolve to an empty PathBuf, which would point at the
@@ -295,7 +308,9 @@ mod tests {
 
     #[test]
     fn a_non_empty_auth_file_override_is_honored() {
-        let _guard = ANTIGRAVITY_AUTH_FILE_ENV_LOCK.lock().unwrap();
+        let _guard = ANTIGRAVITY_AUTH_FILE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let previous = env::var_os("SHUNT_ANTIGRAVITY_AUTH_FILE");
         env::set_var(
             "SHUNT_ANTIGRAVITY_AUTH_FILE",

@@ -575,7 +575,9 @@ mod tests {
     fn reload_routing_to_antigravity_without_a_credential_keeps_previous_state() {
         use crate::auth::antigravity::ANTIGRAVITY_AUTH_FILE_ENV_LOCK;
 
-        let _env_guard = ANTIGRAVITY_AUTH_FILE_ENV_LOCK.lock().unwrap();
+        let _env_guard = ANTIGRAVITY_AUTH_FILE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = temp_dir("antigravity-migration");
         let _guard = TempDirGuard(dir.clone());
         let path = dir.join("shunt.toml");
@@ -607,7 +609,9 @@ mod tests {
     async fn reload_routing_to_antigravity_with_a_credential_succeeds() {
         use crate::auth::antigravity::ANTIGRAVITY_AUTH_FILE_ENV_LOCK;
 
-        let _env_guard = ANTIGRAVITY_AUTH_FILE_ENV_LOCK.lock().unwrap();
+        let _env_guard = ANTIGRAVITY_AUTH_FILE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = temp_dir("antigravity-migration-ok");
         let _guard = TempDirGuard(dir.clone());
         let path = dir.join("shunt.toml");
@@ -629,7 +633,9 @@ mod tests {
     async fn reload_routing_to_antigravity_starts_the_version_refresher() {
         use crate::auth::antigravity::ANTIGRAVITY_AUTH_FILE_ENV_LOCK;
 
-        let _env_guard = ANTIGRAVITY_AUTH_FILE_ENV_LOCK.lock().unwrap();
+        let _env_guard = ANTIGRAVITY_AUTH_FILE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = temp_dir("antigravity-migration-refresher");
         let _guard = TempDirGuard(dir.clone());
         let path = dir.join("shunt.toml");
@@ -689,7 +695,9 @@ mod tests {
     async fn reload_via_spawn_blocking_starts_the_refresher_without_panicking() {
         use crate::auth::antigravity::ANTIGRAVITY_AUTH_FILE_ENV_LOCK;
 
-        let _env_guard = ANTIGRAVITY_AUTH_FILE_ENV_LOCK.lock().unwrap();
+        let _env_guard = ANTIGRAVITY_AUTH_FILE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = temp_dir("antigravity-spawn-blocking-refresher");
         let _guard = TempDirGuard(dir.clone());
         let path = dir.join("shunt.toml");
