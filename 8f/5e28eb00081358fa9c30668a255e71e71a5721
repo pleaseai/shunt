@@ -1,0 +1,19 @@
+src/auth/kimi/login.rs
+  s_02afa83fa6c310::t_498b9dc6c03f54 214-222
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "8f5e28eb00081358fa9c30668a255e71e71a5721",
+  "prompts": {},
+  "sessions": {
+    "s_02afa83fa6c310": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "41a940fb-b079-41d6-801c-c90fdac76db6",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
