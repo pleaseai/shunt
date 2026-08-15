@@ -360,7 +360,10 @@ pub fn default_xai_auth_path() -> PathBuf {
 mod tests {
     use crate::config::{AccountConfig, Config};
 
-    use super::{resolve_api_key, resolve_chatgpt_account, resolve_claude_account, Credential};
+    use super::{
+        resolve_api_key, resolve_chatgpt_account, resolve_claude_account, resolve_kimi_account,
+        Credential,
+    };
 
     #[tokio::test]
     async fn resolves_claude_account_token_env_verbatim_with_uuid() {
@@ -451,6 +454,77 @@ mod tests {
             }
         );
         std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn resolves_kimi_account_token_env_verbatim() {
+        // Mirrors `resolves_claude_account_token_env_verbatim_with_uuid`: a
+        // `token_env`-sourced Kimi credential carries no device id (no
+        // account file to have persisted one in).
+        let env_name = format!("SHUNT_TEST_KIMI_TOKEN_{}", std::process::id());
+        std::env::set_var(&env_name, "  kimi-setup-token-verbatim  ");
+        let account = AccountConfig {
+            name: "ci".to_string(),
+            token_env: Some(env_name.clone()),
+            ..Default::default()
+        };
+
+        let credential = resolve_kimi_account(&account, &reqwest::Client::new())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            credential,
+            Credential::KimiOauth {
+                access_token: "  kimi-setup-token-verbatim  ".to_string(),
+                device_id: None,
+            }
+        );
+        std::env::remove_var(env_name);
+    }
+
+    #[tokio::test]
+    async fn name_only_kimi_account_resolves_store_token() {
+        // Mirrors `name_only_claude_account_resolves_store_token`: a
+        // name-only account resolves through the on-disk store, which does
+        // carry a device id.
+        let _guard = crate::auth::kimi::store::TEST_ENV_LOCK.lock().await;
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-name-only-kimi-auth-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("SHUNT_KIMI_ACCOUNTS_DIR", &dir);
+        let far_future =
+            crate::auth::kimi::auth::expires_at_ms(Some(3600), std::time::SystemTime::now());
+        crate::auth::kimi::store::store_oauth_tokens(
+            "main",
+            "store-token",
+            "store-refresh",
+            far_future,
+            "device-abc-123",
+        )
+        .unwrap();
+        let account = AccountConfig {
+            name: "main".to_string(),
+            ..Default::default()
+        };
+
+        let credential = resolve_kimi_account(&account, &reqwest::Client::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            credential,
+            Credential::KimiOauth {
+                access_token: "store-token".to_string(),
+                device_id: Some("device-abc-123".to_string()),
+            }
+        );
+        std::env::remove_var("SHUNT_KIMI_ACCOUNTS_DIR");
         let _ = std::fs::remove_dir_all(dir);
     }
 

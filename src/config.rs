@@ -3649,13 +3649,13 @@ mod tests {
     use figment::providers::Format;
 
     use super::{
-        config_file_candidates, default_auth_header, host_is_chatgpt, identity_collisions,
-        AccountConfig, AdminConfig, AdminOidcConfig, AuthMode, CodexEndpointConfig, Config,
-        ConfigError, ConfigFormat, GatewayConfig, GatewayOidcConfig, GatewayPolicyConfig,
-        GatewayPolicyMatch, GatewaySessionConfig, GatewayTelemetryConfig,
+        config_file_candidates, default_auth_header, host_is_chatgpt, host_is_kimi,
+        identity_collisions, AccountConfig, AdminConfig, AdminOidcConfig, AuthMode,
+        CodexEndpointConfig, Config, ConfigError, ConfigFormat, GatewayConfig, GatewayOidcConfig,
+        GatewayPolicyConfig, GatewayPolicyMatch, GatewaySessionConfig, GatewayTelemetryConfig,
         GatewayTelemetryDestination, InboundAuthConfig, ModelConfig, OauthUsageConfig,
-        OidcProviderConfig, PoolConfig, ProviderKind, ResponsesFlavor, RetryConfig, Secret,
-        StatusConfig, StatusSource, UsageEndpointConfig, CONFIG_ENV_LOCK,
+        OidcProviderConfig, PoolConfig, ProviderConfig, ProviderKind, ResponsesFlavor, RetryConfig,
+        Secret, StatusConfig, StatusSource, UsageEndpointConfig, CONFIG_ENV_LOCK,
     };
 
     fn model_config(id: &str, upstream_model: Option<BTreeMap<String, String>>) -> ModelConfig {
@@ -4176,6 +4176,16 @@ mod tests {
         config
     }
 
+    fn kimi_oauth_config() -> Config {
+        let mut config = Config::default();
+        config.providers.insert(
+            "kimi".to_string(),
+            ProviderConfig::anthropic("https://api.kimi.com"),
+        );
+        config.providers.get_mut("kimi").unwrap().auth = AuthMode::KimiOauth;
+        config
+    }
+
     #[test]
     fn accounts_require_oauth_provider() {
         let mut config = Config::default();
@@ -4237,6 +4247,52 @@ mod tests {
         let mut config = claude_oauth_config();
         config.providers.get_mut("anthropic").unwrap().base_url =
             "https://api.anthropic.com".to_string();
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn kimi_oauth_requires_anthropic_kind() {
+        let mut config = kimi_oauth_config();
+        config.providers.get_mut("kimi").unwrap().kind = ProviderKind::Responses;
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::KimiOauthWrongKind { .. }
+        ));
+    }
+
+    #[test]
+    fn kimi_oauth_accepts_plaintext_loopback_base_urls() {
+        for base_url in ["http://127.0.0.1:8080", "http://localhost:9000"] {
+            let mut config = kimi_oauth_config();
+            config.providers.get_mut("kimi").unwrap().base_url = base_url.to_string();
+            config.validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn kimi_oauth_rejects_plaintext_remote_base_url() {
+        let mut config = kimi_oauth_config();
+        config.providers.get_mut("kimi").unwrap().base_url = "http://api.kimi.com".to_string();
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::KimiOauthNotHttps { .. }
+        ));
+    }
+
+    #[test]
+    fn kimi_oauth_rejects_remote_non_kimi_base_url() {
+        let mut config = kimi_oauth_config();
+        config.providers.get_mut("kimi").unwrap().base_url = "https://evil.example.com".to_string();
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::KimiOauthNonKimiHost { .. }
+        ));
+    }
+
+    #[test]
+    fn kimi_oauth_accepts_kimi_https_base_url() {
+        let mut config = kimi_oauth_config();
+        config.providers.get_mut("kimi").unwrap().base_url = "https://api.kimi.com".to_string();
         config.validate().unwrap();
     }
 
@@ -5566,6 +5622,15 @@ mod tests {
         assert!(host_is_chatgpt("x.chatgpt.com"));
         assert!(!host_is_chatgpt("chatgpt.com.evil.com"));
         assert!(!host_is_chatgpt("openai.com"));
+    }
+
+    #[test]
+    fn host_is_kimi_matches_kimi_and_subdomains_only() {
+        assert!(host_is_kimi("kimi.com"));
+        assert!(host_is_kimi("api.kimi.com"));
+        assert!(!host_is_kimi("evilkimi.com"));
+        assert!(!host_is_kimi("notkimi.com"));
+        assert!(!host_is_kimi("kimi.com.evil.com"));
     }
 
     #[test]

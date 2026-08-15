@@ -373,3 +373,82 @@ async fn disabled_account_is_skipped_in_favor_of_the_enabled_one() {
     std::env::remove_var("SHUNT_TEST_KIMI_SKIP_A");
     std::env::remove_var("SHUNT_TEST_KIMI_SKIP_B");
 }
+
+/// An account whose `token_env` is unset cannot be resolved by
+/// `resolve_kimi_account`: `forward_kimi_oauth`'s `Err` arm at the
+/// credential-resolve step must arm a cooldown and `continue` to the next
+/// candidate rather than failing the request, mirroring
+/// `unresolvable_account_cools_down_and_rotates` in `tests/multi_account.rs`.
+#[tokio::test]
+async fn unresolvable_account_cools_down_and_rotates() {
+    if !can_bind_loopback() {
+        return;
+    }
+    // account-a points at an env var that is never set; account-b is healthy.
+    std::env::remove_var("SHUNT_TEST_KIMI_MISSING_A");
+    let token_b = ["fake-kimi-", "resolve-b"].concat();
+    std::env::set_var("SHUNT_TEST_KIMI_RESOLVE_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"b"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        vec![
+            account("account-a", "SHUNT_TEST_KIMI_MISSING_A"),
+            account("account-b", "SHUNT_TEST_KIMI_RESOLVE_B"),
+        ],
+    ))
+    .await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+    upstream.verify().await;
+
+    std::env::remove_var("SHUNT_TEST_KIMI_RESOLVE_B");
+}
+
+/// When every account fails to resolve, the pool never reaches an upstream:
+/// `last_response` stays `None` and `forward_kimi_oauth` surfaces a 502
+/// without ever calling the mock, exercising the currently-unreached
+/// `last_response == None` arm. Mirrors
+/// `all_accounts_unresolvable_returns_bad_gateway` in `tests/multi_account.rs`.
+#[tokio::test]
+async fn all_accounts_unresolvable_returns_bad_gateway() {
+    if !can_bind_loopback() {
+        return;
+    }
+    std::env::remove_var("SHUNT_TEST_KIMI_MISSING_ALL_A");
+    std::env::remove_var("SHUNT_TEST_KIMI_MISSING_ALL_B");
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"unexpected":true}"#))
+        .expect(0)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        vec![
+            account("account-a", "SHUNT_TEST_KIMI_MISSING_ALL_A"),
+            account("account-b", "SHUNT_TEST_KIMI_MISSING_ALL_B"),
+        ],
+    ))
+    .await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    upstream.verify().await;
+}
