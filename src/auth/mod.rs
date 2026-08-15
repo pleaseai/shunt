@@ -203,7 +203,12 @@ pub async fn resolve_claude_account(
 /// Kimi, rather than a persisted per-account one.
 pub async fn resolve_kimi_account(
     account: &crate::config::AccountConfig,
-    client: &reqwest::Client,
+    // Unlike `resolve_claude_account`/`resolve_chatgpt_account`, the store
+    // built below is not handed the caller's proxy client: its refresh POST
+    // carries the account's refresh_token, so it must always go through the
+    // redirect-hardened `token_refresh_client()` rather than a client that
+    // follows redirects freely.
+    _client: &reqwest::Client,
 ) -> Result<Credential, AdapterError> {
     if let Some(token_env) = account.token_env.as_deref() {
         let access_token = env::var(token_env)
@@ -221,7 +226,7 @@ pub async fn resolve_kimi_account(
         .as_deref()
         .map(PathBuf::from)
         .unwrap_or_else(|| kimi::store::account_path(&account.name));
-    let store = kimi::auth::KimiAuthStore::new(path, client.clone());
+    let store = kimi::auth::KimiAuthStore::new(path, crate::auth::shared::token_refresh_client());
     store
         .get_valid()
         .await

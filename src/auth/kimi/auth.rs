@@ -319,12 +319,17 @@ pub(crate) fn parse_token_response(value: &Value) -> Option<TokenResponse> {
 }
 
 pub(crate) async fn refresh_tokens(
-    client: &reqwest::Client,
+    // The injected proxy client follows redirects freely; the refresh POST
+    // carries the long-lived refresh_token, so it goes through the
+    // redirect-hardened `token_refresh_client()` instead — a 307/308 from
+    // Kimi's token endpoint must not be able to forward the credential to an
+    // unsafe host.
+    _client: &reqwest::Client,
     token_url: &str,
     refresh_token: &str,
     device_id: &str,
 ) -> Result<TokenResponse, AdapterError> {
-    let mut request = client
+    let mut request = crate::auth::shared::token_refresh_client()
         .post(token_url)
         .header("accept", "application/json")
         .form(&[

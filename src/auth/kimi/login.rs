@@ -59,7 +59,12 @@ enum PollOutcome {
 pub async fn run(name: &str) -> anyhow::Result<()> {
     store::validate_account_name(name)?;
     let device_id = uuid::Uuid::new_v4().to_string();
-    let client = reqwest::Client::new();
+    // Both requests below carry secrets the login flow cannot afford to leak
+    // off-origin: the device-authorization POST returns a one-time
+    // `device_code`, and the token poll redeems it for the account's tokens.
+    // Use the redirect-hardened `token_refresh_client()` so a 307/308 from
+    // either endpoint cannot forward either secret to an unsafe host.
+    let client = crate::auth::shared::token_refresh_client();
     let device = request_device_code(&client, &device_id)
         .await
         .context("failed to request Kimi device code")?;
