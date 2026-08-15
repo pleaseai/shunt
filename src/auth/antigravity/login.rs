@@ -163,7 +163,12 @@ pub(crate) fn build_auth_url(challenge: &str, state: &str, redirect_uri: &str) -
 }
 
 async fn exchange_code(
-    client: &reqwest::Client,
+    // The injected client follows redirects freely; this POST carries the
+    // PKCE verifier and receives the refresh_token, so it goes through the
+    // redirect-hardened `token_refresh_client()` instead — a permitted token
+    // endpoint must not be able to 3xx the exchange to a plaintext/off-loopback
+    // host. `fetch_email`/`discover_project` keep using the caller's client.
+    _client: &reqwest::Client,
     token_url: &str,
     code: &str,
     redirect_uri: &str,
@@ -177,7 +182,7 @@ async fn exchange_code(
         ("redirect_uri", redirect_uri),
         ("code_verifier", verifier),
     ];
-    let response = client
+    let response = crate::auth::shared::token_refresh_client()
         .post(token_url)
         .form(&params)
         .send()
@@ -409,6 +414,39 @@ mod tests {
         assert!(
             error.to_string().contains("redirect_uri_mismatch"),
             "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn code_exchange_refuses_a_redirect_to_an_offhost_plaintext_target() {
+        // The redirect-hardening guard lives in `auth::shared::token_refresh_client`
+        // and is exercised directly in `codex/auth.rs`; this proves `exchange_code`
+        // itself is actually wired through it, rather than the passed-in `client`
+        // (which follows redirects freely).
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(
+                ResponseTemplate::new(307).insert_header("location", "http://evil.example/token"),
+            )
+            .mount(&server)
+            .await;
+
+        let error = exchange_code(
+            &reqwest::Client::new(),
+            &format!("{}/token", server.uri()),
+            "code-1",
+            "http://localhost:51121/oauth-callback",
+            "verifier-1",
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Antigravity token exchange failed"),
+            "expected the refused redirect to surface as an exchange failure, got: {error}"
         );
     }
 

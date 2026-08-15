@@ -285,9 +285,16 @@ impl AntigravityAuthStore {
             ("client_secret", CLIENT_SECRET),
             ("refresh_token", refresh_token),
         ];
+        // `self.client` follows redirects freely; this POST carries the
+        // long-lived refresh_token, so it goes through the redirect-hardened
+        // `token_refresh_client()` instead — a permitted token endpoint must
+        // not be able to 3xx the credential to a plaintext/off-loopback host.
         let response = tokio::time::timeout(
             self.request_timeout,
-            self.client.post(&self.token_url).form(&params).send(),
+            crate::auth::shared::token_refresh_client()
+                .post(&self.token_url)
+                .form(&params)
+                .send(),
         )
         .await
         .map_err(|_| auth_error("Antigravity token refresh timed out"))?
@@ -794,6 +801,37 @@ mod tests {
         assert!(
             body.contains("timed out"),
             "expected a timeout error, got: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_call_refuses_a_redirect_to_an_offhost_plaintext_target() {
+        // The redirect-hardening guard lives in `auth::shared::token_refresh_client`
+        // and is exercised directly in `codex/auth.rs`; this proves `refresh_call`
+        // itself is actually wired through it, rather than `self.client` (which
+        // follows redirects freely).
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(
+                ResponseTemplate::new(307).insert_header("location", "http://evil.example/token"),
+            )
+            .mount(&server)
+            .await;
+
+        let store = store_at(temp_auth_file("refresh_redirect"), &server);
+        let error = store
+            .refresh_call("refresh-token")
+            .await
+            .expect_err("a redirect to a plaintext off-host target must be refused");
+        use axum::body::to_bytes;
+        let bytes = to_bytes(error.response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&bytes);
+        assert!(
+            body.contains("network failure"),
+            "expected the refused redirect to surface as a network failure, got: {body}"
         );
     }
 
