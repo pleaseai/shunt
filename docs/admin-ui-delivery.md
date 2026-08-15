@@ -263,7 +263,7 @@ Any of them works — the load-bearing constraint is *one* call, fanned out.
 
 | Namespace | Contents | Contract owner |
 | :-- | :-- | :-- |
-| `/admin/*` | operator UI: HTML shell, SPA client routes, `/admin/assets/*` — minus the four names still held by JSON aliases, below | shunt |
+| `/admin/*` | operator UI: HTML shell, SPA client routes, `/admin/assets/*` — minus every path `admin_router` already registers, below | shunt |
 | `/admin/api/*` | shunt-specific JSON: pool, status, accounts, observed, provisioning | shunt |
 | `/v1/organizations/*` | **reserved** — see below | Anthropic |
 
@@ -282,13 +282,38 @@ since M9 documents them as a curl-able surface and scripted callers exist.
 answers JSON, the SPA cannot claim `/admin/pool` as a browsable route — that is
 the same collision this split exists to remove, just deferred rather than
 resolved. So the aliases are **transitional, not permanent**: each one blocks the
-deep link of the same name until it is retired, and the four colliding routes
-(`/pool`, `/status`, `/accounts`, `/observed`) are therefore the last the SPA can
-take over. Deciding that retirement window is a prerequisite for building those
-screens, not a follow-up to it. Hash routing (`/admin/#/pool`) and a separate SPA
-prefix (`/admin/ui/pool`) both dodge the collision without retiring anything —
-cheaper, at the cost of a permanently uglier URL for the surface an operator
-looks at most.
+deep link of the same name until it is retired. Deciding that retirement window
+is a prerequisite for building those screens, not a follow-up to it. Hash routing
+(`/admin/#/pool`) and a separate SPA prefix (`/admin/ui/pool`) both dodge the
+collision without retiring anything — cheaper, at the cost of a permanently
+uglier URL for the surface an operator looks at most.
+
+**The blocked set is every registered `/admin/*` path, not only the JSON `GET`s.**
+A `fallback` answers unmatched *paths*; a request whose path matches a route
+registered for other methods gets axum's `405 Method Not Allowed` instead, so a
+POST-only or DELETE-only path is just as unavailable to the SPA as a `GET` alias
+is. Reading `admin_router` (`src/admin/mod.rs:115-146`) the blockers are:
+
+| Path | Registered | Why it blocks a deep link |
+| :-- | :-- | :-- |
+| `/admin/pool`, `/admin/status`, `/admin/accounts`, `/admin/observed` | `GET` | Answers JSON on the path the SPA wants. |
+| `/admin/accounts/codex` | `GET` + `POST` | Same JSON collision — belongs with the four above. |
+| `/admin/accounts/claude/{name}`, `/admin/accounts/codex/{name}` | `DELETE` only | `405`, not the shell. An account **detail view** is the most natural deep link the UI will want, and both of its path shapes are taken. |
+| `/admin/accounts/claude` | `POST` only | `405` on the "add account" screen's natural URL. |
+| `/admin/accounts/claude/{name}/complete`, `/admin/accounts/codex/{name}/complete` | `POST` only | `405`. |
+| `/admin/oidc/start`, `/admin/logout` | `POST` only | `405`; unlikely SPA routes, listed for completeness. |
+
+`/admin` (`GET`) is the shell itself and `/admin/login` (`GET`+`POST`) and
+`/admin/oidc/callback` (`GET`) are server-rendered pages the SPA does not
+replace, so those three are not blockers.
+
+Two consequences. Retiring only the four JSON `GET`s does not unblock the account
+screens — the `{name}` paths need a method-aware plan of their own, whether that
+is registering a `GET` beside the `DELETE`, moving the mutations under
+`/admin/api/*`, or an explicit `method_not_allowed_fallback` routing to the
+shell. And whichever escape Decision 3 takes, hash routing and a separate SPA
+prefix sidestep this whole table, which is a stronger argument for them than the
+`GET` collisions alone made.
 
 ### Why not the root
 
@@ -429,10 +454,12 @@ independent decision.
    decides whether the reserved namespace is a roadmap item or a non-goal, and it
    is owned by [`storage.md`](storage.md) rather than restated here.
 6. How long do the legacy JSON aliases — `/admin/pool`, `/admin/status`,
-   `/admin/accounts`, `/admin/observed` — live? They alias the canonical
-   `/admin/api/*`, and each one blocks the SPA deep link of the same name
-   (Decision 3), so the answer gates when those screens can be built. The
-   canonical paths are not the ones being retired.
+   `/admin/accounts`, `/admin/observed`, `/admin/accounts/codex` — live? They
+   alias the canonical `/admin/api/*`, and each one blocks the SPA deep link of
+   the same name (Decision 3), so the answer gates when those screens can be
+   built. The canonical paths are not the ones being retired. Retiring these
+   alone is **not sufficient**: the `DELETE`- and `POST`-only account paths block
+   their own deep links with a `405`, and need a separate method-aware decision.
 7. Does the admin listener inherit `[server.access_control]`, or get its own
    rules? Decision 2 requires one of the two — inheriting is the smaller change
    and preserves today's behavior, while a dedicated block is what an operator
@@ -449,6 +476,11 @@ independent decision.
   table, so a new route cannot be added without the conflict review.
 - `/` still answers `HEAD` after any UI work.
 - An unmatched path still `404`s rather than returning HTML.
+- A browser `GET` on a mutation-only admin path (`/admin/accounts/claude`,
+  `/admin/accounts/claude/{name}`) asserts whichever outcome Decision 3's chosen
+  escape specifies — `405` or the SPA shell. Asserting it either way is what
+  stops the method-only blockers from being rediscovered after the JSON aliases
+  are retired and the account screens still fail.
 - With `[server.admin].bind` set, admin paths 404 on `server.bind` and serve on
   the admin listener — and the reverse when it is unset.
 - With `[server.admin].bind` set **and** a `[server.access_control]` deny rule
