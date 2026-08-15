@@ -13,12 +13,19 @@
 //! read), then, if the account isn't onboarded yet, polls the operation the
 //! POST returned (`ONBOARD_POLL_INTERVAL` apart) for up to
 //! `ONBOARD_POLL_DEADLINE`: 2 * 30s + 300s = 360s, roughly 6 minutes for
-//! `onboard_user` alone. But discovery on the request path (see `get_valid`
-//! in `auth.rs`) can reach `onboard_user` only after `refresh_call` and
-//! `discover_project`'s own `loadCodeAssist` round trip have each already
-//! spent up to two `CREDENTIAL_REQUEST_TIMEOUT` windows, so the true worst
-//! case there is roughly 2 * 60s + 360s = 480s, about 8 minutes —
-//! acceptable in an interactive login, not in front of a proxied turn.
+//! `onboard_user` alone. Chained after `refresh_call` and
+//! `discover_project`'s own `loadCodeAssist` round trip — each of which can
+//! already spend up to two `CREDENTIAL_REQUEST_TIMEOUT` windows — that is
+//! roughly 2 * 60s + 360s = 480s, about 8 minutes.
+//!
+//! That full 8 minutes is reachable only from this module's `run()`, which
+//! calls `discover_project` directly with no outer bound. On the request path
+//! (`get_valid` via `resolve_credential`) the whole chain is wrapped in
+//! `ANTIGRAVITY_CREDENTIAL_TIMEOUT` (120s, `src/auth/mod.rs`), so onboarding
+//! there gets only whatever is left of that budget and never approaches
+//! `ONBOARD_POLL_DEADLINE`. The asymmetry is deliberate, and is why the
+//! project id is resolved here: 8 minutes is acceptable in an interactive
+//! login, not in front of a proxied turn.
 
 use std::time::Duration;
 
