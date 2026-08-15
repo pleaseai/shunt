@@ -2525,22 +2525,31 @@ impl ConfigFormat {
     }
 }
 
-/// Refuses a `[providers.antigravity]` table that omits `auth` before it ever
+/// Refuses a `[providers.antigravity]` shape that omits `auth` before it ever
 /// reaches the merge against the built-in `antigravity` default.
 ///
-/// Figment deep-merges nested tables: any key the file layer omits is filled
-/// in from the base (`Serialized::defaults(Config::default())`) layer, and
-/// the built-in `antigravity` entry already sets
+/// Figment deep-merges nested tables: any key the *effective* config omits is
+/// filled in from the base (`Serialized::defaults(Config::default())`)
+/// layer, and the built-in `antigravity` entry already sets
 /// `auth = "antigravity_oauth"`. A pre-#372 config never carried an `auth`
 /// key under this name -- `kind = "antigravity"` meant "run the local `agy`
 /// binary", and there was nothing to authenticate over HTTP with -- so after
 /// the merge it would end up with `auth = "antigravity_oauth"` anyway,
 /// passing the `AntigravityKindRequiresOauth` guard in [`Config::validate`]
 /// (which only ever sees the already-merged value) and silently switching
-/// transport. This check runs on the file layer alone, before that merge can
-/// paper over the missing key.
-fn reject_legacy_antigravity_table_without_auth(file_figment: &Figment) -> Result<(), ConfigError> {
-    let Ok(value) = file_figment.find_value("providers.antigravity") else {
+/// transport. `effective_figment` is the file's own table (if any) merged
+/// with any `providers.antigravity.*` env overrides layered on top --
+/// exactly the layering `Config::load` itself applies below -- rather than
+/// the built-in-defaults figment. Probing the file layer alone (the previous
+/// shape of this check) missed both directions: a legacy shape assembled
+/// entirely, or completed, via `SHUNT_PROVIDERS__ANTIGRAVITY__*` env vars was
+/// invisible to a check that only ever looked at the file, and a file table
+/// an env var legitimately completes with `auth` was rejected before the env
+/// layer had a chance to complete it.
+fn reject_legacy_antigravity_table_without_auth(
+    effective_figment: &Figment,
+) -> Result<(), ConfigError> {
+    let Ok(value) = effective_figment.find_value("providers.antigravity") else {
         return Ok(());
     };
     let Some(dict) = value.as_dict() else {
@@ -2586,6 +2595,12 @@ impl Config {
         };
         let mut figment = Figment::from(Serialized::defaults(Self::default()));
         let mut file_declares_upstreams = false;
+        // The file layer alone (no built-in defaults merged in), kept around
+        // past this block so it can be re-merged with the env layer below to
+        // decide the legacy-antigravity-table guard against the *effective*
+        // config rather than the file alone. `None` when there is no config
+        // file.
+        let mut file_figment: Option<Figment> = None;
         // Literal (non-reference) string values found in the file, keyed by
         // value and valued by the dotted field path(s) they appeared at —
         // used only to warn about a `Secret` field holding a plaintext
@@ -2623,22 +2638,42 @@ impl Config {
             never_literal_values = substituted.resolved_values;
             // Probe only the file layer: serialized defaults always contain the
             // built-in providers, and env overrides are allowed under either form.
-            let file_figment = match format {
+            let probed_file_figment = match format {
                 ConfigFormat::Toml => Figment::from(Toml::string(&substituted.text)),
                 ConfigFormat::Yaml => Figment::from(Yaml::string(&substituted.text)),
             };
-            let file_declares_providers = file_figment.find_value("providers").is_ok();
-            file_declares_upstreams = file_figment.find_value("upstreams").is_ok();
+            let file_declares_providers = probed_file_figment.find_value("providers").is_ok();
+            file_declares_upstreams = probed_file_figment.find_value("upstreams").is_ok();
             if file_declares_providers && file_declares_upstreams {
                 return Err(ConfigError::MixedProviderDeclarationForms);
             }
-            reject_legacy_antigravity_table_without_auth(&file_figment)?;
             // The parser is chosen by extension so TOML and YAML configs are
             // both accepted; an unknown extension is treated as TOML.
-            figment = figment.merge(file_figment);
+            figment = figment.merge(&probed_file_figment);
+            file_figment = Some(probed_file_figment);
         }
         never_literal_values.extend(secrets::shunt_env_values());
         let env = Env::prefixed("SHUNT_").split("__");
+        // Decide the legacy-antigravity-table guard against the *effective*
+        // providers.antigravity shape: the file's own table (if any) merged
+        // with any `providers.antigravity.*` env overrides layered on top,
+        // mirroring exactly how the env layer is scoped for the real
+        // extraction below (`file_declares_upstreams` excludes `providers.*`
+        // env keys under the ordered-upstreams form). Built without the
+        // `Serialized::defaults` base layer, so an omitted `auth` is still
+        // visibly absent rather than already backfilled from the built-in
+        // default.
+        let provider_env = if file_declares_upstreams {
+            env.clone().filter(|key| !key.starts_with("providers."))
+        } else {
+            env.clone()
+        };
+        let mut effective_provider_figment = Figment::new();
+        if let Some(file_figment) = &file_figment {
+            effective_provider_figment = effective_provider_figment.merge(file_figment);
+        }
+        effective_provider_figment = effective_provider_figment.merge(provider_env);
+        reject_legacy_antigravity_table_without_auth(&effective_provider_figment)?;
         // Scopes the literal-value map for the extraction below so
         // `Secret::deserialize` can record which config-file paths held a
         // secret written verbatim, for the aggregated warning after
@@ -6337,6 +6372,17 @@ id = "claude-sonnet-5"
         // key from the default rather than the table being rejected outright,
         // this legacy config would resolve quietly to the new OAuth HTTP
         // upstream instead of erroring by name like the sibling test above.
+        //
+        // `Config::load` also reads the real process env, and the sibling
+        // tests below set `SHUNT_PROVIDERS__ANTIGRAVITY__*` -- a name
+        // `Env::prefixed("SHUNT_").split("__")` fixes, so it cannot be given
+        // a per-test-unique suffix like the ordinary `CONFIG_ENV_LOCK` tests
+        // use. Taking the same lock here, even though this test sets no env
+        // var itself, is what keeps it from observing one of those vars left
+        // set by a concurrently running sibling.
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = std::env::temp_dir().join(format!(
             "shunt-config-test-legacy-antigravity-{}",
             std::time::SystemTime::now()
@@ -6366,6 +6412,84 @@ id = "claude-sonnet-5"
         assert!(text.contains("antigravity_oauth"), "message: {text}");
         assert!(text.contains("antigravity_cli"), "message: {text}");
 
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_env_only_legacy_antigravity_shape_is_rejected() {
+        // Same legacy shape as the sibling file-table test above, but
+        // assembled entirely through `SHUNT_PROVIDERS__ANTIGRAVITY__*` env
+        // vars rather than a `[providers.antigravity]` file table. Before the
+        // guard was moved to look at the *effective* (file + env) figment
+        // instead of the file layer alone, this shape was invisible to it:
+        // there was no file table for the guard to inspect, so it let the
+        // config through, and the built-in `antigravity` default's
+        // `auth = "antigravity_oauth"` was silently deep-merged in.
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-env-legacy-antigravity-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shunt.toml");
+        // No `providers.antigravity` table at all -- the config file has
+        // nothing to say about it.
+        std::fs::write(&path, "[server]\ndefault_provider = \"anthropic\"\n").unwrap();
+
+        std::env::set_var("SHUNT_PROVIDERS__ANTIGRAVITY__BASE_URL", "http://localhost:9999");
+
+        let error = Config::load(Some(&path))
+            .expect_err("an env-only legacy antigravity shape must not load");
+        assert!(
+            matches!(error, ConfigError::AntigravityLegacyTableMissingAuth),
+            "expected AntigravityLegacyTableMissingAuth, got: {error}"
+        );
+
+        std::env::remove_var("SHUNT_PROVIDERS__ANTIGRAVITY__BASE_URL");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_legacy_antigravity_table_completed_by_env_auth_is_accepted() {
+        // The mirror image of the two rejection tests above: a file table
+        // shaped like a pre-#372 legacy config (`kind = "antigravity"`, no
+        // `auth`) that a `SHUNT_PROVIDERS__ANTIGRAVITY__AUTH` env var
+        // legitimately completes. Before the guard was moved to look at the
+        // effective (file + env) figment, it ran against the file layer
+        // alone and rejected this config before the env layer ever had a
+        // chance to supply the missing `auth` key.
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-env-completed-antigravity-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shunt.toml");
+        std::fs::write(
+            &path,
+            "[providers.antigravity]\nkind = \"antigravity\"\nbase_url = \"http://localhost\"\n",
+        )
+        .unwrap();
+
+        std::env::set_var("SHUNT_PROVIDERS__ANTIGRAVITY__AUTH", "antigravity_oauth");
+
+        let config = Config::load(Some(&path))
+            .expect("a legacy table completed by an env-supplied auth must load");
+        let antigravity = config.provider("antigravity").unwrap();
+        assert_eq!(antigravity.kind, ProviderKind::Antigravity);
+        assert_eq!(antigravity.auth, AuthMode::AntigravityOauth);
+
+        std::env::remove_var("SHUNT_PROVIDERS__ANTIGRAVITY__AUTH");
         let _ = std::fs::remove_dir_all(dir);
     }
 
