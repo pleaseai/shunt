@@ -5,6 +5,14 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 
 关于文件位置、优先级以及带注释的示例,见 [配置](/zh-cn/guides/configuration/)。完整模板:[`shunt.toml.example`](https://github.com/pleaseai/shunt/blob/main/shunt.toml.example)。
 
+## Secret 引用
+
+配置文件中的字符串值可以写成 `${VAR}` 或 `${file:/绝对/路径}` 而不是字面量。`${VAR}` 会替换为环境变量 `VAR` 的值,可以嵌入更长的字符串中,例如 `"Bearer ${TOKEN}"`(若变量未定义,配置加载会失败)。`${file:/绝对/路径}` 会替换为该文件的内容(已 trim),路径必须是绝对路径,且引用必须是该字段的整个值 —— 不能嵌入更长的字符串中(若文件不可读、路径是相对路径,或引用嵌入在更长的字符串中,配置加载会失败)。`$${` 会转义为字面量 `${`。解析不是递归的 —— 解析出的值不会被再次扫描。此替换仅适用于配置文件,`SHUNT_*` 环境变量覆盖会按原样使用。它会在每次配置加载时重新执行,包括启动、`shunt check` 以及[热重载](https://github.com/pleaseai/shunt/blob/main/docs/config-reload.md)(SIGHUP 与文件监视),因此以 `${file:}` 引用的 secret 可以通过重写所引用的文件并触发一次重载来轮换,无需重启 shunt。但轮换后的值是否生效取决于该字段自身的重载行为:`[sentry]` 和 `[otel]` 只在启动时初始化一次,因此轮换这两个部分中的 secret 只会更新配置,需要重启才能生效。
+
+`[sentry] dsn`、`[otel.headers]` 的值、`[server.gateway.telemetry] forward_to[].headers` 的值,以及 `[server.gateway.session] jwt_secret` 这四个字段被标记为 redacting secret 类型,在诊断输出中显示为 `[redacted]`。在这些字段中写入字面量值的行为与之前完全相同;若某个 secret 类型字段持有字面量值,shunt 会在启动时记录一次仅列出相关字段路径(绝不包含值)的建议性警告,提示改用 `${VAR}` / `${file:...}`。
+
+现有的 `tokens_env`、`jwt_secret_env`、`client_secret_env`、`api_key_env`、`users_env`、`token_env`、`tokens_file` 字段不受此变更影响,仍然指向一个环境变量(对 `tokens_file` 而言是文件路径)(`jwt_secret_env` 已单独被 [`session.jwt_secret`](#servergatewaysession可选) 取代,已弃用)。
+
 ## `[server]`
 
 | 键 | 默认 | 含义 |
@@ -37,6 +45,8 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 
 指定的环境变量必须包含至少一个凭据,例如 `SHUNT_CLIENT_TOKENS="alice:<token>,bob:<token>"`。若此表存在但该变量未设置、为空或格式错误,启动会安全失败(fail closed)。被门控的路由(映射的 `/v1/messages` 推理和 `GET /v1/models` 发现)接受 token 出现在配置的头部、`Authorization: Bearer` 或 `x-api-key` 中 —— 当多个槽位携带有效 token 时,专用头部优先。
 
+`tokens_env` 自身的值也和其他配置文件字符串一样,可以写成 `${VAR}` / `${file:...}`(见 [Secret 引用](#secret-引用))——它仍然指向 shunt 用来读取 token 的环境变量。
+
 ## `[server.admin]`(可选)
 
 存在此表即启用管理 Web 界面,用于浏览器账户预配与账户池健康状况([详情](/zh-cn/guides/admin-remote-provisioning/))。此表不存在时,任何 `/admin*` 路由都不会注册。
@@ -52,6 +62,8 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 
 管理员 token 与 `[server.auth]` 下配置的客户端 token 是相互独立的凭据;不要在两个界面上复用同一个凭据。
 
+和 `[server.auth]` 的 `tokens_env` 一样,这个 `tokens_env` 的值也可以写成 `${VAR}` / `${file:...}`(见 [Secret 引用](#secret-引用))。
+
 ## `[server.gateway]`(可选)
 
 存在此表即启用 Claude Code managed `forceLoginMethod: "gateway"` 使用的 [OAuth device-flow gateway 登录](/zh-cn/guides/gateway-login/)。此表不存在时,shunt 不会注册 `/.well-known/oauth-authorization-server`、`/oauth/device_authorization`、`/oauth/token`、`/device` 或 `/managed/settings`。
@@ -59,14 +71,38 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 | 键 | 默认 | 含义 |
 | :-- | :-- | :-- |
 | `public_url` | 必需 | 对外可达的 HTTPS origin,用作 JWT issuer 和 OAuth endpoint 基址;仅 loopback 允许 `http` |
-| `jwt_secret_env` | `SHUNT_GATEWAY_JWT_SECRET` | 保存至少 32 bytes 的 HS256 signing secret 的 env 变量 |
+| `jwt_secret_env` | `SHUNT_GATEWAY_JWT_SECRET` | 保存至少 32 bytes 的 HS256 signing secret 的 env 变量。**已弃用**,单独使用时仍完全受支持 —— 已被 [`session.jwt_secret`](#servergatewaysession可选) 取代 |
 | `users_env` | `SHUNT_GATEWAY_USERS` | 保存逗号分隔的 `email:secret` approval user 的 env 变量 |
-| `token_ttl_seconds` | `3600` | access token 生命周期,以 `expires_in` 返回 |
+| `token_ttl_seconds` | `3600` | access token 生命周期,以 `expires_in` 返回。**已弃用**,单独使用时仍完全受支持 —— 已被 [`session.ttl_hours`](#servergatewaysession可选) 取代,但它仍是表达小于一小时生命周期的唯一方式 |
 | `trust_forwarded_for` | `false` | 将 `X-Forwarded-For`/`X-Real-IP` 信任为 `/device` rate-limit identity;只能在会替换 client 所提供值的 trusted proxy 后启用 |
 
-如果 URL 不是不带路径等内容的 HTTPS origin(仅 loopback 允许 `http`)、TTL 为 0、secret 缺失或少于 32 bytes,或者 user list 为空或格式错误,启动会 fail closed。secret 可以包含 `:`,只有第一个 colon 用于分隔 email 与 secret。env-backed secret 和 user 的变更会在 config reload 时生效;由于 route tree 在 boot 时固定,添加或移除此表需要 restart。
+如果 URL 不是不带路径等内容的 HTTPS origin(仅 loopback 允许 `http`)、TTL 为 0、secret 缺失或少于 32 bytes,或者 user list 为空或格式错误,启动会 fail closed。secret 可以包含 `:`,只有第一个 colon 用于分隔 email 与 secret。`jwt_secret_env` 和 `users_env` 的值也和其他配置文件字符串一样,可以写成 `${VAR}` / `${file:...}`(见 [Secret 引用](#secret-引用))。env-backed secret 和 user 的变更会在 config reload 时生效;由于 route tree 在 boot 时固定,添加或移除此表需要 restart。
+
+同时设置一个已弃用的键和其对应的 `[server.gateway.session]` 替代键会导致启动失败,按键分别判断:`jwt_secret_env` 与 `session.jwt_secret` 同时设置是错误;`token_ttl_seconds` 与 `session.ttl_hours` 同时设置也是错误。跨这两组混用(例如同时设置 `session.jwt_secret` 和 `token_ttl_seconds`)则没有问题。只要已弃用的键被显式设置——无论是在配置文件中,还是通过 `SHUNT_*` 环境变量 override——shunt 就会记录一次弃用警告;只有当该键本身完全未被设置、使用默认值时才会保持沉默 —— 不设置 `jwt_secret_env`、只依赖 `SHUNT_GATEWAY_JWT_SECRET` env 变量来保存 secret 的配置仍然不会触发警告,因为该变量保存的是 secret 的值,而不是已弃用的键本身被设置。当某一对中只设置了一侧时,`session.*`(若存在)优先,其次是已弃用的键,最后才是默认值。
 
 颁发的 bearer 会在所选 provider 注入 server-side credential 时认证 `/v1/models`、`/v1/messages` 和 `/v1/messages/count_tokens`。passthrough provider 仍保持 open。如果还存在 `[server.auth]`,任一 credential 都能授权访问。device grant 和 rotating refresh token 是 process-lifetime in-memory state:config reload 会保留它们,但 restart 会使其失效。
+
+### `[server.gateway.session]`(可选)
+
+对应上游 Claude apps gateway 的 `session:` 块:
+
+```toml
+[server.gateway.session]
+jwt_secret = "${SHUNT_GATEWAY_JWT_SECRET}"
+ttl_hours = 1
+```
+
+| 键 | 默认 | 含义 |
+| :-- | :-- | :-- |
+| `jwt_secret` | 存在此表时必需 | HS256 signing secret,至少需要 32 bytes 的熵(例如 `openssl rand -base64 32`)。可以是单个字符串,也可以是用于轮换的 array —— index 0 用于签发新 token,所有条目都参与验证 |
+| `ttl_hours` | `1` | access token 生命周期,以小时为单位 |
+
+`jwt_secret` 是一个 `Secret` 类型的字段:它的值和其他配置文件字符串一样支持 `${VAR}` / `${file:/绝对/路径}`(见 [Secret 引用](#secret-引用)),并在诊断输出中被 redact。要在不使旧会话失效的情况下轮换,把新 secret 加到 array 开头,等待 `ttl_hours` 让未过期的 access token 到期,再删除旧的那一项:
+
+```toml
+[server.gateway.session]
+jwt_secret = ["new-secret-value", "old-secret-value"]
+```
 
 ### `[[server.gateway.policies]]`(可选)
 
@@ -80,7 +116,7 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 
 ### `[server.gateway.telemetry]`(可选)
 
-`forward_to` 是 destination array,每项具有必需的 base OTLP/HTTP `url`、可选的 string `headers` map,以及每个 signal 的 opt-in boolean(`metrics` 默认 `true`,`logs`/`traces` 默认 `false`)。至少 opt-in 一个 signal 的 list 会向 managed `settings.env` 注入 6 个值:`CLAUDE_CODE_ENABLE_TELEMETRY=1`、每个 `OTEL_METRICS_EXPORTER`/`OTEL_LOGS_EXPORTER`/`OTEL_TRACES_EXPORTER` 在有 destination opt-in 该 signal 时为 `otlp`,否则为 `none`、`OTEL_EXPORTER_OTLP_ENDPOINT=public_url`、`OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`。若没有任何 signal 被 opt-in,则不注入任何值。发生冲突时 policy env value 优先。同一 list 也驱动 inbound ingest(M-C,#189):只要存在 `[server.gateway]` 就会注册的 `POST /v1/{metrics,logs,traces}` route 接收客户端 export 的 OTLP payload,并将其 verbatim relay 到所有 opt-in 该 signal 的 destination;没有任何 destination opt-in 的 signal 会被接收后丢弃。`logs`/`traces` 默认关闭,因为 Claude Code 的 log record 和 span 可能携带 command line、prompt 和文件路径。
+`forward_to` 是 destination array,每项具有必需的 base OTLP/HTTP `url`、可选的 string `headers` map,以及每个 signal 的 opt-in boolean(`metrics` 默认 `true`,`logs`/`traces` 默认 `false`)。至少 opt-in 一个 signal 的 list 会向 managed `settings.env` 注入 6 个值:`CLAUDE_CODE_ENABLE_TELEMETRY=1`、每个 `OTEL_METRICS_EXPORTER`/`OTEL_LOGS_EXPORTER`/`OTEL_TRACES_EXPORTER` 在有 destination opt-in 该 signal 时为 `otlp`,否则为 `none`、`OTEL_EXPORTER_OTLP_ENDPOINT=public_url`、`OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`。若没有任何 signal 被 opt-in,则不注入任何值。发生冲突时 policy env value 优先。同一 list 也驱动 inbound ingest(M-C,#189):只要存在 `[server.gateway]` 就会注册的 `POST /v1/{metrics,logs,traces}` route 接收客户端 export 的 OTLP payload,并将其 verbatim relay 到所有 opt-in 该 signal 的 destination;没有任何 destination opt-in 的 signal 会被接收后丢弃。`logs`/`traces` 默认关闭,因为 Claude Code 的 log record 和 span 可能携带 command line、prompt 和文件路径。`headers` 的每个值都是 redacting secret 类型,在诊断输出中显示为 `[redacted]`(见 [Secret 引用](#secret-引用))。
 
 ```toml
 [[server.gateway.policies]]
@@ -212,6 +248,8 @@ codex-fallback = "gpt-5.2"
 
 对于 `passthrough` 上游，客户端自己的 `authorization` / `x-api-key` 仅在故障转移尝试中当**主**路由自身为 `passthrough` 且该尝试的目标来源(origin)与该主路由一致时才转发。此时该凭据是客户端自己的上游凭据、对主路由而言是来源专属的，因此对**不同**来源的 `passthrough` 故障转移尝试会将其剥离并快速失败(fail closed)，而不会把主机专属令牌重放到另一个来源；同一来源的回退(例如同一主机上的两个 passthrough 条目)仍会携带该凭据。当主路由改为注入自己的凭据时，客户端头部是网关/客户端密钥而非上游凭据，因此每个 `passthrough` 回退无论来源如何都会将其剥离。`api_key`/OAuth 上游无论位置如何都会注入自己的服务端凭据。
 
+与 origin 无关，每个被保留的槽位还会按它实际持有的值进行检查：只有当 `authorization` 或 `x-api-key` 槽位自身的值与 shunt 自己签发的 JWT **形状相符**——三段式结构，且载荷的 `aud` 声明为 `"shunt"`、`iss` 声明与本网关的身份一致，或 `shunt_token_use` 声明为 `"gateway-session"`（仅由 shunt 签发的专用标记）——或匹配配置的 `[server.auth]` 客户端令牌时，该槽位才会被清除。这项 JWT 检查刻意按“形状是否相符”而非“该令牌现在是否能通过认证”来判定：一个已过期的令牌、由使用不同 `public_url` 的兄弟实例签发的令牌，或在 `jwt_secret` 轮换后已不再能通过校验的令牌，仍然是 shunt 自己的凭据，因此仍会被清除。该标记只是形状检查新增的一个分支，而非必要条件：在该标记出现之前签发的令牌仍会按 `aud`/`iss` 匹配，`verify` 本身也不要求该标记，因此旧版本 shunt 签发的令牌只要仍在其 TTL 内就仍能通过认证 —— `apiKeyHelper` 会用同一个值填充两个槽位，因此任一凭据都可能出现在其中一个或两个槽位中。即使另一个槽位持有网关 JWT 或静态客户端令牌，持有真实上游凭据的槽位仍会被转发；只有持有门控凭据的那个槽位会被清除。`[server.auth] header` 可以是任意头名称，包括 `authorization` 本身；这样配置时客户端使用不带前缀的 `Authorization: <token>` 进行认证，因此该槽位除了按 `Bearer` 载荷检查外还会按整个值检查，此类令牌绝不会被转发到上游。该配置有一个注意事项：在推理请求上 shunt 会在路由前无条件移除配置的头部，因此该槽位不会向上游携带任何东西 —— 不只是门控令牌，调用方自己的凭据也会一并被丢弃。把 `header` 保持为默认的专用 `x-shunt-token` 可以避免这种冲突。
+
 每个代理成功响应或最终失败都带有 `x-gateway-upstream`（所选上游名称）、`x-gateway-model`（客户端请求的 id）和 `x-gateway-upstream-model`（映射后的后端 id）。`count_tokens` 只使用链中第一个条目，且不会故障转移。`[server.codex_endpoint]` 仍固定到所配置的单一上游，不参与此链。
 
 ### 迁移现有配置
@@ -235,7 +273,7 @@ codex-fallback = "gpt-5.2"
 | `kind` | `anthropic` \| `responses` \| `cursor` \| `gemini` \| `antigravity` | 上游协议 / 适配器。`anthropic` = Messages API(透传,可选择重新设置密钥);`responses` = Anthropic Messages 转换为 OpenAI Responses API;`cursor` = 原生 Cursor ConnectRPC/protobuf AgentService 适配器;`gemini` = Anthropic Messages 转换为 Google Code Assist 后端的 Gemini `generateContent`/`streamGenerateContent`;`antigravity` = 没有任何上游,以子进程方式运行本地 Antigravity CLI 二进制(`agy`)。 |
 | `base_url` | URL | 上游 base；shunt 追加端点路径。对于 `kind = "cursor"`，它仅用于登录/令牌刷新接口，不会选择代理/推理主机。 |
 | `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `claude_oauth` \| `xai_oauth` \| `cursor_oauth` \| `google_oauth` \| `none` | `passthrough` 转发客户端自己的 credential;`api_key` 从 `api_key_env` 注入一个密钥;`chatgpt_oauth` 复用 `~/.codex/auth.json`;`claude_oauth` 从显式 Anthropic 账户中选择;`xai_oauth` 复用来自 `shunt login xai` 的 `~/.shunt/xai-auth.json`(仅经由 HTTPS 发送到 x.ai/grok.com 主机);`cursor_oauth` 复用 `~/.shunt/cursor-auth.json`(`shunt login cursor`);`google_oauth` 复用 gemini CLI 登录的 `~/.gemini/oauth_creds.json`,仅在 `kind = "gemini"` 下有效;`none` 完全不发送 credential,用于没有上游需要认证的适配器(`kind = "antigravity"`)。 |
-| `api_key_env` | 环境变量名 | 当 `auth = "api_key"` 时,从何处读取密钥。 |
+| `api_key_env` | 环境变量名 | 当 `auth = "api_key"` 时,从何处读取密钥。该值自身也可以写成 `${VAR}` / `${file:...}`(见 [Secret 引用](#secret-引用))。 |
 | `api_key_header` | `bearer`(默认) \| `x_api_key` | 注入的密钥在哪个头部中发送。 |
 | `effort` | `low` … `max` | 可选的默认推理力度(`responses` 提供方)。 |
 | `count_tokens` | `tiktoken`(默认) \| `estimate` | `responses` 与 `cursor` provider:本地 tiktoken 计数 vs. `501 not_supported` 回退([详情](/zh-cn/guides/effort-and-context/#token-counting-count_tokens))。 |
@@ -271,7 +309,7 @@ codex-fallback = "gpt-5.2"
 
 顶层 `auto_include_builtin_models` 键默认为 `true`。启用后,shunt 会先返回管理员维护的 `[[models]]` 条目,再追加它自行发现的模型。对于 id 完全相同的条目,会保留管理员维护的条目并去重。若只想公开 `[[models]]` 列表,请将其设为 `false` —— 这也会一并关闭下述的上游调用。
 
-发现的模型在 shunt 能取到实际上游列表时来自该列表。仅当 `server.default_provider` 为 Anthropic 类型时,它才会对该上游发起 `GET /v1/models`,并按其认证模式选择凭据。`auth = "passthrough"` 时使用调用方转发的凭据,因此每个调用方看到的都是该凭据有权使用的列表。如果 shunt 已将该凭据用作 `[server.auth]` 客户端 token 或 gateway-login bearer,则不会将其重放到上游。此时,发现会记录没有剩余上游凭据的原因并回退到快照。`api_key` 时使用配置的密钥。`claude_oauth` 时使用推理路径所用的同一有效账户集合中第一个可解析且未禁用的账户。该集合包含从存储中扫描到的账户,并遵循 `account_scope` 顺序。发现不会进行账户池选择、冷却或配额记账。因此,后两种使用网关自有凭据的模式下,所有调用方共享由该凭据范围决定的目录。shunt 不做缓存。若 `server.default_provider` 不是 Anthropic 类型、没有凭据,或调用失败、超时(上限 2 秒),则回退到内置 Claude 目录快照。无论哪种情况,这些 id 都不需要专门的 `[[routes]]` 条目;它们按常规路由规则解析,当 `[[routes]]` 与 `[[route_prefixes]]` 均未匹配时回退到 `server.default_provider`。
+发现的模型在 shunt 能取到实际上游列表时来自该列表。仅当 `server.default_provider` 为 Anthropic 类型时,它才会对该上游发起 `GET /v1/models`,并按其认证模式选择凭据。`auth = "passthrough"` 时使用调用方转发的凭据,因此每个调用方看到的都是该凭据有权使用的列表——但如果某个槽位中存放的不是真正的上游凭据,而是 shunt 自身的 `[server.gateway]` JWT 或配置的 `[server.auth]` 客户端令牌,则该槽位不会被转发。`authorization` 与 `x-api-key` 各自独立过滤,因此另一槽位中的真实凭据仍会被转发;只有当两个槽位都没有可转发的凭据时,发现才会回退到内置快照。`api_key` 时使用配置的密钥。`claude_oauth` 时使用推理路径所用的同一有效账户集合中第一个可解析且未禁用的账户。该集合包含从存储中扫描到的账户,并遵循 `account_scope` 顺序。发现不会进行账户池选择、冷却或配额记账。因此,后两种使用网关自有凭据的模式下,所有调用方共享由该凭据范围决定的目录。shunt 不做缓存。若 `server.default_provider` 不是 Anthropic 类型、没有凭据,或调用失败、超时(上限 2 秒),则回退到内置 Claude 目录快照。无论哪种情况,这些 id 都不需要专门的 `[[routes]]` 条目;它们按常规路由规则解析,当 `[[routes]]` 与 `[[route_prefixes]]` 均未匹配时回退到 `server.default_provider`。
 
 在维护的条目中添加 `[models.upstream_model]`，即可通过同一声明公开 id、进行路由并转换为上游 id。对于精确 id 路由，建议使用此形式而不是 `[[routes]]`。使用有序 `[[upstreams]]` 时，映射可包含一个或多个 `upstream = "backend-id"` 键值对，并按 `[[upstreams]]` 声明顺序解析为故障转移链。旧式 `[providers.*]` 没有声明顺序，因此只能包含一个键值对。对于这个 id，该映射优先于 `[[routes]]`、`[[route_prefixes]]` 和 `server.default_provider`；每个上游的默认 `effort` 会应用到相应链条目。空映射、空或仅含空白字符的上游名称或后端 id、未知上游、同 id 的 `[[routes]]` 条目、以 `[1m]` 或 `[1M]` 结尾的带映射 id，以及至少有一项带映射的重复 `[[models]]` id 都会导致启动错误。client 会在匹配前移除 context-window hint，因此在带映射 id 中包含该 suffix 会使该条目无法命中。仅由不带映射条目组成的重复 id 保持原有行为。
 
@@ -296,7 +334,7 @@ codex = "gpt-5.2"
 
 | 键 | 默认 | 含义 |
 | :-- | :-- | :-- |
-| `dsn` | — | Sentry 项目 DSN。留空则关闭;无效 DSN 为启动错误。 |
+| `dsn` | — | Sentry 项目 DSN。留空则关闭;无效 DSN 为启动错误。Redacting secret —— 在诊断输出中显示为 `[redacted]`(见 [Secret 引用](#secret-引用))。 |
 | `environment` | — | 上报事件上的可选 environment 标签 |
 | `metrics` | `false` | 同时发送用量指标 — OpenTelemetry 指南中列出的 gateway 指标序列(仅聚合值) |
 | `traces_sample_rate` | `0.0` | 同时发送性能 trace:每个请求的 span 成为一个 Sentry 事务,按 `[0.0, 1.0]` 范围内的该比率做头部采样。`0.0` 完全不发送 span;超出范围为启动错误。 |
@@ -319,7 +357,7 @@ codex = "gpt-5.2"
 
 ## `[otel.headers]`(可选)
 
-附加到每个 OTLP 请求的 header(例如托管 collector 的令牌)。会合并到标准 `OTEL_EXPORTER_OTLP_HEADERS` 之下。
+附加到每个 OTLP 请求的 header(例如托管 collector 的令牌)。会合并到标准 `OTEL_EXPORTER_OTLP_HEADERS` 之下。每个 header 值都是 redacting secret 类型,在诊断输出中显示为 `[redacted]`(见 [Secret 引用](#secret-引用))。
 
 | 键 | 含义 |
 | :-- | :-- |

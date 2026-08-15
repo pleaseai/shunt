@@ -168,6 +168,23 @@ Cross-cutting:
   When the primary instead injects its own credential, the client headers are a
   gateway/client secret rather than an upstream credential, so every `passthrough`
   fallback strips them regardless of origin.
+  Layered on top of that origin rule, each slot a same-origin attempt retains is
+  also checked *by the value it holds*: `authorization` and `x-api-key` are each
+  cleared when that slot's own value is one of shunt's own inbound credentials —
+  a `[server.gateway]` JWT or a configured `[server.auth]` static token — never
+  both slots because one of them does. The gateway-JWT half of that check is
+  deliberately by *shape*, not by whether the token currently authenticates
+  (`jwt::has_shunt_shape`): a do-not-forward decision asks "did shunt issue
+  this?", not "is this valid right now?", so an expired token, one minted by a
+  sibling instance under a different `public_url`, or one that no longer
+  verifies after a `jwt_secret` rotation is still recognized and stripped —
+  forwarding it would leak the caller's identity and hand the upstream a
+  signature oracle over `jwt_secret`. An `apiKeyHelper` fills both slots with the
+  same value, so either credential can land in either or both beside a genuine
+  upstream credential that must keep flowing. The origin filter runs first: an
+  off-origin attempt strips both slots outright, and the by-value check applies
+  only to whatever the origin filter retained (`auth::inbound::consumed_by`,
+  shared with model discovery; see `docs/m4-inbound-auth.md` §2).
 - **count_tokens**: answered from the first chain element, as a chain has one
   advertised id; no failover for count_tokens.
 - **Metrics**: per-attempt `record_proxied_request` labeled by upstream name,

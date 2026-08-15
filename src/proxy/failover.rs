@@ -11,6 +11,7 @@ use crate::{
         anthropic::AnthropicAdapter, cursor::CursorAdapter, responses::ResponsesAdapter, Adapter,
         AdapterError, AdapterFailure,
     },
+    auth::inbound::{authorization_consumed_by, consumed_by, ConsumedBy},
     config::{AuthMode, CountTokens, ProviderKind},
     count_tokens,
     error::ShuntError,
@@ -570,14 +571,37 @@ fn headers_for_route(
     let injects_credential = !is_passthrough_route(state, route);
     if !injects_credential {
         // Passthrough forwards the caller's own upstream credential. That
-        // credential is origin-specific to the primary upstream, so it is kept
-        // only while the destination origin matches the primary's: a failover
-        // attempt to a *different* origin strips `authorization` / `x-api-key`
-        // and fails closed rather than replay a host-specific token off-origin.
-        // A same-origin failover (e.g. two passthrough entries on one host)
-        // still carries the credential, so that fallback keeps working. The
-        // primary route is the origin the credential was presented for, so it is
-        // kept without parsing any URL (the single-upstream hot path).
+        // credential is origin-specific to the primary upstream, so a slot is
+        // kept only while the destination origin matches the primary's: a
+        // failover attempt to a *different* origin strips both `authorization`
+        // and `x-api-key` and fails closed rather than replay a host-specific
+        // token off-origin. A same-origin failover (e.g. two passthrough
+        // entries on one host) keeps a slot that holds the caller's own
+        // upstream credential; the primary route is the origin the credential
+        // was presented for, so it is kept without parsing any URL (the
+        // single-upstream hot path).
+        //
+        // Within a same-origin attempt, each retained slot is also checked *by
+        // value*, independently, against both of shunt's own inbound
+        // credentials — the gateway JWT and a configured static
+        // `[server.auth]` token — and stripped only if it holds one, never
+        // both slots just because one of them does. `authorization` and
+        // `x-api-key` are the two slots an `apiKeyHelper` can fill (it fills
+        // both), so either of shunt's own credentials can land in either or
+        // both, beside a genuine upstream credential in the other slot that
+        // must keep flowing. `check_inbound_auth`'s auth gate authenticates
+        // once for the whole route chain, so a chain mixing mapped and
+        // passthrough routes can still reach this branch same-origin with a
+        // shunt-owned credential in one of these slots. A dedicated
+        // `x-shunt-token` header remains a good operational habit — it keeps
+        // `authorization`/`x-api-key` free for the caller's real credential
+        // without needing this per-value check at all (`docs/m4-inbound-auth.md`
+        // §2) — but it is no longer the only thing standing between a static
+        // token and the upstream: `is_consumed_by_shunt` (shared with
+        // `discovery/upstream.rs`) is applied to both slots for both
+        // credential kinds, so a static token delivered through a
+        // rotating-credential mechanism like `apiKeyHelper` is stripped here
+        // too.
         let mut headers = base.clone();
         let same_origin = is_primary
             || matches!(
@@ -587,6 +611,39 @@ fn headers_for_route(
         if !same_origin {
             headers.remove("authorization");
             headers.remove("x-api-key");
+            tracing::debug!(
+                provider = %route.provider,
+                "stripped passthrough credential slots: off_origin"
+            );
+            return headers;
+        }
+        if let Some(reason) = authorization_consumed_by(
+            &headers,
+            state.gateway_auth.as_deref(),
+            state.inbound_auth.as_deref(),
+        ) {
+            headers.remove("authorization");
+            tracing::debug!(
+                provider = %route.provider,
+                slot = "authorization",
+                reason = reason_label(reason),
+                "stripped passthrough credential slot"
+            );
+        }
+        if let Some(reason) = headers.get("x-api-key").and_then(|value| {
+            consumed_by(
+                value.as_bytes(),
+                state.gateway_auth.as_deref(),
+                state.inbound_auth.as_deref(),
+            )
+        }) {
+            headers.remove("x-api-key");
+            tracing::debug!(
+                provider = %route.provider,
+                slot = "x-api-key",
+                reason = reason_label(reason),
+                "stripped passthrough credential slot"
+            );
         }
         return headers;
     }
@@ -641,6 +698,15 @@ fn provider_origin(state: &AppState, provider: &str) -> Option<String> {
     (origin != "null").then_some(origin)
 }
 
+/// Label for a [`ConsumedBy`] match used only in a `tracing::debug!` reason
+/// field — never the token value itself.
+fn reason_label(reason: ConsumedBy) -> &'static str {
+    match reason {
+        ConsumedBy::GatewayJwt => "gateway_jwt",
+        ConsumedBy::StaticToken => "static_token",
+    }
+}
+
 fn stamp_gateway_headers(
     response: &mut axum::response::Response,
     upstream: &str,
@@ -657,3 +723,6 @@ fn stamp_gateway_headers(
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

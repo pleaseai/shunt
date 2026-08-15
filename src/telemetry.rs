@@ -356,7 +356,11 @@ fn build_resource(config: &OtelConfig) -> Resource {
 /// OTLP request headers (e.g. a hosted-collector auth token). The SDK also
 /// merges `OTEL_EXPORTER_OTLP_HEADERS` from the env on top of these.
 fn header_map(config: &OtelConfig) -> HashMap<String, String> {
-    config.headers.clone().into_iter().collect()
+    config
+        .headers
+        .iter()
+        .map(|(name, value)| (name.clone(), value.expose().to_string()))
+        .collect()
 }
 
 /// Warn (once, at startup) when `[otel.headers]` — which can carry a secret like
@@ -452,8 +456,10 @@ mod tests {
         // Build the value from parts so a credential scanner doesn't flag a
         // contiguous `Bearer <token>` literal in test code.
         let token = "token";
-        cfg.headers
-            .insert("authorization".to_string(), format!("Bearer {token}"));
+        cfg.headers.insert(
+            "authorization".to_string(),
+            format!("Bearer {token}").into(),
+        );
         let headers = header_map(&cfg);
         let expected = format!("Bearer {token}");
         assert_eq!(
@@ -516,9 +522,10 @@ mod tests {
         // Split scheme + token so a credential scanner doesn't flag a contiguous
         // `Bearer <token>` literal.
         let token = "x";
-        with_headers
-            .headers
-            .insert("authorization".to_string(), format!("Bearer {token}"));
+        with_headers.headers.insert(
+            "authorization".to_string(),
+            format!("Bearer {token}").into(),
+        );
 
         warn_on_plaintext_headers(&config(true, true, true, None)); // headers empty
         let mut https = with_headers.clone();

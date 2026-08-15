@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     net::SocketAddr,
     path::{Path, PathBuf},
 };
@@ -13,12 +13,16 @@ use thiserror::Error;
 
 mod http_tuning;
 mod presets;
+mod secrets;
+mod session;
 mod upstreams;
 
 pub use http_tuning::{
     AccessControlConfig, LimitsConfig, RateLimitConfig, RateLimitsConfig, TimeoutsConfig,
 };
 pub use presets::{provider_presets, ProviderPresetView};
+pub use secrets::Secret;
+pub use session::GatewaySessionConfig;
 pub use upstreams::{AccountSelection, AuthMap, UpstreamAuth, UpstreamConfig};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -513,14 +517,18 @@ pub struct GatewayConfig {
     /// Externally reachable URL used for issuer and OAuth endpoint metadata.
     pub public_url: String,
     /// Env var holding an HS256 signing secret of at least 32 bytes.
-    #[serde(default = "default_gateway_jwt_secret_env")]
-    pub jwt_secret_env: String,
+    /// Deprecated in favor of `[server.gateway.session] jwt_secret`; set at
+    /// most one of the two (both unset falls back to the historical default
+    /// env var name below).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jwt_secret_env: Option<String>,
     /// Env var holding comma-separated `email:secret` approval users.
     #[serde(default = "default_gateway_users_env")]
     pub users_env: String,
-    /// Access-token lifetime in seconds.
-    #[serde(default = "default_gateway_token_ttl_seconds")]
-    pub token_ttl_seconds: u64,
+    /// Access-token lifetime in seconds. Deprecated in favor of
+    /// `[server.gateway.session] ttl_hours`; set at most one of the two.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_ttl_seconds: Option<u64>,
     /// Honor `X-Forwarded-For`/`X-Real-IP` for `/device` rate limiting.
     /// Enable only behind a trusted proxy that replaces client-supplied values.
     #[serde(default)]
@@ -556,6 +564,11 @@ pub struct GatewayConfig {
     /// Optional external identity provider for browser approval.
     #[serde(default)]
     pub oidc: Option<GatewayOidcConfig>,
+    /// `[server.gateway.session]` — the upstream Claude apps gateway
+    /// `session:` block; see `GatewaySessionConfig`. Supersedes
+    /// `jwt_secret_env` and `token_ttl_seconds` above.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<GatewaySessionConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -750,7 +763,7 @@ fn default_gateway_spend_state_path() -> Option<PathBuf> {
 pub struct GatewayTelemetryDestination {
     pub url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub headers: Option<BTreeMap<String, String>>,
+    pub headers: Option<BTreeMap<String, Secret>>,
     #[serde(default = "default_true")]
     pub metrics: bool,
     #[serde(default)]
@@ -801,15 +814,50 @@ impl GatewayConfig {
         let public_url = resolve_public_origin(&self.public_url, |message| {
             ConfigError::InvalidGatewayPublicUrl { message }
         })?;
-        if self.token_ttl_seconds == 0 {
-            return Err(ConfigError::InvalidGatewayTokenTtl);
+        // `session` is required to carry `jwt_secret` (no default), so its
+        // presence alone means the replacement key is set — fail closed
+        // rather than silently pick a side when both the legacy key and its
+        // replacement are configured.
+        if self.jwt_secret_env.is_some() && self.session.is_some() {
+            return Err(ConfigError::GatewaySessionJwtSecretConflict);
         }
-        let secret = std::env::var(&self.jwt_secret_env).unwrap_or_default();
-        if secret.len() < 32 {
-            return Err(ConfigError::InvalidGatewayJwtSecret {
-                env: self.jwt_secret_env.clone(),
-            });
+        if self.token_ttl_seconds.is_some()
+            && self
+                .session
+                .as_ref()
+                .is_some_and(|session| session.ttl_hours.is_some())
+        {
+            return Err(ConfigError::GatewaySessionTtlConflict);
         }
+        let ttl_seconds = match self.session.as_ref().and_then(|session| session.ttl_hours) {
+            Some(hours) => {
+                if hours == 0 {
+                    return Err(ConfigError::InvalidGatewaySessionTtlHours);
+                }
+                hours
+                    .checked_mul(3600)
+                    .ok_or(ConfigError::GatewaySessionTtlHoursOverflow)?
+            }
+            None => match self.token_ttl_seconds {
+                Some(0) => return Err(ConfigError::InvalidGatewayTokenTtl),
+                Some(seconds) => seconds,
+                None => default_gateway_token_ttl_seconds(),
+            },
+        };
+        let secrets = match &self.session {
+            Some(session) => resolve_session_jwt_secrets(session)?,
+            None => {
+                let env = self
+                    .jwt_secret_env
+                    .clone()
+                    .unwrap_or_else(default_gateway_jwt_secret_env);
+                let secret = std::env::var(&env).unwrap_or_default();
+                if secret.len() < 32 {
+                    return Err(ConfigError::InvalidGatewayJwtSecret { env });
+                }
+                vec![secret.into_bytes()]
+            }
+        };
         let raw_users = std::env::var(&self.users_env).unwrap_or_default();
         let approval = if raw_users.trim().is_empty() {
             if self.oidc.is_none() {
@@ -835,16 +883,64 @@ impl GatewayConfig {
         let telemetry_push = validate_gateway_telemetry(self.telemetry.as_ref())?;
         let mut auth = crate::gateway::GatewayAuth::with_optional_approval(
             public_url.as_str().trim_end_matches('/').to_string(),
-            secret.into_bytes(),
-            self.token_ttl_seconds,
+            secrets[0].clone(),
+            ttl_seconds,
             self.trust_forwarded_for,
             approval,
-        );
+        )
+        .with_signing_secrets(secrets);
         if let Some(oidc) = &self.oidc {
             auth = auth.with_oidc(oidc.resolve()?);
         }
         Ok(auth.with_managed_policies(policies, telemetry_push))
     }
+
+    /// Boot-time deprecation warnings for the legacy `jwt_secret_env` /
+    /// `token_ttl_seconds` keys, which `[server.gateway.session]`
+    /// supersedes. Pure and independently testable so `Config::load` only
+    /// has to log whatever it returns.
+    pub fn deprecations(&self) -> Vec<String> {
+        let mut messages = Vec::new();
+        if self.jwt_secret_env.is_some() {
+            messages.push(
+                "[server.gateway] jwt_secret_env is deprecated; use \
+                 [server.gateway.session] jwt_secret instead"
+                    .to_string(),
+            );
+        }
+        if self.token_ttl_seconds.is_some() {
+            messages.push(
+                "[server.gateway] token_ttl_seconds is deprecated; use \
+                 [server.gateway.session] ttl_hours instead"
+                    .to_string(),
+            );
+        }
+        messages
+    }
+}
+
+/// Validates every secret in `session.jwt_secret` (non-empty list, each
+/// entry at least 32 bytes, the offending index named on failure) and
+/// returns them as signing/verification key bytes in file order — index 0
+/// signs, every entry verifies.
+fn resolve_session_jwt_secrets(
+    session: &GatewaySessionConfig,
+) -> Result<Vec<Vec<u8>>, ConfigError> {
+    if session.jwt_secret.is_empty() {
+        return Err(ConfigError::EmptyGatewaySessionJwtSecret);
+    }
+    session
+        .jwt_secret
+        .iter()
+        .enumerate()
+        .map(|(index, secret)| {
+            if secret.expose().len() < 32 {
+                Err(ConfigError::InvalidGatewaySessionJwtSecret { index })
+            } else {
+                Ok(secret.expose().as_bytes().to_vec())
+            }
+        })
+        .collect()
 }
 
 fn resolve_gateway_policies(
@@ -966,7 +1062,7 @@ fn validate_gateway_telemetry_destination(
     for (name, value) in destination.headers.iter().flatten() {
         let part = if reqwest::header::HeaderName::try_from(name.as_str()).is_err() {
             "name"
-        } else if reqwest::header::HeaderValue::try_from(value.as_str()).is_err() {
+        } else if reqwest::header::HeaderValue::try_from(value.expose()).is_err() {
             "value"
         } else {
             continue;
@@ -1296,7 +1392,7 @@ pub struct SentryConfig {
     /// DSN of the operator's Sentry project. An empty string disables
     /// reporting, so `SHUNT_SENTRY__DSN=""` can turn a TOML-configured section
     /// off without editing the file.
-    pub dsn: String,
+    pub dsn: Secret,
     /// Optional environment tag on reported events (e.g. "prod", "home-lab").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment: Option<String>,
@@ -1323,7 +1419,7 @@ pub struct SentryConfig {
 impl SentryConfig {
     /// Whether this section actually enables reporting (non-empty DSN).
     pub fn enabled(&self) -> bool {
-        !self.dsn.trim().is_empty()
+        !self.dsn.expose().trim().is_empty()
     }
 }
 
@@ -1358,7 +1454,7 @@ pub struct OtelConfig {
     /// collector: `authorization = "Bearer …"`. Values can be secrets; keep
     /// them out of shared configs (prefer `SHUNT_OTEL__HEADERS__…` in the env).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub headers: BTreeMap<String, String>,
+    pub headers: BTreeMap<String, Secret>,
     /// Export trace spans (the per-request `proxy_request` span). On by default.
     #[serde(default = "default_true")]
     pub traces: bool,
@@ -1962,6 +2058,30 @@ pub enum ConfigError {
     ReadConfigFile { path: PathBuf, message: String },
     #[error("declare either [[upstreams]] or [providers.*], not both; use exactly one provider declaration form")]
     MixedProviderDeclarationForms,
+    #[error("failed to parse config file: {message}")]
+    InvalidConfigSyntax { message: String },
+    #[error("{path} has an unterminated ${{ reference: no closing brace found")]
+    UnterminatedReference { path: String },
+    #[error("{path} has an empty ${{}} reference; name an environment variable or use ${{file:/abs/path}}")]
+    EmptyReferenceName { path: String },
+    #[error("{path} references \"{name}\", which is not a valid environment variable name (must match [A-Za-z_][A-Za-z0-9_]*)")]
+    InvalidReferenceVarName { path: String, name: String },
+    #[error("{path} references environment variable \"{var}\", which is not set")]
+    UndefinedReferenceVar { path: String, var: String },
+    #[error("{path} references environment variable \"{var}\", whose value is not valid Unicode")]
+    NonUnicodeReferenceVar { path: String, var: String },
+    #[error("{path} uses unknown reference scheme \"{scheme}\"; only \"file\" is supported")]
+    UnknownReferenceScheme { path: String, scheme: String },
+    #[error("{path} references file \"{file}\", which is not an absolute path")]
+    RelativeFileReference { path: String, file: String },
+    #[error("{path} embeds a ${{file:...}} reference inside a longer string; a file reference must be the field's entire value")]
+    EmbeddedFileReference { path: String },
+    #[error("{path} references file \"{file}\", which could not be read: {message}")]
+    UnreadableReferenceFile {
+        path: String,
+        file: String,
+        message: String,
+    },
     #[error(
         "provider \"{provider}\" runs the Antigravity CLI with sandbox = false, which gives an \
          autonomous agent shell access as the user running shunt; that cannot be served on the \
@@ -2115,6 +2235,24 @@ pub enum ConfigError {
         "[server.gateway] requires {env} to contain a JWT signing secret of at least 32 bytes"
     )]
     InvalidGatewayJwtSecret { env: String },
+    #[error(
+        "[server.gateway] jwt_secret_env conflicts with [server.gateway.session] jwt_secret; \
+         set exactly one"
+    )]
+    GatewaySessionJwtSecretConflict,
+    #[error(
+        "[server.gateway] token_ttl_seconds conflicts with [server.gateway.session] ttl_hours; \
+         set exactly one"
+    )]
+    GatewaySessionTtlConflict,
+    #[error("[server.gateway.session] jwt_secret must contain at least one secret")]
+    EmptyGatewaySessionJwtSecret,
+    #[error("[server.gateway.session] jwt_secret[{index}] must be at least 32 bytes")]
+    InvalidGatewaySessionJwtSecret { index: usize },
+    #[error("[server.gateway.session] ttl_hours must be greater than zero")]
+    InvalidGatewaySessionTtlHours,
+    #[error("[server.gateway.session] ttl_hours is too large to convert to seconds")]
+    GatewaySessionTtlHoursOverflow,
     #[error(
         "[server.gateway] is set but {env} is unset or empty; no approval users are configured"
     )]
@@ -2522,6 +2660,18 @@ impl Config {
         };
         let mut figment = Figment::from(Serialized::defaults(Self::default()));
         let mut file_declares_upstreams = false;
+        // Literal (non-reference) string values found in the file, keyed by
+        // value and valued by the dotted field path(s) they appeared at —
+        // used only to warn about a `Secret` field holding a plaintext
+        // credential. Left empty when there is no config file.
+        let mut literal_values = HashMap::new();
+        // Values that must never be mistaken for a literal secret: every
+        // value produced by resolving a `${VAR}`/`${file:...}` reference in
+        // the file, plus every current `SHUNT_*` env var's value (a `Secret`
+        // fed by either can coincidentally share text with an unrelated
+        // literal elsewhere without that literal's warning misfiring onto
+        // it). See `secrets::record_literal_hit`.
+        let mut never_literal_values = HashSet::new();
         if let Some(path) = &path {
             // Read the file ourselves instead of `Toml::file`, which silently
             // yields an empty provider for a missing file — a typo'd --config
@@ -2537,11 +2687,19 @@ impl Config {
                     }
                 }
             })?;
+            // Resolve `${VAR}`/`${file:...}` references in every string value
+            // of the file tree before it ever reaches figment. This is the
+            // file layer only — `SHUNT_*` env overrides below are never
+            // passed through this pass, so they are never re-resolved.
+            let format = ConfigFormat::from_path(path);
+            let substituted = secrets::substitute(&raw, format)?;
+            literal_values = substituted.literals;
+            never_literal_values = substituted.resolved_values;
             // Probe only the file layer: serialized defaults always contain the
             // built-in providers, and env overrides are allowed under either form.
-            let file_figment = match ConfigFormat::from_path(path) {
-                ConfigFormat::Toml => Figment::from(Toml::string(&raw)),
-                ConfigFormat::Yaml => Figment::from(Yaml::string(&raw)),
+            let file_figment = match format {
+                ConfigFormat::Toml => Figment::from(Toml::string(&substituted.text)),
+                ConfigFormat::Yaml => Figment::from(Yaml::string(&substituted.text)),
             };
             let file_declares_providers = file_figment.find_value("providers").is_ok();
             file_declares_upstreams = file_figment.find_value("upstreams").is_ok();
@@ -2552,7 +2710,14 @@ impl Config {
             // both accepted; an unknown extension is treated as TOML.
             figment = figment.merge(file_figment);
         }
+        never_literal_values.extend(secrets::shunt_env_values());
         let env = Env::prefixed("SHUNT_").split("__");
+        // Scopes the literal-value map for the extraction below so
+        // `Secret::deserialize` can record which config-file paths held a
+        // secret written verbatim, for the aggregated warning after
+        // validation. Dropped (and the thread-local cleared) once this
+        // function returns.
+        let literal_scope = secrets::LiteralScope::enter(literal_values, never_literal_values);
         let mut config: Self = if file_declares_upstreams {
             // Provider env overrides address normalized upstreams by name; applying
             // them to the defaults first would let an env var create a legacy
@@ -2569,10 +2734,62 @@ impl Config {
             config.apply_ordered_provider_env(env)?;
         }
         let config = config.validate()?;
+        // One aggregated warning per load naming every `Secret` field whose
+        // value was written literally in the config file — never the value
+        // itself. A `Secret` populated from an env override, a `${...}`
+        // reference, or a default has no entry here and is not reported. A
+        // literal value whose path could not be attributed is reported as a
+        // count rather than guessed at. Attribution fails for two unrelated
+        // reasons — the same value sits at more than one Secret-shaped path,
+        // or no path matched because the allowlist has drifted behind a newly
+        // added Secret field — so the message states only that the field is
+        // unidentified, never why. Advisory only: a literal secret is allowed
+        // and never fails the load.
+        let literal_hits = secrets::LiteralScope::hits();
+        let unattributed_hits = secrets::LiteralScope::unattributed_count();
+        drop(literal_scope);
+        if !literal_hits.is_empty() || unattributed_hits > 0 {
+            let paths = literal_hits
+                .iter()
+                .map(|path| secrets::format_literal_path(path))
+                .collect::<Vec<_>>()
+                .join(", ");
+            match (literal_hits.is_empty(), unattributed_hits) {
+                (true, unattributed) if unattributed > 0 => {
+                    tracing::warn!(
+                        "{unattributed} config value(s) are written literally in the config \
+                         file but could not be attributed to a specific field; if they are \
+                         credentials, prefer ${{VAR}} or ${{file:}} so the secret does not \
+                         live in the file"
+                    );
+                }
+                (false, 0) => {
+                    tracing::warn!(
+                        "config values at {paths} are written literally in the config file; if \
+                         they are credentials, prefer ${{VAR}} or ${{file:}} so the secret does \
+                         not live in the file"
+                    );
+                }
+                (false, unattributed) => {
+                    tracing::warn!(
+                        "config values at {paths} are written literally in the config file, and \
+                         {unattributed} additional value(s) could not be attributed to a \
+                         specific field; if they are credentials, prefer ${{VAR}} or \
+                         ${{file:}} so the secret does not live in the file"
+                    );
+                }
+                _ => unreachable!("guarded by the outer `if`"),
+            }
+        }
         // Collision reporting belongs to the load boundary rather than
         // validation: RuntimeState defensively re-validates an already-loaded
         // config, and logging there would emit the same warning twice.
         config.warn_identity_collisions();
+        if let Some(gateway) = config.server.gateway.as_ref() {
+            for message in gateway.deprecations() {
+                tracing::warn!("{message}");
+            }
+        }
         // Logged only after validation so a rejected config never boots with a
         // misleading "loaded config" line.
         match &path {
@@ -2895,11 +3112,13 @@ impl Config {
         // out-of-range value would silently distort sampling at runtime.
         if let Some(sentry) = &self.sentry {
             if sentry.enabled() {
-                sentry.dsn.parse::<sentry::types::Dsn>().map_err(|error| {
-                    ConfigError::InvalidSentryDsn {
+                sentry
+                    .dsn
+                    .expose()
+                    .parse::<sentry::types::Dsn>()
+                    .map_err(|error| ConfigError::InvalidSentryDsn {
                         message: error.to_string(),
-                    }
-                })?;
+                    })?;
                 if !(0.0..=1.0).contains(&sentry.traces_sample_rate) {
                     return Err(ConfigError::InvalidSentryTracesSampleRate {
                         rate: sentry.traces_sample_rate,
@@ -3580,10 +3799,10 @@ mod tests {
         config_file_candidates, default_auth_header, host_is_chatgpt, identity_collisions,
         AccountConfig, AdminConfig, AdminOidcConfig, AuthMode, CodexEndpointConfig, Config,
         ConfigError, ConfigFormat, GatewayConfig, GatewayEnforcementConfig, GatewayOidcConfig,
-        GatewayPolicyConfig, GatewayPolicyMatch, GatewayTelemetryConfig,
+        GatewayPolicyConfig, GatewayPolicyMatch, GatewaySessionConfig, GatewayTelemetryConfig,
         GatewayTelemetryDestination, InboundAuthConfig, ModelConfig, OauthUsageConfig,
-        OidcProviderConfig, PoolConfig, ProviderKind, ResponsesFlavor, RetryConfig, StatusConfig,
-        StatusSource, UsageEndpointConfig, CONFIG_ENV_LOCK,
+        OidcProviderConfig, PoolConfig, ProviderKind, ResponsesFlavor, RetryConfig, Secret,
+        StatusConfig, StatusSource, UsageEndpointConfig, CONFIG_ENV_LOCK,
     };
 
     fn model_config(id: &str, upstream_model: Option<BTreeMap<String, String>>) -> ModelConfig {
@@ -4743,9 +4962,9 @@ mod tests {
         let users_env = format!("SHUNT_GATEWAY_CONFIG_USERS_{suffix}");
         let gateway = GatewayConfig {
             public_url: "https://gateway.example".to_string(),
-            jwt_secret_env: secret_env.clone(),
+            jwt_secret_env: Some(secret_env.clone()),
             users_env: users_env.clone(),
-            token_ttl_seconds: 3600,
+            token_ttl_seconds: Some(3600),
             trust_forwarded_for: false,
             policies: None,
             telemetry: None,
@@ -4753,6 +4972,7 @@ mod tests {
             admin: None,
             enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
+            session: None,
         };
 
         assert!(matches!(
@@ -4991,9 +5211,9 @@ mod tests {
     fn gateway_config_rejects_invalid_public_url_and_zero_ttl() {
         let mut gateway = GatewayConfig {
             public_url: "not a URL".to_string(),
-            jwt_secret_env: "UNUSED_GATEWAY_SECRET".to_string(),
+            jwt_secret_env: Some("UNUSED_GATEWAY_SECRET".to_string()),
             users_env: "UNUSED_GATEWAY_USERS".to_string(),
-            token_ttl_seconds: 3600,
+            token_ttl_seconds: Some(3600),
             trust_forwarded_for: false,
             policies: None,
             telemetry: None,
@@ -5001,6 +5221,7 @@ mod tests {
             admin: None,
             enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
+            session: None,
         };
         assert!(matches!(
             gateway.resolve(),
@@ -5022,7 +5243,7 @@ mod tests {
             Err(ConfigError::InvalidGatewayPublicUrl { .. })
         ));
         gateway.public_url = "http://127.0.0.1:8787".to_string();
-        gateway.token_ttl_seconds = 0;
+        gateway.token_ttl_seconds = Some(0);
         assert!(matches!(
             gateway.resolve(),
             Err(ConfigError::InvalidGatewayTokenTtl)
@@ -5104,9 +5325,9 @@ mod tests {
         std::env::set_var(&oidc_env, "client-secret");
         let gateway = GatewayConfig {
             public_url: "https://gateway.example".into(),
-            jwt_secret_env: jwt_env.clone(),
+            jwt_secret_env: Some(jwt_env.clone()),
             users_env: users_env.clone(),
-            token_ttl_seconds: 3600,
+            token_ttl_seconds: Some(3600),
             trust_forwarded_for: false,
             policies: None,
             telemetry: None,
@@ -5126,6 +5347,7 @@ mod tests {
                     userinfo_endpoint: None,
                 },
             }),
+            session: None,
         };
         let resolved = gateway.resolve().expect("OIDC-only gateway resolves");
         assert!(resolved.approval_provider().is_none());
@@ -5144,9 +5366,9 @@ mod tests {
         std::env::set_var(&users_env, "dev@example.com:password");
         let base = GatewayConfig {
             public_url: "https://gateway.example".to_string(),
-            jwt_secret_env: secret_env.clone(),
+            jwt_secret_env: Some(secret_env.clone()),
             users_env: users_env.clone(),
-            token_ttl_seconds: 3600,
+            token_ttl_seconds: Some(3600),
             trust_forwarded_for: false,
             policies: None,
             telemetry: None,
@@ -5154,6 +5376,7 @@ mod tests {
             admin: None,
             enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
+            session: None,
         };
 
         let mut gateway = base.clone();
@@ -5256,6 +5479,250 @@ mod tests {
 
         std::env::remove_var(secret_env);
         std::env::remove_var(users_env);
+    }
+
+    #[test]
+    fn gateway_session_jwt_secret_conflicts_with_legacy_jwt_secret_env() {
+        let gateway = GatewayConfig {
+            public_url: "https://gateway.example".to_string(),
+            jwt_secret_env: Some("UNUSED_GATEWAY_SECRET".to_string()),
+            users_env: "UNUSED_GATEWAY_USERS".to_string(),
+            token_ttl_seconds: None,
+            trust_forwarded_for: false,
+            policies: None,
+            telemetry: None,
+            state_path: None,
+            oidc: None,
+            session: Some(GatewaySessionConfig {
+                jwt_secret: vec![Secret::from("0123456789abcdef0123456789abcdef")],
+                ttl_hours: None,
+            }),
+        };
+        assert!(matches!(
+            gateway.resolve(),
+            Err(ConfigError::GatewaySessionJwtSecretConflict)
+        ));
+    }
+
+    #[test]
+    fn gateway_session_ttl_hours_conflicts_with_legacy_token_ttl_seconds() {
+        let gateway = GatewayConfig {
+            public_url: "https://gateway.example".to_string(),
+            jwt_secret_env: None,
+            users_env: "UNUSED_GATEWAY_USERS".to_string(),
+            token_ttl_seconds: Some(3600),
+            trust_forwarded_for: false,
+            policies: None,
+            telemetry: None,
+            state_path: None,
+            oidc: None,
+            session: Some(GatewaySessionConfig {
+                jwt_secret: vec![Secret::from("0123456789abcdef0123456789abcdef")],
+                ttl_hours: Some(2),
+            }),
+        };
+        assert!(matches!(
+            gateway.resolve(),
+            Err(ConfigError::GatewaySessionTtlConflict)
+        ));
+    }
+
+    #[test]
+    fn gateway_session_jwt_secret_scalar_and_array_wire_forms_both_resolve() {
+        // Proves the `session.jwt_secret` string-or-array wire format survives
+        // the full figment extraction -> resolve() pipeline, not just the
+        // GatewaySessionConfig-level deserialize tests in config/session.rs.
+        let suffix = std::process::id();
+        let users_env = format!("SHUNT_GATEWAY_SESSION_WIRE_USERS_{suffix}");
+        std::env::set_var(&users_env, "dev@example.com:password");
+
+        let scalar_toml = format!(
+            "public_url = \"https://gateway.example\"\n\
+             users_env = \"{users_env}\"\n\
+             [session]\n\
+             jwt_secret = \"0123456789abcdef0123456789abcdef\"\n"
+        );
+        let scalar: GatewayConfig =
+            figment::Figment::from(figment::providers::Toml::string(&scalar_toml))
+                .extract()
+                .unwrap();
+        let resolved = scalar.resolve().expect("scalar jwt_secret resolves");
+        // Absent ttl_hours falls back to the historical 3600s default.
+        assert_eq!(resolved.token_ttl_seconds(), 3600);
+
+        let array_toml = format!(
+            "public_url = \"https://gateway.example\"\n\
+             users_env = \"{users_env}\"\n\
+             [session]\n\
+             jwt_secret = [\"0123456789abcdef0123456789abcdef\", \"fedcba9876543210fedcba9876543210\"]\n\
+             ttl_hours = 2\n"
+        );
+        let array: GatewayConfig =
+            figment::Figment::from(figment::providers::Toml::string(&array_toml))
+                .extract()
+                .unwrap();
+        let resolved = array.resolve().expect("array jwt_secret resolves");
+        assert_eq!(resolved.token_ttl_seconds(), 7200);
+
+        std::env::remove_var(users_env);
+    }
+
+    #[test]
+    fn gateway_session_jwt_secret_rejects_a_short_scalar_secret() {
+        let gateway = GatewayConfig {
+            public_url: "https://gateway.example".to_string(),
+            jwt_secret_env: None,
+            users_env: "UNUSED_GATEWAY_USERS".to_string(),
+            token_ttl_seconds: None,
+            trust_forwarded_for: false,
+            policies: None,
+            telemetry: None,
+            state_path: None,
+            oidc: None,
+            session: Some(GatewaySessionConfig {
+                jwt_secret: vec![Secret::from("too-short")],
+                ttl_hours: None,
+            }),
+        };
+        assert!(matches!(
+            gateway.resolve(),
+            Err(ConfigError::InvalidGatewaySessionJwtSecret { index: 0 })
+        ));
+    }
+
+    #[test]
+    fn gateway_session_jwt_secret_names_the_offending_index_past_zero() {
+        let gateway = GatewayConfig {
+            public_url: "https://gateway.example".to_string(),
+            jwt_secret_env: None,
+            users_env: "UNUSED_GATEWAY_USERS".to_string(),
+            token_ttl_seconds: None,
+            trust_forwarded_for: false,
+            policies: None,
+            telemetry: None,
+            state_path: None,
+            oidc: None,
+            session: Some(GatewaySessionConfig {
+                jwt_secret: vec![
+                    Secret::from("0123456789abcdef0123456789abcdef"),
+                    Secret::from("too-short"),
+                ],
+                ttl_hours: None,
+            }),
+        };
+        assert!(matches!(
+            gateway.resolve(),
+            Err(ConfigError::InvalidGatewaySessionJwtSecret { index: 1 })
+        ));
+    }
+
+    #[test]
+    fn gateway_session_jwt_secret_rejects_an_empty_array() {
+        let gateway = GatewayConfig {
+            public_url: "https://gateway.example".to_string(),
+            jwt_secret_env: None,
+            users_env: "UNUSED_GATEWAY_USERS".to_string(),
+            token_ttl_seconds: None,
+            trust_forwarded_for: false,
+            policies: None,
+            telemetry: None,
+            state_path: None,
+            oidc: None,
+            session: Some(GatewaySessionConfig {
+                jwt_secret: vec![],
+                ttl_hours: None,
+            }),
+        };
+        assert!(matches!(
+            gateway.resolve(),
+            Err(ConfigError::EmptyGatewaySessionJwtSecret)
+        ));
+    }
+
+    #[test]
+    fn gateway_session_ttl_hours_zero_is_rejected() {
+        let gateway = GatewayConfig {
+            public_url: "https://gateway.example".to_string(),
+            jwt_secret_env: None,
+            users_env: "UNUSED_GATEWAY_USERS".to_string(),
+            token_ttl_seconds: None,
+            trust_forwarded_for: false,
+            policies: None,
+            telemetry: None,
+            state_path: None,
+            oidc: None,
+            session: Some(GatewaySessionConfig {
+                jwt_secret: vec![Secret::from("0123456789abcdef0123456789abcdef")],
+                ttl_hours: Some(0),
+            }),
+        };
+        assert!(matches!(
+            gateway.resolve(),
+            Err(ConfigError::InvalidGatewaySessionTtlHours)
+        ));
+    }
+
+    #[test]
+    fn gateway_session_ttl_hours_overflow_is_rejected_not_panicked() {
+        let gateway = GatewayConfig {
+            public_url: "https://gateway.example".to_string(),
+            jwt_secret_env: None,
+            users_env: "UNUSED_GATEWAY_USERS".to_string(),
+            token_ttl_seconds: None,
+            trust_forwarded_for: false,
+            policies: None,
+            telemetry: None,
+            state_path: None,
+            oidc: None,
+            session: Some(GatewaySessionConfig {
+                jwt_secret: vec![Secret::from("0123456789abcdef0123456789abcdef")],
+                ttl_hours: Some(u64::MAX),
+            }),
+        };
+        assert!(matches!(
+            gateway.resolve(),
+            Err(ConfigError::GatewaySessionTtlHoursOverflow)
+        ));
+    }
+
+    #[test]
+    fn gateway_deprecations_is_empty_when_legacy_keys_are_unset() {
+        let gateway = GatewayConfig {
+            public_url: "https://gateway.example".to_string(),
+            jwt_secret_env: None,
+            users_env: "UNUSED_GATEWAY_USERS".to_string(),
+            token_ttl_seconds: None,
+            trust_forwarded_for: false,
+            policies: None,
+            telemetry: None,
+            state_path: None,
+            oidc: None,
+            session: Some(GatewaySessionConfig {
+                jwt_secret: vec![Secret::from("0123456789abcdef0123456789abcdef")],
+                ttl_hours: Some(2),
+            }),
+        };
+        assert!(gateway.deprecations().is_empty());
+    }
+
+    #[test]
+    fn gateway_deprecations_reports_both_legacy_keys_when_set() {
+        let gateway = GatewayConfig {
+            public_url: "https://gateway.example".to_string(),
+            jwt_secret_env: Some("SHUNT_GATEWAY_JWT_SECRET".to_string()),
+            users_env: "UNUSED_GATEWAY_USERS".to_string(),
+            token_ttl_seconds: Some(3600),
+            trust_forwarded_for: false,
+            policies: None,
+            telemetry: None,
+            state_path: None,
+            oidc: None,
+            session: None,
+        };
+        let messages = gateway.deprecations();
+        assert_eq!(messages.len(), 2);
+        assert!(messages[0].contains("jwt_secret_env"));
+        assert!(messages[1].contains("token_ttl_seconds"));
     }
 
     #[test]
@@ -6311,7 +6778,7 @@ id = "claude-sonnet-5"
 
     fn sentry_config(dsn: &str) -> super::SentryConfig {
         super::SentryConfig {
-            dsn: dsn.to_string(),
+            dsn: dsn.into(),
             environment: None,
             metrics: false,
             traces_sample_rate: 0.0,
@@ -6569,7 +7036,7 @@ id = "claude-sonnet-5"
             forward_to: vec![GatewayTelemetryDestination {
                 url: "https://collector.example".to_string(),
                 headers: Some(
-                    [(name.to_string(), value.to_string())]
+                    [(name.to_string(), value.to_string().into())]
                         .into_iter()
                         .collect(),
                 ),
@@ -6771,6 +7238,543 @@ provider = "kimi"
         assert_eq!(codex.effort.as_deref(), Some("high"));
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // Issue #345: `${VAR}`/`${file:...}` reference substitution runs on the
+    // file layer before figment ever sees it. These tests exercise the pass
+    // through the full `Config::load` path (TOML + YAML), confirm `*_env`
+    // fields (which name an env var rather than referencing one) are left
+    // alone, confirm the shipped example files still load after the
+    // parse/walk/re-serialize round trip, and confirm `Secret` fields behave
+    // correctly whether fed by a reference or a literal. Unit coverage for
+    // the substitution pass itself and the `Secret` type lives in
+    // `src/config/secrets.rs`.
+
+    #[test]
+    fn toml_resolves_env_var_reference_in_a_normal_field() {
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-secrets-toml-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shunt.toml");
+        let env = format!("SHUNT_CONFIG_TEST_BASE_HOST_{}", std::process::id());
+        std::env::set_var(&env, "api.moonshot.ai");
+        let reference = format!("${{{env}}}");
+        std::fs::write(
+            &path,
+            format!(
+                "[providers.kimi]\nkind = \"anthropic\"\nbase_url = \"https://{reference}/anthropic\"\nauth = \"api_key\"\napi_key_env = \"MOONSHOT_API_KEY\"\n"
+            ),
+        )
+        .unwrap();
+
+        let config = Config::load(Some(&path)).unwrap();
+        let kimi = config.provider("kimi").unwrap();
+        assert_eq!(kimi.base_url, "https://api.moonshot.ai/anthropic");
+
+        std::env::remove_var(&env);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn yaml_resolves_env_var_reference_in_a_normal_field() {
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-secrets-yaml-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shunt.yaml");
+        let env = format!("SHUNT_CONFIG_TEST_YAML_HOST_{}", std::process::id());
+        std::env::set_var(&env, "api.moonshot.ai");
+        let reference = format!("${{{env}}}");
+        std::fs::write(
+            &path,
+            format!(
+                "providers:\n  kimi:\n    kind: anthropic\n    base_url: \"https://{reference}/anthropic\"\n    auth: api_key\n    api_key_env: MOONSHOT_API_KEY\n"
+            ),
+        )
+        .unwrap();
+
+        let config = Config::load(Some(&path)).unwrap();
+        let kimi = config.provider("kimi").unwrap();
+        assert_eq!(kimi.base_url, "https://api.moonshot.ai/anthropic");
+
+        std::env::remove_var(&env);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn tokens_env_field_is_unaffected_by_the_substitution_pass() {
+        // `tokens_env` *names* an environment variable; it must never be
+        // treated as a `${...}` reference itself, since it contains no `${`.
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-secrets-tokens-env-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shunt.toml");
+        let env = format!("SHUNT_CONFIG_TEST_TOKENS_{}", std::process::id());
+        std::env::set_var(&env, "alice:tok-a");
+        std::fs::write(
+            &path,
+            format!(
+                "[server]\ndefault_provider = \"anthropic\"\n\n[server.auth]\ntokens_env = \"{env}\"\n"
+            ),
+        )
+        .unwrap();
+
+        let config = Config::load(Some(&path)).unwrap();
+        assert_eq!(config.server.auth.as_ref().unwrap().tokens_env, env);
+        assert!(config.resolve_inbound_auth().unwrap().is_some());
+
+        std::env::remove_var(&env);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn example_config_files_still_load() {
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-examples-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // `ConfigFormat::from_path` detects format from the file's real
+        // extension; the example files' last extension segment is
+        // `.example`, not `.toml`/`.yaml`, so copy each to the extension its
+        // own header comment tells users to save it as ("copy to
+        // ./shunt.yaml and edit") before loading.
+        let toml_path = dir.join("shunt.toml");
+        std::fs::copy(root.join("shunt.toml.example"), &toml_path).unwrap();
+        Config::load(Some(&toml_path))
+            .expect("shunt.toml.example loads through the substitution pass");
+
+        let yaml_path = dir.join("shunt.yaml");
+        std::fs::copy(root.join("shunt.yaml.example"), &yaml_path).unwrap();
+        Config::load(Some(&yaml_path))
+            .expect("shunt.yaml.example loads through the substitution pass");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn secret_field_fed_by_a_reference_resolves_and_still_redacts() {
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-secrets-sentry-ref-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shunt.toml");
+        let env = format!("SHUNT_CONFIG_TEST_DSN_{}", std::process::id());
+        let dsn = "https://public@o0.ingest.sentry.io/1";
+        std::env::set_var(&env, dsn);
+        let reference = format!("${{{env}}}");
+        std::fs::write(&path, format!("[sentry]\ndsn = \"{reference}\"\n")).unwrap();
+
+        let config = Config::load(Some(&path)).unwrap();
+        let sentry = config.sentry.as_ref().unwrap();
+        assert_eq!(sentry.dsn.expose(), dsn);
+        assert_eq!(format!("{:?}", sentry.dsn), "[redacted]");
+
+        std::env::remove_var(&env);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn secret_field_with_a_literal_value_still_loads_successfully() {
+        // A literal secret in the config file is allowed; the aggregated
+        // warning is advisory only and must never fail the load, and it
+        // must name the offending field's path so an operator can act on it
+        // (issue #348: attribution used to be by *value*, not field
+        // identity, so an unrelated field could be misnamed instead — see
+        // the sibling tests below for the specific regressions this guards).
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-secrets-sentry-literal-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shunt.toml");
+        std::fs::write(
+            &path,
+            "[sentry]\ndsn = \"https://public@o0.ingest.sentry.io/1\"\n",
+        )
+        .unwrap();
+
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let writer_output = Arc::clone(&output);
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || BufferWriter {
+                buffer: Arc::clone(&writer_output),
+            })
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        let config = tracing::subscriber::with_default(subscriber, || Config::load(Some(&path)));
+        assert!(config.is_ok());
+        let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        assert!(logs.contains("[sentry].dsn"), "{logs}");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn reference_fed_secret_never_warns_even_when_a_plain_field_shares_its_value() {
+        // Regression for issue #348's R3: a `Secret` populated from a
+        // `${VAR}` reference must never trigger the literal-secret warning,
+        // even when an unrelated *non*-Secret field happens to hold that
+        // same resolved value written literally. Attribution used to be by
+        // value rather than field identity, so this used to wrongly warn
+        // about `[otel].endpoint` — a plain `String` field, not a `Secret` —
+        // even though there was no literal secret anywhere in the file.
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-secrets-r3-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shunt.toml");
+        let env = format!("SHUNT_CONFIG_TEST_R3_DSN_{}", std::process::id());
+        let dsn = "https://public@o0.ingest.sentry.io/1";
+        std::env::set_var(&env, dsn);
+        let reference = format!("${{{env}}}");
+        std::fs::write(
+            &path,
+            format!("[sentry]\ndsn = \"{reference}\"\n\n[otel]\nendpoint = \"{dsn}\"\n"),
+        )
+        .unwrap();
+
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let writer_output = Arc::clone(&output);
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || BufferWriter {
+                buffer: Arc::clone(&writer_output),
+            })
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        let config =
+            tracing::subscriber::with_default(subscriber, || Config::load(Some(&path)).unwrap());
+        assert_eq!(config.sentry.as_ref().unwrap().dsn.expose(), dsn);
+        let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        // `Config::load` always emits an unconditional "loaded config" INFO
+        // line, so asserting `logs.is_empty()` would be wrong here; what must
+        // be absent is the literal-secret WARN.
+        assert!(
+            !logs.contains("are written literally in the config file"),
+            "expected no literal-secret warning, got: {logs}"
+        );
+
+        std::env::remove_var(&env);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn literal_secret_warning_names_only_the_secret_field_on_value_collision() {
+        // Regression for issue #348's R1/R2: when a literal `Secret` field
+        // and a plain (non-Secret) field happen to hold the exact same
+        // string, the warning must name only the `Secret`'s path. Value-keyed
+        // attribution used to name *every* path bound to that value,
+        // regardless of whether the field was actually a `Secret`.
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-secrets-r1-r2-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shunt.toml");
+        let shared = "https://public@o0.ingest.sentry.io/1";
+        std::fs::write(
+            &path,
+            format!("[sentry]\ndsn = \"{shared}\"\n\n[otel]\nendpoint = \"{shared}\"\n"),
+        )
+        .unwrap();
+
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let writer_output = Arc::clone(&output);
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || BufferWriter {
+                buffer: Arc::clone(&writer_output),
+            })
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            Config::load(Some(&path)).unwrap();
+        });
+        let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+
+        assert!(logs.contains("[sentry].dsn"), "{logs}");
+        assert!(!logs.contains("[otel].endpoint"), "{logs}");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn literal_secret_warning_at_two_secret_paths_reports_a_count_without_naming_a_cause() {
+        // Regression guard for the wording fixed alongside #348: attribution
+        // can fail for two unrelated reasons -- the same literal value
+        // sitting at more than one Secret-shaped path (this test's
+        // scenario: `sentry.dsn` and `otel.headers.<key>` sharing one
+        // string), or a literal value at a path the hand-maintained
+        // allowlist hasn't caught up to (see
+        // `literal_hit_at_a_path_missing_from_the_secret_field_allowlist_is_unattributed_not_silent`
+        // in src/config/secrets.rs). The aggregated warning must report a
+        // count either way, and must never claim the more specific "more
+        // than one Secret field" cause -- that would be wrong for the
+        // drifted-allowlist case.
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-secrets-unattributed-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shunt.toml");
+        // A clearly-fake literal (the same placeholder DSN the sibling tests
+        // above use), never a real-looking credential; must also be a
+        // syntactically valid DSN since `sentry.dsn` is validated as one. No
+        // `SHUNT_*` env var may hold this same value, or `never_literal`
+        // would suppress the warning by design.
+        let shared = "https://public@o0.ingest.sentry.io/1";
+        std::fs::write(
+            &path,
+            format!(
+                "[server]\ndefault_provider = \"anthropic\"\n\n\
+                 [sentry]\ndsn = \"{shared}\"\n\n\
+                 [otel]\nendpoint = \"https://otel.example.com\"\nservice_name = \"shunt-test\"\n\n\
+                 [otel.headers]\nx-fake-header = \"{shared}\"\n"
+            ),
+        )
+        .unwrap();
+
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let writer_output = Arc::clone(&output);
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || BufferWriter {
+                buffer: Arc::clone(&writer_output),
+            })
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        let config =
+            tracing::subscriber::with_default(subscriber, || Config::load(Some(&path)).unwrap());
+        // Advisory only: a literal secret at an ambiguous path must never
+        // fail the load, and the value itself still resolves normally.
+        assert_eq!(config.sentry.as_ref().unwrap().dsn.expose(), shared);
+
+        let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        assert!(
+            logs.contains(
+                "2 config value(s) are written literally in the config file but \
+                            could not be attributed to a specific field"
+            ),
+            "{logs}"
+        );
+        assert!(
+            !logs.contains("more than one Secret field"),
+            "the message must not assert why attribution failed, only that it did: {logs}"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn empty_secret_and_empty_plain_fields_never_warn() {
+        // An empty string is the documented "disabled" sentinel (e.g.
+        // `SHUNT_SENTRY__DSN=""`), never a credential, so it must never
+        // trigger the literal-secret warning — including when other empty
+        // string fields are also present in the file.
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-secrets-empty-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shunt.toml");
+        std::fs::write(
+            &path,
+            "[sentry]\ndsn = \"\"\n\n[otel]\nendpoint = \"\"\nservice_name = \"\"\n",
+        )
+        .unwrap();
+
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let writer_output = Arc::clone(&output);
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || BufferWriter {
+                buffer: Arc::clone(&writer_output),
+            })
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            Config::load(Some(&path)).unwrap();
+        });
+        let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        // `Config::load` always emits an unconditional "loaded config" INFO
+        // line, so asserting `logs.is_empty()` would be wrong here; what must
+        // be absent is the literal-secret WARN.
+        assert!(
+            !logs.contains("are written literally in the config file"),
+            "expected no literal-secret warning, got: {logs}"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn literal_gateway_session_jwt_secret_is_attributed_in_both_wire_forms() {
+        // End-to-end companion to
+        // `is_secret_field_path_matches_gateway_session_jwt_secret_scalar_and_array_forms`
+        // in `secrets.rs`. That test hand-builds the `LiteralScope` path map,
+        // so it is self-consistent with the `is_secret_field_path` arm rather
+        // than with the real traversal: were `walk_toml` to emit a different
+        // shape for array elements, the arm and the test would be wrong
+        // together and stay green while the boot warning silently degraded to
+        // an unattributed count. This one drives the actual `Config::load`
+        // pass instead. It also pins the exact number of occurrences, so it
+        // fails if `jwt_secret`'s `untagged` deserializer ever records a value
+        // twice — serde buffers content for untagged variants, and
+        // `Secret::deserialize` has the `record_literal_hit` side effect.
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // `[server.gateway]` resolves only with an approval source; this value
+        // is deliberately unrelated to the secrets under test.
+        std::env::set_var("SHUNT_GATEWAY_USERS", "dev@example.com:approval-secret");
+
+        // Clearly-fake literals, each over the 32-byte floor. No `SHUNT_*` env
+        // var may hold these same values, or `never_literal` would suppress
+        // the warning by design.
+        let scalar = "literal-session-secret-0123456789abcdef";
+        let rotated_new = "literal-rotated-new-0123456789abcdef";
+        let rotated_old = "literal-rotated-old-0123456789abcdef";
+
+        let load_logs = |session_body: &str| -> String {
+            let dir = std::env::temp_dir().join(format!(
+                "shunt-config-test-session-literal-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("shunt.toml");
+            std::fs::write(
+                &path,
+                format!(
+                    "[server]\ndefault_provider = \"anthropic\"\n\n\
+                     [server.gateway]\npublic_url = \"https://gateway.example.com\"\n\n\
+                     [server.gateway.session]\n{session_body}\n"
+                ),
+            )
+            .unwrap();
+
+            let output = Arc::new(Mutex::new(Vec::new()));
+            let writer_output = Arc::clone(&output);
+            let subscriber = tracing_subscriber::fmt()
+                .with_writer(move || BufferWriter {
+                    buffer: Arc::clone(&writer_output),
+                })
+                .with_ansi(false)
+                .without_time()
+                .finish();
+            tracing::subscriber::with_default(subscriber, || {
+                Config::load(Some(&path)).unwrap();
+            });
+            let _ = std::fs::remove_dir_all(dir);
+            let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+            logs
+        };
+
+        let logs = load_logs(&format!("jwt_secret = \"{scalar}\""));
+        assert_eq!(
+            logs.matches("[server.gateway.session].jwt_secret").count(),
+            1,
+            "the bare-string form must be attributed by path exactly once: {logs}"
+        );
+        assert!(
+            !logs.contains("could not be attributed"),
+            "the bare-string form must not fall back to an unattributed count: {logs}"
+        );
+
+        let logs = load_logs(&format!(
+            "jwt_secret = [\"{rotated_new}\", \"{rotated_old}\"]"
+        ));
+        assert_eq!(
+            logs.matches("[server.gateway.session.jwt_secret].0")
+                .count(),
+            1,
+            "array element 0 must be attributed by path exactly once: {logs}"
+        );
+        assert_eq!(
+            logs.matches("[server.gateway.session.jwt_secret].1")
+                .count(),
+            1,
+            "array element 1 must be attributed by path exactly once: {logs}"
+        );
+        assert!(
+            !logs.contains("could not be attributed"),
+            "the array form must not fall back to an unattributed count: {logs}"
+        );
+
+        std::env::remove_var("SHUNT_GATEWAY_USERS");
     }
 
     // Default-propagation coverage for issue #286/#289: `Config::load` seeds

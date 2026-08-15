@@ -5,6 +5,14 @@ description: 모든 shunt.toml 키 — server, providers, routes, models.
 
 파일 위치, 우선순위, 주석이 달린 예시는 [구성](/ko/guides/configuration/)을 참고하세요. 전체 템플릿: [`shunt.toml.example`](https://github.com/pleaseai/shunt/blob/main/shunt.toml.example).
 
+## Secret 참조
+
+설정 파일의 문자열 값은 리터럴 대신 `${VAR}` 또는 `${file:/절대/경로}`로 쓸 수 있습니다. `${VAR}`는 환경 변수 `VAR`의 값으로 치환되며 `"Bearer ${TOKEN}"`처럼 더 긴 문자열 안에 포함될 수 있습니다(변수가 없으면 로드 실패). `${file:/절대/경로}`는 해당 파일의 내용(trim)으로 치환되며, 반드시 절대 경로여야 하고 필드의 값 전체여야 합니다 — 다른 문자열에 포함될 수 없습니다(파일을 읽을 수 없거나, 상대 경로이거나, 다른 문자열에 포함되어 있으면 로드 실패). `$${`는 리터럴 `${`로 이스케이프됩니다. 치환은 재귀적이지 않습니다 — 치환된 값은 다시 스캔되지 않습니다. 이 치환은 설정 파일에만 적용되며 `SHUNT_*` 환경 변수 오버라이드는 그대로 사용됩니다. 부팅, `shunt check`, [핫 리로드](https://github.com/pleaseai/shunt/blob/main/docs/config-reload.md)(SIGHUP과 파일 감시)를 포함해 매 설정 로드마다 다시 실행되므로, `${file:}`로 참조한 시크릿은 파일을 다시 쓰고 리로드를 트리거하는 것만으로 재시작 없이 교체할 수 있습니다. 다만 교체한 값이 실제로 적용되는지는 해당 필드 자신의 리로드 동작을 따릅니다. `[sentry]`와 `[otel]`은 시작 시 한 번만 초기화되므로, 이 두 섹션의 시크릿을 교체하면 설정은 갱신되지만 적용하려면 재시작이 필요합니다.
+
+`[sentry] dsn`, `[otel.headers]` 값, `[server.gateway.telemetry] forward_to[].headers` 값, `[server.gateway.session] jwt_secret` 네 필드는 redacting secret 타입으로 진단 출력에서 `[redacted]`로 표시됩니다. 이 필드에 리터럴 값을 적는 것은 이전과 완전히 동일하게 동작하며, secret 타입 필드가 리터럴을 담고 있으면 shunt는 부팅 시 해당 필드 경로만(값은 절대 포함하지 않음) 알리는 권고성 경고를 한 번 기록합니다.
+
+기존 `tokens_env`, `jwt_secret_env`, `client_secret_env`, `api_key_env`, `users_env`, `token_env`, `tokens_file` 필드는 이 변경의 영향을 받지 않으며 그대로 환경 변수(또는 `tokens_file`의 경우 파일 경로)를 가리킵니다(`jwt_secret_env`는 별도로 [`session.jwt_secret`](#servergatewaysession-선택)로 대체되어 deprecated됨).
+
 ## `[server]`
 
 | 키 | 기본값 | 의미 |
@@ -37,6 +45,8 @@ description: 모든 shunt.toml 키 — server, providers, routes, models.
 
 지정된 환경 변수에는 하나 이상의 자격 증명이 있어야 합니다. 예: `SHUNT_CLIENT_TOKENS="alice:<token>,bob:<token>"`. 테이블이 있는데 변수가 설정되지 않았거나, 비어 있거나, 형식이 잘못되면 시작은 닫힌 채로 실패(fail closed)합니다. 게이팅되는 라우트(매핑된 `/v1/messages` 추론과 `GET /v1/models` 디스커버리)는 구성된 헤더, `Authorization: Bearer`, `x-api-key`로 토큰을 받습니다 — 여러 슬롯에 유효한 토큰이 있으면 전용 헤더가 우선합니다.
 
+`tokens_env` 자신의 값도 다른 설정 파일 문자열과 마찬가지로 `${VAR}` / `${file:...}`로 쓸 수 있습니다([Secret 참조](#secret-참조) 참고) — shunt가 토큰을 읽어오는 환경 변수 이름을 가리키는 역할은 그대로입니다.
+
 ## `[server.admin]` (선택)
 
 이 테이블의 존재가 브라우저 계정 프로비저닝과 계정 풀 상태를 위한 관리자 웹 화면을 활성화합니다([상세](/ko/guides/admin-remote-provisioning/)). 테이블이 없으면 `/admin*` 라우트는 하나도 등록되지 않습니다.
@@ -52,6 +62,8 @@ description: 모든 shunt.toml 키 — server, providers, routes, models.
 
 관리자 토큰은 `[server.auth]` 아래에 구성되는 클라이언트 토큰과 별개의 자격 증명입니다; 하나의 자격 증명을 두 표면에 재사용하지 마세요.
 
+`[server.auth]`의 `tokens_env`와 마찬가지로, 이 `tokens_env`의 값도 `${VAR}` / `${file:...}`로 쓸 수 있습니다([Secret 참조](#secret-참조) 참고).
+
 ## `[server.gateway]` (선택)
 
 이 테이블은 Claude Code의 managed `forceLoginMethod: "gateway"`에서 사용하는 [OAuth device-flow gateway 로그인](/ko/guides/gateway-login/)을 활성화합니다. 테이블이 없으면 shunt는 `/.well-known/oauth-authorization-server`, `/oauth/device_authorization`, `/oauth/token`, `/device`, `/managed/settings`를 등록하지 않습니다.
@@ -59,15 +71,39 @@ description: 모든 shunt.toml 키 — server, providers, routes, models.
 | 키 | 기본값 | 의미 |
 | :-- | :-- | :-- |
 | `public_url` | 필수 | JWT issuer와 OAuth endpoint 기준으로 사용하는 외부 공개 HTTPS origin. `http`는 loopback에서만 허용 |
-| `jwt_secret_env` | `SHUNT_GATEWAY_JWT_SECRET` | 32 bytes 이상의 HS256 signing secret을 담는 env 변수 |
+| `jwt_secret_env` | `SHUNT_GATEWAY_JWT_SECRET` | 32 bytes 이상의 HS256 signing secret을 담는 env 변수. **Deprecated**, 단독 사용 시 계속 완전히 지원됨 — [`session.jwt_secret`](#servergatewaysession-선택)로 대체됨 |
 | `users_env` | `SHUNT_GATEWAY_USERS` | 쉼표로 구분된 `email:secret` approval user를 담는 env 변수 |
-| `token_ttl_seconds` | `3600` | access token 수명. `expires_in`으로 반환 |
+| `token_ttl_seconds` | `3600` | access token 수명. `expires_in`으로 반환. **Deprecated**, 단독 사용 시 계속 완전히 지원됨 — [`session.ttl_hours`](#servergatewaysession-선택)로 대체됨. 다만 시간 미만 수명을 지정할 수 있는 유일한 방법으로는 계속 남아 있음 |
 | `trust_forwarded_for` | `false` | `/device` rate-limit identity로 `X-Forwarded-For`/`X-Real-IP`를 신뢰. client 제공 값을 교체하는 trusted proxy 뒤에서만 활성화 |
 | `state_path` | `~/.shunt/gateway-sessions.json` | 재시작 후에도 refresh session을 유지하는 파일. token은 SHA-256 hash로 저장하고 Unix에서는 소유자 전용 권한(`0600`)으로 원자적으로 기록. `""`로 설정하면 memory-only session 사용(home directory를 찾지 못한 경우에도 동일) |
 
-URL이 경로 등을 포함하지 않은 HTTPS origin이 아니거나(`http`는 loopback에서만 허용), TTL이 0이거나, secret이 없거나 32 bytes 미만이거나, user list가 비었거나 잘못되면 시작은 fail closed합니다. secret에는 `:`를 포함할 수 있으며 첫 번째 colon만 email과 secret을 구분합니다. env-backed secret과 user 변경은 config reload 시 반영되지만, route tree는 boot 시 고정되므로 테이블 추가·제거에는 restart가 필요합니다.
+URL이 경로 등을 포함하지 않은 HTTPS origin이 아니거나(`http`는 loopback에서만 허용), TTL이 0이거나, secret이 없거나 32 bytes 미만이거나, user list가 비었거나 잘못되면 시작은 fail closed합니다. secret에는 `:`를 포함할 수 있으며 첫 번째 colon만 email과 secret을 구분합니다. `jwt_secret_env`와 `users_env`의 값도 다른 설정 파일 문자열과 마찬가지로 `${VAR}` / `${file:...}`로 쓸 수 있습니다([Secret 참조](#secret-참조) 참고). env-backed secret과 user 변경은 config reload 시 반영되지만, route tree는 boot 시 고정되므로 테이블 추가·제거에는 restart가 필요합니다.
+
+deprecated 키와 그에 대응하는 `[server.gateway.session]` 대체 키를 함께 설정하면 키별로 시작이 실패합니다: `jwt_secret_env`와 `session.jwt_secret`를 함께 쓰면 오류이고, `token_ttl_seconds`와 `session.ttl_hours`를 함께 쓰면 오류입니다. 두 쌍을 교차해서 섞는 것(예: `session.jwt_secret`과 함께 `token_ttl_seconds`를 쓰는 것)은 문제없습니다. shunt는 deprecated 키가 설정 파일이든 `SHUNT_*` 환경 변수 override든 명시적으로 설정될 때마다 deprecation 경고를 한 번 기록하며, 그 키 자체가 전혀 설정되지 않아 기본값이 적용될 때만 조용히 넘어갑니다 — `jwt_secret_env`를 설정하지 않고 `SHUNT_GATEWAY_JWT_SECRET` env 변수에 secret 값만 담아 두는 설정은 그 변수가 deprecated 키 자체가 아니라 secret의 값을 담고 있을 뿐이므로 여전히 경고하지 않습니다. 쌍 중 한쪽만 설정된 경우 `session.*`이 있으면 그 값이, 없으면 deprecated 키가, 둘 다 없으면 기본값이 우선합니다.
 
 발급된 bearer는 선택된 provider가 server-side credential을 주입할 때 `/v1/models`, `/v1/messages`, `/v1/messages/count_tokens`를 인증합니다. passthrough provider는 open 상태를 유지합니다. `[server.auth]`도 있으면 어느 credential이든 access를 허용합니다. refresh session은 기본적으로 재시작 후에도 유지됩니다. boot 시 `state_path`의 token hash를 복원하므로 사용자는 계속 silent refresh할 수 있습니다. 이 파일을 여러 shunt process가 동시에 공유하면 안 됩니다. `state_path = ""`이면 session은 memory-only이며, config reload에서는 유지되지만 shunt를 재시작하면 access JWT 만료 후 다시 로그인해야 합니다. Device grant와 rate-limit counter는 항상 memory-only이므로 로그인 도중 재시작하면 해당 시도만 손실됩니다. 만료된 grant와 idle rate-limit identity는 opportunistic하게 정리되며 각각 최대 4,096개로 제한됩니다. 사용한 refresh-token tombstone은 30일 동안 family당 최대 64개 유지되고, 30일 동안 사용하지 않은 active refresh token은 만료됩니다.
+
+### `[server.gateway.session]` (선택)
+
+Claude 앱의 gateway `session:` 블록과 대응됩니다:
+
+```toml
+[server.gateway.session]
+jwt_secret = "${SHUNT_GATEWAY_JWT_SECRET}"
+ttl_hours = 1
+```
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `jwt_secret` | 이 테이블이 있으면 필수 | HS256 signing secret, 32 bytes 이상의 entropy 필요(예: `openssl rand -base64 32`). 단일 문자열이거나, rotation을 위한 배열도 가능 — index 0이 새 토큰에 서명하고 모든 항목이 검증에 쓰임 |
+| `ttl_hours` | `1` | access token 수명(시간 단위, 정수) |
+
+`jwt_secret`은 `Secret` 타입 필드입니다: 다른 설정 파일 문자열과 마찬가지로 `${VAR}` / `${file:/절대/경로}`를 쓸 수 있고([Secret 참조](#secret-참조) 참고), 진단 출력에서는 redact됩니다. 기존 세션을 무효화하지 않고 rotate하려면 새 secret을 배열 앞에 추가하고, `ttl_hours`만큼 기다려 기존 access token이 만료되게 한 뒤, 이전 항목을 제거하세요:
+
+```toml
+[server.gateway.session]
+jwt_secret = ["new-secret-value", "old-secret-value"]
+```
 
 ### `[[server.gateway.policies]]` (선택)
 
@@ -81,7 +117,7 @@ URL이 경로 등을 포함하지 않은 HTTPS origin이 아니거나(`http`는 
 
 ### `[server.gateway.telemetry]` (선택)
 
-`forward_to`는 필수 base OTLP/HTTP `url`, 선택적 string `headers` map, signal별 opt-in boolean(`metrics` 기본 `true`, `logs`/`traces` 기본 `false`)을 가진 destination array입니다. signal을 하나 이상 opt-in한 목록은 managed `settings.env`에 값 6개를 주입합니다. `CLAUDE_CODE_ENABLE_TELEMETRY=1`, 각 `OTEL_METRICS_EXPORTER`/`OTEL_LOGS_EXPORTER`/`OTEL_TRACES_EXPORTER`는 해당 signal을 opt-in한 destination이 있으면 `otlp`, 없으면 `none`, `OTEL_EXPORTER_OTLP_ENDPOINT=public_url`, `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`입니다. 어떤 signal도 opt-in되지 않았으면 아무것도 주입하지 않습니다. 충돌 시 policy env value가 우선합니다. 같은 목록이 inbound ingest도 구동합니다(M-C, #189). `[server.gateway]`가 있으면 항상 등록되는 `POST /v1/{metrics,logs,traces}` 라우트가 클라이언트의 OTLP payload를 받아 해당 signal을 opt-in한 모든 destination에 verbatim으로 relay하고, opt-in한 destination이 없는 signal은 수신 후 폐기합니다. `logs`/`traces`가 기본 off인 이유는 Claude Code log record와 span에 command line, prompt, 파일 경로가 담길 수 있기 때문입니다.
+`forward_to`는 필수 base OTLP/HTTP `url`, 선택적 string `headers` map, signal별 opt-in boolean(`metrics` 기본 `true`, `logs`/`traces` 기본 `false`)을 가진 destination array입니다. `headers`의 각 값은 redacting secret 타입으로 진단 출력에서 `[redacted]`로 표시됩니다([Secret 참조](#secret-참조) 참고). signal을 하나 이상 opt-in한 목록은 managed `settings.env`에 값 6개를 주입합니다. `CLAUDE_CODE_ENABLE_TELEMETRY=1`, 각 `OTEL_METRICS_EXPORTER`/`OTEL_LOGS_EXPORTER`/`OTEL_TRACES_EXPORTER`는 해당 signal을 opt-in한 destination이 있으면 `otlp`, 없으면 `none`, `OTEL_EXPORTER_OTLP_ENDPOINT=public_url`, `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`입니다. 어떤 signal도 opt-in되지 않았으면 아무것도 주입하지 않습니다. 충돌 시 policy env value가 우선합니다. 같은 목록이 inbound ingest도 구동합니다(M-C, #189). `[server.gateway]`가 있으면 항상 등록되는 `POST /v1/{metrics,logs,traces}` 라우트가 클라이언트의 OTLP payload를 받아 해당 signal을 opt-in한 모든 destination에 verbatim으로 relay하고, opt-in한 destination이 없는 signal은 수신 후 폐기합니다. `logs`/`traces`가 기본 off인 이유는 Claude Code log record와 span에 command line, prompt, 파일 경로가 담길 수 있기 때문입니다.
 
 ```toml
 [[server.gateway.policies]]
@@ -243,6 +279,8 @@ codex-fallback = "gpt-5.2"
 
 `passthrough` 업스트림에서는 클라이언트 자신의 `authorization` / `x-api-key`가 페일오버 시도에서 전달되는 것은 **기본(primary)** 라우트 자체가 `passthrough`이고 해당 시도의 대상 origin이 그 기본 라우트와 일치하는 경우에 한합니다. 이때 자격 증명은 기본 라우트에 origin 전용인 클라이언트 자신의 업스트림 자격 증명이므로, **다른** origin으로의 `passthrough` 페일오버 시도는 이를 제거하고 페일클로즈(fail closed)하여 호스트 전용 토큰을 다른 출처로 재전송하지 않습니다. 동일 origin 폴백(예: 한 호스트의 passthrough 항목 2개)은 계속 자격 증명을 유지합니다. 기본 라우트가 대신 자체 자격 증명을 주입하는 경우, 클라이언트 헤더는 업스트림 자격 증명이 아니라 게이트웨이/클라이언트 시크릿이므로 모든 `passthrough` 폴백은 origin과 무관하게 이를 제거합니다. `api_key`/OAuth 업스트림은 위치와 무관하게 자체 서버 측 자격 증명을 주입합니다.
 
+origin과 무관하게, 유지된 각 슬롯은 그 슬롯이 실제로 담고 있는 값으로도 검사됩니다. `authorization`과 `x-api-key`는 각각 그 슬롯 자신의 값이 shunt 자체가 발급한 JWT와 **모양이 같거나** — `aud` 클레임이 `"shunt"`이거나, `iss` 클레임이 이 게이트웨이의 아이덴티티이거나, `shunt_token_use` 클레임이 `"gateway-session"`(shunt만 발급하는 전용 마커)인 세 세그먼트 구조 — 설정된 `[server.auth]` 클라이언트 토큰과 일치할 때에만 제거됩니다. JWT 검사는 의도적으로 "지금 이 토큰이 인증되는가"가 아니라 "모양이 같은가"로 판단합니다: 만료된 토큰, 다른 `public_url`을 쓰는 형제 인스턴스가 발급한 토큰, `jwt_secret` 로테이션 이후 더 이상 검증되지 않는 토큰도 여전히 shunt 자신의 크리덴셜이므로 여전히 제거됩니다. 이 마커는 모양 검사에 추가된 분기일 뿐 필수 조건이 아닙니다: 마커가 존재하기 전에 발급된 토큰도 `aud`/`iss`로 여전히 일치하며, `verify` 자체도 마커를 요구하지 않으므로 이전 버전의 shunt가 발급한 토큰은 TTL 내에 있는 한 계속 인증됩니다. `apiKeyHelper`는 두 슬롯을 같은 값으로 채우므로 어느 크리덴셜이든 한쪽 또는 양쪽 슬롯에 들어올 수 있습니다. 다른 슬롯이 게이트웨이 JWT나 정적 클라이언트 토큰을 담고 있어도, 진짜 업스트림 크리덴셜을 담은 슬롯은 그대로 전달됩니다. 게이트 크리덴셜을 담은 슬롯만 제거됩니다. `[server.auth] header`에는 `authorization` 자신을 포함해 어떤 헤더 이름이든 지정할 수 있으며, 그렇게 설정하면 클라이언트는 접두사 없는 `Authorization: <token>` 형태로 인증합니다. 따라서 이 슬롯은 `Bearer` 페이로드뿐 아니라 값 전체로도 검사되며, 그런 토큰은 업스트림으로 전달되지 않습니다. 이 설정에는 한 가지 유의점이 있습니다: 추론 요청에서 shunt는 라우팅 전에 설정된 헤더를 조건 없이 제거하므로, 그 슬롯은 업스트림으로 아무것도 싣지 않습니다 — 게이트 토큰뿐 아니라 호출자 자신의 크리덴셜도 함께 사라집니다. `header`를 기본값인 전용 `x-shunt-token`으로 두면 이 충돌을 피할 수 있습니다.
+
 프록시한 성공 응답과 최종 실패에는 모두 `x-gateway-upstream`(선택한 업스트림 이름), `x-gateway-model`(클라이언트가 요청한 id), `x-gateway-upstream-model`(매핑된 백엔드 id)이 포함됩니다. `count_tokens`는 체인의 첫 항목만 사용하며 페일오버하지 않습니다. `[server.codex_endpoint]`는 설정된 업스트림 하나에 고정되며 이 체인에 참여하지 않습니다.
 
 ### 기존 설정 마이그레이션
@@ -266,7 +304,7 @@ codex-fallback = "gpt-5.2"
 | `kind` | `anthropic` \| `responses` \| `cursor` \| `gemini` \| `antigravity` | 업스트림 프로토콜 / 어댑터. `anthropic` = Messages API(패스스루, 선택적으로 키 재설정); `responses` = Anthropic Messages를 OpenAI Responses API로 변환; `cursor` = 네이티브 Cursor ConnectRPC/protobuf AgentService 어댑터; `gemini` = Anthropic Messages를 Google Code Assist 백엔드의 Gemini `generateContent`/`streamGenerateContent`로 변환; `antigravity` = 업스트림 없이 로컬 Antigravity CLI 바이너리(`agy`)를 서브프로세스로 실행. |
 | `base_url` | URL | 업스트림 base; shunt가 엔드포인트 경로를 붙입니다. `kind = "cursor"`에서는 로그인/토큰 갱신 엔드포인트에만 사용되며 에이전트/추론 호스트를 선택하지 않습니다. |
 | `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `claude_oauth` \| `xai_oauth` \| `cursor_oauth` \| `google_oauth` \| `none` | `passthrough`는 클라이언트 본인의 credential을 전달; `api_key`는 `api_key_env`의 키를 주입; `chatgpt_oauth`는 `~/.codex/auth.json`을 재사용; `claude_oauth`는 명시적 Anthropic 계정에서 선택; `xai_oauth`는 `shunt login xai`의 `~/.shunt/xai-auth.json`을 재사용(HTTPS를 통한 x.ai/grok.com 호스트에만 전송); `cursor_oauth`는 `~/.shunt/cursor-auth.json`을 재사용(`shunt login cursor`); `google_oauth`는 gemini CLI 로그인의 `~/.gemini/oauth_creds.json`을 재사용하며 `kind = "gemini"`에서만 유효; `none`은 인증할 업스트림이 없는 어댑터(`kind = "antigravity"`)를 위해 크리덴셜을 전혀 보내지 않습니다. |
-| `api_key_env` | env 변수 이름 | `auth = "api_key"`일 때 키를 읽어오는 곳. |
+| `api_key_env` | env 변수 이름 | `auth = "api_key"`일 때 키를 읽어오는 곳. 이 값 자신도 `${VAR}` / `${file:...}`로 쓸 수 있음([Secret 참조](#secret-참조) 참고). |
 | `api_key_header` | `bearer`(기본) \| `x_api_key` | 주입된 키가 전송되는 헤더. |
 | `accounts` | 계정 테이블 배열 | Anthropic OAuth 계정 풀. `kind = "anthropic"`이고 `auth = "claude_oauth"`일 때만 유효; 아래 참고. |
 | `effort` | `low` … `max` | 선택적 기본 추론 노력(`responses` 프로바이더). |
@@ -303,7 +341,7 @@ codex-fallback = "gpt-5.2"
 
 최상위 `auto_include_builtin_models` 키의 기본값은 `true`입니다. 활성화하면 shunt는 관리자가 선별한 `[[models]]` 항목을 먼저 반환한 뒤, 스스로 발견한 모델을 추가합니다. id가 정확히 같은 항목은 선별된 항목을 우선하여 중복을 제거합니다. `[[models]]` 목록만 노출하려면 `false`로 설정하세요 — 아래의 업스트림 호출도 함께 비활성화됩니다.
 
-발견된 모델은 shunt가 실제 업스트림 목록을 가져올 수 있으면 거기서 옵니다. `server.default_provider`가 Anthropic 종류일 때 해당 업스트림에 `GET /v1/models`를 호출하며, 그 인증 방식에 맞는 크리덴셜을 사용합니다. `auth = "passthrough"`에서는 호출자가 전달한 크리덴셜을 사용하므로 호출자마다 해당 크리덴셜로 사용할 수 있는 목록을 보게 됩니다. shunt가 그 크리덴셜을 `[server.auth]` 클라이언트 토큰이나 게이트웨이 로그인 bearer로 이미 소비했다면 업스트림으로 재전송하지 않습니다. 이때 디스커버리는 업스트림 크리덴셜이 남지 않은 이유를 로그로 남기고 스냅샷으로 폴백합니다. `api_key`에서는 설정된 키를 사용합니다. `claude_oauth`에서는 추론 경로와 동일한 유효 계정 집합에서 가장 먼저 해석되는 비활성화되지 않은 계정을 사용합니다. 이 집합에는 계정 저장소에서 검색된 계정이 포함되며 `account_scope` 순서를 따릅니다. 디스커버리는 풀 선택, 쿨다운, 할당량 기록을 수행하지 않습니다. 따라서 게이트웨이 소유 크리덴셜을 사용하는 이 두 방식에서는 모든 호출자가 해당 크리덴셜 범위의 카탈로그를 공유합니다. shunt는 캐시하지 않습니다. `server.default_provider`가 Anthropic 종류가 아니거나, 크리덴셜이 없거나, 호출이 실패·타임아웃(2초 상한)하면 내장 Claude 카탈로그 스냅샷으로 폴백합니다. 어느 쪽이든 이 id들은 전용 `[[routes]]` 항목이 필요하지 않습니다. 일반 라우팅 규칙으로 해석되며, `[[routes]]`나 `[[route_prefixes]]` 어느 것에도 매칭되지 않을 때 `server.default_provider`로 폴백합니다.
+발견된 모델은 shunt가 실제 업스트림 목록을 가져올 수 있으면 거기서 옵니다. `server.default_provider`가 Anthropic 종류일 때 해당 업스트림에 `GET /v1/models`를 호출하며, 그 인증 방식에 맞는 크리덴셜을 사용합니다. `auth = "passthrough"`에서는 호출자가 전달한 크리덴셜을 사용하므로 호출자마다 해당 크리덴셜로 사용할 수 있는 목록을 보게 됩니다. 단, 어떤 슬롯에 실제 업스트림 크리덴셜이 아니라 shunt 자체의 `[server.gateway]` JWT나 설정된 `[server.auth]` 클라이언트 토큰이 담겨 있다면 그 슬롯은 전달되지 않습니다. `authorization`과 `x-api-key`는 각각 독립적으로 필터링되므로 다른 슬롯에 담긴 진짜 크리덴셜은 그대로 전달되며, 두 슬롯 모두 전달할 크리덴셜이 남지 않았을 때만 디스커버리가 내장 스냅샷으로 폴백합니다. `api_key`에서는 설정된 키를 사용합니다. `claude_oauth`에서는 추론 경로와 동일한 유효 계정 집합에서 가장 먼저 해석되는 비활성화되지 않은 계정을 사용합니다. 이 집합에는 계정 저장소에서 검색된 계정이 포함되며 `account_scope` 순서를 따릅니다. 디스커버리는 풀 선택, 쿨다운, 할당량 기록을 수행하지 않습니다. 따라서 게이트웨이 소유 크리덴셜을 사용하는 이 두 방식에서는 모든 호출자가 해당 크리덴셜 범위의 카탈로그를 공유합니다. shunt는 캐시하지 않습니다. `server.default_provider`가 Anthropic 종류가 아니거나, 크리덴셜이 없거나, 호출이 실패·타임아웃(2초 상한)하면 내장 Claude 카탈로그 스냅샷으로 폴백합니다. 어느 쪽이든 이 id들은 전용 `[[routes]]` 항목이 필요하지 않습니다. 일반 라우팅 규칙으로 해석되며, `[[routes]]`나 `[[route_prefixes]]` 어느 것에도 매칭되지 않을 때 `server.default_provider`로 폴백합니다.
 
 선별한 항목에 `[models.upstream_model]`을 추가하면 하나의 선언으로 id를 노출하고, 라우팅하고, 업스트림 id로 변환할 수 있습니다. 정확한 id를 라우팅할 때는 `[[routes]]` 대신 이 형식을 권장합니다. 순서가 있는 `[[upstreams]]`를 사용하면 맵에 하나 이상의 `upstream = "backend-id"` 쌍을 넣을 수 있으며, `[[upstreams]]` 선언 순서에 따라 페일오버 체인이 됩니다. 레거시 `[providers.*]`에는 선언된 순서가 없으므로 정확히 한 쌍만 허용됩니다. 해당 id에 대해서는 맵이 `[[routes]]`, `[[route_prefixes]]`, `server.default_provider`보다 우선하며 각 업스트림의 기본 `effort`가 해당 체인 항목에 적용됩니다. 빈 맵, 비어 있거나 공백으로만 이루어진 업스트림 이름 또는 백엔드 id, 알 수 없는 업스트림, 같은 id의 `[[routes]]` 항목, `[1m]` 또는 `[1M]`으로 끝나는 맵 보유 id, 한쪽이라도 맵을 보유한 중복 `[[models]]` id는 시작 오류입니다. 클라이언트가 매칭 전에 context-window hint를 제거하므로 맵 보유 id에 이 suffix를 포함하면 해당 항목에 도달할 수 없습니다. 맵이 없는 항목끼리의 중복은 기존 동작을 유지합니다.
 
@@ -328,7 +366,7 @@ codex = "gpt-5.2"
 
 | 키 | 기본값 | 의미 |
 | :-- | :-- | :-- |
-| `dsn` | — | Sentry 프로젝트 DSN. 비우면 비활성화, 잘못된 DSN은 시작 오류. |
+| `dsn` | — | Sentry 프로젝트 DSN. 비우면 비활성화, 잘못된 DSN은 시작 오류. Redacting secret — 진단 출력에서 `[redacted]`로 표시됨([Secret 참조](#secret-참조) 참고). |
 | `environment` | — | 보고되는 이벤트에 붙는 선택적 environment 태그 |
 | `metrics` | `false` | 사용량 메트릭도 전송 — OpenTelemetry 가이드에 설명된 gateway 메트릭 계열(집계값만) |
 | `traces_sample_rate` | `0.0` | 성능 트레이스도 전송: 요청별 스팬이 Sentry 트랜잭션이 되며, `[0.0, 1.0]` 범위의 이 비율로 head 샘플링. `0.0`이면 스팬을 전혀 보내지 않음, 범위 밖은 시작 오류. |
@@ -351,7 +389,7 @@ codex = "gpt-5.2"
 
 ## `[otel.headers]` (선택)
 
-모든 OTLP 요청에 붙는 추가 헤더(예: 호스팅 컬렉터 토큰). 표준 `OTEL_EXPORTER_OTLP_HEADERS` 아래로 병합됩니다.
+모든 OTLP 요청에 붙는 추가 헤더(예: 호스팅 컬렉터 토큰). 표준 `OTEL_EXPORTER_OTLP_HEADERS` 아래로 병합됩니다. 각 헤더 값은 redacting secret 타입으로 진단 출력에서 `[redacted]`로 표시됩니다([Secret 참조](#secret-참조) 참고).
 
 | 키 | 의미 |
 | :-- | :-- |

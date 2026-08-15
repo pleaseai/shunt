@@ -5,6 +5,21 @@ description: Every shunt.toml key — server, providers, routes, models.
 
 The keys below are shown in TOML, but a config file may also be written in YAML (`shunt.yaml`/`shunt.yml`) — the schema is identical, only the syntax differs. See [Configuration](/guides/configuration/) for file locations, precedence, and an annotated example. Full template: [`shunt.toml.example`](https://github.com/pleaseai/shunt/blob/main/shunt.toml.example).
 
+## Secret references
+
+Any string value in the config file may be written as `${VAR}` or `${file:/abs/path}` instead of a literal, so a secret doesn't have to sit in the file itself. Full details, including redaction and hot-reload interaction, are in [`docs/config-secrets.md`](https://github.com/pleaseai/shunt/blob/main/docs/config-secrets.md).
+
+| Form | Resolves to | Constraints |
+| :-- | :-- | :-- |
+| `${VAR}` | Environment variable `VAR` | May be embedded in a longer string, e.g. `"Bearer ${TOKEN}"`. Config load fails if `VAR` is undefined |
+| `${file:/abs/path}` | The file's contents, trimmed | Must be the field's entire value, and the path must be absolute. Config load fails if the file is unreadable, the path is relative, or the reference is embedded in a longer string |
+
+`$${` escapes to a literal `${`. Resolution is not recursive — a resolved value is not re-scanned for further references. This applies only to the config file; `SHUNT_*` environment overrides are used as-is. It reruns on every config load, including [hot reload](https://github.com/pleaseai/shunt/blob/main/docs/config-reload.md), so a `${file:}`-backed secret can be rotated by rewriting the referenced file and triggering a reload, without restarting shunt. Whether the new value then takes effect follows the field's own reload behavior: `[sentry]` and `[otel]` are initialized once at startup, so rotating a secret in those two sections updates the config but needs a restart to apply.
+
+Four fields are additionally typed as a redacting secret and render as `[redacted]` in diagnostic output: [`[sentry] dsn`](#sentry-optional), [`[otel.headers]`](#otelheaders-optional) values, [`[server.gateway.telemetry] forward_to[].headers`](#servergatewaytelemetry-optional) values, and [`[server.gateway.session] jwt_secret`](#servergatewaysession-optional). A literal value in one of these fields still works exactly as before; shunt additionally logs one advisory boot warning naming the affected field paths — never the values — suggesting `${VAR}` / `${file:...}` when a secret-typed field holds a literal.
+
+The existing `tokens_env`, `jwt_secret_env`, `client_secret_env`, `api_key_env`, `users_env`, `token_env`, and `tokens_file` fields are unaffected by this and keep naming an environment variable or file path, as before (`jwt_secret_env` is separately deprecated in favor of [`session.jwt_secret`](#servergatewaysession-optional)) — see each field's own entry below.
+
 ## `[server]`
 
 | Key | Default | Meaning |
@@ -64,6 +79,8 @@ Presence of this table enables inbound client-token auth ([details](/guides/shar
 
 The named environment variable must contain one or more credentials, for example `SHUNT_CLIENT_TOKENS="alice:<token>,bob:<token>"`. Startup fails closed if the table is present but the variable is unset, empty, or malformed. Gated routes (mapped `/v1/messages` inference and `GET /v1/models` discovery) accept the token via the configured header, `Authorization: Bearer`, or `x-api-key` — the dedicated header wins when several carry valid tokens.
 
+`tokens_env`'s own value, like any config-file string, can also be written as `${VAR}` / `${file:...}` (see [Secret references](#secret-references)); it still names the environment variable shunt reads the tokens from.
+
 A request whose whole route chain is `passthrough` skips this gate: such a route forwards the caller's own upstream credential, so the gateway lends them nothing. **`kind = "antigravity"` is exempt from that exemption** and is always treated as credential-injecting, whatever its `auth` says. The adapter ignores the caller's credential entirely and runs the operator's local `agy` with `--dangerously-skip-permissions`, so a passthrough Antigravity route would otherwise be unauthenticated local code execution as the user running shunt — sandboxed or not. Note this closes the exemption, it does not create a requirement: with neither `[server.auth]` nor [`[server.gateway]`](#servergateway-optional) configured, every route stays open, which is why an unsandboxed Antigravity provider is [refused outright off loopback](#providersname-legacy).
 
 ## `[server.admin]` (optional)
@@ -79,6 +96,8 @@ Presence of this table enables the admin web surface for browser account provisi
 | `pending_ttl_secs` | `600` | Time allowed to finish a started provisioning flow, in seconds |
 
 Admin tokens can come from the environment or a file. The named environment variable must contain one or more credentials, for example `SHUNT_ADMIN_TOKENS="ops:<token>"`. Alternatively, set `tokens_file` to a path (`~` is expanded) and put the pairs there — this is what [`shunt dashboard setup`](/reference/cli/#shunt-dashboard-setup) writes to `~/.shunt/admin-token`, so no secret has to live in the launch environment. When both are set, a non-empty `tokens_env` wins. Startup fails closed if the table is present but neither source yields a valid credential (unset/empty/malformed, or an unreadable `tokens_file`).
+
+As with `[server.auth]` above, `tokens_env`'s and `tokens_file`'s own values can also be written as `${VAR}` / `${file:...}` (see [Secret references](#secret-references)).
 
 Admin tokens are separate credentials from the client tokens configured under `[server.auth]`; do not reuse one credential for both surfaces.
 
@@ -101,6 +120,8 @@ Presence of this subtable adds an OIDC/SSO button to the admin browser login pag
 
 At least one non-empty `allowed_domains` or `allowed_emails` entry is mandatory. Startup also fails closed for an invalid `public_url`, empty issuer/client id, or missing client secret. shunt accepts only a non-empty UserInfo email with `email_verified = true`. The browser flow uses PKCE and a `pending_ttl_secs`-bound, single-use state; callback/token/UserInfo failures produce generic browser messages without echoing provider input. The callback re-checks the current hot-reloaded allowlist before minting the same HttpOnly admin session cookie as token login, then redirects to the fixed `/admin` target.
 
+`client_secret_env`'s own value can also be written as `${VAR}` / `${file:...}` (see [Secret references](#secret-references)).
+
 For GitHub, SAML, or another non-OIDC provider, use an OIDC broker such as Dex; direct provider-specific OAuth2 integrations are out of scope.
 
 ## `[server.gateway]` (optional)
@@ -110,13 +131,39 @@ Presence of this table enables the [OAuth device-flow gateway login](/guides/gat
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
 | `public_url` | required | Externally reachable HTTPS origin used as the JWT issuer and base for advertised OAuth endpoints; `http` is accepted only for loopback |
-| `jwt_secret_env` | `SHUNT_GATEWAY_JWT_SECRET` | Env var holding the HS256 signing secret (at least 32 bytes) |
+| `jwt_secret_env` | `SHUNT_GATEWAY_JWT_SECRET` | Env var holding the HS256 signing secret (at least 32 bytes). **Deprecated**, still fully supported — superseded by [`session.jwt_secret`](#servergatewaysession-optional) |
 | `users_env` | `SHUNT_GATEWAY_USERS` | Env var holding comma-separated `email:secret` approval users; optional when `[server.gateway.oidc]` is configured |
-| `token_ttl_seconds` | `3600` | Access-token lifetime; returned as `expires_in` |
+| `token_ttl_seconds` | `3600` | Access-token lifetime; returned as `expires_in`. **Deprecated**, still fully supported — superseded by [`session.ttl_hours`](#servergatewaysession-optional), except that this key remains the only way to express a sub-hour lifetime |
 | `trust_forwarded_for` | `false` | Trust `X-Forwarded-For`/`X-Real-IP` as the `/device` rate-limit identity; enable only behind a trusted proxy that replaces client-supplied values |
 | `state_path` | `~/.shunt/gateway-sessions.json` | File persisting refresh sessions across restarts; tokens are stored as SHA-256 hashes and written atomically with owner-only permissions (0600 on Unix). Set `""` for memory-only sessions (also the fallback when no home directory resolves) |
 
 Startup fails closed when the URL is not a bare HTTPS origin (`http` is allowed only on loopback), the TTL is zero, the secret is missing or shorter than 32 bytes, or neither a valid static-user list nor a valid external IdP is configured. Static-user secrets may contain `:` because only the first colon separates the email and secret. Changes to the environment-backed secrets, users, and IdP configuration hot-apply on config reload; adding or removing the gateway table requires a restart because the route tree is fixed at boot.
+
+`jwt_secret_env`'s and `users_env`'s own values can also be written as `${VAR}` / `${file:...}` (see [Secret references](#secret-references)).
+
+Setting both a deprecated key and its `[server.gateway.session]` replacement fails startup, per key: `jwt_secret_env` together with `session.jwt_secret` is an error, and `token_ttl_seconds` together with `session.ttl_hours` is an error; mixing across the two pairs (e.g. `token_ttl_seconds` alongside `session.jwt_secret`) is fine. shunt logs one deprecation warning whenever a deprecated key is explicitly set — whether in the config file or through a `SHUNT_*` environment override — and stays silent only when the key itself is never configured and its default applies; a config that never sets `jwt_secret_env` and simply relies on the `SHUNT_GATEWAY_JWT_SECRET` env var holding the secret still doesn't warn, since that variable holds the secret's value, not the deprecated key being set. Where only one side of a pair is set, `session.*` wins if present, else the deprecated key, else the default.
+
+### `[server.gateway.session]` (optional)
+
+Mirrors the upstream Claude apps gateway `session:` block:
+
+```toml
+[server.gateway.session]
+jwt_secret = "${SHUNT_GATEWAY_JWT_SECRET}"
+ttl_hours = 1
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `jwt_secret` | required when this table is present | HS256 signing secret, at least 32 bytes of entropy (e.g. `openssl rand -base64 32`). A single string, or an array for rotation — index 0 signs new tokens and every entry verifies |
+| `ttl_hours` | `1` | Access-token lifetime, in whole hours |
+
+`jwt_secret` is a `Secret`-typed field: its value supports `${VAR}` / `${file:/abs/path}` like any other config string (see [Secret references](#secret-references)) and is redacted in diagnostic output. To rotate without invalidating live sessions, prepend the new secret to the array, wait `ttl_hours` for outstanding access tokens to expire, then drop the old entry:
+
+```toml
+[server.gateway.session]
+jwt_secret = ["new-secret-value", "old-secret-value"]
+```
 
 ### `[server.gateway.oidc]` (optional)
 
@@ -135,6 +182,8 @@ Presence of this subtable replaces or supplements the password approval form wit
 | `userinfo_endpoint` | discovery | Advanced OIDC UserInfo URL override; HTTPS or loopback HTTP only |
 
 At least one non-empty `allowed_domains` or `allowed_emails` entry is mandatory. shunt accepts only a non-empty UserInfo email with `email_verified = true`. The browser flow uses a single-use ten-minute state and PKCE, and callback/token/UserInfo failures produce generic browser messages without echoing provider input. The redirect URI registered at the provider is `{public_url}/device/callback`. For GitHub, SAML, or another non-OIDC provider, use an OIDC broker such as Dex; direct provider-specific OAuth2 integrations are out of scope.
+
+`client_secret_env`'s own value can also be written as `${VAR}` / `${file:...}` (see [Secret references](#secret-references)).
 
 The issued bearer gates `/v1/models` and `/v1/messages`/`/v1/messages/count_tokens` requests whenever the selected provider injects a server-side credential; passthrough providers remain open. If `[server.auth]` is also present, either credential grants access. Refresh sessions persist across restarts by default: `state_path` (tokens hashed at rest) is restored at boot, so users keep silently refreshing. The file must not be shared between concurrent shunt processes. With `state_path = ""`, sessions are memory-only — a config reload preserves them, but restarting shunt invalidates them and users sign in again once their access JWT expires. Device grants and rate-limit counters are always memory-only; a restart mid-login only costs that attempt. Expired grants and idle rate-limit identities are swept opportunistically. Device grants and rate-limit identities are each capped at 4,096 entries. Used refresh-token tombstones are retained for 30 days and capped at 64 per family; active refresh tokens idle for 30 days expire.
 
@@ -155,7 +204,7 @@ If the resolved `cli.availableModels` is an array of strings, gateway-JWT reques
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
 | `url` | required | Base OTLP/HTTP endpoint: scheme, host, and optional path, `http(s)` only. A query string, fragment, or embedded userinfo is rejected at startup. shunt trims a trailing `/` and appends `/v1/metrics`, `/v1/logs`, or `/v1/traces` |
-| `headers` | none | Extra request headers applied to every relay to this destination; a configured key replaces the forwarded value rather than duplicating the header. Names and values are validated at startup |
+| `headers` | none | Extra request headers applied to every relay to this destination; a configured key replaces the forwarded value rather than duplicating the header. Names and values are validated at startup. Each header value is a redacting secret and renders as `[redacted]` in diagnostic output; see [Secret references](#secret-references) |
 | `metrics` | `true` | Relay `POST /v1/metrics` to this destination |
 | `logs` | `false` | Relay `POST /v1/logs` to this destination |
 | `traces` | `false` | Relay `POST /v1/traces` to this destination |
@@ -350,7 +399,9 @@ For a multi-entry model map, shunt filters the declared upstream sequence to the
 
 When the chain is exhausted, shunt returns the best relayed failure with preference `429` → `401`/`403` → `404` → other `5xx`. Pre-header failures are not remembered as best failures. If no relayed response was remembered, shunt returns a `502 api_error` with `all upstreams failed (N attempted)`.
 
-For a `passthrough` upstream, the client's own `authorization` / `x-api-key` is forwarded on a failover attempt only when the **primary** route is itself `passthrough` and the attempt's destination origin matches that primary's. The credential is then the caller's own upstream credential, origin-specific to the primary, so a `passthrough` failover attempt on a **different** origin strips it and fails closed rather than replaying a host-specific token to another origin; a same-origin fallback (e.g. two passthrough entries on one host) still carries it. When the primary instead injects a credential (`api_key`/OAuth), the client headers are a gateway/client secret rather than an upstream credential, so every `passthrough` fallback strips them regardless of origin. `api_key`/OAuth upstreams inject their own server-side credential regardless of position.
+For a `passthrough` upstream, the client's own `authorization` / `x-api-key` is forwarded on a failover attempt only when the **primary** route is itself `passthrough` and the attempt's destination origin matches that primary's. The credential is then the caller's own upstream credential, origin-specific to the primary, so a `passthrough` failover attempt on a **different** origin strips both slots and fails closed rather than replaying a host-specific token to another origin; a same-origin fallback (e.g. two passthrough entries on one host) still carries them. When the primary instead injects a credential (`api_key`/OAuth), the client headers are a gateway/client secret rather than an upstream credential, so every `passthrough` fallback strips them regardless of origin. `api_key`/OAuth upstreams inject their own server-side credential regardless of position.
+
+Independent of origin, each retained slot is also checked by the value it actually holds: `authorization` and `x-api-key` are each cleared only when that slot's own value is shaped like a JWT shunt itself issued — three segments whose payload's `aud` claims `"shunt"`, whose `iss` claims this gateway's identity, or whose `shunt_token_use` claim is `"gateway-session"`, a dedicated marker that only shunt mints — or matches a configured `[server.auth]` client token. The JWT check is deliberately by shape, not by whether the token currently authenticates: an expired token, one minted by a sibling instance under a different `public_url`, or one that no longer verifies after a `jwt_secret` rotation is still shunt's own credential and is still cleared. The marker is an additional arm on that shape check, not a requirement: a token minted before the marker existed still matches by `aud`/`iss`, and `verify` does not require the marker either, so a token minted by an older shunt version still authenticates for as long as it remains within its TTL. An `apiKeyHelper` fills both slots with the same value, so either credential can land in either or both. A slot holding a genuine upstream credential is forwarded even when the other slot holds the gateway JWT or a static client token; only the gate-credential-bearing slot is cleared. `[server.auth] header` accepts any header name, including `authorization` itself; when it is set that way a client authenticates with a bare, unprefixed `Authorization: <token>`, so that slot is checked as a whole value as well as by its `Bearer` payload and such a token is never forwarded upstream. One caveat for that configuration: on inference requests shunt removes the configured header before routing, unconditionally, so that slot then carries nothing upstream — a caller's own credential in it is dropped too, not just a gate token. Keeping `header` at its dedicated `x-shunt-token` default avoids that collision.
 
 Every proxied success or final failure carries `x-gateway-upstream` (selected upstream name), `x-gateway-model` (client-requested id), and `x-gateway-upstream-model` (mapped backend id). `count_tokens` uses only the first chain element and never fails over. `[server.codex_endpoint]` remains pinned to its configured upstream and does not participate in this chain.
 
@@ -375,7 +426,7 @@ Each provider is a table under a name of your choosing. Built-ins (`anthropic`, 
 | `kind` | `anthropic` \| `responses` \| `cursor` \| `gemini` \| `antigravity` | Upstream protocol / adapter. `anthropic` = Messages API (passed through, optionally re-keyed); `responses` = Anthropic Messages translated to the OpenAI Responses API; `cursor` = the native Cursor ConnectRPC/protobuf AgentService adapter; `gemini` = Anthropic Messages translated to Gemini `generateContent`/`streamGenerateContent` on the Google Code Assist backend; `antigravity` = no upstream at all, running the local Antigravity CLI binary (`agy`) as a subprocess. |
 | `base_url` | URL | Upstream base; shunt appends the endpoint path. For `kind = "cursor"`, this is the login/token-refresh surface only; it does not select the agent/inference host. |
 | `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `claude_oauth` \| `xai_oauth` \| `cursor_oauth` \| `google_oauth` \| `none` | `passthrough` forwards the client's own credential; `api_key` injects a key from `api_key_env`; `chatgpt_oauth` reuses `~/.codex/auth.json`; `claude_oauth` selects from explicit Anthropic accounts; `xai_oauth` reuses `~/.shunt/xai-auth.json` from `shunt login xai` (only sent to x.ai/grok.com hosts over HTTPS); `cursor_oauth` reuses `~/.shunt/cursor-auth.json` (`shunt login cursor`); `google_oauth` reuses the gemini CLI login in `~/.gemini/oauth_creds.json` and is valid only with `kind = "gemini"`; `none` sends no credential at all, for adapters with no upstream to authenticate against (`kind = "antigravity"`). |
-| `api_key_env` | env var name | Where the key is read from, when `auth = "api_key"`. |
+| `api_key_env` | env var name | Where the key is read from, when `auth = "api_key"`. Its own value can also be written as `${VAR}` / `${file:...}` (see [Secret references](#secret-references)). |
 | `api_key_header` | `bearer` (default) \| `x_api_key` | Header the injected key is sent in. |
 | `accounts` | array of account tables | Anthropic OAuth account pool. Valid only with `kind = "anthropic"` and `auth = "claude_oauth"`; see below. |
 | `effort` | `low` … `max` | Optional default reasoning effort (`responses` providers). |
@@ -433,7 +484,7 @@ token_env = "CLAUDE_BACKUP_OAUTH_TOKEN"
 | :-- | :-- | :-- |
 | `name` | yes | Unique account label containing only lowercase ASCII letters, digits, and hyphens. A name-only entry resolves from the shunt-managed store. Returned to the client in `x-shunt-account`; avoid personal information. |
 | `credentials` | one usable source | Path to a Claude Code `.credentials.json`-shaped file. `~/` is expanded. shunt refreshes near expiry and atomically writes refreshed tokens back. |
-| `token_env` | one usable source | Environment variable holding a setup token. Used verbatim and not refreshable. Mutually exclusive with `credentials`. |
+| `token_env` | one usable source | Environment variable holding a setup token. Used verbatim and not refreshable. Mutually exclusive with `credentials`. Its own value can also be written as `${VAR}` / `${file:...}` (see [Secret references](#secret-references)). |
 | `uuid` | no | Replaces an existing `metadata.user_id.account_uuid` in requests selected for this account. |
 | `threshold` | no | Per-account soft quota threshold in `[0.0, 1.0]`, for every window without a per-window value. A low value marks a backup account that rotates out early. |
 | `threshold_5h` / `threshold_7d` / `threshold_fable` | no | Per-window soft thresholds; each beats `threshold` for its window. See [`[server.pool]`](#serverpool-optional) for the full resolution order. |
@@ -475,7 +526,7 @@ Entries returned by `GET /v1/models` for [model discovery](/guides/model-discove
 
 The top-level `auto_include_builtin_models` key defaults to `true`. When enabled, shunt returns these curated `[[models]]` entries first, then the models it discovers on its own, with exact-id duplicates removed in favor of the curated entry. Set it to `false` to expose only the `[[models]]` list — that also suppresses the upstream call described next.
 
-Discovered models come from the live upstream list when shunt can get one. It issues `GET /v1/models` against `server.default_provider` when it is Anthropic-kind, using that provider's authentication mode. With `auth = "passthrough"`, shunt forwards the caller's credential, so each caller sees the list that credential is entitled to. If shunt consumed that credential as a `[server.auth]` client token or gateway-login bearer, it does not replay it upstream; discovery logs why no upstream credential remains and falls back to the snapshot. With `api_key`, shunt uses the configured key. With `claude_oauth`, it uses the first resolvable, non-disabled account from the same effective account set as inference, including store-scanned accounts in `account_scope` order. Discovery performs no pool selection, cooldown, or quota accounting. Those two gateway-owned modes therefore expose a shared credential-scoped catalog. shunt caches nothing. When the default provider is not Anthropic-kind, there is no credential, or the call fails or times out (2 s cap), shunt falls back to a builtin snapshot of the Claude catalog. Either way these ids need no dedicated `[[routes]]` entry — they resolve through your normal routing rules, falling back to `server.default_provider` when no `[[routes]]` or `[[route_prefixes]]` entry matches.
+Discovered models come from the live upstream list when shunt can get one. It issues `GET /v1/models` against `server.default_provider` when it is Anthropic-kind, using that provider's authentication mode. With `auth = "passthrough"`, shunt forwards the caller's credential, so each caller sees the list that credential is entitled to — except a slot holding shunt's own `[server.gateway]` JWT or a configured `[server.auth]` client token rather than a real upstream credential, which is not forwarded. `authorization` and `x-api-key` are filtered independently, so a genuine credential in the other slot is still forwarded; discovery falls back to the builtin snapshot only when neither slot has a forwardable credential left. With `api_key`, shunt uses the configured key. With `claude_oauth`, it uses the first resolvable, non-disabled account from the same effective account set as inference, including store-scanned accounts in `account_scope` order. Discovery performs no pool selection, cooldown, or quota accounting. Those two gateway-owned modes therefore expose a shared credential-scoped catalog. shunt caches nothing. When the default provider is not Anthropic-kind, there is no credential, or the call fails or times out (2 s cap), shunt falls back to a builtin snapshot of the Claude catalog. Either way these ids need no dedicated `[[routes]]` entry — they resolve through your normal routing rules, falling back to `server.default_provider` when no `[[routes]]` or `[[route_prefixes]]` entry matches.
 
 A curated entry can include `[models.upstream_model]` to advertise, route, and translate one id in the same declaration; this is the recommended form for exact-id routing instead of `[[routes]]`. With ordered `[[upstreams]]`, the map may contain one or more `upstream = "backend-id"` pairs and resolves to a failover chain in `[[upstreams]]` declaration order. With legacy `[providers.*]`, it must contain exactly one pair because that form has no declared order. For that id the map takes precedence over `[[routes]]`, `[[route_prefixes]]`, and `server.default_provider`; each upstream's default `effort` applies to its chain element. An empty map, an empty or whitespace-only upstream name or backend id, an unknown upstream, a same-id `[[routes]]` entry, a mapped id ending in `[1m]` or `[1M]`, or a duplicate `[[models]]` id where either entry has a map is a startup error. Clients strip the context-window hint before matching, so including it in a mapped id would make that entry unreachable. Pure map-less duplicate ids retain their previous behavior.
 
@@ -500,7 +551,7 @@ Opt-in error reporting to your own Sentry project. Off unless `dsn` is set; inde
 
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
-| `dsn` | — | Sentry project DSN. Empty disables; an invalid DSN is a startup error. |
+| `dsn` | — | Sentry project DSN. Empty disables; an invalid DSN is a startup error. Redacting secret — renders as `[redacted]` in diagnostic output; see [Secret references](#secret-references). |
 | `environment` | — | Optional environment tag on reported events |
 | `metrics` | `false` | Also send usage metrics — the gateway metric series documented in the OpenTelemetry guide (aggregates only) |
 | `traces_sample_rate` | `0.0` | Also send performance traces: the per-request span becomes a Sentry transaction, head-sampled at this rate in `[0.0, 1.0]`. `0.0` sends no spans; out of range is a startup error. |
@@ -523,7 +574,7 @@ Opt-in OpenTelemetry (OTLP/HTTP) export of traces, metrics, and logs to your own
 
 ## `[otel.headers]` (optional)
 
-Extra headers on every OTLP request (e.g. a hosted-collector token). Merged under the standard `OTEL_EXPORTER_OTLP_HEADERS`.
+Extra headers on every OTLP request (e.g. a hosted-collector token). Merged under the standard `OTEL_EXPORTER_OTLP_HEADERS`. Each header value is a redacting secret and renders as `[redacted]` in diagnostic output; see [Secret references](#secret-references).
 
 | Key | Meaning |
 | :-- | :-- |

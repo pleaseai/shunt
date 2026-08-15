@@ -22,7 +22,7 @@ export SHUNT_CLIENT_TOKENS="minsu:$(openssl rand -hex 32),alice:$(openssl rand -
 
 `[server.auth]`가 있는데 env 변수가 설정되지 않았거나 형식이 잘못되면 시작은 **닫힌 채로 실패(fail closed)**합니다. 유효한 토큰 없이 매핑된 모델과 `GET /v1/models`에 대한 요청은 401 `authentication_error`를 받습니다. 두 게이트 모두 표준 Anthropic 자격 증명 슬롯 어디로든 클라이언트 토큰을 받습니다 — 구성된 헤더(기본 `x-shunt-token`), `Authorization: Bearer`, `x-api-key` 순의 우선순위로(여러 슬롯에 유효한 토큰이 있을 때). `GET /routes`, `GET|HEAD /`, `GET /health`, 그리고 패스스루 모델은 열린 채로 유지됩니다. `GET /routes`는 라우팅 메타데이터(구성된 프로바이더/업스트림 모델 매핑)를 노출하는 shunt 네이티브 엔드포인트이기 때문에 인증되지 않습니다 — 자격 증명은 절대 노출하지 않으며, 자격 증명은 오직 프로바이더 구성에만 존재하고 그 핸들러가 읽는 일이 없습니다.
 
-게이팅된 라우트에서는 수락되는 자격 증명 헤더가 전달 전에 항상 제거되고(shunt가 거기에 자체 프로바이더 자격 증명을 주입합니다), 매칭은 상수 시간(constant-time)이며, 토큰 값은 절대 로깅되지 않습니다(클라이언트 *이름*은 요청별로 로깅됩니다).
+게이팅된 라우트에서는 수락되는 자격 증명 헤더가 전달 전에 항상 제거되고(shunt가 거기에 자체 프로바이더 자격 증명을 주입합니다), 매칭은 상수 시간(constant-time)이며, 토큰 값은 절대 로깅되지 않습니다(클라이언트 *이름*은 요청별로 로깅됩니다). 패스스루 라우트에서는 shunt가 아무것도 주입하지 않으므로 호출자 자신의 자격 증명이 보낸 그대로 전달됩니다 — 단, 슬롯 단위로 예외가 있습니다: `Authorization`과 `x-api-key`는 각각 그 슬롯 자신의 값이 shunt 자체의 인바운드 자격 증명(수락된 클라이언트 토큰 또는 `[server.gateway]` JWT)일 때 제거됩니다. 따라서 게이트에서 수락된 자격 증명은 절대 업스트림으로 전달되지 않으면서, 다른 슬롯의 진짜 업스트림 자격 증명은 그대로 흐릅니다.
 
 클라이언트 측은 게이트웨이가 무엇을 제공하는지에 따라 고르세요:
 
@@ -32,7 +32,7 @@ export SHUNT_CLIENT_TOKENS="minsu:$(openssl rand -hex 32),alice:$(openssl rand -
   export ANTHROPIC_AUTH_TOKEN="<your client token>"   # Authorization: Bearer로 전송됨
   ```
 
-- **패스스루 모델이 섞여 있는 경우**: `Bearer` 슬롯은 각 호출자의 실제 Anthropic 자격 증명을 계속 실어야 하므로, 대신 구성된 헤더로 전용 토큰을 배포하세요(`ANTHROPIC_CUSTOM_HEADERS`는 한 줄당 하나의 `Name: Value`를 받습니다):
+- **패스스루 모델이 섞여 있는 경우**: 각 호출자의 실제 Anthropic 자격 증명에 슬롯이 하나 필요하므로, 구성된 헤더로 전용 토큰을 배포하고 `Authorization` / `x-api-key`는 그 용도로 비워 두세요(`ANTHROPIC_CUSTOM_HEADERS`는 한 줄당 하나의 `Name: Value`를 받습니다). 이는 유출을 막는 유일한 장치가 아니라 위생 수칙입니다: `Authorization`이나 `x-api-key`로 도착한 클라이언트 토큰은 패스스루 전달 전에 값 기준으로 그 슬롯에서 제거됩니다.
 
   ```bash
   export ANTHROPIC_CUSTOM_HEADERS="x-shunt-token: <your token>"

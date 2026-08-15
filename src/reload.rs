@@ -576,6 +576,42 @@ mod tests {
     }
 
     #[test]
+    fn reload_reresolves_file_reference() {
+        let dir = temp_dir("file-ref");
+        let _guard = TempDirGuard(dir.clone());
+        let path = dir.join("shunt.toml");
+        let secret_path = dir.join("service-name.txt");
+
+        // A `${file:...}` reference is re-read (and re-resolved) on every
+        // load, so a reload picks up a changed file's contents without a
+        // restart, same as any other config field.
+        std::fs::write(&secret_path, "svc-one\n").unwrap();
+        // The path is interpolated as a TOML *literal* (single-quoted)
+        // string: a basic (double-quoted) string treats backslash as an
+        // escape, which would mangle a Windows path like `C:\path\to\file`.
+        std::fs::write(
+            &path,
+            format!(
+                "[server]\ndefault_provider = \"anthropic\"\n\n[otel]\nendpoint = \"\"\nservice_name = '${{file:{}}}'\n",
+                secret_path.display()
+            ),
+        )
+        .unwrap();
+        let shared = shared_from(Config::load(Some(&path)).unwrap());
+        assert_eq!(
+            shared.load().config.otel.as_ref().unwrap().service_name,
+            "svc-one"
+        );
+
+        std::fs::write(&secret_path, "svc-two\n").unwrap();
+        reload(&shared, Some(&path)).expect("reload re-resolves the file reference");
+        assert_eq!(
+            shared.load().config.otel.as_ref().unwrap().service_name,
+            "svc-two"
+        );
+    }
+
+    #[test]
     fn reload_keeps_gateway_capability_fixed_at_boot() {
         let dir = temp_dir("gateway-toggle");
         let _guard = TempDirGuard(dir.clone());
@@ -803,7 +839,7 @@ mod tests {
     #[test]
     fn sentry_changed_compares_presence_and_fields() {
         let base = SentryConfig {
-            dsn: "https://public@o0.ingest.sentry.io/1".to_string(),
+            dsn: "https://public@o0.ingest.sentry.io/1".to_string().into(),
             environment: Some("prod".to_string()),
             metrics: false,
             traces_sample_rate: 0.0,
@@ -816,7 +852,7 @@ mod tests {
         assert!(sentry_changed(Some(&base), None));
 
         let other_dsn = SentryConfig {
-            dsn: "https://public@o0.ingest.sentry.io/2".to_string(),
+            dsn: "https://public@o0.ingest.sentry.io/2".to_string().into(),
             ..base.clone()
         };
         assert!(sentry_changed(Some(&base), Some(&other_dsn)));

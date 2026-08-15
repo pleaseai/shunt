@@ -97,6 +97,14 @@ rate limits under `[server.access_control]`, `[server.limits]`, `[server.timeout
 telemetry, and analytics routes retain their endpoint-specific body limits.
 See the [configuration reference](https://shunt.dev/reference/configuration/#server).
 
+Secret-shaped values don't have to live in the config file as literals: any string can instead
+be written as `${VAR}` (an environment variable, e.g. `"Bearer ${TOKEN}"`) or `${file:/abs/path}`
+(a file's trimmed contents, as the field's entire value), resolved fresh on every config load —
+including [hot reload](docs/config-reload.md), so a `${file:}`-backed secret can be rotated
+without restarting shunt. Whether the new value then takes effect follows the field's own
+reload behavior: `[sentry]` and `[otel]` are built once at startup, so rotating a secret in
+those two sections still needs a restart. See [Config secret references](docs/config-secrets.md).
+
 ## Providers
 
 A provider is either an ordered `[[upstreams]]` entry or a legacy `[providers.<name>]` TOML table (under YAML, an entry in the corresponding sequence or mapping). Two adapter kinds cover most upstreams: `kind = "anthropic"` (the upstream speaks Anthropic Messages; passed through, optionally with a different key) and `kind = "responses"` (the upstream speaks the OpenAI Responses API; shunt translates Anthropic Messages ⇄ Responses, streaming included). A third native kind, `kind = "cursor"`, bridges Cursor's ConnectRPC/protobuf AgentService so a Cursor subscription is reachable through the same Anthropic-Messages interface.

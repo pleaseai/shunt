@@ -312,6 +312,16 @@ const PASSTHROUGH_STRIP_REQUEST_HEADERS: &[&str] = &[
     "content-length",
     "authorization",
     "chatgpt-account-id",
+    // `Config::validate` (`ConfigError::CodexEndpointWrongAuth`) rejects any
+    // `[server.codex_endpoint]` whose provider is not `auth = "chatgpt_oauth"`,
+    // and that backend authenticates solely via `Authorization: Bearer` +
+    // `chatgpt-account-id`, both injected per pool account in
+    // [`passthrough_send`]. No inbound `x-api-key` value can therefore ever be a
+    // valid credential for this upstream — stripping it unconditionally cannot
+    // break a legitimate relay, and forwarding it would leak a caller's secret
+    // (e.g. an Anthropic key from Claude Code's `apiKeyHelper`, which populates
+    // both `Authorization` and `x-api-key` with the same value) to a third party.
+    "x-api-key",
     "accept-encoding",
     // The default shunt client-token header (`config::default_auth_header`). Always
     // stripped — even on an ungated endpoint (no `[server.auth]`), or one using a

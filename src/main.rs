@@ -552,6 +552,7 @@ fn init_sentry(config: Option<&SentryConfig>) -> Option<sentry::ClientInitGuard>
         dsn: Some(
             config
                 .dsn
+                .expose()
                 .parse()
                 .expect("sentry.dsn validated at config load"),
         ),
@@ -1001,7 +1002,7 @@ mod tests {
     #[test]
     fn init_sentry_with_blank_dsn_creates_no_client() {
         let config = SentryConfig {
-            dsn: "   ".to_string(),
+            dsn: "   ".to_string().into(),
             environment: None,
             metrics: false,
             traces_sample_rate: 0.0,
@@ -1013,7 +1014,7 @@ mod tests {
     #[test]
     fn init_sentry_with_valid_dsn_binds_client() {
         let config = SentryConfig {
-            dsn: "https://public@sentry.invalid/1".to_string(),
+            dsn: "https://public@sentry.invalid/1".to_string().into(),
             environment: Some("test".to_string()),
             metrics: false,
             traces_sample_rate: 0.0,

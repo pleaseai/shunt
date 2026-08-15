@@ -5,6 +5,14 @@ description: すべての shunt.toml キー — server、providers、routes、mo
 
 ファイルの場所、優先順位、注釈付きの例については [Configuration](/ja/guides/configuration/) を参照してください。完全なテンプレート: [`shunt.toml.example`](https://github.com/pleaseai/shunt/blob/main/shunt.toml.example)。
 
+## Secret 参照
+
+設定ファイルの文字列値は、リテラルの代わりに `${VAR}` または `${file:/絶対/パス}` として書けます。`${VAR}` は環境変数 `VAR` の値に置き換わり、`"Bearer ${TOKEN}"` のようにより長い文字列に埋め込むこともできます(変数が未定義だと設定の読み込みは失敗します)。`${file:/絶対/パス}` は指定したファイルの内容(トリム済み)に置き換わり、パスは絶対パスでなければならず、フィールドの値全体でなければなりません — 他の文字列に埋め込むことはできません(ファイルが読み取れない、パスが相対パスである、または他の文字列に埋め込まれている場合、設定の読み込みは失敗します)。`$${` はリテラルの `${` にエスケープされます。解決は再帰的ではありません — 解決済みの値は再スキャンされません。この置換は設定ファイルにのみ適用され、`SHUNT_*` 環境変数オーバーライドはそのまま使われます。起動時、`shunt check`、[ホットリロード](https://github.com/pleaseai/shunt/blob/main/docs/config-reload.md)(SIGHUP とファイル監視)を含む設定の読み込みのたびに再実行されるため、`${file:}` で参照したシークレットはファイルを書き換えてリロードをトリガーするだけで、再起動なしにローテーションできます。ただし、ローテーションした値が実際に反映されるかどうかは、そのフィールド自身のリロード動作に従います。`[sentry]` と `[otel]` は起動時に一度だけ初期化されるため、この 2 つのセクションのシークレットをローテーションしても設定が更新されるだけで、反映するには再起動が必要です。
+
+`[sentry] dsn`、`[otel.headers]` の値、`[server.gateway.telemetry] forward_to[].headers` の値、`[server.gateway.session] jwt_secret` の 4 つのフィールドは redacting secret 型として扱われ、診断出力では `[redacted]` と表示されます。これらのフィールドにリテラル値を書くことは以前とまったく同じように動作します。secret 型のフィールドがリテラルを保持している場合、shunt は起動時に該当するフィールドパスのみを(値は決して含めずに)知らせる勧告的な警告を 1 回記録します。
+
+既存の `tokens_env`、`jwt_secret_env`、`client_secret_env`、`api_key_env`、`users_env`、`token_env`、`tokens_file` フィールドはこの変更の影響を受けず、引き続き環境変数(`tokens_file` の場合はファイルパス)を指します(`jwt_secret_env` は別途 [`session.jwt_secret`](#servergatewaysessionオプション) に置き換えられ deprecated です)。
+
 ## `[server]`
 
 | キー | デフォルト | 意味 |
@@ -37,6 +45,8 @@ description: すべての shunt.toml キー — server、providers、routes、mo
 
 指定された環境変数には 1 つ以上の認証情報が必要です。例: `SHUNT_CLIENT_TOKENS="alice:<token>,bob:<token>"`。テーブルが存在するのに変数が未設定・空・不正な場合、起動はフェイルクローズします。ゲートされるルート（マッピングされた `/v1/messages` 推論と `GET /v1/models` discovery）は、設定されたヘッダー、`Authorization: Bearer`、`x-api-key` のいずれでもトークンを受け付けます — 複数のスロットに有効なトークンがある場合は専用ヘッダーが優先されます。
 
+`tokens_env` の値も、他の設定ファイル文字列と同様に `${VAR}` / `${file:...}` で書けます([Secret 参照](#secret-参照)を参照)。shunt がトークンを読み取る環境変数名を指す点は変わりません。
+
 ## `[server.admin]`（オプション）
 
 このテーブルの存在が、ブラウザーでのアカウントプロビジョニングとアカウントプールの健全性のための管理 Web サーフェスを有効化します（[詳細](/ja/guides/admin-remote-provisioning/)）。テーブルがない場合、`/admin*` ルートは一切登録されません。
@@ -52,6 +62,8 @@ description: すべての shunt.toml キー — server、providers、routes、mo
 
 管理トークンは `[server.auth]` の下で設定されるクライアントトークンとは別個の認証情報です。1 つの認証情報を両方のサーフェスで再利用しないでください。
 
+`[server.auth]` の `tokens_env` と同様、この `tokens_env` の値も `${VAR}` / `${file:...}` で書けます([Secret 参照](#secret-参照)を参照)。
+
 ## `[server.gateway]`（オプション）
 
 このテーブルの存在が、Claude Code の managed `forceLoginMethod: "gateway"` で使う [OAuth device-flow gateway ログイン](/ja/guides/gateway-login/)を有効化します。テーブルがなければ、shunt は `/.well-known/oauth-authorization-server`、`/oauth/device_authorization`、`/oauth/token`、`/device`、`/managed/settings` を登録しません。
@@ -59,14 +71,38 @@ description: すべての shunt.toml キー — server、providers、routes、mo
 | キー | デフォルト | 意味 |
 | :-- | :-- | :-- |
 | `public_url` | 必須 | JWT issuer および OAuth endpoint の基点となる外部公開 HTTPS origin。`http` は loopback のみ許可 |
-| `jwt_secret_env` | `SHUNT_GATEWAY_JWT_SECRET` | 32 bytes 以上の HS256 signing secret を保持する env 変数 |
+| `jwt_secret_env` | `SHUNT_GATEWAY_JWT_SECRET` | 32 bytes 以上の HS256 signing secret を保持する env 変数。**Deprecated**。単独使用では引き続き完全にサポートされる — [`session.jwt_secret`](#servergatewaysessionオプション) に置き換えられた |
 | `users_env` | `SHUNT_GATEWAY_USERS` | カンマ区切りの `email:secret` approval user を保持する env 変数 |
-| `token_ttl_seconds` | `3600` | access token の寿命。`expires_in` として返される |
+| `token_ttl_seconds` | `3600` | access token の寿命。`expires_in` として返される。**Deprecated**。単独使用では引き続き完全にサポートされる — [`session.ttl_hours`](#servergatewaysessionオプション) に置き換えられたが、1 時間未満の寿命を指定できる唯一の方法として残る |
 | `trust_forwarded_for` | `false` | `/device` の rate-limit identity として `X-Forwarded-For`／`X-Real-IP` を信頼する。client 提供値を置換する trusted proxy の背後でのみ有効化 |
 
-URL が path 等を含まない HTTPS origin でない場合（`http` は loopback のみ許可）、TTL が 0 の場合、secret がないか 32 bytes 未満の場合、または user list が空・不正な場合、起動は fail closed します。secret には `:` を含められ、最初の colon だけが email と secret を分けます。env-backed secret と user の変更は config reload で反映されますが、route tree は boot 時に固定されるため、テーブルの追加・削除には restart が必要です。
+URL が path 等を含まない HTTPS origin でない場合（`http` は loopback のみ許可）、TTL が 0 の場合、secret がないか 32 bytes 未満の場合、または user list が空・不正な場合、起動は fail closed します。secret には `:` を含められ、最初の colon だけが email と secret を分けます。`jwt_secret_env` と `users_env` の値も、他の設定ファイル文字列と同様に `${VAR}` / `${file:...}` で書けます([Secret 参照](#secret-参照)を参照)。env-backed secret と user の変更は config reload で反映されますが、route tree は boot 時に固定されるため、テーブルの追加・削除には restart が必要です。
+
+Deprecated なキーと、それに対応する `[server.gateway.session]` の置き換えキーを両方設定すると、キーごとに起動が失敗します: `jwt_secret_env` と `session.jwt_secret` を併用するとエラー、`token_ttl_seconds` と `session.ttl_hours` を併用するとエラーです。2 つのペアをまたいで組み合わせる(例: `session.jwt_secret` と `token_ttl_seconds` の併用)のは問題ありません。shunt は、deprecated なキーが設定ファイルであれ `SHUNT_*` 環境変数 override であれ明示的に設定されるたびに deprecation 警告を 1 回記録し、そのキー自体が一切設定されずデフォルトが適用される場合にのみ警告なしのままです — `jwt_secret_env` を設定せず `SHUNT_GATEWAY_JWT_SECRET` env 変数に secret の値だけを入れておく設定は、その変数が deprecated なキー自体ではなく secret の値を保持しているだけなので、引き続き警告しません。ペアの片方だけが設定されている場合、`session.*` があればそちらが優先され、なければ deprecated なキー、どちらもなければデフォルトが使われます。
 
 発行された bearer は、選択された provider が server-side credential を注入する場合に `/v1/models`、`/v1/messages`、`/v1/messages/count_tokens` を認証します。passthrough provider は open のままです。`[server.auth]` もある場合は、どちらかの credential で access できます。device grant と rotating refresh token は process-lifetime の in-memory state です。config reload では維持されますが、restart では無効になります。
+
+### `[server.gateway.session]`（オプション）
+
+upstream の Claude apps gateway の `session:` ブロックに対応します:
+
+```toml
+[server.gateway.session]
+jwt_secret = "${SHUNT_GATEWAY_JWT_SECRET}"
+ttl_hours = 1
+```
+
+| キー | デフォルト | 意味 |
+| :-- | :-- | :-- |
+| `jwt_secret` | このテーブルがある場合は必須 | HS256 signing secret。32 bytes 以上の entropy が必要(例: `openssl rand -base64 32`)。単一の文字列、またはローテーション用の array も指定可能 — index 0 が新しいトークンに署名し、すべてのエントリが検証に使われる |
+| `ttl_hours` | `1` | access token の寿命(時間単位) |
+
+`jwt_secret` は `Secret` 型のフィールドです: 他の設定ファイル文字列と同様に `${VAR}` / `${file:/絶対/パス}` を使え([Secret 参照](#secret-参照)を参照)、診断出力では redact されます。既存のセッションを無効化せずにローテーションするには、新しい secret を array の先頭に追加し、`ttl_hours` の間だけ待って未完了の access token を失効させてから、古いエントリを削除します:
+
+```toml
+[server.gateway.session]
+jwt_secret = ["new-secret-value", "old-secret-value"]
+```
 
 ### `[[server.gateway.policies]]`（オプション）
 
@@ -80,7 +116,7 @@ URL が path 等を含まない HTTPS origin でない場合（`http` は loopba
 
 ### `[server.gateway.telemetry]`（オプション）
 
-`forward_to` は、必須の base OTLP/HTTP `url`、任意の string `headers` map、signal ごとの opt-in boolean（`metrics` は既定で `true`、`logs`／`traces` は既定で `false`）を持つ destination の array です。いずれかの signal を opt-in した list は managed `settings.env` に 6 つの値を注入します。`CLAUDE_CODE_ENABLE_TELEMETRY=1`、各 `OTEL_METRICS_EXPORTER`／`OTEL_LOGS_EXPORTER`／`OTEL_TRACES_EXPORTER` はその signal を opt-in した destination があれば `otlp`、なければ `none`、`OTEL_EXPORTER_OTLP_ENDPOINT=public_url`、`OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` です。どの signal も opt-in されていない場合は何も注入しません。競合時は policy の env value が優先します。同じ list は inbound ingest も駆動します（M-C、#189）。`[server.gateway]` があれば常に登録される `POST /v1/{metrics,logs,traces}` route がクライアントの OTLP payload を受け取り、その signal を opt-in したすべての destination に verbatim で relay し、opt-in した destination がない signal は受理後に破棄します。`logs`／`traces` が既定で off なのは、Claude Code の log record と span に command line、prompt、ファイルパスが含まれ得るためです。
+`forward_to` は、必須の base OTLP/HTTP `url`、任意の string `headers` map、signal ごとの opt-in boolean（`metrics` は既定で `true`、`logs`／`traces` は既定で `false`）を持つ destination の array です。`headers` の各値は redacting secret 型として扱われ、診断出力では `[redacted]` と表示されます([Secret 参照](#secret-参照)を参照)。いずれかの signal を opt-in した list は managed `settings.env` に 6 つの値を注入します。`CLAUDE_CODE_ENABLE_TELEMETRY=1`、各 `OTEL_METRICS_EXPORTER`／`OTEL_LOGS_EXPORTER`／`OTEL_TRACES_EXPORTER` はその signal を opt-in した destination があれば `otlp`、なければ `none`、`OTEL_EXPORTER_OTLP_ENDPOINT=public_url`、`OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` です。どの signal も opt-in されていない場合は何も注入しません。競合時は policy の env value が優先します。同じ list は inbound ingest も駆動します（M-C、#189）。`[server.gateway]` があれば常に登録される `POST /v1/{metrics,logs,traces}` route がクライアントの OTLP payload を受け取り、その signal を opt-in したすべての destination に verbatim で relay し、opt-in した destination がない signal は受理後に破棄します。`logs`／`traces` が既定で off なのは、Claude Code の log record と span に command line、prompt、ファイルパスが含まれ得るためです。
 
 ```toml
 [[server.gateway.policies]]
@@ -212,6 +248,8 @@ codex-fallback = "gpt-5.2"
 
 `passthrough` アップストリームでは、クライアント自身の `authorization` / `x-api-key` がフェイルオーバー試行で転送されるのは、**プライマリ**ルート自体が `passthrough` であり、かつ試行先のオリジンがそのプライマリと一致する場合に限られます。このときの資格情報はプライマリにオリジン固有なクライアント自身のアップストリーム資格情報であるため、**異なる**オリジンへの `passthrough` フェイルオーバー試行ではこれを削除してフェイルクローズし、ホスト固有のトークンを別のオリジンへ再送しません。同一オリジンのフォールバック（例：1 つのホスト上の 2 つの passthrough エントリ）は引き続き資格情報を保持します。プライマリが自前の資格情報を注入する場合、クライアントのヘッダーはアップストリーム資格情報ではなくゲートウェイ／クライアントのシークレットであるため、すべての `passthrough` フォールバックはオリジンに関係なくこれを削除します。`api_key`／OAuth アップストリームは位置に関係なく自前のサーバーサイド資格情報を注入します。
 
+origin に関係なく、保持された各スロットはそのスロットが実際に保持している値でもチェックされます。`authorization` と `x-api-key` は、そのスロット自身の値が shunt 自身が発行した JWT と**形が一致する**場合 — 3 セグメント構造で、ペイロードの `aud` クレームが `"shunt"` であるか、`iss` クレームがこのゲートウェイのアイデンティティと一致するか、`shunt_token_use` クレームが `"gateway-session"`（shunt だけが発行する専用マーカー）である場合 — または設定済みの `[server.auth]` クライアントトークンと一致する場合にのみクリアされます。この JWT チェックは意図的に「今このトークンが認証されるか」ではなく「形が一致するか」で判定します: 期限切れのトークン、別の `public_url` を持つ兄弟インスタンスが発行したトークン、`jwt_secret` のローテーション後に検証できなくなったトークンも、依然として shunt 自身の認証情報であるため引き続きクリアされます。このマーカーは形状チェックに追加された分岐であり、必須条件ではありません: マーカー導入前に発行されたトークンも `aud`/`iss` で引き続き一致し、`verify` 自体もマーカーを要求しないため、古いバージョンの shunt が発行したトークンは TTL 内であれば引き続き認証されます。`apiKeyHelper` は両方のスロットを同じ値で埋めるため、どちらの認証情報も一方または両方のスロットに入り得ます。もう一方のスロットがゲートウェイ JWT や静的なクライアントトークンを保持していても、本物のアップストリーム認証情報を保持しているスロットはそのまま転送されます。クリアされるのはゲート用認証情報を保持しているスロットだけです。`[server.auth] header` には `authorization` 自体を含め任意のヘッダー名を指定でき、そう設定した場合クライアントはプレフィックスなしの `Authorization: <token>` で認証します。そのためこのスロットは `Bearer` ペイロードだけでなく値全体としてもチェックされ、そうしたトークンがアップストリームへ転送されることはありません。 この設定には注意点があります: 推論リクエストでは shunt がルーティング前に設定されたヘッダーを無条件に除去するため、そのスロットは上流へ何も運びません — ゲートトークンだけでなく、呼び出し元自身の認証情報も落ちます。`header` を既定の専用 `x-shunt-token` のままにすればこの衝突を避けられます。
+
 プロキシされた成功レスポンスと最終失敗には、`x-gateway-upstream`（選択したアップストリーム名）、`x-gateway-model`（クライアントが要求した id）、`x-gateway-upstream-model`（マッピング後のバックエンド id）が必ず含まれます。`count_tokens` はチェーンの最初の要素だけを使い、フェイルオーバーしません。`[server.codex_endpoint]` は設定された単一アップストリームに固定され、このチェーンには参加しません。
 
 ### 既存設定の移行
@@ -235,7 +273,7 @@ codex-fallback = "gpt-5.2"
 | `kind` | `anthropic` \| `responses` \| `cursor` \| `gemini` \| `antigravity` | 上流プロトコル / アダプター。`anthropic` = Messages API（パススルー、オプションで再キー付け）。`responses` = Anthropic Messages を OpenAI Responses API へ変換。`cursor` = ネイティブな Cursor ConnectRPC/protobuf AgentService アダプター。`gemini` = Anthropic Messages を Google Code Assist バックエンドの Gemini `generateContent`/`streamGenerateContent` へ変換。`antigravity` = 上流を持たず、ローカルの Antigravity CLI バイナリ（`agy`）をサブプロセスとして実行。 |
 | `base_url` | URL | 上流のベース。shunt がエンドポイントパスを追加します。`kind = "cursor"` ではログイン／トークン更新用エンドポイントにのみ使われ、エージェント／推論ホストは選択しません。 |
 | `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `claude_oauth` \| `xai_oauth` \| `cursor_oauth` \| `google_oauth` \| `none` | `passthrough` はクライアント自身の credential を転送。`api_key` は `api_key_env` からキーを注入。`chatgpt_oauth` は `~/.codex/auth.json` を再利用。`claude_oauth` は明示的な Anthropic アカウントから選択。`xai_oauth` は `shunt login xai` からの `~/.shunt/xai-auth.json` を再利用（HTTPS 上の x.ai/grok.com ホストへのみ送信）。`cursor_oauth` は `~/.shunt/cursor-auth.json`（`shunt login cursor`）を再利用。`google_oauth` は gemini CLI ログインの `~/.gemini/oauth_creds.json` を再利用し、`kind = "gemini"` でのみ有効。`none` は認証すべき上流を持たないアダプター（`kind = "antigravity"`）向けに、credential を一切送信しません。 |
-| `api_key_env` | 環境変数名 | `auth = "api_key"` のとき、キーを読み取る場所。 |
+| `api_key_env` | 環境変数名 | `auth = "api_key"` のとき、キーを読み取る場所。この値自体も `${VAR}` / `${file:...}` で書けます([Secret 参照](#secret-参照)を参照)。 |
 | `api_key_header` | `bearer`（デフォルト） \| `x_api_key` | 注入されたキーを送るヘッダー。 |
 | `effort` | `low` … `max` | オプションのデフォルト reasoning エフォート（`responses` プロバイダー）。 |
 | `count_tokens` | `tiktoken`（デフォルト） \| `estimate` | `responses` および `cursor` provider: ローカルの tiktoken カウント vs. `501 not_supported` フォールバック（[詳細](/ja/guides/effort-and-context/#token-counting-count_tokens)）。 |
@@ -271,7 +309,7 @@ codex-fallback = "gpt-5.2"
 
 トップレベルの `auto_include_builtin_models` キーはデフォルトで `true` です。有効な場合、shunt は管理者が選定した `[[models]]` エントリを先に返し、その後に shunt 自身が検出したモデルを追加します。同一 id は選定したエントリを優先して重複を除きます。`[[models]]` リストだけを公開するには `false` に設定してください — 下記のアップストリーム呼び出しも同時に無効になります。
 
-検出されるモデルは、shunt が実際のアップストリーム一覧を取得できる場合はそこから得られます。`server.default_provider` が Anthropic 種別の場合に、そのアップストリームへ `GET /v1/models` を発行し、認証モードに応じた認証情報を使います。`auth = "passthrough"` では呼び出し元が転送した認証情報を使うため、呼び出し元ごとにその認証情報で利用できる一覧が返ります。shunt がその認証情報を `[server.auth]` クライアントトークンまたはゲートウェイログインの bearer としてすでに消費した場合、アップストリームへ再送しません。その場合、Discovery はアップストリーム認証情報が残っていない理由をログに記録し、スナップショットへフォールバックします。`api_key` では設定済みのキーを使います。`claude_oauth` では、推論と同じ実効アカウントセットから、解決可能かつ無効化されていない最初のアカウントを使います。このセットにはストアから検出されたアカウントが含まれ、`account_scope` の順序が適用されます。Discovery はプール選択、クールダウン、クォータの記録を行いません。そのため、ゲートウェイ所有の認証情報を使う後者 2 つのモードでは、すべての呼び出し元がその認証情報にスコープされたカタログを共有します。shunt はキャッシュしません。`server.default_provider` が Anthropic 種別ではない、認証情報がない、あるいは呼び出しが失敗・タイムアウト（2 秒上限）した場合は、組み込みの Claude カタログのスナップショットにフォールバックします。いずれの場合もこれらの id は専用の `[[routes]]` エントリを必要としません。通常のルーティング規則で解決され、`[[routes]]` と `[[route_prefixes]]` のいずれにも一致しない場合は `server.default_provider` にフォールバックします。
+検出されるモデルは、shunt が実際のアップストリーム一覧を取得できる場合はそこから得られます。`server.default_provider` が Anthropic 種別の場合に、そのアップストリームへ `GET /v1/models` を発行し、認証モードに応じた認証情報を使います。`auth = "passthrough"` では呼び出し元が転送した認証情報を使うため、呼び出し元ごとにその認証情報で利用できる一覧が返ります。ただし、あるスロットに実際のアップストリーム認証情報ではなく shunt 自身の `[server.gateway]` JWT または設定済みの `[server.auth]` クライアントトークンが入っている場合、そのスロットは転送されません。`authorization` と `x-api-key` は個別にフィルタされるため、もう一方のスロットにある本物の認証情報はそのまま転送され、両方のスロットに転送できる認証情報が残らない場合にのみ Discovery は組み込みのスナップショットへフォールバックします。`api_key` では設定済みのキーを使います。`claude_oauth` では、推論と同じ実効アカウントセットから、解決可能かつ無効化されていない最初のアカウントを使います。このセットにはストアから検出されたアカウントが含まれ、`account_scope` の順序が適用されます。Discovery はプール選択、クールダウン、クォータの記録を行いません。そのため、ゲートウェイ所有の認証情報を使う後者 2 つのモードでは、すべての呼び出し元がその認証情報にスコープされたカタログを共有します。shunt はキャッシュしません。`server.default_provider` が Anthropic 種別ではない、認証情報がない、あるいは呼び出しが失敗・タイムアウト（2 秒上限）した場合は、組み込みの Claude カタログのスナップショットにフォールバックします。いずれの場合もこれらの id は専用の `[[routes]]` エントリを必要としません。通常のルーティング規則で解決され、`[[routes]]` と `[[route_prefixes]]` のいずれにも一致しない場合は `server.default_provider` にフォールバックします。
 
 選定したエントリに `[models.upstream_model]` を追加すると、1つの宣言で id の公開、ルーティング、上流 id への変換を行えます。厳密な id のルーティングには、`[[routes]]` の代わりにこの形式を推奨します。順序付き `[[upstreams]]` では、マップに 1 つ以上の `upstream = "backend-id"` ペアを含めることができ、`[[upstreams]]` の宣言順でフェイルオーバーチェーンになります。レガシー `[providers.*]` には宣言済み順序がないため、正確に 1 ペアだけを許可します。その id ではマップが `[[routes]]`、`[[route_prefixes]]`、`server.default_provider` より優先され、各アップストリームのデフォルト `effort` がそのチェーン要素に適用されます。空のマップ、空または空白文字のみのアップストリーム名またはバックエンド id、未知のアップストリーム、同じ id の `[[routes]]` エントリ、`[1m]` または `[1M]` で終わるマップ付き id、あるいはいずれか一方がマップ付きである重複 `[[models]]` id は起動エラーです。client はマッチング前に context-window hint を取り除くため、マップ付き id にこの suffix を含めると、そのエントリには到達できません。マップなしエントリ同士の重複は従来の動作を維持します。
 
@@ -296,7 +334,7 @@ codex = "gpt-5.2"
 
 | キー | デフォルト | 意味 |
 | :-- | :-- | :-- |
-| `dsn` | — | Sentry プロジェクトの DSN。空で無効化、不正な DSN は起動エラー。 |
+| `dsn` | — | Sentry プロジェクトの DSN。空で無効化、不正な DSN は起動エラー。Redacting secret — 診断出力では `[redacted]` と表示される([Secret 参照](#secret-参照)を参照)。 |
 | `environment` | — | 報告イベントに付く任意の environment タグ |
 | `metrics` | `false` | 使用量メトリクスも送信 — OpenTelemetry ガイドに記載された gateway メトリクス系列(集計値のみ) |
 | `traces_sample_rate` | `0.0` | パフォーマンストレースも送信: リクエストごとのスパンが Sentry トランザクションになり、`[0.0, 1.0]` のこのレートでヘッドサンプリング。`0.0` はスパンを一切送らず、範囲外は起動エラー。 |
@@ -319,7 +357,7 @@ codex = "gpt-5.2"
 
 ## `[otel.headers]`(任意)
 
-すべての OTLP リクエストに付くヘッダー(例: ホスト型コレクターのトークン)。標準の `OTEL_EXPORTER_OTLP_HEADERS` の下にマージされます。
+すべての OTLP リクエストに付くヘッダー(例: ホスト型コレクターのトークン)。標準の `OTEL_EXPORTER_OTLP_HEADERS` の下にマージされます。各ヘッダー値は redacting secret 型として扱われ、診断出力では `[redacted]` と表示されます([Secret 参照](#secret-参照)を参照)。
 
 | キー | 意味 |
 | :-- | :-- |

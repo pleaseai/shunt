@@ -789,6 +789,10 @@ async fn forwards_client_identity_headers_verbatim_and_strips_shunt_token() {
         // A client-supplied internal client-identity label must be stripped, not
         // forwarded (spoofing guard, matches the main proxy path).
         .and(HeaderAbsent("x-shunt-inbound-client"))
+        // A caller's own API key must never reach the backend either — the
+        // codex_endpoint provider is chatgpt_oauth-only, so x-api-key can never
+        // be a valid upstream credential (issue #356).
+        .and(HeaderAbsent("x-api-key"))
         .respond_with(ResponseTemplate::new(200).set_body_raw(r#"{"ok":true}"#, "application/json"))
         .expect(1)
         .mount(&upstream)
@@ -818,6 +822,8 @@ async fn forwards_client_identity_headers_verbatim_and_strips_shunt_token() {
         .header("x-shunt-token", "hdr-secret")
         // A spoofed internal client label the passthrough must strip.
         .header("x-shunt-inbound-client", "spoofed-client")
+        // A caller's own credential in the x-api-key slot must be stripped too.
+        .header("x-api-key", "sk-caller-secret")
         .body(INBOUND_BODY)
         .send()
         .await
@@ -834,7 +840,10 @@ async fn strips_default_shunt_token_even_without_inbound_auth() {
     // The documented guarantee — the shunt client-token header never reaches the
     // Codex backend — holds unconditionally, including on an ungated endpoint (no
     // `[server.auth]`). A client that habitually sends `x-shunt-token` must not
-    // have it forwarded upstream just because auth is off.
+    // have it forwarded upstream just because auth is off. The same holds for a
+    // caller's `x-api-key`: the endpoint's gate never reads that header, so an
+    // ungated caller could put a real credential there and expect it kept private
+    // (issue #356).
     if !can_bind_loopback() {
         return;
     }
@@ -847,6 +856,9 @@ async fn strips_default_shunt_token_even_without_inbound_auth() {
         .and(BearerToken(token_a.clone()))
         // The default shunt token header is stripped even with no auth configured.
         .and(HeaderAbsent("x-shunt-token"))
+        // Same for a caller's x-api-key — never a valid credential for this
+        // chatgpt_oauth-only upstream, so it must never be forwarded.
+        .and(HeaderAbsent("x-api-key"))
         .respond_with(ResponseTemplate::new(200).set_body_raw(r#"{"ok":true}"#, "application/json"))
         .expect(1)
         .mount(&upstream)
@@ -863,6 +875,7 @@ async fn strips_default_shunt_token_even_without_inbound_auth() {
         .post(format!("{}/responses", gateway.base_url))
         .header("content-type", "application/json")
         .header("x-shunt-token", "leftover-token")
+        .header("x-api-key", "sk-caller-secret")
         .body(INBOUND_BODY)
         .send()
         .await

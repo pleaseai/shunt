@@ -66,7 +66,12 @@ impl ResolvedIdp {
 #[derive(Clone)]
 pub struct GatewayAuth {
     public_url: String,
-    jwt_secret: Vec<u8>,
+    /// Ordered, non-empty signing/verification secrets: index 0 signs new
+    /// tokens, every entry verifies a presented one (rotation — issue #348,
+    /// `[server.gateway.session] jwt_secret`). The single-secret
+    /// constructors below seed this with one element; `with_signing_secrets`
+    /// overrides it with the full ordered list resolved from config.
+    jwt_secrets: Vec<Vec<u8>>,
     token_ttl_seconds: u64,
     trust_forwarded_for: bool,
     approval: Option<Arc<dyn ApprovalProvider>>,
@@ -117,7 +122,7 @@ impl GatewayAuth {
     ) -> Self {
         Self {
             public_url,
-            jwt_secret,
+            jwt_secrets: vec![jwt_secret],
             token_ttl_seconds,
             trust_forwarded_for,
             approval,
@@ -125,6 +130,21 @@ impl GatewayAuth {
             managed_default: None,
             managed_by_email: HashMap::new(),
         }
+    }
+
+    /// Overrides the constructor's single-secret seed with the full ordered,
+    /// non-empty secret list resolved from `[server.gateway.session]
+    /// jwt_secret` — index 0 signs, every entry verifies. Panics on an empty
+    /// list so the non-empty invariant is enforced at construction rather
+    /// than trusted from the caller; `GatewayConfig::resolve` already
+    /// rejects an empty `jwt_secret` array before reaching here.
+    pub(crate) fn with_signing_secrets(mut self, secrets: Vec<Vec<u8>>) -> Self {
+        assert!(
+            !secrets.is_empty(),
+            "GatewayAuth requires at least one signing secret"
+        );
+        self.jwt_secrets = secrets;
+        self
     }
 
     pub fn with_oidc(mut self, idp: ResolvedIdp) -> Self {
@@ -156,8 +176,10 @@ impl GatewayAuth {
         &self.public_url
     }
 
+    /// The primary (index-0) signing secret — the one new tokens are signed
+    /// with.
     pub fn jwt_secret(&self) -> &[u8] {
-        &self.jwt_secret
+        &self.jwt_secrets[0]
     }
 
     pub fn token_ttl_seconds(&self) -> u64 {
@@ -196,7 +218,27 @@ impl GatewayAuth {
                     .eq_ignore_ascii_case("bearer")
                     .then_some(token.trim())
             })?;
-        jwt::verify(token, &self.public_url, &self.jwt_secret)
+        self.authenticate_token(token)
+    }
+
+    /// Verify a bare token value — no `Bearer ` prefix — against this gateway's
+    /// issuer and every configured signing key, so a token minted under a
+    /// rotated-out secret still verifies while that secret is still listed.
+    pub fn authenticate_token(&self, token: &str) -> Option<jwt::Claims> {
+        self.jwt_secrets
+            .iter()
+            .find_map(|secret| jwt::verify(token, &self.public_url, secret))
+    }
+
+    /// Whether `token` is *shaped* like a JWT this gateway (or a sibling
+    /// instance sharing its `jwt_secret`) issued — see
+    /// [`jwt::has_shunt_shape`]. Deliberately weaker than
+    /// [`Self::authenticate_token`]: used for the "never forward this
+    /// upstream" decision, which must still catch a token this gateway
+    /// issued even when it is expired, was minted under a different
+    /// `public_url`, or no longer verifies after a secret rotation.
+    pub fn is_shunt_shaped_token(&self, token: &str) -> bool {
+        jwt::has_shunt_shape(token, &self.public_url)
     }
 }
 

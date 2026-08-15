@@ -2,6 +2,8 @@
 # Every provider below has a built-in default, so you only need the keys you
 # want to change. See docs/running.md §3 for the full reference.
 # Env overrides: SHUNT_ prefix, __ for nesting (e.g. SHUNT_SERVER__BIND=0.0.0.0:3001).
+# Any string value below can also be ${VAR} or ${file:/abs/path} instead of a
+# literal, so a secret doesn't have to sit in this file — see docs/config-secrets.md.
 
 [server]
 bind = "127.0.0.1:3001"        # address shunt listens on (ANTHROPIC_BASE_URL points here)

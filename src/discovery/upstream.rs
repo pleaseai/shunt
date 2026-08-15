@@ -21,10 +21,11 @@ use crate::{
     adapters::anthropic::strip_duplicate_oauth_api_key,
     auth::{
         self, claude,
-        inbound::{bearer_token, InboundAuth},
+        inbound::{authorization_consumed_by, is_consumed_by_shunt, InboundAuth},
         resolve_claude_account, resolve_credential, Credential,
     },
     config::{ApiKeyHeader, AuthMode, Config, ProviderConfig, ProviderKind},
+    gateway::GatewayAuth,
     routing::{AdapterKind, Route},
     server::AppState,
 };
@@ -88,7 +89,7 @@ impl From<UpstreamModel> for ModelEntry {
 #[derive(Clone, Copy, Default)]
 pub(super) struct InboundCredentialContext<'a> {
     pub(super) static_auth: Option<&'a InboundAuth>,
-    pub(super) gateway_bearer_authenticated: bool,
+    pub(super) gateway_auth: Option<&'a GatewayAuth>,
 }
 
 /// Fetch the caller's own model list from the Anthropic upstream.
@@ -262,22 +263,31 @@ async fn upstream_headers(
             // A bearer shunt already consumed — gateway login, or a
             // `[server.auth]` client token sent as `Authorization` — authenticates
             // the caller against shunt, not the caller against the upstream.
-            let bearer_is_consumed = inbound_context.gateway_bearer_authenticated
-                || bearer_token(inbound).is_some_and(|token| {
-                    inbound_context
-                        .static_auth
-                        .and_then(|auth| auth.authenticate_value(token))
-                        .is_some()
-                });
+            // Evaluated over the whole slot, because a `[server.auth] header =
+            // "authorization"` caller passes the gate with a bare, unprefixed
+            // token that no Bearer-only check would recognise as shunt's.
+            let bearer_is_consumed = authorization_consumed_by(
+                inbound,
+                inbound_context.gateway_auth,
+                inbound_context.static_auth,
+            )
+            .is_some();
             let bearer = inbound
                 .get("authorization")
                 .cloned()
                 .filter(|_| !bearer_is_consumed);
+            // Checked independently of `authorization`: an `apiKeyHelper` fills
+            // both slots with the same value, so a gateway JWT or static token
+            // can land in either or both, beside a genuine upstream credential
+            // in the other slot that must keep flowing. Gating this slot on
+            // whether `authorization` was consumed would strip a real key
+            // whenever *any* slot held a shunt-consumed credential.
             let api_key = inbound.get("x-api-key").cloned().filter(|value| {
-                inbound_context
-                    .static_auth
-                    .and_then(|auth| auth.authenticate_value(value.as_bytes()))
-                    .is_none()
+                !is_consumed_by_shunt(
+                    value.as_bytes(),
+                    inbound_context.gateway_auth,
+                    inbound_context.static_auth,
+                )
             });
             if bearer.is_none() && api_key.is_none() {
                 tracing::warn!(

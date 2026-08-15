@@ -73,10 +73,74 @@ On a gated (injected-credential) route the gateway strips `authorization` and `x
 from the forwarded headers after a successful check — the injected-credential adapters
 replace those headers with the provider credential anyway, but the boundary must not
 depend on adapter behavior. Passthrough routes are never gated, so the client's `Bearer` /
-`x-api-key` remain the real upstream Anthropic credential and are forwarded unchanged.
-Operators mixing passthrough and mapped models on one shared gateway should keep handing
-out dedicated `x-shunt-token` values: the `Bearer` slot then stays free to carry the real
-Anthropic credential for passthrough models.
+`x-api-key` are forwarded as the caller presented them — except a slot that holds a credential
+that gated this request's admission, whether a static `[server.auth]` token or shunt's own
+`[server.gateway]` JWT, which is cleared from that slot regardless of gating (see below).
+Operators mixing passthrough and mapped models on one shared gateway can still keep handing
+out dedicated `x-shunt-token` values as good hygiene — it keeps the `Bearer` slot free for the
+real Anthropic credential on passthrough models by convention — but it is no longer load-bearing
+for the safety boundary: the by-value check below enforces it even when a client delivers the
+gate credential through a rotating mechanism such as `apiKeyHelper`, which puts the same value
+in **both** `Authorization` and `x-api-key` (that is
+[how the credential variable maps to a header](https://code.claude.com/docs/en/llm-gateway-connect#how-the-credential-variable-maps-to-a-header)
+and leaves no free slot to move it out of).
+
+Both credential kinds hit the same mixed-chain scenario: "gated" is decided per route
+**chain**, not per route, so a chain mixing mapped and passthrough entries is authenticated by
+the gate credential and then reaches its passthrough attempt with the caller's headers intact.
+A purely passthrough chain is never gated at all, so the gate credential (if the caller sends
+one anyway) can still land in either slot there too. Either way, each slot is checked by the
+value it holds rather than by whether the request was gated:
+
+On a same-origin passthrough attempt, `authorization` and `x-api-key` are checked
+independently, by what each slot actually holds: a slot is cleared if its own value is either
+shaped like a JWT shunt itself issued or matches a configured `[server.auth]` static token, via
+the shared `auth::inbound::consumed_by` check used identically on the passthrough attempt of a
+chain (`proxy/failover.rs`) and in upstream model discovery (`discovery/upstream.rs`). The
+gateway-JWT half of that check (`jwt::has_shunt_shape`) is deliberately by shape — three base64url
+segments whose payload's `aud` claims `"shunt"`, whose `iss` claims this gateway's `public_url`, or
+whose `shunt_token_use` claim is `"gateway-session"`, a dedicated marker that only shunt mints — not
+by whether the token currently authenticates: a do-not-forward decision has to ask "did shunt
+issue this?", not "is this valid right now?". An expired token, one minted by a sibling instance
+under a different `public_url` (a fleet sharing one `jwt_secret` across differing `public_url`
+values — the case a strict authenticate-only check misses, since it is still live), or one that no
+longer verifies after a `jwt_secret` rotation is still shunt's own credential and must still be
+stripped; forwarding it leaks the caller's identity in the unencrypted payload and hands a
+third-party upstream a valid (message, tag) pair over `jwt_secret` as an offline oracle. `consumed_by`
+therefore checks `authenticate_token` first (so the `GatewayJwt` reason label keeps meaning "this
+authenticated the caller" whenever it can) and falls back to the shape check only if that fails.
+Forging `aud`/`iss` to force a strip only removes the forger's own credential — the check is
+per-value, never per-request — so the fail-safe direction is correct. The marker claim is an
+additional arm on that shape check, never a required one: a token minted before the marker
+existed still matches by `aud`/`iss`, and `verify` itself does not require the marker either, so
+such a token still authenticates within its TTL — requiring it would reject still-live tokens from
+an older shunt version, trading a silent leak-prevention gap for a loud, self-inflicted logout
+regression. Precision only improves as pre-marker tokens age out, without ever narrowing the check
+in the direction that matters. The
+`authorization` slot is evaluated in **both** shapes it can carry a gate credential in — the
+`Bearer <token>` payload, and the entire header value — because `[server.auth] header` is a
+free-form header name that an operator may set to `authorization`, in which case
+`authenticate_client` gates on the whole unprefixed value and a payload-only check would relay
+the gate token itself upstream (`auth::inbound::authorization_consumed_by`). The origin
+filter runs first — an off-origin failover attempt strips both slots outright before this
+by-value check ever runs; the by-value check applies only to whichever slots the origin filter
+retained. Within a same-origin attempt, the other slot's presence never triggers a strip by
+itself. Consequence to expect: a caller who presents the gate credential in one slot and a
+genuine upstream credential in the other still has that upstream credential forwarded on a
+same-origin attempt — only the gate-credential-bearing slot is cleared. A gate credential with
+no accompanying upstream credential in either slot still falls back to the builtin catalog for
+discovery, since no forwardable credential remains.
+
+Caveat for `[server.auth] header = "authorization"` (or `"x-api-key"`): on the **inference**
+path `check_inbound_auth` removes the configured header from the forwarded map for *every*
+request, before any route handling, so that slot never reaches the by-value check and never
+carries a caller's own upstream credential to a passthrough route — whether or not it holds a
+gate token. The by-value check is what covers the slot on the **discovery** path, which passes
+the request headers through unmodified. The consequence is that pointing `header` at a slot
+callers also need for their real credential costs them that slot on inference; the default
+dedicated `x-shunt-token` avoids the collision entirely. Over-stripping is the deliberate
+direction here — the alternative, deciding per value at the gate, would forward a slot the gate
+had already accepted under some configurations.
 
 ## 3. Comparison & hygiene
 

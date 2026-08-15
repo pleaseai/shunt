@@ -24,19 +24,23 @@ export SHUNT_GATEWAY_JWT_SECRET="$(openssl rand -base64 48)"
 export SHUNT_GATEWAY_USERS='alice@example.com:<unique-secret>,bob@example.com:<unique-secret>'
 ```
 
-Add the public URL that Claude Code and users' browsers can reach:
+Add the public URL that Claude Code and users' browsers can reach, and point `[server.gateway.session]` at the secret:
 
 ```toml
 [server.gateway]
 public_url = "https://gateway.example.com"
-jwt_secret_env = "SHUNT_GATEWAY_JWT_SECRET" # default
 users_env = "SHUNT_GATEWAY_USERS"            # default
-token_ttl_seconds = 3600                      # default
 trust_forwarded_for = false                   # default
 # state_path = "~/.shunt/gateway-sessions.json"  # default; "" = memory-only sessions
+
+[server.gateway.session]
+jwt_secret = "${SHUNT_GATEWAY_JWT_SECRET}"
+ttl_hours = 1                                 # default
 ```
 
-Startup fails closed if `public_url` is not a bare HTTPS origin (`http` is allowed only on loopback), `token_ttl_seconds` is zero, the signing secret is shorter than 32 bytes, or neither a valid user list nor a valid external IdP is configured. A static-user secret may contain `:` because only the first colon separates an email from its secret.
+Startup fails closed if `public_url` is not a bare HTTPS origin (`http` is allowed only on loopback), the token TTL is zero, the signing secret is shorter than 32 bytes, or neither a valid user list nor a valid external IdP is configured. A static-user secret may contain `:` because only the first colon separates an email from its secret.
+
+The deprecated `jwt_secret_env` (env var name, default `SHUNT_GATEWAY_JWT_SECRET`) and `token_ttl_seconds` (default `3600`) keys remain fully supported when used alone, and `token_ttl_seconds` is still the only way to set a sub-hour lifetime. Combining a deprecated key with its `session.*` replacement fails startup (`jwt_secret_env` with `session.jwt_secret`, or `token_ttl_seconds` with `session.ttl_hours`); shunt logs a deprecation warning whenever a deprecated key is explicitly set — whether in the config file or through a `SHUNT_*` environment override — and stays silent only when the key itself is never configured (relying on the `SHUNT_GATEWAY_JWT_SECRET` env var to hold the secret, without ever setting `jwt_secret_env`, still doesn't warn). See the [configuration reference](/reference/configuration/#servergatewaysession-optional) for the full precedence rules and the secret-rotation procedure.
 
 ### Use Google OIDC instead
 
