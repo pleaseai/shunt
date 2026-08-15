@@ -59,6 +59,21 @@ const USERINFO_BODY_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 /// with `email: None`.
 const USERINFO_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// Bound on the token exchange request and on reading its response.
+///
+/// Unlike [`USERINFO_REQUEST_TIMEOUT`], a stall here must not fail open: the
+/// authorization code is single-use and already spent by the time this call
+/// is made, and `run` writes no credential until it returns. An unbounded
+/// exchange that accepts the request and then never answers hangs forever
+/// with the code burned and nothing on disk, forcing the operator to redo
+/// the whole browser flow. Timing out turns that into an ordinary,
+/// immediately visible error instead.
+///
+/// 30s matches `CREDENTIAL_REQUEST_TIMEOUT` in `auth.rs`, which bounds
+/// `refresh_call` — the same Google token endpoint, just a different
+/// `grant_type`.
+const TOKEN_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
+
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 /// Wall-clock budget for the one-shot client-version refresh at login.
@@ -119,7 +134,15 @@ pub async fn run() -> anyhow::Result<()> {
     }
 
     let code = callback.wait_for_code(CALLBACK_TIMEOUT).await?;
-    let tokens = exchange_code(&client, TOKEN_URL, &code, &redirect_uri, &verifier).await?;
+    let tokens = exchange_code(
+        &client,
+        TOKEN_URL,
+        &code,
+        &redirect_uri,
+        &verifier,
+        TOKEN_EXCHANGE_TIMEOUT,
+    )
+    .await?;
     let refresh_token = tokens.refresh_token.clone().ok_or_else(|| {
         anyhow::anyhow!(
             "Antigravity returned no refresh token; the login would expire within the hour. \
@@ -233,6 +256,7 @@ async fn exchange_code(
     code: &str,
     redirect_uri: &str,
     verifier: &str,
+    timeout: Duration,
 ) -> anyhow::Result<TokenResponse> {
     let params = [
         ("grant_type", "authorization_code"),
@@ -242,16 +266,20 @@ async fn exchange_code(
         ("redirect_uri", redirect_uri),
         ("code_verifier", verifier),
     ];
-    let response = crate::auth::shared::token_refresh_client()
-        .post(token_url)
-        .form(&params)
-        .send()
-        .await
-        .context("Antigravity token exchange failed")?;
+    let response = tokio::time::timeout(
+        timeout,
+        crate::auth::shared::token_refresh_client()
+            .post(token_url)
+            .form(&params)
+            .send(),
+    )
+    .await
+    .context("Antigravity token exchange timed out")?
+    .context("Antigravity token exchange failed")?;
     let status = response.status();
-    let body = response
-        .text()
+    let body = tokio::time::timeout(timeout, response.text())
         .await
+        .context("Antigravity token response read timed out")?
         .context("could not read the Antigravity token response")?;
     if !status.is_success() {
         bail!("Antigravity token exchange failed (HTTP {status}): {body}");
@@ -411,6 +439,7 @@ mod tests {
             "code-1",
             "http://localhost:51121/oauth-callback",
             "verifier-1",
+            TOKEN_EXCHANGE_TIMEOUT,
         )
         .await
         .unwrap();
@@ -442,6 +471,7 @@ mod tests {
             "code-1",
             "http://localhost:51121/oauth-callback",
             "the-verifier-value",
+            TOKEN_EXCHANGE_TIMEOUT,
         )
         .await
         .unwrap();
@@ -474,6 +504,7 @@ mod tests {
             "code-1",
             "http://127.0.0.1:1/oauth-callback",
             "verifier-1",
+            TOKEN_EXCHANGE_TIMEOUT,
         )
         .await
         .unwrap_err();
@@ -507,6 +538,7 @@ mod tests {
             "code-1",
             "http://localhost:51121/oauth-callback",
             "verifier-1",
+            TOKEN_EXCHANGE_TIMEOUT,
         )
         .await
         .unwrap_err();
@@ -516,6 +548,48 @@ mod tests {
                 .to_string()
                 .contains("Antigravity token exchange failed"),
             "expected the refused redirect to surface as an exchange failure, got: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stalled_token_exchange_times_out_rather_than_hanging_the_login() {
+        // The authorization code is single-use and already spent by the time
+        // this call is made, and `run` writes no credential until it
+        // returns — so an endpoint that accepts the request and then never
+        // answers would hang forever with the code burned and nothing on
+        // disk. Unlike the userinfo stall, this must surface as `Err`
+        // (fail-closed): a stalled exchange is fatal to the login, only the
+        // hang is being fixed.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({
+                        "access_token": "access-1",
+                        "refresh_token": "refresh-1",
+                        "expires_in": 3599
+                    }))
+                    .set_delay(Duration::from_secs(30)),
+            )
+            .mount(&server)
+            .await;
+
+        // Deliberately not the production constant: this asserts the bound
+        // exists and fires, without making the suite wait for it.
+        let error = exchange_code(
+            &reqwest::Client::new(),
+            &format!("{}/token", server.uri()),
+            "code-1",
+            "http://localhost:51121/oauth-callback",
+            "verifier-1",
+            Duration::from_millis(50),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("timed out"),
+            "expected a timeout error, got: {error}"
         );
     }
 
