@@ -162,13 +162,16 @@ pub fn validate_account_name(name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Resolve a provider store's accounts directory: `$<env_var>` when set, else
-/// `<home>/.shunt/accounts/<subdir>` (`HOME`, falling back to `USERPROFILE` on
-/// Windows where `HOME` is unset), else a working-directory-relative
-/// `.shunt/accounts/<subdir>`. `env_var`/`subdir` are the only things that differ
-/// between the Claude and Codex stores.
+/// Resolve a provider store's accounts directory: `$<env_var>` when set to a
+/// non-blank value, else `<home>/.shunt/accounts/<subdir>` (`HOME`, falling
+/// back to `USERPROFILE` on Windows where `HOME` is unset), else a
+/// working-directory-relative `.shunt/accounts/<subdir>`. `env_var`/`subdir`
+/// are the only things that differ between the Claude, Codex, and Kimi
+/// stores. An override that is set but empty or whitespace-only is treated as
+/// unset rather than resolving to a cwd-relative path.
 pub fn default_accounts_dir(env_var: &str, subdir: &str) -> PathBuf {
     env::var_os(env_var)
+        .filter(|value| !value.to_string_lossy().trim().is_empty())
         .map(PathBuf::from)
         .or_else(|| {
             env::var_os("HOME")
@@ -801,6 +804,25 @@ mod tests {
             default_accounts_dir(&env_name, "codex"),
             PathBuf::from("/tmp/shunt-shared-override")
         );
+        std::env::remove_var(&env_name);
+    }
+
+    #[test]
+    fn default_accounts_dir_treats_a_blank_env_override_as_unset() {
+        // An override set but empty (or whitespace-only) must not resolve to a
+        // cwd-relative path — it should fall through to the same HOME-based
+        // default as an unset override.
+        let env_name = format!("SHUNT_TEST_SHARED_DIR_BLANK_{}", std::process::id());
+        let unset = default_accounts_dir("SHUNT_TEST_SHARED_DIR_NEVER_SET", "codex");
+
+        for blank in ["", "   ", "\t"] {
+            std::env::set_var(&env_name, blank);
+            assert_eq!(
+                default_accounts_dir(&env_name, "codex"),
+                unset,
+                "blank override {blank:?} should be treated as unset"
+            );
+        }
         std::env::remove_var(&env_name);
     }
 
