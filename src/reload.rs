@@ -73,6 +73,17 @@ impl RuntimeState {
 pub fn reload(shared: &SharedState, path: Option<&std::path::Path>) -> Result<(), ConfigError> {
     // Load + validate the candidate before touching the live state.
     let new_config = Config::load(path)?;
+    // Mirror `main.rs`'s boot guard: a reload that newly routes to the native
+    // `antigravity` upstream without a credential must be refused here too, not
+    // just at startup — otherwise editing a running config could silently swap
+    // credentials, egress, and failure modes underneath a live provider.
+    if crate::auth::antigravity::routes_to_antigravity(&new_config) {
+        if let Some(message) = crate::auth::antigravity::antigravity_migration_error(
+            crate::auth::antigravity::default_antigravity_auth_path().exists(),
+        ) {
+            return Err(ConfigError::AntigravityMigrationRequired(message));
+        }
+    }
     let previous = shared.load();
     warn_on_restart_only_changes(&previous.config, &new_config);
     let mut new_state = RuntimeState::from_config(new_config)?;
@@ -482,6 +493,61 @@ mod tests {
         assert!(error.to_string().contains("unknown provider: nonexistent"));
         // Fail-safe: the previously-live config is untouched.
         assert_eq!(shared.load().config.server.default_provider, "anthropic");
+    }
+
+    #[test]
+    fn reload_routing_to_antigravity_without_a_credential_keeps_previous_state() {
+        use crate::auth::antigravity::ANTIGRAVITY_AUTH_FILE_ENV_LOCK;
+
+        let _env_guard = ANTIGRAVITY_AUTH_FILE_ENV_LOCK.lock().unwrap();
+        let dir = temp_dir("antigravity-migration");
+        let _guard = TempDirGuard(dir.clone());
+        let path = dir.join("shunt.toml");
+
+        // Point the credential probe at a file that does not exist.
+        let credential_path = dir.join("antigravity-auth.json");
+        std::env::set_var("SHUNT_ANTIGRAVITY_AUTH_FILE", &credential_path);
+
+        std::fs::write(&path, "[server]\ndefault_provider = \"anthropic\"\n").unwrap();
+        let shared = shared_from(Config::load(Some(&path)).unwrap());
+
+        // Re-point default_provider at the native antigravity upstream, with no
+        // credential file present at the path checked above.
+        std::fs::write(&path, "[server]\ndefault_provider = \"antigravity\"\n").unwrap();
+        let error = reload(&shared, Some(&path)).expect_err("must refuse the migration");
+        assert!(
+            error.to_string().contains("shunt login antigravity"),
+            "{error}"
+        );
+        // Fail-safe: the previously-live config, still pointing at anthropic, is
+        // untouched — a bad edit never takes a running provider down mid-flight.
+        assert_eq!(shared.load().config.server.default_provider, "anthropic");
+
+        std::env::remove_var("SHUNT_ANTIGRAVITY_AUTH_FILE");
+    }
+
+    #[test]
+    fn reload_routing_to_antigravity_with_a_credential_succeeds() {
+        use crate::auth::antigravity::ANTIGRAVITY_AUTH_FILE_ENV_LOCK;
+
+        let _env_guard = ANTIGRAVITY_AUTH_FILE_ENV_LOCK.lock().unwrap();
+        let dir = temp_dir("antigravity-migration-ok");
+        let _guard = TempDirGuard(dir.clone());
+        let path = dir.join("shunt.toml");
+
+        // Point the credential probe at a file that does exist this time.
+        let credential_path = dir.join("antigravity-auth.json");
+        std::fs::write(&credential_path, "{}").unwrap();
+        std::env::set_var("SHUNT_ANTIGRAVITY_AUTH_FILE", &credential_path);
+
+        std::fs::write(&path, "[server]\ndefault_provider = \"anthropic\"\n").unwrap();
+        let shared = shared_from(Config::load(Some(&path)).unwrap());
+
+        std::fs::write(&path, "[server]\ndefault_provider = \"antigravity\"\n").unwrap();
+        reload(&shared, Some(&path)).expect("a present credential must not be refused");
+        assert_eq!(shared.load().config.server.default_provider, "antigravity");
+
+        std::env::remove_var("SHUNT_ANTIGRAVITY_AUTH_FILE");
     }
 
     #[test]

@@ -2012,6 +2012,8 @@ pub enum ConfigError {
          deprecated. Pick one explicitly rather than have the transport change underneath you."
     )]
     AntigravityLegacyTableMissingAuth,
+    #[error("{0}")]
+    AntigravityMigrationRequired(String),
     #[error("providers.{provider}.accounts requires auth = \"claude_oauth\" or \"chatgpt_oauth\"")]
     AccountsRequireOauthProvider { provider: String },
     #[error("providers.{provider} uses auth = \"claude_oauth\" but kind is not \"anthropic\"")]
