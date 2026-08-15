@@ -9,7 +9,7 @@ description: すべての shunt.toml キー — server、providers、routes、mo
 
 設定ファイルの文字列値は、リテラルの代わりに `${VAR}` または `${file:/絶対/パス}` として書けます。`${VAR}` は環境変数 `VAR` の値に置き換わり、`"Bearer ${TOKEN}"` のようにより長い文字列に埋め込むこともできます(変数が未定義だと設定の読み込みは失敗します)。`${file:/絶対/パス}` は指定したファイルの内容(トリム済み)に置き換わり、パスは絶対パスでなければならず、フィールドの値全体でなければなりません — 他の文字列に埋め込むことはできません(ファイルが読み取れない、パスが相対パスである、または他の文字列に埋め込まれている場合、設定の読み込みは失敗します)。`$${` はリテラルの `${` にエスケープされます。解決は再帰的ではありません — 解決済みの値は再スキャンされません。この置換は設定ファイルにのみ適用され、`SHUNT_*` 環境変数オーバーライドはそのまま使われます。起動時、`shunt check`、[ホットリロード](https://github.com/pleaseai/shunt/blob/main/docs/config-reload.md)(SIGHUP とファイル監視)を含む設定の読み込みのたびに再実行されるため、`${file:}` で参照したシークレットはファイルを書き換えてリロードをトリガーするだけで、再起動なしにローテーションできます。ただし、ローテーションした値が実際に反映されるかどうかは、そのフィールド自身のリロード動作に従います。`[sentry]` と `[otel]` は起動時に一度だけ初期化されるため、この 2 つのセクションのシークレットをローテーションしても設定が更新されるだけで、反映するには再起動が必要です。
 
-`[sentry] dsn`、`[otel.headers]` の値、`[server.gateway.telemetry] forward_to[].headers` の値、`[server.gateway.session] jwt_secret` の 4 つのフィールドは redacting secret 型として扱われ、診断出力では `[redacted]` と表示されます。これらのフィールドにリテラル値を書くことは以前とまったく同じように動作します。secret 型のフィールドがリテラルを保持している場合、shunt は起動時に該当するフィールドパスのみを(値は決して含めずに)知らせる勧告的な警告を 1 回記録します。
+`[sentry] dsn`、`[otel.headers]` の値、`[server.gateway.telemetry] forward_to[].headers` の値、`[server.gateway.session] jwt_secret`、そして `[[server.admin.write_keys]]`・`[[server.admin.read_keys]]` 各エントリーの `key` — この 6 つのフィールドパスは redacting secret 型として扱われ、診断出力では `[redacted]` と表示されます。前の 4 つはリテラル値を書いても以前とまったく同じように動作し、リテラルを保持している場合、shunt は起動時に該当するフィールドパスのみを(値は決して含めずに)知らせる勧告的な警告を 1 回記録します。管理キー配列の 2 つは例外で、リテラルを書くと警告ではなく**設定の読み込み自体が失敗**します。
 
 既存の `tokens_env`、`jwt_secret_env`、`client_secret_env`、`api_key_env`、`users_env`、`token_env`、`tokens_file` フィールドはこの変更の影響を受けず、引き続き環境変数(`tokens_file` の場合はファイルパス)を指します(`jwt_secret_env` は別途 [`session.jwt_secret`](#servergatewaysessionオプション) に置き換えられ deprecated です)。
 
@@ -49,20 +49,66 @@ description: すべての shunt.toml キー — server、providers、routes、mo
 
 ## `[server.admin]`（オプション）
 
-このテーブルの存在が、ブラウザーでのアカウントプロビジョニングとアカウントプールの健全性のための管理 Web サーフェスを有効化します（[詳細](/ja/guides/admin-remote-provisioning/)）。テーブルがない場合、`/admin*` ルートは一切登録されません。
+このテーブルの存在が、ブラウザーでのアカウントプロビジョニングとアカウントプールの健全性のための管理 Web サーフェスを有効化します（[詳細](/ja/guides/admin-remote-provisioning/)）。テーブルがない場合、`/admin*` ルートは一切登録されません。同じ認証情報が [`[server.spend]`](#serverspendオプション) の spend-limit API も認証します。
 
 | キー | デフォルト | 意味 |
 | :-- | :-- | :-- |
-| `header` | `x-shunt-admin-token` | API/curl 呼び出し用の管理トークンを運ぶヘッダー |
-| `tokens_env` | `SHUNT_ADMIN_TOKENS` | カンマ区切りの `name:token` ペアを保持する環境変数 |
+| `header` | `x-shunt-admin-token` | API/curl 呼び出し用の管理認証情報を運ぶヘッダー。管理ルーターと spend-limit ルーターでは `x-api-key` も併せて受け付けます |
+| `tokens_env` | `SHUNT_ADMIN_TOKENS` | カンマ区切りの `name:token` ペアを保持する環境変数。これは **write** ティアです |
 | `session_ttl_secs` | `3600` | ログイン後のブラウザーセッションの寿命（秒） |
 | `pending_ttl_secs` | `600` | 開始したプロビジョニングフローを完了できる時間（秒） |
 
-指定された環境変数には 1 つ以上の認証情報が必要です。例: `SHUNT_ADMIN_TOKENS="ops:<token>"`。テーブルが存在するのに変数が未設定・空・不正な場合、起動はフェイルクローズします。
+指定された環境変数には 1 つ以上の認証情報が必要です。例: `SHUNT_ADMIN_TOKENS="ops:<token>"`。テーブルが存在するのに 3 つの認証情報ソース（`tokens_env`/`tokens_file`、`write_keys`、`read_keys`）が**すべて**未設定・空・不正な場合、起動はフェイルクローズします。`tokens_env` を設定せずキー配列だけを使う構成は正常に起動します。
 
-管理トークンは `[server.auth]` の下で設定されるクライアントトークンとは別個の認証情報です。1 つの認証情報を両方のサーフェスで再利用しないでください。
+管理認証情報は `[server.auth]` の下で設定されるクライアントトークンとは別個の認証情報です。1 つの認証情報を両方のサーフェスで再利用しないでください。管理認証情報が認証するのは `/admin*` と spend-limit ルートだけで、推論ルートを認証することはありません — そちらの `x-api-key` は呼び出し元自身の Anthropic 認証情報スロットです。またこれらのルーターがあるスロットで受け付けた値は、上流へのリクエスト前に同じスロットから取り除かれるため、管理認証情報が provider に転送されることはありません。
 
 `[server.auth]` の `tokens_env` と同様、この `tokens_env` の値も `${VAR}` / `${file:...}` で書けます([Secret 参照](#secret-参照)を参照)。
+
+### `[[server.admin.write_keys]]` / `[[server.admin.read_keys]]`（オプション）
+
+`{ id, key }` テーブルを要素とする 2 つのキー配列です。`id` はログに出しても安全で、spend-limit の監査証跡には `admin-key:<id>` として記録されます。`tokens_env`/`tokens_file` のペアは代わりに `admin-token:<name>` として記録されます。
+
+```toml
+[[server.admin.write_keys]]
+id = "terraform"
+key = "${SHUNT_ADMIN_KEY_TERRAFORM}"
+
+[[server.admin.read_keys]]
+id = "reporting"
+key = "${file:/run/secrets/shunt-reporting-key}"
+```
+
+| 配列 | アクセス権 | 意味 |
+| :-- | :-- | :-- |
+| `write_keys` | `write` | フルアクセス。`write` は `read` を含みます。`tokens_env`/`tokens_file` と同じティアです |
+| `read_keys` | `read` | 管理サーフェスと spend-limit API のすべての `GET` を通過し、すべての変更操作では `403 permission_error` で拒否されます。`POST /admin/login` も含みます（ブラウザーセッションはフルアクセスを持つため、read キーからセッションを発行すると権限が昇格してしまいます） |
+
+認証情報の権限は一致したすべての集合に対する**最大値**なので、集合を走査する順序が権限を変えることはありません。各 `id` は空であってはならず、各キーは 32 文字以上である必要があります。id とキー値はそれぞれ 3 つの認証情報集合（`tokens_env`/`tokens_file`、`write_keys`、`read_keys`）全体で一意でなければならず、衝突した場合はキー値をログに出さずに衝突した id だけを報告します。32 文字未満の既存 `tokens_env` トークンは、このルールより前から存在するため失敗ではなく警告になります。
+
+各 `key` は redacting secret であり（[Secret 参照](#secret-参照)を参照）、リテラルが警告ではなく**設定ロードの失敗**になる唯一のフィールドです。`${VAR}`、`${file:/絶対/パス}`、または `SHUNT_*` 環境変数オーバーライドで供給してください。
+
+## `[server.spend]`（オプション）
+
+このテーブルの存在が、`/v1/organizations/spend_limits` 配下の spend-limit Admin API を登録します。**ポリシーのみ**を保持するトップレベルのセクションで、キー材料は一切持ちません。ルートは [`[server.admin]`](#serveradminオプション) の認証情報で認証するため、spend limit を有効にしても gateway ログインサーフェスは不要です。`[server.admin]` のない `[server.spend]` は設定検証に失敗します。
+
+| キー | デフォルト | 意味 |
+| :-- | :-- | :-- |
+| `blocked_message` | 未設定 | 将来の上限エラー用。ステージ 1 では使用しません |
+| `audit_retention_days` | `365` | 将来の監査レコード保持日数 |
+| `spend_retention_months` | `13` | 将来の支出データ保持月数 |
+| `identity_retention_days` | `90` | 将来のアイデンティティ保持日数 |
+| `group_limit_mode` | `min` | `min` または `max`。将来のグループ上限解決用 |
+| `state_path` | `~/.shunt/gateway-spend.json` | 上限と監査レコードを保存するバージョン付き JSON。`""` はメモリのみ |
+
+管理認証情報は設定された `[server.admin] header` または `x-api-key` で送信します。`read_keys` の認証情報は `GET` のみ使用できます。状態ファイルは変更のたびに非公開の一時ファイルを使ってアトミックに置換されます。ホームディレクトリを解決できない場合、デフォルトはメモリのみです。テーブルの追加・削除と状態パスはどちらも起動時に固定され、設定のリロードでは適用されず警告が記録されます。
+
+### `[server.spend.enforcement]`（オプション）
+
+| キー | デフォルト | 意味 |
+| :-- | :-- | :-- |
+| `fail_closed_on_error` | `false` | 将来の上限適用ステージ用。ステージ 1 では読み取りません |
+
+ステージ 1 はこれらの保持設定、`blocked_message`、`group_limit_mode`、`fail_closed_on_error` を受け付けますが、推論への上限適用、使用量計測、`/effective`、`/audit`、保持スイープ、group scope はまだ実装していません。
 
 ## `[server.gateway]`（オプション）
 
@@ -134,31 +180,6 @@ headers = { "x-api-key" = "..." }
 ```
 
 デフォルトでは `/device` は forwarding header を無視し、socket peer を rate limit します。shunt が、client 提供の forwarding header を削除して自分の値を設定する trusted reverse proxy からのみ到達可能な場合に限り、`trust_forwarded_for = true` を設定してください。直接公開された gateway では有効化しないでください。
-
-### `[server.gateway.admin]`（オプション）
-
-このテーブルを設定すると、spend-limit Admin API が登録されます。各設定値には、カンマ区切りの `id:key` ペアを格納した環境変数の名前を指定します。各キー値は 32 文字以上でなければならず、id とキー値はそれぞれ 2 つの環境変数を通して一意である必要があります。
-
-| キー | デフォルト | 意味 |
-| :-- | :-- | :-- |
-| `write_keys_env` | `SHUNT_GATEWAY_ADMIN_WRITE_KEYS` | 書き込みキーの `id:key` ペアを格納する環境変数 |
-| `read_keys_env` | `SHUNT_GATEWAY_ADMIN_READ_KEYS` | GET 専用キーの `id:key` ペアを格納する環境変数 |
-| `blocked_message` | 未設定 | 将来の上限適用エラーに使うメッセージ |
-| `audit_retention_days` | `365` | 将来の監査レコード保持日数 |
-| `spend_retention_months` | `13` | 将来の支出データ保持月数 |
-| `identity_retention_days` | `90` | 将来のアイデンティティ保持日数 |
-| `group_limit_mode` | `min` | 将来のグループ上限解決モード。`min` または `max` |
-| `state_path` | `~/.shunt/gateway-spend.json` | 上限と監査レコードを保存するバージョン付き JSON。`""` はメモリのみ |
-
-`write_keys_env` と `read_keys_env` にはシークレットそのものではなく、環境変数名を指定します。状態ファイルは変更ごとに非公開の一時ファイルを使ってアトミックに置換されます。ホームディレクトリを解決できない場合、デフォルトはメモリのみです。状態パスは起動時に固定され、設定のリロードでは変更されません。
-
-### `[server.gateway.enforcement]`（オプション）
-
-| キー | デフォルト | 意味 |
-| :-- | :-- | :-- |
-| `fail_closed_on_error` | `false` | 将来の上限適用で使う設定。`true` には `[server.gateway.admin]` が必要 |
-
-ステージ 1 はこれらの保持設定、`blocked_message`、`group_limit_mode`、`fail_closed_on_error` を受け付けますが、推論への上限適用、使用量計測、`/effective`、`/audit`、保持期間の sweep、group scope はまだ実装していません。
 
 ## `[server.pool]`（オプション）
 

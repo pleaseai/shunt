@@ -55,17 +55,14 @@ shunt logs a `warn!` so the change is not mistaken for live:
   starts and cannot be hot-swapped.
 - **`[otel]`** — the OpenTelemetry exporters are likewise initialized once at
   startup.
-- **Enabling or disabling `[server.admin]`, `[server.gateway]`,
+- **Enabling or disabling `[server.admin]`, `[server.gateway]`, `[server.spend]`,
   `[server.codex_endpoint]`, `[server.usage]`, or `[server.oauth_usage]`** —
   whether these route trees are registered is decided once at boot. Edits
   *within* an already-enabled table (tokens, headers, target provider) do
   hot-apply; only adding or removing the table needs a restart.
-- **Enabling or disabling `[server.gateway.admin]`** — an exception to the rule
-  above: this is an edit *within* an already-enabled `[server.gateway]`, but
-  whether the spend-limit routes are registered is still decided once at boot,
-  so adding or removing the nested table needs a restart. Its `state_path` is
-  likewise fixed at boot. Both cases log a warning on reload rather than taking
-  effect silently.
+- **`[server.spend] state_path`** — the spend store is created once at boot, so
+  moving the file needs a restart too. Both spend cases log a warning on reload
+  rather than taking effect silently.
 
 ## 5. What reload does not do
 

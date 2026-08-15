@@ -27,7 +27,7 @@ shunt check
 shunt run
 ```
 
-Credentials use the same comma-separated `name:token` format as `SHUNT_CLIENT_TOKENS`, but they are a separate security boundary. Do not reuse a `[server.auth]` client token as an admin token. Startup fails closed if `[server.admin]` is present but its token environment variable is unset, empty, or malformed.
+Credentials use the same comma-separated `name:token` format as `SHUNT_CLIENT_TOKENS`, but they are a separate security boundary. Do not reuse a `[server.auth]` client token as an admin token. Startup fails closed if `[server.admin]` is present but all three credential sources — its token environment variable (or `tokens_file`), `[[server.admin.write_keys]]`, and `[[server.admin.read_keys]]` — are empty or malformed. The `name:token` pairs are the **write** tier; a `read_keys` entry passes every GET on the admin surface and is refused on every mutation, the login form included.
 
 ### Add OIDC/SSO browser login
 
@@ -107,7 +107,7 @@ The collapsed advanced section shows managed account-store metadata and current 
 
 The Claude account list exposes account name, credential kind (`setup_token` or `imported`), expiry, and UUID. The Codex list exposes account name, access-token expiry, and ChatGPT account ID. Neither endpoint returns token material. See [Anthropic Multi-Account](/guides/anthropic-multi-account/#selection-and-proactive-rotation) and [Codex Multi-Account](/guides/codex-multi-account/) for the respective selection behavior.
 
-For API/curl access to account metadata, pool state, provisioning, or account removal, send the admin token in the configured header (default `x-shunt-admin-token`) and use the JSON routes documented in [HTTP Endpoints](/reference/endpoints/). Header-authenticated requests do not use the browser session and are exempt from CSRF checks. Start Claude provisioning with `{ "name": "backup", "mode": "oauth" }` or `mode: "setup_token"`; omitting `mode` keeps the API's backward-compatible `setup_token` default. Start Codex provisioning with `{ "name": "codex-backup" }`, then complete it with `{ "code": "<full redirect URL or code#state>" }`.
+For API/curl access to account metadata, pool state, provisioning, or account removal, send the admin credential in the configured header (default `x-shunt-admin-token`) or in `x-api-key` — both slots are accepted on the admin routes, never on inference routes — and use the JSON routes documented in [HTTP Endpoints](/reference/endpoints/). Header-authenticated requests do not use the browser session and are exempt from CSRF checks. Start Claude provisioning with `{ "name": "backup", "mode": "oauth" }` or `mode: "setup_token"`; omitting `mode` keeps the API's backward-compatible `setup_token` default. Start Codex provisioning with `{ "name": "codex-backup" }`, then complete it with `{ "code": "<full redirect URL or code#state>" }`.
 
 ## CLI and SSH fallback
 

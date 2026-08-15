@@ -9,7 +9,7 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 
 配置文件中的字符串值可以写成 `${VAR}` 或 `${file:/绝对/路径}` 而不是字面量。`${VAR}` 会替换为环境变量 `VAR` 的值,可以嵌入更长的字符串中,例如 `"Bearer ${TOKEN}"`(若变量未定义,配置加载会失败)。`${file:/绝对/路径}` 会替换为该文件的内容(已 trim),路径必须是绝对路径,且引用必须是该字段的整个值 —— 不能嵌入更长的字符串中(若文件不可读、路径是相对路径,或引用嵌入在更长的字符串中,配置加载会失败)。`$${` 会转义为字面量 `${`。解析不是递归的 —— 解析出的值不会被再次扫描。此替换仅适用于配置文件,`SHUNT_*` 环境变量覆盖会按原样使用。它会在每次配置加载时重新执行,包括启动、`shunt check` 以及[热重载](https://github.com/pleaseai/shunt/blob/main/docs/config-reload.md)(SIGHUP 与文件监视),因此以 `${file:}` 引用的 secret 可以通过重写所引用的文件并触发一次重载来轮换,无需重启 shunt。但轮换后的值是否生效取决于该字段自身的重载行为:`[sentry]` 和 `[otel]` 只在启动时初始化一次,因此轮换这两个部分中的 secret 只会更新配置,需要重启才能生效。
 
-`[sentry] dsn`、`[otel.headers]` 的值、`[server.gateway.telemetry] forward_to[].headers` 的值,以及 `[server.gateway.session] jwt_secret` 这四个字段被标记为 redacting secret 类型,在诊断输出中显示为 `[redacted]`。在这些字段中写入字面量值的行为与之前完全相同;若某个 secret 类型字段持有字面量值,shunt 会在启动时记录一次仅列出相关字段路径(绝不包含值)的建议性警告,提示改用 `${VAR}` / `${file:...}`。
+`[sentry] dsn`、`[otel.headers]` 的值、`[server.gateway.telemetry] forward_to[].headers` 的值、`[server.gateway.session] jwt_secret`,以及 `[[server.admin.write_keys]]`、`[[server.admin.read_keys]]` 每一项的 `key` —— 这六个字段路径被标记为 redacting secret 类型,在诊断输出中显示为 `[redacted]`。前四个字段中写入字面量值的行为与之前完全相同;若其持有字面量值,shunt 会在启动时记录一次仅列出相关字段路径(绝不包含值)的建议性警告,提示改用 `${VAR}` / `${file:...}`。两个管理员 key 数组是例外:在其中写入字面量会导致**配置加载失败**,而不是仅发出警告。
 
 现有的 `tokens_env`、`jwt_secret_env`、`client_secret_env`、`api_key_env`、`users_env`、`token_env`、`tokens_file` 字段不受此变更影响,仍然指向一个环境变量(对 `tokens_file` 而言是文件路径)(`jwt_secret_env` 已单独被 [`session.jwt_secret`](#servergatewaysession可选) 取代,已弃用)。
 
@@ -49,20 +49,66 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 
 ## `[server.admin]`(可选)
 
-存在此表即启用管理 Web 界面,用于浏览器账户预配与账户池健康状况([详情](/zh-cn/guides/admin-remote-provisioning/))。此表不存在时,任何 `/admin*` 路由都不会注册。
+存在此表即启用管理 Web 界面,用于浏览器账户预配与账户池健康状况([详情](/zh-cn/guides/admin-remote-provisioning/))。此表不存在时,任何 `/admin*` 路由都不会注册。同一凭据也用于认证 [`[server.spend]`](#serverspend可选) 的 spend-limit API。
 
 | 键 | 默认 | 含义 |
 | :-- | :-- | :-- |
-| `header` | `x-shunt-admin-token` | API/curl 调用中携带管理员 token 的头部 |
-| `tokens_env` | `SHUNT_ADMIN_TOKENS` | 保存逗号分隔的 `name:token` 对的环境变量 |
+| `header` | `x-shunt-admin-token` | API/curl 调用中携带管理员凭据的头部。在管理路由和 spend-limit 路由上,`x-api-key` 也同样被接受 |
+| `tokens_env` | `SHUNT_ADMIN_TOKENS` | 保存逗号分隔的 `name:token` 对的环境变量。它们属于 **write** 层级 |
 | `session_ttl_secs` | `3600` | 登录后浏览器会话的生命周期,单位秒 |
 | `pending_ttl_secs` | `600` | 允许完成一个已开始的预配流程的时间,单位秒 |
 
-指定的环境变量必须包含至少一个凭据,例如 `SHUNT_ADMIN_TOKENS="ops:<token>"`。若此表存在但该变量未设置、为空或格式错误,启动会安全失败(fail closed)。
+指定的环境变量必须包含至少一个凭据,例如 `SHUNT_ADMIN_TOKENS="ops:<token>"`。若此表存在但三个凭据来源(`tokens_env`/`tokens_file`、`write_keys`、`read_keys`)**全部**未设置、为空或格式错误,启动会安全失败(fail closed)。仅使用 key 数组、不设置 `tokens_env` 的部署可以正常启动。
 
-管理员 token 与 `[server.auth]` 下配置的客户端 token 是相互独立的凭据;不要在两个界面上复用同一个凭据。
+管理员凭据与 `[server.auth]` 下配置的客户端 token 是相互独立的凭据;不要在两个界面上复用同一个凭据。管理员凭据只认证 `/admin*` 与 spend-limit 路由,绝不认证推理路由 —— 在那里 `x-api-key` 是调用方自己的 Anthropic 凭据槽位。此外,这些路由在某个槽位接受的值,会在发起上游请求前从同一槽位中剥离,因此管理员凭据不会被转发给 provider。
 
 和 `[server.auth]` 的 `tokens_env` 一样,这个 `tokens_env` 的值也可以写成 `${VAR}` / `${file:...}`(见 [Secret 引用](#secret-引用))。
+
+### `[[server.admin.write_keys]]` / `[[server.admin.read_keys]]`(可选)
+
+两个 key 数组,每一项都是 `{ id, key }` 表。`id` 可以安全地写入日志,spend-limit 审计记录会以 `admin-key:<id>` 记录它;`tokens_env`/`tokens_file` 对则记录为 `admin-token:<name>`。
+
+```toml
+[[server.admin.write_keys]]
+id = "terraform"
+key = "${SHUNT_ADMIN_KEY_TERRAFORM}"
+
+[[server.admin.read_keys]]
+id = "reporting"
+key = "${file:/run/secrets/shunt-reporting-key}"
+```
+
+| 数组 | 访问级别 | 含义 |
+| :-- | :-- | :-- |
+| `write_keys` | `write` | 完全访问权限。`write` 蕴含 `read`,与 `tokens_env`/`tokens_file` 同级 |
+| `read_keys` | `read` | 可以通过管理界面与 spend-limit API 的所有 `GET`;所有修改操作都会以 `403 permission_error` 拒绝,包括 `POST /admin/login`(浏览器会话拥有完全访问权限,用 read key 铸造会话等于提权) |
+
+凭据的权限是它匹配到的所有集合中的**最大值**,因此扫描集合的顺序不会改变权限。每个 `id` 不得为空,每个 key 至少 32 个字符;id 与 key 值都必须在三个凭据集合(`tokens_env`/`tokens_file`、`write_keys`、`read_keys`)范围内唯一,发生冲突时只报告冲突的 id,不会记录 key 值。短于 32 个字符的旧 `tokens_env` token 早于该规则存在,因此只发出警告而不会失败。
+
+每个 `key` 都是 redacting secret(见 [Secret 引用](#secret-引用)),也是唯一一个写成字面量会导致**配置加载失败**而非仅警告的字段。请用 `${VAR}`、`${file:/绝对/路径}` 或 `SHUNT_*` 环境变量覆盖来提供它。
+
+## `[server.spend]`(可选)
+
+存在此表即注册 `/v1/organizations/spend_limits` 下的 spend-limit Admin API。它是**只含策略**的顶层小节,不持有任何 key 材料:这些路由使用 [`[server.admin]`](#serveradmin可选) 凭据认证,因此启用 spend limit 不需要 gateway 登录界面。只有 `[server.spend]` 而没有 `[server.admin]` 会导致配置校验失败。
+
+| 键 | 默认 | 含义 |
+| :-- | :-- | :-- |
+| `blocked_message` | 未设置 | 用于未来的限制错误;stage 1 不使用 |
+| `audit_retention_days` | `365` | 用于后续的审计记录保留清理 |
+| `spend_retention_months` | `13` | 用于后续的支出数据保留清理 |
+| `identity_retention_days` | `90` | 用于后续的身份保留清理 |
+| `group_limit_mode` | `min` | `min` 或 `max`;用于后续的组限制解析 |
+| `state_path` | `~/.shunt/gateway-spend.json` | 保存限制与审计记录的带版本 JSON 文件;`""` 表示仅内存 |
+
+请通过配置的 `[server.admin] header` 或 `x-api-key` 发送管理员凭据;`read_keys` 凭据只能使用 `GET`。每次修改都会通过私有临时文件原子替换状态文件。无法解析 home 目录时,默认仅使用内存。该表的增删与状态路径都在启动时固定,配置重载只会记录警告而不会应用。
+
+### `[server.spend.enforcement]`(可选)
+
+| 键 | 默认 | 含义 |
+| :-- | :-- | :-- |
+| `fail_closed_on_error` | `false` | 用于后续的限制实施阶段;stage 1 不读取它 |
+
+stage 1 接受这些保留设置、`blocked_message`、`group_limit_mode` 和 `fail_closed_on_error`,但尚未实现对推理的限制实施、用量计量、`/effective`、`/audit`、保留清理或 group scope。
 
 ## `[server.gateway]`(可选)
 
@@ -134,31 +180,6 @@ headers = { "x-api-key" = "..." }
 ```
 
 默认情况下,`/device` 忽略 forwarding header 并按 socket peer 做 rate limit。只有在 shunt 仅能通过会删除 client 所提供 forwarding header 并设置自身值的 trusted reverse proxy 访问时,才设置 `trust_forwarded_for = true`。不要在直接暴露的 gateway 上启用。
-
-### `[server.gateway.admin]` (可选)
-
-配置此表会注册 spend-limit Admin API。每个设置值都是环境变量名，变量内容为逗号分隔的 `id:key` 对。每个 key 值至少包含 32 个字符；id 和 key 值都必须分别在两个环境变量中保持唯一。
-
-| 键 | 默认值 | 含义 |
-| :-- | :-- | :-- |
-| `write_keys_env` | `SHUNT_GATEWAY_ADMIN_WRITE_KEYS` | 存储写入 key 的 `id:key` 对的环境变量 |
-| `read_keys_env` | `SHUNT_GATEWAY_ADMIN_READ_KEYS` | 存储仅限 GET 的 key 的 `id:key` 对的环境变量 |
-| `blocked_message` | 未设置 | 用于未来限制错误的消息 |
-| `audit_retention_days` | `365` | 未来审计记录保留天数 |
-| `spend_retention_months` | `13` | 未来支出数据保留月数 |
-| `identity_retention_days` | `90` | 未来身份数据保留天数 |
-| `group_limit_mode` | `min` | 未来 group 限制解析模式：`min` 或 `max` |
-| `state_path` | `~/.shunt/gateway-spend.json` | 存储限制和审计记录的带版本 JSON；`""` 表示仅内存 |
-
-`write_keys_env` 和 `read_keys_env` 指定环境变量名，而不是内联 secret。每次修改都会通过私有临时文件原子替换状态文件。无法解析 home 目录时，默认仅使用内存。状态路径在启动时固定，配置重载不会更改它。
-
-### `[server.gateway.enforcement]`（可选）
-
-| 键 | 默认值 | 含义 |
-| :-- | :-- | :-- |
-| `fail_closed_on_error` | `false` | 用于未来限制；设为 `true` 时必须配置 `[server.gateway.admin]` |
-
-stage 1 接受这些保留设置、`blocked_message`、`group_limit_mode` 和 `fail_closed_on_error`，但尚未实现推理限制、用量计量、`/effective`、`/audit`、保留清理或 group scope。
 
 ## `[server.pool]`(可选)
 

@@ -9,7 +9,7 @@ description: 모든 shunt.toml 키 — server, providers, routes, models.
 
 설정 파일의 문자열 값은 리터럴 대신 `${VAR}` 또는 `${file:/절대/경로}`로 쓸 수 있습니다. `${VAR}`는 환경 변수 `VAR`의 값으로 치환되며 `"Bearer ${TOKEN}"`처럼 더 긴 문자열 안에 포함될 수 있습니다(변수가 없으면 로드 실패). `${file:/절대/경로}`는 해당 파일의 내용(trim)으로 치환되며, 반드시 절대 경로여야 하고 필드의 값 전체여야 합니다 — 다른 문자열에 포함될 수 없습니다(파일을 읽을 수 없거나, 상대 경로이거나, 다른 문자열에 포함되어 있으면 로드 실패). `$${`는 리터럴 `${`로 이스케이프됩니다. 치환은 재귀적이지 않습니다 — 치환된 값은 다시 스캔되지 않습니다. 이 치환은 설정 파일에만 적용되며 `SHUNT_*` 환경 변수 오버라이드는 그대로 사용됩니다. 부팅, `shunt check`, [핫 리로드](https://github.com/pleaseai/shunt/blob/main/docs/config-reload.md)(SIGHUP과 파일 감시)를 포함해 매 설정 로드마다 다시 실행되므로, `${file:}`로 참조한 시크릿은 파일을 다시 쓰고 리로드를 트리거하는 것만으로 재시작 없이 교체할 수 있습니다. 다만 교체한 값이 실제로 적용되는지는 해당 필드 자신의 리로드 동작을 따릅니다. `[sentry]`와 `[otel]`은 시작 시 한 번만 초기화되므로, 이 두 섹션의 시크릿을 교체하면 설정은 갱신되지만 적용하려면 재시작이 필요합니다.
 
-`[sentry] dsn`, `[otel.headers]` 값, `[server.gateway.telemetry] forward_to[].headers` 값, `[server.gateway.session] jwt_secret` 네 필드는 redacting secret 타입으로 진단 출력에서 `[redacted]`로 표시됩니다. 이 필드에 리터럴 값을 적는 것은 이전과 완전히 동일하게 동작하며, secret 타입 필드가 리터럴을 담고 있으면 shunt는 부팅 시 해당 필드 경로만(값은 절대 포함하지 않음) 알리는 권고성 경고를 한 번 기록합니다.
+`[sentry] dsn`, `[otel.headers]` 값, `[server.gateway.telemetry] forward_to[].headers` 값, `[server.gateway.session] jwt_secret`, 그리고 `[[server.admin.write_keys]]`·`[[server.admin.read_keys]]` 각 항목의 `key` — 이 여섯 경로는 redacting secret 타입으로 진단 출력에서 `[redacted]`로 표시됩니다. 앞의 네 필드는 리터럴 값을 적어도 이전과 완전히 동일하게 동작하며, 리터럴을 담고 있으면 shunt는 부팅 시 해당 필드 경로만(값은 절대 포함하지 않음) 알리는 권고성 경고를 한 번 기록합니다. 관리자 key 배열 두 개는 예외로, 리터럴을 적으면 경고가 아니라 **설정 로드 자체가 실패**합니다.
 
 기존 `tokens_env`, `jwt_secret_env`, `client_secret_env`, `api_key_env`, `users_env`, `token_env`, `tokens_file` 필드는 이 변경의 영향을 받지 않으며 그대로 환경 변수(또는 `tokens_file`의 경우 파일 경로)를 가리킵니다(`jwt_secret_env`는 별도로 [`session.jwt_secret`](#servergatewaysession-선택)로 대체되어 deprecated됨).
 
@@ -49,20 +49,66 @@ description: 모든 shunt.toml 키 — server, providers, routes, models.
 
 ## `[server.admin]` (선택)
 
-이 테이블의 존재가 브라우저 계정 프로비저닝과 계정 풀 상태를 위한 관리자 웹 화면을 활성화합니다([상세](/ko/guides/admin-remote-provisioning/)). 테이블이 없으면 `/admin*` 라우트는 하나도 등록되지 않습니다.
+이 테이블의 존재가 브라우저 계정 프로비저닝과 계정 풀 상태를 위한 관리자 웹 화면을 활성화합니다([상세](/ko/guides/admin-remote-provisioning/)). 테이블이 없으면 `/admin*` 라우트는 하나도 등록되지 않습니다. 같은 자격 증명이 [`[server.spend]`](#serverspend-선택) spend-limit API도 인증합니다.
 
 | 키 | 기본값 | 의미 |
 | :-- | :-- | :-- |
-| `header` | `x-shunt-admin-token` | API/curl 호출용 관리자 토큰을 담는 헤더 |
-| `tokens_env` | `SHUNT_ADMIN_TOKENS` | 쉼표로 구분된 `name:token` 쌍을 담는 env 변수 |
+| `header` | `x-shunt-admin-token` | API/curl 호출용 관리자 자격 증명을 담는 헤더. 관리자·spend-limit 라우터에서는 `x-api-key`도 함께 허용됩니다 |
+| `tokens_env` | `SHUNT_ADMIN_TOKENS` | 쉼표로 구분된 `name:token` 쌍을 담는 env 변수. **쓰기(write)** 티어입니다 |
 | `session_ttl_secs` | `3600` | 로그인 후 브라우저 세션 수명(초) |
 | `pending_ttl_secs` | `600` | 시작된 프로비저닝 플로우를 끝낼 수 있는 시간(초) |
 
-지정된 환경 변수에는 하나 이상의 자격 증명이 있어야 합니다. 예: `SHUNT_ADMIN_TOKENS="ops:<token>"`. 테이블이 있는데 변수가 설정되지 않았거나, 비어 있거나, 형식이 잘못되면 시작은 닫힌 채로 실패(fail closed)합니다.
+지정된 환경 변수에는 하나 이상의 자격 증명이 있어야 합니다. 예: `SHUNT_ADMIN_TOKENS="ops:<token>"`. 테이블이 있는데 세 자격 증명 소스(`tokens_env`/`tokens_file`, `write_keys`, `read_keys`)가 **모두** 비어 있거나 형식이 잘못되면 시작은 닫힌 채로 실패(fail closed)합니다. `tokens_env`를 설정하지 않고 key 배열만 쓰는 구성은 정상적으로 부팅됩니다.
 
-관리자 토큰은 `[server.auth]` 아래에 구성되는 클라이언트 토큰과 별개의 자격 증명입니다; 하나의 자격 증명을 두 표면에 재사용하지 마세요.
+관리자 자격 증명은 `[server.auth]` 아래에 구성되는 클라이언트 토큰과 별개의 자격 증명입니다; 하나의 자격 증명을 두 표면에 재사용하지 마세요. 관리자 자격 증명은 `/admin*`과 spend-limit 라우트만 인증하며 추론 라우트는 절대 인증하지 않습니다 — 그곳의 `x-api-key`는 호출자 자신의 Anthropic 자격 증명 슬롯입니다. 또한 이들 라우터가 어떤 슬롯에서 받아들인 값이든 업스트림 요청 전에 그 슬롯에서 제거되므로, 관리자 자격 증명이 provider로 전달되는 일은 없습니다.
 
 `[server.auth]`의 `tokens_env`와 마찬가지로, 이 `tokens_env`의 값도 `${VAR}` / `${file:...}`로 쓸 수 있습니다([Secret 참조](#secret-참조) 참고).
+
+### `[[server.admin.write_keys]]` / `[[server.admin.read_keys]]` (선택)
+
+`{ id, key }` 테이블을 원소로 갖는 두 개의 key 배열입니다. `id`는 로그에 남겨도 안전하며 spend-limit 감사 기록에 `admin-key:<id>`로 기록됩니다. `tokens_env`/`tokens_file` 쌍은 대신 `admin-token:<name>`으로 기록됩니다.
+
+```toml
+[[server.admin.write_keys]]
+id = "terraform"
+key = "${SHUNT_ADMIN_KEY_TERRAFORM}"
+
+[[server.admin.read_keys]]
+id = "reporting"
+key = "${file:/run/secrets/shunt-reporting-key}"
+```
+
+| 배열 | 접근 권한 | 의미 |
+| :-- | :-- | :-- |
+| `write_keys` | `write` | 전체 접근. `write`는 `read`를 포함합니다. `tokens_env`/`tokens_file`과 같은 티어입니다 |
+| `read_keys` | `read` | 관리자 화면과 spend-limit API의 모든 `GET`을 통과하며, 모든 변경 작업에서는 `403 permission_error`로 거부됩니다. `POST /admin/login`도 포함됩니다(브라우저 세션은 전체 접근 권한을 갖기 때문에, read key로 세션을 발급하면 권한이 승격됩니다) |
+
+자격 증명의 권한은 매칭된 모든 집합에 대한 **최댓값**이므로, 집합을 검사하는 순서가 권한을 바꿀 수 없습니다. 각 `id`는 공백이 아니어야 하고 각 key는 32자 이상이어야 합니다. id와 key 값은 각각 세 자격 증명 집합(`tokens_env`/`tokens_file`, `write_keys`, `read_keys`) 전체에서 고유해야 하며, 충돌하면 key 값을 로그에 남기지 않고 충돌한 id만 알립니다. 32자보다 짧은 기존 `tokens_env` 토큰은 이 규칙보다 먼저 존재했기 때문에 실패가 아니라 경고로 처리됩니다.
+
+각 `key`는 redacting secret이며([Secret 참조](#secret-참조) 참고), 리터럴이 경고가 아니라 **설정 로드 실패**로 이어지는 유일한 필드입니다. `${VAR}`, `${file:/절대/경로}`, 또는 `SHUNT_*` 환경 변수 오버라이드로 공급하세요.
+
+## `[server.spend]` (선택)
+
+이 테이블의 존재가 `/v1/organizations/spend_limits` 아래의 spend-limit Admin API를 등록합니다. **정책만** 담는 최상위 섹션으로 key 자료는 전혀 갖지 않습니다: 라우트는 [`[server.admin]`](#serveradmin-선택) 자격 증명으로 인증하므로 spend limit을 켜는 데 gateway 로그인 표면이 필요하지 않습니다. `[server.admin]` 없이 `[server.spend]`만 두면 설정 검증에 실패합니다.
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `blocked_message` | 미설정 | 향후 제한 오류에 사용할 메시지. stage 1은 사용하지 않음 |
+| `audit_retention_days` | `365` | 향후 감사 레코드 보존 일수 |
+| `spend_retention_months` | `13` | 향후 지출 데이터 보존 개월 수 |
+| `identity_retention_days` | `90` | 향후 아이덴티티 보존 일수 |
+| `group_limit_mode` | `min` | 향후 그룹 제한 결정 모드. `min` 또는 `max` |
+| `state_path` | `~/.shunt/gateway-spend.json` | 제한과 감사 레코드를 저장하는 버전이 있는 JSON. `""`은 메모리 전용 |
+
+관리자 자격 증명은 구성된 `[server.admin] header` 또는 `x-api-key`로 보냅니다. `read_keys` 자격 증명은 `GET`만 사용할 수 있습니다. 상태 파일은 변경할 때마다 비공개 임시 파일로 원자적으로 교체됩니다. 홈 디렉터리를 확인할 수 없으면 기본값은 메모리 전용입니다. 테이블의 추가·제거와 상태 경로는 모두 부팅 시 고정되며, 구성 리로드는 적용 대신 경고를 기록합니다.
+
+### `[server.spend.enforcement]` (선택)
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `fail_closed_on_error` | `false` | 향후 제한 단계용 설정. stage 1은 읽지 않음 |
+
+stage 1은 이 보존 설정, `blocked_message`, `group_limit_mode`, `fail_closed_on_error`를 받지만 추론 제한, 사용량 계측, `/effective`, `/audit`, 보존 sweep, group scope는 아직 구현하지 않습니다.
 
 ## `[server.gateway]` (선택)
 
@@ -135,31 +181,6 @@ headers = { "x-api-key" = "..." }
 ```
 
 기본적으로 `/device`는 forwarding header를 무시하고 socket peer를 rate limit합니다. shunt가 client 제공 forwarding header를 제거하고 자체 값을 설정하는 trusted reverse proxy를 통해서만 도달 가능한 경우에만 `trust_forwarded_for = true`를 설정하세요. 직접 노출된 gateway에서는 활성화하지 마세요.
-
-### `[server.gateway.admin]` (선택)
-
-이 테이블을 구성하면 spend-limit Admin API가 등록됩니다. 각 설정값은 쉼표로 구분된 `id:key` 쌍을 담는 환경 변수 이름입니다. 각 key 값은 32자 이상이어야 하며, id와 key 값은 각각 두 환경 변수 전체에서 고유해야 합니다.
-
-| 키 | 기본값 | 의미 |
-| :-- | :-- | :-- |
-| `write_keys_env` | `SHUNT_GATEWAY_ADMIN_WRITE_KEYS` | 쓰기 key의 `id:key` 쌍을 담는 환경 변수 |
-| `read_keys_env` | `SHUNT_GATEWAY_ADMIN_READ_KEYS` | GET 전용 key의 `id:key` 쌍을 담는 환경 변수 |
-| `blocked_message` | 미설정 | 향후 제한 오류에 사용할 메시지 |
-| `audit_retention_days` | `365` | 향후 감사 레코드 보존 일수 |
-| `spend_retention_months` | `13` | 향후 지출 데이터 보존 개월 수 |
-| `identity_retention_days` | `90` | 향후 아이덴티티 보존 일수 |
-| `group_limit_mode` | `min` | 향후 그룹 제한 결정 모드. `min` 또는 `max` |
-| `state_path` | `~/.shunt/gateway-spend.json` | 제한과 감사 레코드를 저장하는 버전이 있는 JSON. `""`은 메모리 전용 |
-
-`write_keys_env`와 `read_keys_env`에는 인라인 secret이 아니라 환경 변수 이름을 지정합니다. 상태 파일은 변경할 때마다 비공개 임시 파일로 원자적으로 교체됩니다. 홈 디렉터리를 확인할 수 없으면 기본값은 메모리 전용입니다. 상태 경로는 부팅 시 고정되며 구성 리로드로 변경되지 않습니다.
-
-### `[server.gateway.enforcement]` (선택)
-
-| 키 | 기본값 | 의미 |
-| :-- | :-- | :-- |
-| `fail_closed_on_error` | `false` | 향후 제한에 사용할 설정. `true`이면 `[server.gateway.admin]` 필요 |
-
-stage 1은 이 보존 설정, `blocked_message`, `group_limit_mode`, `fail_closed_on_error`를 받지만 추론 제한, 사용량 계측, `/effective`, `/audit`, 보존 sweep, group scope는 아직 구현하지 않습니다.
 
 ## `[server.codex_endpoint]` (선택)
 

@@ -25,7 +25,7 @@ shunt check
 shunt run
 ```
 
-凭据使用与 `SHUNT_CLIENT_TOKENS` 相同的逗号分隔 `name:token` 格式,但它们是相互独立的安全边界。不要把 `[server.auth]` 的客户端 token 复用为管理员 token。如果存在 `[server.admin]` 但其 token 环境变量未设置、为空或格式错误,启动会安全失败(fail closed)。
+凭据使用与 `SHUNT_CLIENT_TOKENS` 相同的逗号分隔 `name:token` 格式,但它们是相互独立的安全边界。不要把 `[server.auth]` 的客户端 token 复用为管理员 token。如果存在 `[server.admin]` 但三个凭据来源 —— token 环境变量(或 `tokens_file`)、`[[server.admin.write_keys]]` 与 `[[server.admin.read_keys]]` —— 全部为空或格式错误,启动会安全失败(fail closed)。`name:token` 对属于 **write** 层级;`read_keys` 条目可以通过管理界面的所有 GET,但在包括登录表单在内的所有修改操作上都会被拒绝。
 
 每个键与默认值见[配置参考](/zh-cn/reference/configuration/#serveradmin可选)。[端点参考](/zh-cn/reference/endpoints/)列出了浏览器路由和 JSON 路由。
 
@@ -63,7 +63,7 @@ shunt run
 
 账户列表只暴露元数据:账户名、凭据类型(`setup_token` 或 `imported`)、过期时间和 UUID。它绝不返回 token 材料。shunt 在选择账户时如何使用配额状态、冷却和感知模型的周桶,见 [Anthropic 多账户](/zh-cn/guides/anthropic-multi-account/#选择与主动轮换)。
 
-要通过 API/curl 访问账户 metadata、池健康状况、预配或删除账户,请在配置的头部(默认 `x-shunt-admin-token`)中发送管理员 token,并使用 [HTTP 端点](/zh-cn/reference/endpoints/)中记录的 JSON route。头部认证的请求不使用浏览器会话,免于 CSRF 检查。开始预配时发送 `{ "name": "backup", "mode": "oauth" }` 或 `mode: "setup_token"`;省略 `mode` 时,为保持 API 向后兼容,默认使用 `setup_token`。
+要通过 API/curl 访问账户 metadata、池健康状况、预配或删除账户,请在配置的头部(默认 `x-shunt-admin-token`)或 `x-api-key` 中发送管理员凭据(两个槽位都只在管理路由上被接受,推理路由上绝不接受),并使用 [HTTP 端点](/zh-cn/reference/endpoints/)中记录的 JSON route。头部认证的请求不使用浏览器会话,免于 CSRF 检查。开始预配时发送 `{ "name": "backup", "mode": "oauth" }` 或 `mode: "setup_token"`;省略 `mode` 时,为保持 API 向后兼容,默认使用 `setup_token`。
 
 ## CLI 与 SSH 回退
 

@@ -217,8 +217,8 @@ matching shunt's actual reload semantics ([`config-reload.md`](config-reload.md)
 | Add/remove account (OAuth store file) | **next request** | the store dir's mtime changes and the account is rescanned on the next request; no config write, so the reload path is not triggered at all. Explicitly-scoped `accounts` entries still need a config edit + reload |
 | `[server.auth]` tokens, routes, models | **reload** | token/header edits within an already-enabled surface hot-apply |
 | `server.bind` (port/host) | **restart** | listener already bound |
-| Toggle a boot-registered surface on/off — `[server.admin]`, `[server.gateway]`, `[server.codex_endpoint]`, `[server.usage]`, `[server.oauth_usage]` | **restart** | routes are registered once at boot; edits *within* an already-enabled surface still hot-apply |
-| Toggle `[server.gateway.admin]` on/off, or change its `state_path` | **restart** | exception to the row above: though nested inside an already-enabled `[server.gateway]`, spend-limit route registration and the state file are both fixed at boot. Reload logs a warning instead of applying |
+| Toggle a boot-registered surface on/off — `[server.admin]`, `[server.gateway]`, `[server.spend]`, `[server.codex_endpoint]`, `[server.usage]`, `[server.oauth_usage]` | **restart** | routes are registered once at boot; edits *within* an already-enabled surface still hot-apply |
+| Change `[server.spend] state_path` | **restart** | exception to the row above: the spend store is created once at boot, so moving the file is not an edit reload can apply. Reload logs a warning instead |
 | Any **env-held secret** (API key, admin token) | **restart** | see problem 2 |
 | `[sentry]`, `[otel]` | **restart** | initialized once at startup |
 

@@ -16,7 +16,7 @@ Any string value in the config file may be written as `${VAR}` or `${file:/abs/p
 
 `$${` escapes to a literal `${`. Resolution is not recursive — a resolved value is not re-scanned for further references. This applies only to the config file; `SHUNT_*` environment overrides are used as-is. It reruns on every config load, including [hot reload](https://github.com/pleaseai/shunt/blob/main/docs/config-reload.md), so a `${file:}`-backed secret can be rotated by rewriting the referenced file and triggering a reload, without restarting shunt. Whether the new value then takes effect follows the field's own reload behavior: `[sentry]` and `[otel]` are initialized once at startup, so rotating a secret in those two sections updates the config but needs a restart to apply.
 
-Four fields are additionally typed as a redacting secret and render as `[redacted]` in diagnostic output: [`[sentry] dsn`](#sentry-optional), [`[otel.headers]`](#otelheaders-optional) values, [`[server.gateway.telemetry] forward_to[].headers`](#servergatewaytelemetry-optional) values, and [`[server.gateway.session] jwt_secret`](#servergatewaysession-optional). A literal value in one of these fields still works exactly as before; shunt additionally logs one advisory boot warning naming the affected field paths — never the values — suggesting `${VAR}` / `${file:...}` when a secret-typed field holds a literal.
+Six field paths are additionally typed as a redacting secret and render as `[redacted]` in diagnostic output: [`[sentry] dsn`](#sentry-optional), [`[otel.headers]`](#otelheaders-optional) values, [`[server.gateway.telemetry] forward_to[].headers`](#servergatewaytelemetry-optional) values, [`[server.gateway.session] jwt_secret`](#servergatewaysession-optional), and the `key` of each [`[[server.admin.write_keys]]` and `[[server.admin.read_keys]]`](#serveradmin-optional) entry. For the first four, a literal value still works exactly as before; shunt additionally logs one advisory boot warning naming the affected field paths — never the values — suggesting `${VAR}` / `${file:...}`. The two admin key arrays are the exception: a literal there **fails config load** rather than warning, so an admin key never lives in the config file.
 
 The existing `tokens_env`, `jwt_secret_env`, `client_secret_env`, `api_key_env`, `users_env`, `token_env`, and `tokens_file` fields are unaffected by this and keep naming an environment variable or file path, as before (`jwt_secret_env` is separately deprecated in favor of [`session.jwt_secret`](#servergatewaysession-optional)) — see each field's own entry below.
 
@@ -85,21 +85,46 @@ A request whose whole route chain is `passthrough` skips this gate: such a route
 
 ## `[server.admin]` (optional)
 
-Presence of this table enables the admin web surface for browser account provisioning and account-pool health ([details](/guides/admin-remote-provisioning/)). When the table is absent, none of the `/admin*` routes are registered.
+Presence of this table enables the admin web surface for browser account provisioning and account-pool health ([details](/guides/admin-remote-provisioning/)). When the table is absent, none of the `/admin*` routes are registered. The same credential also authenticates the [`[server.spend]`](#serverspend-optional) spend-limit API.
 
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
-| `header` | `x-shunt-admin-token` | Header carrying the admin token for API/curl calls |
-| `tokens_env` | `SHUNT_ADMIN_TOKENS` | Env var holding comma-separated `name:token` pairs |
-| `tokens_file` | _(unset)_ | Path to a file holding `name:token` pairs (one per line, or comma-separated), used when `tokens_env` is unset/empty |
+| `header` | `x-shunt-admin-token` | Header carrying the admin credential for API/curl calls. `x-api-key` is accepted alongside it on the admin and spend-limit routers |
+| `tokens_env` | `SHUNT_ADMIN_TOKENS` | Env var holding comma-separated `name:token` pairs. These are the **write** tier |
+| `tokens_file` | _(unset)_ | Path to a file holding `name:token` pairs (one per line, or comma-separated), used when `tokens_env` is unset/empty. Also the **write** tier |
 | `session_ttl_secs` | `3600` | Browser session lifetime after login, in seconds |
 | `pending_ttl_secs` | `600` | Time allowed to finish a started provisioning flow, in seconds |
 
-Admin tokens can come from the environment or a file. The named environment variable must contain one or more credentials, for example `SHUNT_ADMIN_TOKENS="ops:<token>"`. Alternatively, set `tokens_file` to a path (`~` is expanded) and put the pairs there — this is what [`shunt dashboard setup`](/reference/cli/#shunt-dashboard-setup) writes to `~/.shunt/admin-token`, so no secret has to live in the launch environment. When both are set, a non-empty `tokens_env` wins. Startup fails closed if the table is present but neither source yields a valid credential (unset/empty/malformed, or an unreadable `tokens_file`).
+Admin tokens can come from the environment or a file. The named environment variable must contain one or more credentials, for example `SHUNT_ADMIN_TOKENS="ops:<token>"`. Alternatively, set `tokens_file` to a path (`~` is expanded) and put the pairs there — this is what [`shunt dashboard setup`](/reference/cli/#shunt-dashboard-setup) writes to `~/.shunt/admin-token`, so no secret has to live in the launch environment. When both are set, a non-empty `tokens_env` wins.
 
 As with `[server.auth]` above, `tokens_env`'s and `tokens_file`'s own values can also be written as `${VAR}` / `${file:...}` (see [Secret references](#secret-references)).
 
-Admin tokens are separate credentials from the client tokens configured under `[server.auth]`; do not reuse one credential for both surfaces.
+Admin credentials are separate credentials from the client tokens configured under `[server.auth]`; do not reuse one credential for both surfaces. An admin credential authenticates only the `/admin*` and spend-limit routes — never an inference route, where `x-api-key` is the caller's own Anthropic credential slot. Whatever these routers accept in a slot is also stripped from that slot before any upstream request, so an admin credential is never relayed to a provider.
+
+### `[[server.admin.write_keys]]` / `[[server.admin.read_keys]]` (optional)
+
+Two arrays of per-credential keys, each entry a `{ id, key }` table. The `id` is safe to log and is what the spend-limit audit trail records as `admin-key:<id>`; a `tokens_env`/`tokens_file` pair is recorded as `admin-token:<name>` instead.
+
+```toml
+[[server.admin.write_keys]]
+id = "terraform"
+key = "${SHUNT_ADMIN_KEY_TERRAFORM}"
+
+[[server.admin.read_keys]]
+id = "reporting"
+key = "${file:/run/secrets/shunt-reporting-key}"
+```
+
+| Array | Access | Meaning |
+| :-- | :-- | :-- |
+| `write_keys` | `write` | Full access: `write` implies `read`. The same tier as `tokens_env`/`tokens_file` |
+| `read_keys` | `read` | Passes every `GET` on the admin surface and the spend-limit API; refused with `403 permission_error` on every mutation, including `POST /admin/login` (a browser session carries full access, so minting one from a read key would escalate it) |
+
+A credential's privilege is the maximum over every set it matches, so the order the sets are scanned in cannot change it. Each `id` must be non-blank and each key at least 32 characters; ids **and** key values must each be unique across all three credential sets (`tokens_env`/`tokens_file`, `write_keys`, `read_keys`), and a collision names the colliding ids without logging a key value. A legacy `tokens_env` token shorter than 32 characters warns rather than failing, because those tokens predate the rule.
+
+Each `key` is a redacting secret (see [Secret references](#secret-references)) and is the one field where a literal **fails config load** instead of warning: supply it with `${VAR}`, `${file:/abs/path}`, or a `SHUNT_*` environment override.
+
+Startup fails closed if `[server.admin]` is present but all three credential sources are empty (unset/empty/malformed `tokens_env`, an unreadable `tokens_file`, and no array entries). An array-only deployment, with `tokens_env` unset, boots.
 
 ### `[server.admin.oidc]` (optional)
 
@@ -123,6 +148,29 @@ At least one non-empty `allowed_domains` or `allowed_emails` entry is mandatory.
 `client_secret_env`'s own value can also be written as `${VAR}` / `${file:...}` (see [Secret references](#secret-references)).
 
 For GitHub, SAML, or another non-OIDC provider, use an OIDC broker such as Dex; direct provider-specific OAuth2 integrations are out of scope.
+
+## `[server.spend]` (optional)
+
+Presence of this table registers the spend-limit Admin API under `/v1/organizations/spend_limits`. It is a top-level section holding **policy only** — no key material: the routes authenticate with the [`[server.admin]`](#serveradmin-optional) credential, so enabling spend limits does not require the gateway login surface. `[server.spend]` without `[server.admin]` fails configuration validation.
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `blocked_message` | unset | Accepted for future enforcement errors; stage 1 does not use it |
+| `audit_retention_days` | `365` | Accepted for the later audit retention sweep |
+| `spend_retention_months` | `13` | Accepted for the later spend retention sweep |
+| `identity_retention_days` | `90` | Accepted for the later identity retention sweep |
+| `group_limit_mode` | `min` | `min` or `max`; accepted for later group-limit resolution |
+| `state_path` | `~/.shunt/gateway-spend.json` | Versioned JSON file containing caps and audit records; `""` selects memory-only storage |
+
+Send the admin credential in the configured `[server.admin] header` or in `x-api-key`; a `read_keys` credential can use `GET` only. The state file is replaced atomically with private permissions after each mutation. When no home directory resolves, the default is memory-only. Adding or removing the table, and the state path itself, are both fixed at boot; configuration reloads log a warning instead of applying them.
+
+### `[server.spend.enforcement]` (optional)
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `fail_closed_on_error` | `false` | Accepted for the later enforcement stage; stage 1 does not read it |
+
+Stage 1 does not enforce caps on `/v1/messages`. It also does not implement usage metering, `/effective`, `/audit`, retention sweeps, or group scopes.
 
 ## `[server.gateway]` (optional)
 
@@ -230,31 +278,6 @@ headers = { "x-api-key" = "..." }
 ```
 
 By default, `/device` ignores forwarding headers and rate-limits the socket peer. Set `trust_forwarded_for = true` only when shunt is reachable exclusively through a trusted reverse proxy that removes client-provided forwarding headers before setting its own value. Do not enable it on a directly exposed gateway.
-
-### `[server.gateway.admin]` (optional)
-
-Presence of this table registers the spend-limit Admin API. The keys name environment variables containing comma-separated `id:key` pairs. Key values must contain at least 32 characters. Both ids and key values must be unique across the two variables.
-
-| Key | Default | Meaning |
-| :-- | :-- | :-- |
-| `write_keys_env` | `SHUNT_GATEWAY_ADMIN_WRITE_KEYS` | Env var holding keys that can read, create, replace, and delete caps |
-| `read_keys_env` | `SHUNT_GATEWAY_ADMIN_READ_KEYS` | Env var holding GET-only keys |
-| `blocked_message` | unset | Accepted for future enforcement errors; stage 1 does not use it |
-| `audit_retention_days` | `365` | Accepted for the later audit retention sweep |
-| `spend_retention_months` | `13` | Accepted for the later spend retention sweep |
-| `identity_retention_days` | `90` | Accepted for the later identity retention sweep |
-| `group_limit_mode` | `min` | `min` or `max`; accepted for later group-limit resolution |
-| `state_path` | `~/.shunt/gateway-spend.json` | Versioned JSON file containing caps and audit records; `""` selects memory-only storage |
-
-Unlike the upstream gateway YAML examples, shunt does not place key values or `${VAR}` placeholders in the config file. Export pairs such as `SHUNT_GATEWAY_ADMIN_WRITE_KEYS="terraform:<32-or-more-character-key>"`. The state file is replaced atomically with private permissions after each mutation. When no home directory resolves, the default is memory-only. The state path is fixed at boot; configuration reloads do not change it.
-
-### `[server.gateway.enforcement]` (optional)
-
-| Key | Default | Meaning |
-| :-- | :-- | :-- |
-| `fail_closed_on_error` | `false` | Accepted for the later enforcement stage. Setting it to `true` without `[server.gateway.admin]` fails configuration validation |
-
-Stage 1 does not enforce caps on `/v1/messages`. It also does not implement usage metering, `/effective`, `/audit`, retention sweeps, or group scopes.
 
 ## `[server.codex_endpoint]` (optional)
 
