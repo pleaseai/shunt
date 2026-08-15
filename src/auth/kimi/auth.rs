@@ -284,13 +284,22 @@ async fn write_back_off_thread(
 
 /// Compute an absolute expiry (ms since epoch) from a token response's
 /// `expires_in` (seconds), falling back to [`DEFAULT_EXPIRES_IN_SECS`] when
-/// absent.
+/// absent. Mirrors `oauth_expires_at_ms` in `auth/claude/login.rs`.
 pub(crate) fn expires_at_ms(expires_in: Option<i64>, now: SystemTime) -> i64 {
     let now_ms = now
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64;
-    now_ms + expires_in.unwrap_or(DEFAULT_EXPIRES_IN_SECS) * 1000
+    // Saturate rather than overflow: a pathologically large `expires_in` (e.g. a
+    // buggy or hostile token response) must not panic under overflow checks, nor
+    // wrap into the past — a negative `expiresAt` is persisted to the account
+    // file and reads as permanently expired, which turns every later request
+    // into its own refresh round-trip.
+    now_ms.saturating_add(
+        expires_in
+            .unwrap_or(DEFAULT_EXPIRES_IN_SECS)
+            .saturating_mul(1000),
+    )
 }
 
 pub(crate) fn parse_token_response(value: &Value) -> Option<TokenResponse> {
@@ -535,6 +544,18 @@ mod tests {
             expires_at_ms(None, now),
             1_000_000 + DEFAULT_EXPIRES_IN_SECS * 1000
         );
+    }
+
+    #[test]
+    fn expires_at_ms_saturates_instead_of_wrapping_into_the_past() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_000);
+        // A pathologically large `expires_in` must clamp to i64::MAX rather than
+        // panic under overflow checks or wrap negative. A negative `expiresAt`
+        // would be persisted and read as permanently expired, so every later
+        // request would drive its own refresh round-trip upstream.
+        assert_eq!(expires_at_ms(Some(i64::MAX), now), i64::MAX);
+        assert_eq!(expires_at_ms(Some(i64::MAX / 1000), now), i64::MAX);
+        assert!(expires_at_ms(Some(i64::MAX), now) > 0);
     }
 
     #[test]
