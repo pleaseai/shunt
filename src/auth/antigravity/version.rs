@@ -38,6 +38,11 @@ pub(crate) const NODE_API_CLIENT: &str = "google-api-nodejs-client/10.3.0";
 const MANIFEST_URL: &str = "https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/manifest/latest-arm64-mac.yml";
 const REFRESH_TTL: Duration = Duration::from_secs(6 * 60 * 60);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
+/// Maximum plausible length for a version string like `2.4.0` or
+/// `2.4.0-beta.1`. Comfortably over anything a real release uses; this value
+/// is formatted straight into the upstream User-Agent header, so a hijacked
+/// or malformed manifest must not be able to inject an arbitrary string here.
+const MAX_VERSION_LEN: usize = 32;
 
 struct VersionCache {
     version: String,
@@ -147,17 +152,40 @@ async fn fetch_version(client: &reqwest::Client, url: &str) -> Option<String> {
 /// this one scalar is needed, so it is scanned rather than parsed — adding a
 /// YAML dependency for a single key is not worth it, and a malformed document
 /// simply yields `None`.
+///
+/// Only a top-level (unindented) `version:` key is matched — the manifest's
+/// own release version lives at the document root, and an indented one
+/// belongs to a nested mapping (e.g. a per-file entry) that must not be
+/// mistaken for it. The extracted value is validated by
+/// [`is_plausible_version`] before being accepted: this value is formatted
+/// straight into the upstream User-Agent header, so a compromised or
+/// malformed manifest must not be able to smuggle arbitrary text there.
 pub(crate) fn parse_manifest_version(body: &str) -> Option<String> {
     for line in body.lines() {
-        let Some(rest) = line.trim().strip_prefix("version:") else {
+        let Some(rest) = line.strip_prefix("version:") else {
             continue;
         };
+        // Drop a trailing YAML comment before trimming quotes/whitespace, so
+        // `version: 2.4.0 # notes` yields `2.4.0` rather than the whole tail.
+        let rest = rest.split('#').next().unwrap_or("");
         let value = rest.trim().trim_matches(['"', '\''].as_ref()).trim();
-        if !value.is_empty() {
+        if is_plausible_version(value) {
             return Some(value.to_string());
         }
     }
     None
+}
+
+/// Whether `value` looks like a real version string rather than manifest
+/// injection: non-empty, short, and built only from characters a version
+/// string would plausibly use (this excludes control characters, whitespace,
+/// and markup on top of rejecting anything overlong).
+fn is_plausible_version(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_VERSION_LEN
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+' | '_'))
 }
 
 #[cfg(test)]
@@ -185,6 +213,53 @@ mod tests {
         assert_eq!(parse_manifest_version("files:\n  - url: x.zip\n"), None);
         assert_eq!(parse_manifest_version("version:\n"), None);
         assert_eq!(parse_manifest_version(""), None);
+    }
+
+    #[test]
+    fn an_indented_version_key_is_not_matched() {
+        // Only the manifest's own top-level `version:` is the release version.
+        // A nested `version:` under a per-file entry (or anything else
+        // indented) must not be mistaken for it.
+        let manifest = "files:\n  - url: x.zip\n    version: 9.9.9\nversion: 2.4.0\n";
+        assert_eq!(parse_manifest_version(manifest).as_deref(), Some("2.4.0"));
+
+        // With no top-level key at all, the indented one must not be
+        // extracted either.
+        let manifest = "files:\n  - url: x.zip\n    version: 9.9.9\n";
+        assert_eq!(parse_manifest_version(manifest), None);
+    }
+
+    #[test]
+    fn a_trailing_comment_is_stripped_from_the_value() {
+        assert_eq!(
+            parse_manifest_version("version: 2.4.0 # released today\n").as_deref(),
+            Some("2.4.0")
+        );
+    }
+
+    #[test]
+    fn implausible_values_are_rejected() {
+        // Control characters (here, a literal newline smuggled via a
+        // multi-line YAML scalar folding into the scan) must not reach the
+        // User-Agent header.
+        assert_eq!(
+            parse_manifest_version("version: 2.4.0\u{0007}\n"),
+            None,
+            "a value containing a control character must be rejected"
+        );
+        // An overlong value — this is a fingerprint header, not free text.
+        let overlong = "a".repeat(64);
+        assert_eq!(
+            parse_manifest_version(&format!("version: {overlong}\n")),
+            None,
+            "an overlong value must be rejected"
+        );
+        // Arbitrary text with spaces/markup is not a version string.
+        assert_eq!(
+            parse_manifest_version("version: <script>alert(1)</script>\n"),
+            None,
+            "non-version-shaped text must be rejected"
+        );
     }
 
     #[test]
