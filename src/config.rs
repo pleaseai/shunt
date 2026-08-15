@@ -1353,9 +1353,9 @@ pub struct ProviderConfig {
     /// How `POST /v1/messages/count_tokens` is answered for this provider.
     #[serde(default)]
     pub count_tokens: CountTokens,
-    /// Explicit OAuth accounts for a `claude_oauth` (Anthropic) or
-    /// `chatgpt_oauth` (Codex) provider. An empty list means the account store
-    /// directory will be scanned by the account-pool layer.
+    /// Explicit OAuth accounts for a `claude_oauth` (Anthropic), `chatgpt_oauth`
+    /// (Codex), or `kimi_oauth` (Kimi Code) provider. An empty list means the
+    /// account store directory will be scanned by the account-pool layer.
     #[serde(default)]
     pub accounts: Vec<AccountConfig>,
     /// Names of account-store entries selected by the `[[upstreams]].auth`
@@ -1404,9 +1404,10 @@ pub struct ProviderConfig {
     /// Applies to this provider's single-credential upstream calls (the
     /// `passthrough`/`api_key` Anthropic path, the single-credential Responses
     /// path — `api_key`, `xai_oauth`, or an unpooled `chatgpt_oauth` provider —
-    /// and the Cursor path); the `claude_oauth`/`chatgpt_oauth` account pools
-    /// have their own account-rotation failover and are unaffected. On by
-    /// default with conservative settings — set `max_retries = 0` to disable.
+    /// and the Cursor path); the `claude_oauth`/`chatgpt_oauth`/`kimi_oauth`
+    /// account pools have their own account-rotation failover and are
+    /// unaffected. On by default with conservative settings — set
+    /// `max_retries = 0` to disable.
     #[serde(default)]
     pub retry: RetryConfig,
     /// Directories the Antigravity CLI may be pointed at by request content
@@ -1561,11 +1562,11 @@ pub struct AccountConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub threshold_fable: Option<f64>,
     /// Selection priority among available accounts: lower is preferred.
-    /// Applies to Claude and Codex pools alike.
+    /// Applies to Claude, Codex, and Kimi pools alike.
     #[serde(default = "default_account_priority")]
     pub priority: u32,
     /// Exclude this account from pool selection entirely without removing its
-    /// configuration. Applies to Claude and Codex pools alike.
+    /// configuration. Applies to Claude, Codex, and Kimi pools alike.
     #[serde(default)]
     pub disabled: bool,
     /// Runtime-only provenance used to distinguish a store entry from an inline
