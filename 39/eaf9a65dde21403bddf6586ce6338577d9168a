@@ -1,0 +1,21 @@
+src/auth/antigravity/version.rs
+  s_16f955127f342a::t_17cdbb3d5371a8 296-309
+  s_16f955127f342a::t_b19782aef5e717 204-226
+  s_16f955127f342a::t_abe4f41a194b41 295
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "39eaf9a65dde21403bddf6586ce6338577d9168a",
+  "prompts": {},
+  "sessions": {
+    "s_16f955127f342a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7e475516-843e-4208-aa72-51d1addafc89",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
