@@ -250,7 +250,9 @@ an implementation of this decision must install an equivalent access-control
 layer on the admin listener — never leave it bare. The admin listener inherits
 `[server.access_control]` rather than getting rules of its own
 ([Resolutions](#resolutions), item 7); that it must not be bare was never in
-question.
+question. Inheriting has an operational cost of its own — those rules are then
+evaluated against the admin listener's peers, so a loopback `bind` needs the
+loopback CIDRs in the allow list — which item 7 covers.
 
 Note that the body limit is *not* part of that layer — `:273-275` records that it
 is read per handler so a reload can hot-apply it — so a second listener does not
@@ -511,6 +513,21 @@ The seven questions this document originally left open are now decided:
    job. A bare listener remains a fail-open regression (Decision 2's
    constraint), and its regression test under [Testing](#testing) stays.
 
+   **What inheriting costs: the rules are then evaluated against the admin
+   listener's own peers.** `AccessControlConfig::allows`
+   (`src/config/http_tuning.rs:39-61`) treats a non-empty `allow_cidrs` as
+   default-deny, and `enforce_http_tuning` (`src/http_tuning.rs:33-64`) exempts
+   only `/` and `/health`, resolving the peer from the connection's
+   `ConnectInfo<SocketAddr>`. So an operator whose allow list names their
+   gateway clients' subnet, and who then splits admin onto the recommended
+   loopback `bind`, gets `403` on every browser request — local or
+   SSH-forwarded — until `127.0.0.1/32` and `::1/128` join the list. That fails
+   closed, not open, but silently: a page that worked before the split answers a
+   flat `permission_error`. An implementation should diagnose it at boot — warn,
+   or refuse to start, when the inherited rules cannot admit the admin
+   listener's bind address — rather than leave the operator to find it one
+   `403` at a time.
+
 ## Testing
 
 - A `build_router` smoke test with **every optional surface enabled at once**,
@@ -538,6 +555,11 @@ The seven questions this document originally left open are now decided:
   covering the client, the admin listener still denies the request. This is the
   regression test for the fail-open in Decision 2's constraint; without it, an
   implementation that simply forgets the layer passes every other test here.
+- The companion to that one: with `[server.admin].bind` on loopback and an
+  `allow_cidrs` that omits the loopback CIDRs, boot warns (or refuses to start),
+  and a build that warns and serves anyway denies the loopback browser. The same
+  inheritance that must not fail open must not silently lock the operator out
+  either, and only asserting both halves distinguishes the two.
 - Graceful shutdown drains both listeners from a single signal.
 - Embedded assets: the bundle is non-empty (a build that silently embedded
   nothing must fail, not serve a blank page), `/admin/assets/*` returns the
