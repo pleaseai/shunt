@@ -1,0 +1,81 @@
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_465bd3ca72b0d8::t_810ffed890a007 43
+  s_465bd3ca72b0d8::t_f4feedc47839a4 41
+docs/gateway-spend-limits.md
+  s_465bd3ca72b0d8::t_9989c79a7f2de0 59
+  s_465bd3ca72b0d8::t_64d1baad594a7e 63
+  s_465bd3ca72b0d8::t_d29822ef97e0b7 7,10,19,27-28,31,33-48
+  s_465bd3ca72b0d8::t_825f3806059087 25,29-30,32
+  s_465bd3ca72b0d8::t_c91be50364889f 52
+docs/m9-admin-surface.md
+  s_465bd3ca72b0d8::t_15707f94fd9e32 271-276
+  s_465bd3ca72b0d8::t_d3e1256918da56 175-176
+  s_465bd3ca72b0d8::t_25d2dcf470f313 191-192,197-212
+  s_465bd3ca72b0d8::t_e0de7e48b96764 242-246
+  s_465bd3ca72b0d8::t_b82a8c4efdc307 67-68,71,75-84,94-99,113-134
+  s_465bd3ca72b0d8::t_ab1b5356c76ea2 240-241
+  s_465bd3ca72b0d8::t_98c18553ca0421 135
+site/src/content/docs/guides/admin-remote-provisioning.mdx
+  s_465bd3ca72b0d8::t_2053e7198ee412 30,110
+site/src/content/docs/ko/guides/admin-remote-provisioning.mdx
+  s_465bd3ca72b0d8::t_2053e7198ee412 28,66
+docs/desktop-app.md
+  s_465bd3ca72b0d8::t_a98e9419924d86 220-221
+docs/config-secrets.md
+  s_465bd3ca72b0d8::t_d7afe225088eec 97-98,103-106
+  s_465bd3ca72b0d8::t_5aee8e1fbe0f25 59,62-83
+docs/config-reload.md
+  s_465bd3ca72b0d8::t_0a67b57636f9b2 58,63-65
+shunt.toml.example
+  s_465bd3ca72b0d8::t_7710f70e0bcada 30-34,36-38,43-69
+  s_465bd3ca72b0d8::t_c5be68ae5310ca 70
+site/src/content/docs/zh-cn/guides/admin-remote-provisioning.mdx
+  s_465bd3ca72b0d8::t_2053e7198ee412 28,66
+site/src/content/docs/ko/reference/configuration.md
+  s_465bd3ca72b0d8::t_d7a348f8b74b29 12
+  s_465bd3ca72b0d8::t_c6bbd88b6ff728 52,56-57,61,63,67-88
+  s_465bd3ca72b0d8::t_7980df8e4a80b3 90-112
+  s_465bd3ca72b0d8::t_9960e23a36d686 89
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_465bd3ca72b0d8::t_22a6d3ee833956 12
+  s_465bd3ca72b0d8::t_6167308ff195c4 52,56-57,61,63,67-111
+  s_465bd3ca72b0d8::t_d52b928a29ac6e 112
+site/src/content/docs/reference/configuration.md
+  s_465bd3ca72b0d8::t_6225ef4d9e4574 88,92-94,98,102-127
+  s_465bd3ca72b0d8::t_0609c68cabc9c0 152-174
+  s_465bd3ca72b0d8::t_b71cb84f9083de 19
+site/src/content/docs/reference/endpoints.md
+  s_465bd3ca72b0d8::t_b47bcfb49ef998 71
+  s_465bd3ca72b0d8::t_080a7d0217aa1f 69
+site/src/content/docs/ja/reference/configuration.md
+  s_465bd3ca72b0d8::t_6624342e116469 12
+  s_465bd3ca72b0d8::t_cba3cb10c96f6b 52,56-57,61,63,67-111
+  s_465bd3ca72b0d8::t_60167b844f4d7f 112
+site/src/content/docs/ko/reference/endpoints.md
+  s_465bd3ca72b0d8::t_a068239a283249 43
+  s_465bd3ca72b0d8::t_b1496ea5406976 41
+README.md
+  s_465bd3ca72b0d8::t_1992fc8dbfdd79 163
+  s_465bd3ca72b0d8::t_18824b6c4bc45d 167
+site/src/content/docs/ja/guides/admin-remote-provisioning.mdx
+  s_465bd3ca72b0d8::t_2053e7198ee412 28,66
+site/src/content/docs/ja/reference/endpoints.md
+  s_465bd3ca72b0d8::t_7aa29ac83d9d78 43
+  s_465bd3ca72b0d8::t_5bb49fd6fd9f64 41
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "eb8174f69cae25c92281ce268566199682b1d051",
+  "prompts": {},
+  "sessions": {
+    "s_465bd3ca72b0d8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "66f88073-f7a8-4995-827e-48edf7ded210",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
