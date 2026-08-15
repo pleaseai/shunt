@@ -500,9 +500,11 @@ The seven questions this document originally left open are now decided:
    login flow (`/admin/login`, `/admin/oidc/callback`) moves to `/admin/api/*`
    at once (`feat!`, its `BREAKING CHANGE:` commit footer pointing at a
    path-migration table in `endpoints.md`); the legacy paths are removed, not
-   aliased. The SPA therefore claims clean `/admin/*` deep links from the start,
-   and Decision 3's blocked-path table becomes the migration inventory rather
-   than a constraint.
+   aliased. `/admin` itself stays for a different reason than those two — it is
+   the shell the SPA takes over, not an endpoint with anywhere to move — which
+   completes Decision 3's three. The SPA therefore claims clean `/admin/*` deep
+   links from the start, and Decision 3's blocked-path table becomes the
+   migration inventory rather than a constraint.
    Hash routing and a separate `/admin/ui/*` prefix were rejected as permanent
    URL costs that only defer the collision. Scripted callers migrate once —
    acceptable while the crate is 0.x.
