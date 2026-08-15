@@ -89,19 +89,36 @@ here because a dashboard is the surface where an operator first notices it.
 | `AccountPool` quota/cooldown | memory + optional `[server.pool] state_path` | Per-instance view. `/admin/pool` reports one replica, not the fleet. |
 | Gateway login sessions | optional `[server.gateway] state_path` | Per-instance view. |
 | Either `state_path` | `atomic_file::write_private_atomic` | Atomic per write, but **last-writer-wins across processes**. No lock, no merge — a shared path is silently clobbered. |
-| Credential refresh | `REFRESH_LOCK` (Claude) / `REFRESH_LOCKS` (Codex) | In-process single-flight only, by two different designs. See below. |
+| Credential refresh | a `REFRESH_LOCK` per provider (Claude, Cursor, Google, xAI) / `REFRESH_LOCKS` (Codex) | In-process single-flight only, in **all five** refreshable stores. See below. |
 | `max_concurrent_requests` | per process | Fleet ceiling is N× the configured value. |
 
-**The blocking constraint is refresh serialization.** Both OAuth providers
-single-flight refreshes, and both do it **in-process only**. `src/auth/claude/auth.rs`
-uses one process-global `static REFRESH_LOCK`, so every Claude account serializes
-against every other; `src/auth/codex/auth.rs` uses `REFRESH_LOCKS`, a registry
-keyed by credential path, so different accounts refresh in parallel while the
-same file still serializes. The designs differ, the scope does not: two processes
-sharing an account store have no shared lock either way, so both can refresh the
-same account concurrently. Refresh tokens rotate, so the loser's stored token
-is invalidated — the exact condition the code already warns about ("stored
-refresh token is now stale until re-login"). Recovery is a manual re-login.
+**The blocking constraint is refresh serialization, and it covers every
+refreshable credential store — not just the two most visible ones.** Five stores
+refresh tokens, and all five single-flight **in-process only**:
+
+| Store | Lock | Granularity |
+| :-- | :-- | :-- |
+| `src/auth/claude/auth.rs:90` | `static REFRESH_LOCK` | process-global |
+| `src/auth/cursor/auth.rs:36` | `static REFRESH_LOCK` | process-global |
+| `src/auth/google/auth.rs:32` | `static REFRESH_LOCK` | process-global |
+| `src/auth/xai/auth.rs:53` | `static REFRESH_LOCK` | process-global |
+| `src/auth/codex/auth.rs:43` | `REFRESH_LOCKS` registry | keyed per credential path |
+
+Four serialize every account of that provider against every other; Codex's
+path-keyed registry lets different accounts refresh in parallel while the same
+file still serializes. The designs differ, the scope does not: two processes
+sharing an account store have no shared lock in any of the five, so both can
+refresh the same account concurrently. Refresh tokens rotate, so the loser's
+stored token is invalidated — the exact condition the code already warns about
+("stored refresh token is now stale until re-login"). Recovery is a manual
+re-login.
+
+Enumerating all five matters because the list is the audit scope for any future
+shared-store work: a lease design that covers only Claude and Codex would leave
+the other three racy across replicas while looking complete. `src/auth/xai/auth.rs:29-33`
+also states the assumption in code rather than leaving it to this document —
+"Cross-process races are out of scope — shunt owns the file and one gateway
+process is the norm."
 
 Sharing one account pool across replicas requires sharing those very files, so
 this is not a tuning problem. Scaling out safely needs a shared store for pool

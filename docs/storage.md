@@ -15,8 +15,8 @@ The question arrives from two directions that are easy to conflate:
 
 - **"Can we run several gateways?"** — a scaling question. Admin sessions,
   pending logins, and OIDC state are per-process; both `state_path` snapshots are
-  last-writer-wins between processes; and credential refresh is serialized by a
-  process-global lock that a second process does not share.
+  last-writer-wins between processes; and credential refresh is serialized by
+  per-provider in-process locks that a second process does not share.
 - **"Can the dashboard show history?"** — a product question, and one that has
   nothing to do with replicas.
 
@@ -50,17 +50,23 @@ control.
 
 ## Hazards a store introduces
 
-- **Refresh coordination becomes a lease, not a transaction.** Replacing the
-  in-process single-flight locks (`REFRESH_LOCK` in `src/auth/claude/auth.rs`,
-  process-global; `REFRESH_LOCKS` in `src/auth/codex/auth.rs`, keyed per
-  credential path) means claiming a lease in one short transaction,
-  performing the OAuth round trip, then writing the token and releasing in a
-  second one. A write transaction must not be held across the network call —
-  SQLite has a single writer, so that stalls every other writer for the duration
-  of an HTTP request. The hazard moves from "no lock" to "lease expiry versus a
-  slow refresh": an improvement, but still a distributed-lock design with the
-  usual failure modes, and the failure it guards against is an invalidated
-  refresh token requiring manual re-login.
+- **Refresh coordination becomes a lease, not a transaction.** The in-process
+  single-flight locks it would replace are in **all five** refreshable stores,
+  not only the two most visible ones: a process-global `static REFRESH_LOCK` in
+  `src/auth/claude/auth.rs:90`, `src/auth/cursor/auth.rs:36`,
+  `src/auth/google/auth.rs:32`, and `src/auth/xai/auth.rs:53`, plus the
+  path-keyed `REFRESH_LOCKS` registry in `src/auth/codex/auth.rs:43`. That full
+  list is the audit scope — a lease covering only Claude and Codex would leave
+  the other three racy across replicas while looking complete, so
+  [`admin-ui-delivery.md`](admin-ui-delivery.md#deployment-topology--single-instance-today)
+  enumerates them in a table rather than in prose. Replacing them means claiming
+  a lease in one short transaction, performing the OAuth round trip, then writing
+  the token and releasing in a second one. A write transaction must not be held
+  across the network call — SQLite has a single writer, so that stalls every
+  other writer for the duration of an HTTP request. The hazard moves from "no
+  lock" to "lease expiry versus a slow refresh": an improvement, but still a
+  distributed-lock design with the usual failure modes, and the failure it guards
+  against is an invalidated refresh token requiring manual re-login.
 - **Persisting sessions weakens a documented security property.**
   [M9](m9-admin-surface.md#authentication-and-hardening) specifies that the
   pending-login store is in-memory, single-use, and TTL-bound, and that emergency
