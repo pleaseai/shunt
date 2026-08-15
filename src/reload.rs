@@ -83,6 +83,15 @@ pub fn reload(shared: &SharedState, path: Option<&std::path::Path>) -> Result<()
         ) {
             return Err(ConfigError::AntigravityMigrationRequired(message));
         }
+        // Mirror `main.rs`'s boot sequence here too: a config that starts with no
+        // route to `antigravity` never starts the version refresher, so a reload
+        // that later adds one is the only remaining place to start it. Without
+        // this, every Antigravity request for the rest of the process lifetime
+        // would carry the compiled-in fallback User-Agent instead of a refreshed
+        // one. `spawn_refresher` is idempotent (a process-lifetime guard, not
+        // per-call state), so calling it on every qualifying reload — including
+        // ones after the first — is safe.
+        crate::auth::antigravity::version::spawn_refresher(reqwest::Client::new());
     }
     let previous = shared.load();
     warn_on_restart_only_changes(&previous.config, &new_config);
@@ -422,6 +431,71 @@ mod tests {
         }
     }
 
+    /// RAII guard for a test that overwrites a real, fixed-name env var.
+    /// Unlike most env vars this file's tests use — which are given a
+    /// process-id-suffixed name (`SHUNT_RELOAD_TEST_TOKENS_{pid}`, etc.) so
+    /// they can never collide with anything real — `SHUNT_ANTIGRAVITY_AUTH_FILE`'s
+    /// name is fixed by its config-loading contract and cannot be made
+    /// unique. Unconditionally removing it after the test (the previous
+    /// shape here) would silently drop a value the run's real environment
+    /// had set before the test started; saving and restoring it on drop
+    /// (even across a panicking assertion) keeps the test's effect on the
+    /// process environment scoped to the test itself.
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    #[test]
+    fn env_var_guard_restores_a_prior_value_on_drop() {
+        // The bug this guard fixes: overwriting a real env var and then
+        // unconditionally removing it (rather than restoring what was there
+        // before) would clobber a value the surrounding environment had set.
+        let key = "SHUNT_RELOAD_ENV_GUARD_TEST_PRIOR_VALUE";
+        std::env::set_var(key, "prior-value");
+        {
+            let _guard = EnvVarGuard::set(key, "temporary-value");
+            assert_eq!(std::env::var(key).unwrap(), "temporary-value");
+        }
+        assert_eq!(
+            std::env::var(key).unwrap(),
+            "prior-value",
+            "the guard must restore the value that was present before it ran, \
+             not leave it removed"
+        );
+        std::env::remove_var(key);
+    }
+
+    #[test]
+    fn env_var_guard_removes_a_previously_unset_var_on_drop() {
+        let key = "SHUNT_RELOAD_ENV_GUARD_TEST_UNSET";
+        std::env::remove_var(key); // start from a clean slate
+        {
+            let _guard = EnvVarGuard::set(key, "temporary-value");
+            assert_eq!(std::env::var(key).unwrap(), "temporary-value");
+        }
+        assert!(
+            std::env::var_os(key).is_none(),
+            "a var with no prior value must end up unset again, not stuck at \
+             the test's temporary value"
+        );
+    }
+
     fn shared_from(config: Config) -> SharedState {
         Arc::new(ArcSwap::from_pointee(
             RuntimeState::from_config(config).expect("valid initial config"),
@@ -506,7 +580,7 @@ mod tests {
 
         // Point the credential probe at a file that does not exist.
         let credential_path = dir.join("antigravity-auth.json");
-        std::env::set_var("SHUNT_ANTIGRAVITY_AUTH_FILE", &credential_path);
+        let _env_var_guard = EnvVarGuard::set("SHUNT_ANTIGRAVITY_AUTH_FILE", &credential_path);
 
         std::fs::write(&path, "[server]\ndefault_provider = \"anthropic\"\n").unwrap();
         let shared = shared_from(Config::load(Some(&path)).unwrap());
@@ -522,12 +596,13 @@ mod tests {
         // Fail-safe: the previously-live config, still pointing at anthropic, is
         // untouched — a bad edit never takes a running provider down mid-flight.
         assert_eq!(shared.load().config.server.default_provider, "anthropic");
-
-        std::env::remove_var("SHUNT_ANTIGRAVITY_AUTH_FILE");
     }
 
-    #[test]
-    fn reload_routing_to_antigravity_with_a_credential_succeeds() {
+    #[tokio::test]
+    // `reload` now starts the antigravity version refresher on this path
+    // (`version::spawn_refresher`), which needs a live Tokio runtime to
+    // `tokio::spawn` onto — hence `#[tokio::test]` rather than a plain `#[test]`.
+    async fn reload_routing_to_antigravity_with_a_credential_succeeds() {
         use crate::auth::antigravity::ANTIGRAVITY_AUTH_FILE_ENV_LOCK;
 
         let _env_guard = ANTIGRAVITY_AUTH_FILE_ENV_LOCK.lock().unwrap();
@@ -538,7 +613,7 @@ mod tests {
         // Point the credential probe at a file that does exist this time.
         let credential_path = dir.join("antigravity-auth.json");
         std::fs::write(&credential_path, "{}").unwrap();
-        std::env::set_var("SHUNT_ANTIGRAVITY_AUTH_FILE", &credential_path);
+        let _env_var_guard = EnvVarGuard::set("SHUNT_ANTIGRAVITY_AUTH_FILE", &credential_path);
 
         std::fs::write(&path, "[server]\ndefault_provider = \"anthropic\"\n").unwrap();
         let shared = shared_from(Config::load(Some(&path)).unwrap());
@@ -546,8 +621,41 @@ mod tests {
         std::fs::write(&path, "[server]\ndefault_provider = \"antigravity\"\n").unwrap();
         reload(&shared, Some(&path)).expect("a present credential must not be refused");
         assert_eq!(shared.load().config.server.default_provider, "antigravity");
+    }
 
-        std::env::remove_var("SHUNT_ANTIGRAVITY_AUTH_FILE");
+    #[tokio::test]
+    async fn reload_routing_to_antigravity_starts_the_version_refresher() {
+        use crate::auth::antigravity::ANTIGRAVITY_AUTH_FILE_ENV_LOCK;
+
+        let _env_guard = ANTIGRAVITY_AUTH_FILE_ENV_LOCK.lock().unwrap();
+        let dir = temp_dir("antigravity-migration-refresher");
+        let _guard = TempDirGuard(dir.clone());
+        let path = dir.join("shunt.toml");
+
+        let credential_path = dir.join("antigravity-auth.json");
+        std::fs::write(&credential_path, "{}").unwrap();
+        let _env_var_guard = EnvVarGuard::set("SHUNT_ANTIGRAVITY_AUTH_FILE", &credential_path);
+
+        // Start with no route to `antigravity` at all — the boot-time call in
+        // `main.rs` never runs in a test, so at this point nothing in this
+        // process has started the refresher via this config.
+        std::fs::write(&path, "[server]\ndefault_provider = \"anthropic\"\n").unwrap();
+        let shared = shared_from(Config::load(Some(&path)).unwrap());
+
+        // A reload that newly routes to `antigravity`, with a credential
+        // present, must not just succeed -- it must also start the refresher.
+        // Before the fix, `reload` never called `spawn_refresher` at all, so a
+        // process that booted without an antigravity route and only gained one
+        // via reload would advertise the compiled-in fallback User-Agent for
+        // its entire remaining lifetime.
+        std::fs::write(&path, "[server]\ndefault_provider = \"antigravity\"\n").unwrap();
+        reload(&shared, Some(&path)).expect("a present credential must not be refused");
+
+        assert!(
+            crate::auth::antigravity::version::is_refresher_started(),
+            "a reload that newly routes to antigravity must start the version \
+             refresher, not just accept the config"
+        );
     }
 
     #[test]

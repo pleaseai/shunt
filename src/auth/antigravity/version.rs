@@ -107,11 +107,15 @@ fn is_fresh() -> bool {
         .is_some_and(|at| at.elapsed() < REFRESH_TTL)
 }
 
+/// Guards [`spawn_refresher`] against starting a second background poller.
+/// Module-level (rather than function-local) so `#[cfg(test)]` code can also
+/// observe it — see [`is_refresher_started`].
+static REFRESHER_STARTED: OnceLock<()> = OnceLock::new();
+
 /// Start the background refresher. Idempotent: a second call is a no-op, so a
 /// config reload cannot accumulate pollers.
 pub fn spawn_refresher(client: reqwest::Client) {
-    static STARTED: OnceLock<()> = OnceLock::new();
-    if STARTED.set(()).is_err() {
+    if REFRESHER_STARTED.set(()).is_err() {
         return;
     }
     tokio::spawn(async move {
@@ -241,6 +245,16 @@ fn is_plausible_version(value: &str) -> bool {
         && value
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+' | '_'))
+}
+
+/// Test-only introspection for [`spawn_refresher`]'s guard: whether the
+/// background poller has been started at all, anywhere in this process.
+/// `reload.rs` uses this to assert that a hot reload which newly routes to
+/// `antigravity` actually starts the refresher — not merely that the reload
+/// call itself returns `Ok`.
+#[cfg(test)]
+pub(crate) fn is_refresher_started() -> bool {
+    REFRESHER_STARTED.get().is_some()
 }
 
 #[cfg(test)]
