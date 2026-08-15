@@ -9,7 +9,8 @@ split**, and an **embedded SPA bundle** — reserves one namespace
 (`/v1/organizations/*`) that a later milestone will need, and records the
 **single-instance deployment constraint** the dashboard would otherwise obscure.
 The storage question that constraint implies is evaluated separately, in
-[`storage.md`](storage.md).
+[`storage.md`](storage.md). The questions this document originally left open are
+now settled in [Resolutions](#resolutions).
 
 It builds on [`m9-admin-surface.md`](m9-admin-surface.md), which already ships an
 admin-authenticated web surface. M9 answered *what* the admin surface does; this
@@ -245,10 +246,11 @@ is a **fail-open access-control regression** for an operator who already relies 
 `[server.access_control]` to restrict who may reach the admin surface. The
 previous bullet frames losing the concurrency gate as a benefit, and it is; losing
 the CIDR rules is not the same kind of change and must not ride along with it. So
-an implementation of this decision must either install an equivalent
-access-control layer on the admin listener, or define a deliberate admin-scoped
-one — never leave it bare. Which of the two is right is an open question below;
-that it must be one of them is not.
+an implementation of this decision must install an equivalent access-control
+layer on the admin listener — never leave it bare. The admin listener inherits
+`[server.access_control]` rather than getting rules of its own
+([Resolutions](#resolutions), item 7); that it must not be bare was never in
+question.
 
 Note that the body limit is *not* part of that layer — `:273-275` records that it
 is read per handler so a reload can hot-apply it — so a second listener does not
@@ -276,7 +278,7 @@ Any of them works — the load-bearing constraint is *one* call, fanned out.
 
 | Namespace | Contents | Contract owner |
 | :-- | :-- | :-- |
-| `/admin/*` | operator UI: HTML shell, SPA client routes, `/admin/assets/*` — minus every path `admin_router` already registers, below | shunt |
+| `/admin/*` | operator UI: HTML shell, SPA client routes, `/admin/assets/*` — minus the server-rendered pages that stay (`/admin/login`, `/admin/oidc/callback`), below | shunt |
 | `/admin/api/*` | shunt-specific JSON: pool, status, accounts, observed, provisioning | shunt |
 | `/v1/organizations/*` | **reserved** — see below | Anthropic |
 
@@ -288,26 +290,29 @@ links. Serving both meanings from one path requires content negotiation on
 `Accept`, which breaks bookmarking and is fragile under any intermediary that
 rewrites headers.
 
-The JSON endpoints move to `/admin/api/*`. The current paths remain as aliases,
-since M9 documents them as a curl-able surface and scripted callers exist.
+The JSON endpoints move to `/admin/api/*`, and the current paths are **removed,
+not aliased** ([Resolutions](#resolutions), item 6). M9 documents them as a
+curl-able surface and scripted callers exist, so the removal ships with a
+path-migration table in the release notes rather than a compatibility shim.
 
-**An alias and a deep link cannot share a path.** While `GET /admin/pool` still
-answers JSON, the SPA cannot claim `/admin/pool` as a browsable route — that is
-the same collision this split exists to remove, just deferred rather than
-resolved. So the aliases are **transitional, not permanent**: each one blocks the
-deep link of the same name until it is retired. Deciding that retirement window
-is a prerequisite for building those screens, not a follow-up to it. Hash routing
-(`/admin/#/pool`) and a separate SPA prefix (`/admin/ui/pool`) both dodge the
-collision without retiring anything — cheaper, at the cost of a permanently
-uglier URL for the surface an operator looks at most.
+**An alias and a deep link cannot share a path**, which is why aliases were
+rejected. While `GET /admin/pool` still answers JSON, the SPA cannot claim
+`/admin/pool` as a browsable route — that is the same collision this split exists
+to remove, just deferred rather than resolved, and every alias would block the
+deep link of the same name until it was retired. Hash routing (`/admin/#/pool`)
+and a separate SPA prefix (`/admin/ui/pool`) dodge the collision without retiring
+anything, at the cost of a permanently uglier URL for the surface an operator
+looks at most. The clean break removes the collision instead of deferring it.
 
-**The blocked set is every registered `/admin/*` path, not only the JSON `GET`s.**
-A `fallback` answers unmatched *paths*; a request whose path matches a route
-registered for other methods gets axum's `405 Method Not Allowed` instead, so a
-POST-only or DELETE-only path is just as unavailable to the SPA as a `GET` alias
-is. Reading `admin_router` (`src/admin/mod.rs:115-146`) the blockers are:
+**The set of paths that must move is every registered `/admin/*` path, not only
+the JSON `GET`s.** A `fallback` answers unmatched *paths*; a request whose path
+matches a route registered for other methods gets axum's `405 Method Not Allowed`
+instead, so a POST-only or DELETE-only path is just as unavailable to the SPA as
+a `GET` alias is. Reading `admin_router` (`src/admin/mod.rs:115-146`), these are
+the registered paths that move, and why each would have blocked a deep link had
+it stayed:
 
-| Path | Registered | Why it blocks a deep link |
+| Path | Registered | Why it would have blocked a deep link |
 | :-- | :-- | :-- |
 | `/admin/pool`, `/admin/status`, `/admin/accounts`, `/admin/observed` | `GET` | Answers JSON on the path the SPA wants. |
 | `/admin/accounts/codex` | `GET` + `POST` | Same JSON collision — belongs with the four above. |
@@ -318,15 +323,15 @@ is. Reading `admin_router` (`src/admin/mod.rs:115-146`) the blockers are:
 
 `/admin` (`GET`) is the shell itself and `/admin/login` (`GET`+`POST`) and
 `/admin/oidc/callback` (`GET`) are server-rendered pages the SPA does not
-replace, so those three are not blockers.
+replace, so those three stay where they are and never blocked anything.
 
-Two consequences. Retiring only the four JSON `GET`s does not unblock the account
-screens — the `{name}` paths need a method-aware plan of their own, whether that
-is registering a `GET` beside the `DELETE`, moving the mutations under
-`/admin/api/*`, or an explicit `method_not_allowed_fallback` routing to the
-shell. And whichever escape Decision 3 takes, hash routing and a separate SPA
-prefix sidestep this whole table, which is a stronger argument for them than the
-`GET` collisions alone made.
+The resolution covers the method-only paths because the mutations move under
+`/admin/api/*` as well, not only the four JSON `GET`s. Once they do, a browser
+`GET` on a former mutation-only path — `/admin/accounts/claude`,
+`/admin/accounts/claude/{name}` — is an SPA route rather than a `405`, so the
+account screens need no method-aware escape of their own. That is exactly what a
+retirement limited to the JSON `GET`s would have missed: it would have unblocked
+the four list views and left every account screen answering `405`.
 
 ### Why not the root
 
@@ -401,8 +406,10 @@ Constraints that survive the move:
   strings must hold for the bundle too.
 - **One binary.** No separate static host, no runtime asset directory.
 
-The open trade-off is **whether `cargo build` may require a Node toolchain**.
-Three options, none yet chosen:
+The trade-off was **whether `cargo build` may require a Node toolchain**, and it
+is settled: it may not. Of the three options below the feature gate is chosen
+([Resolutions](#resolutions), item 1); the table stays as the record of what was
+weighed.
 
 | | Feature-gated (`--features ui`) | Commit `dist/` | `build.rs` with a prebuilt fallback |
 | :-- | :-- | :-- | :-- |
@@ -442,8 +449,10 @@ independent decision.
   `[server.admin]`, `[server.gateway]`, and `[server.codex_endpoint]` enabled
   together, so a collision would surface on an operator's machine rather than in
   CI. This is a gap today, independent of the UI work.
-- **Alias drift.** Keeping `/admin/pool` and friends as aliases of
-  `/admin/api/*` doubles the surface. They should share one handler, not two.
+- **Breaking migration.** Removing the legacy `/admin/*` JSON and mutation paths
+  breaks every scripted caller M9 documented. The release notes must carry the
+  path-migration table, and the removal must land in one release rather than
+  piecemeal.
 - **Second listener, second auth path.** The M9 session cookie is scoped
   `Path=/admin`, and its `Secure` flag keys off request-host loopback-ness. A
   separate admin listener changes the host a browser sees; the cookie scoping
@@ -454,37 +463,53 @@ independent decision.
   presents pool health as *the* answer invites the misreading. Whatever the UI
   shows must be labeled as this instance's view.
 
-## Open questions
+## Resolutions
 
-1. Which of Decision 4's three asset options (feature-gate, commit `dist/`,
-   `build.rs` with a prebuilt fallback).
-2. Frontend framework and whether `site/`'s toolchain is reused or kept separate.
-3. Does `[server.admin].bind` also need its own TLS, or is a fronting proxy
-   always assumed?
-4. Should `shunt ui` open the browser only, or also run `dashboard setup` when
-   the surface is not yet configured?
-5. Is single-instance a documented *limitation* or a documented *decision*? It
-   decides whether the reserved namespace is a roadmap item or a non-goal, and it
-   is owned by [`storage.md`](storage.md) rather than restated here.
-6. How long do the legacy JSON aliases — `/admin/pool`, `/admin/status`,
-   `/admin/accounts`, `/admin/observed`, `/admin/accounts/codex` — live? They
-   alias the canonical `/admin/api/*`, and each one blocks the SPA deep link of
-   the same name (Decision 3), so the answer gates when those screens can be
-   built. The canonical paths are not the ones being retired. Retiring these
-   alone is **not sufficient**: the `DELETE`- and `POST`-only account paths block
-   their own deep links with a `405`, and need a separate method-aware decision.
-7. Does the admin listener inherit `[server.access_control]`, or get its own
-   rules? Decision 2 requires one of the two — inheriting is the smaller change
-   and preserves today's behavior, while a dedicated block is what an operator
-   who splits the listeners probably wants (different rules for a management
-   interface). Whichever is chosen, a bare listener is not an option.
+The questions this document originally left open are now decided:
+
+1. **Assets: feature-gated (`--features ui`).** A default `cargo build` requires
+   no Node toolchain and produces no dashboard; release CI enables the feature,
+   so release binaries carry the UI. No committed `dist/`, no network access in
+   `build.rs` — the drift and supply-chain costs in Decision 4's table are
+   avoided entirely, at the price that table already names: a from-source build
+   without the feature has no dashboard, which release-binary users never see.
+2. **Frontend: React + Vite, in its own toolchain.** The SPA lives in its own
+   package with its own lockfile, separate from `site/`'s Astro/Nimbus toolchain
+   — the two serve different purposes and upgrade on different schedules. The
+   Tauri shell ([Desktop](#desktop)) loads this same bundle.
+3. **No TLS on the admin listener.** `[server.admin].bind` is a management
+   interface, loopback by default; exposing it beyond loopback assumes a
+   fronting proxy that terminates TLS. No certificate configuration enters
+   shunt.
+4. **`shunt ui` opens the browser and offers setup.** With `[server.admin]`
+   configured it resolves the URL and token file and opens the browser. When the
+   surface is not configured it does not silently edit config: it offers to run
+   `shunt dashboard setup` and proceeds only on confirmation.
+5. **Single-instance is a limitation, not a decision.** Scaling out stays on the
+   roadmap and is owned by [`storage.md`](storage.md); the `/v1/organizations/*`
+   reservation is accordingly a roadmap item, not a non-goal.
+6. **No aliases — the admin JSON moves in one breaking change.** Every JSON
+   endpoint and every mutation under `/admin/*` moves to `/admin/api/*` at once
+   (`feat!`, with a path-migration table in the release notes); the legacy paths
+   are removed, not aliased. The SPA therefore claims clean `/admin/*` deep
+   links from the start, and Decision 3's blocked-path table becomes the
+   migration inventory rather than a constraint. Hash routing and a separate
+   `/admin/ui/*` prefix were rejected as permanent URL costs that only defer the
+   collision. Scripted callers migrate once — acceptable while the crate is 0.x
+   and `publish = false` (issue #292).
+7. **The admin listener inherits `[server.access_control]` — always.** No
+   dedicated admin-scoped block: it is the smaller change, preserves today's
+   behavior, and keeps one set of CIDR rules to reason about. Admin-scoped
+   *credential* tiers are a separate proposal (#346) and not this listener's
+   job. A bare listener remains a fail-open regression (Decision 2's
+   constraint), and its regression test under [Testing](#testing) stays.
 
 ## Testing
 
 - A `build_router` smoke test with **every optional surface enabled at once**,
   asserting no panic and that each namespace resolves. This closes the gap under
-  Risks and is worth landing before any UI route, independent of the outcome
-  above.
+  Risks and is worth landing before any UI route, independent of the rest of
+  this design.
 - Path-inventory assertion: the set of registered paths matches this document's
   table, so a new route cannot be added without the conflict review.
 - `/` still answers `HEAD` after any UI work.
@@ -495,11 +520,11 @@ independent decision.
   behavior or force the admin SPA back to `404`s. The property this protects is
   that the UI fallback stays confined to its mount — which is the
   [Why not the root](#why-not-the-root) argument stated as a test.
-- A browser `GET` on a mutation-only admin path (`/admin/accounts/claude`,
-  `/admin/accounts/claude/{name}`) asserts whichever outcome Decision 3's chosen
-  escape specifies — `405` or the SPA shell. Asserting it either way is what
-  stops the method-only blockers from being rediscovered after the JSON aliases
-  are retired and the account screens still fail.
+- Mutations live only under `/admin/api/*`, so a browser `GET` on
+  `/admin/accounts/claude` or `/admin/accounts/claude/{name}` returns the SPA
+  shell, and the mutations answer only on their `/admin/api/*` paths. Asserting
+  both halves is what stops the method-only blockers from being rediscovered
+  once the account screens are built.
 - With `[server.admin].bind` set, admin paths 404 on `server.bind` and serve on
   the admin listener — and the reverse when it is unset.
 - With `[server.admin].bind` set **and** a `[server.access_control]` deny rule
@@ -519,8 +544,8 @@ independent decision.
 
 - `site/src/content/docs/reference/configuration.md` — `[server.admin].bind`.
 - `site/src/content/docs/reference/endpoints.md` — the namespace split, the
-  canonical `/admin/api/*` paths, and the legacy `/admin/*` JSON aliases that
-  point at them.
+  canonical `/admin/api/*` paths, and the removal of the legacy `/admin/*` JSON
+  and mutation paths (breaking; migration table in the release notes).
 - `site/src/content/docs/reference/cli.mdx` — `shunt ui`, next to
   `shunt dashboard setup`.
 - [`m9-admin-surface.md`](m9-admin-surface.md) — its endpoint table becomes the
