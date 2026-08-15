@@ -84,13 +84,25 @@ here because a dashboard is the surface where an operator first notices it.
 | :-- | :-- | :-- |
 | Admin browser session (`SessionStore`) | in-process `Mutex<HashMap>` | Sign in on A, request lands on B ⇒ login screen. Requires sticky sessions. |
 | Pending login (`PendingStore`) | in-process, single-use, TTL-bound | Provisioning **breaks**: start on A, complete on B ⇒ expired/absent. |
-| OIDC state (`OidcStateStore`) | in-process | Authorize on A, callback on B ⇒ state mismatch. |
+| Admin OIDC state (`OidcStateStore`, `src/admin/session.rs:265`) | in-process | Authorize on A, callback on B ⇒ state mismatch. |
 | Admin rate limiters | in-process, documented as process-global | Effective limit relaxes to N× the configured value. |
 | `AccountPool` quota/cooldown | memory + optional `[server.pool] state_path` | Per-instance view. `/admin/pool` reports one replica, not the fleet. |
-| Gateway login sessions | optional `[server.gateway] state_path` | Per-instance view. |
+| Gateway refresh tokens (`GatewayStores.refresh_tokens`) | memory + optional `[server.gateway] state_path` | Per-instance view. The **only** thing that `state_path` persists — `PersistedSessions` carries `refresh_tokens` and nothing else (`src/gateway/persist.rs:35-37`). |
+| Gateway device grants (`GatewayStores.device_grants`) | in-process, **no persistence path at all** | Device login **breaks**: `/oauth/device_authorization` on A, `/device` on B ⇒ unknown code. Survives no restart either. |
+| Gateway OIDC state (`GatewayStores.oidc_states`) | in-process, no persistence | A separate store from the admin one above; same split-brain failure on `/device/callback`. |
+| Gateway device-flow rate limiters (`device_authorization_rate`, `device_verify_rate`) | in-process per-IP | Effective limit relaxes to N× the configured value. |
 | Either `state_path` | `atomic_file::write_private_atomic` | Atomic per write, but **last-writer-wins across processes**. No lock, no merge — a shared path is silently clobbered. |
 | Credential refresh | a `REFRESH_LOCK` per provider (Claude, Cursor, Google, xAI) / `REFRESH_LOCKS` (Codex) | In-process single-flight only, in **all five** refreshable stores. See below. |
 | `max_concurrent_requests` | per process | Fleet ceiling is N× the configured value. |
+
+The gateway rows deserve emphasis because `[server.gateway] state_path` reads
+like coverage and is not: it persists refresh tokens only, so the whole
+`/oauth/device_authorization` → `/device` / `/device/callback` → `/oauth/token`
+rendezvous is memory-only. That is the same rendezvous
+[`storage.md`](storage.md#postgresql) identifies as the upstream gateway's stated
+reason for requiring Postgres — so shared-store work that starts from this table
+must treat device state as unaddressed, not as something session persistence
+already covers.
 
 **The blocking constraint is refresh serialization, and it covers every
 refreshable credential store — not just the two most visible ones.** Five stores
