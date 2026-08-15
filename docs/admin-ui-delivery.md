@@ -428,9 +428,11 @@ independent decision.
 5. Is single-instance a documented *limitation* or a documented *decision*? It
    decides whether the reserved namespace is a roadmap item or a non-goal, and it
    is owned by [`storage.md`](storage.md) rather than restated here.
-6. How long do the `/admin/api/*` aliases live? Each one blocks the SPA deep link
-   of the same name (Decision 3), so the answer gates when those screens can be
-   built.
+6. How long do the legacy JSON aliases — `/admin/pool`, `/admin/status`,
+   `/admin/accounts`, `/admin/observed` — live? They alias the canonical
+   `/admin/api/*`, and each one blocks the SPA deep link of the same name
+   (Decision 3), so the answer gates when those screens can be built. The
+   canonical paths are not the ones being retired.
 7. Does the admin listener inherit `[server.access_control]`, or get its own
    rules? Decision 2 requires one of the two — inheriting is the smaller change
    and preserves today's behavior, while a dedicated block is what an operator
@@ -465,8 +467,9 @@ independent decision.
 ## Documentation impact
 
 - `site/src/content/docs/reference/configuration.md` — `[server.admin].bind`.
-- `site/src/content/docs/reference/endpoints.md` — the namespace split and the
-  `/admin/api/*` aliases.
+- `site/src/content/docs/reference/endpoints.md` — the namespace split, the
+  canonical `/admin/api/*` paths, and the legacy `/admin/*` JSON aliases that
+  point at them.
 - `site/src/content/docs/reference/cli.mdx` — `shunt ui`, next to
   `shunt dashboard setup`.
 - [`m9-admin-surface.md`](m9-admin-surface.md) — its endpoint table becomes the
