@@ -412,6 +412,11 @@ impl AntigravityAuthStore {
         // writing and merge only `project_id` into *that* record, never the
         // stale `stored` snapshot's token fields.
         //
+        // Re-reading is necessary but not sufficient: the record on disk may
+        // no longer be the one discovery ran against at all. The guards below
+        // narrow the write to the case where it still is, and where nobody
+        // else has already resolved a project id.
+        //
         // This re-read/write pair does not touch `REFRESH_LOCK` — `read` and
         // `write` are plain file I/O with no locking of their own — so it is
         // safe to call `project_id` regardless of whether the caller already
@@ -419,12 +424,45 @@ impl AntigravityAuthStore {
         // `get_valid`, but not on the fast, already-valid path).
         match self.read().await {
             Ok(mut fresh) => {
-                fresh.project_id = Some(project.clone());
-                if let Err(error) = self.write(&fresh).await {
+                // A project id belongs to the identity discovery ran against,
+                // so merging it into whatever the file holds now is only
+                // correct while that is still the same account. `shunt login
+                // antigravity` replaces the file wholesale, so a login landing
+                // inside the discovery window would otherwise pair the new
+                // account's access token with a project provisioned for the
+                // old one.
+                let same_identity = match (stored.email.as_deref(), fresh.email.as_deref()) {
+                    (Some(before), Some(after)) => before == after,
+                    // No pair of emails to compare — fall back to the refresh
+                    // token. A login always mints a new one, so an unchanged
+                    // value means this is still the record discovery ran
+                    // against. A changed one is ambiguous (a concurrent
+                    // refresh rotates it too), and skipping costs only a
+                    // rediscovery on the next request.
+                    _ => fresh.refresh_token == stored.refresh_token,
+                };
+                let already_resolved = fresh.project_id.as_deref().is_some_and(|id| !id.is_empty());
+
+                if !same_identity {
                     tracing::warn!(
-                        "failed to persist discovered Antigravity project id: {}",
-                        error.message
+                        "skipped persisting discovered Antigravity project id: \
+                         the credential file no longer holds the account it was discovered for"
                     );
+                } else if already_resolved {
+                    // A login or a concurrent discovery resolved one while
+                    // this call was in flight. That value is at least as fresh
+                    // as ours, so leave it alone.
+                    tracing::debug!(
+                        "Antigravity project id already persisted by a concurrent writer"
+                    );
+                } else {
+                    fresh.project_id = Some(project.clone());
+                    if let Err(error) = self.write(&fresh).await {
+                        tracing::warn!(
+                            "failed to persist discovered Antigravity project id: {}",
+                            error.message
+                        );
+                    }
                 }
             }
             Err(error) => {
@@ -1431,6 +1469,147 @@ mod tests {
         assert_eq!(written.access_token, "fresh-access");
         assert_eq!(written.refresh_token, "fresh-refresh");
         assert_eq!(written.project_id.as_deref(), Some("proj-discovered"));
+    }
+
+    #[tokio::test]
+    async fn project_id_writeback_skips_a_credential_replaced_by_another_account() {
+        // Re-reading before the write keeps a concurrent *refresh* intact, but
+        // it does not make the write correct when the file was replaced by a
+        // different account: `shunt login antigravity` rewrites the record
+        // wholesale, so merging in a project discovered for the previous
+        // account would pair the new access token with the old account's
+        // project on the next request.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1internal:loadCodeAssist"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"cloudaicompanionProject": "proj-of-account-a"})),
+            )
+            .mount(&server)
+            .await;
+
+        let path_buf = temp_auth_file("writeback_relogin");
+        let stale_snapshot = StoredAuth {
+            access_token: "a-access".to_string(),
+            refresh_token: "a-refresh".to_string(),
+            expiry_date: Some(future_millis(3600)),
+            email: Some("a@example.com".to_string()),
+            project_id: None,
+        };
+        write(&path_buf, &stale_snapshot);
+
+        // A login for a different account lands while discovery is in flight.
+        let relogged_in = StoredAuth {
+            access_token: "b-access".to_string(),
+            refresh_token: "b-refresh".to_string(),
+            expiry_date: Some(future_millis(7200)),
+            email: Some("b@example.com".to_string()),
+            project_id: None,
+        };
+        write(&path_buf, &relogged_in);
+
+        let store = store_at(path_buf.clone(), &server);
+        // The caller still gets the project it discovered for account A.
+        let project = store.project_id(&stale_snapshot).await.unwrap();
+        assert_eq!(project, "proj-of-account-a");
+
+        let written: StoredAuth =
+            serde_json::from_str(&fs::read_to_string(&path_buf).unwrap()).unwrap();
+        assert_eq!(written.email.as_deref(), Some("b@example.com"));
+        assert_eq!(
+            written.project_id, None,
+            "account B's credential must not inherit account A's project id"
+        );
+    }
+
+    #[tokio::test]
+    async fn project_id_writeback_skips_an_account_swap_without_emails() {
+        // Same replacement, but neither record carries an email — a login that
+        // could not resolve one. The refresh token is the fallback anchor: a
+        // login always mints a new one, so a changed value is enough to hold
+        // the write back.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1internal:loadCodeAssist"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"cloudaicompanionProject": "proj-of-account-a"})),
+            )
+            .mount(&server)
+            .await;
+
+        let path_buf = temp_auth_file("writeback_relogin_no_email");
+        let stale_snapshot = StoredAuth {
+            access_token: "a-access".to_string(),
+            refresh_token: "a-refresh".to_string(),
+            expiry_date: Some(future_millis(3600)),
+            email: None,
+            project_id: None,
+        };
+        write(&path_buf, &stale_snapshot);
+
+        let relogged_in = StoredAuth {
+            access_token: "b-access".to_string(),
+            refresh_token: "b-refresh".to_string(),
+            expiry_date: Some(future_millis(7200)),
+            email: None,
+            project_id: None,
+        };
+        write(&path_buf, &relogged_in);
+
+        let store = store_at(path_buf.clone(), &server);
+        assert_eq!(
+            store.project_id(&stale_snapshot).await.unwrap(),
+            "proj-of-account-a"
+        );
+
+        let written: StoredAuth =
+            serde_json::from_str(&fs::read_to_string(&path_buf).unwrap()).unwrap();
+        assert_eq!(written.refresh_token, "b-refresh");
+        assert_eq!(written.project_id, None);
+    }
+
+    #[tokio::test]
+    async fn project_id_writeback_does_not_overwrite_a_freshly_resolved_project() {
+        // A login (or another in-flight discovery) resolved a project id while
+        // this call was discovering one. That value is at least as fresh as
+        // ours, so it must survive rather than be replaced.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1internal:loadCodeAssist"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"cloudaicompanionProject": "proj-discovered"})),
+            )
+            .mount(&server)
+            .await;
+
+        let path_buf = temp_auth_file("writeback_existing_project");
+        let stale_snapshot = StoredAuth {
+            access_token: "stale-access".to_string(),
+            refresh_token: "stale-refresh".to_string(),
+            expiry_date: Some(future_millis(3600)),
+            email: Some("a@example.com".to_string()),
+            project_id: None,
+        };
+        write(&path_buf, &stale_snapshot);
+
+        let with_project = StoredAuth {
+            project_id: Some("proj-from-login".to_string()),
+            ..stale_snapshot.clone()
+        };
+        write(&path_buf, &with_project);
+
+        let store = store_at(path_buf.clone(), &server);
+        assert_eq!(
+            store.project_id(&stale_snapshot).await.unwrap(),
+            "proj-discovered"
+        );
+
+        let written: StoredAuth =
+            serde_json::from_str(&fs::read_to_string(&path_buf).unwrap()).unwrap();
+        assert_eq!(written.project_id.as_deref(), Some("proj-from-login"));
     }
 
     #[tokio::test]
