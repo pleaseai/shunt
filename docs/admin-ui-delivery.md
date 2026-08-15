@@ -182,7 +182,7 @@ What this buys, beyond tidiness:
   `bind` governs both, so hardening the gateway's reachability and hardening the
   admin surface are the same knob.
 - Admin requests stop competing with inference for `max_concurrent_requests`
-  permits, and stop inheriting the proxy's `http_tuning` body limits.
+  permits.
 - With `[server.gateway]` enabled, `/admin/login` no longer shares a socket with
   intentionally unauthenticated routes (`/oauth/token`, `/device`,
   `/.well-known/oauth-authorization-server`), which simplifies any fronting
@@ -192,22 +192,49 @@ What this buys, beyond tidiness:
   interface is addressed per replica, so nothing depends on a load balancer
   honoring session affinity.
 
+**Constraint — the second listener must re-install the shared layers, and access
+control is not optional.** `build_router` merges `admin::admin_router()` at
+`src/server.rs:214` and then wraps the *whole* router in two layers: the inbound
+concurrency gate (`limit_requests`, `:265`, when `max_concurrent_requests > 0`)
+and `enforce_http_tuning` (`:276`), which carries both `[server.access_control]`
+allow/deny CIDR rules and the `[server.limits]` header and URL caps. Moving
+`/admin/*` out of that router therefore drops both — and dropping the second one
+is a **fail-open access-control regression** for an operator who already relies on
+`[server.access_control]` to restrict who may reach the admin surface. The
+previous bullet frames losing the concurrency gate as a benefit, and it is; losing
+the CIDR rules is not the same kind of change and must not ride along with it. So
+an implementation of this decision must either install an equivalent
+access-control layer on the admin listener, or define a deliberate admin-scoped
+one — never leave it bare. Which of the two is right is an open question below;
+that it must be one of them is not.
+
+Note that the body limit is *not* part of that layer — `:273-275` records that it
+is read per handler so a reload can hot-apply it — so a second listener does not
+change body-limit behavior either way.
+
 Whether the route tree is registered stays a **boot-time** decision, as M9
 already specifies for `[server.admin]`; a reload that adds or changes `bind` logs
 that it needs a restart.
+
+
 
 **Implementation hazard.** `shutdown::shutdown_signal()` must not be called
 twice. Its documentation explains why: tokio delivers signals through a
 process-wide channel with no queue, and the current implementation deliberately
 keeps one listener continuously live to close a delivery gap between waits. A
-second listener must therefore be driven by a fan-out (`tokio::sync::watch`) from
-a single `shutdown_signal()` call, not by a second call.
+second listener must therefore be driven by a fan-out from a single
+`shutdown_signal()` call, not by a second call. `tokio::sync::watch` is the
+zero-dependency spelling; `futures_util::FutureExt::shared` is also already
+available (`futures-util` is a direct dependency), and
+`tokio_util::sync::CancellationToken` is the most idiomatic of the three but
+would mean promoting `tokio-util` from a transitive dependency to a direct one.
+Any of them works — the load-bearing constraint is *one* call, fanned out.
 
 ## Decision 3 — three-way path split; never a catch-all at `/`
 
 | Namespace | Contents | Contract owner |
 | :-- | :-- | :-- |
-| `/admin/*` | operator UI: HTML shell, SPA client routes, `/admin/assets/*` | shunt |
+| `/admin/*` | operator UI: HTML shell, SPA client routes, `/admin/assets/*` — minus the four names still held by JSON aliases, below | shunt |
 | `/admin/api/*` | shunt-specific JSON: pool, status, accounts, observed, provisioning | shunt |
 | `/v1/organizations/*` | **reserved** — see below | Anthropic |
 
@@ -221,6 +248,18 @@ rewrites headers.
 
 The JSON endpoints move to `/admin/api/*`. The current paths remain as aliases,
 since M9 documents them as a curl-able surface and scripted callers exist.
+
+**An alias and a deep link cannot share a path.** While `GET /admin/pool` still
+answers JSON, the SPA cannot claim `/admin/pool` as a browsable route — that is
+the same collision this split exists to remove, just deferred rather than
+resolved. So the aliases are **transitional, not permanent**: each one blocks the
+deep link of the same name until it is retired, and the four colliding routes
+(`/pool`, `/status`, `/accounts`, `/observed`) are therefore the last the SPA can
+take over. Deciding that retirement window is a prerequisite for building those
+screens, not a follow-up to it. Hash routing (`/admin/#/pool`) and a separate SPA
+prefix (`/admin/ui/pool`) both dodge the collision without retiring anything —
+cheaper, at the cost of a permanently uglier URL for the surface an operator
+looks at most.
 
 ### Why not the root
 
@@ -296,14 +335,22 @@ Constraints that survive the move:
 - **One binary.** No separate static host, no runtime asset directory.
 
 The open trade-off is **whether `cargo build` may require a Node toolchain**.
-Two options, neither yet chosen:
+Three options, none yet chosen:
 
-| | Feature-gated (`--features ui`) | Commit `dist/` |
-| :-- | :-- | :-- |
-| `cargo build` without Node | works, no UI | works, UI included |
-| Source-of-truth risk | none | built output can drift from source |
-| CI | builds assets for release | must verify the committed build reproduces |
-| Default build has a dashboard | no | yes |
+| | Feature-gated (`--features ui`) | Commit `dist/` | `build.rs` with a prebuilt fallback |
+| :-- | :-- | :-- | :-- |
+| `cargo build` without Node | works, no UI | works, UI included | works, UI from the fetched artifact |
+| Source-of-truth risk | none | built output can drift from source | none — the artifact is built from a tagged source |
+| CI | builds assets for release | must verify the committed build reproduces | publishes the artifact per release |
+| Default build has a dashboard | no | yes | yes, when the fetch succeeds |
+| Cost | none | repo bloat, conflicts on built files | a network fetch in `build.rs`, and a supply-chain surface to secure |
+
+The third option builds locally when Node is present and otherwise fetches a
+release artifact. It removes the drift risk that makes committing `dist/`
+unattractive without giving up a dashboard in the default build — but a
+`build.rs` that reaches the network during `cargo build` is itself a
+supply-chain surface, so it trades a repo-hygiene problem for a
+verify-the-download problem. Offline builds also need the fetch to be skippable.
 
 crates.io packaging is not a constraint: the crate is already `publish = false`
 (issue #292).
@@ -342,7 +389,8 @@ independent decision.
 
 ## Open questions
 
-1. Feature-gate vs commit `dist/` (Decision 4 table).
+1. Which of Decision 4's three asset options (feature-gate, commit `dist/`,
+   `build.rs` with a prebuilt fallback).
 2. Frontend framework and whether `site/`'s toolchain is reused or kept separate.
 3. Does `[server.admin].bind` also need its own TLS, or is a fronting proxy
    always assumed?
@@ -351,6 +399,14 @@ independent decision.
 5. Is single-instance a documented *limitation* or a documented *decision*? It
    decides whether the reserved namespace is a roadmap item or a non-goal, and it
    is owned by [`storage.md`](storage.md) rather than restated here.
+6. How long do the `/admin/api/*` aliases live? Each one blocks the SPA deep link
+   of the same name (Decision 3), so the answer gates when those screens can be
+   built.
+7. Does the admin listener inherit `[server.access_control]`, or get its own
+   rules? Decision 2 requires one of the two — inheriting is the smaller change
+   and preserves today's behavior, while a dedicated block is what an operator
+   who splits the listeners probably wants (different rules for a management
+   interface). Whichever is chosen, a bare listener is not an option.
 
 ## Testing
 
@@ -364,7 +420,18 @@ independent decision.
 - An unmatched path still `404`s rather than returning HTML.
 - With `[server.admin].bind` set, admin paths 404 on `server.bind` and serve on
   the admin listener — and the reverse when it is unset.
+- With `[server.admin].bind` set **and** a `[server.access_control]` deny rule
+  covering the client, the admin listener still denies the request. This is the
+  regression test for the fail-open in Decision 2's constraint; without it, an
+  implementation that simply forgets the layer passes every other test here.
 - Graceful shutdown drains both listeners from a single signal.
+- Embedded assets: the bundle is non-empty (a build that silently embedded
+  nothing must fail, not serve a blank page), `/admin/assets/*` returns the
+  file's bytes, and each response carries the `Content-Type` its extension
+  implies — `text/javascript` for `.js`, `text/css` for `.css`, and so on. A
+  wrong or missing type is not cosmetic: browsers refuse a stylesheet or module
+  script served as `text/plain`, and `X-Content-Type-Options: nosniff` removes
+  the sniffing that would otherwise mask the bug.
 
 ## Documentation impact
 
