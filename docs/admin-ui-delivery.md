@@ -476,7 +476,8 @@ The seven questions this document originally left open are now decided:
    so release binaries carry the UI. No committed `dist/`, no network access in
    `build.rs` — the drift and supply-chain costs in Decision 4's table are
    avoided entirely, at the price that table already names: a from-source build
-   without the feature has no dashboard, which release-binary users never see.
+   without the feature has no dashboard — a gap release-binary users never
+   encounter.
 2. **Frontend: React + Vite, in its own toolchain.** The SPA lives in its own
    package with its own lockfile, separate from `site/`'s Astro/Nimbus toolchain
    — the two serve different purposes and upgrade on different schedules. The
@@ -493,11 +494,13 @@ The seven questions this document originally left open are now decided:
    roadmap and is owned by [`storage.md`](storage.md); the `/v1/organizations/*`
    reservation is accordingly a roadmap item, not a non-goal.
 6. **No aliases — the admin JSON moves in one breaking change.** Every JSON
-   endpoint and every mutation under `/admin/*` moves to `/admin/api/*` at once
-   (`feat!`, its `BREAKING CHANGE:` commit footer pointing at a path-migration
-   table in `endpoints.md`); the legacy paths are removed, not aliased. The SPA
-   therefore claims clean `/admin/*` deep links from the start, and Decision 3's
-   blocked-path table becomes the migration inventory rather than a constraint.
+   endpoint and every mutation under `/admin/*` outside the server-rendered
+   login flow (`/admin/login`, `/admin/oidc/callback`) moves to `/admin/api/*`
+   at once (`feat!`, its `BREAKING CHANGE:` commit footer pointing at a
+   path-migration table in `endpoints.md`); the legacy paths are removed, not
+   aliased. The SPA therefore claims clean `/admin/*` deep links from the start,
+   and Decision 3's blocked-path table becomes the migration inventory rather
+   than a constraint.
    Hash routing and a separate `/admin/ui/*` prefix were rejected as permanent
    URL costs that only defer the collision. Scripted callers migrate once —
    acceptable while the crate is 0.x.
