@@ -38,6 +38,13 @@ pub(crate) const NODE_API_CLIENT: &str = "google-api-nodejs-client/10.3.0";
 const MANIFEST_URL: &str = "https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/manifest/latest-arm64-mac.yml";
 const REFRESH_TTL: Duration = Duration::from_secs(6 * 60 * 60);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
+/// After a failed manifest fetch, retry soon rather than waiting out the full
+/// [`REFRESH_TTL`] / 2 (3 hours). This is a cosmetic fingerprint header, not a
+/// security-critical value: a short fixed interval — deliberately no
+/// exponential backoff — keeps a real manifest outage from leaving the
+/// advertised version stale for hours after it clears, without hammering the
+/// endpoint on a transient blip.
+const FAILED_FETCH_RETRY_INTERVAL: Duration = Duration::from_secs(60);
 /// Maximum plausible length for a version string like `2.4.0` or
 /// `2.4.0-beta.1`. Comfortably over anything a real release uses; this value
 /// is formatted straight into the upstream User-Agent header, so a hijacked
@@ -109,11 +116,14 @@ pub fn spawn_refresher(client: reqwest::Client) {
     }
     tokio::spawn(async move {
         loop {
-            if !is_fresh() {
-                match fetch_version(&client, MANIFEST_URL).await {
+            let sleep_duration = if is_fresh() {
+                REFRESH_TTL / 2
+            } else {
+                let fetched = fetch_version(&client, MANIFEST_URL).await;
+                match &fetched {
                     Some(version) => {
                         tracing::debug!(version = %version, "Antigravity client version refreshed");
-                        store(version);
+                        store(version.clone());
                     }
                     None => {
                         // Deliberately not an error: the pinned fallback is a
@@ -125,10 +135,22 @@ pub fn spawn_refresher(client: reqwest::Client) {
                         );
                     }
                 }
-            }
-            tokio::time::sleep(REFRESH_TTL / 2).await;
+                next_refresh_delay(fetched.as_deref())
+            };
+            tokio::time::sleep(sleep_duration).await;
         }
     });
+}
+
+/// How long to wait before the next refresh attempt: the full TTL half-life
+/// after a successful fetch, or [`FAILED_FETCH_RETRY_INTERVAL`] after a failed
+/// one so an outage does not leave the fingerprint stale for hours.
+fn next_refresh_delay(fetched: Option<&str>) -> Duration {
+    if fetched.is_some() {
+        REFRESH_TTL / 2
+    } else {
+        FAILED_FETCH_RETRY_INTERVAL
+    }
 }
 
 /// Fetch and parse the manifest. `None` on any failure — the caller keeps the
@@ -296,5 +318,19 @@ mod tests {
         );
         // The advertised version is unchanged by the failure.
         assert_eq!(current(), FALLBACK_VERSION);
+    }
+
+    #[test]
+    fn a_failed_fetch_schedules_a_short_retry_not_the_full_ttl() {
+        // No exponential backoff, just a short fixed interval — but it must
+        // actually be short relative to the TTL half-life, or a manifest
+        // outage would still leave the fingerprint stale for hours.
+        assert_eq!(next_refresh_delay(None), FAILED_FETCH_RETRY_INTERVAL);
+        assert!(FAILED_FETCH_RETRY_INTERVAL < REFRESH_TTL / 2);
+    }
+
+    #[test]
+    fn a_successful_fetch_schedules_the_full_ttl_half_life() {
+        assert_eq!(next_refresh_delay(Some("2.4.0")), REFRESH_TTL / 2);
     }
 }
