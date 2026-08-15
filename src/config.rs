@@ -2695,6 +2695,7 @@ impl Config {
         if file_declares_upstreams {
             config.apply_ordered_provider_env(env)?;
         }
+        config.backfill_antigravity_cli_migration_auth(&effective_provider_figment);
         let config = config.validate()?;
         // One aggregated warning per load naming every `Secret` field whose
         // value was written literally in the config file — never the value
@@ -2801,6 +2802,51 @@ impl Config {
             self.upstreams_ordered = true;
         }
         Ok(())
+    }
+
+    /// Writing `kind = "antigravity_cli"` under `[providers.antigravity]`,
+    /// with nothing else, is the documented way to migrate that name back
+    /// to the deprecated `agy` subprocess transport (see
+    /// `reject_legacy_antigravity_table_without_auth` above, which lets
+    /// this exact shape through). Figment's deep-merge still backfills the
+    /// omitted `auth` from the built-in `antigravity` default's `auth =
+    /// "antigravity_oauth"`, since the merge has no notion that changing
+    /// `kind` invalidates the rest of that default -- `validate` then
+    /// rejects the result as `AntigravityOauthWrongKind`, breaking the very
+    /// migration path the guard above exists to allow. Reassign `auth` to
+    /// what the built-in `antigravity-cli` provider itself uses instead.
+    ///
+    /// Scoped to this one documented name/kind pair rather than generalized
+    /// to arbitrary provider names: generalizing would also silently
+    /// resolve unrelated kind-mismatched legacy tables (e.g. repurposing
+    /// `[providers.antigravity]` to some unrelated kind without an explicit
+    /// `auth`) that today fail loudly and correctly at `validate`, turning
+    /// that clear, actionable error into a silently invented `auth` choice
+    /// instead.
+    fn backfill_antigravity_cli_migration_auth(&mut self, effective_figment: &Figment) {
+        let Ok(value) = effective_figment.find_value("providers.antigravity") else {
+            return;
+        };
+        let Some(dict) = value.as_dict() else {
+            return;
+        };
+        let migrating_to_cli = dict
+            .get("kind")
+            .and_then(figment::value::Value::as_str)
+            .map(|kind| kind == "antigravity_cli")
+            .unwrap_or(false);
+        if !migrating_to_cli || dict.contains_key("auth") {
+            return;
+        }
+        if let Some(cli_auth) = Self::default()
+            .providers
+            .get("antigravity-cli")
+            .map(|provider| provider.auth)
+        {
+            if let Some(provider) = self.providers.get_mut("antigravity") {
+                provider.auth = cli_auth;
+            }
+        }
     }
 
     /// Validates and normalizes every configured `service_tier` (provider-level
@@ -6441,7 +6487,10 @@ id = "claude-sonnet-5"
         // nothing to say about it.
         std::fs::write(&path, "[server]\ndefault_provider = \"anthropic\"\n").unwrap();
 
-        std::env::set_var("SHUNT_PROVIDERS__ANTIGRAVITY__BASE_URL", "http://localhost:9999");
+        std::env::set_var(
+            "SHUNT_PROVIDERS__ANTIGRAVITY__BASE_URL",
+            "http://localhost:9999",
+        );
 
         let error = Config::load(Some(&path))
             .expect_err("an env-only legacy antigravity shape must not load");
@@ -6490,6 +6539,45 @@ id = "claude-sonnet-5"
         assert_eq!(antigravity.auth, AuthMode::AntigravityOauth);
 
         std::env::remove_var("SHUNT_PROVIDERS__ANTIGRAVITY__AUTH");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn antigravity_cli_migration_backfills_auth_from_the_cli_default() {
+        // The documented migration path off the ambiguous legacy shape
+        // above: a `[providers.antigravity]` table whose only content is
+        // `kind = "antigravity_cli"`, opting explicitly into the deprecated
+        // subprocess transport. Without
+        // `backfill_antigravity_cli_migration_auth`, the merge still
+        // inherits `auth = antigravity_oauth` from the built-in
+        // `antigravity` default for this same name (the identity that
+        // `kind` just overrode), and `validate` rejects the result as
+        // `AntigravityOauthWrongKind` -- breaking the very migration path
+        // this shape is supposed to allow.
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-antigravity-cli-migration-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shunt.toml");
+        std::fs::write(
+            &path,
+            "[providers.antigravity]\nkind = \"antigravity_cli\"\n",
+        )
+        .unwrap();
+
+        let config = Config::load(Some(&path))
+            .expect("the documented antigravity -> antigravity_cli migration must load");
+        let antigravity = config.provider("antigravity").unwrap();
+        assert_eq!(antigravity.kind, ProviderKind::AntigravityCli);
+        assert_eq!(antigravity.auth, AuthMode::None);
+
         let _ = std::fs::remove_dir_all(dir);
     }
 
