@@ -644,6 +644,17 @@ mod tests {
         std::fs::write(&path, "[server]\ndefault_provider = \"anthropic\"\n").unwrap();
         let shared = shared_from(Config::load(Some(&path)).unwrap());
 
+        // `REFRESHER_STARTED` is a process-global guard (see `version.rs`),
+        // so a prior test in this binary that already reached
+        // `spawn_refresher` would otherwise leave `is_refresher_started()`
+        // observably `true` here regardless of what this test's own reload
+        // call does below -- passing the assertion below without this
+        // reload path having started anything. Reset it first, under
+        // `ANTIGRAVITY_AUTH_FILE_ENV_LOCK` (held above for this test's whole
+        // body), which serializes this reset against every other test
+        // capable of reaching `spawn_refresher` in this file.
+        crate::auth::antigravity::version::reset_refresher_started_for_test();
+
         // A reload that newly routes to `antigravity`, with a credential
         // present, must not just succeed -- it must also start the refresher.
         // Before the fix, `reload` never called `spawn_refresher` at all, so a
@@ -691,6 +702,13 @@ mod tests {
         let shared = shared_from(Config::load(Some(&path)).unwrap());
 
         std::fs::write(&path, "[server]\ndefault_provider = \"antigravity\"\n").unwrap();
+
+        // See `reload_routing_to_antigravity_starts_the_version_refresher`
+        // above for why this reset is necessary and safe: `REFRESHER_STARTED`
+        // is process-global, and this test holds `ANTIGRAVITY_AUTH_FILE_ENV_LOCK`
+        // (above) for its whole body, serializing this reset against every
+        // other test capable of reaching `spawn_refresher`.
+        crate::auth::antigravity::version::reset_refresher_started_for_test();
 
         // Mirror `reload_off_thread` exactly: move owned clones into the
         // blocking closure and drive `reload` through `spawn_blocking`. A

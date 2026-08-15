@@ -27,7 +27,10 @@
 //!    value has an expiry.
 
 use std::{
-    sync::{Mutex, OnceLock},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex, OnceLock,
+    },
     time::{Duration, Instant},
 };
 
@@ -114,13 +117,21 @@ fn is_fresh() -> bool {
 
 /// Guards [`spawn_refresher`] against starting a second background poller.
 /// Module-level (rather than function-local) so `#[cfg(test)]` code can also
-/// observe it — see [`is_refresher_started`].
-static REFRESHER_STARTED: OnceLock<()> = OnceLock::new();
+/// observe it and, in tests only, reset it — see [`is_refresher_started`]
+/// and [`reset_refresher_started_for_test`]. An `AtomicBool` rather than the
+/// `OnceLock<()>` this used to be: `OnceLock` has no safe way to un-set
+/// itself, and the test-only reset needs exactly that.
+static REFRESHER_STARTED: AtomicBool = AtomicBool::new(false);
 
 /// Start the background refresher. Idempotent: a second call is a no-op, so a
-/// config reload cannot accumulate pollers.
+/// config reload cannot accumulate pollers. `swap` rather than a
+/// compare-and-exchange: with only two states, whichever concurrent caller's
+/// swap observes the previous value as `false` is the one and only caller
+/// that just performed the `false` -> `true` transition, so it is the sole
+/// spawner -- every other caller, before or after, observes `true` and
+/// returns.
 pub fn spawn_refresher(client: reqwest::Client) {
-    if REFRESHER_STARTED.set(()).is_err() {
+    if REFRESHER_STARTED.swap(true, Ordering::AcqRel) {
         return;
     }
     tokio::spawn(async move {
@@ -336,7 +347,33 @@ fn is_plausible_version(value: &str) -> bool {
 /// call itself returns `Ok`.
 #[cfg(test)]
 pub(crate) fn is_refresher_started() -> bool {
-    REFRESHER_STARTED.get().is_some()
+    REFRESHER_STARTED.load(Ordering::Acquire)
+}
+
+/// Test-only: reset [`spawn_refresher`]'s guard so a test can observe
+/// whether *its own* call path started the refresher, rather than
+/// inheriting `true` left behind by an unrelated test elsewhere in this
+/// binary. `REFRESHER_STARTED` is process-global by design (that is the
+/// point of the guard), and Rust's default test harness runs every test in
+/// this binary in parallel within one process, so without a reset the first
+/// test anywhere to reach `spawn_refresher` would make
+/// `is_refresher_started()` return `true` for every test after it,
+/// regardless of what that later test's own reload path did.
+///
+/// Resetting does not stop a background poller a prior `spawn_refresher`
+/// call may already have spawned — it only forgets that the guard was set,
+/// so the next `spawn_refresher` call is free to spawn another one. That is
+/// harmless in a short-lived test process, but it does mean a caller of
+/// this function must serialize against every other test capable of
+/// reaching `spawn_refresher`, so a reset here can never race a concurrent
+/// `spawn_refresher` call from one of them. `reload.rs`'s antigravity tests
+/// satisfy that by holding `ANTIGRAVITY_AUTH_FILE_ENV_LOCK` for their whole
+/// body, which happens to be every test in the binary that can reach
+/// `spawn_refresher` (`spawn_refresher`'s only other call site is
+/// `main.rs`'s boot path, which no test exercises).
+#[cfg(test)]
+pub(crate) fn reset_refresher_started_for_test() {
+    REFRESHER_STARTED.store(false, Ordering::Release);
 }
 
 #[cfg(test)]
