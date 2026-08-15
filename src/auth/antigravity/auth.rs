@@ -401,13 +401,45 @@ impl AntigravityAuthStore {
         // credential would keep re-discovering until a login happened to write
         // one. Best-effort — a write failure here must not fail a request that
         // already has a working access token and project id in hand.
-        let mut persisted = stored.clone();
-        persisted.project_id = Some(project.clone());
-        if let Err(error) = self.write(&persisted).await {
-            tracing::warn!(
-                "failed to persist discovered Antigravity project id: {}",
-                error.message
-            );
+        //
+        // `stored` is a snapshot this method's caller took before
+        // `discover_project` ran — and that call can take minutes on
+        // first-time onboarding (`ONBOARD_POLL_DEADLINE`). Writing `stored`
+        // back verbatim (plus `project_id`) would clobber a token pair a
+        // concurrent request refreshed in that window, silently discarding a
+        // successful refresh and costing the operator a full re-login for a
+        // lost rotated refresh token. So re-read the file immediately before
+        // writing and merge only `project_id` into *that* record, never the
+        // stale `stored` snapshot's token fields.
+        //
+        // This re-read/write pair does not touch `REFRESH_LOCK` — `read` and
+        // `write` are plain file I/O with no locking of their own — so it is
+        // safe to call `project_id` regardless of whether the caller already
+        // holds that lock (it does on two of its three call sites in
+        // `get_valid`, but not on the fast, already-valid path).
+        match self.read().await {
+            Ok(mut fresh) => {
+                fresh.project_id = Some(project.clone());
+                if let Err(error) = self.write(&fresh).await {
+                    tracing::warn!(
+                        "failed to persist discovered Antigravity project id: {}",
+                        error.message
+                    );
+                }
+            }
+            Err(error) => {
+                // The on-disk record disappeared or became unreadable between
+                // the stale snapshot and this re-read. Do not resurrect it
+                // from `stored` — that could restore a credential a
+                // concurrent login or refresh has already superseded. Skip
+                // the persist; the caller still gets a working access token
+                // and project id in hand, and the next request will simply
+                // rediscover.
+                tracing::warn!(
+                    "skipped persisting discovered Antigravity project id: {}",
+                    error.message
+                );
+            }
         }
 
         Ok(project)
@@ -1344,6 +1376,98 @@ mod tests {
         let second_store = store_at(path_buf, &server);
         let second_cred = second_store.get_valid().await.unwrap();
         assert_eq!(second_cred.project_id, "proj-discovered");
+    }
+
+    #[tokio::test]
+    async fn project_id_writeback_does_not_clobber_a_concurrent_refresh() {
+        // `stored` is a snapshot `project_id`'s caller took before
+        // `discover_project` ran, and that call can run for minutes on
+        // first-time onboarding. If a concurrent request refreshes the
+        // credential during that window, writing `stored` back verbatim
+        // (plus `project_id`) would silently discard the successful refresh
+        // by restoring the stale token pair — costing the operator a full
+        // re-login for a lost rotated refresh token. This pins the fix: the
+        // write must be based on a fresh re-read, not the stale snapshot.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1internal:loadCodeAssist"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"cloudaicompanionProject": "proj-discovered"})),
+            )
+            .mount(&server)
+            .await;
+
+        let path_buf = temp_auth_file("writeback_race");
+        // The stale snapshot `project_id` is called with, as if read at the
+        // very start of `get_valid` before `discover_project` began.
+        let stale_snapshot = StoredAuth {
+            access_token: "stale-access".to_string(),
+            refresh_token: "stale-refresh".to_string(),
+            expiry_date: Some(future_millis(3600)),
+            email: Some("a@example.com".to_string()),
+            project_id: None,
+        };
+        write(&path_buf, &stale_snapshot);
+
+        // Simulate a concurrent refresh landing on disk while discovery is
+        // still in flight against the stale snapshot above.
+        let refreshed = StoredAuth {
+            access_token: "fresh-access".to_string(),
+            refresh_token: "fresh-refresh".to_string(),
+            expiry_date: Some(future_millis(7200)),
+            email: Some("a@example.com".to_string()),
+            project_id: None,
+        };
+        write(&path_buf, &refreshed);
+
+        let store = store_at(path_buf.clone(), &server);
+        let project = store.project_id(&stale_snapshot).await.unwrap();
+        assert_eq!(project, "proj-discovered");
+
+        let written: StoredAuth =
+            serde_json::from_str(&fs::read_to_string(&path_buf).unwrap()).unwrap();
+        // The refreshed token pair must survive — not the stale snapshot's.
+        assert_eq!(written.access_token, "fresh-access");
+        assert_eq!(written.refresh_token, "fresh-refresh");
+        assert_eq!(written.project_id.as_deref(), Some("proj-discovered"));
+    }
+
+    #[tokio::test]
+    async fn project_id_writeback_skips_persistence_when_the_file_is_gone() {
+        // If the on-disk record disappeared between the stale snapshot and
+        // the writeback, resurrecting it from the stale snapshot could
+        // restore a credential a concurrent login or refresh has already
+        // superseded. The safe choice is to skip the persist — the caller
+        // still has a working access token and project id in hand, and the
+        // next request simply rediscovers.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1internal:loadCodeAssist"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"cloudaicompanionProject": "proj-discovered"})),
+            )
+            .mount(&server)
+            .await;
+
+        let path_buf = temp_auth_file("writeback_gone");
+        let stale_snapshot = StoredAuth {
+            access_token: "stale-access".to_string(),
+            refresh_token: "stale-refresh".to_string(),
+            expiry_date: Some(future_millis(3600)),
+            email: None,
+            project_id: None,
+        };
+        // Deliberately never written: the credential file does not exist.
+
+        let store = store_at(path_buf.clone(), &server);
+        let project = store.project_id(&stale_snapshot).await.unwrap();
+        assert_eq!(project, "proj-discovered");
+        assert!(
+            !path_buf.exists(),
+            "must not resurrect a credential file from the stale snapshot"
+        );
     }
 
     #[tokio::test]
