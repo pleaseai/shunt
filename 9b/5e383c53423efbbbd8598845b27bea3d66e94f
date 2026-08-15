@@ -1,0 +1,81 @@
+src/gateway/spend/tests.rs
+  s_465bd3ca72b0d8::t_c75deace8b5f1c 16,22-24,27-29,32,44-45,47-50,52-55,60,66-84,87
+  s_465bd3ca72b0d8::t_9e8fa2cf94321c 617,631-635,637-643,665-673
+src/admin/codex.rs
+  s_465bd3ca72b0d8::t_8b1d4a304e15aa 48-50,117-119,271-273
+  s_465bd3ca72b0d8::t_bdd8000d514f4c 25
+src/reload.rs
+  s_465bd3ca72b0d8::t_1a793eb354e2cf 148-150,152,154-155,158
+  s_465bd3ca72b0d8::t_cb32ba8833daf0 639-640,642,647-648,650,654,663,665,668
+src/config/admin_keys.rs
+  s_465bd3ca72b0d8::t_a8cebbb12372ba 1-271
+src/gateway/mod.rs
+  s_465bd3ca72b0d8::t_8d127c67ab1438 245-246,275
+src/gateway/spend/api.rs
+  s_465bd3ca72b0d8::t_cf1bb9033fb82e 14,75,152,248,264
+  s_465bd3ca72b0d8::t_482574f62bf841 305-312,316,319-320,323,325,327-334,339,341
+src/gateway/spend/persist/tests.rs
+  s_465bd3ca72b0d8::t_78706ed7efa9b9 53-55,57-67,70-73,115-117,123
+  s_465bd3ca72b0d8::t_9d8fb18f3c03d6 425-427
+src/config/secrets.rs
+  s_465bd3ca72b0d8::t_63600b63157859 234,236-237,255-257,284-324
+  s_4525c0381241ec::t_d1e2f852ed98e1 325
+src/gateway/spend/mod.rs
+  s_465bd3ca72b0d8::t_645a53631c4e74 1-6,11-14,17-33
+  s_4525c0381241ec::t_a0a7e88bf1948b 34
+src/config.rs
+  s_465bd3ca72b0d8::t_302b4a2c02c112 2579-2586
+  s_465bd3ca72b0d8::t_d26a4862b53aab 2898-2901,2905-2908
+  s_465bd3ca72b0d8::t_d5686cb6423d9f 3697
+  s_465bd3ca72b0d8::t_23a0eb11c98e82 3998-3999,4106-4107,4166-4167
+  s_465bd3ca72b0d8::t_9d250e7f10fd6e 2909,4911-4939,4941,4945-4946,4948-4955,4958-4961,4964-4983,4986,4989-4994,5001,5004,5006,5008-5012,5015-5017,5019-5034,5042-5044,5046-5047,5052,5056-5058,5069-5073,5075-5076,5081-5105,5109-5111,5113-5118,5122,5126-5127,5131-5163
+  s_465bd3ca72b0d8::t_d1a7f5813b492e 370-376,379-380,383-385,394-402
+  s_465bd3ca72b0d8::t_434304be81d7b5 3692-3694,5035-5041,5077-5080
+  s_465bd3ca72b0d8::t_ad86fe12cc2b6d 478-486,488,495,509,512-522,527-528,533-534
+  s_465bd3ca72b0d8::t_eb6f13bd3db5a3 14,19,22,29
+  s_465bd3ca72b0d8::t_818258d0c2c20c 2097-2100
+  s_465bd3ca72b0d8::t_738684f8d0d767 2437
+  s_465bd3ca72b0d8::t_cd0913b646f709 87-94,97-102
+  s_465bd3ca72b0d8::t_0a2b7db1e1b619 2166-2169,2171,2173-2185
+src/admin/mod.rs
+  s_465bd3ca72b0d8::t_6e8fe2ad0e0985 119-142,145-155,160-161,163-185,268
+  s_465bd3ca72b0d8::t_b446f671aef259 44,519
+  s_465bd3ca72b0d8::t_2865bd752aaf0a 63-64,66-67,78,86-88
+  s_465bd3ca72b0d8::t_32007794dcde53 6-7,9-14
+  s_465bd3ca72b0d8::t_434304be81d7b5 156-159,162
+  s_465bd3ca72b0d8::t_b3633088890054 235-237,244,248,256-258,262-267
+  s_465bd3ca72b0d8::t_8b1d4a304e15aa 89,1056-1058,1108-1110,1303-1305
+  s_465bd3ca72b0d8::t_2a2393b7dd74cd 90,269
+src/server.rs
+  s_465bd3ca72b0d8::t_1355289269caa6 238-246
+  s_465bd3ca72b0d8::t_f2da5bd9b85cf4 130
+  s_465bd3ca72b0d8::t_f578eefb2ea6ac 173-176
+tests/admin_surface.rs
+  s_465bd3ca72b0d8::t_23a0eb11c98e82 67-68
+src/config/spend.rs
+  s_465bd3ca72b0d8::t_b1bba80432d5f7 1-103
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "9b5e383c53423efbbbd8598845b27bea3d66e94f",
+  "prompts": {},
+  "sessions": {
+    "s_4525c0381241ec": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "00aa71c7-b395-4fe6-a728-d4fe71018e71",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_465bd3ca72b0d8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "66f88073-f7a8-4995-827e-48edf7ded210",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
