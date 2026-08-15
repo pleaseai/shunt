@@ -315,8 +315,6 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: Some(path.clone()),
-            admin: None,
-            enforcement: crate::config::GatewayEnforcementConfig::default(),
             oidc: None,
             session: None,
         });

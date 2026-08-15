@@ -50,38 +50,26 @@ fn capture_logs<T>(run: impl FnOnce() -> T) -> (T, String) {
     (result, logs)
 }
 
-fn app_state_with_path(
-    path: std::path::PathBuf,
-    secret_env: &str,
-    users_env: &str,
-    write_env: &str,
-    read_env: &str,
-) -> AppState {
+/// `[server.admin]` + `[server.spend]` with no `[server.gateway]`: spend
+/// persistence is configured from `[server.spend].state_path` alone.
+fn app_state_with_path(path: std::path::PathBuf, tokens_env: &str) -> AppState {
     let mut config = crate::config::Config::default();
-    config.server.gateway = Some(crate::config::GatewayConfig {
-        public_url: "https://gateway.example".into(),
-        jwt_secret_env: Some(secret_env.to_string()),
-        users_env: users_env.to_string(),
-        token_ttl_seconds: Some(3600),
-        trust_forwarded_for: false,
-        policies: None,
-        telemetry: None,
-        state_path: None,
-        admin: Some(crate::config::GatewayAdminConfig {
-            write_keys_env: write_env.to_string(),
-            read_keys_env: read_env.to_string(),
-            blocked_message: None,
-            audit_retention_days: 365,
-            spend_retention_months: 13,
-            identity_retention_days: 90,
-            group_limit_mode: crate::config::GroupLimitMode::Min,
-            state_path: Some(path),
-            write_keys: Vec::new(),
-            read_keys: Vec::new(),
-        }),
-        enforcement: crate::config::GatewayEnforcementConfig::default(),
+    config.server.admin = Some(crate::config::AdminConfig {
+        header: "x-shunt-admin-token".into(),
+        tokens_env: tokens_env.to_string(),
+        tokens_file: None,
+        write_keys: vec![crate::config::AdminKey {
+            id: "writer".into(),
+            key: "write-key-0123456789abcdef0123456789".into(),
+        }],
+        read_keys: Vec::new(),
+        session_ttl_secs: 3600,
+        pending_ttl_secs: 600,
         oidc: None,
-        session: None,
+    });
+    config.server.spend = Some(crate::config::SpendConfig {
+        state_path: Some(path),
+        ..crate::config::SpendConfig::default()
     });
     crate::server::AppState::new(config, reqwest::Client::new()).expect("build app state")
 }
@@ -124,22 +112,15 @@ fn app_state_restore_populates_the_process_lifetime_store() {
     );
     save_snapshot(&path, &source.export()).expect("save state");
 
-    let suffix = format!("{}_restore", std::process::id());
-    let secret_env = format!("SHUNT_SPEND_RESTORE_SECRET_{suffix}");
-    let users_env = format!("SHUNT_SPEND_RESTORE_USERS_{suffix}");
-    let write_env = format!("SHUNT_SPEND_RESTORE_WRITE_{suffix}");
-    let read_env = format!("SHUNT_SPEND_RESTORE_READ_{suffix}");
-    std::env::set_var(&secret_env, "0123456789abcdef0123456789abcdef");
-    std::env::set_var(&users_env, "dev@example.com:password");
-    let state = app_state_with_path(path.clone(), &secret_env, &users_env, &write_env, &read_env);
+    let tokens_env = format!("SHUNT_SPEND_RESTORE_TOKENS_{}", std::process::id());
+    std::env::remove_var(&tokens_env);
+    let state = app_state_with_path(path.clone(), &tokens_env);
     let runtime = tokio::runtime::Runtime::new().expect("build runtime");
     runtime.block_on(restore(&state)).expect("restore state");
 
     assert_eq!(state.gateway_stores.spend.get(&expected.id), Some(expected));
     assert_eq!(state.gateway_stores.spend.export().audit.len(), 1);
-    for env in [secret_env, users_env, write_env, read_env] {
-        std::env::remove_var(env);
-    }
+
     fs::remove_dir_all(path.parent().unwrap()).ok();
 }
 
@@ -441,14 +422,9 @@ fn restore_tolerates_and_round_trips_unknown_audit_snapshots() {
     )
     .unwrap();
 
-    let suffix = format!("{}_unknown_audit", std::process::id());
-    let secret_env = format!("SHUNT_SPEND_RESTORE_SECRET_{suffix}");
-    let users_env = format!("SHUNT_SPEND_RESTORE_USERS_{suffix}");
-    let write_env = format!("SHUNT_SPEND_RESTORE_WRITE_{suffix}");
-    let read_env = format!("SHUNT_SPEND_RESTORE_READ_{suffix}");
-    std::env::set_var(&secret_env, "0123456789abcdef0123456789abcdef");
-    std::env::set_var(&users_env, "dev@example.com:password");
-    let state = app_state_with_path(path.clone(), &secret_env, &users_env, &write_env, &read_env);
+    let tokens_env = format!("SHUNT_SPEND_RESTORE_TOKENS_{}_audit", std::process::id());
+    std::env::remove_var(&tokens_env);
+    let state = app_state_with_path(path.clone(), &tokens_env);
 
     let runtime = tokio::runtime::Runtime::new().expect("build runtime");
     runtime
@@ -461,9 +437,6 @@ fn restore_tolerates_and_round_trips_unknown_audit_snapshots() {
         .expect("saved audit state remains loadable")
         .expect("state exists");
 
-    for env in [secret_env, users_env, write_env, read_env] {
-        std::env::remove_var(env);
-    }
     fs::remove_dir_all(path.parent().unwrap()).ok();
 }
 

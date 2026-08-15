@@ -64,6 +64,8 @@ fn admin_config(tokens_env: &str) -> Config {
         header: "x-shunt-admin-token".to_string(),
         tokens_env: tokens_env.to_string(),
         tokens_file: None,
+        write_keys: Vec::new(),
+        read_keys: Vec::new(),
         session_ttl_secs: 3600,
         pending_ttl_secs: 600,
         oidc: None,

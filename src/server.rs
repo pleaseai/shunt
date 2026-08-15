@@ -127,9 +127,7 @@ impl AppState {
 fn spend_state_path(config: &Config) -> Option<std::path::PathBuf> {
     config
         .server
-        .gateway
-        .as_ref()?
-        .admin
+        .spend
         .as_ref()?
         .state_path()
         .map(ToOwned::to_owned)
@@ -172,11 +170,10 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     // Gateway-login routes are likewise fixed at boot; signing/user edits are
     // re-resolved through `gateway_auth`, while toggling requires a restart.
     let gateway_enabled = config.server.gateway.is_some();
-    let spend_admin_enabled = config
-        .server
-        .gateway
-        .as_ref()
-        .is_some_and(|gateway| gateway.admin.is_some());
+    // Spend-limit routes are registered from `[server.spend]` alone: they
+    // authenticate with the `[server.admin]` credential, so they do not need —
+    // and must not require — the gateway login surface.
+    let spend_enabled = config.server.spend.is_some();
     // The inbound Responses (Codex) routes are likewise registered once from the
     // initial config; a reload can only change the target provider, not add or
     // drop the routes.
@@ -238,7 +235,15 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     // Static client tokens are a separate alternative, and `/v1/models` keeps its
     // existing endpoint-specific authentication behavior.
     if gateway_enabled {
-        router = router.merge(gateway::gateway_router(spend_admin_enabled));
+        router = router.merge(gateway::gateway_router());
+    }
+
+    // Opt-in spend-limit admin API: registered only when `[server.spend]` is
+    // set, independently of the gateway surface. Validation guarantees
+    // `[server.admin]` is present, which is what its handlers authenticate
+    // against.
+    if spend_enabled {
+        router = router.merge(gateway::spend::spend_router());
     }
 
     // Opt-in inbound Responses (Codex) endpoint: registered only when

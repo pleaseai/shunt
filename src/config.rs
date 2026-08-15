@@ -11,18 +11,22 @@ use figment::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+mod admin_keys;
 mod http_tuning;
 mod presets;
 mod secrets;
 mod session;
+mod spend;
 mod upstreams;
 
+pub use admin_keys::{AdminAccess, AdminCredential, AdminKey, AdminKeyring};
 pub use http_tuning::{
     AccessControlConfig, LimitsConfig, RateLimitConfig, RateLimitsConfig, TimeoutsConfig,
 };
 pub use presets::{provider_presets, ProviderPresetView};
 pub use secrets::Secret;
 pub use session::GatewaySessionConfig;
+pub use spend::{GroupLimitMode, SpendConfig, SpendEnforcementConfig};
 pub use upstreams::{AccountSelection, AuthMap, UpstreamAuth, UpstreamConfig};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -80,8 +84,22 @@ pub struct ServerConfig {
     /// Optional opt-in admin web surface (M9). Absent ⇒ no admin routes are
     /// registered at all (today's HTTP surface unchanged). See
     /// `docs/m9-admin-surface.md`.
+    ///
+    /// INVARIANT: this must stay behind an `Option` that is skipped when
+    /// `None`. `AdminConfig` carries `Secret` key material
+    /// (`[[server.admin.write_keys]]`/`read_keys`), and `Secret` serializes as
+    /// the literal string `[redacted]`; a section unconditionally present in
+    /// `Config::default()` is round-tripped through `Serialized::defaults` in
+    /// [`Config::load`], so figment would re-extract `[redacted]` as the
+    /// operator's real key. See `config/secrets.rs`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admin: Option<AdminConfig>,
+    /// Optional spend-limit policy (`[server.spend]`). Absent ⇒ the spend-limit
+    /// routes are not registered. Requires `[server.admin]`, whose credentials
+    /// authenticate them — deliberately independent of `[server.gateway]`, so a
+    /// deployment that never serves gateway login can still run spend limits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spend: Option<SpendConfig>,
     /// Optional OAuth device-flow login and per-user managed-policy surface for
     /// Claude apps. Absent ⇒ discovery, device approval, token, and managed
     /// settings routes are not registered. Secrets, static users, and policies
@@ -349,17 +367,22 @@ impl InboundAuthConfig {
 }
 
 /// `[server.admin]` — opt-in admin web surface (M9). A **separate** credential
-/// from `[server.auth]`: client tokens are handed to devices, admin tokens add
-/// upstream accounts. Tokens live in the environment as `name:token` pairs
-/// (`SHUNT_ADMIN_TOKENS="ops:3f9c…"`), reusing the inbound-auth format and
-/// constant-time compare. Absent ⇒ no admin routes exist. See
-/// `docs/m9-admin-surface.md`.
+/// from `[server.auth]`: client tokens are handed to devices, admin credentials
+/// add upstream accounts and administer spend limits. Tokens live in the
+/// environment as `name:token` pairs (`SHUNT_ADMIN_TOKENS="ops:3f9c…"`),
+/// reusing the inbound-auth format and constant-time compare;
+/// `[[server.admin.write_keys]]` / `[[server.admin.read_keys]]` add
+/// per-credential ids and a read-only tier. Absent ⇒ no admin routes exist.
+/// See `docs/m9-admin-surface.md`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AdminConfig {
-    /// Header carrying the admin token for API/curl calls.
+    /// Header carrying the admin credential for API/curl calls. `x-api-key` is
+    /// accepted alongside it on the admin and spend routers.
     #[serde(default = "default_admin_header")]
     pub header: String,
-    /// Env var holding the `name:token` admin pairs.
+    /// Env var holding the `name:token` admin pairs. Retained for
+    /// compatibility; these are the write tier (full access is read plus
+    /// write). New deployments should prefer the key arrays below.
     #[serde(default = "default_admin_tokens_env")]
     pub tokens_env: String,
     /// Optional file holding `name:token` admin pairs, as an alternative to the
@@ -368,6 +391,15 @@ pub struct AdminConfig {
     /// per line (or comma-separated). `tokens_env`, when non-empty, wins.
     #[serde(default, deserialize_with = "deserialize_optional_credentials_path")]
     pub tokens_file: Option<String>,
+    /// Full-access keys: read plus write, the same tier as `tokens_env`.
+    /// Each key must be supplied by a `${VAR}` / `${file:}` reference or a
+    /// `SHUNT_*` override — a literal in the config file is rejected at load.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub write_keys: Vec<AdminKey>,
+    /// Read-only keys: they pass every GET on the admin and spend surfaces and
+    /// are refused on every mutation, including the browser login form.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub read_keys: Vec<AdminKey>,
     /// Browser session lifetime after login.
     #[serde(default = "default_admin_session_ttl_secs")]
     pub session_ttl_secs: u64,
@@ -443,17 +475,24 @@ fn default_admin_pending_ttl_secs() -> u64 {
 }
 
 impl AdminConfig {
-    /// Resolve the configured admin tokens from the environment into the runtime
-    /// admin-auth state. Fails closed exactly like [`InboundAuthConfig::resolve`]:
-    /// a present `[server.admin]` with an unset/empty/malformed env var is a
-    /// startup error, never a silently-open admin surface.
+    /// Resolve the configured admin credentials into the runtime admin-auth
+    /// state. Fails closed exactly like [`InboundAuthConfig::resolve`]: a
+    /// present `[server.admin]` whose three credential sources
+    /// (`tokens_env`/`tokens_file`, `write_keys`, `read_keys`) are *all* empty
+    /// is a startup error, never a silently-open admin surface. An array-only
+    /// deployment, with `tokens_env` unset, boots.
+    ///
+    /// `Config::validate` reaches every check here through this method, so the
+    /// pure array shape checks run on the validation path too.
     pub fn resolve(&self) -> Result<crate::admin::AdminAuth, ConfigError> {
+        admin_keys::validate_key_arrays(&self.write_keys, &self.read_keys)?;
         let header = axum::http::HeaderName::from_bytes(self.header.as_bytes()).map_err(|_| {
             ConfigError::InvalidAdminHeader {
                 header: self.header.clone(),
             }
         })?;
         let mut raw = std::env::var(&self.tokens_env).unwrap_or_default();
+        let mut source = self.tokens_env.clone();
         // The env var wins; fall back to the token file only when it is unset or
         // empty, so an explicit export always overrides the on-disk secret.
         if raw.trim().is_empty() {
@@ -467,24 +506,32 @@ impl AdminConfig {
                 // `parse_tokens` splits on commas; normalise newlines so a
                 // one-pair-per-line file parses the same as a comma list.
                 raw = contents.replace(['\r', '\n'], ",");
+                source = path.clone();
             }
         }
-        if raw.trim().is_empty() {
+        let tokens = if raw.trim().is_empty() {
+            Vec::new()
+        } else {
+            crate::auth::inbound::parse_tokens(&raw).map_err(|message| {
+                ConfigError::InvalidAdminTokens {
+                    env: self.tokens_env.clone(),
+                    message,
+                }
+            })?
+        };
+        if tokens.is_empty() && self.write_keys.is_empty() && self.read_keys.is_empty() {
             return Err(ConfigError::MissingAdminTokens {
                 env: self.tokens_env.clone(),
             });
         }
-        let tokens = crate::auth::inbound::parse_tokens(&raw).map_err(|message| {
-            ConfigError::InvalidAdminTokens {
-                env: self.tokens_env.clone(),
-                message,
-            }
-        })?;
+        admin_keys::check_key_uniqueness(&tokens, &self.write_keys, &self.read_keys)?;
+        admin_keys::warn_short_tokens(&tokens, &source);
         let mut auth = crate::admin::AdminAuth::new(
             crate::auth::inbound::InboundAuth::new(header, tokens),
             std::time::Duration::from_secs(self.session_ttl_secs),
             std::time::Duration::from_secs(self.pending_ttl_secs),
-        );
+        )
+        .with_keyring(AdminKeyring::new(&self.write_keys, &self.read_keys));
         if let Some(oidc) = &self.oidc {
             let public_url = resolve_public_origin(&oidc.public_url, |message| {
                 ConfigError::InvalidAdminOidc { message }
@@ -552,15 +599,6 @@ pub struct GatewayConfig {
     /// no home directory can be resolved the default is memory-only too.
     #[serde(default = "default_gateway_state_path")]
     pub state_path: Option<std::path::PathBuf>,
-    /// Optional spend-limit Admin API. This is separate from `[server.admin]`,
-    /// whose credentials provision upstream accounts and never authenticate the
-    /// spend-limit API.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub admin: Option<GatewayAdminConfig>,
-    /// Spend-limit enforcement policy. Stage 1 accepts this configuration but
-    /// does not yet enforce limits on inference requests.
-    #[serde(default)]
-    pub enforcement: GatewayEnforcementConfig,
     /// Optional external identity provider for browser approval.
     #[serde(default)]
     pub oidc: Option<GatewayOidcConfig>,
@@ -590,165 +628,6 @@ pub struct GatewayPolicyMatch {
 pub struct GatewayTelemetryConfig {
     #[serde(default)]
     pub forward_to: Vec<GatewayTelemetryDestination>,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum GroupLimitMode {
-    #[default]
-    Min,
-    Max,
-}
-
-/// `[server.gateway.admin]` enables spend-limit CRUD. Stage 1 deserializes the
-/// retention fields without range validation and validates `group_limit_mode`
-/// against its enum, but does not yet run retention sweeps or resolve group limits.
-#[derive(Clone, Deserialize, Serialize)]
-pub struct GatewayAdminConfig {
-    #[serde(default = "default_gateway_admin_write_keys_env")]
-    pub write_keys_env: String,
-    #[serde(default = "default_gateway_admin_read_keys_env")]
-    pub read_keys_env: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub blocked_message: Option<String>,
-    #[serde(default = "default_audit_retention_days")]
-    pub audit_retention_days: u64,
-    #[serde(default = "default_spend_retention_months")]
-    pub spend_retention_months: u64,
-    #[serde(default = "default_identity_retention_days")]
-    pub identity_retention_days: u64,
-    #[serde(default)]
-    pub group_limit_mode: GroupLimitMode,
-    #[serde(default = "default_gateway_spend_state_path")]
-    pub state_path: Option<PathBuf>,
-    #[serde(skip)]
-    pub write_keys: Vec<(String, String)>,
-    #[serde(skip)]
-    pub read_keys: Vec<(String, String)>,
-}
-
-/// Hand-written so resolved key material cannot reach a log line, a panic
-/// message, or a `{:?}` of `Config`. Every other secret in this file is held as
-/// an env var *name* (`token_env`, `jwt_secret_env`, `tokens_env`); the
-/// spend-limit keys are the one place a resolved value is retained, because
-/// `authenticate` compares against it on each admin request, so the redaction
-/// has to be explicit here instead of implied by the surrounding convention.
-impl std::fmt::Debug for GatewayAdminConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("GatewayAdminConfig")
-            .field("write_keys_env", &self.write_keys_env)
-            .field("read_keys_env", &self.read_keys_env)
-            .field("blocked_message", &self.blocked_message)
-            .field("audit_retention_days", &self.audit_retention_days)
-            .field("spend_retention_months", &self.spend_retention_months)
-            .field("identity_retention_days", &self.identity_retention_days)
-            .field("group_limit_mode", &self.group_limit_mode)
-            .field("state_path", &self.state_path)
-            .field("write_keys", &redacted_key_ids(&self.write_keys))
-            .field("read_keys", &redacted_key_ids(&self.read_keys))
-            .finish()
-    }
-}
-
-/// Key ids are safe to show and are what the audit trail records
-/// (`admin-key:<id>`); the key values never are.
-fn redacted_key_ids(keys: &[(String, String)]) -> Vec<String> {
-    keys.iter()
-        .map(|(id, _)| format!("{id}:<redacted>"))
-        .collect()
-}
-
-impl GatewayAdminConfig {
-    pub fn state_path(&self) -> Option<&Path> {
-        self.state_path
-            .as_deref()
-            .filter(|path| !path.as_os_str().is_empty())
-    }
-
-    fn resolve_keys(&mut self) -> Result<(), ConfigError> {
-        self.write_keys = resolve_gateway_admin_keys(&self.write_keys_env, "write_keys_env")?;
-        self.read_keys = resolve_gateway_admin_keys(&self.read_keys_env, "read_keys_env")?;
-        let mut ids = HashSet::new();
-        let mut values = std::collections::HashMap::<&str, &str>::new();
-        for (id, value) in self.write_keys.iter().chain(&self.read_keys) {
-            if !ids.insert(id.clone()) {
-                return Err(ConfigError::DuplicateGatewayAdminKeyId { id: id.clone() });
-            }
-            if let Some(first_id) = values.insert(value, id) {
-                return Err(ConfigError::DuplicateGatewayAdminKeyValue {
-                    first_id: first_id.to_string(),
-                    second_id: id.clone(),
-                });
-            }
-        }
-        if self.write_keys.is_empty() && self.read_keys.is_empty() {
-            tracing::warn!(
-                write_keys_env = %self.write_keys_env,
-                read_keys_env = %self.read_keys_env,
-                "[server.gateway.admin] resolved zero API keys; all spend-limit requests will be unauthorized"
-            );
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-pub struct GatewayEnforcementConfig {
-    #[serde(default)]
-    pub fail_closed_on_error: bool,
-}
-
-fn resolve_gateway_admin_keys(
-    env: &str,
-    key: &'static str,
-) -> Result<Vec<(String, String)>, ConfigError> {
-    let raw = std::env::var(env).unwrap_or_default();
-    if raw.trim().is_empty() {
-        return Ok(Vec::new());
-    }
-    let pairs = crate::auth::inbound::parse_tokens(&raw).map_err(|message| {
-        ConfigError::InvalidGatewayAdminKeys {
-            key,
-            env: env.to_string(),
-            message,
-        }
-    })?;
-    if let Some((id, _)) = pairs.iter().find(|(_, value)| value.len() < 32) {
-        return Err(ConfigError::ShortGatewayAdminKey {
-            key,
-            env: env.to_string(),
-            id: id.clone(),
-        });
-    }
-    Ok(pairs)
-}
-
-fn default_gateway_admin_write_keys_env() -> String {
-    "SHUNT_GATEWAY_ADMIN_WRITE_KEYS".to_string()
-}
-
-fn default_gateway_admin_read_keys_env() -> String {
-    "SHUNT_GATEWAY_ADMIN_READ_KEYS".to_string()
-}
-
-fn default_audit_retention_days() -> u64 {
-    365
-}
-
-fn default_spend_retention_months() -> u64 {
-    13
-}
-
-fn default_identity_retention_days() -> u64 {
-    90
-}
-
-fn default_gateway_spend_state_path() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .filter(|home| !home.is_empty())
-        .or_else(|| std::env::var_os("USERPROFILE").filter(|home| !home.is_empty()))
-        .map(PathBuf::from)
-        .map(|home| home.join(".shunt").join("gateway-spend.json"))
 }
 
 /// One inbound-telemetry relay destination: a base OTLP/HTTP endpoint, the
@@ -2215,7 +2094,10 @@ pub enum ConfigError {
     InvalidAuthHeader { header: String },
     #[error("server.admin.header is not a valid header name: {header}")]
     InvalidAdminHeader { header: String },
-    #[error("[server.admin] is set but {env} is unset or empty; refusing to run open")]
+    #[error(
+        "[server.admin] is set but resolved no credentials ({env} is unset or empty and no \
+         write_keys/read_keys are configured); refusing to run open"
+    )]
     MissingAdminTokens { env: String },
     #[error("[server.admin] tokens_file {path} could not be read: {message}")]
     UnreadableAdminTokensFile { path: String, message: String },
@@ -2281,26 +2163,26 @@ pub enum ConfigError {
     InvalidGatewayPolicyEnv { index: usize },
     #[error("[server.gateway.telemetry].forward_to[{index}].url is invalid: {message}")]
     InvalidGatewayTelemetryUrl { index: usize, message: String },
-    #[error("[server.gateway.admin].{key} ({env}) is invalid: {message}")]
-    InvalidGatewayAdminKeys {
-        key: &'static str,
-        env: String,
-        message: String,
-    },
-    #[error("[server.gateway.admin].{key} ({env}) key {id:?} must be at least 32 characters")]
-    ShortGatewayAdminKey {
-        key: &'static str,
-        env: String,
-        id: String,
-    },
-    #[error("[server.gateway.admin] key id {id:?} is duplicated across read_keys_env and write_keys_env")]
-    DuplicateGatewayAdminKeyId { id: String },
+    #[error("[[server.admin.{field}]][{index}].id must be a non-empty name")]
+    BlankAdminKeyId { field: &'static str, index: usize },
+    #[error("[[server.admin.{field}]] key {id:?} must be at least 32 characters")]
+    ShortAdminKey { field: &'static str, id: String },
     #[error(
-        "[server.gateway.admin] key value is duplicated by ids {first_id:?} and {second_id:?} across read_keys_env and write_keys_env"
+        "[server.admin] credential id {id:?} is duplicated across tokens_env, write_keys, and read_keys"
     )]
-    DuplicateGatewayAdminKeyValue { first_id: String, second_id: String },
-    #[error("[server.gateway.enforcement].fail_closed_on_error = true requires [server.gateway.admin]; configure both keys or disable fail_closed_on_error")]
-    GatewayFailClosedRequiresAdmin,
+    DuplicateAdminKeyId { id: String },
+    #[error(
+        "[server.admin] credential value is duplicated by ids {first_id:?} and {second_id:?} across tokens_env, write_keys, and read_keys"
+    )]
+    DuplicateAdminKeyValue { first_id: String, second_id: String },
+    /// The key value is deliberately not echoed — it is an admin credential.
+    #[error(
+        "[{path}] holds an admin key written literally in the config file; supply it with \
+         ${{VAR}} or ${{file:}} (or a SHUNT_* override) so the key does not live in the file"
+    )]
+    LiteralAdminKey { path: String },
+    #[error("[server.spend] requires [server.admin]: the spend-limit API authenticates with the admin credential")]
+    SpendRequiresAdmin,
     /// The header value is deliberately not echoed — it is typically a
     /// collector API key.
     #[error(
@@ -2552,6 +2434,7 @@ impl Default for Config {
                 default_provider: "anthropic".to_string(),
                 auth: None,
                 admin: None,
+                spend: None,
                 gateway: None,
                 codex_endpoint: None,
                 usage: None,
@@ -2693,6 +2576,14 @@ impl Config {
             // passed through this pass, so they are never re-resolved.
             let format = ConfigFormat::from_path(path);
             let substituted = secrets::substitute(&raw, format)?;
+            // An admin key written literally in the file is rejected outright
+            // rather than warned about like the older `Secret` fields: the key
+            // arrays are new, so no deployment holds a literal there yet, and
+            // rejecting closes the path where an admin credential is committed
+            // to a config file. A value fed by `${VAR}`/`${file:}` lands in
+            // `resolved_values`, not `literals`, so only a real literal trips
+            // this. Env overrides never reach the file layer at all.
+            secrets::reject_literal_admin_keys(&substituted.literals)?;
             literal_values = substituted.literals;
             never_literal_values = substituted.resolved_values;
             // Probe only the file layer: serialized defaults always contain the
@@ -3004,10 +2895,17 @@ impl Config {
         if let Some(auth) = &self.server.auth {
             auth.resolve()?;
         }
-        // Fail closed at boot: [server.admin] without resolvable tokens would be
-        // an unauthenticated admin surface. Reject it rather than run open.
+        // Fail closed at boot: [server.admin] without resolvable credentials
+        // would be an unauthenticated admin surface. Reject it rather than run
+        // open. This also runs the admin key arrays' shape and cross-set
+        // uniqueness checks (see `AdminConfig::resolve`).
         if let Some(admin) = &self.server.admin {
             admin.resolve()?;
+        }
+        // `[server.spend]` authenticates with the admin credential, so it
+        // cannot be served without one.
+        if self.server.spend.is_some() && self.server.admin.is_none() {
+            return Err(ConfigError::SpendRequiresAdmin);
         }
         // Fail closed at boot: an unsandboxed Antigravity provider runs an
         // autonomous agent with shell access and no workspace boundary, as the
@@ -3032,12 +2930,6 @@ impl Config {
         // Fail closed at boot: a configured gateway must have a valid issuer,
         // sufficiently strong signing secret, and at least one approval path.
         if let Some(gateway) = &mut self.server.gateway {
-            if gateway.enforcement.fail_closed_on_error && gateway.admin.is_none() {
-                return Err(ConfigError::GatewayFailClosedRequiresAdmin);
-            }
-            if let Some(admin) = &mut gateway.admin {
-                admin.resolve_keys()?;
-            }
             gateway.resolve()?;
         }
         // [server.pool] thresholds are consumed unchecked by pool selection, so
@@ -3797,12 +3689,12 @@ mod tests {
 
     use super::{
         config_file_candidates, default_auth_header, host_is_chatgpt, identity_collisions,
-        AccountConfig, AdminConfig, AdminOidcConfig, AuthMode, CodexEndpointConfig, Config,
-        ConfigError, ConfigFormat, GatewayConfig, GatewayEnforcementConfig, GatewayOidcConfig,
-        GatewayPolicyConfig, GatewayPolicyMatch, GatewaySessionConfig, GatewayTelemetryConfig,
+        AccountConfig, AdminConfig, AdminKey, AdminOidcConfig, AuthMode, CodexEndpointConfig,
+        Config, ConfigError, ConfigFormat, GatewayConfig, GatewayOidcConfig, GatewayPolicyConfig,
+        GatewayPolicyMatch, GatewaySessionConfig, GatewayTelemetryConfig,
         GatewayTelemetryDestination, InboundAuthConfig, ModelConfig, OauthUsageConfig,
         OidcProviderConfig, PoolConfig, ProviderKind, ResponsesFlavor, RetryConfig, Secret,
-        StatusConfig, StatusSource, UsageEndpointConfig, CONFIG_ENV_LOCK,
+        SpendConfig, StatusConfig, StatusSource, UsageEndpointConfig, CONFIG_ENV_LOCK,
     };
 
     fn model_config(id: &str, upstream_model: Option<BTreeMap<String, String>>) -> ModelConfig {
@@ -4103,6 +3995,8 @@ mod tests {
             header: "x-shunt-admin-token".into(),
             tokens_env: tokens_env.clone(),
             tokens_file: None,
+            write_keys: Vec::new(),
+            read_keys: Vec::new(),
             session_ttl_secs: 3600,
             pending_ttl_secs: 600,
             oidc: Some(AdminOidcConfig {
@@ -4209,6 +4103,8 @@ mod tests {
             header: "x-shunt-admin-token".to_string(),
             tokens_env: "SHUNT_TEST_ADMIN_RESOLVE".to_string(),
             tokens_file: None,
+            write_keys: Vec::new(),
+            read_keys: Vec::new(),
             session_ttl_secs: 1800,
             pending_ttl_secs: 300,
             oidc: None,
@@ -4267,6 +4163,8 @@ mod tests {
             header: "x-shunt-admin-token".to_string(),
             tokens_env: env_name.to_string(),
             tokens_file: Some(token_path.to_string_lossy().into_owned()),
+            write_keys: Vec::new(),
+            read_keys: Vec::new(),
             session_ttl_secs: 1800,
             pending_ttl_secs: 300,
             oidc: None,
@@ -4969,8 +4867,6 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: None,
-            admin: None,
-            enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
             session: None,
         };
@@ -5012,130 +4908,154 @@ mod tests {
         std::env::remove_var(users_env);
     }
 
+    /// Build an `[server.admin]` with the given key arrays and a tokens env var
+    /// name the caller controls.
+    fn admin_config_with_keys(
+        tokens_env: &str,
+        write_keys: Vec<AdminKey>,
+        read_keys: Vec<AdminKey>,
+    ) -> AdminConfig {
+        AdminConfig {
+            header: "x-shunt-admin-token".to_string(),
+            tokens_env: tokens_env.to_string(),
+            tokens_file: None,
+            write_keys,
+            read_keys,
+            session_ttl_secs: 3600,
+            pending_ttl_secs: 600,
+            oidc: None,
+        }
+    }
+
+    fn admin_key(id: &str, key: &str) -> AdminKey {
+        AdminKey {
+            id: id.to_string(),
+            key: Secret::from(key),
+        }
+    }
+
+    const ADMIN_KEY_A: &str = "0123456789abcdef0123456789abcdef";
+    const ADMIN_KEY_B: &str = "fedcba9876543210fedcba9876543210";
+
     #[test]
-    fn gateway_admin_validation_rejects_short_duplicate_and_orphan_fail_closed() {
+    fn admin_key_arrays_reject_short_keys_blank_ids_and_cross_set_duplicates() {
         let _guard = CONFIG_ENV_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let suffix = format!("{}_spend_validation", std::process::id());
-        let secret_env = format!("SHUNT_TEST_SPEND_SECRET_{suffix}");
-        let users_env = format!("SHUNT_TEST_SPEND_USERS_{suffix}");
-        let write_env = format!("SHUNT_TEST_SPEND_WRITE_{suffix}");
-        let read_env = format!("SHUNT_TEST_SPEND_READ_{suffix}");
-        std::env::set_var(&secret_env, "0123456789abcdef0123456789abcdef");
-        std::env::set_var(&users_env, "dev@example.com:password");
-        std::env::set_var(&write_env, "writer:short");
-        std::env::set_var(&read_env, "reader:0123456789abcdef0123456789abcdef");
+        let tokens_env = format!("SHUNT_TEST_ADMIN_KEYS_{}", std::process::id());
+        std::env::set_var(&tokens_env, "ops:ops-token-0123456789abcdef01234567");
         let mut config = Config::default();
-        config.server.gateway = Some(GatewayConfig {
-            public_url: "https://gateway.example".into(),
-            jwt_secret_env: Some(secret_env.clone()),
-            users_env: users_env.clone(),
-            token_ttl_seconds: Some(3600),
-            trust_forwarded_for: false,
-            policies: None,
-            telemetry: None,
-            state_path: None,
-            admin: Some(super::GatewayAdminConfig {
-                write_keys_env: write_env.clone(),
-                read_keys_env: read_env.clone(),
-                blocked_message: None,
-                audit_retention_days: 365,
-                spend_retention_months: 13,
-                identity_retention_days: 90,
-                group_limit_mode: super::GroupLimitMode::Min,
-                state_path: None,
-                write_keys: Vec::new(),
-                read_keys: Vec::new(),
-            }),
-            enforcement: GatewayEnforcementConfig::default(),
-            oidc: None,
-            session: None,
-        });
+
+        // A key shorter than 32 characters is rejected on the arrays (the
+        // legacy `tokens_env` tier only warns — see the test below).
+        config.server.admin = Some(admin_config_with_keys(
+            &tokens_env,
+            vec![admin_key("terraform", "short")],
+            Vec::new(),
+        ));
         assert!(matches!(
             config.clone().validate(),
-            Err(ConfigError::ShortGatewayAdminKey { .. })
+            Err(ConfigError::ShortAdminKey {
+                field: "write_keys",
+                ..
+            })
         ));
 
-        let key = "0123456789abcdef0123456789abcdef";
-        std::env::set_var(&write_env, format!("duplicate:{key}"));
-        std::env::set_var(&read_env, format!("duplicate:{key}"));
+        // Every array entry needs a name to attribute audit records to.
+        config.server.admin = Some(admin_config_with_keys(
+            &tokens_env,
+            Vec::new(),
+            vec![admin_key("  ", ADMIN_KEY_A)],
+        ));
         assert!(matches!(
             config.clone().validate(),
-            Err(ConfigError::DuplicateGatewayAdminKeyId { .. })
+            Err(ConfigError::BlankAdminKeyId {
+                field: "read_keys",
+                index: 0
+            })
         ));
 
-        std::env::set_var(&write_env, format!("writer:{key}"));
-        std::env::set_var(&read_env, format!("reader:{key}"));
+        // Ids must be unique across all three sets, including the env tokens.
+        config.server.admin = Some(admin_config_with_keys(
+            &tokens_env,
+            vec![admin_key("ops", ADMIN_KEY_A)],
+            Vec::new(),
+        ));
+        assert!(matches!(
+            config.clone().validate(),
+            Err(ConfigError::DuplicateAdminKeyId { ref id }) if id == "ops"
+        ));
+
+        // So must values: the same key in two tiers makes privilege ambiguous.
+        config.server.admin = Some(admin_config_with_keys(
+            &tokens_env,
+            vec![admin_key("terraform", ADMIN_KEY_A)],
+            vec![admin_key("reporting", ADMIN_KEY_A)],
+        ));
         let error = config
             .clone()
             .validate()
             .expect_err("duplicate key values must fail validation");
         assert!(matches!(
             error,
-            ConfigError::DuplicateGatewayAdminKeyValue {
+            ConfigError::DuplicateAdminKeyValue {
                 ref first_id,
                 ref second_id,
-            } if first_id == "writer" && second_id == "reader"
+            } if first_id == "terraform" && second_id == "reporting"
         ));
-        assert!(!error.to_string().contains(key));
+        assert!(!error.to_string().contains(ADMIN_KEY_A));
 
-        std::env::set_var(&read_env, "reader:fedcba9876543210fedcba9876543210");
+        config.server.admin = Some(admin_config_with_keys(
+            &tokens_env,
+            vec![admin_key("terraform", ADMIN_KEY_A)],
+            vec![admin_key("reporting", ADMIN_KEY_B)],
+        ));
         config
-            .clone()
             .validate()
-            .expect("distinct key values across lists must validate");
-
-        let gateway = config.server.gateway.as_mut().unwrap();
-        gateway.admin = None;
-        gateway.enforcement.fail_closed_on_error = true;
-        assert!(matches!(
-            config.validate(),
-            Err(ConfigError::GatewayFailClosedRequiresAdmin)
-        ));
-        for env in [secret_env, users_env, write_env, read_env] {
-            std::env::remove_var(env);
-        }
+            .expect("distinct ids and values across all three sets validate");
+        std::env::remove_var(&tokens_env);
     }
 
     #[test]
-    fn gateway_admin_with_no_resolved_keys_warns_and_resolves_empty() {
+    fn admin_resolve_needs_only_the_key_arrays_and_fails_when_every_source_is_empty() {
         let _guard = CONFIG_ENV_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let suffix = format!("{}_spend_empty", std::process::id());
-        let secret_env = format!("SHUNT_TEST_SPEND_SECRET_{suffix}");
-        let users_env = format!("SHUNT_TEST_SPEND_USERS_{suffix}");
-        let write_env = format!("SHUNT_TEST_SPEND_WRITE_{suffix}");
-        let read_env = format!("SHUNT_TEST_SPEND_READ_{suffix}");
-        std::env::set_var(&secret_env, "0123456789abcdef0123456789abcdef");
-        std::env::set_var(&users_env, "dev@example.com:password");
-        let mut config = Config::default();
-        config.server.gateway = Some(GatewayConfig {
-            public_url: "https://gateway.example".into(),
-            jwt_secret_env: Some(secret_env.clone()),
-            users_env: users_env.clone(),
-            token_ttl_seconds: Some(3600),
-            trust_forwarded_for: false,
-            policies: None,
-            telemetry: None,
-            state_path: None,
-            admin: Some(super::GatewayAdminConfig {
-                write_keys_env: write_env.clone(),
-                read_keys_env: read_env.clone(),
-                blocked_message: None,
-                audit_retention_days: 365,
-                spend_retention_months: 13,
-                identity_retention_days: 90,
-                group_limit_mode: super::GroupLimitMode::Min,
-                state_path: None,
-                write_keys: Vec::new(),
-                read_keys: Vec::new(),
-            }),
-            enforcement: GatewayEnforcementConfig::default(),
-            oidc: None,
-            session: None,
-        });
+        let tokens_env = format!("SHUNT_TEST_ADMIN_ARRAY_ONLY_{}", std::process::id());
+        std::env::remove_var(&tokens_env);
+
+        // Array-only: `tokens_env` is unset and the surface still boots.
+        admin_config_with_keys(
+            &tokens_env,
+            vec![admin_key("terraform", ADMIN_KEY_A)],
+            vec![admin_key("reporting", ADMIN_KEY_B)],
+        )
+        .resolve()
+        .expect("write_keys/read_keys alone must resolve");
+        admin_config_with_keys(
+            &tokens_env,
+            Vec::new(),
+            vec![admin_key("reporting", ADMIN_KEY_B)],
+        )
+        .resolve()
+        .expect("read_keys alone must resolve");
+
+        // All three sources empty is still fail-closed: a present
+        // `[server.admin]` never yields an open surface.
+        assert!(matches!(
+            admin_config_with_keys(&tokens_env, Vec::new(), Vec::new()).resolve(),
+            Err(ConfigError::MissingAdminTokens { .. })
+        ));
+    }
+
+    #[test]
+    fn short_legacy_admin_token_warns_but_still_resolves() {
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let tokens_env = format!("SHUNT_TEST_ADMIN_SHORT_TOKEN_{}", std::process::id());
+        std::env::set_var(&tokens_env, "ops:short");
+        let admin = admin_config_with_keys(&tokens_env, Vec::new(), Vec::new());
 
         let output = Arc::new(Mutex::new(Vec::new()));
         let writer_output = Arc::clone(&output);
@@ -5146,68 +5066,101 @@ mod tests {
             .with_ansi(false)
             .without_time()
             .finish();
-        let validated =
-            tracing::subscriber::with_default(subscriber, || config.validate().unwrap());
+        tracing::subscriber::with_default(subscriber, || {
+            admin
+                .resolve()
+                .expect("a short legacy token must not fail startup");
+        });
         let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
-        let admin = validated.server.gateway.unwrap().admin.unwrap();
-        assert!(admin.write_keys.is_empty() && admin.read_keys.is_empty());
-        assert!(logs.contains("resolved zero API keys"), "{logs}");
-        assert!(logs.contains(&write_env), "{logs}");
-        assert!(logs.contains(&read_env), "{logs}");
+        assert!(logs.contains("shorter than 32 characters"), "{logs}");
+        assert!(logs.contains("ops"), "{logs}");
+        assert!(
+            !logs.contains("short\""),
+            "the token value must not be logged: {logs}"
+        );
+        std::env::remove_var(&tokens_env);
+    }
 
-        for env in [secret_env, users_env, write_env, read_env] {
-            std::env::remove_var(env);
-        }
+    #[test]
+    fn spend_section_requires_the_admin_section() {
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut config = Config::default();
+        config.server.spend = Some(SpendConfig::default());
+        assert!(matches!(
+            config.clone().validate(),
+            Err(ConfigError::SpendRequiresAdmin)
+        ));
+
+        let tokens_env = format!("SHUNT_TEST_SPEND_NEEDS_ADMIN_{}", std::process::id());
+        std::env::remove_var(&tokens_env);
+        config.server.admin = Some(admin_config_with_keys(
+            &tokens_env,
+            vec![admin_key("terraform", ADMIN_KEY_A)],
+            Vec::new(),
+        ));
+        config
+            .validate()
+            .expect("[server.spend] with [server.admin] validates");
     }
 
     /// `Config` derives `Debug`, and shunt's convention elsewhere is to keep only
-    /// env var *names* in it. The spend-limit admin block is the one place a
-    /// resolved secret is retained, so assert the redaction directly: a future
-    /// `#[derive(Debug)]` on `GatewayAdminConfig` would leak admin API keys into
-    /// any log line or panic message that formats the config.
+    /// env var *names* in it. The admin key arrays hold resolved key material,
+    /// so assert the redaction directly: without `Secret`, a `{:?}` of the
+    /// config would leak admin keys into any log line or panic message.
     #[test]
-    fn debug_formatting_redacts_resolved_admin_keys_but_keeps_ids() {
-        let secret = "0123456789abcdef0123456789abcdef";
-        let admin = super::GatewayAdminConfig {
-            write_keys_env: "WRITE_ENV".into(),
-            read_keys_env: "READ_ENV".into(),
-            blocked_message: None,
-            audit_retention_days: 365,
-            spend_retention_months: 13,
-            identity_retention_days: 90,
-            group_limit_mode: super::GroupLimitMode::Min,
-            state_path: None,
-            write_keys: vec![("terraform".into(), secret.into())],
-            read_keys: vec![("reporting".into(), secret.into())],
-        };
+    fn debug_formatting_redacts_admin_array_keys_but_keeps_ids() {
+        let admin = admin_config_with_keys(
+            "SHUNT_TEST_ADMIN_DEBUG",
+            vec![admin_key("terraform", ADMIN_KEY_A)],
+            vec![admin_key("reporting", ADMIN_KEY_B)],
+        );
 
         let rendered = format!("{admin:?}");
         assert!(
-            !rendered.contains(secret),
+            !rendered.contains(ADMIN_KEY_A) && !rendered.contains(ADMIN_KEY_B),
             "resolved key material leaked into Debug output: {rendered}"
         );
         // The ids must survive — they are what the audit trail attributes to.
-        assert!(rendered.contains("terraform:<redacted>"), "{rendered}");
-        assert!(rendered.contains("reporting:<redacted>"), "{rendered}");
-        assert!(rendered.contains("WRITE_ENV"), "{rendered}");
+        assert!(rendered.contains("terraform"), "{rendered}");
+        assert!(rendered.contains("reporting"), "{rendered}");
 
         // And the same must hold when it is nested inside a whole `Config`.
         let mut config = Config::default();
-        config.server.gateway = Some(GatewayConfig {
-            public_url: "https://gateway.example".into(),
-            jwt_secret_env: Some("SECRET_ENV".into()),
-            users_env: "USERS_ENV".into(),
-            token_ttl_seconds: Some(3600),
-            trust_forwarded_for: false,
-            policies: None,
-            telemetry: None,
-            state_path: None,
-            admin: Some(admin),
-            enforcement: GatewayEnforcementConfig::default(),
-            oidc: None,
-            session: None,
-        });
-        assert!(!format!("{config:?}").contains(secret));
+        config.server.admin = Some(admin);
+        let rendered = format!("{config:?}");
+        assert!(!rendered.contains(ADMIN_KEY_A) && !rendered.contains(ADMIN_KEY_B));
+    }
+
+    /// `Config::load` seeds figment with `Serialized::defaults(Config::default())`,
+    /// and `Secret` serializes as the literal `[redacted]`. `[server.admin]` now
+    /// carries `Secret` key material, so it must stay behind an `Option` that is
+    /// skipped when `None` — hoisting it would make figment re-extract
+    /// `[redacted]` as the operator's real key. Pins both halves: the default
+    /// omits the section entirely, and the section really does render
+    /// `[redacted]` when present.
+    #[test]
+    fn admin_section_is_omitted_from_serialized_defaults_so_secrets_never_round_trip() {
+        let defaults = serde_json::to_value(Config::default()).expect("serialize defaults");
+        assert!(
+            defaults["server"].get("admin").is_none(),
+            "[server.admin] must not be serialized into the figment defaults: {defaults}"
+        );
+
+        let mut config = Config::default();
+        config.server.admin = Some(admin_config_with_keys(
+            "SHUNT_TEST_ADMIN_ROUNDTRIP",
+            vec![admin_key("terraform", ADMIN_KEY_A)],
+            Vec::new(),
+        ));
+        let serialized = serde_json::to_value(&config).expect("serialize config");
+        assert_eq!(
+            serialized["server"]["admin"]["write_keys"][0]["key"],
+            serde_json::json!("[redacted]"),
+            "this is exactly what would be re-extracted as the real key if the \
+             section were unconditionally present"
+        );
     }
 
     #[test]
@@ -5221,8 +5174,6 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: None,
-            admin: None,
-            enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
             session: None,
         };
@@ -5335,8 +5286,6 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: None,
-            admin: None,
-            enforcement: GatewayEnforcementConfig::default(),
             oidc: Some(GatewayOidcConfig {
                 client_secret_env: oidc_env.clone(),
                 provider: OidcProviderConfig {
@@ -5376,8 +5325,6 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: None,
-            admin: None,
-            enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
             session: None,
         };
@@ -5495,8 +5442,6 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: None,
-            admin: None,
-            enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
             session: Some(GatewaySessionConfig {
                 jwt_secret: vec![Secret::from("0123456789abcdef0123456789abcdef")],
@@ -5520,8 +5465,6 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: None,
-            admin: None,
-            enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
             session: Some(GatewaySessionConfig {
                 jwt_secret: vec![Secret::from("0123456789abcdef0123456789abcdef")],
@@ -5585,8 +5528,6 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: None,
-            admin: None,
-            enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
             session: Some(GatewaySessionConfig {
                 jwt_secret: vec![Secret::from("too-short")],
@@ -5610,8 +5551,6 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: None,
-            admin: None,
-            enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
             session: Some(GatewaySessionConfig {
                 jwt_secret: vec![
@@ -5638,8 +5577,6 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: None,
-            admin: None,
-            enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
             session: Some(GatewaySessionConfig {
                 jwt_secret: vec![],
@@ -5663,8 +5600,6 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: None,
-            admin: None,
-            enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
             session: Some(GatewaySessionConfig {
                 jwt_secret: vec![Secret::from("0123456789abcdef0123456789abcdef")],
@@ -5688,8 +5623,6 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: None,
-            admin: None,
-            enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
             session: Some(GatewaySessionConfig {
                 jwt_secret: vec![Secret::from("0123456789abcdef0123456789abcdef")],
@@ -5713,8 +5646,6 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: None,
-            admin: None,
-            enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
             session: Some(GatewaySessionConfig {
                 jwt_secret: vec![Secret::from("0123456789abcdef0123456789abcdef")],
@@ -5735,8 +5666,6 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: None,
-            admin: None,
-            enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
             session: None,
         };

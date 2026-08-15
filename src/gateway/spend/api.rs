@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use super::store::{
     canonical_amount, validate_scope, Period, Scope, SpendLimit, MAX_AMOUNT, MAX_USER_ID_LENGTH,
 };
-use crate::{auth::inbound::constant_time_eq, server::AppState};
+use crate::{config::AdminAccess, server::AppState};
 
 #[derive(Debug, Deserialize)]
 pub struct ListQuery {
@@ -65,12 +65,6 @@ struct ErrorDetail {
     message: String,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Access {
-    Read,
-    Write,
-}
-
 pub async fn list(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -78,7 +72,7 @@ pub async fn list(
 ) -> Response {
     let request_id = request_id();
     let state = state.refreshed();
-    if let Err(response) = authenticate(&state, &headers, Access::Read, &request_id) {
+    if let Err(response) = authenticate(&state, &headers, AdminAccess::Read, &request_id) {
         return *response;
     }
     let Query(query) = match query {
@@ -155,7 +149,7 @@ pub async fn list(
 pub async fn create(State(state): State<AppState>, request: Request) -> Response {
     let request_id = request_id();
     let state = state.refreshed();
-    let actor = match authenticate(&state, request.headers(), Access::Write, &request_id) {
+    let actor = match authenticate(&state, request.headers(), AdminAccess::Write, &request_id) {
         Ok(actor) => actor,
         Err(response) => return *response,
     };
@@ -251,7 +245,7 @@ pub async fn get_by_id(
 ) -> Response {
     let request_id = request_id();
     let state = state.refreshed();
-    if let Err(response) = authenticate(&state, &headers, Access::Read, &request_id) {
+    if let Err(response) = authenticate(&state, &headers, AdminAccess::Read, &request_id) {
         return *response;
     }
     match state.gateway_stores.spend.get(&id) {
@@ -267,7 +261,7 @@ pub async fn delete_by_id(
 ) -> Response {
     let request_id = request_id();
     let state = state.refreshed();
-    let actor = match authenticate(&state, &headers, Access::Write, &request_id) {
+    let actor = match authenticate(&state, &headers, AdminAccess::Write, &request_id) {
         Ok(actor) => actor,
         Err(response) => return *response,
     };
@@ -308,55 +302,43 @@ pub async fn method_not_allowed() -> Response {
     )
 }
 
+/// Authenticate against the `[server.admin]` credential and enforce
+/// `required_access`, returning the audit actor for the caller to record.
+///
+/// The credential is accepted in either the configured admin header or
+/// `x-api-key` (see [`crate::admin::AdminAuth::authenticate_credential`]), and
+/// its privilege is the maximum over every set it matched. `required_access` is
+/// enforced as a comparison — `write` implies `read` — rather than an equality
+/// test, so a write credential passes a read route.
 fn authenticate(
     state: &AppState,
     headers: &HeaderMap,
-    required_access: Access,
+    required_access: AdminAccess,
     request_id: &str,
 ) -> Result<String, Box<Response>> {
-    let Some(admin) = state
-        .config
-        .server
-        .gateway
-        .as_ref()
-        .and_then(|gateway| gateway.admin.as_ref())
-    else {
-        return Err(Box::new(error(
+    let unauthorized = || {
+        Box::new(error(
             StatusCode::UNAUTHORIZED,
             "authentication_error",
-            "invalid x-api-key",
+            "invalid admin credential: expected the configured [server.admin] header or x-api-key",
             request_id.to_string(),
-        )));
+        ))
     };
-    let presented = headers.get("x-api-key").map(|value| value.as_bytes());
-    let mut matched: Option<(Access, &str)> = None;
-    if let Some(presented) = presented {
-        for (id, key) in &admin.read_keys {
-            if constant_time_eq(presented, key.as_bytes()) {
-                matched = Some((Access::Read, id));
-            }
-        }
-        for (id, key) in &admin.write_keys {
-            if constant_time_eq(presented, key.as_bytes()) {
-                matched = Some((Access::Write, id));
-            }
-        }
-    }
-    match matched {
-        Some((Access::Read, _)) if required_access == Access::Write => Err(Box::new(error(
+    let Some(admin) = state.admin_auth.as_ref() else {
+        return Err(unauthorized());
+    };
+    let Some(credential) = admin.authenticate_credential(headers) else {
+        return Err(unauthorized());
+    };
+    if credential.access < required_access {
+        return Err(Box::new(error(
             StatusCode::FORBIDDEN,
             "permission_error",
             "read-only admin key cannot mutate spend limits",
             request_id.to_string(),
-        ))),
-        Some((_, id)) => Ok(format!("admin-key:{id}")),
-        None => Err(Box::new(error(
-            StatusCode::UNAUTHORIZED,
-            "authentication_error",
-            "invalid x-api-key",
-            request_id.to_string(),
-        ))),
+        )));
     }
+    Ok(credential.actor)
 }
 
 fn paginate(mut limits: Vec<SpendLimit>, query: &ListQuery) -> Result<ListResponse, String> {

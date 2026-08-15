@@ -22,6 +22,7 @@ use crate::{
 use super::{
     authenticate, bad_gateway, bad_request, check_csrf, cleanup_reprovisioned_pool_health,
     forget_pool_health_if_absent, internal, json_secure, remaining_account_identities,
+    require_write,
     session::{PendingAttempt, PendingKind},
     too_many_requests, unauthorized,
 };
@@ -44,6 +45,9 @@ pub(super) async fn add_codex_account(
     let Some(authok) = authenticate(&state, &headers) else {
         return unauthorized();
     };
+    if let Some(response) = require_write(&authok) {
+        return response;
+    }
     if let Some(response) = check_csrf(&authok.kind, &headers) {
         return response;
     }
@@ -110,6 +114,9 @@ pub(super) async fn complete_codex_account(
     let Some(authok) = authenticate(&state, &headers) else {
         return unauthorized();
     };
+    if let Some(response) = require_write(&authok) {
+        return response;
+    }
     if let Some(response) = check_csrf(&authok.kind, &headers) {
         return response;
     }
@@ -261,6 +268,9 @@ pub(super) async fn remove_codex_account_handler(
     let Some(authok) = authenticate(&state, &headers) else {
         return unauthorized();
     };
+    if let Some(response) = require_write(&authok) {
+        return response;
+    }
     if let Some(response) = check_csrf(&authok.kind, &headers) {
         return response;
     }

@@ -3,9 +3,15 @@
 //! (see `crate::server::build_router`); absent ⇒ none of these routes exist.
 //!
 //! Two credentials never mix: `[server.auth]` client tokens are handed to devices,
-//! `[server.admin]` admin tokens add upstream accounts. Browsers authenticate with
+//! `[server.admin]` admin credentials add upstream accounts and administer spend
+//! limits. Browsers authenticate with
 //! a session cookie minted after a login form and are CSRF-protected; API/curl
-//! callers pass the admin token header and are CSRF-exempt (no ambient cookie).
+//! callers pass the admin credential in the configured header or `x-api-key` and
+//! are CSRF-exempt (no ambient cookie).
+//! An admin credential is either a `tokens_env`/`tokens_file` `name:token` pair
+//! or a `[[server.admin.write_keys]]`/`[[server.admin.read_keys]]` entry; the
+//! read tier passes every GET and is refused on every mutation, the login form
+//! included.
 //! The provisioning flow reuses provider OAuth internals for Claude full/setup
 //! logins and refreshable ChatGPT/Codex logins; token values are never returned
 //! to the browser or logged. See `docs/m9-admin-surface.md`.
@@ -35,7 +41,7 @@ use crate::{
         inbound::{constant_time_eq, InboundAuth},
         observation::{self, ObservedCredential, ObservedProvider},
     },
-    config::AuthMode,
+    config::{AdminAccess, AdminCredential, AdminKeyring, AuthMode},
     error::ShuntError,
     server::AppState,
 };
@@ -54,7 +60,11 @@ const SESSION_COOKIE: &str = "shunt_admin_session";
 /// `Debug` would risk leaking them (matches the secret-carrying `PendingLogin`).
 #[derive(Clone)]
 pub struct AdminAuth {
+    /// `tokens_env`/`tokens_file` pairs: the write tier, since full access is
+    /// read plus write.
     inbound: InboundAuth,
+    /// `[[server.admin.write_keys]]`/`[[server.admin.read_keys]]`.
+    keyring: AdminKeyring,
     session_ttl: Duration,
     pending_ttl: Duration,
     oidc: Option<Arc<crate::gateway::ResolvedIdp>>,
@@ -65,11 +75,17 @@ impl AdminAuth {
     pub fn new(inbound: InboundAuth, session_ttl: Duration, pending_ttl: Duration) -> Self {
         Self {
             inbound,
+            keyring: AdminKeyring::default(),
             session_ttl,
             pending_ttl,
             oidc: None,
             oidc_public_url: None,
         }
+    }
+
+    pub fn with_keyring(mut self, keyring: AdminKeyring) -> Self {
+        self.keyring = keyring;
+        self
     }
 
     pub fn with_oidc(mut self, public_url: String, idp: crate::gateway::ResolvedIdp) -> Self {
@@ -100,14 +116,73 @@ impl AdminAuth {
         self.pending_ttl
     }
 
-    /// Whether the request carries a valid admin token in the configured header.
-    fn authenticate_header(&self, headers: &HeaderMap) -> bool {
-        self.inbound.authenticate(headers).is_some()
+    /// The admin credential a request presents, or `None` when it presents
+    /// none that matches.
+    ///
+    /// Both the configured header (`x-shunt-admin-token` by default) and
+    /// `x-api-key` are accepted, so a dashboard client and an Admin-API-shaped
+    /// client both authenticate without a bespoke header. The merged
+    /// acceptance lives here rather than in [`InboundAuth`] on purpose:
+    /// `InboundAuth` also gates inference routes, where `x-api-key` is the
+    /// caller's *Anthropic* credential slot and must never authenticate an
+    /// admin credential.
+    ///
+    /// Privilege is the explicit maximum over every set that matched, so
+    /// scanning order cannot change it. Every slot is compared against every
+    /// set with no early exit.
+    pub(crate) fn authenticate_credential(&self, headers: &HeaderMap) -> Option<AdminCredential> {
+        let slots = [self.inbound.header().as_str(), "x-api-key"];
+        let mut matched: Option<AdminCredential> = None;
+        for slot in slots {
+            let Some(presented) = headers.get(slot).map(|value| value.as_bytes()) else {
+                continue;
+            };
+            matched = keep_higher(matched, self.authenticate_value(presented));
+        }
+        matched
     }
 
-    /// Whether a raw token (from the login form) matches a configured admin token.
-    fn authenticate_token(&self, token: &str) -> bool {
-        self.inbound.authenticate_value(token.as_bytes()).is_some()
+    /// The credential a raw presented value carries — the same maximum as
+    /// [`Self::authenticate_credential`], for values that did not come from a
+    /// header (the login form).
+    fn authenticate_value(&self, presented: &[u8]) -> Option<AdminCredential> {
+        let token = self
+            .inbound
+            .authenticate_value(presented)
+            .map(|name| AdminCredential {
+                access: AdminAccess::Write,
+                actor: format!("admin-token:{name}"),
+            });
+        let key = self
+            .keyring
+            .lookup(presented)
+            .map(|(access, id)| AdminCredential {
+                access,
+                actor: format!("admin-key:{id}"),
+            });
+        keep_higher(token, key)
+    }
+
+    /// Whether a raw token (from the login form) may mint a browser session.
+    /// Read-tier credentials may not: a session carries full access today, so
+    /// minting one from a read key would silently escalate it to write.
+    fn authenticate_login_token(&self, token: &str) -> bool {
+        self.authenticate_value(token.as_bytes())
+            .is_some_and(|credential| credential.access >= AdminAccess::Write)
+    }
+}
+
+/// Keep whichever of two candidate credentials carries the higher privilege.
+/// `AdminCredential` orders by `access` first, so this is an explicit maximum;
+/// the `actor` tie-break is unreachable because a value is unique across every
+/// credential set (`config::admin_keys::check_key_uniqueness`).
+fn keep_higher(
+    current: Option<AdminCredential>,
+    candidate: Option<AdminCredential>,
+) -> Option<AdminCredential> {
+    match (current, candidate) {
+        (Some(current), Some(candidate)) => Some(std::cmp::max(current, candidate)),
+        (current, candidate) => current.or(candidate),
     }
 }
 
@@ -157,16 +232,20 @@ pub(super) enum Authenticated {
 pub(super) struct AuthOk {
     pub(super) kind: Authenticated,
     pub(super) auth: Arc<AdminAuth>,
+    /// The privilege the request authenticated with. GET routes need only
+    /// `Read`; every mutation goes through [`require_write`].
+    pub(super) access: AdminAccess,
 }
 
 /// Resolve the request's admin authentication, or `None` when unauthenticated (or
 /// the admin surface has been disabled by a reload).
 pub(super) fn authenticate(state: &AppState, headers: &HeaderMap) -> Option<AuthOk> {
     let auth = state.admin_auth.clone()?;
-    if auth.authenticate_header(headers) {
+    if let Some(credential) = auth.authenticate_credential(headers) {
         return Some(AuthOk {
             kind: Authenticated::Header,
             auth,
+            access: credential.access,
         });
     }
     let sid = session_cookie(headers)?;
@@ -174,7 +253,18 @@ pub(super) fn authenticate(state: &AppState, headers: &HeaderMap) -> Option<Auth
     Some(AuthOk {
         kind: Authenticated::Session { csrf },
         auth,
+        // A session can only be minted by a write-tier credential or OIDC
+        // (`login_submit`, `oidc::callback`), so it carries full access.
+        access: AdminAccess::Write,
     })
+}
+
+/// Refuse a read-only credential on a mutating admin route. Returns the
+/// rejection response when the check fails, or `None` when the request may
+/// proceed — the same shape as [`check_csrf`], and called alongside it.
+pub(super) fn require_write(authok: &AuthOk) -> Option<Response> {
+    (authok.access < AdminAccess::Write)
+        .then(|| forbidden("read-only admin credential cannot perform this action"))
 }
 
 /// Enforce CSRF on cookie-authenticated mutations: a same-origin request bearing
@@ -426,7 +516,7 @@ async fn login_submit(
         Ok(Form(form)) => form.token,
         Err(_) => String::new(),
     };
-    if !auth.authenticate_token(&token) {
+    if !auth.authenticate_login_token(&token) {
         return login_response(
             StatusCode::UNAUTHORIZED,
             Some("Invalid admin token."),
@@ -963,6 +1053,9 @@ async fn add_account(
     let Some(authok) = authenticate(&state, &headers) else {
         return unauthorized();
     };
+    if let Some(response) = require_write(&authok) {
+        return response;
+    }
     if let Some(response) = check_csrf(&authok.kind, &headers) {
         return response;
     }
@@ -1012,6 +1105,9 @@ async fn complete_account(
     let Some(authok) = authenticate(&state, &headers) else {
         return unauthorized();
     };
+    if let Some(response) = require_write(&authok) {
+        return response;
+    }
     if let Some(response) = check_csrf(&authok.kind, &headers) {
         return response;
     }
@@ -1204,6 +1300,9 @@ async fn remove_account_handler(
     let Some(authok) = authenticate(&state, &headers) else {
         return unauthorized();
     };
+    if let Some(response) = require_write(&authok) {
+        return response;
+    }
     if let Some(response) = check_csrf(&authok.kind, &headers) {
         return response;
     }

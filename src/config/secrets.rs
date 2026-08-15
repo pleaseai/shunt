@@ -231,9 +231,10 @@ pub(crate) fn format_literal_path(path: &str) -> String {
 /// Closed-form allowlist of the dotted field paths that are actually
 /// `Secret` fields in the config schema: `sentry.dsn`,
 /// `otel.headers.<key>`,
-/// `server.gateway.telemetry.forward_to.<index>.headers.<key>`, and
+/// `server.gateway.telemetry.forward_to.<index>.headers.<key>`,
 /// `server.gateway.session.jwt_secret` (scalar or, per array element,
-/// `server.gateway.session.jwt_secret.<index>`). Used to
+/// `server.gateway.session.jwt_secret.<index>`), and the admin key arrays
+/// (`is_admin_key_path`). Used to
 /// filter candidate paths for a literal value down to Secret-shaped ones
 /// before deciding whether the attribution is unambiguous, so a plain
 /// (non-`Secret`) field's path is never named in the warning — even when it
@@ -249,6 +250,9 @@ pub(crate) fn format_literal_path(path: &str) -> String {
 /// when adding a `Secret` field, to keep the warning message precise.
 fn is_secret_field_path(path: &str) -> bool {
     if path == "sentry.dsn" {
+        return true;
+    }
+    if is_admin_key_path(path) {
         return true;
     }
     let segments: Vec<&str> = path.split('.').collect();
@@ -275,6 +279,48 @@ fn is_secret_field_path(path: &str) -> bool {
         return true;
     }
     false
+}
+
+/// `server.admin.write_keys.<index>.key` or
+/// `server.admin.read_keys.<index>.key` — the two array element paths whose
+/// literals `Config::load` rejects outright instead of warning about.
+fn is_admin_key_path(path: &str) -> bool {
+    let segments: Vec<&str> = path.split('.').collect();
+    segments.len() == 5
+        && segments[0] == "server"
+        && segments[1] == "admin"
+        && matches!(segments[2], "write_keys" | "read_keys")
+        && segments[4] == "key"
+}
+
+/// Reject an admin key written literally in the config file. Unlike the
+/// pre-existing `Secret` fields — `sentry.dsn`, `otel.headers.*`, the gateway
+/// telemetry headers, and `server.gateway.session.jwt_secret`, which existing
+/// deployments hold literals in and which therefore only warn — the key arrays
+/// are new and have no such users, so a literal there costs nothing to refuse.
+///
+/// This cannot live in `Secret::deserialize`, which sees only the value and
+/// never the path. `literals` is exactly the set of values written directly
+/// into the file: a `${VAR}`/`${file:}` reference resolves into
+/// `Substituted::resolved_values` instead, and a `SHUNT_*` override never
+/// passes through the file layer at all. The offending paths are sorted so a
+/// config with several literal keys always names the same one.
+pub(crate) fn reject_literal_admin_keys(
+    literals: &HashMap<String, Vec<String>>,
+) -> Result<(), ConfigError> {
+    let mut offending: Vec<&str> = literals
+        .values()
+        .flatten()
+        .filter(|path| is_admin_key_path(path))
+        .map(String::as_str)
+        .collect();
+    offending.sort_unstable();
+    match offending.first() {
+        Some(path) => Err(ConfigError::LiteralAdminKey {
+            path: (*path).to_string(),
+        }),
+        None => Ok(()),
+    }
 }
 
 /// Called from `Secret::deserialize`. Records the sole config-file path that
