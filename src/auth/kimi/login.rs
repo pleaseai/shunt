@@ -1,7 +1,8 @@
 //! `shunt login kimi --name <account-name>` — the RFC 8628 device-authorization
 //! flow for a Kimi Code subscription login, storing the result as a named
 //! account (see [`super::store`]) rather than a single fixed-path credential
-//! file, since multi-account pooling is a follow-up task.
+//! file, so the account can be referenced from the Kimi account pool
+//! (`[[providers.*.accounts]]`/`account_scope`).
 //!
 //! No loopback callback server is needed: shunt requests a device code,
 //! prints a verification URL and short user code, and long-polls Kimi's token

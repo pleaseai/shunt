@@ -79,8 +79,11 @@ pub enum AuthMap {
         accounts: Option<Vec<AccountSelection>>,
     },
     /// Kimi Code subscription OAuth. Shaped like `ClaudeOauth`/`ChatgptOauth`
-    /// for the account-pool follow-up to build on; `resolve_kimi_account`
-    /// (single-account only today) is the only consumer so far.
+    /// because it goes through the same `absorb_oauth_scope` path onto
+    /// `provider.account_scope`/`provider.accounts`, which the Kimi account
+    /// pool (`resolve_pool_accounts`) reads to build its candidate list;
+    /// `resolve_kimi_account` resolves one account per call, same as the
+    /// Claude/ChatGPT resolvers it mirrors.
     KimiOauth {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         account: Option<String>,

@@ -191,11 +191,16 @@ pub async fn resolve_claude_account(
 /// Resolve one Kimi Code OAuth account for the account pool. Mirrors
 /// [`resolve_claude_account`]: `token_env` and an explicit `credentials` path
 /// override the default named-account file
-/// (`~/.shunt/accounts/kimi/<name>.json`), but neither is exercised by
-/// today's config surface — this exists for the pool-integration follow-up to
-/// build on. A `token_env`-sourced token carries no device id (no account
-/// file to persist one in), so `X-Msh-Device-Id` is omitted for it; the
-/// anthropic adapter's outbound header injection accepts a `None` device id.
+/// (`~/.shunt/accounts/kimi/<name>.json`). Both are operator-reachable today
+/// via `[[providers.*.accounts]]`/`account_scope` (`AuthMap::KimiOauth` in
+/// `config/upstreams.rs`), and this is the resolver the Kimi account pool
+/// calls per candidate during failover. A `token_env`-sourced token carries no
+/// device id (no account file to persist one in). Kimi requires
+/// `X-Msh-Device-Id` on every call, so it is never omitted: the anthropic
+/// adapter's outbound header injection substitutes `process_device_id()` for a
+/// `None` device id — such accounts fall back to that single process-wide
+/// value and so share one device identity with each other when presenting to
+/// Kimi, rather than a persisted per-account one.
 pub async fn resolve_kimi_account(
     account: &crate::config::AccountConfig,
     client: &reqwest::Client,
