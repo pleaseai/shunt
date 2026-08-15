@@ -253,7 +253,12 @@ async fn poll_for_tokens(
         };
         // The request succeeded, so any earlier run of transport failures is
         // over — only *consecutive* failures should trip the fail-fast cap.
+        // Clearing `last_transport_error` too keeps the timeout message true:
+        // it claims the *last* poll attempt failed, so a stale error from an
+        // earlier blip would misreport a plain "user never approved" timeout
+        // as a network problem.
         consecutive_transport_failures = 0;
+        last_transport_error = None;
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
         // *** CRITICAL: Kimi returns HTTP 400 for the ordinary
@@ -568,7 +573,14 @@ mod tests {
         let error = poll_for_tokens(&client, &device, &token_url, "device-1")
             .await
             .expect_err("poll should time out");
-        assert!(error.to_string().contains("timed out"));
+        let message = error.to_string();
+        assert!(message.contains("timed out"));
+        // Every poll here reached the server, so the timeout means the user
+        // never approved. It must not blame a transport failure.
+        assert!(
+            !message.contains("the last poll attempt failed"),
+            "a timeout with no failed poll must not report one: {message}"
+        );
     }
 
     #[tokio::test]
