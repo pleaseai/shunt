@@ -201,10 +201,29 @@ pub(crate) fn parse_manifest_version(body: &str) -> Option<String> {
         let Some(rest) = line.strip_prefix("version:") else {
             continue;
         };
-        // Drop a trailing YAML comment before trimming quotes/whitespace, so
-        // `version: 2.4.0 # notes` yields `2.4.0` rather than the whole tail.
-        let rest = rest.split('#').next().unwrap_or("");
-        let value = rest.trim().trim_matches(['"', '\''].as_ref()).trim();
+        let rest = rest.trim_start();
+        // A `#` only starts a YAML comment outside of quotes; inside a quoted
+        // scalar it is part of the value. Splitting on `#` before trimming
+        // quotes (the previous behavior) truncated a quoted value like
+        // `"1.2#3"` down to `1.2` -- a corrupted-looking version silently
+        // accepted as a plausible one. Extract the quoted scalar's own
+        // content first, so a `#` inside it survives into `value` and is then
+        // rejected by `is_plausible_version` (which does not allow `#`)
+        // rather than silently truncated.
+        let value = if let Some(quoted) = rest.strip_prefix('"') {
+            match quoted.find('"') {
+                Some(end) => &quoted[..end],
+                None => continue, // unterminated quote: not a value to trust
+            }
+        } else if let Some(quoted) = rest.strip_prefix('\'') {
+            match quoted.find('\'') {
+                Some(end) => &quoted[..end],
+                None => continue,
+            }
+        } else {
+            // Unquoted scalar: a `#` here does start a comment.
+            rest.split('#').next().unwrap_or("").trim()
+        };
         if is_plausible_version(value) {
             return Some(value.to_string());
         }
@@ -270,6 +289,21 @@ mod tests {
         assert_eq!(
             parse_manifest_version("version: 2.4.0 # released today\n").as_deref(),
             Some("2.4.0")
+        );
+    }
+
+    #[test]
+    fn a_hash_inside_a_quoted_value_is_not_treated_as_a_comment_start() {
+        // Splitting on `#` before trimming quotes used to truncate this to
+        // `1.2`, a value that then passed `is_plausible_version` and was
+        // silently accepted. The `#` is part of the quoted scalar, not a
+        // comment, and `1.2#3` is not a plausible version string, so the
+        // whole line must now be rejected rather than truncated.
+        assert_eq!(
+            parse_manifest_version("version: \"1.2#3\"\n"),
+            None,
+            "a `#` inside quotes must not truncate the value into a \
+             different, plausible-looking one"
         );
     }
 
