@@ -146,6 +146,31 @@ Run xAI's device-code OAuth flow and save its refreshable credential:
 shunt login xai
 ```
 
+## `shunt login kimi`
+
+Run Kimi Code's device-authorization ([RFC 8628](https://www.rfc-editor.org/rfc/rfc8628)) OAuth flow and store a refreshable credential:
+
+```bash
+shunt login kimi --name <account-name>
+```
+
+`--name` is required; omitting it fails with `` `shunt login kimi` requires --name <account-name> ``. `--mode` and `--long-lived` are rejected, since Kimi Code OAuth tokens are always refreshable; `--manual` is claude-only.
+
+Login generates the account's `X-Msh-Device-Id` once and reuses it on every later refresh, so the account presents a stable device identity to Kimi. No Kimi login response has been observed to carry a stable upstream account identifier, so a scanned entry's pool identity is its own file name.
+
+The file is written atomically at `0600` on Unix; a store directory that shunt creates is made with `0700`. `SHUNT_KIMI_ACCOUNTS_DIR` overrides the store directory; reusing a name replaces its file.
+
+The result is consumed by a provider with `auth = "kimi_oauth"`, valid only with `kind = "anthropic"` and a `kimi.com` base URL. Reference it with a name-only pool entry:
+
+```toml
+[[providers.kimi-code.accounts]]
+name = "primary"
+```
+
+A config declares its providers with either `[[upstreams]]` or `[providers.*]`, never both, so in an `[[upstreams]]` config name the accounts in the auth map instead: `auth = { mode = "kimi_oauth", accounts = ["primary"] }`.
+
+See [Kimi](/providers/kimi/#kimi-code-oauth-subscription) for complete upstream configuration.
+
 ## Anthropic account-pool authentication
 
 For an Anthropic provider with `auth = "claude_oauth"`, an account can use a name-only store entry, `credentials = "~/.claude/.credentials.json"`, or `token_env = "YOUR_ENV_NAME"`. The store entry can come from full OAuth, an imported Claude Code login, or the setup-token flow described above. See [Anthropic Multi-Account](/guides/anthropic-multi-account/) for complete configuration and failover rules.
@@ -160,5 +185,6 @@ For an Anthropic provider with `auth = "claude_oauth"`, an account can use a nam
 | `SHUNT_GATEWAY_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN` | Static token for `shunt token` |
 | `CLAUDE_CREDENTIALS` | Alternate credentials file path for `shunt token` and refreshable `shunt login claude` import |
 | `SHUNT_CLAUDE_ACCOUNTS_DIR` | Alternate shunt-managed Claude account-store directory |
+| `SHUNT_KIMI_ACCOUNTS_DIR` | Alternate shunt-managed Kimi Code account-store directory |
 | Account-specific variable named by `token_env` | Setup token for an Anthropic `claude_oauth` pool entry; used verbatim |
 | `OPENAI_API_KEY` | Default key env for the `openai` provider (per-provider via `api_key_env`) |

@@ -134,6 +134,31 @@ xAI device-code OAuth 플로우를 실행하고 갱신 가능한 credential을 �
 shunt login xai
 ```
 
+## `shunt login kimi`
+
+Kimi Code의 device-authorization([RFC 8628](https://www.rfc-editor.org/rfc/rfc8628)) OAuth 플로우를 실행하고 갱신 가능한 credential을 저장합니다:
+
+```bash
+shunt login kimi --name <account-name>
+```
+
+`--name`은 필수입니다. 생략하면 `` `shunt login kimi` requires --name <account-name> `` 오류로 실패합니다. Kimi Code OAuth 토큰은 항상 갱신 가능하므로 `--mode`와 `--long-lived`는 거부됩니다. `--manual`은 claude 전용입니다.
+
+로그인 시 해당 계정의 `X-Msh-Device-Id`가 한 번 생성되어 이후의 모든 갱신에서 재사용되므로, 계정은 Kimi에 안정적인 디바이스 신원을 제시합니다. 안정적인 upstream 계정 식별자를 담은 Kimi 로그인 응답은 지금까지 관측된 적이 없으므로, 스캔된 항목의 풀 신원은 그 자체의 파일명이 됩니다.
+
+파일은 Unix에서 `0600` 권한으로 원자적으로 기록됩니다. shunt가 생성하는 스토어 디렉터리는 `0700`으로 만들어집니다. `SHUNT_KIMI_ACCOUNTS_DIR`로 스토어 디렉터리를 재정의할 수 있으며, 같은 이름을 재사용하면 파일이 교체됩니다.
+
+결과는 `auth = "kimi_oauth"`를 사용하는 provider에서 소비되며, 이는 `kind = "anthropic"`이고 base URL이 `kimi.com`일 때만 유효합니다. 이름만 있는 풀 항목으로 참조합니다:
+
+```toml
+[[providers.kimi-code.accounts]]
+name = "primary"
+```
+
+config는 provider를 `[[upstreams]]` 또는 `[providers.*]` 중 한 형식으로만 선언하며 둘을 함께 쓸 수 없습니다. `[[upstreams]]` config에서는 대신 auth 맵에 계정을 지정하세요: `auth = { mode = "kimi_oauth", accounts = ["primary"] }`.
+
+전체 upstream 구성은 [Kimi](/ko/providers/kimi/#kimi-code-oauth-subscription)를 참고하세요.
+
 ## Anthropic 계정 풀 인증
 
 `auth = "claude_oauth"`인 Anthropic provider에서 계정은 이름만 있는 스토어 항목, `credentials = "~/.claude/.credentials.json"`, 또는 `token_env = "YOUR_ENV_NAME"`을 사용할 수 있습니다. 스토어 항목은 위의 Full OAuth, Claude Code 로그인 가져오기, setup-token 플로우 중 하나로 만들 수 있습니다. 전체 구성과 failover 규칙은 [Anthropic 멀티 계정](/ko/guides/anthropic-multi-account/)을 참고하세요.
@@ -148,5 +173,6 @@ shunt login xai
 | `SHUNT_GATEWAY_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN` | `shunt token`용 정적 토큰 |
 | `CLAUDE_CREDENTIALS` | `shunt token` 및 갱신 가능한 `shunt login claude` 가져오기용 대체 credential 파일 경로 |
 | `SHUNT_CLAUDE_ACCOUNTS_DIR` | shunt가 관리하는 Claude 계정 스토어의 대체 디렉터리 |
+| `SHUNT_KIMI_ACCOUNTS_DIR` | shunt가 관리하는 Kimi Code 계정 스토어의 대체 디렉터리 |
 | `token_env`로 지정한 계정별 변수 | Anthropic `claude_oauth` 풀 항목의 setup token; 변경 없이 그대로 사용 |
 | `OPENAI_API_KEY` | `openai` 프로바이더용 기본 키 env(프로바이더별로 `api_key_env`를 통해) |

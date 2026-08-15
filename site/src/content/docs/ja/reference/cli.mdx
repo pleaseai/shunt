@@ -134,6 +134,31 @@ xAI の device-code OAuth フローを実行し、リフレッシュ可能な cr
 shunt login xai
 ```
 
+## `shunt login kimi`
+
+Kimi Code の device-authorization（[RFC 8628](https://www.rfc-editor.org/rfc/rfc8628)）OAuth フローを実行し、リフレッシュ可能な credential を保存します。
+
+```bash
+shunt login kimi --name <account-name>
+```
+
+`--name` は必須です。省略すると `` `shunt login kimi` requires --name <account-name> `` で失敗します。Kimi Code OAuth トークンは常にリフレッシュ可能なため `--mode` と `--long-lived` は拒否されます。`--manual` は claude 専用です。
+
+ログイン時にそのアカウントの `X-Msh-Device-Id` が一度だけ生成され、以降のリフレッシュのたびに再利用されるため、アカウントは Kimi に対して安定したデバイス識別子を提示します。安定した upstream アカウント識別子を含む Kimi ログインレスポンスはこれまで観測されていないため、スキャンされたエントリーのプール識別子はそのファイル名自体になります。
+
+ファイルは Unix で `0600` でアトミックに書き込まれます。shunt が作成するストアディレクトリは `0700` になります。`SHUNT_KIMI_ACCOUNTS_DIR` でストアディレクトリを上書きでき、同じ名前を再利用するとファイルを置き換えます。
+
+結果は `auth = "kimi_oauth"` を使う provider で利用され、これは `kind = "anthropic"` かつ `kimi.com` の base URL の場合にのみ有効です。名前だけのプールエントリーで参照します。
+
+```toml
+[[providers.kimi-code.accounts]]
+name = "primary"
+```
+
+config は provider を `[[upstreams]]` か `[providers.*]` のどちらか一方で宣言し、両方は使えません。`[[upstreams]]` の config では、代わりに auth マップでアカウントを指定します: `auth = { mode = "kimi_oauth", accounts = ["primary"] }`。
+
+完全な upstream 設定は [Kimi](/ja/providers/kimi/#kimi-code-oauth-subscription) を参照してください。
+
 ## Anthropic アカウントプール認証
 
 `auth = "claude_oauth"` の Anthropic provider では、アカウントに名前だけのストアエントリー、`credentials = "~/.claude/.credentials.json"`、または `token_env = "YOUR_ENV_NAME"` を使えます。ストアエントリーは、上記の Full OAuth、Claude Code ログインのインポート、setup-token フローのいずれかで作成できます。完全な設定と failover ルールは [Anthropic マルチアカウント](/ja/guides/anthropic-multi-account/) を参照してください。
@@ -148,5 +173,6 @@ shunt login xai
 | `SHUNT_GATEWAY_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN` | `shunt token` 向けの静的トークン |
 | `CLAUDE_CREDENTIALS` | `shunt token` とリフレッシュ可能な `shunt login claude` インポート向けの代替 credential ファイルパス |
 | `SHUNT_CLAUDE_ACCOUNTS_DIR` | shunt 管理の Claude アカウントストア用の代替ディレクトリ |
+| `SHUNT_KIMI_ACCOUNTS_DIR` | shunt 管理の Kimi Code アカウントストア用の代替ディレクトリ |
 | `token_env` で指定するアカウント別変数 | Anthropic `claude_oauth` プールエントリーの setup token。値を変更せずに使用 |
 | `OPENAI_API_KEY` | `openai` プロバイダーのデフォルトキー環境変数（プロバイダーごとに `api_key_env` で） |
