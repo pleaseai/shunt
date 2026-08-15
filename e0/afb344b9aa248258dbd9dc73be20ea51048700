@@ -1,0 +1,20 @@
+docs/admin-ui-delivery.md
+  s_c645a92fd9bc90::t_012f89934c78c1 470-472
+  s_c645a92fd9bc90::t_c9ef75711b4ca2 431-435
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "e0afb344b9aa248258dbd9dc73be20ea51048700",
+  "prompts": {},
+  "sessions": {
+    "s_c645a92fd9bc90": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "57ebe8a8-09da-4100-a92f-5da95c4bcba6",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
