@@ -43,6 +43,24 @@ fn auth_string_and_map_shorthand_normalize_identically() {
 }
 
 #[test]
+fn antigravity_oauth_map_form_deserializes_mode_only() {
+    // Documented general rule (docs/upstreams-failover.md §1.3, site
+    // reference/configuration.md): a bare string is shorthand for the map
+    // form. `antigravity_oauth` previously had no `AuthMap` variant, so the
+    // map spelling failed to deserialize even though the shorthand worked.
+    let string = parse(
+        "name = \"a\"\nkind = \"antigravity\"\nbase_url = \"http://localhost\"\nauth = \"antigravity_oauth\"",
+    );
+    let map = parse(
+        "name = \"a\"\nkind = \"antigravity\"\nbase_url = \"http://localhost\"\nauth = { mode = \"antigravity_oauth\" }",
+    );
+    let (string, _) = normalize(&[string]).unwrap();
+    let (map, _) = normalize(&[map]).unwrap();
+    assert_eq!(map["a"].auth, AuthMode::AntigravityOauth);
+    assert_eq!(string["a"].auth, map["a"].auth);
+}
+
+#[test]
 fn request_compression_defaults_true_and_can_be_disabled() {
     let default = parse("name = \"a\"\nprovider = \"codex\"");
     assert!(default.request_compression);

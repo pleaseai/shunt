@@ -63,7 +63,7 @@ existing `AuthMode` strings) and absorbs the legacy sibling fields:
 | `passthrough` | — |
 | `api_key` | `env` (required unless preset supplies it), `header` (default as today) |
 | `claude_oauth` / `chatgpt_oauth` | optional scope: `account = "name"` (single) **or** `accounts = [...]` (subset; entries are full `AccountConfig` tables or bare name strings referencing the store). No scope → whole store scan; for `chatgpt_oauth` an empty store additionally falls through to the single-account `~/.codex/auth.json` path (both preserved today's behavior). Setting both `account` and `accounts` is an error. |
-| `xai_oauth` / `cursor_oauth` | as today (no scoping fields yet) |
+| `xai_oauth` / `cursor_oauth` / `antigravity_oauth` | as today (no scoping fields yet) |
 
 Unknown map keys for a mode are errors (strict), mirroring the reference's
 strict per-provider auth objects.

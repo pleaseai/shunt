@@ -242,7 +242,7 @@ codex-fallback = "gpt-5.2"
 | `kimi` | `anthropic` | `https://api.moonshot.ai/anthropic` | `api_key`, env `MOONSHOT_API_KEY` |
 | `cursor` | `cursor` | `https://api2.cursor.sh` | `cursor_oauth` |
 
-`auth = "claude_oauth"` 같은 문자열은 `auth = { mode = "claude_oauth" }`의 축약형입니다. `api_key` 맵은 `env`(preset이 제공하지 않으면 필수)와 `header`(기본 `bearer`, 또는 `x_api_key`)를 받습니다. `claude_oauth`와 `chatgpt_oauth` 맵은 `account = "name"` 또는 `accounts = [...]`로 범위를 좁힐 수 있지만 둘을 함께 쓸 수는 없습니다. `accounts`에는 스토어 항목 이름 문자열과 전체 계정 테이블을 넣을 수 있습니다. 명시적인 `accounts = []`는 거부되며, 두 범위 필드를 모두 생략하면 전체 스토어를 스캔합니다. ChatGPT 스토어가 비어 있으면 `chatgpt_oauth`는 기존 `~/.codex/auth.json` fallback을 유지합니다. `passthrough`, `xai_oauth`, `cursor_oauth` 맵에는 `mode`만 사용할 수 있으며, mode별로 알 수 없는 키는 오류입니다.
+`auth = "claude_oauth"` 같은 문자열은 `auth = { mode = "claude_oauth" }`의 축약형입니다. `api_key` 맵은 `env`(preset이 제공하지 않으면 필수)와 `header`(기본 `bearer`, 또는 `x_api_key`)를 받습니다. `claude_oauth`와 `chatgpt_oauth` 맵은 `account = "name"` 또는 `accounts = [...]`로 범위를 좁힐 수 있지만 둘을 함께 쓸 수는 없습니다. `accounts`에는 스토어 항목 이름 문자열과 전체 계정 테이블을 넣을 수 있습니다. 명시적인 `accounts = []`는 거부되며, 두 범위 필드를 모두 생략하면 전체 스토어를 스캔합니다. ChatGPT 스토어가 비어 있으면 `chatgpt_oauth`는 기존 `~/.codex/auth.json` fallback을 유지합니다. `passthrough`, `xai_oauth`, `cursor_oauth`, `antigravity_oauth` 맵에는 `mode`만 사용할 수 있으며, mode별로 알 수 없는 키는 오류입니다.
 
 구성 파일에서 `[[upstreams]]`와 `[providers.*]`를 함께 선언하지 마세요. 파일 계층에 두 선언 형식이 모두 있으면 시작에 실패합니다. 환경 변수는 어느 형식에서든 정규화된 업스트림/provider 이름을 기준으로 `SHUNT_PROVIDERS__<name>__<field>`를 사용해 개별 필드를 재정의할 수 있습니다. 순서가 있는 `[[upstreams]]` 배열 자체는 하나의 환경 변수로 합성하려 하지 말고 구성 파일에 선언하세요. 레거시 `[providers.<name>]`는 계속 지원되며 이름순의 암시적 업스트림으로 정규화됩니다. 이 형식은 페일오버 순서를 선언하지 않으므로 모델 맵은 항목이 없거나 하나만 있어야 합니다. 모델 맵에 여러 항목을 추가하기 전에 `[[upstreams]]`로 전환하세요.
 

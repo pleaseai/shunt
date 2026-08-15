@@ -80,6 +80,7 @@ pub enum AuthMap {
     },
     XaiOauth {},
     CursorOauth {},
+    AntigravityOauth {},
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -115,6 +116,7 @@ impl UpstreamAuth {
             }
             Self::Map(AuthMap::XaiOauth {}) => provider.auth = AuthMode::XaiOauth,
             Self::Map(AuthMap::CursorOauth {}) => provider.auth = AuthMode::CursorOauth,
+            Self::Map(AuthMap::AntigravityOauth {}) => provider.auth = AuthMode::AntigravityOauth,
         }
         Ok(())
     }
