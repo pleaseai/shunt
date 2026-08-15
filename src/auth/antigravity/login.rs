@@ -7,17 +7,18 @@
 //! rejected as a redirect_uri mismatch.
 //!
 //! The project id is resolved here rather than on the first request, because
-//! provisioning a first-time account polls `onboardUser` to exhaustion —
-//! `ONBOARD_MAX_ATTEMPTS` attempts, each bounded by up to two
-//! `ONBOARD_REQUEST_TIMEOUT` windows (the send and, separately, the body
-//! read), spaced by `ONBOARD_POLL_INTERVAL`: 5 * (2 * 30s) + 4 * 2s = 308s,
-//! roughly 5 minutes for `onboard_user` alone. But discovery on the request
-//! path (see `get_valid` in `auth.rs`) can reach `onboard_user` only after
-//! `refresh_call` and `discover_project`'s own `loadCodeAssist` round trip
-//! have each already spent up to two `CREDENTIAL_REQUEST_TIMEOUT` windows,
-//! so the true worst case there is roughly 2 * 60s + 308s = 428s, about
-//! 7 minutes — acceptable in an interactive login, not in front of a
-//! proxied turn.
+//! provisioning a first-time account can poll a long-running operation for a
+//! while — `onboard_user` POSTs `onboardUser` once (up to two
+//! `ONBOARD_REQUEST_TIMEOUT` windows: the send and, separately, the body
+//! read), then, if the account isn't onboarded yet, polls the operation the
+//! POST returned (`ONBOARD_POLL_INTERVAL` apart) for up to
+//! `ONBOARD_POLL_DEADLINE`: 2 * 30s + 300s = 360s, roughly 6 minutes for
+//! `onboard_user` alone. But discovery on the request path (see `get_valid`
+//! in `auth.rs`) can reach `onboard_user` only after `refresh_call` and
+//! `discover_project`'s own `loadCodeAssist` round trip have each already
+//! spent up to two `CREDENTIAL_REQUEST_TIMEOUT` windows, so the true worst
+//! case there is roughly 2 * 60s + 360s = 480s, about 8 minutes —
+//! acceptable in an interactive login, not in front of a proxied turn.
 
 use std::time::Duration;
 

@@ -73,10 +73,34 @@ pub(crate) const SCOPES: &[&str] = &[
 /// Refresh this long before `expiry_date` rather than at it.
 const EXPIRY_BUFFER: Duration = Duration::from_secs(5 * 60);
 
-/// Bound on a single `onboardUser` poll, and how long to wait between polls.
+/// Bound on a single onboarding request/response leg — the initial
+/// `onboardUser` POST, or one operation-poll GET — split into its own send
+/// and body-read window, so a single leg can block for up to twice this.
 const ONBOARD_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-const ONBOARD_POLL_INTERVAL: Duration = Duration::from_secs(2);
-const ONBOARD_MAX_ATTEMPTS: usize = 5;
+
+/// How long to wait between operation polls, matching the interval the
+/// reference client uses (`packages/core/src/code_assist/setup.ts` in
+/// `google-gemini/gemini-cli`, Apache-2.0).
+const ONBOARD_POLL_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Wall-clock cap on how long `onboard_user` keeps polling the long-running
+/// operation the initial `onboardUser` POST returns, once polling has
+/// actually started — this does not bound the initial POST itself (see its
+/// own two `ONBOARD_REQUEST_TIMEOUT` windows in `onboard_user` below).
+///
+/// The reference client polls forever (`while (!lroRes.done)`, no cap); that
+/// is not safe to copy — a stuck operation would hang this call, and on the
+/// request path `REFRESH_LOCK` with it, indefinitely. The scheme this
+/// replaces bounded polling by attempt count instead of wall clock and
+/// really only budgeted `4 * 2s` = 8s of waiting between its 5 attempts
+/// (its documented 308s worst case was almost entirely per-attempt request
+/// timeouts, not time spent actually waiting on the operation) — first-time
+/// project provisioning is a background approval-and-resource-creation step
+/// that routinely needs longer than that, which is why first-time onboarding
+/// was failing. Five minutes gives real provisioning room to finish while
+/// still failing a genuinely stuck operation well inside an interactive
+/// login.
+const ONBOARD_POLL_DEADLINE: Duration = Duration::from_secs(5 * 60);
 
 /// Bound on a single request/response leg of the token-refresh and
 /// project-discovery calls. Both are reached per-request from
@@ -129,6 +153,11 @@ pub struct AntigravityAuthStore {
     /// Bound on a single leg (send, or body read) of the refresh/discovery
     /// calls. Fixed at [`CREDENTIAL_REQUEST_TIMEOUT`] outside tests.
     request_timeout: Duration,
+    /// How long `poll_onboard_operation` sleeps between polls. Fixed at
+    /// [`ONBOARD_POLL_INTERVAL`] outside tests — a real Google endpoint needs
+    /// that much headroom between polls, but a test against a local mock
+    /// server does not, and `ONBOARD_POLL_INTERVAL` is 5s.
+    onboard_poll_interval: Duration,
 }
 
 impl AntigravityAuthStore {
@@ -141,6 +170,7 @@ impl AntigravityAuthStore {
             daily_api_endpoint: DAILY_API_ENDPOINT.to_string(),
             project_cache: Arc::new(RwLock::new(None)),
             request_timeout: CREDENTIAL_REQUEST_TIMEOUT,
+            onboard_poll_interval: ONBOARD_POLL_INTERVAL,
         }
     }
 
@@ -160,6 +190,7 @@ impl AntigravityAuthStore {
             daily_api_endpoint,
             project_cache: Arc::new(RwLock::new(None)),
             request_timeout: CREDENTIAL_REQUEST_TIMEOUT,
+            onboard_poll_interval: ONBOARD_POLL_INTERVAL,
         }
     }
 
@@ -168,6 +199,14 @@ impl AntigravityAuthStore {
     #[cfg(test)]
     pub(crate) fn with_request_timeout(mut self, timeout: Duration) -> Self {
         self.request_timeout = timeout;
+        self
+    }
+
+    /// Test-only override so an onboarding-poll test does not have to wait
+    /// out the real 5s [`ONBOARD_POLL_INTERVAL`] between polls.
+    #[cfg(test)]
+    pub(crate) fn with_onboard_poll_interval(mut self, interval: Duration) -> Self {
+        self.onboard_poll_interval = interval;
         self
     }
 
@@ -192,12 +231,13 @@ impl AntigravityAuthStore {
         // yet: refresh_call (send + body read, each up to
         // CREDENTIAL_REQUEST_TIMEOUT) + discover_project's loadCodeAssist
         // (send + body read, each up to CREDENTIAL_REQUEST_TIMEOUT) +
-        // onboard_user (ONBOARD_MAX_ATTEMPTS attempts, each up to two
-        // ONBOARD_REQUEST_TIMEOUT windows, spaced by ONBOARD_POLL_INTERVAL) —
-        // 2*30s + 2*30s + (5*(2*30s) + 4*2s) = 60 + 60 + 308 = 428s, roughly
-        // 7 minutes, worst case before this lock is released. See the
+        // onboard_user (its own POST: send + body read, each up to
+        // ONBOARD_REQUEST_TIMEOUT, then up to ONBOARD_POLL_DEADLINE of
+        // polling if the account isn't onboarded yet) —
+        // 2*30s + 2*30s + (2*30s + 300s) = 60 + 60 + 360 = 480s, roughly
+        // 8 minutes, worst case before this lock is released. See the
         // `onboard_user` timing note in `login.rs` for the derivation of the
-        // 308s figure.
+        // 360s figure.
         // Re-read: another task may have refreshed while we waited on the lock.
         let stored = self.read().await?;
         if is_stored_valid(&stored, SystemTime::now()) {
@@ -424,9 +464,15 @@ impl AntigravityAuthStore {
             .await
     }
 
-    /// Provision a project for a first-time account. The control plane answers
-    /// with a long-running operation, so poll until `done` rather than treating
-    /// the first response as final.
+    /// Provision a project for a first-time account. The control plane
+    /// answers the initial `onboardUser` POST with a
+    /// `google.longrunning.Operation` (`google/longrunning/operations.proto`):
+    /// if it is not already `done`, that response carries a `name` to poll
+    /// rather than a result to act on. Poll
+    /// `GET {daily_api_endpoint}/{API_VERSION}/{name}` — with the same bearer
+    /// token and identity headers as the POST — until `done`; never re-POST
+    /// `onboardUser` itself on a retry, which the operation contract does not
+    /// call for.
     async fn onboard_user(
         &self,
         access_token: &str,
@@ -443,20 +489,86 @@ impl AntigravityAuthStore {
             "metadata": control_plane_metadata(),
         });
 
-        for attempt in 1..=ONBOARD_MAX_ATTEMPTS {
+        let response = tokio::time::timeout(
+            ONBOARD_REQUEST_TIMEOUT,
+            self.client
+                .post(&url)
+                .bearer_auth(access_token)
+                .header("User-Agent", &user_agent)
+                .header("X-Goog-Api-Client", super::version::GOOG_API_CLIENT)
+                .json(&body)
+                .send(),
+        )
+        .await
+        .map_err(|_| auth_error("Antigravity onboardUser timed out"))?
+        .map_err(|error| auth_error(format!("Antigravity onboardUser failed: {error}")))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = diagnostic_body(ONBOARD_REQUEST_TIMEOUT, response).await;
+            tracing::warn!(
+                status = %status,
+                body = %body,
+                "Antigravity onboardUser rejected"
+            );
+            return Err(auth_error(format!(
+                "Antigravity account onboarding failed with HTTP status {status}"
+            )));
+        }
+
+        let payload = tokio::time::timeout(ONBOARD_REQUEST_TIMEOUT, response.json::<Value>())
+            .await
+            .map_err(|_| auth_error("Antigravity onboardUser timed out reading the response"))?
+            .map_err(|error| auth_error(format!("invalid JSON from onboardUser: {error}")))?;
+
+        match onboard_operation_outcome(&payload)? {
+            OnboardOperation::Done(project) => Ok(project),
+            OnboardOperation::Pending(name) => tokio::time::timeout(
+                ONBOARD_POLL_DEADLINE,
+                self.poll_onboard_operation(access_token, &user_agent, &name),
+            )
+            .await
+            .map_err(|_| {
+                auth_error(format!(
+                    "Antigravity account onboarding did not complete within {ONBOARD_POLL_DEADLINE:?} of polling"
+                ))
+            })?,
+        }
+    }
+
+    /// Poll the named long-running operation `onboard_user`'s initial POST
+    /// returned, until it reports `done`, sleeping [`ONBOARD_POLL_INTERVAL`]
+    /// before each poll — matching the reference client's cadence
+    /// (`packages/core/src/code_assist/setup.ts` in `google-gemini/gemini-cli`,
+    /// Apache-2.0). This loop has no cap of its own — unlike the reference,
+    /// which polls forever — because the caller wraps it in
+    /// [`ONBOARD_POLL_DEADLINE`].
+    async fn poll_onboard_operation(
+        &self,
+        access_token: &str,
+        user_agent: &str,
+        name: &str,
+    ) -> Result<String, AdapterError> {
+        let url = format!("{}/{}/{}", self.daily_api_endpoint, API_VERSION, name);
+        loop {
+            tokio::time::sleep(self.onboard_poll_interval).await;
+
             let response = tokio::time::timeout(
                 ONBOARD_REQUEST_TIMEOUT,
                 self.client
-                    .post(&url)
+                    .get(&url)
                     .bearer_auth(access_token)
-                    .header("User-Agent", &user_agent)
+                    .header("User-Agent", user_agent)
                     .header("X-Goog-Api-Client", super::version::GOOG_API_CLIENT)
-                    .json(&body)
                     .send(),
             )
             .await
-            .map_err(|_| auth_error("Antigravity onboardUser timed out"))?
-            .map_err(|error| auth_error(format!("Antigravity onboardUser failed: {error}")))?;
+            .map_err(|_| auth_error("Antigravity onboarding operation poll timed out"))?
+            .map_err(|error| {
+                auth_error(format!(
+                    "Antigravity onboarding operation poll failed: {error}"
+                ))
+            })?;
 
             if !response.status().is_success() {
                 let status = response.status();
@@ -464,34 +576,33 @@ impl AntigravityAuthStore {
                 tracing::warn!(
                     status = %status,
                     body = %body,
-                    "Antigravity onboardUser rejected"
+                    "Antigravity onboarding operation poll rejected"
                 );
                 return Err(auth_error(format!(
-                    "Antigravity account onboarding failed with HTTP status {status}"
+                    "Antigravity onboarding operation poll failed with HTTP status {status}"
                 )));
             }
 
             let payload = tokio::time::timeout(ONBOARD_REQUEST_TIMEOUT, response.json::<Value>())
                 .await
-                .map_err(|_| auth_error("Antigravity onboardUser timed out reading the response"))?
-                .map_err(|error| auth_error(format!("invalid JSON from onboardUser: {error}")))?;
+                .map_err(|_| {
+                    auth_error(
+                        "Antigravity onboarding operation poll timed out reading the response",
+                    )
+                })?
+                .map_err(|error| {
+                    auth_error(format!(
+                        "invalid JSON from the onboarding operation poll: {error}"
+                    ))
+                })?;
 
-            if payload.get("done").and_then(Value::as_bool) == Some(true) {
-                return payload
-                    .get("response")
-                    .and_then(extract_project)
-                    .ok_or_else(|| {
-                        auth_error("Antigravity onboardUser completed without a project id")
-                    });
+            if let OnboardOperation::Done(project) = onboard_operation_outcome(&payload)? {
+                return Ok(project);
             }
-            if attempt < ONBOARD_MAX_ATTEMPTS {
-                tokio::time::sleep(ONBOARD_POLL_INTERVAL).await;
-            }
+            // Still pending: keep polling the same `name` this loop was
+            // handed — a payload's own `name` echo, if present, never
+            // changes mid-operation.
         }
-
-        Err(auth_error(format!(
-            "Antigravity account onboarding did not complete after {ONBOARD_MAX_ATTEMPTS} attempts"
-        )))
     }
 }
 
@@ -527,6 +638,61 @@ pub(super) async fn diagnostic_body(timeout: Duration, response: reqwest::Respon
         Ok(Err(error)) => format!("<error reading body: {error}>"),
         Err(_) => "<timed out reading body>".to_string(),
     }
+}
+
+/// Outcome of interpreting one `onboardUser`/operation-poll JSON payload
+/// against the `google.longrunning.Operation` contract: a `done` field, and —
+/// only once `done` is true — mutually exclusive `response` or `error`
+/// fields (`oneof result` in `google/longrunning/operations.proto`).
+enum OnboardOperation {
+    /// `done: true`, with a project id extracted from `response`.
+    Done(String),
+    /// Not yet `done`; carries the operation `name` to poll next.
+    Pending(String),
+}
+
+/// Interpret a single onboarding JSON payload — the initial `onboardUser`
+/// response, or a later poll of the operation it returned — against the
+/// operation contract [`OnboardOperation`] documents. A `done: true` payload
+/// carrying `error` is a server-side onboarding failure and is reported as
+/// such, rather than falling through to "completed without a project id",
+/// which would misreport it as a merely-missing field.
+fn onboard_operation_outcome(payload: &Value) -> Result<OnboardOperation, AdapterError> {
+    if payload.get("done").and_then(Value::as_bool) != Some(true) {
+        return match payload
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
+            Some(name) => Ok(OnboardOperation::Pending(name.to_string())),
+            // Nothing to poll and nothing done: a protocol violation, not
+            // something to retry into.
+            None => Err(auth_error(
+                "Antigravity onboarding returned an incomplete operation with no name to poll",
+            )),
+        };
+    }
+
+    if let Some(error) = payload.get("error") {
+        let code = error.get("code").and_then(Value::as_i64);
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("(no message)");
+        return Err(auth_error(match code {
+            Some(code) => {
+                format!("Antigravity account onboarding failed: operation error {code}: {message}")
+            }
+            None => format!("Antigravity account onboarding failed: operation error: {message}"),
+        }));
+    }
+
+    payload
+        .get("response")
+        .and_then(extract_project)
+        .map(OnboardOperation::Done)
+        .ok_or_else(|| auth_error("Antigravity onboardUser completed without a project id"))
 }
 
 /// Pull the project id out of a `loadCodeAssist` / `onboardUser` payload. The
@@ -894,7 +1060,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_projectless_account_is_onboarded_by_polling_until_done() {
+    async fn a_projectless_account_is_onboarded_by_polling_the_operation_until_done() {
         let server = MockServer::start().await;
         // No project yet, and a tier the response says is the default.
         Mock::given(method("POST"))
@@ -904,26 +1070,122 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        // The control plane answers with a long-running operation: the first
-        // reply is not final, and treating it as final would lose the project.
+        // The initial POST must happen exactly once: the fix this pins down
+        // is that a not-done operation is polled by `name`, not re-POSTed.
         Mock::given(method("POST"))
             .and(path("/v1internal:onboardUser"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"done": false})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "done": false,
+                "name": "operations/op-1"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        // Re-POSTing `onboardUser` would also match this path — mounting
+        // nothing else on it means a re-POST gets wiremock's unmatched-request
+        // 500 instead of a plausible-looking response, so a regression back
+        // to the old re-POST loop fails loudly rather than by accident.
+        Mock::given(method("GET"))
+            .and(path("/v1internal/operations/op-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "done": false,
+                "name": "operations/op-1"
+            })))
             .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1internal/operations/op-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "done": true,
+                "response": {"cloudaicompanionProject": "proj-onboarded"}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        // Real (unpaused) clock: `poll_onboard_operation` sleeps between
+        // polls before each GET, so the interval is shrunk to keep this test
+        // fast rather than pausing tokio's clock — a paused clock races ahead
+        // of the still-real socket I/O to the mock server and times the
+        // whole call out before a single request lands.
+        let store = store_at(temp_auth_file("onboard"), &server)
+            .with_onboard_poll_interval(Duration::from_millis(1));
+        let project = store.discover_project("token").await.unwrap();
+        assert_eq!(project, "proj-onboarded");
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn onboarding_error_on_a_done_operation_is_surfaced_not_misreported() {
+        // `google.longrunning.Operation` is `oneof result { response | error }`
+        // — a `done: true` operation carrying `error` is a server-side
+        // failure, and must not fall into the "completed without a project
+        // id" branch, which would misreport it as a merely-missing field.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1internal:loadCodeAssist"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
             .mount(&server)
             .await;
         Mock::given(method("POST"))
             .and(path("/v1internal:onboardUser"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "done": true,
-                "response": {"cloudaicompanionProject": "proj-onboarded"}
+                "error": {"code": 7, "message": "not entitled to onboarding"}
             })))
+            .expect(1)
             .mount(&server)
             .await;
 
-        let store = store_at(temp_auth_file("onboard"), &server);
-        let project = store.discover_project("token").await.unwrap();
-        assert_eq!(project, "proj-onboarded");
+        let store = store_at(temp_auth_file("onboard_operation_error"), &server);
+        let error = store.discover_project("token").await.unwrap_err();
+        use axum::body::to_bytes;
+        let bytes = to_bytes(error.response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&bytes);
+        assert!(
+            body.contains("not entitled to onboarding"),
+            "expected the operation error message in the response, got: {body}"
+        );
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn onboarding_without_an_operation_name_fails_immediately() {
+        // A not-done response with no `name` has nothing to poll — that is a
+        // protocol violation, not something to retry into. No poll mock is
+        // mounted at all: if the fix regressed into polling anyway, the
+        // unmatched GET would surface as a distinct "poll failed with HTTP
+        // status 500" error instead of the message asserted below, so this
+        // stays non-vacuous even without asserting elapsed time.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1internal:loadCodeAssist"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1internal:onboardUser"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"done": false})))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let store = store_at(temp_auth_file("onboard_no_name"), &server);
+        let error = store.discover_project("token").await.unwrap_err();
+        use axum::body::to_bytes;
+        let bytes = to_bytes(error.response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&bytes);
+        assert!(
+            body.contains("no name to poll"),
+            "expected the no-name protocol violation to be reported, got: {body}"
+        );
+        server.verify().await;
     }
 
     #[tokio::test]
