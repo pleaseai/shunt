@@ -42,11 +42,22 @@ use super::auth::{
 use super::default_antigravity_auth_path;
 
 /// Bound on draining a rejected userinfo response body for the error message
-/// below. `fetch_email`'s request itself deliberately has no timeout wrapper
-/// (see its call site in `run`, which already treats a failure here as
-/// non-fatal) — this constant bounds only the body read added on top of that,
-/// so it does not change that request's existing timeout semantics.
+/// below. Separate from [`USERINFO_REQUEST_TIMEOUT`] because it bounds only
+/// the diagnostic read of an already-received rejection, not the exchange
+/// that produced it.
 const USERINFO_BODY_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Bound on the userinfo request and on reading its successful body.
+///
+/// The email only labels the stored credential, and `run` already treats a
+/// failed lookup as non-fatal — but "failed" and "never answers" are not the
+/// same thing. Unbounded, a userinfo endpoint that accepts the request and
+/// then stalls hangs `shunt login antigravity` forever *after* the tokens
+/// have already been exchanged, so the operator interrupts a completed OAuth
+/// flow and is left with no credential on disk. Timing out turns that into
+/// the failure `run` already degrades gracefully: the credential is written
+/// with `email: None`.
+const USERINFO_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
@@ -104,14 +115,19 @@ pub async fn run() -> anyhow::Result<()> {
         )
     })?;
 
-    let email = fetch_email(&client, USERINFO_URL, &tokens.access_token)
-        .await
-        .unwrap_or_else(|error| {
-            // The email only labels the credential; failing to read it must not
-            // discard a working token.
-            eprintln!("Could not read the account email ({error}); continuing.");
-            None
-        });
+    let email = fetch_email(
+        &client,
+        USERINFO_URL,
+        &tokens.access_token,
+        USERINFO_REQUEST_TIMEOUT,
+    )
+    .await
+    .unwrap_or_else(|error| {
+        // The email only labels the credential; failing to read it must not
+        // discard a working token.
+        eprintln!("Could not read the account email ({error}); continuing.");
+        None
+    });
 
     let expiry_date = expiry_millis(tokens.expires_in.unwrap_or(3600));
     let mut stored = StoredAuth {
@@ -219,14 +235,19 @@ async fn fetch_email(
     client: &reqwest::Client,
     userinfo_url: &str,
     access_token: &str,
+    timeout: Duration,
 ) -> anyhow::Result<Option<String>> {
-    let response = client
-        .get(userinfo_url)
-        .bearer_auth(access_token)
-        .header("User-Agent", super::version::user_agent())
-        .send()
-        .await
-        .context("Google userinfo request failed")?;
+    let response = tokio::time::timeout(
+        timeout,
+        client
+            .get(userinfo_url)
+            .bearer_auth(access_token)
+            .header("User-Agent", super::version::user_agent())
+            .send(),
+    )
+    .await
+    .context("Google userinfo request timed out")?
+    .context("Google userinfo request failed")?;
     if !response.status().is_success() {
         // Drain the body (bounded by USERINFO_BODY_DRAIN_TIMEOUT) rather than
         // dropping the response un-drained, which would strand the reqwest
@@ -237,9 +258,9 @@ async fn fetch_email(
         let body = diagnostic_body(USERINFO_BODY_DRAIN_TIMEOUT, response).await;
         bail!("Google userinfo request failed (HTTP {status}): {body}");
     }
-    let info = response
-        .json::<UserInfo>()
+    let info = tokio::time::timeout(timeout, response.json::<UserInfo>())
         .await
+        .context("Google userinfo response read timed out")?
         .context("invalid JSON in the Google userinfo response")?;
     Ok(info
         .email
@@ -477,9 +498,14 @@ mod tests {
             .mount(&server)
             .await;
 
-        let error = fetch_email(&reqwest::Client::new(), &server.uri(), "token")
-            .await
-            .unwrap_err();
+        let error = fetch_email(
+            &reqwest::Client::new(),
+            &server.uri(),
+            "token",
+            USERINFO_REQUEST_TIMEOUT,
+        )
+        .await
+        .unwrap_err();
         assert!(
             error.to_string().contains("403"),
             "unexpected error: {error}"
@@ -497,12 +523,50 @@ mod tests {
             .mount(&server)
             .await;
 
-        let error = fetch_email(&reqwest::Client::new(), &server.uri(), "token")
-            .await
-            .unwrap_err();
+        let error = fetch_email(
+            &reqwest::Client::new(),
+            &server.uri(),
+            "token",
+            USERINFO_REQUEST_TIMEOUT,
+        )
+        .await
+        .unwrap_err();
         assert!(
             error.to_string().contains("insufficient_scope"),
             "expected the upstream body in the error, got: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stalled_userinfo_endpoint_times_out_rather_than_hanging_the_login() {
+        // The tokens are already exchanged by the time `run` calls this, so an
+        // endpoint that accepts the request and then never answers would hang a
+        // completed OAuth flow forever and leave no credential on disk. The
+        // bound turns that into an ordinary error, which `run` already degrades
+        // to `email: None`.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(r#"{"email":"someone@example.com"}"#)
+                    .set_delay(Duration::from_secs(30)),
+            )
+            .mount(&server)
+            .await;
+
+        // Deliberately not the production constant: this asserts the bound
+        // exists and fires, without making the suite wait for it.
+        let error = fetch_email(
+            &reqwest::Client::new(),
+            &server.uri(),
+            "token",
+            Duration::from_millis(50),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("timed out"),
+            "expected a timeout error, got: {error}"
         );
     }
 
@@ -514,9 +578,14 @@ mod tests {
             .mount(&server)
             .await;
 
-        let email = fetch_email(&reqwest::Client::new(), &server.uri(), "token")
-            .await
-            .unwrap();
+        let email = fetch_email(
+            &reqwest::Client::new(),
+            &server.uri(),
+            "token",
+            USERINFO_REQUEST_TIMEOUT,
+        )
+        .await
+        .unwrap();
         assert_eq!(email, None);
     }
 }
