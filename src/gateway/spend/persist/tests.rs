@@ -60,9 +60,9 @@ fn app_state_with_path(
     let mut config = crate::config::Config::default();
     config.server.gateway = Some(crate::config::GatewayConfig {
         public_url: "https://gateway.example".into(),
-        jwt_secret_env: secret_env.to_string(),
+        jwt_secret_env: Some(secret_env.to_string()),
         users_env: users_env.to_string(),
-        token_ttl_seconds: 3600,
+        token_ttl_seconds: Some(3600),
         trust_forwarded_for: false,
         policies: None,
         telemetry: None,
@@ -81,6 +81,7 @@ fn app_state_with_path(
         }),
         enforcement: crate::config::GatewayEnforcementConfig::default(),
         oidc: None,
+        session: None,
     });
     crate::server::AppState::new(config, reqwest::Client::new()).expect("build app state")
 }

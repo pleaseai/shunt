@@ -5029,9 +5029,9 @@ mod tests {
         let mut config = Config::default();
         config.server.gateway = Some(GatewayConfig {
             public_url: "https://gateway.example".into(),
-            jwt_secret_env: secret_env.clone(),
+            jwt_secret_env: Some(secret_env.clone()),
             users_env: users_env.clone(),
-            token_ttl_seconds: 3600,
+            token_ttl_seconds: Some(3600),
             trust_forwarded_for: false,
             policies: None,
             telemetry: None,
@@ -5050,6 +5050,7 @@ mod tests {
             }),
             enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
+            session: None,
         });
         assert!(matches!(
             config.clone().validate(),
@@ -5112,9 +5113,9 @@ mod tests {
         let mut config = Config::default();
         config.server.gateway = Some(GatewayConfig {
             public_url: "https://gateway.example".into(),
-            jwt_secret_env: secret_env.clone(),
+            jwt_secret_env: Some(secret_env.clone()),
             users_env: users_env.clone(),
-            token_ttl_seconds: 3600,
+            token_ttl_seconds: Some(3600),
             trust_forwarded_for: false,
             policies: None,
             telemetry: None,
@@ -5133,6 +5134,7 @@ mod tests {
             }),
             enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
+            session: None,
         });
 
         let output = Arc::new(Mutex::new(Vec::new()));
@@ -5193,9 +5195,9 @@ mod tests {
         let mut config = Config::default();
         config.server.gateway = Some(GatewayConfig {
             public_url: "https://gateway.example".into(),
-            jwt_secret_env: "SECRET_ENV".into(),
+            jwt_secret_env: Some("SECRET_ENV".into()),
             users_env: "USERS_ENV".into(),
-            token_ttl_seconds: 3600,
+            token_ttl_seconds: Some(3600),
             trust_forwarded_for: false,
             policies: None,
             telemetry: None,
@@ -5203,6 +5205,7 @@ mod tests {
             admin: Some(admin),
             enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
+            session: None,
         });
         assert!(!format!("{config:?}").contains(secret));
     }
@@ -5492,6 +5495,8 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: None,
+            admin: None,
+            enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
             session: Some(GatewaySessionConfig {
                 jwt_secret: vec![Secret::from("0123456789abcdef0123456789abcdef")],
@@ -5515,6 +5520,8 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: None,
+            admin: None,
+            enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
             session: Some(GatewaySessionConfig {
                 jwt_secret: vec![Secret::from("0123456789abcdef0123456789abcdef")],
@@ -5578,6 +5585,8 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: None,
+            admin: None,
+            enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
             session: Some(GatewaySessionConfig {
                 jwt_secret: vec![Secret::from("too-short")],
@@ -5601,6 +5610,8 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: None,
+            admin: None,
+            enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
             session: Some(GatewaySessionConfig {
                 jwt_secret: vec![
@@ -5627,6 +5638,8 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: None,
+            admin: None,
+            enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
             session: Some(GatewaySessionConfig {
                 jwt_secret: vec![],
@@ -5650,6 +5663,8 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: None,
+            admin: None,
+            enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
             session: Some(GatewaySessionConfig {
                 jwt_secret: vec![Secret::from("0123456789abcdef0123456789abcdef")],
@@ -5673,6 +5688,8 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: None,
+            admin: None,
+            enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
             session: Some(GatewaySessionConfig {
                 jwt_secret: vec![Secret::from("0123456789abcdef0123456789abcdef")],
@@ -5696,6 +5713,8 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: None,
+            admin: None,
+            enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
             session: Some(GatewaySessionConfig {
                 jwt_secret: vec![Secret::from("0123456789abcdef0123456789abcdef")],
@@ -5716,6 +5735,8 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: None,
+            admin: None,
+            enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
             session: None,
         };

@@ -666,9 +666,9 @@ mod tests {
     ) -> crate::config::GatewayConfig {
         crate::config::GatewayConfig {
             public_url: "https://gateway.example".into(),
-            jwt_secret_env: "UNSET_RELOAD_GATEWAY_SECRET".into(),
+            jwt_secret_env: Some("UNSET_RELOAD_GATEWAY_SECRET".into()),
             users_env: "UNSET_RELOAD_GATEWAY_USERS".into(),
-            token_ttl_seconds: 3600,
+            token_ttl_seconds: Some(3600),
             trust_forwarded_for: false,
             policies: None,
             telemetry: None,
@@ -676,6 +676,7 @@ mod tests {
             admin,
             enforcement: crate::config::GatewayEnforcementConfig::default(),
             oidc: None,
+            session: None,
         }
     }
 
