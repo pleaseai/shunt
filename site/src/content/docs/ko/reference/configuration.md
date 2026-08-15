@@ -55,14 +55,15 @@ description: 모든 shunt.toml 키 — server, providers, routes, models.
 | :-- | :-- | :-- |
 | `header` | `x-shunt-admin-token` | API/curl 호출용 관리자 자격 증명을 담는 헤더. 관리자·spend-limit 라우터에서는 `x-api-key`도 함께 허용됩니다 |
 | `tokens_env` | `SHUNT_ADMIN_TOKENS` | 쉼표로 구분된 `name:token` 쌍을 담는 env 변수. **쓰기(write)** 티어입니다 |
+| `tokens_file` | _(설정 안 함)_ | `name:token` 쌍을 담는 파일 경로(한 줄에 하나, 또는 쉼표로 구분). `tokens_env`가 설정되지 않았거나 비어 있을 때 사용합니다. 이것도 **쓰기(write)** 티어입니다 |
 | `session_ttl_secs` | `3600` | 로그인 후 브라우저 세션 수명(초) |
 | `pending_ttl_secs` | `600` | 시작된 프로비저닝 플로우를 끝낼 수 있는 시간(초) |
 
-지정된 환경 변수에는 하나 이상의 자격 증명이 있어야 합니다. 예: `SHUNT_ADMIN_TOKENS="ops:<token>"`. 테이블이 있는데 세 자격 증명 소스(`tokens_env`/`tokens_file`, `write_keys`, `read_keys`)가 **모두** 비어 있거나 형식이 잘못되면 시작은 닫힌 채로 실패(fail closed)합니다. `tokens_env`를 설정하지 않고 key 배열만 쓰는 구성은 정상적으로 부팅됩니다.
+관리자 토큰은 환경 변수나 파일에서 가져올 수 있습니다. 지정된 환경 변수에는 하나 이상의 자격 증명이 있어야 합니다. 예: `SHUNT_ADMIN_TOKENS="ops:<token>"`. 또는 `tokens_file`에 경로(`~`는 확장됩니다)를 지정하고 그 파일에 쌍을 넣어도 됩니다 — `shunt dashboard setup`이 `~/.shunt/admin-token`에 쓰는 것이 바로 이 파일이므로, 실행 환경에 비밀 값을 두지 않아도 됩니다. 둘 다 설정되면 비어 있지 않은 `tokens_env`가 우선합니다. 테이블이 있는데 세 자격 증명 소스(`tokens_env`/`tokens_file`, `write_keys`, `read_keys`)가 **모두** 비어 있거나 형식이 잘못되면 시작은 닫힌 채로 실패(fail closed)합니다. `tokens_env`를 설정하지 않고 key 배열만 쓰는 구성은 정상적으로 부팅됩니다.
 
 관리자 자격 증명은 `[server.auth]` 아래에 구성되는 클라이언트 토큰과 별개의 자격 증명입니다; 하나의 자격 증명을 두 표면에 재사용하지 마세요. 관리자 자격 증명은 `/admin*`과 spend-limit 라우트만 인증하며 추론 라우트는 절대 인증하지 않습니다 — 그곳의 `x-api-key`는 호출자 자신의 Anthropic 자격 증명 슬롯입니다. 또한 이들 라우터가 어떤 슬롯에서 받아들인 값이든 업스트림 요청 전에 그 슬롯에서 제거되므로, 관리자 자격 증명이 provider로 전달되는 일은 없습니다.
 
-`[server.auth]`의 `tokens_env`와 마찬가지로, 이 `tokens_env`의 값도 `${VAR}` / `${file:...}`로 쓸 수 있습니다([Secret 참조](#secret-참조) 참고).
+`[server.auth]`의 `tokens_env`와 마찬가지로, 이 `tokens_env`와 `tokens_file`의 값도 `${VAR}` / `${file:...}`로 쓸 수 있습니다([Secret 참조](#secret-참조) 참고).
 
 ### `[[server.admin.write_keys]]` / `[[server.admin.read_keys]]` (선택)
 
@@ -81,7 +82,7 @@ key = "${file:/run/secrets/shunt-reporting-key}"
 | 배열 | 접근 권한 | 의미 |
 | :-- | :-- | :-- |
 | `write_keys` | `write` | 전체 접근. `write`는 `read`를 포함합니다. `tokens_env`/`tokens_file`과 같은 티어입니다 |
-| `read_keys` | `read` | 관리자 화면과 spend-limit API의 모든 `GET`을 통과하며, 모든 변경 작업에서는 `403 permission_error`로 거부됩니다. `POST /admin/login`도 포함됩니다(브라우저 세션은 전체 접근 권한을 갖기 때문에, read key로 세션을 발급하면 권한이 승격됩니다) |
+| `read_keys` | `read` | 관리자 화면과 spend-limit API의 모든 `GET`을 통과하며, 모든 변경 작업에서는 `403 permission_error`로 거부됩니다. 로그인도 할 수 없습니다: `POST /admin/login`은 `401`로 거부합니다(브라우저 세션은 전체 접근 권한을 갖기 때문에, read key로 세션을 발급하면 권한이 승격됩니다) |
 
 자격 증명의 권한은 매칭된 모든 집합에 대한 **최댓값**이므로, 집합을 검사하는 순서가 권한을 바꿀 수 없습니다. 각 `id`는 공백이 아니어야 하고 각 key는 32자 이상이어야 합니다. id와 key 값은 각각 세 자격 증명 집합(`tokens_env`/`tokens_file`, `write_keys`, `read_keys`) 전체에서 고유해야 하며, 충돌하면 key 값을 로그에 남기지 않고 충돌한 id만 알립니다. 32자보다 짧은 기존 `tokens_env` 토큰은 이 규칙보다 먼저 존재했기 때문에 실패가 아니라 경고로 처리됩니다.
 

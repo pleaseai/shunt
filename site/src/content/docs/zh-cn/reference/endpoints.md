@@ -38,7 +38,7 @@ description: shunt 作为 Claude Code LLM 网关所提供的端点。
 | `POST` | `/backend-api/codex/analytics-events/events` | Codex CLI 分析 sink —— 接收后丢弃，仅记录净化后的事件名称计数器 |
 | `POST` | `/codex/analytics-events/events` | Codex CLI 分析 sink —— 根路径式 `chatgpt_base_url` 形式 |
 
-`/admin*` 路由仅在配置了 [`[server.admin]`](/zh-cn/reference/configuration/#serveradmin可选) 时存在;没有该表时,它们一个都不会注册。管理员凭据可通过配置的头部或 `x-api-key` 提交,`read_keys` 凭据可以通过上面的所有 GET,但在所有修改操作以及 `POST /admin/login` 上会被 `403` 拒绝。
+`/admin*` 路由仅在配置了 [`[server.admin]`](/zh-cn/reference/configuration/#serveradmin可选) 时存在;没有该表时,它们一个都不会注册。管理员凭据可通过配置的头部或 `x-api-key` 提交,`read_keys` 凭据可以通过上面的所有 GET,但在所有修改操作上会被 `403` 拒绝,在 `POST /admin/login` 上会被 `401` 拒绝。
 
 spend-limit 路由仅在启动时配置了 [`[server.spend]`](/zh-cn/reference/configuration/#serverspend可选) 的情况下存在;它们使用 [`[server.admin]`](/zh-cn/reference/configuration/#serveradmin可选) 凭据认证,因此与 `[server.gateway]` 无关。请通过配置的管理员头部(默认 `x-shunt-admin-token`)或 `x-api-key` 发送该凭据 —— 两个槽位都被接受。write 凭据(`write_keys` 条目,或 `tokens_env`/`tokens_file` 对)可使用全部操作;`read_keys` 凭据只能使用 GET,在修改操作上会收到 `403`。`POST` 接受 `user` 和 `organization` scope、`daily`/`weekly`/`monthly` period、user scope 中 1–256 字节的 `user_id`，以及 1–19 位非负 USD 美分整数字符串或 `null` 的 `amount`，并按 `(scope, period)` 执行 upsert。列表分页接受 `limit`（1–1000，默认 20）、`after_id`、`before_id` 和 `scope_type`；两个游标不能同时使用。每个响应都包含 `request-id`，错误采用 Anthropic 错误形状。限制与修改审计记录一起保存到所配置的带版本 JSON 状态文件中,每次修改归属于 `admin-key:<id>` 或 `admin-token:<name>`。stage 1 不公开 `/effective` 或 `/audit`，也不对推理请求实施限制。
 

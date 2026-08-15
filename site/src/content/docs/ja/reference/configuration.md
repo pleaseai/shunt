@@ -55,14 +55,15 @@ description: すべての shunt.toml キー — server、providers、routes、mo
 | :-- | :-- | :-- |
 | `header` | `x-shunt-admin-token` | API/curl 呼び出し用の管理認証情報を運ぶヘッダー。管理ルーターと spend-limit ルーターでは `x-api-key` も併せて受け付けます |
 | `tokens_env` | `SHUNT_ADMIN_TOKENS` | カンマ区切りの `name:token` ペアを保持する環境変数。これは **write** ティアです |
+| `tokens_file` | _(未設定)_ | `name:token` ペアを保持するファイルのパス（1 行に 1 つ、またはカンマ区切り）。`tokens_env` が未設定または空のときに使われます。これも **write** ティアです |
 | `session_ttl_secs` | `3600` | ログイン後のブラウザーセッションの寿命（秒） |
 | `pending_ttl_secs` | `600` | 開始したプロビジョニングフローを完了できる時間（秒） |
 
-指定された環境変数には 1 つ以上の認証情報が必要です。例: `SHUNT_ADMIN_TOKENS="ops:<token>"`。テーブルが存在するのに 3 つの認証情報ソース（`tokens_env`/`tokens_file`、`write_keys`、`read_keys`）が**すべて**未設定・空・不正な場合、起動はフェイルクローズします。`tokens_env` を設定せずキー配列だけを使う構成は正常に起動します。
+管理トークンは環境変数からもファイルからも与えられます。指定された環境変数には 1 つ以上の認証情報が必要です。例: `SHUNT_ADMIN_TOKENS="ops:<token>"`。あるいは `tokens_file` にパス（`~` は展開されます）を設定し、そのファイルにペアを置くこともできます — これは `shunt dashboard setup` が `~/.shunt/admin-token` に書き込むファイルそのもので、起動環境に秘密を置かずに済みます。両方が設定されている場合は、空でない `tokens_env` が優先されます。テーブルが存在するのに 3 つの認証情報ソース（`tokens_env`/`tokens_file`、`write_keys`、`read_keys`）が**すべて**未設定・空・不正な場合、起動はフェイルクローズします。`tokens_env` を設定せずキー配列だけを使う構成は正常に起動します。
 
 管理認証情報は `[server.auth]` の下で設定されるクライアントトークンとは別個の認証情報です。1 つの認証情報を両方のサーフェスで再利用しないでください。管理認証情報が認証するのは `/admin*` と spend-limit ルートだけで、推論ルートを認証することはありません — そちらの `x-api-key` は呼び出し元自身の Anthropic 認証情報スロットです。またこれらのルーターがあるスロットで受け付けた値は、上流へのリクエスト前に同じスロットから取り除かれるため、管理認証情報が provider に転送されることはありません。
 
-`[server.auth]` の `tokens_env` と同様、この `tokens_env` の値も `${VAR}` / `${file:...}` で書けます([Secret 参照](#secret-参照)を参照)。
+`[server.auth]` の `tokens_env` と同様、この `tokens_env` と `tokens_file` の値も `${VAR}` / `${file:...}` で書けます([Secret 参照](#secret-参照)を参照)。
 
 ### `[[server.admin.write_keys]]` / `[[server.admin.read_keys]]`（オプション）
 
@@ -81,7 +82,7 @@ key = "${file:/run/secrets/shunt-reporting-key}"
 | 配列 | アクセス権 | 意味 |
 | :-- | :-- | :-- |
 | `write_keys` | `write` | フルアクセス。`write` は `read` を含みます。`tokens_env`/`tokens_file` と同じティアです |
-| `read_keys` | `read` | 管理サーフェスと spend-limit API のすべての `GET` を通過し、すべての変更操作では `403 permission_error` で拒否されます。`POST /admin/login` も含みます（ブラウザーセッションはフルアクセスを持つため、read キーからセッションを発行すると権限が昇格してしまいます） |
+| `read_keys` | `read` | 管理サーフェスと spend-limit API のすべての `GET` を通過し、すべての変更操作では `403 permission_error` で拒否されます。サインインもできません: `POST /admin/login` は `401` で拒否します（ブラウザーセッションはフルアクセスを持つため、read キーからセッションを発行すると権限が昇格してしまいます） |
 
 認証情報の権限は一致したすべての集合に対する**最大値**なので、集合を走査する順序が権限を変えることはありません。各 `id` は空であってはならず、各キーは 32 文字以上である必要があります。id とキー値はそれぞれ 3 つの認証情報集合（`tokens_env`/`tokens_file`、`write_keys`、`read_keys`）全体で一意でなければならず、衝突した場合はキー値をログに出さずに衝突した id だけを報告します。32 文字未満の既存 `tokens_env` トークンは、このルールより前から存在するため失敗ではなく警告になります。
 

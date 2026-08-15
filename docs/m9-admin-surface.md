@@ -119,9 +119,10 @@ pre-existing `[server.admin]` untouched.
   `[[server.admin.write_keys]]`, which carries an `id`), as is every
   `write_keys` entry.
 - **`read`** — passes every `GET` on the admin surface and on the spend-limit
-  API, and is refused with `403 permission_error` on every mutation. That
-  includes `POST /admin/login`: a browser session carries full access, so
-  minting one from a read key would silently escalate it.
+  API, and is refused with `403 permission_error` on every mutation. It also
+  cannot sign in: `POST /admin/login` rejects it with `401` through the login
+  form's own path, because a browser session carries full access and minting one
+  from a read key would silently escalate it.
 
 A credential's privilege is the **maximum** over every set it matches, not
 whichever set happened to be scanned last. Array `id`s must be non-blank and

@@ -38,7 +38,7 @@ description: shunt가 Claude Code LLM 게이트웨이로서 제공하는 엔드�
 | `POST` | `/backend-api/codex/analytics-events/events` | Codex CLI 분석 sink — 수락 후 폐기하고 정제된 이벤트 이름 카운터만 기록 |
 | `POST` | `/codex/analytics-events/events` | Codex CLI 분석 sink — 루트형 `chatgpt_base_url` 형식 |
 
-`/admin*` 라우트는 [`[server.admin]`](/ko/reference/configuration/#serveradmin-선택)이 구성된 경우에만 존재합니다; 그 테이블이 없으면 하나도 등록되지 않습니다. 관리자 자격 증명은 구성된 헤더 또는 `x-api-key`로 받으며, `read_keys` 자격 증명은 위의 모든 GET을 통과하지만 모든 변경 작업과 `POST /admin/login`에서는 `403`으로 거부됩니다.
+`/admin*` 라우트는 [`[server.admin]`](/ko/reference/configuration/#serveradmin-선택)이 구성된 경우에만 존재합니다; 그 테이블이 없으면 하나도 등록되지 않습니다. 관리자 자격 증명은 구성된 헤더 또는 `x-api-key`로 받으며, `read_keys` 자격 증명은 위의 모든 GET을 통과하지만 모든 변경 작업에서는 `403`으로, `POST /admin/login`에서는 `401`로 거부됩니다.
 
 spend-limit 라우트는 부팅 시 [`[server.spend]`](/ko/reference/configuration/#serverspend-선택)가 구성된 경우에만 존재하며, [`[server.admin]`](/ko/reference/configuration/#serveradmin-선택) 자격 증명으로 인증하므로 `[server.gateway]`와는 무관합니다. 자격 증명은 구성된 관리자 헤더(기본값 `x-shunt-admin-token`) 또는 `x-api-key`로 보냅니다 — 두 슬롯 모두 허용됩니다. 쓰기 자격 증명(`write_keys` 항목 또는 `tokens_env`/`tokens_file` 쌍)은 모든 작업을 사용할 수 있고, `read_keys` 자격 증명은 GET만 사용할 수 있으며 변경 작업에서는 `403`을 받습니다. `POST`는 `user`와 `organization` scope, `daily`/`weekly`/`monthly` period, user scope에서는 1–256바이트인 `user_id`, 1–19자리의 음수가 아닌 USD 센트 정수 문자열 또는 `null`인 `amount`를 받아 `(scope, period)` 기준으로 upsert합니다. 목록 페이지네이션은 `limit`(1–1000, 기본값 20), `after_id`, `before_id`, `scope_type`을 받으며 두 커서는 함께 사용할 수 없습니다. 모든 응답에는 `request-id`가 포함되고 오류는 Anthropic 오류 형태를 사용합니다. 제한과 변경 감사 레코드는 구성한 버전 JSON 상태 파일에 함께 저장되며, 각 변경은 `admin-key:<id>` 또는 `admin-token:<name>`으로 귀속됩니다. stage 1은 `/effective`나 `/audit`을 노출하지 않으며 추론 요청에 제한을 적용하지 않습니다.
 

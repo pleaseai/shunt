@@ -118,7 +118,7 @@ key = "${file:/run/secrets/shunt-reporting-key}"
 | Array | Access | Meaning |
 | :-- | :-- | :-- |
 | `write_keys` | `write` | Full access: `write` implies `read`. The same tier as `tokens_env`/`tokens_file` |
-| `read_keys` | `read` | Passes every `GET` on the admin surface and the spend-limit API; refused with `403 permission_error` on every mutation, including `POST /admin/login` (a browser session carries full access, so minting one from a read key would escalate it) |
+| `read_keys` | `read` | Passes every `GET` on the admin surface and the spend-limit API; refused with `403 permission_error` on every mutation. It also cannot sign in: `POST /admin/login` rejects it with `401` (a browser session carries full access, so minting one from a read key would escalate it) |
 
 A credential's privilege is the maximum over every set it matches, so the order the sets are scanned in cannot change it. Each `id` must be non-blank and each key at least 32 characters; ids **and** key values must each be unique across all three credential sets (`tokens_env`/`tokens_file`, `write_keys`, `read_keys`), and a collision names the colliding ids without logging a key value. A legacy `tokens_env` token shorter than 32 characters warns rather than failing, because those tokens predate the rule.
 

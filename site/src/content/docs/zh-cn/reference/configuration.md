@@ -55,14 +55,15 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 | :-- | :-- | :-- |
 | `header` | `x-shunt-admin-token` | API/curl 调用中携带管理员凭据的头部。在管理路由和 spend-limit 路由上,`x-api-key` 也同样被接受 |
 | `tokens_env` | `SHUNT_ADMIN_TOKENS` | 保存逗号分隔的 `name:token` 对的环境变量。它们属于 **write** 层级 |
+| `tokens_file` | _(未设置)_ | 保存 `name:token` 对的文件路径(每行一个,或逗号分隔),在 `tokens_env` 未设置或为空时使用。它同样属于 **write** 层级 |
 | `session_ttl_secs` | `3600` | 登录后浏览器会话的生命周期,单位秒 |
 | `pending_ttl_secs` | `600` | 允许完成一个已开始的预配流程的时间,单位秒 |
 
-指定的环境变量必须包含至少一个凭据,例如 `SHUNT_ADMIN_TOKENS="ops:<token>"`。若此表存在但三个凭据来源(`tokens_env`/`tokens_file`、`write_keys`、`read_keys`)**全部**未设置、为空或格式错误,启动会安全失败(fail closed)。仅使用 key 数组、不设置 `tokens_env` 的部署可以正常启动。
+管理员 token 既可以来自环境变量,也可以来自文件。指定的环境变量必须包含至少一个凭据,例如 `SHUNT_ADMIN_TOKENS="ops:<token>"`。或者把 `tokens_file` 设为一个路径(`~` 会被展开)并把这些对放进该文件 —— 这正是 `shunt dashboard setup` 写入 `~/.shunt/admin-token` 的文件,这样启动环境里就不必存放任何密钥。两者都设置时,非空的 `tokens_env` 优先。若此表存在但三个凭据来源(`tokens_env`/`tokens_file`、`write_keys`、`read_keys`)**全部**未设置、为空或格式错误,启动会安全失败(fail closed)。仅使用 key 数组、不设置 `tokens_env` 的部署可以正常启动。
 
 管理员凭据与 `[server.auth]` 下配置的客户端 token 是相互独立的凭据;不要在两个界面上复用同一个凭据。管理员凭据只认证 `/admin*` 与 spend-limit 路由,绝不认证推理路由 —— 在那里 `x-api-key` 是调用方自己的 Anthropic 凭据槽位。此外,这些路由在某个槽位接受的值,会在发起上游请求前从同一槽位中剥离,因此管理员凭据不会被转发给 provider。
 
-和 `[server.auth]` 的 `tokens_env` 一样,这个 `tokens_env` 的值也可以写成 `${VAR}` / `${file:...}`(见 [Secret 引用](#secret-引用))。
+和 `[server.auth]` 的 `tokens_env` 一样,这个 `tokens_env` 与 `tokens_file` 的值也可以写成 `${VAR}` / `${file:...}`(见 [Secret 引用](#secret-引用))。
 
 ### `[[server.admin.write_keys]]` / `[[server.admin.read_keys]]`(可选)
 
@@ -81,7 +82,7 @@ key = "${file:/run/secrets/shunt-reporting-key}"
 | 数组 | 访问级别 | 含义 |
 | :-- | :-- | :-- |
 | `write_keys` | `write` | 完全访问权限。`write` 蕴含 `read`,与 `tokens_env`/`tokens_file` 同级 |
-| `read_keys` | `read` | 可以通过管理界面与 spend-limit API 的所有 `GET`;所有修改操作都会以 `403 permission_error` 拒绝,包括 `POST /admin/login`(浏览器会话拥有完全访问权限,用 read key 铸造会话等于提权) |
+| `read_keys` | `read` | 可以通过管理界面与 spend-limit API 的所有 `GET`;所有修改操作都会以 `403 permission_error` 拒绝。它也无法登录:`POST /admin/login` 会以 `401` 拒绝(浏览器会话拥有完全访问权限,用 read key 铸造会话等于提权) |
 
 凭据的权限是它匹配到的所有集合中的**最大值**,因此扫描集合的顺序不会改变权限。每个 `id` 不得为空,每个 key 至少 32 个字符;id 与 key 值都必须在三个凭据集合(`tokens_env`/`tokens_file`、`write_keys`、`read_keys`)范围内唯一,发生冲突时只报告冲突的 id,不会记录 key 值。短于 32 个字符的旧 `tokens_env` token 早于该规则存在,因此只发出警告而不会失败。
 

@@ -38,7 +38,7 @@ description: shunt が Claude Code LLM ゲートウェイとして提供する�
 | `POST` | `/backend-api/codex/analytics-events/events` | Codex CLI analytics sink — 受理して破棄し、サニタイズ済みイベント名のカウンターのみ記録 |
 | `POST` | `/codex/analytics-events/events` | Codex CLI analytics sink — ルート形式の `chatgpt_base_url` |
 
-`/admin*` ルートは [`[server.admin]`](/ja/reference/configuration/#serveradminオプション) が設定されている場合にのみ存在します。そのテーブルがなければ、いずれも登録されません。管理認証情報は設定されたヘッダーまたは `x-api-key` で受け付け、`read_keys` の認証情報は上記のすべての GET を通過しますが、すべての変更操作と `POST /admin/login` では `403` で拒否されます。
+`/admin*` ルートは [`[server.admin]`](/ja/reference/configuration/#serveradminオプション) が設定されている場合にのみ存在します。そのテーブルがなければ、いずれも登録されません。管理認証情報は設定されたヘッダーまたは `x-api-key` で受け付け、`read_keys` の認証情報は上記のすべての GET を通過しますが、すべての変更操作では `403` で、`POST /admin/login` では `401` で拒否されます。
 
 spend-limit ルートは、起動時に [`[server.spend]`](/ja/reference/configuration/#serverspendオプション) が設定されていた場合にのみ存在します。[`[server.admin]`](/ja/reference/configuration/#serveradminオプション) の認証情報で認証するため、`[server.gateway]` とは無関係です。その認証情報は設定された管理ヘッダー（デフォルトは `x-shunt-admin-token`）または `x-api-key` で送信します — どちらのスロットも受け付けます。write の認証情報（`write_keys` エントリー、または `tokens_env`/`tokens_file` のペア）はすべての操作を使用でき、`read_keys` の認証情報は GET のみ使用でき、変更操作では `403` を受け取ります。`POST` は `user` と `organization` の scope、`daily`／`weekly`／`monthly` の period、user scope では 1～256 バイトの `user_id`、1～19 桁の USD セント非負整数文字列または `null` の `amount` を受け付け、`(scope, period)` 単位で upsert します。一覧では `limit`（1～1000、デフォルト 20）、`after_id`、`before_id`、`scope_type` を使用でき、2 つのカーソルは同時に指定できません。すべてのレスポンスに `request-id` が含まれ、エラーは Anthropic のエラー形式です。上限と変更監査レコードは、設定したバージョン付き JSON 状態ファイルに一緒に保存され、各変更は `admin-key:<id>` または `admin-token:<name>` に帰属します。ステージ 1 は `/effective` と `/audit` を公開せず、推論リクエストに上限を適用しません。
 
