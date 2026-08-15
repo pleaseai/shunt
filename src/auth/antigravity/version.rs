@@ -161,6 +161,20 @@ async fn fetch_version(client: &reqwest::Client, url: &str) -> Option<String> {
         .ok()?
         .ok()?;
     if !response.status().is_success() {
+        // Drain the body (bounded by the same FETCH_TIMEOUT already governing
+        // this call) rather than dropping the response un-drained, which would
+        // strand the reqwest connection instead of returning it to the pool.
+        // There is no error to enrich here — the caller only gets `None` — so
+        // the drained body is logged at debug rather than folded into a
+        // return value, matching this module's existing fail-open logging
+        // for a manifest outage (the `None` branch in `spawn_refresher`).
+        let status = response.status();
+        let body = super::auth::diagnostic_body(FETCH_TIMEOUT, response).await;
+        tracing::debug!(
+            status = %status,
+            body = %body,
+            "Antigravity version manifest request rejected"
+        );
         return None;
     }
     let body = tokio::time::timeout(FETCH_TIMEOUT, response.text())

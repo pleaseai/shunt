@@ -28,10 +28,17 @@ use crate::auth::callback::{CallbackConfig, CallbackServer};
 use crate::auth::shared::{generate_pkce, PkceChallenge};
 
 use super::auth::{
-    write_stored, StoredAuth, TokenResponse, AUTH_URL, CALLBACK_PATH, CALLBACK_PORT, CLIENT_ID,
-    CLIENT_SECRET, SCOPES, TOKEN_URL, USERINFO_URL,
+    diagnostic_body, write_stored, StoredAuth, TokenResponse, AUTH_URL, CALLBACK_PATH,
+    CALLBACK_PORT, CLIENT_ID, CLIENT_SECRET, SCOPES, TOKEN_URL, USERINFO_URL,
 };
 use super::default_antigravity_auth_path;
+
+/// Bound on draining a rejected userinfo response body for the error message
+/// below. `fetch_email`'s request itself deliberately has no timeout wrapper
+/// (see its call site in `run`, which already treats a failure here as
+/// non-fatal) — this constant bounds only the body read added on top of that,
+/// so it does not change that request's existing timeout semantics.
+const USERINFO_BODY_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
@@ -213,10 +220,14 @@ async fn fetch_email(
         .await
         .context("Google userinfo request failed")?;
     if !response.status().is_success() {
-        bail!(
-            "Google userinfo request failed (HTTP {})",
-            response.status()
-        );
+        // Drain the body (bounded by USERINFO_BODY_DRAIN_TIMEOUT) rather than
+        // dropping the response un-drained, which would strand the reqwest
+        // connection instead of returning it to the pool — and fold it into
+        // the error, since a bare status code does not say whether Google
+        // rejected the scope, the token, or something else entirely.
+        let status = response.status();
+        let body = diagnostic_body(USERINFO_BODY_DRAIN_TIMEOUT, response).await;
+        bail!("Google userinfo request failed (HTTP {status}): {body}");
     }
     let info = response
         .json::<UserInfo>()
@@ -464,6 +475,26 @@ mod tests {
         assert!(
             error.to_string().contains("403"),
             "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn userinfo_failure_folds_the_upstream_body_into_the_error() {
+        // A bare status code does not say whether Google rejected the scope,
+        // the token, or something else entirely; the drained body must be
+        // folded into the error rather than discarded.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(403).set_body_string("insufficient_scope"))
+            .mount(&server)
+            .await;
+
+        let error = fetch_email(&reqwest::Client::new(), &server.uri(), "token")
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("insufficient_scope"),
+            "expected the upstream body in the error, got: {error}"
         );
     }
 

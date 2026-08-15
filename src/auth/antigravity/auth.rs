@@ -515,7 +515,12 @@ pub(crate) fn control_plane_metadata() -> Value {
 /// would make the log line as ambiguous as the bare status code it accompanies.
 /// This is diagnostic-only — the caller still receives a distinct [`AdapterError`]
 /// regardless of which of these three a rejected response hits.
-async fn diagnostic_body(timeout: Duration, response: reqwest::Response) -> String {
+///
+/// `pub(super)` rather than private: `version.rs` and `login.rs` (siblings under
+/// `antigravity`) reuse this to drain their own non-2xx responses rather than
+/// dropping them un-drained, which would otherwise strand the reqwest
+/// connection instead of returning it to the pool.
+pub(super) async fn diagnostic_body(timeout: Duration, response: reqwest::Response) -> String {
     match tokio::time::timeout(timeout, response.text()).await {
         Ok(Ok(body)) if body.is_empty() => "<empty body>".to_string(),
         Ok(Ok(body)) => body,
