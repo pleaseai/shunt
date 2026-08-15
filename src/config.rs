@@ -7334,6 +7334,97 @@ provider = "kimi"
     }
 
     #[test]
+    fn literal_admin_key_is_rejected_while_reference_fed_keys_load() {
+        // The pre-existing `Secret` fields only warn about a literal, because
+        // deployments already hold literals there. The admin key arrays are
+        // new, so a literal is refused outright — this pins the difference.
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-admin-key-literal-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let tokens_env = format!(
+            "SHUNT_CONFIG_TEST_ADMIN_LITERAL_TOKENS_{}",
+            std::process::id()
+        );
+        std::env::remove_var(&tokens_env);
+
+        // A key written straight into the file is a load error, and the error
+        // names the path without echoing the key.
+        let toml_path = dir.join("shunt.toml");
+        let literal_toml = format!(
+            "[server.admin]\ntokens_env = \"{tokens_env}\"\n\n\
+             [[server.admin.write_keys]]\nid = \"terraform\"\nkey = \"{ADMIN_KEY_A}\"\n"
+        );
+        std::fs::write(&toml_path, &literal_toml).unwrap();
+        let error =
+            Config::load(Some(&toml_path)).expect_err("a literal admin key must be refused");
+        assert!(matches!(
+            error,
+            ConfigError::LiteralAdminKey { ref path }
+                if path == "server.admin.write_keys.0.key"
+        ));
+        assert!(!error.to_string().contains(ADMIN_KEY_A));
+
+        // The same holds for `read_keys`, and for a YAML config file — the
+        // literals map is shared by both parsers.
+        let yaml_path = dir.join("shunt.yaml");
+        std::fs::write(
+            &yaml_path,
+            format!(
+                "server:\n  admin:\n    tokens_env: \"{tokens_env}\"\n    read_keys:\n\
+                 \x20     - id: reporting\n        key: \"{ADMIN_KEY_B}\"\n"
+            ),
+        )
+        .unwrap();
+        assert!(matches!(
+            Config::load(Some(&yaml_path)),
+            Err(ConfigError::LiteralAdminKey { ref path })
+                if path == "server.admin.read_keys.0.key"
+        ));
+
+        // A `${VAR}` reference loads and resolves to the real key.
+        let key_env = format!("SHUNT_CONFIG_TEST_ADMIN_KEY_{}", std::process::id());
+        std::env::set_var(&key_env, ADMIN_KEY_A);
+        std::fs::write(
+            &toml_path,
+            format!(
+                "[server.admin]\ntokens_env = \"{tokens_env}\"\n\n\
+                 [[server.admin.write_keys]]\nid = \"terraform\"\nkey = \"${{{key_env}}}\"\n"
+            ),
+        )
+        .unwrap();
+        let config = Config::load(Some(&toml_path)).expect("a ${VAR}-fed key loads");
+        let admin = config.server.admin.as_ref().unwrap();
+        assert_eq!(admin.write_keys[0].key.expose(), ADMIN_KEY_A);
+        std::env::remove_var(&key_env);
+
+        // So does a `${file:}` reference.
+        let key_file = dir.join("admin-key");
+        std::fs::write(&key_file, format!("{ADMIN_KEY_B}\n")).unwrap();
+        std::fs::write(
+            &toml_path,
+            format!(
+                "[server.admin]\ntokens_env = \"{tokens_env}\"\n\n\
+                 [[server.admin.read_keys]]\nid = \"reporting\"\nkey = \"${{file:{}}}\"\n",
+                key_file.display()
+            ),
+        )
+        .unwrap();
+        let config = Config::load(Some(&toml_path)).expect("a ${file:}-fed key loads");
+        let admin = config.server.admin.as_ref().unwrap();
+        assert_eq!(admin.read_keys[0].key.expose(), ADMIN_KEY_B);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn secret_field_fed_by_a_reference_resolves_and_still_redacts() {
         let _guard = CONFIG_ENV_LOCK
             .lock()

@@ -613,6 +613,100 @@ async fn delete_and_unknown_ids_use_the_pinned_shapes() {
     assert_error_response(&response, &body, StatusCode::NOT_FOUND);
 }
 
+/// THE COUPLING TEST. `[server.admin]` + `[server.spend]` with no
+/// `[server.gateway]` at all must boot and serve the spend endpoints. Before
+/// this change the spend surface lived under `[server.gateway.admin]`, so
+/// enabling it forced a deployment to configure gateway login — a signing
+/// secret plus static users or OIDC — that it never used.
+#[tokio::test]
+async fn spend_surface_boots_and_serves_without_any_gateway_configuration() {
+    let (config, _env) = SpendEnv::config("no-gateway");
+    assert!(config.server.gateway.is_none());
+    assert!(config.server.admin.is_some() && config.server.spend.is_some());
+
+    let (router, _, _) = build_router(config).expect("a gateway-less spend config must boot");
+
+    let (response, _) = send(
+        &router,
+        request("GET", "/v1/organizations/spend_limits", WRITE_KEY, None),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let (response, body) = post(&router, WRITE_KEY, organization(json!("100"), "monthly")).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body["amount"], "100");
+}
+
+/// A legacy `tokens_env` pair is the write tier, so it must behave exactly like
+/// a `write_keys` entry — and be attributed as `admin-token:<name>` rather than
+/// `admin-key:<id>` in the audit trail.
+#[tokio::test]
+async fn legacy_tokens_env_credential_behaves_like_a_write_key() {
+    let (config, _env) = SpendEnv::config("legacy-token");
+    let (router, _, state) = build_router(config).unwrap();
+
+    let (response, created) = post(&router, TOKEN_KEY, organization(json!("1"), "daily")).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let id = created["id"].as_str().unwrap().to_string();
+
+    let (response, _) = send(
+        &router,
+        request(
+            "GET",
+            &format!("/v1/organizations/spend_limits/{id}"),
+            TOKEN_KEY,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let (response, _) = send(
+        &router,
+        request(
+            "DELETE",
+            &format!("/v1/organizations/spend_limits/{id}"),
+            TOKEN_KEY,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let actors: Vec<String> = state
+        .gateway_stores
+        .spend
+        .export()
+        .audit
+        .iter()
+        .map(|record| record.actor.clone())
+        .collect();
+    assert_eq!(actors, vec!["admin-token:ops", "admin-token:ops"]);
+}
+
+/// The spend routes accept the admin credential in the configured header as
+/// well as in `x-api-key`, for every credential kind.
+#[tokio::test]
+async fn spend_routes_accept_both_credential_slots() {
+    let (config, _env) = SpendEnv::config("both-slots");
+    let (router, _, _) = build_router(config).unwrap();
+
+    for credential in [TOKEN_KEY, WRITE_KEY, READ_KEY] {
+        for slot in ["x-shunt-admin-token", "x-api-key"] {
+            let request = Request::get("/v1/organizations/spend_limits")
+                .header(slot, credential)
+                .body(Body::empty())
+                .unwrap();
+            let (response, _) = send(&router, request).await;
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "{credential} in {slot} must authenticate the spend surface"
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn routes_are_absent_without_the_spend_section() {
     let response = build_router(Config::default())

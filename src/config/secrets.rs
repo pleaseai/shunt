@@ -982,4 +982,57 @@ mod tests {
         );
         assert_eq!(LiteralScope::unattributed_count(), 0);
     }
+
+    #[test]
+    fn is_secret_field_path_matches_the_admin_key_array_forms() {
+        // `Config::load` rejects a literal at these paths outright, but they
+        // are `Secret` fields all the same: a value that reaches one without
+        // being a file literal (a `SHUNT_*` override, say) must still be
+        // attributed by path rather than degrading to an unattributed count.
+        let mut map = HashMap::new();
+        map.insert(
+            "write-array-key".to_string(),
+            vec!["server.admin.write_keys.0.key".to_string()],
+        );
+        map.insert(
+            "read-array-key".to_string(),
+            vec!["server.admin.read_keys.3.key".to_string()],
+        );
+        let _scope = LiteralScope::enter(map, HashSet::new());
+        record_literal_hit("write-array-key");
+        record_literal_hit("read-array-key");
+        assert_eq!(
+            LiteralScope::hits(),
+            vec![
+                "server.admin.read_keys.3.key".to_string(),
+                "server.admin.write_keys.0.key".to_string(),
+            ]
+        );
+        assert_eq!(LiteralScope::unattributed_count(), 0);
+    }
+
+    #[test]
+    fn reject_literal_admin_keys_names_only_admin_key_paths() {
+        let mut literals = HashMap::new();
+        literals.insert(
+            "some-dsn".to_string(),
+            vec!["sentry.dsn".to_string(), "server.admin.header".to_string()],
+        );
+        reject_literal_admin_keys(&literals)
+            .expect("a literal at a non-admin-key path is warned about, not refused");
+
+        literals.insert(
+            "an-admin-key".to_string(),
+            vec![
+                "server.admin.write_keys.1.key".to_string(),
+                "server.admin.read_keys.0.key".to_string(),
+            ],
+        );
+        // Sorted, so the reported path does not depend on map iteration order.
+        assert!(matches!(
+            reject_literal_admin_keys(&literals),
+            Err(ConfigError::LiteralAdminKey { ref path })
+                if path == "server.admin.read_keys.0.key"
+        ));
+    }
 }
