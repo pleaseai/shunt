@@ -904,6 +904,25 @@ async fn admin_credential_never_authenticates_an_inference_route_in_either_slot(
             }
         }
     }
+
+    // Control on a gated route that answers without an upstream: the client
+    // token is accepted in the very slot the admin credential was refused in,
+    // so the 401s above are about the credential and not about the route.
+    let response = client
+        .get(format!("{}/v1/models", gateway.base_url))
+        .header("x-api-key", "client-token-value")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response = client
+        .get(format!("{}/v1/models", gateway.base_url))
+        .header("x-api-key", ADMIN_WRITE_KEY)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
     std::env::remove_var(admin_env);
     std::env::remove_var(client_env);
 }
