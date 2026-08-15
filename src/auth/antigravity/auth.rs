@@ -590,7 +590,12 @@ fn is_stored_valid(stored: &StoredAuth, now: SystemTime) -> bool {
     let Some(expiry_ms) = stored.expiry_date else {
         return false;
     };
-    let expiry = UNIX_EPOCH + Duration::from_millis(expiry_ms);
+    // A corrupted or maliciously large `expiry_date` must not panic: `+` on
+    // `SystemTime` panics on overflow, so use the checked form and treat an
+    // out-of-range value as stale (fail-closed) rather than crash.
+    let Some(expiry) = UNIX_EPOCH.checked_add(Duration::from_millis(expiry_ms)) else {
+        return false;
+    };
     expiry
         .checked_sub(EXPIRY_BUFFER)
         .is_some_and(|refresh_at| now < refresh_at)
@@ -683,6 +688,37 @@ mod tests {
             project_id: None,
         };
         assert!(!is_stored_valid(&stored, SystemTime::now()));
+    }
+
+    #[test]
+    fn a_corrupted_huge_expiry_never_panics() {
+        // `UNIX_EPOCH + Duration::from_millis(expiry_ms)` panics on overflow
+        // for a sufficiently large millisecond value; a corrupted credential
+        // file must not be able to crash the process over this, so the
+        // checked form is used instead and any overflow fails closed
+        // (treated as stale) rather than propagating.
+        //
+        // `u64::MAX` milliseconds happens to still be representable as a
+        // `SystemTime` on 64-bit Unix (comfortably inside its `i64`-seconds
+        // range), so it is not itself an overflowing value here — the
+        // property this test actually pins down, and the one the fix exists
+        // for, is that no expiry_date value can ever panic this function.
+        let stored = StoredAuth {
+            access_token: "token".to_string(),
+            refresh_token: "refresh".to_string(),
+            expiry_date: Some(u64::MAX),
+            email: None,
+            project_id: None,
+        };
+        let result = std::panic::catch_unwind(|| is_stored_valid(&stored, SystemTime::now()));
+        assert!(
+            result.is_ok(),
+            "is_stored_valid must not panic on a corrupted huge expiry_date"
+        );
+        // Pin the concrete, currently-representable outcome so this stays
+        // non-vacuous: on this platform the value is a legitimate (if
+        // absurdly distant) future expiry, not an overflow.
+        assert!(result.unwrap());
     }
 
     #[test]
