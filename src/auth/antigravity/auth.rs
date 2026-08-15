@@ -638,10 +638,16 @@ const DIAGNOSTIC_BODY_MAX_BYTES: usize = 4096;
 /// The read is capped at [`DIAGNOSTIC_BODY_MAX_BYTES`]: rather than draining
 /// the body in full with [`reqwest::Response::text`] and only truncating the
 /// string afterwards (which still buffers the whole thing), this reads chunk
-/// by chunk and stops once the cap is hit, so an oversized body is never
-/// fully buffered. A body cut short this way is marked in the returned
-/// string so the truncation itself is visible in the log line rather than
-/// looking like the response actually ended there.
+/// by chunk and folds each one through [`accumulate_diagnostic_chunk`], which
+/// keeps `buf` at or under the cap no matter how large an individual chunk
+/// is. The loop itself keeps polling `response.chunk()` until the body ends
+/// (`Ok(None)`) or errors, even after the cap is hit -- stopping early there
+/// would leave the rest of the body unread and strand the reqwest connection
+/// instead of returning it to the pool, the same problem this function was
+/// introduced to fix for its callers' non-2xx responses in the first place.
+/// A body cut short this way is marked in the returned string so the
+/// truncation itself is visible in the log line rather than looking like the
+/// response actually ended there.
 ///
 /// `pub(super)` rather than private: `version.rs` and `login.rs` (siblings under
 /// `antigravity`) reuse this to drain their own non-2xx responses rather than
@@ -652,12 +658,8 @@ pub(super) async fn diagnostic_body(timeout: Duration, mut response: reqwest::Re
         let mut buf = Vec::new();
         let mut truncated = false;
         loop {
-            if buf.len() >= DIAGNOSTIC_BODY_MAX_BYTES {
-                truncated = true;
-                break;
-            }
             match response.chunk().await {
-                Ok(Some(chunk)) => buf.extend_from_slice(&chunk),
+                Ok(Some(chunk)) => accumulate_diagnostic_chunk(&mut buf, &chunk, &mut truncated),
                 Ok(None) => break,
                 Err(error) => return Err(format!("<error reading body: {error}>")),
             }
@@ -677,6 +679,30 @@ pub(super) async fn diagnostic_body(timeout: Duration, mut response: reqwest::Re
         }
         Ok(Err(message)) => message,
         Err(_) => "<timed out reading body>".to_string(),
+    }
+}
+
+/// Fold one body chunk into the bounded diagnostic buffer, keeping `buf` at
+/// or under [`DIAGNOSTIC_BODY_MAX_BYTES`] regardless of how large `chunk`
+/// itself is. The previous version only checked the cap *between* chunks
+/// (`if buf.len() >= CAP { break }` before each read), so a single chunk
+/// larger than the whole cap -- an entirely ordinary shape for a small
+/// upstream error body, since `reqwest::Response::chunk` yields whatever the
+/// transport handed it, not a fixed size -- sailed straight through and blew
+/// past the bound in one step. Splitting an oversized chunk at the remaining
+/// budget instead means the cap holds no matter how the body happens to be
+/// chunked on the wire.
+///
+/// `truncated` is only ever set, never cleared: once part of the body has
+/// been dropped, a later empty or already-capped chunk must not make the
+/// result look complete again.
+fn accumulate_diagnostic_chunk(buf: &mut Vec<u8>, chunk: &[u8], truncated: &mut bool) {
+    let remaining = DIAGNOSTIC_BODY_MAX_BYTES.saturating_sub(buf.len());
+    if chunk.len() <= remaining {
+        buf.extend_from_slice(chunk);
+    } else {
+        buf.extend_from_slice(&chunk[..remaining]);
+        *truncated = true;
     }
 }
 
@@ -1465,17 +1491,96 @@ mod tests {
             .unwrap();
         let body = diagnostic_body(Duration::from_secs(5), response).await;
 
-        // Without the cap this would be the full `huge.len()` bytes, buffered
-        // and written into the log line whole.
+        // A tight bound, not just "less than the full body": the previous
+        // cap only checked *between* chunks, so it still let through
+        // whatever the first chunk happened to be -- which passed this test
+        // before because wiremock/hyper happened to split `huge` into chunks
+        // smaller than `huge.len()` but still well over the cap. Asserting
+        // the cap plus a generous allowance for the truncation marker text
+        // catches that regardless of how the body happens to be chunked.
+        let marker_upper_bound = 64;
         assert!(
-            body.len() < huge.len(),
-            "an oversized body must not be buffered and logged in full: got {} bytes",
+            body.len() <= DIAGNOSTIC_BODY_MAX_BYTES + marker_upper_bound,
+            "an oversized body must be bounded by the cap (plus marker), not just \
+             smaller than the full body: got {} bytes",
             body.len()
         );
         assert!(
             body.contains("truncated"),
             "a capped body must say so, rather than silently reading like the whole \
              response ended there: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn diagnostic_body_bounds_a_single_oversized_chunk_and_drains_the_connection() {
+        // Hand-writes a raw HTTP/1.1 response so the whole oversized body goes
+        // out in one `write_all` call rather than relying on however wiremock's
+        // own buffering happens to chunk a response -- the shape that defeats
+        // the previous "check the cap only between chunks" loop, since a single
+        // chunk larger than the whole cap sailed straight through it untouched.
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let oversized_len = DIAGNOSTIC_BODY_MAX_BYTES * 4;
+
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut discard = [0u8; 1024];
+            let _ = socket.read(&mut discard).await; // drain the request line/headers
+
+            let body = vec![b'x'; oversized_len];
+            let mut response = format!(
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n",
+                body.len()
+            )
+            .into_bytes();
+            response.extend_from_slice(&body);
+            socket.write_all(&response).await.unwrap();
+
+            // A second request on the SAME connection (keep-alive). If
+            // `diagnostic_body` left any of the first response's bytes
+            // unread, they would sit ahead of this exchange and desync it.
+            let mut discard = [0u8; 1024];
+            let _ = socket.read(&mut discard).await;
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nok",
+                )
+                .await
+                .unwrap();
+            // Dropping the listener here means any attempt to open a *second*
+            // connection (rather than reusing the pooled one) fails fast
+            // instead of silently working around an undrained first one.
+        });
+
+        let client = reqwest::Client::builder()
+            .pool_max_idle_per_host(1)
+            .build()
+            .unwrap();
+        let uri = format!("http://{addr}");
+
+        let response = client.get(&uri).send().await.unwrap();
+        let body = diagnostic_body(Duration::from_secs(5), response).await;
+        let marker_upper_bound = 64;
+        assert!(
+            body.len() <= DIAGNOSTIC_BODY_MAX_BYTES + marker_upper_bound,
+            "a single oversized chunk must still be bounded by the cap, not \
+             appended whole: got {} bytes",
+            body.len()
+        );
+        assert!(body.contains("truncated"), "{body}");
+
+        // Proof the connection was fully drained rather than stranded: reusing
+        // it for a second request succeeds.
+        let second = client.get(&uri).send().await.unwrap();
+        assert_eq!(
+            second.text().await.unwrap(),
+            "ok",
+            "the pooled connection must have been reused, not left desynced by \
+             an undrained first response"
         );
     }
 
@@ -1497,5 +1602,42 @@ mod tests {
         // A body well under the cap must come through exactly, with no
         // spurious truncation marker.
         assert_eq!(body, "small error");
+    }
+
+    #[test]
+    fn accumulate_diagnostic_chunk_bounds_a_single_oversized_chunk() {
+        // The bug this guards: the previous loop checked the cap only
+        // *between* chunks, so one chunk larger than the whole cap sailed
+        // straight through in a single step -- exactly the shape of a small
+        // upstream response delivered in one read.
+        let mut buf = Vec::new();
+        let mut truncated = false;
+        let oversized = vec![b'x'; DIAGNOSTIC_BODY_MAX_BYTES * 4];
+        accumulate_diagnostic_chunk(&mut buf, &oversized, &mut truncated);
+        assert_eq!(buf.len(), DIAGNOSTIC_BODY_MAX_BYTES);
+        assert!(truncated);
+    }
+
+    #[test]
+    fn accumulate_diagnostic_chunk_fits_several_chunks_under_the_cap() {
+        let mut buf = Vec::new();
+        let mut truncated = false;
+        accumulate_diagnostic_chunk(&mut buf, &[b'a'; 10], &mut truncated);
+        accumulate_diagnostic_chunk(&mut buf, &[b'b'; 20], &mut truncated);
+        assert_eq!(buf.len(), 30);
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn accumulate_diagnostic_chunk_keeps_truncated_set_once_the_cap_is_hit() {
+        // Once truncation happens, a later chunk landing on an already-full
+        // buffer must not un-mark it -- the caller keeps polling
+        // `response.chunk()` after the cap is hit purely to drain the
+        // connection, not to collect more of the body.
+        let mut buf = vec![b'x'; DIAGNOSTIC_BODY_MAX_BYTES];
+        let mut truncated = true;
+        accumulate_diagnostic_chunk(&mut buf, &[b'y'; 10], &mut truncated);
+        assert_eq!(buf.len(), DIAGNOSTIC_BODY_MAX_BYTES);
+        assert!(truncated);
     }
 }
