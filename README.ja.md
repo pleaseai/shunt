@@ -171,6 +171,13 @@ name = "kimi-code"
 provider = "kimi-code"
 auth = { mode = "kimi_oauth", account = "<account-name>" }
 
+# [[upstreams]] を宣言すると組み込みの provider セットが置き換わるため、末尾に
+# anthropic passthrough を残します。これがないと `shunt check` がデフォルトの
+# server.default_provider を解決できずに失敗します。`shunt init` が追加するものと同じです。
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic"
+
 [[routes]]
 model = "<model-id-your-subscription-exposes>"
 provider = "kimi-code"
