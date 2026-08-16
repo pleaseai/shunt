@@ -1,0 +1,94 @@
+site/src/content/docs/reference/endpoints.md
+  s_16f955127f342a::t_b0c8326512786a 16-19,69
+  s_16f955127f342a::t_9d6acb46935d6c 70
+src/config.rs
+  s_16f955127f342a::t_b0c8326512786a 555-563,595-753,2328-2347,3230-3236,4039-4040,5210-5211,5253-5450,5462-5463,5576-5577,5617-5618,5736-5737,5761-5762,5826-5827,5851-5852,5879-5880,5904-5905,5929-5930,5954-5955,5976-5977
+docs/gateway-spend-limits.md
+  s_16f955127f342a::t_b0c8326512786a 1-65
+src/gateway/tests.rs
+  s_16f955127f342a::t_b0c8326512786a 46-47
+src/gateway/spend/tests.rs
+  s_16f955127f342a::t_b0c8326512786a 1-675
+.claude/agent-memory/review-review-security-reviewer/MEMORY.md
+  s_16f955127f342a::t_b0c8326512786a 20
+.please/docs/review/rejected-findings.jsonl
+  s_16f955127f342a::t_b0c8326512786a 79-80
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_16f955127f342a::t_b0c8326512786a 16-19,43
+  s_16f955127f342a::t_05acbc455371dd 44
+src/gateway/jwt.rs
+  s_16f955127f342a::t_b0c8326512786a 14-17,30-35,55,93-96,106-117,125,156,189-197,211,364-418
+docs/config-reload.md
+  s_16f955127f342a::t_b0c8326512786a 63-68
+src/gateway/mod.rs
+  s_16f955127f342a::t_b0c8326512786a 10,245-246,275-291
+src/gateway/spend/api.rs
+  s_16f955127f342a::t_b0c8326512786a 1-482
+src/gateway/spend/store.rs
+  s_16f955127f342a::t_b0c8326512786a 1-458
+site/src/content/docs/ja/reference/endpoints.md
+  s_16f955127f342a::t_b0c8326512786a 16-19,43
+  s_16f955127f342a::t_4f507717d5640b 44
+README.md
+  s_16f955127f342a::t_b0c8326512786a 168-169
+docs/admin-ui-delivery.md
+  s_16f955127f342a::t_b0c8326512786a 1-590
+src/main.rs
+  s_16f955127f342a::t_b0c8326512786a 528-533
+docs/desktop-app.md
+  s_16f955127f342a::t_b0c8326512786a 221
+src/gateway/store.rs
+  s_16f955127f342a::t_b0c8326512786a 16-17,341,355-358,362,386,576-585,587-588
+docs/storage.md
+  s_16f955127f342a::t_b0c8326512786a 1-180
+src/gateway/spend/mod.rs
+  s_16f955127f342a::t_b0c8326512786a 1-8
+.claude/agent-memory/review-review-security-reviewer/project_pr333-spend-limit-admin-api-security.md
+  s_16f955127f342a::t_b0c8326512786a 1-52
+site/src/content/docs/ko/reference/endpoints.md
+  s_16f955127f342a::t_b0c8326512786a 16-19,42-43
+docs/m4-inbound-auth.md
+  s_16f955127f342a::t_b0c8326512786a 101-102,113-119
+src/auth/shared.rs
+  s_16f955127f342a::t_b0c8326512786a 695-709,769-779
+  s_16f955127f342a::t_0c72370b78cce0 780-781
+src/gateway/spend/persist/tests.rs
+  s_16f955127f342a::t_b0c8326512786a 1-515
+site/src/content/docs/ko/reference/configuration.md
+  s_16f955127f342a::t_b0c8326512786a 139-163,282
+src/gateway/spend/persist.rs
+  s_16f955127f342a::t_b0c8326512786a 1-244
+src/gateway/persist.rs
+  s_16f955127f342a::t_b0c8326512786a 318-319
+src/reload.rs
+  s_16f955127f342a::t_b0c8326512786a 69-73,168-188,905-978
+  s_16f955127f342a::t_715439dce4bba7 979
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_16f955127f342a::t_b0c8326512786a 138-162,251
+src/server.rs
+  s_16f955127f342a::t_b0c8326512786a 70,80,127-137,175-179,198,207,241
+tests/passthrough.rs
+  s_16f955127f342a::t_b0c8326512786a 406-407
+site/src/content/docs/ja/reference/configuration.md
+  s_16f955127f342a::t_b0c8326512786a 138-162,251
+site/src/content/docs/reference/configuration.md
+  s_16f955127f342a::t_b0c8326512786a 234-258,404
+src/gateway/spend/persist/tests/audit_cap.rs
+  s_16f955127f342a::t_b0c8326512786a 1-99
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "ec3ea7514d22f026cd55e8b8106e7500b150ba91",
+  "prompts": {},
+  "sessions": {
+    "s_16f955127f342a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7e475516-843e-4208-aa72-51d1addafc89",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
