@@ -707,6 +707,40 @@ async fn spend_routes_accept_both_credential_slots() {
     }
 }
 
+/// A request can carry a valid credential in *both* accepted slots — a proxy
+/// that adds the admin header to a request that already holds `x-api-key` does
+/// exactly that. The audit trail records one actor, so which one must not be
+/// incidental: the configured header is scanned first and supplies it. Here the
+/// header credential (`admin-key:writer`) also sorts *below* the `x-api-key` one
+/// (`admin-token:ops`), so comparing whole credentials would blame the wrong
+/// slot.
+#[tokio::test]
+async fn both_slots_carrying_a_same_tier_credential_attribute_to_the_configured_header() {
+    let (config, _env) = SpendEnv::config("slot-priority");
+    let (router, _, state) = build_router(config).unwrap();
+
+    let request = Request::post("/v1/organizations/spend_limits")
+        .header("x-shunt-admin-token", WRITE_KEY)
+        .header("x-api-key", TOKEN_KEY)
+        .header("content-type", "application/json")
+        .body(Body::from(
+            organization(json!("100"), "monthly").to_string(),
+        ))
+        .unwrap();
+    let (response, _) = send(&router, request).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let actors: Vec<String> = state
+        .gateway_stores
+        .spend
+        .export()
+        .audit
+        .iter()
+        .map(|record| record.actor.clone())
+        .collect();
+    assert_eq!(actors, vec!["admin-key:writer"]);
+}
+
 #[tokio::test]
 async fn routes_are_absent_without_the_spend_section() {
     let response = build_router(Config::default())

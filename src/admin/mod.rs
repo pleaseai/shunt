@@ -154,7 +154,9 @@ impl AdminAuth {
     ///
     /// Privilege is the explicit maximum over every set that matched, so
     /// scanning order cannot change it. Every slot is compared against every
-    /// set with no early exit.
+    /// set with no early exit. Order does decide one thing: when both slots
+    /// carry a *different* valid credential of the same tier, the configured
+    /// header supplies the audit actor, because it is scanned first.
     pub(crate) fn authenticate_credential(&self, headers: &HeaderMap) -> Option<AdminCredential> {
         let slots = [self.header.as_str(), "x-api-key"];
         let mut matched: Option<AdminCredential> = None;
@@ -188,16 +190,27 @@ impl AdminAuth {
     }
 }
 
-/// Keep whichever of two candidate credentials carries the higher privilege.
-/// `AdminCredential` orders by `access` first, so this is an explicit maximum;
-/// the `actor` tie-break is unreachable because a value is unique across every
-/// credential set (`config::admin_keys::check_key_uniqueness`).
+/// Keep whichever of two candidate credentials carries the higher privilege,
+/// keeping `current` when the two are equal.
+///
+/// [`AdminAuth::authenticate_credential`] feeds slots in order, so an equal-tier
+/// tie resolves to the earlier slot — the configured admin header outranks the
+/// `x-api-key` alias. The tie is reachable: key *values* are unique across the
+/// credential sets, but nothing stops a caller (or a proxy that adds the admin
+/// header to a request that already carries `x-api-key`) from presenting two
+/// different valid credentials at once, and the audit trail records exactly one
+/// actor. Comparing whole credentials instead would settle that by `actor`
+/// string order, which is why [`AdminCredential`] is not `Ord`.
 fn keep_higher(
     current: Option<AdminCredential>,
     candidate: Option<AdminCredential>,
 ) -> Option<AdminCredential> {
     match (current, candidate) {
-        (Some(current), Some(candidate)) => Some(std::cmp::max(current, candidate)),
+        (Some(current), Some(candidate)) => Some(if candidate.access > current.access {
+            candidate
+        } else {
+            current
+        }),
         (current, candidate) => current.or(candidate),
     }
 }

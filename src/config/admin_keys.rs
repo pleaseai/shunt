@@ -46,9 +46,14 @@ pub struct AdminKey {
 }
 
 /// The credential a request presented: its resolved privilege plus the audit
-/// actor string. Ordered by `access` first, so taking a maximum over several
-/// matching sets picks the highest privilege.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+/// actor string.
+///
+/// Deliberately **not** `Ord`. Two distinct credentials of equal privilege can
+/// reach the same request in different slots, and ordering the struct would
+/// settle which one the audit trail blames by comparing `actor` strings.
+/// Callers compare `access` explicitly and break a tie on something meaningful
+/// — see `admin::keep_higher`.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdminCredential {
     pub access: AdminAccess,
     /// `admin-token:<name>` for a `tokens_env`/`tokens_file` pair,

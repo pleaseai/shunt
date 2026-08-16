@@ -198,7 +198,9 @@ process-lifetime state:
   loopback carve-out). A session therefore always carries write access.
 - **API/curl:** send the admin credential in the configured header
   (`x-shunt-admin-token`) or in `x-api-key`; both slots are accepted, and the
-  resolved privilege is the maximum over whichever slots matched. This merged
+  resolved privilege is the maximum over whichever slots matched. When both
+  slots carry a *different* valid credential of the same tier, the configured
+  header supplies the audit actor, because it is checked first. This merged
   acceptance is scoped to the admin and spend-limit routers — on inference routes
   `x-api-key` is the caller's *own* Anthropic credential slot and an admin
   credential never authenticates there. Whatever these routers accept,
