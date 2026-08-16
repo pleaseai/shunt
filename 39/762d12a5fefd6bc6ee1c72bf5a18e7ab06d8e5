@@ -1,0 +1,195 @@
+src/admin/mod.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 6-7,9-14,30,41,44,55-57,59-61,64-69,77-82,84-85,93-110,139-181,184-214,264-266,273,277,285-287,291-298,548,1096-1098,1148-1150,1343-1345
+src/auth/antigravity/auth.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 1-1994
+shunt.toml.example
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 30-34,36-38,43-69
+  s_02afa83fa6c310::t_7aa026e9e24152 70
+src/discovery/upstream.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 27,93-96,267-269,278,286-287,297
+src/auth/antigravity/login.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 1-694
+src/discovery.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 180-183,441-535
+docs/storage.md
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 1-180
+tests/antigravity_process.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 218,251,254,267
+docs/desktop-app.md
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 220-221
+src/config/secrets.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 234,236-237,255-257,284-325,985-1037
+src/gateway/jwt.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 14-17,30-35,55,93-96,106-117,125,156,189-197,211,364-418
+src/gateway/spend/tests.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 1-802
+site/src/content/docs/ja/reference/endpoints.md
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 16-19,41-43
+src/reload.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 69-73,77-96,168-180,409-410,450-514,588-758,897-928
+  s_02afa83fa6c310::t_b27adb254b3de5 929
+tests/inbound_auth.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 456-460,463
+src/config/upstreams.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 95,134
+src/config/admin_keys.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 1-324
+src/gateway/store.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 16-17,341,355-358,362,386,576-585,587-588
+src/main.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 8-11,376-381,383,503-508,515-531,546-551
+  s_02afa83fa6c310::t_5b92c3ed7364f1 92-93,95-96
+  s_02afa83fa6c310::t_ad8b2f9f22f504 408
+  s_02afa83fa6c310::t_91e0f38fa3e2d7 382
+src/auth/antigravity/version.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 1-642
+README.md
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 147-148,152-156,168-169,172
+src/proxy/failover/tests.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 2,6,8,272-273,523-761
+src/adapters/responses/websocket.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 340-343,551-567
+  s_02afa83fa6c310::t_5a990892e6908c 568-569
+src/routing.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 15-17,27-33
+docs/admin-ui-delivery.md
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 1-590
+src/gateway/spend/store.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 1-458
+src/gateway/spend/persist.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 1-244
+.claude/agent-memory/review-review-security-reviewer/MEMORY.md
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 19-20
+src/adapters/responses/request.rs
+  s_02afa83fa6c310::t_0324e27d93a673 101-103,105
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 97-100,104,106-107,400-420
+  s_1eb44ad0bca191::t_96f7ebbe250b07 421
+src/admin/codex.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 25,48-50,117-119,271-273
+src/auth/inbound.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 13,181,185-190,207-213,223,234-239,247,249,262-264,272,276-277
+.please/docs/review/rejected-findings.jsonl
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 79-80
+site/src/content/docs/reference/cli.mdx
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 210
+  s_02afa83fa6c310::t_21a6a0c8bd3feb 149-169
+.claude/agent-memory/review-review-security-reviewer/project_pr372-antigravity-native-oauth.md
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 1-37
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 12,52,56-58,62,64,66-112,244,261,273,291,295,297
+src/server.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 70,80,127-135,173-176,195,204,241-246
+  s_02afa83fa6c310::t_6c7429d1c513eb 247-248
+.claude/agent-memory/review-review-security-reviewer/project_pr333-spend-limit-admin-api-security.md
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 1-52
+src/config/upstreams/tests.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 46-62,532
+  s_02afa83fa6c310::t_42f531ba292c4e 45
+site/src/content/docs/ko/guides/admin-remote-provisioning.mdx
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 28,66
+src/auth/shared.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 709-723,783-793
+  s_02afa83fa6c310::t_addf31a2d06968 794-795
+site/src/content/docs/ja/reference/configuration.md
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 12,52,56-58,62,64,66-112,244,261,273,291,295,297
+site/src/content/docs/ko/reference/configuration.md
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 12,52,56-58,62,64,66-112,275,292,304,322,326,328
+src/adapters/gemini/mod.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 82-85,109-117,131-136,145,151-153
+  s_02afa83fa6c310::t_2e9f072cd69099 154
+docs/config-secrets.md
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 59,62-83,97-98,103-106
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 16-19,41-43
+src/config/spend.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 1-103
+docs/config-reload.md
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 58,63-65
+site/src/content/docs/reference/configuration.md
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 19,84,88,92-94,98,102-127,152-174,397-398,428,446,450,463-464
+  s_02afa83fa6c310::t_21668e3278ad77 452
+  s_02afa83fa6c310::t_17e62d1130c0cb 416
+src/gateway/spend/api.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 1-464
+src/auth/claude/login.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 14-15,68
+src/auth/mod.rs
+  s_02afa83fa6c310::t_247e669116b180 422
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 1,12-13,46-52,130-145,331-350,425-448
+  s_02afa83fa6c310::t_9b7f1366d6fbe5 351-352
+  s_02afa83fa6c310::t_978a0e47d0efb0 449
+src/proxy/failover.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 14,287,371,504-520,603-606,609,614-617,623-624,642,647,662,708,732
+site/src/content/docs/guides/admin-remote-provisioning.mdx
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 30,110
+site/src/content/docs/ko/reference/endpoints.md
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 16-19,41-43
+site/src/content/docs/reference/endpoints.md
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 16-19,69-71
+src/adapters/responses/inbound.rs
+  s_02afa83fa6c310::t_42081a258fd178 433-437,439
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 438,440-441,478-536
+  s_02afa83fa6c310::t_0ac085dd5fcce1 537
+src/init.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 194
+src/auth/antigravity/mod.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 1-327
+src/gateway/spend/persist/tests/audit_cap.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 1-99
+src/discovery/upstream/tests.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 12,157,238,271,305,348,385,407,417,458,509,857-940
+src/gateway/spend/persist/tests.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 1-488
+docs/upstreams-failover.md
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 23,27,66
+src/gateway/mod.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 10
+site/src/content/docs/zh-cn/guides/admin-remote-provisioning.mdx
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 28,66
+src/config.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 14,19,22,29,87-94,97-102,370-376,379-380,383-385,394-402,478-486,488,495,509,512-522,527-528,530-531,1461,1482,1748-1753,1755-1762,1793-1798,2052-2076,2160-2163,2229-2248,2387-2410,2496-2498,2500-2507,2509,2534,2618-2662,2688-2693,2727-2734,2739,2743-2744,2750-2751,2755-2774,2796,2905-2949,3113-3116,3120-3124,3136,3147,3344-3385,4096,4284-4285,4392-4393,4452-4453,5253-5507,6824-7097,7961-8047,8049-8050
+  s_02afa83fa6c310::t_37bffa15fbfc0a 3978,3983
+  s_1eb44ad0bca191::t_b4fb45fe34e42f 8048,8051
+docs/m4-inbound-auth.md
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 101-102,113-119
+site/src/content/docs/ja/guides/admin-remote-provisioning.mdx
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 28,66
+src/auth/callback.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 1-564
+docs/m9-admin-surface.md
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 67-68,71,75-84,94-99,113-136,176-177,192-193,198-215,243-249,274-278
+  s_02afa83fa6c310::t_95fa961abf1343 279
+docs/gateway-spend-limits.md
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 1-84
+tests/admin_surface.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 13-16,70-71,769-974
+  s_02afa83fa6c310::t_0f743660c2c15c 975
+site/src/content/docs/guides/providers.mdx
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 12-13,26-27,48-53,66-79,127-128
+src/gateway/spend/mod.rs
+  s_02afa83fa6c310::t_d4d6eb09dcbe8d 1-36
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "39762d12a5fefd6bc6ee1c72bf5a18e7ab06d8e5",
+  "prompts": {},
+  "sessions": {
+    "s_02afa83fa6c310": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "41a940fb-b079-41d6-801c-c90fdac76db6",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_1eb44ad0bca191": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "41aeb5db-3c09-4fd1-86d1-d488288161b7",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
