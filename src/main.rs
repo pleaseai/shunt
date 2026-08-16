@@ -525,6 +525,12 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     // sessions before serving; later mutations are written by the token
     // endpoint itself. A no-op when the key is unset.
     shunt::gateway::persist::restore(&state).await;
+    // Spend-limit caps and audit records share a versioned, atomic state file.
+    // Restore it before accepting admin mutations; memory-only configuration is
+    // a no-op.
+    shunt::gateway::spend::persist::restore(&state)
+        .await
+        .context("failed to restore gateway spend-limit state")?;
     // Opt-in `[server.status]`: poll provider Statuspage `summary.json`
     // endpoints in the background, sharing the router's status store.
     // Observation-only (see AGENTS.md) and a no-op when `sources` is empty.

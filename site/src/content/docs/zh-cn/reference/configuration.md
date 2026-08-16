@@ -135,6 +135,31 @@ headers = { "x-api-key" = "..." }
 
 默认情况下,`/device` 忽略 forwarding header 并按 socket peer 做 rate limit。只有在 shunt 仅能通过会删除 client 所提供 forwarding header 并设置自身值的 trusted reverse proxy 访问时,才设置 `trust_forwarded_for = true`。不要在直接暴露的 gateway 上启用。
 
+### `[server.gateway.admin]` (可选)
+
+配置此表会注册 spend-limit Admin API。每个设置值都是环境变量名，变量内容为逗号分隔的 `id:key` 对。每个 key 值至少包含 32 个字符；id 和 key 值都必须分别在两个环境变量中保持唯一。
+
+| 键 | 默认值 | 含义 |
+| :-- | :-- | :-- |
+| `write_keys_env` | `SHUNT_GATEWAY_ADMIN_WRITE_KEYS` | 存储写入 key 的 `id:key` 对的环境变量 |
+| `read_keys_env` | `SHUNT_GATEWAY_ADMIN_READ_KEYS` | 存储仅限 GET 的 key 的 `id:key` 对的环境变量 |
+| `blocked_message` | 未设置 | 用于未来限制错误的消息 |
+| `audit_retention_days` | `365` | 未来审计记录保留天数 |
+| `spend_retention_months` | `13` | 未来支出数据保留月数 |
+| `identity_retention_days` | `90` | 未来身份数据保留天数 |
+| `group_limit_mode` | `min` | 未来 group 限制解析模式：`min` 或 `max` |
+| `state_path` | `~/.shunt/gateway-spend.json` | 存储限制和审计记录的带版本 JSON；`""` 表示仅内存 |
+
+`write_keys_env` 和 `read_keys_env` 指定环境变量名，而不是内联 secret。每次修改都会通过私有临时文件原子替换状态文件。无法解析 home 目录时，默认仅使用内存。状态路径在启动时固定，配置重载不会更改它。
+
+### `[server.gateway.enforcement]`（可选）
+
+| 键 | 默认值 | 含义 |
+| :-- | :-- | :-- |
+| `fail_closed_on_error` | `false` | 用于未来限制；设为 `true` 时必须配置 `[server.gateway.admin]` |
+
+stage 1 接受这些保留设置、`blocked_message`、`group_limit_mode` 和 `fail_closed_on_error`，但尚未实现推理限制、用量计量、`/effective`、`/audit`、保留清理或 group scope。
+
 ## `[server.pool]`(可选)
 
 面向账户池的配额感知负载均衡调优 —— Claude(Anthropic)([详情](/zh-cn/guides/anthropic-multi-account/#调优选择serverpool)),以及自 issue #195 起的 Codex/ChatGPT([详情](/zh-cn/guides/codex-multi-account/))。此表不存在时,选择逻辑使用单一的内置 `0.98` 阈值,与该表出现之前的行为完全一致。
@@ -223,7 +248,7 @@ codex-fallback = "gpt-5.2"
 
 对于 `passthrough` 上游，客户端自己的 `authorization` / `x-api-key` 仅在故障转移尝试中当**主**路由自身为 `passthrough` 且该尝试的目标来源(origin)与该主路由一致时才转发。此时该凭据是客户端自己的上游凭据、对主路由而言是来源专属的，因此对**不同**来源的 `passthrough` 故障转移尝试会将其剥离并快速失败(fail closed)，而不会把主机专属令牌重放到另一个来源；同一来源的回退(例如同一主机上的两个 passthrough 条目)仍会携带该凭据。当主路由改为注入自己的凭据时，客户端头部是网关/客户端密钥而非上游凭据，因此每个 `passthrough` 回退无论来源如何都会将其剥离。`api_key`/OAuth 上游无论位置如何都会注入自己的服务端凭据。
 
-与 origin 无关，每个被保留的槽位还会按它实际持有的值进行检查：只有当 `authorization` 或 `x-api-key` 槽位自身的值与 shunt 自己签发的 JWT **形状相符**——三段式结构，且载荷的 `aud` 声明为 `"shunt"` 或 `iss` 声明与本网关的身份一致——或匹配配置的 `[server.auth]` 客户端令牌时，该槽位才会被清除。这项 JWT 检查刻意按"形状是否相符"而非"该令牌现在是否能通过认证"来判定：一个已过期的令牌、由使用不同 `public_url` 的兄弟实例签发的令牌，或在 `jwt_secret` 轮换后已不再能通过校验的令牌，仍然是 shunt 自己的凭据，因此仍会被清除 —— `apiKeyHelper` 会用同一个值填充两个槽位，因此任一凭据都可能出现在其中一个或两个槽位中。即使另一个槽位持有网关 JWT 或静态客户端令牌，持有真实上游凭据的槽位仍会被转发；只有持有门控凭据的那个槽位会被清除。`[server.auth] header` 可以是任意头名称，包括 `authorization` 本身；这样配置时客户端使用不带前缀的 `Authorization: <token>` 进行认证，因此该槽位除了按 `Bearer` 载荷检查外还会按整个值检查，此类令牌绝不会被转发到上游。该配置有一个注意事项：在推理请求上 shunt 会在路由前无条件移除配置的头部，因此该槽位不会向上游携带任何东西 —— 不只是门控令牌，调用方自己的凭据也会一并被丢弃。把 `header` 保持为默认的专用 `x-shunt-token` 可以避免这种冲突。
+与 origin 无关，每个被保留的槽位还会按它实际持有的值进行检查：只有当 `authorization` 或 `x-api-key` 槽位自身的值与 shunt 自己签发的 JWT **形状相符**——三段式结构，且载荷的 `aud` 声明为 `"shunt"`、`iss` 声明与本网关的身份一致，或 `shunt_token_use` 声明为 `"gateway-session"`（仅由 shunt 签发的专用标记）——或匹配配置的 `[server.auth]` 客户端令牌时，该槽位才会被清除。这项 JWT 检查刻意按“形状是否相符”而非“该令牌现在是否能通过认证”来判定：一个已过期的令牌、由使用不同 `public_url` 的兄弟实例签发的令牌，或在 `jwt_secret` 轮换后已不再能通过校验的令牌，仍然是 shunt 自己的凭据，因此仍会被清除。该标记只是形状检查新增的一个分支，而非必要条件：在该标记出现之前签发的令牌仍会按 `aud`/`iss` 匹配，`verify` 本身也不要求该标记，因此旧版本 shunt 签发的令牌只要仍在其 TTL 内就仍能通过认证 —— `apiKeyHelper` 会用同一个值填充两个槽位，因此任一凭据都可能出现在其中一个或两个槽位中。即使另一个槽位持有网关 JWT 或静态客户端令牌，持有真实上游凭据的槽位仍会被转发；只有持有门控凭据的那个槽位会被清除。`[server.auth] header` 可以是任意头名称，包括 `authorization` 本身；这样配置时客户端使用不带前缀的 `Authorization: <token>` 进行认证，因此该槽位除了按 `Bearer` 载荷检查外还会按整个值检查，此类令牌绝不会被转发到上游。该配置有一个注意事项：在推理请求上 shunt 会在路由前无条件移除配置的头部，因此该槽位不会向上游携带任何东西 —— 不只是门控令牌，调用方自己的凭据也会一并被丢弃。把 `header` 保持为默认的专用 `x-shunt-token` 可以避免这种冲突。
 
 每个代理成功响应或最终失败都带有 `x-gateway-upstream`（所选上游名称）、`x-gateway-model`（客户端请求的 id）和 `x-gateway-upstream-model`（映射后的后端 id）。`count_tokens` 只使用链中第一个条目，且不会故障转移。`[server.codex_endpoint]` 仍固定到所配置的单一上游，不参与此链。
 

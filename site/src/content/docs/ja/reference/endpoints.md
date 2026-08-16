@@ -13,6 +13,10 @@ description: shunt が Claude Code LLM ゲートウェイとして提供する�
 | `POST` | `/v1/messages` | 推論 — リクエストの `model` id に従ってルーティング |
 | `POST` | `/v1/messages/count_tokens` | [トークンカウント](/ja/guides/effort-and-context/#token-counting-count_tokens) |
 | `GET` | `/managed/settings` | ゲートウェイ JWT ごとの Claude Code managed settings。`ETag`、`If-None-Match`、`304 Not Modified` に対応 |
+| `GET` | `/v1/organizations/spend_limits` | 保存された支出上限を方向付きカーソルページネーションで一覧表示 |
+| `POST` | `/v1/organizations/spend_limits` | 1 つの `(scope, period)` に対する支出上限を作成または置換 |
+| `GET` | `/v1/organizations/spend_limits/{id}` | 保存された支出上限を 1 件取得 |
+| `DELETE` | `/v1/organizations/spend_limits/{id}` | 保存された支出上限を 1 件削除 |
 | `POST` | `/v1/metrics` | 管理された Claude Code クライアントからのインバウンド OTLP/HTTP メトリクス — opt-in したゲートウェイテレメトリー宛先へ verbatim 中継 |
 | `POST` | `/v1/logs` | インバウンド OTLP/HTTP log record — `logs = true` の宛先にのみ中継 |
 | `POST` | `/v1/traces` | インバウンド OTLP/HTTP span — `traces = true` の宛先にのみ中継 |
@@ -35,6 +39,8 @@ description: shunt が Claude Code LLM ゲートウェイとして提供する�
 | `POST` | `/codex/analytics-events/events` | Codex CLI analytics sink — ルート形式の `chatgpt_base_url` |
 
 `/admin*` ルートは [`[server.admin]`](/ja/reference/configuration/#serveradminオプション) が設定されている場合にのみ存在します。そのテーブルがなければ、いずれも登録されません。
+
+spend-limit ルートは、起動時に [`[server.gateway.admin]`](/ja/reference/configuration/) が設定されていた場合にのみ存在します。すべての操作には `write_keys_env` の `x-api-key` を送信します。`read_keys_env` のキーは GET のみ使用できます。`POST` は `user` と `organization` の scope、`daily`／`weekly`／`monthly` の period、user scope では 1～256 バイトの `user_id`、1～19 桁の USD セント非負整数文字列または `null` の `amount` を受け付け、`(scope, period)` 単位で upsert します。一覧では `limit`（1～1000、デフォルト 20）、`after_id`、`before_id`、`scope_type` を使用でき、2 つのカーソルは同時に指定できません。すべてのレスポンスに `request-id` が含まれ、エラーは Anthropic のエラー形式です。上限と変更監査レコードは、設定したバージョン付き JSON 状態ファイルに一緒に保存されます。ステージ 1 は `/effective` と `/audit` を公開せず、推論リクエストに上限を適用しません。
 
 `GET /managed/settings` と `POST /v1/{metrics,logs,traces}` のテレメトリー受信ルートは、起動時に `[server.gateway]` が有効だった場合にのみ存在し、どちらも同じゲートウェイのベアラー JWT を要求します。受信ルートは、管理された Claude Code クライアントが export する OTLP/HTTP ペイロードを受け取り（[`[server.gateway.telemetry]`](/ja/reference/configuration/) がそれらの exporter をゲートウェイへ向けます）、リクエストのバイト列をその signal に opt-in したすべての宛先へそのまま中継します。インバウンドの `content-type` と `content-encoding` は保持され、宛先に設定された headers がその上に適用されます（設定されたキーは転送値を置き換え、ヘッダーを重複させません）。クライアントの `Authorization` ヘッダーが転送されることはなく、中継はリダイレクトに従いません。宛先は signal ごとに opt-in し（`metrics` はデフォルト on、`logs`／`traces` は off）、どの宛先も opt-in していない signal は受理後に破棄されます。中継はデタッチされているため、宛先の状態にかかわらずレスポンスは常に即座の `200` で、成功ボディは OTLP/HTTP に従いリクエストのプロトコルをミラーします（`application/json` には `{}`、それ以外には空の `application/x-protobuf` ボディ）。32 MiB の受信上限を超えるボディは `413` を返します。
 

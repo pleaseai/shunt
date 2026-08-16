@@ -552,6 +552,15 @@ pub struct GatewayConfig {
     /// no home directory can be resolved the default is memory-only too.
     #[serde(default = "default_gateway_state_path")]
     pub state_path: Option<std::path::PathBuf>,
+    /// Optional spend-limit Admin API. This is separate from `[server.admin]`,
+    /// whose credentials provision upstream accounts and never authenticate the
+    /// spend-limit API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admin: Option<GatewayAdminConfig>,
+    /// Spend-limit enforcement policy. Stage 1 accepts this configuration but
+    /// does not yet enforce limits on inference requests.
+    #[serde(default)]
+    pub enforcement: GatewayEnforcementConfig,
     /// Optional external identity provider for browser approval.
     #[serde(default)]
     pub oidc: Option<GatewayOidcConfig>,
@@ -581,6 +590,165 @@ pub struct GatewayPolicyMatch {
 pub struct GatewayTelemetryConfig {
     #[serde(default)]
     pub forward_to: Vec<GatewayTelemetryDestination>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupLimitMode {
+    #[default]
+    Min,
+    Max,
+}
+
+/// `[server.gateway.admin]` enables spend-limit CRUD. Stage 1 deserializes the
+/// retention fields without range validation and validates `group_limit_mode`
+/// against its enum, but does not yet run retention sweeps or resolve group limits.
+#[derive(Clone, Deserialize, Serialize)]
+pub struct GatewayAdminConfig {
+    #[serde(default = "default_gateway_admin_write_keys_env")]
+    pub write_keys_env: String,
+    #[serde(default = "default_gateway_admin_read_keys_env")]
+    pub read_keys_env: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_message: Option<String>,
+    #[serde(default = "default_audit_retention_days")]
+    pub audit_retention_days: u64,
+    #[serde(default = "default_spend_retention_months")]
+    pub spend_retention_months: u64,
+    #[serde(default = "default_identity_retention_days")]
+    pub identity_retention_days: u64,
+    #[serde(default)]
+    pub group_limit_mode: GroupLimitMode,
+    #[serde(default = "default_gateway_spend_state_path")]
+    pub state_path: Option<PathBuf>,
+    #[serde(skip)]
+    pub write_keys: Vec<(String, String)>,
+    #[serde(skip)]
+    pub read_keys: Vec<(String, String)>,
+}
+
+/// Hand-written so resolved key material cannot reach a log line, a panic
+/// message, or a `{:?}` of `Config`. Every other secret in this file is held as
+/// an env var *name* (`token_env`, `jwt_secret_env`, `tokens_env`); the
+/// spend-limit keys are the one place a resolved value is retained, because
+/// `authenticate` compares against it on each admin request, so the redaction
+/// has to be explicit here instead of implied by the surrounding convention.
+impl std::fmt::Debug for GatewayAdminConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GatewayAdminConfig")
+            .field("write_keys_env", &self.write_keys_env)
+            .field("read_keys_env", &self.read_keys_env)
+            .field("blocked_message", &self.blocked_message)
+            .field("audit_retention_days", &self.audit_retention_days)
+            .field("spend_retention_months", &self.spend_retention_months)
+            .field("identity_retention_days", &self.identity_retention_days)
+            .field("group_limit_mode", &self.group_limit_mode)
+            .field("state_path", &self.state_path)
+            .field("write_keys", &redacted_key_ids(&self.write_keys))
+            .field("read_keys", &redacted_key_ids(&self.read_keys))
+            .finish()
+    }
+}
+
+/// Key ids are safe to show and are what the audit trail records
+/// (`admin-key:<id>`); the key values never are.
+fn redacted_key_ids(keys: &[(String, String)]) -> Vec<String> {
+    keys.iter()
+        .map(|(id, _)| format!("{id}:<redacted>"))
+        .collect()
+}
+
+impl GatewayAdminConfig {
+    pub fn state_path(&self) -> Option<&Path> {
+        self.state_path
+            .as_deref()
+            .filter(|path| !path.as_os_str().is_empty())
+    }
+
+    fn resolve_keys(&mut self) -> Result<(), ConfigError> {
+        self.write_keys = resolve_gateway_admin_keys(&self.write_keys_env, "write_keys_env")?;
+        self.read_keys = resolve_gateway_admin_keys(&self.read_keys_env, "read_keys_env")?;
+        let mut ids = HashSet::new();
+        let mut values = std::collections::HashMap::<&str, &str>::new();
+        for (id, value) in self.write_keys.iter().chain(&self.read_keys) {
+            if !ids.insert(id.clone()) {
+                return Err(ConfigError::DuplicateGatewayAdminKeyId { id: id.clone() });
+            }
+            if let Some(first_id) = values.insert(value, id) {
+                return Err(ConfigError::DuplicateGatewayAdminKeyValue {
+                    first_id: first_id.to_string(),
+                    second_id: id.clone(),
+                });
+            }
+        }
+        if self.write_keys.is_empty() && self.read_keys.is_empty() {
+            tracing::warn!(
+                write_keys_env = %self.write_keys_env,
+                read_keys_env = %self.read_keys_env,
+                "[server.gateway.admin] resolved zero API keys; all spend-limit requests will be unauthorized"
+            );
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct GatewayEnforcementConfig {
+    #[serde(default)]
+    pub fail_closed_on_error: bool,
+}
+
+fn resolve_gateway_admin_keys(
+    env: &str,
+    key: &'static str,
+) -> Result<Vec<(String, String)>, ConfigError> {
+    let raw = std::env::var(env).unwrap_or_default();
+    if raw.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let pairs = crate::auth::inbound::parse_tokens(&raw).map_err(|message| {
+        ConfigError::InvalidGatewayAdminKeys {
+            key,
+            env: env.to_string(),
+            message,
+        }
+    })?;
+    if let Some((id, _)) = pairs.iter().find(|(_, value)| value.len() < 32) {
+        return Err(ConfigError::ShortGatewayAdminKey {
+            key,
+            env: env.to_string(),
+            id: id.clone(),
+        });
+    }
+    Ok(pairs)
+}
+
+fn default_gateway_admin_write_keys_env() -> String {
+    "SHUNT_GATEWAY_ADMIN_WRITE_KEYS".to_string()
+}
+
+fn default_gateway_admin_read_keys_env() -> String {
+    "SHUNT_GATEWAY_ADMIN_READ_KEYS".to_string()
+}
+
+fn default_audit_retention_days() -> u64 {
+    365
+}
+
+fn default_spend_retention_months() -> u64 {
+    13
+}
+
+fn default_identity_retention_days() -> u64 {
+    90
+}
+
+fn default_gateway_spend_state_path() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .filter(|home| !home.is_empty())
+        .or_else(|| std::env::var_os("USERPROFILE").filter(|home| !home.is_empty()))
+        .map(PathBuf::from)
+        .map(|home| home.join(".shunt").join("gateway-spend.json"))
 }
 
 /// One inbound-telemetry relay destination: a base OTLP/HTTP endpoint, the
@@ -2157,6 +2325,26 @@ pub enum ConfigError {
     InvalidGatewayPolicyEnv { index: usize },
     #[error("[server.gateway.telemetry].forward_to[{index}].url is invalid: {message}")]
     InvalidGatewayTelemetryUrl { index: usize, message: String },
+    #[error("[server.gateway.admin].{key} ({env}) is invalid: {message}")]
+    InvalidGatewayAdminKeys {
+        key: &'static str,
+        env: String,
+        message: String,
+    },
+    #[error("[server.gateway.admin].{key} ({env}) key {id:?} must be at least 32 characters")]
+    ShortGatewayAdminKey {
+        key: &'static str,
+        env: String,
+        id: String,
+    },
+    #[error("[server.gateway.admin] key id {id:?} is duplicated across read_keys_env and write_keys_env")]
+    DuplicateGatewayAdminKeyId { id: String },
+    #[error(
+        "[server.gateway.admin] key value is duplicated by ids {first_id:?} and {second_id:?} across read_keys_env and write_keys_env"
+    )]
+    DuplicateGatewayAdminKeyValue { first_id: String, second_id: String },
+    #[error("[server.gateway.enforcement].fail_closed_on_error = true requires [server.gateway.admin]; configure both keys or disable fail_closed_on_error")]
+    GatewayFailClosedRequiresAdmin,
     /// The header value is deliberately not echoed — it is typically a
     /// collector API key.
     #[error(
@@ -3039,7 +3227,13 @@ impl Config {
         }
         // Fail closed at boot: a configured gateway must have a valid issuer,
         // sufficiently strong signing secret, and at least one approval path.
-        if let Some(gateway) = &self.server.gateway {
+        if let Some(gateway) = &mut self.server.gateway {
+            if gateway.enforcement.fail_closed_on_error && gateway.admin.is_none() {
+                return Err(ConfigError::GatewayFailClosedRequiresAdmin);
+            }
+            if let Some(admin) = &mut gateway.admin {
+                admin.resolve_keys()?;
+            }
             gateway.resolve()?;
         }
         // [server.pool] thresholds are consumed unchecked by pool selection, so
@@ -3842,8 +4036,8 @@ mod tests {
     use super::{
         config_file_candidates, default_auth_header, host_is_chatgpt, identity_collisions,
         AccountConfig, AdminConfig, AdminOidcConfig, AuthMode, CodexEndpointConfig, Config,
-        ConfigError, ConfigFormat, GatewayConfig, GatewayOidcConfig, GatewayPolicyConfig,
-        GatewayPolicyMatch, GatewaySessionConfig, GatewayTelemetryConfig,
+        ConfigError, ConfigFormat, GatewayConfig, GatewayEnforcementConfig, GatewayOidcConfig,
+        GatewayPolicyConfig, GatewayPolicyMatch, GatewaySessionConfig, GatewayTelemetryConfig,
         GatewayTelemetryDestination, InboundAuthConfig, ModelConfig, OauthUsageConfig,
         OidcProviderConfig, PoolConfig, ProviderKind, ResponsesFlavor, RetryConfig, Secret,
         StatusConfig, StatusSource, UsageEndpointConfig, CONFIG_ENV_LOCK,
@@ -5013,6 +5207,8 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: None,
+            admin: None,
+            enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
             session: None,
         };
@@ -5055,6 +5251,204 @@ mod tests {
     }
 
     #[test]
+    fn gateway_admin_validation_rejects_short_duplicate_and_orphan_fail_closed() {
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let suffix = format!("{}_spend_validation", std::process::id());
+        let secret_env = format!("SHUNT_TEST_SPEND_SECRET_{suffix}");
+        let users_env = format!("SHUNT_TEST_SPEND_USERS_{suffix}");
+        let write_env = format!("SHUNT_TEST_SPEND_WRITE_{suffix}");
+        let read_env = format!("SHUNT_TEST_SPEND_READ_{suffix}");
+        std::env::set_var(&secret_env, "0123456789abcdef0123456789abcdef");
+        std::env::set_var(&users_env, "dev@example.com:password");
+        std::env::set_var(&write_env, "writer:short");
+        std::env::set_var(&read_env, "reader:0123456789abcdef0123456789abcdef");
+        let mut config = Config::default();
+        config.server.gateway = Some(GatewayConfig {
+            public_url: "https://gateway.example".into(),
+            jwt_secret_env: Some(secret_env.clone()),
+            users_env: users_env.clone(),
+            token_ttl_seconds: Some(3600),
+            trust_forwarded_for: false,
+            policies: None,
+            telemetry: None,
+            state_path: None,
+            admin: Some(super::GatewayAdminConfig {
+                write_keys_env: write_env.clone(),
+                read_keys_env: read_env.clone(),
+                blocked_message: None,
+                audit_retention_days: 365,
+                spend_retention_months: 13,
+                identity_retention_days: 90,
+                group_limit_mode: super::GroupLimitMode::Min,
+                state_path: None,
+                write_keys: Vec::new(),
+                read_keys: Vec::new(),
+            }),
+            enforcement: GatewayEnforcementConfig::default(),
+            oidc: None,
+            session: None,
+        });
+        assert!(matches!(
+            config.clone().validate(),
+            Err(ConfigError::ShortGatewayAdminKey { .. })
+        ));
+
+        let key = "0123456789abcdef0123456789abcdef";
+        std::env::set_var(&write_env, format!("duplicate:{key}"));
+        std::env::set_var(&read_env, format!("duplicate:{key}"));
+        assert!(matches!(
+            config.clone().validate(),
+            Err(ConfigError::DuplicateGatewayAdminKeyId { .. })
+        ));
+
+        std::env::set_var(&write_env, format!("writer:{key}"));
+        std::env::set_var(&read_env, format!("reader:{key}"));
+        let error = config
+            .clone()
+            .validate()
+            .expect_err("duplicate key values must fail validation");
+        assert!(matches!(
+            error,
+            ConfigError::DuplicateGatewayAdminKeyValue {
+                ref first_id,
+                ref second_id,
+            } if first_id == "writer" && second_id == "reader"
+        ));
+        assert!(!error.to_string().contains(key));
+
+        std::env::set_var(&read_env, "reader:fedcba9876543210fedcba9876543210");
+        config
+            .clone()
+            .validate()
+            .expect("distinct key values across lists must validate");
+
+        let gateway = config.server.gateway.as_mut().unwrap();
+        gateway.admin = None;
+        gateway.enforcement.fail_closed_on_error = true;
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::GatewayFailClosedRequiresAdmin)
+        ));
+        for env in [secret_env, users_env, write_env, read_env] {
+            std::env::remove_var(env);
+        }
+    }
+
+    #[test]
+    fn gateway_admin_with_no_resolved_keys_warns_and_resolves_empty() {
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let suffix = format!("{}_spend_empty", std::process::id());
+        let secret_env = format!("SHUNT_TEST_SPEND_SECRET_{suffix}");
+        let users_env = format!("SHUNT_TEST_SPEND_USERS_{suffix}");
+        let write_env = format!("SHUNT_TEST_SPEND_WRITE_{suffix}");
+        let read_env = format!("SHUNT_TEST_SPEND_READ_{suffix}");
+        std::env::set_var(&secret_env, "0123456789abcdef0123456789abcdef");
+        std::env::set_var(&users_env, "dev@example.com:password");
+        let mut config = Config::default();
+        config.server.gateway = Some(GatewayConfig {
+            public_url: "https://gateway.example".into(),
+            jwt_secret_env: Some(secret_env.clone()),
+            users_env: users_env.clone(),
+            token_ttl_seconds: Some(3600),
+            trust_forwarded_for: false,
+            policies: None,
+            telemetry: None,
+            state_path: None,
+            admin: Some(super::GatewayAdminConfig {
+                write_keys_env: write_env.clone(),
+                read_keys_env: read_env.clone(),
+                blocked_message: None,
+                audit_retention_days: 365,
+                spend_retention_months: 13,
+                identity_retention_days: 90,
+                group_limit_mode: super::GroupLimitMode::Min,
+                state_path: None,
+                write_keys: Vec::new(),
+                read_keys: Vec::new(),
+            }),
+            enforcement: GatewayEnforcementConfig::default(),
+            oidc: None,
+            session: None,
+        });
+
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let writer_output = Arc::clone(&output);
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || BufferWriter {
+                buffer: Arc::clone(&writer_output),
+            })
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        let validated =
+            tracing::subscriber::with_default(subscriber, || config.validate().unwrap());
+        let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        let admin = validated.server.gateway.unwrap().admin.unwrap();
+        assert!(admin.write_keys.is_empty() && admin.read_keys.is_empty());
+        assert!(logs.contains("resolved zero API keys"), "{logs}");
+        assert!(logs.contains(&write_env), "{logs}");
+        assert!(logs.contains(&read_env), "{logs}");
+
+        for env in [secret_env, users_env, write_env, read_env] {
+            std::env::remove_var(env);
+        }
+    }
+
+    /// `Config` derives `Debug`, and shunt's convention elsewhere is to keep only
+    /// env var *names* in it. The spend-limit admin block is the one place a
+    /// resolved secret is retained, so assert the redaction directly: a future
+    /// `#[derive(Debug)]` on `GatewayAdminConfig` would leak admin API keys into
+    /// any log line or panic message that formats the config.
+    #[test]
+    fn debug_formatting_redacts_resolved_admin_keys_but_keeps_ids() {
+        let secret = "0123456789abcdef0123456789abcdef";
+        let admin = super::GatewayAdminConfig {
+            write_keys_env: "WRITE_ENV".into(),
+            read_keys_env: "READ_ENV".into(),
+            blocked_message: None,
+            audit_retention_days: 365,
+            spend_retention_months: 13,
+            identity_retention_days: 90,
+            group_limit_mode: super::GroupLimitMode::Min,
+            state_path: None,
+            write_keys: vec![("terraform".into(), secret.into())],
+            read_keys: vec![("reporting".into(), secret.into())],
+        };
+
+        let rendered = format!("{admin:?}");
+        assert!(
+            !rendered.contains(secret),
+            "resolved key material leaked into Debug output: {rendered}"
+        );
+        // The ids must survive — they are what the audit trail attributes to.
+        assert!(rendered.contains("terraform:<redacted>"), "{rendered}");
+        assert!(rendered.contains("reporting:<redacted>"), "{rendered}");
+        assert!(rendered.contains("WRITE_ENV"), "{rendered}");
+
+        // And the same must hold when it is nested inside a whole `Config`.
+        let mut config = Config::default();
+        config.server.gateway = Some(GatewayConfig {
+            public_url: "https://gateway.example".into(),
+            jwt_secret_env: Some("SECRET_ENV".into()),
+            users_env: "USERS_ENV".into(),
+            token_ttl_seconds: Some(3600),
+            trust_forwarded_for: false,
+            policies: None,
+            telemetry: None,
+            state_path: None,
+            admin: Some(admin),
+            enforcement: GatewayEnforcementConfig::default(),
+            oidc: None,
+            session: None,
+        });
+        assert!(!format!("{config:?}").contains(secret));
+    }
+
+    #[test]
     fn gateway_config_rejects_invalid_public_url_and_zero_ttl() {
         let mut gateway = GatewayConfig {
             public_url: "not a URL".to_string(),
@@ -5065,6 +5459,8 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: None,
+            admin: None,
+            enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
             session: None,
         };
@@ -5177,6 +5573,8 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: None,
+            admin: None,
+            enforcement: GatewayEnforcementConfig::default(),
             oidc: Some(GatewayOidcConfig {
                 client_secret_env: oidc_env.clone(),
                 provider: OidcProviderConfig {
@@ -5216,6 +5614,8 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: None,
+            admin: None,
+            enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
             session: None,
         };
@@ -5333,6 +5733,8 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: None,
+            admin: None,
+            enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
             session: Some(GatewaySessionConfig {
                 jwt_secret: vec![Secret::from("0123456789abcdef0123456789abcdef")],
@@ -5356,6 +5758,8 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: None,
+            admin: None,
+            enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
             session: Some(GatewaySessionConfig {
                 jwt_secret: vec![Secret::from("0123456789abcdef0123456789abcdef")],
@@ -5419,6 +5823,8 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: None,
+            admin: None,
+            enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
             session: Some(GatewaySessionConfig {
                 jwt_secret: vec![Secret::from("too-short")],
@@ -5442,6 +5848,8 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: None,
+            admin: None,
+            enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
             session: Some(GatewaySessionConfig {
                 jwt_secret: vec![
@@ -5468,6 +5876,8 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: None,
+            admin: None,
+            enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
             session: Some(GatewaySessionConfig {
                 jwt_secret: vec![],
@@ -5491,6 +5901,8 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: None,
+            admin: None,
+            enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
             session: Some(GatewaySessionConfig {
                 jwt_secret: vec![Secret::from("0123456789abcdef0123456789abcdef")],
@@ -5514,6 +5926,8 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: None,
+            admin: None,
+            enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
             session: Some(GatewaySessionConfig {
                 jwt_secret: vec![Secret::from("0123456789abcdef0123456789abcdef")],
@@ -5537,6 +5951,8 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: None,
+            admin: None,
+            enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
             session: Some(GatewaySessionConfig {
                 jwt_secret: vec![Secret::from("0123456789abcdef0123456789abcdef")],
@@ -5557,6 +5973,8 @@ mod tests {
             policies: None,
             telemetry: None,
             state_path: None,
+            admin: None,
+            enforcement: GatewayEnforcementConfig::default(),
             oidc: None,
             session: None,
         };

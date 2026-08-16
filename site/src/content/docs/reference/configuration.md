@@ -231,6 +231,31 @@ headers = { "x-api-key" = "..." }
 
 By default, `/device` ignores forwarding headers and rate-limits the socket peer. Set `trust_forwarded_for = true` only when shunt is reachable exclusively through a trusted reverse proxy that removes client-provided forwarding headers before setting its own value. Do not enable it on a directly exposed gateway.
 
+### `[server.gateway.admin]` (optional)
+
+Presence of this table registers the spend-limit Admin API. The keys name environment variables containing comma-separated `id:key` pairs. Key values must contain at least 32 characters. Both ids and key values must be unique across the two variables.
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `write_keys_env` | `SHUNT_GATEWAY_ADMIN_WRITE_KEYS` | Env var holding keys that can read, create, replace, and delete caps |
+| `read_keys_env` | `SHUNT_GATEWAY_ADMIN_READ_KEYS` | Env var holding GET-only keys |
+| `blocked_message` | unset | Accepted for future enforcement errors; stage 1 does not use it |
+| `audit_retention_days` | `365` | Accepted for the later audit retention sweep |
+| `spend_retention_months` | `13` | Accepted for the later spend retention sweep |
+| `identity_retention_days` | `90` | Accepted for the later identity retention sweep |
+| `group_limit_mode` | `min` | `min` or `max`; accepted for later group-limit resolution |
+| `state_path` | `~/.shunt/gateway-spend.json` | Versioned JSON file containing caps and audit records; `""` selects memory-only storage |
+
+Unlike the upstream gateway YAML examples, shunt does not place key values or `${VAR}` placeholders in the config file. Export pairs such as `SHUNT_GATEWAY_ADMIN_WRITE_KEYS="terraform:<32-or-more-character-key>"`. The state file is replaced atomically with private permissions after each mutation. When no home directory resolves, the default is memory-only. The state path is fixed at boot; configuration reloads do not change it.
+
+### `[server.gateway.enforcement]` (optional)
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `fail_closed_on_error` | `false` | Accepted for the later enforcement stage. Setting it to `true` without `[server.gateway.admin]` fails configuration validation |
+
+Stage 1 does not enforce caps on `/v1/messages`. It also does not implement usage metering, `/effective`, `/audit`, retention sweeps, or group scopes.
+
 ## `[server.codex_endpoint]` (optional)
 
 Presence of this table enables an inbound OpenAI Responses passthrough so the **Codex CLI** can point its `base_url` at shunt and be load-balanced across a ChatGPT/Codex OAuth account pool ([details](/guides/inbound-codex-endpoint/)). When the table is absent, none of those routes are registered.
@@ -376,7 +401,7 @@ When the chain is exhausted, shunt returns the best relayed failure with prefere
 
 For a `passthrough` upstream, the client's own `authorization` / `x-api-key` is forwarded on a failover attempt only when the **primary** route is itself `passthrough` and the attempt's destination origin matches that primary's. The credential is then the caller's own upstream credential, origin-specific to the primary, so a `passthrough` failover attempt on a **different** origin strips both slots and fails closed rather than replaying a host-specific token to another origin; a same-origin fallback (e.g. two passthrough entries on one host) still carries them. When the primary instead injects a credential (`api_key`/OAuth), the client headers are a gateway/client secret rather than an upstream credential, so every `passthrough` fallback strips them regardless of origin. `api_key`/OAuth upstreams inject their own server-side credential regardless of position.
 
-Independent of origin, each retained slot is also checked by the value it actually holds: `authorization` and `x-api-key` are each cleared only when that slot's own value is shaped like a JWT shunt itself issued — three segments whose payload's `aud` claims `"shunt"` or whose `iss` claims this gateway's identity — or matches a configured `[server.auth]` client token. The JWT check is deliberately by shape, not by whether the token currently authenticates: an expired token, one minted by a sibling instance under a different `public_url`, or one that no longer verifies after a `jwt_secret` rotation is still shunt's own credential and is still cleared. An `apiKeyHelper` fills both slots with the same value, so either credential can land in either or both. A slot holding a genuine upstream credential is forwarded even when the other slot holds the gateway JWT or a static client token; only the gate-credential-bearing slot is cleared. `[server.auth] header` accepts any header name, including `authorization` itself; when it is set that way a client authenticates with a bare, unprefixed `Authorization: <token>`, so that slot is checked as a whole value as well as by its `Bearer` payload and such a token is never forwarded upstream. One caveat for that configuration: on inference requests shunt removes the configured header before routing, unconditionally, so that slot then carries nothing upstream — a caller's own credential in it is dropped too, not just a gate token. Keeping `header` at its dedicated `x-shunt-token` default avoids that collision.
+Independent of origin, each retained slot is also checked by the value it actually holds: `authorization` and `x-api-key` are each cleared only when that slot's own value is shaped like a JWT shunt itself issued — three segments whose payload's `aud` claims `"shunt"`, whose `iss` claims this gateway's identity, or whose `shunt_token_use` claim is `"gateway-session"`, a dedicated marker that only shunt mints — or matches a configured `[server.auth]` client token. The JWT check is deliberately by shape, not by whether the token currently authenticates: an expired token, one minted by a sibling instance under a different `public_url`, or one that no longer verifies after a `jwt_secret` rotation is still shunt's own credential and is still cleared. The marker is an additional arm on that shape check, not a requirement: a token minted before the marker existed still matches by `aud`/`iss`, and `verify` does not require the marker either, so a token minted by an older shunt version still authenticates for as long as it remains within its TTL. An `apiKeyHelper` fills both slots with the same value, so either credential can land in either or both. A slot holding a genuine upstream credential is forwarded even when the other slot holds the gateway JWT or a static client token; only the gate-credential-bearing slot is cleared. `[server.auth] header` accepts any header name, including `authorization` itself; when it is set that way a client authenticates with a bare, unprefixed `Authorization: <token>`, so that slot is checked as a whole value as well as by its `Bearer` payload and such a token is never forwarded upstream. One caveat for that configuration: on inference requests shunt removes the configured header before routing, unconditionally, so that slot then carries nothing upstream — a caller's own credential in it is dropped too, not just a gate token. Keeping `header` at its dedicated `x-shunt-token` default avoids that collision.
 
 Every proxied success or final failure carries `x-gateway-upstream` (selected upstream name), `x-gateway-model` (client-requested id), and `x-gateway-upstream-model` (mapped backend id). `count_tokens` uses only the first chain element and never fails over. `[server.codex_endpoint]` remains pinned to its configured upstream and does not participate in this chain.
 

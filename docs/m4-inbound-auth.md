@@ -98,7 +98,8 @@ shaped like a JWT shunt itself issued or matches a configured `[server.auth]` st
 the shared `auth::inbound::consumed_by` check used identically on the passthrough attempt of a
 chain (`proxy/failover.rs`) and in upstream model discovery (`discovery/upstream.rs`). The
 gateway-JWT half of that check (`jwt::has_shunt_shape`) is deliberately by shape — three base64url
-segments whose payload's `aud` claims `"shunt"` or whose `iss` claims this gateway's issuer — not
+segments whose payload's `aud` claims `"shunt"`, whose `iss` claims this gateway's `public_url`, or
+whose `shunt_token_use` claim is `"gateway-session"`, a dedicated marker that only shunt mints — not
 by whether the token currently authenticates: a do-not-forward decision has to ask "did shunt
 issue this?", not "is this valid right now?". An expired token, one minted by a sibling instance
 under a different `public_url` (a fleet sharing one `jwt_secret` across differing `public_url`
@@ -109,7 +110,13 @@ third-party upstream a valid (message, tag) pair over `jwt_secret` as an offline
 therefore checks `authenticate_token` first (so the `GatewayJwt` reason label keeps meaning "this
 authenticated the caller" whenever it can) and falls back to the shape check only if that fails.
 Forging `aud`/`iss` to force a strip only removes the forger's own credential — the check is
-per-value, never per-request — so the fail-safe direction is correct. The
+per-value, never per-request — so the fail-safe direction is correct. The marker claim is an
+additional arm on that shape check, never a required one: a token minted before the marker
+existed still matches by `aud`/`iss`, and `verify` itself does not require the marker either, so
+such a token still authenticates within its TTL — requiring it would reject still-live tokens from
+an older shunt version, trading a silent leak-prevention gap for a loud, self-inflicted logout
+regression. Precision only improves as pre-marker tokens age out, without ever narrowing the check
+in the direction that matters. The
 `authorization` slot is evaluated in **both** shapes it can carry a gate credential in — the
 `Bearer <token>` payload, and the entire header value — because `[server.auth] header` is a
 free-form header name that an operator may set to `authorization`, in which case

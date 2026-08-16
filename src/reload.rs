@@ -66,10 +66,11 @@ impl RuntimeState {
 /// good config rather than going down or running open.
 ///
 /// Fields that cannot be hot-applied (`server.bind`,
-/// `server.max_concurrent_requests`, `[sentry]`, `[otel]`, and enabling or
-/// disabling the optional `[server.*]` route trees) are compared against the
-/// live config and a `warn!` is logged when they change; the new values are
-/// accepted into the swapped config but only take effect on restart.
+/// `server.max_concurrent_requests`, spend-limit route registration/state path,
+/// `[sentry]`, `[otel]`, and enabling or disabling the optional `[server.*]` route
+/// trees) are compared against the live config and a `warn!` is logged when they
+/// change; the new values are accepted into the swapped config but only take
+/// effect on restart.
 pub fn reload(shared: &SharedState, path: Option<&std::path::Path>) -> Result<(), ConfigError> {
     // Load + validate the candidate before touching the live state.
     let new_config = Config::load(path)?;
@@ -162,6 +163,27 @@ fn warn_on_restart_only_changes(previous: &Config, next: &Config) {
     if previous.server.gateway.is_some() != next.server.gateway.is_some() {
         tracing::warn!(
             "[server.gateway] was enabled or disabled but requires a restart; the running route and JWT-auth capability remains unchanged"
+        );
+    }
+    let previous_spend_admin = previous
+        .server
+        .gateway
+        .as_ref()
+        .and_then(|gateway| gateway.admin.as_ref());
+    let next_spend_admin = next
+        .server
+        .gateway
+        .as_ref()
+        .and_then(|gateway| gateway.admin.as_ref());
+    if previous_spend_admin.is_some() != next_spend_admin.is_some() {
+        tracing::warn!(
+            "[server.gateway.admin] was enabled or disabled but requires a restart to register or drop spend-limit routes"
+        );
+    } else if previous_spend_admin.and_then(|admin| admin.state_path())
+        != next_spend_admin.and_then(|admin| admin.state_path())
+    {
+        tracing::warn!(
+            "[server.gateway.admin].state_path changed but requires a restart; spend-limit persistence is fixed at boot"
         );
     }
     // Like `[server.admin]`, whether the inbound Responses routes are registered
@@ -878,6 +900,81 @@ mod tests {
 
         std::env::remove_var(secret_env);
         std::env::remove_var(users_env);
+    }
+
+    fn gateway_admin_config(
+        state_path: Option<std::path::PathBuf>,
+    ) -> crate::config::GatewayAdminConfig {
+        crate::config::GatewayAdminConfig {
+            write_keys_env: "UNSET_RELOAD_SPEND_WRITE_KEYS".into(),
+            read_keys_env: "UNSET_RELOAD_SPEND_READ_KEYS".into(),
+            blocked_message: None,
+            audit_retention_days: 365,
+            spend_retention_months: 13,
+            identity_retention_days: 90,
+            group_limit_mode: crate::config::GroupLimitMode::Min,
+            state_path,
+            write_keys: Vec::new(),
+            read_keys: Vec::new(),
+        }
+    }
+
+    fn gateway_config(
+        admin: Option<crate::config::GatewayAdminConfig>,
+    ) -> crate::config::GatewayConfig {
+        crate::config::GatewayConfig {
+            public_url: "https://gateway.example".into(),
+            jwt_secret_env: Some("UNSET_RELOAD_GATEWAY_SECRET".into()),
+            users_env: "UNSET_RELOAD_GATEWAY_USERS".into(),
+            token_ttl_seconds: Some(3600),
+            trust_forwarded_for: false,
+            policies: None,
+            telemetry: None,
+            state_path: None,
+            admin,
+            enforcement: crate::config::GatewayEnforcementConfig::default(),
+            oidc: None,
+            session: None,
+        }
+    }
+
+    #[test]
+    fn spend_admin_presence_toggle_warns_that_restart_is_required() {
+        let mut previous = Config::default();
+        previous.server.gateway = Some(gateway_config(None));
+        let mut next = previous.clone();
+        next.server.gateway.as_mut().unwrap().admin = Some(gateway_admin_config(None));
+
+        let logs = capture_logs(|| super::warn_on_restart_only_changes(&previous, &next));
+        assert!(
+            logs.contains("[server.gateway.admin] was enabled or disabled"),
+            "{logs}"
+        );
+        assert!(logs.contains("requires a restart"), "{logs}");
+    }
+
+    #[test]
+    fn spend_state_path_change_warns_that_restart_is_required() {
+        let mut previous = Config::default();
+        previous.server.gateway = Some(gateway_config(Some(gateway_admin_config(Some(
+            "/tmp/spend-before.json".into(),
+        )))));
+        let mut next = previous.clone();
+        next.server
+            .gateway
+            .as_mut()
+            .unwrap()
+            .admin
+            .as_mut()
+            .unwrap()
+            .state_path = Some("/tmp/spend-after.json".into());
+
+        let logs = capture_logs(|| super::warn_on_restart_only_changes(&previous, &next));
+        assert!(
+            logs.contains("[server.gateway.admin].state_path changed"),
+            "{logs}"
+        );
+        assert!(logs.contains("requires a restart"), "{logs}");
     }
 
     #[test]

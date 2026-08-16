@@ -7,6 +7,7 @@ pub mod managed;
 mod oauth;
 pub mod persist;
 pub mod refresh;
+pub mod spend;
 pub mod store;
 pub mod telemetry_ingest;
 
@@ -241,8 +242,8 @@ impl GatewayAuth {
     }
 }
 
-pub fn gateway_router() -> Router<AppState> {
-    Router::new()
+pub fn gateway_router(spend_admin_enabled: bool) -> Router<AppState> {
+    let mut router = Router::new()
         .route(
             "/.well-known/oauth-authorization-server",
             get(oauth::discovery),
@@ -271,7 +272,23 @@ pub fn gateway_router() -> Router<AppState> {
         .route(
             telemetry_ingest::Signal::Traces.path(),
             post(telemetry_ingest::traces),
-        )
+        );
+    if spend_admin_enabled {
+        router = router
+            .route(
+                "/v1/organizations/spend_limits",
+                get(spend::api::list)
+                    .post(spend::api::create)
+                    .fallback(spend::api::method_not_allowed),
+            )
+            .route(
+                "/v1/organizations/spend_limits/{id}",
+                get(spend::api::get_by_id)
+                    .delete(spend::api::delete_by_id)
+                    .fallback(spend::api::method_not_allowed),
+            );
+    }
+    router
 }
 
 #[cfg(test)]

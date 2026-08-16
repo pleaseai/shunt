@@ -403,6 +403,8 @@ fn gateway_enabled_config(
         policies: None,
         telemetry: None,
         state_path: None,
+        admin: None,
+        enforcement: shunt::config::GatewayEnforcementConfig::default(),
         oidc: None,
         session: None,
     });

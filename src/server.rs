@@ -67,6 +67,7 @@ impl AppState {
     /// by callers that do not thread an external [`SharedState`].
     pub fn new(config: Config, http_client: reqwest::Client) -> Result<Self, ConfigError> {
         let boot_is_loopback = boot_is_loopback(&config);
+        let spend_state_path = spend_state_path(&config);
         let rate_limits = config.server.rate_limits.clone();
         let runtime = RuntimeState::from_config(config)?;
         let shared: SharedState = Arc::new(arc_swap::ArcSwap::from_pointee(runtime));
@@ -76,7 +77,7 @@ impl AppState {
             Arc::new(AccountPool::new()),
             Arc::new(StatusStore::new()),
             Arc::new(AdminStores::new()),
-            Arc::new(GatewayStores::new(&rate_limits)),
+            Arc::new(GatewayStores::new(&rate_limits, spend_state_path)),
             boot_is_loopback,
         ))
     }
@@ -123,6 +124,17 @@ impl AppState {
     }
 }
 
+fn spend_state_path(config: &Config) -> Option<std::path::PathBuf> {
+    config
+        .server
+        .gateway
+        .as_ref()?
+        .admin
+        .as_ref()?
+        .state_path()
+        .map(ToOwned::to_owned)
+}
+
 /// Whether `config.server.bind` (the value in force at process startup,
 /// before any reload can rewrite it) resolves to a loopback address. Computed
 /// once, from the pre-boot config, and then carried unchanged across reloads
@@ -160,6 +172,11 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     // Gateway-login routes are likewise fixed at boot; signing/user edits are
     // re-resolved through `gateway_auth`, while toggling requires a restart.
     let gateway_enabled = config.server.gateway.is_some();
+    let spend_admin_enabled = config
+        .server
+        .gateway
+        .as_ref()
+        .is_some_and(|gateway| gateway.admin.is_some());
     // The inbound Responses (Codex) routes are likewise registered once from the
     // initial config; a reload can only change the target provider, not add or
     // drop the routes.
@@ -178,6 +195,7 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     // rewriting `server.bind` must not move that gate without a restart (see
     // `AppState::boot_is_loopback`).
     let boot_is_loopback = boot_is_loopback(config);
+    let spend_state_path = spend_state_path(config);
     let rate_limits = config.server.rate_limits.clone();
     let shared: SharedState = Arc::new(arc_swap::ArcSwap::from_pointee(runtime));
     let state = AppState::from_shared(
@@ -186,7 +204,7 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
         Arc::new(AccountPool::new()),
         Arc::new(StatusStore::new()),
         Arc::new(AdminStores::new()),
-        Arc::new(GatewayStores::new(&rate_limits)),
+        Arc::new(GatewayStores::new(&rate_limits, spend_state_path)),
         boot_is_loopback,
     );
 
@@ -220,7 +238,7 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     // Static client tokens are a separate alternative, and `/v1/models` keeps its
     // existing endpoint-specific authentication behavior.
     if gateway_enabled {
-        router = router.merge(gateway::gateway_router());
+        router = router.merge(gateway::gateway_router(spend_admin_enabled));
     }
 
     // Opt-in inbound Responses (Codex) endpoint: registered only when
