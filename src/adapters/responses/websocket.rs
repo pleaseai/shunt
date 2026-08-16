@@ -337,6 +337,10 @@ fn websocket_headers(credential: Credential) -> Result<HeaderMap, AdapterError> 
         Credential::GoogleOauth { access_token, .. } => {
             set("authorization", format!("Bearer {access_token}"))?
         }
+        // Fails closed for the same reason as the HTTP Responses path: the
+        // Codex WebSocket is not the origin an Antigravity subscription token
+        // was issued for, so an unreachable-by-validation arm must not carry it.
+        Credential::AntigravityOauth { .. } => {}
         Credential::Passthrough => {}
         // Kimi's coding API speaks the Anthropic Messages shape, so a
         // `kimi_oauth` provider is always `kind = "anthropic"` and never
@@ -542,6 +546,25 @@ mod tests {
         let headers = websocket_headers(Credential::Passthrough).unwrap();
         assert_eq!(headers.get("openai-beta").unwrap(), WEBSOCKET_BETA_PROTOCOL);
         assert!(headers.get("authorization").is_none());
+    }
+
+    #[test]
+    fn websocket_headers_antigravity_oauth_sends_no_authorization() {
+        use super::codex_ws::WEBSOCKET_BETA_PROTOCOL;
+        use super::{websocket_headers, Credential};
+
+        // Config validation pins `antigravity_oauth` to `kind = "antigravity"`,
+        // so this arm is unreachable in a valid config — but if it were ever
+        // reached, it must fail closed rather than bearer an off-origin
+        // subscription token onto the Codex WebSocket.
+        let headers = websocket_headers(Credential::AntigravityOauth {
+            access_token: "antigravity-token".to_string(),
+            project_id: "proj-1".to_string(),
+        })
+        .unwrap();
+        assert_eq!(headers.get("openai-beta").unwrap(), WEBSOCKET_BETA_PROTOCOL);
+        assert!(headers.get("authorization").is_none());
+        assert!(headers.get("x-api-key").is_none());
     }
 
     #[test]

@@ -56,18 +56,31 @@ field instead of through a separate `*_env` name. See
 
 ## 3. Redaction
 
-Four fields are typed as a redacting secret and render as `[redacted]` in
+Six field paths are typed as a redacting secret and render as `[redacted]` in
 diagnostic output (logs, `shunt check`, admin/debug surfaces): `[sentry]
 dsn`, each value in `[otel] headers`, each `headers` value under
-`[server.gateway.telemetry] forward_to[]`, and `[server.gateway.session]
-jwt_secret`.
+`[server.gateway.telemetry] forward_to[]`, `[server.gateway.session]
+jwt_secret`, and the `key` of each `[[server.admin.write_keys]]` and
+`[[server.admin.read_keys]]` entry.
 
-Writing one of these literally in the config file still works exactly as
-before — this is a redaction change, not a validation change. On boot, if a
-secret-typed field holds a literal (rather than a `${VAR}` / `${file:...}`
-reference), shunt logs one advisory warning naming the affected field paths
-— never the values — suggesting `${VAR}` / `${file:...}` instead. The
-warning is advisory only; it does not fail config load or `shunt check`.
+For the first four, writing the value literally in the config file still works
+exactly as before — that is a redaction change, not a validation change. On
+boot, if such a field holds a literal (rather than a `${VAR}` /
+`${file:...}` reference), shunt logs one advisory warning naming the affected
+field paths — never the values — suggesting `${VAR}` / `${file:...}` instead.
+The warning is advisory only; it does not fail config load or `shunt check`.
+
+**The two admin key arrays are the exception: a literal there is refused, not
+warned about.** A `key` written directly in the config file fails config load
+with `[server.admin.write_keys.<index>.key] holds an admin key written
+literally in the config file` (likewise for `read_keys`); the value itself is
+never echoed. It must be supplied by `${VAR}`, `${file:/abs/path}`, or a
+`SHUNT_*` environment override. The four older paths only warn because
+deployments already hold literals in them and tightening the rule would refuse
+to start a config that works today; the key arrays are new, so no deployment
+holds a literal there yet and refusing costs nothing. An admin key is also a
+higher-value secret than the others — it can provision upstream accounts and
+administer spend limits — so keeping it out of the file is worth a hard failure.
 
 ## 4. Interaction with hot reload
 
@@ -81,15 +94,16 @@ own parent directory, not arbitrary `${file:...}` target paths.
 
 Re-resolution is not the same as taking effect. The reloaded config always
 holds the new value, but whether the running gateway uses it follows that
-field's own reload behavior, and two of the three secret-typed field groups
-are restart-only: `[sentry]` (the Sentry client is initialized once at
+field's own reload behavior, and two of the secret-typed field groups are
+restart-only: `[sentry]` (the Sentry client is initialized once at
 startup) and `[otel]` (the OpenTelemetry exporters likewise). Rotating a
 `${file:...}` secret in either section updates the config and logs
 `requires a restart to apply`, while the running client keeps the old
 credential until shunt restarts. `[server.gateway.telemetry].forward_to`
-headers are read from the live config per request, so those do rotate on
-reload. See `warn_on_restart_only_changes` in `src/reload.rs` for the full
-restart-only set.
+headers are read from the live config per request, and the `[server.admin]`
+key arrays are re-resolved into the admin-auth state on every reload, so those
+do rotate on reload. See `warn_on_restart_only_changes` in `src/reload.rs` for
+the full restart-only set.
 
 Reload's usual fail-safe behavior applies: if the reloaded config fails to
 resolve a reference (undefined variable, unreadable file), the reload is

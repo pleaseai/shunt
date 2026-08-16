@@ -215,7 +215,7 @@ async fn start_gateway() -> TestGateway {
                 "bind = \"127.0.0.1:0\"\n",
                 "default_provider = \"agy\"\n\n",
                 "[providers.agy]\n",
-                "kind = \"antigravity\"\n",
+                "kind = \"antigravity_cli\"\n",
                 "base_url = \"http://localhost\"\n",
                 "auth = \"none\"\n\n",
                 "[[routes]]\n",
@@ -248,10 +248,10 @@ async fn start_gateway_after_unsandboxed_loopback_reload() -> TestGateway {
     let _ = stub_agy();
     let mut boot_config = Config::default();
     boot_config.server.bind = "0.0.0.0:0".to_string();
-    boot_config.server.default_provider = "antigravity".to_string();
+    boot_config.server.default_provider = "antigravity-cli".to_string();
     boot_config.routes.push(RouteConfig {
         model: MODEL.to_string(),
-        provider: "antigravity".to_string(),
+        provider: "antigravity-cli".to_string(),
         upstream_model: Some("gemini-3.1-pro".to_string()),
         effort: None,
         service_tier: None,
@@ -264,7 +264,7 @@ async fn start_gateway_after_unsandboxed_loopback_reload() -> TestGateway {
     reloaded_config.server.bind = "127.0.0.1:0".to_string();
     reloaded_config
         .providers
-        .get_mut("antigravity")
+        .get_mut("antigravity-cli")
         .unwrap()
         .sandbox = false;
     let runtime = RuntimeState::from_config(reloaded_config).unwrap();

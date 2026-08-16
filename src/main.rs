@@ -5,6 +5,10 @@ use std::sync::OnceLock;
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use shunt::{
+    auth::antigravity::{
+        antigravity_migration_error, routes_to_antigravity, routes_to_antigravity_cli,
+        warn_if_routes_to_antigravity_cli,
+    },
     blueprints::{self, AddKind},
     config::{Config, OtelConfig, SentryConfig},
     init, server,
@@ -85,10 +89,11 @@ enum Command {
         print: bool,
     },
     /// Log in to a subscription provider and save its credential for shunt to
-    /// inject. Supports `xai`, `cursor`, `claude`, `codex`, and `kimi`.
+    /// inject. Supports `xai`, `cursor`, `claude`, `codex`, `antigravity`, and
+    /// `kimi`.
     Login {
-        /// Provider to log in to (`xai`, `cursor`, `claude`, `codex`, or
-        /// `kimi`).
+        /// Provider to log in to (`xai`, `cursor`, `claude`, `codex`,
+        /// `antigravity`, or `kimi`).
         provider: String,
         /// Stable account name used by a name-only pool entry (`claude`,
         /// `codex`, and `kimi` only).
@@ -368,6 +373,14 @@ fn login(
                 "--mode is not supported for `shunt login codex`; Codex OAuth tokens are always refreshable"
             )
         }
+        "antigravity" if name.is_none() && !long_lived && mode.is_none() => {
+            runtime()?.block_on(shunt::auth::antigravity::login::run())
+        }
+        "antigravity" => {
+            anyhow::bail!(
+                "--name, --long-lived, and --mode are only valid for `shunt login claude`"
+            )
+        }
         "codex" => {
             let name = name.ok_or_else(|| {
                 anyhow::anyhow!("`shunt login codex` requires --name <account-name>")
@@ -392,7 +405,7 @@ fn login(
         }
         _ => {
             anyhow::bail!(
-                "unknown login provider {provider:?}; supported: claude, codex, cursor, xai, kimi"
+                "unknown login provider {provider:?}; supported: antigravity, claude, codex, cursor, kimi, xai"
             )
         }
     }
@@ -487,12 +500,34 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     // `Config::default()` seeds a built-in `antigravity` provider, so keying
     // off the provider map alone spawned the subprocess on every startup with
     // `agy` installed, including configs that route nowhere near it.
-    if routes_to_antigravity(&config) {
+    // Issue #368 Stage 1: `kind = "antigravity_cli"` shells out to the local
+    // `agy` binary; `kind = "antigravity"` reaches the same service natively
+    // over HTTP without the subprocess. Warn operators still routed to the CLI
+    // transport so they can migrate before it is removed.
+    warn_if_routes_to_antigravity_cli(&config);
+    if routes_to_antigravity_cli(&config) {
         if let Some(agy) = shunt::adapters::antigravity::find_agy_binary() {
             tokio::spawn(async move {
                 shunt::adapters::antigravity::models::warm(&agy).await;
             });
         }
+    }
+    // The native Antigravity upstream advertises the shipping client version.
+    // The refresher is bounded, off the request path, and falls back to the
+    // compiled-in version, so a manifest outage degrades the fingerprint
+    // rather than the provider.
+    if routes_to_antigravity(&config) {
+        // `antigravity` changed meaning: it used to run the local `agy` binary,
+        // and now reaches the same service over HTTP under its own credential.
+        // A config that still means the old thing must fail loudly here rather
+        // than resolve quietly to a different transport, with different
+        // credentials, egress, and failure modes, behind a green startup.
+        if let Some(message) = antigravity_migration_error(
+            shunt::auth::antigravity::default_antigravity_auth_path().exists(),
+        ) {
+            anyhow::bail!(message);
+        }
+        shunt::auth::antigravity::version::spawn_refresher(reqwest::Client::new());
     }
     let (router, shared, state) =
         server::build_router(config).context("failed to initialize gateway")?;
@@ -508,6 +543,12 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     // sessions before serving; later mutations are written by the token
     // endpoint itself. A no-op when the key is unset.
     shunt::gateway::persist::restore(&state).await;
+    // Spend-limit caps and audit records share a versioned, atomic state file.
+    // Restore it before accepting admin mutations; memory-only configuration is
+    // a no-op.
+    shunt::gateway::spend::persist::restore(&state)
+        .await
+        .context("failed to restore gateway spend-limit state")?;
     // Opt-in `[server.status]`: poll provider Statuspage `summary.json`
     // endpoints in the background, sharing the router's status store.
     // Observation-only (see AGENTS.md) and a no-op when `sources` is empty.
@@ -692,40 +733,6 @@ fn init_telemetry(config: Option<&OtelConfig>) -> Option<TelemetryGuard> {
             None
         }
     }
-}
-
-/// Whether any routing surface can actually reach an Antigravity provider.
-///
-/// Presence in the provider map is not routing: `Config::default()` seeds a
-/// built-in `antigravity` entry, so a config whose traffic goes entirely to
-/// Anthropic still "has" one. Warming on that spawned a ~20s `agy models`
-/// subprocess on every startup with `agy` installed, for nothing.
-///
-/// Checks every way a request can select a provider: the default provider,
-/// exact routes, prefix routes, and a model's `upstream_model` map.
-fn routes_to_antigravity(config: &Config) -> bool {
-    let is_antigravity = |name: &str| {
-        config
-            .providers
-            .get(name)
-            .is_some_and(|provider| provider.kind == shunt::config::ProviderKind::Antigravity)
-    };
-
-    is_antigravity(&config.server.default_provider)
-        || config
-            .routes
-            .iter()
-            .any(|route| is_antigravity(&route.provider))
-        || config
-            .route_prefixes
-            .iter()
-            .any(|prefix| is_antigravity(&prefix.provider))
-        || config.models.iter().any(|model| {
-            model
-                .upstream_model
-                .as_ref()
-                .is_some_and(|map| map.keys().any(|provider| is_antigravity(provider)))
-        })
 }
 
 #[cfg(test)]
@@ -1223,92 +1230,5 @@ mod tests {
             .expect("serve returns before the test deadline")
             .expect("serve task join")
             .expect("graceful shutdown returns Ok once drained");
-    }
-}
-
-#[cfg(test)]
-mod warm_gate_tests {
-    use shunt::config::{Config, ModelConfig, ProviderKind, RouteConfig, RoutePrefixConfig};
-
-    use super::routes_to_antigravity;
-
-    /// Turn the built-in `antigravity` provider into the one under test without
-    /// hand-building a provider: `Config::default()` already seeds it.
-    fn base() -> Config {
-        let config = Config::default();
-        assert_eq!(
-            config
-                .providers
-                .get("antigravity")
-                .map(|provider| provider.kind),
-            Some(ProviderKind::Antigravity),
-            "this test rests on the default config seeding an antigravity provider"
-        );
-        config
-    }
-
-    #[test]
-    fn default_config_does_not_route_to_antigravity() {
-        // The provider exists but nothing selects it. This is the whole point:
-        // presence is not routing.
-        assert!(!routes_to_antigravity(&base()));
-    }
-
-    #[test]
-    fn default_provider_pointing_at_antigravity_counts() {
-        let mut config = base();
-        config.server.default_provider = "antigravity".to_string();
-        assert!(routes_to_antigravity(&config));
-    }
-
-    #[test]
-    fn an_exact_route_counts() {
-        let mut config = base();
-        config.routes.push(RouteConfig {
-            model: "gemini-3.1-pro".to_string(),
-            provider: "antigravity".to_string(),
-            upstream_model: None,
-            effort: None,
-            service_tier: None,
-        });
-        assert!(routes_to_antigravity(&config));
-    }
-
-    #[test]
-    fn a_prefix_route_counts() {
-        let mut config = base();
-        config.route_prefixes.push(RoutePrefixConfig {
-            prefix: "gemini-".to_string(),
-            provider: "antigravity".to_string(),
-        });
-        assert!(routes_to_antigravity(&config));
-    }
-
-    #[test]
-    fn a_model_upstream_map_counts() {
-        let mut config = base();
-        config.models.push(ModelConfig {
-            id: "claude-gemini-via-agy".to_string(),
-            display_name: None,
-            upstream_model: Some(
-                [("antigravity".to_string(), "gemini-3.1-pro".to_string())]
-                    .into_iter()
-                    .collect(),
-            ),
-        });
-        assert!(routes_to_antigravity(&config));
-    }
-
-    #[test]
-    fn routing_to_a_non_antigravity_provider_does_not_count() {
-        let mut config = base();
-        config.routes.push(RouteConfig {
-            model: "some-model".to_string(),
-            provider: "anthropic".to_string(),
-            upstream_model: None,
-            effort: None,
-            service_tier: None,
-        });
-        assert!(!routes_to_antigravity(&config));
     }
 }

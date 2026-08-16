@@ -13,7 +13,8 @@ use std::{
 };
 
 use super::{
-    approval::Identity, idp_client::DiscoveredEndpoints, refresh::RefreshTokenStore, ResolvedIdp,
+    approval::Identity, idp_client::DiscoveredEndpoints, refresh::RefreshTokenStore,
+    spend::SpendStore, ResolvedIdp,
 };
 
 pub const DEVICE_CODE_TTL: Duration = Duration::from_secs(600);
@@ -337,6 +338,7 @@ impl PerIpRateLimiter {
 pub struct GatewayStores {
     pub device_grants: DeviceGrantStore,
     pub refresh_tokens: RefreshTokenStore,
+    pub spend: SpendStore,
     pub device_authorization_rate: PerIpRateLimiter,
     pub device_verify_rate: PerIpRateLimiter,
     pub oidc_states: OidcStateStore,
@@ -350,10 +352,14 @@ pub struct GatewayStores {
 }
 
 impl GatewayStores {
-    pub fn new(rate_limits: &crate::config::RateLimitsConfig) -> Self {
+    pub fn new(
+        rate_limits: &crate::config::RateLimitsConfig,
+        spend_state_path: Option<std::path::PathBuf>,
+    ) -> Self {
         Self {
             device_grants: DeviceGrantStore::new(),
             refresh_tokens: RefreshTokenStore::new(),
+            spend: SpendStore::new(spend_state_path),
             device_authorization_rate: PerIpRateLimiter::new(
                 Duration::from_secs(rate_limits.device_authorization.window_seconds),
                 rate_limits.device_authorization.max,
@@ -377,7 +383,7 @@ impl GatewayStores {
 
 impl Default for GatewayStores {
     fn default() -> Self {
-        Self::new(&crate::config::RateLimitsConfig::default())
+        Self::new(&crate::config::RateLimitsConfig::default(), None)
     }
 }
 
@@ -567,16 +573,19 @@ mod tests {
 
     #[test]
     fn configured_device_limiters_are_independent() {
-        let stores = GatewayStores::new(&crate::config::RateLimitsConfig {
-            device_authorization: crate::config::RateLimitConfig {
-                max: 1,
-                window_seconds: 600,
+        let stores = GatewayStores::new(
+            &crate::config::RateLimitsConfig {
+                device_authorization: crate::config::RateLimitConfig {
+                    max: 1,
+                    window_seconds: 600,
+                },
+                device_verify: crate::config::RateLimitConfig {
+                    max: 2,
+                    window_seconds: 600,
+                },
             },
-            device_verify: crate::config::RateLimitConfig {
-                max: 2,
-                window_seconds: 600,
-            },
-        });
+            None,
+        );
         assert!(stores.device_authorization_rate.check("192.0.2.1"));
         assert!(!stores.device_authorization_rate.check("192.0.2.1"));
         assert!(stores.device_verify_rate.check("192.0.2.1"));

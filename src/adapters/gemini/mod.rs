@@ -79,6 +79,10 @@ async fn forward(
         Credential::GoogleOauth {
             access_token,
             project_id,
+        }
+        | Credential::AntigravityOauth {
+            access_token,
+            project_id,
         } => (access_token, project_id),
         Credential::ApiKey { value, .. } => (value, String::new()),
         _ => {
@@ -102,7 +106,15 @@ async fn forward(
     } else {
         "generateContent"
     };
-    let (endpoint, payload) = if provider.auth == AuthMode::GoogleOauth {
+    // Both subscription paths speak the Code Assist protocol: the same
+    // `v1internal` methods under the `{model,project,request}` envelope. Only
+    // the credential and the client identity differ, so the envelope is gated
+    // on "is a subscription token", not on which provider issued it.
+    let is_code_assist = matches!(
+        provider.auth,
+        AuthMode::GoogleOauth | AuthMode::AntigravityOauth
+    );
+    let (endpoint, payload) = if is_code_assist {
         let endpoint = format!("{base_url}/v1internal:{method}");
         let envelope = wrap_code_assist_envelope(&route.upstream_model, &project_id, inner_req);
         (endpoint, envelope)
@@ -116,7 +128,12 @@ async fn forward(
     let http_client = state.http_client.clone();
     let payload_clone = payload.clone();
     let endpoint_clone = endpoint.clone();
-    let is_google_oauth = provider.auth == AuthMode::GoogleOauth;
+    let is_google_oauth = is_code_assist;
+    // Antigravity's backend is addressed as the Antigravity client; the Gemini
+    // Code Assist path is not, so the fingerprint is per auth mode rather than
+    // sent on every Code Assist request.
+    let user_agent = (provider.auth == AuthMode::AntigravityOauth)
+        .then(crate::auth::antigravity::version::user_agent);
     let token = access_token.clone();
 
     let ttfb_ms = state.config.server.timeouts.upstream_ttfb_ms;
@@ -125,10 +142,15 @@ async fn forward(
         let payload = payload_clone.clone();
         let endpoint = endpoint_clone.clone();
         let token = token.clone();
+        let user_agent = user_agent.clone();
         async move {
             let mut req = client
                 .post(&endpoint)
                 .header("Content-Type", "application/json");
+
+            if let Some(user_agent) = user_agent {
+                req = req.header("User-Agent", user_agent);
+            }
 
             if is_google_oauth {
                 req = req.bearer_auth(&token);

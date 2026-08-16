@@ -191,6 +191,7 @@ fn credential_source(preset: ProviderPresetView) -> String {
         }
         AuthMode::ClaudeOauth => "a configured Claude OAuth account.".to_string(),
         AuthMode::GoogleOauth => "a Gemini CLI Google OAuth login.".to_string(),
+        AuthMode::AntigravityOauth => "`shunt login antigravity`.".to_string(),
         AuthMode::None => "uses no HTTP credential (local adapter).".to_string(),
     }
 }

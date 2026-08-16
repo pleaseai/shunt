@@ -9,7 +9,7 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 
 配置文件中的字符串值可以写成 `${VAR}` 或 `${file:/绝对/路径}` 而不是字面量。`${VAR}` 会替换为环境变量 `VAR` 的值,可以嵌入更长的字符串中,例如 `"Bearer ${TOKEN}"`(若变量未定义,配置加载会失败)。`${file:/绝对/路径}` 会替换为该文件的内容(已 trim),路径必须是绝对路径,且引用必须是该字段的整个值 —— 不能嵌入更长的字符串中(若文件不可读、路径是相对路径,或引用嵌入在更长的字符串中,配置加载会失败)。`$${` 会转义为字面量 `${`。解析不是递归的 —— 解析出的值不会被再次扫描。此替换仅适用于配置文件,`SHUNT_*` 环境变量覆盖会按原样使用。它会在每次配置加载时重新执行,包括启动、`shunt check` 以及[热重载](https://github.com/pleaseai/shunt/blob/main/docs/config-reload.md)(SIGHUP 与文件监视),因此以 `${file:}` 引用的 secret 可以通过重写所引用的文件并触发一次重载来轮换,无需重启 shunt。但轮换后的值是否生效取决于该字段自身的重载行为:`[sentry]` 和 `[otel]` 只在启动时初始化一次,因此轮换这两个部分中的 secret 只会更新配置,需要重启才能生效。
 
-`[sentry] dsn`、`[otel.headers]` 的值、`[server.gateway.telemetry] forward_to[].headers` 的值,以及 `[server.gateway.session] jwt_secret` 这四个字段被标记为 redacting secret 类型,在诊断输出中显示为 `[redacted]`。在这些字段中写入字面量值的行为与之前完全相同;若某个 secret 类型字段持有字面量值,shunt 会在启动时记录一次仅列出相关字段路径(绝不包含值)的建议性警告,提示改用 `${VAR}` / `${file:...}`。
+`[sentry] dsn`、`[otel.headers]` 的值、`[server.gateway.telemetry] forward_to[].headers` 的值、`[server.gateway.session] jwt_secret`,以及 `[[server.admin.write_keys]]`、`[[server.admin.read_keys]]` 每一项的 `key` —— 这六个字段路径被标记为 redacting secret 类型,在诊断输出中显示为 `[redacted]`。前四个字段中写入字面量值的行为与之前完全相同;若其持有字面量值,shunt 会在启动时记录一次仅列出相关字段路径(绝不包含值)的建议性警告,提示改用 `${VAR}` / `${file:...}`。两个管理员 key 数组是例外:在其中写入字面量会导致**配置加载失败**,而不是仅发出警告。
 
 现有的 `tokens_env`、`jwt_secret_env`、`client_secret_env`、`api_key_env`、`users_env`、`token_env`、`tokens_file` 字段不受此变更影响,仍然指向一个环境变量(对 `tokens_file` 而言是文件路径)(`jwt_secret_env` 已单独被 [`session.jwt_secret`](#servergatewaysession可选) 取代,已弃用)。
 
@@ -49,20 +49,67 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 
 ## `[server.admin]`(可选)
 
-存在此表即启用管理 Web 界面,用于浏览器账户预配与账户池健康状况([详情](/zh-cn/guides/admin-remote-provisioning/))。此表不存在时,任何 `/admin*` 路由都不会注册。
+存在此表即启用管理 Web 界面,用于浏览器账户预配与账户池健康状况([详情](/zh-cn/guides/admin-remote-provisioning/))。此表不存在时,任何 `/admin*` 路由都不会注册。同一凭据也用于认证 [`[server.spend]`](#serverspend可选) 的 spend-limit API。
 
 | 键 | 默认 | 含义 |
 | :-- | :-- | :-- |
-| `header` | `x-shunt-admin-token` | API/curl 调用中携带管理员 token 的头部 |
-| `tokens_env` | `SHUNT_ADMIN_TOKENS` | 保存逗号分隔的 `name:token` 对的环境变量 |
+| `header` | `x-shunt-admin-token` | API/curl 调用中携带管理员凭据的头部。在管理路由和 spend-limit 路由上,`x-api-key` 也同样被接受 |
+| `tokens_env` | `SHUNT_ADMIN_TOKENS` | 保存逗号分隔的 `name:token` 对的环境变量。它们属于 **write** 层级 |
+| `tokens_file` | _(未设置)_ | 保存 `name:token` 对的文件路径(每行一个,或逗号分隔),在 `tokens_env` 未设置或为空时使用。它同样属于 **write** 层级 |
 | `session_ttl_secs` | `3600` | 登录后浏览器会话的生命周期,单位秒 |
 | `pending_ttl_secs` | `600` | 允许完成一个已开始的预配流程的时间,单位秒 |
 
-指定的环境变量必须包含至少一个凭据,例如 `SHUNT_ADMIN_TOKENS="ops:<token>"`。若此表存在但该变量未设置、为空或格式错误,启动会安全失败(fail closed)。
+管理员 token 既可以来自环境变量,也可以来自文件。指定的环境变量必须包含至少一个凭据,例如 `SHUNT_ADMIN_TOKENS="ops:<token>"`。或者把 `tokens_file` 设为一个路径(`~` 会被展开)并把这些对放进该文件 —— 这正是 `shunt dashboard setup` 写入 `~/.shunt/admin-token` 的文件,这样启动环境里就不必存放任何密钥。两者都设置时,非空的 `tokens_env` 优先。若此表存在但三个凭据来源(`tokens_env`/`tokens_file`、`write_keys`、`read_keys`)**全部**未设置、为空或格式错误,启动会安全失败(fail closed)。仅使用 key 数组、不设置 `tokens_env` 的部署可以正常启动。
 
-管理员 token 与 `[server.auth]` 下配置的客户端 token 是相互独立的凭据;不要在两个界面上复用同一个凭据。
+管理员凭据与 `[server.auth]` 下配置的客户端 token 是相互独立的凭据;不要在两个界面上复用同一个凭据。管理员凭据只认证 `/admin*` 与 spend-limit 路由,绝不认证推理路由 —— 在那里 `x-api-key` 是调用方自己的 Anthropic 凭据槽位。此外,这些路由在某个槽位接受的值,会在发起上游请求前从同一槽位中剥离,因此管理员凭据不会被转发给 provider。
 
-和 `[server.auth]` 的 `tokens_env` 一样,这个 `tokens_env` 的值也可以写成 `${VAR}` / `${file:...}`(见 [Secret 引用](#secret-引用))。
+和 `[server.auth]` 的 `tokens_env` 一样,这个 `tokens_env` 与 `tokens_file` 的值也可以写成 `${VAR}` / `${file:...}`(见 [Secret 引用](#secret-引用))。
+
+### `[[server.admin.write_keys]]` / `[[server.admin.read_keys]]`(可选)
+
+两个 key 数组,每一项都是 `{ id, key }` 表。`id` 可以安全地写入日志,spend-limit 审计记录会以 `admin-key:<id>` 记录它;`tokens_env`/`tokens_file` 对则记录为 `admin-token:<name>`。
+
+```toml
+[[server.admin.write_keys]]
+id = "terraform"
+key = "${SHUNT_ADMIN_KEY_TERRAFORM}"
+
+[[server.admin.read_keys]]
+id = "reporting"
+key = "${file:/run/secrets/shunt-reporting-key}"
+```
+
+| 数组 | 访问级别 | 含义 |
+| :-- | :-- | :-- |
+| `write_keys` | `write` | 完全访问权限。`write` 蕴含 `read`,与 `tokens_env`/`tokens_file` 同级 |
+| `read_keys` | `read` | 可以通过管理界面与 spend-limit API 的所有 `GET`;所有修改操作都会以 `403 permission_error` 拒绝。它也无法登录:`POST /admin/login` 会以 `401` 拒绝(浏览器会话拥有完全访问权限,用 read key 铸造会话等于提权) |
+
+凭据的权限是它匹配到的所有集合中的**最大值**,因此扫描集合的顺序不会改变权限。每个 `id` 不得为空,每个 key 至少 32 个字符;id 与 key 值都必须在三个凭据集合(`tokens_env`/`tokens_file`、`write_keys`、`read_keys`)范围内唯一,发生冲突时只报告冲突的 id,不会记录 key 值。短于 32 个字符的旧 `tokens_env` token 早于该规则存在,因此只发出警告而不会失败。
+
+每个 `key` 都是 redacting secret(见 [Secret 引用](#secret-引用)),也是唯一一个写成字面量会导致**配置加载失败**而非仅警告的字段。请用 `${VAR}`、`${file:/绝对/路径}` 或 `SHUNT_*` 环境变量覆盖来提供它。
+
+## `[server.spend]`(可选)
+
+存在此表即注册 `/v1/organizations/spend_limits` 下的 spend-limit Admin API。它是**只含策略**的顶层小节,不持有任何 key 材料:这些路由使用 [`[server.admin]`](#serveradmin可选) 凭据认证,因此启用 spend limit 不需要 gateway 登录界面。只有 `[server.spend]` 而没有 `[server.admin]` 会导致配置校验失败。
+
+| 键 | 默认 | 含义 |
+| :-- | :-- | :-- |
+| `blocked_message` | 未设置 | 用于未来的限制错误;stage 1 不使用 |
+| `audit_retention_days` | `365` | 用于后续的审计记录保留清理 |
+| `spend_retention_months` | `13` | 用于后续的支出数据保留清理 |
+| `identity_retention_days` | `90` | 用于后续的身份保留清理 |
+| `group_limit_mode` | `min` | `min` 或 `max`;用于后续的组限制解析 |
+| `state_path` | `~/.shunt/gateway-spend.json` | 保存限制与审计记录的带版本 JSON 文件;`""` 表示仅内存 |
+
+请通过配置的 `[server.admin] header` 或 `x-api-key` 发送管理员凭据;`read_keys` 凭据只能使用 `GET`。每次修改都会通过私有临时文件原子替换状态文件。无法解析 home 目录时,默认仅使用内存。该表的增删与状态路径都在启动时固定,配置重载只会记录警告而不会应用。
+
+### `[server.spend.enforcement]`(可选)
+
+| 键 | 默认 | 含义 |
+| :-- | :-- | :-- |
+| `fail_closed_on_error` | `false` | 用于后续的限制实施阶段;stage 1 不读取它 |
+
+stage 1 接受这些保留设置、`blocked_message`、`group_limit_mode` 和 `fail_closed_on_error`,但尚未实现对推理的限制实施、用量计量、`/effective`、`/audit`、保留清理或 group scope。
 
 ## `[server.gateway]`(可选)
 
@@ -194,7 +241,7 @@ codex-fallback = "gpt-5.2"
 | :-- | :-- | :-- |
 | `name` | 是 | 非空且唯一的上游名称。路由、模型映射、`server.default_provider`、指标和管理界面都使用它。 |
 | `provider` | 未设置 `kind` + `base_url` 时 | 内置 preset。提供 `kind`、`base_url` 和默认 auth。显式字段覆盖 preset 值。 |
-| `kind` | 无 preset 时 | `anthropic`、`responses`、`cursor`、`gemini` 或 `antigravity`。后两者在下方 preset 表中没有条目(同名的内置 `[providers.*]` 表是另一套遗留机制,并非 preset),因此有序 upstream 必须显式设置 `kind`。 |
+| `kind` | 无 preset 时 | `anthropic`、`responses`、`cursor`、`gemini`、`antigravity` 或 `antigravity_cli`。后三者在下方 preset 表中没有条目(内置的 `[providers.gemini]`、`[providers.antigravity]`、`[providers.antigravity-cli]` 表是另一套遗留机制,并非 preset),因此有序 upstream 必须显式设置 `kind`。注意 CLI provider 的表名是带连字符的 `antigravity-cli`,而其 `kind` 值是带下划线的 `antigravity_cli`。 |
 | `base_url` | 无 preset 时 | 上游 base URL。对于 `kind = "cursor"`，它仅用于登录/令牌刷新接口；推理使用固定的代理主机 `https://agentn.global.api5.cursor.sh`，且只能通过 `SHUNT_CURSOR_AGENT_BASE_URL` 覆盖。 |
 | `auth` | 否 | auth mode 字符串或特定于 mode 的映射。默认采用 preset 的 auth；没有 preset 时为 `passthrough`。 |
 | `effort`, `count_tokens`, `websocket`, `tool_search`, `request_compression`, `retry` | 否 | 与旧式 provider 相同的按上游设置。preset 不会覆盖 `count_tokens`。Cursor 上游的 `retry` 也会被标准化，但不适用于 Cursor 流式推理请求。 |
@@ -211,7 +258,7 @@ codex-fallback = "gpt-5.2"
 | `kimi` | `anthropic` | `https://api.moonshot.ai/anthropic` | `api_key`, env `MOONSHOT_API_KEY` |
 | `cursor` | `cursor` | `https://api2.cursor.sh` | `cursor_oauth` |
 
-`auth = "claude_oauth"` 这样的字符串是 `auth = { mode = "claude_oauth" }` 的简写。`api_key` 映射接受 `env`（除非 preset 已提供，否则必需）和 `header`（默认为 `bearer`，也可设为 `x_api_key`）。`claude_oauth` 与 `chatgpt_oauth` 映射可用 `account = "name"` 或 `accounts = [...]` 缩小范围，但不能同时设置两者。`accounts` 接受存储条目名称字符串和完整账户表；显式的 `accounts = []` 会被拒绝，而省略两个范围字段则扫描整个存储。若 ChatGPT 存储为空，`chatgpt_oauth` 仍会回退到 `~/.codex/auth.json`。`passthrough`、`xai_oauth`、`cursor_oauth` 映射只接受 `mode`；特定 mode 下的未知键会报错。
+`auth = "claude_oauth"` 这样的字符串是 `auth = { mode = "claude_oauth" }` 的简写。`api_key` 映射接受 `env`（除非 preset 已提供，否则必需）和 `header`（默认为 `bearer`，也可设为 `x_api_key`）。`claude_oauth` 与 `chatgpt_oauth` 映射可用 `account = "name"` 或 `accounts = [...]` 缩小范围，但不能同时设置两者。`accounts` 接受存储条目名称字符串和完整账户表；显式的 `accounts = []` 会被拒绝，而省略两个范围字段则扫描整个存储。若 ChatGPT 存储为空，`chatgpt_oauth` 仍会回退到 `~/.codex/auth.json`。`passthrough`、`xai_oauth`、`cursor_oauth`、`antigravity_oauth` 映射只接受 `mode`；特定 mode 下的未知键会报错。
 
 不要在配置文件中同时声明 `[[upstreams]]` 与 `[providers.*]`：文件层同时存在这两种声明形式时，启动会失败。无论采用哪种形式，环境变量都可按标准化后的上游/provider 名称通过 `SHUNT_PROVIDERS__<name>__<field>` 覆盖单个字段。有序的 `[[upstreams]]` 数组本身应在配置文件中声明，不要试图用单个环境变量合成整个数组。旧式 `[providers.<name>]` 仍受支持，并会标准化为按名称排序的隐式上游。由于这种形式没有声明故障转移顺序，模型映射只能有零个或一个条目；向模型映射添加多个条目前，请迁移到 `[[upstreams]]`。
 
@@ -223,7 +270,7 @@ codex-fallback = "gpt-5.2"
 
 对于 `passthrough` 上游，客户端自己的 `authorization` / `x-api-key` 仅在故障转移尝试中当**主**路由自身为 `passthrough` 且该尝试的目标来源(origin)与该主路由一致时才转发。此时该凭据是客户端自己的上游凭据、对主路由而言是来源专属的，因此对**不同**来源的 `passthrough` 故障转移尝试会将其剥离并快速失败(fail closed)，而不会把主机专属令牌重放到另一个来源；同一来源的回退(例如同一主机上的两个 passthrough 条目)仍会携带该凭据。当主路由改为注入自己的凭据时，客户端头部是网关/客户端密钥而非上游凭据，因此每个 `passthrough` 回退无论来源如何都会将其剥离。`api_key`/OAuth 上游无论位置如何都会注入自己的服务端凭据。
 
-与 origin 无关，每个被保留的槽位还会按它实际持有的值进行检查：只有当 `authorization` 或 `x-api-key` 槽位自身的值与 shunt 自己签发的 JWT **形状相符**——三段式结构，且载荷的 `aud` 声明为 `"shunt"` 或 `iss` 声明与本网关的身份一致——或匹配配置的 `[server.auth]` 客户端令牌时，该槽位才会被清除。这项 JWT 检查刻意按"形状是否相符"而非"该令牌现在是否能通过认证"来判定：一个已过期的令牌、由使用不同 `public_url` 的兄弟实例签发的令牌，或在 `jwt_secret` 轮换后已不再能通过校验的令牌，仍然是 shunt 自己的凭据，因此仍会被清除 —— `apiKeyHelper` 会用同一个值填充两个槽位，因此任一凭据都可能出现在其中一个或两个槽位中。即使另一个槽位持有网关 JWT 或静态客户端令牌，持有真实上游凭据的槽位仍会被转发；只有持有门控凭据的那个槽位会被清除。`[server.auth] header` 可以是任意头名称，包括 `authorization` 本身；这样配置时客户端使用不带前缀的 `Authorization: <token>` 进行认证，因此该槽位除了按 `Bearer` 载荷检查外还会按整个值检查，此类令牌绝不会被转发到上游。该配置有一个注意事项：在推理请求上 shunt 会在路由前无条件移除配置的头部，因此该槽位不会向上游携带任何东西 —— 不只是门控令牌，调用方自己的凭据也会一并被丢弃。把 `header` 保持为默认的专用 `x-shunt-token` 可以避免这种冲突。
+与 origin 无关，每个被保留的槽位还会按它实际持有的值进行检查：只有当 `authorization` 或 `x-api-key` 槽位自身的值与 shunt 自己签发的 JWT **形状相符**——三段式结构，且载荷的 `aud` 声明为 `"shunt"`、`iss` 声明与本网关的身份一致，或 `shunt_token_use` 声明为 `"gateway-session"`（仅由 shunt 签发的专用标记）——或匹配配置的 `[server.auth]` 客户端令牌时，该槽位才会被清除。这项 JWT 检查刻意按“形状是否相符”而非“该令牌现在是否能通过认证”来判定：一个已过期的令牌、由使用不同 `public_url` 的兄弟实例签发的令牌，或在 `jwt_secret` 轮换后已不再能通过校验的令牌，仍然是 shunt 自己的凭据，因此仍会被清除。该标记只是形状检查新增的一个分支，而非必要条件：在该标记出现之前签发的令牌仍会按 `aud`/`iss` 匹配，`verify` 本身也不要求该标记，因此旧版本 shunt 签发的令牌只要仍在其 TTL 内就仍能通过认证 —— `apiKeyHelper` 会用同一个值填充两个槽位，因此任一凭据都可能出现在其中一个或两个槽位中。即使另一个槽位持有网关 JWT 或静态客户端令牌，持有真实上游凭据的槽位仍会被转发；只有持有门控凭据的那个槽位会被清除。`[server.auth] header` 可以是任意头名称，包括 `authorization` 本身；这样配置时客户端使用不带前缀的 `Authorization: <token>` 进行认证，因此该槽位除了按 `Bearer` 载荷检查外还会按整个值检查，此类令牌绝不会被转发到上游。该配置有一个注意事项：在推理请求上 shunt 会在路由前无条件移除配置的头部，因此该槽位不会向上游携带任何东西 —— 不只是门控令牌，调用方自己的凭据也会一并被丢弃。把 `header` 保持为默认的专用 `x-shunt-token` 可以避免这种冲突。
 
 每个代理成功响应或最终失败都带有 `x-gateway-upstream`（所选上游名称）、`x-gateway-model`（客户端请求的 id）和 `x-gateway-upstream-model`（映射后的后端 id）。`count_tokens` 只使用链中第一个条目，且不会故障转移。`[server.codex_endpoint]` 仍固定到所配置的单一上游，不参与此链。
 
@@ -241,13 +288,13 @@ codex-fallback = "gpt-5.2"
 
 ## `[providers.<name>]`（旧式）
 
-每个提供方都是一个以你自选名称命名的表。内置项(`anthropic`、`openai`、`codex`、`xai`、`grok`、`cursor`、`gemini`、`antigravity`)可被部分覆盖 —— 配置映射深度合并。
+每个提供方都是一个以你自选名称命名的表。内置项(`anthropic`、`openai`、`codex`、`xai`、`grok`、`cursor`、`gemini`、`antigravity`、`antigravity-cli`)可被部分覆盖 —— 配置映射深度合并。
 
 | 键 | 取值 | 含义 |
 | :-- | :-- | :-- |
-| `kind` | `anthropic` \| `responses` \| `cursor` \| `gemini` \| `antigravity` | 上游协议 / 适配器。`anthropic` = Messages API(透传,可选择重新设置密钥);`responses` = Anthropic Messages 转换为 OpenAI Responses API;`cursor` = 原生 Cursor ConnectRPC/protobuf AgentService 适配器;`gemini` = Anthropic Messages 转换为 Google Code Assist 后端的 Gemini `generateContent`/`streamGenerateContent`;`antigravity` = 没有任何上游,以子进程方式运行本地 Antigravity CLI 二进制(`agy`)。 |
+| `kind` | `anthropic` \| `responses` \| `cursor` \| `gemini` \| `antigravity` \| `antigravity_cli` | 上游协议 / 适配器。`anthropic` = Messages API(透传,可选择重新设置密钥);`responses` = Anthropic Messages 转换为 OpenAI Responses API;`cursor` = 原生 Cursor ConnectRPC/protobuf AgentService 适配器;`gemini` = Anthropic Messages 转换为 Google Code Assist 后端的 Gemini `generateContent`/`streamGenerateContent`;`antigravity` = 通过 HTTP 连接 Google Antigravity 后端,与 `gemini` 使用相同的 Code Assist 协议,但以 Antigravity 订阅令牌认证,并在项目发现时以 `ideType: ANTIGRAVITY` 标识自身;`antigravity_cli` = **已弃用** —— 没有任何上游,以子进程方式运行本地 Antigravity CLI 二进制(`agy`)。 |
 | `base_url` | URL | 上游 base；shunt 追加端点路径。对于 `kind = "cursor"`，它仅用于登录/令牌刷新接口，不会选择代理/推理主机。 |
-| `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `claude_oauth` \| `xai_oauth` \| `cursor_oauth` \| `google_oauth` \| `none` | `passthrough` 转发客户端自己的 credential;`api_key` 从 `api_key_env` 注入一个密钥;`chatgpt_oauth` 复用 `~/.codex/auth.json`;`claude_oauth` 从显式 Anthropic 账户中选择;`xai_oauth` 复用来自 `shunt login xai` 的 `~/.shunt/xai-auth.json`(仅经由 HTTPS 发送到 x.ai/grok.com 主机);`cursor_oauth` 复用 `~/.shunt/cursor-auth.json`(`shunt login cursor`);`google_oauth` 复用 gemini CLI 登录的 `~/.gemini/oauth_creds.json`,仅在 `kind = "gemini"` 下有效;`none` 完全不发送 credential,用于没有上游需要认证的适配器(`kind = "antigravity"`)。 |
+| `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `claude_oauth` \| `xai_oauth` \| `cursor_oauth` \| `google_oauth` \| `antigravity_oauth` \| `none` | `passthrough` 转发客户端自己的 credential;`api_key` 从 `api_key_env` 注入一个密钥;`chatgpt_oauth` 复用 `~/.codex/auth.json`;`claude_oauth` 从显式 Anthropic 账户中选择;`xai_oauth` 复用来自 `shunt login xai` 的 `~/.shunt/xai-auth.json`(仅经由 HTTPS 发送到 x.ai/grok.com 主机);`cursor_oauth` 复用 `~/.shunt/cursor-auth.json`(`shunt login cursor`);`google_oauth` 复用 gemini CLI 登录的 `~/.gemini/oauth_creds.json`,仅在 `kind = "gemini"` 下有效;`antigravity_oauth` 复用来自 `shunt login antigravity` 的 `~/.shunt/antigravity-auth.json`,仅在 `kind = "antigravity"` 下有效,且与 `google_oauth` **不可互换** —— Antigravity 会请求 Gemini CLI 令牌所没有的两个 scope(`cclog`、`experimentsandconfigs`);`none` 完全不发送 credential,用于没有上游需要认证的适配器(`kind = "antigravity_cli"`)。 |
 | `api_key_env` | 环境变量名 | 当 `auth = "api_key"` 时,从何处读取密钥。该值自身也可以写成 `${VAR}` / `${file:...}`(见 [Secret 引用](#secret-引用))。 |
 | `api_key_header` | `bearer`(默认) \| `x_api_key` | 注入的密钥在哪个头部中发送。 |
 | `effort` | `low` … `max` | 可选的默认推理力度(`responses` 提供方)。 |

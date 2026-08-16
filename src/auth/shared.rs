@@ -706,6 +706,21 @@ pub(crate) fn format_iso8601(time: SystemTime) -> String {
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
 }
 
+pub(crate) fn format_iso8601_millis(time: SystemTime) -> String {
+    let duration = time.duration_since(UNIX_EPOCH).unwrap_or_default();
+    let seconds = duration.as_secs() as i64;
+    let days = seconds.div_euclid(86_400);
+    let day_seconds = seconds.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    let hour = day_seconds / 3_600;
+    let minute = (day_seconds % 3_600) / 60;
+    let second = day_seconds % 60;
+    format!(
+        "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{:03}Z",
+        duration.subsec_millis()
+    )
+}
+
 fn civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
     let z = days_since_epoch + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
@@ -763,6 +778,19 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    #[test]
+    fn format_iso8601_millis_handles_boundaries_and_leap_day() {
+        for (seconds, millis, expected) in [
+            (0, 0, "1970-01-01T00:00:00.000Z"),
+            (1_704_067_199, 999, "2023-12-31T23:59:59.999Z"),
+            (1_704_067_200, 1, "2024-01-01T00:00:00.001Z"),
+            (1_709_164_800, 123, "2024-02-29T00:00:00.123Z"),
+        ] {
+            let time = UNIX_EPOCH + Duration::from_secs(seconds) + Duration::from_millis(millis);
+            assert_eq!(format_iso8601_millis(time), expected);
+        }
     }
 
     #[test]

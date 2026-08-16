@@ -11,18 +11,22 @@ use figment::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+mod admin_keys;
 mod http_tuning;
 mod presets;
 mod secrets;
 mod session;
+mod spend;
 mod upstreams;
 
+pub use admin_keys::{AdminAccess, AdminCredential, AdminKey, AdminKeyring};
 pub use http_tuning::{
     AccessControlConfig, LimitsConfig, RateLimitConfig, RateLimitsConfig, TimeoutsConfig,
 };
 pub use presets::{provider_presets, ProviderPresetView};
 pub use secrets::Secret;
 pub use session::GatewaySessionConfig;
+pub use spend::{GroupLimitMode, SpendConfig, SpendEnforcementConfig};
 pub use upstreams::{AccountSelection, AuthMap, UpstreamAuth, UpstreamConfig};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -80,8 +84,22 @@ pub struct ServerConfig {
     /// Optional opt-in admin web surface (M9). Absent ⇒ no admin routes are
     /// registered at all (today's HTTP surface unchanged). See
     /// `docs/m9-admin-surface.md`.
+    ///
+    /// INVARIANT: this must stay behind an `Option` that is skipped when
+    /// `None`. `AdminConfig` carries `Secret` key material
+    /// (`[[server.admin.write_keys]]`/`read_keys`), and `Secret` serializes as
+    /// the literal string `[redacted]`; a section unconditionally present in
+    /// `Config::default()` is round-tripped through `Serialized::defaults` in
+    /// [`Config::load`], so figment would re-extract `[redacted]` as the
+    /// operator's real key. See `config/secrets.rs`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admin: Option<AdminConfig>,
+    /// Optional spend-limit policy (`[server.spend]`). Absent ⇒ the spend-limit
+    /// routes are not registered. Requires `[server.admin]`, whose credentials
+    /// authenticate them — deliberately independent of `[server.gateway]`, so a
+    /// deployment that never serves gateway login can still run spend limits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spend: Option<SpendConfig>,
     /// Optional OAuth device-flow login and per-user managed-policy surface for
     /// Claude apps. Absent ⇒ discovery, device approval, token, and managed
     /// settings routes are not registered. Secrets, static users, and policies
@@ -349,17 +367,22 @@ impl InboundAuthConfig {
 }
 
 /// `[server.admin]` — opt-in admin web surface (M9). A **separate** credential
-/// from `[server.auth]`: client tokens are handed to devices, admin tokens add
-/// upstream accounts. Tokens live in the environment as `name:token` pairs
-/// (`SHUNT_ADMIN_TOKENS="ops:3f9c…"`), reusing the inbound-auth format and
-/// constant-time compare. Absent ⇒ no admin routes exist. See
-/// `docs/m9-admin-surface.md`.
+/// from `[server.auth]`: client tokens are handed to devices, admin credentials
+/// add upstream accounts and administer spend limits. Tokens live in the
+/// environment as `name:token` pairs (`SHUNT_ADMIN_TOKENS="ops:3f9c…"`),
+/// reusing the inbound-auth format and constant-time compare;
+/// `[[server.admin.write_keys]]` / `[[server.admin.read_keys]]` add
+/// per-credential ids and a read-only tier. Absent ⇒ no admin routes exist.
+/// See `docs/m9-admin-surface.md`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AdminConfig {
-    /// Header carrying the admin token for API/curl calls.
+    /// Header carrying the admin credential for API/curl calls. `x-api-key` is
+    /// accepted alongside it on the admin and spend routers.
     #[serde(default = "default_admin_header")]
     pub header: String,
-    /// Env var holding the `name:token` admin pairs.
+    /// Env var holding the `name:token` admin pairs. Retained for
+    /// compatibility; these are the write tier (full access is read plus
+    /// write). New deployments should prefer the key arrays below.
     #[serde(default = "default_admin_tokens_env")]
     pub tokens_env: String,
     /// Optional file holding `name:token` admin pairs, as an alternative to the
@@ -368,6 +391,15 @@ pub struct AdminConfig {
     /// per line (or comma-separated). `tokens_env`, when non-empty, wins.
     #[serde(default, deserialize_with = "deserialize_optional_credentials_path")]
     pub tokens_file: Option<String>,
+    /// Full-access keys: read plus write, the same tier as `tokens_env`.
+    /// Each key must be supplied by a `${VAR}` / `${file:}` reference or a
+    /// `SHUNT_*` override — a literal in the config file is rejected at load.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub write_keys: Vec<AdminKey>,
+    /// Read-only keys: they pass every GET on the admin and spend surfaces and
+    /// are refused on every mutation, including the browser login form.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub read_keys: Vec<AdminKey>,
     /// Browser session lifetime after login.
     #[serde(default = "default_admin_session_ttl_secs")]
     pub session_ttl_secs: u64,
@@ -443,17 +475,24 @@ fn default_admin_pending_ttl_secs() -> u64 {
 }
 
 impl AdminConfig {
-    /// Resolve the configured admin tokens from the environment into the runtime
-    /// admin-auth state. Fails closed exactly like [`InboundAuthConfig::resolve`]:
-    /// a present `[server.admin]` with an unset/empty/malformed env var is a
-    /// startup error, never a silently-open admin surface.
+    /// Resolve the configured admin credentials into the runtime admin-auth
+    /// state. Fails closed exactly like [`InboundAuthConfig::resolve`]: a
+    /// present `[server.admin]` whose three credential sources
+    /// (`tokens_env`/`tokens_file`, `write_keys`, `read_keys`) are *all* empty
+    /// is a startup error, never a silently-open admin surface. An array-only
+    /// deployment, with `tokens_env` unset, boots.
+    ///
+    /// `Config::validate` reaches every check here through this method, so the
+    /// pure array shape checks run on the validation path too.
     pub fn resolve(&self) -> Result<crate::admin::AdminAuth, ConfigError> {
+        admin_keys::validate_key_arrays(&self.write_keys, &self.read_keys)?;
         let header = axum::http::HeaderName::from_bytes(self.header.as_bytes()).map_err(|_| {
             ConfigError::InvalidAdminHeader {
                 header: self.header.clone(),
             }
         })?;
         let mut raw = std::env::var(&self.tokens_env).unwrap_or_default();
+        let mut source = self.tokens_env.clone();
         // The env var wins; fall back to the token file only when it is unset or
         // empty, so an explicit export always overrides the on-disk secret.
         if raw.trim().is_empty() {
@@ -467,21 +506,29 @@ impl AdminConfig {
                 // `parse_tokens` splits on commas; normalise newlines so a
                 // one-pair-per-line file parses the same as a comma list.
                 raw = contents.replace(['\r', '\n'], ",");
+                source = path.clone();
             }
         }
-        if raw.trim().is_empty() {
+        let tokens = if raw.trim().is_empty() {
+            Vec::new()
+        } else {
+            crate::auth::inbound::parse_tokens(&raw).map_err(|message| {
+                ConfigError::InvalidAdminTokens {
+                    env: self.tokens_env.clone(),
+                    message,
+                }
+            })?
+        };
+        if tokens.is_empty() && self.write_keys.is_empty() && self.read_keys.is_empty() {
             return Err(ConfigError::MissingAdminTokens {
                 env: self.tokens_env.clone(),
             });
         }
-        let tokens = crate::auth::inbound::parse_tokens(&raw).map_err(|message| {
-            ConfigError::InvalidAdminTokens {
-                env: self.tokens_env.clone(),
-                message,
-            }
-        })?;
+        admin_keys::check_key_uniqueness(&tokens, &self.write_keys, &self.read_keys)?;
+        admin_keys::warn_short_tokens(&tokens, &source);
         let mut auth = crate::admin::AdminAuth::new(
-            crate::auth::inbound::InboundAuth::new(header, tokens),
+            header,
+            AdminKeyring::new(&tokens, &self.write_keys, &self.read_keys),
             std::time::Duration::from_secs(self.session_ttl_secs),
             std::time::Duration::from_secs(self.pending_ttl_secs),
         );
@@ -1411,7 +1458,7 @@ pub struct ProviderConfig {
     #[serde(default)]
     pub retry: RetryConfig,
     /// Directories the Antigravity CLI may be pointed at by request content
-    /// (`kind = "antigravity"` only).
+    /// (`kind = "antigravity_cli"` only).
     ///
     /// `agy` runs with `--dangerously-skip-permissions`, so whatever directory
     /// it starts in is a directory an unattended agent can read, write, and run
@@ -1432,7 +1479,7 @@ pub struct ProviderConfig {
     /// is used.
     #[serde(default)]
     pub workspace_roots: Vec<String>,
-    /// Run the Antigravity CLI with `--sandbox` (`kind = "antigravity"` only).
+    /// Run the Antigravity CLI with `--sandbox` (`kind = "antigravity_cli"` only).
     ///
     /// On by default. Without it, `--dangerously-skip-permissions` leaves an
     /// unattended agent with shell access and no workspace boundary: refusing a
@@ -1698,8 +1745,21 @@ pub enum ProviderKind {
     /// in the Code Assist `{model,project,request}` envelope. Auth reuses a
     /// Google OAuth subscription token (`google_oauth`).
     Gemini,
-    /// Local Antigravity CLI binary (`agy`) execution.
+    /// Antigravity over its native HTTP backend. Wire-identical to the Code
+    /// Assist path `kind = "gemini"` speaks (`v1internal:generateContent` under
+    /// the `{model,project,request}` envelope), but authenticated with an
+    /// Antigravity subscription token rather than a Gemini CLI one, and carrying
+    /// `ideType: ANTIGRAVITY` through project discovery. Requires
+    /// `auth = "antigravity_oauth"`.
     Antigravity,
+    /// Local Antigravity CLI binary (`agy`) execution.
+    ///
+    /// **Deprecated.** Superseded by `kind = "antigravity"`, which reaches the
+    /// same service over HTTP without depending on an installed binary, on
+    /// `PATH`, or on a subprocess. Retained so existing deployments keep working
+    /// while they migrate; it will be removed once the HTTP transport reaches
+    /// parity.
+    AntigravityCli,
 }
 
 /// How shunt authenticates to an upstream.
@@ -1730,6 +1790,12 @@ pub enum AuthMode {
     /// Only valid for
     /// `kind = "gemini"`.
     GoogleOauth,
+    /// Antigravity subscription OAuth, acquired via `shunt login antigravity`
+    /// and stored in ~/.shunt/antigravity-auth.json. Shares Google's OAuth
+    /// endpoints with [`AuthMode::GoogleOauth`] but uses the Antigravity client
+    /// and scopes, so the two credentials are not interchangeable. Only valid
+    /// for `kind = "antigravity"`.
+    AntigravityOauth,
     /// No authentication header sent (e.g. local subprocess CLI adapters).
     None,
 }
@@ -1983,6 +2049,31 @@ pub enum ConfigError {
     GoogleOauthNonGoogleHost { provider: String, host: String },
     #[error("providers.{provider} uses auth = \"google_oauth\" but base_url is not https; refusing to send a subscription token over plaintext")]
     GoogleOauthNotHttps { provider: String },
+    #[error("providers.{provider} uses auth = \"antigravity_oauth\" but kind is not \"antigravity\"; another adapter would forward the client's own credential instead of the Antigravity token")]
+    AntigravityOauthWrongKind { provider: String },
+    #[error("providers.{provider} uses auth = \"antigravity_oauth\" but base_url host {host} is not a googleapis.com host; refusing to send a subscription token off-origin")]
+    AntigravityOauthNonGoogleHost { provider: String, host: String },
+    #[error("providers.{provider} uses auth = \"antigravity_oauth\" but base_url is not https; refusing to send a subscription token over plaintext")]
+    AntigravityOauthNotHttps { provider: String },
+    #[error(
+        "providers.{provider} uses kind = \"antigravity\" with auth = \"{auth}\", but \
+         kind = \"antigravity\" is now the native HTTP upstream and requires \
+         auth = \"antigravity_oauth\". The local `agy` CLI transport moved to \
+         kind = \"antigravity_cli\" (built-in provider `antigravity-cli`), which is \
+         deprecated. Pick one explicitly rather than have the transport change underneath you."
+    )]
+    AntigravityKindRequiresOauth { provider: String, auth: String },
+    #[error(
+        "providers.antigravity has no `auth` key, so it deep-merges the built-in \
+         antigravity_oauth default instead of being caught by the kind = \"antigravity\" \
+         guard. kind = \"antigravity\" is now the native HTTP upstream and requires an \
+         explicit auth = \"antigravity_oauth\". The local `agy` CLI transport moved to \
+         kind = \"antigravity_cli\" (built-in provider `antigravity-cli`), which is \
+         deprecated. Pick one explicitly rather than have the transport change underneath you."
+    )]
+    AntigravityLegacyTableMissingAuth,
+    #[error("{0}")]
+    AntigravityMigrationRequired(String),
     #[error("providers.{provider}.accounts requires auth = \"claude_oauth\", \"chatgpt_oauth\", or \"kimi_oauth\"")]
     AccountsRequireOauthProvider { provider: String },
     #[error("providers.{provider} uses auth = \"claude_oauth\" but kind is not \"anthropic\"")]
@@ -2066,7 +2157,10 @@ pub enum ConfigError {
     InvalidAuthHeader { header: String },
     #[error("server.admin.header is not a valid header name: {header}")]
     InvalidAdminHeader { header: String },
-    #[error("[server.admin] is set but {env} is unset or empty; refusing to run open")]
+    #[error(
+        "[server.admin] is set but resolved no credentials ({env} is unset or empty and no \
+         write_keys/read_keys are configured); refusing to run open"
+    )]
     MissingAdminTokens { env: String },
     #[error("[server.admin] tokens_file {path} could not be read: {message}")]
     UnreadableAdminTokensFile { path: String, message: String },
@@ -2132,6 +2226,26 @@ pub enum ConfigError {
     InvalidGatewayPolicyEnv { index: usize },
     #[error("[server.gateway.telemetry].forward_to[{index}].url is invalid: {message}")]
     InvalidGatewayTelemetryUrl { index: usize, message: String },
+    #[error("[[server.admin.{field}]][{index}].id must be a non-empty name")]
+    BlankAdminKeyId { field: &'static str, index: usize },
+    #[error("[[server.admin.{field}]] key {id:?} must be at least 32 characters")]
+    ShortAdminKey { field: &'static str, id: String },
+    #[error(
+        "[server.admin] credential id {id:?} is duplicated across tokens_env, write_keys, and read_keys"
+    )]
+    DuplicateAdminKeyId { id: String },
+    #[error(
+        "[server.admin] credential value is duplicated by ids {first_id:?} and {second_id:?} across tokens_env, write_keys, and read_keys"
+    )]
+    DuplicateAdminKeyValue { first_id: String, second_id: String },
+    /// The key value is deliberately not echoed — it is an admin credential.
+    #[error(
+        "[{path}] holds an admin key written literally in the config file; supply it with \
+         ${{VAR}} or ${{file:}} (or a SHUNT_* override) so the key does not live in the file"
+    )]
+    LiteralAdminKey { path: String },
+    #[error("[server.spend] requires [server.admin]: the spend-limit API authenticates with the admin credential")]
+    SpendRequiresAdmin,
     /// The header value is deliberately not echoed — it is typically a
     /// collector API key.
     #[error(
@@ -2270,6 +2384,30 @@ impl ProviderConfig {
             sandbox: true,
         }
     }
+
+    /// An `Antigravity`-kind provider on the Antigravity HTTP backend, reusing
+    /// an Antigravity subscription token (`antigravity_oauth`). Used for the
+    /// built-in `antigravity` provider.
+    fn antigravity(base_url: &str) -> Self {
+        Self {
+            kind: ProviderKind::Antigravity,
+            base_url: base_url.to_string(),
+            auth: AuthMode::AntigravityOauth,
+            api_key_env: None,
+            api_key_header: ApiKeyHeader::Bearer,
+            effort: None,
+            service_tier: None,
+            count_tokens: CountTokens::default(),
+            accounts: Vec::new(),
+            account_scope: Vec::new(),
+            websocket: false,
+            tool_search: None,
+            request_compression: true,
+            retry: RetryConfig::default(),
+            workspace_roots: Vec::new(),
+            sandbox: true,
+        }
+    }
 }
 
 impl Default for Config {
@@ -2355,10 +2493,20 @@ impl Default for Config {
                 ProviderConfig::gemini("https://cloudcode-pa.googleapis.com"),
             ),
             (
-                // Local Antigravity CLI binary (`agy`) execution for Gemini models.
+                // Antigravity over its native HTTP backend, authenticated with
+                // `shunt login antigravity`. Same service the `agy` CLI reaches,
+                // without the subprocess.
                 "antigravity".to_string(),
+                ProviderConfig::antigravity("https://cloudcode-pa.googleapis.com"),
+            ),
+            (
+                // Local Antigravity CLI binary (`agy`) execution for Gemini
+                // models. Deprecated in favour of the `antigravity` provider
+                // above; retained for deployments still on the subprocess
+                // transport.
+                "antigravity-cli".to_string(),
                 ProviderConfig {
-                    kind: ProviderKind::Antigravity,
+                    kind: ProviderKind::AntigravityCli,
                     base_url: "http://localhost".to_string(),
                     auth: AuthMode::None,
                     api_key_env: None,
@@ -2383,6 +2531,7 @@ impl Default for Config {
                 default_provider: "anthropic".to_string(),
                 auth: None,
                 admin: None,
+                spend: None,
                 gateway: None,
                 codex_endpoint: None,
                 usage: None,
@@ -2466,6 +2615,51 @@ impl ConfigFormat {
     }
 }
 
+/// Refuses a `[providers.antigravity]` shape that omits `auth` before it ever
+/// reaches the merge against the built-in `antigravity` default.
+///
+/// Figment deep-merges nested tables: any key the *effective* config omits is
+/// filled in from the base (`Serialized::defaults(Config::default())`)
+/// layer, and the built-in `antigravity` entry already sets
+/// `auth = "antigravity_oauth"`. A pre-#372 config never carried an `auth`
+/// key under this name -- `kind = "antigravity"` meant "run the local `agy`
+/// binary", and there was nothing to authenticate over HTTP with -- so after
+/// the merge it would end up with `auth = "antigravity_oauth"` anyway,
+/// passing the `AntigravityKindRequiresOauth` guard in [`Config::validate`]
+/// (which only ever sees the already-merged value) and silently switching
+/// transport. `effective_figment` is the file's own table (if any) merged
+/// with any `providers.antigravity.*` env overrides layered on top --
+/// exactly the layering `Config::load` itself applies below -- rather than
+/// the built-in-defaults figment. Probing the file layer alone (the previous
+/// shape of this check) missed both directions: a legacy shape assembled
+/// entirely, or completed, via `SHUNT_PROVIDERS__ANTIGRAVITY__*` env vars was
+/// invisible to a check that only ever looked at the file, and a file table
+/// an env var legitimately completes with `auth` was rejected before the env
+/// layer had a chance to complete it.
+fn reject_legacy_antigravity_table_without_auth(
+    effective_figment: &Figment,
+) -> Result<(), ConfigError> {
+    let Ok(value) = effective_figment.find_value("providers.antigravity") else {
+        return Ok(());
+    };
+    let Some(dict) = value.as_dict() else {
+        return Ok(());
+    };
+    // An explicit `kind` naming something else (e.g. migrating straight to
+    // `antigravity_cli` under this table name) is not the ambiguous legacy
+    // shape; an omitted `kind` inherits the built-in default, which is
+    // `antigravity`.
+    let kind_is_antigravity = dict
+        .get("kind")
+        .and_then(figment::value::Value::as_str)
+        .map(|kind| kind == "antigravity")
+        .unwrap_or(true);
+    if kind_is_antigravity && !dict.contains_key("auth") {
+        return Err(ConfigError::AntigravityLegacyTableMissingAuth);
+    }
+    Ok(())
+}
+
 /// Normalizes a raw `service_tier` config value to its Responses wire form.
 /// `default` is preserved as its own sentinel string rather than collapsed to
 /// `None`: `None` also means "not configured", and collapsing the two made an
@@ -2491,6 +2685,12 @@ impl Config {
         };
         let mut figment = Figment::from(Serialized::defaults(Self::default()));
         let mut file_declares_upstreams = false;
+        // The file layer alone (no built-in defaults merged in), kept around
+        // past this block so it can be re-merged with the env layer below to
+        // decide the legacy-antigravity-table guard against the *effective*
+        // config rather than the file alone. `None` when there is no config
+        // file.
+        let mut file_figment: Option<Figment> = None;
         // Literal (non-reference) string values found in the file, keyed by
         // value and valued by the dotted field path(s) they appeared at —
         // used only to warn about a `Secret` field holding a plaintext
@@ -2524,25 +2724,54 @@ impl Config {
             // passed through this pass, so they are never re-resolved.
             let format = ConfigFormat::from_path(path);
             let substituted = secrets::substitute(&raw, format)?;
+            // An admin key written literally in the file is rejected outright
+            // rather than warned about like the older `Secret` fields: the key
+            // arrays are new, so no deployment holds a literal there yet, and
+            // rejecting closes the path where an admin credential is committed
+            // to a config file. A value fed by `${VAR}`/`${file:}` lands in
+            // `resolved_values`, not `literals`, so only a real literal trips
+            // this. Env overrides never reach the file layer at all.
+            secrets::reject_literal_admin_keys(&substituted.literals)?;
             literal_values = substituted.literals;
             never_literal_values = substituted.resolved_values;
             // Probe only the file layer: serialized defaults always contain the
             // built-in providers, and env overrides are allowed under either form.
-            let file_figment = match format {
+            let probed_file_figment = match format {
                 ConfigFormat::Toml => Figment::from(Toml::string(&substituted.text)),
                 ConfigFormat::Yaml => Figment::from(Yaml::string(&substituted.text)),
             };
-            let file_declares_providers = file_figment.find_value("providers").is_ok();
-            file_declares_upstreams = file_figment.find_value("upstreams").is_ok();
+            let file_declares_providers = probed_file_figment.find_value("providers").is_ok();
+            file_declares_upstreams = probed_file_figment.find_value("upstreams").is_ok();
             if file_declares_providers && file_declares_upstreams {
                 return Err(ConfigError::MixedProviderDeclarationForms);
             }
             // The parser is chosen by extension so TOML and YAML configs are
             // both accepted; an unknown extension is treated as TOML.
-            figment = figment.merge(file_figment);
+            figment = figment.merge(&probed_file_figment);
+            file_figment = Some(probed_file_figment);
         }
         never_literal_values.extend(secrets::shunt_env_values());
         let env = Env::prefixed("SHUNT_").split("__");
+        // Decide the legacy-antigravity-table guard against the *effective*
+        // providers.antigravity shape: the file's own table (if any) merged
+        // with any `providers.antigravity.*` env overrides layered on top,
+        // mirroring exactly how the env layer is scoped for the real
+        // extraction below (`file_declares_upstreams` excludes `providers.*`
+        // env keys under the ordered-upstreams form). Built without the
+        // `Serialized::defaults` base layer, so an omitted `auth` is still
+        // visibly absent rather than already backfilled from the built-in
+        // default.
+        let provider_env = if file_declares_upstreams {
+            env.clone().filter(|key| !key.starts_with("providers."))
+        } else {
+            env.clone()
+        };
+        let mut effective_provider_figment = Figment::new();
+        if let Some(file_figment) = &file_figment {
+            effective_provider_figment = effective_provider_figment.merge(file_figment);
+        }
+        effective_provider_figment = effective_provider_figment.merge(provider_env);
+        reject_legacy_antigravity_table_without_auth(&effective_provider_figment)?;
         // Scopes the literal-value map for the extraction below so
         // `Secret::deserialize` can record which config-file paths held a
         // secret written verbatim, for the aggregated warning after
@@ -2564,6 +2793,7 @@ impl Config {
         if file_declares_upstreams {
             config.apply_ordered_provider_env(env)?;
         }
+        config.backfill_antigravity_cli_migration_auth(&effective_provider_figment);
         let config = config.validate()?;
         // One aggregated warning per load naming every `Secret` field whose
         // value was written literally in the config file — never the value
@@ -2670,6 +2900,51 @@ impl Config {
             self.upstreams_ordered = true;
         }
         Ok(())
+    }
+
+    /// Writing `kind = "antigravity_cli"` under `[providers.antigravity]`,
+    /// with nothing else, is the documented way to migrate that name back
+    /// to the deprecated `agy` subprocess transport (see
+    /// `reject_legacy_antigravity_table_without_auth` above, which lets
+    /// this exact shape through). Figment's deep-merge still backfills the
+    /// omitted `auth` from the built-in `antigravity` default's `auth =
+    /// "antigravity_oauth"`, since the merge has no notion that changing
+    /// `kind` invalidates the rest of that default -- `validate` then
+    /// rejects the result as `AntigravityOauthWrongKind`, breaking the very
+    /// migration path the guard above exists to allow. Reassign `auth` to
+    /// what the built-in `antigravity-cli` provider itself uses instead.
+    ///
+    /// Scoped to this one documented name/kind pair rather than generalized
+    /// to arbitrary provider names: generalizing would also silently
+    /// resolve unrelated kind-mismatched legacy tables (e.g. repurposing
+    /// `[providers.antigravity]` to some unrelated kind without an explicit
+    /// `auth`) that today fail loudly and correctly at `validate`, turning
+    /// that clear, actionable error into a silently invented `auth` choice
+    /// instead.
+    fn backfill_antigravity_cli_migration_auth(&mut self, effective_figment: &Figment) {
+        let Ok(value) = effective_figment.find_value("providers.antigravity") else {
+            return;
+        };
+        let Some(dict) = value.as_dict() else {
+            return;
+        };
+        let migrating_to_cli = dict
+            .get("kind")
+            .and_then(figment::value::Value::as_str)
+            .map(|kind| kind == "antigravity_cli")
+            .unwrap_or(false);
+        if !migrating_to_cli || dict.contains_key("auth") {
+            return;
+        }
+        if let Some(cli_auth) = Self::default()
+            .providers
+            .get("antigravity-cli")
+            .map(|provider| provider.auth)
+        {
+            if let Some(provider) = self.providers.get_mut("antigravity") {
+                provider.auth = cli_auth;
+            }
+        }
     }
 
     /// Validates and normalizes every configured `service_tier` (provider-level
@@ -2835,10 +3110,17 @@ impl Config {
         if let Some(auth) = &self.server.auth {
             auth.resolve()?;
         }
-        // Fail closed at boot: [server.admin] without resolvable tokens would be
-        // an unauthenticated admin surface. Reject it rather than run open.
+        // Fail closed at boot: [server.admin] without resolvable credentials
+        // would be an unauthenticated admin surface. Reject it rather than run
+        // open. This also runs the admin key arrays' shape and cross-set
+        // uniqueness checks (see `AdminConfig::resolve`).
         if let Some(admin) = &self.server.admin {
             admin.resolve()?;
+        }
+        // `[server.spend]` authenticates with the admin credential, so it
+        // cannot be served without one.
+        if self.server.spend.is_some() && self.server.admin.is_none() {
+            return Err(ConfigError::SpendRequiresAdmin);
         }
         // Fail closed at boot: an unsandboxed Antigravity provider runs an
         // autonomous agent with shell access and no workspace boundary, as the
@@ -2851,7 +3133,7 @@ impl Config {
         // request because a reload can change this config value but not the
         // listener the process actually bound.
         if let Some(name) = self.providers.iter().find_map(|(name, provider)| {
-            (provider.kind == ProviderKind::Antigravity && !provider.sandbox).then_some(name)
+            (provider.kind == ProviderKind::AntigravityCli && !provider.sandbox).then_some(name)
         }) {
             if !self.server.bind_is_loopback() {
                 return Err(ConfigError::UnsandboxedAntigravityOnPublicBind {
@@ -2862,7 +3144,7 @@ impl Config {
         }
         // Fail closed at boot: a configured gateway must have a valid issuer,
         // sufficiently strong signing secret, and at least one approval path.
-        if let Some(gateway) = &self.server.gateway {
+        if let Some(gateway) = &mut self.server.gateway {
             gateway.resolve()?;
         }
         // [server.pool] thresholds are consumed unchecked by pool selection, so
@@ -3053,6 +3335,48 @@ impl Config {
                     }
                     if !host_is_google_codeassist(host) {
                         return Err(ConfigError::GoogleOauthNonGoogleHost {
+                            provider: name.clone(),
+                            host: host.to_string(),
+                        });
+                    }
+                }
+            }
+            // `kind = "antigravity"` used to mean "run the local `agy` binary".
+            // It now means the native HTTP upstream, so a config carrying the
+            // old meaning must not resolve quietly to a different transport
+            // with different credentials, egress, and failure modes. Anything
+            // that is not the new auth mode is rejected by name.
+            if provider.kind == ProviderKind::Antigravity
+                && provider.auth != AuthMode::AntigravityOauth
+            {
+                return Err(ConfigError::AntigravityKindRequiresOauth {
+                    provider: name.clone(),
+                    auth: serde_json::to_value(provider.auth)
+                        .ok()
+                        .and_then(|value| value.as_str().map(str::to_string))
+                        .unwrap_or_else(|| "unknown".to_string()),
+                });
+            }
+            // Mirrors the `google_oauth` guards above: the Antigravity token is
+            // a subscription bearer on the same Google host family, so it must
+            // stay on a googleapis.com host over https and be carried by the
+            // adapter that injects it rather than one that forwards the
+            // client's own credential.
+            if provider.auth == AuthMode::AntigravityOauth {
+                if provider.kind != ProviderKind::Antigravity {
+                    return Err(ConfigError::AntigravityOauthWrongKind {
+                        provider: name.clone(),
+                    });
+                }
+                let host = url.host_str().unwrap_or_default();
+                if !host_is_loopback(host) {
+                    if url.scheme() != "https" {
+                        return Err(ConfigError::AntigravityOauthNotHttps {
+                            provider: name.clone(),
+                        });
+                    }
+                    if !host_is_google_codeassist(host) {
+                        return Err(ConfigError::AntigravityOauthNonGoogleHost {
                             provider: name.clone(),
                             host: host.to_string(),
                         });
@@ -3651,12 +3975,12 @@ mod tests {
 
     use super::{
         config_file_candidates, default_auth_header, host_is_chatgpt, host_is_kimi,
-        identity_collisions, AccountConfig, AdminConfig, AdminOidcConfig, AuthMode,
+        identity_collisions, AccountConfig, AdminConfig, AdminKey, AdminOidcConfig, AuthMode,
         CodexEndpointConfig, Config, ConfigError, ConfigFormat, GatewayConfig, GatewayOidcConfig,
         GatewayPolicyConfig, GatewayPolicyMatch, GatewaySessionConfig, GatewayTelemetryConfig,
         GatewayTelemetryDestination, InboundAuthConfig, ModelConfig, OauthUsageConfig,
         OidcProviderConfig, PoolConfig, ProviderConfig, ProviderKind, ResponsesFlavor, RetryConfig,
-        Secret, StatusConfig, StatusSource, UsageEndpointConfig, CONFIG_ENV_LOCK,
+        Secret, SpendConfig, StatusConfig, StatusSource, UsageEndpointConfig, CONFIG_ENV_LOCK,
     };
 
     fn model_config(id: &str, upstream_model: Option<BTreeMap<String, String>>) -> ModelConfig {
@@ -3769,7 +4093,7 @@ mod tests {
 
         let antigravity = |sandbox: bool| {
             let mut provider = ProviderConfig::gemini("http://localhost");
-            provider.kind = ProviderKind::Antigravity;
+            provider.kind = ProviderKind::AntigravityCli;
             provider.auth = AuthMode::None;
             provider.sandbox = sandbox;
             provider
@@ -3957,6 +4281,8 @@ mod tests {
             header: "x-shunt-admin-token".into(),
             tokens_env: tokens_env.clone(),
             tokens_file: None,
+            write_keys: Vec::new(),
+            read_keys: Vec::new(),
             session_ttl_secs: 3600,
             pending_ttl_secs: 600,
             oidc: Some(AdminOidcConfig {
@@ -4063,6 +4389,8 @@ mod tests {
             header: "x-shunt-admin-token".to_string(),
             tokens_env: "SHUNT_TEST_ADMIN_RESOLVE".to_string(),
             tokens_file: None,
+            write_keys: Vec::new(),
+            read_keys: Vec::new(),
             session_ttl_secs: 1800,
             pending_ttl_secs: 300,
             oidc: None,
@@ -4121,6 +4449,8 @@ mod tests {
             header: "x-shunt-admin-token".to_string(),
             tokens_env: env_name.to_string(),
             tokens_file: Some(token_path.to_string_lossy().into_owned()),
+            write_keys: Vec::new(),
+            read_keys: Vec::new(),
             session_ttl_secs: 1800,
             pending_ttl_secs: 300,
             oidc: None,
@@ -4918,6 +5248,261 @@ mod tests {
 
         std::env::remove_var(secret_env);
         std::env::remove_var(users_env);
+    }
+
+    /// Build an `[server.admin]` with the given key arrays and a tokens env var
+    /// name the caller controls.
+    fn admin_config_with_keys(
+        tokens_env: &str,
+        write_keys: Vec<AdminKey>,
+        read_keys: Vec<AdminKey>,
+    ) -> AdminConfig {
+        AdminConfig {
+            header: "x-shunt-admin-token".to_string(),
+            tokens_env: tokens_env.to_string(),
+            tokens_file: None,
+            write_keys,
+            read_keys,
+            session_ttl_secs: 3600,
+            pending_ttl_secs: 600,
+            oidc: None,
+        }
+    }
+
+    fn admin_key(id: &str, key: &str) -> AdminKey {
+        AdminKey {
+            id: id.to_string(),
+            key: Secret::from(key),
+        }
+    }
+
+    const ADMIN_KEY_A: &str = "0123456789abcdef0123456789abcdef";
+    const ADMIN_KEY_B: &str = "fedcba9876543210fedcba9876543210";
+
+    #[test]
+    fn admin_key_arrays_reject_short_keys_blank_ids_and_cross_set_duplicates() {
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let tokens_env = format!("SHUNT_TEST_ADMIN_KEYS_{}", std::process::id());
+        std::env::set_var(&tokens_env, "ops:ops-token-0123456789abcdef01234567");
+        let mut config = Config::default();
+
+        // A key shorter than 32 characters is rejected on the arrays (the
+        // legacy `tokens_env` tier only warns — see the test below).
+        config.server.admin = Some(admin_config_with_keys(
+            &tokens_env,
+            vec![admin_key("terraform", "short")],
+            Vec::new(),
+        ));
+        assert!(matches!(
+            config.clone().validate(),
+            Err(ConfigError::ShortAdminKey {
+                field: "write_keys",
+                ..
+            })
+        ));
+
+        // Every array entry needs a name to attribute audit records to.
+        config.server.admin = Some(admin_config_with_keys(
+            &tokens_env,
+            Vec::new(),
+            vec![admin_key("  ", ADMIN_KEY_A)],
+        ));
+        assert!(matches!(
+            config.clone().validate(),
+            Err(ConfigError::BlankAdminKeyId {
+                field: "read_keys",
+                index: 0
+            })
+        ));
+
+        // Ids must be unique across all three sets, including the env tokens.
+        config.server.admin = Some(admin_config_with_keys(
+            &tokens_env,
+            vec![admin_key("ops", ADMIN_KEY_A)],
+            Vec::new(),
+        ));
+        assert!(matches!(
+            config.clone().validate(),
+            Err(ConfigError::DuplicateAdminKeyId { ref id }) if id == "ops"
+        ));
+
+        // So must values: the same key in two tiers makes privilege ambiguous.
+        config.server.admin = Some(admin_config_with_keys(
+            &tokens_env,
+            vec![admin_key("terraform", ADMIN_KEY_A)],
+            vec![admin_key("reporting", ADMIN_KEY_A)],
+        ));
+        let error = config
+            .clone()
+            .validate()
+            .expect_err("duplicate key values must fail validation");
+        assert!(matches!(
+            error,
+            ConfigError::DuplicateAdminKeyValue {
+                ref first_id,
+                ref second_id,
+            } if first_id == "terraform" && second_id == "reporting"
+        ));
+        assert!(!error.to_string().contains(ADMIN_KEY_A));
+
+        config.server.admin = Some(admin_config_with_keys(
+            &tokens_env,
+            vec![admin_key("terraform", ADMIN_KEY_A)],
+            vec![admin_key("reporting", ADMIN_KEY_B)],
+        ));
+        config
+            .validate()
+            .expect("distinct ids and values across all three sets validate");
+        std::env::remove_var(&tokens_env);
+    }
+
+    #[test]
+    fn admin_resolve_needs_only_the_key_arrays_and_fails_when_every_source_is_empty() {
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let tokens_env = format!("SHUNT_TEST_ADMIN_ARRAY_ONLY_{}", std::process::id());
+        std::env::remove_var(&tokens_env);
+
+        // Array-only: `tokens_env` is unset and the surface still boots.
+        admin_config_with_keys(
+            &tokens_env,
+            vec![admin_key("terraform", ADMIN_KEY_A)],
+            vec![admin_key("reporting", ADMIN_KEY_B)],
+        )
+        .resolve()
+        .expect("write_keys/read_keys alone must resolve");
+        admin_config_with_keys(
+            &tokens_env,
+            Vec::new(),
+            vec![admin_key("reporting", ADMIN_KEY_B)],
+        )
+        .resolve()
+        .expect("read_keys alone must resolve");
+
+        // All three sources empty is still fail-closed: a present
+        // `[server.admin]` never yields an open surface.
+        assert!(matches!(
+            admin_config_with_keys(&tokens_env, Vec::new(), Vec::new()).resolve(),
+            Err(ConfigError::MissingAdminTokens { .. })
+        ));
+    }
+
+    #[test]
+    fn short_legacy_admin_token_warns_but_still_resolves() {
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let tokens_env = format!("SHUNT_TEST_ADMIN_SHORT_TOKEN_{}", std::process::id());
+        std::env::set_var(&tokens_env, "ops:short");
+        let admin = admin_config_with_keys(&tokens_env, Vec::new(), Vec::new());
+
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let writer_output = Arc::clone(&output);
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || BufferWriter {
+                buffer: Arc::clone(&writer_output),
+            })
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            admin
+                .resolve()
+                .expect("a short legacy token must not fail startup");
+        });
+        let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        assert!(logs.contains("shorter than 32 characters"), "{logs}");
+        assert!(logs.contains("ops"), "{logs}");
+        assert!(
+            !logs.contains("short\""),
+            "the token value must not be logged: {logs}"
+        );
+        std::env::remove_var(&tokens_env);
+    }
+
+    #[test]
+    fn spend_section_requires_the_admin_section() {
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut config = Config::default();
+        config.server.spend = Some(SpendConfig::default());
+        assert!(matches!(
+            config.clone().validate(),
+            Err(ConfigError::SpendRequiresAdmin)
+        ));
+
+        let tokens_env = format!("SHUNT_TEST_SPEND_NEEDS_ADMIN_{}", std::process::id());
+        std::env::remove_var(&tokens_env);
+        config.server.admin = Some(admin_config_with_keys(
+            &tokens_env,
+            vec![admin_key("terraform", ADMIN_KEY_A)],
+            Vec::new(),
+        ));
+        config
+            .validate()
+            .expect("[server.spend] with [server.admin] validates");
+    }
+
+    /// `Config` derives `Debug`, and shunt's convention elsewhere is to keep only
+    /// env var *names* in it. The admin key arrays hold resolved key material,
+    /// so assert the redaction directly: without `Secret`, a `{:?}` of the
+    /// config would leak admin keys into any log line or panic message.
+    #[test]
+    fn debug_formatting_redacts_admin_array_keys_but_keeps_ids() {
+        let admin = admin_config_with_keys(
+            "SHUNT_TEST_ADMIN_DEBUG",
+            vec![admin_key("terraform", ADMIN_KEY_A)],
+            vec![admin_key("reporting", ADMIN_KEY_B)],
+        );
+
+        let rendered = format!("{admin:?}");
+        assert!(
+            !rendered.contains(ADMIN_KEY_A) && !rendered.contains(ADMIN_KEY_B),
+            "resolved key material leaked into Debug output: {rendered}"
+        );
+        // The ids must survive — they are what the audit trail attributes to.
+        assert!(rendered.contains("terraform"), "{rendered}");
+        assert!(rendered.contains("reporting"), "{rendered}");
+
+        // And the same must hold when it is nested inside a whole `Config`.
+        let mut config = Config::default();
+        config.server.admin = Some(admin);
+        let rendered = format!("{config:?}");
+        assert!(!rendered.contains(ADMIN_KEY_A) && !rendered.contains(ADMIN_KEY_B));
+    }
+
+    /// `Config::load` seeds figment with `Serialized::defaults(Config::default())`,
+    /// and `Secret` serializes as the literal `[redacted]`. `[server.admin]` now
+    /// carries `Secret` key material, so it must stay behind an `Option` that is
+    /// skipped when `None` — hoisting it would make figment re-extract
+    /// `[redacted]` as the operator's real key. Pins both halves: the default
+    /// omits the section entirely, and the section really does render
+    /// `[redacted]` when present.
+    #[test]
+    fn admin_section_is_omitted_from_serialized_defaults_so_secrets_never_round_trip() {
+        let defaults = serde_json::to_value(Config::default()).expect("serialize defaults");
+        assert!(
+            defaults["server"].get("admin").is_none(),
+            "[server.admin] must not be serialized into the figment defaults: {defaults}"
+        );
+
+        let mut config = Config::default();
+        config.server.admin = Some(admin_config_with_keys(
+            "SHUNT_TEST_ADMIN_ROUNDTRIP",
+            vec![admin_key("terraform", ADMIN_KEY_A)],
+            Vec::new(),
+        ));
+        let serialized = serde_json::to_value(&config).expect("serialize config");
+        assert_eq!(
+            serialized["server"]["admin"]["write_keys"][0]["key"],
+            serde_json::json!("[redacted]"),
+            "this is exactly what would be re-extracted as the real key if the \
+             section were unconditionally present"
+        );
     }
 
     #[test]
@@ -6237,6 +6822,280 @@ id = "claude-sonnet-5"
     }
 
     #[test]
+    fn default_seeds_the_native_antigravity_provider_and_the_deprecated_cli_one() {
+        let config = Config::default();
+
+        // `antigravity` is the native HTTP upstream.
+        let native = config.provider("antigravity").unwrap();
+        assert_eq!(native.kind, ProviderKind::Antigravity);
+        assert_eq!(native.auth, AuthMode::AntigravityOauth);
+        assert_eq!(native.base_url, "https://cloudcode-pa.googleapis.com");
+
+        // The `agy` subprocess transport kept its behaviour under a new name.
+        let cli = config.provider("antigravity-cli").unwrap();
+        assert_eq!(cli.kind, ProviderKind::AntigravityCli);
+        assert_eq!(cli.auth, AuthMode::None);
+        assert_eq!(cli.base_url, "http://localhost");
+        assert!(cli.sandbox);
+
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn a_legacy_antigravity_block_is_rejected_by_name_rather_than_retargeted() {
+        // The whole point of the rename: a config that meant "run the local
+        // `agy` binary" must not resolve quietly to an OAuth HTTP upstream with
+        // different credentials, egress, and failure modes.
+        // The two shapes a legacy config can actually have: the old built-in
+        // preset used `none`, and an omitted `auth` defaults to passthrough.
+        // (`api_key` is not a legacy shape and is caught earlier by the
+        // missing-`api_key_env` guard.)
+        for auth in [AuthMode::None, AuthMode::Passthrough] {
+            let mut config = Config::default();
+            let provider = config.providers.get_mut("antigravity").unwrap();
+            provider.auth = auth;
+            let error = config.validate().unwrap_err();
+            assert!(
+                matches!(error, ConfigError::AntigravityKindRequiresOauth { .. }),
+                "auth {auth:?} should be refused, got: {error}"
+            );
+            // The message has to name both ways forward, or the operator has to
+            // guess which transport they are on.
+            let text = error.to_string();
+            assert!(text.contains("antigravity_oauth"), "message: {text}");
+            assert!(text.contains("antigravity_cli"), "message: {text}");
+        }
+    }
+
+    #[test]
+    fn a_legacy_antigravity_table_without_auth_is_rejected_not_silently_retargeted() {
+        // Shaped like a real pre-#372 config: `kind = "antigravity"` meant "run
+        // the local `agy` binary", so it never carried an `auth` key (there was
+        // nothing to authenticate over HTTP with) and carried CLI-only knobs
+        // like `workspace_roots`/`sandbox`. Figment deep-merges this table over
+        // the built-in `antigravity` default, which *does* set
+        // `auth = "antigravity_oauth"` -- if the merge fills the missing `auth`
+        // key from the default rather than the table being rejected outright,
+        // this legacy config would resolve quietly to the new OAuth HTTP
+        // upstream instead of erroring by name like the sibling test above.
+        //
+        // `Config::load` also reads the real process env, and the sibling
+        // tests below set `SHUNT_PROVIDERS__ANTIGRAVITY__*` -- a name
+        // `Env::prefixed("SHUNT_").split("__")` fixes, so it cannot be given
+        // a per-test-unique suffix like the ordinary `CONFIG_ENV_LOCK` tests
+        // use. Taking the same lock here, even though this test sets no env
+        // var itself, is what keeps it from observing one of those vars left
+        // set by a concurrently running sibling.
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-legacy-antigravity-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shunt.toml");
+        std::fs::write(
+            &path,
+            "[providers.antigravity]\n\
+             kind = \"antigravity\"\n\
+             base_url = \"http://localhost\"\n\
+             workspace_roots = [\"/home/user/project\"]\n\
+             sandbox = true\n",
+        )
+        .unwrap();
+
+        let error = Config::load(Some(&path))
+            .expect_err("a legacy antigravity table without `auth` must not load");
+        assert!(
+            matches!(error, ConfigError::AntigravityLegacyTableMissingAuth),
+            "expected AntigravityLegacyTableMissingAuth, got: {error}"
+        );
+        let text = error.to_string();
+        assert!(text.contains("antigravity_oauth"), "message: {text}");
+        assert!(text.contains("antigravity_cli"), "message: {text}");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_env_only_legacy_antigravity_shape_is_rejected() {
+        // Same legacy shape as the sibling file-table test above, but
+        // assembled entirely through `SHUNT_PROVIDERS__ANTIGRAVITY__*` env
+        // vars rather than a `[providers.antigravity]` file table. Before the
+        // guard was moved to look at the *effective* (file + env) figment
+        // instead of the file layer alone, this shape was invisible to it:
+        // there was no file table for the guard to inspect, so it let the
+        // config through, and the built-in `antigravity` default's
+        // `auth = "antigravity_oauth"` was silently deep-merged in.
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-env-legacy-antigravity-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shunt.toml");
+        // No `providers.antigravity` table at all -- the config file has
+        // nothing to say about it.
+        std::fs::write(&path, "[server]\ndefault_provider = \"anthropic\"\n").unwrap();
+
+        std::env::set_var(
+            "SHUNT_PROVIDERS__ANTIGRAVITY__BASE_URL",
+            "http://localhost:9999",
+        );
+
+        let error = Config::load(Some(&path))
+            .expect_err("an env-only legacy antigravity shape must not load");
+        assert!(
+            matches!(error, ConfigError::AntigravityLegacyTableMissingAuth),
+            "expected AntigravityLegacyTableMissingAuth, got: {error}"
+        );
+
+        std::env::remove_var("SHUNT_PROVIDERS__ANTIGRAVITY__BASE_URL");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_legacy_antigravity_table_completed_by_env_auth_is_accepted() {
+        // The mirror image of the two rejection tests above: a file table
+        // shaped like a pre-#372 legacy config (`kind = "antigravity"`, no
+        // `auth`) that a `SHUNT_PROVIDERS__ANTIGRAVITY__AUTH` env var
+        // legitimately completes. Before the guard was moved to look at the
+        // effective (file + env) figment, it ran against the file layer
+        // alone and rejected this config before the env layer ever had a
+        // chance to supply the missing `auth` key.
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-env-completed-antigravity-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shunt.toml");
+        std::fs::write(
+            &path,
+            "[providers.antigravity]\nkind = \"antigravity\"\nbase_url = \"http://localhost\"\n",
+        )
+        .unwrap();
+
+        std::env::set_var("SHUNT_PROVIDERS__ANTIGRAVITY__AUTH", "antigravity_oauth");
+
+        let config = Config::load(Some(&path))
+            .expect("a legacy table completed by an env-supplied auth must load");
+        let antigravity = config.provider("antigravity").unwrap();
+        assert_eq!(antigravity.kind, ProviderKind::Antigravity);
+        assert_eq!(antigravity.auth, AuthMode::AntigravityOauth);
+
+        std::env::remove_var("SHUNT_PROVIDERS__ANTIGRAVITY__AUTH");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn antigravity_cli_migration_backfills_auth_from_the_cli_default() {
+        // The documented migration path off the ambiguous legacy shape
+        // above: a `[providers.antigravity]` table whose only content is
+        // `kind = "antigravity_cli"`, opting explicitly into the deprecated
+        // subprocess transport. Without
+        // `backfill_antigravity_cli_migration_auth`, the merge still
+        // inherits `auth = antigravity_oauth` from the built-in
+        // `antigravity` default for this same name (the identity that
+        // `kind` just overrode), and `validate` rejects the result as
+        // `AntigravityOauthWrongKind` -- breaking the very migration path
+        // this shape is supposed to allow.
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-antigravity-cli-migration-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shunt.toml");
+        std::fs::write(
+            &path,
+            "[providers.antigravity]\nkind = \"antigravity_cli\"\n",
+        )
+        .unwrap();
+
+        let config = Config::load(Some(&path))
+            .expect("the documented antigravity -> antigravity_cli migration must load");
+        let antigravity = config.provider("antigravity").unwrap();
+        assert_eq!(antigravity.kind, ProviderKind::AntigravityCli);
+        assert_eq!(antigravity.auth, AuthMode::None);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn antigravity_oauth_requires_the_antigravity_kind() {
+        let mut config = Config::default();
+        // Carrying the token on an anthropic-kind provider would forward the
+        // client's own credential instead of injecting the Antigravity one.
+        config.providers.get_mut("antigravity").unwrap().kind = ProviderKind::Anthropic;
+        let error = config.validate().unwrap_err();
+        assert!(matches!(
+            error,
+            ConfigError::AntigravityOauthWrongKind { .. }
+        ));
+    }
+
+    #[test]
+    fn antigravity_oauth_rejects_an_off_origin_host() {
+        let mut config = Config::default();
+        config.providers.get_mut("antigravity").unwrap().base_url =
+            "https://evil.example.com".to_string();
+        let error = config.validate().unwrap_err();
+        assert!(matches!(
+            error,
+            ConfigError::AntigravityOauthNonGoogleHost { .. }
+        ));
+        assert!(error.to_string().contains("evil.example.com"));
+    }
+
+    #[test]
+    fn antigravity_oauth_requires_https() {
+        let mut config = Config::default();
+        config.providers.get_mut("antigravity").unwrap().base_url =
+            "http://cloudcode-pa.googleapis.com".to_string();
+        let error = config.validate().unwrap_err();
+        assert!(matches!(
+            error,
+            ConfigError::AntigravityOauthNotHttps { .. }
+        ));
+        assert!(error.to_string().contains("plaintext"));
+    }
+
+    #[test]
+    fn the_native_antigravity_provider_rides_the_gemini_adapter() {
+        // Stage 1 is wire-identical to Code Assist, so it must dispatch to the
+        // Gemini adapter rather than the `agy` subprocess one.
+        use crate::routing::AdapterKind;
+        assert_eq!(
+            AdapterKind::from(ProviderKind::Antigravity),
+            AdapterKind::Gemini
+        );
+        assert_eq!(
+            AdapterKind::from(ProviderKind::AntigravityCli),
+            AdapterKind::AntigravityCli
+        );
+    }
+
+    #[test]
     fn default_seeds_builtin_gemini_provider() {
         let config = Config::default();
         let gemini = config.provider("gemini").unwrap();
@@ -7095,6 +7954,97 @@ provider = "kimi"
         std::fs::copy(root.join("shunt.yaml.example"), &yaml_path).unwrap();
         Config::load(Some(&yaml_path))
             .expect("shunt.yaml.example loads through the substitution pass");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn literal_admin_key_is_rejected_while_reference_fed_keys_load() {
+        // The pre-existing `Secret` fields only warn about a literal, because
+        // deployments already hold literals there. The admin key arrays are
+        // new, so a literal is refused outright — this pins the difference.
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-admin-key-literal-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let tokens_env = format!(
+            "SHUNT_CONFIG_TEST_ADMIN_LITERAL_TOKENS_{}",
+            std::process::id()
+        );
+        std::env::remove_var(&tokens_env);
+
+        // A key written straight into the file is a load error, and the error
+        // names the path without echoing the key.
+        let toml_path = dir.join("shunt.toml");
+        let literal_toml = format!(
+            "[server.admin]\ntokens_env = \"{tokens_env}\"\n\n\
+             [[server.admin.write_keys]]\nid = \"terraform\"\nkey = \"{ADMIN_KEY_A}\"\n"
+        );
+        std::fs::write(&toml_path, &literal_toml).unwrap();
+        let error =
+            Config::load(Some(&toml_path)).expect_err("a literal admin key must be refused");
+        assert!(matches!(
+            error,
+            ConfigError::LiteralAdminKey { ref path }
+                if path == "server.admin.write_keys.0.key"
+        ));
+        assert!(!error.to_string().contains(ADMIN_KEY_A));
+
+        // The same holds for `read_keys`, and for a YAML config file — the
+        // literals map is shared by both parsers.
+        let yaml_path = dir.join("shunt.yaml");
+        std::fs::write(
+            &yaml_path,
+            format!(
+                "server:\n  admin:\n    tokens_env: \"{tokens_env}\"\n    read_keys:\n\
+                 \x20     - id: reporting\n        key: \"{ADMIN_KEY_B}\"\n"
+            ),
+        )
+        .unwrap();
+        assert!(matches!(
+            Config::load(Some(&yaml_path)),
+            Err(ConfigError::LiteralAdminKey { ref path })
+                if path == "server.admin.read_keys.0.key"
+        ));
+
+        // A `${VAR}` reference loads and resolves to the real key.
+        let key_env = format!("SHUNT_CONFIG_TEST_ADMIN_KEY_{}", std::process::id());
+        std::env::set_var(&key_env, ADMIN_KEY_A);
+        std::fs::write(
+            &toml_path,
+            format!(
+                "[server.admin]\ntokens_env = \"{tokens_env}\"\n\n\
+                 [[server.admin.write_keys]]\nid = \"terraform\"\nkey = \"${{{key_env}}}\"\n"
+            ),
+        )
+        .unwrap();
+        let config = Config::load(Some(&toml_path)).expect("a ${VAR}-fed key loads");
+        let admin = config.server.admin.as_ref().unwrap();
+        assert_eq!(admin.write_keys[0].key.expose(), ADMIN_KEY_A);
+        std::env::remove_var(&key_env);
+
+        // So does a `${file:}` reference.
+        let key_file = dir.join("admin-key");
+        std::fs::write(&key_file, format!("{ADMIN_KEY_B}\n")).unwrap();
+        std::fs::write(
+            &toml_path,
+            format!(
+                "[server.admin]\ntokens_env = \"{tokens_env}\"\n\n\
+                 [[server.admin.read_keys]]\nid = \"reporting\"\nkey = \"${{file:{}}}\"\n",
+                key_file.display()
+            ),
+        )
+        .unwrap();
+        let config = Config::load(Some(&toml_path)).expect("a ${file:}-fed key loads");
+        let admin = config.server.admin.as_ref().unwrap();
+        assert_eq!(admin.read_keys[0].key.expose(), ADMIN_KEY_B);
 
         let _ = std::fs::remove_dir_all(dir);
     }

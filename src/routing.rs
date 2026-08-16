@@ -12,7 +12,9 @@ pub enum AdapterKind {
     Responses,
     Cursor,
     Gemini,
-    Antigravity,
+    /// Local `agy` subprocess execution. Deprecated alongside
+    /// [`ProviderKind::AntigravityCli`].
+    AntigravityCli,
 }
 
 impl From<ProviderKind> for AdapterKind {
@@ -22,7 +24,13 @@ impl From<ProviderKind> for AdapterKind {
             ProviderKind::Responses => AdapterKind::Responses,
             ProviderKind::Cursor => AdapterKind::Cursor,
             ProviderKind::Gemini => AdapterKind::Gemini,
-            ProviderKind::Antigravity => AdapterKind::Antigravity,
+            // Stage 1 of the native Antigravity upstream is wire-identical to
+            // the Code Assist path, so it rides the Gemini adapter; only the
+            // credential and the discovery metadata differ. The
+            // Antigravity-specific request rewrites (signature replay, schema
+            // sanitization, the claude/non-claude split) fork this in stage 2.
+            ProviderKind::Antigravity => AdapterKind::Gemini,
+            ProviderKind::AntigravityCli => AdapterKind::AntigravityCli,
         }
     }
 }

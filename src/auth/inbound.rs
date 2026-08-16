@@ -10,7 +10,7 @@
 
 use axum::http::{HeaderMap, HeaderName};
 
-use crate::gateway::GatewayAuth;
+use crate::{config::AdminKeyring, gateway::GatewayAuth};
 
 /// Resolved inbound-auth state: the header to inspect and the accepted
 /// `name → token` pairs. Built once at startup from `[server.auth]` plus the
@@ -178,12 +178,16 @@ pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 pub(crate) enum ConsumedBy {
     GatewayJwt,
     StaticToken,
+    AdminCredential,
 }
 
 /// Whether `value` — the raw contents of a header slot — is a credential shunt
-/// itself consumes rather than the caller's own upstream credential: either
-/// shunt's gateway JWT (checked as a bare token, no `Bearer ` prefix) or a
-/// configured static `[server.auth]` token, and which one. Checked by value
+/// itself consumes rather than the caller's own upstream credential, and which
+/// one. Three kinds qualify: shunt's gateway JWT (checked as a bare token, no
+/// `Bearer ` prefix), a configured static `[server.auth]` token, and a
+/// `[server.admin]` credential (a `tokens_env`/`tokens_file` pair or either key
+/// array — the read tier included, since a read key still reaches the admin
+/// surface). Checked by value
 /// per slot, not by whether *some* slot in the request authenticated the
 /// caller, so a genuine upstream credential in one slot survives even when the
 /// other slot holds a credential shunt consumed.
@@ -200,6 +204,13 @@ pub(crate) enum ConsumedBy {
 /// authenticated the caller" whenever it can; the shape check only widens
 /// which non-authenticating tokens are still caught and stripped.
 ///
+/// The admin branch is the mirror of
+/// [`crate::admin::AdminAuth::authenticate_credential`], which accepts an admin
+/// credential in `x-api-key` as well as in the configured admin header. Both
+/// read the same `AdminKeyring`, so a value that can administer this gateway —
+/// and an admin credential can provision upstream accounts — is never relayed
+/// to the provider from a slot shunt would have authenticated it in.
+///
 /// Shared by discovery's passthrough header filtering
 /// (`discovery/upstream.rs`) and inference failover's passthrough header
 /// filtering (`proxy/failover.rs`), which independently apply it to the same
@@ -209,6 +220,7 @@ pub(crate) fn consumed_by(
     value: &[u8],
     gateway_auth: Option<&GatewayAuth>,
     static_auth: Option<&InboundAuth>,
+    admin_credentials: Option<&AdminKeyring>,
 ) -> Option<ConsumedBy> {
     let is_gateway_jwt = gateway_auth.is_some_and(|auth| {
         std::str::from_utf8(value).is_ok_and(|token| {
@@ -219,9 +231,12 @@ pub(crate) fn consumed_by(
     if is_gateway_jwt {
         return Some(ConsumedBy::GatewayJwt);
     }
-    static_auth
-        .is_some_and(|auth| auth.authenticate_value(value).is_some())
-        .then_some(ConsumedBy::StaticToken)
+    if static_auth.is_some_and(|auth| auth.authenticate_value(value).is_some()) {
+        return Some(ConsumedBy::StaticToken);
+    }
+    admin_credentials
+        .is_some_and(|credentials| credentials.contains(value))
+        .then_some(ConsumedBy::AdminCredential)
 }
 
 /// Like [`consumed_by`], but for a caller that only needs the yes/no answer.
@@ -229,8 +244,9 @@ pub(crate) fn is_consumed_by_shunt(
     value: &[u8],
     gateway_auth: Option<&GatewayAuth>,
     static_auth: Option<&InboundAuth>,
+    admin_credentials: Option<&AdminKeyring>,
 ) -> bool {
-    consumed_by(value, gateway_auth, static_auth).is_some()
+    consumed_by(value, gateway_auth, static_auth, admin_credentials).is_some()
 }
 
 /// Evaluate the whole `Authorization` slot, which can carry a shunt-owned
@@ -243,7 +259,9 @@ pub(crate) fn is_consumed_by_shunt(
 /// value with no scheme prefix, and a caller passes the gate with a bare
 /// `Authorization: <token>`. Checking only the Bearer payload finds nothing
 /// consumed for that caller and relays their gate token upstream, so both
-/// shapes are checked here.
+/// shapes are checked here. `[server.admin] header` is free-form in exactly the
+/// same way (`InvalidAdminHeader` only checks it parses), so both shapes matter
+/// for an admin credential too.
 ///
 /// Returns `None` when the header is absent or holds the caller's own
 /// credential.
@@ -251,11 +269,12 @@ pub(crate) fn authorization_consumed_by(
     headers: &HeaderMap,
     gateway_auth: Option<&GatewayAuth>,
     static_auth: Option<&InboundAuth>,
+    admin_credentials: Option<&AdminKeyring>,
 ) -> Option<ConsumedBy> {
     let raw = headers.get("authorization")?;
     bearer_token(headers)
-        .and_then(|token| consumed_by(token, gateway_auth, static_auth))
-        .or_else(|| consumed_by(raw.as_bytes(), gateway_auth, static_auth))
+        .and_then(|token| consumed_by(token, gateway_auth, static_auth, admin_credentials))
+        .or_else(|| consumed_by(raw.as_bytes(), gateway_auth, static_auth, admin_credentials))
 }
 
 #[cfg(test)]

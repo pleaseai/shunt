@@ -24,7 +24,7 @@ use crate::{
         inbound::{authorization_consumed_by, is_consumed_by_shunt, InboundAuth},
         resolve_claude_account, resolve_credential, Credential,
     },
-    config::{ApiKeyHeader, AuthMode, Config, ProviderConfig, ProviderKind},
+    config::{AdminKeyring, ApiKeyHeader, AuthMode, Config, ProviderConfig, ProviderKind},
     gateway::GatewayAuth,
     routing::{AdapterKind, Route},
     server::AppState,
@@ -90,6 +90,10 @@ impl From<UpstreamModel> for ModelEntry {
 pub(super) struct InboundCredentialContext<'a> {
     pub(super) static_auth: Option<&'a InboundAuth>,
     pub(super) gateway_auth: Option<&'a GatewayAuth>,
+    /// `[server.admin]`'s resolved credentials. An admin credential
+    /// authenticates the admin and spend surfaces in `x-api-key` as well as in
+    /// its own header, so it is one shunt consumes and must not be relayed.
+    pub(super) admin_credentials: Option<&'a AdminKeyring>,
 }
 
 /// Fetch the caller's own model list from the Anthropic upstream.
@@ -260,8 +264,9 @@ async fn upstream_headers(
         // gateway auth whenever configured, so first remove any value shunt's own
         // auth gate consumed; inference passthrough routes do not have this step.
         AuthMode::Passthrough => {
-            // A bearer shunt already consumed — gateway login, or a
-            // `[server.auth]` client token sent as `Authorization` — authenticates
+            // A bearer shunt already consumed — gateway login, a
+            // `[server.auth]` client token sent as `Authorization`, or a
+            // `[server.admin]` credential — authenticates
             // the caller against shunt, not the caller against the upstream.
             // Evaluated over the whole slot, because a `[server.auth] header =
             // "authorization"` caller passes the gate with a bare, unprefixed
@@ -270,6 +275,7 @@ async fn upstream_headers(
                 inbound,
                 inbound_context.gateway_auth,
                 inbound_context.static_auth,
+                inbound_context.admin_credentials,
             )
             .is_some();
             let bearer = inbound
@@ -277,7 +283,8 @@ async fn upstream_headers(
                 .cloned()
                 .filter(|_| !bearer_is_consumed);
             // Checked independently of `authorization`: an `apiKeyHelper` fills
-            // both slots with the same value, so a gateway JWT or static token
+            // both slots with the same value, so a gateway JWT, static token, or
+            // admin credential
             // can land in either or both, beside a genuine upstream credential
             // in the other slot that must keep flowing. Gating this slot on
             // whether `authorization` was consumed would strip a real key
@@ -287,6 +294,7 @@ async fn upstream_headers(
                     value.as_bytes(),
                     inbound_context.gateway_auth,
                     inbound_context.static_auth,
+                    inbound_context.admin_credentials,
                 )
             });
             if bearer.is_none() && api_key.is_none() {

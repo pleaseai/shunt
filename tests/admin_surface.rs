@@ -10,7 +10,10 @@ use std::{net::SocketAddr, path::PathBuf, time::SystemTime};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use reqwest::StatusCode;
 use shunt::{
-    config::{AccountConfig, AdminConfig, AdminOidcConfig, AuthMode, Config, OidcProviderConfig},
+    config::{
+        AccountConfig, AdminConfig, AdminKey, AdminOidcConfig, AuthMode, Config, InboundAuthConfig,
+        OidcProviderConfig,
+    },
     server,
 };
 use tokio::task::JoinHandle;
@@ -64,6 +67,8 @@ fn admin_config(tokens_env: &str) -> Config {
         header: "x-shunt-admin-token".to_string(),
         tokens_env: tokens_env.to_string(),
         tokens_file: None,
+        write_keys: Vec::new(),
+        read_keys: Vec::new(),
         session_ttl_secs: 3600,
         pending_ttl_secs: 600,
         oidc: None,
@@ -759,6 +764,213 @@ async fn admin_status_reports_observed_sources() {
     assert!(sources[0]["error"].is_null());
 
     std::env::remove_var("SHUNT_TEST_ADMIN_STATUS_SEEDED");
+}
+
+/// A 32+ character write key and read key for the `[server.admin]` arrays.
+const ADMIN_WRITE_KEY: &str = "admin-write-0123456789abcdef012345";
+const ADMIN_READ_KEY: &str = "admin-read-0123456789abcdef0123456";
+
+/// [`admin_config`] plus the read/write key arrays.
+fn admin_config_with_keys(tokens_env: &str) -> Config {
+    let mut config = admin_config(tokens_env);
+    let admin = config.server.admin.as_mut().unwrap();
+    admin.write_keys = vec![AdminKey {
+        id: "terraform".to_string(),
+        key: ADMIN_WRITE_KEY.into(),
+    }];
+    admin.read_keys = vec![AdminKey {
+        id: "reporting".to_string(),
+        key: ADMIN_READ_KEY.into(),
+    }];
+    config
+}
+
+/// Both accepted credential slots reach the admin surface: the configured
+/// header and `x-api-key`. Covers every credential kind — a legacy
+/// `tokens_env` pair, a `write_keys` entry, and a `read_keys` entry — on a GET
+/// route, which needs only `read`.
+#[tokio::test]
+async fn admin_header_and_x_api_key_both_authenticate_every_credential_kind() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let env = "SHUNT_TEST_ADMIN_TOKENS_SLOTS";
+    std::env::set_var(env, "ops:secret-slots");
+    let gateway = start(admin_config_with_keys(env)).await;
+    let client = reqwest::Client::new();
+
+    for credential in ["secret-slots", ADMIN_WRITE_KEY, ADMIN_READ_KEY] {
+        for slot in ["x-shunt-admin-token", "x-api-key"] {
+            let response = client
+                .get(format!("{}/admin/pool", gateway.base_url))
+                .header(slot, credential)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "{credential} in {slot} must authenticate the admin surface"
+            );
+        }
+    }
+    std::env::remove_var(env);
+}
+
+/// A read key is a full citizen on GET routes and is refused everywhere a
+/// write would happen — including the browser login form, which would
+/// otherwise mint a session that carries full access.
+#[tokio::test]
+async fn read_key_passes_admin_gets_and_is_refused_on_mutations_and_login() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let env = "SHUNT_TEST_ADMIN_TOKENS_READONLY";
+    std::env::set_var(env, "ops:secret-readonly");
+    let gateway = start(admin_config_with_keys(env)).await;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+
+    for route in ["/admin/pool", "/admin/status", "/admin/accounts"] {
+        let response = client
+            .get(format!("{}{route}", gateway.base_url))
+            .header("x-api-key", ADMIN_READ_KEY)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "read key must pass {route}"
+        );
+    }
+
+    // A mutation is refused for the read key but accepted (past auth) for the
+    // write key, so the 403 is about privilege and not about the route.
+    let post_account = |credential: &'static str| {
+        client
+            .post(format!("{}/admin/accounts/claude", gateway.base_url))
+            .header("x-api-key", credential)
+            .header("content-type", "application/json")
+            .body(r#"{"name":"main","mode":"setup-token"}"#)
+            .send()
+    };
+    let response = post_account(ADMIN_READ_KEY).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let response = post_account(ADMIN_WRITE_KEY).await.unwrap();
+    assert_ne!(response.status(), StatusCode::FORBIDDEN);
+
+    let response = client
+        .delete(format!("{}/admin/accounts/claude/main", gateway.base_url))
+        .header("x-api-key", ADMIN_READ_KEY)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    // The login form must not mint a session from a read key.
+    let response = client
+        .post(format!("{}/admin/login", gateway.base_url))
+        .form(&[("token", ADMIN_READ_KEY)])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(
+        response.headers().get("set-cookie").is_none(),
+        "a read key must never receive a session cookie"
+    );
+
+    // The write key does log in, so the refusal above is about the tier.
+    let response = client
+        .post(format!("{}/admin/login", gateway.base_url))
+        .form(&[("token", ADMIN_WRITE_KEY)])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert!(response.headers().get("set-cookie").is_some());
+    std::env::remove_var(env);
+}
+
+/// The merged slot acceptance is scoped to the admin (and spend) routers.
+/// `x-api-key` is also the Anthropic client credential slot on inference
+/// routes, and an admin credential must never satisfy it there.
+#[tokio::test]
+async fn admin_credential_never_authenticates_an_inference_route_in_either_slot() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let admin_env = "SHUNT_TEST_ADMIN_TOKENS_INFERENCE";
+    let client_env = "SHUNT_TEST_ADMIN_CLIENT_INFERENCE";
+    std::env::set_var(admin_env, "ops:secret-inference");
+    std::env::set_var(client_env, "device:client-token-value");
+    let mut config = admin_config_with_keys(admin_env);
+    config.server.auth = Some(InboundAuthConfig {
+        header: "x-shunt-token".to_string(),
+        tokens_env: client_env.to_string(),
+    });
+    let gateway = start(config).await;
+    let client = reqwest::Client::new();
+
+    // The credentials really are valid admin credentials.
+    for credential in ["secret-inference", ADMIN_WRITE_KEY, ADMIN_READ_KEY] {
+        let response = client
+            .get(format!("{}/admin/pool", gateway.base_url))
+            .header("x-api-key", credential)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    // …and none of them opens an inference route, in either client slot.
+    for route in ["/v1/messages", "/v1/messages/count_tokens"] {
+        for credential in ["secret-inference", ADMIN_WRITE_KEY, ADMIN_READ_KEY] {
+            for (slot, value) in [
+                ("x-api-key", credential.to_string()),
+                ("authorization", format!("Bearer {credential}")),
+                ("x-shunt-token", credential.to_string()),
+            ] {
+                let response = client
+                    .post(format!("{}{route}", gateway.base_url))
+                    .header(slot, value)
+                    .header("content-type", "application/json")
+                    .body(r#"{"model":"claude-3-5-haiku-20241022","max_tokens":1,"messages":[]}"#)
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    response.status(),
+                    StatusCode::UNAUTHORIZED,
+                    "{credential} in {slot} must not authenticate {route}"
+                );
+            }
+        }
+    }
+
+    // Control on a gated route that answers without an upstream: the client
+    // token is accepted in the very slot the admin credential was refused in,
+    // so the 401s above are about the credential and not about the route.
+    let response = client
+        .get(format!("{}/v1/models", gateway.base_url))
+        .header("x-api-key", "client-token-value")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response = client
+        .get(format!("{}/v1/models", gateway.base_url))
+        .header("x-api-key", ADMIN_WRITE_KEY)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    std::env::remove_var(admin_env);
+    std::env::remove_var(client_env);
 }
 
 #[tokio::test]
