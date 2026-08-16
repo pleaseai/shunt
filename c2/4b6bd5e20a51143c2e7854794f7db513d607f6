@@ -1,0 +1,27 @@
+README.ja.md
+  s_02afa83fa6c310::t_bbc012db1ee65d 174-180
+README.zh-CN.md
+  s_02afa83fa6c310::t_bbc012db1ee65d 174-180
+README.ko.md
+  s_02afa83fa6c310::t_bbc012db1ee65d 174-180
+site/src/content/docs/providers/kimi.md
+  s_02afa83fa6c310::t_bbc012db1ee65d 143-149
+README.md
+  s_02afa83fa6c310::t_bbc012db1ee65d 228-234
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "c24b6bd5e20a51143c2e7854794f7db513d607f6",
+  "prompts": {},
+  "sessions": {
+    "s_02afa83fa6c310": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "41a940fb-b079-41d6-801c-c90fdac76db6",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
