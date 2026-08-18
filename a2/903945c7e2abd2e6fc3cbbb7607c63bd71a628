@@ -1,0 +1,21 @@
+.claude/agent-memory/review-review-security-reviewer/MEMORY.md
+  s_8ac7b3d8238f53::t_872ae0aae61edd 22
+.claude/agent-memory/review-review-security-reviewer/project_pr391-slot-enumeration.md
+  s_8ac7b3d8238f53::t_872ae0aae61edd 1-44
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "a2903945c7e2abd2e6fc3cbbb7607c63bd71a628",
+  "prompts": {},
+  "sessions": {
+    "s_8ac7b3d8238f53": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6872395d-b5ef-44e2-be10-2544083db6cd",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
