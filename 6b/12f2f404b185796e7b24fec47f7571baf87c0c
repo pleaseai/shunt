@@ -1,0 +1,19 @@
+.claude/agent-memory/review-review-documentation-analyzer/shunt_pr380_antigravity_base_url_docs_review.md
+  s_e06370109bef57::t_3c5ab9e4ac9eff 12-14,24-28,39-43
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "6b12f2f404b185796e7b24fec47f7571baf87c0c",
+  "prompts": {},
+  "sessions": {
+    "s_e06370109bef57": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "827ef0a3-744d-48e6-a620-f261c1fd4bdd",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
