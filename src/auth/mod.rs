@@ -121,6 +121,7 @@ pub async fn resolve_credential(
             let store = antigravity::auth::AntigravityAuthStore::new(
                 antigravity::default_antigravity_auth_path(),
                 client.clone(),
+                provider.base_url.clone(),
             );
             with_credential_timeout(
                 ANTIGRAVITY_CREDENTIAL_TIMEOUT,
@@ -357,11 +358,14 @@ pub fn default_xai_auth_path() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
+
     use crate::config::{AccountConfig, Config};
+    use crate::routing::AdapterKind;
 
     use super::{
-        resolve_api_key, resolve_chatgpt_account, resolve_claude_account, with_credential_timeout,
-        Credential,
+        resolve_api_key, resolve_chatgpt_account, resolve_claude_account, resolve_credential,
+        with_credential_timeout, Credential, Route,
     };
 
     #[tokio::test]
@@ -387,6 +391,93 @@ mod tests {
             body.contains("Antigravity credential resolution timed out"),
             "expected the timeout to surface its named message, got: {body}"
         );
+    }
+
+    #[tokio::test]
+    async fn antigravity_credential_resolution_discovers_against_the_provider_configured_base_url()
+    {
+        // A store-level test alone would not catch this arm regressing back
+        // to a hardcoded host: it only proves `AntigravityAuthStore::new`
+        // honors whatever base_url it is handed, not that `resolve_credential`
+        // still passes `provider.base_url` through. Prove the wiring
+        // end-to-end instead: a wiremock server as the provider's base_url,
+        // a stored credential with no cached project_id, and an assertion
+        // that discovery actually reached the mock.
+        use crate::auth::antigravity::{self, ANTIGRAVITY_AUTH_FILE_ENV_LOCK};
+        use crate::auth::shared::EnvVarGuard;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // Declared before the env guard so it drops (and releases) last,
+        // after `_env_var_guard` has already removed the override — mirrors
+        // the pairing in src/reload.rs's antigravity-file-env tests.
+        let _lock = ANTIGRAVITY_AUTH_FILE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1internal:loadCodeAssist"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "cloudaicompanionProject": "proj-wired"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-resolve-credential-antigravity-wiring-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let credential_path = dir.join("antigravity-auth.json");
+        let _env_var_guard = EnvVarGuard::set("SHUNT_ANTIGRAVITY_AUTH_FILE", &credential_path);
+
+        let expiry = (std::time::SystemTime::now() + std::time::Duration::from_secs(3600))
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        antigravity::auth::write_stored(
+            &credential_path,
+            &antigravity::auth::StoredAuth {
+                access_token: "valid-access-token".to_string(),
+                refresh_token: "refresh".to_string(),
+                expiry_date: Some(expiry),
+                email: None,
+                project_id: None,
+            },
+        )
+        .unwrap();
+
+        let config_path = dir.join("shunt.toml");
+        std::fs::write(
+            &config_path,
+            format!(
+                "[providers.antigravity]\nauth = \"antigravity_oauth\"\nbase_url = \"{}\"\n",
+                server.uri()
+            ),
+        )
+        .unwrap();
+        let config = Config::load(Some(&config_path)).unwrap();
+
+        let route = Route {
+            provider: "antigravity".to_string(),
+            adapter: AdapterKind::Gemini,
+            model: "gemini-3-pro".to_string(),
+            upstream_model: "gemini-3-pro".to_string(),
+            effort: None,
+            service_tier: None,
+        };
+
+        resolve_credential(&config, &route, &reqwest::Client::new())
+            .await
+            .expect("credential resolution must succeed against the mock backend");
+
+        server.verify().await;
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

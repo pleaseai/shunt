@@ -372,7 +372,24 @@ fn login(
             )
         }
         "antigravity" if name.is_none() && !long_lived && mode.is_none() => {
-            runtime()?.block_on(shunt::auth::antigravity::login::run())
+            runtime()?.block_on(async {
+                // Logging in should not require a fully valid gateway config:
+                // read the optional override best-effort and fall back to the
+                // default Antigravity Code Assist host if the config fails to
+                // load or omits it. Looked up by the built-in provider name
+                // only, same limitation as the `cursor` arm above — iterating
+                // the provider map instead would make the pick nondeterministic
+                // if more than one provider used `antigravity_oauth`.
+                let base_url = Config::load(config_path)
+                    .ok()
+                    .and_then(|config| {
+                        config
+                            .provider("antigravity")
+                            .map(|provider| provider.base_url.clone())
+                    })
+                    .unwrap_or_else(|| "https://cloudcode-pa.googleapis.com".to_string());
+                shunt::auth::antigravity::login::run(&base_url).await
+            })
         }
         "antigravity" => {
             anyhow::bail!(

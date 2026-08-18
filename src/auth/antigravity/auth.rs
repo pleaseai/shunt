@@ -1,11 +1,12 @@
 //! Antigravity subscription OAuth credential store.
 //!
 //! Antigravity reaches the same Code Assist backend the `gemini` provider uses
-//! (`cloudcode-pa.googleapis.com/v1internal`), but with its own OAuth client and
-//! scopes, and it identifies itself as `ideType: ANTIGRAVITY` during project
-//! discovery. The two credentials are therefore not interchangeable, which is
-//! why this store exists alongside [`crate::auth::google::auth`] rather than
-//! extending it.
+//! — `cloudcode-pa.googleapis.com/v1internal` by default, or whatever host the
+//! provider's `base_url` configures (see [`AntigravityAuthStore::new`]) — but
+//! with its own OAuth client and scopes, and it identifies itself as
+//! `ideType: ANTIGRAVITY` during project discovery. The two credentials are
+//! therefore not interchangeable, which is why this store exists alongside
+//! [`crate::auth::google::auth`] rather than extending it.
 //!
 //! The credential file (`~/.shunt/antigravity-auth.json`, overridable via
 //! `SHUNT_ANTIGRAVITY_AUTH_FILE`) is written by `shunt login antigravity` (see
@@ -53,9 +54,15 @@ pub(crate) const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth"
 pub(crate) const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 pub(crate) const USERINFO_URL: &str = "https://www.googleapis.com/oauth2/v2/userinfo?alt=json";
 
-/// Production Code Assist backend. Project discovery and inference both go here.
+/// Production Code Assist backend. This is only the default: `discover_project`
+/// and inference (`adapters::gemini`) both address the provider's configured
+/// `base_url`, which `AntigravityAuthStore::new` derives `api_endpoint` from —
+/// see there for why. This constant remains the production value that
+/// `main.rs`'s login command falls back to when no config is available.
 pub(crate) const API_ENDPOINT: &str = "https://cloudcode-pa.googleapis.com";
-/// Onboarding is served from the `daily-` host, not the production one.
+/// Onboarding is served from the `daily-` host, not the production one — but
+/// only when the configured backend actually is production; see
+/// `AntigravityAuthStore::new` for the non-production case.
 pub(crate) const DAILY_API_ENDPOINT: &str = "https://daily-cloudcode-pa.googleapis.com";
 pub(crate) const API_VERSION: &str = "v1internal";
 
@@ -161,13 +168,40 @@ pub struct AntigravityAuthStore {
 }
 
 impl AntigravityAuthStore {
-    pub fn new(path: PathBuf, client: reqwest::Client) -> Self {
+    /// `base_url` is the provider's configured Code Assist host — the same
+    /// host `adapters::gemini` sends inference to (`provider.base_url` in
+    /// `src/adapters/gemini/mod.rs`) — so that credential-path project
+    /// discovery and onboarding address the backend the operator actually
+    /// configured, rather than always reaching the hardcoded production host
+    /// regardless of `base_url`. Trailing slashes are trimmed once here,
+    /// mirroring the Gemini adapter's own normalization at the point it
+    /// builds a request URL; no fallback to [`API_ENDPOINT`] is applied for an
+    /// empty or malformed value — config validation already parses every
+    /// provider `base_url` (`provider_base_url` in `src/config.rs`), and
+    /// silently falling back here would fail open to the production host.
+    pub fn new(path: PathBuf, client: reqwest::Client, base_url: impl Into<String>) -> Self {
+        let api_endpoint = base_url.into().trim_end_matches('/').to_string();
+        // The `daily-` control-plane host that serves onboarding only exists
+        // for the production backend. Config validation (the
+        // `AuthMode::AntigravityOauth` block in `src/config.rs`) only admits a
+        // non-production `base_url` when its host is a loopback address — the
+        // operator's proxy standing in for the whole backend — so sending
+        // `onboardUser` to the real `daily-` host in that case would egress
+        // straight past the very endpoint the operator configured.
+        // `discover_project` chains into `onboard_user` on the same request
+        // path, so this has to travel with `api_endpoint`, not stay pinned to
+        // the production default.
+        let daily_api_endpoint = if api_endpoint == API_ENDPOINT {
+            DAILY_API_ENDPOINT.to_string()
+        } else {
+            api_endpoint.clone()
+        };
         Self {
             path,
             client,
             token_url: TOKEN_URL.to_string(),
-            api_endpoint: API_ENDPOINT.to_string(),
-            daily_api_endpoint: DAILY_API_ENDPOINT.to_string(),
+            api_endpoint,
+            daily_api_endpoint,
             project_cache: Arc::new(RwLock::new(None)),
             request_timeout: CREDENTIAL_REQUEST_TIMEOUT,
             onboard_poll_interval: ONBOARD_POLL_INTERVAL,
@@ -963,6 +997,112 @@ mod tests {
 
     fn write(path: &Path, stored: &StoredAuth) {
         write_stored(path, stored).unwrap();
+    }
+
+    // `AntigravityAuthStore::new` derives both endpoints from the base_url its
+    // caller passes it (issue #380: it used to hardcode the production host
+    // regardless of what the provider was configured with). These four tests
+    // exercise `new(...)` directly, unlike the rest of this module which goes
+    // through `with_urls`/`store_at`, since `with_urls` bypasses `new` entirely
+    // and would not catch a regression there.
+
+    #[tokio::test]
+    async fn discovery_addresses_the_configured_base_url() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1internal:loadCodeAssist"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "cloudaicompanionProject": "proj-configured"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let store = AntigravityAuthStore::new(
+            temp_auth_file("configured_base_url"),
+            reqwest::Client::new(),
+            server.uri(),
+        );
+        let project = store.discover_project("access-token").await.unwrap();
+        assert_eq!(project, "proj-configured");
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn a_trailing_slash_on_the_configured_base_url_does_not_double_up() {
+        // The Gemini adapter trims a trailing slash before building its own
+        // request URL (`adapters::gemini::mod`); `new` must normalize the
+        // same way, or a trailing-slash base_url would send
+        // `.../` + `/v1internal:loadCodeAssist` (double slash), which
+        // wiremock's exact `path` matcher below would refuse to serve.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1internal:loadCodeAssist"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "cloudaicompanionProject": "proj-trimmed"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let store = AntigravityAuthStore::new(
+            temp_auth_file("trailing_slash"),
+            reqwest::Client::new(),
+            format!("{}/", server.uri()),
+        );
+        let project = store.discover_project("access-token").await.unwrap();
+        assert_eq!(project, "proj-trimmed");
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn onboarding_follows_the_configured_base_url_when_it_is_not_the_production_default() {
+        // `discover_project` chains into `onboard_user` on the same request
+        // path, so a non-production base_url must carry onboarding along with
+        // it rather than splitting back to the production `daily-` host.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1internal:loadCodeAssist"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "allowedTiers": [{"id": "standard-tier", "isDefault": true}]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1internal:onboardUser"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "done": true,
+                "response": {"cloudaicompanionProject": "proj-onboarded-configured"}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let store = AntigravityAuthStore::new(
+            temp_auth_file("onboard_configured_base_url"),
+            reqwest::Client::new(),
+            server.uri(),
+        );
+        let project = store.discover_project("access-token").await.unwrap();
+        assert_eq!(project, "proj-onboarded-configured");
+        server.verify().await;
+    }
+
+    #[test]
+    fn the_production_default_still_routes_onboarding_to_the_daily_host() {
+        // When the configured base_url resolves to the production default,
+        // onboarding must keep using the dedicated `daily-` control-plane
+        // host — only a genuinely non-production base_url (necessarily
+        // loopback, per the AntigravityOauth validation guard in
+        // src/config.rs) collapses daily_api_endpoint onto api_endpoint.
+        let store = AntigravityAuthStore::new(
+            temp_auth_file("production_default_daily_host"),
+            reqwest::Client::new(),
+            API_ENDPOINT,
+        );
+        assert_eq!(store.api_endpoint, API_ENDPOINT);
+        assert_eq!(store.daily_api_endpoint, DAILY_API_ENDPOINT);
     }
 
     #[test]

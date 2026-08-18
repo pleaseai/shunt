@@ -108,7 +108,12 @@ struct UserInfo {
     email: Option<String>,
 }
 
-pub async fn run() -> anyhow::Result<()> {
+/// `base_url` is the Code Assist host to discover the project against — the
+/// same value `resolve_credential` passes `AntigravityAuthStore::new` on the
+/// request path (see `src/auth/mod.rs`). Callers resolve their own default
+/// (`main.rs`'s `antigravity` login arm mirrors the `cursor` one) since login
+/// must not require a fully valid gateway config.
+pub async fn run(base_url: &str) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
     let PkceChallenge {
         verifier,
@@ -191,7 +196,7 @@ pub async fn run() -> anyhow::Result<()> {
     .await;
 
     let path = default_antigravity_auth_path();
-    let store = super::auth::AntigravityAuthStore::new(path.clone(), client.clone());
+    let store = super::auth::AntigravityAuthStore::new(path.clone(), client.clone(), base_url);
     match store.discover_project(&stored.access_token).await {
         Ok(project_id) => stored.project_id = Some(project_id),
         Err(error) => {
