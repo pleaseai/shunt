@@ -1,0 +1,79 @@
+docs/running.md
+  s_e6a8029daf2f59::t_79b6ef22498551 561-565
+  s_e6a8029daf2f59::t_d4110e033c38c7 593-612
+  s_e6a8029daf2f59::t_87e7c9fd7e9ef3 558-560
+site/src/content/docs/reference/cli.mdx
+  s_e6a8029daf2f59::t_ae04eadacb0f10 125-128
+  s_e6a8029daf2f59::t_79b6ef22498551 104
+src/auth/claude/login.rs
+  s_e6a8029daf2f59::t_96bf495145dea0 73
+  s_e6a8029daf2f59::t_b6428a49d6b66f 99-101,204-206
+src/auth/gateway/auth.rs
+  s_e6a8029daf2f59::t_6c9b7e918e015e 63,339-346,353-356,358-368,380-383,512
+  s_e6a8029daf2f59::t_5238f960739b39 259
+  s_e6a8029daf2f59::t_b6428a49d6b66f 449-452
+  s_e6a8029daf2f59::t_8ee658a8ee335b 42-62,64-67,274-301,305-313
+  s_e6a8029daf2f59::t_9030243cc37e65 315,523
+  s_e6a8029daf2f59::t_5e4564e86767ad 143,173-175,263
+  s_e6a8029daf2f59::t_71e397c83c1fa6 369-379
+  s_e6a8029daf2f59::t_9f25bf5ff465a3 444-448,453-454,461-477
+  s_e6a8029daf2f59::t_2594934fc39f1b 257-258,260
+  s_e6a8029daf2f59::t_59a29921ea6662 324-338,347-352,357
+  s_e6a8029daf2f59::t_d4770c8e617d9f 948-1206
+  s_e6a8029daf2f59::t_734c08ae96fd01 314,401-409,412,422,425-442,455-460,479-492,494,509-511,513-522
+  s_e6a8029daf2f59::t_90cf837cc12418 443
+tests/gateway_cli.rs
+  s_e6a8029daf2f59::t_36a4ca5b080146 17,131-138,147-165,174-183,225-227
+  s_e6a8029daf2f59::t_c8ecbd7ee02cca 38-42,45,48,184-224
+  s_e6a8029daf2f59::t_727c4b64776817 11-16
+  s_e6a8029daf2f59::t_6a6282f5859e1e 228
+  s_e6a8029daf2f59::t_2594934fc39f1b 139-146,166-173
+src/main.rs
+  s_e6a8029daf2f59::t_d324d6920fd7c3 552-557
+  s_e6a8029daf2f59::t_860a8a8ea565fc 958-970
+src/auth/shared.rs
+  s_e6a8029daf2f59::t_96bf495145dea0 787-792,794,797
+src/auth/gateway/store.rs
+  s_e6a8029daf2f59::t_7d011f61f89a57 153-156
+  s_e6a8029daf2f59::t_2594934fc39f1b 264
+  s_e6a8029daf2f59::t_0d514898bd797e 19,134-148,185-191,193-201,203,227-230,232,249-263,265-276,289
+  s_e6a8029daf2f59::t_b3fdbadc14c9bd 225
+  s_e6a8029daf2f59::t_42d5ac57c7d0b8 487-535
+  s_e6a8029daf2f59::t_5f8c877b535302 214-224,226
+site/src/content/docs/zh-cn/reference/cli.mdx
+  s_e6a8029daf2f59::t_d4110e033c38c7 113-116
+  s_e6a8029daf2f59::t_79b6ef22498551 92
+src/auth/gateway/login.rs
+  s_e6a8029daf2f59::t_9f25bf5ff465a3 373,409-414,431-434,439-441,443-447,449-450
+  s_e6a8029daf2f59::t_d4770c8e617d9f 810-916,920,924,930,936,942-968
+  s_e6a8029daf2f59::t_5238f960739b39 21
+  s_e6a8029daf2f59::t_5f8c877b535302 96-102,104-109,111-116
+  s_e6a8029daf2f59::t_4b16341c81e5d6 123,126,251-252,272-277
+  s_e6a8029daf2f59::t_5e4564e86767ad 259,367
+  s_e6a8029daf2f59::t_aa3190b6386728 75-89,103,110
+  s_e6a8029daf2f59::t_9add8c1631a8f7 20,253,442,448
+  s_e6a8029daf2f59::t_42d5ac57c7d0b8 254
+  s_e6a8029daf2f59::t_b6428a49d6b66f 136-138
+site/src/content/docs/ja/reference/cli.mdx
+  s_e6a8029daf2f59::t_79b6ef22498551 92
+  s_e6a8029daf2f59::t_d4110e033c38c7 113-116
+site/src/content/docs/ko/reference/cli.mdx
+  s_e6a8029daf2f59::t_79b6ef22498551 92
+  s_e6a8029daf2f59::t_d4110e033c38c7 113-116
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "aa91368e847b783ee0d3586035f5f32bd8f29dd9",
+  "prompts": {},
+  "sessions": {
+    "s_e6a8029daf2f59": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cb8ae398-3f69-419a-afa1-44307e44678e",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
