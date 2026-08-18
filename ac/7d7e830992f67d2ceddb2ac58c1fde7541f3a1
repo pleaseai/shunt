@@ -1,0 +1,45 @@
+src/auth/gateway/launch.rs
+  s_e6a8029daf2f59::t_5a88dea9a55513 194-212
+  s_e6a8029daf2f59::t_13830f3c280bc5 63-75
+site/src/content/docs/ja/reference/cli.mdx
+  s_e6a8029daf2f59::t_7129ce6efe92d6 92-94
+src/auth/gateway/auth.rs
+  s_e6a8029daf2f59::t_bcf8999f2185d2 415-416,418-420
+  s_e6a8029daf2f59::t_485d33aa98de87 395-414,417,421-422,427-454,459-466,468-481,483-521,525-566
+  s_e6a8029daf2f59::t_60462eb7b288e8 423-426,455-458,482,522-524
+  s_e6a8029daf2f59::t_39f9ac3634a51e 84-90,92-103,121-132,136-152,154,209-215
+  s_e6a8029daf2f59::t_5007edbbe5f5a2 467
+src/auth/gateway/store.rs
+  s_e6a8029daf2f59::t_13830f3c280bc5 215-218,221-229
+  s_e6a8029daf2f59::t_60462eb7b288e8 394-396
+  s_e6a8029daf2f59::t_5a88dea9a55513 375-393,397-417
+site/src/content/docs/ko/reference/cli.mdx
+  s_e6a8029daf2f59::t_7129ce6efe92d6 92-94
+site/src/content/docs/reference/cli.mdx
+  s_e6a8029daf2f59::t_7129ce6efe92d6 104-106
+src/auth/gateway/login.rs
+  s_e6a8029daf2f59::t_2e1d20b9d61b58 97-107,158-160,169-190,204-210,277-290,292,311-314
+  s_e6a8029daf2f59::t_0d4c03418b669f 640-749
+src/auth/shared.rs
+  s_e6a8029daf2f59::t_2094329c9aaec7 75-79
+docs/running.md
+  s_e6a8029daf2f59::t_7129ce6efe92d6 557-568
+site/src/content/docs/zh-cn/reference/cli.mdx
+  s_e6a8029daf2f59::t_7129ce6efe92d6 92-94
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "ac7d7e830992f67d2ceddb2ac58c1fde7541f3a1",
+  "prompts": {},
+  "sessions": {
+    "s_e6a8029daf2f59": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cb8ae398-3f69-419a-afa1-44307e44678e",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
