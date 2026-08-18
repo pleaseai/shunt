@@ -157,6 +157,8 @@ name = "primary"
 
 配置只能用 `[[upstreams]]` 或 `[providers.*]` 之一声明 provider,不能同时使用两者。在 `[[upstreams]]` 配置中,改为在 auth 映射里指定账户: `auth = { mode = "kimi_oauth", accounts = ["primary"] }`。
 
+Kimi 在每次刷新时都会轮换 refresh token,而且签发的 access token 生命周期只有约 15 分钟,因此刷新非常频繁。上面"每个可刷新登录只能有一个所有者"的规则在这里完全适用:多个 shunt 进程共享同一个 Kimi 账户文件时,第一次刷新就会让彼此失效。
+
 完整的 upstream 配置见 [Kimi](/zh-cn/providers/kimi/#kimi-code-oauth-subscription)。
 
 ## Anthropic 账户池认证

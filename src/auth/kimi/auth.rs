@@ -107,10 +107,12 @@ impl Tokens {
 #[derive(Debug, Clone)]
 pub(crate) struct TokenResponse {
     pub access_token: String,
-    /// Kimi's refresh-rotation behavior on a refresh grant is unmeasured, so a
-    /// response that omits this is treated leniently (existing refresh token
-    /// reused — see `refresh_and_write_back`), not rejected like xAI's
-    /// always-rotates store does.
+    /// Measured against the live endpoint: Kimi **does** rotate the refresh
+    /// token on a refresh grant, returning a new one every time. The field
+    /// stays optional and a response that omits it is still treated leniently
+    /// (existing refresh token reused — see `refresh_and_write_back`) rather
+    /// than rejected like xAI's always-rotates store does, so a future server
+    /// change cannot strand an account.
     pub refresh_token: Option<String>,
     pub expires_in: Option<i64>,
 }
@@ -189,10 +191,10 @@ impl KimiAuthStore {
             };
             let refreshed =
                 refresh_tokens(&client, &token_url, &refresh_token, header_device_id).await?;
-            // Kimi's rotation behavior on refresh is unmeasured; be lenient like
-            // Claude and reuse the existing refresh token when the response
-            // omits one, rather than rejecting the response as invalid like
-            // xAI's always-rotates store does.
+            // Kimi rotates the refresh token on every refresh (measured), so
+            // this normally takes the new one. Keep Claude's lenient fallback
+            // anyway — reuse the existing token when a response omits one —
+            // rather than rejecting it like xAI's always-rotates store does.
             let refresh_token = refreshed.refresh_token.clone().unwrap_or(refresh_token);
             let expires_at_ms = expires_at_ms(refreshed.expires_in, SystemTime::now());
             let access_token = refreshed.access_token.clone();
@@ -704,9 +706,11 @@ mod tests {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        // Kimi's refresh-rotation behavior is unmeasured; the store follows
-        // Claude's lenient policy (reuse the existing refresh token when the
-        // response omits one) rather than xAI's strict always-rotates policy.
+        // The live endpoint always rotates, so this response shape is
+        // defensive rather than observed: the store follows Claude's lenient
+        // policy (reuse the existing refresh token when the response omits
+        // one) rather than xAI's strict always-rotates policy, so a server
+        // that stopped rotating could not strand the account.
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/token"))

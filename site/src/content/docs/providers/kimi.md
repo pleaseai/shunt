@@ -130,6 +130,11 @@ until approval completes or the code expires. The stored account lands at
 `~/.shunt/accounts/kimi/<account-name>.json` (0600, in a 0700 directory), overridable with
 `SHUNT_KIMI_ACCOUNTS_DIR`.
 
+Kimi rotates the refresh token on every refresh, and its access tokens last only about
+15 minutes, so refreshes are frequent. Run one shunt process per Kimi account file — two
+processes sharing a file will invalidate each other on the first refresh. Provision a
+separate account for each process instead.
+
 ### 2. Configure the upstream
 
 The `kimi-code` preset supplies `kind = "anthropic"`, `base_url = "https://api.kimi.com/coding"`,

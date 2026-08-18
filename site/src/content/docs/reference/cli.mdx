@@ -190,6 +190,8 @@ name = "primary"
 
 A config declares its providers with either `[[upstreams]]` or `[providers.*]`, never both, so in an `[[upstreams]]` config name the accounts in the auth map instead: `auth = { mode = "kimi_oauth", accounts = ["primary"] }`.
 
+Kimi rotates the refresh token on every refresh, and the access token it issues lasts only about 15 minutes, so refreshes are frequent. The one-owner-per-refreshable-login rule above therefore applies here with full force: two shunt processes sharing one Kimi account file will invalidate each other on the first refresh.
+
 See [Kimi](/providers/kimi/#kimi-code-oauth-subscription) for complete upstream configuration.
 
 ## Anthropic account-pool authentication

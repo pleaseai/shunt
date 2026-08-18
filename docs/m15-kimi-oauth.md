@@ -1,11 +1,12 @@
 # M15 — Kimi Code OAuth provider (spec)
 
-> **⚠️ Not yet live-verified.** Every fact below is grounded in shunt's source and its own test
-> suite (mocked against the measured wire shapes described in the code's doc comments), not a real
-> device-flow login against a live Kimi Code subscription. Task tracking for that live-verification
-> pass is still open; until it lands, treat refresh-token rotation behavior, `anthropic-beta`
-> acceptance on `api.kimi.com`, and any latency/quota-window/rate-limit-header behavior as
-> unmeasured (see §11).
+> **⚠️ Partially live-verified.** A real device-flow login against a live Kimi Code account was
+> run on 2026-08-18: the flow completed, the account file was written, and a refresh executed
+> against the live token endpoint. Inference was **not** exercised — that account returned
+> `402 Payment Required` ("We're unable to verify your membership benefits at this time"), so no
+> successful `/v1/messages` response has ever been observed through this path. Treat the model
+> catalog, `anthropic-beta` acceptance, quota-window headers, and success-path latency as still
+> unmeasured (see §12).
 
 > Companion to [`m2-chatgpt-oauth.md`](m2-chatgpt-oauth.md) (the original subscription-OAuth
 > pattern this follows), [`m6-xai-provider.md`](m6-xai-provider.md) (the closest device-code
@@ -227,20 +228,33 @@ whichever model ids their own subscription exposes.
   code and its test suite's mocked fixtures (each annotated in-source as measured against the real
   `auth.kimi.com` endpoints where noted), not an actual end-to-end login and request against a live
   Kimi Code subscription. A live-verification pass is tracked separately and remains open.
-- **Refresh-token rotation.** Unmeasured whether Kimi always rotates the refresh token on a
-  refresh grant, sometimes does, or never does. shunt treats a response that omits
-  `refresh_token` leniently (reuses the existing one, §5) rather than rejecting it — the opposite
-  of xAI's always-rotates assumption. If live testing shows Kimi always rotates and expects the
-  old token invalidated, this policy should be revisited.
+- **Refresh-token rotation.** ~~Unmeasured~~ **Measured 2026-08-18: Kimi rotates the refresh
+  token on a refresh grant.** A live refresh returned both a new access token and a new refresh
+  token (both 705-char strings, different from the stored pair). shunt's lenient handling of a
+  response that omits `refresh_token` (reuse the existing one, §5) is therefore defensive rather
+  than load-bearing, and is kept so a future server change cannot strand an account. The practical
+  consequence is that the **one-owner-per-refreshable-login rule applies to Kimi with full force**:
+  two shunt processes sharing one Kimi account file will invalidate each other on the first
+  refresh. The `expires_in` observed was ~900s, so refreshes are frequent and that window is
+  small.
 - **`anthropic-beta` header.** shunt does not send one on the Kimi path (§6). Whether
   `api.kimi.com/coding` accepts, ignores, or rejects Anthropic-specific beta headers at all is
   unmeasured.
-- **Rate limits, quota windows, and latency.** No live request has been made against
-  `api.kimi.com/coding` through this path, so there is no data yet on response headers, quota
-  windows, or typical latency to compare against Claude's or Codex's pools.
+- **Rate limits, quota windows, and latency.** Live requests have now reached
+  `api.kimi.com/coding` through this path, but only on the 402 error path, which carried **no**
+  quota or rate-limit headers — no `x-ratelimit-*`, and nothing resembling Codex's
+  `x-codex-*-used-percent` family. The endpoint sits behind Cloudflare and returns `x-trace-id`
+  and `cf-ray`. Because this is the error path, it does not establish what a successful response
+  carries, so quota-window behavior remains unmeasured and the `/usage` aggregate for a Kimi pool
+  still has nothing real to report.
 - **Model catalog accuracy.** The builtin catalog entries under the `kimi-code` provider are
   best-effort and not verified against what a real subscription actually exposes (§10);
   operators should treat the ids their own subscription lists as authoritative over the catalog.
-- **Tier/entitlement gating.** Unknown whether every Kimi Code subscription tier can use this
-  OAuth path, or whether (like xAI's SuperGrok Heavy gate) some tiers are restricted. No gating
-  behavior has been observed because no live login has been attempted.
+- **Tier/entitlement gating.** **Partially measured 2026-08-18: gating exists and is enforced
+  after authentication, not during it.** A live account completed the device flow and its token
+  was accepted — the upstream answered `402 Payment Required` rather than `401`, and the same 402
+  came back from `/v1/models` (with an empty `data` array) and from `/v1/messages` for every model
+  id tried. The body is
+  `{"error":{"message":"We're unable to verify your membership benefits at this time. Please ensure your membership is active.","type":"invalid_request_error"}}`.
+  This mirrors the xAI SuperGrok analog. What remains unknown is which tiers *do* pass: only one
+  account has been tested, so this shows a gate exists, not where the line sits.
