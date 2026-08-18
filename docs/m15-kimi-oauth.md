@@ -224,10 +224,14 @@ whichever model ids their own subscription exposes.
 
 ## 12. Open questions
 
-- **Live-API validation.** Not yet done. Everything in this document is grounded in shunt's own
+- **Live-API validation.** Partially done. The device flow, the account-file write, and a live
+  token refresh were exercised against a real Kimi Code account on 2026-08-18 (see the note at the
+  top of this document). The inference path was not: that account has no active membership, so every
+  request returned `402 Payment Required` and no successful `/v1/messages` response has been
+  observed. Everything below that describes a *successful* request is still grounded in shunt's own
   code and its test suite's mocked fixtures (each annotated in-source as measured against the real
-  `auth.kimi.com` endpoints where noted), not an actual end-to-end login and request against a live
-  Kimi Code subscription. A live-verification pass is tracked separately and remains open.
+  `auth.kimi.com` endpoints where noted). The remaining live-verification pass is tracked separately
+  and stays open.
 - **Refresh-token rotation.** ~~Unmeasured~~ **Measured 2026-08-18: Kimi rotates the refresh
   token on a refresh grant.** A live refresh returned both a new access token and a new refresh
   token (both 705-char strings, different from the stored pair). shunt's lenient handling of a

@@ -20,6 +20,13 @@ The `kimi-code` preset supplies `kind = "anthropic"`, `base_url = "https://api.k
 [[upstreams]]
 name = "kimi-code"
 provider = "kimi-code"
+
+# Declaring [[upstreams]] replaces the built-in provider set, so keep a trailing
+# anthropic passthrough — without it `shunt check` rejects the default
+# server.default_provider. This is the same entry `shunt init` appends.
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic"
 ```
 
 Kimi Code uses shunt's Anthropic adapter because it speaks the Anthropic Messages wire shape directly. Explicit fields override preset defaults.
@@ -41,6 +48,13 @@ shunt login kimi --name <account-name>
 name = "kimi-code"
 provider = "kimi-code"
 auth = { mode = "kimi_oauth", account = "<account-name>" }
+
+# Declaring [[upstreams]] replaces the built-in provider set, so keep a trailing
+# anthropic passthrough — without it `shunt check` rejects the default
+# server.default_provider. This is the same entry `shunt init` appends.
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic"
 ```
 
 Use `accounts = [...]` instead of `account` to pool several named accounts under one upstream; omit both to scan the whole shunt-managed Kimi account store. Do not set both in the same map. Do not share a refreshable credential file between concurrently running shunt processes.
