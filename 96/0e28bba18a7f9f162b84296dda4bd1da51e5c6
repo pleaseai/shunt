@@ -1,0 +1,25 @@
+.claude/agent-memory/review-review-security-reviewer/MEMORY.md
+  s_e6a8029daf2f59::t_e80d4dde7f4af6 22
+.claude/agent-memory/review-review-security-reviewer/project_gateway-login-cli-security.md
+  s_e6a8029daf2f59::t_e80d4dde7f4af6 1-23
+.claude/agent-memory/review-review-pr-test-analyzer/shunt-gateway-cli-login-coverage.md
+  s_e6a8029daf2f59::t_616e59dbe2e924 1-38
+.claude/agent-memory/review-review-pr-test-analyzer/MEMORY.md
+  s_e6a8029daf2f59::t_2c8fc1cd3be9db 17
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "960e28bba18a7f9f162b84296dda4bd1da51e5c6",
+  "prompts": {},
+  "sessions": {
+    "s_e6a8029daf2f59": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cb8ae398-3f69-419a-afa1-44307e44678e",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
