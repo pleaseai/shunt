@@ -142,6 +142,23 @@ enum GatewayAction {
     Token,
     /// Remove the stored gateway session.
     Logout,
+    /// Launch Claude Code against this gateway; everything after `claude` is
+    /// forwarded to it verbatim.
+    ///
+    /// The generated `--settings` document is scoped to that one `claude`
+    /// process: it does not modify `~/.claude/settings.json`, and it overrides
+    /// any `apiKeyHelper` or `ANTHROPIC_BASE_URL` already configured for that
+    /// invocation alone. That process scoping is the reason this subcommand
+    /// exists.
+    ///
+    /// Arguments are forwarded unchanged, except that shunt's own `--config`
+    /// and `--help` win when they lead the list: pass them after a `--`
+    /// separator (`shunt gateway claude -- --help`) to send them to `claude`.
+    Claude {
+        /// Arguments passed straight through to `claude`.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -509,6 +526,8 @@ fn gateway(action: GatewayAction) -> anyhow::Result<()> {
         }
         GatewayAction::Token => runtime()?.block_on(gateway_token()),
         GatewayAction::Logout => shunt::auth::gateway::login::logout(),
+        // No runtime: the launcher only reads the cached session and execs.
+        GatewayAction::Claude { args } => shunt::auth::gateway::launch::run(&args),
     }
 }
 
@@ -817,6 +836,78 @@ mod tests {
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
         }
+    }
+
+    fn forwarded(argv: &[&str]) -> Vec<String> {
+        match Cli::try_parse_from(argv).map(|cli| cli.command) {
+            Ok(Some(Command::Gateway {
+                action: GatewayAction::Claude { args },
+            })) => args,
+            other => panic!("unexpected parse: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gateway_claude_forwards_arguments_verbatim() {
+        // The launcher must not interpret Claude Code's flags: `--model opus`
+        // in particular has to reach `claude`, not be swallowed here.
+        assert_eq!(
+            forwarded(&[
+                "shunt",
+                "gateway",
+                "claude",
+                "-p",
+                "hi",
+                "--model",
+                "opus",
+                "--verbose",
+            ]),
+            ["-p", "hi", "--model", "opus", "--verbose"]
+        );
+        assert_eq!(
+            forwarded(&["shunt", "gateway", "claude", "--model", "opus"]),
+            ["--model", "opus"]
+        );
+        // An unknown-to-shunt flag is data, not an error.
+        assert_eq!(
+            forwarded(&[
+                "shunt",
+                "gateway",
+                "claude",
+                "--dangerously-skip-permissions"
+            ]),
+            ["--dangerously-skip-permissions"]
+        );
+        assert!(forwarded(&["shunt", "gateway", "claude"]).is_empty());
+    }
+
+    #[test]
+    fn gateway_claude_needs_a_double_dash_for_shunt_owned_flags() {
+        // Measured clap behavior: shunt's own global `--config` and the
+        // generated `--help` win when they lead the argument list, so the
+        // subcommand's help documents `--` as the escape. Pinned here because
+        // both are silent — `--config foo` yields *no* forwarded arguments
+        // rather than an error.
+        assert!(forwarded(&["shunt", "gateway", "claude", "--config", "foo"]).is_empty());
+        assert_eq!(
+            forwarded(&["shunt", "gateway", "claude", "--", "--config", "foo"]),
+            ["--config", "foo"]
+        );
+        assert!(Cli::try_parse_from(["shunt", "gateway", "claude", "--help"]).is_err());
+        assert_eq!(
+            forwarded(&["shunt", "gateway", "claude", "--", "--help"]),
+            ["--help"]
+        );
+        // A leading `--` is consumed by clap and never reaches `claude`.
+        assert_eq!(
+            forwarded(&["shunt", "gateway", "claude", "--", "--model", "opus"]),
+            ["--model", "opus"]
+        );
+        // Once any other argument leads, `--config` forwards untouched.
+        assert_eq!(
+            forwarded(&["shunt", "gateway", "claude", "-p", "hi", "--config", "foo"]),
+            ["-p", "hi", "--config", "foo"]
+        );
     }
 
     #[test]
