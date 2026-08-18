@@ -80,7 +80,7 @@ wire_api = "responses"
 http_headers = { "x-shunt-token" = "<token>" }
 ```
 
-`[server.auth]`가 없으면 엔드포인트는 도달할 수 있는 누구에게나 열려 있습니다 — 루프백이나 개인 용도에는 받아들일 만하지만 공유 게이트웨이에는 적절하지 않습니다. 클라이언트가 제시한 자격 증명은 shunt에 인증하는 데에**만** 사용됩니다: 이 값은(그리고 CLI가 보내는 어떤 `Authorization`이든) 제거되며 업스트림으로 전달되지 않습니다. `x-api-key`도 `[server.auth]`가 설정되지 않은 경우를 포함해 무조건 제거됩니다 — 대상 프로바이더는 부팅 시점에 `chatgpt_oauth` 전용으로 검증되므로, 인바운드 `x-api-key` 값은 이 업스트림에 대해 결코 유효한 자격 증명이 될 수 없습니다. Claude Code의 `apiKeyHelper`처럼 `Authorization`과 `x-api-key`에 같은 키를 넣는 클라이언트라도 두 번째 슬롯을 통해 그 키가 새어 나가지 않습니다. 인바운드 클라이언트가 실제 Codex CLI이므로, 패스스루는 그 요청 헤더를 그대로 전달하고(`version`, `originator`, `OpenAI-Beta`, `x-codex-*`, …) 선택된 풀 계정의 `Authorization` bearer와 `chatgpt-account-id`**만** 바꿔 넣습니다. 전체 인증 안내는 [Codex CLI 연결](/ko/guides/connect-codex-cli/#3-shunt-클라이언트-토큰-제시-serverauth가-설정된-경우)을 참고하세요.
+`[server.auth]`가 없으면 엔드포인트는 도달할 수 있는 누구에게나 열려 있습니다 — 루프백이나 개인 용도에는 받아들일 만하지만 공유 게이트웨이에는 적절하지 않습니다. 클라이언트가 제시한 자격 증명은 shunt에 인증하는 데에**만** 사용됩니다: 이 값은(그리고 CLI가 보내는 어떤 `Authorization`이든) 제거되며 업스트림으로 전달되지 않습니다. `[server.admin]` 자격 증명 헤더(기본값 `x-shunt-admin-token`, 또는 `[server.admin] header`가 지정한 이름)도 제거됩니다 — 관리 화면이 바로 그 슬롯에서 인증하며, 관리 자격 증명은 업스트림 계정을 프로비저닝할 수 있기 때문입니다. `cookie` 헤더도 통째로 제거됩니다: 관리 화면은 쓰기 등급 세션 쿠키 역시 그 슬롯에서 수락하고, shunt는 쿠키 저장소를 두지 않으므로 업스트림이 이에 의존할 일이 없습니다. `x-api-key`도 `[server.auth]`가 설정되지 않은 경우를 포함해 무조건 제거됩니다 — 대상 프로바이더는 부팅 시점에 `chatgpt_oauth` 전용으로 검증되므로, 인바운드 `x-api-key` 값은 이 업스트림에 대해 결코 유효한 자격 증명이 될 수 없습니다. Claude Code의 `apiKeyHelper`처럼 `Authorization`과 `x-api-key`에 같은 키를 넣는 클라이언트라도 두 번째 슬롯을 통해 그 키가 새어 나가지 않습니다. 인바운드 클라이언트가 실제 Codex CLI이므로, 패스스루는 그 요청 헤더를 그대로 전달하고(`version`, `originator`, `OpenAI-Beta`, `x-codex-*`, …) 선택된 풀 계정의 `Authorization` bearer와 `chatgpt-account-id`**만** 바꿔 넣습니다. 전체 인증 안내는 [Codex CLI 연결](/ko/guides/connect-codex-cli/#3-shunt-클라이언트-토큰-제시-serverauth가-설정된-경우)을 참고하세요.
 
 ## 계정 프로비저닝
 
@@ -110,5 +110,5 @@ name = "main"
 ## 보안
 
 - 루프백을 넘어서는 모든 경우에 `[server.auth]`로 이 엔드포인트를 게이팅하세요 — 프로바이더가 매 요청마다 실제 Codex bearer를 주입합니다.
-- 클라이언트 자신의 자격 증명은 어떤 것도 Codex 백엔드에 닿지 않습니다. 패스스루는 Codex CLI 자체의 요청 헤더를 그대로 전달하고 선택된 풀 계정의 bearer와 `chatgpt-account-id`만 바꿔 넣습니다(shunt 클라이언트 토큰 헤더, 클라이언트의 `Authorization`/`chatgpt-account-id`, 그리고 `x-api-key`는 모두 제거되며 전달되지 않습니다).
+- 클라이언트 자신의 자격 증명은 어떤 것도 Codex 백엔드에 닿지 않습니다. 패스스루는 Codex CLI 자체의 요청 헤더를 그대로 전달하고 선택된 풀 계정의 bearer와 `chatgpt-account-id`만 바꿔 넣습니다(shunt 클라이언트 토큰 헤더, `[server.admin]` 자격 증명 헤더, `cookie` 헤더 전체, 내부용 `x-shunt-inbound-client` 라벨, 클라이언트의 `Authorization`/`chatgpt-account-id`, 그리고 `x-api-key`는 모두 제거되며 전달되지 않습니다).
 - 라우트 집합은 부팅 시 한 번 결정됩니다. 런타임에 `[server.codex_endpoint]`를 켜거나 끄면 재시작이 필요하다는 경고가 로깅됩니다. 다만 리로드로 대상 프로바이더를 바꾸는 것은 가능합니다.

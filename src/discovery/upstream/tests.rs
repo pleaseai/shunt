@@ -8,13 +8,16 @@ use wiremock::{
 };
 
 use crate::{
-    auth::inbound::{is_consumed_by_shunt, InboundAuth},
+    auth::{
+        inbound::{is_consumed_by_shunt, InboundAuth},
+        slots::ShuntCredentials,
+    },
     config::{AccountConfig, AdminKey, AdminKeyring, ApiKeyHeader, AuthMode, ProviderKind, Secret},
     gateway::{approval::Identity, jwt, GatewayAuth},
     server::AppState,
 };
 
-use super::{anthropic_provider, fetch, InboundCredentialContext};
+use super::{anthropic_provider, fetch};
 
 /// Point the default anthropic provider at `base_url` with the given auth.
 fn config_for(base_url: &str, auth: AuthMode) -> crate::config::Config {
@@ -85,7 +88,7 @@ fn passthrough_headers() -> HeaderMap {
 }
 
 async fn fetch_open(state: &AppState, inbound: &HeaderMap) -> Option<Vec<super::ModelEntry>> {
-    fetch(state, inbound, InboundCredentialContext::default()).await
+    fetch(state, inbound, ShuntCredentials::for_test(None, None, None)).await
 }
 
 fn inbound_auth(token: &str) -> InboundAuth {
@@ -151,11 +154,7 @@ async fn assert_genuine_api_key_forwarded_and_authorization_stripped(
     let models = fetch(
         state,
         &headers,
-        InboundCredentialContext {
-            static_auth: None,
-            gateway_auth: Some(gateway),
-            admin_credentials: None,
-        },
+        ShuntCredentials::for_test(Some(gateway), None, None),
     )
     .await;
 
@@ -232,11 +231,7 @@ async fn consumed_x_api_key_is_not_forwarded_to_passthrough_upstream() {
     let models = fetch(
         &state,
         &headers,
-        InboundCredentialContext {
-            static_auth: Some(&auth),
-            gateway_auth: None,
-            admin_credentials: None,
-        },
+        ShuntCredentials::for_test(None, Some(&auth), None),
     )
     .await;
 
@@ -265,11 +260,7 @@ async fn a_gateway_jwt_is_not_forwarded_in_the_api_key_slot() {
     let models = fetch(
         &state,
         &headers,
-        InboundCredentialContext {
-            static_auth: Some(&auth),
-            gateway_auth: Some(&gateway),
-            admin_credentials: None,
-        },
+        ShuntCredentials::for_test(Some(&gateway), Some(&auth), None),
     )
     .await;
 
@@ -299,11 +290,7 @@ async fn upstream_x_api_key_survives_when_inbound_auth_is_also_configured() {
     let models = fetch(
         &state,
         &headers,
-        InboundCredentialContext {
-            static_auth: Some(&auth),
-            gateway_auth: None,
-            admin_credentials: None,
-        },
+        ShuntCredentials::for_test(None, Some(&auth), None),
     )
     .await;
 
@@ -342,11 +329,7 @@ async fn a_gateway_jwt_present_only_in_the_api_key_slot_is_not_forwarded() {
     let models = fetch(
         &state,
         &headers,
-        InboundCredentialContext {
-            static_auth: None,
-            gateway_auth: Some(&gateway),
-            admin_credentials: None,
-        },
+        ShuntCredentials::for_test(Some(&gateway), None, None),
     )
     .await;
 
@@ -379,11 +362,7 @@ async fn a_static_token_configured_on_the_authorization_header_is_not_forwarded_
     let models = fetch(
         &state,
         &headers,
-        InboundCredentialContext {
-            static_auth: Some(&auth),
-            gateway_auth: None,
-            admin_credentials: None,
-        },
+        ShuntCredentials::for_test(None, Some(&auth), None),
     )
     .await;
 
@@ -452,11 +431,7 @@ async fn expired_gateway_jwt_in_x_api_key_is_not_forwarded() {
     let models = fetch(
         &state,
         &headers,
-        InboundCredentialContext {
-            static_auth: None,
-            gateway_auth: Some(&gateway),
-            admin_credentials: None,
-        },
+        ShuntCredentials::for_test(Some(&gateway), None, None),
     )
     .await;
 
@@ -503,11 +478,7 @@ async fn bad_signature_gateway_jwt_is_not_forwarded() {
     let models = fetch(
         &state,
         &headers,
-        InboundCredentialContext {
-            static_auth: None,
-            gateway_auth: Some(&gateway),
-            admin_credentials: None,
-        },
+        ShuntCredentials::for_test(Some(&gateway), None, None),
     )
     .await;
 
@@ -895,11 +866,7 @@ async fn an_admin_credential_is_not_forwarded_in_the_api_key_slot() {
     let models = fetch(
         &state,
         &headers,
-        InboundCredentialContext {
-            static_auth: None,
-            gateway_auth: None,
-            admin_credentials: Some(&keyring),
-        },
+        ShuntCredentials::for_test(None, None, Some(&keyring)),
     )
     .await;
 
@@ -928,11 +895,7 @@ async fn a_non_admin_api_key_survives_when_admin_credentials_are_configured() {
     let models = fetch(
         &state,
         &headers,
-        InboundCredentialContext {
-            static_auth: None,
-            gateway_auth: None,
-            admin_credentials: Some(&keyring),
-        },
+        ShuntCredentials::for_test(None, None, Some(&keyring)),
     )
     .await;
 

@@ -6,9 +6,9 @@ use axum::{
 };
 use serde::Serialize;
 
-use crate::{error::ShuntError, server::AppState};
+use crate::{auth::slots::ShuntCredentials, error::ShuntError, server::AppState};
 
-mod upstream;
+pub(crate) mod upstream;
 
 /// Builtin catalog captured live from `GET https://api.anthropic.com/v1/models`
 /// on 2026-07-28, in the API's own order (`created_at` descending, newest
@@ -171,20 +171,10 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         // Ask the upstream for this caller's own catalog first; the builtin
         // table is the offline snapshot used when there is no Anthropic-kind
         // upstream, no credential to ask with, or the call fails.
-        match upstream::fetch(
-            &state,
-            &headers,
-            upstream::InboundCredentialContext {
-                static_auth: state.inbound_auth.as_deref(),
-                gateway_auth: state.gateway_auth.as_deref(),
-                admin_credentials: state
-                    .admin_auth
-                    .as_deref()
-                    .map(crate::admin::AdminAuth::credentials),
-            },
-        )
-        .await
-        {
+        // Built from the *refreshed* snapshot above, not from the handler's
+        // original `State`, so a reload that just added or rotated a credential
+        // is reflected in what this request refuses to relay upstream.
+        match upstream::fetch(&state, &headers, ShuntCredentials::from_state(&state)).await {
             Some(models) => {
                 for model in models {
                     if data.iter().all(|entry| entry.id != model.id) {

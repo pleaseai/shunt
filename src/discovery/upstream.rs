@@ -20,12 +20,11 @@ use serde::Deserialize;
 use crate::{
     adapters::anthropic::strip_duplicate_oauth_api_key,
     auth::{
-        self, claude,
-        inbound::{authorization_consumed_by, is_consumed_by_shunt, InboundAuth},
-        resolve_claude_account, resolve_credential, Credential,
+        self, claude, resolve_claude_account, resolve_credential,
+        slots::{ShuntCredentials, SHARED_SLOTS},
+        Credential,
     },
-    config::{AdminKeyring, ApiKeyHeader, AuthMode, Config, ProviderConfig, ProviderKind},
-    gateway::GatewayAuth,
+    config::{ApiKeyHeader, AuthMode, Config, ProviderConfig, ProviderKind},
     routing::{AdapterKind, Route},
     server::AppState,
 };
@@ -84,18 +83,6 @@ impl From<UpstreamModel> for ModelEntry {
     }
 }
 
-/// Authentication context already established by the discovery endpoint. It
-/// prevents a gateway credential consumed by shunt from being relayed upstream.
-#[derive(Clone, Copy, Default)]
-pub(super) struct InboundCredentialContext<'a> {
-    pub(super) static_auth: Option<&'a InboundAuth>,
-    pub(super) gateway_auth: Option<&'a GatewayAuth>,
-    /// `[server.admin]`'s resolved credentials. An admin credential
-    /// authenticates the admin and spend surfaces in `x-api-key` as well as in
-    /// its own header, so it is one shunt consumes and must not be relayed.
-    pub(super) admin_credentials: Option<&'a AdminKeyring>,
-}
-
 /// Fetch the caller's own model list from the Anthropic upstream.
 ///
 /// Returns `None` — and the caller falls back to the builtin snapshot — when
@@ -105,12 +92,12 @@ pub(super) struct InboundCredentialContext<'a> {
 pub(super) async fn fetch(
     state: &AppState,
     inbound: &HeaderMap,
-    inbound_context: InboundCredentialContext<'_>,
+    credentials: ShuntCredentials<'_>,
 ) -> Option<Vec<ModelEntry>> {
     let provider_name = anthropic_provider(&state.config).map(|(name, _)| name.to_string());
     match tokio::time::timeout(
         FETCH_TIMEOUT,
-        fetch_within_deadline(state, inbound, inbound_context),
+        fetch_within_deadline(state, inbound, credentials),
     )
     .await
     {
@@ -128,10 +115,10 @@ pub(super) async fn fetch(
 async fn fetch_within_deadline(
     state: &AppState,
     inbound: &HeaderMap,
-    inbound_context: InboundCredentialContext<'_>,
+    credentials: ShuntCredentials<'_>,
 ) -> Option<Vec<ModelEntry>> {
     let (name, provider) = anthropic_provider(&state.config)?;
-    let headers = upstream_headers(state, name, provider, inbound, inbound_context).await?;
+    let headers = upstream_headers(state, name, provider, inbound, credentials).await?;
     let base = provider.base_url.trim_end_matches('/');
 
     let url = format!("{base}/v1/models");
@@ -249,12 +236,12 @@ fn anthropic_provider(config: &Config) -> Option<(&str, &ProviderConfig)> {
 /// Build the outbound auth headers, mirroring what the Messages path sends for
 /// the same `auth` mode. `None` means "no credential available", which is the
 /// normal case for a passthrough upstream on an unauthenticated discovery call.
-async fn upstream_headers(
+pub(crate) async fn upstream_headers(
     state: &AppState,
     name: &str,
     provider: &ProviderConfig,
     inbound: &HeaderMap,
-    inbound_context: InboundCredentialContext<'_>,
+    credentials: ShuntCredentials<'_>,
 ) -> Option<HeaderMap> {
     let mut headers = HeaderMap::new();
     headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
@@ -264,51 +251,43 @@ async fn upstream_headers(
         // gateway auth whenever configured, so first remove any value shunt's own
         // auth gate consumed; inference passthrough routes do not have this step.
         AuthMode::Passthrough => {
-            // A bearer shunt already consumed — gateway login, a
-            // `[server.auth]` client token sent as `Authorization`, or a
-            // `[server.admin]` credential — authenticates
-            // the caller against shunt, not the caller against the upstream.
-            // Evaluated over the whole slot, because a `[server.auth] header =
-            // "authorization"` caller passes the gate with a bare, unprefixed
-            // token that no Bearer-only check would recognise as shunt's.
-            let bearer_is_consumed = authorization_consumed_by(
-                inbound,
-                inbound_context.gateway_auth,
-                inbound_context.static_auth,
-                inbound_context.admin_credentials,
-            )
-            .is_some();
-            let bearer = inbound
-                .get("authorization")
-                .cloned()
-                .filter(|_| !bearer_is_consumed);
-            // Checked independently of `authorization`: an `apiKeyHelper` fills
-            // both slots with the same value, so a gateway JWT, static token, or
-            // admin credential
+            // Copy the two shared inbound slots into a scratch map and let the
+            // shared enumeration judge each of them, so discovery and inference
+            // failover agree on what "the caller's own credential" means. Only
+            // these two slots are ever candidates: everything else the caller
+            // sent — including any header shunt reserves — is simply never
+            // copied into the outbound map, which is built from scratch here.
+            //
+            // Each slot is judged by its own value, independently: an
+            // `apiKeyHelper` fills both with the same value, so a gateway JWT,
+            // a static `[server.auth]` token, or a `[server.admin]` credential
             // can land in either or both, beside a genuine upstream credential
-            // in the other slot that must keep flowing. Gating this slot on
-            // whether `authorization` was consumed would strip a real key
-            // whenever *any* slot held a shunt-consumed credential.
-            let api_key = inbound.get("x-api-key").cloned().filter(|value| {
-                !is_consumed_by_shunt(
-                    value.as_bytes(),
-                    inbound_context.gateway_auth,
-                    inbound_context.static_auth,
-                    inbound_context.admin_credentials,
-                )
-            });
-            if bearer.is_none() && api_key.is_none() {
+            // in the other slot that must keep flowing. Gating one slot on
+            // whether the other was consumed would strip a real key whenever
+            // *any* slot held a shunt-consumed credential.
+            let mut inbound_slots = HeaderMap::new();
+            for slot in SHARED_SLOTS {
+                if let Some(value) = inbound.get(slot) {
+                    inbound_slots.insert(slot, value.clone());
+                }
+            }
+            credentials.strip_consumed_slots(&mut inbound_slots);
+            if inbound_slots.is_empty() {
                 tracing::warn!(
                     provider = %name,
                     "inbound gateway credential is not forwarded to passthrough upstream; using builtin catalog"
                 );
                 return None;
             }
-            if let Some(value) = bearer {
-                headers.insert("authorization", value);
-            }
-            if let Some(value) = api_key {
-                headers.insert("x-api-key", value);
+            // Move the survivors rather than cloning them a second time. `remove`
+            // per slot rather than `drain`, because `drain` yields
+            // `Option<HeaderName>` (a `None` continues the previous name's
+            // multi-value run) and this loop would have to decide what to do
+            // with a case `insert` above already makes unreachable.
+            for slot in SHARED_SLOTS {
+                if let Some(value) = inbound_slots.remove(slot) {
+                    headers.insert(slot, value);
+                }
             }
             strip_duplicate_oauth_api_key(&mut headers);
         }
