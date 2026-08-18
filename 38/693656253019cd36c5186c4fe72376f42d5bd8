@@ -1,0 +1,21 @@
+blueprints/upstream/kimi-code.md
+  s_02afa83fa6c310::t_2625e10d03d819 23-29,51-57
+docs/m15-kimi-oauth.md
+  s_02afa83fa6c310::t_2625e10d03d819 227-231,233-234
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "38693656253019cd36c5186c4fe72376f42d5bd8",
+  "prompts": {},
+  "sessions": {
+    "s_02afa83fa6c310": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "41a940fb-b079-41d6-801c-c90fdac76db6",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
