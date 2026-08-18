@@ -1,0 +1,55 @@
+src/auth/slots/tests.rs
+  s_8ac7b3d8238f53::t_ab6f6b531a2414 326-334,366-370,372,375-383,555-621
+  s_8ac7b3d8238f53::t_e7bd10fd471740 642
+  s_8ac7b3d8238f53::t_805f897a3ca987 622,625-632,634-638,640-641,643-648,657-660,664-668,672,678-679,698-705,712,718,720-721
+site/src/content/docs/ja/guides/inbound-codex-endpoint.md
+  s_8ac7b3d8238f53::t_bd051077658b94 83,113
+site/src/content/docs/ja/guides/shared-gateway.mdx
+  s_8ac7b3d8238f53::t_bd051077658b94 25
+site/src/content/docs/guides/shared-gateway.mdx
+  s_8ac7b3d8238f53::t_bd051077658b94 25
+docs/m4-inbound-auth.md
+  s_8ac7b3d8238f53::t_71cf996d5c0115 158-162,167,169-178,190-199,209-222,251-273
+site/src/content/docs/guides/inbound-codex-endpoint.md
+  s_8ac7b3d8238f53::t_bd051077658b94 83,113
+site/src/content/docs/ko/guides/inbound-codex-endpoint.md
+  s_8ac7b3d8238f53::t_bd051077658b94 83,113
+site/src/content/docs/zh-cn/guides/shared-gateway.mdx
+  s_8ac7b3d8238f53::t_bd051077658b94 25
+site/src/content/docs/ko/guides/shared-gateway.mdx
+  s_8ac7b3d8238f53::t_bd051077658b94 25
+src/auth/slots.rs
+  s_8ac7b3d8238f53::t_e7bd10fd471740 111
+  s_8ac7b3d8238f53::t_b792b4af2a5ed2 130-137,142,149-170,174,182-191,193-195,197,199,203-206,217-236
+  s_8ac7b3d8238f53::t_66ab4101639bb7 23,27-32,40-42,47-51,55-71,94-110,112-122,237-239
+site/src/content/docs/zh-cn/guides/inbound-codex-endpoint.md
+  s_8ac7b3d8238f53::t_bd051077658b94 83,113
+src/discovery/upstream/tests.rs
+  s_8ac7b3d8238f53::t_49fbff84f79efd 91,157,234,263,293,332,365,434,481,869,898
+src/discovery/upstream.rs
+  s_71bf4332afc3f8::t_09625c8790865b 282-290
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "5f00473487c46abba19c9cd9dc34ea795a3dcb65",
+  "prompts": {},
+  "sessions": {
+    "s_71bf4332afc3f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-acc-launcher-verify-3e947925d3999096",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_8ac7b3d8238f53": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6872395d-b5ef-44e2-be10-2544083db6cd",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
