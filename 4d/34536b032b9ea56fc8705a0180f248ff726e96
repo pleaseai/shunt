@@ -1,0 +1,32 @@
+site/src/content/docs/ko/guides/providers.mdx
+  s_02afa83fa6c310::t_8f2eda1acaf03d 82,92-120
+docs/upstreams-failover.md
+  s_02afa83fa6c310::t_ed6d3dabe4fdfd 71
+  s_02afa83fa6c310::t_924e27a29d06ed 45-50,57
+docs/running.md
+  s_02afa83fa6c310::t_29f911449905fe 244-247,254-257,259-265
+  s_02afa83fa6c310::t_9adf04ac52fe96 233,241-243,248-253,258,266-277
+  s_02afa83fa6c310::t_141b4a58f69e10 218
+site/src/content/docs/zh-cn/guides/providers.mdx
+  s_02afa83fa6c310::t_abb69191f21089 89,101-130
+site/src/content/docs/guides/providers.mdx
+  s_02afa83fa6c310::t_b001fd5101d141 218,229-264
+site/src/content/docs/ja/guides/providers.mdx
+  s_02afa83fa6c310::t_98082cbdd800e4 79,89-117
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "4d34536b032b9ea56fc8705a0180f248ff726e96",
+  "prompts": {},
+  "sessions": {
+    "s_02afa83fa6c310": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "41a940fb-b079-41d6-801c-c90fdac76db6",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
