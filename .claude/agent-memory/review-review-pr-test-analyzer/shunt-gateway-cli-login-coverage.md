@@ -23,15 +23,30 @@ tests/gateway_cli.rs). Reviewed against origin/main diff of ~2760 lines.
 - `slow_down` interval-widening test deliberately uses real time (not `start_paused`) with a code comment
   explaining why paused-clock would make it vacuous — team already knows this trap.
 
-**Real gap found: the flock concurrency guard is untested.**
-`store::lock_session`/`lock_blocking` (store.rs:170-208) is the entire reason the design exists
-(doc comment: prevents two `apiKeyHelper` racers from both replaying a single-use refresh token
-and revoking the whole family) — but only `lock_path_is_a_sibling_of_the_session_file` (pure path
-computation) exists. No test ever calls `lock_session` and checks it actually acquires/blocks/releases,
-and no test exercises `resolve_token_at`'s double-check-under-lock path (auth.rs:238-243, "waiter
-re-reads and usually finds the token the winner already persisted"). This is the single biggest
-finding in this PR — flag it plainly as manually-verified-only, not automated, in any review of this
-diff or its follow-ups.
+**The flock concurrency guard IS covered (do not re-flag it as a gap):**
+`store::lock_session`/`lock_blocking` is the reason the design exists (doc comment: prevents two
+`apiKeyHelper` racers from both replaying a single-use refresh token and revoking the whole family),
+and it has real tests beyond `lock_path_is_a_sibling_of_the_session_file` (pure path computation):
+- In `src/auth/gateway/store.rs`: `a_held_session_lock_blocks_the_next_acquisition_until_it_drops`
+  (the waiter is proven not to acquire while the holder lives, and to acquire once it drops),
+  `waiting_for_a_stuck_holder_times_out_and_names_the_lock` (timeout path, error names the lock file),
+  `logout_waits_for_an_in_flight_refresh_instead_of_racing_it`, and a logout test asserting the lock
+  inode survives `remove_session` so later runs still serialize on it (that last one has been renamed
+  at least once — match it by what it asserts about the lock file, not by name). The flock-dependent
+  ones are `#[cfg(unix)]` and use `multi_thread` + real time, since a paused clock cannot advance
+  through a blocking `flock(2)`.
+- The double-check-under-lock path — reached through `resolve_token_at` and implemented in
+  `resolve_token_bounded` (`src/auth/gateway/auth.rs`, "waiter re-reads and usually finds the token
+  the winner already persisted") — is covered by `concurrent_resolvers_perform_exactly_one_refresh`
+  in `src/auth/gateway/auth/tests.rs`: two spawned `resolve_token_at` calls against a wiremock
+  gateway that honors the refresh exactly once and 401s `invalid_grant` on any replay. It asserts
+  both resolvers return the winner's rotated token AND that exactly one POST reached the server, so
+  a losing resolver that replayed the spent token fails it.
+- `the_lock_timeout_leaves_slack_over_the_worst_case_legitimate_hold` (auth/tests.rs) pins the
+  timeout constant against the worst-case legitimate hold.
+
+Cite these by symbol name, not line number: an earlier revision of this note carried line anchors
+(`auth.rs:238-243`, `store.rs:170-208`) that were already wrong when written.
 
 **Minor gap:** invalid_grant refresh-failure test only asserts stdout content, not that the file is
 byte-unchanged beyond refresh_token field (already covered adequately though — access_token check
