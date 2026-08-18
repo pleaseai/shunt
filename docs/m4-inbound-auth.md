@@ -313,7 +313,9 @@ Integration tests (wiremock, alongside the existing suites):
 
 Cross-cutting (added by #363, see §2.1): `src/auth/slots/tests.rs` asserts the mirror invariant
 over the whole credential-kind × delivery-shape cross product at every registered forward site,
-and holds the tripwire that forces a new bulk-header relay path to be classified.
+and holds the tripwire that forces a new header-producing site to be classified — whether it
+bulk-applies a header map or merely declares a function that returns one. Matching only the
+bulk-application idioms left both hand-rolled forward sites invisible.
 
 ## 6. Out of scope
 
