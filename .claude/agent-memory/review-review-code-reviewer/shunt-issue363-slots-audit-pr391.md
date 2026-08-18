@@ -30,10 +30,13 @@ saga tracked in [[new-credential-kind-slot-audit]] (4 prior point-fixes: #352, #
   `x-shunt-inbound-client`) are now stripped unconditionally instead of only-when-configured;
   (2) the Codex passthrough endpoint now also strips the `[server.admin]` header (previously
   leaked it — this was the actual bug issue #363 targeted).
-- `every_bulk_header_forward_is_a_registered_site` tripwire test (walks `src/**/*.rs` for bulk
-  header-map application patterns, asserts against a hard-coded allowlist) passed and is a good
+- `every_header_producing_site_is_classified` tripwire test (walks `src/**/*.rs` for files that
+  bulk-apply a header map to an outbound request **or** declare a function returning
+  `HeaderMap`/`Option<HeaderMap>`, asserts against a hard-coded allowlist) passed and is a good
   regression guard against a 5th recurrence of this defect class — worth checking still exists
-  and still passes in any future PR touching header-forwarding code.
+  and still passes in any future PR touching header-forwarding code. The type-signature half is
+  the load-bearing one: matching only the bulk-application idioms left both hand-rolled forward
+  sites invisible.
 
 No findings reported (empty findings array). If a future PR touches this area, start from
 `src/auth/slots.rs`'s own module doc comment — it is unusually complete (states the mirror

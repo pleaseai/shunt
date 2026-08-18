@@ -32,13 +32,20 @@ Single enumeration + `from_state` as the only wiring point.
 - `AppState` has exactly three credential kinds (`inbound_auth`, `admin_auth`, `gateway_auth`);
   `from_state` covers all three. Compiles; `cargo test --lib` 1592 pass.
 
-**Residual gap:** the accept-site enumeration in the module docs omits `admin::authenticate`'s
-**session cookie** path — `shunt_admin_session` in the `cookie` header is a full-write admin
-credential, and no forward site strips `cookie`, so all three relay it. Low exploitability
-(`Path=/admin; SameSite=Strict`, so a browser will not send it to `/v1/messages`), but it is the
-same class of gap the module exists to close. See [[m9-admin-surface-security]].
+**Closed in this PR — do not re-open.** An earlier revision of this note recorded the
+`admin::authenticate` session-cookie path as a residual gap. It was, until commit `5f00473`:
+`shunt_admin_session` in the `cookie` header is a full-write admin credential, and no forward
+site stripped `cookie`. It is now enumerated in the `slots.rs` module doc, `"cookie"` is in
+`RESERVED_SLOTS`, and `strip_reserved_slots` removes it by name at every forward site
+(`proxy/failover.rs:506`, `adapters/responses/inbound.rs:394`; discovery builds its outbound map
+from scratch and never copies it). `slots/tests.rs::no_forward_site_relays_the_admin_session_cookie`
+asserts all three sites drop it, and removing `"cookie"` from `RESERVED_SLOTS` turns it RED.
+The strip is whole-header, so a benign caller cookie is dropped too — a recorded decision, not an
+oversight. See [[m9-admin-surface-security]].
 
 **How to apply:** when a new credential kind or accept slot lands, the edit is `from_state` +
 `RESERVED_SLOTS`/`SHARED_SLOTS`, and the `slots/tests.rs` mirror table + source tripwire
-(`every_bulk_header_forward_is_a_registered_site`) must be extended. The tripwire's known hole:
-it does not catch a site that appends headers one at a time in a loop.
+(`every_header_producing_site_is_classified`) must be extended. That per-key-loop shape is now
+caught — the tripwire matches any non-`tests.rs` file declaring `-> HeaderMap`/`-> Option<HeaderMap>`,
+however it builds one. The remaining hole is narrower: a site that mutates a request in place and
+never returns a `HeaderMap` is caught only by the extend-into-`headers_mut` pattern.
