@@ -185,6 +185,16 @@ and [`m10-codex-multi-account.md`](m10-codex-multi-account.md)):
   across the resolved accounts on failure exactly like the Claude/Codex pools, cooling down an
   account that fails over rather than retrying it immediately. There is no same-account forced
   refresh/retry path — `KimiAuthStore` only refreshes lazily via `get_valid`.
+- Failure classification uses `accounts::classify_kimi`, not the generic `accounts::classify`.
+  The one difference is `402 Payment Required`: Kimi returns it on *every* inference request from
+  an account whose subscription membership is inactive (measured 2026-08-18, §12), which makes it
+  an account-specific and persistent failure rather than a client-fixable one. Under the generic
+  classifier it fell through to `Relay`, which both handed the 402 to the client while other
+  accounts in the pool were healthy and cleared the dead account's cooldown via `mark_healthy`,
+  so that account kept getting reselected. It now rotates and cools down like a 401/5xx, under
+  its own `membership` pool-rotation reason. A pool where *every* account is 402 still relays the
+  last upstream response verbatim through the existing exhaustion path, so a single-account
+  deployment continues to see Kimi's real status and error body rather than a gateway-owned one.
 - `GET /admin/pool` and `GET /usage` both include Kimi accounts via the same generic
   `AuthMode::ClaudeOauth | AuthMode::ChatgptOauth | AuthMode::KimiOauth` filter, each with a
   dedicated `StoreFamily::Kimi` resolution arm.
@@ -228,10 +238,11 @@ whichever model ids their own subscription exposes.
   token refresh were exercised against a real Kimi Code account on 2026-08-18 (see the note at the
   top of this document). The inference path was not: that account has no active membership, so every
   request returned `402 Payment Required` and no successful `/v1/messages` response has been
-  observed. Everything below that describes a *successful* request is still grounded in shunt's own
-  code and its test suite's mocked fixtures (each annotated in-source as measured against the real
-  `auth.kimi.com` endpoints where noted). The remaining live-verification pass is tracked separately
-  and stays open.
+  observed. The **inference** path specifically — the model catalog, `anthropic-beta` acceptance,
+  quota-window headers, and success-path latency — is therefore still grounded in shunt's own code
+  and its test suite's mocked fixtures (each annotated in-source as measured against the real
+  `auth.kimi.com` endpoints where noted). The token endpoints are not: see the next bullet. The
+  remaining live-verification pass is tracked separately and stays open.
 - **Refresh-token rotation.** ~~Unmeasured~~ **Measured 2026-08-18: Kimi rotates the refresh
   token on a refresh grant.** A live refresh returned both a new access token and a new refresh
   token (both 705-char strings, different from the stored pair). shunt's lenient handling of a

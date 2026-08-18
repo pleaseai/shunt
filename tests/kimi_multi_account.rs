@@ -1,9 +1,9 @@
 //! Multi-account pool and failover tests for `auth = "kimi_oauth"`, mirroring
 //! `tests/multi_account.rs`'s Claude coverage but scoped to the Kimi path:
 //! no account-UUID rewrite, no `anthropic-beta` header, and every non-`Relay`
-//! classification (401, quota 429, 5xx) collapses to cooldown-and-rotate
-//! rather than Claude's fuller Rotate/PauseSame/RefreshRetry split (see
-//! `forward_kimi_oauth`'s doc comment for why).
+//! classification (401, quota 429, 5xx, membership 402) collapses to
+//! cooldown-and-rotate rather than Claude's fuller Rotate/PauseSame/
+//! RefreshRetry split (see `forward_kimi_oauth`'s doc comment for why).
 
 use std::{io::ErrorKind, net::SocketAddr};
 
@@ -261,6 +261,122 @@ async fn pool_rotates_to_next_account_on_401() {
 
     std::env::remove_var("SHUNT_TEST_KIMI_UNAUTH_A");
     std::env::remove_var("SHUNT_TEST_KIMI_UNAUTH_B");
+}
+
+/// A 402 from the first account rotates to the next candidate rather than
+/// relaying it to the client: a Kimi account with an inactive subscription
+/// membership returns 402 on every request (measured against a live account
+/// on 2026-08-18), so `classify_kimi` routes it through `Rotate` instead of
+/// `classify`'s generic `Relay` fallthrough. The follow-up sticky-session
+/// request proves the cooldown actually took — it hashes to account-a's
+/// slot but still lands on account-b, so the upstream never sees a second
+/// account-a call at all.
+#[tokio::test]
+async fn pool_rotates_to_next_account_on_402() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = ["fake-kimi-", "membership-a"].concat();
+    let token_b = ["fake-kimi-", "membership-b"].concat();
+    std::env::set_var("SHUNT_TEST_KIMI_MEMBERSHIP_A", &token_a);
+    std::env::set_var("SHUNT_TEST_KIMI_MEMBERSHIP_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(ResponseTemplate::new(402).set_body_string(
+            r#"{"error":{"message":"We're unable to verify your membership benefits at this time. Please ensure your membership is active.","type":"invalid_request_error"}}"#,
+        ))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"b"}"#))
+        .expect(2)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        vec![
+            account("account-a", "SHUNT_TEST_KIMI_MEMBERSHIP_A"),
+            account("account-b", "SHUNT_TEST_KIMI_MEMBERSHIP_B"),
+        ],
+    ))
+    .await;
+
+    // First request rotates off the 402'd account to the healthy one.
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+
+    // A session that hashes to account-a still lands on account-b, because
+    // account-a is now cooling down.
+    let session_id = session_id_for_account(0, 2);
+    let response = post_messages(&gateway, Some(&session_id)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+
+    upstream.verify().await;
+
+    std::env::remove_var("SHUNT_TEST_KIMI_MEMBERSHIP_A");
+    std::env::remove_var("SHUNT_TEST_KIMI_MEMBERSHIP_B");
+}
+
+/// When every account in the pool returns 402, `forward_kimi_oauth` must
+/// still relay the last upstream 402 verbatim (status and body) rather than
+/// substituting the generic "all Kimi OAuth accounts failed" error: an
+/// operator debugging a dead membership needs to see Kimi's real error, and
+/// this is what makes rotating on 402 safe for a single-account pool in the
+/// first place.
+#[tokio::test]
+async fn all_402_pool_relays_upstream_error_verbatim() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let token = ["fake-kimi-", "membership-only"].concat();
+    std::env::set_var("SHUNT_TEST_KIMI_MEMBERSHIP_ONLY", &token);
+
+    let upstream = MockServer::start().await;
+    let body = r#"{"error":{"message":"We're unable to verify your membership benefits at this time. Please ensure your membership is active.","type":"invalid_request_error"}}"#;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token.clone()))
+        .respond_with(ResponseTemplate::new(402).set_body_string(body))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        vec![account("account-a", "SHUNT_TEST_KIMI_MEMBERSHIP_ONLY")],
+    ))
+    .await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::PAYMENT_REQUIRED);
+    // No `x-shunt-account` header: that header is only set on the immediate
+    // `Relay` return path (`classify`'s generic 402 fallthrough), not on the
+    // exhaustion path taken after `classify_kimi` routes 402 through
+    // `Rotate`. Its absence proves the account was actually cooled down and
+    // rotated off before this response was relayed, not just relayed as-is
+    // on the first try.
+    assert!(response.headers().get("x-shunt-account").is_none());
+    let response_body = response.text().await.unwrap();
+    assert_eq!(response_body, body);
+
+    upstream.verify().await;
+
+    std::env::remove_var("SHUNT_TEST_KIMI_MEMBERSHIP_ONLY");
 }
 
 /// Every configured account `disabled = true` must error clearly rather than

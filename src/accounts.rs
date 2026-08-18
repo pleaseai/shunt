@@ -1298,7 +1298,11 @@ pub fn is_fable_scoped_rejection(headers: &HeaderMap) -> bool {
 
 /// Low-cardinality pool-rotation reason for an upstream response that moves off
 /// an account. A quota-rejected Anthropic 429 is distinguished from ordinary
-/// throttling; 5xx and 401 retain their operational categories.
+/// throttling; 5xx and 401 retain their operational categories. A Kimi 402
+/// (inactive subscription membership, routed here via `classify_kimi`) gets
+/// its own `"membership"` label instead of falling into `"other"`, since it
+/// is a distinct, persistent, account-level failure mode worth tracking
+/// separately from transient ones.
 pub fn rotation_reason(status: StatusCode, headers: &HeaderMap) -> &'static str {
     if status == StatusCode::TOO_MANY_REQUESTS {
         if QUOTA_STATUS_HEADERS
@@ -1311,6 +1315,8 @@ pub fn rotation_reason(status: StatusCode, headers: &HeaderMap) -> &'static str 
         }
     } else if status == StatusCode::UNAUTHORIZED {
         "auth"
+    } else if status == StatusCode::PAYMENT_REQUIRED {
+        "membership"
     } else if status.is_server_error() {
         "server_error"
     } else {
@@ -1338,6 +1344,24 @@ pub fn classify(status: StatusCode, headers: &HeaderMap) -> FailoverAction {
         return FailoverAction::Rotate;
     }
     FailoverAction::Relay
+}
+
+/// Classify a Kimi Code OAuth upstream response for account-pool failover.
+/// Takes the same `(status, headers)` shape as [`classify`], with one added
+/// case: `402 Payment Required` rotates instead of relaying. A Kimi account
+/// whose subscription membership is inactive returns 402 on *every*
+/// inference request — measured against a live account on 2026-08-18 — so
+/// it is an account-specific, persistent failure, not a transient one a
+/// client retry could work around. Left under `classify`'s generic `Relay`
+/// fallthrough, it would both surface the 402 straight to the client instead
+/// of trying the next account, and clear the account's cooldown via
+/// `mark_healthy` (which treats any answered request as healthy), so a
+/// permanently dead account would keep getting reselected.
+pub fn classify_kimi(status: StatusCode, headers: &HeaderMap) -> FailoverAction {
+    if status == StatusCode::PAYMENT_REQUIRED {
+        return FailoverAction::Rotate;
+    }
+    classify(status, headers)
 }
 
 /// Classify a Codex/ChatGPT upstream response for account-pool failover.
@@ -1560,6 +1584,10 @@ mod tests {
         assert_eq!(
             rotation_reason(StatusCode::UNAUTHORIZED, &HeaderMap::new()),
             "auth"
+        );
+        assert_eq!(
+            rotation_reason(StatusCode::PAYMENT_REQUIRED, &HeaderMap::new()),
+            "membership"
         );
         assert_eq!(
             rotation_reason(StatusCode::BAD_GATEWAY, &HeaderMap::new()),
@@ -2883,6 +2911,37 @@ mod tests {
         );
         assert_eq!(
             classify(StatusCode::BAD_REQUEST, &HeaderMap::new()),
+            FailoverAction::Relay
+        );
+    }
+
+    #[test]
+    fn classifies_upstream_responses_kimi() {
+        // classify_kimi mirrors classify except for the added 402 case: a
+        // Kimi account with an inactive subscription membership returns 402
+        // on every request, so it must rotate rather than relay.
+        assert_eq!(
+            classify_kimi(StatusCode::PAYMENT_REQUIRED, &HeaderMap::new()),
+            FailoverAction::Rotate
+        );
+        assert_eq!(
+            classify_kimi(StatusCode::TOO_MANY_REQUESTS, &HeaderMap::new()),
+            FailoverAction::PauseSame
+        );
+        assert_eq!(
+            classify_kimi(StatusCode::UNAUTHORIZED, &HeaderMap::new()),
+            FailoverAction::RefreshRetry
+        );
+        assert_eq!(
+            classify_kimi(StatusCode::SERVICE_UNAVAILABLE, &HeaderMap::new()),
+            FailoverAction::Rotate
+        );
+        assert_eq!(
+            classify_kimi(StatusCode::OK, &HeaderMap::new()),
+            FailoverAction::Relay
+        );
+        assert_eq!(
+            classify_kimi(StatusCode::BAD_REQUEST, &HeaderMap::new()),
             FailoverAction::Relay
         );
     }

@@ -566,8 +566,12 @@ async fn forward_claude_oauth(
 }
 
 /// Kimi Code OAuth pool: resolves the provider's Kimi accounts, then rotates
-/// across them on auth/quota/server failures using the same account pool and
-/// storm control as [`forward_claude_oauth`].
+/// across them on auth/quota/server/membership failures using the same
+/// account pool and storm control as [`forward_claude_oauth`]. Unlike the
+/// Claude path, this uses [`accounts::classify_kimi`], which additionally
+/// rotates on `402 Payment Required` — a Kimi account with an inactive
+/// subscription membership returns 402 on every request, so it must be
+/// treated as an account-specific, persistent failure rather than relayed.
 ///
 /// Deliberately simpler than the Claude path in two ways:
 /// - No account-UUID rewrite: that mechanism (`metadata.user_id`'s embedded
@@ -719,7 +723,7 @@ async fn forward_kimi_oauth(
             .accounts
             .note_quota(&route.provider, account, upstream.headers());
         let status = upstream.status();
-        match accounts::classify(status, upstream.headers()) {
+        match accounts::classify_kimi(status, upstream.headers()) {
             FailoverAction::Relay => {
                 // A relayed 4xx still clears the cooldown (the account answered)
                 // but only a success grows the storm-control allowance.

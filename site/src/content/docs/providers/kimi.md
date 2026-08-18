@@ -183,11 +183,20 @@ curl -sS http://127.0.0.1:3001/v1/messages \
 
 Confirm the response's `x-gateway-upstream` header names `kimi-code`.
 
+A `402 Payment Required` with `"We're unable to verify your membership benefits at this time"`
+means the login worked but that account has no active Kimi Code membership. The credential is
+fine; the subscription is what needs attention.
+
 ### Pooled accounts and the admin surface
 
 A `kimi_oauth` pool participates in the same load-balancing, failover, and quota-aware account
 rotation as the Claude and Codex pools, and its accounts appear in `GET /admin/pool` and in the
-sanitized `GET /usage` aggregate when those are enabled. Browser-driven account provisioning in
+sanitized `GET /usage` aggregate when those are enabled. It rotates on one extra condition the
+other pools do not have: the `402` membership response above. Because an inactive membership
+returns 402 on every request, shunt treats it as an account-level failure — it cools that account
+down and tries the next one, rather than handing the 402 to your client while healthy accounts sit
+idle. If *every* account in the pool is inactive, you still get Kimi's own 402 status and message
+back, so the cause stays visible. Browser-driven account provisioning in
 the [admin web surface](https://shunt.dev/guides/admin-remote-provisioning/) does not support
 Kimi accounts — that surface's pool view is read-only for Kimi; provision Kimi accounts with
 `shunt login kimi` on the CLI.
