@@ -1,0 +1,19 @@
+.claude/agent-memory/review-review-code-reviewer/shunt-issue363-slots-audit-pr391.md
+  s_8ac7b3d8238f53::t_49e4dd41c828c8 1-41
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "9fbe4f0dd8607616e0b3aea4875a3c9654bd8956",
+  "prompts": {},
+  "sessions": {
+    "s_8ac7b3d8238f53": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6872395d-b5ef-44e2-be10-2544083db6cd",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
