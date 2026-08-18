@@ -13,6 +13,15 @@
 //! `ANTHROPIC_AUTH_TOKEN` instead fills the `gatewayAuth` credential slot and
 //! degrades the client (7 betas, `opus` pinned to `claude-opus-4-7`), so this
 //! module deliberately sets neither.
+//!
+//! Also measured against 2.1.234: the settings document's `env` block **beats
+//! an ambient exported `ANTHROPIC_BASE_URL`**. With the variable exported in
+//! the environment pointing at one mock server and `--settings` naming a
+//! second, only the settings target ever received `POST /v1/messages`; the
+//! exported one received nothing. That is what makes this subcommand safe to
+//! run from a shell that already exports `ANTHROPIC_BASE_URL` for some other
+//! gateway — the launcher does not need to clear the variable first, and a
+//! future reader should not "fix" it by doing so.
 
 use std::{io, path::Path, process::Command};
 
