@@ -165,12 +165,16 @@ are **not** interchangeable in either direction.
 
 The login also resolves the Code Assist project, provisioning one for a first-time account, and
 stores it alongside the tokens so no discovery runs in front of a request. If that step fails the
-credential is still saved and discovery is retried on the first request. Discovery addresses
-`[providers.antigravity] base_url` — the same host the request path uses — when that provider is the
-Antigravity upstream (`kind = "antigravity"` with `auth = "antigravity_oauth"`), whose `base_url`
-config validation has pinned to the Code Assist host or loopback. Any other table parked under that
-name, and an unreadable config, fall back to the default Code Assist backend rather than send the
-subscription token to an unvetted host.
+credential is still saved and discovery is retried on the first request. Discovery addresses the
+`base_url` of the Antigravity upstream your config routes to — the same host the request path uses.
+Only a provider that really is that upstream counts (`kind = "antigravity"` with
+`auth = "antigravity_oauth"`), because config validation has pinned only such a `base_url` to the
+Code Assist host or loopback; the provider name itself does not matter, so an ordered
+`[[upstreams]]` entry or a `[providers.*]` table under your own name is honored as well. When no
+route selects one, the single declared Antigravity upstream is used. An unreadable config, a table
+of some other kind parked under the `antigravity` name, and several routed Antigravity upstreams
+with no `antigravity`-named one among them all fall back to the default Code Assist backend rather
+than send the subscription token to a host you did not select.
 
 ## `shunt login kimi`
 

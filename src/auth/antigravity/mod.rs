@@ -1,7 +1,7 @@
 //! Antigravity subscription OAuth: credential store, login, and the client
 //! version fingerprint the backend is addressed with.
 
-use std::{env, path::PathBuf};
+use std::{collections::BTreeSet, env, path::PathBuf};
 
 use crate::config::{AuthMode, Config, ProviderConfig, ProviderKind};
 
@@ -33,29 +33,37 @@ pub fn default_antigravity_auth_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".shunt/antigravity-auth.json"))
 }
 
+/// Every provider name `config` can send a request to: its `default_provider`,
+/// an exact `route`, a `route_prefix`, or a per-model `upstream_model` map
+/// entry. Names are returned as written, including ones no `[providers.*]`
+/// table defines — callers resolve them against the providers map themselves.
+fn routed_provider_names(config: &Config) -> BTreeSet<&str> {
+    let mut names = BTreeSet::new();
+    names.insert(config.server.default_provider.as_str());
+    names.extend(config.routes.iter().map(|route| route.provider.as_str()));
+    names.extend(
+        config
+            .route_prefixes
+            .iter()
+            .map(|prefix| prefix.provider.as_str()),
+    );
+    for model in &config.models {
+        if let Some(map) = model.upstream_model.as_ref() {
+            names.extend(map.keys().map(String::as_str));
+        }
+    }
+    names
+}
+
 /// Whether `config` routes any request path to the given built-in-kind
-/// provider: its `default_provider`, an exact `route`, a `route_prefix`, or a
-/// per-model `upstream_model` map entry.
+/// provider.
 fn routes_to_kind(config: &Config, kind: ProviderKind) -> bool {
-    let is_kind = |name: &str| {
+    routed_provider_names(config).into_iter().any(|name| {
         config
             .providers
             .get(name)
             .is_some_and(|provider| provider.kind == kind)
-    };
-
-    is_kind(&config.server.default_provider)
-        || config.routes.iter().any(|route| is_kind(&route.provider))
-        || config
-            .route_prefixes
-            .iter()
-            .any(|prefix| is_kind(&prefix.provider))
-        || config.models.iter().any(|model| {
-            model
-                .upstream_model
-                .as_ref()
-                .is_some_and(|map| map.keys().any(|provider| is_kind(provider)))
-        })
+    })
 }
 
 /// Whether the deprecated `agy` subprocess transport is reachable.
@@ -97,10 +105,10 @@ pub fn antigravity_migration_error(credential_exists: bool) -> Option<String> {
 }
 
 /// The Code Assist host `shunt login antigravity` runs project discovery
-/// against: the configured `antigravity` provider's `base_url` when that
-/// provider really is the Antigravity upstream, else the production default.
+/// against: the `base_url` of the Antigravity upstream the config routes to,
+/// else of the only one it declares, else the production default.
 ///
-/// Looking the slot up by name alone is not enough, and that distinction is
+/// Looking a slot up by name alone is not enough, and that distinction is
 /// load-bearing rather than defensive. `[providers.antigravity]` is only a
 /// table name: an operator can point it at any other kind, and such a config
 /// validates cleanly — the deprecated `antigravity_cli` transport keeps a
@@ -120,53 +128,65 @@ pub fn login_base_url(config: Option<&Config>) -> String {
         return auth::API_ENDPOINT.to_string();
     };
 
-    // The built-in name wins whenever it qualifies: it is what a legacy
-    // `[providers.*]` config carries, and pinning it keeps the pick stable if
-    // an ordered config happens to declare a second one under another name.
-    if let Some(provider) = config
-        .provider("antigravity")
-        .filter(|provider| is_vetted_antigravity(provider))
-    {
-        return provider.base_url.clone();
-    }
-
-    // An ordered `[[upstreams]]` config has no such slot to find:
-    // `normalize_upstreams` replaces the whole providers map, so the
-    // Antigravity upstream lives under whatever name the operator declared
-    // (`agy-local`, say) and a bare name lookup would silently discover
-    // against production while the request path used the configured host.
-    //
-    // Scanning is safe here in a way that name lookup was not. Every
-    // candidate satisfies the exact predicate `Config::validate` vetted, so
-    // an unlucky pick can only reach another host the operator themself
-    // pinned — never an arbitrary one. Iteration is over a `BTreeMap`, so the
-    // scan order is the sorted key order and the pick is deterministic.
-    let mut candidates = config
+    // Prefer the upstreams the config can actually send a request to. A
+    // non-ordered `[providers.*]` config keeps every built-in table merged in,
+    // so the seeded `antigravity` slot exists — pointing at production — even
+    // when the operator declared their own Antigravity provider under another
+    // name and routed to that one. Picking by name alone would then discover
+    // against production while the request path used the configured host,
+    // which is the split issue #380 exists to close. Only when nothing
+    // Antigravity-shaped is routed does the whole providers map become the
+    // pool, so `shunt login antigravity` still honors a configured slot on a
+    // config that has not been wired up to route to it yet.
+    let routed = routed_provider_names(config);
+    let vetted: Vec<(&str, &ProviderConfig)> = config
         .providers
         .iter()
-        .filter(|(_, provider)| is_vetted_antigravity(provider));
-    let Some((name, provider)) = candidates.next() else {
-        return auth::API_ENDPOINT.to_string();
+        .filter(|(_, provider)| is_vetted_antigravity(provider))
+        .map(|(name, provider)| (name.as_str(), provider))
+        .collect();
+    let routed_vetted: Vec<(&str, &ProviderConfig)> = vetted
+        .iter()
+        .copied()
+        .filter(|(name, _)| routed.contains(name))
+        .collect();
+    let candidates = if routed_vetted.is_empty() {
+        vetted
+    } else {
+        routed_vetted
     };
-    let ambiguous: Vec<&str> = candidates.map(|(name, _)| name.as_str()).collect();
-    if ambiguous.is_empty() {
-        return provider.base_url.clone();
-    }
 
-    // Several qualify and none is the built-in name, so there is no
-    // operator-intended pick to infer — a failover chain can hold both a
-    // debug proxy and the real backend. Guessing would provision a project
-    // against a backend the operator never chose, so say so and use the
-    // production default, which is what login targeted before it read config
-    // at all.
-    tracing::warn!(
-        first = %name,
-        others = ?ambiguous,
-        "several antigravity_oauth upstreams are configured and none is named `antigravity`; \
-         signing in against the default Code Assist endpoint. Name the one to log in to \
-         `antigravity` to discover the project against it."
-    );
-    auth::API_ENDPOINT.to_string()
+    // Iteration is over a `BTreeMap`, so the candidate order is sorted key
+    // order and every observation below is deterministic. Scanning is safe
+    // here in a way that name lookup was not: each candidate satisfies the
+    // exact predicate `Config::validate` vetted, so an unlucky pick can only
+    // reach another host the operator themself pinned — never an arbitrary
+    // one.
+    match candidates.as_slice() {
+        [] => auth::API_ENDPOINT.to_string(),
+        [(_, provider)] => provider.base_url.clone(),
+        // Several qualify. The built-in name still disambiguates when it is
+        // one of them: an operator who configured that slot named the upstream
+        // login has always meant.
+        several => {
+            if let Some((_, provider)) = several.iter().find(|(name, _)| *name == "antigravity") {
+                return provider.base_url.clone();
+            }
+
+            // Otherwise there is no operator-intended pick to infer — a
+            // failover chain can hold both a debug proxy and the real backend.
+            // Guessing would provision a project against a backend the
+            // operator never chose, so say so and use the production default,
+            // which is what login targeted before it read config at all.
+            tracing::warn!(
+                candidates = ?several.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
+                "several antigravity_oauth upstreams are configured and none is named \
+                 `antigravity`; signing in against the default Code Assist endpoint. Name the \
+                 one to log in to `antigravity` to discover the project against it."
+            );
+            auth::API_ENDPOINT.to_string()
+        }
+    }
 }
 
 /// Whether `provider` is an Antigravity upstream whose `base_url` the
@@ -432,6 +452,124 @@ mod tests {
         // `shunt login antigravity` must still work when no config loads at
         // all — that is the whole reason main.rs treats the load as optional.
         assert_eq!(login_base_url(None), super::auth::API_ENDPOINT);
+    }
+
+    /// A legacy `[providers.*]` config with the operator's own Antigravity
+    /// upstream declared under another name and routed to, while the seeded
+    /// built-in `antigravity` table is left untouched.
+    fn legacy_config_routing_to(name: &str, base_url: &str, via: Routing) -> Config {
+        let mut config = base();
+        let mut provider = config
+            .providers
+            .get("antigravity")
+            .expect("the default config seeds an antigravity provider")
+            .clone();
+        provider.base_url = base_url.to_string();
+        config.providers.insert(name.to_string(), provider);
+
+        match via {
+            Routing::Default => config.server.default_provider = name.to_string(),
+            Routing::Route => config.routes.push(RouteConfig {
+                model: "gemini-3.1-pro".to_string(),
+                provider: name.to_string(),
+                upstream_model: None,
+                effort: None,
+                service_tier: None,
+            }),
+            Routing::Prefix => config.route_prefixes.push(RoutePrefixConfig {
+                prefix: "gemini-".to_string(),
+                provider: name.to_string(),
+            }),
+            Routing::UpstreamModel => config.models.push(ModelConfig {
+                id: "gemini-3.1-pro".to_string(),
+                display_name: None,
+                upstream_model: Some(
+                    [(name.to_string(), "gemini-3.1-pro-preview".to_string())]
+                        .into_iter()
+                        .collect(),
+                ),
+            }),
+        }
+        config
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Routing {
+        Default,
+        Route,
+        Prefix,
+        UpstreamModel,
+    }
+
+    #[test]
+    fn login_follows_the_routed_upstream_over_an_untouched_built_in_slot() {
+        // `Config::default()` seeds an `antigravity` table pointing at
+        // production, and a non-ordered `[providers.*]` config keeps every
+        // built-in merged in. So the built-in slot qualifies even in a config
+        // whose operator never configured it, and preferring it by name sent
+        // discovery to production while requests went to the upstream they
+        // actually routed to — the split issue #380 exists to close. Every
+        // routing surface counts, because every one of them can carry the
+        // request path to that provider.
+        for via in [
+            Routing::Default,
+            Routing::Route,
+            Routing::Prefix,
+            Routing::UpstreamModel,
+        ] {
+            let config = legacy_config_routing_to("agy-local", "http://127.0.0.1:9443", via);
+            assert!(
+                config.providers.contains_key("antigravity"),
+                "the untouched built-in slot must still be present for this to be a regression \
+                 test, routed via {via:?}"
+            );
+
+            assert_eq!(
+                login_base_url(Some(&config)),
+                "http://127.0.0.1:9443",
+                "routed via {via:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn login_still_prefers_the_built_in_slot_when_it_is_the_routed_one() {
+        // The mirror of the case above: routing to the built-in name while
+        // another Antigravity upstream sits unrouted in the map must keep
+        // discovery on the built-in slot's configured host.
+        let mut config =
+            legacy_config_routing_to("agy-local", "http://127.0.0.1:9443", Routing::Default);
+        config.server.default_provider = "antigravity".to_string();
+        config
+            .providers
+            .get_mut("antigravity")
+            .expect("still seeded")
+            .base_url = "http://127.0.0.1:9999".to_string();
+
+        assert_eq!(login_base_url(Some(&config)), "http://127.0.0.1:9999");
+    }
+
+    #[test]
+    fn login_refuses_to_guess_between_several_routed_upstreams() {
+        // Routing narrows the pool but does not always collapse it: a failover
+        // config can route to two Antigravity upstreams at once. With no
+        // built-in name among them there is still no pick to infer.
+        let mut config =
+            legacy_config_routing_to("agy-a", "http://127.0.0.1:9443", Routing::Default);
+        let mut other = config
+            .providers
+            .get("agy-a")
+            .expect("just inserted")
+            .clone();
+        other.base_url = "http://127.0.0.1:9444".to_string();
+        config.providers.insert("agy-b".to_string(), other);
+        config.route_prefixes.push(RoutePrefixConfig {
+            prefix: "gemini-".to_string(),
+            provider: "agy-b".to_string(),
+        });
+        config.providers.remove("antigravity");
+
+        assert_eq!(login_base_url(Some(&config)), super::auth::API_ENDPOINT);
     }
 
     #[test]
