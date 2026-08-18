@@ -1,6 +1,6 @@
 ---
 name: pr391-slot-enumeration
-description: PR #391 (issue #363) src/auth/slots.rs — the single credential-slot enumeration; audit verdict and the one residual (admin session cookie is an unenumerated accept slot).
+description: PR #391 (issue #363) src/auth/slots.rs — the single credential-slot enumeration; audit verdict, and the admin session-cookie accept slot that commit 5f00473 closed (do not re-open).
 metadata:
   type: project
 ---
