@@ -151,7 +151,20 @@ pub fn login_base_url(config: Option<&Config>) -> String {
         .filter(|(name, _)| routed.contains(name))
         .collect();
     let candidates = if routed_vetted.is_empty() {
+        // Nothing Antigravity-shaped is routed, so there is no intent to read
+        // off the routes — but the seeded `antigravity` table is still in the
+        // map, and left at the production default it is not a declaration
+        // either. Dropping it here cannot widen where the token can go: the
+        // host it names is exactly the fallback this function returns when it
+        // finds no signal at all. Keeping it would instead outvote the one
+        // upstream the operator did declare, which is the same production/host
+        // split for anyone who signs in before wiring up their routes.
         vetted
+            .into_iter()
+            .filter(|(name, provider)| {
+                *name != "antigravity" || !auth::addresses_production_backend(&provider.base_url)
+            })
+            .collect()
     } else {
         routed_vetted
     };
@@ -445,6 +458,70 @@ mod tests {
             .base_url = "http://127.0.0.1:9999".to_string();
 
         assert_eq!(login_base_url(Some(&config)), "http://127.0.0.1:9999");
+    }
+
+    #[test]
+    fn login_uses_the_only_declared_upstream_when_nothing_routes_to_it_yet() {
+        // Signing in before wiring up routes is the ordinary setup order, and
+        // the untouched built-in `antigravity` table is not a second
+        // declaration — it still names the host login falls back to anyway.
+        // Preferring it here would re-open the same production/host split for
+        // every operator who logs in first.
+        let mut config = base();
+        let mut provider = config
+            .providers
+            .get("antigravity")
+            .expect("the default config seeds an antigravity provider")
+            .clone();
+        provider.base_url = "http://127.0.0.1:9443".to_string();
+        config.providers.insert("agy-local".to_string(), provider);
+        assert!(
+            config.providers.contains_key("antigravity"),
+            "the untouched built-in slot must still be present for this to be a regression test"
+        );
+        assert!(
+            !routes_to_antigravity(&config),
+            "nothing may route to an Antigravity provider, or this exercises the routed path"
+        );
+
+        assert_eq!(login_base_url(Some(&config)), "http://127.0.0.1:9443");
+    }
+
+    #[test]
+    fn login_treats_every_production_spelling_of_the_built_in_slot_as_no_signal() {
+        // Whether the seeded `antigravity` table was left alone or spelled out
+        // by hand, a slot that addresses production names exactly the host
+        // login falls back to — so it never outvotes a declared upstream. The
+        // check parses the URL rather than comparing bytes, which is why the
+        // cased, trailing-slash, and explicit-port spellings behave the same;
+        // a byte compare would make the pick depend on capitalization, the
+        // defect `addresses_production_backend` exists to prevent.
+        for spelling in [
+            "https://cloudcode-pa.googleapis.com",
+            "https://cloudcode-pa.googleapis.com/",
+            "https://CloudCode-PA.googleapis.com",
+            "https://cloudcode-pa.googleapis.com:443",
+        ] {
+            let mut config = base();
+            let mut provider = config
+                .providers
+                .get("antigravity")
+                .expect("the default config seeds an antigravity provider")
+                .clone();
+            provider.base_url = "http://127.0.0.1:9443".to_string();
+            config.providers.insert("agy-local".to_string(), provider);
+            config
+                .providers
+                .get_mut("antigravity")
+                .expect("still seeded")
+                .base_url = spelling.to_string();
+
+            assert_eq!(
+                login_base_url(Some(&config)),
+                "http://127.0.0.1:9443",
+                "built-in slot spelled {spelling}"
+            );
+        }
     }
 
     #[test]

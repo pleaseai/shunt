@@ -943,7 +943,7 @@ pub(crate) fn default_tier_id(load_response: &Value) -> String {
 /// treat a port, a path prefix, or a non-https scheme as "not plain
 /// production" — those address something in front of the backend, which is
 /// exactly the case that must carry onboarding with it.
-fn addresses_production_backend(endpoint: &str) -> bool {
+pub(super) fn addresses_production_backend(endpoint: &str) -> bool {
     reqwest::Url::parse(endpoint).is_ok_and(|url| {
         url.scheme() == "https"
             && url.port().is_none()

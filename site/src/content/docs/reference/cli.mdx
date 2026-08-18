@@ -171,7 +171,9 @@ Only a provider that really is that upstream counts (`kind = "antigravity"` with
 `auth = "antigravity_oauth"`), because config validation has pinned only such a `base_url` to the
 Code Assist host or loopback; the provider name itself does not matter, so an ordered
 `[[upstreams]]` entry or a `[providers.*]` table under your own name is honored as well. When no
-route selects one, the single declared Antigravity upstream is used. An unreadable config, a table
+route selects one, the single Antigravity upstream you declared is used — the built-in
+`[providers.antigravity]` table still pointing at the production host counts as no declaration,
+since that host is the fallback anyway. An unreadable config, a table
 of some other kind parked under the `antigravity` name, and several routed Antigravity upstreams
 with no `antigravity`-named one among them all fall back to the default Code Assist backend rather
 than send the subscription token to a host you did not select.
