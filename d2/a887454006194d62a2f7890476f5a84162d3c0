@@ -1,0 +1,21 @@
+.claude/agent-memory/review-review-pr-test-analyzer/shunt-auth-slots-mirror-coverage.md
+  s_8ac7b3d8238f53::t_5bd1b89fa28420 1-75
+.claude/agent-memory/review-review-pr-test-analyzer/MEMORY.md
+  s_8ac7b3d8238f53::t_6d860aebd1fffe 17
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "d2a887454006194d62a2f7890476f5a84162d3c0",
+  "prompts": {},
+  "sessions": {
+    "s_8ac7b3d8238f53": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6872395d-b5ef-44e2-be10-2544083db6cd",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
