@@ -198,7 +198,7 @@ the real request state.
 accept side still spells `"x-api-key"` literally in `auth/inbound.rs` and `admin/mod.rs`. Those
 two remain decoupled from `SHARED_SLOTS`.
 
-Three behavior changes came with the consolidation:
+Four behavior changes came with the consolidation:
 
 - **The reserved names are now stripped unconditionally.** `x-shunt-token`,
   `x-shunt-admin-token`, and `x-shunt-inbound-client` are removed on every forward, whether or
