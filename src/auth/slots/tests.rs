@@ -515,6 +515,160 @@ async fn a_genuine_upstream_credential_survives_beside_a_consumed_one() {
     assert!(out.get("x-api-key").is_none());
 }
 
+// --- Multi-value slots (#392) ------------------------------------------------
+//
+// A `HeaderMap` slot is a *list*, not a scalar. `append` puts a second value on
+// the same name, and forward site 1 starts from a clone of the caller's map, so
+// every value survives to the upstream. The strip predicates read only
+// `HeaderMap::get`, which returns the **first** value — so a shunt credential
+// sitting behind a genuine one in the same slot is judged as "not consumed" and
+// relayed. Sites 2 and 3 are structurally immune: site 2 copies one value per
+// slot into a fresh map, site 3 drops both shared slots unconditionally.
+
+/// `x-api-key: <genuine>` followed by `x-api-key: <admin credential>`.
+fn multi_value_api_key(second: &str) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.append("x-api-key", GENUINE_UPSTREAM_KEY.parse().unwrap());
+    headers.append("x-api-key", second.parse().unwrap());
+    headers
+}
+
+#[tokio::test]
+async fn a_shunt_credential_in_a_trailing_x_api_key_value_is_not_forwarded() {
+    let state = state();
+    let headers = multi_value_api_key(ADMIN_WRITE_KEY);
+
+    let out = ForwardSite::InferenceFailover.run(&state, &headers).await;
+
+    assert!(
+        !contains_value(&out, ADMIN_WRITE_KEY),
+        "the inference passthrough relayed an admin credential riding in the second \
+         `x-api-key` value"
+    );
+    // The implemented behavior is whole-slot removal, so the genuine credential
+    // sharing the slot goes too. Asserted explicitly: this is over-stripping,
+    // which the invariant permits, and recording it here keeps it a decision
+    // rather than something a future reader meets as a bug report.
+    assert!(
+        out.get("x-api-key").is_none(),
+        "a consumed value must take the whole slot with it"
+    );
+}
+
+#[tokio::test]
+async fn a_multi_value_x_api_key_with_no_shunt_credential_survives_intact() {
+    // Non-vacuity control for the two tests above. Without it, a strip that
+    // simply dropped every multi-value slot would satisfy them. Two genuine
+    // caller values must both still reach the upstream.
+    let state = state();
+    let second = "sk-ant-second-genuine-key";
+    let mut headers = HeaderMap::new();
+    headers.append("x-api-key", GENUINE_UPSTREAM_KEY.parse().unwrap());
+    headers.append("x-api-key", second.parse().unwrap());
+
+    let out = ForwardSite::InferenceFailover.run(&state, &headers).await;
+
+    let values: Vec<&[u8]> = out
+        .get_all("x-api-key")
+        .iter()
+        .map(HeaderValue::as_bytes)
+        .collect();
+    assert_eq!(
+        values,
+        vec![GENUINE_UPSTREAM_KEY.as_bytes(), second.as_bytes()],
+        "both of the caller's own values must survive, in order"
+    );
+}
+
+#[tokio::test]
+async fn a_shunt_credential_in_the_leading_x_api_key_value_is_still_not_forwarded() {
+    // The pre-#392 ordering, kept as a regression guard: widening the scan to
+    // every value must not stop it finding one in the position `get` already
+    // returned.
+    let state = state();
+    let mut headers = HeaderMap::new();
+    headers.append("x-api-key", ADMIN_WRITE_KEY.parse().unwrap());
+    headers.append("x-api-key", GENUINE_UPSTREAM_KEY.parse().unwrap());
+
+    let out = ForwardSite::InferenceFailover.run(&state, &headers).await;
+
+    assert!(!contains_value(&out, ADMIN_WRITE_KEY));
+    assert!(out.get("x-api-key").is_none());
+}
+
+#[tokio::test]
+async fn a_shunt_credential_in_a_trailing_authorization_value_is_not_forwarded() {
+    // Both shapes, on the trailing value, because each value has to be judged
+    // as a `Bearer` payload *and* as a whole raw value (#361). A multi-value
+    // loop that keeps only one of the two shapes passes half of this test.
+    let state = state();
+    let jwt = gateway_jwt(GATEWAY_URL);
+
+    for (shape, second) in [("bearer", bearer(&jwt)), ("raw", jwt.clone())] {
+        let mut headers = HeaderMap::new();
+        headers.append(
+            "authorization",
+            bearer(GENUINE_UPSTREAM_KEY).parse().unwrap(),
+        );
+        headers.append("authorization", second.parse().unwrap());
+
+        let out = ForwardSite::InferenceFailover.run(&state, &headers).await;
+
+        assert!(
+            !contains_value(&out, &jwt),
+            "the inference passthrough relayed a gateway JWT riding in the second \
+             `authorization` value ({shape} shape)"
+        );
+    }
+}
+
+/// A configured `[server.auth]` token whose **whole value** begins with a
+/// `Bearer ` scheme. `parse_tokens` keeps everything after the first `:` and
+/// preserves inner whitespace, so `SHUNT_CLIENT_TOKENS="ci:Bearer <secret>"` is
+/// a legal deployment.
+const SCHEME_SHAPED_TOKEN: &str = "Bearer scheme-shaped-static-token";
+
+#[tokio::test]
+async fn both_authorization_shapes_are_judged_for_the_same_value() {
+    // Pins the *structure* of the per-value check, which nothing else in this
+    // file does. With `[server.auth] header = "authorization"` and a token that
+    // itself starts with `Bearer `, the two shapes disagree about the same
+    // value: the payload (`scheme-shaped-static-token`) matches no credential,
+    // while the whole raw value is exactly the configured token, so
+    // `authenticate` accepts the request. A strip that resolves the shapes with
+    // `unwrap_or_else` — take the payload, else the raw value — checks only the
+    // payload here, finds nothing, and relays a credential shunt just
+    // authenticated. Both shapes have to be tried for every value, not one per
+    // value.
+    let mut state = state_with_headers(
+        HeaderName::from_static("authorization"),
+        HeaderName::from_static("x-shunt-admin-token"),
+    );
+    state.inbound_auth = Some(Arc::new(InboundAuth::new(
+        HeaderName::from_static("authorization"),
+        vec![("ci".to_string(), SCHEME_SHAPED_TOKEN.to_string())],
+    )));
+
+    let mut headers = HeaderMap::new();
+    headers.insert("authorization", SCHEME_SHAPED_TOKEN.parse().unwrap());
+
+    // Non-vacuity: the real accept predicate must actually admit this, or the
+    // mirror invariant would not require anything of the strip side.
+    assert!(
+        accepted_by_any_gate(&state, &headers),
+        "fixture no longer authenticates; the assertion below would be vacuous"
+    );
+
+    for site in FORWARD_SITES {
+        let out = site.run(&state, &headers).await;
+        assert!(
+            !contains_value(&out, SCHEME_SHAPED_TOKEN),
+            "{} relayed a static token whose whole value carries a Bearer scheme",
+            site.name()
+        );
+    }
+}
+
 #[tokio::test]
 async fn the_codex_passthrough_never_relays_an_admin_credential_header() {
     // Regression for the gap this module closed: `[server.admin]`'s header was

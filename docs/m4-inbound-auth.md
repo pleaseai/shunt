@@ -198,7 +198,7 @@ the real request state.
 accept side still spells `"x-api-key"` literally in `auth/inbound.rs` and `admin/mod.rs`. Those
 two remain decoupled from `SHARED_SLOTS`.
 
-Two behavior changes came with the consolidation:
+Three behavior changes came with the consolidation:
 
 - **The reserved names are now stripped unconditionally.** `x-shunt-token`,
   `x-shunt-admin-token`, and `x-shunt-inbound-client` are removed on every forward, whether or
@@ -220,6 +220,20 @@ Two behavior changes came with the consolidation:
   parse and would reintroduce exactly the accept/strip drift this module exists to eliminate.
   The accepted cost is that a benign `cookie: theme=dark` is dropped too; the tests assert that
   over-strip explicitly so it is a recorded decision.
+- **Both shared slots are now judged over every value, and a slot with any consumed value is
+  removed entirely.** A `HeaderMap` slot is a list: a caller may send `x-api-key` (or
+  `Authorization`) twice, and forward site 1 forwards a clone of the caller's map, so both values
+  reach the upstream. The strip predicates read `HeaderMap::get`, which returns only the *first*
+  value, so a shunt credential appended **behind** a genuine one was judged "not consumed" and
+  relayed (#392). `authorization_consumed_by` and `strip_consumed_slots` now scan `get_all`, and
+  `authorization` is evaluated in both of its shapes *per value* — hoisting that choice out of the
+  loop would drop the #361 fix for every value after the first that carries a scheme. The accept
+  predicates deliberately stay first-value-only: widening what authenticates a caller is a separate
+  security decision from widening what shunt refuses to forward, and keeping strip ⊇ accept is what
+  preserves the invariant. The cost is that a consumed value takes the whole slot with it, so a
+  genuine credential sharing that slot is dropped too; the alternative — rebuilding the slot from
+  its survivors — adds a second place deciding which values are shunt's, which is the drift this
+  module exists to remove.
 - **The `[server.admin]` header gap on the Codex endpoint is closed.** The inbound Codex
   passthrough stripped `authorization`, `x-api-key`, `x-shunt-token`, `x-shunt-inbound-client`,
   and the configured `[server.auth] header` — but not the `[server.admin] header` (default

@@ -290,6 +290,16 @@ impl<'a> ShuntCredentials<'a> {
     /// names an operator may point at `authorization`, in which case the accept
     /// predicate reads the whole unprefixed value.
     ///
+    /// Both slots are judged over **every value**, not just the first. A slot is
+    /// a list, and forward site 1 forwards a clone of the caller's map, so a
+    /// shunt credential appended behind a genuine one would otherwise be relayed
+    /// (#392). A slot with any consumed value is removed **entirely**:
+    /// `HeaderMap::remove` clears every value for the name, so a genuine
+    /// credential sharing the slot goes with it. That over-strip is deliberate
+    /// and is asserted in the tests — the alternative, rebuilding the slot from
+    /// its surviving values, adds a second place where "which values are
+    /// shunt's" is decided, which is the drift this module exists to remove.
+    ///
     /// Returns what was stripped — slot name and matched credential kind — so
     /// callers can log *why* without logging the token. `Vec::new()` does not
     /// allocate, so the common nothing-to-strip path stays free.
@@ -307,7 +317,7 @@ impl<'a> ShuntCredentials<'a> {
             headers.remove(AUTHORIZATION);
             stripped.push((AUTHORIZATION, reason));
         }
-        if let Some(reason) = headers.get(API_KEY).and_then(|value| {
+        if let Some(reason) = headers.get_all(API_KEY).iter().find_map(|value| {
             consumed_by(
                 value.as_bytes(),
                 self.gateway_auth,
