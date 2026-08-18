@@ -89,7 +89,9 @@ shunt gateway login https://gateway.example.com
 shunt gateway login https://gateway.example.com --manual   # ブラウザを開かず URL のみ表示
 ```
 
-shunt はデプロイの `/.well-known/oauth-authorization-server` ドキュメントを読み、そこで告知されたエンドポイントを使います。確認用 URL と短いユーザーコードを表示してブラウザを開き、ゲートウェイの `/device` ページで承認されるまでポーリングします。discovery が `404` を返す場合、そのデプロイに `[server.gateway]` セクションが無いことがほとんどです。ループバック以外の平文 `http://` URL も受け付けますが警告が出ます — device code と refresh token が暗号化されずに流れるためです。
+shunt はデプロイの `/.well-known/oauth-authorization-server` ドキュメントを読み、そこで告知されたエンドポイントを使います。確認用 URL と短いユーザーコードを表示してブラウザを開き、ゲートウェイの `/device` ページで承認されるまでポーリングします。discovery が `404` を返す場合、そのデプロイに `[server.gateway]` セクションが無いことがほとんどです。ループバック以外の平文 `http://` URL も受け付けますが警告が出ます — device code と refresh token が暗号化されずに流れるためで、しかもこのログイン時だけではありません。以降のトークン更新もすべて同じ経路を通ります。
+
+デプロイが返してくる内容には 2 つの下限が適用されます。shunt が device code と refresh token を POST するのは、discovery ドキュメントが `https` で、またはループバックアドレスに対して `http` で告知したエンドポイントだけです。それ以外のエンドポイントは資格情報を受け取る代わりに、名前を挙げて discovery が失敗します。また確認用 URL を自動的に開くのは `http` か `https` のときだけです — その文字列を選ぶのは shunt ではなくゲートウェイなので、他のスキームなら開かなかった理由とともに表示し、たどるかどうかは利用者が判断します。
 
 セッションは `~/.shunt/gateway/session.json` に保存され（`SHUNT_GATEWAY_SESSION_FILE` で上書き可能）、所有者専用で書き込まれます: `0700` のディレクトリ内に `0600` のファイル。
 

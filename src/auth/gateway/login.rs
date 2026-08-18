@@ -94,8 +94,17 @@ pub async fn run(gateway_url: &str, manual: bool) -> anyhow::Result<()> {
         device.user_code
     );
     if !manual {
-        if let Err(error) = crate::auth::shared::open_url_async(&prompt_url).await {
-            eprintln!("Could not open a browser ({error}); open the URL above manually.");
+        match browser_open_refusal(&prompt_url) {
+            Some(reason) => eprintln!(
+                "Not opening this URL automatically: {reason}. It was chosen by the gateway, not \
+                 by shunt — open it yourself only if it looks like the deployment's own sign-in \
+                 page."
+            ),
+            None => {
+                if let Err(error) = crate::auth::shared::open_url_async(&prompt_url).await {
+                    eprintln!("Could not open a browser ({error}); open the URL above manually.");
+                }
+            }
         }
     }
 
@@ -146,13 +155,37 @@ fn normalize_gateway_url(raw: &str) -> anyhow::Result<String> {
             if !crate::config::host_is_loopback(url.host_str().unwrap_or_default()) {
                 eprintln!(
                     "Warning: {trimmed} is plain HTTP, so the device code and refresh token \
-                     travel unencrypted. Use https:// unless this link is already private."
+                     travel unencrypted — not just during this login, but on every token \
+                     refresh for as long as the session lives. Use https:// unless this link \
+                     is already private."
                 );
             }
         }
         scheme => bail!("gateway URL scheme {scheme:?} is not supported; use https or http"),
     }
     Ok(trimmed.to_string())
+}
+
+/// Why the verification URL must not be handed to the OS handler, or `None`
+/// when it may be.
+///
+/// This is the one URL in shunt that a **remote party** picks: it arrives
+/// verbatim in the device-authorization response, and the OS handler will act
+/// on whatever scheme it names. A hostile or MITM'd gateway could otherwise
+/// answer with `file:///…`, an `smb://` share the handler authenticates to, or
+/// a leading-dash string that `open(1)` reads as a flag. The URL is printed
+/// either way — refusing to *auto-open* is not the same as hiding it.
+fn browser_open_refusal(raw: &str) -> Option<String> {
+    let Ok(url) = raw.parse::<reqwest::Url>() else {
+        return Some("the gateway's verification URL is not a valid absolute URL".to_string());
+    };
+    match url.scheme() {
+        "http" | "https" => None,
+        scheme => Some(format!(
+            "the gateway's verification URL uses the {scheme:?} scheme, and shunt only opens http \
+             and https"
+        )),
+    }
 }
 
 async fn request_device_code(
@@ -168,7 +201,13 @@ async fn request_device_code(
         .await
         .with_context(|| format!("failed to reach {device_authorization_endpoint}"))?;
     let status = response.status();
-    let text = response.text().await.unwrap_or_default();
+    // Propagate rather than defaulting to "": the same reason as in
+    // [`super::auth`]'s two body reads. An empty string here is reported as a
+    // response "missing device_code / user_code / verification_uri", which
+    // blames the gateway for a body it may well have sent in full.
+    let text = response.text().await.with_context(|| {
+        format!("failed to read the device-code response from {device_authorization_endpoint}")
+    })?;
     // Never gate on `status` before parsing the body (see the module doc).
     let value: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
     if let Some(device) = parse_device_code(&value) {
@@ -235,11 +274,22 @@ async fn poll_for_tokens(
                 ("client_id", CLIENT_ID),
                 ("device_code", device.device_code.as_str()),
             ]);
-        // A single DNS/TLS/connect blip must not abort the login: remember the
-        // error and fall through to the deadline-bounded sleep, then retry. A
-        // permanently unreachable endpoint still fails fast via the
+        // A connection reset partway through the *body* is the same class of
+        // blip as a failed connect, so the two are collapsed into one outcome
+        // here rather than only the send being retried. Reading the body inside
+        // this match is what puts it on the retry path below.
+        let attempt = match request.send().await {
+            Ok(response) => {
+                let status = response.status();
+                response.text().await.map(|text| (status, text))
+            }
+            Err(error) => Err(error),
+        };
+        // A single DNS/TLS/connect/read blip must not abort the login: remember
+        // the error and fall through to the deadline-bounded sleep, then retry.
+        // A permanently unreachable endpoint still fails fast via the
         // consecutive-failure cap rather than spinning until the deadline.
-        let response = match request.send().await {
+        let (status, text) = match attempt {
             Ok(response) => response,
             Err(error) => {
                 tracing::warn!("gateway token poll request failed, will retry: {error}");
@@ -258,14 +308,12 @@ async fn poll_for_tokens(
                 continue;
             }
         };
-        // The request landed, so any earlier run of failures is over — only
-        // *consecutive* failures trip the cap. Clearing the remembered error
-        // keeps the timeout message honest: a stale blip must not make a plain
-        // "the user never approved" timeout look like a network problem.
+        // A whole response arrived, so any earlier run of failures is over —
+        // only *consecutive* failures trip the cap. Clearing the remembered
+        // error keeps the timeout message honest: a stale blip must not make a
+        // plain "the user never approved" timeout look like a network problem.
         consecutive_transport_failures = 0;
         last_transport_error = None;
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
         // *** CRITICAL: the gateway answers an ordinary pending poll with HTTP
         // 400, so the status cannot decide which branch to parse — try the
         // token first regardless of status, then the OAuth error envelope, and
@@ -587,6 +635,116 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("3 times in a row"), "got: {message}");
         assert!(!message.contains("timed out"), "got: {message}");
+    }
+
+    /// A raw listener that answers the first `truncated` requests with headers
+    /// promising more body than it sends and then closes the connection, and
+    /// every request after that with a grant. wiremock cannot express a body
+    /// that dies mid-flight, and that is exactly the failure under test.
+    async fn truncating_token_endpoint(truncated: usize) -> (String, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind an ephemeral port");
+        let endpoint = format!(
+            "http://{}/oauth/token",
+            listener.local_addr().expect("local address")
+        );
+        let handle = tokio::spawn(async move {
+            let mut served = 0usize;
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut request = [0u8; 2048];
+                let _ = socket.read(&mut request).await;
+                if served < truncated {
+                    served += 1;
+                    // `content-length` promises 64 bytes; 27 are sent and the
+                    // connection then closes, so the *body read* fails after
+                    // the headers already arrived successfully.
+                    let _ = socket
+                        .write_all(
+                            b"HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\n\
+                              content-length: 64\r\n\r\n{\"error\":\"authorization_pend",
+                        )
+                        .await;
+                } else {
+                    let body = br#"{"access_token":"access-1","refresh_token":"refresh-1","token_type":"Bearer","expires_in":3600}"#;
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
+                         connection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = socket.write_all(head.as_bytes()).await;
+                    let _ = socket.write_all(body).await;
+                }
+                let _ = socket.shutdown().await;
+            }
+        });
+        (endpoint, handle)
+    }
+
+    #[tokio::test]
+    async fn a_body_read_that_dies_after_the_headers_is_retried_not_fatal() {
+        let (endpoint, server) = truncating_token_endpoint(2).await;
+
+        // Two truncated bodies stay under MAX_CONSECUTIVE_TRANSPORT_FAILURES,
+        // so the login must survive them and succeed on the third poll. Reading
+        // the body outside the retry path turns the first one into an immediate
+        // "invalid gateway token response" and aborts a ten-minute login over a
+        // local read failure.
+        let tokens = poll_for_tokens(&reqwest::Client::new(), &test_device(1, 600), &endpoint)
+            .await
+            .expect("a truncated body is a transport blip, not a malformed response");
+        assert_eq!(tokens.access_token, "access-1");
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn repeated_body_read_failures_still_trip_the_consecutive_cap() {
+        // The retry path must not become an unbounded one: a body that never
+        // completes has to fail fast on the same counter a failed connect does.
+        let (endpoint, server) = truncating_token_endpoint(usize::MAX).await;
+
+        let error = poll_for_tokens(&reqwest::Client::new(), &test_device(1, 600), &endpoint)
+            .await
+            .expect_err("a body that never completes must eventually give up");
+        let message = error.to_string();
+        assert!(message.contains("3 times in a row"), "got: {message}");
+        assert!(!message.contains("timed out"), "got: {message}");
+
+        server.abort();
+    }
+
+    #[test]
+    fn only_http_and_https_verification_urls_are_opened_automatically() {
+        assert_eq!(browser_open_refusal("https://gateway.example/device"), None);
+        assert_eq!(
+            browser_open_refusal("http://127.0.0.1:3001/device?user_code=BCDF-GHJK"),
+            None
+        );
+
+        // The device-authorization response is the one URL in shunt that a
+        // remote party chooses, so each of these reaches the OS handler unless
+        // the scheme is checked first.
+        for hostile in [
+            "file:///etc/passwd",
+            "smb://attacker.example/share",
+            "javascript:alert(1)",
+            // Not a URL at all: `open(1)` would read the leading dash as a flag.
+            "-n",
+            "",
+        ] {
+            let refusal = browser_open_refusal(hostile)
+                .unwrap_or_else(|| panic!("{hostile:?} must not be auto-opened"));
+            assert!(
+                refusal.contains("verification URL"),
+                "the refusal must say what it is refusing: {refusal}"
+            );
+        }
     }
 
     #[test]

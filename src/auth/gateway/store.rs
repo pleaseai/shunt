@@ -212,8 +212,21 @@ fn lock_blocking(lock_path: &Path) -> anyhow::Result<SessionLock> {
 /// concurrent-refresh guard degrades to nothing rather than failing to build.
 /// Two simultaneous `shunt gateway token` runs on such a platform can still
 /// race each other into a single-use refresh-token replay.
+///
+/// It says so once per process rather than degrading silently: the symptom is a
+/// surprise family-wide logout much later, which is impossible to trace back to
+/// an absent lock with nothing in the output to connect them.
 #[cfg(not(unix))]
 fn lock_blocking(_lock_path: &Path) -> anyhow::Result<SessionLock> {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    WARNED.call_once(|| {
+        eprintln!(
+            "Warning: this platform has no advisory file lock, so concurrent `shunt gateway \
+             token` runs are not serialized. If two run at once they can replay the same \
+             single-use refresh token, which signs this machine out of the gateway; run \
+             `shunt gateway login <url>` again if that happens."
+        );
+    });
     Ok(SessionLock {})
 }
 
@@ -358,5 +371,48 @@ mod tests {
             lock_path(Path::new("/tmp/shunt/session.json")),
             PathBuf::from("/tmp/shunt/session.json.lock")
         );
+    }
+
+    /// The lock actually excludes, rather than merely being taken. Real time,
+    /// not a paused clock: `lock_blocking` blocks a `spawn_blocking` thread in
+    /// `flock(2)`, which a virtual clock cannot advance through.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_held_session_lock_blocks_the_next_acquisition_until_it_drops() {
+        use std::time::Duration;
+
+        let dir = temp_dir("lock-exclusion");
+        let path = dir.join("session.json");
+        let held = lock_session(&path).await.expect("first acquisition");
+
+        // A channel rather than a `Barrier`: a panic on either side of a
+        // barrier deadlocks teardown, while a dropped sender just ends the
+        // receive.
+        let (acquired_tx, mut acquired_rx) = tokio::sync::mpsc::channel::<()>(1);
+        let waiter_path = path.clone();
+        let waiter = tokio::spawn(async move {
+            let lock = lock_session(&waiter_path)
+                .await
+                .expect("second acquisition");
+            let _ = acquired_tx.send(()).await;
+            lock
+        });
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(500), acquired_rx.recv())
+                .await
+                .is_err(),
+            "the second acquisition completed while the first lock was still held, so the lock \
+             excludes nothing"
+        );
+
+        drop(held);
+        tokio::time::timeout(Duration::from_secs(10), acquired_rx.recv())
+            .await
+            .expect("dropping the guard must release the lock")
+            .expect("the waiter must report its acquisition");
+        drop(waiter.await.expect("waiter task"));
+
+        let _ = fs::remove_dir_all(dir);
     }
 }

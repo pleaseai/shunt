@@ -72,7 +72,11 @@ pub fn is_token_valid_at(token: &str, now: SystemTime) -> bool {
 
 /// Whether the long-lived `refresh_token` may be POSTed to `url`: HTTPS anywhere,
 /// or plain `http://` only to loopback. Vets the initial URL and each redirect hop.
-fn is_safe_refresh_url(url: &reqwest::Url) -> bool {
+///
+/// The single definition of that floor. [`crate::auth::gateway::auth`] applies it
+/// to the endpoints a *discovery document* names, which no redirect policy can
+/// see — a second copy of this predicate would be free to drift from this one.
+pub(crate) fn is_safe_refresh_url(url: &reqwest::Url) -> bool {
     url.scheme() == "https"
         || (url.scheme() == "http"
             && crate::config::host_is_loopback(url.host_str().unwrap_or_default()))

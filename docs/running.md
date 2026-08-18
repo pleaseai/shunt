@@ -554,8 +554,18 @@ shunt gateway logout                               # discards the stored session
 `shunt gateway login` reads the deployment's `/.well-known/oauth-authorization-server` document,
 prints a verification URL plus a user code, opens a browser (`--manual` prints the URL instead),
 and polls until you approve. A URL that is plain `http://` and not loopback is accepted but warns:
-the device code and refresh token would travel unencrypted. If the deployment answers the
-discovery request with `404`, it is most likely missing `[server.gateway]`.
+the device code and refresh token would travel unencrypted, on every later refresh as well as
+during this login. If the deployment answers the discovery request with `404`, it is most likely
+missing `[server.gateway]`.
+
+The discovery document is remote input, so two floors apply to what it can direct shunt to do. The
+device code and refresh token are POSTed only to an endpoint advertised over `https`, or over
+`http` to a loopback address — anything else fails discovery naming the offending endpoint, rather
+than receiving the credential. (The redirect-hardened refresh client enforces the same rule, but
+only on redirect *targets*; with no redirect in play it never fires, so the check has to happen
+here.) The verification URL is likewise handed to the OS handler only when it is `http` or
+`https`: the gateway picks that string, and a `file://` or `smb://` value would otherwise be acted
+on with no confirmation. It is printed either way.
 
 The session lands in `~/.shunt/gateway/session.json` (override with `SHUNT_GATEWAY_SESSION_FILE`),
 written owner-only — file `0600` inside a `0700` directory. Note that the similarly named

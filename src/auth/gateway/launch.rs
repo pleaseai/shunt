@@ -60,10 +60,19 @@ pub(crate) fn settings_document(
     gateway_url: &str,
     shunt_executable: &Path,
 ) -> anyhow::Result<String> {
-    let helper = format!(
-        "{} gateway token",
-        shell_quote(&shunt_executable.to_string_lossy())
-    );
+    // Fail here, not lossily: a `to_string_lossy` replacement character would
+    // build a helper command naming a file that does not exist, and Claude Code
+    // would surface that as an opaque auth error at first use — the exact
+    // deferred failure this module's quoting exists to prevent.
+    let executable = shunt_executable.to_str().ok_or_else(|| {
+        anyhow!(
+            "the shunt executable path {} is not valid UTF-8, so it cannot be embedded in the \
+             Claude Code apiKeyHelper command; reinstall shunt under a UTF-8 path, or set \
+             `apiKeyHelper` yourself in your Claude Code settings",
+            shunt_executable.display()
+        )
+    })?;
+    let helper = format!("{} gateway token", shell_quote(executable));
     serde_json::to_string(&json!({
         "env": { "ANTHROPIC_BASE_URL": gateway_url },
         "apiKeyHelper": helper
@@ -179,6 +188,25 @@ mod tests {
         assert_eq!(
             shell_quote("/home/o'brien/bin/shunt"),
             r"'/home/o'\''brien/bin/shunt'"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_executable_path_fails_instead_of_being_mangled() {
+        use std::os::unix::ffi::OsStrExt;
+
+        // `to_string_lossy` would turn this into a U+FFFD and produce a helper
+        // command naming a file that does not exist, which Claude Code reports
+        // only later and only as an auth failure.
+        let path = PathBuf::from(std::ffi::OsStr::from_bytes(b"/opt/sh\xffunt"));
+        let error = settings_document("https://gateway.example", &path)
+            .expect_err("a path that cannot round-trip must not be embedded");
+        let message = error.to_string();
+        assert!(message.contains("not valid UTF-8"), "got: {message}");
+        assert!(
+            message.contains("apiKeyHelper"),
+            "the message must name what breaks: {message}"
         );
     }
 

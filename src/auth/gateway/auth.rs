@@ -81,11 +81,26 @@ pub(crate) async fn discover(
         .await
         .with_context(|| format!("failed to reach {url}"))?;
     let status = response.status();
-    let text = response.text().await.unwrap_or_default();
+    // Propagate rather than defaulting to "": a body that could not be read is
+    // a local read failure, and reporting it as an empty document would blame
+    // the gateway for sending garbage it never sent.
+    let text = response
+        .text()
+        .await
+        .with_context(|| format!("failed to read the discovery response from {url}"))?;
     let value: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
-    if let Some(discovery) = parse_discovery(&value) {
-        warn_on_unknown_protocol_version(&value);
-        return Ok(discovery);
+    match parse_discovery(&value) {
+        Ok(discovery) => {
+            warn_on_unknown_protocol_version(&value);
+            return Ok(discovery);
+        }
+        Err(DiscoveryProblem::Unsafe(endpoint)) => bail!(
+            "{url} advertised {endpoint}, which is neither https nor http to a loopback address. \
+             shunt will not send the device code or the refresh token over that transport"
+        ),
+        // An absent endpoint is not a discovery document at all, so it falls
+        // through to the 404 / bare-status reporting below.
+        Err(DiscoveryProblem::Absent) => {}
     }
     // A shunt deployment only registers this route when `[server.gateway]` is
     // configured, so a 404 here is the single most likely misconfiguration —
@@ -103,15 +118,40 @@ pub(crate) async fn discover(
     )
 }
 
-fn parse_discovery(value: &Value) -> Option<Discovery> {
-    let endpoint = |name: &str| {
-        value
+/// Why a discovery document yielded no usable [`Discovery`]. The two cases are
+/// deliberately distinct: an absent endpoint means "not a discovery document",
+/// while an unsafe one is a document shunt understood and refused.
+enum DiscoveryProblem {
+    Absent,
+    /// The offending endpoint, already named and truncated for an error message.
+    Unsafe(String),
+}
+
+fn parse_discovery(value: &Value) -> Result<Discovery, DiscoveryProblem> {
+    let endpoint = |name: &str| -> Result<String, DiscoveryProblem> {
+        let raw = value
             .get(name)
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned)
+            .ok_or(DiscoveryProblem::Absent)?;
+        // The device code and the long-lived refresh token are POSTed to
+        // whichever URL this document names, and the document comes from the
+        // network. `token_refresh_client()`'s hardened policy only inspects
+        // *redirect* targets, so with no redirect in play it never fires and
+        // this is the only place the transport floor can be applied at all.
+        // Same predicate as that policy, not a second copy of it.
+        if !raw
+            .parse::<reqwest::Url>()
+            .is_ok_and(|url| crate::auth::shared::is_safe_refresh_url(&url))
+        {
+            return Err(DiscoveryProblem::Unsafe(format!(
+                "{name} {:?}",
+                truncate_for_error(raw)
+            )));
+        }
+        Ok(raw.to_string())
     };
-    Some(Discovery {
+    Ok(Discovery {
         device_authorization_endpoint: endpoint("device_authorization_endpoint")?,
         token_endpoint: endpoint("token_endpoint")?,
     })
@@ -166,7 +206,13 @@ async fn refresh(
         .await
         .with_context(|| format!("failed to reach {token_endpoint}"))?;
     let status = response.status();
-    let text = response.text().await.unwrap_or_default();
+    // Propagate rather than defaulting to "": an unreadable body is a local
+    // read failure, not a malformed token response, and the two have different
+    // remedies.
+    let text = response
+        .text()
+        .await
+        .with_context(|| format!("failed to read the token response from {token_endpoint}"))?;
     // Body before status: a rejected refresh is HTTP 401, which says nothing
     // about *why* on its own.
     let value: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
@@ -344,6 +390,178 @@ mod tests {
             discovery.device_authorization_endpoint,
             "https://elsewhere.example/da"
         );
+    }
+
+    #[tokio::test]
+    async fn a_discovery_document_naming_a_plaintext_endpoint_is_refused() {
+        // The exfiltration path this closes: `token_refresh_client()` vets only
+        // *redirect* targets, so a document that simply names an off-host
+        // plaintext endpoint is never seen by that policy and the refresh token
+        // would be POSTed there in the clear on the very first hop.
+        for (field, other) in [
+            ("token_endpoint", "device_authorization_endpoint"),
+            ("device_authorization_endpoint", "token_endpoint"),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path(DISCOVERY_PATH))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    field: "http://collector.example/tok",
+                    other: "https://elsewhere.example/ok"
+                })))
+                .mount(&server)
+                .await;
+
+            let error = match discover(&reqwest::Client::new(), &server.uri()).await {
+                Ok(discovery) => {
+                    panic!("{field} over plaintext must not be usable, got {discovery:?}")
+                }
+                Err(error) => error,
+            };
+            let message = error.to_string();
+            assert!(
+                message.contains(field),
+                "the cause must be named: {message}"
+            );
+            assert!(
+                message.contains("http://collector.example/tok"),
+                "the offending endpoint must be shown: {message}"
+            );
+            assert!(
+                message.contains("loopback"),
+                "the message must say what the floor is: {message}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_transport_floor_still_allows_loopback_http() {
+        // The floor is transport, not origin: a locally hosted deployment is a
+        // supported setup, and so is a cross-host endpoint over https (see
+        // `discovery_uses_the_documents_endpoints_not_concatenated_paths`).
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(DISCOVERY_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "device_authorization_endpoint": "http://127.0.0.1:3001/oauth/device_authorization",
+                "token_endpoint": "http://localhost:3001/oauth/token"
+            })))
+            .mount(&server)
+            .await;
+
+        let discovery = discover(&reqwest::Client::new(), &server.uri())
+            .await
+            .expect("plain http to loopback must stay usable");
+        assert_eq!(
+            discovery.token_endpoint,
+            "http://localhost:3001/oauth/token"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refresh_is_never_sent_to_a_plaintext_endpoint() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(DISCOVERY_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "device_authorization_endpoint": "https://gateway.example/da",
+                "token_endpoint": "http://collector.example/tok"
+            })))
+            .mount(&server)
+            .await;
+
+        let dir = temp_dir("plaintext-endpoint");
+        let session_path = dir.join("session.json");
+        let mut session = test_session(&server.uri(), 0);
+        session.expires_at_ms = now_plus_ms(-1);
+        store::write_session(&session_path, &session).unwrap();
+
+        let error = resolve_token_at(&session_path)
+            .await
+            .expect_err("the stored refresh token must not leave over plaintext");
+        assert!(error.to_string().contains("token_endpoint"), "got: {error}");
+        // The session is untouched: nothing was rotated, so a later login is
+        // not required just because one discovery document was hostile.
+        let stored = store::read_session(&session_path).unwrap().unwrap();
+        assert_eq!(stored.refresh_token, "refresh-1");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The invariant the file lock exists for: the gateway's refresh tokens are
+    /// single-use, so two concurrent resolvers must produce exactly one refresh
+    /// between them. Without the lock the loser replays a spent token, which
+    /// revokes the whole rotation family.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_resolvers_perform_exactly_one_refresh() {
+        let server = MockServer::start().await;
+        mount_discovery(&server).await;
+        // The endpoint accepts `refresh-1` once. The delay is load-bearing: it
+        // holds the winner inside the critical section long enough that the
+        // second caller is guaranteed to arrive while the lock is held, rather
+        // than merely usually.
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(300))
+                    .set_body_json(json!({
+                        "access_token": "access-2",
+                        "refresh_token": "refresh-2",
+                        "token_type": "Bearer",
+                        "expires_in": 3600
+                    })),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        // Any second presentation of the spent token is rejected, exactly as
+        // the real gateway rejects it.
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .respond_with(
+                ResponseTemplate::new(401).set_body_json(json!({"error": "invalid_grant"})),
+            )
+            .mount(&server)
+            .await;
+
+        let dir = temp_dir("concurrent-refresh");
+        let session_path = dir.join("session.json");
+        let mut session = test_session(&server.uri(), 0);
+        session.expires_at_ms = now_plus_ms(-1);
+        store::write_session(&session_path, &session).unwrap();
+
+        let first = tokio::spawn({
+            let path = session_path.clone();
+            async move { resolve_token_at(&path).await }
+        });
+        let second = tokio::spawn({
+            let path = session_path.clone();
+            async move { resolve_token_at(&path).await }
+        });
+        let first = first.await.unwrap();
+        let second = second.await.unwrap();
+
+        let first = first.expect("the winning resolver must succeed");
+        let second = second.expect(
+            "the losing resolver must pick up the winner's token, not replay the spent one",
+        );
+        assert_eq!(first, "access-2");
+        assert_eq!(second, "access-2");
+
+        let posts = server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|request| request.method == wiremock::http::Method::POST)
+            .count();
+        assert_eq!(
+            posts, 1,
+            "the single-use refresh token must be presented exactly once"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]

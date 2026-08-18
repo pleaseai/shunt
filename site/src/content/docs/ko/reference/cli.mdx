@@ -89,7 +89,9 @@ shunt gateway login https://gateway.example.com
 shunt gateway login https://gateway.example.com --manual   # 브라우저를 열지 않고 URL만 출력
 ```
 
-shunt는 배포의 `/.well-known/oauth-authorization-server` 문서를 읽어 거기서 광고된 엔드포인트를 사용하고, 확인용 URL과 짧은 사용자 코드를 출력한 뒤 브라우저를 열고, 게이트웨이의 `/device` 페이지에서 승인할 때까지 폴링합니다. discovery가 `404`를 반환한다면 대개 그 배포에 `[server.gateway]` 섹션이 없다는 뜻입니다. 루프백이 아닌 평문 `http://` URL도 허용되지만 경고가 출력됩니다 — device code와 refresh token이 암호화되지 않은 채 전송되기 때문입니다.
+shunt는 배포의 `/.well-known/oauth-authorization-server` 문서를 읽어 거기서 광고된 엔드포인트를 사용하고, 확인용 URL과 짧은 사용자 코드를 출력한 뒤 브라우저를 열고, 게이트웨이의 `/device` 페이지에서 승인할 때까지 폴링합니다. discovery가 `404`를 반환한다면 대개 그 배포에 `[server.gateway]` 섹션이 없다는 뜻입니다. 루프백이 아닌 평문 `http://` URL도 허용되지만 경고가 출력됩니다 — device code와 refresh token이 암호화되지 않은 채 전송되기 때문이며, 이는 이번 로그인에 한정되지 않습니다. 이후의 모든 토큰 갱신도 같은 전송 경로를 사용합니다.
+
+배포가 돌려주는 응답에는 두 가지 하한이 적용됩니다. shunt는 discovery 문서가 `https`로, 또는 루프백 주소에 대해 `http`로 광고한 엔드포인트에만 device code와 refresh token을 POST합니다. 그 외의 엔드포인트는 자격 증명을 받는 대신 discovery 단계에서 이름과 함께 실패합니다. 또한 확인용 URL은 `http` 또는 `https`일 때만 자동으로 열립니다 — 그 문자열은 shunt가 아니라 게이트웨이가 고르므로, 다른 스킴이면 열지 않은 이유와 함께 출력하고 따라갈지 여부는 사용자가 판단합니다.
 
 세션은 `~/.shunt/gateway/session.json`에 저장되며(`SHUNT_GATEWAY_SESSION_FILE`로 오버라이드), 소유자 전용으로 기록됩니다: `0700` 디렉터리 안의 `0600` 파일.
 

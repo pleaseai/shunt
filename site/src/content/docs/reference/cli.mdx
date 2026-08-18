@@ -101,7 +101,9 @@ shunt gateway login https://gateway.example.com
 shunt gateway login https://gateway.example.com --manual   # print the URL, don't open a browser
 ```
 
-shunt reads the deployment's `/.well-known/oauth-authorization-server` document and uses the endpoints it advertises, prints a verification URL and a short user code, opens your browser, and polls until you approve on the gateway's `/device` page. A `404` on discovery almost always means the deployment has no `[server.gateway]` section. A plain `http://` URL that is not loopback is accepted but warns — the device code and refresh token would travel unencrypted.
+shunt reads the deployment's `/.well-known/oauth-authorization-server` document and uses the endpoints it advertises, prints a verification URL and a short user code, opens your browser, and polls until you approve on the gateway's `/device` page. A `404` on discovery almost always means the deployment has no `[server.gateway]` section. A plain `http://` URL that is not loopback is accepted but warns — the device code and refresh token would travel unencrypted, and not only during this login: every later token refresh uses the same transport.
+
+Two floors apply to what the deployment sends back. shunt POSTs the device code and the refresh token only to an endpoint the discovery document advertises over `https`, or over `http` to a loopback address; any other endpoint fails discovery by name instead of receiving the credential. And the verification URL is opened automatically only when it is `http` or `https` — the gateway chooses that string, so any other scheme is printed with the reason it was not opened, and you decide whether to follow it.
 
 The session is stored at `~/.shunt/gateway/session.json` (override with `SHUNT_GATEWAY_SESSION_FILE`), written owner-only: file mode `0600` inside a `0700` directory.
 
