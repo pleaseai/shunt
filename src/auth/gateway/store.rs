@@ -183,7 +183,7 @@ impl Drop for SessionLock {
 /// itself: writeback renames a temp file over the session, so its inode
 /// changes and a lock held on the old inode would guard nothing.
 ///
-/// Acquisition is bounded ([`LOCK_TIMEOUT`]) rather than an unconditional
+/// Acquisition is bounded (`LOCK_TIMEOUT`) rather than an unconditional
 /// `LOCK_EX`. A holder blocked on a gateway that accepts the connection and
 /// never answers would otherwise stall every other `apiKeyHelper` on the
 /// machine indefinitely and silently — one unreachable deployment taking down
