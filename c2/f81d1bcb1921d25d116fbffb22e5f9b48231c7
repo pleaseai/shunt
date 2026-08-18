@@ -1,0 +1,19 @@
+docs/m4-inbound-auth.md
+  s_8ac7b3d8238f53::t_e22db81192b443 201
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "c2f81d1bcb1921d25d116fbffb22e5f9b48231c7",
+  "prompts": {},
+  "sessions": {
+    "s_8ac7b3d8238f53": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6872395d-b5ef-44e2-be10-2544083db6cd",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
