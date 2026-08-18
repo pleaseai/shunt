@@ -3,7 +3,7 @@
 
 use std::{env, path::PathBuf};
 
-use crate::config::{Config, ProviderKind};
+use crate::config::{AuthMode, Config, ProviderKind};
 
 pub mod auth;
 pub mod login;
@@ -96,6 +96,36 @@ pub fn antigravity_migration_error(credential_exists: bool) -> Option<String> {
     })
 }
 
+/// The Code Assist host `shunt login antigravity` runs project discovery
+/// against: the configured `antigravity` provider's `base_url` when that
+/// provider really is the Antigravity upstream, else the production default.
+///
+/// Looking the slot up by name alone is not enough, and that distinction is
+/// load-bearing rather than defensive. `[providers.antigravity]` is only a
+/// table name: an operator can point it at any other kind, and such a config
+/// validates cleanly — the deprecated `antigravity_cli` transport keeps a
+/// `http://localhost` placeholder under exactly this name, and
+/// `kind = "responses"` with `auth = "passthrough"` and an arbitrary host is
+/// accepted too, because the `AuthMode::AntigravityOauth` host guard in
+/// [`Config::validate`] only fires for providers that actually use that auth
+/// mode. Login mints a live subscription bearer and discovery sends it to
+/// whichever host it is handed, so honoring an unvetted slot would carry the
+/// token off-origin — or over plaintext to `localhost:80`. Only a
+/// `kind = "antigravity"` provider with `auth = "antigravity_oauth"` has had
+/// its `base_url` through that guard (https on the Code Assist host, or
+/// loopback), which is the same guarantee the request path relies on in
+/// `resolve_credential`.
+pub fn login_base_url(config: Option<&Config>) -> String {
+    config
+        .and_then(|config| config.provider("antigravity"))
+        .filter(|provider| {
+            provider.kind == ProviderKind::Antigravity
+                && provider.auth == AuthMode::AntigravityOauth
+        })
+        .map(|provider| provider.base_url.clone())
+        .unwrap_or_else(|| auth::API_ENDPOINT.to_string())
+}
+
 /// Process-env guard for tests that set `SHUNT_ANTIGRAVITY_AUTH_FILE`.
 ///
 /// Deliberately the *same* mutex as [`crate::config::CONFIG_ENV_LOCK`] rather
@@ -117,11 +147,13 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
 
-    use crate::config::{Config, ModelConfig, ProviderKind, RouteConfig, RoutePrefixConfig};
+    use crate::config::{
+        AuthMode, Config, ModelConfig, ProviderKind, RouteConfig, RoutePrefixConfig,
+    };
 
     use super::{
-        antigravity_migration_error, default_antigravity_auth_path, routes_to_antigravity,
-        routes_to_antigravity_cli, warn_if_routes_to_antigravity_cli,
+        antigravity_migration_error, default_antigravity_auth_path, login_base_url,
+        routes_to_antigravity, routes_to_antigravity_cli, warn_if_routes_to_antigravity_cli,
         ANTIGRAVITY_AUTH_FILE_ENV_LOCK,
     };
 
@@ -229,6 +261,59 @@ mod tests {
         let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
 
         assert!(logs.is_empty(), "{logs}");
+    }
+
+    #[test]
+    fn login_uses_a_configured_antigravity_base_url() {
+        let mut config = base();
+        config
+            .providers
+            .get_mut("antigravity")
+            .expect("the default config seeds an antigravity provider")
+            .base_url = "http://127.0.0.1:9999".to_string();
+
+        assert_eq!(login_base_url(Some(&config)), "http://127.0.0.1:9999");
+    }
+
+    #[test]
+    fn login_refuses_a_base_url_from_a_slot_that_is_not_the_antigravity_upstream() {
+        // `[providers.antigravity]` is only a table name, and a config that
+        // parks some other kind under it validates cleanly — the deprecated
+        // CLI transport keeps a `http://localhost` placeholder there, and
+        // `kind = "responses"` with `auth = "passthrough"` accepts any host at
+        // all, because the AuthMode::AntigravityOauth host guard never fires
+        // for it. Login mints a live subscription bearer and hands this host
+        // straight to `discover_project`, so trusting the name alone would
+        // send that token off-origin, or over plaintext to localhost:80. Only
+        // a slot that guard actually vetted may redirect discovery.
+        for (kind, auth) in [
+            (ProviderKind::AntigravityCli, AuthMode::None),
+            (ProviderKind::Responses, AuthMode::Passthrough),
+            (ProviderKind::Antigravity, AuthMode::Passthrough),
+            (ProviderKind::Gemini, AuthMode::GoogleOauth),
+        ] {
+            let mut config = base();
+            let provider = config
+                .providers
+                .get_mut("antigravity")
+                .expect("the default config seeds an antigravity provider");
+            provider.kind = kind;
+            provider.auth = auth;
+            provider.base_url = "https://evil.example.com".to_string();
+
+            assert_eq!(
+                login_base_url(Some(&config)),
+                super::auth::API_ENDPOINT,
+                "kind {kind:?} with auth {auth:?} must not redirect discovery"
+            );
+        }
+    }
+
+    #[test]
+    fn login_falls_back_to_production_without_a_config() {
+        // `shunt login antigravity` must still work when no config loads at
+        // all — that is the whole reason main.rs treats the load as optional.
+        assert_eq!(login_base_url(None), super::auth::API_ENDPOINT);
     }
 
     #[test]

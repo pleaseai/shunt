@@ -182,16 +182,15 @@ impl AntigravityAuthStore {
     pub fn new(path: PathBuf, client: reqwest::Client, base_url: impl Into<String>) -> Self {
         let api_endpoint = base_url.into().trim_end_matches('/').to_string();
         // The `daily-` control-plane host that serves onboarding only exists
-        // for the production backend. Config validation (the
-        // `AuthMode::AntigravityOauth` block in `src/config.rs`) only admits a
-        // non-production `base_url` when its host is a loopback address — the
-        // operator's proxy standing in for the whole backend — so sending
-        // `onboardUser` to the real `daily-` host in that case would egress
-        // straight past the very endpoint the operator configured.
-        // `discover_project` chains into `onboard_user` on the same request
-        // path, so this has to travel with `api_endpoint`, not stay pinned to
-        // the production default.
-        let daily_api_endpoint = if api_endpoint == API_ENDPOINT {
+        // for the production backend. Anything else config validation admits
+        // (the `AuthMode::AntigravityOauth` block in `src/config.rs`) is a
+        // loopback host — the operator's proxy standing in for the whole
+        // backend — so sending `onboardUser` to the real `daily-` host there
+        // would egress straight past the very endpoint the operator
+        // configured. `discover_project` chains into `onboard_user` on the same
+        // request path, so this has to travel with `api_endpoint` rather than
+        // stay pinned to the production default.
+        let daily_api_endpoint = if addresses_production_backend(&api_endpoint) {
             DAILY_API_ENDPOINT.to_string()
         } else {
             api_endpoint.clone()
@@ -929,6 +928,32 @@ pub(crate) fn default_tier_id(load_response: &Value) -> String {
     "free-tier".to_string()
 }
 
+/// Whether `endpoint` addresses the production Code Assist backend itself,
+/// which is what decides between the `daily-` control-plane host and the
+/// configured host for onboarding (see [`AntigravityAuthStore::new`]).
+///
+/// Deliberately not `endpoint == API_ENDPOINT`. Config validation accepts any
+/// `base_url` whose *parsed* host is the Code Assist host over https, and the
+/// operator's raw spelling is what reaches here — so `https://CloudCode-PA.googleapis.com`
+/// (the URL parser lowercases hosts) and `https://cloudcode-pa.googleapis.com:443`
+/// (an explicit default port) are both the production backend while being
+/// byte-different from the constant. A string compare sends their first-time
+/// onboarding to the production host, which does not serve `onboardUser`.
+/// Compare the parsed URL instead, reusing config's own host predicate, and
+/// treat a port, a path prefix, or a non-https scheme as "not plain
+/// production" — those address something in front of the backend, which is
+/// exactly the case that must carry onboarding with it.
+fn addresses_production_backend(endpoint: &str) -> bool {
+    reqwest::Url::parse(endpoint).is_ok_and(|url| {
+        url.scheme() == "https"
+            && url.port().is_none()
+            && url.path() == "/"
+            && url
+                .host_str()
+                .is_some_and(crate::config::host_is_google_codeassist)
+    })
+}
+
 /// Google issues opaque access tokens, so validity comes from the recorded
 /// `expiry_date` alone. A credential without one is treated as stale rather
 /// than assumed live — the cost is one refresh, and the alternative is sending
@@ -1102,6 +1127,56 @@ mod tests {
             API_ENDPOINT,
         );
         assert_eq!(store.api_endpoint, API_ENDPOINT);
+        assert_eq!(store.daily_api_endpoint, DAILY_API_ENDPOINT);
+    }
+
+    #[test]
+    fn every_config_valid_spelling_of_the_production_host_still_reaches_the_daily_host() {
+        // The production check cannot be a string compare against
+        // API_ENDPOINT. Config validation admits any base_url whose *parsed*
+        // host is the Code Assist host over https, and the operator's raw
+        // spelling is what reaches the store — so a mis-cased host or an
+        // explicit `:443` is production while being byte-different from the
+        // constant. Treating those as non-production sends a first-time
+        // account's `onboardUser` to the production host, which does not serve
+        // it: a config the validator calls plain production would break.
+        for spelling in [
+            API_ENDPOINT,
+            "https://CloudCode-PA.googleapis.com",
+            "https://cloudcode-pa.googleapis.com:443",
+        ] {
+            assert!(
+                addresses_production_backend(spelling),
+                "{spelling} is the production backend"
+            );
+        }
+        // Anything standing in *front* of the backend — a proxy port, a path
+        // prefix, plaintext, or a different host — has to carry onboarding
+        // with it instead.
+        for spelling in [
+            "https://cloudcode-pa.googleapis.com:8443",
+            "https://cloudcode-pa.googleapis.com/debug-proxy",
+            "http://cloudcode-pa.googleapis.com",
+            "http://127.0.0.1:8080",
+            "https://daily-cloudcode-pa.googleapis.com",
+            "not a url",
+        ] {
+            assert!(
+                !addresses_production_backend(spelling),
+                "{spelling} is not the plain production backend"
+            );
+        }
+    }
+
+    #[test]
+    fn a_non_canonical_production_base_url_keeps_onboarding_on_the_daily_host() {
+        // The store-level mirror of the case above: `:443` is the same backend
+        // as the bare host, so it must not collapse daily_api_endpoint onto it.
+        let store = AntigravityAuthStore::new(
+            temp_auth_file("production_with_explicit_port"),
+            reqwest::Client::new(),
+            "https://cloudcode-pa.googleapis.com:443",
+        );
         assert_eq!(store.daily_api_endpoint, DAILY_API_ENDPOINT);
     }
 

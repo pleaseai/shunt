@@ -373,21 +373,24 @@ fn login(
         }
         "antigravity" if name.is_none() && !long_lived && mode.is_none() => {
             runtime()?.block_on(async {
-                // Logging in should not require a fully valid gateway config:
-                // read the optional override best-effort and fall back to the
-                // default Antigravity Code Assist host if the config fails to
-                // load or omits it. Looked up by the built-in provider name
-                // only, same limitation as the `cursor` arm above — iterating
-                // the provider map instead would make the pick nondeterministic
-                // if more than one provider used `antigravity_oauth`.
-                let base_url = Config::load(config_path)
-                    .ok()
-                    .and_then(|config| {
-                        config
-                            .provider("antigravity")
-                            .map(|provider| provider.base_url.clone())
-                    })
-                    .unwrap_or_else(|| "https://cloudcode-pa.googleapis.com".to_string());
+                // Logging in should not require a fully valid gateway config,
+                // so a config that will not load is not fatal here — but it
+                // must not silently drop a configured `base_url` either, or an
+                // operator debugging why their loopback backend never saw the
+                // discovery call has nothing to go on. Say so, then fall back.
+                // Which slot is trusted, and why the lookup is not by name
+                // alone, lives with `login_base_url`.
+                let config = match Config::load(config_path) {
+                    Ok(config) => Some(config),
+                    Err(error) => {
+                        eprintln!(
+                            "Could not read the config ({error}); signing in against the default \
+                             Antigravity endpoint. A configured base_url will not be used."
+                        );
+                        None
+                    }
+                };
+                let base_url = shunt::auth::antigravity::login_base_url(config.as_ref());
                 shunt::auth::antigravity::login::run(&base_url).await
             })
         }
