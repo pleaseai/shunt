@@ -549,9 +549,12 @@ fn reject_swallowed_config(global_config: Option<&std::path::Path>) -> anyhow::R
     };
     let path = path.display();
     anyhow::bail!(
-        "`--config {path}` is not used by `shunt gateway claude`, and shunt consumed it instead \
-         of forwarding it to claude.\n\nTo pass it to claude, put it after `--`:\n\n    shunt \
-         gateway claude -- --config {path}"
+        "`--config {path}` is not used by `shunt gateway claude`: this command reads the stored \
+         gateway session and its own executable path, never a shunt config file. shunt consumed \
+         the flag rather than forwarding it, so the invocation is refused instead of silently \
+         dropping it.\n\nDrop the flag to run against the stored session. If you meant \
+         `claude`'s own `--config`, pass it after `--`:\n\n    shunt gateway claude -- --config \
+         <claude's config>"
     )
 }
 
@@ -952,8 +955,19 @@ mod tests {
         .expect_err("a swallowed --config must abort rather than launch claude without it");
         let message = error.to_string();
         assert!(
-            message.contains("shunt gateway claude -- --config foo"),
-            "the error must spell out the fix: {message}"
+            message.contains("--config foo"),
+            "the error must name the flag it refused: {message}"
+        );
+        assert!(
+            message.contains("never a shunt config file"),
+            "the error must say why the flag has no meaning here: {message}"
+        );
+        // The remedy must not be "forward shunt's config path to claude". That
+        // is what the first wording prescribed, and it answers a question the
+        // user did not ask: `-- --config foo` hands *shunt's* config to claude.
+        assert!(
+            !message.contains("-- --config foo"),
+            "the error must not prescribe forwarding shunt's own config path: {message}"
         );
 
         // Every other subcommand keeps `--config` working exactly as before,

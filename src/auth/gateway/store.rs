@@ -16,6 +16,7 @@
 use std::{
     fs, io,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use anyhow::{anyhow, Context};
@@ -130,15 +131,29 @@ pub fn write_session(path: &Path, session: &GatewaySession) -> anyhow::Result<()
 /// Remove the session file. `Ok(false)` means there was nothing to remove, so
 /// `shunt gateway logout` is idempotent.
 pub fn remove_session(path: &Path) -> anyhow::Result<bool> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(true),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error).with_context(|| format!("failed to remove {}", path.display())),
-    }
+    let removed = match fs::remove_file(path) {
+        Ok(()) => true,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to remove {}", path.display()))
+        }
+    };
+    // Best-effort, and deliberately not an error: the lock file carries no
+    // state, so failing the logout over a leftover empty file would be worse
+    // than leaving it. Unlinking it while another process holds the lock is
+    // safe here precisely because the session is gone too — that process's
+    // refresh has nothing left to write, and a later `login` creates a fresh
+    // lock inode for the fresh session.
+    let _ = fs::remove_file(lock_path(path));
+    Ok(removed)
 }
 
 /// Held for the read -> refresh -> write critical section. Dropping it releases
 /// the advisory lock.
+///
+/// `Debug` is derived rather than redacted: this holds a descriptor on an empty
+/// lock file, never any token material.
+#[derive(Debug)]
 pub struct SessionLock {
     #[cfg(unix)]
     file: fs::File,
@@ -167,9 +182,25 @@ impl Drop for SessionLock {
 /// The lock is taken on a sibling `.lock` file rather than on the session
 /// itself: writeback renames a temp file over the session, so its inode
 /// changes and a lock held on the old inode would guard nothing.
+///
+/// Acquisition is bounded ([`LOCK_TIMEOUT`]) rather than an unconditional
+/// `LOCK_EX`. A holder blocked on a gateway that accepts the connection and
+/// never answers would otherwise stall every other `apiKeyHelper` on the
+/// machine indefinitely and silently — one unreachable deployment taking down
+/// every Claude Code session. Timing out turns that into a reported failure on
+/// one session instead of a hang on all of them.
 pub async fn lock_session(path: &Path) -> anyhow::Result<SessionLock> {
+    lock_session_for(path, LOCK_TIMEOUT).await
+}
+
+/// [`lock_session`] with an explicit bound, so tests can drive the expiry path
+/// without waiting [`LOCK_TIMEOUT`] out.
+pub(crate) async fn lock_session_for(
+    path: &Path,
+    timeout: Duration,
+) -> anyhow::Result<SessionLock> {
     let lock_path = lock_path(path);
-    tokio::task::spawn_blocking(move || lock_blocking(&lock_path))
+    tokio::task::spawn_blocking(move || lock_blocking(&lock_path, timeout))
         .await
         .context("gateway session lock task failed")?
 }
@@ -180,8 +211,25 @@ fn lock_path(path: &Path) -> PathBuf {
     path.with_file_name(name)
 }
 
+/// Slack the waiter keeps beyond the worst-case legitimate hold, covering the
+/// session write and scheduling jitter.
+const LOCK_HEADROOM_SECS: u64 = 30;
+/// How long a caller waits for the refresh lock before giving up.
+///
+/// Derived from [`super::auth::NETWORK_TIMEOUT`] rather than chosen
+/// independently, so the two cannot drift apart: a legitimate holder makes two
+/// separately bounded round-trips (discovery, then the token POST), so its
+/// worst case is twice that budget, and the waiter needs headroom *beyond* it.
+/// At exactly 2x, a holder using its full budget would expire the waiter at the
+/// same instant it succeeded, reporting contention for a refresh that worked.
+pub(crate) const LOCK_TIMEOUT: Duration =
+    Duration::from_secs(2 * super::auth::NETWORK_TIMEOUT.as_secs() + LOCK_HEADROOM_SECS);
+/// Re-try cadence for the non-blocking acquire. Short relative to a refresh, so
+/// the waiter picks the lock up promptly once the holder is done.
+const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(50);
+
 #[cfg(unix)]
-fn lock_blocking(lock_path: &Path) -> anyhow::Result<SessionLock> {
+fn lock_blocking(lock_path: &Path, timeout: Duration) -> anyhow::Result<SessionLock> {
     use std::os::unix::{fs::OpenOptionsExt, io::AsRawFd};
 
     if let Some(parent) = lock_path
@@ -198,14 +246,35 @@ fn lock_blocking(lock_path: &Path) -> anyhow::Result<SessionLock> {
         .mode(0o600)
         .open(lock_path)
         .with_context(|| format!("failed to open {}", lock_path.display()))?;
-    // Blocking acquire: the holder is doing one token refresh, so waiting is
-    // both short and exactly what the waiter wants — it re-reads afterwards and
-    // usually finds the refreshed token already on disk.
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-        return Err(io::Error::last_os_error())
-            .with_context(|| format!("failed to lock {}", lock_path.display()));
+    // Non-blocking acquire on a deadline rather than a bare `LOCK_EX`. Waiting
+    // is what the waiter wants — the holder is doing one token refresh, and the
+    // waiter re-reads afterwards and usually finds the refreshed token already
+    // on disk — but waiting *without bound* means a wedged holder hangs every
+    // other session with no output to explain it.
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(SessionLock { file });
+        }
+        let error = io::Error::last_os_error();
+        // Only contention is retried; a real failure (bad descriptor, an
+        // filesystem that cannot lock) is reported immediately rather than
+        // being retried until the deadline and then misreported as contention.
+        if error.kind() != io::ErrorKind::WouldBlock {
+            return Err(error).with_context(|| format!("failed to lock {}", lock_path.display()));
+        }
+        if std::time::Instant::now() >= deadline {
+            anyhow::bail!(
+                "timed out after {:?} waiting for the gateway session lock at {}. Another \
+                 `shunt gateway token` is holding it — most likely one whose gateway accepted \
+                 the connection and never answered. If no such process is running, remove that \
+                 file",
+                timeout,
+                lock_path.display()
+            );
+        }
+        std::thread::sleep(LOCK_RETRY_INTERVAL.min(timeout));
     }
-    Ok(SessionLock { file })
 }
 
 /// Documented no-op off Unix: `flock(2)` has no `std` equivalent there, so the
@@ -217,7 +286,7 @@ fn lock_blocking(lock_path: &Path) -> anyhow::Result<SessionLock> {
 /// surprise family-wide logout much later, which is impossible to trace back to
 /// an absent lock with nothing in the output to connect them.
 #[cfg(not(unix))]
-fn lock_blocking(_lock_path: &Path) -> anyhow::Result<SessionLock> {
+fn lock_blocking(_lock_path: &Path, _timeout: Duration) -> anyhow::Result<SessionLock> {
     static WARNED: std::sync::Once = std::sync::Once::new();
     WARNED.call_once(|| {
         eprintln!(
@@ -412,6 +481,55 @@ mod tests {
             .expect("dropping the guard must release the lock")
             .expect("the waiter must report its acquisition");
         drop(waiter.await.expect("waiter task"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// A wedged holder must be reported, not waited on forever: an unbounded
+    /// `LOCK_EX` behind one unreachable gateway hangs every `apiKeyHelper` on
+    /// the machine with nothing on stderr to explain it.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn waiting_for_a_stuck_holder_times_out_and_names_the_lock() {
+        let dir = temp_dir("lock-timeout");
+        let path = dir.join("session.json");
+        let held = lock_session(&path).await.expect("first acquisition");
+
+        let started = std::time::Instant::now();
+        let error = lock_session_for(&path, Duration::from_millis(300))
+            .await
+            .expect_err("a held lock must time out rather than block forever");
+        let message = error.to_string();
+        assert!(message.contains("timed out"), "got: {message}");
+        assert!(
+            message.contains(&lock_path(&path).display().to_string()),
+            "the message must name the lock file so it can be found: {message}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the bound must actually bound: waited {:?}",
+            started.elapsed()
+        );
+
+        drop(held);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn logout_removes_the_lock_file_alongside_the_session() {
+        let dir = temp_dir("logout-lock");
+        let path = dir.join("session.json");
+        write_session(&path, &test_session("https://gateway.example", 0)).unwrap();
+        // Taking and releasing the lock is what creates the sibling file.
+        drop(lock_session(&path).await.unwrap());
+        assert!(lock_path(&path).exists(), "the lock file should exist now");
+
+        assert!(remove_session(&path).unwrap());
+        assert!(!path.exists());
+        assert!(
+            !lock_path(&path).exists(),
+            "logout must not leave the lock file behind"
+        );
 
         let _ = fs::remove_dir_all(dir);
     }

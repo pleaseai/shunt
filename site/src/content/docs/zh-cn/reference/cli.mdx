@@ -89,7 +89,7 @@ shunt gateway login https://gateway.example.com
 shunt gateway login https://gateway.example.com --manual   # 只打印 URL，不打开浏览器
 ```
 
-shunt 会读取该部署的 `/.well-known/oauth-authorization-server` 文档并使用其中公布的端点，打印一个验证 URL 和一个短用户码，打开浏览器，然后轮询直到你在网关的 `/device` 页面上批准。discovery 返回 `404` 通常意味着该部署没有 `[server.gateway]` 配置段。非回环的明文 `http://` URL 也会被接受，但会给出警告 —— device code 和 refresh token 会以未加密的形式传输，而且不只是这一次登录：之后的每一次令牌刷新都走同一条链路。
+shunt 会读取该部署的 `/.well-known/oauth-authorization-server` 文档并使用其中公布的端点，打印一个验证 URL 和一个短用户码，打开浏览器，然后轮询直到你在网关的 `/device` 页面上批准。discovery 返回 `404` 通常意味着该部署没有 `[server.gateway]` 配置段。discovery 和 device code 请求各自都有上限，因此只接受连接却从不应答的部署会以超时形式报告，而不会让终端无限期等待；随后的批准轮询则刻意不作同样限制，因为等待正是它的职责。非回环的明文 `http://` URL 也会被接受，但会给出警告 —— device code 和 refresh token 会以未加密的形式传输，而且不只是这一次登录：之后的每一次令牌刷新都走同一条链路，并且 `shunt gateway token` 每次真正执行刷新时都会重复该警告（直接返回缓存 token、不发起网络调用时则不会）。
 
 对该部署返回的内容还有两条底线。shunt 只会把 device code 和 refresh token POST 到 discovery 文档以 `https` 公布、或以 `http` 指向回环地址的端点；其他端点不会收到凭据，而是让 discovery 指名失败。验证 URL 也只在其为 `http` 或 `https` 时才自动打开 —— 该字符串由网关而非 shunt 选择，因此其他协议只会打印出来并说明未打开的原因，由你自己决定是否访问。
 
@@ -109,6 +109,10 @@ shunt 会读取该部署的 `/.well-known/oauth-authorization-server` 文档并�
 它与打印上游 Claude 订阅 token 的 [`shunt token`](#shunt-token) 是**两个不同的 helper**。两者不会读取对方的存储，而名字相近的 `SHUNT_GATEWAY_TOKEN` 变量属于 `shunt token`，不属于本命令。
 
 已保存的 token 会一直使用到距离过期不足 5 分钟，然后才刷新。网关的 refresh token 会轮换且只能使用一次，因此刷新在独占文件锁下执行，并在拿到锁之后重新读取会话：多个 Claude Code 会话同时调用 helper 也只会发生一次刷新，不会因重放而使整个轮换家族失效。
+
+锁和刷新都不会无限期等待。与网关的每次往返有上限，等待锁也有上限 —— 否则一个只接受连接却从不应答的部署会一直握着锁，让该机器上其他所有 `apiKeyHelper` 毫无提示地卡住。超出上限时命令会失败，并指出锁文件的路径。
+
+进入 5 分钟缓冲期意味着**该刷新了**，而不是**必须刷新**。如果刷新失败而缓存的 token 仍然真正有效，shunt 会在 stderr 上给出警告并继续提供该 token，而不是把一次短暂的网络抖动变成认证失败。等它真正过期之后，命令才会失败。凡是 Claude Code 的 helper 校验器会拒绝的 token —— 不是 1~16384 个不含空白的可打印 ASCII 字符 —— 都会在这里被拒绝并给出指明网关的诊断，而不是被打印出去、导致认证失败却没有任何说明。`shunt gateway logout` 会连同会话一起删除锁文件。
 
 ## `shunt gateway claude`
 

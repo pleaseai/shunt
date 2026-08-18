@@ -70,7 +70,7 @@ async fn run_oauth_auto(name: &str) -> anyhow::Result<PathBuf> {
     let authorize_url = build_authorize_url(&challenge, &state, auth::SCOPE, &redirect_uri)?;
     println!("Open this URL to authorize shunt with the Claude account to store:\n");
     println!("    {authorize_url}\n");
-    crate::auth::shared::open_url_async(authorize_url.as_str())
+    crate::auth::shared::open_url_async("Claude OAuth", authorize_url.as_str())
         .await
         .context("failed to open Claude OAuth authorization URL")?;
     let code = callback.wait_for_code(OAUTH_CALLBACK_TIMEOUT).await?;
@@ -96,7 +96,9 @@ async fn run_oauth_manual(name: &str) -> anyhow::Result<PathBuf> {
     let authorize_url = build_authorize_url(&challenge, &state, auth::SCOPE, MANUAL_REDIRECT_URL)?;
     println!("Open this URL to authorize shunt with the Claude account to store:\n");
     println!("    {authorize_url}\n");
-    if let Err(error) = crate::auth::shared::open_url_async(authorize_url.as_str()).await {
+    if let Err(error) =
+        crate::auth::shared::open_url_async("Claude OAuth", authorize_url.as_str()).await
+    {
         eprintln!("Could not open browser automatically: {error}");
     }
     let pasted = prompt_authorization_code().await?;
@@ -199,7 +201,9 @@ async fn run_setup_token(name: &str) -> anyhow::Result<PathBuf> {
 
     println!("Open this URL to authorize shunt with the Claude account to store:\n");
     println!("    {authorize_url}\n");
-    if let Err(error) = crate::auth::shared::open_url_async(authorize_url.as_str()).await {
+    if let Err(error) =
+        crate::auth::shared::open_url_async("Claude OAuth", authorize_url.as_str()).await
+    {
         eprintln!("Could not open browser automatically: {error}");
     }
     let pasted = prompt_authorization_code().await?;

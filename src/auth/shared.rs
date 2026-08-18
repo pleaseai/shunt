@@ -784,11 +784,17 @@ pub(crate) fn open_url(url: &str) -> anyhow::Result<()> {
 /// Launch the browser without blocking the async runtime: [`open_url`] spawns a
 /// child process and waits on it, so it runs on `spawn_blocking`'s dedicated
 /// pool rather than on a Tokio worker thread.
-pub(crate) async fn open_url_async(url: &str) -> anyhow::Result<()> {
+///
+/// `flow` names the login flow in the error — "Claude OAuth", "gateway login".
+/// A shared body must not mean a shared diagnostic: several flows can open a
+/// browser in one session, and a bare "browser open task failed" leaves the
+/// user unable to tell which one broke.
+pub(crate) async fn open_url_async(flow: &str, url: &str) -> anyhow::Result<()> {
     let url = url.to_string();
+    let flow = flow.to_string();
     tokio::task::spawn_blocking(move || open_url(&url))
         .await
-        .context("browser open task failed")?
+        .with_context(|| format!("{flow} browser open task failed"))?
 }
 
 /// Test-only RAII guard that sets an environment variable on construction and

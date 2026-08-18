@@ -555,8 +555,14 @@ shunt gateway logout                               # discards the stored session
 prints a verification URL plus a user code, opens a browser (`--manual` prints the URL instead),
 and polls until you approve. A URL that is plain `http://` and not loopback is accepted but warns:
 the device code and refresh token would travel unencrypted, on every later refresh as well as
-during this login. If the deployment answers the discovery request with `404`, it is most likely
-missing `[server.gateway]`.
+during this login. `shunt gateway token` repeats that warning on stderr each time it actually
+refreshes — tied to a refresh rather than to every helper invocation, since the cached-token fast
+path makes no network call at all. If the deployment answers the discovery request with `404`, it is most likely
+missing `[server.gateway]`. Discovery and the device-code request are each bounded on the same
+budget as the refresh path, so a deployment that completes the TCP handshake and then never answers
+reports a timeout instead of waiting indefinitely with only Ctrl-C to end it. The approval poll is
+deliberately excluded: waiting is its job, and it already has its own deadline plus a per-attempt
+transport retry.
 
 The discovery document is remote input, so two floors apply to what it can direct shunt to do. The
 device code and refresh token are POSTed only to an endpoint advertised over `https`, or over
@@ -583,6 +589,26 @@ gateway's refresh tokens rotate and are single-use, so the refresh runs under an
 lock and re-reads the session after acquiring it: several Claude Code sessions can call the helper
 at the same moment and only one refresh happens. Without that, the losing caller would replay a
 spent refresh token, which revokes the whole rotation family and signs the user out everywhere.
+
+Neither the lock wait nor the refresh itself is unbounded. Each gateway round-trip is wrapped in a
+timeout, and the lock is acquired non-blocking on a deadline rather than with a bare `LOCK_EX`. The
+case that motivates both: a deployment that completes the TCP handshake and then never answers.
+The holder would wait forever inside the critical section, and every other `apiKeyHelper` on the
+machine would block behind it silently — one unreachable gateway taking down every Claude Code
+session. The timeout is applied with `tokio::time::timeout` inside the gateway module rather than
+as `reqwest`'s `.timeout()`, which is process-wide on the shared refresh client and also covers the
+response body (streaming paths must never set it).
+
+Crossing the 5-minute buffer makes a refresh *due*, not mandatory. If the refresh fails while the
+cached token is still genuinely unexpired, that token is served with a warning on stderr, so a
+brief network blip four minutes before real expiry does not become a user-visible auth failure;
+once the token has actually expired the command fails hard. `expires_in` is clamped on the way in —
+a gateway reporting it in milliseconds would otherwise cache a dead token as valid for weeks, with
+no recovery but deleting `session.json` by hand. Clamping is safe even when it is wrong, since a
+too-short cached expiry only triggers an earlier refresh. Finally, a token that would fail Claude
+Code's `apiKeyHelper` validator (1..=16384 characters of printable ASCII, no whitespace) is refused
+with a diagnostic naming the gateway rather than printed to fail authentication silently, and
+`shunt gateway logout` removes the sibling lock file along with the session.
 
 #### Launching Claude Code with `shunt gateway claude`
 

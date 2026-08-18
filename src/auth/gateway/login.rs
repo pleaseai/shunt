@@ -17,8 +17,8 @@ use serde_json::Value;
 use tokio::time::{sleep, Instant};
 
 use super::auth::{
-    discover, expires_at_ms, parse_token_response, truncate_for_error, CLIENT_ID,
-    DEVICE_CODE_GRANT_TYPE,
+    bounded, discover, expires_at_ms, parse_token_response, sanitize_for_error,
+    sanitize_for_terminal, CLIENT_ID, DEVICE_CODE_GRANT_TYPE, NETWORK_TIMEOUT,
 };
 use super::store::{self, GatewaySession};
 
@@ -72,26 +72,58 @@ enum PollOutcome {
 /// Log in to the shunt gateway at `gateway_url`. With `manual`, the browser is
 /// not opened and the user is left to follow the printed URL themselves.
 pub async fn run(gateway_url: &str, manual: bool) -> anyhow::Result<()> {
+    run_bounded(gateway_url, manual, NETWORK_TIMEOUT).await
+}
+
+/// [`run`] with an explicit per-call network bound, so tests can drive the
+/// timeout path without waiting [`NETWORK_TIMEOUT`] out.
+///
+/// The third such variant in this module, alongside
+/// [`super::auth::resolve_token_bounded`] and
+/// [`super::store::lock_session_for`] — consistency with an established seam
+/// rather than a new pattern.
+pub(crate) async fn run_bounded(
+    gateway_url: &str,
+    manual: bool,
+    network_timeout: Duration,
+) -> anyhow::Result<()> {
     let gateway_url = normalize_gateway_url(gateway_url)?;
     // Every request below carries a secret this flow cannot afford to leak
     // off-origin: the device-authorization POST returns a one-time
     // `device_code`, and the poll redeems it for the session's tokens. The
     // redirect-hardened client refuses to forward either to an unsafe host.
     let client = crate::auth::shared::token_refresh_client();
-    let discovery = discover(&client, &gateway_url).await?;
-    let device = request_device_code(&client, &discovery.device_authorization_endpoint)
-        .await
-        .context("failed to request a device code from the gateway")?;
+    // Bounded on the same budget as the refresh path. Not because this one can
+    // wedge the lock — it holds none — but because a gateway that accepts the
+    // connection and never answers would otherwise leave the terminal waiting
+    // indefinitely with nothing to read and only Ctrl-C to end it. The poll
+    // loop below is deliberately *not* wrapped: it is supposed to wait, and it
+    // has `poll_deadline` plus its own per-attempt transport retry.
+    let discovery = bounded(
+        network_timeout,
+        discover(&client, &gateway_url),
+        "discovery",
+        &gateway_url,
+    )
+    .await?;
+    let device = bounded(
+        network_timeout,
+        request_device_code(&client, &discovery.device_authorization_endpoint),
+        "device-code request",
+        &discovery.device_authorization_endpoint,
+    )
+    .await
+    .context("failed to request a device code from the gateway")?;
 
     let prompt_url = device
         .verification_uri_complete
         .clone()
         .unwrap_or_else(|| device.verification_uri.clone());
     println!("To authorize this machine against {gateway_url}, open:\n");
-    println!("    {prompt_url}\n");
+    println!("    {}\n", sanitize_for_terminal(&prompt_url));
     println!(
         "and confirm the code: {}\n(waiting for approval — this window will update automatically)",
-        device.user_code
+        sanitize_for_terminal(&device.user_code)
     );
     if !manual {
         match browser_open_refusal(&prompt_url) {
@@ -101,7 +133,9 @@ pub async fn run(gateway_url: &str, manual: bool) -> anyhow::Result<()> {
                  page."
             ),
             None => {
-                if let Err(error) = crate::auth::shared::open_url_async(&prompt_url).await {
+                if let Err(error) =
+                    crate::auth::shared::open_url_async("gateway login", &prompt_url).await
+                {
                     eprintln!("Could not open a browser ({error}); open the URL above manually.");
                 }
             }
@@ -214,12 +248,15 @@ async fn request_device_code(
         return Ok(device);
     }
     if let Some(error) = value.get("error").and_then(Value::as_str) {
-        bail!("the gateway refused the device-code request ({error})");
+        bail!(
+            "the gateway refused the device-code request ({})",
+            sanitize_for_error(error)
+        );
     }
     bail!(
         "the gateway's device-code response is missing device_code / user_code / \
          verification_uri (HTTP {status}): {}",
-        truncate_for_error(&text)
+        sanitize_for_error(&text)
     )
 }
 
@@ -232,7 +269,12 @@ fn parse_device_code(value: &Value) -> Option<DeviceCode> {
             .get("verification_uri_complete")
             .and_then(Value::as_str)
             .map(ToOwned::to_owned),
-        expires_in: positive_secs(value.get("expires_in"), DEFAULT_EXPIRES_SECS),
+        // Capped, not merely defaulted: any non-overflowing value was honored,
+        // so a gateway could hold the terminal polling for a year.
+        // DEFAULT_EXPIRES_SECS is the gateway's own DEVICE_CODE_TTL, which is
+        // the longest a device code can legitimately stay live.
+        expires_in: positive_secs(value.get("expires_in"), DEFAULT_EXPIRES_SECS)
+            .min(DEFAULT_EXPIRES_SECS),
         interval: positive_secs(value.get("interval"), DEFAULT_INTERVAL_SECS)
             .max(MIN_INTERVAL_SECS),
     })
@@ -322,13 +364,13 @@ async fn poll_for_tokens(
             Ok(value) => value,
             Err(_) => bail!(
                 "invalid gateway token response (HTTP {status}): {}",
-                truncate_for_error(&text)
+                sanitize_for_error(&text)
             ),
         };
         if let Some(tokens) = parse_token_response(&value) {
             return Ok(tokens);
         }
-        match classify_poll_error(&value) {
+        match classify_poll_error(&value, &text) {
             PollOutcome::Pending => {}
             PollOutcome::SlowDown => interval = next_interval(interval),
             PollOutcome::Failed(reason) => bail!("{reason}"),
@@ -364,7 +406,12 @@ fn next_interval(current: u64) -> u64 {
     (current + SLOW_DOWN_INCREMENT_SECS).min(MAX_INTERVAL_SECS)
 }
 
-fn classify_poll_error(body: &Value) -> PollOutcome {
+/// `raw` is the response body the JSON came from: the unrecognized-shape arm
+/// reports it, matching the invalid-JSON path one branch up. Without it, a
+/// gateway answering with valid JSON in an unexpected shape (`{}`, or a
+/// health-check body that matched by accident) ends the login with a message
+/// that says nothing about what actually came back.
+fn classify_poll_error(body: &Value, raw: &str) -> PollOutcome {
     let error = body.get("error").and_then(Value::as_str).unwrap_or("");
     match error {
         "authorization_pending" => PollOutcome::Pending,
@@ -381,13 +428,26 @@ fn classify_poll_error(body: &Value) -> PollOutcome {
                 .to_string(),
         ),
         _ => {
-            let description = body
+            // Capped like every raw-body site: pulling the string out of a JSON
+            // field does not make it any shorter, and the same proxy or WAF can
+            // put a whole HTML page in `error_description`.
+            match body
                 .get("error_description")
                 .and_then(Value::as_str)
                 .or(Some(error))
                 .filter(|value| !value.is_empty())
-                .unwrap_or("unknown error");
-            PollOutcome::Failed(format!("device authorization failed: {description}"))
+            {
+                Some(description) => PollOutcome::Failed(format!(
+                    "device authorization failed: {}",
+                    sanitize_for_error(description)
+                )),
+                // Nothing recognizable in the body: show what did arrive.
+                None => PollOutcome::Failed(format!(
+                    "device authorization failed; the gateway's response was not a token or a \
+                     recognized OAuth error: {}",
+                    sanitize_for_error(raw)
+                )),
+            }
         }
     }
 }
@@ -748,28 +808,162 @@ mod tests {
     }
 
     #[test]
+    fn a_device_code_lifetime_is_capped_at_the_gateways_own_ttl() {
+        // A year of `expires_in` would otherwise hold the terminal polling for
+        // a year: overflow was guarded, but any non-overflowing value honored.
+        let device = parse_device_code(&json!({
+            "device_code": "d",
+            "user_code": "u",
+            "verification_uri": "https://gateway.example/device",
+            "expires_in": 31_536_000_u64,
+            "interval": 5
+        }))
+        .expect("the response is otherwise well formed");
+        assert_eq!(device.expires_in, DEFAULT_EXPIRES_SECS);
+
+        // Anything at or under the ceiling is honored as sent.
+        let short = parse_device_code(&json!({
+            "device_code": "d",
+            "user_code": "u",
+            "verification_uri": "https://gateway.example/device",
+            "expires_in": 120,
+            "interval": 5
+        }))
+        .unwrap();
+        assert_eq!(short.expires_in, 120);
+    }
+
+    #[test]
+    fn gateway_chosen_error_strings_are_capped_like_raw_bodies() {
+        // Pulling the string out of a JSON field does not make it shorter: the
+        // same proxy or WAF can put a whole HTML page in `error_description`.
+        let flood = "x".repeat(5_000);
+        let PollOutcome::Failed(message) =
+            classify_poll_error(&json!({"error": "boom", "error_description": flood}), "")
+        else {
+            panic!("an unknown error is terminal");
+        };
+        assert!(
+            message.chars().count() < 500,
+            "the description must be capped, got {} chars",
+            message.chars().count()
+        );
+    }
+
+    /// A listener that accepts and then says nothing, for the two bounded calls in
+    /// [`super::run_bounded`].
+    async fn silent_listener() -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind an ephemeral port");
+        let address = listener.local_addr().expect("local address");
+        let handle = tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((socket, _)) = listener.accept().await {
+                held.push(socket);
+            }
+        });
+        (format!("http://{address}"), handle)
+    }
+
+    #[tokio::test]
+    async fn a_silent_gateway_bounds_the_login_discovery_rather_than_hanging() {
+        // The wiring, not the helper: `bounded` is covered on the refresh path, but
+        // nothing asserted that `run` actually wraps these two calls, so a refactor
+        // could unwrap them with the suite still green.
+        let (gateway_url, server) = silent_listener().await;
+
+        let started = std::time::Instant::now();
+        let error = run_bounded(&gateway_url, true, Duration::from_secs(1))
+            .await
+            .expect_err("a silent gateway must not hang the terminal");
+        assert!(error.to_string().contains("did not answer"), "got: {error}");
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "the bound must actually bound: waited {:?}",
+            started.elapsed()
+        );
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_silent_device_code_endpoint_is_bounded_too() {
+        // Discovery answers, so this reaches the *second* bounded call — which a
+        // test that only exercised discovery would leave unwrapped and unnoticed.
+        let (silent_url, silent) = silent_listener().await;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/.well-known/oauth-authorization-server"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "device_authorization_endpoint": format!("{silent_url}/oauth/device_authorization"),
+                "token_endpoint": format!("{silent_url}/oauth/token")
+            })))
+            .mount(&server)
+            .await;
+
+        let error = run_bounded(&server.uri(), true, Duration::from_secs(1))
+            .await
+            .expect_err("a silent device-code endpoint must not hang the terminal");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("device-code request"),
+            "the second call must be the one that timed out: {message}"
+        );
+
+        silent.abort();
+    }
+
+    #[test]
     fn classifies_poll_errors() {
         assert_eq!(
-            classify_poll_error(&json!({"error": "authorization_pending"})),
+            classify_poll_error(&json!({"error": "authorization_pending"}), ""),
             PollOutcome::Pending
         );
         assert_eq!(
-            classify_poll_error(&json!({"error": "slow_down"})),
+            classify_poll_error(&json!({"error": "slow_down"}), ""),
             PollOutcome::SlowDown
         );
         for terminal in ["access_denied", "expired_token", "unsupported_grant_type"] {
             assert!(
                 matches!(
-                    classify_poll_error(&json!({ "error": terminal })),
+                    classify_poll_error(&json!({ "error": terminal }), ""),
                     PollOutcome::Failed(_)
                 ),
                 "{terminal} must be terminal"
             );
         }
-        match classify_poll_error(&json!({"error": "boom", "error_description": "kaboom"})) {
+        match classify_poll_error(&json!({"error": "boom", "error_description": "kaboom"}), "") {
             PollOutcome::Failed(reason) => assert!(reason.contains("kaboom")),
             other => panic!("expected failure, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn an_unrecognized_poll_body_is_reported_with_what_actually_arrived() {
+        // Valid JSON in a shape the client does not know — an empty object, or
+        // a health-check body that matched by accident. Reporting only
+        // "unknown error" tells the operator nothing about what came back,
+        // while the invalid-JSON path one branch up does show the body.
+        let PollOutcome::Failed(message) = classify_poll_error(&json!({}), r#"{"status":"ok"}"#)
+        else {
+            panic!("an unrecognized body is terminal");
+        };
+        assert!(
+            message.contains(r#"{"status":"ok"}"#),
+            "the message must show what arrived: {message}"
+        );
+
+        // Still capped: the same proxy or WAF can answer with a whole page.
+        let flood = "x".repeat(5_000);
+        let PollOutcome::Failed(message) = classify_poll_error(&json!({}), &flood) else {
+            panic!("an unrecognized body is terminal");
+        };
+        assert!(
+            message.chars().count() < 500,
+            "the raw body must be truncated, got {} chars",
+            message.chars().count()
+        );
     }
 
     #[test]

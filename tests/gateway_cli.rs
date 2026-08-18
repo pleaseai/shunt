@@ -8,19 +8,13 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-/// The `apiKeyHelper` output contract enforced by Claude Code 2.1.234: it trims
-/// stdout, then rejects the value outright if it holds a line break, a NUL, any
-/// space or tab, any other control character, or any byte above 126 — printable
-/// ASCII only — up to 16384 characters. `shunt gateway token` feeds that
-/// validator, so anything shunt adds to stdout breaks authentication with no
-/// useful diagnostic.
-const MAX_HELPER_OUTPUT: usize = 16_384;
-
-fn is_helper_safe(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= MAX_HELPER_OUTPUT
-        && value.bytes().all(|byte| (b'!'..=b'~').contains(&byte))
-}
+// The `apiKeyHelper` output contract enforced by Claude Code 2.1.234 — it trims
+// stdout, then rejects the value outright if it holds a line break, a NUL, any
+// space or tab, any other control character, or any byte above 126, up to 16384
+// characters — is imported from the production module rather than restated here.
+// It used to live only in this file, where it asserted a rule nothing enforced;
+// a second copy is exactly how that drift started.
+use shunt::auth::gateway::auth::{is_helper_safe, MAX_HELPER_OUTPUT};
 
 struct TempDir(PathBuf);
 
@@ -39,15 +33,19 @@ impl TempDir {
     }
 
     fn session(&self, access_token: &str) -> PathBuf {
-        let path = self.0.join("session.json");
         // Far-future expiry: the token is served from disk, so the command
         // makes no network call and the gateway URL is never contacted.
+        self.session_at("https://gateway.example", access_token, 4_000_000_000_000)
+    }
+
+    fn session_at(&self, gateway_url: &str, access_token: &str, expires_at: i64) -> PathBuf {
+        let path = self.0.join("session.json");
         let document = serde_json::json!({
             "gatewaySession": {
-                "gatewayUrl": "https://gateway.example",
+                "gatewayUrl": gateway_url,
                 "accessToken": access_token,
                 "refreshToken": "refresh-1",
-                "expiresAt": 4_000_000_000_000_i64
+                "expiresAt": expires_at
             }
         });
         std::fs::write(
@@ -126,6 +124,104 @@ fn claude_launcher_reports_a_missing_session_instead_of_launching() {
     assert!(
         stderr(&output).contains("shunt gateway login"),
         "stderr: {}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn a_global_config_before_the_subcommand_is_refused_by_the_dispatcher() {
+    // Covers the `cli.config.as_deref()` argument at the `Command::Gateway`
+    // dispatch site, which no other test reaches: the unit test calls
+    // `gateway(...)` directly and re-derives that argument itself, so mutating
+    // the dispatcher to pass `None` left the whole suite green.
+    let output = shunt(
+        None,
+        &[
+            "--config",
+            "/tmp/nope.toml",
+            "gateway",
+            "claude",
+            "-p",
+            "hi",
+        ],
+    );
+    assert!(
+        !output.status.success(),
+        "a swallowed --config must abort rather than launch claude without it"
+    );
+    assert!(
+        stderr(&output).contains("is not used by `shunt gateway claude`"),
+        "stderr: {}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn a_config_after_the_subcommand_is_forwarded_rather_than_refused() {
+    // The trailing-var-arg list captures it, so it is claude's flag and shunt
+    // must not claim it. This is the direction guard: a refusal keyed on the
+    // string rather than on what clap actually consumed would fail here.
+    let output = shunt(
+        None,
+        &[
+            "gateway",
+            "claude",
+            "-p",
+            "hi",
+            "--config",
+            "/tmp/nope.toml",
+        ],
+    );
+    assert!(!output.status.success(), "there is still no session");
+    assert!(
+        stderr(&output).contains("no gateway session at"),
+        "it must fail on the missing session, not on the flag: {}",
+        stderr(&output)
+    );
+    assert!(
+        !stderr(&output).contains("is not used by"),
+        "a flag clap never consumed must not be refused: {}",
+        stderr(&output)
+    );
+}
+
+/// `.invalid` is reserved and never resolves, so the refresh fails fast — but
+/// only *after* the plaintext warning, which is the point.
+const PLAINTEXT_GATEWAY: &str = "http://internal.invalid";
+
+#[test]
+fn a_plaintext_refresh_warns_on_stderr_and_keeps_stdout_empty() {
+    // The login-time warning promises the exposure continues "on every token
+    // refresh for as long as the session lives". Without this the code makes
+    // that promise and never keeps it.
+    let dir = TempDir::new("plaintext-refresh");
+    let path = dir.session_at(PLAINTEXT_GATEWAY, "access-1", 1);
+
+    let output = shunt(Some(&path), &["gateway", "token"]);
+    assert!(
+        stderr(&output).contains("plain HTTP"),
+        "a refresh over plaintext must warn: {}",
+        stderr(&output)
+    );
+    // stdout is the apiKeyHelper contract: a warning there breaks
+    // authentication rather than informing anyone.
+    assert_eq!(stdout(&output), "");
+}
+
+#[test]
+fn a_cached_token_is_served_without_repeating_the_plaintext_warning() {
+    // The frequency constraint: the fast path makes no network call, so
+    // warning there would fire on every single helper invocation instead of
+    // roughly once per token lifetime.
+    let dir = TempDir::new("plaintext-cached");
+    let path = dir.session_at(PLAINTEXT_GATEWAY, "access-1", 4_000_000_000_000);
+
+    let output = shunt(Some(&path), &["gateway", "token"]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert_eq!(stdout(&output), "access-1\n");
+    assert!(
+        !stderr(&output).contains("plain HTTP"),
+        "serving a cached token performs no refresh, so it must not warn: {}",
         stderr(&output)
     );
 }

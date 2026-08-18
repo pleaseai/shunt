@@ -39,6 +39,32 @@ const EXPIRY_BUFFER: Duration = Duration::from_secs(5 * 60);
 /// Fallback lifetime when a token response omits `expires_in` (the gateway's
 /// own `token_ttl_seconds` default).
 const DEFAULT_EXPIRES_IN_SECS: i64 = 3600;
+/// Upper clamp on a gateway-supplied `expires_in`.
+///
+/// Nothing hostile is needed to hit this: a gateway that reports `expires_in`
+/// in *milliseconds* caches a token as valid for ~41 days, so `resolve_token_at`
+/// takes the fast path forever, and once the real token is revoked Claude Code
+/// 401s, re-runs the helper, gets the same dead token back, and loops — with no
+/// recovery short of deleting `session.json` by hand.
+///
+/// A week is far above the gateway's own one-hour default and above any
+/// plausible *access*-token lifetime (longevity is the refresh token's job).
+/// Clamping is safe even where it is wrong: a too-short cached expiry only
+/// triggers an earlier refresh, which succeeds — it can never turn a working
+/// session into a failing one.
+const MAX_EXPIRES_IN_SECS: i64 = 7 * 24 * 60 * 60;
+/// Bound on a single gateway round-trip taken while the refresh lock is held.
+///
+/// Deliberately applied here with `tokio::time::timeout` rather than as
+/// `reqwest`'s `.timeout()`: that one is process-wide on the shared refresh
+/// client and covers the response *body*, which is why streaming paths in this
+/// repo must never set it. These two calls exchange small JSON documents, so
+/// bounding the whole call is right for them and only for them.
+pub(crate) const NETWORK_TIMEOUT: Duration = Duration::from_secs(30);
+/// Claude Code 2.1.234 trims `apiKeyHelper` stdout and then rejects the value
+/// outright if it holds a line break, a NUL, a space or tab, any other control
+/// character, or any byte above 126.
+pub const MAX_HELPER_OUTPUT: usize = 16_384;
 
 #[derive(Debug)]
 pub(crate) struct Discovery {
@@ -114,7 +140,7 @@ pub(crate) async fn discover(
     }
     bail!(
         "unexpected response from {url} (HTTP {status}): {}",
-        truncate_for_error(&text)
+        sanitize_for_error(&text)
     )
 }
 
@@ -144,6 +170,9 @@ fn parse_discovery(value: &Value) -> Result<Discovery, DiscoveryProblem> {
             .parse::<reqwest::Url>()
             .is_ok_and(|url| crate::auth::shared::is_safe_refresh_url(&url))
         {
+            // `{:?}` rather than `sanitize_for_error`: Debug already escapes
+            // control characters, and it quotes the endpoint so an empty or
+            // whitespace value is still visible in the message.
             return Err(DiscoveryProblem::Unsafe(format!(
                 "{name} {:?}",
                 truncate_for_error(raw)
@@ -225,10 +254,13 @@ async fn refresh(
              another session already used it — refresh tokens are single-use. Run \
              `shunt gateway login <url>` to sign in again"
         ),
-        Some(error) => bail!("gateway token refresh failed ({error})"),
+        Some(error) => bail!(
+            "gateway token refresh failed ({})",
+            sanitize_for_error(error)
+        ),
         None => bail!(
             "invalid gateway token response (HTTP {status}): {}",
-            truncate_for_error(&text)
+            sanitize_for_error(&text)
         ),
     }
 }
@@ -239,14 +271,46 @@ pub(crate) fn expires_at_ms(expires_in: Option<i64>, now: SystemTime) -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64;
-    // Saturate rather than overflow: a pathological `expires_in` must not panic
-    // under overflow checks, nor wrap into a negative `expiresAt` that reads as
-    // permanently expired and drives a refresh on every single call.
-    now_ms.saturating_add(
-        expires_in
-            .unwrap_or(DEFAULT_EXPIRES_IN_SECS)
-            .saturating_mul(1000),
+    // Clamp before scaling. Saturating alone only stops the panic and the
+    // negative wrap; it still honors an absurd positive, which is the case that
+    // strands the user on a dead token (see [`MAX_EXPIRES_IN_SECS`]).
+    let expires_in = expires_in
+        .unwrap_or(DEFAULT_EXPIRES_IN_SECS)
+        .min(MAX_EXPIRES_IN_SECS);
+    now_ms.saturating_add(expires_in.saturating_mul(1000))
+}
+
+/// Whether `value` survives Claude Code's `apiKeyHelper` validation.
+///
+/// The production definition, deliberately: this rule used to live only in
+/// `tests/gateway_cli.rs`, where it asserted things about output nothing
+/// enforced. A token that fails it produces an opaque auth failure with no hint
+/// the token was the problem, so it is checked before the token is handed out.
+pub fn is_helper_safe(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_HELPER_OUTPUT
+        && value.bytes().all(|byte| (b'!'..=b'~').contains(&byte))
+}
+
+/// Gate a token on [`is_helper_safe`], naming the gateway that issued it.
+fn helper_safe_token(token: String, gateway_url: &str) -> anyhow::Result<String> {
+    if is_helper_safe(&token) {
+        return Ok(token);
+    }
+    bail!(
+        "{gateway_url} issued an access token that Claude Code's apiKeyHelper will reject: it          must be 1..={MAX_HELPER_OUTPUT} characters of printable ASCII with no whitespace.          Printing it would fail authentication with no diagnostic, so it is refused here instead"
     )
+}
+
+/// Whether the token has not *actually* expired yet, ignoring the refresh
+/// buffer. The buffer decides when to refresh; this decides whether a token is
+/// still usable when a refresh could not be completed.
+fn is_unexpired_at(session: &GatewaySession, now: SystemTime) -> bool {
+    let now_ms = now
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    session.expires_at_ms > now_ms
 }
 
 fn is_valid_at(session: &GatewaySession, now: SystemTime) -> bool {
@@ -255,6 +319,66 @@ fn is_valid_at(session: &GatewaySession, now: SystemTime) -> bool {
         .unwrap_or_default()
         .as_millis() as i64;
     session.expires_at_ms.saturating_sub(now_ms) > EXPIRY_BUFFER.as_millis() as i64
+}
+
+/// Bidirectional overrides (U+202A–U+202E) and isolates (U+2066–U+2069).
+///
+/// Deliberately these two ranges rather than the whole `Cf` category
+/// [`char::is_control`] misses. `Cf` also holds ZWNJ (U+200C), ZWJ (U+200D),
+/// and the soft hyphen (U+00AD), which are load-bearing for correct rendering
+/// of Arabic, Persian, and Indic text — and an `error_description` can
+/// legitimately be prose in those scripts, so replacing the category wholesale
+/// would mangle it. The overrides and isolates have no legitimate use in a URL,
+/// a device code, or an error message; the joiners do.
+fn is_bidi_control(character: char) -> bool {
+    matches!(character, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+}
+
+/// Strip characters that let a gateway control how its string *renders* before
+/// printing it.
+///
+/// [`truncate_for_error`] caps length but removes nothing, so an escape
+/// sequence in a verification URL, a user code, or an `error_description`
+/// would be interpreted by the terminal — repainting the screen, or hiding the
+/// URL that was actually opened. This is what makes
+/// `login::browser_open_refusal`'s "the URL is printed either way" promise
+/// worth anything: refusing to auto-open only helps if the printed string is
+/// what the user actually reads.
+///
+/// Two classes, because [`char::is_control`] is general category `Cc` only and
+/// stops at U+001B. A bidi override is `Cf`, passes that test, and makes the
+/// printed URL *display* as something other than what it is — the Trojan Source
+/// class (CVE-2021-42574) — which defeats the printed fallback just as
+/// thoroughly as an escape sequence.
+pub(crate) fn sanitize_for_terminal(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_control() || is_bidi_control(character) {
+                char::REPLACEMENT_CHARACTER
+            } else {
+                character
+            }
+        })
+        .collect()
+}
+
+/// Make a gateway-chosen string safe to put in an error message: escape first,
+/// then cap.
+///
+/// The order is defensive, not currently observable: [`sanitize_for_terminal`]
+/// replaces one character with one character, so it cannot change the character
+/// count [`truncate_for_error`] measures, and either order gives the same
+/// result today. It matters the moment the escaping becomes a *lengthening*
+/// one — `\x1b` rendered as four literal characters rather than one U+FFFD —
+/// because a cap applied first would then be exceeded by the escaped form.
+/// Escaping first is the order that stays correct through that change.
+///
+/// Neither step can split a multi-byte character: [`truncate_for_error`] counts
+/// characters and slices on a character boundary, and the replacement is
+/// character-to-character.
+pub(crate) fn sanitize_for_error(text: &str) -> String {
+    truncate_for_error(&sanitize_for_terminal(text)).into_owned()
 }
 
 /// Cap a raw upstream body before it reaches an error message: a proxy or WAF
@@ -274,9 +398,18 @@ pub async fn resolve_token() -> anyhow::Result<String> {
 }
 
 pub(crate) async fn resolve_token_at(path: &Path) -> anyhow::Result<String> {
+    resolve_token_bounded(path, NETWORK_TIMEOUT).await
+}
+
+/// [`resolve_token_at`] with an explicit per-call network bound, so tests can
+/// drive the timeout path without waiting [`NETWORK_TIMEOUT`] out.
+pub(crate) async fn resolve_token_bounded(
+    path: &Path,
+    network_timeout: Duration,
+) -> anyhow::Result<String> {
     let session = read_session_or_bail(path)?;
     if is_valid_at(&session, SystemTime::now()) {
-        return Ok(session.access_token);
+        return helper_safe_token(session.access_token, &session.gateway_url);
     }
 
     // Cross-process single flight. Claude Code runs `apiKeyHelper` per session,
@@ -286,14 +419,79 @@ pub(crate) async fn resolve_token_at(path: &Path) -> anyhow::Result<String> {
     let _lock = store::lock_session(path).await?;
     let session = read_session_or_bail(path)?;
     if is_valid_at(&session, SystemTime::now()) {
-        return Ok(session.access_token);
+        return helper_safe_token(session.access_token, &session.gateway_url);
     }
 
+    match refresh_session(path, &session, network_timeout).await {
+        Ok(token) => helper_safe_token(token, &session.gateway_url),
+        // Crossing into the expiry buffer makes a refresh *due*, not mandatory:
+        // the token is still good for up to EXPIRY_BUFFER, so a two-second
+        // network blip four minutes before real expiry must not become a
+        // user-visible auth failure. Once the token has genuinely expired this
+        // still fails hard — a dead token returned as a success would only move
+        // the error somewhere less legible.
+        Err(error) if is_unexpired_at(&session, SystemTime::now()) => {
+            eprintln!(
+                "Warning: could not refresh the gateway token ({error}); serving the cached one, \
+                 which is still valid but expires shortly. This will fail once it does."
+            );
+            helper_safe_token(session.access_token, &session.gateway_url)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Whether a stored gateway URL sends its traffic in the clear.
+///
+/// Mirrors the check `login::normalize_gateway_url` applies at sign-in: plain
+/// `http` to anything but loopback.
+pub(crate) fn is_plaintext_gateway(gateway_url: &str) -> bool {
+    gateway_url.parse::<reqwest::Url>().is_ok_and(|url| {
+        url.scheme() == "http"
+            && !crate::config::host_is_loopback(url.host_str().unwrap_or_default())
+    })
+}
+
+/// The refresh critical section: called with the session lock held.
+async fn refresh_session(
+    path: &Path,
+    session: &GatewaySession,
+    network_timeout: Duration,
+) -> anyhow::Result<String> {
+    // The login-time warning promises this exposure continues "on every token
+    // refresh for as long as the session lives" — so it has to be said on the
+    // refreshes too, or the docs describe a behavior the code does not have.
+    //
+    // Here rather than in `resolve_token_bounded`: the fast path serves a
+    // cached token with no network traffic at all, and warning there would fire
+    // on every single helper invocation. Tied to an actual refresh, this is
+    // roughly once per token lifetime.
+    //
+    // stderr, never stdout: stdout is the apiKeyHelper contract.
+    if is_plaintext_gateway(&session.gateway_url) {
+        eprintln!(
+            "Warning: refreshing against {} over plain HTTP; the refresh token and the new \
+             access token travel unencrypted.",
+            session.gateway_url
+        );
+    }
     let client = crate::auth::shared::token_refresh_client();
-    let discovery = discover(&client, &session.gateway_url).await?;
-    let tokens = refresh(&client, &discovery.token_endpoint, &session.refresh_token).await?;
+    let discovery = bounded(
+        network_timeout,
+        discover(&client, &session.gateway_url),
+        "discovery",
+        &session.gateway_url,
+    )
+    .await?;
+    let tokens = bounded(
+        network_timeout,
+        refresh(&client, &discovery.token_endpoint, &session.refresh_token),
+        "token refresh",
+        &discovery.token_endpoint,
+    )
+    .await?;
     let refreshed = GatewaySession {
-        gateway_url: session.gateway_url,
+        gateway_url: session.gateway_url.clone(),
         access_token: tokens.access_token,
         refresh_token: tokens.refresh_token,
         expires_at_ms: expires_at_ms(tokens.expires_in, SystemTime::now()),
@@ -306,6 +504,21 @@ pub(crate) async fn resolve_token_at(path: &Path) -> anyhow::Result<String> {
          token is now spent, so run `shunt gateway login <url>` to sign in again",
     )?;
     Ok(refreshed.access_token)
+}
+
+/// Bound one gateway round-trip. A gateway that completes the TCP handshake and
+/// then never answers would otherwise hold the session lock forever, and every
+/// other `apiKeyHelper` on the machine blocks behind it.
+pub(crate) async fn bounded<T>(
+    timeout: Duration,
+    future: impl std::future::Future<Output = anyhow::Result<T>>,
+    what: &str,
+    target: &str,
+) -> anyhow::Result<T> {
+    match tokio::time::timeout(timeout, future).await {
+        Ok(result) => result,
+        Err(_) => bail!("gateway {what} against {target} did not answer within {timeout:?}"),
+    }
 }
 
 fn read_session_or_bail(path: &Path) -> anyhow::Result<GatewaySession> {
@@ -732,6 +945,264 @@ mod tests {
             expires_at_ms(None, now),
             10_000_000 + DEFAULT_EXPIRES_IN_SECS * 1000
         );
-        assert_eq!(expires_at_ms(Some(i64::MAX), now), i64::MAX);
+        // Was `assert_eq!(expires_at_ms(Some(i64::MAX), now), i64::MAX)`, which
+        // pinned the saturating behavior — and that behavior was the defect: it
+        // caches a dead token as valid essentially forever. The clamp is the
+        // contract now, so this asserts the clamp rather than whatever the code
+        // happens to produce.
+        assert_eq!(
+            expires_at_ms(Some(i64::MAX), now),
+            10_000_000 + MAX_EXPIRES_IN_SECS * 1000
+        );
+        // The realistic trigger is not `i64::MAX` but a gateway reporting
+        // milliseconds in a seconds field.
+        assert_eq!(
+            expires_at_ms(Some(3_600_000), now),
+            10_000_000 + MAX_EXPIRES_IN_SECS * 1000
+        );
+        // Anything at or under the cap is untouched.
+        assert_eq!(
+            expires_at_ms(Some(MAX_EXPIRES_IN_SECS), now),
+            10_000_000 + MAX_EXPIRES_IN_SECS * 1000
+        );
+        assert_eq!(expires_at_ms(Some(3600), now), 10_000_000 + 3_600_000);
+    }
+
+    #[test]
+    fn printed_gateway_strings_cannot_carry_terminal_escapes() {
+        // `browser_open_refusal` promises the URL is printed even when it is
+        // not opened. That promise is only worth something if what reaches the
+        // terminal is what the user reads.
+        assert_eq!(
+            sanitize_for_terminal("https://gateway.example/device\x1b[2J?x=1"),
+            "https://gateway.example/device\u{fffd}[2J?x=1"
+        );
+        assert_eq!(
+            sanitize_for_terminal("BCDF\r\nGHJK"),
+            "BCDF\u{fffd}\u{fffd}GHJK"
+        );
+        // Ordinary values pass through untouched.
+        assert_eq!(
+            sanitize_for_terminal("https://gateway.example/device?user_code=BCDF-GHJK"),
+            "https://gateway.example/device?user_code=BCDF-GHJK"
+        );
+    }
+
+    #[test]
+    fn bidi_overrides_and_isolates_are_stripped_but_joiners_survive() {
+        // `char::is_control` is general category Cc only, so every one of these
+        // passes it untouched. A bidi override makes the *printed* URL display as
+        // something other than what it is (CVE-2021-42574), which defeats
+        // `browser_open_refusal`'s printed fallback exactly as an escape sequence
+        // would — a test written only against \x1b stays green against these.
+        for hostile in [
+            '\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}', '\u{202e}', '\u{2066}', '\u{2067}',
+            '\u{2068}', '\u{2069}',
+        ] {
+            assert!(
+                !hostile.is_control(),
+                "{hostile:?} is Cf, so is_control cannot be what catches it"
+            );
+            let printed =
+                sanitize_for_terminal(&format!("https://gateway.example/{hostile}device"));
+            assert!(
+                !printed.contains(hostile),
+                "{hostile:?} must not reach the terminal: {printed:?}"
+            );
+        }
+
+        // The rest of Cf is left alone: these are load-bearing for correct
+        // rendering of Arabic, Persian, and Indic text, and an `error_description`
+        // can legitimately be prose in those scripts.
+        for legitimate in ['\u{200c}', '\u{200d}', '\u{00ad}'] {
+            let text = format!("خطأ{legitimate}ما");
+            assert_eq!(
+                sanitize_for_terminal(&text),
+                text,
+                "{legitimate:?} is legitimate text, not a rendering attack"
+            );
+        }
+    }
+
+    #[test]
+    fn gateway_error_strings_are_escaped_before_they_are_capped() {
+        // A length cap alone leaves an escape sequence intact, so a test that only
+        // checks length would stay green against exactly the input this guards.
+        let escaped = sanitize_for_error("boom\u{1b}[2Jcleared");
+        assert!(
+            !escaped.contains('\u{1b}'),
+            "the escape must not survive: {escaped:?}"
+        );
+        assert!(escaped.contains("boom"), "got: {escaped:?}");
+
+        // A body that is nothing but escapes is still capped. (This does not pin
+        // the escape/cap *order*: the replacement is one character for one, so both
+        // orders agree today — see `sanitize_for_error`'s note on why escaping
+        // still goes first.)
+        let flood = "\u{1b}".repeat(5_000);
+        let capped = sanitize_for_error(&flood);
+        assert!(
+            capped.chars().count() <= 201,
+            "the escaped form must still be capped, got {} chars",
+            capped.chars().count()
+        );
+        assert!(
+            !capped.contains('\u{1b}'),
+            "no escape may survive the cap either: {capped:?}"
+        );
+
+        // Truncation lands on a character boundary: multi-byte input must not be
+        // sliced mid-character (which would panic on the string slice).
+        let wide = "\u{1f600}".repeat(5_000);
+        let capped = sanitize_for_error(&wide);
+        assert!(
+            capped.chars().count() <= 201,
+            "got {}",
+            capped.chars().count()
+        );
+        assert!(capped.starts_with('\u{1f600}'));
+    }
+
+    #[test]
+    fn the_lock_timeout_leaves_slack_over_the_worst_case_legitimate_hold() {
+        // A holder makes two separately bounded round-trips, so at exactly 2x a
+        // holder using its full budget would expire the waiter at the instant it
+        // succeeded — reporting contention for a refresh that actually worked.
+        assert!(
+            crate::auth::gateway::store::LOCK_TIMEOUT > NETWORK_TIMEOUT * 2,
+            "the waiter must outlast the worst-case legitimate hold"
+        );
+    }
+
+    #[test]
+    fn helper_safety_matches_the_validator_claude_code_applies() {
+        assert!(is_helper_safe("sk-ant-abc123"));
+        assert!(is_helper_safe(
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkZXZAZXhhbXBsZSJ9.c2ln-_9"
+        ));
+        assert!(!is_helper_safe(""));
+        assert!(!is_helper_safe("token with space"));
+        assert!(!is_helper_safe("token\twith-tab"));
+        assert!(!is_helper_safe("token\nwith-newline"));
+        assert!(!is_helper_safe("token\0with-nul"));
+        assert!(!is_helper_safe("tok\u{e9}n-non-ascii"));
+        assert!(is_helper_safe(&"x".repeat(MAX_HELPER_OUTPUT)));
+        assert!(!is_helper_safe(&"x".repeat(MAX_HELPER_OUTPUT + 1)));
+    }
+
+    #[tokio::test]
+    async fn a_token_claude_code_would_reject_is_refused_with_a_diagnostic() {
+        let dir = temp_dir("unsafe-token");
+        let session_path = dir.join("session.json");
+        let mut session = test_session("https://gateway.example", 0);
+        // A newline is the realistic case: it turns one line of stdout into two
+        // and fails Claude Code's validator with no hint about the cause.
+        session.access_token = "access-1\nextra".to_string();
+        session.expires_at_ms = now_plus_ms(3600);
+        store::write_session(&session_path, &session).unwrap();
+
+        let error = resolve_token_at(&session_path)
+            .await
+            .expect_err("a token the helper validator rejects must not be printed");
+        let message = error.to_string();
+        assert!(
+            message.contains("https://gateway.example"),
+            "the diagnostic must name the gateway that issued it: {message}"
+        );
+        assert!(
+            message.contains("printable ASCII"),
+            "the diagnostic must state the rule: {message}"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_gateway_that_never_answers_fails_within_the_bound() {
+        use tokio::net::TcpListener;
+
+        // Accepts the connection and then says nothing at all — the case a
+        // connect timeout does not catch and a bare `LOCK_EX` waits on forever.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((socket, _)) = listener.accept().await {
+                held.push(socket);
+            }
+        });
+
+        let dir = temp_dir("silent-gateway");
+        let session_path = dir.join("session.json");
+        let mut session = test_session(&format!("http://{address}"), 0);
+        session.expires_at_ms = now_plus_ms(-1);
+        store::write_session(&session_path, &session).unwrap();
+
+        let started = std::time::Instant::now();
+        let error = resolve_token_bounded(&session_path, Duration::from_secs(1))
+            .await
+            .expect_err("a silent gateway must not hang the helper");
+        assert!(error.to_string().contains("did not answer"), "got: {error}");
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "the bound must actually bound: waited {:?}",
+            started.elapsed()
+        );
+
+        server.abort();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn plaintext_detection_matches_the_rule_applied_at_login() {
+        // The login-time warning claims the exposure continues on every
+        // refresh, so the refresh path has to apply the same test.
+        assert!(is_plaintext_gateway("http://internal.example"));
+        assert!(is_plaintext_gateway("http://10.0.0.5:8080/base"));
+        assert!(!is_plaintext_gateway("https://gateway.example"));
+        assert!(!is_plaintext_gateway("http://127.0.0.1:3001"));
+        assert!(!is_plaintext_gateway("http://localhost:3001"));
+        assert!(!is_plaintext_gateway("not a url"));
+    }
+
+    #[tokio::test]
+    async fn a_blip_inside_the_expiry_buffer_serves_the_still_valid_cached_token() {
+        // Nothing is mounted, so discovery fails — a stand-in for the two-second
+        // network blip that must not become a user-visible auth failure.
+        let server = MockServer::start().await;
+
+        let dir = temp_dir("buffer-blip");
+        let session_path = dir.join("session.json");
+        let mut session = test_session(&server.uri(), 0);
+        // Inside the refresh buffer, but not actually expired for 60s.
+        session.expires_at_ms = now_plus_ms(60);
+        store::write_session(&session_path, &session).unwrap();
+
+        let token = resolve_token_at(&session_path)
+            .await
+            .expect("a failed refresh must not discard a token that is still valid");
+        assert_eq!(token, "access-1");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_failed_refresh_on_a_genuinely_expired_token_still_fails() {
+        // Same failure, but the cached token is actually dead: returning it
+        // would only move the error somewhere less legible.
+        let server = MockServer::start().await;
+
+        let dir = temp_dir("buffer-expired");
+        let session_path = dir.join("session.json");
+        let mut session = test_session(&server.uri(), 0);
+        session.expires_at_ms = now_plus_ms(-1);
+        store::write_session(&session_path, &session).unwrap();
+
+        let error = resolve_token_at(&session_path)
+            .await
+            .expect_err("an expired token must not be served as a success");
+        assert!(!error.to_string().contains("access-1"), "got: {error}");
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
