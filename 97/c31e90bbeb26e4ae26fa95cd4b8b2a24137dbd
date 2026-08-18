@@ -1,0 +1,19 @@
+src/auth/slots/tests.rs
+  s_8ac7b3d8238f53::t_b63774effec79f 861-873
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "97c31e90bbeb26e4ae26fa95cd4b8b2a24137dbd",
+  "prompts": {},
+  "sessions": {
+    "s_8ac7b3d8238f53": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6872395d-b5ef-44e2-be10-2544083db6cd",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
