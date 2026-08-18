@@ -1,6 +1,6 @@
 ---
 title: CLI
-description: shunt コマンドライン — run、check、init、add、token、provider login。
+description: shunt コマンドライン — run、check、init、add、token、gateway login、provider login。
 ---
 
 ## `shunt run`
@@ -79,6 +79,61 @@ Claude サブスクリプションの OAuth トークンを **stdout** に出力
 ```
 
 これが必要になる場面については [Connect Claude Code](/ja/guides/connect-claude-code/#2-choose-the-anthropic-credential) を参照してください。
+
+## `shunt gateway login`
+
+[`[server.gateway]`](/ja/guides/gateway-login/) を有効にした shunt デプロイに、このマシンをサインインさせます。Claude Code の `/login` が使うものと同じ OAuth device flow です。これはゲートウェイの**クライアント側**であり、`shunt login <provider>` と `shunt token` は変更されておらず、引き続き shunt 自身をアップストリームに対して認証します。
+
+```bash
+shunt gateway login https://gateway.example.com
+shunt gateway login https://gateway.example.com --manual   # ブラウザを開かず URL のみ表示
+```
+
+shunt はデプロイの `/.well-known/oauth-authorization-server` ドキュメントを読み、そこで告知されたエンドポイントを使います。確認用 URL と短いユーザーコードを表示してブラウザを開き、ゲートウェイの `/device` ページで承認されるまでポーリングします。discovery が `404` を返す場合、そのデプロイに `[server.gateway]` セクションが無いことがほとんどです。ループバック以外の平文 `http://` URL も受け付けますが警告が出ます — device code と refresh token が暗号化されずに流れるためです。
+
+セッションは `~/.shunt/gateway/session.json` に保存され（`SHUNT_GATEWAY_SESSION_FILE` で上書き可能）、所有者専用で書き込まれます: `0700` のディレクトリ内に `0600` のファイル。
+
+## `shunt gateway token`
+
+ゲートウェイのアクセストークンを **stdout** にのみ出力します — メッセージや警告、ヒントはすべて stderr に出ます — そのため Claude Code の `apiKeyHelper` にそのまま接続できます:
+
+```json
+// ~/.claude/settings.json
+{
+  "apiKeyHelper": "/path/to/shunt gateway token"
+}
+```
+
+これはアップストリームの Claude サブスクリプショントークンを出力する [`shunt token`](#shunt-token) とは**別のヘルパー**です。互いのストレージを読むことはなく、名前の似た `SHUNT_GATEWAY_TOKEN` 変数はこのコマンドではなく `shunt token` のものです。
+
+保存済みトークンは有効期限の 5 分前まではそのまま使われ、それ以降にリフレッシュされます。ゲートウェイの refresh token はローテーションする使い捨てなので、リフレッシュは排他ファイルロックの下で実行され、ロック取得後にセッションを読み直します: 複数の Claude Code セッションが同時にヘルパーを呼んでもリフレッシュは 1 回だけで、ローテーションファミリー全体を失効させる再送は起きません。
+
+## `shunt gateway claude`
+
+設定ファイルを編集せずに、Claude Code をゲートウェイに接続して起動します:
+
+```bash
+shunt gateway claude
+shunt gateway claude -p 'summarize this repo' --model opus
+```
+
+保存されたセッションのゲートウェイを `ANTHROPIC_BASE_URL` に設定し、`apiKeyHelper` をこのバイナリの絶対パス + `gateway token` に設定したインラインの `--settings` ドキュメントを付けて `claude` を実行します。このドキュメントはそのプロセス 1 つだけに適用されます: `~/.claude/settings.json` は一切変更されず、シェルで既に export 済みの `ANTHROPIC_BASE_URL` よりも優先されます（Claude Code 2.1.234 で実測）。
+
+`claude` 以降の引数はすべてそのまま転送されます。引数リストの先頭に来た場合のみ 2 つの例外があります: `--help` は shunt のヘルプを表示し、`--config` は shunt のグローバルオプションに黙って消費される代わりにエラーで拒否されます。どちらも `claude` に渡すには `--` の後ろに置いてください:
+
+```bash
+shunt gateway claude -- --config /path/to/claude/config
+```
+
+認証情報が `apiKeyHelper` 経由で渡されるため、セッションはサインイン済みのゲートウェイセッションにはならず、Claude Code の通常のファーストパーティモードのままです — トークンがどの認証情報スロットに届くかがモードを決めます。何を手放すことになるかは[ゲートウェイログイン](/ja/guides/gateway-login/#ターミナルからサインインする)を参照してください。
+
+## `shunt gateway logout`
+
+保存済みのセッションを破棄します。冪等です — すでに存在しないセッションを削除しても成功します。
+
+```bash
+shunt gateway logout
+```
 
 ## `shunt login claude`
 
@@ -173,6 +228,7 @@ Kimi はリフレッシュのたびに refresh token をローテーションし
 | `RUST_LOG` | ログフィルター、例 `shunt=debug` |
 | `SHUNT_CLIENT_TOKENS` | [`[server.auth]`](/ja/guides/shared-gateway/) 向けのクライアントトークン（名前は `tokens_env` で設定可能） |
 | `SHUNT_GATEWAY_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN` | `shunt token` 向けの静的トークン |
+| `SHUNT_GATEWAY_SESSION_FILE` | `shunt gateway` 系コマンドが使うセッションファイルの変更（既定 `~/.shunt/gateway/session.json`）。上の `SHUNT_GATEWAY_TOKEN` とは無関係 |
 | `CLAUDE_CREDENTIALS` | `shunt token` とリフレッシュ可能な `shunt login claude` インポート向けの代替 credential ファイルパス |
 | `SHUNT_CLAUDE_ACCOUNTS_DIR` | shunt 管理の Claude アカウントストア用の代替ディレクトリ |
 | `SHUNT_KIMI_ACCOUNTS_DIR` | shunt 管理の Kimi Code アカウントストア用の代替ディレクトリ |

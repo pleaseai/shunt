@@ -108,6 +108,30 @@ Start Claude Code and run `/login`. The CLI shows a device code and opens the ga
 
 Pre-filling the code never auto-approves it. The password approval POST is same-origin protected. The external callback instead binds the cross-site redirect with a single-use, ten-minute OAuth state and PKCE; provider errors are never echoed into the page.
 
+## Sign in from the terminal instead
+
+`forceLoginMethod: "gateway"` is not the only way to reach the gateway with a per-user identity. shunt ships the client side of the same device flow, so a user can sign in from a terminal and keep Claude Code out of a signed-in gateway session:
+
+```bash
+shunt gateway login https://gateway.example.com   # same /device approval, in a browser
+shunt gateway claude                              # launch Claude Code wired to the gateway
+```
+
+`shunt gateway login` stores the issued session at `~/.shunt/gateway/session.json` (owner-only; override with `SHUNT_GATEWAY_SESSION_FILE`). `shunt gateway claude` then launches Claude Code with an inline `--settings` document supplying the gateway base URL and an `apiKeyHelper` of `shunt gateway token`, scoped to that one process — `~/.claude/settings.json` is never modified. `shunt gateway logout` discards the session. Full flags in the [CLI reference](/reference/cli/#shunt-gateway-login).
+
+What this changes, and what it does not:
+
+| | In-client `/login` (`forceLoginMethod`) | `shunt gateway login` + `shunt gateway claude` |
+| :-- | :-- | :-- |
+| Browser approval | Required | Required — same `/device` page, same same-origin protection |
+| Per-user identity at the gateway | Yes | Yes, same device-flow session |
+| Client-side [feature trade-offs](#feature-trade-offs) | Taken on | Not taken on — the credential arrives via `apiKeyHelper`, which leaves the client in its ordinary first-party mode |
+| Model aliases | A gateway session pins `opus`/`sonnet` to older ids | Unchanged from a normal session |
+| [Credential-type gate](/reference/client-environment/#which-gateway-restrictions-apply-to-you) | Tripped | **Also tripped** — supplying an `apiKeyHelper` is what triggers it, independently of the session gate |
+| Per-user policy from `GET /managed/settings` | Delivered | Not observed being fetched — use `forceLoginMethod: "gateway"` when the client must enforce policy |
+
+Which credential slot the token arrives in is what selects the client's provider mode; the rows above were measured against Claude Code 2.1.234 and can change with a client release.
+
 ## Managed settings and model policy
 
 After sign-in, shunt serves the user's resolved policy from authenticated

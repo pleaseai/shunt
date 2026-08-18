@@ -535,6 +535,82 @@ file, so the static + `setup-token` route stays the simplest and safest default.
 > `apiKeyHelper` + an OAuth token would only satisfy the discovery gate and mapped-model routes —
 > Claude passthrough would 401.
 
+#### The `shunt gateway token` credential helper
+
+A different helper for a different credential. `shunt token` above prints an **upstream Claude
+subscription** token; `shunt gateway token` prints an access token issued by a **shunt deployment
+that has `[server.gateway]` enabled**, so each user carries their own gateway session instead of a
+shared client token. The two are independent — neither reads the other's storage — and `shunt
+login <provider>` and `shunt token` keep their existing upstream meaning.
+
+Sign in once per machine, then wire the helper:
+
+```bash
+shunt gateway login https://gateway.example.com   # device flow; approve in a browser
+shunt gateway token                                # prints the access token
+shunt gateway logout                               # discards the stored session
+```
+
+`shunt gateway login` reads the deployment's `/.well-known/oauth-authorization-server` document,
+prints a verification URL plus a user code, opens a browser (`--manual` prints the URL instead),
+and polls until you approve. A URL that is plain `http://` and not loopback is accepted but warns:
+the device code and refresh token would travel unencrypted. If the deployment answers the
+discovery request with `404`, it is most likely missing `[server.gateway]`.
+
+The session lands in `~/.shunt/gateway/session.json` (override with `SHUNT_GATEWAY_SESSION_FILE`),
+written owner-only — file `0600` inside a `0700` directory. Note that the similarly named
+`SHUNT_GATEWAY_TOKEN` is unrelated: it is the static override for `shunt token`, described above.
+
+```json
+{
+  "apiKeyHelper": "/path/to/shunt gateway token"
+}
+```
+
+`shunt gateway token` prints the token and nothing else to stdout; every message goes to stderr.
+It serves the stored token until it is within 5 minutes of expiry, then refreshes it. The
+gateway's refresh tokens rotate and are single-use, so the refresh runs under an exclusive file
+lock and re-reads the session after acquiring it: several Claude Code sessions can call the helper
+at the same moment and only one refresh happens. Without that, the losing caller would replay a
+spent refresh token, which revokes the whole rotation family and signs the user out everywhere.
+
+#### Launching Claude Code with `shunt gateway claude`
+
+`shunt gateway claude` does the wiring per invocation instead of asking you to edit settings:
+
+```bash
+shunt gateway claude
+shunt gateway claude -p 'summarize this repo' --model opus
+```
+
+It launches `claude` with an inline `--settings` document that points `ANTHROPIC_BASE_URL` at the
+gateway from the stored session and sets `apiKeyHelper` to this shunt binary's absolute path plus
+`gateway token`. The document applies to that one process — `~/.claude/settings.json` is never
+modified — and it takes precedence over an `ANTHROPIC_BASE_URL` already exported in the shell, so
+it is safe to run inside a shell configured for a different gateway (measured against Claude Code
+2.1.234).
+
+Everything after `claude` is forwarded verbatim, so Claude Code's own flags reach it unchanged.
+Two exceptions when they lead the argument list: `--help` prints shunt's help, and `--config` is
+**rejected with an error** rather than silently consumed by shunt's global option. Pass either
+after `--` to forward it:
+
+```bash
+shunt gateway claude -- --config /path/to/claude/config
+```
+
+This route supplies the credential through `apiKeyHelper`, which leaves Claude Code in its
+ordinary first-party mode; it does **not** put the client into a signed-in Claude apps gateway
+session the way `forceLoginMethod: "gateway"` does. Which credential slot the token arrives in is
+what selects that mode, and a gateway session additionally resolves the `opus`/`sonnet` aliases to
+older model ids. This is not "no restrictions": the route still sets a credential, so Claude Code's
+credential-type gate — the one any `apiKeyHelper` trips, covering prompt-cache TTL defaults, Remote
+Control, voice dictation, and artifact publishing — applies here exactly as it does to `shunt token`
+above. The two gates are independent. The consequence to plan around: shunt's per-user `GET /managed/settings` policy
+channel is fetched by a signed-in gateway session, and a helper-credential session was not
+observed requesting it (measured against Claude Code 2.1.234) — use `forceLoginMethod: "gateway"`
+when you need the client to enforce per-user policy.
+
 ### 5.3 Provide the mapped provider's credential (to shunt, not Claude Code)
 
 - **OpenAI provider:** export the key named by `api_key_env` (default `OPENAI_API_KEY`) in the

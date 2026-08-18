@@ -240,6 +240,28 @@ Sign-in requires a browser. Personal single-user installations that do not need
 managed identity should continue to use `ANTHROPIC_BASE_URL` and, when needed,
 `[server.auth]`; that path trips a much smaller set of client restrictions.
 
+A client-side CLI route trades that feature set differently. `shunt gateway
+login <url>` runs the same device flow from the terminal and stores the issued
+session locally; `shunt gateway token` prints the access token for Claude Code's
+`apiKeyHelper`, and `shunt gateway claude` launches Claude Code with that wiring
+applied to a single process. **This does not change the browser requirement
+above** — approval still happens on the `/device` page, `POST /device` is still
+same-origin protected, and an OIDC-only deployment still renders no password
+form. What it changes is which credential slot the token arrives in on the
+client, and that slot is what selects Claude Code's provider mode: a
+helper-supplied credential leaves the session in the client's ordinary
+first-party mode, so the restrictions tabulated above — which apply to a
+signed-in gateway session — are not taken on, and the `opus`/`sonnet` aliases
+are not remapped to the older ids a gateway session pins (measured against
+Claude Code 2.1.234). That is narrower than "no restrictions": supplying any
+credential, `apiKeyHelper` included, trips Claude Code's separate credential-type
+gate (prompt-cache TTL defaults, Remote Control, voice dictation, artifact
+publishing), which is independent of the signed-in session. The cost is symmetrical: a helper-credential session was
+not observed fetching `GET /managed/settings` (same measurement), so per-user
+policy enforcement in the client remains a `forceLoginMethod: "gateway"`
+property. Users are still individually identified at the gateway either way,
+because the token is the same per-user device-flow session.
+
 For per-user policy after sign-in, shunt now serves authenticated
 `GET /managed/settings` with ordered email matching, `ETag`/`304`, telemetry
 environment push, and `availableModels` enforcement. See the

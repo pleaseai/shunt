@@ -1,6 +1,6 @@
 ---
 title: CLI
-description: shunt 命令行 —— run、check、init、add、token 和 provider login。
+description: shunt 命令行 —— run、check、init、add、token、gateway login 和 provider login。
 ---
 
 ## `shunt run`
@@ -79,6 +79,61 @@ shunt add upstream kimi --print | claude
 ```
 
 何时需要它,见 [连接 Claude Code](/zh-cn/guides/connect-claude-code/#2-choose-the-anthropic-credential)。
+
+## `shunt gateway login`
+
+让这台机器登录到启用了 [`[server.gateway]`](/zh-cn/guides/gateway-login/) 的 shunt 部署，使用与 Claude Code 自身 `/login` 相同的 OAuth device flow。这是网关的**客户端**一侧；`shunt login <provider>` 和 `shunt token` 保持不变，仍然用于让 shunt 自己向上游认证。
+
+```bash
+shunt gateway login https://gateway.example.com
+shunt gateway login https://gateway.example.com --manual   # 只打印 URL，不打开浏览器
+```
+
+shunt 会读取该部署的 `/.well-known/oauth-authorization-server` 文档并使用其中公布的端点，打印一个验证 URL 和一个短用户码，打开浏览器，然后轮询直到你在网关的 `/device` 页面上批准。discovery 返回 `404` 通常意味着该部署没有 `[server.gateway]` 配置段。非回环的明文 `http://` URL 也会被接受，但会给出警告 —— device code 和 refresh token 会以未加密的形式传输。
+
+会话保存在 `~/.shunt/gateway/session.json`（可用 `SHUNT_GATEWAY_SESSION_FILE` 覆盖），以仅属主可读写的方式写入：`0700` 目录中的 `0600` 文件。
+
+## `shunt gateway token`
+
+只把网关访问 token 打印到 **stdout** —— 所有消息、警告和提示都走 stderr —— 因此可以直接接入 Claude Code 的 `apiKeyHelper`：
+
+```json
+// ~/.claude/settings.json
+{
+  "apiKeyHelper": "/path/to/shunt gateway token"
+}
+```
+
+它与打印上游 Claude 订阅 token 的 [`shunt token`](#shunt-token) 是**两个不同的 helper**。两者不会读取对方的存储，而名字相近的 `SHUNT_GATEWAY_TOKEN` 变量属于 `shunt token`，不属于本命令。
+
+已保存的 token 会一直使用到距离过期不足 5 分钟，然后才刷新。网关的 refresh token 会轮换且只能使用一次，因此刷新在独占文件锁下执行，并在拿到锁之后重新读取会话：多个 Claude Code 会话同时调用 helper 也只会发生一次刷新，不会因重放而使整个轮换家族失效。
+
+## `shunt gateway claude`
+
+无需编辑任何设置文件即可让 Claude Code 连接网关运行：
+
+```bash
+shunt gateway claude
+shunt gateway claude -p 'summarize this repo' --model opus
+```
+
+它在运行 `claude` 时附带一个内联 `--settings` 文档，把 `ANTHROPIC_BASE_URL` 指向已保存会话中的网关，并把 `apiKeyHelper` 设为本二进制的绝对路径加 `gateway token`。该文档只作用于这一个进程：`~/.claude/settings.json` 完全不会被修改，并且它的优先级高于 shell 中已经 export 的 `ANTHROPIC_BASE_URL`（针对 Claude Code 2.1.234 实测）。
+
+`claude` 之后的参数都会原样转发。只有当它们出现在参数列表最前面时才有两个例外：`--help` 会打印 shunt 的帮助，而 `--config` 会被明确报错拒绝，而不是被 shunt 的全局选项悄悄吞掉。要把它们交给 `claude`，请放在 `--` 之后：
+
+```bash
+shunt gateway claude -- --config /path/to/claude/config
+```
+
+由于凭据是通过 `apiKeyHelper` 提供的，会话不会变成已登录的网关会话，而是保持 Claude Code 通常的 first-party 模式 —— token 落在哪个凭据槽位决定了模式。关于这样做会放弃什么，参见[网关登录](/zh-cn/guides/gateway-login/#改用终端登录)。
+
+## `shunt gateway logout`
+
+删除已保存的会话。幂等 —— 删除一个已经不存在的会话同样成功。
+
+```bash
+shunt gateway logout
+```
 
 ## `shunt login claude`
 
@@ -173,6 +228,7 @@ Kimi 在每次刷新时都会轮换 refresh token,而且签发的 access token �
 | `RUST_LOG` | 日志过滤器,如 `shunt=debug` |
 | `SHUNT_CLIENT_TOKENS` | 面向 [`[server.auth]`](/zh-cn/guides/shared-gateway/) 的客户端 token(名称可通过 `tokens_env` 配置) |
 | `SHUNT_GATEWAY_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN` | 面向 `shunt token` 的静态 token |
+| `SHUNT_GATEWAY_SESSION_FILE` | `shunt gateway` 系列命令使用的会话文件（默认 `~/.shunt/gateway/session.json`）；与上面的 `SHUNT_GATEWAY_TOKEN` 无关 |
 | `CLAUDE_CREDENTIALS` | 面向 `shunt token` 和可刷新 `shunt login claude` 导入的备用 credential 文件路径 |
 | `SHUNT_CLAUDE_ACCOUNTS_DIR` | shunt 管理的 Claude 账户存储的备用目录 |
 | `SHUNT_KIMI_ACCOUNTS_DIR` | shunt 管理的 Kimi Code 账户存储的备用目录 |

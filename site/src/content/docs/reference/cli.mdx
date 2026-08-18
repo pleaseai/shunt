@@ -1,6 +1,6 @@
 ---
 title: CLI
-description: The shunt command line — run, check, init, add, token, and provider login.
+description: The shunt command line — run, check, init, add, token, gateway login, and provider login.
 ---
 
 ## `shunt run`
@@ -91,6 +91,61 @@ Print a Claude subscription OAuth token to **stdout** (logs go to stderr), desig
 ```
 
 See [Connect Claude Code](/guides/connect-claude-code/#2-choose-the-anthropic-credential) for when you need this.
+
+## `shunt gateway login`
+
+Sign this machine in to a shunt deployment that has [`[server.gateway]`](/guides/gateway-login/) enabled, using the same OAuth device flow Claude Code's own `/login` uses. This is the **client** side of the gateway; `shunt login <provider>` and `shunt token` are unchanged and still authenticate shunt itself against an upstream.
+
+```bash
+shunt gateway login https://gateway.example.com
+shunt gateway login https://gateway.example.com --manual   # print the URL, don't open a browser
+```
+
+shunt reads the deployment's `/.well-known/oauth-authorization-server` document and uses the endpoints it advertises, prints a verification URL and a short user code, opens your browser, and polls until you approve on the gateway's `/device` page. A `404` on discovery almost always means the deployment has no `[server.gateway]` section. A plain `http://` URL that is not loopback is accepted but warns — the device code and refresh token would travel unencrypted.
+
+The session is stored at `~/.shunt/gateway/session.json` (override with `SHUNT_GATEWAY_SESSION_FILE`), written owner-only: file mode `0600` inside a `0700` directory.
+
+## `shunt gateway token`
+
+Print the gateway access token to **stdout** and nothing else — every message, warning, and hint goes to stderr — so it wires straight into Claude Code's `apiKeyHelper`:
+
+```json
+// ~/.claude/settings.json
+{
+  "apiKeyHelper": "/path/to/shunt gateway token"
+}
+```
+
+This is a **different helper from [`shunt token`](#shunt-token)**, which prints an upstream Claude subscription token. Neither reads the other's storage, and the similarly named `SHUNT_GATEWAY_TOKEN` variable belongs to `shunt token`, not to this command.
+
+The stored token is served until it is within 5 minutes of expiry, then refreshed. Gateway refresh tokens rotate and are single-use, so the refresh runs under an exclusive file lock and re-reads the session after taking it: concurrent Claude Code sessions calling the helper at the same moment produce one refresh, not a replay that would revoke the whole rotation family.
+
+## `shunt gateway claude`
+
+Launch Claude Code against the gateway without editing any settings file:
+
+```bash
+shunt gateway claude
+shunt gateway claude -p 'summarize this repo' --model opus
+```
+
+It runs `claude` with an inline `--settings` document that points `ANTHROPIC_BASE_URL` at the gateway from the stored session and sets `apiKeyHelper` to this binary's absolute path plus `gateway token`. The document is scoped to that one process: `~/.claude/settings.json` is never modified, and it takes precedence over an `ANTHROPIC_BASE_URL` already exported in your shell (measured against Claude Code 2.1.234).
+
+Everything after `claude` is forwarded verbatim. Two exceptions when they lead the argument list: `--help` prints shunt's help, and `--config` is rejected with an error rather than being silently consumed by shunt's global option. Pass either after `--` to send it to `claude`:
+
+```bash
+shunt gateway claude -- --config /path/to/claude/config
+```
+
+Because the credential arrives through `apiKeyHelper`, the session stays in Claude Code's ordinary first-party mode rather than becoming a signed-in gateway session — the credential slot the token lands in is what selects the mode. See [Gateway Login](/guides/gateway-login/#sign-in-from-the-terminal-instead) for what that trades away.
+
+## `shunt gateway logout`
+
+Discard the stored session. Idempotent — removing a session that is already gone succeeds.
+
+```bash
+shunt gateway logout
+```
 
 ## `shunt login claude`
 
@@ -217,6 +272,7 @@ For an Anthropic provider with `auth = "claude_oauth"`, an account can use a nam
 | `RUST_LOG` | Log filter, e.g. `shunt=debug` |
 | `SHUNT_CLIENT_TOKENS` | Client tokens for [`[server.auth]`](/guides/shared-gateway/) (name configurable via `tokens_env`) |
 | `SHUNT_GATEWAY_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN` | Static token for `shunt token` |
+| `SHUNT_GATEWAY_SESSION_FILE` | Alternate session file for the `shunt gateway` commands (default `~/.shunt/gateway/session.json`); unrelated to `SHUNT_GATEWAY_TOKEN` above |
 | `CLAUDE_CREDENTIALS` | Alternate credentials file path for `shunt token` and refreshable `shunt login claude` import |
 | `SHUNT_CLAUDE_ACCOUNTS_DIR` | Alternate shunt-managed Claude account-store directory |
 | `SHUNT_KIMI_ACCOUNTS_DIR` | Alternate shunt-managed Kimi Code account-store directory |

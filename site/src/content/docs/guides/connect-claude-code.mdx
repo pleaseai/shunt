@@ -90,6 +90,36 @@ Claude Code sends an `apiKeyHelper` value in **both** `x-api-key` and `Authoriza
 
 
 
+### The `shunt gateway token` helper
+
+If shunt runs [`[server.gateway]`](/guides/gateway-login/), each user can carry their own gateway session instead of a shared token. Sign in once, then use the second helper:
+
+```bash
+shunt gateway login https://gateway.example.com
+```
+
+```json
+// ~/.claude/settings.json
+{
+  "apiKeyHelper": "/path/to/shunt gateway token"
+}
+```
+
+This is a different credential from `shunt token` above: that one prints an upstream Claude subscription token, this one prints a token the shunt deployment issued to you. The helper refreshes within 5 minutes of expiry, under a file lock so concurrent Claude Code sessions cannot replay a single-use refresh token. `shunt gateway logout` discards the session.
+
+### Skip the settings file: `shunt gateway claude`
+
+To avoid editing `~/.claude/settings.json` at all, let shunt do the wiring for one process:
+
+```bash
+shunt gateway claude
+shunt gateway claude -p 'summarize this repo' --model opus
+```
+
+It launches Claude Code with an inline `--settings` document carrying both the gateway base URL and the `apiKeyHelper`, scoped to that invocation — your settings file is untouched, and the document wins over an `ANTHROPIC_BASE_URL` already exported in the shell (measured against Claude Code 2.1.234). Arguments after `claude` are forwarded verbatim; `--config` is rejected rather than silently swallowed, so pass shunt-owned flags after `--`. See [`shunt gateway claude`](/reference/cli/#shunt-gateway-claude).
+
+
+
 ## 3. Provide the mapped provider's credential
 
 These go to **shunt's environment**, not Claude Code's:

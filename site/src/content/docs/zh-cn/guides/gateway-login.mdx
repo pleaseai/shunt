@@ -102,6 +102,30 @@ Google 使用默认的 `openid email profile` scope。shunt 要求 Google UserIn
 
 预填设备码绝不会自动批准它。密码批准的 POST 受同源保护。而外部 callback 则用一次性、十分钟有效的 OAuth state 与 PKCE 绑定这次跨站重定向;提供方的错误绝不会被回显到页面上。
 
+## 改用终端登录
+
+要以按用户的身份接入网关，`forceLoginMethod: "gateway"` 并不是唯一途径。shunt 也提供了同一套 device flow 的客户端一侧，用户可以在终端登录，同时让 Claude Code 不进入已登录的网关会话：
+
+```bash
+shunt gateway login https://gateway.example.com   # 同样在浏览器里完成 /device 批准
+shunt gateway claude                              # 启动已连接网关的 Claude Code
+```
+
+`shunt gateway login` 会把签发的会话保存到 `~/.shunt/gateway/session.json`（仅属主可读写；可用 `SHUNT_GATEWAY_SESSION_FILE` 覆盖）。随后 `shunt gateway claude` 会在启动 Claude Code 时附带一个内联 `--settings` 文档，提供网关 base URL 和指向 `shunt gateway token` 的 `apiKeyHelper`，且只作用于这一个进程 —— `~/.claude/settings.json` 完全不会被修改。`shunt gateway logout` 删除该会话。完整参数见 [CLI 参考](/zh-cn/reference/cli/#shunt-gateway-login)。
+
+哪些会变、哪些不会：
+
+| | 客户端内 `/login`（`forceLoginMethod`） | `shunt gateway login` + `shunt gateway claude` |
+| :-- | :-- | :-- |
+| 浏览器批准 | 需要 | 需要 —— 同一个 `/device` 页面，同样的 same-origin 保护 |
+| 网关侧的按用户身份 | 有 | 有，同一个 device flow 会话 |
+| 客户端侧的功能取舍 | 会被套用 | 不会 —— 凭据经由 `apiKeyHelper` 到达，客户端保持通常的 first-party 模式 |
+| 模型别名 | 网关会话把 `opus`/`sonnet` 固定为较旧的 id | 与普通会话相同 |
+| 凭据类型闸门 | 会触发 | **同样会触发** —— 提供 `apiKeyHelper` 本身就是触发条件，与会话闸门相互独立（提示缓存 TTL 默认值、Remote Control、语音听写、发布 artifact） |
+| 来自 `GET /managed/settings` 的按用户策略 | 会下发 | 未观测到客户端去请求 —— 需要客户端强制执行策略时请用 `forceLoginMethod: "gateway"` |
+
+token 落在哪个凭据槽位决定了客户端的 provider 模式。上表针对 Claude Code 2.1.234 实测，可能随客户端版本变化。
+
 ## 托管设置与模型策略
 
 登录之后,shunt 通过需认证的 `GET /managed/settings` 提供该用户解析后的策略。配置有序的 `[[server.gateway.policies]]` 条目:
