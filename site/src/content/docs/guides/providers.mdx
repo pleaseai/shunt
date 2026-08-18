@@ -215,6 +215,7 @@ Most third-party "use Claude Code with X" gateways are Anthropic-Messages-compat
 | Provider | `base_url` | Example model IDs |
 | :-- | :-- | :-- |
 | [Kimi (Moonshot)](/providers/kimi/) | `https://api.moonshot.ai/anthropic` | `kimi-k3[1m]`, `kimi-k2.7-code` |
+| [Kimi Code (subscription, OAuth)](/providers/kimi/#kimi-code-oauth-subscription) | `https://api.kimi.com/coding` | use the ids your subscription exposes |
 | [DeepSeek](/providers/deepseek/) | `https://api.deepseek.com/anthropic` | `deepseek-v4-pro`, `deepseek-v4-flash` |
 | [Z.ai (GLM)](/providers/zai/) | `https://api.z.ai/api/anthropic` | `glm-5.2`, `glm-4.7` |
 | [MiniMax](/providers/minimax/) | `https://api.minimax.io/anthropic` | see [MiniMax docs](https://platform.minimax.io/docs/token-plan/claude-code) |
@@ -225,7 +226,42 @@ Most third-party "use Claude Code with X" gateways are Anthropic-Messages-compat
 For a provider not in this table, `shunt add upstream <docs-url>` prints a research blueprint
 that walks a coding agent through wiring it up from the provider's own documentation.
 
-For example, to route Kimi's model through shunt:
+Every row above but one takes `auth = "api_key"`. **Kimi Code** is the exception: a separate,
+subscription-billed Kimi service from the metered Moonshot API in the row above it — different
+host, and OAuth instead of an API key. It has a dedicated built-in `kimi-code` preset (`kind =
+"anthropic"`, `base_url = "https://api.kimi.com/coding"`, `auth = "kimi_oauth"`), so it needs no
+manual `[providers.*]` table beyond `provider = "kimi-code"` under the ordered `[[upstreams]]`
+form, plus a logged-in account:
+
+```bash
+shunt login kimi --name <account-name>   # RFC 8628 device flow -> ~/.shunt/accounts/kimi/<account-name>.json
+```
+
+```toml
+# shunt.toml — route to your Kimi Code subscription
+[[upstreams]]
+name = "kimi-code"
+provider = "kimi-code"
+auth = { mode = "kimi_oauth", account = "<account-name>" }
+
+# Declaring [[upstreams]] replaces the built-in provider set, so keep a trailing
+# anthropic passthrough — without it `shunt check` rejects the default
+# server.default_provider. This is the same entry `shunt init` appends.
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic"
+
+[[routes]]
+model = "<model-id-your-subscription-exposes>"
+provider = "kimi-code"
+```
+
+`kimi_oauth` is pool-capable like `claude_oauth`/`chatgpt_oauth` — use `accounts = [...]` in place
+of `account` to spread load across several stored Kimi accounts. See
+[Kimi → Kimi Code (OAuth subscription)](/providers/kimi/#kimi-code-oauth-subscription) for the
+full walkthrough.
+
+For example, to route Kimi's (Moonshot) model through shunt:
 
 ```toml
 [providers.kimi]

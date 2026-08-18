@@ -1400,9 +1400,9 @@ pub struct ProviderConfig {
     /// How `POST /v1/messages/count_tokens` is answered for this provider.
     #[serde(default)]
     pub count_tokens: CountTokens,
-    /// Explicit OAuth accounts for a `claude_oauth` (Anthropic) or
-    /// `chatgpt_oauth` (Codex) provider. An empty list means the account store
-    /// directory will be scanned by the account-pool layer.
+    /// Explicit OAuth accounts for a `claude_oauth` (Anthropic), `chatgpt_oauth`
+    /// (Codex), or `kimi_oauth` (Kimi Code) provider. An empty list means the
+    /// account store directory will be scanned by the account-pool layer.
     #[serde(default)]
     pub accounts: Vec<AccountConfig>,
     /// Names of account-store entries selected by the `[[upstreams]].auth`
@@ -1451,9 +1451,10 @@ pub struct ProviderConfig {
     /// Applies to this provider's single-credential upstream calls (the
     /// `passthrough`/`api_key` Anthropic path, the single-credential Responses
     /// path — `api_key`, `xai_oauth`, or an unpooled `chatgpt_oauth` provider —
-    /// and the Cursor path); the `claude_oauth`/`chatgpt_oauth` account pools
-    /// have their own account-rotation failover and are unaffected. On by
-    /// default with conservative settings — set `max_retries = 0` to disable.
+    /// and the Cursor path); the `claude_oauth`/`chatgpt_oauth`/`kimi_oauth`
+    /// account pools have their own account-rotation failover and are
+    /// unaffected. On by default with conservative settings — set
+    /// `max_retries = 0` to disable.
     #[serde(default)]
     pub retry: RetryConfig,
     /// Directories the Antigravity CLI may be pointed at by request content
@@ -1608,11 +1609,11 @@ pub struct AccountConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub threshold_fable: Option<f64>,
     /// Selection priority among available accounts: lower is preferred.
-    /// Applies to Claude and Codex pools alike.
+    /// Applies to Claude, Codex, and Kimi pools alike.
     #[serde(default = "default_account_priority")]
     pub priority: u32,
     /// Exclude this account from pool selection entirely without removing its
-    /// configuration. Applies to Claude and Codex pools alike.
+    /// configuration. Applies to Claude, Codex, and Kimi pools alike.
     #[serde(default)]
     pub disabled: bool,
     /// Runtime-only provenance used to distinguish a store entry from an inline
@@ -1779,6 +1780,10 @@ pub enum AuthMode {
     XaiOauth,
     /// Cursor OAuth acquired by `shunt login cursor`.
     CursorOauth,
+    /// Kimi Code subscription OAuth, acquired via the device-code flow
+    /// (`shunt login kimi --name <account-name>`) and stored per-account in
+    /// `~/.shunt/accounts/kimi/<name>.json`.
+    KimiOauth,
     /// Google OAuth subscription token (Gemini Code Assist / Google One AI Pro),
     /// reused from the gemini CLI login (`~/.gemini/oauth_creds.json`). shunt
     /// can refresh it when operator-supplied client credentials are present.
@@ -1896,6 +1901,14 @@ pub fn host_is_chatgpt(host: &str) -> bool {
 /// leaks the reused Google subscription bearer off-origin.
 pub fn host_is_google_codeassist(host: &str) -> bool {
     host == "cloudcode-pa.googleapis.com"
+}
+
+/// Whether `host` belongs to Kimi (`kimi.com` or any subdomain, which covers
+/// the measured `api.kimi.com` API host). Used to reject a `kimi_oauth`
+/// provider pointed at a non-Kimi host, so shunt never leaks a Kimi Code
+/// subscription bearer to another origin.
+pub fn host_is_kimi(host: &str) -> bool {
+    host == "kimi.com" || host.ends_with(".kimi.com")
 }
 
 /// Whether `host` identifies the local machine.
@@ -2061,7 +2074,7 @@ pub enum ConfigError {
     AntigravityLegacyTableMissingAuth,
     #[error("{0}")]
     AntigravityMigrationRequired(String),
-    #[error("providers.{provider}.accounts requires auth = \"claude_oauth\" or \"chatgpt_oauth\"")]
+    #[error("providers.{provider}.accounts requires auth = \"claude_oauth\", \"chatgpt_oauth\", or \"kimi_oauth\"")]
     AccountsRequireOauthProvider { provider: String },
     #[error("providers.{provider} uses auth = \"claude_oauth\" but kind is not \"anthropic\"")]
     ClaudeOauthWrongKind { provider: String },
@@ -2075,6 +2088,12 @@ pub enum ConfigError {
     ChatgptOauthNotHttps { provider: String },
     #[error("providers.{provider} uses auth = \"chatgpt_oauth\" but kind is not \"responses\"; the anthropic adapter would forward the client's own credential instead of the Codex token")]
     ChatgptOauthWrongKind { provider: String },
+    #[error("providers.{provider} uses auth = \"kimi_oauth\" but kind is not \"anthropic\"")]
+    KimiOauthWrongKind { provider: String },
+    #[error("providers.{provider} uses auth = \"kimi_oauth\" but base_url host {host} is not kimi.com; refusing to send a subscription token off-origin")]
+    KimiOauthNonKimiHost { provider: String, host: String },
+    #[error("providers.{provider} uses auth = \"kimi_oauth\" but base_url is not https; refusing to send a subscription token over plaintext")]
+    KimiOauthNotHttps { provider: String },
     #[error("providers.{provider}.accounts contains duplicate account name \"{name}\"")]
     DuplicateAccountName { provider: String, name: String },
     #[error("providers.{provider}.accounts account name \"{name}\" must match [a-z0-9-]+")]
@@ -3367,7 +3386,7 @@ impl Config {
             if !provider.accounts.is_empty()
                 && !matches!(
                     provider.auth,
-                    AuthMode::ClaudeOauth | AuthMode::ChatgptOauth
+                    AuthMode::ClaudeOauth | AuthMode::ChatgptOauth | AuthMode::KimiOauth
                 )
             {
                 return Err(ConfigError::AccountsRequireOauthProvider {
@@ -3473,6 +3492,35 @@ impl Config {
                     }
                     if !host_is_chatgpt(host) {
                         return Err(ConfigError::ChatgptOauthNonChatgptHost {
+                            provider: name.clone(),
+                            host: host.to_string(),
+                        });
+                    }
+                }
+            }
+            // A kimi_oauth provider injects the operator's stored Kimi Code
+            // subscription bearer, so — like claude_oauth above — its base_url
+            // must stay on a Kimi host over https, never a gateway or plaintext
+            // endpoint that would receive the token. It must also be an
+            // `anthropic`-kind provider (Kimi's coding API speaks the Anthropic
+            // Messages wire shape): the anthropic adapter is what injects the
+            // Kimi bearer and X-Msh-* headers, whereas any other adapter would
+            // forward the client's own credential off-origin.
+            if provider.auth == AuthMode::KimiOauth {
+                if provider.kind != ProviderKind::Anthropic {
+                    return Err(ConfigError::KimiOauthWrongKind {
+                        provider: name.clone(),
+                    });
+                }
+                let host = url.host_str().unwrap_or_default();
+                if !host_is_loopback(host) {
+                    if url.scheme() != "https" {
+                        return Err(ConfigError::KimiOauthNotHttps {
+                            provider: name.clone(),
+                        });
+                    }
+                    if !host_is_kimi(host) {
+                        return Err(ConfigError::KimiOauthNonKimiHost {
                             provider: name.clone(),
                             host: host.to_string(),
                         });
@@ -3926,13 +3974,13 @@ mod tests {
     use figment::providers::Format;
 
     use super::{
-        config_file_candidates, default_auth_header, host_is_chatgpt, identity_collisions,
-        AccountConfig, AdminConfig, AdminKey, AdminOidcConfig, AuthMode, CodexEndpointConfig,
-        Config, ConfigError, ConfigFormat, GatewayConfig, GatewayOidcConfig, GatewayPolicyConfig,
-        GatewayPolicyMatch, GatewaySessionConfig, GatewayTelemetryConfig,
+        config_file_candidates, default_auth_header, host_is_chatgpt, host_is_kimi,
+        identity_collisions, AccountConfig, AdminConfig, AdminKey, AdminOidcConfig, AuthMode,
+        CodexEndpointConfig, Config, ConfigError, ConfigFormat, GatewayConfig, GatewayOidcConfig,
+        GatewayPolicyConfig, GatewayPolicyMatch, GatewaySessionConfig, GatewayTelemetryConfig,
         GatewayTelemetryDestination, InboundAuthConfig, ModelConfig, OauthUsageConfig,
-        OidcProviderConfig, PoolConfig, ProviderKind, ResponsesFlavor, RetryConfig, Secret,
-        SpendConfig, StatusConfig, StatusSource, UsageEndpointConfig, CONFIG_ENV_LOCK,
+        OidcProviderConfig, PoolConfig, ProviderConfig, ProviderKind, ResponsesFlavor, RetryConfig,
+        Secret, SpendConfig, StatusConfig, StatusSource, UsageEndpointConfig, CONFIG_ENV_LOCK,
     };
 
     fn model_config(id: &str, upstream_model: Option<BTreeMap<String, String>>) -> ModelConfig {
@@ -4459,6 +4507,16 @@ mod tests {
         config
     }
 
+    fn kimi_oauth_config() -> Config {
+        let mut config = Config::default();
+        config.providers.insert(
+            "kimi".to_string(),
+            ProviderConfig::anthropic("https://api.kimi.com"),
+        );
+        config.providers.get_mut("kimi").unwrap().auth = AuthMode::KimiOauth;
+        config
+    }
+
     #[test]
     fn accounts_require_oauth_provider() {
         let mut config = Config::default();
@@ -4520,6 +4578,52 @@ mod tests {
         let mut config = claude_oauth_config();
         config.providers.get_mut("anthropic").unwrap().base_url =
             "https://api.anthropic.com".to_string();
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn kimi_oauth_requires_anthropic_kind() {
+        let mut config = kimi_oauth_config();
+        config.providers.get_mut("kimi").unwrap().kind = ProviderKind::Responses;
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::KimiOauthWrongKind { .. }
+        ));
+    }
+
+    #[test]
+    fn kimi_oauth_accepts_plaintext_loopback_base_urls() {
+        for base_url in ["http://127.0.0.1:8080", "http://localhost:9000"] {
+            let mut config = kimi_oauth_config();
+            config.providers.get_mut("kimi").unwrap().base_url = base_url.to_string();
+            config.validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn kimi_oauth_rejects_plaintext_remote_base_url() {
+        let mut config = kimi_oauth_config();
+        config.providers.get_mut("kimi").unwrap().base_url = "http://api.kimi.com".to_string();
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::KimiOauthNotHttps { .. }
+        ));
+    }
+
+    #[test]
+    fn kimi_oauth_rejects_remote_non_kimi_base_url() {
+        let mut config = kimi_oauth_config();
+        config.providers.get_mut("kimi").unwrap().base_url = "https://evil.example.com".to_string();
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::KimiOauthNonKimiHost { .. }
+        ));
+    }
+
+    #[test]
+    fn kimi_oauth_accepts_kimi_https_base_url() {
+        let mut config = kimi_oauth_config();
+        config.providers.get_mut("kimi").unwrap().base_url = "https://api.kimi.com".to_string();
         config.validate().unwrap();
     }
 
@@ -6104,6 +6208,15 @@ mod tests {
         assert!(host_is_chatgpt("x.chatgpt.com"));
         assert!(!host_is_chatgpt("chatgpt.com.evil.com"));
         assert!(!host_is_chatgpt("openai.com"));
+    }
+
+    #[test]
+    fn host_is_kimi_matches_kimi_and_subdomains_only() {
+        assert!(host_is_kimi("kimi.com"));
+        assert!(host_is_kimi("api.kimi.com"));
+        assert!(!host_is_kimi("evilkimi.com"));
+        assert!(!host_is_kimi("notkimi.com"));
+        assert!(!host_is_kimi("kimi.com.evil.com"));
     }
 
     #[test]

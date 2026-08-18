@@ -76,6 +76,7 @@ OAuth 経由であなたの **SuperGrok / X Premium+** サブスクリプショ�
 | プロバイダー | `base_url` | モデル ID の例 |
 | :-- | :-- | :-- |
 | [Kimi (Moonshot)](/ja/providers/kimi/) | `https://api.moonshot.ai/anthropic` | `kimi-k3[1m]`, `kimi-k2.7-code` |
+| [Kimi Code（サブスクリプション、OAuth）](/ja/providers/kimi/#kimi-code-oauth-subscription) | `https://api.kimi.com/coding` | サブスクリプションが公開しているモデル ID を使用 |
 | [DeepSeek](/ja/providers/deepseek/) | `https://api.deepseek.com/anthropic` | `deepseek-v4-pro`, `deepseek-v4-flash` |
 | [Z.ai (GLM)](/ja/providers/zai/) | `https://api.z.ai/api/anthropic` | `glm-5.2`, `glm-4.7` |
 | [MiniMax](/ja/providers/minimax/) | `https://api.minimax.io/anthropic` | [MiniMax docs](https://platform.minimax.io/docs/token-plan/claude-code) を参照 |
@@ -85,7 +86,35 @@ OAuth 経由であなたの **SuperGrok / X Premium+** サブスクリプショ�
 
 この表にないプロバイダーについては、`shunt add upstream <docs-url>` が、そのプロバイダー自身のドキュメントをもとにコーディングエージェントへ組み込み手順を案内するリサーチ用ブループリントを出力します（`shunt add upstream https://docs.example.com --print | claude`）。
 
-例えば、Kimi のモデルを shunt 経由でルーティングするには:
+上記の行はすべて `auth = "api_key"` を使いますが、1 行だけ例外があります。**Kimi Code** は、その 1 行上にある従量課金制の Moonshot API とは別の、サブスクリプション課金の Kimi サービスです — ホストが異なり、API キーの代わりに OAuth を使います。専用の組み込みプリセット `kimi-code`（`kind = "anthropic"`、`base_url = "https://api.kimi.com/coding"`、`auth = "kimi_oauth"`）が用意されているため、順序付きの `[[upstreams]]` 形式で `provider = "kimi-code"` を指定するだけでよく、手動の `[providers.*]` テーブルは不要です。あとはログイン済みのアカウントがあれば使えます:
+
+```bash
+shunt login kimi --name <account-name>   # RFC 8628 デバイスフロー -> ~/.shunt/accounts/kimi/<account-name>.json
+```
+
+```toml
+# shunt.toml — Kimi Code サブスクリプションへルーティングする
+[[upstreams]]
+name = "kimi-code"
+provider = "kimi-code"
+auth = { mode = "kimi_oauth", account = "<account-name>" }
+
+# [[upstreams]] を宣言すると組み込みのプロバイダー集合が置き換わるため、末尾に
+# anthropic のパススルーを残しておくこと — これがないと、デフォルトの
+# server.default_provider を `shunt check` が拒否する。これは `shunt init` が
+# 追加するのと同じエントリ。
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic"
+
+[[routes]]
+model = "<model-id-your-subscription-exposes>"
+provider = "kimi-code"
+```
+
+`kimi_oauth` は `claude_oauth` / `chatgpt_oauth` と同様にプール対応です — `account` の代わりに `accounts = [...]` を使うと、保存済みの複数の Kimi アカウントへ負荷を分散できます。詳しい手順は [Kimi → Kimi Code (OAuth subscription)](/ja/providers/kimi/#kimi-code-oauth-subscription) を参照してください。
+
+例えば、Kimi（Moonshot）のモデルを shunt 経由でルーティングするには:
 
 ```toml
 [providers.kimi]

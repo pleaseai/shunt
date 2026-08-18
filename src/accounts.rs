@@ -21,6 +21,7 @@ use crate::config::{AccountConfig, PoolConfig};
 pub enum StoreFamily {
     Claude,
     Chatgpt,
+    Kimi,
 }
 
 /// Stable physical-account identity used by every runtime state map.
@@ -944,11 +945,19 @@ pub(crate) fn account_identity(account: &AccountConfig) -> &str {
 
 pub(crate) fn account_key(upstream: &str, account: &AccountConfig) -> AccountKey {
     let store_family = account.store_family.unwrap_or_else(|| {
-        // Case-insensitive so an upstream named e.g. `My-Codex` still infers the
-        // ChatGPT store family instead of falling through to Claude.
+        // Only a caller that bypassed `resolve_pool_accounts` (which always
+        // stamps the family) lands here, so this is a defensive guess, not the
+        // normal path. Case-insensitive so an upstream named e.g. `My-Codex`
+        // still infers the ChatGPT store family instead of falling through to
+        // Claude. Kimi is matched before the Claude fallback because it would
+        // otherwise be keyed as a Claude account and could collide with a
+        // real Claude account of the same name — note `kimi-code`, the
+        // preset's own name, does *not* contain `codex`.
         let lower = upstream.to_lowercase();
         if lower.contains("codex") || lower.contains("chatgpt") {
             StoreFamily::Chatgpt
+        } else if lower.contains("kimi") {
+            StoreFamily::Kimi
         } else {
             StoreFamily::Claude
         }
@@ -1289,7 +1298,11 @@ pub fn is_fable_scoped_rejection(headers: &HeaderMap) -> bool {
 
 /// Low-cardinality pool-rotation reason for an upstream response that moves off
 /// an account. A quota-rejected Anthropic 429 is distinguished from ordinary
-/// throttling; 5xx and 401 retain their operational categories.
+/// throttling; 5xx and 401 retain their operational categories. A Kimi 402
+/// (inactive subscription membership, routed here via `classify_kimi`) gets
+/// its own `"membership"` label instead of falling into `"other"`, since it
+/// is a distinct, persistent, account-level failure mode worth tracking
+/// separately from transient ones.
 pub fn rotation_reason(status: StatusCode, headers: &HeaderMap) -> &'static str {
     if status == StatusCode::TOO_MANY_REQUESTS {
         if QUOTA_STATUS_HEADERS
@@ -1302,6 +1315,8 @@ pub fn rotation_reason(status: StatusCode, headers: &HeaderMap) -> &'static str 
         }
     } else if status == StatusCode::UNAUTHORIZED {
         "auth"
+    } else if status == StatusCode::PAYMENT_REQUIRED {
+        "membership"
     } else if status.is_server_error() {
         "server_error"
     } else {
@@ -1329,6 +1344,24 @@ pub fn classify(status: StatusCode, headers: &HeaderMap) -> FailoverAction {
         return FailoverAction::Rotate;
     }
     FailoverAction::Relay
+}
+
+/// Classify a Kimi Code OAuth upstream response for account-pool failover.
+/// Takes the same `(status, headers)` shape as [`classify`], with one added
+/// case: `402 Payment Required` rotates instead of relaying. A Kimi account
+/// whose subscription membership is inactive returns 402 on *every*
+/// inference request — measured against a live account on 2026-08-18 — so
+/// it is an account-specific, persistent failure, not a transient one a
+/// client retry could work around. Left under `classify`'s generic `Relay`
+/// fallthrough, it would both surface the 402 straight to the client instead
+/// of trying the next account, and clear the account's cooldown via
+/// `mark_healthy` (which treats any answered request as healthy), so a
+/// permanently dead account would keep getting reselected.
+pub fn classify_kimi(status: StatusCode, headers: &HeaderMap) -> FailoverAction {
+    if status == StatusCode::PAYMENT_REQUIRED {
+        return FailoverAction::Rotate;
+    }
+    classify(status, headers)
 }
 
 /// Classify a Codex/ChatGPT upstream response for account-pool failover.
@@ -1551,6 +1584,10 @@ mod tests {
         assert_eq!(
             rotation_reason(StatusCode::UNAUTHORIZED, &HeaderMap::new()),
             "auth"
+        );
+        assert_eq!(
+            rotation_reason(StatusCode::PAYMENT_REQUIRED, &HeaderMap::new()),
+            "membership"
         );
         assert_eq!(
             rotation_reason(StatusCode::BAD_GATEWAY, &HeaderMap::new()),
@@ -2250,6 +2287,45 @@ mod tests {
     }
 
     #[test]
+    fn unstamped_account_key_infers_kimi_rather_than_defaulting_to_claude() {
+        // `account_key` guesses a store family only when the caller bypassed
+        // `resolve_pool_accounts` (which always stamps one). The guess used to
+        // be "codex/chatgpt, else Claude", which silently filed a Kimi account
+        // under the Claude family — note that `kimi-code`, the preset's own
+        // upstream name, does not contain `codex`, so it took the Claude
+        // branch, and two same-named store accounts collided on one key.
+        //
+        // Both accounts are `store_entry`, so their identity is the bare
+        // account name with no upstream in it. That makes `store_family` the
+        // only component that can distinguish the two keys — an inline account
+        // would differ by upstream name alone and prove nothing about family.
+        let store_account = |name: &str| AccountConfig {
+            store_entry: true,
+            ..account(name)
+        };
+        let kimi = store_account("shared-name");
+        let claude = store_account("shared-name");
+        assert_eq!(kimi.store_family, None, "the guess only applies unstamped");
+
+        assert_ne!(
+            account_key("kimi-code", &kimi),
+            account_key("anthropic", &claude),
+            "a Kimi account must not share a pool-state key with a Claude account of the same name"
+        );
+
+        // The stamped family still wins over the upstream-name guess.
+        let stamped = AccountConfig {
+            store_family: Some(StoreFamily::Claude),
+            ..store_account("shared-name")
+        };
+        assert_eq!(
+            account_key("kimi-code", &stamped),
+            account_key("anthropic", &claude),
+            "an explicitly stamped family must override the upstream-name guess"
+        );
+    }
+
+    #[test]
     fn forget_identity_purges_membership_entries() {
         // `forget_identity` must clear the forgotten key from the membership map
         // too, not just `entries`/`refresh_locks` — otherwise a deleted/rotated
@@ -2835,6 +2911,37 @@ mod tests {
         );
         assert_eq!(
             classify(StatusCode::BAD_REQUEST, &HeaderMap::new()),
+            FailoverAction::Relay
+        );
+    }
+
+    #[test]
+    fn classifies_upstream_responses_kimi() {
+        // classify_kimi mirrors classify except for the added 402 case: a
+        // Kimi account with an inactive subscription membership returns 402
+        // on every request, so it must rotate rather than relay.
+        assert_eq!(
+            classify_kimi(StatusCode::PAYMENT_REQUIRED, &HeaderMap::new()),
+            FailoverAction::Rotate
+        );
+        assert_eq!(
+            classify_kimi(StatusCode::TOO_MANY_REQUESTS, &HeaderMap::new()),
+            FailoverAction::PauseSame
+        );
+        assert_eq!(
+            classify_kimi(StatusCode::UNAUTHORIZED, &HeaderMap::new()),
+            FailoverAction::RefreshRetry
+        );
+        assert_eq!(
+            classify_kimi(StatusCode::SERVICE_UNAVAILABLE, &HeaderMap::new()),
+            FailoverAction::Rotate
+        );
+        assert_eq!(
+            classify_kimi(StatusCode::OK, &HeaderMap::new()),
+            FailoverAction::Relay
+        );
+        assert_eq!(
+            classify_kimi(StatusCode::BAD_REQUEST, &HeaderMap::new()),
             FailoverAction::Relay
         );
     }

@@ -66,6 +66,13 @@ pub(super) const PRESETS: &[ProviderPreset] = &[
         auth: AuthMode::CursorOauth,
         api_key_env: None,
     },
+    ProviderPreset {
+        name: "kimi-code",
+        kind: ProviderKind::Anthropic,
+        base_url: "https://api.kimi.com/coding",
+        auth: AuthMode::KimiOauth,
+        api_key_env: None,
+    },
 ];
 
 pub(super) fn find(name: &str) -> Option<&'static ProviderPreset> {
@@ -104,12 +111,13 @@ mod tests {
                 "xai",
                 "grok",
                 "kimi",
-                "cursor"
+                "cursor",
+                "kimi-code"
             ]
         );
         assert_eq!(
             available_names(),
-            "anthropic, codex, openai, xai, grok, kimi, cursor"
+            "anthropic, codex, openai, xai, grok, kimi, cursor, kimi-code"
         );
     }
 
@@ -132,5 +140,20 @@ mod tests {
         assert_eq!(kimi.base_url, "https://api.moonshot.ai/anthropic");
         assert_eq!(kimi.auth, AuthMode::ApiKey);
         assert_eq!(kimi.api_key_env, Some("MOONSHOT_API_KEY"));
+    }
+
+    #[test]
+    fn kimi_code_preset_uses_the_kimi_oauth_surface_and_leaves_kimi_untouched() {
+        let kimi_code = find("kimi-code").unwrap();
+        assert_eq!(kimi_code.kind, ProviderKind::Anthropic);
+        assert_eq!(kimi_code.base_url, "https://api.kimi.com/coding");
+        assert_eq!(kimi_code.auth, AuthMode::KimiOauth);
+        assert_eq!(kimi_code.api_key_env, None);
+
+        // The pre-existing Moonshot API-key preset must be unaffected by the
+        // new subscription-OAuth preset sharing the "kimi" name prefix.
+        let kimi = find("kimi").unwrap();
+        assert_eq!(kimi.base_url, "https://api.moonshot.ai/anthropic");
+        assert_eq!(kimi.auth, AuthMode::ApiKey);
     }
 }

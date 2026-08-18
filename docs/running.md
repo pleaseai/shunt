@@ -215,7 +215,7 @@ a brand-new table adds a provider. Every provider takes these keys:
 | :-- | :-- | :-- |
 | `kind` | `anthropic` \| `responses` \| `cursor` | Upstream protocol / adapter. `anthropic` = Messages API (passed through, optionally re-keyed); `responses` = Anthropic Messages translated to the OpenAI Responses API; `cursor` = Cursor's native ConnectRPC/protobuf AgentService. |
 | `base_url` | URL | Upstream base; shunt appends the provider endpoint path. |
-| `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `claude_oauth` \| `xai_oauth` \| `cursor_oauth` | `passthrough` forwards the client's credential; `api_key` injects `api_key_env`; `chatgpt_oauth` uses Codex/ChatGPT OAuth; `claude_oauth` selects an Anthropic subscription account pool (see §3.3); `xai_oauth` and `cursor_oauth` reuse their shunt-managed subscription logins. |
+| `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `claude_oauth` \| `kimi_oauth` \| `xai_oauth` \| `cursor_oauth` | `passthrough` forwards the client's credential; `api_key` injects `api_key_env`; `chatgpt_oauth` uses Codex/ChatGPT OAuth; `claude_oauth` selects an Anthropic subscription account pool (see §3.3); `kimi_oauth` selects a Kimi Code subscription account pool (`shunt login kimi`; see the Kimi Code example below); `xai_oauth` and `cursor_oauth` reuse their shunt-managed subscription logins. |
 | `api_key_env` | env var name | Where the key is read from, when `auth = "api_key"`. |
 | `api_key_header` | `bearer` (default) \| `x_api_key` | Header the injected key is sent in. |
 | `effort` | `low`…`max` | Optional default reasoning effort (`responses` providers). |
@@ -230,6 +230,7 @@ shunt injects the key and forwards the request. Ready-to-use entries (uncomment 
 | Provider | `base_url` | Example model IDs |
 | :-- | :-- | :-- |
 | Kimi (Moonshot) | `https://api.moonshot.ai/anthropic` | `kimi-k3[1m]`, `kimi-k2.7-code` |
+| Kimi Code (subscription, OAuth) | `https://api.kimi.com/coding` | use the ids your subscription exposes |
 | DeepSeek | `https://api.deepseek.com/anthropic` | `deepseek-v4-pro`, `deepseek-v4-flash` |
 | Z.ai (GLM) | `https://api.z.ai/api/anthropic` | `glm-5.2`, `glm-4.7` |
 | MiniMax | `https://api.minimax.io/anthropic` | see [MiniMax docs](https://platform.minimax.io/docs/token-plan/claude-code) |
@@ -237,7 +238,43 @@ shunt injects the key and forwards the request. Ready-to-use entries (uncomment 
 | OpenRouter | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8`, `~anthropic/claude-sonnet-latest` |
 | Vercel AI Gateway | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8` (accepts `x_api_key`) |
 
-For example, to route Kimi's model through shunt:
+Every row above but one takes `auth = "api_key"`. **Kimi Code** is the exception: a separate,
+subscription-billed Kimi service from the metered Moonshot API in the row above it — different
+host, and OAuth instead of an API key. It has a dedicated built-in `kimi-code` preset (`kind =
+"anthropic"`, `base_url = "https://api.kimi.com/coding"`, `auth = "kimi_oauth"`), so it needs no
+manual `[providers.*]` table, just a logged-in account and the ordered `[[upstreams]]` form
+(§1.2 in [upstreams-failover.md](upstreams-failover.md)) that resolves preset shortcuts —
+the plain `[providers.<name>]` map used elsewhere in this section has no preset lookup:
+
+```bash
+shunt login kimi --name <account-name>   # RFC 8628 device flow -> ~/.shunt/accounts/kimi/<account-name>.json
+```
+
+```toml
+# shunt.toml — route to your Kimi Code subscription
+[[upstreams]]
+name = "kimi-code"
+provider = "kimi-code"
+auth = { mode = "kimi_oauth", account = "<account-name>" }
+
+# Declaring [[upstreams]] replaces the built-in provider set, so keep a trailing
+# anthropic passthrough — without it `shunt check` rejects the default
+# server.default_provider. This is the same entry `shunt init` appends.
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic"
+
+[[routes]]
+model = "<model-id-your-subscription-exposes>"
+provider = "kimi-code"
+```
+
+`kimi_oauth` is pool-capable like `claude_oauth`/`chatgpt_oauth` — use `accounts = [...]` in place
+of `account` to spread load across several stored Kimi accounts. See
+[Kimi → Kimi Code (OAuth subscription)](https://shunt.dev/providers/kimi/#kimi-code-oauth-subscription)
+for the full walkthrough.
+
+For example, to route Kimi's (Moonshot) model through shunt:
 
 ```toml
 [providers.kimi]

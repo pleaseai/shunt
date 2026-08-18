@@ -40,7 +40,7 @@ shunt init --root /path/to/project
 shunt init --force
 ```
 
-不指定 upstream 时，starter 完全由注释组成，加载后使用 shunt 的默认 passthrough 配置。重复使用 `--upstream` 可按 failover 顺序添加 preset 条目；可用名称为 `anthropic`、`codex`、`openai`、`xai`、`grok`、`kimi` 和 `cursor`。Starter 不设置 `server.default_provider`，因此未映射流量仍使用默认 Anthropic passthrough。指定 preset 时，会在末尾自动追加一个 `anthropic` passthrough upstream（除非你自己指定了 `anthropic`），使生成的文件既能通过 `shunt check`，又能保留该 fallback。
+不指定 upstream 时，starter 完全由注释组成，加载后使用 shunt 的默认 passthrough 配置。重复使用 `--upstream` 可按 failover 顺序添加 preset 条目；可用名称为 `anthropic`、`codex`、`openai`、`xai`、`grok`、`kimi`、`cursor` 和 `kimi-code`。Starter 不设置 `server.default_provider`，因此未映射流量仍使用默认 Anthropic passthrough。指定 preset 时，会在末尾自动追加一个 `anthropic` passthrough upstream（除非你自己指定了 `anthropic`），使生成的文件既能通过 `shunt check`，又能保留该 fallback。
 
 Root 默认为当前目录，并且必须已经存在。如果其中已有 `shunt.toml`、`shunt.yaml` 或 `shunt.yml`，则不带 `--force` 时会停止且不写入任何内容。强制 init 只覆盖 `shunt.toml`；YAML variant 保持不变，config discovery 会优先使用新的 TOML 文件。
 
@@ -134,6 +134,33 @@ name = "primary"
 shunt login xai
 ```
 
+## `shunt login kimi`
+
+运行 Kimi Code 的 device-authorization([RFC 8628](https://www.rfc-editor.org/rfc/rfc8628))OAuth 流程,并存储一个可刷新的 credential:
+
+```bash
+shunt login kimi --name <account-name>
+```
+
+`--name` 是必需的;省略它会失败,报错 `` `shunt login kimi` requires --name <account-name> ``。由于 Kimi Code OAuth token 始终可刷新,`--mode` 和 `--long-lived` 会被拒绝;`--manual` 仅限 claude 使用。
+
+登录时会生成该账户的 `X-Msh-Device-Id` 一次,之后每次刷新都会复用,因此该账户向 Kimi 呈现的是稳定的设备身份。目前尚未观测到任何 Kimi 登录响应携带稳定的 upstream 账户标识符,所以扫描到的条目的池身份就是它自己的文件名。
+
+在 Unix 上,文件以 `0600` 权限原子写入。shunt 创建的存储目录权限为 `0700`。`SHUNT_KIMI_ACCOUNTS_DIR` 可覆盖存储目录;复用名称会替换其文件。
+
+其结果由使用 `auth = "kimi_oauth"` 的 provider 消费,该设置仅在 `kind = "anthropic"` 且 base URL 为 `kimi.com` 时才有效。通过只带名称的池条目引用:
+
+```toml
+[[providers.kimi-code.accounts]]
+name = "primary"
+```
+
+配置只能用 `[[upstreams]]` 或 `[providers.*]` 之一声明 provider,不能同时使用两者。在 `[[upstreams]]` 配置中,改为在 auth 映射里指定账户: `auth = { mode = "kimi_oauth", accounts = ["primary"] }`。
+
+Kimi 在每次刷新时都会轮换 refresh token,而且签发的 access token 生命周期只有约 15 分钟,因此刷新非常频繁。上面"每个可刷新登录只能有一个所有者"的规则在这里完全适用:多个 shunt 进程共享同一个 Kimi 账户文件时,第一次刷新就会让彼此失效。
+
+完整的 upstream 配置见 [Kimi](/zh-cn/providers/kimi/#kimi-code-oauth-subscription)。
+
 ## Anthropic 账户池认证
 
 对于 `auth = "claude_oauth"` 的 Anthropic provider,账户可以使用只带名称的存储条目、`credentials = "~/.claude/.credentials.json"` 或 `token_env = "YOUR_ENV_NAME"`。存储条目可由上面的 Full OAuth、Claude Code 登录导入或 setup-token 流程创建。完整配置和 failover 规则见 [Anthropic 多账户](/zh-cn/guides/anthropic-multi-account/)。
@@ -148,5 +175,6 @@ shunt login xai
 | `SHUNT_GATEWAY_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN` | 面向 `shunt token` 的静态 token |
 | `CLAUDE_CREDENTIALS` | 面向 `shunt token` 和可刷新 `shunt login claude` 导入的备用 credential 文件路径 |
 | `SHUNT_CLAUDE_ACCOUNTS_DIR` | shunt 管理的 Claude 账户存储的备用目录 |
+| `SHUNT_KIMI_ACCOUNTS_DIR` | shunt 管理的 Kimi Code 账户存储的备用目录 |
 | 由 `token_env` 指定的按账户变量 | Anthropic `claude_oauth` 池条目的 setup token;原样使用 |
 | `OPENAI_API_KEY` | `openai` 提供方的默认密钥环境变量(每个提供方通过 `api_key_env`) |

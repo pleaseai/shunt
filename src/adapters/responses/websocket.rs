@@ -342,6 +342,10 @@ fn websocket_headers(credential: Credential) -> Result<HeaderMap, AdapterError> 
         // was issued for, so an unreachable-by-validation arm must not carry it.
         Credential::AntigravityOauth { .. } => {}
         Credential::Passthrough => {}
+        // Kimi's coding API speaks the Anthropic Messages shape, so a
+        // `kimi_oauth` provider is always `kind = "anthropic"` and never
+        // reaches this Responses/Codex WebSocket path in practice.
+        Credential::KimiOauth { .. } => {}
     }
     Ok(headers)
 }

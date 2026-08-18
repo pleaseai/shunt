@@ -16,6 +16,7 @@ pub mod codex;
 pub mod cursor;
 pub mod google;
 pub mod inbound;
+pub mod kimi;
 pub mod observation;
 pub mod shared;
 pub mod xai;
@@ -52,6 +53,12 @@ pub enum Credential {
     ClaudeOauth {
         access_token: String,
         account_uuid: Option<String>,
+    },
+    /// Kimi Code subscription OAuth: bearer plus the account's stable
+    /// `X-Msh-Device-Id` (sent as one of the required `X-Msh-*` headers).
+    KimiOauth {
+        access_token: String,
+        device_id: Option<String>,
     },
 }
 
@@ -105,6 +112,9 @@ pub async fn resolve_credential(
         }
         AuthMode::ClaudeOauth => Err(auth_error(
             "claude_oauth is resolved per-account by the account pool, not resolve_credential",
+        )),
+        AuthMode::KimiOauth => Err(auth_error(
+            "kimi_oauth is resolved per-account by the account pool, not resolve_credential",
         )),
         AuthMode::GoogleOauth => {
             let store =
@@ -202,6 +212,54 @@ pub async fn resolve_claude_account(
             account_uuid,
         })
         .map_err(|error| auth_error(error.to_string()))
+}
+
+/// Resolve one Kimi Code OAuth account for the account pool. Mirrors
+/// [`resolve_claude_account`]: `token_env` and an explicit `credentials` path
+/// override the default named-account file
+/// (`~/.shunt/accounts/kimi/<name>.json`). Both are operator-reachable today
+/// via `[[providers.*.accounts]]`/`account_scope` (`AuthMap::KimiOauth` in
+/// `config/upstreams.rs`), and this is the resolver the Kimi account pool
+/// calls per candidate during failover. A `token_env`-sourced token carries no
+/// device id (no account file to persist one in). Kimi requires
+/// `X-Msh-Device-Id` on every call, so it is never omitted: the anthropic
+/// adapter's outbound header injection substitutes `process_device_id()` for a
+/// `None` device id — such accounts fall back to that single process-wide
+/// value and so share one device identity with each other when presenting to
+/// Kimi, rather than a persisted per-account one.
+pub async fn resolve_kimi_account(
+    account: &crate::config::AccountConfig,
+    // Unlike `resolve_claude_account`/`resolve_chatgpt_account`, the store
+    // built below is not handed the caller's proxy client: its refresh POST
+    // carries the account's refresh_token, so it must always go through the
+    // redirect-hardened `token_refresh_client()` rather than a client that
+    // follows redirects freely.
+    _client: &reqwest::Client,
+) -> Result<Credential, AdapterError> {
+    if let Some(token_env) = account.token_env.as_deref() {
+        let access_token = env::var(token_env)
+            .ok()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| auth_error(format!("{token_env} is not set")))?;
+        return Ok(Credential::KimiOauth {
+            access_token,
+            device_id: None,
+        });
+    }
+
+    let path = account
+        .credentials
+        .as_deref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| kimi::store::account_path(&account.name));
+    let store = kimi::auth::KimiAuthStore::new(path, crate::auth::shared::token_refresh_client());
+    store
+        .get_valid()
+        .await
+        .map(|credential| Credential::KimiOauth {
+            access_token: credential.access_token,
+            device_id: credential.device_id,
+        })
 }
 
 /// Resolve one ChatGPT (Codex) OAuth account for the account pool. Unlike
@@ -365,7 +423,7 @@ mod tests {
 
     use super::{
         resolve_api_key, resolve_chatgpt_account, resolve_claude_account, resolve_credential,
-        with_credential_timeout, Credential, Route,
+        resolve_kimi_account, with_credential_timeout, Credential, Route,
     };
 
     #[tokio::test]
@@ -569,6 +627,77 @@ mod tests {
             }
         );
         std::env::remove_var("SHUNT_CLAUDE_ACCOUNTS_DIR");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn resolves_kimi_account_token_env_verbatim() {
+        // Mirrors `resolves_claude_account_token_env_verbatim_with_uuid`: a
+        // `token_env`-sourced Kimi credential carries no device id (no
+        // account file to have persisted one in).
+        let env_name = format!("SHUNT_TEST_KIMI_TOKEN_{}", std::process::id());
+        std::env::set_var(&env_name, "  kimi-setup-token-verbatim  ");
+        let account = AccountConfig {
+            name: "ci".to_string(),
+            token_env: Some(env_name.clone()),
+            ..Default::default()
+        };
+
+        let credential = resolve_kimi_account(&account, &reqwest::Client::new())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            credential,
+            Credential::KimiOauth {
+                access_token: "  kimi-setup-token-verbatim  ".to_string(),
+                device_id: None,
+            }
+        );
+        std::env::remove_var(env_name);
+    }
+
+    #[tokio::test]
+    async fn name_only_kimi_account_resolves_store_token() {
+        // Mirrors `name_only_claude_account_resolves_store_token`: a
+        // name-only account resolves through the on-disk store, which does
+        // carry a device id.
+        let _guard = crate::auth::kimi::store::TEST_ENV_LOCK.lock().await;
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-name-only-kimi-auth-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("SHUNT_KIMI_ACCOUNTS_DIR", &dir);
+        let far_future =
+            crate::auth::kimi::auth::expires_at_ms(Some(3600), std::time::SystemTime::now());
+        crate::auth::kimi::store::store_oauth_tokens(
+            "main",
+            "store-token",
+            "store-refresh",
+            far_future,
+            "device-abc-123",
+        )
+        .unwrap();
+        let account = AccountConfig {
+            name: "main".to_string(),
+            ..Default::default()
+        };
+
+        let credential = resolve_kimi_account(&account, &reqwest::Client::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            credential,
+            Credential::KimiOauth {
+                access_token: "store-token".to_string(),
+                device_id: Some("device-abc-123".to_string()),
+            }
+        );
+        std::env::remove_var("SHUNT_KIMI_ACCOUNTS_DIR");
         let _ = std::fs::remove_dir_all(dir);
     }
 

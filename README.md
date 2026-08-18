@@ -15,7 +15,7 @@
 
 The name is the mechanism: an electrical/railway *shunt* diverts a selected part of the flow onto a parallel path. Here, a mapped model's inference is diverted to another provider while Claude Code's tools and skills stay intact.
 
-It ships with **OpenAI**, **ChatGPT/Codex** (reuse your subscription via `codex login`), **xAI** (API key), **Grok** (reuse your SuperGrok / X Premium+ subscription via `shunt login xai`), **Cursor** (reuse your subscription via `shunt login cursor`), **Gemini / Google Code Assist** (reuse your subscription via `~/.gemini/oauth_creds.json`; shunt uses a valid access token directly, while self-refresh requires `SHUNT_GOOGLE_CLIENT_ID` and `SHUNT_GOOGLE_CLIENT_SECRET`), and **Anthropic** passthrough built in — and any Anthropic-Messages-compatible backend (Kimi, DeepSeek, GLM, MiniMax, OpenRouter, Vercel AI Gateway, …) is one TOML table or YAML mapping away, no code changes.
+It ships with **OpenAI**, **ChatGPT/Codex** (reuse your subscription via `codex login`), **xAI** (API key), **Grok** (reuse your SuperGrok / X Premium+ subscription via `shunt login xai`), **Cursor** (reuse your subscription via `shunt login cursor`), **Kimi Code** (reuse your subscription via `shunt login kimi`), **Gemini / Google Code Assist** (reuse your subscription via `~/.gemini/oauth_creds.json`; shunt uses a valid access token directly, while self-refresh requires `SHUNT_GOOGLE_CLIENT_ID` and `SHUNT_GOOGLE_CLIENT_SECRET`), and **Anthropic** passthrough built in — and any Anthropic-Messages-compatible backend (Kimi, DeepSeek, GLM, MiniMax, OpenRouter, Vercel AI Gateway, …) is one TOML table or YAML mapping away, no code changes.
 
 > [!NOTE]
 > `shunt` is pre-1.0 software under active development. Per [SemVer](https://semver.org/#spec), `0.x` releases may include breaking changes to configuration keys, the CLI, and behavior — check the [release notes](https://github.com/pleaseai/shunt/releases) before upgrading.
@@ -205,11 +205,39 @@ The `cursor:` / `cursor-agent:` / `cursor-plan:` / `cursor-ask:` prefixes pick C
 | Provider | `base_url` | Example model IDs |
 | :-- | :-- | :-- |
 | Kimi (Moonshot) | `https://api.moonshot.ai/anthropic` | `kimi-k3[1m]`, `kimi-k2.7-code` |
+| Kimi Code (subscription, OAuth) | `https://api.kimi.com/coding` | use the ids your subscription exposes |
 | DeepSeek | `https://api.deepseek.com/anthropic` | `deepseek-v4-pro`, `deepseek-v4-flash` |
 | Z.ai (GLM) | `https://api.z.ai/api/anthropic` | `glm-5.2`, `glm-4.7` |
 | MiniMax | `https://api.minimax.io/anthropic` | see [MiniMax docs](https://platform.minimax.io/docs/token-plan/claude-code) |
 | OpenRouter | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8` |
 | Vercel AI Gateway | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8` |
+
+Every row above but one takes `auth = "api_key"`. **Kimi Code** is the exception: a separate, subscription-billed Kimi service from the metered Moonshot API in the row above it — different host, and OAuth instead of an API key. It has a dedicated built-in `kimi-code` preset (`kind = "anthropic"`, `base_url = "https://api.kimi.com/coding"`, `auth = "kimi_oauth"`), so it needs no manual `[providers.*]`/`[[upstreams]]` table beyond `provider = "kimi-code"`, plus a logged-in account:
+
+```bash
+shunt login kimi --name <account-name>                # RFC 8628 device flow -> ~/.shunt/accounts/kimi/<account-name>.json
+```
+
+```toml
+# shunt.toml — route to your Kimi Code subscription
+[[upstreams]]
+name = "kimi-code"
+provider = "kimi-code"
+auth = { mode = "kimi_oauth", account = "<account-name>" }
+
+# Declaring [[upstreams]] replaces the built-in provider set, so keep a trailing
+# anthropic passthrough — without it `shunt check` rejects the default
+# server.default_provider. This is the same entry `shunt init` appends.
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic"
+
+[[routes]]
+model = "<model-id-your-subscription-exposes>"
+provider = "kimi-code"
+```
+
+`kimi_oauth` is pool-capable like `claude_oauth`/`chatgpt_oauth` — use `accounts = [...]` in place of `account` to spread load across several stored Kimi accounts. See [Kimi → Kimi Code (OAuth subscription)](https://shunt.dev/providers/kimi/#kimi-code-oauth-subscription) for the full walkthrough, including the admin/`/usage` pool surface, and the [M15 design note](docs/m15-kimi-oauth.md) for the device-flow, token-store, and validation internals.
 
 ```toml
 [providers.kimi]

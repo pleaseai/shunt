@@ -430,11 +430,13 @@ async fn passthrough_send(
         | Credential::GoogleOauth { access_token, .. } => {
             request = request.bearer_auth(access_token);
         }
-        // Send nothing rather than bearer an off-origin subscription token: an
-        // Antigravity credential cannot legitimately reach a Responses upstream
-        // (validation pins it to `kind = "antigravity"`), so the defensive arm
-        // fails closed.
+        // Send nothing rather than bearer an off-origin subscription token:
+        // neither an Antigravity nor a Kimi credential can legitimately reach a
+        // Responses upstream (validation pins them to `kind = "antigravity"`
+        // and `kind = "anthropic"` respectively), so the defensive arm fails
+        // closed.
         Credential::CursorOauth { .. }
+        | Credential::KimiOauth { .. }
         | Credential::AntigravityOauth { .. }
         | Credential::Passthrough => {}
     }
