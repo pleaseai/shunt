@@ -1,0 +1,40 @@
+site/src/content/docs/reference/cli.mdx
+  s_e06370109bef57::t_c14a09020ca1dd 168-170
+src/auth/antigravity/auth.rs
+  s_e06370109bef57::t_a683846a0dfb0f 4-9
+  s_e06370109bef57::t_d1ed475f8c9df5 183
+  s_e06370109bef57::t_6cc1d8a6decb53 194-198
+  s_e06370109bef57::t_49acaa39d4ad79 57-61,63-65
+  s_e06370109bef57::t_14417f2fa66125 171-182,184-193,203-204
+  s_e06370109bef57::t_cbb9cd778b4ba6 1002-1107
+site/src/content/docs/reference/configuration.md
+  s_e06370109bef57::t_c14a09020ca1dd 398,450
+src/auth/mod.rs
+  s_e06370109bef57::t_a1094bed6489d3 397-457,462-482
+  s_e06370109bef57::t_f5c9461b059d00 124
+  s_e06370109bef57::t_a3c4097e383965 364,367-368
+  s_e06370109bef57::t_2b141451696504 458-461
+  s_e06370109bef57::t_4f7f7048c0d7d3 361-362
+  s_e06370109bef57::t_496e3bfa2fdb85 396
+src/auth/antigravity/login.rs
+  s_e06370109bef57::t_81c75cd0ac78fc 111-116
+  s_e06370109bef57::t_ecf1dcc5e92991 199
+src/main.rs
+  s_e06370109bef57::t_26b9c1761727a1 375-392
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "6cfc54a3232adf708594d72dfafdf4f46db500ee",
+  "prompts": {},
+  "sessions": {
+    "s_e06370109bef57": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "827ef0a3-744d-48e6-a620-f261c1fd4bdd",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
