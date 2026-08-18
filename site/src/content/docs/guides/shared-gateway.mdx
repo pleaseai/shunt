@@ -22,7 +22,7 @@ export SHUNT_CLIENT_TOKENS="minsu:$(openssl rand -hex 32),alice:$(openssl rand -
 
 Startup **fails closed** if `[server.auth]` is present but the env var is unset or malformed. Requests to mapped models and `GET /v1/models` without a valid token get a 401 `authentication_error`. Both gates accept the client token in any standard Anthropic credential slot — the configured header (default `x-shunt-token`), `Authorization: Bearer`, or `x-api-key`, in that priority when several carry valid tokens. `GET /routes`, `GET|HEAD /`, `GET /health`, and passthrough models stay open. `GET /routes` remains unauthenticated because it is a shunt-native endpoint exposing routing metadata (the configured provider/upstream-model mapping), never credentials, which live only in provider config and are never read by that handler.
 
-On gated routes the accepted credential headers are always stripped before forwarding (shunt injects its own provider credential there), matching is constant-time, and token values are never logged (client *names* are, per request). On a passthrough route shunt injects nothing, so the caller's own credential is forwarded as presented — except per slot: `Authorization` and `x-api-key` are each cleared when that slot's own value is one of shunt's own inbound credentials (an accepted client token, or a `[server.gateway]` JWT), so a credential accepted at the gate is never relayed upstream while a genuine upstream credential in the other slot keeps flowing.
+On gated routes the accepted credential headers are always stripped before forwarding (shunt injects its own provider credential there), matching is constant-time, and token values are never logged (client *names* are, per request). On a passthrough route shunt injects nothing, so the caller's own credential is forwarded as presented — except per slot: `Authorization` and `x-api-key` are each cleared when that slot's own value is one of shunt's own inbound credentials (an accepted client token, a `[server.gateway]` JWT, or a `[server.admin]` credential — the admin surface accepts one in `x-api-key` beside its own header), so a credential accepted at the gate is never relayed upstream while a genuine upstream credential in the other slot keeps flowing.
 
 Client side, pick by what the gateway serves:
 
@@ -32,7 +32,7 @@ Client side, pick by what the gateway serves:
   export ANTHROPIC_AUTH_TOKEN="<your client token>"   # sent as Authorization: Bearer
   ```
 
-- **Passthrough models mixed in**: each caller's real Anthropic credential needs a slot of its own, so hand out dedicated tokens in the configured header and keep `Authorization` / `x-api-key` free for it (`ANTHROPIC_CUSTOM_HEADERS` takes one `Name: Value` per line). This is hygiene rather than the only thing preventing a leak: a client token that does arrive in `Authorization` or `x-api-key` is cleared from that slot by value before any passthrough forward.
+- **Passthrough models mixed in**: each caller's real Anthropic credential needs a slot of its own, so hand out dedicated tokens in the configured header and keep `Authorization` / `x-api-key` free for it (`ANTHROPIC_CUSTOM_HEADERS` takes one `Name: Value` per line). This is hygiene rather than the only thing preventing a leak: a client token — or a `[server.gateway]` JWT, or a `[server.admin]` credential — that does arrive in `Authorization` or `x-api-key` is cleared from that slot by value before any passthrough forward.
 
   ```bash
   export ANTHROPIC_CUSTOM_HEADERS="x-shunt-token: <your token>"

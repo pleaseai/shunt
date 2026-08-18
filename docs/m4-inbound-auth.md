@@ -142,6 +142,85 @@ dedicated `x-shunt-token` avoids the collision entirely. Over-stripping is the d
 direction here — the alternative, deciding per value at the gate, would forward a slot the gate
 had already accepted under some configurations.
 
+### 2.1 The slot enumeration and its mirror invariant (#363)
+
+Four consecutive fixes (#352, #357, #361, #356) landed the *same* defect: a credential shunt
+accepts as its own gate token reached a third-party upstream, because one enumeration of a slot
+was missed while an accept predicate widened or a credential kind was added. The rule that was
+being broken each time is stated once here, and implemented once in **`src/auth/slots.rs`**:
+
+> **Mirror invariant.** If any accept site would authenticate value `V` presented in slot `S`,
+> then every forward site must remove `V` from `S`.
+
+The strip predicate is the mirror image of the accept predicate — not an approximation of it,
+and never a per-request boolean.
+
+| Accept site | Slots it reads |
+| --- | --- |
+| `InboundAuth::authenticate` | `[server.auth] header`, raw |
+| `InboundAuth::authenticate_bearer` | `[server.auth] header` raw, `Authorization: Bearer` payload |
+| `InboundAuth::authenticate_client` | `[server.auth] header` raw, `Authorization: Bearer` payload, `x-api-key` raw |
+| `GatewayAuth::authenticate_bearer` / `authenticate_token` | `Authorization: Bearer` payload / a bare token value |
+| `AdminAuth::authenticate_credential` | `[server.admin] header` raw **and** `x-api-key` raw, over `write_keys`, `read_keys`, and the legacy `tokens_env`/`tokens_file` pairs alike |
+
+| Forward site | What it does |
+| --- | --- |
+| `proxy::failover::check_inbound_auth` + `headers_for_route` | reserved names, then the by-value strip on the same-origin passthrough branch. Every inference adapter receives only what `headers_for_route` produced, so the pair is the single choke point for `/v1/messages`. |
+| `discovery::upstream::upstream_headers` (`AuthMode::Passthrough`) | builds a fresh map holding only the two shared slots, each judged by value |
+| `adapters::responses::inbound::passthrough_request_headers` | relays the client's headers verbatim minus a strip list, then `strip_reserved_slots` |
+
+`gateway::telemetry_ingest`'s relay, `adapters::responses::request`, and
+`adapters::responses::codex_ws::connect` are deliberately *not* forward sites: each builds its
+outbound header map from an allowlist, so no caller header can cross.
+
+`ShuntCredentials::from_state` is the single wiring point from request state, so a credential
+kind added to `AppState` cannot be picked up by the accept path while a forward site that
+hand-rolled its own field list silently misses it.
+
+Two behavior changes came with the consolidation:
+
+- **The reserved names are now stripped unconditionally.** `x-shunt-token`,
+  `x-shunt-admin-token`, and `x-shunt-inbound-client` are removed on every forward, whether or
+  not the corresponding `[server.auth]`/`[server.admin]` table is configured and whether or not
+  the endpoint is gated. None of them is ever a legitimate upstream header, so removing a name
+  a client sent cannot break a legitimate relay — the argument the Codex strip list already made
+  for `x-shunt-token` alone.
+- **The `[server.admin]` header gap on the Codex endpoint is closed.** The inbound Codex
+  passthrough stripped `authorization`, `x-api-key`, `x-shunt-token`, `x-shunt-inbound-client`,
+  and the configured `[server.auth] header` — but not the `[server.admin] header` (default
+  `x-shunt-admin-token`). An admin credential presented in that slot on a
+  `[server.codex_endpoint]` route was relayed verbatim to the ChatGPT backend, even though
+  `AdminAuth::authenticate_credential` authenticates on exactly that slot. It is the
+  highest-value credential shunt holds: it can provision upstream accounts.
+
+The asymmetry between the two configurable headers is preserved exactly as described in the
+caveat above: `strip_reserved_slots` removes `[server.auth] header` **always**, even when it
+names `authorization` or `x-api-key`, while it removes `[server.admin] header` only when that
+name is *not* one of the two shared slots — dropping a shared slot outright for the admin header
+would delete a genuine caller credential sight unseen, so that case is handled by value in
+`strip_consumed_slots` instead.
+
+**Tests.** `src/auth/slots/tests.rs` encodes the invariant rather than one scenario at a time: it
+walks the cross product of every credential kind (a verifying gateway JWT, a shunt-shaped JWT
+that no longer verifies, a `[server.auth]` token, a `write_keys` entry, a `read_keys` entry, a
+legacy `tokens_env` pair) against every delivery shape (`Authorization: Bearer <v>`,
+`Authorization: <v>`, `x-api-key: <v>`, the configured auth header, the configured admin header),
+computes acceptance by calling the **real** accept predicates rather than a hand-written table,
+and asserts the value appears in no header of any forward site's output. It runs under two
+configurations — the default header names, and one that points `[server.auth] header` at
+`authorization` and `[server.admin] header` at `x-api-key`, because only the latter makes the raw
+`Authorization` shape an accepted credential at all, which is what #361 missed. Non-vacuity is
+guarded by a hard-coded count of accepted pairs per configuration, by a non-empty-output check
+per site, and by a control credential (`sk-ant-genuine-upstream-key`) that must *survive*.
+
+**Tripwire.** `every_bulk_header_forward_is_a_registered_site` walks `src/**/*.rs` for a bulk
+application of a header map to an outbound request and asserts the file set equals a hard-coded
+allowlist, so a new relay path must be classified as a registered forward site or an
+allowlist-built map rather than merely compile. Its residual hole is stated with the allowlist:
+only *bulk* application is detected, so a site that appends headers one at a time in a loop is
+invisible to it — `discovery/upstream.rs` does exactly that when it issues its request, which is
+why it is a registered forward site rather than an allowlist entry.
+
 ## 3. Comparison & hygiene
 
 - **Constant-time comparison**, no new dependency: compare presented token against every
@@ -180,6 +259,10 @@ Integration tests (wiremock, alongside the existing suites):
   forwarded request.
 - passthrough route, auth configured, no token ⇒ still forwarded (unchanged behavior).
 - auth not configured ⇒ mapped route works without a token (backward compat).
+
+Cross-cutting (added by #363, see §2.1): `src/auth/slots/tests.rs` asserts the mirror invariant
+over the whole credential-kind × delivery-shape cross product at every registered forward site,
+and holds the tripwire that forces a new bulk-header relay path to be classified.
 
 ## 6. Out of scope
 

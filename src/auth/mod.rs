@@ -19,6 +19,7 @@ pub mod inbound;
 pub mod kimi;
 pub mod observation;
 pub mod shared;
+pub(crate) mod slots;
 pub mod xai;
 
 // TODO(M2): Add the optional `shunt login` PKCE loopback fallback. M2 currently

@@ -11,8 +11,7 @@ use crate::{
         anthropic::AnthropicAdapter, cursor::CursorAdapter, responses::ResponsesAdapter, Adapter,
         AdapterError, AdapterFailure,
     },
-    admin::AdminAuth,
-    auth::inbound::{authorization_consumed_by, consumed_by, ConsumedBy},
+    auth::{inbound::ConsumedBy, slots::ShuntCredentials},
     config::{AuthMode, CountTokens, ProviderKind},
     count_tokens,
     error::ShuntError,
@@ -479,7 +478,7 @@ fn enforce_managed_model_policy(
     }))
 }
 
-struct InboundContext {
+pub(crate) struct InboundContext {
     gateway_claims: Option<crate::gateway::jwt::Claims>,
     client: Option<String>,
     static_client: bool,
@@ -491,33 +490,20 @@ struct InboundContext {
 /// it. On failover, a passthrough attempt keeps the credential only while its
 /// origin matches the primary upstream's, so a host-specific token is never
 /// replayed to a different origin (a same-origin fallback still carries it).
-fn check_inbound_auth(
+pub(crate) fn check_inbound_auth(
     state: &AppState,
     routes: &[routing::Route],
     headers: &HeaderMap,
 ) -> Result<(HeaderMap, InboundContext), Box<ForwardError>> {
     let mut forwarded = headers.clone();
-    forwarded.remove("x-shunt-inbound-client");
-    if let Some(auth) = &state.inbound_auth {
-        forwarded.remove(auth.header());
-    }
-    // The admin credential header is likewise a slot shunt consumes, and
-    // `[server.admin] header` is free-form exactly like `[server.auth] header`.
-    // Removing it outright is only correct while it is *dedicated*: an operator
-    // may point it at `authorization` or `x-api-key`, which on a passthrough
-    // route carry the caller's own upstream credential, and dropping the slot
-    // here would delete a genuine credential sight unseen. Those two shared
-    // slots are handled by value instead, in `headers_for_route`, where
-    // `consumed_by` strips them only when they actually hold an admin
-    // credential — the mirror of `AdminAuth::authenticate_credential` either
-    // way. `HeaderName` lowercase-normalizes on construction, so comparing
-    // against the lowercase names is already case-insensitive.
-    if let Some(admin) = &state.admin_auth {
-        let name = admin.header();
-        if !matches!(name.as_str(), "authorization" | "x-api-key") {
-            forwarded.remove(name);
-        }
-    }
+    // Every slot shunt reserves by *name* — the fixed `x-shunt-*` names plus
+    // whatever `[server.auth]`/`[server.admin]` are configured to — goes here,
+    // once, through the shared enumeration in `auth::slots`. That module owns
+    // why the two configured headers are treated asymmetrically (the static
+    // header is removed even when it names a shared slot; the admin header is
+    // not, because the shared slots carry the caller's own upstream credential
+    // and are cleared by value in `headers_for_route` instead).
+    ShuntCredentials::from_state(state).strip_reserved_slots(&mut forwarded);
 
     let gateway_claims = state
         .gateway_auth
@@ -578,7 +564,7 @@ fn check_inbound_auth(
     }))
 }
 
-fn headers_for_route(
+pub(crate) fn headers_for_route(
     state: &AppState,
     route: &routing::Route,
     base: &HeaderMap,
@@ -619,11 +605,11 @@ fn headers_for_route(
         // `authorization`/`x-api-key` free for the caller's real credential
         // without needing this per-value check at all (`docs/m4-inbound-auth.md`
         // §2) — but it is no longer the only thing standing between a static
-        // token and the upstream: `is_consumed_by_shunt` (shared with
-        // `discovery/upstream.rs`) is applied to both slots for every
-        // credential kind, so a static token delivered through a
-        // rotating-credential mechanism like `apiKeyHelper` is stripped here
-        // too.
+        // token and the upstream: `ShuntCredentials::strip_consumed_slots`
+        // (shared with `discovery/upstream.rs`, and enumerated once in
+        // `auth::slots`) is applied to both slots for every credential kind, so
+        // a static token delivered through a rotating-credential mechanism like
+        // `apiKeyHelper` is stripped here too.
         let mut headers = base.clone();
         let same_origin = is_primary
             || matches!(
@@ -639,33 +625,11 @@ fn headers_for_route(
             );
             return headers;
         }
-        let admin_credentials = state.admin_auth.as_deref().map(AdminAuth::credentials);
-        if let Some(reason) = authorization_consumed_by(
-            &headers,
-            state.gateway_auth.as_deref(),
-            state.inbound_auth.as_deref(),
-            admin_credentials,
-        ) {
-            headers.remove("authorization");
+        for (slot, reason) in ShuntCredentials::from_state(state).strip_consumed_slots(&mut headers)
+        {
             tracing::debug!(
                 provider = %route.provider,
-                slot = "authorization",
-                reason = reason_label(reason),
-                "stripped passthrough credential slot"
-            );
-        }
-        if let Some(reason) = headers.get("x-api-key").and_then(|value| {
-            consumed_by(
-                value.as_bytes(),
-                state.gateway_auth.as_deref(),
-                state.inbound_auth.as_deref(),
-                admin_credentials,
-            )
-        }) {
-            headers.remove("x-api-key");
-            tracing::debug!(
-                provider = %route.provider,
-                slot = "x-api-key",
+                slot,
                 reason = reason_label(reason),
                 "stripped passthrough credential slot"
             );

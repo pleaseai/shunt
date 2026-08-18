@@ -11,7 +11,7 @@ use tracing::Instrument;
 
 use crate::{error::ShuntError, model::responses::anthropic_error_type, server::AppState};
 
-mod failover;
+pub(crate) mod failover;
 
 pub async fn post(
     State(state): State<AppState>,
@@ -85,7 +85,7 @@ pub async fn post(
     .await
 }
 
-struct ForwardError {
+pub(crate) struct ForwardError {
     message: String,
     response: axum::response::Response,
 }

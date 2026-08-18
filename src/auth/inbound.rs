@@ -240,6 +240,13 @@ pub(crate) fn consumed_by(
 }
 
 /// Like [`consumed_by`], but for a caller that only needs the yes/no answer.
+///
+/// Test-only since the forward sites moved onto
+/// [`crate::auth::slots::ShuntCredentials::strip_consumed_slots`], which needs
+/// the [`ConsumedBy`] label for its `tracing` reason field. Kept because
+/// several tests assert the predicate directly, where the yes/no shape is the
+/// clearer assertion.
+#[cfg(test)]
 pub(crate) fn is_consumed_by_shunt(
     value: &[u8],
     gateway_auth: Option<&GatewayAuth>,

@@ -22,7 +22,7 @@ export SHUNT_CLIENT_TOKENS="minsu:$(openssl rand -hex 32),alice:$(openssl rand -
 
 如果存在 `[server.auth]` 但环境变量未设置或格式错误,启动会**安全失败(fail closed)**。对映射模型和 `GET /v1/models` 的、不带有效 token 的请求会得到 401 `authentication_error`。两个门控都接受客户端 token 出现在任意标准 Anthropic 凭据槽位中 —— 当多个槽位都携带有效 token 时,优先级依次为:配置的头部(默认 `x-shunt-token`)、`Authorization: Bearer`、`x-api-key`。`GET /routes`、`GET|HEAD /`、`GET /health` 以及透传模型保持开放。`GET /routes` 无需认证,因为它是暴露路由元数据(配置的提供方/上游模型映射)的 shunt 原生端点,从不暴露凭据 —— 凭据只存在于提供方配置中,且从不被该处理器读取。
 
-在被门控的路由上,被接受的凭据头部在转发前总会被剥除(shunt 会在那里注入它自己的提供方凭据),匹配是常量时间的,token 值从不被记录(客户端*名称*会,按请求)。在透传路由上 shunt 不注入任何东西,因此调用方自己的凭据会按呈现的样子转发 —— 但按槽位有例外:当 `Authorization` 或 `x-api-key` 槽位自身的值是 shunt 自己的入站凭据(被接受的客户端 token,或 `[server.gateway]` JWT)时,该槽位会被清除。因此在门控处被接受的凭据绝不会被中继到上游,而另一个槽位中真实的上游凭据仍会继续流动。
+在被门控的路由上,被接受的凭据头部在转发前总会被剥除(shunt 会在那里注入它自己的提供方凭据),匹配是常量时间的,token 值从不被记录(客户端*名称*会,按请求)。在透传路由上 shunt 不注入任何东西,因此调用方自己的凭据会按呈现的样子转发 —— 但按槽位有例外:当 `Authorization` 或 `x-api-key` 槽位自身的值是 shunt 自己的入站凭据(被接受的客户端 token、`[server.gateway]` JWT,或 `[server.admin]` 凭据 —— 管理面除了自己的头部之外也在 `x-api-key` 中接受它)时,该槽位会被清除。因此在门控处被接受的凭据绝不会被中继到上游,而另一个槽位中真实的上游凭据仍会继续流动。
 
 客户端侧,按网关提供的内容来选择:
 
@@ -32,7 +32,7 @@ export SHUNT_CLIENT_TOKENS="minsu:$(openssl rand -hex 32),alice:$(openssl rand -
   export ANTHROPIC_AUTH_TOKEN="<your client token>"   # 以 Authorization: Bearer 发送
   ```
 
-- **混有透传模型时**:每个调用方真实的 Anthropic 凭据需要一个自己的槽位,因此请通过配置的头部分发专用 token,并把 `Authorization` / `x-api-key` 留给它(`ANTHROPIC_CUSTOM_HEADERS` 每行接受一个 `Name: Value`)。这是卫生做法,而非防止泄露的唯一手段:确实出现在 `Authorization` 或 `x-api-key` 中的客户端 token,会在任何透传转发之前按值从该槽位清除。
+- **混有透传模型时**:每个调用方真实的 Anthropic 凭据需要一个自己的槽位,因此请通过配置的头部分发专用 token,并把 `Authorization` / `x-api-key` 留给它(`ANTHROPIC_CUSTOM_HEADERS` 每行接受一个 `Name: Value`)。这是卫生做法,而非防止泄露的唯一手段:确实出现在 `Authorization` 或 `x-api-key` 中的客户端 token —— `[server.gateway]` JWT 和 `[server.admin]` 凭据同样如此 —— 会在任何透传转发之前按值从该槽位清除。
 
   ```bash
   export ANTHROPIC_CUSTOM_HEADERS="x-shunt-token: <your token>"

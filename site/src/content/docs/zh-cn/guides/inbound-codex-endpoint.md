@@ -80,7 +80,7 @@ wire_api = "responses"
 http_headers = { "x-shunt-token" = "<token>" }
 ```
 
-没有 `[server.auth]` 时,该端点对任何能触达它的人开放 —— 对回环或个人使用可以接受,对共享网关则不行。客户端提供的凭据**仅**用于向 shunt 认证:它(以及 CLI 碰巧发送的任何 `Authorization`)都会被剥除,绝不转发到上游。`x-api-key` 也会被无条件剥除 —— 即使未配置 `[server.auth]` 也是如此,因为目标提供方在启动时就被校验为仅 `chatgpt_oauth`,所以入站的 `x-api-key` 值永远不可能是该上游的有效凭据;像 Claude Code 的 `apiKeyHelper` 那样在 `Authorization` 和 `x-api-key` 中填入同一个密钥的客户端,也不会因为第二个槽位而泄露该密钥。由于入站客户端是真正的 Codex CLI,该透传会逐字转发它的请求头部(`version`、`originator`、`OpenAI-Beta`、`x-codex-*` 等),并**只**换入所选池账户的 `Authorization` bearer 与 `chatgpt-account-id`。完整的认证演练见[连接 Codex CLI](/zh-cn/guides/connect-codex-cli/#3-提供-shunt-客户端-token当配置了-serverauth-时)。
+没有 `[server.auth]` 时,该端点对任何能触达它的人开放 —— 对回环或个人使用可以接受,对共享网关则不行。客户端提供的凭据**仅**用于向 shunt 认证:它(以及 CLI 碰巧发送的任何 `Authorization`)都会被剥除,绝不转发到上游。`[server.admin]` 的凭据头部 —— 默认 `x-shunt-admin-token`,或 `[server.admin] header` 指定的名字 —— 同样会被剥除,因为管理面正是在该槽位上认证,而管理凭据可以开通上游账户。`x-api-key` 也会被无条件剥除 —— 即使未配置 `[server.auth]` 也是如此,因为目标提供方在启动时就被校验为仅 `chatgpt_oauth`,所以入站的 `x-api-key` 值永远不可能是该上游的有效凭据;像 Claude Code 的 `apiKeyHelper` 那样在 `Authorization` 和 `x-api-key` 中填入同一个密钥的客户端,也不会因为第二个槽位而泄露该密钥。由于入站客户端是真正的 Codex CLI,该透传会逐字转发它的请求头部(`version`、`originator`、`OpenAI-Beta`、`x-codex-*` 等),并**只**换入所选池账户的 `Authorization` bearer 与 `chatgpt-account-id`。完整的认证演练见[连接 Codex CLI](/zh-cn/guides/connect-codex-cli/#3-提供-shunt-客户端-token当配置了-serverauth-时)。
 
 ## 账户预配
 
@@ -110,5 +110,5 @@ name = "main"
 ## 安全
 
 - 在回环之外的任何场景都请用 `[server.auth]` 为该端点设置门控 —— 提供方会在每个请求上注入一个真实的 Codex bearer。
-- 客户端自己的凭据不会有任何部分到达 Codex 后端;该透传逐字转发 Codex CLI 自己的请求头部,并只换入所选池账户的 bearer 与 `chatgpt-account-id`(shunt 客户端 token 头部、客户端的 `Authorization`/`chatgpt-account-id`,以及 `x-api-key` 都会被剥除,绝不转发)。
+- 客户端自己的凭据不会有任何部分到达 Codex 后端;该透传逐字转发 Codex CLI 自己的请求头部,并只换入所选池账户的 bearer 与 `chatgpt-account-id`(shunt 客户端 token 头部、`[server.admin]` 凭据头部、内部的 `x-shunt-inbound-client` 标签、客户端的 `Authorization`/`chatgpt-account-id`,以及 `x-api-key` 都会被剥除,绝不转发)。
 - 路由集合在启动时一次性确定。在运行时开启或关闭 `[server.codex_endpoint]` 会记录一条需要重启的警告;而 reload 仍可以改变它所指向的提供方。

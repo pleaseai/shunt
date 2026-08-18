@@ -80,7 +80,7 @@ wire_api = "responses"
 http_headers = { "x-shunt-token" = "<token>" }
 ```
 
-`[server.auth]` がなければ、このエンドポイントはそこへ到達できる誰にでも開かれています — ループバックや個人利用なら許容できますが、共有ゲートウェイでは不可です。クライアントが提示した認証情報は shunt への認証に**のみ**使われ、それ（および CLI がたまたま送る `Authorization`）は取り除かれ、上流へ転送されることはありません。`x-api-key` も無条件に取り除かれます — `[server.auth]` が設定されていない場合も同様です。対象のプロバイダーは起動時に `chatgpt_oauth` 専用であることが検証されるため、インバウンドの `x-api-key` の値がこのアップストリームに対して有効な認証情報になることは決してありません。Claude Code の `apiKeyHelper` のように `Authorization` と `x-api-key` の両方に同じキーを設定するクライアントであっても、2 つ目のスロット経由でそのキーが漏れることはありません。インバウンドのクライアントが実際の Codex CLI であるため、パススルーはそのリクエストヘッダーをそのまま転送し（`version`、`originator`、`OpenAI-Beta`、`x-codex-*`、…）、差し替えるのは選択されたプールアカウントの `Authorization` ベアラーと `chatgpt-account-id` **だけ**です。認証の詳しい手順は [Codex CLI の接続](/ja/guides/connect-codex-cli/#3-shunt-クライアントトークンを提示するserverauth-設定時)を参照してください。
+`[server.auth]` がなければ、このエンドポイントはそこへ到達できる誰にでも開かれています — ループバックや個人利用なら許容できますが、共有ゲートウェイでは不可です。クライアントが提示した認証情報は shunt への認証に**のみ**使われ、それ（および CLI がたまたま送る `Authorization`）は取り除かれ、上流へ転送されることはありません。`[server.admin]` の認証情報ヘッダー（既定では `x-shunt-admin-token`、`[server.admin] header` で指定した名前）も取り除かれます — 管理サーフェスはそのスロットで認証し、管理用の認証情報はアップストリームアカウントをプロビジョニングできるためです。`x-api-key` も無条件に取り除かれます — `[server.auth]` が設定されていない場合も同様です。対象のプロバイダーは起動時に `chatgpt_oauth` 専用であることが検証されるため、インバウンドの `x-api-key` の値がこのアップストリームに対して有効な認証情報になることは決してありません。Claude Code の `apiKeyHelper` のように `Authorization` と `x-api-key` の両方に同じキーを設定するクライアントであっても、2 つ目のスロット経由でそのキーが漏れることはありません。インバウンドのクライアントが実際の Codex CLI であるため、パススルーはそのリクエストヘッダーをそのまま転送し（`version`、`originator`、`OpenAI-Beta`、`x-codex-*`、…）、差し替えるのは選択されたプールアカウントの `Authorization` ベアラーと `chatgpt-account-id` **だけ**です。認証の詳しい手順は [Codex CLI の接続](/ja/guides/connect-codex-cli/#3-shunt-クライアントトークンを提示するserverauth-設定時)を参照してください。
 
 ## アカウントのプロビジョニング
 
@@ -110,5 +110,5 @@ name = "main"
 ## セキュリティ
 
 - ループバックを超えるものでは、このエンドポイントを `[server.auth]` でゲートしてください — プロバイダーはリクエストごとに実際の Codex ベアラーを注入します。
-- クライアント自身の認証情報が Codex バックエンドへ届くことはありません。パススルーは Codex CLI 自身のリクエストヘッダーをそのまま転送し、差し替えるのは選択されたプールアカウントのベアラーと `chatgpt-account-id` だけです（shunt のクライアントトークンヘッダー、クライアントの `Authorization`/`chatgpt-account-id`、そして `x-api-key` はすべて取り除かれ、転送されることはありません）。
+- クライアント自身の認証情報が Codex バックエンドへ届くことはありません。パススルーは Codex CLI 自身のリクエストヘッダーをそのまま転送し、差し替えるのは選択されたプールアカウントのベアラーと `chatgpt-account-id` だけです（shunt のクライアントトークンヘッダー、`[server.admin]` の認証情報ヘッダー、内部用の `x-shunt-inbound-client` ラベル、クライアントの `Authorization`/`chatgpt-account-id`、そして `x-api-key` はすべて取り除かれ、転送されることはありません）。
 - ルートの集合は起動時に一度だけ決まります。`[server.codex_endpoint]` の実行時のオン/オフ切り替えは、再起動が必要である旨の警告をログに出力します。リロードでも、どのプロバイダーを対象にするかは変更できます。

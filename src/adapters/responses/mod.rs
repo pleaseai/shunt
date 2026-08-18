@@ -5,7 +5,7 @@ mod body;
 mod context;
 mod error;
 mod http;
-mod inbound;
+pub(crate) mod inbound;
 mod pool;
 mod request;
 mod websocket;
