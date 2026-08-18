@@ -118,6 +118,30 @@ enum Command {
         #[command(subcommand)]
         action: DashboardAction,
     },
+    /// Log in to a self-hosted shunt gateway and print its access token. This
+    /// is the *client* side of `[server.gateway]` — unrelated to `shunt login`,
+    /// which authenticates shunt against an upstream provider.
+    Gateway {
+        #[command(subcommand)]
+        action: GatewayAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum GatewayAction {
+    /// Approve this machine against a shunt gateway via its OAuth device flow.
+    Login {
+        /// Base URL of the gateway, e.g. `https://gateway.example.com`.
+        url: String,
+        /// Print the verification URL instead of opening a browser.
+        #[arg(long)]
+        manual: bool,
+    },
+    /// Print the gateway access token to stdout, refreshing it when stale, for
+    /// use as a Claude Code `apiKeyHelper`.
+    Token,
+    /// Remove the stored gateway session.
+    Logout,
 }
 
 #[derive(Debug, Subcommand)]
@@ -164,6 +188,7 @@ fn main() -> anyhow::Result<()> {
             cli.config.as_deref(),
         ),
         Some(Command::Dashboard { action }) => dashboard(action, cli.config),
+        Some(Command::Gateway { action }) => gateway(action),
         None if cli.check => check(cli.config),
         None => run(cli.config),
     }
@@ -473,6 +498,27 @@ fn runtime() -> anyhow::Result<tokio::runtime::Runtime> {
         .enable_all()
         .build()
         .context("failed to start tokio runtime")
+}
+
+/// `shunt gateway <action>`. Logout is plain filesystem work; the other two
+/// talk to the gateway and need a runtime.
+fn gateway(action: GatewayAction) -> anyhow::Result<()> {
+    match action {
+        GatewayAction::Login { url, manual } => {
+            runtime()?.block_on(shunt::auth::gateway::login::run(&url, manual))
+        }
+        GatewayAction::Token => runtime()?.block_on(gateway_token()),
+        GatewayAction::Logout => shunt::auth::gateway::login::logout(),
+    }
+}
+
+async fn gateway_token() -> anyhow::Result<()> {
+    // stdout carries only the token: Claude Code v2.1.227+ fails an
+    // `apiKeyHelper` whose output is anything else, so every message, warning,
+    // and hint on this path goes to stderr.
+    let token = shunt::auth::gateway::auth::resolve_token().await?;
+    println!("{token}");
+    Ok(())
 }
 
 async fn token() -> anyhow::Result<()> {

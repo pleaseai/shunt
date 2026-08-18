@@ -134,7 +134,7 @@ pub async fn run(base_url: &str) -> anyhow::Result<()> {
     let auth_url = build_auth_url(&challenge, &state, &redirect_uri);
 
     println!("Open this URL to authenticate with Antigravity:\n\n    {auth_url}\n");
-    if let Err(error) = open_url(&auth_url) {
+    if let Err(error) = crate::auth::shared::open_url(&auth_url) {
         eprintln!("Could not open browser automatically: {error}");
     }
 
@@ -335,25 +335,6 @@ fn expiry_millis(expires_in: u64) -> Option<u64> {
         .checked_add(Duration::from_secs(expires_in))
         .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|since| since.as_millis() as u64)
-}
-
-fn open_url(url: &str) -> anyhow::Result<()> {
-    let status = if cfg!(target_os = "macos") {
-        std::process::Command::new("open").arg(url).status()?
-    } else if cfg!(target_os = "windows") {
-        // Open via rundll32 FileProtocolHandler rather than `cmd /c start`: the
-        // login URL contains `&` query separators, which cmd.exe would treat as
-        // command separators and truncate the URL.
-        std::process::Command::new("rundll32")
-            .args(["url.dll,FileProtocolHandler", url])
-            .status()?
-    } else {
-        std::process::Command::new("xdg-open").arg(url).status()?
-    };
-    if !status.success() {
-        bail!("browser open command exited with {status}");
-    }
-    Ok(())
 }
 
 #[cfg(test)]

@@ -14,6 +14,7 @@ pub(crate) mod callback;
 pub mod claude;
 pub mod codex;
 pub mod cursor;
+pub mod gateway;
 pub mod google;
 pub mod inbound;
 pub mod kimi;

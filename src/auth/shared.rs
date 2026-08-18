@@ -14,6 +14,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use anyhow::Context as _;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::RngCore;
 use serde_json::Value;
@@ -170,17 +171,28 @@ pub fn validate_account_name(name: &str) -> anyhow::Result<()> {
 /// stores. An override that is set but empty or whitespace-only is treated as
 /// unset rather than resolving to a cwd-relative path.
 pub fn default_accounts_dir(env_var: &str, subdir: &str) -> PathBuf {
+    env_path_override(env_var)
+        .or_else(|| home_dir().map(|home| home.join(".shunt").join("accounts").join(subdir)))
+        .unwrap_or_else(|| PathBuf::from(".shunt/accounts").join(subdir))
+}
+
+/// Read a path from `$<env_var>`, treating a value that is set but empty or
+/// whitespace-only as unset rather than as a working-directory-relative path.
+/// Shared by [`default_accounts_dir`] and the gateway session store
+/// ([`crate::auth::gateway::store`]) so that rule cannot drift between them.
+pub(crate) fn env_path_override(env_var: &str) -> Option<PathBuf> {
     env::var_os(env_var)
         .filter(|value| !value.to_string_lossy().trim().is_empty())
         .map(PathBuf::from)
-        .or_else(|| {
-            env::var_os("HOME")
-                .filter(|home| !home.is_empty())
-                .or_else(|| env::var_os("USERPROFILE").filter(|home| !home.is_empty()))
-                .map(PathBuf::from)
-                .map(|home| home.join(".shunt").join("accounts").join(subdir))
-        })
-        .unwrap_or_else(|| PathBuf::from(".shunt/accounts").join(subdir))
+}
+
+/// The user's home directory: `HOME`, falling back to `USERPROFILE` on Windows
+/// where `HOME` is unset. An empty value is treated as unset.
+pub(crate) fn home_dir() -> Option<PathBuf> {
+    env::var_os("HOME")
+        .filter(|home| !home.is_empty())
+        .or_else(|| env::var_os("USERPROFILE").filter(|home| !home.is_empty()))
+        .map(PathBuf::from)
 }
 
 fn account_files(dir: &Path) -> io::Result<Vec<(String, PathBuf)>> {
@@ -679,17 +691,23 @@ fn warn_scan_identity_collisions(provider: &str, dir: &Path, accounts: &[Account
 /// `value` via [`write_auth_file_atomic`]. Both stores import credentials this way.
 pub(crate) fn write_account_file(path: &Path, value: &Value) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
-        let mut builder = fs::DirBuilder::new();
-        builder.recursive(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            builder.mode(0o700);
-        }
-        builder.create(parent)?;
+        create_private_dir(parent)?;
     }
     write_auth_file_atomic(path, value)?;
     Ok(())
+}
+
+/// Create `dir` and its ancestors owner-only (`0700` on Unix) — born private,
+/// with no chmod-after-create window on a multi-user host.
+pub(crate) fn create_private_dir(dir: &Path) -> io::Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(dir)
 }
 
 pub(crate) fn format_iso8601(time: SystemTime) -> String {
@@ -733,6 +751,40 @@ fn civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
     let m = mp + if mp < 10 { 3 } else { -9 };
     let y = y + if m <= 2 { 1 } else { 0 };
     (y, m, d)
+}
+
+/// Open `url` in the user's default browser. Every interactive login flow
+/// (Claude, Cursor, Antigravity, and the gateway device flow) hands the user
+/// off to a browser, so the OS dispatch lives here instead of being copied into
+/// each provider's login module.
+///
+/// Windows goes through `rundll32 url.dll,FileProtocolHandler` rather than
+/// `cmd /c start`: authorization URLs carry `&` query separators, which cmd.exe
+/// would treat as command separators and truncate the URL.
+pub(crate) fn open_url(url: &str) -> anyhow::Result<()> {
+    let status = if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg(url).status()?
+    } else if cfg!(target_os = "windows") {
+        std::process::Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", url])
+            .status()?
+    } else {
+        std::process::Command::new("xdg-open").arg(url).status()?
+    };
+    if !status.success() {
+        anyhow::bail!("browser open command exited with {status}");
+    }
+    Ok(())
+}
+
+/// Launch the browser without blocking the async runtime: [`open_url`] spawns a
+/// child process and waits on it, so it runs on `spawn_blocking`'s dedicated
+/// pool rather than on a Tokio worker thread.
+pub(crate) async fn open_url_async(url: &str) -> anyhow::Result<()> {
+    let url = url.to_string();
+    tokio::task::spawn_blocking(move || open_url(&url))
+        .await
+        .context("browser open task failed")?
 }
 
 /// Test-only RAII guard that sets an environment variable on construction and
