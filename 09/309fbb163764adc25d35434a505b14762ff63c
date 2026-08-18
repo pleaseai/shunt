@@ -1,0 +1,19 @@
+.claude/agent-memory/review-review-security-reviewer/project_pr391-slot-enumeration.md
+  s_8ac7b3d8238f53::t_2ad678dd2cea59 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "09309fbb163764adc25d35434a505b14762ff63c",
+  "prompts": {},
+  "sessions": {
+    "s_8ac7b3d8238f53": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6872395d-b5ef-44e2-be10-2544083db6cd",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
