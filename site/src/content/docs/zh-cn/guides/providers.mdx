@@ -86,6 +86,7 @@ ChatGPT 账户的 Codex 后端**拒绝** `gpt-*-codex` slug —— 它只接受�
 | 提供方 | `base_url` | 示例模型 ID |
 | :-- | :-- | :-- |
 | [Kimi (Moonshot)](/zh-cn/providers/kimi/) | `https://api.moonshot.ai/anthropic` | `kimi-k3[1m]`、`kimi-k2.7-code` |
+| [Kimi Code(订阅制,OAuth)](/zh-cn/providers/kimi/#kimi-code-oauth-subscription) | `https://api.kimi.com/coding` | 使用你的订阅暴露的模型 ID |
 | [DeepSeek](/zh-cn/providers/deepseek/) | `https://api.deepseek.com/anthropic` | `deepseek-v4-pro`、`deepseek-v4-flash` |
 | [Z.ai (GLM)](/zh-cn/providers/zai/) | `https://api.z.ai/api/anthropic` | `glm-5.2`、`glm-4.7` |
 | [MiniMax](/zh-cn/providers/minimax/) | `https://api.minimax.io/anthropic` | 见 [MiniMax 文档](https://platform.minimax.io/docs/token-plan/claude-code) |
@@ -97,7 +98,36 @@ ChatGPT 账户的 Codex 后端**拒绝** `gpt-*-codex` slug —— 它只接受�
 引导编码 agent 根据该提供方自己的文档完成接入
 (`shunt add upstream https://docs.example.com --print | claude`)。
 
-例如,要通过 shunt 路由 Kimi 的模型:
+上表中除一行外都使用 `auth = "api_key"`。**Kimi Code** 是例外:它是与上一行按量计费的 Moonshot API 不同的、订阅制计费的 Kimi 服务 —— 主机不同,且使用 OAuth 而非 API 密钥。它拥有专用的内置预设 `kimi-code`(`kind = "anthropic"`、`base_url = "https://api.kimi.com/coding"`、`auth = "kimi_oauth"`),因此在有序的 `[[upstreams]]` 形式下只需指定 `provider = "kimi-code"`,无需手写 `[providers.*]` 表。你还需要一个已登录的账号:
+
+```bash
+shunt login kimi --name <account-name>   # RFC 8628 设备流程 -> ~/.shunt/accounts/kimi/<account-name>.json
+```
+
+```toml
+# shunt.toml —— 路由到你的 Kimi Code 订阅
+[[upstreams]]
+name = "kimi-code"
+provider = "kimi-code"
+auth = { mode = "kimi_oauth", account = "<account-name>" }
+
+# 声明 [[upstreams]] 会替换内置的提供方集合,因此要保留末尾的
+# anthropic 透传条目 —— 否则 `shunt check` 会因默认的
+# server.default_provider 找不到而报错。这与 `shunt init` 追加的条目相同。
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic"
+
+[[routes]]
+model = "<model-id-your-subscription-exposes>"
+provider = "kimi-code"
+```
+
+`kimi_oauth` 和 `claude_oauth`/`chatgpt_oauth` 一样支持账号池 —— 用 `accounts = [...]` 代替
+`account`,即可将负载分散到多个已保存的 Kimi 账号上。完整说明见
+[Kimi → Kimi Code (OAuth subscription)](/zh-cn/providers/kimi/#kimi-code-oauth-subscription)。
+
+例如,要通过 shunt 路由 Kimi(Moonshot)的模型:
 
 ```toml
 [providers.kimi]
