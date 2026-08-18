@@ -279,8 +279,15 @@ pub(crate) async fn upstream_headers(
                 );
                 return None;
             }
-            for (slot, value) in inbound_slots.iter() {
-                headers.insert(slot.clone(), value.clone());
+            // Move the survivors rather than cloning them a second time. `remove`
+            // per slot rather than `drain`, because `drain` yields
+            // `Option<HeaderName>` (a `None` continues the previous name's
+            // multi-value run) and this loop would have to decide what to do
+            // with a case `insert` above already makes unreachable.
+            for slot in SHARED_SLOTS {
+                if let Some(value) = inbound_slots.remove(slot) {
+                    headers.insert(slot, value);
+                }
             }
             strip_duplicate_oauth_api_key(&mut headers);
         }

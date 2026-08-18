@@ -323,6 +323,15 @@ impl ForwardSite {
     /// Run the site for real and return exactly what it would hand the HTTP
     /// client. `discovery::upstream` answers `None` when nothing forwardable
     /// survives; an empty map is the faithful rendering of that.
+    ///
+    /// Note for anyone reading a failure here: under the `defaults` fixture the
+    /// two configured-header shapes are **structurally vacuous** at
+    /// [`Self::DiscoveryPassthrough`]. That site builds its outbound map from
+    /// scratch and only ever considers the two shared slots, so a credential
+    /// delivered in `x-shunt-token` or `x-shunt-admin-token` is not stripped
+    /// there — it is simply never a candidate. That is by design, not a gap:
+    /// the collision fixture points both configured headers *at* shared slots,
+    /// which covers the same logic non-vacuously.
     async fn run(self, state: &AppState, headers: &HeaderMap) -> HeaderMap {
         match self {
             Self::InferenceFailover => {
@@ -354,10 +363,24 @@ fn credentials(state: &AppState) -> ShuntCredentials<'_> {
 /// Scan **every** header value, not just the slot the credential arrived in: a
 /// forward site that copied the value into a different header would still be
 /// leaking it.
+///
+/// Compared over raw bytes. A lossy UTF-8 decode would replace any invalid
+/// sequence with U+FFFD *before* the search, so a value adjacent to
+/// non-UTF-8 bytes could be rewritten out of its own match — a false negative,
+/// in the direction that hides a leak.
 fn contains_value(headers: &HeaderMap, value: &str) -> bool {
+    let needle = value.as_bytes();
     headers
         .iter()
-        .any(|(_, header)| String::from_utf8_lossy(header.as_bytes()).contains(value))
+        .any(|(_, header)| contains_bytes(header.as_bytes(), needle))
+}
+
+fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    needle.is_empty()
+        || (haystack.len() >= needle.len()
+            && haystack
+                .windows(needle.len())
+                .any(|window| window == needle))
 }
 
 // --- Tests -------------------------------------------------------------------
@@ -529,20 +552,100 @@ async fn the_codex_passthrough_never_relays_an_admin_credential_header() {
     }
 }
 
+#[tokio::test]
+async fn no_forward_site_relays_the_admin_session_cookie() {
+    // `admin::authenticate` falls back to `session_cookie`, which accepts a
+    // write-tier `shunt_admin_session` out of the `cookie` header when no
+    // credential header matched. That made `cookie` an accept slot the first
+    // version of this enumeration missed, and two of the three forward sites
+    // relayed the header verbatim: `headers_for_route` starts from
+    // `base.clone()` on both branches, and the Codex strip list had no `cookie`
+    // entry. Only `discovery::upstream` was safe, and only incidentally —
+    // it builds its map from scratch.
+    let state = state();
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "cookie",
+        "shunt_admin_session=sid-abc123; theme=dark"
+            .parse()
+            .unwrap(),
+    );
+    headers.insert("x-api-key", GENUINE_UPSTREAM_KEY.parse().unwrap());
+
+    for site in FORWARD_SITES {
+        let out = site.run(&state, &headers).await;
+        assert!(
+            !contains_value(&out, "sid-abc123"),
+            "{} relayed the admin session cookie",
+            site.name()
+        );
+        // The behavior implemented is a **whole-header** strip, not a surgical
+        // removal of the `shunt_admin_session=` pair. Assert the over-strip
+        // explicitly so it is a recorded decision rather than something a
+        // future reader discovers from a bug report: a benign cookie a caller
+        // sent is dropped too. A surgical parser was rejected because it would
+        // have to track `session_cookie`'s own parse and would reintroduce the
+        // accept/strip drift this module exists to eliminate.
+        assert!(
+            out.get("cookie").is_none(),
+            "{} kept the cookie header; the implemented behavior is whole-header removal",
+            site.name()
+        );
+    }
+}
+
+#[tokio::test]
+async fn stripping_the_cookie_header_leaves_the_callers_own_credential_alone() {
+    // Non-vacuity control for the test above: the `cookie` strip is by name and
+    // must not disturb the by-value decision on the shared slots. Sites 1 and 2
+    // keep the caller's genuine upstream key; site 3 drops both shared slots
+    // unconditionally by design, which is asserted separately.
+    let state = state();
+    let mut headers = HeaderMap::new();
+    headers.insert("cookie", "theme=dark".parse().unwrap());
+    headers.insert("x-api-key", GENUINE_UPSTREAM_KEY.parse().unwrap());
+
+    for site in [
+        ForwardSite::InferenceFailover,
+        ForwardSite::DiscoveryPassthrough,
+    ] {
+        let out = site.run(&state, &headers).await;
+        assert_eq!(
+            out.get("x-api-key").map(HeaderValue::as_bytes),
+            Some(GENUINE_UPSTREAM_KEY.as_bytes()),
+            "{} dropped the caller's own upstream credential",
+            site.name()
+        );
+        assert!(out.get("cookie").is_none());
+    }
+}
+
 // --- Tripwire ----------------------------------------------------------------
 
-/// Files allowed to apply a whole header map to an outbound request.
+/// Files allowed to produce or bulk-apply an outbound header map.
 ///
-/// A path that bulk-copies headers is either a registered forward site (and
-/// must appear in [`FORWARD_SITES`] with a row in the mirror table above) or an
-/// allowlist-built map that never carries a caller header. Both are fine; being
-/// neither, and unclassified, is what this catches.
+/// A file lands here by either building a `HeaderMap` that something sends, or
+/// applying one wholesale to a request. Each is one of three things — a
+/// registered forward site (which must also appear in [`FORWARD_SITES`] with a
+/// row in the mirror table above), an allowlist-built map that never carries a
+/// caller header, or test scaffolding. Being none of those, and unclassified,
+/// is what this catches.
 ///
-/// Residual hole, stated plainly: only *bulk* application is detected. A site
-/// that appends headers one at a time in a loop is invisible here —
-/// `discovery/upstream.rs` itself does exactly that when it issues the request,
-/// which is why it is a registered forward site rather than an allowlist entry.
-const BULK_HEADER_FORWARD_ALLOWLIST: [&str; 4] = [
+/// The type-signature half of the scan is what makes it worth having. Matching
+/// only the bulk-application idioms left **both** hand-rolled forward sites
+/// invisible: `discovery/upstream.rs` feeds its map to `request.header(k, v)`
+/// in a loop, and `proxy/failover.rs` returns `headers.clone()`/`base.clone()`.
+/// A new forward site written by copying either one escaped detection.
+///
+/// Residual hole, narrower than the bulk-only version but still real: a site
+/// that mutates a request in place and never returns a `HeaderMap` is caught
+/// only by the extend-into-`headers_mut` pattern, so a different in-place idiom
+/// would slip through. Files named `tests.rs` are skipped so fixtures need no
+/// entry; an in-file `#[cfg(test)] mod tests` helper is *not* skipped and is
+/// listed below as noise.
+const HEADER_PRODUCER_ALLOWLIST: [&str; 9] = [
+    // noise — `#[cfg(test)] mod tests` fixture builder.
+    "src/accounts.rs",
     // registered forward site — consumes the map `headers_for_route` produced
     // (site 1) and adds only the resolved provider credential.
     "src/adapters/anthropic/mod.rs",
@@ -551,18 +654,29 @@ const BULK_HEADER_FORWARD_ALLOWLIST: [&str; 4] = [
     "src/adapters/responses/codex_ws.rs",
     // registered forward site — site 3, the inbound Codex passthrough.
     "src/adapters/responses/inbound.rs",
+    // noise — `#[cfg(test)] mod tests` fixture builder.
+    "src/admin/mod.rs",
+    // registered forward site — site 2, discovery's passthrough branch.
+    "src/discovery/upstream.rs",
     // allowlist-built, not a forward site — the OTLP relay forwards only
     // content-type/content-encoding beside the destination's configured headers.
     "src/gateway/telemetry_ingest.rs",
+    // header-derivation site, not a forward site on its own — `filtered()` drops
+    // hop-by-hop names from a map its callers already stripped credentials from.
+    "src/headers.rs",
+    // registered forward site — site 1, `check_inbound_auth` + `headers_for_route`.
+    "src/proxy/failover.rs",
 ];
 
 #[test]
-fn every_bulk_header_forward_is_a_registered_site() {
+fn every_header_producing_site_is_classified() {
     // Patterns are assembled rather than written literally so this file does
     // not match itself.
     let bulk_apply = format!(".{}(", "headers");
     let bulk_apply_getter = format!(".{}()", "headers");
     let bulk_extend = format!("{}_mut().{}(", "headers", "extend");
+    let produces = format!("-> {}", "HeaderMap");
+    let produces_optional = format!("-> Option<{}>", "HeaderMap");
 
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut found: BTreeSet<String> = BTreeSet::new();
@@ -581,22 +695,29 @@ fn every_bulk_header_forward_is_a_registered_site() {
             let bulk = source
                 .match_indices(&bulk_apply)
                 .any(|(at, _)| !source[at..].starts_with(&bulk_apply_getter));
-            if bulk || source.contains(&bulk_extend) {
+            // A dedicated `tests.rs` is scaffolding by construction, so a
+            // fixture returning a `HeaderMap` does not need an allowlist entry.
+            // Bulk application still counts there — a test that relays headers
+            // is exercising a real path.
+            let is_test_file = path.file_name().is_some_and(|name| name == "tests.rs");
+            let produces_map = !is_test_file
+                && (source.contains(&produces) || source.contains(&produces_optional));
+            if bulk || source.contains(&bulk_extend) || produces_map {
                 let relative = path.strip_prefix(&root).expect("scanned under src");
                 found.insert(format!("src/{}", relative.display()));
             }
         }
     }
 
-    let expected: BTreeSet<String> = BULK_HEADER_FORWARD_ALLOWLIST
+    let expected: BTreeSet<String> = HEADER_PRODUCER_ALLOWLIST
         .iter()
         .map(|path| (*path).to_string())
         .collect();
     assert_eq!(
         found, expected,
-        "a file gained or lost a bulk header forward. If it relays caller-supplied headers to a \
+        "a file gained or lost an outbound header map. If it relays caller-supplied headers to a \
          third party, register it in FORWARD_SITES and extend the mirror table above; if it \
-         builds its outbound map from an allowlist, add it to \
-         BULK_HEADER_FORWARD_ALLOWLIST with a comment saying so."
+         builds its map from an allowlist, or is test scaffolding, add it to \
+         HEADER_PRODUCER_ALLOWLIST with a comment saying which."
     );
 }

@@ -155,13 +155,27 @@ being broken each time is stated once here, and implemented once in **`src/auth/
 The strip predicate is the mirror image of the accept predicate — not an approximation of it,
 and never a per-request boolean.
 
-| Accept site | Slots it reads |
+The accept table is **exhaustive for header slots**, which is the scope the invariant is about:
+a header is the only channel a forward site copies from the caller's request into an upstream
+request.
+
+| Accept site | Header slots it reads |
 | --- | --- |
 | `InboundAuth::authenticate` | `[server.auth] header`, raw |
 | `InboundAuth::authenticate_bearer` | `[server.auth] header` raw, `Authorization: Bearer` payload |
 | `InboundAuth::authenticate_client` | `[server.auth] header` raw, `Authorization: Bearer` payload, `x-api-key` raw |
-| `GatewayAuth::authenticate_bearer` / `authenticate_token` | `Authorization: Bearer` payload / a bare token value |
+| `GatewayAuth::authenticate_bearer` / `authenticate_token` | `Authorization: Bearer` payload / a bare token value (reached in production only through that bearer path and through `consumed_by`) |
 | `AdminAuth::authenticate_credential` | `[server.admin] header` raw **and** `x-api-key` raw, over `write_keys`, `read_keys`, and the legacy `tokens_env`/`tokens_file` pairs alike |
+| `admin::authenticate` → `session_cookie` | the `cookie` header — a **write-tier** `shunt_admin_session` accepted when no credential header matched |
+
+shunt also accepts its own values, and admin credentials, out of **form bodies and query
+strings**: `admin::login_submit` (a write-tier admin credential in a form field, via
+`authenticate_login_token`), `gateway::oauth`, `gateway::device`, `gateway::idp`, `admin::oidc`,
+and `auth::callback`. None of them needs a strip, and the reason is structural rather than a rule
+anyone has to remember: no forward site copies an inbound body or query string into an outbound
+request. Every upstream URL is rebuilt from config (`responses_url` and friends), and the body a
+forward site sends is the caller's inference payload, which never carries these values. They are
+recorded so the enumeration is honest about its scope, not because they are a risk.
 
 | Forward site | What it does |
 | --- | --- |
@@ -173,9 +187,16 @@ and never a per-request boolean.
 `adapters::responses::codex_ws::connect` are deliberately *not* forward sites: each builds its
 outbound header map from an allowlist, so no caller header can cross.
 
-`ShuntCredentials::from_state` is the single wiring point from request state, so a credential
-kind added to `AppState` cannot be picked up by the accept path while a forward site that
-hand-rolled its own field list silently misses it.
+`ShuntCredentials::from_state` is the single wiring point from request state — and, since the
+struct is neither `Default` nor built from public fields, the only production constructor — so a
+credential kind added to `AppState` cannot be picked up by the accept path while a forward site
+that hand-rolled its own field list silently misses it. An all-`None` value would strip nothing
+at all, so making one unconstructible outside tests also means each forward site provably passes
+the real request state.
+
+"One enumeration" is true of the **credential-table wiring**, not of the slot-name strings: the
+accept side still spells `"x-api-key"` literally in `auth/inbound.rs` and `admin/mod.rs`. Those
+two remain decoupled from `SHARED_SLOTS`.
 
 Two behavior changes came with the consolidation:
 
@@ -185,6 +206,20 @@ Two behavior changes came with the consolidation:
   the endpoint is gated. None of them is ever a legitimate upstream header, so removing a name
   a client sent cannot break a legitimate relay — the argument the Codex strip list already made
   for `x-shunt-token` alone.
+- **The `cookie` header is now stripped outright on every forward.** `admin::authenticate`
+  falls back to `session_cookie`, which reads a write-tier `shunt_admin_session` out of `cookie`,
+  making it an accept slot the first version of this enumeration missed — and two of the three
+  forward sites relayed it verbatim (`headers_for_route` starts from a clone of the caller's map
+  on both branches; the Codex strip list had no `cookie` entry). Whole-header removal is safe
+  because shunt keeps no cookie jar: `Cargo.toml` builds reqwest **without** the `cookies`
+  feature and nothing in `src/` constructs a `cookie_store`/`cookie_provider`, so shunt never
+  participates in upstream edge or affinity cookies (`__cf_bm`, `cf_clearance`). The mirror
+  direction already made this call — `PASSTHROUGH_STRIP_RESPONSE_HEADERS` strips
+  `set-cookie`/`set-cookie2` on the way back for the same reason. A surgical
+  `shunt_admin_session=` pair parser was rejected: it would have to track `session_cookie`'s own
+  parse and would reintroduce exactly the accept/strip drift this module exists to eliminate.
+  The accepted cost is that a benign `cookie: theme=dark` is dropped too; the tests assert that
+  over-strip explicitly so it is a recorded decision.
 - **The `[server.admin]` header gap on the Codex endpoint is closed.** The inbound Codex
   passthrough stripped `authorization`, `x-api-key`, `x-shunt-token`, `x-shunt-inbound-client`,
   and the configured `[server.auth] header` — but not the `[server.admin] header` (default
@@ -213,13 +248,29 @@ configurations — the default header names, and one that points `[server.auth] 
 guarded by a hard-coded count of accepted pairs per configuration, by a non-empty-output check
 per site, and by a control credential (`sk-ant-genuine-upstream-key`) that must *survive*.
 
-**Tripwire.** `every_bulk_header_forward_is_a_registered_site` walks `src/**/*.rs` for a bulk
-application of a header map to an outbound request and asserts the file set equals a hard-coded
-allowlist, so a new relay path must be classified as a registered forward site or an
-allowlist-built map rather than merely compile. Its residual hole is stated with the allowlist:
-only *bulk* application is detected, so a site that appends headers one at a time in a loop is
-invisible to it — `discovery/upstream.rs` does exactly that when it issues its request, which is
-why it is a registered forward site rather than an allowlist entry.
+**Tripwire.** `every_header_producing_site_is_classified` walks `src/**/*.rs` and asserts that the
+set of files which either bulk-apply a header map to an outbound request *or* declare a function
+returning `HeaderMap` equals a hard-coded 9-entry allowlist, so a new relay path must be
+classified — registered forward site, allowlist-built map, or test scaffolding — rather than
+merely compile.
+
+The type-signature half is what makes it useful. A bulk-application-only scan left **both**
+hand-rolled forward sites invisible: `discovery/upstream.rs` feeds its map to a
+`request.header(k, v)` loop, and `proxy/failover.rs` returns a clone of the caller's map. A new
+site written by copying either one escaped detection entirely. Matching a site by what it
+*produces* catches it however it builds the map. (`.header(`, `.insert(`, and `HeaderMap::new()`
+were measured as alternatives and are unusable — 38, 71, and 24 files respectively.)
+
+Residual hole, narrower than the bulk-only version but still real: a site that mutates a request
+in place and never returns a `HeaderMap` — the shape `codex_ws::connect` has — is caught only by
+the extend-into-`headers_mut` pattern, so a different in-place idiom would slip through. Files
+named `tests.rs` are skipped so fixtures need no entry; an in-file `#[cfg(test)] mod tests`
+helper is not skipped and is allowlisted as noise.
+
+Considered and deferred: a `SanitizedHeaders` newtype that only these methods can produce, making
+the strip a compile-time obligation rather than a convention a tripwire polices. It is a real
+improvement, but the three sites hand their map to three different HTTP clients, so the churn is
+larger than this change should carry.
 
 ## 3. Comparison & hygiene
 
