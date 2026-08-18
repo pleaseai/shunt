@@ -1,0 +1,22 @@
+.claude/agent-memory/review-review-security-reviewer/project_gateway-login-cli-security.md
+  s_e6a8029daf2f59::t_d59e12a550e7c3 27
+  s_e6a8029daf2f59::t_006a0a461fdefa 3,12-13,15-17,19-24,26,28-37
+.claude/agent-memory/review-review-security-reviewer/MEMORY.md
+  s_e6a8029daf2f59::t_a600019e3901d8 22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "4c648d0a2f7ea5494c1c22789f19fcd9f0e24622",
+  "prompts": {},
+  "sessions": {
+    "s_e6a8029daf2f59": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cb8ae398-3f69-419a-afa1-44307e44678e",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
