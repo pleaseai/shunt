@@ -858,7 +858,19 @@ fn every_header_producing_site_is_classified() {
                 && (source.contains(&produces) || source.contains(&produces_optional));
             if bulk || source.contains(&bulk_extend) || produces_map {
                 let relative = path.strip_prefix(&root).expect("scanned under src");
-                found.insert(format!("src/{}", relative.display()));
+                // Join with `/` explicitly rather than using `Path::display`,
+                // whose separator is platform-dependent: on Windows it renders
+                // `auth\slots.rs`, which matches nothing in the
+                // forward-slashed allowlist and fails the tripwire for a
+                // reason that has nothing to do with a new forward site.
+                // Building from components rather than replacing `\` keeps a
+                // backslash that is a legitimate character in a Unix filename.
+                let relative = relative
+                    .components()
+                    .map(|part| part.as_os_str().to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                found.insert(format!("src/{relative}"));
             }
         }
     }
