@@ -3,7 +3,7 @@
 
 use std::{env, path::PathBuf};
 
-use crate::config::{AuthMode, Config, ProviderKind};
+use crate::config::{AuthMode, Config, ProviderConfig, ProviderKind};
 
 pub mod auth;
 pub mod login;
@@ -116,14 +116,63 @@ pub fn antigravity_migration_error(credential_exists: bool) -> Option<String> {
 /// loopback), which is the same guarantee the request path relies on in
 /// `resolve_credential`.
 pub fn login_base_url(config: Option<&Config>) -> String {
-    config
-        .and_then(|config| config.provider("antigravity"))
-        .filter(|provider| {
-            provider.kind == ProviderKind::Antigravity
-                && provider.auth == AuthMode::AntigravityOauth
-        })
-        .map(|provider| provider.base_url.clone())
-        .unwrap_or_else(|| auth::API_ENDPOINT.to_string())
+    let Some(config) = config else {
+        return auth::API_ENDPOINT.to_string();
+    };
+
+    // The built-in name wins whenever it qualifies: it is what a legacy
+    // `[providers.*]` config carries, and pinning it keeps the pick stable if
+    // an ordered config happens to declare a second one under another name.
+    if let Some(provider) = config
+        .provider("antigravity")
+        .filter(|provider| is_vetted_antigravity(provider))
+    {
+        return provider.base_url.clone();
+    }
+
+    // An ordered `[[upstreams]]` config has no such slot to find:
+    // `normalize_upstreams` replaces the whole providers map, so the
+    // Antigravity upstream lives under whatever name the operator declared
+    // (`agy-local`, say) and a bare name lookup would silently discover
+    // against production while the request path used the configured host.
+    //
+    // Scanning is safe here in a way that name lookup was not. Every
+    // candidate satisfies the exact predicate `Config::validate` vetted, so
+    // an unlucky pick can only reach another host the operator themself
+    // pinned — never an arbitrary one. Iteration is over a `BTreeMap`, so the
+    // scan order is the sorted key order and the pick is deterministic.
+    let mut candidates = config
+        .providers
+        .iter()
+        .filter(|(_, provider)| is_vetted_antigravity(provider));
+    let Some((name, provider)) = candidates.next() else {
+        return auth::API_ENDPOINT.to_string();
+    };
+    let ambiguous: Vec<&str> = candidates.map(|(name, _)| name.as_str()).collect();
+    if ambiguous.is_empty() {
+        return provider.base_url.clone();
+    }
+
+    // Several qualify and none is the built-in name, so there is no
+    // operator-intended pick to infer — a failover chain can hold both a
+    // debug proxy and the real backend. Guessing would provision a project
+    // against a backend the operator never chose, so say so and use the
+    // production default, which is what login targeted before it read config
+    // at all.
+    tracing::warn!(
+        first = %name,
+        others = ?ambiguous,
+        "several antigravity_oauth upstreams are configured and none is named `antigravity`; \
+         signing in against the default Code Assist endpoint. Name the one to log in to \
+         `antigravity` to discover the project against it."
+    );
+    auth::API_ENDPOINT.to_string()
+}
+
+/// Whether `provider` is an Antigravity upstream whose `base_url` the
+/// `AuthMode::AntigravityOauth` guard in [`Config::validate`] has vetted.
+fn is_vetted_antigravity(provider: &ProviderConfig) -> bool {
+    provider.kind == ProviderKind::Antigravity && provider.auth == AuthMode::AntigravityOauth
 }
 
 /// Process-env guard for tests that set `SHUNT_ANTIGRAVITY_AUTH_FILE`.
@@ -307,6 +356,75 @@ mod tests {
                 "kind {kind:?} with auth {auth:?} must not redirect discovery"
             );
         }
+    }
+
+    #[test]
+    fn login_finds_an_ordered_upstream_declared_under_another_name() {
+        // An ordered `[[upstreams]]` config replaces the providers map
+        // wholesale (`normalize_upstreams`), so there is no `antigravity` slot
+        // left to look up — the upstream lives under the operator's own name.
+        // A bare name lookup discovers against production here while the
+        // request path uses the configured host, which is the split issue #380
+        // exists to close.
+        let mut config = base();
+        let mut provider = config
+            .providers
+            .get("antigravity")
+            .expect("the default config seeds an antigravity provider")
+            .clone();
+        provider.base_url = "http://127.0.0.1:9443".to_string();
+        config.providers.remove("antigravity");
+        config.providers.insert("agy-local".to_string(), provider);
+
+        assert_eq!(login_base_url(Some(&config)), "http://127.0.0.1:9443");
+    }
+
+    #[test]
+    fn login_refuses_to_guess_between_several_unnamed_antigravity_upstreams() {
+        // A failover chain can hold both a debug proxy and the real backend.
+        // With no built-in name to disambiguate there is no operator-intended
+        // pick to infer, and guessing would provision a project against a
+        // backend they never chose — so fall back to production rather than
+        // take the first one.
+        let mut config = base();
+        let provider = config
+            .providers
+            .get("antigravity")
+            .expect("the default config seeds an antigravity provider")
+            .clone();
+        config.providers.remove("antigravity");
+        for (name, base_url) in [
+            ("agy-a", "http://127.0.0.1:9443"),
+            ("agy-b", "http://127.0.0.1:9444"),
+        ] {
+            let mut candidate = provider.clone();
+            candidate.base_url = base_url.to_string();
+            config.providers.insert(name.to_string(), candidate);
+        }
+
+        assert_eq!(login_base_url(Some(&config)), super::auth::API_ENDPOINT);
+    }
+
+    #[test]
+    fn login_prefers_the_built_in_name_when_it_also_qualifies() {
+        // Determinism: with both a built-in slot and another qualifying
+        // upstream, the pick must be the named one, not whichever sorts first.
+        let mut config = base();
+        let mut other = config
+            .providers
+            .get("antigravity")
+            .expect("the default config seeds an antigravity provider")
+            .clone();
+        other.base_url = "http://127.0.0.1:9443".to_string();
+        // Sorts before "antigravity", so a plain scan would return it.
+        config.providers.insert("agy-aaa".to_string(), other);
+        config
+            .providers
+            .get_mut("antigravity")
+            .expect("still seeded")
+            .base_url = "http://127.0.0.1:9999".to_string();
+
+        assert_eq!(login_base_url(Some(&config)), "http://127.0.0.1:9999");
     }
 
     #[test]
