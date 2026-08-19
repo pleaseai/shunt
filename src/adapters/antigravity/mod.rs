@@ -117,6 +117,7 @@ impl Adapter for AntigravityAdapter {
     ) -> AdapterFuture<'a> {
         Box::pin(async move {
             let request = body.json();
+            reject_caller_tools(request)?;
             let prompt = extract_antigravity_prompt(request);
             let is_streaming = request
                 .get("stream")
@@ -608,6 +609,54 @@ fn terminal_failure(end: Option<&AgyEnd>, timed_out: bool, stderr: &StderrLog) -
 /// which excludes `~/.local/bin` — the default install location for `agy` — so
 /// a provider that works in a shell returns 503 under the service with no
 /// indication why. `AGY_BIN` is the fix, and the message has to say so.
+/// Reject a request that carries caller-supplied tools.
+///
+/// `agy` resolves its own tool calls internally and has no mode that hands them
+/// back to the caller: `agy --help` exposes only `--dangerously-skip-permissions`
+/// (auto-approve) and the `--input-format`/`--output-format` stream-json pair.
+/// So this adapter cannot emit a `tool_use` block, and until now it dropped
+/// `tools`/`tool_choice` silently — returning a `200` whose `stop_reason` is
+/// `end_turn` and which contains only text. An agentic caller cannot act on
+/// that: it stalls waiting for a tool call that will never come. Worse, it
+/// violates the Messages contract outright when the caller sent
+/// `tool_choice: {"type": "any"}`, which obliges a `tool_use` block.
+///
+/// Fail closed instead, so the caller learns why on the first turn (issue #404).
+/// `tool_choice: {"type": "none"}` is the one exemption: the caller has said it
+/// does not want tool calls, so a text-only answer is what it asked for.
+fn reject_caller_tools(request: &Value) -> Result<(), AdapterError> {
+    let choice = request.get("tool_choice").filter(|c| !c.is_null());
+    if choice.and_then(|c| c.get("type")).and_then(Value::as_str) == Some("none") {
+        return Ok(());
+    }
+    let has_tools = request
+        .get("tools")
+        .and_then(Value::as_array)
+        .is_some_and(|tools| !tools.is_empty());
+    if !has_tools && choice.is_none() {
+        return Ok(());
+    }
+
+    let message = "The Antigravity provider cannot use caller-supplied tools. `agy` runs its own \
+         tool set and never returns a tool_use block, so a request carrying `tools` or \
+         `tool_choice` would receive a text-only reply that silently ignores them. Send the \
+         task as a plain prompt and let agy do the work, or route this model to a provider \
+         that forwards tools."
+        .to_string();
+    Err(AdapterError {
+        response: Box::new(
+            ShuntError::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_request_error",
+                message.clone(),
+            )
+            .into_response(),
+        ),
+        message,
+        failure: None,
+    })
+}
+
 fn agy_not_found() -> AdapterError {
     let message = "Antigravity CLI (agy) not found on PATH, in ~/.gemini/antigravity-cli/bin, or at $AGY_BIN. \
          Install agy, or set AGY_BIN to its absolute path — a service manager \
@@ -865,6 +914,71 @@ fn find_agy_binary_uncached() -> Option<PathBuf> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    fn status_of(error: &AdapterError) -> StatusCode {
+        error.response.status()
+    }
+
+    /// The reported shape from issue #404: a caller sends tools and no
+    /// `tool_choice`, which is what a Claude Code subagent does. Before the
+    /// guard this returned a text-only 200 the caller could not act on.
+    #[test]
+    fn caller_tools_without_a_choice_are_rejected() {
+        let request = json!({
+            "messages": [{"role": "user", "content": "read Cargo.toml"}],
+            "tools": [{"name": "Read", "input_schema": {"type": "object"}}],
+        });
+        let error = reject_caller_tools(&request).expect_err("tools must be refused");
+        assert_eq!(status_of(&error), StatusCode::BAD_REQUEST);
+        assert!(
+            error.message.contains("cannot use caller-supplied tools"),
+            "the error must say why: {}",
+            error.message
+        );
+    }
+
+    /// `tool_choice: any` obliges a `tool_use` block, which this provider can
+    /// never emit — the least ambiguous case, refused even with no `tools`.
+    #[test]
+    fn a_forcing_tool_choice_is_rejected() {
+        let request = json!({
+            "messages": [{"role": "user", "content": "hi"}],
+            "tool_choice": {"type": "any"},
+        });
+        let error = reject_caller_tools(&request).expect_err("tool_choice must be refused");
+        assert_eq!(status_of(&error), StatusCode::BAD_REQUEST);
+    }
+
+    /// The one exemption: the caller declared it does not want tool calls, so a
+    /// text-only answer is exactly what it asked for. Refusing this would break
+    /// callers that pass a tool list they never intend the model to use.
+    #[test]
+    fn tool_choice_none_is_allowed_even_alongside_tools() {
+        let request = json!({
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"name": "Read", "input_schema": {"type": "object"}}],
+            "tool_choice": {"type": "none"},
+        });
+        assert!(reject_caller_tools(&request).is_ok());
+    }
+
+    /// An empty `tools` array carries no capability request, so it must not
+    /// turn an otherwise valid prompt into a 400.
+    #[test]
+    fn an_empty_tools_array_is_not_a_tool_request() {
+        let request = json!({
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [],
+        });
+        assert!(reject_caller_tools(&request).is_ok());
+    }
+
+    /// The ordinary path stays open.
+    #[test]
+    fn a_plain_prompt_is_untouched() {
+        let request = json!({"messages": [{"role": "user", "content": "hi"}]});
+        assert!(reject_caller_tools(&request).is_ok());
+    }
 
     /// `kill(-0, ...)` is `kill(0, ...)`: every process in shunt's own group.
     #[test]
