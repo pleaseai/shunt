@@ -1,0 +1,25 @@
+.claude/agent-memory/review-review-security-reviewer/MEMORY.md
+  s_55f424ce824b24::t_3ac31c8362fe7e 23
+.claude/agent-memory/review-review-comment-analyzer/shunt-pr403-codex-0148-sync-clean.md
+  s_55f424ce824b24::t_b4241606bde937 1-51
+.claude/agent-memory/review-review-comment-analyzer/MEMORY.md
+  s_55f424ce824b24::t_40167d2531823f 11
+.claude/agent-memory/review-review-security-reviewer/project_codex-routing-hint-header.md
+  s_55f424ce824b24::t_3ac31c8362fe7e 1-28
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "1b0f4adc3f7ffb18f81f162d1380147b6403e628",
+  "prompts": {},
+  "sessions": {
+    "s_55f424ce824b24": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bd6d7497-b259-485d-95e1-ff619b491f07",
+        "model": "claude-opus-5"
+      },
+      "human_author": null
+    }
+  }
+}
