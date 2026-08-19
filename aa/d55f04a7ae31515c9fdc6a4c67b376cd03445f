@@ -1,0 +1,19 @@
+.claude/agent-memory/review-review-security-reviewer/project_codex-routing-hint-header.md
+  s_55f424ce824b24::t_ac2c0ad144afc2 3,21,29-35
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "aad55f04a7ae31515c9fdc6a4c67b376cd03445f",
+  "prompts": {},
+  "sessions": {
+    "s_55f424ce824b24": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bd6d7497-b259-485d-95e1-ff619b491f07",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
