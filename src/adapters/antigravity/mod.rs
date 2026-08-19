@@ -622,26 +622,36 @@ fn terminal_failure(end: Option<&AgyEnd>, timed_out: bool, stderr: &StderrLog) -
 /// `tool_choice: {"type": "any"}`, which obliges a `tool_use` block.
 ///
 /// Fail closed instead, so the caller learns why on the first turn (issue #404).
-/// `tool_choice: {"type": "none"}` is the one exemption: the caller has said it
-/// does not want tool calls, so a text-only answer is what it asked for.
+///
+/// Only a request that actually asks for a tool call is refused: a non-empty
+/// `tools` array, or a `tool_choice` that obliges one (`any`/`tool`). A
+/// `tool_choice` of `none` is exempt even alongside `tools`, because the caller
+/// has said it does not want tool calls. So is `auto` with no tools — it is the
+/// Anthropic SDK default and many clients serialize it on every request, so
+/// refusing it would break ordinary text prompts that never wanted a tool.
 fn reject_caller_tools(request: &Value) -> Result<(), AdapterError> {
-    let choice = request.get("tool_choice").filter(|c| !c.is_null());
-    if choice.and_then(|c| c.get("type")).and_then(Value::as_str) == Some("none") {
+    let choice_type = request
+        .get("tool_choice")
+        .and_then(|choice| choice.get("type"))
+        .and_then(Value::as_str);
+    if choice_type == Some("none") {
         return Ok(());
     }
     let has_tools = request
         .get("tools")
         .and_then(Value::as_array)
         .is_some_and(|tools| !tools.is_empty());
-    if !has_tools && choice.is_none() {
+    let forces_a_tool = matches!(choice_type, Some("any" | "tool"));
+    if !has_tools && !forces_a_tool {
         return Ok(());
     }
 
-    let message = "The Antigravity provider cannot use caller-supplied tools. `agy` runs its own \
-         tool set and never returns a tool_use block, so a request carrying `tools` or \
-         `tool_choice` would receive a text-only reply that silently ignores them. Send the \
-         task as a plain prompt and let agy do the work, or route this model to a provider \
-         that forwards tools."
+    let message = "The deprecated `antigravity-cli` transport cannot use caller-supplied \
+         tools. It runs the local `agy` binary, which resolves its own tool calls and never \
+         returns a tool_use block, so this request would otherwise get a text-only reply \
+         that silently ignored them. Send the task as a plain prompt and let agy do the \
+         work, or route this model at the native `antigravity` provider (or `gemini`), \
+         which do forward tools."
         .to_string();
     Err(AdapterError {
         response: Box::new(
@@ -978,6 +988,51 @@ mod tests {
     fn a_plain_prompt_is_untouched() {
         let request = json!({"messages": [{"role": "user", "content": "hi"}]});
         assert!(reject_caller_tools(&request).is_ok());
+    }
+
+    /// `auto` is the Anthropic SDK default and many clients serialize it on
+    /// every request. With no tools to call it obliges nothing, so refusing it
+    /// would turn ordinary text prompts into 400s.
+    #[test]
+    fn tool_choice_auto_without_tools_is_allowed() {
+        let request = json!({
+            "messages": [{"role": "user", "content": "hi"}],
+            "tool_choice": {"type": "auto"},
+        });
+        assert!(reject_caller_tools(&request).is_ok());
+    }
+
+    /// `auto` stops being a no-op once there are tools to choose from.
+    #[test]
+    fn tool_choice_auto_with_tools_is_rejected() {
+        let request = json!({
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"name": "Read", "input_schema": {"type": "object"}}],
+            "tool_choice": {"type": "auto"},
+        });
+        assert!(reject_caller_tools(&request).is_err());
+    }
+
+    /// Naming the deprecated transport matters: the native `antigravity`
+    /// provider does forward tools, and an operator told only that
+    /// "Antigravity" cannot may switch away from the one that works.
+    #[test]
+    fn the_error_names_the_cli_transport_and_the_working_alternative() {
+        let request = json!({
+            "messages": [{"role": "user", "content": "hi"}],
+            "tool_choice": {"type": "any"},
+        });
+        let error = reject_caller_tools(&request).expect_err("must be refused");
+        assert!(
+            error.message.contains("antigravity-cli"),
+            "must name the transport: {}",
+            error.message
+        );
+        assert!(
+            error.message.contains("native `antigravity` provider"),
+            "must point at the working alternative: {}",
+            error.message
+        );
     }
 
     /// `kill(-0, ...)` is `kill(0, ...)`: every process in shunt's own group.
