@@ -176,7 +176,7 @@ For a Codex request shunt sends the Codex-CLI identity so client-version gating 
 | `originator` | `codex_cli_rs` |
 | `user-agent` | `codex_cli_rs/0.148.0` (`CODEX_USER_AGENT`) |
 | `version` | `0.148.0` (`CODEX_CLIENT_VERSION`) |
-| `x-codex-routing-hint` | `model=<upstream_model>`, or `model=<upstream_model>;tier=<service_tier>` when a tier is set |
+| `x-codex-routing-hint` | `model=<upstream_model>`, or `model=<upstream_model>;tier=<service_tier>` when a tier is set — omitted when the model can't be safely put in a header (see below) |
 | `OpenAI-Beta` | `responses=experimental` |
 | `content-type` | `application/json` |
 | `content-encoding` | `zstd` — only when the request body was compressed (see §4.5) |
@@ -194,11 +194,29 @@ flavor instead (withheld for xAI/Grok, sent otherwise), and `content-type` is al
 (`build_routing_hint_header`, codex-rs/core/src/client.rs), which upstream likewise suppresses for
 api-key/bearer/aws providers. The `;tier=` segment appears only when the same predicate that
 governs the request body's `service_tier` holds — a tier is configured and it isn't the
-client-only `"default"` sentinel (§9) — so the hint can never advertise a tier the body did not
-send. The websocket transport (`m7-codex-websocket.md`) sends it too, as a handshake header;
-because shunt pools and reuses those connections, a reused socket carries the hint of the turn
-that opened it. That matches upstream, which also builds the header only at connection time — and
-it is a routing *hint*, not a routing decision.
+client-only `"default"` sentinel (§9). The websocket transport (`m7-codex-websocket.md`) sends it
+too, as a handshake header; because shunt pools and reuses those connections, a reused socket
+carries the hint of the turn that opened it. That matches upstream, which also builds the header
+only at connection time — and it is a routing *hint*, not a routing decision.
+
+**The hint is omitted, not an error, when it cannot be built safely.** Unlike upstream codex —
+which builds the hint from its own local config — shunt's `<upstream_model>` is client-controlled
+on a prefix route or via `default_provider`, where the request's raw `model` string is passed
+through unchanged. So shunt sends the header only when the model is a plausible slug: non-empty,
+at most 128 bytes, and made up solely of ASCII letters/digits and `-` `_` `.` `:` `/` `+`. Anything
+else — a `;`, a `,`, whitespace, a control character — drops the header and the request still goes
+out. This is an allowlist rather than a list of banned separators on purpose: shunt does not own
+the backend's parser for this header, so a parser splitting on `,` (the standard HTTP list
+separator) would read `model=gpt-5,tier=priority` as two fields, and enumerating separators against
+a grammar this repo cannot observe is the guard that erodes. Failing by omission also keeps a
+malformed client `model` from becoming an upstream send failure, which the Codex account pool would
+otherwise charge to the account as a transport cooldown. Each omission logs a `debug`-level line
+carrying the reason and the model's length — never the model string itself.
+
+That honesty property covers the headers **shunt builds**. On the inbound Codex passthrough
+(§17) the caller's own `x-codex-routing-hint` is relayed verbatim like the rest of its Codex-CLI
+headers, and its body is the caller's too — so there is no hint/body divergence for shunt to police
+there.
 
 ### 4.5 Request-body compression
 

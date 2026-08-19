@@ -1,6 +1,8 @@
 //! Build the upstream Responses HTTP request (URL, auth, identity headers) and
 //! resolve the per-provider Responses endpoint.
 
+use axum::http::HeaderValue;
+
 use crate::{auth::Credential, routing::Route, server::AppState};
 
 /// Codex CLI client identity, mirrored from openai/codex rust-v0.148.0.
@@ -26,23 +28,97 @@ pub(super) const CODEX_CLIENT_VERSION: &str = "0.148.0";
 const GROK_CLIENT_IDENTIFIER: &str = "grok-shell";
 const GROK_CLIENT_VERSION: &str = "0.2.93";
 
+/// Upper bound on the `upstream_model` slug interpolated into the routing hint.
+/// Shares the value of `observability::MAX_MODEL_TAG_LEN`, which bounds this
+/// same client-supplied string at its other sink, but **not its unit**: that one
+/// counts `char`s (`.chars().take(..)`), this one counts bytes (`.len()`). Bytes
+/// is the right unit here because the bound exists to cap what goes on the wire,
+/// and a header value is measured in bytes; it is also the stricter of the two,
+/// since a UTF-8 string is never fewer bytes than `char`s.
+pub(super) const MAX_ROUTING_HINT_MODEL_LEN: usize = 128;
+
+/// Whether `model` may be interpolated into the routing hint.
+///
+/// A model slug is an opaque id. Every slug reachable on this path is drawn from
+/// this set — verified against the Codex/OpenAI slugs this repo knows about
+/// (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`,
+/// `gpt-5.4-mini`, `gpt-5.2`, `gpt-5.2-codex`, …), which use only `-` and `.`;
+/// `_`, `:`, `/` and `+` are headroom for provider-qualified id styles. Anything
+/// outside it cannot be a real slug and must not be interpolated into the hint's
+/// `model=<m>[;tier=<t>]` grammar, whose server-side parser shunt does not own.
+///
+/// A positive allowlist rather than a denylist of metacharacters: `HeaderValue`
+/// admits every visible ASCII byte plus TAB, so enumerating separators against a
+/// remote grammar shunt cannot observe is the guard that erodes — a parser
+/// splitting on `,` (the standard HTTP list separator) would read
+/// `model=gpt-5,tier=priority` as two fields, the same forge a `;`-only rule was
+/// added to stop.
+///
+/// The emptiness clause is load-bearing, not decoration:
+/// `routing::strip_context_window_hint("[1m]")` returns `""` (pinned by its own
+/// test), so an empty `upstream_model` is reachable and would otherwise emit a
+/// meaningless `model=`.
+fn is_hint_safe_slug(model: &str) -> bool {
+    !model.is_empty()
+        && model.len() <= MAX_ROUTING_HINT_MODEL_LEN
+        && model.bytes().all(|b| {
+            b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b':' | b'/' | b'+')
+        })
+}
+
 /// Build the `x-codex-routing-hint` value the Codex CLI sends on the ChatGPT
 /// backend (`X_CODEX_ROUTING_HINT_HEADER` / `build_routing_hint_header`,
 /// codex-rs/core/src/client.rs): the upstream model slug, plus `;tier=<tier>`
-/// when a service tier is actually on the wire.
+/// when a service tier is on the wire. The tier predicate mirrors the request
+/// body's exactly (see `model/responses_request.rs`) — `"default"` is a
+/// client-only sentinel stripped before the body is serialized, so a hint built
+/// from a *route-configured* tier can never advertise a tier the body omitted.
 ///
-/// The tier predicate mirrors the request body's exactly (see
-/// `model/responses_request.rs`): `"default"` is a client-only sentinel that is
-/// stripped before the body is serialized, so the hint must strip it too and
-/// never advertise a tier the body did not send.
-pub(super) fn routing_hint(route: &Route) -> String {
-    match route
+/// Returns `None` — omit the header — rather than failing the turn, because
+/// unlike upstream codex (which builds the hint from its own local config)
+/// shunt's `upstream_model` is **client-controlled**: a prefix route or the
+/// default provider passes the request's raw `model` string straight through
+/// (`routing.rs`, only a trailing `[1m]` stripped). Omitted when the slug fails
+/// [`is_hint_safe_slug`], and — belt-and-braces behind that allowlist — when the
+/// assembled value is not a valid header value. Building it unconditionally
+/// would defer a `HeaderValue` rejection to reqwest's builder, surfacing at
+/// `.send()` as a non-transient error that the Codex OAuth pool classifies as an
+/// account transport failure, cooling *every* account for 30s off one malformed
+/// client string.
+///
+/// Failing closed by omission is what upstream does too (`…from_str(&hint).ok()`
+/// behind an `if let Some`), and matches this repo's own `stamp_gateway_headers`
+/// (`proxy/failover.rs`) for the equally client-derived `x-gateway-model`.
+pub(super) fn routing_hint(route: &Route) -> Option<HeaderValue> {
+    let model = route.upstream_model.as_str();
+    if !is_hint_safe_slug(model) {
+        // Debug, never warn/info: this is client-triggerable, so a higher level
+        // is a log-flood vector. The model itself is unvalidated client free
+        // text and is never logged — only its length, which is enough to tell
+        // empty from over-long from a bad character.
+        tracing::debug!(
+            model_len = model.len(),
+            "routing hint omitted: upstream model is not usable in the hint grammar"
+        );
+        return None;
+    }
+    let hint = match route
         .service_tier
         .as_deref()
         .filter(|tier| *tier != "default")
     {
-        Some(tier) => format!("model={};tier={tier}", route.upstream_model),
-        None => format!("model={}", route.upstream_model),
+        Some(tier) => format!("model={model};tier={tier}"),
+        None => format!("model={model}"),
+    };
+    match HeaderValue::from_str(&hint) {
+        Ok(value) => Some(value),
+        Err(_) => {
+            tracing::debug!(
+                model_len = model.len(),
+                "routing hint omitted: not a valid header value"
+            );
+            None
+        }
     }
 }
 
@@ -79,8 +155,12 @@ pub(super) fn request_builder(
                 .header("chatgpt-account-id", account_id)
                 .header("originator", "codex_cli_rs")
                 .header("user-agent", CODEX_USER_AGENT)
-                .header("version", CODEX_CLIENT_VERSION)
-                .header("x-codex-routing-hint", routing_hint(route));
+                .header("version", CODEX_CLIENT_VERSION);
+            // Omitted, never fatal, when the client-controlled model makes an
+            // unusable value — see [`routing_hint`].
+            if let Some(hint) = routing_hint(route) {
+                request = request.header("x-codex-routing-hint", hint);
+            }
             // Session/identity headers the real Codex CLI sends alongside the
             // client identity above (raine/claude-code-proxy build_codex_headers,
             // cross-checked against codex-rs/login/src/auth/default_client.rs).
@@ -167,7 +247,7 @@ mod tests {
         server::AppState,
     };
 
-    use super::{build_test_request, responses_url};
+    use super::{build_test_request, request_builder, responses_url};
 
     fn codex_route() -> Route {
         Route {
@@ -303,6 +383,121 @@ mod tests {
 
         // Upstream suppresses the hint for api-key/bearer/aws providers.
         assert!(request.headers().get("x-codex-routing-hint").is_none());
+    }
+
+    /// The route a prefix/default-provider match produces: `upstream_model` is
+    /// the client's raw `model` string (`routing.rs`), so these are the values a
+    /// request body can put there.
+    fn client_model_route(model: &str) -> Route {
+        Route {
+            model: model.to_string(),
+            upstream_model: model.to_string(),
+            ..codex_route()
+        }
+    }
+
+    fn codex_oauth() -> Credential {
+        Credential::ChatGptOAuth {
+            access_token: "access-token".to_string(),
+            account_id: "account-id".to_string(),
+        }
+    }
+
+    #[test]
+    fn routing_hint_is_omitted_for_a_model_outside_the_slug_allowlist() {
+        let state = AppState::new(Config::default(), reqwest::Client::new()).unwrap();
+
+        // Each case carries exactly ONE character outside the allowlist, so
+        // widening the allowlist by one byte reddens exactly one case. (A
+        // realistic forge like `gpt-5,tier=priority` is rejected by its `=`
+        // before the `,` is ever reached, which would make it useless for
+        // pinning the `,` rule specifically — the full forges are asserted
+        // separately below.)
+        let one_bad_character = [
+            "gpt-5;codex",  // the hint's own segment delimiter
+            "gpt-5,codex",  // the standard HTTP list separator
+            "gpt-5=codex",  // the hint's own key/value delimiter
+            "gpt-5 codex",  // SP — accepted by `HeaderValue`
+            "gpt-5\tcodex", // TAB — likewise accepted by `HeaderValue`
+            "gpt-5\"codex", // quoting, for a parser that unquotes
+            "gpt-5\ncodex", // control character: not a valid header value at all
+        ];
+        // The forges these rules exist to stop, asserted as whole strings.
+        let forged = [
+            "gpt-5.2-codex;tier=priority",
+            "gpt-5,tier=priority",
+            "gpt-5 tier=priority",
+            "gpt-5\ttier=priority",
+            // Empty is reachable: `strip_context_window_hint("[1m]") == ""`.
+            "",
+        ];
+        let outside_the_allowlist = one_bad_character.iter().chain(forged.iter()).copied();
+        for model in outside_the_allowlist {
+            let request =
+                build_test_request(&state, &client_model_route(model), codex_oauth(), None);
+            assert!(
+                request.headers().get("x-codex-routing-hint").is_none(),
+                "model {model:?} must not produce a routing hint"
+            );
+        }
+
+        // The allowlist still admits every real slug shape.
+        for model in ["gpt-5.6-sol", "gpt-5.2-codex", "gpt-5.4-mini"] {
+            let request =
+                build_test_request(&state, &client_model_route(model), codex_oauth(), None);
+            assert_eq!(
+                request.headers().get("x-codex-routing-hint").unwrap(),
+                format!("model={model}").as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn routing_hint_is_omitted_for_an_over_long_model() {
+        let state = AppState::new(Config::default(), reqwest::Client::new()).unwrap();
+        let model = "g".repeat(super::MAX_ROUTING_HINT_MODEL_LEN + 1);
+
+        let request = build_test_request(&state, &client_model_route(&model), codex_oauth(), None);
+
+        assert!(request.headers().get("x-codex-routing-hint").is_none());
+        // The bound is inclusive: exactly the limit still sends a hint, so the
+        // test above is failing on the length rule and not on some other guard.
+        let at_limit = "g".repeat(super::MAX_ROUTING_HINT_MODEL_LEN);
+        let request =
+            build_test_request(&state, &client_model_route(&at_limit), codex_oauth(), None);
+        assert_eq!(
+            request.headers().get("x-codex-routing-hint").unwrap(),
+            format!("model={at_limit}").as_str()
+        );
+    }
+
+    #[test]
+    fn a_control_character_model_omits_the_hint_and_still_builds_the_request() {
+        let state = AppState::new(Config::default(), reqwest::Client::new()).unwrap();
+
+        // Regression guard for the pool-cooldown defect: interpolating a control
+        // character into the header would defer a `HeaderValue` rejection to
+        // reqwest's builder, surfacing at `.send()` as a non-transient error that
+        // the Codex OAuth pool charges to the account as a 30s transport
+        // cooldown — deterministic, so it would cool every account in turn.
+        // `build` must therefore still succeed, with the hint simply absent.
+        let request = request_builder(
+            &state,
+            &client_model_route("gpt-5\n-sol"),
+            codex_oauth(),
+            None,
+        )
+        .body("{}")
+        .build()
+        .expect("a malformed model must not fail the request build");
+
+        assert!(request.headers().get("x-codex-routing-hint").is_none());
+        // The rest of the identity is unaffected — only the hint is dropped.
+        assert_eq!(request.headers().get("originator").unwrap(), "codex_cli_rs");
+        assert_eq!(
+            request.headers().get("version").unwrap(),
+            super::CODEX_CLIENT_VERSION
+        );
     }
 
     #[test]

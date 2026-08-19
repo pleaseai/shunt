@@ -328,7 +328,11 @@ including a route explicitly set to `default`, which opts that route **out** of 
 Whatever tier ends up on the wire is also echoed to the backend in the Codex CLI's
 `x-codex-routing-hint` header, as `model=<upstream model>;tier=<tier>` (just `model=<upstream model>`
 when no tier is sent). shunt sends that header only on the ChatGPT OAuth path, exactly as the Codex
-CLI does — over HTTP on every request, and on the WebSocket transport as a handshake header.
+CLI does — on HTTP requests, and on the WebSocket transport as a handshake header. On a prefix route
+or via `default_provider` that upstream model is the client's own `model` string, so the header is
+built defensively: it goes out only for a plausible slug (non-empty, at most 128 bytes, ASCII
+letters/digits and `-` `_` `.` `:` `/` `+`), and is otherwise dropped while the request still goes
+out.
 
 ## 6. Context window
 

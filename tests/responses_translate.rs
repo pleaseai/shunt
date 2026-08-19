@@ -1172,6 +1172,42 @@ fn event_usage(emitted: &str, event_type: &str) -> Value {
 }
 
 #[test]
+fn cache_write_tokens_split_out_of_the_nested_response_usage() {
+    // The real streaming shape nests usage under `/response/usage` (the module
+    // unit tests exercise the flat `usage` fallback). Mirrors
+    // `streaming_state_machine_emits_incremental_anthropic_events`' usage frame,
+    // with the `cache_write_tokens` field openai/codex added in rust-v0.148.0.
+    let fixture = concat!(
+        "event: response.output_item.added\n",
+        "data: {\"item\":{\"type\":\"message\"}}\n\n",
+        "event: response.output_text.delta\n",
+        "data: {\"delta\":\"Hi\"}\n\n",
+        "event: response.output_text.done\n",
+        "data: {}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{\"usage\":{\"input_tokens\":1200,\"input_tokens_details\":{\"cached_tokens\":800,\"cache_write_tokens\":150},\"output_tokens\":9}}}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let mut machine = AnthropicSseMachine::new("gpt-5.2-codex", false, false);
+    let emitted = parse_sse_events(fixture)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
+
+    let usage = event_usage(&emitted, "message_delta");
+    assert_eq!(
+        usage,
+        json!({
+            "input_tokens": 250,
+            "cache_read_input_tokens": 800,
+            "cache_creation_input_tokens": 150,
+            "output_tokens": 9,
+        }),
+        "the three input fields must sum to the upstream input_tokens (1200)"
+    );
+}
+
+#[test]
 fn message_start_seeds_input_token_estimate() {
     // Responses reports usage only at response.completed, so without a seed the
     // message_start usage is {input_tokens:0}. Claude Code's per-subagent
